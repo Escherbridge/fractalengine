@@ -490,6 +490,65 @@ for label, rows_before, rows_at_send, expected in [
                     "passed":accepted==expected and len(sent)==(1 if expected else 0),
                     "authenticated_writes":len(sent),
                     "boundary":"production retained-stream pre-send owner guard; controlled OS rows, no network/runtime acceptance"})
+import owned_run_http as snapshot_module
+from unittest.mock import patch
+for label, raw, expected in [
+        ("bounded-version", b'{"tokens":{},"roles":{}}', True),
+        ("growth-after-size", b'{"tokens":{},"roles":{}}', True),
+        ("inplace-writer-held", b'{"tokens":{},"roles":{}}', False),
+        ("inplace-mutation-attempt", b'{"tokens":{},"roles":{}}', True),
+        ("oversized", b'{"tokens":{},"roles":{}}', False),
+        ("duplicate-key", b'{"tokens":{},"tokens":{},"roles":{}}', False),
+        ("nonfinite", b'{"tokens":{},"roles":{},"extra":NaN}', False),
+        ("short-read", b'{"tokens":{},"roles":{}}', False)]:
+    snapshot_path = output / "unwritten-token-snapshot.json"
+    observed = {"shares": [], "sizes": 0, "reads": [], "closed": 0, "writer_denied": False}
+
+    def open_snapshot(path, access, share, security, disposition, flags, template):
+        observed["shares"].append(share)
+        return None if label == "inplace-writer-held" and not share & 2 else 1
+
+    def resolve_snapshot(handle, buffer, size, flags):
+        buffer.value = str(snapshot_path)
+        return len(buffer.value)
+
+    def snapshot_size():
+        observed["sizes"] += 1
+        if label == "oversized" or label == "growth-after-size" and observed["sizes"] > 1:
+            return snapshot_module.MAX_TOKEN_BYTES + 1
+        return len(raw)
+
+    def snapshot_read(offset, length):
+        observed["reads"].append([offset, length])
+        if label == "inplace-mutation-attempt":
+            observed["writer_denied"] = not observed["shares"][0] & 2
+            if not observed["writer_denied"]:
+                raise ValueError("controlled concurrent writer was not excluded")
+        return raw[:-1] if label == "short-read" else raw
+
+    files = SimpleNamespace(api=SimpleNamespace(
+        CreateFileW=open_snapshot, GetFinalPathNameByHandleW=resolve_snapshot,
+        CloseHandle=lambda handle: observed.__setitem__("closed", observed["closed"] + 1)))
+    pinned = SimpleNamespace(information=lambda: SimpleNamespace(attributes=0),
+                             size=snapshot_size, read=snapshot_read)
+    accepted = True
+    with patch.object(snapshot_module, "PinnedFile", lambda files, handle: pinned), \
+            patch.object(snapshot_module, "canonical", lambda value: Path(value)):
+        try:
+            value = snapshot_module.token_snapshot(files, snapshot_path)
+            accepted = value == {"tokens": {}, "roles": {}}
+        except ValueError:
+            accepted = False
+    contract = observed["shares"] == [5] and observed["sizes"] <= 1
+    contract = contract and all(length <= snapshot_module.MAX_TOKEN_BYTES for _, length in observed["reads"])
+    contract = contract and observed["closed"] == (0 if label == "inplace-writer-held" else 1)
+    if label == "growth-after-size":
+        contract = contract and observed["reads"] == [[0, len(raw)]]
+    if label == "inplace-mutation-attempt":
+        contract = contract and observed["writer_denied"]
+    results.append({"case": "owned-token-" + label, "expected_accepted": expected, "accepted": accepted,
+                    "passed": accepted == expected and contract, "contract": observed,
+                    "boundary": "production snapshot with controlled kernel sharing/read seams; no token file or native API execution"})
 summary = {"scope": "offline synthetic validator fixtures; zero application checkpoint coverage",
            "passed": all(result["passed"] for result in results), "cases": results}
 (output / "results.json").write_text(json.dumps(summary, indent=2), encoding="utf-8")

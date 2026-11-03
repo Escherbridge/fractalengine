@@ -14,6 +14,7 @@ from owned_stdout_windows import WindowsLease, PinnedFile, canonical
 
 MAX_TABLE_BYTES = 1024 * 1024
 MAX_RESPONSE_BYTES = 16 * 1024 * 1024
+MAX_TOKEN_BYTES = 1024 * 1024
 
 
 class Tcp4Row(ctypes.Structure):
@@ -96,24 +97,47 @@ class PinnedConnection(http.client.HTTPConnection):
         super().send(data)
 
 
+def token_object(raw):
+    def unique_object(pairs):
+        result = {}
+        for key, value in pairs:
+            if key in result:
+                raise ValueError("duplicate token snapshot key")
+            result[key] = value
+        return result
+
+    def reject_constant(_):
+        raise ValueError("nonfinite token snapshot number")
+
+    try:
+        value = json.loads(raw.decode("utf-8-sig"), object_pairs_hook=unique_object,
+                           parse_constant=reject_constant)
+    except (ValueError, UnicodeError):
+        raise ValueError("owned token snapshot is malformed") from None
+    if not isinstance(value, dict) or not isinstance(value.get("tokens"), dict) or not isinstance(value.get("roles"), dict):
+        raise ValueError("owned token snapshot is malformed")
+    return value
+
+
 def token_snapshot(files,path):
-    # The publisher atomically replaces this leaf; retain its version, without blocking publication.
-    handle=files.api.CreateFileW(str(path),0x80000000,7,None,3,0x00200000,None)
+    # FILE_SHARE_READ | FILE_SHARE_DELETE retains one version while allowing atomic publication.
+    handle=files.api.CreateFileW(str(path),0x80000000,5,None,3,0x00200000,None)
     if handle in (None,ctypes.c_void_p(-1).value):
         raise ValueError("owned token snapshot is unavailable")
     try:
         pinned=PinnedFile(files,handle)
         info=pinned.information()
-        if info.attributes & (0x400|0x10) or not 0 < pinned.size() <= 1024*1024:
+        size = pinned.size()
+        if info.attributes & (0x400|0x10) or not 0 < size <= MAX_TOKEN_BYTES:
             raise ValueError("owned token snapshot is redirected or exceeds its bound")
         resolved=ctypes.create_unicode_buffer(32768)
         length=files.api.GetFinalPathNameByHandleW(handle,resolved,len(resolved),0)
         if not 0 < length < len(resolved) or canonical(resolved.value.removeprefix("\\\\?\\")) != path:
             raise ValueError("owned token snapshot resolved through an alias")
-        value=json.loads(pinned.read(0,pinned.size()).decode("utf-8-sig"))
-        if not isinstance(value,dict) or not isinstance(value.get("tokens"),dict) or not isinstance(value.get("roles"),dict):
-            raise ValueError("owned token snapshot is malformed")
-        return value
+        raw = pinned.read(0, size)
+        if len(raw) != size:
+            raise ValueError("owned token snapshot read was incomplete")
+        return token_object(raw)
     finally:
         files.api.CloseHandle(handle)
 

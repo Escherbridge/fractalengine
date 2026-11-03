@@ -1077,8 +1077,10 @@ no cache file is written. Existing evidence-boundaries fixtures cover controlled
 wrong-tuple, ambiguous-owner and rebind-before-auth refusal with zero authenticated writes.
 These offline fixtures do not substitute for root-owned native paired execution.
 
-The token leaf is read as one bounded handle-pinned version with read/write/delete sharing,
-then closed immediately. The existing atomic owner-only publisher may replace tokens.json
+The token leaf is read as one bounded handle-pinned version with read/delete sharing; write
+sharing is denied, excluding existing and future in-place writers. One checked length controls
+one exact read (at most 1 MiB), and strict UTF-8 JSON parsing uses that same captured buffer.
+Duplicate keys and nonfinite JSON constants are refused. The handle is then closed immediately. The existing atomic owner-only publisher may replace tokens.json
 without being blocked by a long transfer. Only the exact run-local non-reparse file is read;
 its token map stays in memory and is injected into token resolution. current.json and parent
 identity guards remain retained. Existing durable API credential checks reject obsolete tokens.
@@ -1089,3 +1091,10 @@ same lease before and after source consumption, sends the fixed focus/text/Join 
 X-FE-Join-Lease, and accepts only the actual commands-applied receipt. The host confines text
 to the actual masked TextEdit and rechecks each frame and mutation/click boundary. A dialog,
 layout, focus, navigation, identity or window change stops the batch without replay or Ready.
+
+
+The existing offline evidence-boundary journey also constrains the production token snapshot
+with controlled kernel seams: exactly read/delete sharing, one checked size, no growth-driven
+read, existing-writer refusal, in-place mutation exclusion, and strict/complete buffer parsing.
+These source-contract fixtures were authored without native calls or credential files and do
+not replace the parent-owned Windows publication/runtime checks.
