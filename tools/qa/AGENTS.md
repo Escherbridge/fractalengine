@@ -1145,27 +1145,27 @@ this unrecognized stem. This is setup only: no upload, metadata stripping, ficti
 uploader, logical DB writer or adoption. Basic/terrain fixture builders are skipped.
 The staged helper is SHA256-sealed as legacy_fixture_sha256 in stage.json.
 
-legacy-fixture.ps1 -Run <explicit-run> -Phase discovery|baseline|adopted holds the
-shared lifecycle lease/restart lock and requires exact recorded identities absent.
-The helper independently duplicates that lease handle and checks identities before
-and after opening the existing store. Only fixed bounded SELECTs run. Static codes
-replace raw SQL/native errors. Source SHA256/BLAKE3, actual DB presence and complete
-CBOR-derived witness digests bind readback without publishing raw journal payloads.
-See fe-database/examples/AGENTS.md for numeric/time/output/overflow contracts.
+Discovery, baseline, adopted and ResumeRun are unsupported in this interim slice.
+After validating the recorded lifetime, immutable preparation/stage/source and
+canonical input, the helper unconditionally returns
+fixture_store_confinement_unavailable before any SDK store open. It issues no SQL
+and creates no successful phase report. The scripts still hold the shared
+lifecycle lease/restart lock and require exact recorded identities absent; the
+helper independently duplicates that lease. Static codes replace raw errors.
+See the Interim boundary below and fe-database/examples/AGENTS.md for limits.
 
-Stop and inspect discovery to learn the actual seeded ID and prove 0 references.
-Resume this disposable run; normal authorized APIs create a new namespace-bearing
-Owner Verse, Fractal, one Petal and two existing-asset objects named QA Legacy A/B.
-Keep properties empty. Stop and inspect baseline. Resume; actual native Review/one
-Confirm remains a separate step. Stop and inspect adopted for durable provenance
-and unchanged node/history/bytes. Public asset query policy remains unchanged.
+Generate/seal and the first fresh launch remain available. Do not stop this run
+in order to follow the former discovery/baseline/adopted procedure, or attempt
+ResumeRun expecting a restart: that path stops the selected recorded lifetime
+before reaching the unconditional refusal. Positive readback and restart require
+a separately reviewed typed surface through the live application's DB owner.
+No durable adoption or unchanged node/history/blob result is available here.
 
-Resume verifies preparation/stage/source, runtime creator, existing Genesis and
-asset before starting; it never regenerates/reseeds. Missing storage or changed
-context refuses. Reports are create-new and cannot erase prior cuts. Do not use
-retained campaign stores. Recorded-child absence is not a complete orphan census.
-Fs bytes do not prove cold iroh state, peer delivery or rendering; recipient bytes
-are never installed by this workflow. Source authorship is not execution evidence.
+No phase regenerates/reseeds an existing run. Missing or changed preparation
+context refuses. Do not use retained campaign stores. Recorded-child absence is
+not a complete orphan census. Fs bytes do not prove cold iroh state, peer delivery
+or rendering; recipient bytes are never installed by this workflow. Public asset
+query policy remains unchanged. Source authorship is not execution evidence.
 
 ### Interim legacy helper lifecycle boundary
 

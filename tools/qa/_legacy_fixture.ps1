@@ -1,4 +1,4 @@
-# Explicit disposable legacy setup and stopped-store reads; see AGENTS.md.
+# Disposable legacy preparation and refused stopped inspection; see AGENTS.md.
 
 function Invoke-QaLegacyHelper {
     param([Parameter(Mandatory)]$Request, [Parameter(Mandatory)][string]$Stage,

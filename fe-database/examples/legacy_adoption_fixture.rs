@@ -1,4 +1,4 @@
-//! Disposable legacy fixture preparation and stopped-store SELECTs; see examples/AGENTS.md.
+//! Disposable legacy fixture preparation and refused stopped inspection; see examples/AGENTS.md.
 
 #[path = "legacy_adoption_fixture/files.rs"]
 mod files;
