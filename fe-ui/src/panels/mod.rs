@@ -477,6 +477,234 @@ mod tests {
     #[test]
     fn gardener_console_render_smoke_sanitizes_all_numeric_tool_surfaces() {
         crate::viewport::browser_access_render_journey();
+        {
+            use crate::verse_manager::{FractalEntry, NodeEntry, PetalEntry, VerseEntry};
+            use fe_runtime::messages::DbResult;
+            let ctx = egui::Context::default();
+            ctx.enable_accesskit();
+            let mut tree = VerseManager::default();
+            tree.verses.push(VerseEntry {
+                id: "v".into(),
+                fractals: vec![FractalEntry {
+                    id: "f".into(),
+                    petals: vec![PetalEntry {
+                        id: "p".into(),
+                        nodes: vec![NodeEntry {
+                            id: "n".into(),
+                            ..Default::default()
+                        }],
+                        ..Default::default()
+                    }],
+                    ..Default::default()
+                }],
+                ..Default::default()
+            });
+            let mut nav = NavigationManager::default();
+            nav.navigate_to_petal_in_fractal("v", "Verse", "f", "Fractal", "p");
+            let mut nodes = crate::node_manager::NodeManager::default();
+            nodes.select(bevy::prelude::Entity::PLACEHOLDER, "n");
+            let role = crate::plugin::LocalUserRole {
+                role: Some(fe_policy::RoleLevel::Viewer),
+            };
+            let mut state = crate::object_data::ObjectDataState::default();
+            crate::object_data::synchronize(&mut state, &nodes, &tree, &nav, &role);
+            let (tx, rx) = crossbeam::channel::unbounded();
+            let mut notices = UiManager::default();
+            let mut frame = |state: &mut crate::object_data::ObjectDataState,
+                             events: Vec<egui::Event>| {
+                ctx.run(
+                    egui::RawInput {
+                        screen_rect: Some(egui::Rect::from_min_size(
+                            egui::Pos2::ZERO,
+                            egui::vec2(900.0, 1100.0),
+                        )),
+                        events,
+                        ..Default::default()
+                    },
+                    |ctx| {
+                        egui::CentralPanel::default().show(ctx, |ui| {
+                            crate::object_data::render(ui, state, &role, &tx, &mut notices)
+                        });
+                    },
+                )
+            };
+            let bounds = |output: &egui::FullOutput, name: &str| {
+                let rect = output
+                    .platform_output
+                    .accesskit_update
+                    .as_ref()
+                    .unwrap()
+                    .nodes
+                    .iter()
+                    .find_map(|(_, node)| {
+                        (node.label() == Some(name))
+                            .then(|| node.bounds())
+                            .flatten()
+                    })
+                    .unwrap_or_else(|| panic!("missing actual native control {name}"));
+                egui::pos2(
+                    ((rect.x0 + rect.x1) / 2.0) as f32,
+                    ((rect.y0 + rect.y1) / 2.0) as f32,
+                )
+            };
+            let click = |point: egui::Pos2, pressed| {
+                vec![
+                    egui::Event::PointerMoved(point),
+                    egui::Event::PointerButton {
+                        pos: point,
+                        button: egui::PointerButton::Primary,
+                        pressed,
+                        modifiers: egui::Modifiers::NONE,
+                    },
+                ]
+            };
+            frame(&mut state, vec![]);
+            let DbCommand::ReadNodeHistory {
+                correlation_id: Some(page_id),
+                at_version: None,
+                ..
+            } = rx.try_recv().unwrap()
+            else {
+                panic!("native history must request a page")
+            };
+            let coverage = serde_json::json!({"node_id":"n","journal_version":1,"current_version":4,"coverage_start_version":1,"coverage_started_at":"now","supported_operations":["baseline","property_set"],"order":"per_object_commit_version","event_time_ordering":false,"current_state_verified":true});
+            let save = serde_json::json!({"batch_id":"save-n","first_version":2,"committed_version":4});
+            let mut wire = coverage.clone();
+            wire["next_after_version"] = serde_json::Value::Null;
+            wire["entries"] = serde_json::json!([{"log_id":"fact2","node_id":"n","hlc_timestamp":42,"op":"property_set","source_did":"actor","payload":{},"row_version":2,"created_at":"now","atomic_save":save,"replay_availability":"inside_atomic_batch"}]);
+            assert!(crate::object_data::route(
+                &mut state,
+                &DbResult::NodeHistoryLoaded {
+                    page: serde_json::from_value(wire).unwrap(),
+                    correlation_id: Some(page_id)
+                }
+            ));
+            let output = frame(&mut state, vec![]);
+            assert!(output.shapes.iter().any(|shape| matches!(&shape.shape,egui::epaint::Shape::Text(text) if text.galley.text().contains("saved together"))));
+            let row = bounds(&output, "Replay object version 4");
+            frame(&mut state, click(row, true));
+            frame(&mut state, click(row, false));
+            let DbCommand::ReadNodeHistory {
+                correlation_id: Some(preview_id),
+                at_version: Some(4),
+                ..
+            } = rx.try_recv().unwrap()
+            else {
+                panic!("an interior row must request its completed Save")
+            };
+            let mut preview = coverage.clone();
+            preview["at_version"] = serde_json::json!(4);
+            preview["availability"] = serde_json::json!("available");
+            preview["atomic_save"] = save.clone();
+            preview["baseline_version"] = serde_json::json!(1);
+            preview["state"] = serde_json::json!({"node_id":"n","petal_id":"p","display_name":"Object","asset_id":null,"position":[0,0,0],"elevation":0,"rotation":[0,0,0],"scale":[1,1,1],"interactive":true,"created_at":"now","edit_seq":0,"properties":{},"tombstone":null});
+            assert!(crate::object_data::route(
+                &mut state,
+                &DbResult::NodeStateAtVersionLoaded {
+                    state: serde_json::from_value(preview).unwrap(),
+                    correlation_id: Some(preview_id)
+                }
+            ));
+            let output = frame(&mut state, vec![]);
+            let earlier = bounds(&output, "Replay earlier object version");
+            frame(&mut state, click(earlier, true));
+            frame(&mut state, click(earlier, false));
+            let DbCommand::ReadNodeHistory {
+                correlation_id: Some(prior_id),
+                at_version: Some(1),
+                ..
+            } = rx.try_recv().unwrap()
+            else {
+                panic!("Earlier must skip the entire saved group")
+            };
+            let mut unavailable = coverage.clone();
+            unavailable["at_version"] = serde_json::json!(1);
+            unavailable["availability"] = serde_json::json!("before_coverage");
+            assert!(crate::object_data::route(
+                &mut state,
+                &DbResult::NodeStateAtVersionLoaded {
+                    state: serde_json::from_value(unavailable).unwrap(),
+                    correlation_id: Some(prior_id)
+                }
+            ));
+            let output = frame(&mut state, vec![]);
+            let input = bounds(&output, "Object replay version");
+            frame(&mut state, click(input, true));
+            frame(&mut state, click(input, false));
+            frame(
+                &mut state,
+                vec![
+                    egui::Event::Key {
+                        key: egui::Key::A,
+                        physical_key: None,
+                        pressed: true,
+                        repeat: false,
+                        modifiers: egui::Modifiers {
+                            ctrl: true,
+                            command: true,
+                            ..Default::default()
+                        },
+                    },
+                    egui::Event::Text("2".into()),
+                ],
+            );
+            let output = frame(&mut state, vec![]);
+            let read = bounds(&output, "Read exact object version");
+            frame(&mut state, click(read, true));
+            frame(&mut state, click(read, false));
+            let DbCommand::ReadNodeHistory {
+                correlation_id: Some(interior_id),
+                at_version: Some(2),
+                ..
+            } = rx.try_recv().unwrap()
+            else {
+                panic!("manual exact requests must retain their requested version")
+            };
+            let mut unavailable = coverage;
+            unavailable["at_version"] = serde_json::json!(2);
+            unavailable["availability"] = serde_json::json!("inside_atomic_batch");
+            unavailable["atomic_save"] = save;
+            assert!(crate::object_data::route(
+                &mut state,
+                &DbResult::NodeStateAtVersionLoaded {
+                    state: serde_json::from_value(unavailable).unwrap(),
+                    correlation_id: Some(interior_id)
+                }
+            ));
+            let output = frame(&mut state, vec![]);
+            let texts: Vec<_> = output
+                .shapes
+                .iter()
+                .filter_map(|shape| match &shape.shape {
+                    egui::epaint::Shape::Text(text) => Some(text.galley.text()),
+                    _ => None,
+                })
+                .collect();
+            assert!(
+                texts
+                    .iter()
+                    .any(|text| text.contains("never a separately committed object state"))
+            );
+            assert!(
+                !texts.iter().any(|text| text.starts_with("Position:")),
+                "an unavailable interior cannot paint a partial transform"
+            );
+            let completed = bounds(&output, "Read completed atomic Save");
+            frame(&mut state, click(completed, true));
+            frame(&mut state, click(completed, false));
+            assert!(matches!(
+                rx.try_recv().unwrap(),
+                DbCommand::ReadNodeHistory {
+                    at_version: Some(4),
+                    ..
+                }
+            ));
+            assert_eq!(
+                tree.find_petal("p").unwrap().nodes[0].position,
+                [0.0; 3],
+                "read-only browsing cannot materialize historical field steps"
+            );
+        }
         let ctx = egui::Context::default();
         let mut sidebar = crate::plugin::SidebarState::default();
         let mut tool = crate::plugin::ToolState {

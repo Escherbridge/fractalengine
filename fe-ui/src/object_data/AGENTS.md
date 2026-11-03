@@ -11,6 +11,13 @@ not define a global wall-clock cut. Pages replace one bounded 50-fact page, and 
 most 64 cursors. Exact-version detail and timed replay are read-only previews. They never write
 VerseManager, ECS transforms or current Inspector properties. Unsupported, incomplete and inaccessible
 intervals remain explicit. JSON detail is formatted when a response arrives, rather than every frame.
+Explicit atomic Save metadata labels all retained field facts as saved together. Row clicks and
+replay navigation choose the completed Save version, including boundaries beyond the current page.
+Earlier skips to before the whole group. A manual exact interior request retains its requested number,
+shows the refusal reason and offers the completed Save; it never paints partial fields. Playback
+advances through completed Saves, following the explicit boundary if it crosses a page. Untagged
+legacy facts keep their existing version behavior. The existing top-level native render journey
+exercises real row/earlier/exact/completed-Save controls; execution belongs to the final sweep.
 
 `measurements.rs` draws real persisted measurements, separately grouped by metric and units. Event
 timestamps determine chart/table order, with reading ID as a deterministic tie breaker. The runtime

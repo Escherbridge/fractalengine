@@ -8,7 +8,7 @@ use fe_runtime::node_history::{
     HistoryAvailability, NodeAccessGrant, NodeHistoryPage, NodeStateAtVersion,
 };
 
-use super::{button, error, json_view, request_error, send, Request, Target};
+use super::{Request, Target, button, error, json_view, request_error, send};
 use crate::accessibility::ResponseExt;
 
 #[derive(Default)]
@@ -27,6 +27,23 @@ pub(super) struct HistoryState {
 }
 
 impl HistoryState {
+    fn completed_version(&self, version: i64) -> i64 {
+        self.page
+            .as_ref()
+            .and_then(|page| {
+                page.entries.iter().find_map(|entry| {
+                    entry
+                        .atomic_save
+                        .as_ref()
+                        .filter(|save| {
+                            (save.first_version..=save.committed_version).contains(&version)
+                        })
+                        .map(|save| save.committed_version)
+                })
+            })
+            .unwrap_or(version)
+    }
+
     fn load_page(
         &mut self,
         target: &Target,
@@ -129,7 +146,10 @@ impl HistoryState {
                     self.playing = false;
                 } else {
                     self.version = state.at_version.to_string();
-                    if !matches!(state.availability, HistoryAvailability::Available) {
+                    if !matches!(
+                        state.availability,
+                        HistoryAvailability::Available | HistoryAvailability::InsideAtomicBatch
+                    ) {
                         self.playing = false;
                     }
                     self.preview_json = state
@@ -216,6 +236,7 @@ impl HistoryState {
         }
         error(ui, &self.error);
         let mut selected_version = None;
+        let mut exact_version = false;
         let mut next_cursor = None;
         let mut previous_cursor = None;
         if let Some(page) = &self.page {
@@ -249,15 +270,35 @@ impl HistoryState {
                 .show(ui, |ui| {
                     for entry in &page.entries {
                         ui.push_id(entry.row_version, |ui| {
-                            let label = format!("v{}  {}", entry.row_version, entry.op);
+                            let label = match &entry.atomic_save {
+                                Some(save) => format!(
+                                    "v{}  {} · saved together v{}–{}",
+                                    entry.row_version,
+                                    entry.op,
+                                    save.first_version,
+                                    save.committed_version
+                                ),
+                                None => format!("v{}  {}", entry.row_version, entry.op),
+                            };
                             if ui
-                                .add(
+                                .add_enabled(
+                                    !matches!(
+                                        entry.replay_availability,
+                                        Some(HistoryAvailability::IncompleteAtomicBatch)
+                                    ),
                                     egui::Button::new(&label)
                                         .min_size(egui::Vec2::splat(super::target_size(ui))),
                                 )
                                 .named(
                                     ui,
-                                    format_args!("Replay object version {}", entry.row_version),
+                                    format_args!(
+                                        "Replay object version {}",
+                                        entry
+                                            .atomic_save
+                                            .as_ref()
+                                            .map_or(entry.row_version, |save| save
+                                                .committed_version)
+                                    ),
                                 )
                                 .on_hover_text(format!(
                                     "Recorded: {}\nActor: {}",
@@ -265,7 +306,12 @@ impl HistoryState {
                                 ))
                                 .clicked()
                             {
-                                selected_version = Some(entry.row_version);
+                                selected_version = Some(
+                                    entry
+                                        .atomic_save
+                                        .as_ref()
+                                        .map_or(entry.row_version, |save| save.committed_version),
+                                );
                             }
                         });
                     }
@@ -304,6 +350,7 @@ impl HistoryState {
         }
         ui.separator();
         ui.label("Exact committed version");
+        ui.small("Rows saved together replay at their completed Save version. Individual audit facts remain listed above.");
         ui.add(
             egui::TextEdit::singleline(&mut self.version)
                 .desired_width(ui.available_width())
@@ -318,7 +365,11 @@ impl HistoryState {
                 self.preview_request.is_none(),
             ) {
                 match self.version.trim().parse::<i64>() {
-                    Ok(version) if version > 0 => selected_version = Some(version),
+                    Ok(version) if version > 0 => {
+                        selected_version = Some(version);
+                        exact_version = true;
+                        self.playing = false;
+                    }
                     _ => self.error = Some("Enter a positive committed version number.".into()),
                 }
             }
@@ -337,7 +388,13 @@ impl HistoryState {
                         .zip(start)
                         .is_some_and(|(value, start)| value > start),
             ) {
-                selected_version = current.and_then(|value| value.checked_sub(1));
+                selected_version = self.preview.as_ref().and_then(|preview| {
+                    preview
+                        .atomic_save
+                        .as_ref()
+                        .map_or(preview.at_version, |save| save.first_version)
+                        .checked_sub(1)
+                });
             }
             if button(
                 ui,
@@ -346,7 +403,16 @@ impl HistoryState {
                 self.preview_request.is_none()
                     && current.zip(end).is_some_and(|(value, end)| value < end),
             ) {
-                selected_version = current.and_then(|value| value.checked_add(1));
+                selected_version = self.preview.as_ref().and_then(|preview| {
+                    if matches!(preview.availability, HistoryAvailability::InsideAtomicBatch) {
+                        preview
+                            .atomic_save
+                            .as_ref()
+                            .map(|save| save.committed_version)
+                    } else {
+                        preview.at_version.checked_add(1)
+                    }
+                });
             }
             if button(
                 ui,
@@ -370,10 +436,16 @@ impl HistoryState {
                 .next_frame
                 .is_some_and(|deadline| Instant::now() >= deadline)
         {
-            let next = self
-                .preview
-                .as_ref()
-                .and_then(|preview| preview.at_version.checked_add(1));
+            let next = self.preview.as_ref().and_then(|preview| {
+                if matches!(preview.availability, HistoryAvailability::InsideAtomicBatch) {
+                    preview
+                        .atomic_save
+                        .as_ref()
+                        .map(|save| save.committed_version)
+                } else {
+                    preview.at_version.checked_add(1)
+                }
+            });
             let end = self.page.as_ref().map(|page| page.coverage.current_version);
             if next.zip(end).is_some_and(|(next, end)| next <= end) {
                 selected_version = next;
@@ -382,6 +454,11 @@ impl HistoryState {
             }
         }
         if let Some(version) = selected_version {
+            let version = if exact_version {
+                version
+            } else {
+                self.completed_version(version)
+            };
             self.load_version(target, version, sender);
         }
         if self.playing || self.preview_request.is_some() {
@@ -412,6 +489,21 @@ impl HistoryState {
                 json_view(ui, "historical-object-properties", &self.preview_json);
             } else {
                 ui.label(availability_label(&preview.availability));
+                if let Some(save) = &preview.atomic_save {
+                    ui.label(format!(
+                        "Versions {}–{} were saved together. The completed Save is version {}.",
+                        save.first_version, save.committed_version, save.committed_version
+                    ));
+                    if button(
+                        ui,
+                        &format!("Read saved version {}", save.committed_version),
+                        "Read completed atomic Save",
+                        self.preview_request.is_none(),
+                    ) {
+                        let version = save.committed_version;
+                        self.load_version(target, version, sender);
+                    }
+                }
             }
         }
     }
@@ -420,6 +512,12 @@ impl HistoryState {
 fn availability_label(availability: &HistoryAvailability) -> &'static str {
     match availability {
         HistoryAvailability::Available => "Historical state is available.",
+        HistoryAvailability::InsideAtomicBatch => {
+            "This audit version is inside one atomic Save. Its intermediate fields were never a separately committed object state."
+        }
+        HistoryAvailability::IncompleteAtomicBatch => {
+            "The atomic Save receipt or its contiguous facts cannot be verified. No partial object state is shown."
+        }
         HistoryAvailability::BeforeCoverage => {
             "This version precedes the complete replay baseline."
         }
