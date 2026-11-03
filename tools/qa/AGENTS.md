@@ -1012,10 +1012,10 @@ fingerprint stays null until the main owner reconciles the final build inputs. N
 `catalog_source_rules.json` supplies explicit shared-source and action ownership where a file serves multiple
 families. `catalog_sources.py` uses only stdlib file reads and writes the catalog views; it never calls Git,
 launches processes/apps, reads token stores or accesses network. After reviewing source and the canonical JSON,
-use the actual audited full commit (this snapshot is 84ca20af4a47951cf9dbd22d457526a0840291e6):
+use the actual audited full commit (this snapshot is 09923b5daf16af848944db34fd7fff5e04ad5c25):
 
 ```powershell
-python tools/qa/catalog_sources.py --source-commit 84ca20af4a47951cf9dbd22d457526a0840291e6 --write
+python tools/qa/catalog_sources.py --source-commit 09923b5daf16af848944db34fd7fff5e04ad5c25 --write
 ```
 
 The command refreshes `qa/catalog-source-census.json`, `qa/source-inventory.md`, the feature table and each
@@ -1036,12 +1036,12 @@ exist in the audited source. The older fixture paragraph above describes the pre
 starting the helper still cannot itself grant permission or prove embedded browsing. Only the main owner may
 prepare/relaunch the exact controlled fixture and test the live listener/policy boundaries.
 
-The current followup includes terminal Settings Reset, typed Portal storage/explicit initialization, fixed native fixture APIs and durable REST/legacy WebSocket credential validity. Explicit action ownership keys must name a parsed UiAction variant; stale names fail generation instead of falling through silently. The current stamp viewport/context/index producers carry live origins and the terminal watcher retains its original process/EOF evidence. F143 separates actual observer admission from synthetic validator-only cases; the latter provide zero application coverage. P2P QA-0050 remains pending source reconciliation. Generation does not clear that list or grant a final fingerprint.
+The current followup includes terminal Settings Reset, typed Portal storage/explicit initialization, fixed native fixture APIs and durable REST/legacy WebSocket credential validity. Explicit action ownership keys must name a parsed UiAction variant; stale names fail generation instead of falling through silently. The current stamp viewport/context/index producers carry live origins and the terminal watcher retains its original process/EOF evidence. F143 separates actual terminal observer admission from synthetic validator-only cases. Current source09923 includes the reviewed P2P production stack; F098/F099 own actual Owner/Manager/v1/v2 GUI readiness, F144 owns the actual owned transfer bridge and F145 owns its separately synthetic client helpers with zero application coverage. Paired runtime acceptance remains required. Generation does not clear pending obligations or grant a final fingerprint.
 
 ## One-use invitation transfer
 
 fe.py --run <owner-run> transfer-invite --recipient-run <recipient-run> consumes only the
-latest actual GUI-generated invitation. The Owner Access panel must remain open, and the
+latest actual GUI-generated invitation. The current issuer Access panel must remain open, and the
 recipient must have a clean empty masked Join dialog. Observe the recipient actual DID from
 GET /api/v1/debug/invitation before generating the addressed invitation for that DID. The
 separate consume endpoint is default-off with input and Owner gates; its fifteen-second
@@ -1112,3 +1112,19 @@ missing/ambiguous/unknown authority fields, then requires unchanged exact metada
 the existing owned-GUI consume workflow. It does not implement alternate signature/auth or
 readiness logic. Existing offline boundary fixtures exercise this production metadata-shape
 helper only and claim zero application/signature/native coverage.
+
+
+### Source09923 invitation/history/selection reconciliation
+
+The canonical catalog preserves all old checkpoint IDs and adds current Owner/Manager addressed-v2,
+strict v1 acceptance, bounded finalization, exact owned one-use transfer and masked-input lease cases.
+F099.no-partial-on-error is retained with a precise pre-admission rollback meaning: accepted metadata,
+capability or active proof may remain after later cancellation/failure, but cannot fabricate Joined or
+navigation. The actual API Owner-token floor stays separate from entity Manager proof authority.
+
+F144 actual app/API/Windows boundaries and F145 synthetic helper contracts are separate denominators.
+F145 results never credit application, signature, native socket/publication, paired Join or replication.
+Transfer prints submission only. Completed-save replay and compact primary selection have their own
+current checkpoints; additional/partial renderer assertions do not implement multiple selection.
+Isolated group/batch editing is outside this snapshot. No focused PASS is imported into FULL coverage.
+Keep execution_evidence false and the final staged fingerprint null until final owner reconciliation.

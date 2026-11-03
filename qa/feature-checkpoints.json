@@ -1,6 +1,6 @@
 {
   "type": "FeatureCheckpointCatalog",
-  "catalog_source_commit": "44ad28da5ac33120c988bd26a8e8a79362dd15d4",
+  "catalog_source_commit": "09923b5daf16af848944db34fd7fff5e04ad5c25",
   "catalog_source_fingerprint": null,
   "snapshot_date": "2026-11-02",
   "execution_evidence": false,
@@ -7101,6 +7101,561 @@
       "id": "F141.second-link-unrelated-invalidation",
       "family": "F141",
       "reachability": "A"
+    },
+    {
+      "id": "F116.rest-get-api-v1-debug-invitation",
+      "family": "F116",
+      "reachability": "A"
+    },
+    {
+      "id": "F116.rest-post-api-v1-debug-invitation",
+      "family": "F116",
+      "reachability": "A"
+    },
+    {
+      "id": "F098.recipient-did",
+      "family": "F098",
+      "reachability": "Y"
+    },
+    {
+      "id": "F098.manager-issuer-viewer",
+      "family": "F098",
+      "reachability": "Y"
+    },
+    {
+      "id": "F098.manager-issuer-editor",
+      "family": "F098",
+      "reachability": "Y"
+    },
+    {
+      "id": "F098.manager-issuer-manager",
+      "family": "F098",
+      "reachability": "Y"
+    },
+    {
+      "id": "F098.legacy-manager-reauthorization",
+      "family": "F098",
+      "reachability": "Y"
+    },
+    {
+      "id": "F098.reauthorize-existing-manager",
+      "family": "F098",
+      "reachability": "Y"
+    },
+    {
+      "id": "F098.manager-lifetime-refused",
+      "family": "F098",
+      "reachability": "Y"
+    },
+    {
+      "id": "F098.context-change-discards",
+      "family": "F098",
+      "reachability": "Y"
+    },
+    {
+      "id": "F098.issuer-role-loss-discards",
+      "family": "F098",
+      "reachability": "Y"
+    },
+    {
+      "id": "F098.native-export-unavailable",
+      "family": "F098",
+      "reachability": "Y"
+    },
+    {
+      "id": "F098.issuer-proof-revoked-refused",
+      "family": "F098",
+      "reachability": "A"
+    },
+    {
+      "id": "F098.issuer-proof-regrant-hlc-refused",
+      "family": "F098",
+      "reachability": "A"
+    },
+    {
+      "id": "F098.issuer-proof-scope-refused",
+      "family": "F098",
+      "reachability": "A"
+    },
+    {
+      "id": "F098.issuer-proof-expiry-refused",
+      "family": "F098",
+      "reachability": "A"
+    },
+    {
+      "id": "F098.issuer-proof-depth-refused",
+      "family": "F098",
+      "reachability": "A"
+    },
+    {
+      "id": "F098.source-change-at-use-refused",
+      "family": "F098",
+      "reachability": "A"
+    },
+    {
+      "id": "F098.native-ticket-preflight-refused",
+      "family": "F098",
+      "reachability": "A"
+    },
+    {
+      "id": "F098.postgrant-failure-unconfirmed",
+      "family": "F098",
+      "reachability": "A"
+    },
+    {
+      "id": "F098.bounded-queue-unsubmitted",
+      "family": "F098",
+      "reachability": "A"
+    },
+    {
+      "id": "F099.owner-v1-viewer-join",
+      "family": "F099",
+      "reachability": "Y"
+    },
+    {
+      "id": "F099.owner-v1-editor-join",
+      "family": "F099",
+      "reachability": "Y"
+    },
+    {
+      "id": "F099.owner-v1-manager-join",
+      "family": "F099",
+      "reachability": "Y"
+    },
+    {
+      "id": "F099.v2-manager-proof-ready",
+      "family": "F099",
+      "reachability": "Y"
+    },
+    {
+      "id": "F099.wrong-recipient-refused",
+      "family": "F099",
+      "reachability": "Y"
+    },
+    {
+      "id": "F099.accepted-metadata-unconfirmed",
+      "family": "F099",
+      "reachability": "Y"
+    },
+    {
+      "id": "F099.cancel-after-admission",
+      "family": "F099",
+      "reachability": "Y"
+    },
+    {
+      "id": "F099.context-change-no-navigation",
+      "family": "F099",
+      "reachability": "Y"
+    },
+    {
+      "id": "F099.current-verse-preserved",
+      "family": "F099",
+      "reachability": "Y"
+    },
+    {
+      "id": "F099.duplicate-submission-refused",
+      "family": "F099",
+      "reachability": "Y"
+    },
+    {
+      "id": "F099.masked-byte-limit",
+      "family": "F099",
+      "reachability": "Y"
+    },
+    {
+      "id": "F099.finalize-sequence-native-role-hierarchy",
+      "family": "F099",
+      "reachability": "A"
+    },
+    {
+      "id": "F099.finalize-queue-full-unsubmitted",
+      "family": "F099",
+      "reachability": "A"
+    },
+    {
+      "id": "F099.finalize-accepted-no-replay",
+      "family": "F099",
+      "reachability": "A"
+    },
+    {
+      "id": "F099.finalize-deadline-refused",
+      "family": "F099",
+      "reachability": "A"
+    },
+    {
+      "id": "F099.finalize-stale-reply-ignored",
+      "family": "F099",
+      "reachability": "A"
+    },
+    {
+      "id": "F099.finalize-cancel-late-no-navigation",
+      "family": "F099",
+      "reachability": "A"
+    },
+    {
+      "id": "F099.admission-rollback-no-proof",
+      "family": "F099",
+      "reachability": "A"
+    },
+    {
+      "id": "F099.readiness-current-supporting-grants",
+      "family": "F099",
+      "reachability": "A"
+    },
+    {
+      "id": "F099.handoff-exact-lease-fifo",
+      "family": "F099",
+      "reachability": "A"
+    },
+    {
+      "id": "F099.cancel-transient-cursor-cleanup",
+      "family": "F099",
+      "reachability": "A"
+    },
+    {
+      "id": "F099.legacy-reply-cannot-complete",
+      "family": "F099",
+      "reachability": "A"
+    },
+    {
+      "id": "F001.join-admission-suppresses-autoenter",
+      "family": "F001",
+      "reachability": "Y"
+    },
+    {
+      "id": "F001.canceled-join-late-hierarchy-no-autoenter",
+      "family": "F001",
+      "reachability": "Y"
+    },
+    {
+      "id": "F144.observe-current-dids",
+      "family": "F144",
+      "reachability": "A"
+    },
+    {
+      "id": "F144.observe-protected-input",
+      "family": "F144",
+      "reachability": "A"
+    },
+    {
+      "id": "F144.consume-once",
+      "family": "F144",
+      "reachability": "A"
+    },
+    {
+      "id": "F144.consume-expired-refused",
+      "family": "F144",
+      "reachability": "A"
+    },
+    {
+      "id": "F144.consume-source-changed-refused",
+      "family": "F144",
+      "reachability": "A"
+    },
+    {
+      "id": "F144.consume-manager-proof-changed-refused",
+      "family": "F144",
+      "reachability": "A"
+    },
+    {
+      "id": "F144.default-off",
+      "family": "F144",
+      "reachability": "A"
+    },
+    {
+      "id": "F144.non-owner-refused",
+      "family": "F144",
+      "reachability": "A"
+    },
+    {
+      "id": "F144.foreign-scope-refused",
+      "family": "F144",
+      "reachability": "A"
+    },
+    {
+      "id": "F144.revoked-during-await-refused",
+      "family": "F144",
+      "reachability": "A"
+    },
+    {
+      "id": "F144.expired-during-await-refused",
+      "family": "F144",
+      "reachability": "A"
+    },
+    {
+      "id": "F144.queue-busy-deadline",
+      "family": "F144",
+      "reachability": "A"
+    },
+    {
+      "id": "F144.distinct-owned-runs-required",
+      "family": "F144",
+      "reachability": "A"
+    },
+    {
+      "id": "F144.exact-owned-socket",
+      "family": "F144",
+      "reachability": "A"
+    },
+    {
+      "id": "F144.process-lifetime-changed-refused",
+      "family": "F144",
+      "reachability": "A"
+    },
+    {
+      "id": "F144.masked-lease-submit-once",
+      "family": "F144",
+      "reachability": "A"
+    },
+    {
+      "id": "F144.lease-focus-change-refused",
+      "family": "F144",
+      "reachability": "A"
+    },
+    {
+      "id": "F144.lease-layout-change-refused",
+      "family": "F144",
+      "reachability": "A"
+    },
+    {
+      "id": "F144.lease-dialog-navigation-change-refused",
+      "family": "F144",
+      "reachability": "A"
+    },
+    {
+      "id": "F144.token-publication-snapshot",
+      "family": "F144",
+      "reachability": "A"
+    },
+    {
+      "id": "F144.secret-redaction-no-store",
+      "family": "F144",
+      "reachability": "A"
+    },
+    {
+      "id": "F144.consumed-submission-unknown-no-replay",
+      "family": "F144",
+      "reachability": "A"
+    },
+    {
+      "id": "F145.validator-owned-api-matching",
+      "family": "F145",
+      "reachability": "A"
+    },
+    {
+      "id": "F145.validator-owned-api-pid-mismatch",
+      "family": "F145",
+      "reachability": "A"
+    },
+    {
+      "id": "F145.validator-owned-api-rebind-before-auth",
+      "family": "F145",
+      "reachability": "A"
+    },
+    {
+      "id": "F145.validator-owned-api-tuple-mismatch",
+      "family": "F145",
+      "reachability": "A"
+    },
+    {
+      "id": "F145.validator-owned-api-ambiguous-owner",
+      "family": "F145",
+      "reachability": "A"
+    },
+    {
+      "id": "F145.validator-owned-token-bounded-version",
+      "family": "F145",
+      "reachability": "A"
+    },
+    {
+      "id": "F145.validator-owned-token-growth-after-size",
+      "family": "F145",
+      "reachability": "A"
+    },
+    {
+      "id": "F145.validator-owned-token-inplace-writer-held",
+      "family": "F145",
+      "reachability": "A"
+    },
+    {
+      "id": "F145.validator-owned-token-inplace-mutation-attempt",
+      "family": "F145",
+      "reachability": "A"
+    },
+    {
+      "id": "F145.validator-owned-token-oversized",
+      "family": "F145",
+      "reachability": "A"
+    },
+    {
+      "id": "F145.validator-owned-token-duplicate-key",
+      "family": "F145",
+      "reachability": "A"
+    },
+    {
+      "id": "F145.validator-owned-token-nonfinite",
+      "family": "F145",
+      "reachability": "A"
+    },
+    {
+      "id": "F145.validator-owned-token-short-read",
+      "family": "F145",
+      "reachability": "A"
+    },
+    {
+      "id": "F145.validator-typed-invitation-authority-owner",
+      "family": "F145",
+      "reachability": "A"
+    },
+    {
+      "id": "F145.validator-typed-invitation-authority-manager",
+      "family": "F145",
+      "reachability": "A"
+    },
+    {
+      "id": "F145.validator-typed-invitation-authority-wrong-issuer",
+      "family": "F145",
+      "reachability": "A"
+    },
+    {
+      "id": "F145.validator-typed-invitation-authority-missing-proof",
+      "family": "F145",
+      "reachability": "A"
+    },
+    {
+      "id": "F145.validator-typed-invitation-authority-bad-proof",
+      "family": "F145",
+      "reachability": "A"
+    },
+    {
+      "id": "F145.validator-typed-invitation-authority-owner-extra-proof",
+      "family": "F145",
+      "reachability": "A"
+    },
+    {
+      "id": "F007.primary-row-outline",
+      "family": "F007",
+      "reachability": "Y"
+    },
+    {
+      "id": "F007.primary-accessible-selected",
+      "family": "F007",
+      "reachability": "Y"
+    },
+    {
+      "id": "F007.navigation-path-distinct",
+      "family": "F007",
+      "reachability": "Y"
+    },
+    {
+      "id": "F133.text-sized-thin-glyphs",
+      "family": "F133",
+      "reachability": "Y"
+    },
+    {
+      "id": "F133.chosen-dark-color-readable",
+      "family": "F133",
+      "reachability": "Y"
+    },
+    {
+      "id": "F133.size-scale-selection-readable",
+      "family": "F133",
+      "reachability": "Y"
+    },
+    {
+      "id": "F133.additional-partial-renderer-contract",
+      "family": "F133",
+      "reachability": "A"
+    },
+    {
+      "id": "F130.atomic-interior-no-state",
+      "family": "F130",
+      "reachability": "A"
+    },
+    {
+      "id": "F130.atomic-completed-boundary",
+      "family": "F130",
+      "reachability": "A"
+    },
+    {
+      "id": "F130.atomic-cross-page-membership",
+      "family": "F130",
+      "reachability": "A"
+    },
+    {
+      "id": "F130.atomic-same-clock-distinct-batches",
+      "family": "F130",
+      "reachability": "A"
+    },
+    {
+      "id": "F130.atomic-malformed-markers-refused",
+      "family": "F130",
+      "reachability": "A"
+    },
+    {
+      "id": "F130.atomic-tagged-baseline-refused",
+      "family": "F130",
+      "reachability": "A"
+    },
+    {
+      "id": "F130.atomic-untagged-compatibility",
+      "family": "F130",
+      "reachability": "A"
+    },
+    {
+      "id": "F134.saved-together-labels",
+      "family": "F134",
+      "reachability": "Y"
+    },
+    {
+      "id": "F134.manual-interior-refusal",
+      "family": "F134",
+      "reachability": "Y"
+    },
+    {
+      "id": "F134.completed-save-cta",
+      "family": "F134",
+      "reachability": "Y"
+    },
+    {
+      "id": "F134.earlier-skips-atomic-save",
+      "family": "F134",
+      "reachability": "Y"
+    },
+    {
+      "id": "F134.later-skips-atomic-save",
+      "family": "F134",
+      "reachability": "Y"
+    },
+    {
+      "id": "F134.play-completed-boundaries",
+      "family": "F134",
+      "reachability": "Y"
+    },
+    {
+      "id": "F134.preview-keeps-actual-ecs",
+      "family": "F134",
+      "reachability": "Y"
+    },
+    {
+      "id": "F138.numeric-text-enter-responsive",
+      "family": "F138",
+      "reachability": "Y"
+    },
+    {
+      "id": "F138.fresh-promotion-scoped-baseline",
+      "family": "F138",
+      "reachability": "Y"
+    },
+    {
+      "id": "F138.promotion-reentry-keeps-actual-pose",
+      "family": "F138",
+      "reachability": "Y"
+    },
+    {
+      "id": "F110.verified-promoted-stamp-pose",
+      "family": "F110",
+      "reachability": "A"
     }
   ],
   "gold_tasks": {
@@ -7137,7 +7692,16 @@
       "F001.back-late-hierarchy-no-autoenter",
       "F001.navigation-late-hydration-preserved",
       "F001.initial-startup-fallback",
-      "F001.hydration-suppression-no-intent"
+      "F001.hydration-suppression-no-intent",
+      "F001.join-admission-suppresses-autoenter",
+      "F001.canceled-join-late-hierarchy-no-autoenter",
+      "F007.primary-row-outline",
+      "F007.primary-accessible-selected",
+      "F007.navigation-path-distinct",
+      "F133.text-sized-thin-glyphs",
+      "F133.chosen-dark-color-readable",
+      "F133.size-scale-selection-readable",
+      "F133.additional-partial-renderer-contract"
     ],
     "G2": [
       "F019.import-success",
@@ -7294,7 +7858,21 @@
       "F130.asset-placement-initial-trs",
       "F130.creation-precondition-rollback",
       "F130.stale-birth-no-replacement",
-      "F130.full-queue-hydration-retained"
+      "F130.full-queue-hydration-retained",
+      "F130.atomic-interior-no-state",
+      "F130.atomic-completed-boundary",
+      "F130.atomic-cross-page-membership",
+      "F130.atomic-same-clock-distinct-batches",
+      "F130.atomic-malformed-markers-refused",
+      "F130.atomic-tagged-baseline-refused",
+      "F130.atomic-untagged-compatibility",
+      "F134.saved-together-labels",
+      "F134.manual-interior-refusal",
+      "F134.completed-save-cta",
+      "F134.earlier-skips-atomic-save",
+      "F134.later-skips-atomic-save",
+      "F134.play-completed-boundaries",
+      "F134.preview-keeps-actual-ecs"
     ],
     "G4": [
       "F054.raise-square-UI",
@@ -7347,7 +7925,10 @@
       "F138.unchanged-native-map-apply",
       "F138.map-terrain-same-scale-refused",
       "F138.map-bounds-change-refused",
-      "F138.map-metadata-change-refused"
+      "F138.map-metadata-change-refused",
+      "F138.numeric-text-enter-responsive",
+      "F138.fresh-promotion-scoped-baseline",
+      "F138.promotion-reentry-keeps-actual-pose"
     ],
     "G6": [
       "F079.maximize",
@@ -7381,7 +7962,48 @@
       "F097.own-grant-revoke",
       "F097.inherited-role",
       "F097.new-target-late-reply",
-      "F097.timeout-needs-readback"
+      "F097.timeout-needs-readback",
+      "F098.recipient-did",
+      "F098.manager-issuer-viewer",
+      "F098.manager-issuer-editor",
+      "F098.manager-issuer-manager",
+      "F098.legacy-manager-reauthorization",
+      "F098.reauthorize-existing-manager",
+      "F098.manager-lifetime-refused",
+      "F098.context-change-discards",
+      "F098.issuer-role-loss-discards",
+      "F098.native-export-unavailable",
+      "F098.issuer-proof-revoked-refused",
+      "F098.issuer-proof-regrant-hlc-refused",
+      "F098.issuer-proof-scope-refused",
+      "F098.issuer-proof-expiry-refused",
+      "F098.issuer-proof-depth-refused",
+      "F098.source-change-at-use-refused",
+      "F098.native-ticket-preflight-refused",
+      "F098.postgrant-failure-unconfirmed",
+      "F098.bounded-queue-unsubmitted",
+      "F099.owner-v1-viewer-join",
+      "F099.owner-v1-editor-join",
+      "F099.owner-v1-manager-join",
+      "F099.v2-manager-proof-ready",
+      "F099.wrong-recipient-refused",
+      "F099.accepted-metadata-unconfirmed",
+      "F099.cancel-after-admission",
+      "F099.context-change-no-navigation",
+      "F099.current-verse-preserved",
+      "F099.duplicate-submission-refused",
+      "F099.masked-byte-limit",
+      "F099.finalize-sequence-native-role-hierarchy",
+      "F099.finalize-queue-full-unsubmitted",
+      "F099.finalize-accepted-no-replay",
+      "F099.finalize-deadline-refused",
+      "F099.finalize-stale-reply-ignored",
+      "F099.finalize-cancel-late-no-navigation",
+      "F099.admission-rollback-no-proof",
+      "F099.readiness-current-supporting-grants",
+      "F099.handoff-exact-lease-fifo",
+      "F099.cancel-transient-cursor-cleanup",
+      "F099.legacy-reply-cannot-complete"
     ],
     "G8": [
       "F105.replicate-node",
@@ -7411,7 +8033,51 @@
       "F141.second-link-from-two-refused",
       "F141.second-link-extra-generation-refused",
       "F141.second-link-intervening-refusal",
-      "F141.second-link-unrelated-invalidation"
+      "F141.second-link-unrelated-invalidation",
+      "F116.rest-get-api-v1-debug-invitation",
+      "F116.rest-post-api-v1-debug-invitation",
+      "F144.observe-current-dids",
+      "F144.observe-protected-input",
+      "F144.consume-once",
+      "F144.consume-expired-refused",
+      "F144.consume-source-changed-refused",
+      "F144.consume-manager-proof-changed-refused",
+      "F144.default-off",
+      "F144.non-owner-refused",
+      "F144.foreign-scope-refused",
+      "F144.revoked-during-await-refused",
+      "F144.expired-during-await-refused",
+      "F144.queue-busy-deadline",
+      "F144.distinct-owned-runs-required",
+      "F144.exact-owned-socket",
+      "F144.process-lifetime-changed-refused",
+      "F144.masked-lease-submit-once",
+      "F144.lease-focus-change-refused",
+      "F144.lease-layout-change-refused",
+      "F144.lease-dialog-navigation-change-refused",
+      "F144.token-publication-snapshot",
+      "F144.secret-redaction-no-store",
+      "F144.consumed-submission-unknown-no-replay",
+      "F145.validator-owned-api-matching",
+      "F145.validator-owned-api-pid-mismatch",
+      "F145.validator-owned-api-rebind-before-auth",
+      "F145.validator-owned-api-tuple-mismatch",
+      "F145.validator-owned-api-ambiguous-owner",
+      "F145.validator-owned-token-bounded-version",
+      "F145.validator-owned-token-growth-after-size",
+      "F145.validator-owned-token-inplace-writer-held",
+      "F145.validator-owned-token-inplace-mutation-attempt",
+      "F145.validator-owned-token-oversized",
+      "F145.validator-owned-token-duplicate-key",
+      "F145.validator-owned-token-nonfinite",
+      "F145.validator-owned-token-short-read",
+      "F145.validator-typed-invitation-authority-owner",
+      "F145.validator-typed-invitation-authority-manager",
+      "F145.validator-typed-invitation-authority-wrong-issuer",
+      "F145.validator-typed-invitation-authority-missing-proof",
+      "F145.validator-typed-invitation-authority-bad-proof",
+      "F145.validator-typed-invitation-authority-owner-extra-proof",
+      "F110.verified-promoted-stamp-pose"
     ],
     "G10": [
       "F117.same-root-restart",
@@ -7514,10 +8180,12 @@
       "region": "R1",
       "journey": "J01",
       "entry": "Node row select/Options; inactive-petal node row",
-      "expected": "Stable node selection/Inspector identity; inactive-Petal row enters complete ancestry and requests bounded deferred selection",
+      "expected": "Stable actual primary node identity, text-sized row glyphs and cohesive primary outline/accent plus accessible selected state; navigation-path shading stays separate. Inactive-Petal entry uses complete ancestry and bounded deferred selection. Multiple selection is not supplied by the current singular caller.",
       "requires_persistence": false,
       "sources": [
-        "fe-ui/src/panels/sidebar.rs"
+        "fe-ui/src/panels/sidebar.rs",
+        "fe-ui/src/panels/tree_entry.rs",
+        "fe-ui/src/theme.rs"
       ]
     },
     {
@@ -8602,22 +9270,37 @@
       "id": "F098",
       "region": "R7",
       "journey": "J07",
-      "entry": "Invite role/expiry/Generate/Copy to Clipboard",
-      "expected": "second host joins with exact role, expiry/refusals",
+      "entry": "Entity Options Access addressed recipient DID / role / expiry / Generate / safe Copy; actual Owner or certified Manager issuer",
+      "expected": "Actual local signer and current Owner or activated Owner-rooted Manager proof; native ticket export, fenced checked grant and signed envelope. Production Owner-v2 roles and delegated Manager roles require real second-host native/effective-role acceptance; legacy ordinary Manager access alone cannot issue.",
       "requires_persistence": true,
       "sources": [
-        "fe-ui/src/dialogs/entity_settings.rs"
+        "fe-ui/src/dialogs/entity_settings.rs",
+        "fe-ui/src/dialogs/entity_access.rs",
+        "fe-ui/src/invitations/issue.rs",
+        "fe-database/src/handlers/addressed_join_v2.rs",
+        "fe-database/src/join_authority.rs",
+        "fe-database/src/join_delegation.rs",
+        "fe-database/src/join_invite.rs",
+        "fe-sync/src/join_ticket.rs"
       ]
     },
     {
       "id": "F099",
       "region": "R7",
       "journey": "J07",
-      "entry": "Join text/Join/Cancel; invalid/expired/already joined",
-      "expected": "no partial hierarchy on error, real live replica on success",
+      "entry": "Masked addressed Join v1/v2 / Join / Cancel / pending native-role-hierarchy-proof phases / actual navigation",
+      "expected": "Strict recipient/signature/native validation; correlated staged acceptance, real issuer sync, ordinary role convergence and loaded ancestry. V2 Manager proof finalization requires coordinator readiness and a fresh native probe before navigation. Stored metadata/capability/proof may remain after cancellation or unknown result; no unconfirmed navigation, command replay or fabricated Joined.",
       "requires_persistence": true,
       "sources": [
-        "fe-ui/src/dialogs/join.rs"
+        "fe-ui/src/dialogs/join.rs",
+        "fe-ui/src/invitations/join.rs",
+        "fe-ui/src/invitations/mod.rs",
+        "fe-ui/src/invitations/join_input.rs",
+        "fe-ui/src/navigation_manager.rs",
+        "fe-ui/src/verse_manager/db_results/hierarchy.rs",
+        "fe-database/src/handlers/addressed_join.rs",
+        "fe-database/src/handlers/addressed_join_v2.rs",
+        "fe-sync/src/sync_thread.rs"
       ]
     },
     {
@@ -8742,7 +9425,8 @@
       "expected": "truthful settled fields, bounded/redacted/scope-confined logs",
       "requires_persistence": false,
       "sources": [
-        "fractalengine/src/qa_debug_bridge.rs"
+        "fractalengine/src/qa_debug_bridge.rs",
+        "fe-ui/src/node_manager/stamp_selection.rs"
       ]
     },
     {
@@ -8973,7 +9657,7 @@
       "region": "R3",
       "journey": "J03",
       "entry": "API: create object, commit mutation, history pages and state at explicit object version",
-      "expected": "Committed baseline and exact readbacks; property set/delete/full transform; paginated per-object history; old replay leaves current state unchanged; ordinary native import and existing-asset placement share scoped atomic creation and complete initial committed materialization",
+      "expected": "Scoped atomic creation and exact per-object completed-save readbacks; field audit facts remain intact. Explicit node+batch identity, bounded authorized contiguous facts and final receipt markers govern replay; interior/malformed atomic cuts return no state. Native import and existing-asset placement retain complete committed initial materialization.",
       "requires_persistence": true,
       "sources": [
         "fe-api/src/node_history.rs",
@@ -8981,7 +9665,8 @@
         "fe-database/src/handlers/node_history.rs",
         "fe-database/src/handlers/object_creation.rs",
         "fe-database/src/handlers/crud.rs",
-        "fe-ui/src/verse_manager/db_results/mod.rs"
+        "fe-ui/src/verse_manager/db_results/mod.rs",
+        "fe-database/src/handlers/stamp_promotion.rs"
       ]
     },
     {
@@ -9016,12 +9701,13 @@
       "region": "R1",
       "journey": "J01",
       "entry": "Row Appearance… for each Verse/Fractal/Petal/Node: wheel, HSV, #RRGGBB, icon, Save/Cancel/Reset",
-      "expected": "Per-entry kind+stable-ID local preference; selected/ancestor/visibility state remains distinct; Save persists locally, Cancel/Escape/deleted target and invalid hex do not write",
+      "expected": "Per-entry kind+stable-ID local icon/color preference; thin text-sized glyphs preserve row hit targets and visible primary/path/visibility signals. Save persists locally, Cancel/Escape/deleted target/invalid hex do not write. Additional/partial renderer states are A-only until actual multi-selection integrates.",
       "requires_persistence": true,
       "sources": [
         "fe-ui/src/panels/tree_appearance.rs",
         "fe-ui/src/panels/tree_entry.rs",
-        "fe-ui/src/settings.rs"
+        "fe-ui/src/settings.rs",
+        "fe-ui/src/theme.rs"
       ]
     },
     {
@@ -9029,7 +9715,7 @@
       "region": "R3",
       "journey": "J03",
       "entry": "Inspector tab: Data > Object data section: History; Refresh object history / Replay object version N / exact version / Earlier / Later / Play/Pause / Copy",
-      "expected": "Bounded pages and read-only replay preserve live scene/current properties; actual per-object versions and unavailable coverage; correlation rejects stale target, errors and timeout remain visible",
+      "expected": "Bounded individual audit rows identify saved-together groups; row selection/Earlier/Later/Play use completed-save boundaries. Manual exact interiors retain the request, explain refusal and offer the completed boundary. Historical previews preserve actual live ECS/current stored state and never imply derived-stamp or global snapshot history.",
       "requires_persistence": true,
       "sources": [
         "fe-ui/src/object_data/mod.rs",
@@ -9170,6 +9856,36 @@
         "tools/qa/owned_stdout.py",
         "tools/qa/coverage.py",
         "tools/qa/scenarios/evidence-boundaries.py"
+      ]
+    },
+    {
+      "id": "F144",
+      "region": "R9",
+      "journey": "J09",
+      "entry": "Owned one-use GUI invitation Observe/Consume and guarded masked Join input",
+      "expected": "Actual current GUI generation, fresh issuer authority, exact owned process/socket/token boundary and one-use masked input lease. Submission remains pending actual native/role/hierarchy/proof readiness. Secret-free no-store metadata; no automatic consume/input replay.",
+      "requires_persistence": false,
+      "sources": [
+        "fe-api/src/qa_invitation.rs",
+        "fe-runtime/src/qa_invitation.rs",
+        "fractalengine/src/qa_invitation_bridge.rs",
+        "fractalengine/src/input_bridge.rs",
+        "fe-ui/src/invitations/join_input.rs",
+        "tools/qa/invite_transfer.py",
+        "tools/qa/owned_run_http.py"
+      ]
+    },
+    {
+      "id": "F145",
+      "region": "R9",
+      "journey": "J09",
+      "entry": "Synthetic invitation client boundary validators; zero application coverage",
+      "expected": "Controlled production-helper fixtures only: exact pre-send owner, bounded immutable token buffer and strict typed public authority metadata. These results never establish native Windows, signature, GUI, application or paired readiness acceptance.",
+      "requires_persistence": false,
+      "sources": [
+        "tools/qa/scenarios/evidence-boundaries.py",
+        "tools/qa/owned_run_http.py",
+        "tools/qa/invite_transfer.py"
       ]
     }
   ],
@@ -9582,15 +10298,504 @@
       "audited_snapshot": "44ad28da5ac33120c988bd26a8e8a79362dd15d4",
       "required_assertion": "Only pageone-to-pagetwo exact admitted single-generation transition may tolerate intermediate old Source. Actual pagetwo Source and fresh matching ready DOM remain mandatory; no transient-state success.",
       "execution_status": "NOT_RUN"
+    },
+    "F116.rest-get-api-v1-debug-invitation": {
+      "audited_snapshot": "09923b5daf16af848944db34fd7fff5e04ad5c25",
+      "reason": "Invoke the exact registered REST method/path against the owned app, inspect application outcome, no-store and admission/readback. No invitation MCP route exists; endpoint presence and a transfer receipt do not establish Joined."
+    },
+    "F116.rest-post-api-v1-debug-invitation": {
+      "audited_snapshot": "09923b5daf16af848944db34fd7fff5e04ad5c25",
+      "reason": "Invoke the exact registered REST method/path against the owned app, inspect application outcome, no-store and admission/readback. No invitation MCP route exists; endpoint presence and a transfer receipt do not establish Joined."
+    },
+    "F098.recipient-did": {
+      "audited_snapshot": "09923b5daf16af848944db34fd7fff5e04ad5c25",
+      "reason": "Use actual distinct owned app DIDs and current GUI controls. Delegated issuance requires an activated Owner-rooted proof and actual Manager signer. Independently verify recipient/scope/grant/transport/effective-role results in the other app; a role dropdown or submission alone is insufficient."
+    },
+    "F098.manager-issuer-viewer": {
+      "audited_snapshot": "09923b5daf16af848944db34fd7fff5e04ad5c25",
+      "reason": "Use actual distinct owned app DIDs and current GUI controls. Delegated issuance requires an activated Owner-rooted proof and actual Manager signer. Independently verify recipient/scope/grant/transport/effective-role results in the other app; a role dropdown or submission alone is insufficient."
+    },
+    "F098.manager-issuer-editor": {
+      "audited_snapshot": "09923b5daf16af848944db34fd7fff5e04ad5c25",
+      "reason": "Use actual distinct owned app DIDs and current GUI controls. Delegated issuance requires an activated Owner-rooted proof and actual Manager signer. Independently verify recipient/scope/grant/transport/effective-role results in the other app; a role dropdown or submission alone is insufficient."
+    },
+    "F098.manager-issuer-manager": {
+      "audited_snapshot": "09923b5daf16af848944db34fd7fff5e04ad5c25",
+      "reason": "Use actual distinct owned app DIDs and current GUI controls. Delegated issuance requires an activated Owner-rooted proof and actual Manager signer. Independently verify recipient/scope/grant/transport/effective-role results in the other app; a role dropdown or submission alone is insufficient."
+    },
+    "F098.legacy-manager-reauthorization": {
+      "audited_snapshot": "09923b5daf16af848944db34fd7fff5e04ad5c25",
+      "reason": "Legacy Manager role access alone gives explicit Owner-reauthorization guidance. Actual checked Owner-to-Manager issuance/reauthorization supplies the proof; excessive child lifetime refuses. Use a sufficiently longer parent lifetime for the normal delegated happy path."
+    },
+    "F098.reauthorize-existing-manager": {
+      "audited_snapshot": "09923b5daf16af848944db34fd7fff5e04ad5c25",
+      "reason": "Legacy Manager role access alone gives explicit Owner-reauthorization guidance. Actual checked Owner-to-Manager issuance/reauthorization supplies the proof; excessive child lifetime refuses. Use a sufficiently longer parent lifetime for the normal delegated happy path."
+    },
+    "F098.manager-lifetime-refused": {
+      "audited_snapshot": "09923b5daf16af848944db34fd7fff5e04ad5c25",
+      "reason": "Legacy Manager role access alone gives explicit Owner-reauthorization guidance. Actual checked Owner-to-Manager issuance/reauthorization supplies the proof; excessive child lifetime refuses. Use a sufficiently longer parent lifetime for the normal delegated happy path."
+    },
+    "F098.context-change-discards": {
+      "audited_snapshot": "09923b5daf16af848944db34fd7fff5e04ad5c25",
+      "reason": "Actual target/navigation/role-refresh context changes discard pending or retained UI source. Role-loss case uses authoritative Access refresh; it does not promise instantaneous global revocation. Unavailable native export refuses before issuing a usable invitation; inspect stored effects and honest outcome."
+    },
+    "F098.issuer-role-loss-discards": {
+      "audited_snapshot": "09923b5daf16af848944db34fd7fff5e04ad5c25",
+      "reason": "Actual target/navigation/role-refresh context changes discard pending or retained UI source. Role-loss case uses authoritative Access refresh; it does not promise instantaneous global revocation. Unavailable native export refuses before issuing a usable invitation; inspect stored effects and honest outcome."
+    },
+    "F098.native-export-unavailable": {
+      "audited_snapshot": "09923b5daf16af848944db34fd7fff5e04ad5c25",
+      "reason": "Actual target/navigation/role-refresh context changes discard pending or retained UI source. Role-loss case uses authoritative Access refresh; it does not promise instantaneous global revocation. Unavailable native export refuses before issuing a usable invitation; inspect stored effects and honest outcome."
+    },
+    "F098.issuer-proof-revoked-refused": {
+      "audited_snapshot": "09923b5daf16af848944db34fd7fff5e04ad5c25",
+      "reason": "Exercise the production authority and issuance adapter against real stored signed proof/current grant inputs. Require exact supporting HLC, scope, expiry and depth, with no unauthorized grant or credential. Shape-only synthetic metadata does not satisfy this checkpoint."
+    },
+    "F098.issuer-proof-regrant-hlc-refused": {
+      "audited_snapshot": "09923b5daf16af848944db34fd7fff5e04ad5c25",
+      "reason": "Exercise the production authority and issuance adapter against real stored signed proof/current grant inputs. Require exact supporting HLC, scope, expiry and depth, with no unauthorized grant or credential. Shape-only synthetic metadata does not satisfy this checkpoint."
+    },
+    "F098.issuer-proof-scope-refused": {
+      "audited_snapshot": "09923b5daf16af848944db34fd7fff5e04ad5c25",
+      "reason": "Exercise the production authority and issuance adapter against real stored signed proof/current grant inputs. Require exact supporting HLC, scope, expiry and depth, with no unauthorized grant or credential. Shape-only synthetic metadata does not satisfy this checkpoint."
+    },
+    "F098.issuer-proof-expiry-refused": {
+      "audited_snapshot": "09923b5daf16af848944db34fd7fff5e04ad5c25",
+      "reason": "Exercise the production authority and issuance adapter against real stored signed proof/current grant inputs. Require exact supporting HLC, scope, expiry and depth, with no unauthorized grant or credential. Shape-only synthetic metadata does not satisfy this checkpoint."
+    },
+    "F098.issuer-proof-depth-refused": {
+      "audited_snapshot": "09923b5daf16af848944db34fd7fff5e04ad5c25",
+      "reason": "Exercise the production authority and issuance adapter against real stored signed proof/current grant inputs. Require exact supporting HLC, scope, expiry and depth, with no unauthorized grant or credential. Shape-only synthetic metadata does not satisfy this checkpoint."
+    },
+    "F098.source-change-at-use-refused": {
+      "audited_snapshot": "09923b5daf16af848944db34fd7fff5e04ad5c25",
+      "reason": "Use controlled production store/channel journeys. Before-grant failures leave no accepted grant; a failure after committed grant remains explicitly unconfirmed and returns no credential. A full queue is definitely unsent. Never automatically replay an accepted issuance."
+    },
+    "F098.native-ticket-preflight-refused": {
+      "audited_snapshot": "09923b5daf16af848944db34fd7fff5e04ad5c25",
+      "reason": "Use controlled production store/channel journeys. Before-grant failures leave no accepted grant; a failure after committed grant remains explicitly unconfirmed and returns no credential. A full queue is definitely unsent. Never automatically replay an accepted issuance."
+    },
+    "F098.postgrant-failure-unconfirmed": {
+      "audited_snapshot": "09923b5daf16af848944db34fd7fff5e04ad5c25",
+      "reason": "Use controlled production store/channel journeys. Before-grant failures leave no accepted grant; a failure after committed grant remains explicitly unconfirmed and returns no credential. A full queue is definitely unsent. Never automatically replay an accepted issuance."
+    },
+    "F098.bounded-queue-unsubmitted": {
+      "audited_snapshot": "09923b5daf16af848944db34fd7fff5e04ad5c25",
+      "reason": "Use controlled production store/channel journeys. Before-grant failures leave no accepted grant; a failure after committed grant remains explicitly unconfirmed and returns no credential. A full queue is definitely unsent. Never automatically replay an accepted issuance."
+    },
+    "F099.owner-v1-viewer-join": {
+      "audited_snapshot": "09923b5daf16af848944db34fd7fff5e04ad5c25",
+      "reason": "Actual native masked Join consumes a valid Owner-v1 signed fixture for the actual recipient. Require real replica and exact effective role; v1 Manager access does not manufacture a portable delegation proof."
+    },
+    "F099.owner-v1-editor-join": {
+      "audited_snapshot": "09923b5daf16af848944db34fd7fff5e04ad5c25",
+      "reason": "Actual native masked Join consumes a valid Owner-v1 signed fixture for the actual recipient. Require real replica and exact effective role; v1 Manager access does not manufacture a portable delegation proof."
+    },
+    "F099.owner-v1-manager-join": {
+      "audited_snapshot": "09923b5daf16af848944db34fd7fff5e04ad5c25",
+      "reason": "Actual native masked Join consumes a valid Owner-v1 signed fixture for the actual recipient. Require real replica and exact effective role; v1 Manager access does not manufacture a portable delegation proof."
+    },
+    "F099.v2-manager-proof-ready": {
+      "audited_snapshot": "09923b5daf16af848944db34fd7fff5e04ad5c25",
+      "reason": "Actual v2 Manager Join proceeds through real issuer sync, ordinary role convergence and loaded target before checked proof activation, followed by another native inspection before navigation. Metadata acceptance alone is insufficient; subsequent actual Manager issuance also verifies usable proof activation."
+    },
+    "F099.wrong-recipient-refused": {
+      "audited_snapshot": "09923b5daf16af848944db34fd7fff5e04ad5c25",
+      "reason": "Drive actual masked input/Join/Cancel and inspect current stored effects, cursor and native ownership. Pre-admission refusals do not write; post-admission cancel/failure may retain accepted metadata/capability/proof but cannot report Joined or navigate. Preserve current Verse pipeline, bound UTF-8 bytes and refuse duplicate session submission without replay."
+    },
+    "F099.accepted-metadata-unconfirmed": {
+      "audited_snapshot": "09923b5daf16af848944db34fd7fff5e04ad5c25",
+      "reason": "Drive actual masked input/Join/Cancel and inspect current stored effects, cursor and native ownership. Pre-admission refusals do not write; post-admission cancel/failure may retain accepted metadata/capability/proof but cannot report Joined or navigate. Preserve current Verse pipeline, bound UTF-8 bytes and refuse duplicate session submission without replay."
+    },
+    "F099.cancel-after-admission": {
+      "audited_snapshot": "09923b5daf16af848944db34fd7fff5e04ad5c25",
+      "reason": "Drive actual masked input/Join/Cancel and inspect current stored effects, cursor and native ownership. Pre-admission refusals do not write; post-admission cancel/failure may retain accepted metadata/capability/proof but cannot report Joined or navigate. Preserve current Verse pipeline, bound UTF-8 bytes and refuse duplicate session submission without replay."
+    },
+    "F099.context-change-no-navigation": {
+      "audited_snapshot": "09923b5daf16af848944db34fd7fff5e04ad5c25",
+      "reason": "Drive actual masked input/Join/Cancel and inspect current stored effects, cursor and native ownership. Pre-admission refusals do not write; post-admission cancel/failure may retain accepted metadata/capability/proof but cannot report Joined or navigate. Preserve current Verse pipeline, bound UTF-8 bytes and refuse duplicate session submission without replay."
+    },
+    "F099.current-verse-preserved": {
+      "audited_snapshot": "09923b5daf16af848944db34fd7fff5e04ad5c25",
+      "reason": "Drive actual masked input/Join/Cancel and inspect current stored effects, cursor and native ownership. Pre-admission refusals do not write; post-admission cancel/failure may retain accepted metadata/capability/proof but cannot report Joined or navigate. Preserve current Verse pipeline, bound UTF-8 bytes and refuse duplicate session submission without replay."
+    },
+    "F099.duplicate-submission-refused": {
+      "audited_snapshot": "09923b5daf16af848944db34fd7fff5e04ad5c25",
+      "reason": "Drive actual masked input/Join/Cancel and inspect current stored effects, cursor and native ownership. Pre-admission refusals do not write; post-admission cancel/failure may retain accepted metadata/capability/proof but cannot report Joined or navigate. Preserve current Verse pipeline, bound UTF-8 bytes and refuse duplicate session submission without replay."
+    },
+    "F099.masked-byte-limit": {
+      "audited_snapshot": "09923b5daf16af848944db34fd7fff5e04ad5c25",
+      "reason": "Drive actual masked input/Join/Cancel and inspect current stored effects, cursor and native ownership. Pre-admission refusals do not write; post-admission cancel/failure may retain accepted metadata/capability/proof but cannot report Joined or navigate. Preserve current Verse pipeline, bound UTF-8 bytes and refuse duplicate session submission without replay."
+    },
+    "F099.finalize-sequence-native-role-hierarchy": {
+      "audited_snapshot": "09923b5daf16af848944db34fd7fff5e04ad5c25",
+      "reason": "Exercise the real bounded coordinator/DB phase through controlled channel/store journeys. The trusted coordinator orders native/roles/hierarchy before finalization and forces a fresh native probe afterward; the DB does not independently prove native readiness. Cancel/late receipts cannot navigate, even if an accepted proof write remains stored."
+    },
+    "F099.finalize-queue-full-unsubmitted": {
+      "audited_snapshot": "09923b5daf16af848944db34fd7fff5e04ad5c25",
+      "reason": "Exercise the real bounded coordinator/DB phase through controlled channel/store journeys. The trusted coordinator orders native/roles/hierarchy before finalization and forces a fresh native probe afterward; the DB does not independently prove native readiness. Cancel/late receipts cannot navigate, even if an accepted proof write remains stored."
+    },
+    "F099.finalize-accepted-no-replay": {
+      "audited_snapshot": "09923b5daf16af848944db34fd7fff5e04ad5c25",
+      "reason": "Exercise the real bounded coordinator/DB phase through controlled channel/store journeys. The trusted coordinator orders native/roles/hierarchy before finalization and forces a fresh native probe afterward; the DB does not independently prove native readiness. Cancel/late receipts cannot navigate, even if an accepted proof write remains stored."
+    },
+    "F099.finalize-deadline-refused": {
+      "audited_snapshot": "09923b5daf16af848944db34fd7fff5e04ad5c25",
+      "reason": "Exercise the real bounded coordinator/DB phase through controlled channel/store journeys. The trusted coordinator orders native/roles/hierarchy before finalization and forces a fresh native probe afterward; the DB does not independently prove native readiness. Cancel/late receipts cannot navigate, even if an accepted proof write remains stored."
+    },
+    "F099.finalize-stale-reply-ignored": {
+      "audited_snapshot": "09923b5daf16af848944db34fd7fff5e04ad5c25",
+      "reason": "Exercise the real bounded coordinator/DB phase through controlled channel/store journeys. The trusted coordinator orders native/roles/hierarchy before finalization and forces a fresh native probe afterward; the DB does not independently prove native readiness. Cancel/late receipts cannot navigate, even if an accepted proof write remains stored."
+    },
+    "F099.finalize-cancel-late-no-navigation": {
+      "audited_snapshot": "09923b5daf16af848944db34fd7fff5e04ad5c25",
+      "reason": "Exercise the real bounded coordinator/DB phase through controlled channel/store journeys. The trusted coordinator orders native/roles/hierarchy before finalization and forces a fresh native probe afterward; the DB does not independently prove native readiness. Cancel/late receipts cannot navigate, even if an accepted proof write remains stored."
+    },
+    "F099.admission-rollback-no-proof": {
+      "audited_snapshot": "09923b5daf16af848944db34fd7fff5e04ad5c25",
+      "reason": "Use production admission/role/lease/lifecycle seams: failed metadata transaction leaves no quarantined proof; current ordinary supporting grants govern readiness; exact generation/namespace conditional cleanup retains FIFO order under Full; legacy or late replies cannot complete an addressed Join."
+    },
+    "F099.readiness-current-supporting-grants": {
+      "audited_snapshot": "09923b5daf16af848944db34fd7fff5e04ad5c25",
+      "reason": "Use production admission/role/lease/lifecycle seams: failed metadata transaction leaves no quarantined proof; current ordinary supporting grants govern readiness; exact generation/namespace conditional cleanup retains FIFO order under Full; legacy or late replies cannot complete an addressed Join."
+    },
+    "F099.handoff-exact-lease-fifo": {
+      "audited_snapshot": "09923b5daf16af848944db34fd7fff5e04ad5c25",
+      "reason": "Use production admission/role/lease/lifecycle seams: failed metadata transaction leaves no quarantined proof; current ordinary supporting grants govern readiness; exact generation/namespace conditional cleanup retains FIFO order under Full; legacy or late replies cannot complete an addressed Join."
+    },
+    "F099.cancel-transient-cursor-cleanup": {
+      "audited_snapshot": "09923b5daf16af848944db34fd7fff5e04ad5c25",
+      "reason": "Use production admission/role/lease/lifecycle seams: failed metadata transaction leaves no quarantined proof; current ordinary supporting grants govern readiness; exact generation/namespace conditional cleanup retains FIFO order under Full; legacy or late replies cannot complete an addressed Join."
+    },
+    "F099.legacy-reply-cannot-complete": {
+      "audited_snapshot": "09923b5daf16af848944db34fd7fff5e04ad5c25",
+      "reason": "Use production admission/role/lease/lifecycle seams: failed metadata transaction leaves no quarantined proof; current ordinary supporting grants govern readiness; exact generation/namespace conditional cleanup retains FIFO order under Full; legacy or late replies cannot complete an addressed Join."
+    },
+    "F001.join-admission-suppresses-autoenter": {
+      "audited_snapshot": "09923b5daf16af848944db34fd7fff5e04ad5c25",
+      "reason": "On an actual empty recipient cursor, accepted or late hydrated rows cannot auto-navigate while Join owns navigation or after cancellation. Observe actual cursor and loaded rows; existing explicit Back/startup suppression remains independent."
+    },
+    "F001.canceled-join-late-hierarchy-no-autoenter": {
+      "audited_snapshot": "09923b5daf16af848944db34fd7fff5e04ad5c25",
+      "reason": "On an actual empty recipient cursor, accepted or late hydrated rows cannot auto-navigate while Join owns navigation or after cancellation. Observe actual cursor and loaded rows; existing explicit Back/startup suppression remains independent."
+    },
+    "F144.observe-current-dids": {
+      "audited_snapshot": "09923b5daf16af848944db34fd7fff5e04ad5c25",
+      "reason": "Require actual owned app/API and applicable native Windows process/socket/token-publication outcomes, exact current GUI generation/DIDs/target/role/lifetime/typed proof, fresh DB preparation and one-use release. Actual masked TextEdit insertion and actual Join response remain constrained by the lease. API Owner floor is separate from entity Manager authority. Never retain credentials or read host clipboard; unknown consumed submission must not replay. Synthetic F145 cannot satisfy this case."
+    },
+    "F144.observe-protected-input": {
+      "audited_snapshot": "09923b5daf16af848944db34fd7fff5e04ad5c25",
+      "reason": "Require actual owned app/API and applicable native Windows process/socket/token-publication outcomes, exact current GUI generation/DIDs/target/role/lifetime/typed proof, fresh DB preparation and one-use release. Actual masked TextEdit insertion and actual Join response remain constrained by the lease. API Owner floor is separate from entity Manager authority. Never retain credentials or read host clipboard; unknown consumed submission must not replay. Synthetic F145 cannot satisfy this case."
+    },
+    "F144.consume-once": {
+      "audited_snapshot": "09923b5daf16af848944db34fd7fff5e04ad5c25",
+      "reason": "Require actual owned app/API and applicable native Windows process/socket/token-publication outcomes, exact current GUI generation/DIDs/target/role/lifetime/typed proof, fresh DB preparation and one-use release. Actual masked TextEdit insertion and actual Join response remain constrained by the lease. API Owner floor is separate from entity Manager authority. Never retain credentials or read host clipboard; unknown consumed submission must not replay. Synthetic F145 cannot satisfy this case."
+    },
+    "F144.consume-expired-refused": {
+      "audited_snapshot": "09923b5daf16af848944db34fd7fff5e04ad5c25",
+      "reason": "Require actual owned app/API and applicable native Windows process/socket/token-publication outcomes, exact current GUI generation/DIDs/target/role/lifetime/typed proof, fresh DB preparation and one-use release. Actual masked TextEdit insertion and actual Join response remain constrained by the lease. API Owner floor is separate from entity Manager authority. Never retain credentials or read host clipboard; unknown consumed submission must not replay. Synthetic F145 cannot satisfy this case."
+    },
+    "F144.consume-source-changed-refused": {
+      "audited_snapshot": "09923b5daf16af848944db34fd7fff5e04ad5c25",
+      "reason": "Require actual owned app/API and applicable native Windows process/socket/token-publication outcomes, exact current GUI generation/DIDs/target/role/lifetime/typed proof, fresh DB preparation and one-use release. Actual masked TextEdit insertion and actual Join response remain constrained by the lease. API Owner floor is separate from entity Manager authority. Never retain credentials or read host clipboard; unknown consumed submission must not replay. Synthetic F145 cannot satisfy this case."
+    },
+    "F144.consume-manager-proof-changed-refused": {
+      "audited_snapshot": "09923b5daf16af848944db34fd7fff5e04ad5c25",
+      "reason": "Require actual owned app/API and applicable native Windows process/socket/token-publication outcomes, exact current GUI generation/DIDs/target/role/lifetime/typed proof, fresh DB preparation and one-use release. Actual masked TextEdit insertion and actual Join response remain constrained by the lease. API Owner floor is separate from entity Manager authority. Never retain credentials or read host clipboard; unknown consumed submission must not replay. Synthetic F145 cannot satisfy this case."
+    },
+    "F144.default-off": {
+      "audited_snapshot": "09923b5daf16af848944db34fd7fff5e04ad5c25",
+      "reason": "Require actual owned app/API and applicable native Windows process/socket/token-publication outcomes, exact current GUI generation/DIDs/target/role/lifetime/typed proof, fresh DB preparation and one-use release. Actual masked TextEdit insertion and actual Join response remain constrained by the lease. API Owner floor is separate from entity Manager authority. Never retain credentials or read host clipboard; unknown consumed submission must not replay. Synthetic F145 cannot satisfy this case."
+    },
+    "F144.non-owner-refused": {
+      "audited_snapshot": "09923b5daf16af848944db34fd7fff5e04ad5c25",
+      "reason": "Require actual owned app/API and applicable native Windows process/socket/token-publication outcomes, exact current GUI generation/DIDs/target/role/lifetime/typed proof, fresh DB preparation and one-use release. Actual masked TextEdit insertion and actual Join response remain constrained by the lease. API Owner floor is separate from entity Manager authority. Never retain credentials or read host clipboard; unknown consumed submission must not replay. Synthetic F145 cannot satisfy this case."
+    },
+    "F144.foreign-scope-refused": {
+      "audited_snapshot": "09923b5daf16af848944db34fd7fff5e04ad5c25",
+      "reason": "Require actual owned app/API and applicable native Windows process/socket/token-publication outcomes, exact current GUI generation/DIDs/target/role/lifetime/typed proof, fresh DB preparation and one-use release. Actual masked TextEdit insertion and actual Join response remain constrained by the lease. API Owner floor is separate from entity Manager authority. Never retain credentials or read host clipboard; unknown consumed submission must not replay. Synthetic F145 cannot satisfy this case."
+    },
+    "F144.revoked-during-await-refused": {
+      "audited_snapshot": "09923b5daf16af848944db34fd7fff5e04ad5c25",
+      "reason": "Require actual owned app/API and applicable native Windows process/socket/token-publication outcomes, exact current GUI generation/DIDs/target/role/lifetime/typed proof, fresh DB preparation and one-use release. Actual masked TextEdit insertion and actual Join response remain constrained by the lease. API Owner floor is separate from entity Manager authority. Never retain credentials or read host clipboard; unknown consumed submission must not replay. Synthetic F145 cannot satisfy this case."
+    },
+    "F144.expired-during-await-refused": {
+      "audited_snapshot": "09923b5daf16af848944db34fd7fff5e04ad5c25",
+      "reason": "Require actual owned app/API and applicable native Windows process/socket/token-publication outcomes, exact current GUI generation/DIDs/target/role/lifetime/typed proof, fresh DB preparation and one-use release. Actual masked TextEdit insertion and actual Join response remain constrained by the lease. API Owner floor is separate from entity Manager authority. Never retain credentials or read host clipboard; unknown consumed submission must not replay. Synthetic F145 cannot satisfy this case."
+    },
+    "F144.queue-busy-deadline": {
+      "audited_snapshot": "09923b5daf16af848944db34fd7fff5e04ad5c25",
+      "reason": "Require actual owned app/API and applicable native Windows process/socket/token-publication outcomes, exact current GUI generation/DIDs/target/role/lifetime/typed proof, fresh DB preparation and one-use release. Actual masked TextEdit insertion and actual Join response remain constrained by the lease. API Owner floor is separate from entity Manager authority. Never retain credentials or read host clipboard; unknown consumed submission must not replay. Synthetic F145 cannot satisfy this case."
+    },
+    "F144.distinct-owned-runs-required": {
+      "audited_snapshot": "09923b5daf16af848944db34fd7fff5e04ad5c25",
+      "reason": "Require actual owned app/API and applicable native Windows process/socket/token-publication outcomes, exact current GUI generation/DIDs/target/role/lifetime/typed proof, fresh DB preparation and one-use release. Actual masked TextEdit insertion and actual Join response remain constrained by the lease. API Owner floor is separate from entity Manager authority. Never retain credentials or read host clipboard; unknown consumed submission must not replay. Synthetic F145 cannot satisfy this case."
+    },
+    "F144.exact-owned-socket": {
+      "audited_snapshot": "09923b5daf16af848944db34fd7fff5e04ad5c25",
+      "reason": "Require actual owned app/API and applicable native Windows process/socket/token-publication outcomes, exact current GUI generation/DIDs/target/role/lifetime/typed proof, fresh DB preparation and one-use release. Actual masked TextEdit insertion and actual Join response remain constrained by the lease. API Owner floor is separate from entity Manager authority. Never retain credentials or read host clipboard; unknown consumed submission must not replay. Synthetic F145 cannot satisfy this case."
+    },
+    "F144.process-lifetime-changed-refused": {
+      "audited_snapshot": "09923b5daf16af848944db34fd7fff5e04ad5c25",
+      "reason": "Require actual owned app/API and applicable native Windows process/socket/token-publication outcomes, exact current GUI generation/DIDs/target/role/lifetime/typed proof, fresh DB preparation and one-use release. Actual masked TextEdit insertion and actual Join response remain constrained by the lease. API Owner floor is separate from entity Manager authority. Never retain credentials or read host clipboard; unknown consumed submission must not replay. Synthetic F145 cannot satisfy this case."
+    },
+    "F144.masked-lease-submit-once": {
+      "audited_snapshot": "09923b5daf16af848944db34fd7fff5e04ad5c25",
+      "reason": "Require actual owned app/API and applicable native Windows process/socket/token-publication outcomes, exact current GUI generation/DIDs/target/role/lifetime/typed proof, fresh DB preparation and one-use release. Actual masked TextEdit insertion and actual Join response remain constrained by the lease. API Owner floor is separate from entity Manager authority. Never retain credentials or read host clipboard; unknown consumed submission must not replay. Synthetic F145 cannot satisfy this case."
+    },
+    "F144.lease-focus-change-refused": {
+      "audited_snapshot": "09923b5daf16af848944db34fd7fff5e04ad5c25",
+      "reason": "Require actual owned app/API and applicable native Windows process/socket/token-publication outcomes, exact current GUI generation/DIDs/target/role/lifetime/typed proof, fresh DB preparation and one-use release. Actual masked TextEdit insertion and actual Join response remain constrained by the lease. API Owner floor is separate from entity Manager authority. Never retain credentials or read host clipboard; unknown consumed submission must not replay. Synthetic F145 cannot satisfy this case."
+    },
+    "F144.lease-layout-change-refused": {
+      "audited_snapshot": "09923b5daf16af848944db34fd7fff5e04ad5c25",
+      "reason": "Require actual owned app/API and applicable native Windows process/socket/token-publication outcomes, exact current GUI generation/DIDs/target/role/lifetime/typed proof, fresh DB preparation and one-use release. Actual masked TextEdit insertion and actual Join response remain constrained by the lease. API Owner floor is separate from entity Manager authority. Never retain credentials or read host clipboard; unknown consumed submission must not replay. Synthetic F145 cannot satisfy this case."
+    },
+    "F144.lease-dialog-navigation-change-refused": {
+      "audited_snapshot": "09923b5daf16af848944db34fd7fff5e04ad5c25",
+      "reason": "Require actual owned app/API and applicable native Windows process/socket/token-publication outcomes, exact current GUI generation/DIDs/target/role/lifetime/typed proof, fresh DB preparation and one-use release. Actual masked TextEdit insertion and actual Join response remain constrained by the lease. API Owner floor is separate from entity Manager authority. Never retain credentials or read host clipboard; unknown consumed submission must not replay. Synthetic F145 cannot satisfy this case."
+    },
+    "F144.token-publication-snapshot": {
+      "audited_snapshot": "09923b5daf16af848944db34fd7fff5e04ad5c25",
+      "reason": "Require actual owned app/API and applicable native Windows process/socket/token-publication outcomes, exact current GUI generation/DIDs/target/role/lifetime/typed proof, fresh DB preparation and one-use release. Actual masked TextEdit insertion and actual Join response remain constrained by the lease. API Owner floor is separate from entity Manager authority. Never retain credentials or read host clipboard; unknown consumed submission must not replay. Synthetic F145 cannot satisfy this case."
+    },
+    "F144.secret-redaction-no-store": {
+      "audited_snapshot": "09923b5daf16af848944db34fd7fff5e04ad5c25",
+      "reason": "Require actual owned app/API and applicable native Windows process/socket/token-publication outcomes, exact current GUI generation/DIDs/target/role/lifetime/typed proof, fresh DB preparation and one-use release. Actual masked TextEdit insertion and actual Join response remain constrained by the lease. API Owner floor is separate from entity Manager authority. Never retain credentials or read host clipboard; unknown consumed submission must not replay. Synthetic F145 cannot satisfy this case."
+    },
+    "F144.consumed-submission-unknown-no-replay": {
+      "audited_snapshot": "09923b5daf16af848944db34fd7fff5e04ad5c25",
+      "reason": "Require actual owned app/API and applicable native Windows process/socket/token-publication outcomes, exact current GUI generation/DIDs/target/role/lifetime/typed proof, fresh DB preparation and one-use release. Actual masked TextEdit insertion and actual Join response remain constrained by the lease. API Owner floor is separate from entity Manager authority. Never retain credentials or read host clipboard; unknown consumed submission must not replay. Synthetic F145 cannot satisfy this case."
+    },
+    "F145.validator-owned-api-matching": {
+      "audited_snapshot": "09923b5daf16af848944db34fd7fff5e04ad5c25",
+      "reason": "Run the exact named case in the existing offline evidence-boundaries scenario. Its controlled seams exercise a production helper but provide ZERO application, GUI, signature, native Windows/socket/publication or paired readiness coverage. Keep the fixture scope in the retained record; never credit F144/F098/F099/F105/F106 from this result."
+    },
+    "F145.validator-owned-api-pid-mismatch": {
+      "audited_snapshot": "09923b5daf16af848944db34fd7fff5e04ad5c25",
+      "reason": "Run the exact named case in the existing offline evidence-boundaries scenario. Its controlled seams exercise a production helper but provide ZERO application, GUI, signature, native Windows/socket/publication or paired readiness coverage. Keep the fixture scope in the retained record; never credit F144/F098/F099/F105/F106 from this result."
+    },
+    "F145.validator-owned-api-rebind-before-auth": {
+      "audited_snapshot": "09923b5daf16af848944db34fd7fff5e04ad5c25",
+      "reason": "Run the exact named case in the existing offline evidence-boundaries scenario. Its controlled seams exercise a production helper but provide ZERO application, GUI, signature, native Windows/socket/publication or paired readiness coverage. Keep the fixture scope in the retained record; never credit F144/F098/F099/F105/F106 from this result."
+    },
+    "F145.validator-owned-api-tuple-mismatch": {
+      "audited_snapshot": "09923b5daf16af848944db34fd7fff5e04ad5c25",
+      "reason": "Run the exact named case in the existing offline evidence-boundaries scenario. Its controlled seams exercise a production helper but provide ZERO application, GUI, signature, native Windows/socket/publication or paired readiness coverage. Keep the fixture scope in the retained record; never credit F144/F098/F099/F105/F106 from this result."
+    },
+    "F145.validator-owned-api-ambiguous-owner": {
+      "audited_snapshot": "09923b5daf16af848944db34fd7fff5e04ad5c25",
+      "reason": "Run the exact named case in the existing offline evidence-boundaries scenario. Its controlled seams exercise a production helper but provide ZERO application, GUI, signature, native Windows/socket/publication or paired readiness coverage. Keep the fixture scope in the retained record; never credit F144/F098/F099/F105/F106 from this result."
+    },
+    "F145.validator-owned-token-bounded-version": {
+      "audited_snapshot": "09923b5daf16af848944db34fd7fff5e04ad5c25",
+      "reason": "Run the exact named case in the existing offline evidence-boundaries scenario. Its controlled seams exercise a production helper but provide ZERO application, GUI, signature, native Windows/socket/publication or paired readiness coverage. Keep the fixture scope in the retained record; never credit F144/F098/F099/F105/F106 from this result."
+    },
+    "F145.validator-owned-token-growth-after-size": {
+      "audited_snapshot": "09923b5daf16af848944db34fd7fff5e04ad5c25",
+      "reason": "Run the exact named case in the existing offline evidence-boundaries scenario. Its controlled seams exercise a production helper but provide ZERO application, GUI, signature, native Windows/socket/publication or paired readiness coverage. Keep the fixture scope in the retained record; never credit F144/F098/F099/F105/F106 from this result."
+    },
+    "F145.validator-owned-token-inplace-writer-held": {
+      "audited_snapshot": "09923b5daf16af848944db34fd7fff5e04ad5c25",
+      "reason": "Run the exact named case in the existing offline evidence-boundaries scenario. Its controlled seams exercise a production helper but provide ZERO application, GUI, signature, native Windows/socket/publication or paired readiness coverage. Keep the fixture scope in the retained record; never credit F144/F098/F099/F105/F106 from this result."
+    },
+    "F145.validator-owned-token-inplace-mutation-attempt": {
+      "audited_snapshot": "09923b5daf16af848944db34fd7fff5e04ad5c25",
+      "reason": "Run the exact named case in the existing offline evidence-boundaries scenario. Its controlled seams exercise a production helper but provide ZERO application, GUI, signature, native Windows/socket/publication or paired readiness coverage. Keep the fixture scope in the retained record; never credit F144/F098/F099/F105/F106 from this result."
+    },
+    "F145.validator-owned-token-oversized": {
+      "audited_snapshot": "09923b5daf16af848944db34fd7fff5e04ad5c25",
+      "reason": "Run the exact named case in the existing offline evidence-boundaries scenario. Its controlled seams exercise a production helper but provide ZERO application, GUI, signature, native Windows/socket/publication or paired readiness coverage. Keep the fixture scope in the retained record; never credit F144/F098/F099/F105/F106 from this result."
+    },
+    "F145.validator-owned-token-duplicate-key": {
+      "audited_snapshot": "09923b5daf16af848944db34fd7fff5e04ad5c25",
+      "reason": "Run the exact named case in the existing offline evidence-boundaries scenario. Its controlled seams exercise a production helper but provide ZERO application, GUI, signature, native Windows/socket/publication or paired readiness coverage. Keep the fixture scope in the retained record; never credit F144/F098/F099/F105/F106 from this result."
+    },
+    "F145.validator-owned-token-nonfinite": {
+      "audited_snapshot": "09923b5daf16af848944db34fd7fff5e04ad5c25",
+      "reason": "Run the exact named case in the existing offline evidence-boundaries scenario. Its controlled seams exercise a production helper but provide ZERO application, GUI, signature, native Windows/socket/publication or paired readiness coverage. Keep the fixture scope in the retained record; never credit F144/F098/F099/F105/F106 from this result."
+    },
+    "F145.validator-owned-token-short-read": {
+      "audited_snapshot": "09923b5daf16af848944db34fd7fff5e04ad5c25",
+      "reason": "Run the exact named case in the existing offline evidence-boundaries scenario. Its controlled seams exercise a production helper but provide ZERO application, GUI, signature, native Windows/socket/publication or paired readiness coverage. Keep the fixture scope in the retained record; never credit F144/F098/F099/F105/F106 from this result."
+    },
+    "F145.validator-typed-invitation-authority-owner": {
+      "audited_snapshot": "09923b5daf16af848944db34fd7fff5e04ad5c25",
+      "reason": "Run the exact named case in the existing offline evidence-boundaries scenario. Its controlled seams exercise a production helper but provide ZERO application, GUI, signature, native Windows/socket/publication or paired readiness coverage. Keep the fixture scope in the retained record; never credit F144/F098/F099/F105/F106 from this result."
+    },
+    "F145.validator-typed-invitation-authority-manager": {
+      "audited_snapshot": "09923b5daf16af848944db34fd7fff5e04ad5c25",
+      "reason": "Run the exact named case in the existing offline evidence-boundaries scenario. Its controlled seams exercise a production helper but provide ZERO application, GUI, signature, native Windows/socket/publication or paired readiness coverage. Keep the fixture scope in the retained record; never credit F144/F098/F099/F105/F106 from this result."
+    },
+    "F145.validator-typed-invitation-authority-wrong-issuer": {
+      "audited_snapshot": "09923b5daf16af848944db34fd7fff5e04ad5c25",
+      "reason": "Run the exact named case in the existing offline evidence-boundaries scenario. Its controlled seams exercise a production helper but provide ZERO application, GUI, signature, native Windows/socket/publication or paired readiness coverage. Keep the fixture scope in the retained record; never credit F144/F098/F099/F105/F106 from this result."
+    },
+    "F145.validator-typed-invitation-authority-missing-proof": {
+      "audited_snapshot": "09923b5daf16af848944db34fd7fff5e04ad5c25",
+      "reason": "Run the exact named case in the existing offline evidence-boundaries scenario. Its controlled seams exercise a production helper but provide ZERO application, GUI, signature, native Windows/socket/publication or paired readiness coverage. Keep the fixture scope in the retained record; never credit F144/F098/F099/F105/F106 from this result."
+    },
+    "F145.validator-typed-invitation-authority-bad-proof": {
+      "audited_snapshot": "09923b5daf16af848944db34fd7fff5e04ad5c25",
+      "reason": "Run the exact named case in the existing offline evidence-boundaries scenario. Its controlled seams exercise a production helper but provide ZERO application, GUI, signature, native Windows/socket/publication or paired readiness coverage. Keep the fixture scope in the retained record; never credit F144/F098/F099/F105/F106 from this result."
+    },
+    "F145.validator-typed-invitation-authority-owner-extra-proof": {
+      "audited_snapshot": "09923b5daf16af848944db34fd7fff5e04ad5c25",
+      "reason": "Run the exact named case in the existing offline evidence-boundaries scenario. Its controlled seams exercise a production helper but provide ZERO application, GUI, signature, native Windows/socket/publication or paired readiness coverage. Keep the fixture scope in the retained record; never credit F144/F098/F099/F105/F106 from this result."
+    },
+    "F007.primary-row-outline": {
+      "audited_snapshot": "09923b5daf16af848944db34fd7fff5e04ad5c25",
+      "reason": "Actual current primary node ID agrees with the Inspector and selected metadata; judge cohesive row outline/accent separately from active navigation-path shading and chosen icon color. This does not implement or prove multiple selection."
+    },
+    "F007.primary-accessible-selected": {
+      "audited_snapshot": "09923b5daf16af848944db34fd7fff5e04ad5c25",
+      "reason": "Actual current primary node ID agrees with the Inspector and selected metadata; judge cohesive row outline/accent separately from active navigation-path shading and chosen icon color. This does not implement or prove multiple selection."
+    },
+    "F007.navigation-path-distinct": {
+      "audited_snapshot": "09923b5daf16af848944db34fd7fff5e04ad5c25",
+      "reason": "Actual current primary node ID agrees with the Inspector and selected metadata; judge cohesive row outline/accent separately from active navigation-path shading and chosen icon color. This does not implement or prove multiple selection."
+    },
+    "F133.text-sized-thin-glyphs": {
+      "audited_snapshot": "09923b5daf16af848944db34fd7fff5e04ad5c25",
+      "reason": "Judge actual current tree captures at required sizes/scales and representative chosen icons/colors, preserving reachable measured hit geometry. Record19.9921875px reduced-scale quantization exactly; never round into strict20px PASS. Additional/partial states are not live multi-selection."
+    },
+    "F133.chosen-dark-color-readable": {
+      "audited_snapshot": "09923b5daf16af848944db34fd7fff5e04ad5c25",
+      "reason": "Judge actual current tree captures at required sizes/scales and representative chosen icons/colors, preserving reachable measured hit geometry. Record19.9921875px reduced-scale quantization exactly; never round into strict20px PASS. Additional/partial states are not live multi-selection."
+    },
+    "F133.size-scale-selection-readable": {
+      "audited_snapshot": "09923b5daf16af848944db34fd7fff5e04ad5c25",
+      "reason": "Judge actual current tree captures at required sizes/scales and representative chosen icons/colors, preserving reachable measured hit geometry. Record19.9921875px reduced-scale quantization exactly; never round into strict20px PASS. Additional/partial states are not live multi-selection."
+    },
+    "F133.additional-partial-renderer-contract": {
+      "audited_snapshot": "09923b5daf16af848944db34fd7fff5e04ad5c25",
+      "reason": "Invoke the existing real egui renderer journey for explicit Primary/Selected/Partial states, accessible names/selected descriptions and preserved targets. This renderer contract provides no actual application multiple-selection behavior."
+    },
+    "F130.atomic-interior-no-state": {
+      "audited_snapshot": "09923b5daf16af848944db34fd7fff5e04ad5c25",
+      "reason": "Use exact production history API/store reads and existing real-store journeys. Resolve bounded individually authorized contiguous membership by explicit node+batch identity and final markers outside page boundaries. Interior/malformed cuts return no state, same HLC does not merge saves, original facts/current object stay unchanged and untagged compatibility remains."
+    },
+    "F130.atomic-completed-boundary": {
+      "audited_snapshot": "09923b5daf16af848944db34fd7fff5e04ad5c25",
+      "reason": "Use exact production history API/store reads and existing real-store journeys. Resolve bounded individually authorized contiguous membership by explicit node+batch identity and final markers outside page boundaries. Interior/malformed cuts return no state, same HLC does not merge saves, original facts/current object stay unchanged and untagged compatibility remains."
+    },
+    "F130.atomic-cross-page-membership": {
+      "audited_snapshot": "09923b5daf16af848944db34fd7fff5e04ad5c25",
+      "reason": "Use exact production history API/store reads and existing real-store journeys. Resolve bounded individually authorized contiguous membership by explicit node+batch identity and final markers outside page boundaries. Interior/malformed cuts return no state, same HLC does not merge saves, original facts/current object stay unchanged and untagged compatibility remains."
+    },
+    "F130.atomic-same-clock-distinct-batches": {
+      "audited_snapshot": "09923b5daf16af848944db34fd7fff5e04ad5c25",
+      "reason": "Use exact production history API/store reads and existing real-store journeys. Resolve bounded individually authorized contiguous membership by explicit node+batch identity and final markers outside page boundaries. Interior/malformed cuts return no state, same HLC does not merge saves, original facts/current object stay unchanged and untagged compatibility remains."
+    },
+    "F130.atomic-malformed-markers-refused": {
+      "audited_snapshot": "09923b5daf16af848944db34fd7fff5e04ad5c25",
+      "reason": "Use exact production history API/store reads and existing real-store journeys. Resolve bounded individually authorized contiguous membership by explicit node+batch identity and final markers outside page boundaries. Interior/malformed cuts return no state, same HLC does not merge saves, original facts/current object stay unchanged and untagged compatibility remains."
+    },
+    "F130.atomic-tagged-baseline-refused": {
+      "audited_snapshot": "09923b5daf16af848944db34fd7fff5e04ad5c25",
+      "reason": "Use exact production history API/store reads and existing real-store journeys. Resolve bounded individually authorized contiguous membership by explicit node+batch identity and final markers outside page boundaries. Interior/malformed cuts return no state, same HLC does not merge saves, original facts/current object stay unchanged and untagged compatibility remains."
+    },
+    "F130.atomic-untagged-compatibility": {
+      "audited_snapshot": "09923b5daf16af848944db34fd7fff5e04ad5c25",
+      "reason": "Use exact production history API/store reads and existing real-store journeys. Resolve bounded individually authorized contiguous membership by explicit node+batch identity and final markers outside page boundaries. Interior/malformed cuts return no state, same HLC does not merge saves, original facts/current object stay unchanged and untagged compatibility remains."
+    },
+    "F134.saved-together-labels": {
+      "audited_snapshot": "09923b5daf16af848944db34fd7fff5e04ad5c25",
+      "reason": "Actual native history controls retain requested interior version and explain refusal, offer its completed save, and navigate/play completed boundaries while listing audit facts. Independently compare API requests, current stored state and actual selected ECS; historical stored stamp overrides are not rendered-pose history."
+    },
+    "F134.manual-interior-refusal": {
+      "audited_snapshot": "09923b5daf16af848944db34fd7fff5e04ad5c25",
+      "reason": "Actual native history controls retain requested interior version and explain refusal, offer its completed save, and navigate/play completed boundaries while listing audit facts. Independently compare API requests, current stored state and actual selected ECS; historical stored stamp overrides are not rendered-pose history."
+    },
+    "F134.completed-save-cta": {
+      "audited_snapshot": "09923b5daf16af848944db34fd7fff5e04ad5c25",
+      "reason": "Actual native history controls retain requested interior version and explain refusal, offer its completed save, and navigate/play completed boundaries while listing audit facts. Independently compare API requests, current stored state and actual selected ECS; historical stored stamp overrides are not rendered-pose history."
+    },
+    "F134.earlier-skips-atomic-save": {
+      "audited_snapshot": "09923b5daf16af848944db34fd7fff5e04ad5c25",
+      "reason": "Actual native history controls retain requested interior version and explain refusal, offer its completed save, and navigate/play completed boundaries while listing audit facts. Independently compare API requests, current stored state and actual selected ECS; historical stored stamp overrides are not rendered-pose history."
+    },
+    "F134.later-skips-atomic-save": {
+      "audited_snapshot": "09923b5daf16af848944db34fd7fff5e04ad5c25",
+      "reason": "Actual native history controls retain requested interior version and explain refusal, offer its completed save, and navigate/play completed boundaries while listing audit facts. Independently compare API requests, current stored state and actual selected ECS; historical stored stamp overrides are not rendered-pose history."
+    },
+    "F134.play-completed-boundaries": {
+      "audited_snapshot": "09923b5daf16af848944db34fd7fff5e04ad5c25",
+      "reason": "Actual native history controls retain requested interior version and explain refusal, offer its completed save, and navigate/play completed boundaries while listing audit facts. Independently compare API requests, current stored state and actual selected ECS; historical stored stamp overrides are not rendered-pose history."
+    },
+    "F134.preview-keeps-actual-ecs": {
+      "audited_snapshot": "09923b5daf16af848944db34fd7fff5e04ad5c25",
+      "reason": "Actual native history controls retain requested interior version and explain refusal, offer its completed save, and navigate/play completed boundaries while listing audit facts. Independently compare API requests, current stored state and actual selected ECS; historical stored stamp overrides are not rendered-pose history."
+    },
+    "F138.numeric-text-enter-responsive": {
+      "audited_snapshot": "09923b5daf16af848944db34fd7fff5e04ad5c25",
+      "reason": "Edit actual stamp numeric fields with Text/Enter and explicit Apply without context-lock failure. Fresh canonical promotion has one scoped actor baseline. Verify curved derived pose with a prospective independent oracle and complete row/history plus actual pose on reentry; no whole-world duplicate census inferred."
+    },
+    "F138.fresh-promotion-scoped-baseline": {
+      "audited_snapshot": "09923b5daf16af848944db34fd7fff5e04ad5c25",
+      "reason": "Edit actual stamp numeric fields with Text/Enter and explicit Apply without context-lock failure. Fresh canonical promotion has one scoped actor baseline. Verify curved derived pose with a prospective independent oracle and complete row/history plus actual pose on reentry; no whole-world duplicate census inferred."
+    },
+    "F138.promotion-reentry-keeps-actual-pose": {
+      "audited_snapshot": "09923b5daf16af848944db34fd7fff5e04ad5c25",
+      "reason": "Edit actual stamp numeric fields with Text/Enter and explicit Apply without context-lock failure. Fresh canonical promotion has one scoped actor baseline. Verify curved derived pose with a prospective independent oracle and complete row/history plus actual pose on reentry; no whole-world duplicate census inferred."
+    },
+    "F110.verified-promoted-stamp-pose": {
+      "audited_snapshot": "09923b5daf16af848944db34fd7fff5e04ad5c25",
+      "reason": "Read-only QA state observes the actual typed live rendered stamp projection under verified canonical identity/current scope/origin. Compare independently computed numeric pose; stored override/replay TRS cannot substitute for the actual derived ECS observation."
+    },
+    "F098.generate": {
+      "audited_snapshot": "09923b5daf16af848944db34fd7fff5e04ad5c25",
+      "reason": "Stable ID now follows current production Owner-v2 Prepare/native Export/checked Issue. A label or Generate click alone is not acceptance; actual source identity and stored grant/readiness outcomes remain required."
+    },
+    "F098.copy": {
+      "audited_snapshot": "09923b5daf16af848944db34fd7fff5e04ad5c25",
+      "reason": "Use the actual ordinary Copy control with the authorized synthetic clipboard sink. Do not read unrelated host clipboard, capture a secret-bearing frame or persist the invitation. Safe transfer and actual paired Join remain separate cases."
+    },
+    "F098.second-host-join": {
+      "audited_snapshot": "09923b5daf16af848944db34fd7fff5e04ad5c25",
+      "reason": "Stable paired GUI checkpoint requires actual distinct recipient identity, strict invitation verification, native issuer sync, effective role and hierarchy before Joined. One-use transfer submission alone is not Ready."
+    },
+    "F099.join-valid": {
+      "audited_snapshot": "09923b5daf16af848944db34fd7fff5e04ad5c25",
+      "reason": "Current normal production Join is Owner-v2; actual compatibility v1 joins and delegated Manager issuance have additive IDs. Metadata accepted locally is not Joined."
+    },
+    "F099.no-partial-on-error": {
+      "audited_snapshot": "09923b5daf16af848944db34fd7fff5e04ad5c25",
+      "reason": "Preserved legacy ID: pre-admission validation/transaction refusal leaves no unauthorized hierarchy/member/proof effects. It does NOT promise rollback of accepted metadata, imported capabilities or activated proof after later failure/cancel. F099.accepted-metadata-unconfirmed and cancel-after-admission require honest partial-outcome/no-navigation checks."
+    },
+    "F099.already-joined": {
+      "audited_snapshot": "09923b5daf16af848944db34fd7fff5e04ad5c25",
+      "reason": "Preserved ID covers refusing a Join to the currently active Verse before metadata/native replacement. It is not a blanket refusal of every previously stored inactive Verse."
+    },
+    "F099.cancel": {
+      "audited_snapshot": "09923b5daf16af848944db34fd7fff5e04ad5c25",
+      "reason": "Cancel remains reachable while pending; accepted metadata/capability/proof may remain. Exact lease cleanup and late receipts cannot navigate or replay an accepted request."
+    },
+    "F098.role-viewer": {
+      "audited_snapshot": "09923b5daf16af848944db34fd7fff5e04ad5c25",
+      "reason": "Existing role-selection ID now requires actual current Owner-v2 GUI generation and corresponding paired role/transport result, not only choosing the dropdown. Delegated Manager issuer variants are separately enumerated."
+    },
+    "F098.role-editor": {
+      "audited_snapshot": "09923b5daf16af848944db34fd7fff5e04ad5c25",
+      "reason": "Existing role-selection ID now requires actual current Owner-v2 GUI generation and corresponding paired role/transport result, not only choosing the dropdown. Delegated Manager issuer variants are separately enumerated."
+    },
+    "F098.role-manager": {
+      "audited_snapshot": "09923b5daf16af848944db34fd7fff5e04ad5c25",
+      "reason": "Existing role-selection ID now requires actual current Owner-v2 GUI generation and corresponding paired role/transport result, not only choosing the dropdown. Delegated Manager issuer variants are separately enumerated."
     }
   },
-  "audited_source_commit": "44ad28da5ac33120c988bd26a8e8a79362dd15d4",
+  "audited_source_commit": "09923b5daf16af848944db34fd7fff5e04ad5c25",
   "pending_source_reconciliation": [
-    "P2P QA-0050 repair remains isolated and is not part of this audited source. Actual two-root invite/join/role/replica and P2P transfer acceptance remains required; no completed collaboration is inferred."
+    "Current source includes the reviewed Owner/Manager addressed-v2 production stack with strict Owner-v1 acceptance, completed-save history and compact primary selection. Actual paired invitation/native/role/proof/transfer acceptance and current-source FULL/convergence remain unexecuted catalog obligations. Isolated group/multiple-selection/batch-edit work is outside this source snapshot."
   ],
   "source_acceptance_obligations": [
     "F143.watch-nonzero-exit-refused and F143.watch-writer-drain-refused require actual root-owned native refusal experiments. Synthetic F143 validator cases provide zero application coverage and cannot replace those outcomes or actual F080.confirm-close GUI/lifecycle/native-exit proof.",
     "Stage20 reconciliation adds native creation/baseline/materialization, request-owner/unknown/fullqueue, startup-hydration, native map fences, native form/header and expected page navigation variants. Every new checkpoint remains NOT_RUN; source assertions and QA18/19 do not execute these repairs.",
-    "Y cases require actual current-stage GUI actions/state/images/readback. Controlled production channel/store/COM journeys may cover their A cases only; synthetic schema/receipt packets cannot substitute for native GUI or browser results."
+    "Y cases require actual current-stage GUI actions/state/images/readback. Controlled production channel/store/COM journeys may cover their A cases only; synthetic schema/receipt packets cannot substitute for native GUI or browser results.",
+    "Source09923 reconciliation preserves every previous checkpoint ID. New invitation, completed-save and selection variants start NOT_RUN; focused QA24-26 evidence is not imported as current-pass coverage.",
+    "F098/F099 require actual owned GUI/native joins and independent current role, hierarchy and proof outcomes. Accepted metadata, capabilities or active proof may remain after cancellation or an unknown result; no unconfirmed request may navigate. A transfer submission receipt is not Joined.",
+    "F144 requires actual app/API and applicable Windows process/socket/token-publication outcomes. F145 contains exactly synthetic production-helper validator cases with zero application/signature/native coverage; F145 PASS cannot satisfy F144, F098, F099, F105 or F106.",
+    "Y selection cases cover current primary selection only. Additional/partial renderer assertions are A-only; isolated multi-selection/groups/tools are not advertised as live. Record physical target quantization exactly;19.9921875px cannot be rounded into strict20px success.",
+    "Normal history playback exposes completed saves while retaining every field audit fact. Interior or malformed atomic cuts return no state; historical stored overrides do not claim the path-derived rendered pose or a global multi-object snapshot."
   ]
 }

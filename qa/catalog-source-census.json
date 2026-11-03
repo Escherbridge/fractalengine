@@ -1,28 +1,33 @@
 {
   "type": "FeatureSourceCensus",
-  "audited_source_commit": "44ad28da5ac33120c988bd26a8e8a79362dd15d4",
+  "audited_source_commit": "09923b5daf16af848944db34fd7fff5e04ad5c25",
   "execution_evidence": false,
   "pending_source_reconciliation": [
-    "P2P QA-0050 repair remains isolated and is not part of this audited source. Actual two-root invite/join/role/replica and P2P transfer acceptance remains required; no completed collaboration is inferred."
+    "Current source includes the reviewed Owner/Manager addressed-v2 production stack with strict Owner-v1 acceptance, completed-save history and compact primary selection. Actual paired invitation/native/role/proof/transfer acceptance and current-source FULL/convergence remain unexecuted catalog obligations. Isolated group/multiple-selection/batch-edit work is outside this source snapshot."
   ],
   "source_acceptance_obligations": [
     "F143.watch-nonzero-exit-refused and F143.watch-writer-drain-refused require actual root-owned native refusal experiments. Synthetic F143 validator cases provide zero application coverage and cannot replace those outcomes or actual F080.confirm-close GUI/lifecycle/native-exit proof.",
     "Stage20 reconciliation adds native creation/baseline/materialization, request-owner/unknown/fullqueue, startup-hydration, native map fences, native form/header and expected page navigation variants. Every new checkpoint remains NOT_RUN; source assertions and QA18/19 do not execute these repairs.",
-    "Y cases require actual current-stage GUI actions/state/images/readback. Controlled production channel/store/COM journeys may cover their A cases only; synthetic schema/receipt packets cannot substitute for native GUI or browser results."
+    "Y cases require actual current-stage GUI actions/state/images/readback. Controlled production channel/store/COM journeys may cover their A cases only; synthetic schema/receipt packets cannot substitute for native GUI or browser results.",
+    "Source09923 reconciliation preserves every previous checkpoint ID. New invitation, completed-save and selection variants start NOT_RUN; focused QA24-26 evidence is not imported as current-pass coverage.",
+    "F098/F099 require actual owned GUI/native joins and independent current role, hierarchy and proof outcomes. Accepted metadata, capabilities or active proof may remain after cancellation or an unknown result; no unconfirmed request may navigate. A transfer submission receipt is not Joined.",
+    "F144 requires actual app/API and applicable Windows process/socket/token-publication outcomes. F145 contains exactly synthetic production-helper validator cases with zero application/signature/native coverage; F145 PASS cannot satisfy F144, F098, F099, F105 or F106.",
+    "Y selection cases cover current primary selection only. Additional/partial renderer assertions are A-only; isolated multi-selection/groups/tools are not advertised as live. Record physical target quantization exactly;19.9921875px cannot be rounded into strict20px success.",
+    "Normal history playback exposes completed saves while retaining every field audit fact. Interior or malformed atomic cuts return no state; historical stored overrides do not claim the path-derived rendered pose or a global multi-object snapshot."
   ],
   "limits": "Lexical producer candidates, excluding literal cfg(test) items while preserving line numbers. Helpers/named wrappers can repeat one control; conditional production openers require manual reconciliation. Not a Rust parser, live-tree census or proof of execution.",
   "source_sha256": {
     "fe-ui/src/accessibility.rs": "78141f8b97285d60b5cc69619d428ea4c41ef4d928a22fe3ff5f23ea29730000",
-    "fe-ui/src/actions/asset.rs": "33041add06bc3a3c77ae513e2d5e8a0b4c1f3f21a567bd2857fab93350b72ec5",
+    "fe-ui/src/actions/asset.rs": "b75d0906ba211d50f21b8214b7927b52a15dd2cbb43c53b5fcee9e44dd66e8c6",
     "fe-ui/src/actions/dimension_callout.rs": "69d2325bab4a40668177101672204985e67654d2f272b2c737434ad186217152",
     "fe-ui/src/actions/gis.rs": "bc48c128054407a11cd39b2018116473c648fbb029c032a7ec8bb755766c63f1",
     "fe-ui/src/actions/gpx.rs": "a53c5f66f97b019bdf79ddaa8bbd73ae16b34ff47f91a28ecaf1d96653159778",
     "fe-ui/src/actions/hexon.rs": "ee536722f9abd22aa78b7f49452d4af88972b20ebe14c0c207aa9b5a0141508b",
-    "fe-ui/src/actions/mod.rs": "8294f37b73b9dfa27486a01e72e53dac503a3465de5e4d9e2a93443bb2daed81",
+    "fe-ui/src/actions/mod.rs": "892147a5894ae71dd97c62d607d4771d4c6a4fe08814ae0dd31e33db6c0e67b1",
     "fe-ui/src/actions/node.rs": "1413209997e0403c157aef9b2021770e2dfb979f32ca2e7311906d74fa4500d2",
     "fe-ui/src/actions/node_props.rs": "f0990030a25cf334fe38d7693bb7ec672976557920cf7e6127742d48c477f9d6",
     "fe-ui/src/actions/path.rs": "698e0430056bc078045a741c7dc970b3b3f45050d18ea6e13f7dcf640dd4ddb9",
-    "fe-ui/src/actions/portal.rs": "d5b8c3ae0a5b6dc1b75888625a4143099565274e10b8ad43c181edf46ba571df",
+    "fe-ui/src/actions/portal.rs": "f19f51c23ca1b028b1f36595b71f2a77b15a551c727c76fc644c0bcc0eae7976",
     "fe-ui/src/actions/query.rs": "9c8e072a7a5b878508fadf58e2d002e9709089197de42d9003634cbd7c46b11f",
     "fe-ui/src/actions/terrain_proposal.rs": "df482ad4cd236536487abd069aa84cb5fac0dde300f13e3ae992f86a8e7c4695",
     "fe-ui/src/actions/transform.rs": "fb73ffc1183e37394090615c225b69ff9a94d954b75ab9c854e804e9dd98dcd9",
@@ -38,13 +43,13 @@
     "fe-ui/src/atlas/visibility_control.rs": "491545109b871a0d96039e6831164cebcd7719e1d7eed15f62c78a4d1bcc167f",
     "fe-ui/src/dialogs/context_menu.rs": "ce144b901fc34ee4462cb7d0a36d49d4863ff767199bf93f692684727451a018",
     "fe-ui/src/dialogs/create_entity.rs": "9e9a84148beabc1c90e74e8df7951bd4257179209840aff26576e3ad32bf378f",
-    "fe-ui/src/dialogs/entity_access.rs": "62fb3da42da4d19b6c9503d1d546a1f8a995426452b328508c9c3a370b351139",
+    "fe-ui/src/dialogs/entity_access.rs": "85ac356d53b2c1ba75d28e6f658217a50b880c4089057e76d0cba7f26c484907",
     "fe-ui/src/dialogs/entity_details.rs": "be10e30b0e07b2e012468b52e19508e6547e111f136a820d83cd2c3ac28d68bf",
-    "fe-ui/src/dialogs/entity_settings.rs": "6752bd7b6edd4bdea04f157635a7a43a63f2ff33a2e8a0bd882ff6f415612cb7",
+    "fe-ui/src/dialogs/entity_settings.rs": "5142bf5caa4f8b9ed6fd78a611911d509d59e9a3d433d723fd7b5cbe7245f61b",
     "fe-ui/src/dialogs/gltf_import.rs": "51f1132e528ff3859837583b5010f2d193c9b74278f5b4bb725b768cf5e86569",
     "fe-ui/src/dialogs/hexon_manager.rs": "e0b71c91e38f756336567c0add207807544d5a095cc29f4e0f20e6767a20f046",
-    "fe-ui/src/dialogs/join.rs": "9ea2b1d15021e54ad8528624c8e68fceeb41b614d06a37f0b9d0f8b90f6397f8",
-    "fe-ui/src/dialogs/mod.rs": "4dca1578b718e52090440e40913eae9be911fd526bb0aa503f34ff2c733147b6",
+    "fe-ui/src/dialogs/join.rs": "4c811c323a7bfe1e59e052dbba308ff65f14ba46b1248f2a58aef2e1a5099a0a",
+    "fe-ui/src/dialogs/mod.rs": "0728693668c4452db05305a8c3bca05eb74eb4d2117f3a584c3b6d67a1f12ffc",
     "fe-ui/src/dialogs/node_options.rs": "f2c9ce89df7277341b350ee35371a95610e83967f292b5d20ec2a12fd27c4f92",
     "fe-ui/src/dialogs/peer_debug.rs": "d0db7d0c179b03fee32d64d471544a883d125ff6a13738d4f9ce679f3466cb3f",
     "fe-ui/src/dialogs/petal_manifest.rs": "1dfe7aa2cf66fef643c373332eee810ff8a8db3347c03f161e2e38be54bce91d",
@@ -57,18 +62,22 @@
     "fe-ui/src/gis/mod.rs": "fb8b5c405679ae62b895fcabdb523e8f19e1d49bd71f7c66783f0e608152d183",
     "fe-ui/src/gis/query.rs": "bbcf2e6f1e34df3a616929ee86e157b090cb8f3bbc38b756af3c1eacc14a9eec",
     "fe-ui/src/gpx_ops.rs": "1d51643c3aac8075786526059ca22b0951da0ac322f09732dc4383f9c668ec5d",
-    "fe-ui/src/lib.rs": "667a2b29a40e4ea60bf0a0d66e219cf720edcacc8eb83871d25d8b84fd7c9a7a",
-    "fe-ui/src/maintenance.rs": "6b56b5d2c7ca9a07840e465eddc40f9a2e28bae20d9911af9311fa3b2abd7769",
-    "fe-ui/src/navigation_manager.rs": "a338ed6e445a27ad0572ac952cea645acc55e413dc33a2a5c11f5ddea63efc1a",
+    "fe-ui/src/invitations/issue.rs": "8f3191ab9a3d35bde92c34bcac972bf292de5b5547c81cf68ac948fd8648746b",
+    "fe-ui/src/invitations/join.rs": "052e4791f8db3f60979585115db0b4de03ef531a30967b37b331eb75c49d3789",
+    "fe-ui/src/invitations/join_input.rs": "6a58e93d1f0ecf554eac9be537b58c7d1552fd96a6afa531dc6d5d3edfec36e0",
+    "fe-ui/src/invitations/mod.rs": "b360163cfba1f8a6b9a4ecdbef33116f8184a7fc61bb99eb171d6df4acf57388",
+    "fe-ui/src/lib.rs": "0960102b41469564712347d4b90f0ae5b9cec1348861d1d867ef12c05bd0c9fc",
+    "fe-ui/src/maintenance.rs": "e47e1aa0536ca424458884591636c9258e091175055b34b6fb0c65cbd1730a9c",
+    "fe-ui/src/navigation_manager.rs": "dfb0debc7fe59c919ac4ee39ccb25cd06a0137330dd67c6e7ab8a4b5e02807ff",
     "fe-ui/src/node_manager/billboard.rs": "dfba8588aa5138a5a20fb13f5da34e3352b4675f77fe61c4789e2851ea9a978d",
     "fe-ui/src/node_manager/brush_interaction.rs": "053315c69a4e9d23f3ae9d48ff08313f57fe3db998158dc5bf64464586fdf5d1",
-    "fe-ui/src/node_manager/context_pick.rs": "8ee21cddbdf2f599cb3baba2b4fe8d15354f2ae33d7d3111e4ec45f4b516454c",
+    "fe-ui/src/node_manager/context_pick.rs": "9f3abff795ccd270d1aa90490c0b673f0ab8dc25a817475f0ae097bf96666312",
     "fe-ui/src/node_manager/curve.rs": "bc08ea5800a4a06c309512f2007bb32d5118e318f8f9697227c52404f1076aeb",
     "fe-ui/src/node_manager/dispatch.rs": "19930bb5aabd0f3a666639d515f0c94fed4db19a0ceb53836e00f3d59f98706c",
     "fe-ui/src/node_manager/gimbal_interaction.rs": "5835bf43525c1983a3ee1d164233b0bff5ac071a79b8b5d75b0631aaf90aaf57",
     "fe-ui/src/node_manager/inspector_sync.rs": "640bd897c47b053a39fad4da68ba909201fc7b15d9f0210cb1044ae098f714aa",
     "fe-ui/src/node_manager/measure.rs": "8b8a841e8fe920a5b7246a0d9bedb9f0e1428472261697539e2005cdd9b391b6",
-    "fe-ui/src/node_manager/mod.rs": "d65bd1e4ae28cbc2fa7d7104acc28cb189d29a44edcec1b711d7b9a5d7244fc5",
+    "fe-ui/src/node_manager/mod.rs": "8696da2ca19076b5172b7ee8ec933b063d9a9dd894d053fb4a4dc0dccc5f6567",
     "fe-ui/src/node_manager/path_gimbal_drag.rs": "b84aa43661e966d8d9af1015624df400eb8b7ebcb41d38265940b04eed91b52c",
     "fe-ui/src/node_manager/path_handle_interaction.rs": "f23cfa21b25e5f86215b2c2d2ae1a9fc909908559eff9d5683c5ff4ac39e394b",
     "fe-ui/src/node_manager/path_point_interaction.rs": "2d3db44d1c98c432eac1db7be032fbe0abb24cacb3ddf924c2ee22926cc877e1",
@@ -77,14 +86,14 @@
     "fe-ui/src/node_manager/router.rs": "b773cfed32d8ec1d2744da9311400c5c556b29e045ceff8e085f8778d1e51a83",
     "fe-ui/src/node_manager/selection.rs": "55484a95d78b63b52b9723ee0dbeba0ad1a6cbb7345cc2e216cbab6c64aec3ba",
     "fe-ui/src/node_manager/shortcuts.rs": "f837f1b2069811adf68cc5f47053f8323fb27eb29a115bc22942dfba616153a2",
-    "fe-ui/src/node_manager/sidebar_sync.rs": "22cf5621ee7f4f981ccab1de8798fbd3785e7a1fa4ad988fb8d3ee9a1b4ade64",
-    "fe-ui/src/node_manager/stamp_selection.rs": "c38122b8a7d7053ecb31afde1f1e54089b585f62fb71dd30c8dfb991fb017ac5",
+    "fe-ui/src/node_manager/sidebar_sync.rs": "137dc7d786b6d8b6d99b56cc4b5fa214a688d0a13246d08f7770fea12431d8ae",
+    "fe-ui/src/node_manager/stamp_selection.rs": "8cba72e29488d0a2170c0ac3f869d25a471d7a0add6f2a4d2f4e1e658f9036d2",
     "fe-ui/src/node_manager/terrain_authoring.rs": "2d70e9cb982f880da6f2dbe5c1d98f96590a157ce51b19a0bea55e1dbca02d7a",
     "fe-ui/src/node_manager/transform_broadcast.rs": "9409e40ce906c3d9304962b6a9a37c24264d1cce6139f2f408b002878e469f32",
     "fe-ui/src/node_manager/transform_snap.rs": "6fdae16dcdf8b970a9efcf386d4296d5e5f5a50b8ad0b5933fee407120b8e28c",
-    "fe-ui/src/node_manager/viewport_pick.rs": "431835c080b63eb97217f661c5438721fcb70eb3ce8a22e305b3b000e98ce75d",
+    "fe-ui/src/node_manager/viewport_pick.rs": "0217952376858e6334bc83db4b798da1006cb7d9face6a50028dc9d08a2c856a",
     "fe-ui/src/notice.rs": "0bcaaec60eea6a69ffe7fe9821e684bbbdddb92812d78b9c767111b98638de54",
-    "fe-ui/src/object_data/history.rs": "b857c2f3eace1930c1368ea6750074977c0bfed73e651ef6f6b091b7150d1769",
+    "fe-ui/src/object_data/history.rs": "af5db37445cbbbbed1cc9a13b17277738c090fde2e539ebd650967ef44341c4b",
     "fe-ui/src/object_data/measurements.rs": "b0529eda9a9a78be1c42384da19d0fc536403c7f0a9500133a53e0542cbda114",
     "fe-ui/src/object_data/mod.rs": "0afdc39a85a8c1646a0aa2c2bd15503267b6914bf8e137839f8508b3691e0ec4",
     "fe-ui/src/object_data/schema.rs": "87ddf1025124aa15c7c034009b6e23979645099fe6143cfa9d662676278f1b6f",
@@ -95,27 +104,27 @@
     "fe-ui/src/panels/gpx_import_card.rs": "84a446a83e8deb097ac07b86ba44f5c2d31740e23e3aacb40dfc0db369e2a8bb",
     "fe-ui/src/panels/inspector.rs": "256972413d72dd32830ca3bf499e77a9898cf346cb619e0c8d752af5745f58a7",
     "fe-ui/src/panels/layer_manager_card.rs": "c9db50e981d0791f3ba306cc726960718448f6b6c61deda87591e726f07f31a6",
-    "fe-ui/src/panels/mod.rs": "e1a15053de5c875595a50b3171071a6f8dec26e94e22bdead38760fda2ed95e8",
+    "fe-ui/src/panels/mod.rs": "7ac7b7d18729fa86859a9fb3a694f0783af829be513eb1efaddbd170dd808a21",
     "fe-ui/src/panels/path_editor_card.rs": "d4f15f276b86e4fbd9dda003f146488e2629f626346c6988cdd9d0ad22e3416f",
-    "fe-ui/src/panels/portal_toolbar.rs": "e69ff939ad08883ec147650c9479d0cbd7859a1ad028d041a6672c016de19ab2",
+    "fe-ui/src/panels/portal_toolbar.rs": "21bab6219f73ef8091786a93273400cba47f06e58e538eb6a19411eb50ced90b",
     "fe-ui/src/panels/property_grid.rs": "764933f1e9d58b3c0f5e0392ec89ce90c96d04ce0c6c75ed64ce9ded344a6dc8",
     "fe-ui/src/panels/property_value.rs": "712e91b376c2c0419a902eb4a29e6b58aed40434ba10cde9ff57fe14243c3d69",
     "fe-ui/src/panels/proposal_report_panel.rs": "5d4c2b6de2d3e17795733176a8d2dd5add8df82ae05cf0f8394ca537d55e97a1",
     "fe-ui/src/panels/query_tab.rs": "6c7b3c03e6ed63ae85e1d219d0dc3f4f3283bcb83878a53a35839bcc196027c3",
-    "fe-ui/src/panels/sidebar.rs": "8f7da97979b1b61b1bc438fd2fb8c78206bcd6bc5d334ceb8b0417d9bce8ab74",
+    "fe-ui/src/panels/sidebar.rs": "967593494e4178773fbd2208fd81c85b3106148eba30a4984985a445ead51404",
     "fe-ui/src/panels/status_bar.rs": "3f28c9866ba50b3e435af6f5dd2a7b16398dbfbb723fe9abc44fa59843c96d57",
     "fe-ui/src/panels/terrain_tools_panel.rs": "2265ca89ae2b4e69bb0887d781761516436eb742368e36f0121e8a291c05bb0c",
     "fe-ui/src/panels/tool_inspector.rs": "2959958c1f0d7f2e5ef48f3f48877f622f98cbf3d55f9514d9b81690d797da28",
     "fe-ui/src/panels/tool_options.rs": "f6ef988a44c2ac995a63d26d185172502716b54a22f2e87def2f0043d6e63ca1",
-    "fe-ui/src/panels/tool_panel.rs": "210d0f6847d2d16b3ed6527dfe0cb2a6d212b074b8c6cab21090db69fc8abf26",
+    "fe-ui/src/panels/tool_panel.rs": "af8f49bde618a0d43fa5b4a52d8d0638c5558494478b5f85db606c0bb913cdaf",
     "fe-ui/src/panels/toolbar.rs": "071bc2ddd3d7731b7af40ab2720f59bdd64527d435dd4bfd3d7acc88531a7a6f",
     "fe-ui/src/panels/transform_options.rs": "3e3be5063e6e52578dce2167175fde99f9e6f93912b87fd74129c1a9d2bba209",
-    "fe-ui/src/panels/tree_appearance.rs": "697c912c9ecbcf1b47d8e593d78871db59f6d38c6e0617665765c53a11f517a7",
-    "fe-ui/src/panels/tree_entry.rs": "9a88001debed785ddfa5e009b1cba135774b9a92640ed8349e2b4382b03a948d",
+    "fe-ui/src/panels/tree_appearance.rs": "00942c5eaffccbba06a90e16eb925129d9f20237a7ee65b2fddbaf41d4623b6f",
+    "fe-ui/src/panels/tree_entry.rs": "63f5ce7db70b3a917f1f41d4869788515419ac2d32251b3c31157aaa7ea421ac",
     "fe-ui/src/panels/volume_report_panel.rs": "9fd7324b444eaae5c68fb0910ee16c7bb1d1d2194b0d5c1cd07f585afcafb6ea",
     "fe-ui/src/panels/widgets.rs": "fbd4082ae9922bb84c2ebbb03f9ff4053bd2ad3b5c3885c3c2b0bd37d534db5d",
     "fe-ui/src/path_ops.rs": "f8ae588b8fe1eacda1aef37852075355b6bb90a9631189f6456e5c244c755e46",
-    "fe-ui/src/plugin.rs": "06be3f91085d6613bc04c95e56f39845e3b791e724fa6bad571e007481241e6c",
+    "fe-ui/src/plugin.rs": "38e6e4abb23c44e827ed89ebb5262eaee31d782d3da4a53393594be5a7ee882b",
     "fe-ui/src/portal/mod.rs": "f98508047289fa6454428e464df71b4aaf5ca8937ddfc70a88aae85ef20d0a04",
     "fe-ui/src/role_chip.rs": "b269965e7008c1cda1cd7949deb0af08d8de6e67002d089d5a5b7990dbc50496",
     "fe-ui/src/scene_analysis.rs": "f14b63ed1c9ca5968802435192f2f8ec3d756431b3d8de7fa3ac3c12732755e8",
@@ -127,7 +136,7 @@
     "fe-ui/src/terrain_map/mod.rs": "a1a3933b5e9145490eaa009e909bc84e04c9c531da353e405c27707489851717",
     "fe-ui/src/terrain_preview.rs": "ffe411cc17f496237bdcdf927561a32c953b59ca186ee08150ced165b2e9b272",
     "fe-ui/src/terrain_proposal_state.rs": "6da00f3b3fc8f39400693706a62933b1891d206b020af7b6d6279ee60577ecc8",
-    "fe-ui/src/theme.rs": "dff3ef6add9947edea210c4a02daee8dbfc58861860f02421fd6f747419a36dd",
+    "fe-ui/src/theme.rs": "d5d0f4743f5b5b4a74fab1c004bd4d73811148812a769834ce8b1e94987febb8",
     "fe-ui/src/timeseries_settings.rs": "e45e63d891244ceb8dbd9f3fedde4d7bcbe8d95a5a9a1d3055bc215ff39e3a1f",
     "fe-ui/src/ui_shell/layout_policy.rs": "c631f9cb0bf91b096795abb808b03801f8ca5cb653881fa70788b10f208ed37a",
     "fe-ui/src/ui_shell/left_sidebar.rs": "8b5f1455c6d1e032562ca93a4b292800b32d0756aba6e735f0a37a15dbc5ec15",
@@ -140,23 +149,24 @@
     "fe-ui/src/undo.rs": "a8e6716d67c2ea2f97e21904f966b7c758f010db81c75159f9b57b62f98a5179",
     "fe-ui/src/verse_manager/db_results/committed.rs": "6170be99fc2697afa4e824a571b23766f71ab8e84e0ce6ca05a7bc4b448ef571",
     "fe-ui/src/verse_manager/db_results/fields.rs": "0552638eaa43e1f06b35abbeb94568bec907bfa58d41acdaa78f9b53591a7fe0",
-    "fe-ui/src/verse_manager/db_results/hierarchy.rs": "d49a90a0f3332919d0ad0fe0bb8dba5a973add384c24f7902b417b3fdeba5daf",
-    "fe-ui/src/verse_manager/db_results/mod.rs": "fa50a167b0ae61d75c5e16a3be0e158fd7fb2e22bfb27b2f10ccfa1693ac1c0c",
+    "fe-ui/src/verse_manager/db_results/hierarchy.rs": "c768f79aa3378633491a296dd09e94a3e024bb54ef4c4cdc9044a2bcabfe2ef8",
+    "fe-ui/src/verse_manager/db_results/mod.rs": "1b31586bd2935ebf1e2e81ba45a4894ee5cbf8e8f42e9cef666122a3bd380d9a",
     "fe-ui/src/verse_manager/db_results/nodes.rs": "e8b13f3a27e7ad551806803e1e7832be1bde3a2d50a9c7ca3edefd1cb8e46d71",
-    "fe-ui/src/verse_manager/db_results/properties.rs": "acefa34abdec576378ceb8ebb95a9897379a55e4d787a7708b634733f3886267",
+    "fe-ui/src/verse_manager/db_results/properties.rs": "3024871668390a3b71189f172c5e8128efa23109cb3811d398fa71b7909e2350",
     "fe-ui/src/verse_manager/db_results/query.rs": "c1e59b06b4c891dceebb346cd142f47f63a66b02fd6826b39d600614b6158e07",
     "fe-ui/src/verse_manager/db_results/roles.rs": "023498d128c31f9edb7ac4361fa4030d8a0940422618ec6dc42451779242aa63",
     "fe-ui/src/verse_manager/db_results/terrain.rs": "ded3a8b374b9e25743be42ea2694bc23987beb6191ca20fa3c06d2544c2620ef",
     "fe-ui/src/verse_manager/db_results/tokens.rs": "291045223614fe71510cc471f0239ac01f03bfeb7b220131ffc9a7e7ef5eeb13",
     "fe-ui/src/verse_manager/lifecycle_events.rs": "c8ecbcd255a99a28f39982266d6549d49ea324dd3c20bfebf4bed7a505791058",
-    "fe-ui/src/verse_manager/mod.rs": "237ed58122aca479b290d154daa6c4ec86c426226ff65acb0be96d2a277758de",
+    "fe-ui/src/verse_manager/mod.rs": "091ed3b14cb2d3d5069bbf4811e98d0817a1251df87fd3b6c560f4bc34aaa541",
     "fe-ui/src/verse_manager/node_index.rs": "3a74fce4fd049288bb0f0a3453f71d4062658e0fbdea7a5432dda6254fe1e978",
-    "fe-ui/src/verse_manager/path_asset_materialize.rs": "35f6e7b1ecf8de8f50dc22e0a346979b9caf5e30689db06ab4ec83c9c4896300",
-    "fe-ui/src/verse_manager/path_asset_reconcile.rs": "de5be4bf12b53f5b0b19cf08d226c8b7116d45064184989fe7df4ee841395f8a",
-    "fe-ui/src/verse_manager/petal_respawn.rs": "e43612fc3b0bc6af6a794773e74fd8d59ef08888570b5499214027f245503dad",
-    "fe-ui/src/verse_manager/primitive_materialize.rs": "99935f4272abc987c529c54c331ac8c19391cd8425090487cdafd19261d3c911",
+    "fe-ui/src/verse_manager/path_asset_materialize.rs": "c05f6054171797972a7d92f18cd207ca2702c65dedcc3915f722ec6dafb61e84",
+    "fe-ui/src/verse_manager/path_asset_reconcile.rs": "2f512e5b2fabc93bb028965dfdc1ba08bd77f5e766c625a580e2007a68d381da",
+    "fe-ui/src/verse_manager/petal_respawn.rs": "5013a03dcd91e61c6cf54ad75dd3d521a57edfaf6302d5c548d28aa806f34a48",
+    "fe-ui/src/verse_manager/primitive_materialize.rs": "3b7fab8598b4ba7e918222f7e461e9cf1d722915393cb3e322faf57d308b10a5",
     "fe-ui/src/verse_manager/primitive_reconcile.rs": "01f75458ddac13d864075b94187c551a426d2ae8fd96432e11086ae9fe30432c",
-    "fe-ui/src/verse_manager/residency_ledger.rs": "4c26486acc753168c1856991405b3ccb09a187f2d6c2017b05e0c96acc66f606",
+    "fe-ui/src/verse_manager/residency_ledger.rs": "8d20be9d5549dc64d68ccfd5f40d403eed76495b4e3c8cb666c2fced51709126",
+    "fe-ui/src/verse_manager/scene_property_reads.rs": "26e9efbac71fce0d33a4e43858f81305d7303bc70c959675648c0df3f2a6fdf1",
     "fe-ui/src/verse_manager/spawn.rs": "3514d1036c53745e557d4705b62a7409e10a992ecc9e3ed83f03af184e0ac6cf",
     "fe-ui/src/viewport.rs": "63a84daaf595dcc4045a2e30873f6a716cfa6865a6347cff81f1eb57e199c355",
     "fe-ui/src/viewport_labels.rs": "c16f540e08fe6d20d95055a1bb09f5136bcb6054230636a225d2b09edc5db4b1",
@@ -182,22 +192,23 @@
     "fe-api/src/gis.rs": "ea69d1a418ca149bed0d2b1371aeece11149749b7f5bb28c7200b26e63d3e1d9",
     "fe-api/src/gpx.rs": "e0c40bc4be0a1052dabe74e8a4c733b7f6b84c49652fa0e90abc4b17f483178b",
     "fe-api/src/hexon.rs": "8838a955192fae2f20c8182cdbcc452737f91de06729b9ffb6de6c5185187615",
-    "fe-api/src/input.rs": "152cd02397b49cd5685c3231f4f1774d12592880ebc934643e57b25997c15055",
+    "fe-api/src/input.rs": "fead0b9c78941a50bdfb7942d554c330619e958c1353f8fac758905ffa283566",
     "fe-api/src/iot.rs": "80022ac7a92fd404e1177972b9a92f5a2077f3500761d6e65366b2e02b6ec35d",
-    "fe-api/src/lib.rs": "cd54f5e3f7692cd8b47bf261928f7d45bac007f145dd82d20eeafad086e0d165",
+    "fe-api/src/lib.rs": "6fe422b2198b178cd1bce9985eaffad2ebcf43d141d08915508d943259759fc8",
     "fe-api/src/limits.rs": "6dc5174fce15f7ec89ac7b04597c158cc092a48fbd0f479a8fe7b3ae080f761f",
     "fe-api/src/mcp/mod.rs": "9603afe210cfa71a334ac0c1f0e5622aaa3a924f7a0f7dad9e7a3748811c24f3",
-    "fe-api/src/mcp/tools.rs": "09081cb0622342787b73807205c209cc3f8f51f6b5ce3a4ed32e5581c3939ffb",
+    "fe-api/src/mcp/tools.rs": "82d9cc22ead8e0dc42bec3c421af261b15862c6459e8c1f9a5cd3250ac21597f",
     "fe-api/src/node_history.rs": "3d85e7ba65f2d49e6722f89a2a80263abe18a136202df0ee2722dbe7f7d75cbc",
     "fe-api/src/operator_gate.rs": "6b880c02e68bd6a5b733ceccb4ffaf8dd6721352d57fa45819d75e30c2972eec",
     "fe-api/src/property_schema.rs": "cf794f4a58781a5fafdba22d125226105bd67a37a2af21023aa4077d8059d65c",
     "fe-api/src/qa_debug.rs": "770bebf6b4af95d5e739fab3793db2db0493a1ee04968c58b9b7991a140e5c6d",
+    "fe-api/src/qa_invitation.rs": "aa0e68708cc0acc8c39c9078506e848cf5ebf62acf7fd6e700c80724dce7acb5",
     "fe-api/src/qa_portal.rs": "185972d6c97a1d58cd6cd80e5f86696b6779adee6b277b1e6860d947ff923fdd",
     "fe-api/src/query_guard.rs": "3688b1f6da09c046e7f187b3c8a813daa58f140226d8bec6ba52820de73a8bdc",
     "fe-api/src/render_distance.rs": "bf9760d3e57b696489c729030fae2c03af354171552132523738a15867865648",
-    "fe-api/src/rest.rs": "e8ac404dad88c9829dbb84185597f54d1a162523077dd8f2ff06493e56b2a3e8",
+    "fe-api/src/rest.rs": "09a3089745ab1deac896232e18e3880a58e249af20beab4b1f2eb171e92c53b4",
     "fe-api/src/screenshot.rs": "6d9a9d8fdd87fa034a9f86e171aa74e2b9dd03a1e0233b17b22c2f08d010c8fb",
-    "fe-api/src/server.rs": "c22bb20d43852b1d3afa84aae8ee7cea805b8f0d71909ec17fe019f1bc813cdd",
+    "fe-api/src/server.rs": "421e8bc6e025656aa856d130e115a9d7f1c1c2137ab93d99d21ce458c4144512",
     "fe-api/src/share.rs": "eef5a7c622fb64bbbbbf8b9a796eb187aa1c8a0a14397cdc3639777071768a96",
     "fe-api/src/sim.rs": "035f9c155c208ec124ffe30f3f711246638a14e573be10d4ed4cad1fda07b6fc",
     "fe-api/src/terrain.rs": "9c066b47a0f8096021fa95d0a4c42c30657859d5d543aea175a1ea46a4d9f1a7",
@@ -207,28 +218,30 @@
     "fe-api/src/visibility.rs": "d2eef41008ea91aec7948011556d2441e49c3a0290c96d07e0ccfb190d7919a3",
     "fe-api/src/vision.rs": "c14ffc19defac5f81f68d8f4a8e963ab26477b4eeac0c345e3a81514674bb549",
     "fe-api/src/ws.rs": "190386396154a7dd6057c3fa30296a6a8a1fb1e0ad84016795cec61554934e70",
-    "fe-runtime/src/app.rs": "3b344a732bb327cfbbbda231d8d7925af349e084328496f498ab4f085cf5c987",
+    "fe-runtime/src/app.rs": "2d8ec1c72cb979496b310ebb281752d6f003796902872ebcfcbafd2b86da61da",
     "fe-runtime/src/asset_gc.rs": "2f7175843e1c8bdbe96862f92831ed77741274cf58ed77c89eb85a174a38cb84",
     "fe-runtime/src/bevy_blob_reader.rs": "3a623ea9a314c69acc99c0a3dbd066abc6fe43eb6d2bc5eb971ddb6fab367e04",
     "fe-runtime/src/blob_store.rs": "05875aae7d10d25807e33f8062b83a75fa1c9554370aaad93ac725f20accb608",
     "fe-runtime/src/blob_transport.rs": "106f85d3f3c168544b9bffda1d7afc9d5e34ee6259c0ece6439a08ff73955533",
-    "fe-runtime/src/bridge.rs": "5a3e853b8e3303da1cdc36f23e9b47c6bb8978261e505ead655bfde7d816f4b9",
+    "fe-runtime/src/bridge.rs": "61d707318bcdecb286242d05d8a9b3bc7b438f153ec43dfa6bccd0e2b6fc2e81",
     "fe-runtime/src/channels.rs": "12f119e337222729c615f2896e8a89a57590ed984f547689658a2d79aa9701bc",
     "fe-runtime/src/diag15m.rs": "4a6093cf70e8c8e03d7ff7852bce838ca5f9fcb790d392e1a6dd2e941bd14bc8",
     "fe-runtime/src/distributed_query.rs": "a3b1c62a77a5c41c7987af5d5806cef7b546b82df8b65b017f5d042b3fb5e4b8",
     "fe-runtime/src/entity_access.rs": "5038b4acda40fb0cb4dbd3bf5e0fbab018de71ba19cbe8206fdf196ba40a6df6",
-    "fe-runtime/src/input.rs": "73c0d27b4e6bfd6222746e3aae628132259fa60730bb10a5aec2ab6df525f271",
+    "fe-runtime/src/input.rs": "20e942e51267c0f6f1573653f87e297b6442915262a21e5313f00f00421e5cdf",
+    "fe-runtime/src/join_invite.rs": "344a5b3efae378d199109519244ca6b86283f7e6ccddc3462b70636a2d909ce3",
     "fe-runtime/src/ktx2_guard.rs": "aaa743d38617dca706b078fbe471c3f99a99851dce6d369f08154b461095d67f",
-    "fe-runtime/src/lib.rs": "ac74d9d8a9ca7afbe5e6810f69b933775a7b33649a06947bc487fab0bc5d6d1e",
+    "fe-runtime/src/lib.rs": "f75f77051b249732f20ccd1431bc581e0f3a383181cc443d53bddd750f390260",
     "fe-runtime/src/maintenance.rs": "73b365367e60ff7aedbd3c8efd59c4baedf0801495b5b6ee5b686a885db4c195",
-    "fe-runtime/src/messages.rs": "15b6c12f85ffb5df918b82bc0b599a144f0a6eead5efdf623f0d5680a96645f2",
-    "fe-runtime/src/node_history.rs": "d0396dde8f39e6258093d242071efe6632ea9952fd2c612e07a58b9cc9b71b87",
+    "fe-runtime/src/messages.rs": "e317118f543d0f6f61f91d00d970034eb140083d486e18d0b6e47def81042f15",
+    "fe-runtime/src/node_history.rs": "2786fbf1ffe65c67b66a92b3f7e9dd440f3fe478d72a0ddf20479ef0ad61b78a",
     "fe-runtime/src/node_measurements.rs": "038e2297852bf2c3e293bc05c406f56c8d0971d47d160966aabcb6671eafa759",
     "fe-runtime/src/peer_registry.rs": "a214957f46e98d80478ac61f9b53de32459abf0d99b56f3a677ac0ccef1e3049",
     "fe-runtime/src/petal_requirements.rs": "fb2156399b20987b544bb59f0afdd3ecbb9c6115c4c46a1d802e9161f39018b1",
     "fe-runtime/src/plugin_host.rs": "22e351ea4ef8d19bbec64d14ce71b731af3671316178b46091456e66173545f6",
     "fe-runtime/src/portal_url.rs": "980a120d0e3d6faa76e27a7e06f52226c2f88d0866b1cfbdd6a37c4d62d1afd6",
-    "fe-runtime/src/qa_debug.rs": "69a155821b4448389ce23b8abb0a39487e191bf6cac229669435dfae80269ec5",
+    "fe-runtime/src/qa_debug.rs": "7e5d5b643f5faabfe7c43898c57674b07725fbc9b353e0a7d0934b9a198c7a91",
+    "fe-runtime/src/qa_invitation.rs": "1455f514c87180135fd7302b9e15f36764a24010090ecb260a5e268a63642354",
     "fe-runtime/src/qa_portal.rs": "1ae81dca8dfd6686eac7b528149eb1e81e1975074bf4737044920559b5fd2157",
     "fe-runtime/src/qa_web/unsupported.rs": "723a29dffd30348ba79a46f9d1309a3e78ef9c7ecd84076ea0fc9dd859d1a3fb",
     "fe-runtime/src/qa_web/windows.rs": "9fd1d3344fa88691c57b9f7eae9a4ba6c306d4c013e73d466741ea68dba8510e",
@@ -277,13 +290,14 @@
     "fractalengine/src/api_endpoint.rs": "0bf67c03bb07f60070bbfc007a3c88f8f8245fbaf6bd86057f383993aa1985a3",
     "fractalengine/src/asset_bridge.rs": "454842b3a61b30dbdb1d3e1660a34f5bbedd23cfb8c981b58fb8417a93860d51",
     "fractalengine/src/gpx_bridge.rs": "dede32cca72430fd8da141cc89b906b10fb8073d075b56bb6d073befc436e3ae",
-    "fractalengine/src/input_bridge.rs": "07c6b70cfc510d7bf6e6152b1432c458d2e148dca4b60fa4b6f27c6e772da866",
-    "fractalengine/src/main.rs": "9d2d476cc1230865ba7297190c5f9bbbb86f9a43e8fc249b8cc065264ad5de4e",
+    "fractalengine/src/input_bridge.rs": "4728de2b100e8d32c971f8536fdddc777daee7d11f37bf5857cdc720ecf1313e",
+    "fractalengine/src/main.rs": "3e66ddaeb9b36404db593e9d1ec5a6b3d0543c435201898799ba51266a912bca",
     "fractalengine/src/panic_log.rs": "f039a9398f86d2ee2a4526410b16deb7f521b5a80aa3afc80f168ad3db05d090",
     "fractalengine/src/plugin_bridge.rs": "2a698e5fdad8f47b3b9406e42f453e6ab636be0f097150ae4e9e3a6ebaa55109",
     "fractalengine/src/qa_a11y_timing.rs": "844bd60110a989b933f27f5a06d90e6a0cf56b012f316caae909f59c4100b6bd",
-    "fractalengine/src/qa_debug_bridge.rs": "086d82f8c84f3919fd427f3ce6addc2cabac4daca7c10403a11b7617c592e5f3",
+    "fractalengine/src/qa_debug_bridge.rs": "06082363b9137b2671892a3c8e7a6369d9f05cd25235653a584bff81a0236a15",
     "fractalengine/src/qa_dev_token.rs": "61e258fcd6eb53ce9844d5b0079f574f591c191e796e19ec1f5b155b02cd0837",
+    "fractalengine/src/qa_invitation_bridge.rs": "e90b5dfcbe36db7b808477c684a14e13545d97ccc8dd08e6c42b483efd08e163",
     "fractalengine/src/qa_log.rs": "e82351664198efd5be7dd0fb753e9eee20a278b8ffb6c8d31930210396615fcc",
     "fractalengine/src/qa_portal_bridge.rs": "67cbeb36c4a034640d8737098c618b23bebd7a9639a3a7c7ebe366c727ea28c0",
     "fractalengine/src/screenshot_bridge.rs": "38180dda2d0b539f52a02e0a9fc4608ada47ddb06d2612c293656e5988543e30",
@@ -330,7 +344,7 @@
       "render_or_gesture_references": [
         {
           "source": "fe-ui/src/panels/portal_toolbar.rs",
-          "line": 59,
+          "line": 95,
           "families": [
             "F025"
           ]
@@ -346,7 +360,7 @@
       "render_or_gesture_references": [
         {
           "source": "fe-ui/src/panels/portal_toolbar.rs",
-          "line": 27,
+          "line": 63,
           "families": [
             "F025"
           ]
@@ -362,7 +376,7 @@
       "render_or_gesture_references": [
         {
           "source": "fe-ui/src/panels/portal_toolbar.rs",
-          "line": 28,
+          "line": 64,
           "families": [
             "F025"
           ]
@@ -378,7 +392,7 @@
       "render_or_gesture_references": [
         {
           "source": "fe-ui/src/panels/portal_toolbar.rs",
-          "line": 29,
+          "line": 65,
           "families": [
             "F025"
           ]
@@ -394,7 +408,7 @@
       "render_or_gesture_references": [
         {
           "source": "fe-ui/src/panels/portal_toolbar.rs",
-          "line": 52,
+          "line": 88,
           "families": [
             "F025"
           ]
@@ -938,7 +952,7 @@
       "render_or_gesture_references": [
         {
           "source": "fe-ui/src/panels/sidebar.rs",
-          "line": 532,
+          "line": 536,
           "families": [
             "F001",
             "F002",
@@ -1625,7 +1639,7 @@
       "render_or_gesture_references": [
         {
           "source": "fe-ui/src/panels/tool_panel.rs",
-          "line": 1005,
+          "line": 1003,
           "families": [
             "F066",
             "F067",
@@ -1647,7 +1661,7 @@
       "render_or_gesture_references": [
         {
           "source": "fe-ui/src/panels/tool_panel.rs",
-          "line": 1066,
+          "line": 1064,
           "families": [
             "F066",
             "F067",
@@ -1660,7 +1674,7 @@
         },
         {
           "source": "fe-ui/src/panels/tool_panel.rs",
-          "line": 1079,
+          "line": 1077,
           "families": [
             "F066",
             "F067",
@@ -1673,7 +1687,7 @@
         },
         {
           "source": "fe-ui/src/panels/tool_panel.rs",
-          "line": 1092,
+          "line": 1090,
           "families": [
             "F066",
             "F067",
@@ -1835,7 +1849,7 @@
       "render_or_gesture_references": [
         {
           "source": "fe-ui/src/panels/tool_panel.rs",
-          "line": 629,
+          "line": 627,
           "families": [
             "F066",
             "F067",
@@ -1858,7 +1872,7 @@
       "render_or_gesture_references": [
         {
           "source": "fe-ui/src/panels/tool_panel.rs",
-          "line": 698,
+          "line": 696,
           "families": [
             "F066",
             "F067",
@@ -1908,7 +1922,7 @@
       "render_or_gesture_references": [
         {
           "source": "fe-ui/src/panels/tool_panel.rs",
-          "line": 692,
+          "line": 690,
           "families": [
             "F066",
             "F067",
@@ -1930,7 +1944,7 @@
       "render_or_gesture_references": [
         {
           "source": "fe-ui/src/panels/tool_panel.rs",
-          "line": 688,
+          "line": 686,
           "families": [
             "F066",
             "F067",
@@ -2259,7 +2273,7 @@
         },
         {
           "source": "fe-ui/src/panels/sidebar.rs",
-          "line": 621,
+          "line": 625,
           "families": [
             "F001",
             "F002",
@@ -2274,7 +2288,7 @@
         },
         {
           "source": "fe-ui/src/panels/sidebar.rs",
-          "line": 886,
+          "line": 890,
           "families": [
             "F001",
             "F002",
@@ -2324,7 +2338,7 @@
         },
         {
           "source": "fe-ui/src/panels/sidebar.rs",
-          "line": 767,
+          "line": 771,
           "families": [
             "F001",
             "F002",
@@ -2365,7 +2379,7 @@
         },
         {
           "source": "fe-ui/src/panels/sidebar.rs",
-          "line": 869,
+          "line": 873,
           "families": [
             "F001",
             "F002",
@@ -2404,7 +2418,7 @@
       "render_or_gesture_references": [
         {
           "source": "fe-ui/src/panels/sidebar.rs",
-          "line": 578,
+          "line": 582,
           "families": [
             "F001",
             "F002",
@@ -2641,7 +2655,7 @@
     },
     {
       "source": "fe-ui/src/dialogs/entity_access.rs",
-      "line": 282,
+      "line": 286,
       "families": [
         "F096",
         "F097",
@@ -2653,7 +2667,7 @@
     },
     {
       "source": "fe-ui/src/dialogs/entity_access.rs",
-      "line": 283,
+      "line": 287,
       "families": [
         "F096",
         "F097",
@@ -2665,7 +2679,7 @@
     },
     {
       "source": "fe-ui/src/dialogs/entity_access.rs",
-      "line": 316,
+      "line": 320,
       "families": [
         "F096",
         "F097",
@@ -2677,7 +2691,7 @@
     },
     {
       "source": "fe-ui/src/dialogs/entity_access.rs",
-      "line": 317,
+      "line": 321,
       "families": [
         "F096",
         "F097",
@@ -2689,7 +2703,7 @@
     },
     {
       "source": "fe-ui/src/dialogs/entity_access.rs",
-      "line": 318,
+      "line": 322,
       "families": [
         "F096",
         "F097",
@@ -2701,7 +2715,7 @@
     },
     {
       "source": "fe-ui/src/dialogs/entity_access.rs",
-      "line": 319,
+      "line": 323,
       "families": [
         "F096",
         "F097",
@@ -2713,7 +2727,7 @@
     },
     {
       "source": "fe-ui/src/dialogs/entity_access.rs",
-      "line": 322,
+      "line": 326,
       "families": [
         "F096",
         "F097",
@@ -2725,7 +2739,7 @@
     },
     {
       "source": "fe-ui/src/dialogs/entity_access.rs",
-      "line": 328,
+      "line": 332,
       "families": [
         "F096",
         "F097",
@@ -2737,7 +2751,7 @@
     },
     {
       "source": "fe-ui/src/dialogs/entity_access.rs",
-      "line": 343,
+      "line": 347,
       "families": [
         "F096",
         "F097",
@@ -2749,7 +2763,7 @@
     },
     {
       "source": "fe-ui/src/dialogs/entity_access.rs",
-      "line": 344,
+      "line": 348,
       "families": [
         "F096",
         "F097",
@@ -2761,7 +2775,7 @@
     },
     {
       "source": "fe-ui/src/dialogs/entity_access.rs",
-      "line": 381,
+      "line": 385,
       "families": [
         "F096",
         "F097",
@@ -2773,7 +2787,31 @@
     },
     {
       "source": "fe-ui/src/dialogs/entity_access.rs",
-      "line": 427,
+      "line": 464,
+      "families": [
+        "F096",
+        "F097",
+        "F098",
+        "F102",
+        "F103"
+      ],
+      "candidate": "egui::TextEdit::singleline(&mut state.invitation.recipient)"
+    },
+    {
+      "source": "fe-ui/src/dialogs/entity_access.rs",
+      "line": 468,
+      "families": [
+        "F096",
+        "F097",
+        "F098",
+        "F102",
+        "F103"
+      ],
+      "candidate": ".named(ui, \"Invitation recipient DID\");"
+    },
+    {
+      "source": "fe-ui/src/dialogs/entity_access.rs",
+      "line": 469,
       "families": [
         "F096",
         "F097",
@@ -2785,7 +2823,7 @@
     },
     {
       "source": "fe-ui/src/dialogs/entity_access.rs",
-      "line": 431,
+      "line": 473,
       "families": [
         "F096",
         "F097",
@@ -2797,7 +2835,7 @@
     },
     {
       "source": "fe-ui/src/dialogs/entity_access.rs",
-      "line": 435,
+      "line": 477,
       "families": [
         "F096",
         "F097",
@@ -2809,7 +2847,7 @@
     },
     {
       "source": "fe-ui/src/dialogs/entity_access.rs",
-      "line": 436,
+      "line": 478,
       "families": [
         "F096",
         "F097",
@@ -2821,7 +2859,7 @@
     },
     {
       "source": "fe-ui/src/dialogs/entity_access.rs",
-      "line": 437,
+      "line": 479,
       "families": [
         "F096",
         "F097",
@@ -2833,7 +2871,7 @@
     },
     {
       "source": "fe-ui/src/dialogs/entity_access.rs",
-      "line": 439,
+      "line": 483,
       "families": [
         "F096",
         "F097",
@@ -2841,11 +2879,23 @@
         "F102",
         "F103"
       ],
-      "candidate": ".button(\"Generate invite\")"
+      "candidate": ".add_enabled("
     },
     {
       "source": "fe-ui/src/dialogs/entity_access.rs",
-      "line": 440,
+      "line": 485,
+      "families": [
+        "F096",
+        "F097",
+        "F098",
+        "F102",
+        "F103"
+      ],
+      "candidate": "egui::Button::new(\"Generate invite\"),"
+    },
+    {
+      "source": "fe-ui/src/dialogs/entity_access.rs",
+      "line": 487,
       "families": [
         "F096",
         "F097",
@@ -2857,7 +2907,7 @@
     },
     {
       "source": "fe-ui/src/dialogs/entity_access.rs",
-      "line": 456,
+      "line": 504,
       "families": [
         "F096",
         "F097",
@@ -2869,7 +2919,7 @@
     },
     {
       "source": "fe-ui/src/dialogs/entity_access.rs",
-      "line": 457,
+      "line": 505,
       "families": [
         "F096",
         "F097",
@@ -2881,7 +2931,7 @@
     },
     {
       "source": "fe-ui/src/dialogs/entity_access.rs",
-      "line": 514,
+      "line": 596,
       "families": [
         "F096",
         "F097",
@@ -2893,7 +2943,7 @@
     },
     {
       "source": "fe-ui/src/dialogs/entity_access.rs",
-      "line": 518,
+      "line": 600,
       "families": [
         "F096",
         "F097",
@@ -2905,7 +2955,7 @@
     },
     {
       "source": "fe-ui/src/dialogs/entity_access.rs",
-      "line": 522,
+      "line": 604,
       "families": [
         "F096",
         "F097",
@@ -2917,7 +2967,7 @@
     },
     {
       "source": "fe-ui/src/dialogs/entity_access.rs",
-      "line": 523,
+      "line": 605,
       "families": [
         "F096",
         "F097",
@@ -2929,7 +2979,7 @@
     },
     {
       "source": "fe-ui/src/dialogs/entity_access.rs",
-      "line": 524,
+      "line": 606,
       "families": [
         "F096",
         "F097",
@@ -2941,7 +2991,7 @@
     },
     {
       "source": "fe-ui/src/dialogs/entity_access.rs",
-      "line": 526,
+      "line": 608,
       "families": [
         "F096",
         "F097",
@@ -2953,7 +3003,7 @@
     },
     {
       "source": "fe-ui/src/dialogs/entity_access.rs",
-      "line": 529,
+      "line": 611,
       "families": [
         "F096",
         "F097",
@@ -2965,7 +3015,7 @@
     },
     {
       "source": "fe-ui/src/dialogs/entity_access.rs",
-      "line": 539,
+      "line": 621,
       "families": [
         "F096",
         "F097",
@@ -2977,7 +3027,7 @@
     },
     {
       "source": "fe-ui/src/dialogs/entity_access.rs",
-      "line": 540,
+      "line": 622,
       "families": [
         "F096",
         "F097",
@@ -2989,7 +3039,7 @@
     },
     {
       "source": "fe-ui/src/dialogs/entity_access.rs",
-      "line": 557,
+      "line": 639,
       "families": [
         "F096",
         "F097",
@@ -3001,7 +3051,7 @@
     },
     {
       "source": "fe-ui/src/dialogs/entity_access.rs",
-      "line": 558,
+      "line": 640,
       "families": [
         "F096",
         "F097",
@@ -3013,7 +3063,7 @@
     },
     {
       "source": "fe-ui/src/dialogs/entity_access.rs",
-      "line": 561,
+      "line": 643,
       "families": [
         "F096",
         "F097",
@@ -3025,7 +3075,7 @@
     },
     {
       "source": "fe-ui/src/dialogs/entity_access.rs",
-      "line": 565,
+      "line": 647,
       "families": [
         "F096",
         "F097",
@@ -3037,7 +3087,7 @@
     },
     {
       "source": "fe-ui/src/dialogs/entity_access.rs",
-      "line": 568,
+      "line": 650,
       "families": [
         "F096",
         "F097",
@@ -3049,7 +3099,7 @@
     },
     {
       "source": "fe-ui/src/dialogs/entity_access.rs",
-      "line": 569,
+      "line": 651,
       "families": [
         "F096",
         "F097",
@@ -3061,7 +3111,7 @@
     },
     {
       "source": "fe-ui/src/dialogs/entity_access.rs",
-      "line": 585,
+      "line": 667,
       "families": [
         "F096",
         "F097",
@@ -3073,7 +3123,7 @@
     },
     {
       "source": "fe-ui/src/dialogs/entity_access.rs",
-      "line": 589,
+      "line": 671,
       "families": [
         "F096",
         "F097",
@@ -3085,7 +3135,7 @@
     },
     {
       "source": "fe-ui/src/dialogs/entity_access.rs",
-      "line": 591,
+      "line": 673,
       "families": [
         "F096",
         "F097",
@@ -3097,7 +3147,7 @@
     },
     {
       "source": "fe-ui/src/dialogs/entity_access.rs",
-      "line": 592,
+      "line": 674,
       "families": [
         "F096",
         "F097",
@@ -3879,23 +3929,23 @@
     },
     {
       "source": "fe-ui/src/dialogs/join.rs",
-      "line": 70,
+      "line": 118,
       "families": [
         "F099"
       ],
-      "candidate": "ui.add_enabled("
+      "candidate": "let response = ui.add_enabled("
     },
     {
       "source": "fe-ui/src/dialogs/join.rs",
-      "line": 72,
+      "line": 120,
       "families": [
         "F099"
       ],
-      "candidate": "egui::TextEdit::multiline(invite_buf)"
+      "candidate": "egui::TextEdit::singleline(&mut buffer)"
     },
     {
       "source": "fe-ui/src/dialogs/join.rs",
-      "line": 78,
+      "line": 129,
       "families": [
         "F099"
       ],
@@ -3903,19 +3953,19 @@
     },
     {
       "source": "fe-ui/src/dialogs/join.rs",
-      "line": 89,
+      "line": 149,
       "families": [
         "F099"
       ],
-      "candidate": ".add_enabled(can_join, egui::Button::new(\"Join\")).observed(ui)"
+      "candidate": "ui.add_enabled(can_join, egui::Button::new(\"Join\"))"
     },
     {
       "source": "fe-ui/src/dialogs/join.rs",
-      "line": 99,
+      "line": 163,
       "families": [
         "F099"
       ],
-      "candidate": ".add_enabled(!pending, egui::Button::new(\"Cancel\")).observed(ui)"
+      "candidate": ".add(egui::Button::new(\"Cancel\"))"
     },
     {
       "source": "fe-ui/src/dialogs/node_options.rs",
@@ -4297,7 +4347,7 @@
     },
     {
       "source": "fe-ui/src/object_data/history.rs",
-      "line": 205,
+      "line": 225,
       "families": [
         "F134"
       ],
@@ -4305,7 +4355,15 @@
     },
     {
       "source": "fe-ui/src/object_data/history.rs",
-      "line": 255,
+      "line": 284,
+      "families": [
+        "F134"
+      ],
+      "candidate": ".add_enabled("
+    },
+    {
+      "source": "fe-ui/src/object_data/history.rs",
+      "line": 289,
       "families": [
         "F134"
       ],
@@ -4313,7 +4371,7 @@
     },
     {
       "source": "fe-ui/src/object_data/history.rs",
-      "line": 258,
+      "line": 292,
       "families": [
         "F134"
       ],
@@ -4321,7 +4379,7 @@
     },
     {
       "source": "fe-ui/src/object_data/history.rs",
-      "line": 274,
+      "line": 320,
       "families": [
         "F134"
       ],
@@ -4329,7 +4387,7 @@
     },
     {
       "source": "fe-ui/src/object_data/history.rs",
-      "line": 282,
+      "line": 328,
       "families": [
         "F134"
       ],
@@ -4337,7 +4395,7 @@
     },
     {
       "source": "fe-ui/src/object_data/history.rs",
-      "line": 308,
+      "line": 355,
       "families": [
         "F134"
       ],
@@ -4345,7 +4403,7 @@
     },
     {
       "source": "fe-ui/src/object_data/history.rs",
-      "line": 312,
+      "line": 359,
       "families": [
         "F134"
       ],
@@ -4353,7 +4411,7 @@
     },
     {
       "source": "fe-ui/src/object_data/history.rs",
-      "line": 314,
+      "line": 361,
       "families": [
         "F134"
       ],
@@ -4361,7 +4419,7 @@
     },
     {
       "source": "fe-ui/src/object_data/history.rs",
-      "line": 331,
+      "line": 382,
       "families": [
         "F134"
       ],
@@ -4369,7 +4427,7 @@
     },
     {
       "source": "fe-ui/src/object_data/history.rs",
-      "line": 342,
+      "line": 399,
       "families": [
         "F134"
       ],
@@ -4377,7 +4435,7 @@
     },
     {
       "source": "fe-ui/src/object_data/history.rs",
-      "line": 351,
+      "line": 417,
       "families": [
         "F134"
       ],
@@ -4385,7 +4443,15 @@
     },
     {
       "source": "fe-ui/src/object_data/history.rs",
-      "line": 402,
+      "line": 479,
+      "families": [
+        "F134"
+      ],
+      "candidate": "if button("
+    },
+    {
+      "source": "fe-ui/src/object_data/history.rs",
+      "line": 497,
       "families": [
         "F134"
       ],
@@ -6716,7 +6782,7 @@
     },
     {
       "source": "fe-ui/src/panels/mod.rs",
-      "line": 450,
+      "line": 451,
       "families": [
         "F087",
         "F089"
@@ -6725,7 +6791,7 @@
     },
     {
       "source": "fe-ui/src/panels/mod.rs",
-      "line": 455,
+      "line": 456,
       "families": [
         "F087",
         "F089"
@@ -6734,7 +6800,7 @@
     },
     {
       "source": "fe-ui/src/panels/mod.rs",
-      "line": 456,
+      "line": 457,
       "families": [
         "F087",
         "F089"
@@ -7415,7 +7481,7 @@
     },
     {
       "source": "fe-ui/src/panels/portal_toolbar.rs",
-      "line": 32,
+      "line": 68,
       "families": [
         "F025"
       ],
@@ -7423,7 +7489,7 @@
     },
     {
       "source": "fe-ui/src/panels/portal_toolbar.rs",
-      "line": 34,
+      "line": 70,
       "families": [
         "F025"
       ],
@@ -7431,7 +7497,7 @@
     },
     {
       "source": "fe-ui/src/panels/portal_toolbar.rs",
-      "line": 36,
+      "line": 72,
       "families": [
         "F025"
       ],
@@ -7439,7 +7505,7 @@
     },
     {
       "source": "fe-ui/src/panels/portal_toolbar.rs",
-      "line": 47,
+      "line": 83,
       "families": [
         "F025"
       ],
@@ -7447,7 +7513,7 @@
     },
     {
       "source": "fe-ui/src/panels/portal_toolbar.rs",
-      "line": 48,
+      "line": 84,
       "families": [
         "F025"
       ],
@@ -7455,7 +7521,7 @@
     },
     {
       "source": "fe-ui/src/panels/portal_toolbar.rs",
-      "line": 55,
+      "line": 91,
       "families": [
         "F025"
       ],
@@ -7463,7 +7529,7 @@
     },
     {
       "source": "fe-ui/src/panels/portal_toolbar.rs",
-      "line": 56,
+      "line": 92,
       "families": [
         "F025"
       ],
@@ -7628,7 +7694,7 @@
     },
     {
       "source": "fe-ui/src/panels/sidebar.rs",
-      "line": 271,
+      "line": 273,
       "families": [
         "F001",
         "F002",
@@ -7644,7 +7710,7 @@
     },
     {
       "source": "fe-ui/src/panels/sidebar.rs",
-      "line": 397,
+      "line": 401,
       "families": [
         "F001",
         "F002",
@@ -7660,22 +7726,6 @@
     },
     {
       "source": "fe-ui/src/panels/sidebar.rs",
-      "line": 517,
-      "families": [
-        "F001",
-        "F002",
-        "F003",
-        "F004",
-        "F005",
-        "F006",
-        "F007",
-        "F008",
-        "F015"
-      ],
-      "candidate": ".add_enabled("
-    },
-    {
-      "source": "fe-ui/src/panels/sidebar.rs",
       "line": 521,
       "families": [
         "F001",
@@ -7688,7 +7738,7 @@
         "F008",
         "F015"
       ],
-      "candidate": "egui::Button::new(egui::RichText::new(\"Petal requirements\").small())"
+      "candidate": ".add_enabled("
     },
     {
       "source": "fe-ui/src/panels/sidebar.rs",
@@ -7704,11 +7754,27 @@
         "F008",
         "F015"
       ],
+      "candidate": "egui::Button::new(egui::RichText::new(\"Petal requirements\").small())"
+    },
+    {
+      "source": "fe-ui/src/panels/sidebar.rs",
+      "line": 529,
+      "families": [
+        "F001",
+        "F002",
+        "F003",
+        "F004",
+        "F005",
+        "F006",
+        "F007",
+        "F008",
+        "F015"
+      ],
       "candidate": ".named(ui, format_args!(\"Petal requirements for {petal_name}\"))"
     },
     {
       "source": "fe-ui/src/panels/sidebar.rs",
-      "line": 539,
+      "line": 543,
       "families": [
         "F001",
         "F002",
@@ -7724,7 +7790,7 @@
     },
     {
       "source": "fe-ui/src/panels/sidebar.rs",
-      "line": 699,
+      "line": 703,
       "families": [
         "F001",
         "F002",
@@ -7740,7 +7806,7 @@
     },
     {
       "source": "fe-ui/src/panels/sidebar.rs",
-      "line": 700,
+      "line": 704,
       "families": [
         "F001",
         "F002",
@@ -7756,7 +7822,7 @@
     },
     {
       "source": "fe-ui/src/panels/sidebar.rs",
-      "line": 793,
+      "line": 797,
       "families": [
         "F001",
         "F002",
@@ -7772,7 +7838,7 @@
     },
     {
       "source": "fe-ui/src/panels/sidebar.rs",
-      "line": 795,
+      "line": 799,
       "families": [
         "F001",
         "F002",
@@ -7788,7 +7854,7 @@
     },
     {
       "source": "fe-ui/src/panels/sidebar.rs",
-      "line": 799,
+      "line": 803,
       "families": [
         "F001",
         "F002",
@@ -7804,7 +7870,7 @@
     },
     {
       "source": "fe-ui/src/panels/sidebar.rs",
-      "line": 826,
+      "line": 830,
       "families": [
         "F001",
         "F002",
@@ -7820,7 +7886,7 @@
     },
     {
       "source": "fe-ui/src/panels/sidebar.rs",
-      "line": 882,
+      "line": 886,
       "families": [
         "F001",
         "F002",
@@ -8645,7 +8711,7 @@
     },
     {
       "source": "fe-ui/src/panels/tool_panel.rs",
-      "line": 555,
+      "line": 556,
       "families": [
         "F066",
         "F067",
@@ -8659,7 +8725,7 @@
     },
     {
       "source": "fe-ui/src/panels/tool_panel.rs",
-      "line": 562,
+      "line": 563,
       "families": [
         "F066",
         "F067",
@@ -8673,7 +8739,7 @@
     },
     {
       "source": "fe-ui/src/panels/tool_panel.rs",
-      "line": 604,
+      "line": 602,
       "families": [
         "F066",
         "F067",
@@ -8687,7 +8753,7 @@
     },
     {
       "source": "fe-ui/src/panels/tool_panel.rs",
-      "line": 608,
+      "line": 606,
       "families": [
         "F066",
         "F067",
@@ -8701,7 +8767,7 @@
     },
     {
       "source": "fe-ui/src/panels/tool_panel.rs",
-      "line": 617,
+      "line": 615,
       "families": [
         "F066",
         "F067",
@@ -8715,7 +8781,7 @@
     },
     {
       "source": "fe-ui/src/panels/tool_panel.rs",
-      "line": 619,
+      "line": 617,
       "families": [
         "F066",
         "F067",
@@ -8729,7 +8795,7 @@
     },
     {
       "source": "fe-ui/src/panels/tool_panel.rs",
-      "line": 622,
+      "line": 620,
       "families": [
         "F066",
         "F067",
@@ -8743,7 +8809,7 @@
     },
     {
       "source": "fe-ui/src/panels/tool_panel.rs",
-      "line": 686,
+      "line": 684,
       "families": [
         "F066",
         "F067",
@@ -8757,7 +8823,7 @@
     },
     {
       "source": "fe-ui/src/panels/tool_panel.rs",
-      "line": 687,
+      "line": 685,
       "families": [
         "F066",
         "F067",
@@ -8771,7 +8837,7 @@
     },
     {
       "source": "fe-ui/src/panels/tool_panel.rs",
-      "line": 690,
+      "line": 688,
       "families": [
         "F066",
         "F067",
@@ -8785,7 +8851,7 @@
     },
     {
       "source": "fe-ui/src/panels/tool_panel.rs",
-      "line": 691,
+      "line": 689,
       "families": [
         "F066",
         "F067",
@@ -8799,7 +8865,7 @@
     },
     {
       "source": "fe-ui/src/panels/tool_panel.rs",
-      "line": 694,
+      "line": 692,
       "families": [
         "F066",
         "F067",
@@ -8813,7 +8879,7 @@
     },
     {
       "source": "fe-ui/src/panels/tool_panel.rs",
-      "line": 695,
+      "line": 693,
       "families": [
         "F066",
         "F067",
@@ -8827,7 +8893,7 @@
     },
     {
       "source": "fe-ui/src/panels/tool_panel.rs",
-      "line": 750,
+      "line": 748,
       "families": [
         "F066",
         "F067",
@@ -8841,7 +8907,7 @@
     },
     {
       "source": "fe-ui/src/panels/tool_panel.rs",
-      "line": 751,
+      "line": 749,
       "families": [
         "F066",
         "F067",
@@ -8855,7 +8921,7 @@
     },
     {
       "source": "fe-ui/src/panels/tool_panel.rs",
-      "line": 786,
+      "line": 784,
       "families": [
         "F066",
         "F067",
@@ -8869,7 +8935,7 @@
     },
     {
       "source": "fe-ui/src/panels/tool_panel.rs",
-      "line": 791,
+      "line": 789,
       "families": [
         "F066",
         "F067",
@@ -8883,7 +8949,7 @@
     },
     {
       "source": "fe-ui/src/panels/tool_panel.rs",
-      "line": 813,
+      "line": 811,
       "families": [
         "F066",
         "F067",
@@ -8897,7 +8963,7 @@
     },
     {
       "source": "fe-ui/src/panels/tool_panel.rs",
-      "line": 815,
+      "line": 813,
       "families": [
         "F066",
         "F067",
@@ -8911,7 +8977,7 @@
     },
     {
       "source": "fe-ui/src/panels/tool_panel.rs",
-      "line": 827,
+      "line": 825,
       "families": [
         "F066",
         "F067",
@@ -8925,7 +8991,7 @@
     },
     {
       "source": "fe-ui/src/panels/tool_panel.rs",
-      "line": 837,
+      "line": 835,
       "families": [
         "F066",
         "F067",
@@ -8939,7 +9005,7 @@
     },
     {
       "source": "fe-ui/src/panels/tool_panel.rs",
-      "line": 842,
+      "line": 840,
       "families": [
         "F066",
         "F067",
@@ -8953,7 +9019,7 @@
     },
     {
       "source": "fe-ui/src/panels/tool_panel.rs",
-      "line": 900,
+      "line": 898,
       "families": [
         "F066",
         "F067",
@@ -8967,7 +9033,7 @@
     },
     {
       "source": "fe-ui/src/panels/tool_panel.rs",
-      "line": 905,
+      "line": 903,
       "families": [
         "F066",
         "F067",
@@ -8981,7 +9047,7 @@
     },
     {
       "source": "fe-ui/src/panels/tool_panel.rs",
-      "line": 909,
+      "line": 907,
       "families": [
         "F066",
         "F067",
@@ -8995,7 +9061,7 @@
     },
     {
       "source": "fe-ui/src/panels/tool_panel.rs",
-      "line": 914,
+      "line": 912,
       "families": [
         "F066",
         "F067",
@@ -9009,7 +9075,7 @@
     },
     {
       "source": "fe-ui/src/panels/tool_panel.rs",
-      "line": 918,
+      "line": 916,
       "families": [
         "F066",
         "F067",
@@ -9023,7 +9089,7 @@
     },
     {
       "source": "fe-ui/src/panels/tool_panel.rs",
-      "line": 923,
+      "line": 921,
       "families": [
         "F066",
         "F067",
@@ -9037,7 +9103,7 @@
     },
     {
       "source": "fe-ui/src/panels/tool_panel.rs",
-      "line": 938,
+      "line": 936,
       "families": [
         "F066",
         "F067",
@@ -9051,7 +9117,7 @@
     },
     {
       "source": "fe-ui/src/panels/tool_panel.rs",
-      "line": 943,
+      "line": 941,
       "families": [
         "F066",
         "F067",
@@ -9065,7 +9131,7 @@
     },
     {
       "source": "fe-ui/src/panels/tool_panel.rs",
-      "line": 947,
+      "line": 945,
       "families": [
         "F066",
         "F067",
@@ -9079,7 +9145,7 @@
     },
     {
       "source": "fe-ui/src/panels/tool_panel.rs",
-      "line": 952,
+      "line": 950,
       "families": [
         "F066",
         "F067",
@@ -9093,7 +9159,7 @@
     },
     {
       "source": "fe-ui/src/panels/tool_panel.rs",
-      "line": 956,
+      "line": 954,
       "families": [
         "F066",
         "F067",
@@ -9107,7 +9173,7 @@
     },
     {
       "source": "fe-ui/src/panels/tool_panel.rs",
-      "line": 961,
+      "line": 959,
       "families": [
         "F066",
         "F067",
@@ -9121,7 +9187,7 @@
     },
     {
       "source": "fe-ui/src/panels/tool_panel.rs",
-      "line": 975,
+      "line": 973,
       "families": [
         "F066",
         "F067",
@@ -9135,7 +9201,7 @@
     },
     {
       "source": "fe-ui/src/panels/tool_panel.rs",
-      "line": 976,
+      "line": 974,
       "families": [
         "F066",
         "F067",
@@ -9149,7 +9215,7 @@
     },
     {
       "source": "fe-ui/src/panels/tool_panel.rs",
-      "line": 987,
+      "line": 985,
       "families": [
         "F066",
         "F067",
@@ -9163,7 +9229,7 @@
     },
     {
       "source": "fe-ui/src/panels/tool_panel.rs",
-      "line": 988,
+      "line": 986,
       "families": [
         "F066",
         "F067",
@@ -9177,7 +9243,7 @@
     },
     {
       "source": "fe-ui/src/panels/tool_panel.rs",
-      "line": 997,
+      "line": 995,
       "families": [
         "F066",
         "F067",
@@ -9191,7 +9257,7 @@
     },
     {
       "source": "fe-ui/src/panels/tool_panel.rs",
-      "line": 999,
+      "line": 997,
       "families": [
         "F066",
         "F067",
@@ -9205,7 +9271,7 @@
     },
     {
       "source": "fe-ui/src/panels/tool_panel.rs",
-      "line": 1021,
+      "line": 1019,
       "families": [
         "F066",
         "F067",
@@ -9219,7 +9285,7 @@
     },
     {
       "source": "fe-ui/src/panels/tool_panel.rs",
-      "line": 1025,
+      "line": 1023,
       "families": [
         "F066",
         "F067",
@@ -9233,7 +9299,7 @@
     },
     {
       "source": "fe-ui/src/panels/tool_panel.rs",
-      "line": 1032,
+      "line": 1030,
       "families": [
         "F066",
         "F067",
@@ -9247,7 +9313,7 @@
     },
     {
       "source": "fe-ui/src/panels/tool_panel.rs",
-      "line": 1036,
+      "line": 1034,
       "families": [
         "F066",
         "F067",
@@ -9261,7 +9327,7 @@
     },
     {
       "source": "fe-ui/src/panels/tool_panel.rs",
-      "line": 1046,
+      "line": 1044,
       "families": [
         "F066",
         "F067",
@@ -9275,7 +9341,7 @@
     },
     {
       "source": "fe-ui/src/panels/tool_panel.rs",
-      "line": 1047,
+      "line": 1045,
       "families": [
         "F066",
         "F067",
@@ -9289,7 +9355,7 @@
     },
     {
       "source": "fe-ui/src/panels/tool_panel.rs",
-      "line": 1055,
+      "line": 1053,
       "families": [
         "F066",
         "F067",
@@ -9303,7 +9369,7 @@
     },
     {
       "source": "fe-ui/src/panels/tool_panel.rs",
-      "line": 1069,
+      "line": 1067,
       "families": [
         "F066",
         "F067",
@@ -9317,7 +9383,7 @@
     },
     {
       "source": "fe-ui/src/panels/tool_panel.rs",
-      "line": 1082,
+      "line": 1080,
       "families": [
         "F066",
         "F067",
@@ -9459,7 +9525,7 @@
     },
     {
       "source": "fe-ui/src/panels/tree_appearance.rs",
-      "line": 195,
+      "line": 181,
       "families": [
         "F133"
       ],
@@ -9467,7 +9533,7 @@
     },
     {
       "source": "fe-ui/src/panels/tree_appearance.rs",
-      "line": 280,
+      "line": 266,
       "families": [
         "F133"
       ],
@@ -9475,7 +9541,7 @@
     },
     {
       "source": "fe-ui/src/panels/tree_appearance.rs",
-      "line": 281,
+      "line": 267,
       "families": [
         "F133"
       ],
@@ -9483,7 +9549,7 @@
     },
     {
       "source": "fe-ui/src/panels/tree_appearance.rs",
-      "line": 285,
+      "line": 271,
       "families": [
         "F133"
       ],
@@ -9491,7 +9557,7 @@
     },
     {
       "source": "fe-ui/src/panels/tree_appearance.rs",
-      "line": 286,
+      "line": 272,
       "families": [
         "F133"
       ],
@@ -9499,7 +9565,7 @@
     },
     {
       "source": "fe-ui/src/panels/tree_appearance.rs",
-      "line": 289,
+      "line": 275,
       "families": [
         "F133"
       ],
@@ -9507,7 +9573,7 @@
     },
     {
       "source": "fe-ui/src/panels/tree_appearance.rs",
-      "line": 290,
+      "line": 276,
       "families": [
         "F133"
       ],
@@ -9515,7 +9581,7 @@
     },
     {
       "source": "fe-ui/src/panels/tree_appearance.rs",
-      "line": 300,
+      "line": 286,
       "families": [
         "F133"
       ],
@@ -9523,7 +9589,7 @@
     },
     {
       "source": "fe-ui/src/panels/tree_appearance.rs",
-      "line": 329,
+      "line": 315,
       "families": [
         "F133"
       ],
@@ -9531,7 +9597,7 @@
     },
     {
       "source": "fe-ui/src/panels/tree_appearance.rs",
-      "line": 333,
+      "line": 319,
       "families": [
         "F133"
       ],
@@ -9539,7 +9605,7 @@
     },
     {
       "source": "fe-ui/src/panels/tree_appearance.rs",
-      "line": 355,
+      "line": 341,
       "families": [
         "F133"
       ],
@@ -9547,7 +9613,7 @@
     },
     {
       "source": "fe-ui/src/panels/tree_appearance.rs",
-      "line": 357,
+      "line": 343,
       "families": [
         "F133"
       ],
@@ -9555,7 +9621,7 @@
     },
     {
       "source": "fe-ui/src/panels/tree_appearance.rs",
-      "line": 359,
+      "line": 345,
       "families": [
         "F133"
       ],
@@ -9563,7 +9629,7 @@
     },
     {
       "source": "fe-ui/src/panels/tree_appearance.rs",
-      "line": 362,
+      "line": 348,
       "families": [
         "F133"
       ],
@@ -9571,7 +9637,7 @@
     },
     {
       "source": "fe-ui/src/panels/tree_appearance.rs",
-      "line": 363,
+      "line": 349,
       "families": [
         "F133"
       ],
@@ -9579,7 +9645,7 @@
     },
     {
       "source": "fe-ui/src/panels/tree_appearance.rs",
-      "line": 366,
+      "line": 352,
       "families": [
         "F133"
       ],
@@ -9587,7 +9653,7 @@
     },
     {
       "source": "fe-ui/src/panels/tree_appearance.rs",
-      "line": 368,
+      "line": 354,
       "families": [
         "F133"
       ],
@@ -9595,7 +9661,7 @@
     },
     {
       "source": "fe-ui/src/panels/tree_appearance.rs",
-      "line": 370,
+      "line": 356,
       "families": [
         "F133"
       ],
@@ -9603,7 +9669,7 @@
     },
     {
       "source": "fe-ui/src/panels/tree_entry.rs",
-      "line": 61,
+      "line": 141,
       "families": [
         "F001",
         "F002",
@@ -9617,7 +9683,7 @@
     },
     {
       "source": "fe-ui/src/panels/tree_entry.rs",
-      "line": 62,
+      "line": 142,
       "families": [
         "F001",
         "F002",
@@ -9631,7 +9697,7 @@
     },
     {
       "source": "fe-ui/src/panels/tree_entry.rs",
-      "line": 72,
+      "line": 152,
       "families": [
         "F001",
         "F002",
@@ -9645,7 +9711,7 @@
     },
     {
       "source": "fe-ui/src/panels/tree_entry.rs",
-      "line": 73,
+      "line": 153,
       "families": [
         "F001",
         "F002",
@@ -9659,7 +9725,7 @@
     },
     {
       "source": "fe-ui/src/panels/tree_entry.rs",
-      "line": 84,
+      "line": 164,
       "families": [
         "F001",
         "F002",
@@ -9673,7 +9739,7 @@
     },
     {
       "source": "fe-ui/src/panels/tree_entry.rs",
-      "line": 85,
+      "line": 165,
       "families": [
         "F001",
         "F002",
@@ -9687,7 +9753,7 @@
     },
     {
       "source": "fe-ui/src/panels/tree_entry.rs",
-      "line": 99,
+      "line": 179,
       "families": [
         "F001",
         "F002",
@@ -9701,7 +9767,7 @@
     },
     {
       "source": "fe-ui/src/panels/tree_entry.rs",
-      "line": 100,
+      "line": 180,
       "families": [
         "F001",
         "F002",
@@ -9715,7 +9781,7 @@
     },
     {
       "source": "fe-ui/src/panels/tree_entry.rs",
-      "line": 201,
+      "line": 285,
       "families": [
         "F001",
         "F002",
@@ -9729,7 +9795,7 @@
     },
     {
       "source": "fe-ui/src/panels/tree_entry.rs",
-      "line": 207,
+      "line": 291,
       "families": [
         "F001",
         "F002",
@@ -9743,7 +9809,7 @@
     },
     {
       "source": "fe-ui/src/panels/tree_entry.rs",
-      "line": 237,
+      "line": 325,
       "families": [
         "F001",
         "F002",
@@ -9757,7 +9823,7 @@
     },
     {
       "source": "fe-ui/src/panels/tree_entry.rs",
-      "line": 238,
+      "line": 326,
       "families": [
         "F001",
         "F002",
@@ -9771,7 +9837,7 @@
     },
     {
       "source": "fe-ui/src/panels/tree_entry.rs",
-      "line": 245,
+      "line": 333,
       "families": [
         "F001",
         "F002",
@@ -12036,262 +12102,276 @@
     },
     {
       "method": "GET",
+      "path": "/api/v1/debug/invitation",
+      "checkpoint": "F116.rest-get-api-v1-debug-invitation",
+      "source": "fe-api/src/server.rs",
+      "line": 351
+    },
+    {
+      "method": "POST",
+      "path": "/api/v1/debug/invitation",
+      "checkpoint": "F116.rest-post-api-v1-debug-invitation",
+      "source": "fe-api/src/server.rs",
+      "line": 351
+    },
+    {
+      "method": "GET",
       "path": "/api/v1/debug/portal-fixture/observe",
       "checkpoint": "F116.rest-get-api-v1-debug-portal-fixture-observe",
       "source": "fe-api/src/server.rs",
-      "line": 351
+      "line": 352
     },
     {
       "method": "POST",
       "path": "/api/v1/debug/portal-fixture/action",
       "checkpoint": "F116.rest-post-api-v1-debug-portal-fixture-action",
       "source": "fe-api/src/server.rs",
-      "line": 352
+      "line": 353
     },
     {
       "method": "POST",
       "path": "/api/v1/debug/portal-fixture/capture",
       "checkpoint": "F116.rest-post-api-v1-debug-portal-fixture-capture",
       "source": "fe-api/src/server.rs",
-      "line": 353
+      "line": 354
     },
     {
       "method": "GET",
       "path": "/api/v1/debug/logs",
       "checkpoint": "F116.rest-get-api-v1-debug-logs",
       "source": "fe-api/src/server.rs",
-      "line": 354
+      "line": 355
     },
     {
       "method": "POST",
       "path": "/api/v1/debug/dialog-answers",
       "checkpoint": "F116.rest-post-api-v1-debug-dialog-answers",
       "source": "fe-api/src/server.rs",
-      "line": 355
+      "line": 356
     },
     {
       "method": "POST",
       "path": "/api/v1/debug/window",
       "checkpoint": "F116.rest-post-api-v1-debug-window",
       "source": "fe-api/src/server.rs",
-      "line": 360
+      "line": 361
     },
     {
       "method": "POST",
       "path": "/api/v1/query",
       "checkpoint": "F116.rest-post-api-v1-query",
       "source": "fe-api/src/server.rs",
-      "line": 365
+      "line": 366
     },
     {
       "method": "POST",
       "path": "/api/v1/query/elevated",
       "checkpoint": "F116.rest-post-api-v1-query-elevated",
       "source": "fe-api/src/server.rs",
-      "line": 366
+      "line": 367
     },
     {
       "method": "GET",
       "path": "/api/v1/petals/{petal_id}/export.parquet",
       "checkpoint": "F116.rest-get-api-v1-petals-petal-id-export-parquet",
       "source": "fe-api/src/server.rs",
-      "line": 371
+      "line": 372
     },
     {
       "method": "GET",
       "path": "/api/v1/petals/{petal_id}/export.csv",
       "checkpoint": "F116.rest-get-api-v1-petals-petal-id-export-csv",
       "source": "fe-api/src/server.rs",
-      "line": 375
+      "line": 376
     },
     {
       "method": "POST",
       "path": "/api/v1/petals/{petal_id}/iot/readings",
       "checkpoint": "F116.rest-post-api-v1-petals-petal-id-iot-readings",
       "source": "fe-api/src/server.rs",
-      "line": 380
+      "line": 381
     },
     {
       "method": "POST",
       "path": "/api/v1/verses/{verse_id}/device-formats",
       "checkpoint": "F116.rest-post-api-v1-verses-verse-id-device-formats",
       "source": "fe-api/src/server.rs",
-      "line": 385
+      "line": 386
     },
     {
       "method": "GET",
       "path": "/api/v1/verses/{verse_id}/device-formats",
       "checkpoint": "F116.rest-get-api-v1-verses-verse-id-device-formats",
       "source": "fe-api/src/server.rs",
-      "line": 385
+      "line": 386
     },
     {
       "method": "POST",
       "path": "/api/v1/petals/{petal_id}/iot/payloads",
       "checkpoint": "F116.rest-post-api-v1-petals-petal-id-iot-payloads",
       "source": "fe-api/src/server.rs",
-      "line": 389
+      "line": 390
     },
     {
       "method": "GET",
       "path": "/api/v1/petals/{petal_id}/iot/payloads",
       "checkpoint": "F116.rest-get-api-v1-petals-petal-id-iot-payloads",
       "source": "fe-api/src/server.rs",
-      "line": 389
+      "line": 390
     },
     {
       "method": "POST",
       "path": "/api/v1/query/share",
       "checkpoint": "F116.rest-post-api-v1-query-share",
       "source": "fe-api/src/server.rs",
-      "line": 398
+      "line": 399
     },
     {
       "method": "POST",
       "path": "/api/v1/analytics/query",
       "checkpoint": "F116.rest-post-api-v1-analytics-query",
       "source": "fe-api/src/server.rs",
-      "line": 400
+      "line": 401
     },
     {
       "method": "POST",
       "path": "/api/v1/hexons/tilesets/install",
       "checkpoint": "F116.rest-post-api-v1-hexons-tilesets-install",
       "source": "fe-api/src/server.rs",
-      "line": 405
+      "line": 406
     },
     {
       "method": "DELETE",
       "path": "/api/v1/hexons/tilesets/{hexon_id}",
       "checkpoint": "F116.rest-delete-api-v1-hexons-tilesets-hexon-id",
       "source": "fe-api/src/server.rs",
-      "line": 411
+      "line": 412
     },
     {
       "method": "PATCH",
       "path": "/api/v1/hexons/tilesets/{hexon_id}/seeding",
       "checkpoint": "F116.rest-patch-api-v1-hexons-tilesets-hexon-id-seeding",
       "source": "fe-api/src/server.rs",
-      "line": 415
+      "line": 416
     },
     {
       "method": "GET",
       "path": "/api/v1/hexons/tilesets",
       "checkpoint": "F116.rest-get-api-v1-hexons-tilesets",
       "source": "fe-api/src/server.rs",
-      "line": 419
+      "line": 420
     },
     {
       "method": "GET",
       "path": "/api/v1/hexons/storage",
       "checkpoint": "F116.rest-get-api-v1-hexons-storage",
       "source": "fe-api/src/server.rs",
-      "line": 423
+      "line": 424
     },
     {
       "method": "POST",
       "path": "/api/v1/crates/publish",
       "checkpoint": "F116.rest-post-api-v1-crates-publish",
       "source": "fe-api/src/server.rs",
-      "line": 428
+      "line": 429
     },
     {
       "method": "POST",
       "path": "/api/v1/crates/{hexon_uri}/install",
       "checkpoint": "F116.rest-post-api-v1-crates-hexon-uri-install",
       "source": "fe-api/src/server.rs",
-      "line": 429
+      "line": 430
     },
     {
       "method": "DELETE",
       "path": "/api/v1/crates/{hexon_uri}/uninstall",
       "checkpoint": "F116.rest-delete-api-v1-crates-hexon-uri-uninstall",
       "source": "fe-api/src/server.rs",
-      "line": 433
+      "line": 434
     },
     {
       "method": "GET",
       "path": "/api/v1/crates/search",
       "checkpoint": "F116.rest-get-api-v1-crates-search",
       "source": "fe-api/src/server.rs",
-      "line": 437
+      "line": 438
     },
     {
       "method": "GET",
       "path": "/api/v1/crates/installed",
       "checkpoint": "F116.rest-get-api-v1-crates-installed",
       "source": "fe-api/src/server.rs",
-      "line": 438
+      "line": 439
     },
     {
       "method": "GET",
       "path": "/api/v1/crates/{hexon_uri}",
       "checkpoint": "F116.rest-get-api-v1-crates-hexon-uri",
       "source": "fe-api/src/server.rs",
-      "line": 442
+      "line": 443
     },
     {
       "method": "GET",
       "path": "/api/v1/crates/{hexon_uri}/entries",
       "checkpoint": "F116.rest-get-api-v1-crates-hexon-uri-entries",
       "source": "fe-api/src/server.rs",
-      "line": 446
+      "line": 447
     },
     {
       "method": "GET",
       "path": "/api/v1/crates/{hexon_uri}/entries/{entry_id}/asset",
       "checkpoint": "F116.rest-get-api-v1-crates-hexon-uri-entries-entry-id-asset",
       "source": "fe-api/src/server.rs",
-      "line": 450
+      "line": 451
     },
     {
       "method": "GET",
       "path": "/api/v1/crates/available",
       "checkpoint": "F116.rest-get-api-v1-crates-available",
       "source": "fe-api/src/server.rs",
-      "line": 454
+      "line": 455
     },
     {
       "method": "POST",
       "path": "/api/v1/sim/start",
       "checkpoint": "F116.rest-post-api-v1-sim-start",
       "source": "fe-api/src/server.rs",
-      "line": 459
+      "line": 460
     },
     {
       "method": "POST",
       "path": "/api/v1/sim/stop",
       "checkpoint": "F116.rest-post-api-v1-sim-stop",
       "source": "fe-api/src/server.rs",
-      "line": 460
+      "line": 461
     },
     {
       "method": "GET",
       "path": "/api/v1/sim/status",
       "checkpoint": "F116.rest-get-api-v1-sim-status",
       "source": "fe-api/src/server.rs",
-      "line": 461
+      "line": 462
     },
     {
       "method": "POST",
       "path": "/api/v1/sim/step",
       "checkpoint": "F116.rest-post-api-v1-sim-step",
       "source": "fe-api/src/server.rs",
-      "line": 462
+      "line": 463
     },
     {
       "method": "POST",
       "path": "/api/v1/sim/inject-fault",
       "checkpoint": "F116.rest-post-api-v1-sim-inject-fault",
       "source": "fe-api/src/server.rs",
-      "line": 463
+      "line": 464
     },
     {
       "method": "POST",
       "path": "/mcp",
       "checkpoint": "F116.rest-post-mcp",
       "source": "fe-api/src/server.rs",
-      "line": 469
+      "line": 470
     }
   ],
   "unmapped": {

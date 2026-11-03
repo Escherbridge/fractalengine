@@ -1,7 +1,7 @@
 ---
 type: FeatureSourceInventory
 date: 2026-11-02
-source_commit: 44ad28da5ac33120c988bd26a8e8a79362dd15d4
+source_commit: 09923b5daf16af848944db34fd7fff5e04ad5c25
 execution_status: NOT_RUN
 ---
 
@@ -11,7 +11,7 @@ This is an audited source census, not execution evidence. The final staged finge
 
 Lexical producer candidates, excluding literal cfg(test) items while preserving line numbers. Helpers/named wrappers can repeat one control; conditional production openers require manual reconciliation. Not a Rust parser, live-tree census or proof of execution.
 
-Counts: 84 UiAction variants; 678 lexical control/naming candidates; 49 MCP tools; 103 REST method/path cases. Full candidate lines and normalized-source hashes are retained in catalog-source-census.json.
+Counts: 84 UiAction variants; 683 lexical control/naming candidates; 49 MCP tools; 105 REST method/path cases. Full candidate lines and normalized-source hashes are retained in catalog-source-census.json.
 
 Candidates map to owning capability families; this is routing responsibility, not an automatic assertion that every branch is covered. A shared helper is not an extra control. Every current mandatory checkpoint still requires current-pass evidence and independent assertions.
 
@@ -20,11 +20,11 @@ Candidates map to owning capability families; this is routing responsibility, no
 | Action | Families | Current render/gesture producers | Note |
 |---|---|---|---|
 | `OpenPortal` | F024, F025 | `fe-ui/src/panels/inspector.rs:717` |  |
-| `ClosePortal` | F025 | `fe-ui/src/panels/portal_toolbar.rs:59` |  |
-| `PortalGoBack` | F025 | `fe-ui/src/panels/portal_toolbar.rs:27` |  |
-| `PortalGoForward` | F025 | `fe-ui/src/panels/portal_toolbar.rs:28` |  |
-| `PortalReload` | F025 | `fe-ui/src/panels/portal_toolbar.rs:29` |  |
-| `PortalOpenExternal` | F025 | `fe-ui/src/panels/portal_toolbar.rs:52` |  |
+| `ClosePortal` | F025 | `fe-ui/src/panels/portal_toolbar.rs:95` |  |
+| `PortalGoBack` | F025 | `fe-ui/src/panels/portal_toolbar.rs:63` |  |
+| `PortalGoForward` | F025 | `fe-ui/src/panels/portal_toolbar.rs:64` |  |
+| `PortalReload` | F025 | `fe-ui/src/panels/portal_toolbar.rs:65` |  |
+| `PortalOpenExternal` | F025 | `fe-ui/src/panels/portal_toolbar.rs:88` |  |
 | `SaveNodeUrl` | F024 | `fe-ui/src/dialogs/node_options.rs:139`, `fe-ui/src/panels/inspector.rs:701` |  |
 | `ApplyNodeTransform` | F018 | `fe-ui/src/panels/inspector.rs:602` |  |
 | `CreateNodeAt` | F020 | `fe-ui/src/dialogs/context_menu.rs:726` |  |
@@ -44,7 +44,7 @@ Candidates map to owning capability families; this is routing responsibility, no
 | `PetalSetMapScale` | F048 | `fe-ui/src/dialogs/hexon_manager.rs:499`, `fe-ui/src/dialogs/hexon_manager.rs:522` |  |
 | `PetalManifestSave` | F124 | `fe-ui/src/dialogs/petal_manifest.rs:281` | Legacy intent is refused; canonical requirements controller uses correlated typed DB commands and F124 owns its rendered Save. |
 | `PetalSetRenderOverride` | F061 | No render/gesture reference in census | Legacy action enum has no current render/gesture producer; the Settings session-override surface owns F061 through its current resource path. No separate GUI action is claimed. |
-| `PetalManifestOpen` | F124 | `fe-ui/src/panels/sidebar.rs:532` |  |
+| `PetalManifestOpen` | F124 | `fe-ui/src/panels/sidebar.rs:536` |  |
 | `DownloadNodeAsset` | F026 | `fe-ui/src/panels/asset_card.rs:77` |  |
 | `GisQueryAnnotated` | F040, F042 | `fe-ui/src/panels/gis_panel.rs:409` |  |
 | `GisRefreshAnnotations` | F039 | `fe-ui/src/panels/gis_panel.rs:211` |  |
@@ -71,18 +71,18 @@ Candidates map to owning capability families; this is routing responsibility, no
 | `PathExportGpx` | F078 | `fe-ui/src/panels/path_editor_card.rs:364` |  |
 | `PathSetStyle` | F071 | `fe-ui/src/panels/path_editor_card.rs:380` |  |
 | `PathAssetApply` | F074 | `fe-ui/src/panels/tool_panel.rs:472` |  |
-| `PathSmoothCurrent` | F066 | `fe-ui/src/panels/tool_panel.rs:1005` |  |
-| `PathAppendShape` | F068 | `fe-ui/src/panels/tool_panel.rs:1066`, `fe-ui/src/panels/tool_panel.rs:1079`, `fe-ui/src/panels/tool_panel.rs:1092` |  |
+| `PathSmoothCurrent` | F066 | `fe-ui/src/panels/tool_panel.rs:1003` |  |
+| `PathAppendShape` | F068 | `fe-ui/src/panels/tool_panel.rs:1064`, `fe-ui/src/panels/tool_panel.rs:1077`, `fe-ui/src/panels/tool_panel.rs:1090` |  |
 | `TerrainProposalAdd` | F050, F051 | `fe-ui/src/node_manager/terrain_authoring.rs:96`, `fe-ui/src/node_manager/terrain_authoring.rs:354` |  |
 | `CommitTerrainAuthoring` | F053 | `fe-ui/src/node_manager/brush_interaction.rs:193`, `fe-ui/src/node_manager/brush_interaction.rs:214`, `fe-ui/src/node_manager/brush_interaction.rs:312` |  |
 | `TerrainProposalDelete` | F051 | `fe-ui/src/dialogs/context_menu.rs:351`, `fe-ui/src/panels/terrain_tools_panel.rs:315` |  |
 | `TerrainProposalSelect` | F051 | `fe-ui/src/dialogs/context_menu.rs:292` |  |
 | `OpenTerrainReport` | F055 | `fe-ui/src/dialogs/context_menu.rs:313`, `fe-ui/src/panels/volume_report_panel.rs:237` |  |
-| `SelectStamp` | F075, F138 | `fe-ui/src/panels/tool_panel.rs:629` | Options one-based Select emits a private live scene/source origin; lower-tier viewport and fresh context picks enter the same NodeManager controller without inventing UiAction references. F10 path pick priority remains. No unchecked current-index GUI mutation. |
-| `InspectStampNode` | F075, F138 | `fe-ui/src/panels/tool_panel.rs:698` |  |
+| `SelectStamp` | F075, F138 | `fe-ui/src/panels/tool_panel.rs:627` | Options one-based Select emits a private live scene/source origin; lower-tier viewport and fresh context picks enter the same NodeManager controller without inventing UiAction references. F10 path pick priority remains. No unchecked current-index GUI mutation. |
+| `InspectStampNode` | F075, F138 | `fe-ui/src/panels/tool_panel.rs:696` |  |
 | `CheckStampSave` | F066, F067, F068, F073, F074, F075, F138 | `fe-ui/src/panels/tool_panel.rs:521` |  |
-| `DownloadStampProperties` | F138 | `fe-ui/src/panels/tool_panel.rs:692` |  |
-| `ApplyStampOverrides` | F138 | `fe-ui/src/panels/tool_panel.rs:688` |  |
+| `DownloadStampProperties` | F138 | `fe-ui/src/panels/tool_panel.rs:690` |  |
+| `ApplyStampOverrides` | F138 | `fe-ui/src/panels/tool_panel.rs:686` |  |
 | `SetStampScale` | F075 | No render/gesture reference in census | Legacy per-field adapter has no current render constructor; actual selected-stamp scale uses atomic ApplyStampOverrides (F138). |
 | `SetStampRotation` | F075 | No render/gesture reference in census | Legacy per-field adapter has no current render constructor; actual yaw/quaternion-preserving editor uses atomic ApplyStampOverrides (F138). |
 | `SlideStampAlongPath` | F075 | No render/gesture reference in census | Legacy per-field adapter has no current render constructor; current metric slide uses atomic ApplyStampOverrides (F138). |
@@ -97,10 +97,10 @@ Candidates map to owning capability families; this is routing responsibility, no
 | `ClearNodeProperties` | F022, F023 | `fe-ui/src/dialogs/context_menu.rs:228` |  |
 | `CopyApiString` | F027 | `fe-ui/src/dialogs/context_menu.rs:229` |  |
 | `ReportObject` | F027 | `fe-ui/src/dialogs/context_menu.rs:230` |  |
-| `RevealSection` | F082 | `fe-ui/src/dialogs/context_menu.rs:293`, `fe-ui/src/panels/sidebar.rs:621`, `fe-ui/src/panels/sidebar.rs:886`, `fe-ui/src/panels/tool_options.rs:622` |  |
-| `SetNodeView` | F008, F009 | `fe-ui/src/node_manager/shortcuts.rs:205`, `fe-ui/src/panels/sidebar.rs:767`, `fe-ui/src/visibility/mod.rs:463`, `fe-ui/src/visibility/mod.rs:479` |  |
-| `SetGroupRegistry` | F010 | `fe-ui/src/gis/layers.rs:127`, `fe-ui/src/panels/sidebar.rs:869`, `fe-ui/src/ui_shell/right_sidebar.rs:1428` |  |
-| `SetScopeHidden` | F008 | `fe-ui/src/panels/sidebar.rs:578`, `fe-ui/src/visibility/mod.rs:450` |  |
+| `RevealSection` | F082 | `fe-ui/src/dialogs/context_menu.rs:293`, `fe-ui/src/panels/sidebar.rs:625`, `fe-ui/src/panels/sidebar.rs:890`, `fe-ui/src/panels/tool_options.rs:622` |  |
+| `SetNodeView` | F008, F009 | `fe-ui/src/node_manager/shortcuts.rs:205`, `fe-ui/src/panels/sidebar.rs:771`, `fe-ui/src/visibility/mod.rs:463`, `fe-ui/src/visibility/mod.rs:479` |  |
+| `SetGroupRegistry` | F010 | `fe-ui/src/gis/layers.rs:127`, `fe-ui/src/panels/sidebar.rs:873`, `fe-ui/src/ui_shell/right_sidebar.rs:1428` |  |
+| `SetScopeHidden` | F008 | `fe-ui/src/panels/sidebar.rs:582`, `fe-ui/src/visibility/mod.rs:450` |  |
 | `SetNodeGroups` | F011 | `fe-ui/src/ui_shell/right_sidebar.rs:1602` |  |
 | `SetAppOverlay` | F060 | `fe-ui/src/gis/layers.rs:137` |  |
 
@@ -112,7 +112,7 @@ Candidates map to owning capability families; this is routing responsibility, no
 | `fe-ui/src/atlas/visibility_control.rs` | F094 | 3 |
 | `fe-ui/src/dialogs/context_menu.rs` | F020, F021, F022, F027, F076, F077, F139 | 7 |
 | `fe-ui/src/dialogs/create_entity.rs` | F005, F089 | 2 |
-| `fe-ui/src/dialogs/entity_access.rs` | F096, F097, F098, F102, F103 | 39 |
+| `fe-ui/src/dialogs/entity_access.rs` | F096, F097, F098, F102, F103 | 42 |
 | `fe-ui/src/dialogs/entity_settings.rs` | F012, F089, F093, F094, F095, F098, F102, F103 | 21 |
 | `fe-ui/src/dialogs/gltf_import.rs` | F006, F019, F089 | 5 |
 | `fe-ui/src/dialogs/hexon_manager.rs` | F047, F048, F089, F119, F120, F121, F122, F123 | 27 |
@@ -120,7 +120,7 @@ Candidates map to owning capability families; this is routing responsibility, no
 | `fe-ui/src/dialogs/node_options.rs` | F012, F013, F021, F022, F023, F024, F089 | 11 |
 | `fe-ui/src/dialogs/peer_debug.rs` | F104 | 1 |
 | `fe-ui/src/dialogs/petal_manifest.rs` | F089, F124 | 24 |
-| `fe-ui/src/object_data/history.rs` | F134 | 12 |
+| `fe-ui/src/object_data/history.rs` | F134 | 14 |
 | `fe-ui/src/object_data/measurements.rs` | F135 | 7 |
 | `fe-ui/src/object_data/mod.rs` | F134, F135, F136 | 6 |
 | `fe-ui/src/object_data/schema.rs` | F136 | 14 |
@@ -279,43 +279,45 @@ Every available tool requires actual invocation, independent readback, role/scop
 | POST | `/api/v1/debug/input` | `F116.rest-post-api-v1-debug-input` | `fe-api/src/server.rs:348` |
 | GET | `/api/v1/debug/ui-tree` | `F116.rest-get-api-v1-debug-ui-tree` | `fe-api/src/server.rs:349` |
 | GET | `/api/v1/debug/ui-state` | `F116.rest-get-api-v1-debug-ui-state` | `fe-api/src/server.rs:350` |
-| GET | `/api/v1/debug/portal-fixture/observe` | `F116.rest-get-api-v1-debug-portal-fixture-observe` | `fe-api/src/server.rs:351` |
-| POST | `/api/v1/debug/portal-fixture/action` | `F116.rest-post-api-v1-debug-portal-fixture-action` | `fe-api/src/server.rs:352` |
-| POST | `/api/v1/debug/portal-fixture/capture` | `F116.rest-post-api-v1-debug-portal-fixture-capture` | `fe-api/src/server.rs:353` |
-| GET | `/api/v1/debug/logs` | `F116.rest-get-api-v1-debug-logs` | `fe-api/src/server.rs:354` |
-| POST | `/api/v1/debug/dialog-answers` | `F116.rest-post-api-v1-debug-dialog-answers` | `fe-api/src/server.rs:355` |
-| POST | `/api/v1/debug/window` | `F116.rest-post-api-v1-debug-window` | `fe-api/src/server.rs:360` |
-| POST | `/api/v1/query` | `F116.rest-post-api-v1-query` | `fe-api/src/server.rs:365` |
-| POST | `/api/v1/query/elevated` | `F116.rest-post-api-v1-query-elevated` | `fe-api/src/server.rs:366` |
-| GET | `/api/v1/petals/{petal_id}/export.parquet` | `F116.rest-get-api-v1-petals-petal-id-export-parquet` | `fe-api/src/server.rs:371` |
-| GET | `/api/v1/petals/{petal_id}/export.csv` | `F116.rest-get-api-v1-petals-petal-id-export-csv` | `fe-api/src/server.rs:375` |
-| POST | `/api/v1/petals/{petal_id}/iot/readings` | `F116.rest-post-api-v1-petals-petal-id-iot-readings` | `fe-api/src/server.rs:380` |
-| POST | `/api/v1/verses/{verse_id}/device-formats` | `F116.rest-post-api-v1-verses-verse-id-device-formats` | `fe-api/src/server.rs:385` |
-| GET | `/api/v1/verses/{verse_id}/device-formats` | `F116.rest-get-api-v1-verses-verse-id-device-formats` | `fe-api/src/server.rs:385` |
-| POST | `/api/v1/petals/{petal_id}/iot/payloads` | `F116.rest-post-api-v1-petals-petal-id-iot-payloads` | `fe-api/src/server.rs:389` |
-| GET | `/api/v1/petals/{petal_id}/iot/payloads` | `F116.rest-get-api-v1-petals-petal-id-iot-payloads` | `fe-api/src/server.rs:389` |
-| POST | `/api/v1/query/share` | `F116.rest-post-api-v1-query-share` | `fe-api/src/server.rs:398` |
-| POST | `/api/v1/analytics/query` | `F116.rest-post-api-v1-analytics-query` | `fe-api/src/server.rs:400` |
-| POST | `/api/v1/hexons/tilesets/install` | `F116.rest-post-api-v1-hexons-tilesets-install` | `fe-api/src/server.rs:405` |
-| DELETE | `/api/v1/hexons/tilesets/{hexon_id}` | `F116.rest-delete-api-v1-hexons-tilesets-hexon-id` | `fe-api/src/server.rs:411` |
-| PATCH | `/api/v1/hexons/tilesets/{hexon_id}/seeding` | `F116.rest-patch-api-v1-hexons-tilesets-hexon-id-seeding` | `fe-api/src/server.rs:415` |
-| GET | `/api/v1/hexons/tilesets` | `F116.rest-get-api-v1-hexons-tilesets` | `fe-api/src/server.rs:419` |
-| GET | `/api/v1/hexons/storage` | `F116.rest-get-api-v1-hexons-storage` | `fe-api/src/server.rs:423` |
-| POST | `/api/v1/crates/publish` | `F116.rest-post-api-v1-crates-publish` | `fe-api/src/server.rs:428` |
-| POST | `/api/v1/crates/{hexon_uri}/install` | `F116.rest-post-api-v1-crates-hexon-uri-install` | `fe-api/src/server.rs:429` |
-| DELETE | `/api/v1/crates/{hexon_uri}/uninstall` | `F116.rest-delete-api-v1-crates-hexon-uri-uninstall` | `fe-api/src/server.rs:433` |
-| GET | `/api/v1/crates/search` | `F116.rest-get-api-v1-crates-search` | `fe-api/src/server.rs:437` |
-| GET | `/api/v1/crates/installed` | `F116.rest-get-api-v1-crates-installed` | `fe-api/src/server.rs:438` |
-| GET | `/api/v1/crates/{hexon_uri}` | `F116.rest-get-api-v1-crates-hexon-uri` | `fe-api/src/server.rs:442` |
-| GET | `/api/v1/crates/{hexon_uri}/entries` | `F116.rest-get-api-v1-crates-hexon-uri-entries` | `fe-api/src/server.rs:446` |
-| GET | `/api/v1/crates/{hexon_uri}/entries/{entry_id}/asset` | `F116.rest-get-api-v1-crates-hexon-uri-entries-entry-id-asset` | `fe-api/src/server.rs:450` |
-| GET | `/api/v1/crates/available` | `F116.rest-get-api-v1-crates-available` | `fe-api/src/server.rs:454` |
-| POST | `/api/v1/sim/start` | `F116.rest-post-api-v1-sim-start` | `fe-api/src/server.rs:459` |
-| POST | `/api/v1/sim/stop` | `F116.rest-post-api-v1-sim-stop` | `fe-api/src/server.rs:460` |
-| GET | `/api/v1/sim/status` | `F116.rest-get-api-v1-sim-status` | `fe-api/src/server.rs:461` |
-| POST | `/api/v1/sim/step` | `F116.rest-post-api-v1-sim-step` | `fe-api/src/server.rs:462` |
-| POST | `/api/v1/sim/inject-fault` | `F116.rest-post-api-v1-sim-inject-fault` | `fe-api/src/server.rs:463` |
-| POST | `/mcp` | `F116.rest-post-mcp` | `fe-api/src/server.rs:469` |
+| GET | `/api/v1/debug/invitation` | `F116.rest-get-api-v1-debug-invitation` | `fe-api/src/server.rs:351` |
+| POST | `/api/v1/debug/invitation` | `F116.rest-post-api-v1-debug-invitation` | `fe-api/src/server.rs:351` |
+| GET | `/api/v1/debug/portal-fixture/observe` | `F116.rest-get-api-v1-debug-portal-fixture-observe` | `fe-api/src/server.rs:352` |
+| POST | `/api/v1/debug/portal-fixture/action` | `F116.rest-post-api-v1-debug-portal-fixture-action` | `fe-api/src/server.rs:353` |
+| POST | `/api/v1/debug/portal-fixture/capture` | `F116.rest-post-api-v1-debug-portal-fixture-capture` | `fe-api/src/server.rs:354` |
+| GET | `/api/v1/debug/logs` | `F116.rest-get-api-v1-debug-logs` | `fe-api/src/server.rs:355` |
+| POST | `/api/v1/debug/dialog-answers` | `F116.rest-post-api-v1-debug-dialog-answers` | `fe-api/src/server.rs:356` |
+| POST | `/api/v1/debug/window` | `F116.rest-post-api-v1-debug-window` | `fe-api/src/server.rs:361` |
+| POST | `/api/v1/query` | `F116.rest-post-api-v1-query` | `fe-api/src/server.rs:366` |
+| POST | `/api/v1/query/elevated` | `F116.rest-post-api-v1-query-elevated` | `fe-api/src/server.rs:367` |
+| GET | `/api/v1/petals/{petal_id}/export.parquet` | `F116.rest-get-api-v1-petals-petal-id-export-parquet` | `fe-api/src/server.rs:372` |
+| GET | `/api/v1/petals/{petal_id}/export.csv` | `F116.rest-get-api-v1-petals-petal-id-export-csv` | `fe-api/src/server.rs:376` |
+| POST | `/api/v1/petals/{petal_id}/iot/readings` | `F116.rest-post-api-v1-petals-petal-id-iot-readings` | `fe-api/src/server.rs:381` |
+| POST | `/api/v1/verses/{verse_id}/device-formats` | `F116.rest-post-api-v1-verses-verse-id-device-formats` | `fe-api/src/server.rs:386` |
+| GET | `/api/v1/verses/{verse_id}/device-formats` | `F116.rest-get-api-v1-verses-verse-id-device-formats` | `fe-api/src/server.rs:386` |
+| POST | `/api/v1/petals/{petal_id}/iot/payloads` | `F116.rest-post-api-v1-petals-petal-id-iot-payloads` | `fe-api/src/server.rs:390` |
+| GET | `/api/v1/petals/{petal_id}/iot/payloads` | `F116.rest-get-api-v1-petals-petal-id-iot-payloads` | `fe-api/src/server.rs:390` |
+| POST | `/api/v1/query/share` | `F116.rest-post-api-v1-query-share` | `fe-api/src/server.rs:399` |
+| POST | `/api/v1/analytics/query` | `F116.rest-post-api-v1-analytics-query` | `fe-api/src/server.rs:401` |
+| POST | `/api/v1/hexons/tilesets/install` | `F116.rest-post-api-v1-hexons-tilesets-install` | `fe-api/src/server.rs:406` |
+| DELETE | `/api/v1/hexons/tilesets/{hexon_id}` | `F116.rest-delete-api-v1-hexons-tilesets-hexon-id` | `fe-api/src/server.rs:412` |
+| PATCH | `/api/v1/hexons/tilesets/{hexon_id}/seeding` | `F116.rest-patch-api-v1-hexons-tilesets-hexon-id-seeding` | `fe-api/src/server.rs:416` |
+| GET | `/api/v1/hexons/tilesets` | `F116.rest-get-api-v1-hexons-tilesets` | `fe-api/src/server.rs:420` |
+| GET | `/api/v1/hexons/storage` | `F116.rest-get-api-v1-hexons-storage` | `fe-api/src/server.rs:424` |
+| POST | `/api/v1/crates/publish` | `F116.rest-post-api-v1-crates-publish` | `fe-api/src/server.rs:429` |
+| POST | `/api/v1/crates/{hexon_uri}/install` | `F116.rest-post-api-v1-crates-hexon-uri-install` | `fe-api/src/server.rs:430` |
+| DELETE | `/api/v1/crates/{hexon_uri}/uninstall` | `F116.rest-delete-api-v1-crates-hexon-uri-uninstall` | `fe-api/src/server.rs:434` |
+| GET | `/api/v1/crates/search` | `F116.rest-get-api-v1-crates-search` | `fe-api/src/server.rs:438` |
+| GET | `/api/v1/crates/installed` | `F116.rest-get-api-v1-crates-installed` | `fe-api/src/server.rs:439` |
+| GET | `/api/v1/crates/{hexon_uri}` | `F116.rest-get-api-v1-crates-hexon-uri` | `fe-api/src/server.rs:443` |
+| GET | `/api/v1/crates/{hexon_uri}/entries` | `F116.rest-get-api-v1-crates-hexon-uri-entries` | `fe-api/src/server.rs:447` |
+| GET | `/api/v1/crates/{hexon_uri}/entries/{entry_id}/asset` | `F116.rest-get-api-v1-crates-hexon-uri-entries-entry-id-asset` | `fe-api/src/server.rs:451` |
+| GET | `/api/v1/crates/available` | `F116.rest-get-api-v1-crates-available` | `fe-api/src/server.rs:455` |
+| POST | `/api/v1/sim/start` | `F116.rest-post-api-v1-sim-start` | `fe-api/src/server.rs:460` |
+| POST | `/api/v1/sim/stop` | `F116.rest-post-api-v1-sim-stop` | `fe-api/src/server.rs:461` |
+| GET | `/api/v1/sim/status` | `F116.rest-get-api-v1-sim-status` | `fe-api/src/server.rs:462` |
+| POST | `/api/v1/sim/step` | `F116.rest-post-api-v1-sim-step` | `fe-api/src/server.rs:463` |
+| POST | `/api/v1/sim/inject-fault` | `F116.rest-post-api-v1-sim-inject-fault` | `fe-api/src/server.rs:464` |
+| POST | `/mcp` | `F116.rest-post-mcp` | `fe-api/src/server.rs:470` |
 
 ## Reconciliation limits and explicit gaps
 
@@ -325,6 +327,6 @@ Missing endpoint checkpoint summary: `{"routes": [], "tools": []}`.
 
 Developer Settings now owns terminal Reset (F086); only a disposable owned store may exercise it. Config URL has an explicit unsupported Inspector explanation and no editor/save route. The old InviteDialog enum/opener is retired. Petal Requirements is declaration-only. PluginHost has no plugin-management GUI. Native Portal fixture evidence (F141) is separate from GUI browsing (F025). Durable REST/legacy WebSocket auth (F142) requires actual lifecycle outcomes, not schema presence.
 
-Pending source reconciliation: `["P2P QA-0050 repair remains isolated and is not part of this audited source. Actual two-root invite/join/role/replica and P2P transfer acceptance remains required; no completed collaboration is inferred."]`.
+Pending source reconciliation: `["Current source includes the reviewed Owner/Manager addressed-v2 production stack with strict Owner-v1 acceptance, completed-save history and compact primary selection. Actual paired invitation/native/role/proof/transfer acceptance and current-source FULL/convergence remain unexecuted catalog obligations. Isolated group/multiple-selection/batch-edit work is outside this source snapshot."]`.
 
-Additional live acceptance obligations: `["F143.watch-nonzero-exit-refused and F143.watch-writer-drain-refused require actual root-owned native refusal experiments. Synthetic F143 validator cases provide zero application coverage and cannot replace those outcomes or actual F080.confirm-close GUI/lifecycle/native-exit proof.", "Stage20 reconciliation adds native creation/baseline/materialization, request-owner/unknown/fullqueue, startup-hydration, native map fences, native form/header and expected page navigation variants. Every new checkpoint remains NOT_RUN; source assertions and QA18/19 do not execute these repairs.", "Y cases require actual current-stage GUI actions/state/images/readback. Controlled production channel/store/COM journeys may cover their A cases only; synthetic schema/receipt packets cannot substitute for native GUI or browser results."]`.
+Additional live acceptance obligations: `["F143.watch-nonzero-exit-refused and F143.watch-writer-drain-refused require actual root-owned native refusal experiments. Synthetic F143 validator cases provide zero application coverage and cannot replace those outcomes or actual F080.confirm-close GUI/lifecycle/native-exit proof.", "Stage20 reconciliation adds native creation/baseline/materialization, request-owner/unknown/fullqueue, startup-hydration, native map fences, native form/header and expected page navigation variants. Every new checkpoint remains NOT_RUN; source assertions and QA18/19 do not execute these repairs.", "Y cases require actual current-stage GUI actions/state/images/readback. Controlled production channel/store/COM journeys may cover their A cases only; synthetic schema/receipt packets cannot substitute for native GUI or browser results.", "Source09923 reconciliation preserves every previous checkpoint ID. New invitation, completed-save and selection variants start NOT_RUN; focused QA24-26 evidence is not imported as current-pass coverage.", "F098/F099 require actual owned GUI/native joins and independent current role, hierarchy and proof outcomes. Accepted metadata, capabilities or active proof may remain after cancellation or an unknown result; no unconfirmed request may navigate. A transfer submission receipt is not Joined.", "F144 requires actual app/API and applicable Windows process/socket/token-publication outcomes. F145 contains exactly synthetic production-helper validator cases with zero application/signature/native coverage; F145 PASS cannot satisfy F144, F098, F099, F105 or F106.", "Y selection cases cover current primary selection only. Additional/partial renderer assertions are A-only; isolated multi-selection/groups/tools are not advertised as live. Record physical target quantization exactly;19.9921875px cannot be rounded into strict20px success.", "Normal history playback exposes completed saves while retaining every field audit fact. Interior or malformed atomic cuts return no state; historical stored overrides do not claim the path-derived rendered pose or a global multi-object snapshot."]`.
