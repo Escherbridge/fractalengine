@@ -58,6 +58,7 @@ pub struct SceneAssetAdoptionCandidate {
     pub size_bytes: u64,
     pub asset_fingerprint: String,
     pub reference_fingerprints: Vec<SceneAssetReferenceWitness>,
+    pub model_fingerprint: Option<String>,
 }
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]

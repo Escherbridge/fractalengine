@@ -490,3 +490,8 @@ are limited to 64 KiB, and transfer bytes to 256 MiB. The existing op_log journe
 Owner refusal, stale adoption refusal, explicit provenance/no uploader fiction, unchanged
 node/history, exact adoption publication proof, fresh missing-byte demand order and live
 Serve role revocation. No execution or real peer/blob/render proof is claimed here.
+
+Adoption also captures the optional singleton Portal/model reference: ambiguous or
+foreign-Petal metadata refuses the action. Candidate model_fingerprint binds exact
+presence/content across preview and Apply, and the transaction fences that same row.
+This local reference check does not make model metadata part of peer replication.

@@ -79,11 +79,25 @@ async fn prepare(db: &Db, node_id: &str, actor: &str) -> anyhow::Result<Prepared
     let fingerprint = asset["fingerprint"]
         .as_str()
         .ok_or_else(|| anyhow::anyhow!("missing metadata fingerprint"))?;
-    let mut response=db.query(format!("{REFERENCES}; SELECT node_id,petal_id FROM node WHERE asset_id=$adoption_asset ORDER BY node_id LIMIT 257 TIMEOUT 2s; SELECT payload_id FROM device_payload WHERE asset_ids CONTAINS $adoption_asset LIMIT 1 TIMEOUT 2s"))
+    let mut response=db.query(format!("{REFERENCES}; SELECT node_id,petal_id FROM node WHERE asset_id=$adoption_asset ORDER BY node_id LIMIT 257 TIMEOUT 2s; SELECT payload_id FROM device_payload WHERE asset_ids CONTAINS $adoption_asset LIMIT 1 TIMEOUT 2s; SELECT petal_id, encoding::base64::encode(encoding::cbor::encode($this)) AS fingerprint FROM model WHERE asset_id=$adoption_asset LIMIT 2 TIMEOUT 2s"))
         .bind(("adoption_asset",asset_id.to_owned())).await?.check()?;
     let references: Vec<SceneAssetReferenceWitness> = response.take(0)?;
     let locations: Vec<Value> = response.take(1)?;
     let payloads: Vec<Value> = response.take(2)?;
+    let models: Vec<Value> = response.take(3)?;
+    anyhow::ensure!(
+        models.len() <= 1 && models.iter().all(|row| row["petal_id"] == petal),
+        "asset Portal metadata is ambiguous or belongs to another Petal"
+    );
+    let model_fingerprint = models
+        .first()
+        .map(|row| {
+            row["fingerprint"]
+                .as_str()
+                .map(str::to_owned)
+                .ok_or_else(|| anyhow::anyhow!("model reference fingerprint missing"))
+        })
+        .transpose()?;
     anyhow::ensure!(
         !references.is_empty()
             && references.len() <= 256
@@ -100,10 +114,12 @@ async fn prepare(db: &Db, node_id: &str, actor: &str) -> anyhow::Result<Prepared
         "IF (SELECT VALUE encoding::base64::encode(encoding::cbor::encode($this)) FROM asset WHERE asset_id=$adoption_asset) != [$adoption_fingerprint] { THROW 'adoption metadata changed'; }".into(),
         format!("IF ({REFERENCES}) != $adoption_references {{ THROW 'adoption reference set changed'; }}"),
         "IF array::len((SELECT payload_id FROM device_payload WHERE asset_ids CONTAINS $adoption_asset LIMIT 1)) != 0 { THROW 'adoption payload reference appeared'; }".into(),
+        "IF (SELECT petal_id, encoding::base64::encode(encoding::cbor::encode($this)) AS fingerprint FROM model WHERE asset_id=$adoption_asset LIMIT 2) != $adoption_models { THROW 'adoption model reference changed'; }".into(),
         "IF array::len((SELECT node_id FROM node WHERE node_id=$adoption_node AND asset_id=$adoption_asset AND petal_id=$adoption_petal AND tombstone=NONE)) != 1 { THROW 'adoption target changed'; }".into(),
     ]);
     bindings.extend([
         ("adoption_asset".into(), json!(asset_id)),
+        ("adoption_models".into(), json!(models)),
         ("adoption_fingerprint".into(), json!(fingerprint)),
         (
             "adoption_references".into(),
@@ -127,6 +143,7 @@ async fn prepare(db: &Db, node_id: &str, actor: &str) -> anyhow::Result<Prepared
             size_bytes: size,
             asset_fingerprint: fingerprint.into(),
             reference_fingerprints: references,
+            model_fingerprint,
         },
         guards,
         bindings,

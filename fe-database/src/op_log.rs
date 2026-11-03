@@ -5815,10 +5815,59 @@ mod tests {
                     .unwrap()
                     .check()
                     .unwrap();
+                legacy
+                    .query(
+                        "CREATE model CONTENT {petal_id:'foreign-p',asset_id:$asset,transform:{}}",
+                    )
+                    .bind(("asset", legacy_asset.clone()))
+                    .await
+                    .unwrap()
+                    .check()
+                    .unwrap();
+                assert!(
+                    crate::handlers::scene_asset_adoption::read(&legacy, &disk, node_id, "did:qa")
+                        .await
+                        .is_err(),
+                    "foreign Portal metadata reference refuses adoption"
+                );
+                legacy
+                    .query("DELETE model WHERE asset_id=$asset")
+                    .bind(("asset", legacy_asset.clone()))
+                    .await
+                    .unwrap()
+                    .check()
+                    .unwrap();
                 let candidate =
                     crate::handlers::scene_asset_adoption::read(&legacy, &disk, node_id, "did:qa")
                         .await
                         .unwrap();
+                assert!(candidate.model_fingerprint.is_none());
+                legacy
+                    .query("CREATE model CONTENT {petal_id:'scene-p',asset_id:$asset,transform:{}}")
+                    .bind(("asset", legacy_asset.clone()))
+                    .await
+                    .unwrap()
+                    .check()
+                    .unwrap();
+                assert!(
+                    crate::handlers::scene_asset_adoption::adopt(
+                        &legacy,
+                        &disk,
+                        &candidate,
+                        "did:qa",
+                        "new-model-after-preview"
+                    )
+                    .await
+                    .is_err(),
+                    "all references remain bound to the preview"
+                );
+                legacy
+                    .query("DELETE model WHERE asset_id=$asset")
+                    .bind(("asset", legacy_asset.clone()))
+                    .await
+                    .unwrap()
+                    .check()
+                    .unwrap();
                 let mut stale = candidate.clone();
                 stale.size_bytes += 1;
                 assert!(crate::handlers::scene_asset_adoption::adopt(
