@@ -66,7 +66,17 @@ pub(super) async fn publish(
             .as_str()
             .ok_or_else(|| anyhow::anyhow!("Scene asset row lacks digest"))?,
     )?;
-    let permit = admit_job(db, verse, hash, SceneAssetTransferPurpose::Publish).await?;
+    let purpose = SceneAssetTransferPurpose::Publish {
+        asset_id: row["asset_id"]
+            .as_str()
+            .ok_or_else(|| anyhow::anyhow!("Scene metadata lacks asset identity"))?
+            .into(),
+        petal_id: row["petal_id"]
+            .as_str()
+            .ok_or_else(|| anyhow::anyhow!("Scene metadata lacks Petal identity"))?
+            .into(),
+    };
+    let permit = admit_job(db, verse, hash, purpose.clone()).await?;
     anyhow::ensure!(
         row["asset_id"].as_str() == Some(permit.asset_id.as_str())
             && row["petal_id"].as_str() == Some(permit.petal_id.as_str())
@@ -76,7 +86,7 @@ pub(super) async fn publish(
     );
     let bytes = read_shared(blobs, hash, permit.size_bytes, Some(lease.io_owner.clone())).await?;
     verify_scene_asset_bytes(&bytes, &hash, &permit.content_type, permit.size_bytes)?;
-    let current = admit_job(db, verse, hash, SceneAssetTransferPurpose::Publish).await?;
+    let current = admit_job(db, verse, hash, purpose.clone()).await?;
     anyhow::ensure!(
         current == permit && !lease.stop.is_requested(),
         "Scene asset publication authority changed"
@@ -114,7 +124,7 @@ pub(super) async fn publish(
     }
     .await;
     result?;
-    let current = admit_job(db, verse, hash, SceneAssetTransferPurpose::Publish).await?;
+    let current = admit_job(db, verse, hash, purpose.clone()).await?;
     anyhow::ensure!(
         current == permit && !lease.stop.is_requested(),
         "Scene asset publication changed before metadata emission"

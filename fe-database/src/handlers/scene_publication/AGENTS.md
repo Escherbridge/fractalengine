@@ -195,3 +195,10 @@ Ordinary asset/API/device publication remains separate; signed scope/author and
 current local upload/adoption proofs still determine authorization. Upgraded sync
 holds marked metadata until verified source bytes are retained; old peers may ignore
 the additive hint and retain their earlier metadata-first behavior.
+
+Current reads verify canonical local regular-file digest and exact captured metadata
+size after the guarded read, on blocking IO with a constant-memory streaming bound.
+A corrupt/empty/directory entry becomes MissingBlob and produces a bounded Need; it
+does not permanently suppress demand merely because a path exists. Existing larger
+local files remain available when verified; missing/invalid files above the transfer
+cap remain TransferLimitExceeded. This read is event-driven, not per-frame hashing.

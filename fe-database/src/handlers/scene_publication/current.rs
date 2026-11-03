@@ -125,10 +125,27 @@ pub(crate) async fn read_current_and_need(
         ..
     } = &asset
     {
-        if !blobs.has_blob(&crate::hash_from_hex(content_hash)?) {
+        let hash = crate::hash_from_hex(content_hash)?;
+        let path = blobs.get_blob_path(&hash);
+        let expected_size = descriptor
+            .as_ref()
+            .map(|(_, _, size)| *size)
+            .ok_or_else(|| anyhow::anyhow!("local asset metadata size unavailable"))?;
+        let verified = if let Some(path) = path {
+            tokio::task::spawn_blocking(move || {
+                fe_runtime::blob_store::verify_blob_file(&path, &hash, expected_size)
+            })
+            .await?
+            .unwrap_or(false)
+        } else {
+            false
+        };
+        if !verified {
             asset = ReplicaNodeAsset::Unavailable {
                 asset_id: asset_id.clone(),
-                reason: if descriptor.is_none() {
+                reason: if descriptor.as_ref().is_some_and(|(_, _, size)| {
+                    *size > fe_runtime::scene_asset::MAX_SCENE_ASSET_BYTES
+                }) {
                     ReplicaAssetUnavailable::TransferLimitExceeded
                 } else {
                     ReplicaAssetUnavailable::MissingBlob
@@ -220,9 +237,7 @@ async fn asset_state(
     let Some(size) = metadata["size_bytes"].as_u64().filter(|size| *size > 0) else {
         return Ok(unavailable(ReplicaAssetUnavailable::InvalidMetadata));
     };
-    if size <= fe_runtime::scene_asset::MAX_SCENE_ASSET_BYTES {
-        *descriptor = Some((id.into(), decoded, size));
-    }
+    *descriptor = Some((id.into(), decoded, size));
     if !blobs.has_blob(&decoded) {
         return Ok(unavailable(
             if size > fe_runtime::scene_asset::MAX_SCENE_ASSET_BYTES {

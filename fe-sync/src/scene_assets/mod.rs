@@ -31,6 +31,34 @@ struct OpenVerse {
     generation: u64,
     stop: StopSignal,
     providers: Vec<ProviderRef>,
+    roster: Option<crate::replicator::SceneProviderRoster>,
+}
+
+impl OpenVerse {
+    fn providers(&self) -> anyhow::Result<Vec<ProviderRef>> {
+        anyhow::ensure!(
+            !self.stop.is_requested(),
+            "Scene provider generation closed"
+        );
+        let mut providers = self.providers.clone();
+        if let Some(roster) = &self.roster {
+            for peer in roster.peers()? {
+                if !providers.iter().any(|provider| {
+                    IrohBlobTransport::parse_provider(provider)
+                        .is_ok_and(|address| address.id == peer)
+                }) {
+                    providers.push(IrohBlobTransport::provider_ref(&iroh::EndpointAddr::new(
+                        peer,
+                    ))?);
+                }
+            }
+        }
+        anyhow::ensure!(
+            providers.len() <= 16,
+            "More than 16 native scene providers; no prefix selected"
+        );
+        Ok(providers)
+    }
 }
 
 type OpenVerses = Arc<RwLock<HashMap<String, OpenVerse>>>;
@@ -156,7 +184,17 @@ impl SceneAssetJobs {
         }
     }
 
+    #[cfg(test)]
     pub(crate) fn opened(&mut self, verse: &str, peers: &[iroh::EndpointAddr]) {
+        self.opened_with_roster(verse, peers, None);
+    }
+
+    pub(crate) fn opened_with_roster(
+        &mut self,
+        verse: &str,
+        peers: &[iroh::EndpointAddr],
+        roster: Option<crate::replicator::SceneProviderRoster>,
+    ) {
         self.close(verse);
         if peers.len() > 16 {
             tracing::warn!(
@@ -180,6 +218,7 @@ impl SceneAssetJobs {
                 generation,
                 stop: StopSignal::default(),
                 providers,
+                roster,
             },
         );
     }
@@ -384,7 +423,13 @@ impl SceneAssetJobs {
                     }
                     Job::Fetch { verse, hash, .. } => {
                         let permit = admit_job(&db, verse, *hash, SceneAssetTransferPurpose::Fetch).await?;
-                        let bytes = fetch(&transport, &gate, verse, *hash, &permit, &lease.providers, &job_lease).await?;
+                        // Subscription startup and a newly joined peer may settle after metadata arrives.
+                        for attempt in 0..20 {
+                            if lease.providers().is_ok_and(|providers| !providers.is_empty()) { break; }
+                            if attempt < 19 { tokio::time::sleep(Duration::from_millis(100)).await; }
+                        }
+                        let providers = lease.providers()?;
+                        let bytes = fetch(&transport, &gate, verse, *hash, &permit, &providers, &job_lease).await?;
                         Some((permit, bytes))
                     }
                 };

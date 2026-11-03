@@ -495,3 +495,14 @@ Adoption also captures the optional singleton Portal/model reference: ambiguous 
 foreign-Petal metadata refuses the action. Candidate model_fingerprint binds exact
 presence/content across preview and Apply, and the transaction fences that same row.
 This local reference check does not make model metadata part of peer replication.
+
+## Scene metadata reference confinement
+
+Inbound asset CREATE captures node, device_payload and optional model/Portal reference
+sets before writing. Ambiguous or foreign/unknown-Petal models refuse. The exact
+model presence/Petal/server-CBOR witness is checked again inside the CREATE transaction
+alongside asset absence and sealed actual-author/ancestry guards. The shared reference
+preparation helper is also exercised by the existing operation journey for model
+insertion/reparenting between preparation and use; it does not grant author authority.
+Exact Publish admission filters asset ID and expected Petal before selecting metadata,
+so different imports with one digest cannot borrow proofs or starve one another.

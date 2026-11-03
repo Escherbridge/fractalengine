@@ -1148,6 +1148,51 @@ mod tests {
                 .unwrap(),
             "GLB MIME alone never reroutes ordinary/device metadata"
         );
+        let second_asset_id = ulid::Ulid::new().to_string();
+        let mut second_row: serde_json::Value = serde_json::from_slice(&row).unwrap();
+        second_row["asset_id"] = serde_json::json!(second_asset_id);
+        second_row["petal_id"] = serde_json::json!("scene-p2");
+        let second_row_hash = provider_files
+            .add_blob(&serde_json::to_vec(&second_row).unwrap())
+            .unwrap();
+        use crate::replicator::{IrohDocsEngineHolder, IrohDocsReplicator, VerseReplicator};
+        let secret = [161u8; 32];
+        let namespace = hex::encode(fe_database::derive_namespace_id(&secret));
+        // Original Owner opens with no providers; the joining Editor dials the Owner.
+        let owner_replica = IrohDocsReplicator::new(
+            "scene-v".into(),
+            namespace.clone(),
+            hex::encode(secret),
+            "owner".into(),
+            Arc::new(IrohDocsEngineHolder::online(requester_stack.clone())),
+        );
+        let editor_replica = IrohDocsReplicator::new(
+            "scene-v".into(),
+            namespace.clone(),
+            hex::encode(secret),
+            "editor".into(),
+            Arc::new(IrohDocsEngineHolder::online(provider_stack.clone())),
+        );
+        owner_replica.open_document().await.unwrap();
+        editor_replica.open_document().await.unwrap();
+        let _owner_rows = owner_replica.subscribe().await.unwrap();
+        let _editor_rows = editor_replica.subscribe().await.unwrap();
+        owner_replica.start_sync(Vec::new()).await.unwrap();
+        editor_replica
+            .start_sync(vec![requester_ep.addr()])
+            .await
+            .unwrap();
+        let owner_roster = owner_replica.scene_provider_roster().unwrap();
+        tokio::time::timeout(std::time::Duration::from_secs(20), async {
+            while !owner_roster
+                .peers()
+                .is_ok_and(|peers| peers.contains(&provider_ep.id()))
+            {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("Owner learns the joined authenticated Editor from its actual native subscription");
         let permit = SceneAssetTransferPermit {
             verse_id: "scene-v".into(),
             petal_id: "scene-p".into(),
@@ -1165,6 +1210,7 @@ mod tests {
         let (requester_db, requester_rx) = crossbeam::channel::bounded::<DbCommand>(16);
         let spawn_admissions = |rx: crossbeam::channel::Receiver<DbCommand>, source: bool| {
             let permit = permit.clone();
+            let second_asset_id = second_asset_id.clone();
             let allowed = allowed.clone();
             let stop = admission_stop.clone();
             let requester_did = requester_did.clone();
@@ -1174,8 +1220,15 @@ mod tests {
                         if let DbCommand::InspectSceneAssetTransfer { request, reply } = command {
                             assert_eq!(request.verse_id, "scene-v");
                             assert_eq!(request.hash, permit.content_hash);
+                            let mut selected = permit.clone();
+                            if let SceneAssetTransferPurpose::Publish { asset_id, petal_id } = &request.purpose {
+                                if asset_id == &second_asset_id && petal_id == "scene-p2" {
+                                    selected.asset_id=second_asset_id.clone(); selected.petal_id="scene-p2".into();
+                                    selected.node_id="scene-n2".into(); selected.asset_fingerprint="second-exact-fixture".into();
+                                }
+                            }
                             let valid = match &request.purpose {
-                                SceneAssetTransferPurpose::Publish => source,
+                                SceneAssetTransferPurpose::Publish { asset_id, petal_id } => source && asset_id == &selected.asset_id && petal_id == &selected.petal_id,
                                 SceneAssetTransferPurpose::Fetch => !source,
                                 SceneAssetTransferPurpose::Serve {
                                     requester_did: actual,
@@ -1186,7 +1239,7 @@ mod tests {
                                 }
                             };
                             let _ = reply.try_send(if valid {
-                                Ok(permit.clone())
+                                Ok(selected)
                             } else {
                                 Err("controlled current admission refusal".into())
                             });
@@ -1225,8 +1278,8 @@ mod tests {
             receiver_outbox.clone(),
             receiver_publications,
         );
-        source_jobs.opened("scene-v", &[]);
-        receiver_jobs.opened("scene-v", &[provider_ep.addr()]);
+        source_jobs.opened_with_roster("scene-v", &[], editor_replica.scene_provider_roster());
+        receiver_jobs.opened_with_roster("scene-v", &[], Some(owner_roster.clone()));
         source_jobs.publish_row("scene-v", row_hash);
         let publication =
             tokio::time::timeout(std::time::Duration::from_secs(20), publication_rx.recv())
@@ -1236,6 +1289,10 @@ mod tests {
         assert!(source_jobs.publication_is_current(&publication));
         assert_eq!(publication.record_id, asset_id);
         assert_eq!(publication.row_hash, row_hash);
+        source_jobs.publish_row("scene-v", second_row_hash);
+        let second_publication=tokio::time::timeout(std::time::Duration::from_secs(20), publication_rx.recv()).await.unwrap().unwrap();
+        assert_eq!(second_publication.record_id,second_asset_id,"same bytes do not collapse metadata identities");
+        assert_eq!(second_publication.row_hash,second_row_hash);
         assert!(
             provider_dir
                 .path()
@@ -1325,7 +1382,8 @@ mod tests {
         );
         let canonical = requester_files.get_blob_path(&scene_hash).unwrap();
         std::fs::write(&canonical, b"corrupt pre-existing cache file").unwrap();
-        receiver_jobs.fetch_owned("scene-v", scene_hash, Some("scene-corrupt-readback".into()));
+        crate::sync_thread::handle_fetch_blob(&mut receiver_jobs, &scene_hash, "scene-v");
+        assert!(events_rx.try_recv().is_err(), "compatibility request cannot synchronously announce corrupt cache readiness");
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(20);
         loop {
             assert!(
@@ -1338,17 +1396,14 @@ mod tests {
                     result,
                     ..
                 }) => {
-                    assert_eq!(request_ids, vec!["scene-corrupt-readback"]);
-                    assert!(
-                        result.is_ok(),
-                        "verified bytes repair the corrupt canonical cache entry"
-                    );
-                    break;
+                    panic!("compatibility fetch has no owned request IDs: {request_ids:?} {result:?}");
                 }
                 Ok(SyncEvent::BlobReady { hash }) => {
                     assert_eq!(hash, scene_hash);
                     assert_eq!(std::fs::read(&canonical).unwrap(), glb);
+                    break;
                 }
+                Ok(SyncEvent::SceneAssetFetchFailed { reason, .. }) => panic!("compatibility repair failed: {reason}"),
                 Ok(_) => {}
                 Err(_) => tokio::time::sleep(std::time::Duration::from_millis(5)).await,
             }
@@ -1390,7 +1445,34 @@ mod tests {
         allowed.store(true, std::sync::atomic::Ordering::Release);
         receiver_jobs.fetch_owned("scene-v", scene_hash, Some("scene-old-generation".into()));
         receiver_jobs.close("scene-v");
-        receiver_jobs.opened("scene-v", &[provider_ep.addr()]);
+        owner_replica.close().await.unwrap();
+        assert!(
+            owner_roster.peers().is_err(),
+            "closed subscription cannot retain a usable provider roster"
+        );
+        owner_replica.open_document().await.unwrap();
+        let _owner_rows_reopened = owner_replica.subscribe().await.unwrap();
+        owner_replica.start_sync(Vec::new()).await.unwrap();
+        editor_replica
+            .start_sync(vec![requester_ep.addr()])
+            .await
+            .unwrap();
+        let reopened_roster = owner_replica.scene_provider_roster().unwrap();
+        tokio::time::timeout(std::time::Duration::from_secs(20), async {
+            while !reopened_roster
+                .peers()
+                .is_ok_and(|peers| peers.contains(&provider_ep.id()))
+            {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("reopened retained namespace relearns connected Editor without explicit bootstrap");
+        assert!(
+            owner_roster.peers().is_err(),
+            "a fresh subscription never resurrects the old roster"
+        );
+        receiver_jobs.opened_with_roster("scene-v", &[], Some(reopened_roster));
         receiver_jobs.fetch_owned("scene-v", scene_hash, Some("scene-new-generation".into()));
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(20);
         let mut old = false;
@@ -1466,6 +1548,8 @@ mod tests {
             69,
             "queue refusal and every cancelled owner settle without loop self-drain deadlock"
         );
+        owner_replica.close().await.unwrap();
+        editor_replica.close().await.unwrap();
         source_jobs.shutdown().await;
         admission_stop.request();
         source_admissions.await.unwrap();

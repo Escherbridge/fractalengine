@@ -52,6 +52,33 @@ pub trait BlobStore: Send + Sync {
     fn remove_blob(&self, hash: &BlobHash) -> anyhow::Result<()>;
 }
 
+/// Verify one regular canonical file with bounded streaming IO; call off the async/select thread.
+pub fn verify_blob_file(path: &Path, hash: &BlobHash, expected_size: u64) -> anyhow::Result<bool> {
+    use std::io::Read;
+    let file = std::fs::File::open(path)?;
+    let metadata = file.metadata()?;
+    if !metadata.is_file() || metadata.len() != expected_size {
+        return Ok(false);
+    }
+    let size = expected_size;
+    let Some(bound) = size.checked_add(1) else {
+        return Ok(false);
+    };
+    let mut reader = file.take(bound);
+    let mut hasher = blake3::Hasher::new();
+    let mut total = 0u64;
+    let mut buffer = [0u8; 64 * 1024];
+    loop {
+        let count = reader.read(&mut buffer)?;
+        if count == 0 {
+            break;
+        }
+        total += count as u64;
+        hasher.update(&buffer[..count]);
+    }
+    Ok(total == size && *hasher.finalize().as_bytes() == *hash)
+}
+
 /// Encode a `BlobHash` as a lowercase hex string suitable for DB rows and URLs.
 pub fn hash_to_hex(hash: &BlobHash) -> String {
     hex::encode(hash)

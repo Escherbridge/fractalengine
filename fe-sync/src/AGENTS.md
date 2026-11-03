@@ -1997,8 +1997,8 @@ tileset publishing. Native UI uses FetchSceneAsset with an owned request ID. Job
 coalesce equal hash/Verse/open-generation requests, fan out SceneAssetFetchSettled
 for at most 256 exact owners, and also emit BlobReady only after verified shared-store
 persistence. Hash-only failure events are advisory and cannot settle a newer owner.
-The old FetchBlob local-hit behavior remains a compatibility path; misses enter the
-same independently admitted scene jobs, never a separate untrusted provider route.
+Compatibility FetchBlob requests enter these same independently admitted verified
+scene jobs, never a presence-only readiness path or untrusted provider route.
 
 The private scene_asset runtime protocol and DQA020 adoption are described in the
 DB handlers directory. These contracts have no public REST/MCP route and no local
@@ -2104,3 +2104,19 @@ uncancellable blocking IO, so rapid Close/reopen cannot accumulate unbounded dis
 workers behind cancelled async jobs. Runtime teardown drains finite blocking tasks
 before the sync OS-thread join. Generic metadata classification reads remain one
 small sequential loop operation, using the same blocking-pool file reader.
+
+Scene asset review corrections bind every Publish/re-admission to the exact envelope
+asset ID and Petal, while byte storage remains content-addressed. FetchBlob no longer
+emits readiness for mere canonical-path presence; compatibility and owned requests
+share bounded asynchronous admission/verification/readback jobs. Current read state
+also verifies local file size/digest before LocalBlob.
+
+Native providers include successful authenticated SyncFinished peers of the exact
+open subscription, in addition to explicit native bootstrap endpoints. Jobs sample
+this live bounded roster; NeighborDown/errors/Close/subscription replacement invalidate
+old identities and generations. This follows pinned iroh-docs LiveEvent::SyncFinished
+and iroh 1.3 Endpoint::connect's retained recent remote routes, without arbitrary UI
+addresses. Existing native journeys author Owner-open-empty/Editor-join discovery,
+reverse byte delivery, retained namespace reopen and stale-roster rejection. The role
+fixture remains controlled; production DB authority is covered separately. No new
+execution, peer-history, model/schema convergence or tagged-release claim is added.

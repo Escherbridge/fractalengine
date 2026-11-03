@@ -9,7 +9,7 @@ pub const SCENE_ASSET_ROW_MARKER: &str = "_fe_scene_asset";
 /// The DB resolves all identities and authority; a request is never an authority token.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum SceneAssetTransferPurpose {
-    Publish,
+    Publish { asset_id: String, petal_id: String },
     Fetch,
     Serve { requester_did: String },
 }

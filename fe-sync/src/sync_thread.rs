@@ -288,6 +288,10 @@ enum AnyReplicator {
 }
 
 impl VerseReplicator for AnyReplicator {
+    fn scene_provider_roster(&self) -> Option<crate::replicator::SceneProviderRoster> {
+        match self { Self::Iroh(replica) => replica.scene_provider_roster(), Self::Virtual(_) => None }
+    }
+
     fn joined_peer_ready(&self, namespace_id: &str, issuer_did: &str) -> bool {
         match self {
             Self::Iroh(replica) => replica.joined_peer_ready(namespace_id, issuer_did),
@@ -936,9 +940,7 @@ pub fn spawn_sync_thread_with_transport(
                                 }
                             }
                             Some(SyncCommand::FetchBlob { hash, verse_id }) => {
-                                if !handle_fetch_blob(&blob_store,endpoint.as_ref(),&hash,&verse_id,&evt_tx) {
-                                    scene_assets.fetch(&verse_id,hash);
-                                }
+                                handle_fetch_blob(&mut scene_assets, &hash, &verse_id);
                             }
                             Some(SyncCommand::FetchSceneAsset {hash,verse_id,request_id}) => {
                                 scene_assets.fetch_owned(&verse_id,hash,Some(request_id));
@@ -1033,7 +1035,11 @@ pub fn spawn_sync_thread_with_transport(
                                         tracing::debug!("Replica join caller is no longer waiting");
                                     }
                                 }
-                                if opened.native_ready && replicas.contains_key(&verse_id) {scene_assets.opened(&verse_id,&peers);}
+                                if opened.native_ready {
+                                    if let Some(replica) = replicas.get(&verse_id) {
+                                        scene_assets.opened_with_roster(&verse_id, &peers, replica.scene_provider_roster());
+                                    }
+                                }
                                 sync_blob_access_gate(
                                     &docs_stack,
                                     &verse_id,
@@ -1595,18 +1601,13 @@ fn sync_blob_access_gate(
     }
 }
 
-/// Preserve the generic local-hit fast path; scene misses use independently admitted jobs.
-fn handle_fetch_blob(
-    blob_store: &BlobStoreHandle,
-    _endpoint: Option<&SyncEndpoint>,
+/// Compatibility requests share the admitted, verified asynchronous scene job boundary.
+pub(crate) fn handle_fetch_blob(
+    scene_assets: &mut crate::scene_assets::SceneAssetJobs,
     hash: &fe_runtime::blob_store::BlobHash,
-    _verse_id: &str,
-    evt_tx: &dyn EventSink,
-) -> bool {
-    if blob_store.has_blob(hash) {
-        send_sync_event(evt_tx, SyncEvent::BlobReady { hash: *hash });
-        true
-    } else {false}
+    verse_id: &str,
+) {
+    scene_assets.fetch(verse_id, *hash);
 }
 
 /// Replay a freshly-opened replica's current entries through the inbound
@@ -3523,31 +3524,50 @@ mod tests {
     }
 
     #[test]
-    fn fetch_blob_local_hit_emits_ready() {
+    fn fetch_blob_local_hit_requires_current_admission() {
         let store: BlobStoreHandle = Arc::new(MockBlobStore::new());
         let hash = store.add_blob(b"test data").unwrap();
         let (evt_tx, evt_rx) = crossbeam::channel::bounded(8);
-
-        handle_fetch_blob(&store, None, &hash, "verse-1", &evt_tx);
-
-        let evt = evt_rx.try_recv().expect("should have BlobReady");
-        assert!(matches!(evt, SyncEvent::BlobReady { hash: h } if h == hash));
+        let (publication_tx, _) = tokio::sync::mpsc::channel(1);
+        let mut jobs = crate::scene_assets::SceneAssetJobs::new(
+            store,
+            None,
+            Default::default(),
+            None,
+            crate::event_outbox::EventOutbox::new(evt_tx),
+            publication_tx,
+        );
+        handle_fetch_blob(&mut jobs, &hash, "verse-1");
+        assert!(matches!(
+            evt_rx.try_recv().unwrap(),
+            SyncEvent::SceneAssetFetchFailed { .. }
+        ));
+        assert!(
+            evt_rx.try_recv().is_err(),
+            "presence alone never emits BlobReady"
+        );
     }
 
     #[test]
     fn fetch_blob_miss_does_not_emit_ready() {
         let store: BlobStoreHandle = Arc::new(MockBlobStore::new());
-        let missing = [0xABu8; 32];
         let (evt_tx, evt_rx) = crossbeam::channel::bounded(8);
-
-        handle_fetch_blob(&store, None, &missing, "verse-2", &evt_tx);
-
-        assert!(
-            evt_rx.try_recv().is_err(),
-            "no event for a miss in Phase D stub"
+        let (publication_tx, _) = tokio::sync::mpsc::channel(1);
+        let mut jobs = crate::scene_assets::SceneAssetJobs::new(
+            store,
+            None,
+            Default::default(),
+            None,
+            crate::event_outbox::EventOutbox::new(evt_tx),
+            publication_tx,
         );
+        handle_fetch_blob(&mut jobs, &[0xABu8; 32], "verse-2");
+        assert!(matches!(
+            evt_rx.try_recv().unwrap(),
+            SyncEvent::SceneAssetFetchFailed { .. }
+        ));
+        assert!(evt_rx.try_recv().is_err());
     }
-
     /// Serializes tests that mutate process env and spawn sync threads —
     /// env is process-global and cargo runs tests in parallel.
     static SYNC_THREAD_ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());

@@ -1468,39 +1468,16 @@ async fn apply_anchored_asset_row(
     )
     .await?;
     let (mut guards, mut bindings) = permission.into_parts();
-    let references="SELECT node_id,petal_id FROM node WHERE asset_id=$inbound_scene_asset ORDER BY node_id LIMIT 257 TIMEOUT 2s";
-    let payloads="SELECT payload_id,petal_id FROM device_payload WHERE asset_ids CONTAINS $inbound_scene_asset ORDER BY payload_id LIMIT 257 TIMEOUT 2s";
-    let mut response = db
-        .query(format!("{references}; {payloads}"))
-        .bind(("inbound_scene_asset", asset_id.clone()))
-        .await?
-        .check()?;
-    let nodes: Vec<serde_json::Value> = response.take(0)?;
-    let payload_rows: Vec<serde_json::Value> = response.take(1)?;
-    if nodes.len() > 256
-        || payload_rows.len() > 256
-        || nodes
-            .iter()
-            .chain(&payload_rows)
-            .any(|reference| reference["petal_id"] != petal)
-    {
+    let Some((reference_guards, reference_bindings)) = prepare_asset_reference_fence(db, &asset_id, petal).await? else {
         return Ok(ReplicatedRowOutcome::Denied);
-    }
+    };
+    guards.extend(reference_guards);
+    bindings.extend(reference_bindings);
     guards.extend([
-        format!("IF ({references}) != $inbound_scene_nodes {{ THROW 'asset reference set changed'; }}"),
-        format!("IF ({payloads}) != $inbound_scene_payloads {{ THROW 'asset payload reference set changed'; }}"),
         "IF array::len((SELECT asset_id FROM asset WHERE asset_id=$inbound_scene_asset)) != 0 { THROW 'asset identity appeared'; }".into(),
         "CREATE asset CONTENT $inbound_scene_row".into(),
     ]);
-    bindings.extend([
-        ("inbound_scene_asset".into(), serde_json::json!(asset_id)),
-        ("inbound_scene_nodes".into(), serde_json::json!(nodes)),
-        (
-            "inbound_scene_payloads".into(),
-            serde_json::json!(payload_rows),
-        ),
-        ("inbound_scene_row".into(), row),
-    ]);
+    bindings.push(("inbound_scene_row".into(), row));
     let script = format!(
         "BEGIN TRANSACTION; {}; COMMIT TRANSACTION;",
         guards.join(";\n")
@@ -1517,6 +1494,52 @@ async fn apply_anchored_asset_row(
     Ok(ReplicatedRowOutcome::Applied)
 }
 
+/// Capture all retained asset reference identities for the same use-time CREATE fence.
+pub(crate) async fn prepare_asset_reference_fence(
+    db: &Db,
+    asset_id: &str,
+    petal: &str,
+) -> anyhow::Result<Option<(Vec<String>, Vec<(String, serde_json::Value)>)>> {
+    let references="SELECT node_id,petal_id FROM node WHERE asset_id=$inbound_scene_asset ORDER BY node_id LIMIT 257 TIMEOUT 2s";
+    let payloads="SELECT payload_id,petal_id FROM device_payload WHERE asset_ids CONTAINS $inbound_scene_asset ORDER BY payload_id LIMIT 257 TIMEOUT 2s";
+    let models = "SELECT petal_id, encoding::base64::encode(encoding::cbor::encode($this)) AS fingerprint FROM model WHERE asset_id=$inbound_scene_asset LIMIT 2 TIMEOUT 2s";
+    let mut response = db
+        .query(format!("{references}; {payloads}; {models}"))
+        .bind(("inbound_scene_asset", asset_id.to_owned()))
+        .await?
+        .check()?;
+    let nodes: Vec<serde_json::Value> = response.take(0)?;
+    let payload_rows: Vec<serde_json::Value> = response.take(1)?;
+    let model_rows: Vec<serde_json::Value> = response.take(2)?;
+    if model_rows.len() > 1
+        || model_rows
+            .iter()
+            .any(|reference| reference["petal_id"] != petal)
+        || nodes.len() > 256
+        || payload_rows.len() > 256
+        || nodes
+            .iter()
+            .chain(&payload_rows)
+            .any(|reference| reference["petal_id"] != petal)
+    {
+        return Ok(None);
+    }
+    let guards = vec![
+        format!("IF ({references}) != $inbound_scene_nodes {{ THROW 'asset reference set changed'; }}"),
+        format!("IF ({payloads}) != $inbound_scene_payloads {{ THROW 'asset payload reference set changed'; }}"),
+        format!("IF ({models}) != $inbound_scene_models {{ THROW 'asset Portal reference changed'; }}"),
+    ];
+    let bindings = vec![
+        ("inbound_scene_asset".into(), serde_json::json!(asset_id)),
+        ("inbound_scene_nodes".into(), serde_json::json!(nodes)),
+        (
+            "inbound_scene_payloads".into(),
+            serde_json::json!(payload_rows),
+        ),
+        ("inbound_scene_models".into(), serde_json::json!(model_rows)),
+    ];
+    Ok(Some((guards, bindings)))
+}
 /// Why an inbound `asset` row's own fields are unsafe to store, or `None`.
 /// The id is joined into a filesystem path by the legacy backfill, the hash
 /// names a blob-store file, the size feeds the upload quota and the

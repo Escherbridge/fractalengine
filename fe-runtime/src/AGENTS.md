@@ -1095,3 +1095,10 @@ responsibility action. They do not identify an original uploader, grant access,
 or change node history. The UI must bind exact private request owners and refresh
 current state after a durable receipt. TransferLimitExceeded is a missing-byte
 condition only; the peer-transfer cap does not hide existing authorized local files.
+
+## Scene transfer review corrections
+
+SceneAssetTransferPurpose::Publish binds exact asset_id and petal_id; Fetch and Serve
+remain digest lookups under current stored authority. verify_blob_file performs
+constant-memory regular-file BLAKE3 verification bounded by an exact captured metadata
+size plus one byte. Run it on blocking IO, never a per-frame path or sync select loop.

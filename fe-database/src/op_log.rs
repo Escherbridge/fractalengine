@@ -5536,8 +5536,33 @@ mod tests {
                 .unwrap(),
                 ReplicatedRowOutcome::Applied
             );
-            let peer_concrete = std::sync::Arc::new(fe_runtime::blob_store::mock::MockBlobStore::new());
-            let peer_blobs: crate::BlobStoreHandle = peer_concrete.clone();
+            struct DiskSceneBlobs {
+                root: std::path::PathBuf,
+            }
+            impl fe_runtime::blob_store::BlobStore for DiskSceneBlobs {
+                fn add_blob(&self, bytes: &[u8]) -> anyhow::Result<[u8; 32]> {
+                    let hash = *blake3::hash(bytes).as_bytes();
+                    let path = fe_runtime::blob_store::canonical_blob_path(&self.root, &hash);
+                    std::fs::create_dir_all(path.parent().unwrap())?;
+                    std::fs::write(path, bytes)?;
+                    Ok(hash)
+                }
+                fn get_blob_path(&self, hash: &[u8; 32]) -> Option<std::path::PathBuf> {
+                    let path = fe_runtime::blob_store::canonical_blob_path(&self.root, hash);
+                    path.is_file().then_some(path)
+                }
+                fn has_blob(&self, hash: &[u8; 32]) -> bool {
+                    self.get_blob_path(hash).is_some()
+                }
+                fn remove_blob(&self, hash: &[u8; 32]) -> anyhow::Result<()> {
+                    if let Some(path) = self.get_blob_path(hash) {
+                        std::fs::remove_file(path)?;
+                    }
+                    Ok(())
+                }
+            }
+            let peer_dir = tempfile::tempdir().unwrap();
+            let peer_blobs: crate::BlobStoreHandle = std::sync::Arc::new(DiskSceneBlobs {root: peer_dir.path().to_owned()});
             let absent = scene::read_current(
                 &peer,
                 &peer_blobs,
@@ -5554,6 +5579,83 @@ mod tests {
                     ..
                 }
             ));
+            // Orphan Portal references are scope-bearing even when metadata is absent.
+            peer.query("CREATE model CONTENT {petal_id:'foreign-p',asset_id:$asset,transform:{}}")
+                .bind(("asset", asset_id.clone()))
+                .await
+                .unwrap()
+                .check()
+                .unwrap();
+            assert_eq!(
+                apply_replicated_row_handler(
+                    &peer,
+                    "scene-v",
+                    "asset",
+                    &asset_id,
+                    &metadata_bytes,
+                    "did:qa",
+                    None
+                )
+                .await
+                .unwrap(),
+                ReplicatedRowOutcome::Denied
+            );
+            peer.query("DELETE model WHERE asset_id=$asset")
+                .bind(("asset", asset_id.clone()))
+                .await
+                .unwrap()
+                .check()
+                .unwrap();
+            let (guards, bindings) =
+                crate::handlers::replicated_row::prepare_asset_reference_fence(&peer, &asset_id, "scene-p")
+                    .await
+                    .unwrap()
+                    .unwrap();
+            peer.query("CREATE model CONTENT {petal_id:'scene-p',asset_id:$asset,transform:{}}")
+                .bind(("asset", asset_id.clone()))
+                .await
+                .unwrap()
+                .check()
+                .unwrap();
+            let mut query = peer.query(format!(
+                "BEGIN TRANSACTION; {}; COMMIT TRANSACTION;",
+                guards.join(";")
+            ));
+            for binding in bindings {
+                query = query.bind(binding);
+            }
+            assert!(
+                query.await.unwrap().check().is_err(),
+                "Portal insertion after capture invalidates the CREATE reference fence"
+            );
+            let (guards, bindings) =
+                crate::handlers::replicated_row::prepare_asset_reference_fence(&peer, &asset_id, "scene-p")
+                    .await
+                    .unwrap()
+                    .unwrap();
+            peer.query("UPDATE model SET petal_id='foreign-p' WHERE asset_id=$asset")
+                .bind(("asset", asset_id.clone()))
+                .await
+                .unwrap()
+                .check()
+                .unwrap();
+            let mut query = peer.query(format!(
+                "BEGIN TRANSACTION; {}; COMMIT TRANSACTION;",
+                guards.join(";")
+            ));
+            for binding in bindings {
+                query = query.bind(binding);
+            }
+            assert!(
+                query.await.unwrap().check().is_err(),
+                "Portal reparenting after capture invalidates the CREATE reference fence"
+            );
+            peer.query("UPDATE model SET petal_id='scene-p' WHERE asset_id=$asset")
+                .bind(("asset", asset_id.clone()))
+                .await
+                .unwrap()
+                .check()
+                .unwrap();
             assert_eq!(
                 apply_replicated_row_handler(
                     &peer,
@@ -5626,6 +5728,28 @@ mod tests {
                 "asset availability can refresh at the same original node version"
             );
             assert!(projection_rx.try_recv().is_err());
+            let cached = peer_blobs
+                .get_blob_path(&crate::hash_from_hex(&hash).unwrap())
+                .unwrap();
+            std::fs::write(&cached, b"corrupt scene bytes").unwrap();
+            let (corrupt, need) = scene::read_current_and_need(
+                &peer,
+                &peer_blobs,
+                "scene-v",
+                &imported.node.node_id,
+                "did:viewer",
+            )
+            .await
+            .unwrap();
+            assert!(matches!(
+                corrupt.asset,
+                ReplicaNodeAsset::Unavailable {
+                    reason: ReplicaAssetUnavailable::MissingBlob,
+                    ..
+                }
+            ));
+            assert_eq!(need.unwrap().asset_id, asset_id);
+            peer_blobs.add_blob(asset_bytes).unwrap();
             peer.query("UPDATE asset SET petal_id='foreign' WHERE asset_id=$id")
                 .bind(("id", asset_id.clone()))
                 .await
@@ -5708,31 +5832,6 @@ mod tests {
 
             // Legacy local availability does not invent upload ownership; adoption is explicit.
             {
-                struct DiskSceneBlobs {
-                    root: std::path::PathBuf,
-                }
-                impl fe_runtime::blob_store::BlobStore for DiskSceneBlobs {
-                    fn add_blob(&self, bytes: &[u8]) -> anyhow::Result<[u8; 32]> {
-                        let hash = *blake3::hash(bytes).as_bytes();
-                        let path = fe_runtime::blob_store::canonical_blob_path(&self.root, &hash);
-                        std::fs::create_dir_all(path.parent().unwrap())?;
-                        std::fs::write(path, bytes)?;
-                        Ok(hash)
-                    }
-                    fn get_blob_path(&self, hash: &[u8; 32]) -> Option<std::path::PathBuf> {
-                        let path = fe_runtime::blob_store::canonical_blob_path(&self.root, hash);
-                        path.is_file().then_some(path)
-                    }
-                    fn has_blob(&self, hash: &[u8; 32]) -> bool {
-                        self.get_blob_path(hash).is_some()
-                    }
-                    fn remove_blob(&self, hash: &[u8; 32]) -> anyhow::Result<()> {
-                        if let Some(path) = self.get_blob_path(hash) {
-                            std::fs::remove_file(path)?;
-                        }
-                        Ok(())
-                    }
-                }
                 let legacy = probe_db().await;
                 crate::schema::apply_all(&legacy).await.unwrap();
                 legacy.query("CREATE verse CONTENT {verse_id:'scene-v',name:'v',created_by:'did:qa',created_at:'2026-11-02'}; CREATE fractal CONTENT {fractal_id:'scene-f',verse_id:'scene-v',owner_did:'did:qa',name:'f',created_at:'2026-11-02'}; CREATE petal CONTENT {petal_id:'scene-p',fractal_id:'scene-f',name:'p',node_id:'p',created_at:'2026-11-02'}").await.unwrap().check().unwrap();
@@ -5941,7 +6040,7 @@ mod tests {
                     verse_id: "scene-v".into(),
                     hash: digest,
                     node_id: Some(node_id.clone()),
-                    purpose: SceneAssetTransferPurpose::Publish,
+                    purpose: SceneAssetTransferPurpose::Publish {asset_id: legacy_asset.clone(), petal_id: "scene-p".into()},
                     deadline: std::time::Instant::now() + std::time::Duration::from_secs(5),
                 };
                 let permit =
@@ -5949,6 +6048,87 @@ mod tests {
                         .await
                         .unwrap();
                 assert_eq!(permit.asset_id, legacy_asset);
+                // Distinct local imports sharing bytes retain exact publication identities.
+                legacy.query("CREATE petal CONTENT {petal_id:'scene-p2',fractal_id:'scene-f',name:'p2',node_id:'p2',created_at:'2026-11-02'}").await.unwrap().check().unwrap();
+                let second_asset = ImportedSceneAsset::new(
+                    "same bytes second identity",
+                    "model/gltf+json",
+                    &crate::hash_to_hex(&digest),
+                    bytes.len(),
+                )
+                .unwrap();
+                let second_id = second_asset.id().to_owned();
+                let second = crate::handlers::object_creation::prepare(
+                    &legacy,
+                    ObjectCreation {
+                        petal_id: "scene-p2",
+                        name: "same bytes",
+                        asset: SceneAsset::Imported(second_asset),
+                        position: [0.0; 3],
+                        rotation: vec![0.0; 3],
+                        scale: vec![1.0; 3],
+                        properties: serde_json::Map::new(),
+                        actor: "did:qa",
+                        grant: &NodeAccessGrant::Local,
+                    },
+                )
+                .await
+                .unwrap();
+                let second = crate::handlers::object_creation::commit(&legacy, second)
+                    .await
+                    .unwrap();
+                let second_request = SceneAssetTransferRequest {
+                    node_id: Some(second.node.node_id.clone()),
+                    purpose: SceneAssetTransferPurpose::Publish {
+                        asset_id: second_id.clone(),
+                        petal_id: "scene-p2".into(),
+                    },
+                    ..request.clone()
+                };
+                let second_permit =
+                    crate::handlers::scene_asset_transfer::inspect(&legacy, &second_request, "did:qa")
+                        .await
+                        .unwrap();
+                assert_eq!(second_permit.asset_id, second_id);
+                assert_eq!(second_permit.petal_id, "scene-p2");
+                assert_eq!(
+                    crate::handlers::scene_asset_transfer::inspect(&legacy, &request, "did:qa")
+                        .await
+                        .unwrap()
+                        .asset_id,
+                    legacy_asset
+                );
+                let wrong_petal = SceneAssetTransferRequest {
+                    purpose: SceneAssetTransferPurpose::Publish {
+                        asset_id: second_id.clone(),
+                        petal_id: "scene-p".into(),
+                    },
+                    ..second_request.clone()
+                };
+                assert!(
+                    crate::handlers::scene_asset_transfer::inspect(&legacy, &wrong_petal, "did:qa")
+                        .await
+                        .is_err()
+                );
+                assert!(
+                    crate::handlers::scene_asset_transfer::inspect(&legacy, &second_request, "did:viewer")
+                        .await
+                        .is_err(),
+                    "same bytes never borrow another publisher's authority"
+                );
+                legacy
+                    .query("UPDATE asset SET owner_did=NONE WHERE asset_id=$asset")
+                    .bind(("asset", second_id))
+                    .await
+                    .unwrap()
+                    .check()
+                    .unwrap();
+                assert!(
+                    crate::handlers::scene_asset_transfer::inspect(&legacy, &second_request, "did:qa")
+                        .await
+                        .is_err(),
+                    "the other identity's adoption proof never grants this unproven copy publication"
+                );
                 let serve = SceneAssetTransferRequest {
                     purpose: SceneAssetTransferPurpose::Serve {
                         requester_did: "did:viewer".into(),

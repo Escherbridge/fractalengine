@@ -95,6 +95,9 @@ pub fn row_is_tombstone(data: &[u8]) -> bool {
 /// Implementations must be `Send + Sync` so they can be stored in the sync
 /// thread's `HashMap<String, Box<dyn VerseReplicator>>`.
 pub trait VerseReplicator: Send + Sync {
+    /// Current authenticated native synchronization peers for this exact open replica.
+    fn scene_provider_roster(&self) -> Option<SceneProviderRoster> { None }
+
     fn joined_peer_ready(&self, namespace_id: &str, issuer_did: &str) -> bool {
         let _ = (namespace_id, issuer_did);
         false
@@ -541,9 +544,37 @@ pub struct IrohDocsReplicator {
 #[derive(Default)]
 struct JoinReadiness {
     alive: AtomicBool,
+    invalidated: AtomicBool,
     successful_peers: Mutex<HashSet<iroh::EndpointId>>,
 }
 
+/// Bounded live provider identities owned by one native subscription generation.
+#[derive(Clone)]
+pub struct SceneProviderRoster(Arc<JoinReadiness>);
+impl SceneProviderRoster {
+    pub(crate) fn peers(&self) -> anyhow::Result<Vec<iroh::EndpointId>> {
+        anyhow::ensure!(
+            self.0.alive.load(Ordering::Acquire) && !self.0.invalidated.load(Ordering::Acquire),
+            "Native provider subscription is no longer live"
+        );
+        let peers = self
+            .0
+            .successful_peers
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        anyhow::ensure!(
+            peers.len() <= 16,
+            "More than 16 authenticated scene providers; no prefix selected"
+        );
+        let mut peers: Vec<_> = peers.iter().copied().collect();
+        peers.sort();
+        anyhow::ensure!(
+            self.0.alive.load(Ordering::Acquire) && !self.0.invalidated.load(Ordering::Acquire),
+            "Native provider subscription closed during capture"
+        );
+        Ok(peers)
+    }
+}
 struct JoinReadinessGuard(Arc<JoinReadiness>);
 
 impl Drop for JoinReadinessGuard {
@@ -767,6 +798,11 @@ impl IrohDocsReplicator {
 }
 
 impl VerseReplicator for IrohDocsReplicator {
+    fn scene_provider_roster(&self) -> Option<SceneProviderRoster> {
+        if self.open_error().is_some() || !self.is_doc_backed() { return None; }
+        Some(SceneProviderRoster(self.join_readiness.read().unwrap_or_else(|error| error.into_inner()).clone()))
+    }
+
     fn joined_peer_ready(&self, namespace_id: &str, issuer_did: &str) -> bool {
         if self.open_error().is_some() || !self.live_doc().is_some_and(|doc| hex::encode(doc.id().as_bytes()) == namespace_id) {
             return false;
@@ -832,6 +868,8 @@ impl VerseReplicator for IrohDocsReplicator {
                 .map_err(|e| anyhow::anyhow!("doc subscribe: {e}"))?;
             let (tx, rx) = mpsc::channel::<RowChange>(1024);
             if let Some(old) = self.pump.lock().unwrap_or_else(|error| error.into_inner()).take() { old.abort(); }
+            self.join_readiness.read().unwrap_or_else(|error| error.into_inner()).invalidated.store(true, Ordering::Release);
+            self.join_readiness.read().unwrap_or_else(|error| error.into_inner()).alive.store(false, Ordering::Release);
             let readiness = Arc::new(JoinReadiness::default());
             *self.join_readiness.write().unwrap_or_else(|error| error.into_inner()) = readiness.clone();
             let handle = tokio::spawn(pump_live_events(
@@ -933,6 +971,8 @@ impl VerseReplicator for IrohDocsReplicator {
     fn close(&self) -> ReplicatorFuture<'_, anyhow::Result<()>> {
         Box::pin(async move {
             // Stop the inbound pump first so no further rows are emitted.
+            self.join_readiness.read().unwrap_or_else(|error| error.into_inner()).invalidated.store(true, Ordering::Release);
+            self.join_readiness.read().unwrap_or_else(|error| error.into_inner()).alive.store(false, Ordering::Release);
             if let Some(handle) = self.pump.lock().unwrap_or_else(|e| e.into_inner()).take() {
                 handle.abort();
             }

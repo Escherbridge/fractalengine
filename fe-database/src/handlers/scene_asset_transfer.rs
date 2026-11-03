@@ -34,9 +34,22 @@ pub(crate) async fn inspect(
             "invalid authenticated requester"
         );
     }
+    let (exact_asset, exact_petal) = match &request.purpose {
+        SceneAssetTransferPurpose::Publish { asset_id, petal_id } => {
+            anyhow::ensure!(
+                !asset_id.is_empty()
+                    && asset_id.len() <= 1024
+                    && !petal_id.is_empty()
+                    && petal_id.len() <= 1024,
+                "invalid publication identity"
+            );
+            (Some(asset_id.clone()), Some(petal_id.clone()))
+        }
+        _ => (None, None),
+    };
     let hash = crate::hash_to_hex(&request.hash);
-    let mut response = db.query("SELECT *, encoding::base64::encode(encoding::cbor::encode($this)) AS transfer_fingerprint OMIT id FROM asset WHERE content_hash=$transfer_hash ORDER BY asset_id LIMIT 17 TIMEOUT 2s")
-        .bind(("transfer_hash", hash.clone())).await?.check()?;
+    let mut response = db.query("SELECT *, encoding::base64::encode(encoding::cbor::encode($this)) AS transfer_fingerprint OMIT id FROM asset WHERE content_hash=$transfer_hash AND ($transfer_exact_asset=NONE OR asset_id=$transfer_exact_asset) AND ($transfer_exact_petal=NONE OR petal_id=$transfer_exact_petal) ORDER BY asset_id LIMIT 17 TIMEOUT 2s")
+        .bind(("transfer_hash", hash.clone())).bind(("transfer_exact_asset", exact_asset)).bind(("transfer_exact_petal", exact_petal)).await?.check()?;
     let assets: Vec<Value> = response.take(0)?;
     anyhow::ensure!(
         assets.len() <= 16,
