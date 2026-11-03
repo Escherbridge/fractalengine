@@ -112,11 +112,8 @@ pub(crate) fn validate_complete(row: &Value) -> anyhow::Result<()> {
         row["position"]["type"] == "Point"
             && row["position"]["coordinates"]
                 .as_array()
-                .is_some_and(|values| values.len() == 2
-                    && values
-                        .iter()
-                        .all(|value| value.as_f64().is_some_and(f64::is_finite)))
-            && row["elevation"].as_f64().is_some_and(f64::is_finite)
+                .is_some_and(|values| values.len() == 2 && values.iter().all(finite_render_number))
+            && finite_render_number(&row["elevation"])
             && row["interactive"].is_boolean()
             && row["edit_seq"].as_i64().is_some_and(|value| value >= 0),
         "invalid scene geometry or edit state"
@@ -131,9 +128,7 @@ pub(crate) fn validate_complete(row: &Value) -> anyhow::Result<()> {
             row[key]
                 .as_array()
                 .is_some_and(|values| lengths.contains(&values.len())
-                    && values
-                        .iter()
-                        .all(|value| value.as_f64().is_some_and(f64::is_finite))),
+                    && values.iter().all(finite_render_number)),
             "invalid scene {key}"
         );
     }
@@ -156,4 +151,10 @@ pub(crate) fn validate_complete(row: &Value) -> anyhow::Result<()> {
         );
     }
     Ok(())
+}
+
+fn finite_render_number(value: &Value) -> bool {
+    value
+        .as_f64()
+        .is_some_and(|value| value.is_finite() && (value as f32).is_finite())
 }
