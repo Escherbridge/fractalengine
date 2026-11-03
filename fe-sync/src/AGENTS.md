@@ -2160,3 +2160,10 @@ endpoint (which would regress relay-dependent WAN access), a vendor fork, or sil
 broaden an enforced allowlist. Those mechanisms need their own scoped implementation
 and independent security review. No network execution or stronger policy acceptance
 is established by this documentation correction.
+
+Scene transport initialization gives RelayMap::urls an explicit Vec<iroh::RelayUrl>
+result before passing it to with_allowed_relays. The pinned SDK's urls method is
+generic over FromIterator, while the adapter accepts IntoIterator; leaving both
+sides generic can send trait inference through Bevy's recursive reference-to-Res
+blanket impl. Keep this collection concrete; increasing recursion_limit masks the
+missing inference boundary and does not describe the intended container.

@@ -679,9 +679,13 @@ pub fn spawn_sync_thread_with_transport(
                 ));
             }
 
-            let scene_transport=docs_stack.as_ref().map(|stack|Arc::new(IrohBlobTransport::from_stack(stack).with_allowed_relays(
-                relay_config.to_relay_mode().map(|mode|mode.relay_map().urls()).unwrap_or_default(),
-            )));
+            let scene_transport = docs_stack.as_ref().map(|stack| {
+                let allowed_relays: Vec<iroh::RelayUrl> = relay_config
+                    .to_relay_mode()
+                    .map(|mode| mode.relay_map().urls())
+                    .unwrap_or_default();
+                Arc::new(IrohBlobTransport::from_stack(stack).with_allowed_relays(allowed_relays))
+            });
             let scene_gate=docs_stack.as_ref().map(|stack|stack.blob_access_gate().scene_assets()).unwrap_or_default();
             let (scene_publication_tx,mut scene_publication_rx)=tokio::sync::mpsc::channel(128);
             let mut scene_assets=crate::scene_assets::SceneAssetJobs::new(blob_store.clone(),scene_transport,scene_gate,db_cmd_tx.clone(),evt_tx.clone(),scene_publication_tx);
