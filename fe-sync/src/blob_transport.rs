@@ -29,9 +29,7 @@ pub const LOCAL_STORE_TIMEOUT: Duration = Duration::from_secs(30);
 /// Longest accepted wire-supplied provider address (`EndpointAddr` JSON).
 pub const MAX_PROVIDER_ADDR_LEN: usize = 4 * 1024;
 
-/// A wire-supplied provider address reduced to what this node may dial: the
-/// endpoint id, its IP addresses, and only relay URLs this node already
-/// trusts — never an arbitrary URL (S8b; `src/AGENTS.md` §tileset-security).
+/// Filter supplied relay URLs; see `src/AGENTS.md` section relay-routing-contract.
 pub fn sanitize_provider_addr(
     addr: EndpointAddr,
     allowed_relays: &BTreeSet<RelayUrl>,
@@ -335,9 +333,7 @@ impl BlobTransport for IrohBlobTransport {
 mod tests {
     use super::*;
 
-    /// S8b: a wire-supplied provider keeps its id and IP addresses but only
-    /// relay URLs this node already trusts, so a forged ad can never make
-    /// this node dial an arbitrary URL.
+    /// S8b supplied-address filtering only; see `src/AGENTS.md` section relay-routing-contract.
     #[test]
     fn a_provider_address_keeps_only_trusted_relays() {
         let id = iroh::SecretKey::from_bytes(&[11u8; 32]).public();

@@ -1754,9 +1754,11 @@ and what stops it. Each guard has a named regression test.
 - **Dialing.** A wire-supplied `ProviderRef` is capped at 4 KiB and
   `sanitize_provider_addr` keeps only its endpoint id, IP addresses and
   relay URLs already in this node's relay map (`with_allowed_relays`, fed
-  from `RelayConfig`). A forged ad can never make this node open an HTTPS
-  connection to an arbitrary URL (SSRF). Test:
-  `a_provider_address_keeps_only_trusted_relays`.
+  from `RelayConfig`). This constrains the supplied address, not every route the
+  shared endpoint can retain or discover. The historical global SSRF-immunity
+  conclusion is unestablished; see section relay-routing-contract (DQA022). The pure
+  test `a_provider_address_keeps_only_trusted_relays` checks supplied-address filtering
+  only, not actual endpoint-wide network egress.
 - **Size caps before download.** `BlobTransport::fetch`/`fetch_hash_seq`
   take the caller's cap. `IrohBlobTransport` first asks the provider for
   the blob's BAO-verified size (`get_verified_size`: the last chunk's proof
@@ -2011,9 +2013,11 @@ review and the end-of-campaign integrated sweep before acceptance.
 scene_assets owns four active jobs and 64 waiting jobs, a 120-second outer work
 deadline, bounded private DB requests, and at most 16 providers captured from a
 successfully opened native Verse. Requests never supply arbitrary provider URLs.
-IrohBlobTransport applies this node's relay allowlist and pins EndpointId through
-the authenticated connection. Fresh provider-size admission runs even for a native
-cache hit; provider BAO size, content digest, declared size/MIME and the texture
+IrohBlobTransport filters explicitly supplied provider relay URLs and pins EndpointId
+through the authenticated connection. The shared native endpoint can also use retained
+or discovered routes; its actual relay egress is not globally allowlisted (DQA022;
+see section relay-routing-contract). Fresh provider-size admission runs even for a
+native cache hit; provider BAO size, content digest, declared size/MIME and the texture
 guard are checked before local persistence. Missing glTF external resources remain
 a separate dependency gap: transferring its root file does not certify those files.
 
@@ -2120,3 +2124,39 @@ addresses. Existing native journeys author Owner-open-empty/Editor-join discover
 reverse byte delivery, retained namespace reopen and stale-roster rejection. The role
 fixture remains controlled; production DB authority is covered separately. No new
 execution, peer-history, model/schema convergence or tagged-release claim is added.
+
+### relay-routing-contract - supplied URL filtering and native routing (DQA022)
+
+DQA022 selects the existing shared-native-endpoint routing contract for this scene
+asset slice. ProviderRef parsing is bounded EndpointAddr JSON; sanitize_provider_addr
+filters explicitly supplied relay URLs against with_allowed_relays. This is an input
+URL filter. It does not establish an endpoint-wide network-egress allowlist: iroh 1.3
+merges supplied addresses with retained paths and address lookup, probes known paths,
+and can reuse another active relay route. Filtering a remote_info snapshot or checking
+only after connection does not enforce a stronger boundary.
+
+Scene discovery accepts authenticated successful synchronization peers associated with
+the exact live opened Verse subscription, under bounded roster/generation ownership.
+The blob connection pins their EndpointId. Serving still requires fresh actual stored
+Viewer reach for the authenticated requester and actual local Editor plus legitimate
+local upload/adoption proof; fetching repeats actual local Viewer and exact stored
+metadata/reference admission. Byte-size/hash/MIME guards, queue/time/IO bounds and
+Close/reset cancellation remain independent of native route choice. This contract
+adds no arbitrary UI provider URL route and does not treat a peer-supplied Boolean
+or mere possession of bytes as authority.
+
+The older tileset-security/test-comment statement that supplied filtering guaranteed
+global SSRF immunity was broader than its implementation or pure sanitizer test.
+It is corrected here as an unestablished residual claim, not reported as a repaired
+endpoint-wide control. The existing named test checks the supplied address projection
+only. An authenticated peer/another native protocol may have populated routes outside
+that supplied filter, so callers and operators must not infer a global egress promise.
+
+Strict endpoint-wide relay egress is an OPEN policy/dependency choice for separate
+work. A complete implementation would need a supported SDK or reviewed lower-level
+sender/relay-actor policy covering retained/discovered paths, probes, active fallback
+and cached connections before any disallowed dial. DQA022 does not select a direct-only
+endpoint (which would regress relay-dependent WAN access), a vendor fork, or silently
+broaden an enforced allowlist. Those mechanisms need their own scoped implementation
+and independent security review. No network execution or stronger policy acceptance
+is established by this documentation correction.

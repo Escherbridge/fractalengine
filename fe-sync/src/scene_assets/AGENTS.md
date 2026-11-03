@@ -17,9 +17,14 @@ with no bootstrap peers and learn a later joining Editor. Jobs sample the live r
 (after a bounded startup wait), not a list copied at job creation. NeighborDown,
 stream error, subscription replacement and Close remove readiness; old roster objects
 never become usable again. A cap failure refuses the full roster rather than choosing
-a prefix. ID-only addresses resolve through the native endpoint's recently learned
-routes; normal transport endpoint pinning and relay allowlisting still apply. No UI
-provider URL bypass or Boolean permission cache belongs in these modules.
+a prefix. ID-only addresses resolve through the shared native endpoint's retained
+and discovered routes. The blob transport filters relay URLs supplied in bootstrap/
+provider addresses; other native protocols can already have populated its routes.
+That input filter is not an endpoint-wide relay-egress guarantee. DQA022
+preserves this native routing contract and records strict egress enforcement as an
+open policy/dependency choice; see ../AGENTS.md section relay-routing-contract.
+Endpoint identity and fresh actual DB authorization remain mandatory. No arbitrary
+UI provider route or Boolean permission cache belongs in these modules.
 
 JobLease owns both cancellation and an Arc of the four-slot permit. Blocking reads
 and classification writes clone this owner until their finite IO ends, so cancelling
