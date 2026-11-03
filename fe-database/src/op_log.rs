@@ -2763,10 +2763,9 @@ mod tests {
                     serde_json::json!([group])
                 );
             }
-            let partial =
-                editor_batch::read(&db, &plugin_scope, "tree-other-petal", &ids[..1], "did:qa")
-                    .await
-                    .unwrap();
+            let partial = editor_batch::read(&db, &plugin_scope, "tree-other-petal", &ids[..1], "did:qa")
+                .await
+                .unwrap();
             editor_batch::prepare(
                 &db,
                 &EditorBatchRequest {
@@ -2780,6 +2779,255 @@ mod tests {
             )
             .await
             .expect_err("Group inverse refuses uncaptured members");
+            {
+                let mut registry = grouped.groups.clone();
+                registry[0].name = "Exact hidden legacy Group".into();
+                registry[0].visible = false;
+                registry[0].order = -2.5;
+                registry.insert(
+                    0,
+                    fe_runtime::messages::VisibilityGroupDto {
+                        id: "left-neighbor".into(),
+                        name: "Left".into(),
+                        visible: true,
+                        order: 9.0,
+                    },
+                );
+                registry.push(fe_runtime::messages::VisibilityGroupDto {
+                    id: "right-neighbor".into(),
+                    name: "Right".into(),
+                    visible: true,
+                    order: 0.125,
+                });
+                db.query("UPDATE petal SET visibility_groups=$groups WHERE petal_id='tree-other-petal'")
+                    .bind(("groups", serde_json::json!(registry)))
+                    .await
+                    .unwrap()
+                    .check()
+                    .unwrap();
+                let target = EditorBatchTarget::Group {
+                    group_id: group.clone(),
+                };
+                let complete = editor_batch::read_target(
+                    &db,
+                    &plugin_scope,
+                    "tree-other-petal",
+                    &[],
+                    &target,
+                    "did:qa",
+                )
+                .await
+                .unwrap();
+                let mut sorted_ids = ids.clone();
+                sorted_ids.sort();
+                assert_eq!(complete.members.iter().map(|member| member.node_id.clone()).collect::<Vec<_>>(), sorted_ids, "Group targets derive every persisted member in canonical order without the selected set");
+                let mut invalid_membership = complete.members[0].state.properties.clone();
+                invalid_membership.insert("view.groups".into(), serde_json::json!([group, group]));
+                db.query("UPDATE node SET properties=$properties WHERE node_id=$id")
+                    .bind(("id", complete.members[0].node_id.clone()))
+                    .bind(("properties", serde_json::json!(invalid_membership)))
+                    .await
+                    .unwrap()
+                    .check()
+                    .unwrap();
+                editor_batch::read_target(&db, &plugin_scope, "tree-other-petal", &[], &target, "did:qa").await.expect_err("legacy membership representations that cannot be restored exactly refuse before deletion");
+                db.query("UPDATE node SET properties=$properties WHERE node_id=$id")
+                    .bind(("id", complete.members[0].node_id.clone()))
+                    .bind((
+                        "properties",
+                        serde_json::json!(complete.members[0].state.properties),
+                    ))
+                    .await
+                    .unwrap()
+                    .check()
+                    .unwrap();
+                let delete_request = EditorBatchRequest {
+                    capture: complete.clone(),
+                    edit: EditorBatchEdit::DeleteGroup {
+                        group_id: group.clone(),
+                    },
+                };
+                let raced = editor_batch::prepare(&db, &delete_request, "qa-group-raced-delete", "did:qa")
+                    .await
+                    .unwrap();
+                let outside = crate::handlers::node_history::create_object_granted(
+                    &db,
+                    "tree-other-petal",
+                    "Raced group member",
+                    None,
+                    [0.0; 3],
+                    vec![0.0; 3],
+                    vec![1.0; 3],
+                    serde_json::from_value(serde_json::json!({"view.groups":[group]})).unwrap(),
+                    "did:qa",
+                    &NodeAccessGrant::Local,
+                )
+                .await
+                .unwrap()
+                .0;
+                let count = op_log_count(&db).await;
+                editor_batch::commit(&db, raced)
+                    .await
+                    .expect_err("new membership after complete capture refuses the entire Group delete");
+                assert_eq!(op_log_count(&db).await, count);
+                db.query("UPDATE node SET tombstone={source_did:'qa',hlc:1} WHERE node_id=$id")
+                    .bind(("id", outside.clone()))
+                    .await
+                    .unwrap()
+                    .check()
+                    .unwrap();
+                let error = editor_batch::read_target(
+                    &db,
+                    &plugin_scope,
+                    "tree-other-petal",
+                    &[],
+                    &target,
+                    "did:qa",
+                )
+                .await
+                .expect_err(
+                    "protected deleted-object references cannot disappear from the complete target set",
+                );
+                assert!(error
+                    .to_string()
+                    .contains("1 protected deleted-object references"));
+                db.query("UPDATE node SET properties={} WHERE node_id=$id; UPDATE node UNSET tombstone WHERE node_id=$id").bind(("id",outside)).await.unwrap().check().unwrap();
+                let prepared =
+                    editor_batch::prepare(&db, &delete_request, "qa-group-complete-delete", "did:qa")
+                        .await
+                        .unwrap();
+                let deleted = editor_batch::commit(&db, prepared).await.unwrap();
+                assert_eq!(
+                    deleted.members.len(),
+                    ids.len(),
+                    "nonowning delete retains every object"
+                );
+                assert!(!deleted.groups.iter().any(|entry| entry.id == group));
+                let resolved = editor_batch::resolve_target(
+                    &db,
+                    &plugin_scope,
+                    "tree-other-petal",
+                    &sorted_ids,
+                    &target,
+                    "qa-group-complete-delete",
+                    "did:qa",
+                )
+                .await
+                .unwrap();
+                assert_eq!(
+                    serde_json::to_value(resolved.receipt.unwrap()).unwrap(),
+                    serde_json::to_value(&deleted).unwrap()
+                );
+                let generic_capture =
+                    editor_batch::read(&db, &plugin_scope, "tree-other-petal", &ids, "did:qa")
+                        .await
+                        .unwrap();
+                editor_batch::prepare(
+                    &db,
+                    &EditorBatchRequest {
+                        capture: generic_capture,
+                        edit: EditorBatchEdit::CreateGroup {
+                            id: group.clone(),
+                            name: "Client-chosen old ID".into(),
+                        },
+                    },
+                    "qa-generic-group-resurrection",
+                    "did:qa",
+                )
+                .await
+                .expect_err("CreateGroup cannot bypass a checked delete's required restore proof");
+                let legacy_restore = crate::handlers::visibility_groups::set_petal_visibility_groups_reply(
+                    &db,
+                    "did:qa",
+                    "tree-other-petal".into(),
+                    registry.clone(),
+                    fe_runtime::messages::CallerAuth::Local,
+                    Some("qa-legacy-group-resurrection".into()),
+                )
+                .await;
+                assert!(
+                    matches!(
+                        legacy_restore,
+                        fe_runtime::messages::DbResult::RequestFailed { .. }
+                    ),
+                    "legacy whole-registry writes cannot bypass the durable proof boundary"
+                );
+                let proof_target = EditorBatchTarget::DeletedGroup {
+                    delete_request_id: "qa-group-complete-delete".into(),
+                };
+                editor_batch::read_target(
+                    &db,
+                    &plugin_scope,
+                    "tree-other-petal",
+                    &[],
+                    &proof_target,
+                    "did:other",
+                )
+                .await
+                .expect_err("a different actor cannot borrow a local Group deletion receipt");
+                let inverse = editor_batch::read_target(
+                    &db,
+                    &plugin_scope,
+                    "tree-other-petal",
+                    &[],
+                    &proof_target,
+                    "did:qa",
+                )
+                .await
+                .unwrap();
+                assert_eq!(
+                    inverse.deleted_group.as_ref().unwrap().registry_before,
+                    registry
+                );
+                let restore_request = EditorBatchRequest {
+                    capture: inverse.clone(),
+                    edit: EditorBatchEdit::RestoreDeletedGroup {
+                        delete_request_id: "qa-group-complete-delete".into(),
+                    },
+                };
+                let mut forged = restore_request.clone();
+                forged
+                    .capture
+                    .deleted_group
+                    .as_mut()
+                    .unwrap()
+                    .registry_before[1]
+                    .id = "client-chosen-resurrection".into();
+                editor_batch::prepare(&db, &forged, "qa-forged-group-restore", "did:qa")
+                    .await
+                    .expect_err("client context is never a grant to choose an old Group ID");
+                let restore =
+                    editor_batch::prepare(&db, &restore_request, "qa-group-complete-restore", "did:qa")
+                        .await
+                        .unwrap();
+                let restored = editor_batch::commit(&db, restore).await.unwrap();
+                assert_eq!(
+                    restored.groups, registry,
+                    "inverse restores exact raw registry position, name, visibility and noninteger order"
+                );
+                for (old, restored) in complete.members.iter().zip(&restored.members) {
+                    assert_eq!(
+                        serde_json::to_value(&old.state).unwrap(),
+                        serde_json::to_value(&restored.state).unwrap()
+                    );
+                }
+                editor_batch::read_target(
+                    &db,
+                    &plugin_scope,
+                    "tree-other-petal",
+                    &[],
+                    &proof_target,
+                    "did:qa",
+                )
+                .await
+                .expect_err("a consumed proof cannot resurrect an ID after some later unrelated deletion");
+                db.query("UPDATE petal SET visibility_groups=$groups WHERE petal_id='tree-other-petal'")
+                    .bind(("groups", serde_json::json!(grouped.groups)))
+                    .await
+                    .unwrap()
+                    .check()
+                    .unwrap();
+            }
             let capture = editor_batch::read(&db, &plugin_scope, "tree-other-petal", &ids, "did:qa")
                 .await
                 .unwrap();
@@ -2802,17 +3050,31 @@ mod tests {
                 inverse.members[0].state.properties["view.groups"],
                 serde_json::json!([])
             );
+            assert!(inverse.members[1]
+                .state
+                .properties
+                .get("view.groups")
+                .unwrap()
+                .is_null());
+            let empty_target = EditorBatchTarget::Group {
+                group_id: group.clone(),
+            };
+            let capture = editor_batch::read_target(
+                &db,
+                &plugin_scope,
+                "tree-other-petal",
+                &[],
+                &empty_target,
+                "did:qa",
+            )
+            .await
+            .unwrap();
             assert!(
-                inverse.members[1]
-                    .state
-                    .properties
-                    .get("view.groups")
-                    .unwrap()
-                    .is_null()
+                capture.members.is_empty(),
+                "no phantom targets are invented for an empty Group"
             );
-            let capture = editor_batch::read(&db, &plugin_scope, "tree-other-petal", &ids, "did:qa")
-                .await
-                .unwrap();
+            let mut unaffected_rows = db.query("SELECT node_id, properties FROM node WHERE petal_id='tree-other-petal' ORDER BY node_id").await.unwrap().check().unwrap();
+            let unaffected: Vec<serde_json::Value> = unaffected_rows.take(0).unwrap();
             let prepared = editor_batch::prepare(
                 &db,
                 &EditorBatchRequest {
@@ -2830,9 +3092,199 @@ mod tests {
             assert!(deleted.groups.is_empty());
             assert_eq!(
                 deleted.members.len(),
-                2,
-                "deleting a nonowning Group retains its objects"
+                0,
+                "empty Group receives a real registry-only receipt"
             );
+            let empty_resolution = editor_batch::resolve_target(
+                &db,
+                &plugin_scope,
+                "tree-other-petal",
+                &[],
+                &empty_target,
+                "qa-group-delete",
+                "did:qa",
+            )
+            .await
+            .unwrap();
+            assert!(empty_resolution.receipt.unwrap().members.is_empty());
+            let empty_proof = EditorBatchTarget::DeletedGroup {
+                delete_request_id: "qa-group-delete".into(),
+            };
+            let empty_restore = editor_batch::read_target(
+                &db,
+                &plugin_scope,
+                "tree-other-petal",
+                &[],
+                &empty_proof,
+                "did:qa",
+            )
+            .await
+            .unwrap();
+            let restore = editor_batch::prepare(
+                &db,
+                &EditorBatchRequest {
+                    capture: empty_restore,
+                    edit: EditorBatchEdit::RestoreDeletedGroup {
+                        delete_request_id: "qa-group-delete".into(),
+                    },
+                },
+                "qa-empty-group-restore",
+                "did:qa",
+            )
+            .await
+            .unwrap();
+            let second_empty_restore = editor_batch::read_target(
+                &db,
+                &plugin_scope,
+                "tree-other-petal",
+                &[],
+                &empty_proof,
+                "did:qa",
+            )
+            .await
+            .unwrap();
+            let second_empty_restore = editor_batch::prepare(
+                &db,
+                &EditorBatchRequest {
+                    capture: second_empty_restore,
+                    edit: EditorBatchEdit::RestoreDeletedGroup {
+                        delete_request_id: "qa-group-delete".into(),
+                    },
+                },
+                "qa-empty-group-restore-again",
+                "did:qa",
+            )
+            .await
+            .unwrap();
+            let restored_empty = editor_batch::commit(&db, restore).await.unwrap();
+            assert!(restored_empty.members.is_empty());
+            let unchanged = editor_batch::read(&db, &plugin_scope, "tree-other-petal", &ids, "did:qa")
+                .await
+                .unwrap();
+            assert_eq!(
+                unchanged.members[0].state.properties["view.groups"],
+                serde_json::json!([])
+            );
+            assert_eq!(
+                unchanged.members[1].state.properties["view.groups"],
+                serde_json::Value::Null
+            );
+            db.query("UPDATE petal SET visibility_groups=[] WHERE petal_id='tree-other-petal'")
+                .await
+                .unwrap()
+                .check()
+                .unwrap();
+            let mut retained_rows = db.query("SELECT node_id, properties FROM node WHERE petal_id='tree-other-petal' ORDER BY node_id").await.unwrap().check().unwrap();
+            let retained: Vec<serde_json::Value> = retained_rows.take(0).unwrap();
+            assert_eq!(retained, unaffected, "empty Group deletion/restoration preserves every nonmember's absent/null/explicit-empty membership exactly");
+            let count = op_log_count(&db).await;
+            editor_batch::commit(&db, second_empty_restore).await.expect_err("single-use proof remains consumed even when an outside writer resets the registry to its old empty state");
+            assert_eq!(op_log_count(&db).await, count);
+            {
+                db.query("CREATE petal CONTENT {petal_id:'group-empty-petal',fractal_id:'tree-other-fractal',name:'empty',node_id:'empty',created_at:'2026-11-02',visibility_groups:[{id:'empty-legacy-group',name:'Empty legacy',visible:false,order:2.5}]}").await.unwrap().check().unwrap();
+                let empty_scope = crate::build_scope(
+                    "tree-10",
+                    Some("tree-other-fractal"),
+                    Some("group-empty-petal"),
+                );
+                let target = EditorBatchTarget::Group {
+                    group_id: "empty-legacy-group".into(),
+                };
+                let capture = editor_batch::read_target(
+                    &db,
+                    &empty_scope,
+                    "group-empty-petal",
+                    &[],
+                    &target,
+                    "did:qa",
+                )
+                .await
+                .unwrap();
+                assert!(capture.members.is_empty());
+                let request = EditorBatchRequest {
+                    capture: capture.clone(),
+                    edit: EditorBatchEdit::DeleteGroup {
+                        group_id: "empty-legacy-group".into(),
+                    },
+                };
+                let prepared = editor_batch::prepare(&db, &request, "qa-zero-node-race", "did:qa")
+                    .await
+                    .unwrap();
+                db.query("UPDATE petal SET view_hidden=true WHERE petal_id='group-empty-petal'")
+                    .await
+                    .unwrap()
+                    .check()
+                    .unwrap();
+                let count = op_log_count(&db).await;
+                editor_batch::commit(&db, prepared)
+                    .await
+                    .expect_err("registry-only batches still fence the full actual Petal row");
+                assert_eq!(op_log_count(&db).await, count);
+                db.query("UPDATE petal UNSET view_hidden WHERE petal_id='group-empty-petal'")
+                    .await
+                    .unwrap()
+                    .check()
+                    .unwrap();
+                let prepared = editor_batch::prepare(&db, &request, "qa-zero-node-delete", "did:qa")
+                    .await
+                    .unwrap();
+                let deleted = editor_batch::commit(&db, prepared).await.unwrap();
+                assert!(deleted.members.is_empty() && deleted.groups.is_empty());
+                let proof = EditorBatchTarget::DeletedGroup {
+                    delete_request_id: "qa-zero-node-delete".into(),
+                };
+                let current = editor_batch::read_target(
+                    &db,
+                    &empty_scope,
+                    "group-empty-petal",
+                    &[],
+                    &proof,
+                    "did:qa",
+                )
+                .await
+                .unwrap();
+                let inverse = editor_batch::prepare(
+                    &db,
+                    &EditorBatchRequest {
+                        capture: current,
+                        edit: EditorBatchEdit::RestoreDeletedGroup {
+                            delete_request_id: "qa-zero-node-delete".into(),
+                        },
+                    },
+                    "qa-zero-node-restore",
+                    "did:qa",
+                )
+                .await
+                .unwrap();
+                let restored = editor_batch::commit(&db, inverse).await.unwrap();
+                assert!(restored.members.is_empty());
+                assert_eq!(restored.groups, capture.groups);
+                db.query("CREATE petal CONTENT {petal_id:'group-overflow-petal',fractal_id:'tree-other-fractal',name:'overflow',node_id:'overflow',created_at:'2026-11-02',visibility_groups:[{id:'overflow-group',name:'Overflow',visible:true,order:0.0}]}").await.unwrap().check().unwrap();
+                for index in 0..257 {
+                    db.query("CREATE node SET node_id=$id,petal_id='group-overflow-petal',display_name='overflow',position=<geometry<point>> [0.0,0.0],rotation=[0.0,0.0,0.0],scale=[1.0,1.0,1.0],created_at='2026-11-02',properties=$properties").bind(("id",format!("group-overflow-{index}"))).bind(("properties",serde_json::json!({"view.groups":["overflow-group"]}))).await.unwrap().check().unwrap();
+                }
+                let overflow_scope = crate::build_scope(
+                    "tree-10",
+                    Some("tree-other-fractal"),
+                    Some("group-overflow-petal"),
+                );
+                let overflow = editor_batch::read_target(
+                    &db,
+                    &overflow_scope,
+                    "group-overflow-petal",
+                    &[],
+                    &EditorBatchTarget::Group {
+                        group_id: "overflow-group".into(),
+                    },
+                    "did:qa",
+                )
+                .await
+                .expect_err("server-expanded Groups are bounded before a target subset is exposed");
+                assert!(overflow
+                    .to_string()
+                    .contains("more than 256 stored members"));
+            }
+
             let group = ulid::Ulid::new().to_string();
             let capture = editor_batch::read(&db, &plugin_scope, "tree-other-petal", &ids, "did:qa")
                 .await

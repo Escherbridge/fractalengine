@@ -20,8 +20,20 @@ pub(super) fn capture(
     if value.scope != scope
         || value.petal_id != petal
         || value.members.len() != ids.len()
-        || ids.is_empty()
+        || (ids.is_empty() && matches!(&value.target, EditorBatchTarget::Nodes))
         || ids.len() > MAX_EDITOR_BATCH_TARGETS
+        || fe_database::handlers::visibility_groups::validate_groups(&value.groups).is_err()
+        || (matches!(
+            &value.target,
+            EditorBatchTarget::Nodes | EditorBatchTarget::Group { .. }
+        ) && value.deleted_group.is_some())
+        || value.deleted_group.as_ref().is_some_and(|context| {
+            context.memberships.len() != value.members.len()
+                || fe_database::handlers::visibility_groups::validate_groups(
+                    &context.registry_before,
+                )
+                .is_err()
+        })
         || value.petal_snapshot.is_empty()
         || !value.world_scale.is_finite()
         || value.world_scale <= 0.0
@@ -50,6 +62,24 @@ pub(super) fn capture(
 }
 
 pub(super) fn edit(request: &EditorBatchRequest) -> Result<(), String> {
+    match (&request.capture.target, &request.edit) {
+        (
+            EditorBatchTarget::Group { group_id },
+            EditorBatchEdit::DeleteGroup { group_id: edited },
+        ) if group_id == edited => {}
+        (
+            EditorBatchTarget::DeletedGroup { delete_request_id },
+            EditorBatchEdit::RestoreDeletedGroup {
+                delete_request_id: edited,
+            },
+        ) if delete_request_id == edited && request.capture.deleted_group.is_some() => {}
+        (EditorBatchTarget::Nodes, edit)
+            if !matches!(
+                edit,
+                EditorBatchEdit::DeleteGroup { .. } | EditorBatchEdit::RestoreDeletedGroup { .. }
+            ) && !request.capture.members.is_empty() => {}
+        _ => return Err("Edit does not match the complete stored Group target".into()),
+    }
     if let EditorBatchEdit::Targets(targets) = &request.edit {
         if targets.len() != request.capture.members.len()
             || targets
@@ -153,7 +183,9 @@ pub(super) fn receipt(
     request: &EditorBatchRequest,
 ) -> Result<(), String> {
     let before = &request.capture;
-    if receipt.request_id != request_id
+    if serde_json::to_vec(receipt).map_or(true, |bytes| bytes.len() > MAX_EDITOR_BATCH_BYTES)
+        || receipt.target != before.target
+        || receipt.request_id != request_id
         || receipt.scope != before.scope
         || receipt.petal_id != before.petal_id
         || receipt.members.len() != before.members.len()
@@ -186,6 +218,14 @@ pub(super) fn receipt(
                     + 1.0,
             });
         }
+        EditorBatchEdit::RestoreDeletedGroup { .. } => {
+            groups = before
+                .deleted_group
+                .as_ref()
+                .ok_or("Exact Group restore context is missing")?
+                .registry_before
+                .clone();
+        }
         EditorBatchEdit::DeleteGroup { group_id }
         | EditorBatchEdit::UndoCreatedGroup { group_id, .. } => {
             groups.retain(|group| group.id != *group_id);
@@ -200,10 +240,21 @@ pub(super) fn receipt(
         return Err("Selection receipt has an unexpected group registry".into());
     }
     for (index, (old, saved)) in before.members.iter().zip(&receipt.members).enumerate() {
+        let mut expected_path = old.stamp_path.clone();
+        if let Some(path) = &mut expected_path {
+            if let Some(owner) = receipt
+                .members
+                .iter()
+                .find(|member| member.node_id == path.state.node_id)
+            {
+                path.state = owner.state.clone();
+                path.history_version = owner.history_version;
+            }
+        }
         if old.node_id != saved.node_id
             || saved.state.node_id != old.node_id
             || saved.state.petal_id != before.petal_id
-            || !equal(&old.stamp_path, &saved.stamp_path)
+            || !equal(&expected_path, &saved.stamp_path)
             || saved.history_version.is_none()
             || saved.history_version < old.history_version
         {
@@ -232,6 +283,19 @@ pub(super) fn receipt(
                     members.retain(|id| id != group_id);
                 }
                 write_memberships(&mut expected.properties, members);
+            }
+            EditorBatchEdit::RestoreDeletedGroup { .. } => {
+                let context = before
+                    .deleted_group
+                    .as_ref()
+                    .ok_or("Exact Group restore context is missing")?;
+                restore_membership(
+                    &mut expected.properties,
+                    context
+                        .memberships
+                        .get(index)
+                        .ok_or("Incomplete Group restore context")?,
+                );
             }
             EditorBatchEdit::RestoreMemberships(members)
             | EditorBatchEdit::UndoCreatedGroup {
@@ -341,6 +405,20 @@ pub(super) fn replay_edit(
                     name: name.clone(),
                 }
             })
+        }
+        EditorBatchEdit::DeleteGroup { group_id } => {
+            return Ok(if undo {
+                EditorBatchEdit::RestoreDeletedGroup {
+                    delete_request_id: entry
+                        .delete_request_id
+                        .clone()
+                        .ok_or("Exact Group deletion proof is unavailable")?,
+                }
+            } else {
+                EditorBatchEdit::DeleteGroup {
+                    group_id: group_id.clone(),
+                }
+            });
         }
         EditorBatchEdit::Membership { group_id, member } if !undo => {
             return Ok(EditorBatchEdit::Membership {

@@ -28,9 +28,34 @@ pub struct EditorBatchMember {
     pub stamp_path: Option<EditorStampPath>,
 }
 
+/// Stored target authority; Group members are expanded by the DB writer.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub enum EditorBatchTarget {
+    #[default]
+    Nodes,
+    Group {
+        group_id: String,
+    },
+    DeletedGroup {
+        delete_request_id: String,
+    },
+}
+
+/// Server-derived exact inverse context, backed by a durable checked delete.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct EditorDeletedGroup {
+    pub group_id: String,
+    pub registry_before: Vec<VisibilityGroupDto>,
+    pub memberships: Vec<EditorMembershipValue>,
+}
+
 /// Scope-checked selection read; writes revalidate every field at use.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct EditorBatchCapture {
+    #[serde(default)]
+    pub target: EditorBatchTarget,
+    #[serde(default)]
+    pub deleted_group: Option<EditorDeletedGroup>,
     pub scope: String,
     pub petal_id: String,
     pub members: Vec<EditorBatchMember>,
@@ -111,6 +136,9 @@ pub enum EditorBatchEdit {
     DeleteGroup {
         group_id: String,
     },
+    RestoreDeletedGroup {
+        delete_request_id: String,
+    },
     UndoCreatedGroup {
         group_id: String,
         memberships: Vec<EditorMembershipValue>,
@@ -131,6 +159,8 @@ pub struct EditorBatchRequest {
 /// Complete immutable outcome; no member receipt implies a partial batch success.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct EditorBatchReceipt {
+    #[serde(default)]
+    pub target: EditorBatchTarget,
     pub request_id: String,
     pub scope: String,
     pub petal_id: String,

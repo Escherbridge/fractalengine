@@ -120,7 +120,11 @@ fn render_overlay_row(
     let mut visible = row.visible;
     ui.horizontal(|ui| {
         if ui
-            .checkbox(&mut visible, row.name.as_str())
+            .add_enabled(
+                !matches!(&row.key, OverlayKey::Group(_))
+                    || (visibility.registry_ready(petal_id) && !ui_mgr.editor_batch.is_pending()),
+                egui::Checkbox::new(&mut visible, row.name.as_str()),
+            )
             .observed(ui)
             .changed()
         {

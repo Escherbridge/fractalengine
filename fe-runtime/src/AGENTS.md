@@ -1069,3 +1069,9 @@ node/request with Result<ReplicatedNodeCurrent,String>. Both are GUI-only/unmapp
 families. Native intent owners coalesce/retry reads and check their captured node/Petal/epoch
 before projection. They must request fresh state after missing-parent hierarchy hydration rather
 than retain/replay a stale remote DTO. Request nonces are not global ordering versions.
+
+## Group-target editor batches
+
+ReadEditorBatch and ResolveCheckedEditorBatch carry EditorBatchTarget. Nodes keeps nonempty explicit IDs; Group expands complete persisted membership on the DB writer, while DeletedGroup resolves the exact original checked deletion request. Captures/receipts echo and validate target context. Zero members are valid only for typed Group contexts, including zero-node Petals; no object version is invented.
+
+RestoreDeletedGroup submits only delete_request_id. EditorDeletedGroup context is server-derived expected-state data containing the original registry and exact memberships, never permission to choose a resurrected ID. The database rederives it from the immutable actor/scope/Petal deletion manifest. Proofs are single-use; a successful Redo delete supplies a new request ID for the next Undo. The existing reply-contract journey covers empty Group read/commit/resolution without new test declarations.

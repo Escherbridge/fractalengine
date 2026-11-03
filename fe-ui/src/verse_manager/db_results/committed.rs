@@ -23,7 +23,7 @@ pub(super) fn external_editor_batch(
         })
     });
     if scope.as_deref() != Some(receipt.scope.as_str())
-        || receipt.members.is_empty()
+        || (receipt.members.is_empty() && matches!(&receipt.target, fe_runtime::editor_batch::EditorBatchTarget::Nodes))
         || receipt.members.len() > fe_runtime::editor_batch::MAX_EDITOR_BATCH_TARGETS
         || receipt.members.iter().enumerate().any(|(index, member)| {
             receipt.members[..index]

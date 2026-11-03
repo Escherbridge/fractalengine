@@ -132,3 +132,11 @@ Its existing ECS fixture also exercises inactive handle drafts, property/transfo
 Group refusal before any send, changed rendering, missing stamp source and one complete
 admission after matching sources are restored. These are source-authored checks;
 the parent campaign owns compilation, execution, live QA and acceptance.
+
+## Complete Group deletion and chronological replay
+
+Group Delete owns a typed asynchronous server read, independently of NodeManager selection. Its complete stored targets pass the same original-target source/draft/render checks immediately before the one checked write; hidden Group targets do not need to be pickable, but still need unique current identity, actual transforms and exact derived source/draft agreement. The Group may have no members. Role/navigation/gesture and competing registry-write gates remain active. Unknown accepted outcomes use the original current-read resolution, never a write retry, even for a registry-only receipt.
+
+One confirmed deletion records one chronological history entry. Undo recaptures the original IDs through DeletedGroup and submits only the durable deletion proof ID. Redo re-expands the live Group and compares it to the original expected complete targets/state, then deletes in one fresh transaction; its new receipt replaces the proof used by the next Undo. The inverse does not borrow the current selected set. Complete receipt validation updates a promoted stamp's expected owning-path context from the same complete receipt when its owner is another captured member, and still validates every parent's submitted effect before any projection.
+
+Groups displays persistent errors even with zero selected objects. Registry metadata controls and their left-panel/layer-manager eyes disable while a batch edit/read owns the controller. Rename buffers remain until the authoritative name matches or Escape discards the draft, so full queues or admission refusals cannot silently consume unsaved text. Existing packet/native render journeys cover dependent path/stamp contexts, no-selection Delete/Undo/Redo, fresh proofs, empty outcome reconciliation, pending controls and retained rename text. Source authoring has not executed them.

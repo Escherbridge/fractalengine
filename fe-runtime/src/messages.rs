@@ -509,6 +509,7 @@ pub enum DbCommand {
     /// Private native current read; actual local Viewer authority is resolved by the DB.
     ReadReplicatedNodeCurrent { node_id:String, request_id:String },
     ReadEditorBatch {
+        target: crate::editor_batch::EditorBatchTarget,
         scope: String,
         petal_id: String,
         node_ids: Vec<String>,
@@ -519,6 +520,7 @@ pub enum DbCommand {
         correlation_id: String,
     },
     ResolveCheckedEditorBatch {
+        target: crate::editor_batch::EditorBatchTarget,
         scope: String,
         petal_id: String,
         node_ids: Vec<String>,

@@ -58,6 +58,10 @@ impl RenderedSources<'_, '_> {
         if nav.active_petal_id.as_deref() != Some(capture.petal_id.as_str()) {
             return Err("Undo targets belong to another Petal; no inverse was sent".into());
         }
+        let group_registry_edit = !matches!(
+            &capture.target,
+            fe_runtime::editor_batch::EditorBatchTarget::Nodes
+        );
         let mut entities = Vec::with_capacity(capture.members.len());
         for member in &capture.members {
             if closed_path(member) {
@@ -74,9 +78,18 @@ impl RenderedSources<'_, '_> {
                                     crate::verse_manager::parse_stamp_marker_id(&marker.node_id)
                                         == Some((stamp.track_node_id.as_str(), stamp.stamp_index))
                                 }))
-                            && crate::visibility::rendered(*drawn)
-                            && crate::visibility::pickable(&member.node_id, nav, visibility)
-                            && crate::visibility::pickable(&marker.node_id, nav, visibility)
+                            && (group_registry_edit
+                                || (crate::visibility::rendered(*drawn)
+                                    && crate::visibility::pickable(
+                                        &member.node_id,
+                                        nav,
+                                        visibility,
+                                    )
+                                    && crate::visibility::pickable(
+                                        &marker.node_id,
+                                        nav,
+                                        visibility,
+                                    )))
                             && (member.stamp_path.is_some() || instance.is_none())
                             && (member.stamp_path.is_some()
                                 || !member.state.properties.contains_key("gpx_points")

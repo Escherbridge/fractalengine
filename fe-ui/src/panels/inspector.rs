@@ -4624,6 +4624,8 @@ mod tests {
             let mut first = row("a", 0.0);
             first.properties.insert("nullable".into(), Value::Null);
             let capture = EditorBatchCapture {
+                target: Default::default(),
+                deleted_group: None,
                 scope: build_nav_scope(&nav),
                 petal_id: "petal".into(),
                 members: vec![
@@ -4999,6 +5001,7 @@ mod tests {
                 assert_eq!(request.capture.members.len(), 2);
                 assert!(source_rx.try_recv().is_err());
                 let mut receipt = EditorBatchReceipt {
+                    target: Default::default(),
                     request_id: correlation_id.clone(),
                     scope: source_capture.scope.clone(),
                     petal_id: "petal".into(),
@@ -5249,6 +5252,7 @@ mod tests {
             );
 
             let mut receipt = EditorBatchReceipt {
+                target: Default::default(),
                 request_id: correlation_id.clone(),
                 scope: capture.scope.clone(),
                 petal_id: "petal".into(),
@@ -5351,6 +5355,322 @@ mod tests {
                 batch_rx.try_recv().is_err(),
                 "Undo cannot submit only a subset"
             );
+            {
+                let mut controller = crate::editor_batch::EditorBatchState::default();
+                let no_selection = NodeManager::default();
+                let (tx, rx) = crossbeam::channel::bounded(2);
+                controller.maintain(&nav, &no_selection, &hierarchy, &tx);
+                let group_id = "legacy-group";
+                let registry = vec![fe_runtime::messages::VisibilityGroupDto {
+                    id: group_id.into(),
+                    name: "Hidden legacy".into(),
+                    visible: false,
+                    order: 7.25,
+                }];
+                let mut group_capture = capture.clone();
+                group_capture.target = EditorBatchTarget::Group {
+                    group_id: group_id.into(),
+                };
+                group_capture.groups = registry.clone();
+                for member in &mut group_capture.members {
+                    member
+                        .state
+                        .properties
+                        .insert("view.groups".into(), json!([group_id]));
+                }
+                group_capture.members[1].stamp_path = Some(EditorStampPath {
+                    state: group_capture.members[0].state.clone(),
+                    history_version: group_capture.members[0].history_version,
+                });
+                controller.delete_group(group_id.into(), &nav, &tx).unwrap();
+                let DbCommand::ReadEditorBatch {
+                    target,
+                    node_ids,
+                    correlation_id,
+                    ..
+                } = rx.try_recv().unwrap()
+                else {
+                    panic!("Delete starts with one server-derived Group read");
+                };
+                assert!(matches!(target, EditorBatchTarget::Group { group_id: id } if id == group_id));
+                assert!(
+                    node_ids.is_empty(),
+                    "selected nodes cannot constrain the complete Group read"
+                );
+                controller
+                    .route(
+                        &DbResult::EditorBatchLoaded {
+                            capture: group_capture.clone(),
+                            correlation_id,
+                        },
+                        &nav,
+                        |_| Ok(()),
+                        |actual| {
+                            assert_eq!(actual.members.len(), 2);
+                            Ok(())
+                        },
+                        &tx,
+                    )
+                    .unwrap();
+                let DbCommand::CommitCheckedEditorBatch {
+                    request,
+                    correlation_id: first_delete,
+                } = rx.try_recv().unwrap()
+                else {
+                    panic!("Delete commits exactly one complete batch");
+                };
+                assert!(
+                    matches!(&request.edit, EditorBatchEdit::DeleteGroup { group_id: id } if id == group_id)
+                );
+                let mut deleted = EditorBatchReceipt {
+                    target: request.capture.target.clone(),
+                    request_id: first_delete.clone(),
+                    scope: request.capture.scope.clone(),
+                    petal_id: "petal".into(),
+                    members: request.capture.members.clone(),
+                    groups: vec![],
+                    created_group_id: None,
+                };
+                for member in &mut deleted.members {
+                    member.history_version = Some(2);
+                    member.state.properties.remove("view.groups");
+                }
+                deleted.members[1].stamp_path = Some(EditorStampPath {
+                    state: deleted.members[0].state.clone(),
+                    history_version: deleted.members[0].history_version,
+                });
+                controller
+                    .route(
+                        &DbResult::EditorBatchCommitted {
+                            receipt: deleted.clone(),
+                            correlation_id: first_delete.clone(),
+                        },
+                        &nav,
+                        |_| Ok(()),
+                        |_| Ok(()),
+                        &tx,
+                    )
+                    .unwrap();
+                assert!(controller.newest(false).is_some());
+                controller.replay(false, &nav, &tx).unwrap();
+                let DbCommand::ReadEditorBatch {
+                    target,
+                    node_ids,
+                    correlation_id,
+                    ..
+                } = rx.try_recv().unwrap()
+                else {
+                    panic!("Group Undo recaptures original targets");
+                };
+                assert!(
+                    matches!(&target, EditorBatchTarget::DeletedGroup { delete_request_id } if delete_request_id == &first_delete)
+                );
+                assert_eq!(node_ids, ["a", "b"]);
+                let mut fresh = group_capture.clone();
+                fresh.target = target;
+                fresh.members = deleted.members.clone();
+                fresh.groups.clear();
+                fresh.petal_snapshot = "group-deleted".into();
+                fresh.deleted_group = Some(EditorDeletedGroup {
+                    group_id: group_id.into(),
+                    registry_before: registry.clone(),
+                    memberships: vec![EditorMembershipValue::Groups(vec![group_id.into()]); 2],
+                });
+                controller
+                    .route(
+                        &DbResult::EditorBatchLoaded {
+                            capture: fresh,
+                            correlation_id,
+                        },
+                        &nav,
+                        |_| Ok(()),
+                        |_| Ok(()),
+                        &tx,
+                    )
+                    .unwrap();
+                let DbCommand::CommitCheckedEditorBatch {
+                    request,
+                    correlation_id: undo_id,
+                } = rx.try_recv().unwrap()
+                else {
+                    panic!("Group Undo is one checked inverse");
+                };
+                assert!(
+                    matches!(&request.edit, EditorBatchEdit::RestoreDeletedGroup { delete_request_id } if delete_request_id == &first_delete),
+                    "the inverse submits only the durable proof ID, not a client-selected old registry"
+                );
+                let mut restored = EditorBatchReceipt {
+                    target: request.capture.target.clone(),
+                    request_id: undo_id.clone(),
+                    scope: request.capture.scope.clone(),
+                    petal_id: "petal".into(),
+                    members: group_capture.members.clone(),
+                    groups: registry.clone(),
+                    created_group_id: None,
+                };
+                for member in &mut restored.members {
+                    member.history_version = Some(3);
+                }
+                restored.members[1].stamp_path = Some(EditorStampPath {
+                    state: restored.members[0].state.clone(),
+                    history_version: restored.members[0].history_version,
+                });
+                controller
+                    .route(
+                        &DbResult::EditorBatchCommitted {
+                            receipt: restored.clone(),
+                            correlation_id: undo_id,
+                        },
+                        &nav,
+                        |_| Ok(()),
+                        |_| Ok(()),
+                        &tx,
+                    )
+                    .unwrap();
+                controller.replay(true, &nav, &tx).unwrap();
+                let DbCommand::ReadEditorBatch {
+                    target,
+                    correlation_id,
+                    ..
+                } = rx.try_recv().unwrap()
+                else {
+                    panic!("Redo re-expands and checks the stored Group");
+                };
+                assert!(matches!(target, EditorBatchTarget::Group { .. }));
+                let mut fresh = group_capture.clone();
+                fresh.members = restored.members;
+                fresh.petal_snapshot = "group-restored".into();
+                controller
+                    .route(
+                        &DbResult::EditorBatchLoaded {
+                            capture: fresh,
+                            correlation_id,
+                        },
+                        &nav,
+                        |_| Ok(()),
+                        |_| Ok(()),
+                        &tx,
+                    )
+                    .unwrap();
+                let DbCommand::CommitCheckedEditorBatch {
+                    request,
+                    correlation_id: second_delete,
+                } = rx.try_recv().unwrap()
+                else {
+                    panic!("Redo is one new checked deletion");
+                };
+                assert_ne!(second_delete, first_delete);
+                deleted.request_id = second_delete.clone();
+                deleted.members = request.capture.members;
+                for member in &mut deleted.members {
+                    member.history_version = Some(4);
+                    member.state.properties.remove("view.groups");
+                }
+                deleted.members[1].stamp_path = Some(EditorStampPath {
+                    state: deleted.members[0].state.clone(),
+                    history_version: deleted.members[0].history_version,
+                });
+                controller
+                    .route(
+                        &DbResult::EditorBatchCommitted {
+                            receipt: deleted,
+                            correlation_id: second_delete.clone(),
+                        },
+                        &nav,
+                        |_| Ok(()),
+                        |_| Ok(()),
+                        &tx,
+                    )
+                    .unwrap();
+                controller.replay(false, &nav, &tx).unwrap();
+                let DbCommand::ReadEditorBatch { target, .. } = rx.try_recv().unwrap() else {
+                    panic!("next Undo has a new proof");
+                };
+                assert!(
+                    matches!(target, EditorBatchTarget::DeletedGroup { delete_request_id } if delete_request_id == second_delete)
+                );
+
+                let mut empty_controller = crate::editor_batch::EditorBatchState::default();
+                empty_controller.maintain(&nav, &no_selection, &hierarchy, &tx);
+                let mut empty_capture = group_capture.clone();
+                empty_capture.members.clear();
+                empty_controller
+                    .delete_group(group_id.into(), &nav, &tx)
+                    .unwrap();
+                let DbCommand::ReadEditorBatch { correlation_id, .. } = rx.try_recv().unwrap() else {
+                    panic!("empty Group read");
+                };
+                empty_controller
+                    .route(
+                        &DbResult::EditorBatchLoaded {
+                            capture: empty_capture.clone(),
+                            correlation_id,
+                        },
+                        &nav,
+                        |_| Ok(()),
+                        |_| Ok(()),
+                        &tx,
+                    )
+                    .unwrap();
+                let DbCommand::CommitCheckedEditorBatch {
+                    request,
+                    correlation_id: empty_id,
+                } = rx.try_recv().unwrap()
+                else {
+                    panic!("registry-only delete");
+                };
+                assert!(request.capture.members.is_empty());
+                empty_controller.resolve(&tx).unwrap();
+                let DbCommand::ResolveCheckedEditorBatch {
+                    target,
+                    node_ids,
+                    request_id,
+                    correlation_id,
+                    ..
+                } = rx.try_recv().unwrap()
+                else {
+                    panic!("unknown empty delete resolves, never replays its write");
+                };
+                assert_eq!(target, empty_capture.target);
+                assert!(node_ids.is_empty());
+                assert_eq!(request_id, empty_id);
+                let receipt = EditorBatchReceipt {
+                    target,
+                    request_id: empty_id,
+                    scope: empty_capture.scope.clone(),
+                    petal_id: "petal".into(),
+                    members: vec![],
+                    groups: vec![],
+                    created_group_id: None,
+                };
+                let mut current = empty_capture;
+                current.groups.clear();
+                current.petal_snapshot = "empty-after".into();
+                let projection = empty_controller
+                    .route(
+                        &DbResult::EditorBatchResolved {
+                            resolution: EditorBatchResolution {
+                                request_id: receipt.request_id.clone(),
+                                receipt: Some(receipt),
+                                current,
+                            },
+                            correlation_id,
+                        },
+                        &nav,
+                        |_| Ok(()),
+                        |_| Ok(()),
+                        &tx,
+                    )
+                    .unwrap()
+                    .unwrap();
+                assert!(projection.members.is_empty() && projection.groups.is_empty());
+                assert!(
+                    !empty_controller.is_pending() && empty_controller.newest(false).is_some(),
+                    "zero members still produce one real chronological Undo"
+                );
+                assert!(rx.try_recv().is_err());
+            }
+
         }
     }
 

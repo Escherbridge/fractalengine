@@ -2,6 +2,7 @@
 
 mod capture;
 mod geometry;
+mod groups;
 mod prepare;
 mod stamp;
 
@@ -10,8 +11,9 @@ use crate::{
     types::{NodeId, OpLogEntry, OpType},
 };
 use fe_runtime::editor_batch::*;
-use serde_json::{Value, json};
+use serde_json::{json, Value};
 
+#[cfg(test)]
 pub(crate) async fn read(
     db: &Db,
     scope: &str,
@@ -19,8 +21,28 @@ pub(crate) async fn read(
     ids: &[String],
     actor: &str,
 ) -> anyhow::Result<EditorBatchCapture> {
-    let captured =
-        capture::prepare(db, scope, petal, ids, actor, fe_policy::RoleLevel::Viewer).await?;
+    read_target(db, scope, petal, ids, &EditorBatchTarget::Nodes, actor).await
+}
+
+pub(crate) async fn read_target(
+    db: &Db,
+    scope: &str,
+    petal: &str,
+    ids: &[String],
+    target: &EditorBatchTarget,
+    actor: &str,
+) -> anyhow::Result<EditorBatchCapture> {
+    let captured = groups::prepare_target(
+        db,
+        scope,
+        petal,
+        ids,
+        target,
+        actor,
+        fe_policy::RoleLevel::Viewer,
+        None,
+    )
+    .await?;
     capture::verify(db, &captured).await?;
     Ok(captured.view)
 }
@@ -33,6 +55,8 @@ pub(crate) struct PreparedBatch {
     checks: Vec<String>,
     receipt: EditorBatchReceipt,
     actor: String,
+    delete_before: Option<EditorBatchCapture>,
+    restore_of: Option<String>,
 }
 
 pub(crate) use prepare::prepare;
@@ -46,13 +70,15 @@ pub(crate) async fn commit(db: &Db, prepared: PreparedBatch) -> anyhow::Result<E
         checks,
         receipt,
         actor,
+        delete_before,
+        restore_of,
     } = prepared;
     let entry = OpLogEntry {
         lamport_clock: 0,
         hlc_timestamp: String::new(),
         node_id: NodeId(receipt.petal_id.clone()),
         op_type: OpType::EditorTransaction,
-        payload: json!({"editor_batch_request_id":receipt.request_id,"scope":receipt.scope,"actor_did":actor,"receipt":receipt}),
+        payload: json!({"editor_batch_request_id":receipt.request_id,"scope":receipt.scope,"actor_did":actor,"receipt":receipt,"group_delete_before":delete_before,"group_restore_of":restore_of}),
         sig: "00".repeat(64),
     };
     guards.insert(0, "IF (SELECT VALUE payload FROM op_log WHERE payload.editor_batch_request_id=$batch_request) != [$batch_manifest_payload] { THROW 'batch manifest differs from the exact current request'; }".into());
@@ -97,6 +123,7 @@ pub(crate) async fn commit(db: &Db, prepared: PreparedBatch) -> anyhow::Result<E
     Ok(receipt)
 }
 
+#[cfg(test)]
 pub(crate) async fn resolve(
     db: &Db,
     scope: &str,
@@ -105,15 +132,56 @@ pub(crate) async fn resolve(
     request_id: &str,
     actor: &str,
 ) -> anyhow::Result<EditorBatchResolution> {
+    resolve_target(
+        db,
+        scope,
+        petal,
+        ids,
+        &EditorBatchTarget::Nodes,
+        request_id,
+        actor,
+    )
+    .await
+}
+
+pub(crate) async fn resolve_target(
+    db: &Db,
+    scope: &str,
+    petal: &str,
+    ids: &[String],
+    target: &EditorBatchTarget,
+    request_id: &str,
+    actor: &str,
+) -> anyhow::Result<EditorBatchResolution> {
     validate_request_id(request_id)?;
-    let mut captured =
-        capture::prepare(db, scope, petal, ids, actor, fe_policy::RoleLevel::Viewer).await?;
+    let mut captured = capture::prepare_nodes(
+        db,
+        scope,
+        petal,
+        ids,
+        target,
+        actor,
+        fe_policy::RoleLevel::Viewer,
+    )
+    .await?;
     let select = "SELECT payload.receipt AS receipt FROM op_log WHERE op_type='EditorTransaction' AND payload.editor_batch_request_id=$batch_request AND payload.scope=$batch_scope AND payload.actor_did=$batch_actor LIMIT 2";
     captured.bindings.extend([
         ("batch_request".into(), json!(request_id)),
         ("batch_scope".into(), json!(scope)),
         ("batch_actor".into(), json!(actor)),
     ]);
+    let expanded_read_bytes = serde_json::to_vec(&(
+        &captured.view,
+        &captured.guards,
+        &captured.bindings,
+        select,
+        "BEGIN TRANSACTION; COMMIT TRANSACTION;",
+    ))?
+    .len();
+    anyhow::ensure!(
+        expanded_read_bytes <= MAX_EDITOR_BATCH_BYTES,
+        "expanded editor resolution exceeds 4 MiB"
+    );
     let slot = captured.guards.len() + 1;
     let mut query = db.query(format!(
         "BEGIN TRANSACTION; {}; {select}; COMMIT TRANSACTION;",
@@ -132,6 +200,7 @@ pub(crate) async fn resolve(
     if let Some(receipt) = &receipt {
         anyhow::ensure!(
             receipt.request_id == request_id
+                && receipt.target == *target
                 && receipt.scope == scope
                 && receipt.petal_id == petal
                 && receipt
@@ -141,7 +210,11 @@ pub(crate) async fn resolve(
                     .eq(ids.iter().map(String::as_str)),
             "batch receipt target mismatch"
         );
-        capture::bounded(receipt)?;
+        anyhow::ensure!(
+            expanded_read_bytes.saturating_add(serde_json::to_vec(receipt)?.len())
+                <= MAX_EDITOR_BATCH_BYTES,
+            "expanded editor resolution and receipt exceed 4 MiB"
+        );
         anyhow::ensure!(
             receipt
                 .members
@@ -150,11 +223,13 @@ pub(crate) async fn resolve(
             "invalid batch receipt members"
         );
     }
-    Ok(EditorBatchResolution {
+    let resolution = EditorBatchResolution {
         request_id: request_id.into(),
         receipt,
         current: captured.view,
-    })
+    };
+    capture::bounded(&resolution)?;
+    Ok(resolution)
 }
 
 fn validate_request_id(id: &str) -> anyhow::Result<()> {

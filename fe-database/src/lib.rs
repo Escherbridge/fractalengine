@@ -1762,8 +1762,8 @@ pub fn spawn_db_thread_shared(
                         }.await.map_err(|error|{tracing::warn!(node_id,"private replica current read deferred: {error:#}");"Current shared object is unavailable or changed; refresh before retrying.".to_owned()});
                         send_result(&tx,DbResult::ReplicatedNodeCurrentRead {node_id,request_id,result});
                     }
-                    Ok(DbCommand::ReadEditorBatch {scope,petal_id,node_ids,correlation_id}) => {
-                        let reply=match handlers::editor_batch::read(&db,&scope,&petal_id,&node_ids,&local_did).await {
+                    Ok(DbCommand::ReadEditorBatch {scope,petal_id,node_ids,target,correlation_id}) => {
+                        let reply=match handlers::editor_batch::read_target(&db,&scope,&petal_id,&node_ids,&target,&local_did).await {
                             Ok(capture)=>DbResult::EditorBatchLoaded {capture,correlation_id},
                             Err(error)=>DbResult::RequestFailed {error:format!("Selection read refused: {error:#}"),correlation_id},
                         };
@@ -1785,8 +1785,8 @@ pub fn spawn_db_thread_shared(
                         };
                         send_result(&tx,reply);
                     }
-                    Ok(DbCommand::ResolveCheckedEditorBatch {scope,petal_id,node_ids,request_id,correlation_id}) => {
-                        let reply=match handlers::editor_batch::resolve(&db,&scope,&petal_id,&node_ids,&request_id,&local_did).await {
+                    Ok(DbCommand::ResolveCheckedEditorBatch {scope,petal_id,node_ids,target,request_id,correlation_id}) => {
+                        let reply=match handlers::editor_batch::resolve_target(&db,&scope,&petal_id,&node_ids,&target,&request_id,&local_did).await {
                             Ok(resolution)=>DbResult::EditorBatchResolved {resolution,correlation_id},
                             Err(error)=>DbResult::RequestFailed {error:format!("Selection reconciliation refused: {error:#}"),correlation_id},
                         };

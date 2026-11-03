@@ -1087,7 +1087,7 @@ fn sidebar_section_groups(
                     if eye_button(
                         ui,
                         visibility::glyph_for_bool(group.visible),
-                        true,
+                        vis_state.registry_ready(petal_id) && !ui_mgr.editor_batch.is_pending(),
                         tooltip,
                         format_args!("{tooltip}: {}", group.name),
                     ) {

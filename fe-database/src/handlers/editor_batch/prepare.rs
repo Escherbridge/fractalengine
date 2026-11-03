@@ -1,13 +1,13 @@
 //! Prepare all targets before one containing transaction has any effects.
 
-use super::{PreparedBatch, capture, geometry, stamp};
+use super::{capture, geometry, groups as group_capture, stamp, PreparedBatch};
 use crate::{
     handlers::{field_def, node_history, node_view, stamp_overrides, visibility_groups},
     repo::Db,
 };
 use bevy::math::{EulerRot, Quat};
 use fe_runtime::editor_batch::*;
-use serde_json::{Value, json};
+use serde_json::{json, Value};
 use std::collections::{BTreeMap, BTreeSet};
 
 struct Staged {
@@ -50,19 +50,39 @@ pub(crate) async fn prepare(
         .iter()
         .map(|m| m.node_id.clone())
         .collect();
-    let captured = capture::prepare(
+    let captured = group_capture::prepare_target(
         db,
         &request.capture.scope,
         &request.capture.petal_id,
         &ids,
+        &request.capture.target,
         actor,
         fe_policy::RoleLevel::Editor,
+        Some(request_id),
     )
     .await?;
     anyhow::ensure!(
         serde_json::to_value(&captured.view)? == serde_json::to_value(&request.capture)?,
         "selection, versions or source context changed before batch use"
     );
+    match (&request.capture.target, &request.edit) {
+        (
+            EditorBatchTarget::Group { group_id },
+            EditorBatchEdit::DeleteGroup { group_id: edited },
+        ) if group_id == edited => {}
+        (
+            EditorBatchTarget::DeletedGroup { delete_request_id },
+            EditorBatchEdit::RestoreDeletedGroup {
+                delete_request_id: edited,
+            },
+        ) if delete_request_id == edited => {}
+        (EditorBatchTarget::Nodes, edit)
+            if !matches!(
+                edit,
+                EditorBatchEdit::DeleteGroup { .. } | EditorBatchEdit::RestoreDeletedGroup { .. }
+            ) => {}
+        _ => anyhow::bail!("edit does not match the server-derived Group target"),
+    }
     let scope = &captured.view.scope;
     let mut guards = captured.guards;
     let mut bindings = captured.bindings;
@@ -439,6 +459,52 @@ pub(crate) async fn prepare(
             writes.push("UPDATE petal SET visibility_groups=$batch_new_registry WHERE petal_id=$batch_petal".into());
             bindings.push(("batch_new_registry".into(), json!(groups)));
         }
+        EditorBatchEdit::RestoreDeletedGroup { .. } => {
+            let context = captured
+                .view
+                .deleted_group
+                .as_ref()
+                .ok_or_else(|| anyhow::anyhow!("durable Group deletion context is missing"))?;
+            anyhow::ensure!(
+                !groups.iter().any(|group| group.id == context.group_id),
+                "restored Group ID collides with the current registry"
+            );
+            visibility_groups::fence_unreferenced_group_ids(
+                db,
+                &captured.view.petal_id,
+                &groups,
+                &[context.group_id.clone()],
+                "batch_restore_group",
+                &mut guards,
+                &mut bindings,
+            )
+            .await?;
+            anyhow::ensure!(
+                context.memberships.len() == staged.len(),
+                "Group restore must cover the exact proven target set"
+            );
+            groups = context.registry_before.clone();
+            visibility_groups::validate_groups(&groups).map_err(anyhow::Error::msg)?;
+            for (index, node) in staged.iter_mut().enumerate() {
+                let prefix = format!("batch_member_{index}");
+                restore_membership(
+                    db,
+                    node,
+                    scope,
+                    &context.memberships[index],
+                    &groups,
+                    &prefix,
+                    &mut guards,
+                    &mut bindings,
+                )
+                .await?;
+                if !node.facts.is_empty() {
+                    write_node(node, &prefix, &mut writes, &mut bindings);
+                }
+            }
+            writes.push("UPDATE petal SET visibility_groups=$batch_new_registry WHERE petal_id=$batch_petal".into());
+            bindings.push(("batch_new_registry".into(), json!(groups)));
+        }
         EditorBatchEdit::RestoreMemberships(previous) => {
             anyhow::ensure!(
                 previous.len() == staged.len(),
@@ -489,6 +555,7 @@ pub(crate) async fn prepare(
         }
     }
     let receipt = EditorBatchReceipt {
+        target: request.capture.target.clone(),
         request_id: request_id.into(),
         scope: scope.clone(),
         petal_id: captured.view.petal_id.clone(),
@@ -540,6 +607,14 @@ pub(crate) async fn prepare(
         checks,
         receipt,
         actor: actor.into(),
+        delete_before: matches!(&request.edit, EditorBatchEdit::DeleteGroup { .. })
+            .then(|| request.capture.clone()),
+        restore_of: match &request.edit {
+            EditorBatchEdit::RestoreDeletedGroup { delete_request_id } => {
+                Some(delete_request_id.clone())
+            }
+            _ => None,
+        },
     })
 }
 

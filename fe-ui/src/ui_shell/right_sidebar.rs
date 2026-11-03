@@ -1413,12 +1413,9 @@ fn seed_hexon_manager() -> ActiveDialog {
 // ---------------------------------------------------------------------------
 
 /// Empty-group copy (spec §4.5 — calm state, never blank).
-pub(crate) const EMPTY_GROUP_COPY: &str = "No members — select nodes and use Add to group";
+pub(crate) const EMPTY_GROUP_COPY: &str = "No loaded members; stored membership is checked before deletion.";
 
-/// Groups section (D-10): the ONE editor for the active petal's Group
-/// registry. Every edit is a whole-registry `UiAction::SetGroupRegistry`
-/// (pure transforms in `visibility::groups`); membership edits are
-/// `UiAction::SetNodeGroups` for the selected node.
+/// Group registry and complete checked selection edits; see ui_shell/AGENTS.md.
 fn render_groups_section(
     ctx: &egui::Context,
     state: &mut RightSidebarState,
@@ -1472,7 +1469,11 @@ fn render_groups_controls(
             });
         }
     }
-    let editable = local_role.can_edit() && visibility.registry_ready(petal_id);
+    let batch_busy = ui_mgr.editor_batch.is_pending();
+    if batch_busy {
+        ui.label("Wait for the complete Group/object edit to finish saving or reconciling.");
+    }
+    let editable = local_role.can_edit() && visibility.registry_ready(petal_id) && !batch_busy;
     if !local_role.can_edit() {
         ui.label("Editor access to this petal is required to change Groups.");
     }
@@ -1585,8 +1586,8 @@ fn render_groups_controls(
                                 group_ops::with_group_renamed(groups, &group.id, trimmed),
                             );
                         }
-                        ui.data_mut(|d| d.remove::<String>(buffer_id));
-                    } else if edit.has_focus() {
+                        ui.data_mut(|d| d.insert_temp(buffer_id, name));
+                    } else if name != group.name {
                         ui.data_mut(|d| d.insert_temp(buffer_id, name));
                     } else {
                         ui.data_mut(|d| d.remove::<String>(buffer_id));
@@ -1620,7 +1621,10 @@ fn render_groups_controls(
                         "Confirm delete",
                         format_args!("Delete visibility group {}", group.name),
                     ) {
-                        push_registry(ui_mgr, group_ops::with_group_removed(groups, &group.id));
+                        ui_mgr.push_action(UiAction::DeleteGroup {
+                            petal_id: petal_id.into(),
+                            group_id: group.id.clone(),
+                        });
                     }
                 });
 
@@ -1960,6 +1964,14 @@ mod tests {
         assert!(
             matches!(&actions[..], [UiAction::SetGroupRegistry { petal_id, groups }] if petal_id == "p" && groups[0].name == "Renamed")
         );
+        let retained_rename: Option<String> =
+            ctx.data(|data| data.get_temp(egui::Id::new(("groups_section_rename", "p", "g1"))));
+        assert_eq!(
+            retained_rename.as_deref(),
+            Some("Renamed"),
+            "a queued/refused rename retains its editable draft until authoritative confirmation"
+        );
+
         let observed = group_frame(&editor, vec![], &mut time, &visibility, &mut notices);
         group_click(
             &editor,
@@ -1997,7 +2009,7 @@ mod tests {
         );
         let actions = notices.drain_actions();
         assert!(
-            matches!(&actions[..], [UiAction::SetGroupRegistry { petal_id, groups }] if petal_id == "p" && groups.is_empty())
+            matches!(&actions[..], [UiAction::DeleteGroup { petal_id, group_id }] if petal_id == "p" && group_id == "g1")
         );
         visibility.replace_groups(
             (0..MAX_VISIBILITY_GROUPS)
@@ -2024,6 +2036,21 @@ mod tests {
         );
         assert!(notices.drain_actions().is_empty());
         assert_eq!(visibility.groups().len(), MAX_VISIBILITY_GROUPS);
+
+        let mut group_nav = NavigationManager::default();
+        group_nav.navigate_to_petal_in_fractal("v", "Verse", "f", "Fractal", "p");
+        let (batch_tx, batch_rx) = crossbeam::channel::bounded(1);
+        notices
+            .editor_batch
+            .delete_group("g1".into(), &group_nav, &batch_tx)
+            .unwrap();
+        batch_rx.try_recv().unwrap();
+        let batch_busy = group_frame(&editor, vec![], &mut time, &visibility, &mut notices);
+        assert!(
+            batch_busy.controls.iter().all(|control| !control.allowed),
+            "registry controls cannot compete with an accepted Group read/edit"
+        );
+        notices.editor_batch = Default::default();
 
         let (registry_tx, registry_rx) = crossbeam::channel::bounded(1);
         let registry_sender = fe_runtime::app::DbCommandSender(registry_tx);

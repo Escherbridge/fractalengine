@@ -163,8 +163,13 @@ fn render_form(
         ui.colored_label(crate::theme::STATUS_OFFLINE, error);
     }
     if state.is_pending() {
-        ui.label("Saving or reconciling the complete selection?");
-        if ui.button("Check saved selection").observed(ui).clicked() {
+        ui.label(if state.has_submitted_write() {
+            "Saving or reconciling the complete edit."
+        } else {
+            "Reading stored targets; no write has been submitted."
+        });
+        if state.has_submitted_write() && ui.button("Check saved selection").observed(ui).clicked()
+        {
             action = Some(UiAction::CheckSelectionSave);
         }
     }
@@ -408,6 +413,9 @@ pub(crate) fn group_controls(
     ui.spacing_mut().interact_size = egui::Vec2::splat(target);
     pending_controls(ui, ui_mgr);
     if nodes.selection_count() == 0 {
+        if let Some(error) = &ui_mgr.editor_batch.error {
+            ui.colored_label(crate::theme::STATUS_OFFLINE, error);
+        }
         return;
     }
     let mut state = std::mem::take(&mut ui_mgr.editor_batch);
@@ -527,8 +535,10 @@ pub(crate) fn group_controls(
 
 pub(crate) fn pending_controls(ui: &mut egui::Ui, ui_mgr: &mut UiManager) {
     if ui_mgr.editor_batch.is_pending() {
-        ui.label("A selection save is pending. Checking reads the original request outcome; it never repeats the write.");
-        if ui.button("Check saved selection").observed(ui).clicked() {
+        ui.label(if ui_mgr.editor_batch.has_submitted_write() { "An edit is pending. Checking reads the original request outcome; it never repeats the write." } else { "Reading stored Group or Undo targets; no write has been submitted." });
+        if ui_mgr.editor_batch.has_submitted_write()
+            && ui.button("Check saved selection").observed(ui).clicked()
+        {
             ui_mgr.push_action(UiAction::CheckSelectionSave);
         }
     }

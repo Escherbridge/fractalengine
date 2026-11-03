@@ -104,15 +104,33 @@ struct HistoryEntry {
     after: EditorBatchCapture,
     forward: EditorBatchEdit,
     order: u64,
+    delete_request_id: Option<String>,
+}
+
+#[derive(Debug)]
+enum ReadPurpose {
+    Selection,
+    DeleteGroup,
+    Replay {
+        entry: HistoryEntry,
+        direction: HistoryDirection,
+    },
 }
 
 #[derive(Debug)]
 struct ReadRequest {
+    target: EditorBatchTarget,
+    purpose: ReadPurpose,
     id: String,
     key: SelectionKey,
-    replay: Option<(HistoryEntry, HistoryDirection)>,
     accepted: bool,
     started: Instant,
+}
+
+impl ReadRequest {
+    fn edits(&self) -> bool {
+        !matches!(&self.purpose, ReadPurpose::Selection)
+    }
 }
 
 #[derive(Debug)]
@@ -218,6 +236,8 @@ fn id() -> String {
 
 fn snapshot(receipt: &EditorBatchReceipt, original: &EditorBatchCapture) -> EditorBatchCapture {
     EditorBatchCapture {
+        target: receipt.target.clone(),
+        deleted_group: original.deleted_group.clone(),
         scope: receipt.scope.clone(),
         petal_id: receipt.petal_id.clone(),
         members: receipt.members.clone(),
@@ -307,8 +327,12 @@ impl EditorBatchState {
         None
     }
 
+    pub(crate) fn has_submitted_write(&self) -> bool {
+        self.pending.is_some()
+    }
+
     pub(crate) fn is_pending(&self) -> bool {
-        self.pending.is_some() || self.read.as_ref().is_some_and(|read| read.replay.is_some())
+        self.pending.is_some() || self.read.as_ref().is_some_and(|read| read.edits())
     }
 
     pub(crate) fn capture(
@@ -459,7 +483,7 @@ impl EditorBatchState {
             self.undo.clear();
             self.redo.clear();
             self.history_scope = navigation.map(|ids| ids.map(str::to_owned));
-            if self.read.as_ref().is_some_and(|read| read.replay.is_some()) {
+            if self.read.as_ref().is_some_and(|read| read.edits()) {
                 self.read = None;
             }
         }
@@ -495,7 +519,7 @@ impl EditorBatchState {
             self.capture = None;
             self.interaction = None;
             self.error = None;
-            if self.read.as_ref().is_none_or(|read| read.replay.is_none()) {
+            if self.read.as_ref().is_none_or(|read| !read.edits()) {
                 self.read = None;
             }
         }
@@ -532,9 +556,10 @@ impl EditorBatchState {
                     return;
                 }
                 self.read = Some(ReadRequest {
+                    target: EditorBatchTarget::Nodes,
+                    purpose: ReadPurpose::Selection,
                     id: id(),
                     key,
-                    replay: None,
                     accepted: false,
                     started: Instant::now(),
                 });
@@ -559,6 +584,7 @@ impl EditorBatchState {
             return Ok(());
         };
         match db.try_send(DbCommand::ReadEditorBatch {
+            target: read.target.clone(),
             scope: read.key.scope.clone(),
             petal_id: read.key.petal_id.clone(),
             node_ids: read.key.ids.clone(),
@@ -575,6 +601,49 @@ impl EditorBatchState {
                 Err("Database connection closed; selected objects could not be read and no edit was submitted".into())
             }
         }
+    }
+
+    pub(crate) fn delete_group(
+        &mut self,
+        group_id: String,
+        nav: &NavigationManager,
+        db: &crossbeam::channel::Sender<DbCommand>,
+    ) -> Result<(), String> {
+        if self.is_pending() {
+            return Err("Wait for the pending edit before deleting a Group".into());
+        }
+        let navigation = [
+            nav.active_verse_id
+                .clone()
+                .ok_or("Open the Group's Verse")?,
+            nav.active_fractal_id
+                .clone()
+                .ok_or("Open the Group's Fractal")?,
+            nav.active_petal_id
+                .clone()
+                .ok_or("Open the Group's Petal")?,
+        ];
+        let key = SelectionKey {
+            scope: fe_database::build_scope(
+                &navigation[0],
+                Some(&navigation[1]),
+                Some(&navigation[2]),
+            ),
+            petal_id: navigation[2].clone(),
+            ids: Vec::new(),
+            generation: 0,
+            navigation,
+        };
+        self.read = Some(ReadRequest {
+            target: EditorBatchTarget::Group { group_id },
+            purpose: ReadPurpose::DeleteGroup,
+            id: id(),
+            key,
+            accepted: false,
+            started: Instant::now(),
+        });
+        self.error = None;
+        self.flush_read(db)
     }
 
     pub(crate) fn report_error(&mut self, error: &str) {
@@ -673,7 +742,7 @@ impl EditorBatchState {
         db: &crossbeam::channel::Sender<DbCommand>,
     ) -> Result<(), String> {
         let Some(pending) = self.pending.as_mut() else {
-            return Err("There is no submitted selection save to check; an Undo read may still be preparing its edit".into());
+            return Err("There is no submitted save to check; a Group or Undo read may still be preparing its edit".into());
         };
         if pending.resolve_id.is_some()
             && !pending.resolve_queued
@@ -701,6 +770,7 @@ impl EditorBatchState {
         };
         let resolve_id = pending.resolve_id.get_or_insert_with(id).clone();
         match db.try_send(DbCommand::ResolveCheckedEditorBatch {
+            target: pending.request.capture.target.clone(),
             scope: pending.request.capture.scope.clone(),
             petal_id: pending.request.capture.petal_id.clone(),
             node_ids: pending
@@ -781,8 +851,21 @@ impl EditorBatchState {
             .iter()
             .map(|member| member.node_id.clone())
             .collect::<Vec<_>>();
+        let target = match (&entry.forward, redo) {
+            (EditorBatchEdit::DeleteGroup { group_id }, true) => EditorBatchTarget::Group {
+                group_id: group_id.clone(),
+            },
+            (EditorBatchEdit::DeleteGroup { .. }, false) => EditorBatchTarget::DeletedGroup {
+                delete_request_id: entry
+                    .delete_request_id
+                    .clone()
+                    .ok_or("Exact Group deletion proof is unavailable")?,
+            },
+            _ => EditorBatchTarget::Nodes,
+        };
         let request_id = id();
         self.read = Some(ReadRequest {
+            target,
             id: request_id,
             key: SelectionKey {
                 scope,
@@ -796,14 +879,14 @@ impl EditorBatchState {
                 ],
             },
             accepted: false,
-            replay: Some((
+            purpose: ReadPurpose::Replay {
                 entry,
-                if redo {
+                direction: if redo {
                     HistoryDirection::Redo
                 } else {
                     HistoryDirection::Undo
                 },
-            )),
+            },
             started: Instant::now(),
         });
         self.flush_read(db)
@@ -830,31 +913,78 @@ impl EditorBatchState {
                 if !read.key.matches_navigation(nav) {
                     return Err("Petal changed; the selected-object read or Undo was canceled before any write".into());
                 }
-                validation::capture(capture, &read.key.scope, &read.key.petal_id, &read.key.ids)?;
-                if let Some((entry, direction)) = read.replay {
-                    let expected = if direction == HistoryDirection::Undo {
-                        &entry.after
-                    } else {
-                        &entry.before
-                    };
-                    if !validation::same_state(capture, expected) {
-                        return Err("One or more selected objects or group memberships changed; the complete Undo was refused".into());
+                if capture.target != read.target {
+                    return Err("Stored read returned a different Group target".into());
+                }
+                let server_ids;
+                let ids = if matches!(&read.purpose, ReadPurpose::DeleteGroup) {
+                    server_ids = capture
+                        .members
+                        .iter()
+                        .map(|member| member.node_id.clone())
+                        .collect::<Vec<_>>();
+                    &server_ids
+                } else {
+                    &read.key.ids
+                };
+                validation::capture(capture, &read.key.scope, &read.key.petal_id, ids)?;
+                match read.purpose {
+                    ReadPurpose::DeleteGroup => {
+                        let EditorBatchTarget::Group { group_id } = &capture.target else {
+                            return Err("Delete read did not return a Group target".into());
+                        };
+                        if serde_json::to_vec(capture)
+                            .map_err(|_| "Group capture is unavailable")?
+                            .len()
+                            .saturating_mul(2)
+                            > MAX_EDITOR_BATCH_BYTES
+                        {
+                            return Err(
+                                "Group exceeds the bounded Undo budget; no deletion was submitted"
+                                    .into(),
+                            );
+                        }
+                        admit_inverse(capture)?;
+                        self.submit(
+                            EditorBatchRequest {
+                                capture: capture.clone(),
+                                edit: EditorBatchEdit::DeleteGroup {
+                                    group_id: group_id.clone(),
+                                },
+                            },
+                            None,
+                            HistoryDirection::New,
+                            db,
+                        )?;
+                        return Ok(None);
                     }
-                    let edit = validation::replay_edit(&entry, capture, direction)?;
-                    admit_inverse(capture)?;
-                    self.submit(
-                        EditorBatchRequest {
-                            capture: capture.clone(),
-                            edit,
-                        },
-                        Some(entry),
-                        direction,
-                        db,
-                    )?;
-                } else if self.key.as_ref() == Some(&read.key) {
-                    self.interaction = Some(Arc::new(SelectionInteraction::capture(capture)));
-                    self.capture = Some(Arc::new(capture.clone()));
-                    self.error = None;
+                    ReadPurpose::Replay { entry, direction } => {
+                        let expected = if direction == HistoryDirection::Undo {
+                            &entry.after
+                        } else {
+                            &entry.before
+                        };
+                        if !validation::same_state(capture, expected) {
+                            return Err("One or more selected objects or group memberships changed; the complete Undo was refused".into());
+                        }
+                        let edit = validation::replay_edit(&entry, capture, direction)?;
+                        admit_inverse(capture)?;
+                        self.submit(
+                            EditorBatchRequest {
+                                capture: capture.clone(),
+                                edit,
+                            },
+                            Some(entry),
+                            direction,
+                            db,
+                        )?;
+                    }
+                    ReadPurpose::Selection if self.key.as_ref() == Some(&read.key) => {
+                        self.interaction = Some(Arc::new(SelectionInteraction::capture(capture)));
+                        self.capture = Some(Arc::new(capture.clone()));
+                        self.error = None;
+                    }
+                    ReadPurpose::Selection => {}
                 }
                 Ok(None)
             }
@@ -1006,7 +1136,11 @@ impl EditorBatchState {
             after: after.clone(),
             forward: pending.request.edit.clone(),
             order: 0,
+            delete_request_id: None,
         });
+        if matches!(&pending.request.edit, EditorBatchEdit::DeleteGroup { .. }) {
+            entry.delete_request_id = Some(receipt.request_id.clone());
+        }
         entry.order = crate::undo::next_history_order();
         let scope_matches = self.history_scope.as_ref().is_some_and(|ids| {
             ids[2] == receipt.petal_id

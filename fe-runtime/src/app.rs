@@ -2307,6 +2307,7 @@ mod tests {
             let capture:EditorBatchCapture=serde_json::from_value(serde_json::json!({"scope":"VERSE#v-FRACTAL#f-PETAL#p","petal_id":"p","groups":[],"petal_snapshot":"opaque","world_scale":1.0,
                     "members":[{"node_id":"n","history_version":null,"stamp_path":null,"state":{"node_id":"n","petal_id":"p","display_name":"Object","asset_id":null,"position":[0,0,0],"elevation":0,"rotation":[0,0,0],"scale":[1,1,1],"interactive":false,"created_at":"now","edit_seq":0,"properties":{"nested":{"null":null}},"tombstone":null}}]})).unwrap();
             let receipt = EditorBatchReceipt {
+                target: Default::default(),
                 request_id: "batch-1".into(),
                 scope: capture.scope.clone(),
                 petal_id: "p".into(),
@@ -2314,6 +2315,67 @@ mod tests {
                 groups: vec![],
                 created_group_id: None,
             };
+            let mut empty_group = capture.clone();
+            empty_group.target = EditorBatchTarget::Group {
+                group_id: "empty-group".into(),
+            };
+            empty_group.members.clear();
+            let empty_receipt = EditorBatchReceipt {
+                target: empty_group.target.clone(),
+                request_id: "empty-group-delete".into(),
+                scope: empty_group.scope.clone(),
+                petal_id: "p".into(),
+                members: vec![],
+                groups: vec![],
+                created_group_id: None,
+            };
+            cases.push((
+                DbCommand::ReadEditorBatch {
+                    target: empty_group.target.clone(),
+                    scope: empty_group.scope.clone(),
+                    petal_id: "p".into(),
+                    node_ids: vec![],
+                    correlation_id: "empty-group-read".into(),
+                },
+                DbResult::EditorBatchLoaded {
+                    capture: empty_group.clone(),
+                    correlation_id: "empty-group-read".into(),
+                },
+            ));
+            cases.push((
+                DbCommand::CommitCheckedEditorBatch {
+                    request: EditorBatchRequest {
+                        capture: empty_group.clone(),
+                        edit: EditorBatchEdit::DeleteGroup {
+                            group_id: "empty-group".into(),
+                        },
+                    },
+                    correlation_id: "empty-group-delete".into(),
+                },
+                DbResult::EditorBatchCommitted {
+                    receipt: empty_receipt.clone(),
+                    correlation_id: "empty-group-delete".into(),
+                },
+            ));
+            cases.push((
+                DbCommand::ResolveCheckedEditorBatch {
+                    target: empty_group.target.clone(),
+                    scope: empty_group.scope.clone(),
+                    petal_id: "p".into(),
+                    node_ids: vec![],
+                    request_id: "empty-group-delete".into(),
+                    correlation_id: "empty-group-check".into(),
+                },
+                DbResult::EditorBatchResolved {
+                    resolution: EditorBatchResolution {
+                        request_id: "empty-group-delete".into(),
+                        receipt: Some(empty_receipt),
+                        current: empty_group,
+                    },
+                    correlation_id: "empty-group-check".into(),
+                },
+            ));
+
             let serialized = serde_json::to_value(&receipt).unwrap();
             let decoded: EditorBatchReceipt = serde_json::from_value(serialized.clone()).unwrap();
             assert_eq!(
@@ -2324,6 +2386,7 @@ mod tests {
             cases.extend([
                 (
                     DbCommand::ReadEditorBatch {
+                        target: Default::default(),
                         scope: capture.scope.clone(),
                         petal_id: "p".into(),
                         node_ids: vec!["n".into()],
@@ -2352,6 +2415,7 @@ mod tests {
                 ),
                 (
                     DbCommand::ResolveCheckedEditorBatch {
+                        target: Default::default(),
                         scope: capture.scope.clone(),
                         petal_id: "p".into(),
                         node_ids: vec!["n".into()],

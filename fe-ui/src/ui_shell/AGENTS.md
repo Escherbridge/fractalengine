@@ -515,4 +515,6 @@ They have not been run in the source-author lane.
 
 ## Confirmed Group registry editing
 
-Registry controls wait for the active Petal registry, then queue a checked proposal without optimistic display changes. Pending edits disable competing registry and batch Group controls while keeping Check stored Groups available. The matching current readback releases ownership; a missing read can be checked again after its bounded wait. Actual registry deletion is refused by this admission path until its separate checked membership/inverse contract is wired. See `../visibility/AGENTS.md`.
+Registry controls wait for the active Petal registry, then queue a checked proposal without optimistic display changes. Pending edits disable competing registry and batch Group controls while keeping Check stored Groups available. The matching current readback releases ownership; a missing read can be checked again after its bounded wait. Actual Delete routes through a complete server-derived Group transaction and one proven chronological Undo; registry CAS still refuses ID removal. See `../visibility/AGENTS.md`.
+
+Rename drafts survive queue/admission refusal and clear when the stored name matches or Escape discards them. Pending batch ownership disables registry mutation controls across the right panel, left Groups eyes and layer manager. The cached loaded-member count is advisory; deletion always checks actual stored membership, and protected tombstoned references produce a counted whole-operation refusal.

@@ -5,7 +5,7 @@ use crate::{
     repo::Db,
 };
 use fe_runtime::{editor_batch::*, node_history::NodeRowSnapshot};
-use serde_json::{Value, json};
+use serde_json::{json, Value};
 use std::collections::BTreeSet;
 
 pub(super) struct StoredNode {
@@ -97,15 +97,19 @@ pub(super) fn fence(
     ]);
 }
 
-pub(super) async fn prepare(
+pub(super) async fn prepare_nodes(
     db: &Db,
     scope: &str,
     petal_id: &str,
     ids: &[String],
+    target: &EditorBatchTarget,
     actor: &str,
     floor: fe_policy::RoleLevel,
 ) -> anyhow::Result<Captured> {
-    validate_ids(ids)?;
+    if !ids.is_empty() || *target == EditorBatchTarget::Nodes {
+        validate_ids(ids)?;
+    }
+    super::groups::validate_target(target)?;
     anyhow::ensure!(
         crud::resolve_petal_scope_handler(db, petal_id)
             .await?
@@ -197,6 +201,8 @@ pub(super) async fn prepare(
         nodes.push(current);
     }
     let view = EditorBatchCapture {
+        target: target.clone(),
+        deleted_group: None,
         scope: scope.into(),
         petal_id: petal_id.into(),
         members,

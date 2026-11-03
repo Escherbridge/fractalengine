@@ -472,6 +472,11 @@ pub enum UiAction {
     },
 
     // --- hierarchy_visibility_groups Phases 4-5 ---
+    /// Delete the stored complete Group without deleting its objects.
+    DeleteGroup {
+        petal_id: String,
+        group_id: String,
+    },
     /// Read current Groups without retrying an accepted write.
     CheckGroupRegistry {
         petal_id: String,
@@ -1254,7 +1259,7 @@ pub(crate) fn process_ui_actions(
         }
         if ui_mgr.editor_batch.is_pending()
             && (selection_singular_edit(&action)
-                || matches!(&action, UiAction::SetGroupRegistry { .. }))
+                || matches!(&action, UiAction::SetGroupRegistry { .. } | UiAction::DeleteGroup { .. }))
         {
             ui_mgr.show_advisory(
                 "Wait for the complete selection edit to finish saving or reconciling",
@@ -1896,6 +1901,28 @@ pub(crate) fn process_ui_actions(
                     state,
                 );
             }
+            UiAction::DeleteGroup { petal_id, group_id } => {
+                let result = if !local_role.can_edit() {
+                    Err("Editor access is required to delete a Group".into())
+                } else if nav.active_petal_id.as_deref() != Some(petal_id.as_str())
+                    || !visibility.registry_ready(&petal_id)
+                {
+                    Err("Open this Petal and wait for its stored Groups before deleting a Group".into())
+                } else if undo.is_pending() || node_mgr.is_dragging() || node_mgr.gesture_active {
+                    Err("Finish or cancel the current object edit before deleting a Group".into())
+                } else {
+                    ui_mgr
+                        .editor_batch
+                        .delete_group(group_id, &nav, &db_sender.0)
+                };
+                match result {
+                    Ok(()) => {
+                        ui_mgr.show_toast("Preparing the complete stored Group deletion", now_secs)
+                    }
+                    Err(error) => ui_mgr.show_error(error, now_secs),
+                }
+            }
+
             UiAction::CheckGroupRegistry { petal_id } => {
                 if nav.active_petal_id.as_deref() != Some(petal_id.as_str()) {
                     ui_mgr.show_advisory("Select this Petal before checking its Groups", now_secs);

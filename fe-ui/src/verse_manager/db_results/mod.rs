@@ -210,7 +210,7 @@ pub(super) fn apply_db_results(
                 &nav,
                 |projection| committed::editor_batch(projection, &verse_mgr).map(|_| ()),
                 |capture| {
-                    if !local_role.can_edit() || node_mgr.gesture_active || node_mgr.is_dragging() { return Err("Edit access changed or a gesture started while Undo was preparing; no inverse was sent".into()); }
+                    if !local_role.can_edit() || caches.visibility.registry_write_pending() || node_mgr.gesture_active || node_mgr.is_dragging() { return Err("Edit access changed or a gesture started while Undo was preparing; no inverse was sent".into()); }
                     caches.selection_sources.validate_replay(capture, &path_state, &caches.path_asset, &caches.stamp_state, &nav, &caches.visibility)
                 },
                 &db_sender.0,
