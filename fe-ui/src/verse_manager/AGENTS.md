@@ -186,6 +186,11 @@ id flowing through the result: do not re-derive it UI-side and do not add a
 
 ## §node-index (`code_review_20260430_performance_hotpaths`)
 
+Same-Petal current snapshots replace their existing node slot in place. A Save,
+Undo or Redo must not append selected rows beneath their siblings or invalidate
+visible-range selection order. Births and explicit parent moves append normally;
+every replacement still retires the previous URL/property cache identity.
+
 `VerseManager.node_index` maps `node_id → (verse_idx, fractal_idx,
 petal_idx)` so drag-commit updates (`update_node_position`,
 `update_node_url` — called every gimbal release via

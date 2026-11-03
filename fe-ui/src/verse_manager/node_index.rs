@@ -8,10 +8,31 @@ impl VerseManager {
         if self.find_petal(petal_id).is_none() {
             return false;
         }
+        if self.petal_id_of(&node.id) == Some(petal_id) {
+            let id = node.id.clone();
+            let Some(existing) = self.node_entry_mut(&id) else {
+                return false;
+            };
+            *existing = node;
+            self.refresh_node_cache(&id);
+            return true;
+        }
         if let Some(previous) = self.petal_id_of(&node.id).map(str::to_owned) {
             self.remove_node(&previous, &node.id);
         }
         self.add_node(petal_id, node)
+    }
+
+    fn refresh_node_cache(&mut self, node_id: &str) {
+        self.committed_versions.remove(node_id);
+        self.url_asset_ids.remove(node_id);
+        self.url_storage.remove(node_id);
+        if let Some(epoch) = self.next_node_cache_epoch.checked_add(1) {
+            self.next_node_cache_epoch = epoch;
+            self.node_cache_epochs.insert(node_id.to_owned(), epoch);
+        } else {
+            self.node_cache_epochs.remove(node_id);
+        }
     }
 
     /// Retain all transform components for later petal and residency respawns.
@@ -98,16 +119,10 @@ impl VerseManager {
         else {
             return false;
         };
-        self.node_index.insert(node.id.clone(), (vi, fi, pi));
-        self.url_asset_ids.remove(&node.id);
-        self.url_storage.remove(&node.id);
-        if let Some(epoch) = self.next_node_cache_epoch.checked_add(1) {
-            self.next_node_cache_epoch = epoch;
-            self.node_cache_epochs.insert(node.id.clone(), epoch);
-        } else {
-            self.node_cache_epochs.remove(&node.id);
-        }
+        let id = node.id.clone();
         petal.nodes.push(node);
+        self.node_index.insert(id.clone(), (vi, fi, pi));
+        self.refresh_node_cache(&id);
         true
     }
 
@@ -992,6 +1007,14 @@ mod tests {
     #[test]
     fn add_node_indexes_new_node() {
         let mut mgr = make_tree();
+        let order: Vec<_> = mgr.find_petal("petal-2").unwrap().nodes.iter().map(|node| node.id.clone()).collect();
+        let previous_epoch = mgr.node_cache_epochs.get("node-2").copied();
+        let mut updated = node("node-2");
+        updated.position = [42.0, 2.0, 3.0];
+        assert!(mgr.upsert_node("petal-2", updated));
+        assert_eq!(mgr.find_petal("petal-2").unwrap().nodes.iter().map(|node| node.id.clone()).collect::<Vec<_>>(), order, "same-Petal receipts preserve visible tree order");
+        assert_ne!(mgr.node_cache_epochs.get("node-2").copied(), previous_epoch, "replacement still retires old cache owners");
+        assert_eq!(mgr.all_nodes().find(|node| node.id == "node-2").unwrap().position, [42.0, 2.0, 3.0]);
         assert!(mgr.add_node("petal-3", node("node-5")));
         assert_eq!(mgr.node_index.get("node-5"), Some(&(1, 0, 0)));
         mgr.update_node_position("node-5", [7.0, 7.0, 7.0]);
