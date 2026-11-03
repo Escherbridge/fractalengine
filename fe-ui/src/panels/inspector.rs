@@ -60,6 +60,10 @@ pub(crate) fn right_inspector(
     egui::Frame::NONE
         .inner_margin(egui::Margin::same(8))
         .show(ui, |ui| {
+            if node_mgr.selection_count() <= 1 || inspector.active_tab() != InspectorTab::Properties
+            {
+                crate::editor_batch::ui::pending_controls(ui, ui_mgr);
+            }
             inspector_navigation(ui, inspector, node_mgr, db_tx, nav)
         });
     crate::ui_shell::layout_policy::scroll(
@@ -96,6 +100,9 @@ fn inspector_navigation(
     db_tx: &crossbeam::channel::Sender<DbCommand>,
     nav: &NavigationManager,
 ) {
+    if node_mgr.selection_count() > 1 {
+        ui.strong(format!("{} selected objects", node_mgr.selection_count()));
+    }
     if node_mgr.selected_entity().is_some() {
         crate::ui_shell::layout_policy::trailing_row(ui, |ui| {
             if ui
@@ -182,6 +189,23 @@ fn inspector_tab_body(
     nav: &NavigationManager,
     asset_status: &AssetDownloadStatus,
 ) {
+    if node_mgr.selection_count() > 1 {
+        if inspector.active_tab() == InspectorTab::Properties {
+            crate::editor_batch::render(ui, node_mgr, nav, ui_mgr, local_role);
+            egui::CollapsingHeader::new("Primary object only: Portal URL").show(ui, |ui| {
+                inspector_url_meta_section(ui, inspector, node_mgr, ui_mgr, local_role, hierarchy);
+            });
+            return;
+        }
+        if let Some(primary) = node_mgr.primary() {
+            ui.label(format!(
+                "{} objects selected ? this tab shows only primary object {}",
+                node_mgr.selection_count(),
+                primary.node_id
+            ));
+            ui.label("History, appended measurements, portal URL and API scope belong to the primary object.");
+        }
+    }
     match inspector.active_tab() {
         InspectorTab::Properties => {
             if node_mgr.selected.is_none() {
@@ -203,7 +227,15 @@ fn inspector_tab_body(
                 ui, inspector, node_mgr, ui_mgr,
             );
             ui.add_space(2.0);
-            inspector_transform_section(ui, inspector, node_mgr, ui_mgr, local_role);
+            if ui_mgr
+                .editor_batch
+                .capture(nav, node_mgr)
+                .is_some_and(crate::editor_batch::has_derived_transform)
+            {
+                crate::editor_batch::ui::render_transform(ui, node_mgr, nav, ui_mgr, local_role);
+            } else {
+                inspector_transform_section(ui, inspector, node_mgr, ui_mgr, local_role);
+            }
             ui.add_space(2.0);
             inspector_url_meta_section(ui, inspector, node_mgr, ui_mgr, local_role, hierarchy);
             ui.add_space(2.0);
@@ -4513,6 +4545,343 @@ mod tests {
                 .try_iter()
                 .all(|command| matches!(command, DbCommand::ListApiTokensByScope { .. })));
             assert!(feedback.drain_actions().is_empty());
+        }
+
+        {
+            use crate::node_manager::{SelectionMode, SelectionTarget};
+            use fe_runtime::editor_batch::*;
+            use fe_runtime::messages::DbResult;
+            use serde_json::Value;
+            let nav = NavigationManager {
+                active_verse_id: Some("verse".into()),
+                active_fractal_id: Some("fractal".into()),
+                active_petal_id: Some("petal".into()),
+                ..Default::default()
+            };
+            let mut selected = NodeManager::default();
+            selected
+                .reduce_selection(
+                    Some("petal"),
+                    vec![
+                        SelectionTarget {
+                            entity: Entity::from_bits(1),
+                            node_id: "a".into(),
+                        },
+                        SelectionTarget {
+                            entity: Entity::from_bits(2),
+                            node_id: "b".into(),
+                        },
+                    ],
+                    SelectionMode::Replace,
+                )
+                .unwrap();
+            let hierarchy = VerseManager::from_verses(vec![crate::verse_manager::VerseEntry {
+                id: "verse".into(),
+                fractals: vec![crate::verse_manager::FractalEntry {
+                    id: "fractal".into(),
+                    petals: vec![crate::verse_manager::PetalEntry {
+                        id: "petal".into(),
+                        nodes: vec![
+                            crate::verse_manager::NodeEntry {
+                                id: "a".into(),
+                                name: "First".into(),
+                                ..Default::default()
+                            },
+                            crate::verse_manager::NodeEntry {
+                                id: "b".into(),
+                                name: "Second".into(),
+                                ..Default::default()
+                            },
+                        ],
+                        ..Default::default()
+                    }],
+                    ..Default::default()
+                }],
+                ..Default::default()
+            }]);
+            let row = |id: &str, x: f64| {
+                serde_json::from_value::<fe_runtime::node_history::NodeRowSnapshot>(json!({
+                "node_id":id,"petal_id":"petal","display_name":id,"asset_id":null,"position":[x,0.0,0.0],"elevation":0.0,
+                "rotation":[0.0,0.0,0.0,1.0],"scale":[1.0,1.0,1.0],"interactive":true,"created_at":"fixture","edit_seq":0,
+                "properties":{"shared":1,"both-null":null,"mixed":x,"complex":{"samples":[1,null,{"value":2.5}]}},"tombstone":null
+            })).unwrap()
+            };
+            let mut first = row("a", 0.0);
+            first.properties.insert("nullable".into(), Value::Null);
+            let capture = EditorBatchCapture {
+                scope: build_nav_scope(&nav),
+                petal_id: "petal".into(),
+                members: vec![
+                    EditorBatchMember {
+                        node_id: "a".into(),
+                        history_version: Some(1),
+                        state: first,
+                        stamp_path: None,
+                    },
+                    EditorBatchMember {
+                        node_id: "b".into(),
+                        history_version: Some(1),
+                        state: row("b", 4.0),
+                        stamp_path: None,
+                    },
+                ],
+                groups: vec![],
+                petal_snapshot: "fixture-before".into(),
+                world_scale: 1.0,
+            };
+            use crate::editor_batch::ui::{property_presence, PropertyPresence};
+            assert_eq!(
+                property_presence(&capture, "shared"),
+                PropertyPresence::Common(json!(1))
+            );
+            assert_eq!(
+                property_presence(&capture, "mixed"),
+                PropertyPresence::Mixed
+            );
+            assert_eq!(
+                property_presence(&capture, "nullable"),
+                PropertyPresence::Missing {
+                    present: 1,
+                    total: 2
+                }
+            );
+            assert_eq!(
+                property_presence(&capture, "both-null"),
+                PropertyPresence::Common(Value::Null)
+            );
+            let (batch_tx, batch_rx) = crossbeam::channel::unbounded();
+            let mut feedback = UiManager::default();
+            feedback
+                .editor_batch
+                .maintain(&nav, &selected, &hierarchy, &batch_tx);
+            let DbCommand::ReadEditorBatch {
+                node_ids,
+                correlation_id,
+                ..
+            } = batch_rx.try_recv().unwrap()
+            else {
+                panic!("selection reads use the complete typed batch")
+            };
+            assert_eq!(node_ids, ["a", "b"]);
+            feedback
+                .editor_batch
+                .route(
+                    &DbResult::EditorBatchLoaded {
+                        capture: capture.clone(),
+                        correlation_id,
+                    },
+                    &nav,
+                    |_| Ok(()),
+                    &batch_tx,
+                )
+                .unwrap();
+            for width in [260.0, 320.0, 640.0] {
+                for scale in [0.75, 1.0, 2.0] {
+                    let ctx = egui::Context::default();
+                    ctx.set_pixels_per_point(scale);
+                    ctx.enable_accesskit();
+                    let mut form = InspectorFormState::default();
+                    crate::ui_shell::layout_policy::begin_frame(&ctx, true);
+                    let output = ctx.run(
+                        egui::RawInput {
+                            screen_rect: Some(egui::Rect::from_min_size(
+                                egui::Pos2::ZERO,
+                                egui::vec2(width, 3000.0),
+                            )),
+                            ..Default::default()
+                        },
+                        |ctx| {
+                            egui::CentralPanel::default().show(ctx, |ui| {
+                                right_inspector(
+                                    ui,
+                                    &mut form,
+                                    &mut selected,
+                                    &hierarchy,
+                                    &mut feedback,
+                                    &LocalUserRole {
+                                        role: Some(fe_database::RoleLevel::Editor),
+                                    },
+                                    &batch_tx,
+                                    &nav,
+                                    &AssetDownloadStatus::default(),
+                                )
+                            });
+                        },
+                    );
+                    let texts = output
+                        .shapes
+                        .iter()
+                        .filter_map(|shape| match &shape.shape {
+                            egui::epaint::Shape::Text(text) => Some(text.galley.text()),
+                            _ => None,
+                        })
+                        .collect::<Vec<_>>();
+                    assert!(texts.iter().any(|text| text.contains("2 selected objects")));
+                    assert!(texts.iter().any(|text| text.contains("Mixed")));
+                    assert!(texts.iter().any(|text| text.contains("Present on 1/2")));
+                    assert!(texts
+                        .iter()
+                        .any(|text| text.contains("Primary object only: Portal URL")));
+                    let access = output.platform_output.accesskit_update.unwrap();
+                    assert!(access
+                        .nodes
+                        .iter()
+                        .any(|(_, node)| node.label() == Some("Selection Move by X")));
+                    for control in crate::ui_shell::layout_policy::observations(&ctx)
+                        .controls
+                        .iter()
+                        .filter(|control| {
+                            (control.clickable || control.draggable)
+                                && control.clip.intersects(control.hit)
+                        })
+                    {
+                        assert!(
+                            control.hit.width() >= 24.0 && control.hit.height() >= 24.0,
+                            "selection control target: {:?}",
+                            control.hit
+                        );
+                        assert!(
+                            control.hit.width() * scale >= 20.0
+                                && control.hit.height() * scale >= 20.0
+                        );
+                    }
+                    assert!(
+                        feedback.drain_actions().is_empty(),
+                        "rendering a selection cannot mutate it"
+                    );
+                }
+            }
+            let origin = feedback.editor_batch.origin(&selected).unwrap();
+            let edits = capture
+                .members
+                .iter()
+                .map(|member| EditorTargetEdit {
+                    node_id: member.node_id.clone(),
+                    mutation: EditorTargetMutation::Properties(vec![EditorPropertyEdit::Set {
+                        key: "added".into(),
+                        value: json!({"samples":[1,null,2]}),
+                    }]),
+                })
+                .collect();
+            feedback
+                .editor_batch
+                .start(
+                    origin,
+                    EditorBatchEdit::Targets(edits),
+                    &nav,
+                    &selected,
+                    &batch_tx,
+                )
+                .unwrap();
+            let DbCommand::CommitCheckedEditorBatch {
+                request,
+                correlation_id,
+            } = batch_rx.try_recv().unwrap()
+            else {
+                panic!("one complete selected edit must use one checked batch")
+            };
+            assert_eq!(request.capture.members.len(), 2);
+            assert!(batch_rx.try_recv().is_err(), "no per-node save loop");
+            let mut receipt = EditorBatchReceipt {
+                request_id: correlation_id.clone(),
+                scope: capture.scope.clone(),
+                petal_id: "petal".into(),
+                members: capture.members.clone(),
+                groups: vec![],
+                created_group_id: None,
+            };
+            for member in &mut receipt.members {
+                member.history_version = Some(2);
+                member
+                    .state
+                    .properties
+                    .insert("added".into(), json!({"samples":[1,null,2]}));
+            }
+            let mut partial = receipt.clone();
+            partial.members.pop();
+            let projected = std::cell::Cell::new(0);
+            let preflight = |_: &crate::editor_batch::BatchProjection| {
+                projected.set(projected.get() + 1);
+                Ok(())
+            };
+            assert!(feedback
+                .editor_batch
+                .route(
+                    &DbResult::EditorBatchCommitted {
+                        receipt: partial,
+                        correlation_id: correlation_id.clone()
+                    },
+                    &nav,
+                    &preflight,
+                    &batch_tx
+                )
+                .is_err());
+            assert_eq!(
+                projected.get(),
+                0,
+                "a partial receipt cannot project any member"
+            );
+            assert!(
+                feedback.editor_batch.is_pending(),
+                "malformed success retains reconciliation ownership"
+            );
+            assert!(feedback
+                .editor_batch
+                .route(
+                    &DbResult::EditorBatchCommitted {
+                        receipt: receipt.clone(),
+                        correlation_id
+                    },
+                    &nav,
+                    &preflight,
+                    &batch_tx
+                )
+                .unwrap()
+                .is_some());
+            assert_eq!(projected.get(), 1);
+            assert!(!feedback.editor_batch.is_pending());
+            assert!(feedback.editor_batch.newest(false).is_some());
+            feedback
+                .editor_batch
+                .replay(false, &nav, &batch_tx)
+                .unwrap();
+            let DbCommand::ReadEditorBatch {
+                correlation_id,
+                node_ids,
+                ..
+            } = batch_rx.try_recv().unwrap()
+            else {
+                panic!("Undo reads every target again before writing")
+            };
+            assert_eq!(node_ids, ["a", "b"]);
+            let mut fresh = capture.clone();
+            fresh.members = receipt.members.clone();
+            fresh.petal_snapshot = "fixture-after".into();
+            feedback
+                .editor_batch
+                .route(
+                    &DbResult::EditorBatchLoaded {
+                        capture: fresh,
+                        correlation_id,
+                    },
+                    &nav,
+                    &preflight,
+                    &batch_tx,
+                )
+                .unwrap();
+            let DbCommand::CommitCheckedEditorBatch { request, .. } = batch_rx.try_recv().unwrap()
+            else {
+                panic!("Undo must be one checked batch")
+            };
+            let EditorBatchEdit::Targets(inverse) = request.edit else {
+                panic!("property edits restore their exact before values")
+            };
+            assert_eq!(inverse.len(), 2);
+            assert!(inverse.iter().all(|target| matches!(&target.mutation, EditorTargetMutation::Properties(properties) if matches!(properties.as_slice(), [EditorPropertyEdit::Delete { key }] if key == "added"))));
+            assert!(
+                batch_rx.try_recv().is_err(),
+                "Undo cannot submit only a subset"
+            );
         }
     }
 

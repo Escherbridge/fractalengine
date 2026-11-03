@@ -1,5 +1,12 @@
 # fractalengine (GUI binary) — main wiring rationale
 
+Checked selection route commits and Undo feed the same `PathProjection` consumer as
+ordinary point edits. `advance_path_edits` drains UiManager's confirmed selection
+projections before the existing Undo queue, checks the active Petal, rebuilds route
+rendering and refreshes the current editor rows. History previews have no path into
+this queue. QA debug and portal adapters read NodeManager's primary accessor; their
+actual rendered-entity identity guards are unchanged.
+
 ## Confirmed local API address
 
 The existing API-listening fan-out always forwards the actual bound SocketAddr

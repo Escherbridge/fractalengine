@@ -2,6 +2,12 @@
 
 ## 2026-07-26 routing
 
+Plural selection uses the same checked transform/property form in Inspector and
+Move/Rotate/Scale/Select Options. Brush/Measure keep their own independent controls;
+Pen explains its one-route requirement. Groups controls apply creation and membership
+to every selected object through one checked batch. The legacy per-node membership
+buttons are not used by the production Groups section. See `../editor_batch/AGENTS.md`.
+
 Topbar **Options** toggles `RightSidebarSection::Options` (ALL non-Select tools request the
 Options section via `ToolState::activate`, not just Brush). Right-row helpers resolve
 active section, compute labels, and provide toggle/reveal operations.

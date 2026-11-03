@@ -307,7 +307,19 @@ pub(super) fn handle_path_handle_interaction(
     mut marker_tx: Query<(&mut Transform, &PathHandleMarker)>,
     marker_pick: Query<(&GlobalTransform, &PathHandleMarker)>,
     mut arbiter: ResMut<ClickArbiter>,
+    manager: Option<Res<super::NodeManager>>,
 ) {
+    if ui_mgr.editor_batch.is_pending() {
+        drag.active = None;
+        return;
+    }
+    if manager
+        .as_ref()
+        .is_some_and(|manager| manager.selection_count() > 1)
+    {
+        drag.active = None;
+        return;
+    }
     // Stranded-gesture sweep: a Hover frame (button up) with a live drag means
     // its Release was missed — drop it before it can replay on a later click.
     sweep_stranded_drag(arbiter.phase(), &mut drag.active);

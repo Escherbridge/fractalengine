@@ -15,6 +15,11 @@ use std::{
     time::{Duration, Instant},
 };
 
+pub(crate) fn next_history_order() -> u64 {
+    static ORDER: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+    ORDER.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+}
+
 const MAX_ENTRIES: usize = 50;
 const MAX_BYTES: usize = 4 * 1024 * 1024;
 const SAVE_TIMEOUT: Duration = Duration::from_secs(15);
@@ -64,6 +69,7 @@ impl EditValue {
 }
 #[derive(Debug, Clone)]
 struct Entry {
+    order: u64,
     node_id: String,
     petal_id: String,
     scope: String,
@@ -219,6 +225,7 @@ pub struct UndoState {
     scope: Option<String>,
     petal_id: Option<String>,
     generation: u64,
+    normal_generation: u64,
     undo: VecDeque<Entry>,
     redo: Vec<Entry>,
     pending: Option<Pending>,
@@ -238,6 +245,18 @@ fn request_id() -> String {
 }
 
 impl UndoState {
+    pub(crate) fn normal_generation(&self) -> u64 {
+        self.normal_generation
+    }
+    pub(crate) fn newest(&self, redo: bool) -> Option<u64> {
+        if redo {
+            self.redo.last()
+        } else {
+            self.undo.back()
+        }
+        .map(|entry| entry.order)
+    }
+
     fn sync(&mut self, nav: &NavigationManager) {
         let current = navigation_key(nav);
         if self
@@ -374,6 +393,7 @@ impl UndoState {
         }
         self.start(
             Entry {
+                order: 0,
                 node_id: node_id.into(),
                 petal_id: petal_id.into(),
                 scope: self.scope.clone().unwrap(),
@@ -617,6 +637,7 @@ impl UndoState {
             }
         }
         let entry = Entry {
+            order: 0,
             node_id: draft.node_id,
             petal_id: self.petal_id.clone().ok_or("Petal closed")?,
             scope: self.scope.clone().ok_or("Petal closed")?,
@@ -761,6 +782,7 @@ impl UndoState {
             .is_some_and(|(a, b)| a == b);
         let pending = self.pending.take().unwrap();
         let mut entry = pending.entry.unwrap();
+        entry.order = next_history_order();
         let previous_target = if pending.origin == Origin::Undo {
             entry.before_version
         } else {
@@ -776,6 +798,7 @@ impl UndoState {
         let petal_id = entry.petal_id.clone();
         match pending.origin {
             Origin::Normal => {
+                self.normal_generation = self.normal_generation.wrapping_add(1);
                 self.redo.clear();
                 self.undo.push_back(entry);
             }

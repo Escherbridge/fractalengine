@@ -117,6 +117,7 @@ pub(crate) fn gimbal_affordance_label(tool: Tool, kind: &SelectionKind) -> Optio
         SelectionKind::PathVertex { .. } | SelectionKind::PathSegment { .. } => {
             Some("Gimbal active — drag an axis to move this point")
         }
+        SelectionKind::Stamp(_) if tool == Tool::Move => None,
         SelectionKind::Node(_) | SelectionKind::Stamp(_) | SelectionKind::PathTrack { .. }
             if transform_tool =>
         {
@@ -136,6 +137,9 @@ pub(crate) fn gimbal_affordance_label(tool: Tool, kind: &SelectionKind) -> Optio
 pub(crate) fn selection_summary(kind: &SelectionKind) -> String {
     match kind {
         SelectionKind::Empty => "Nothing selected".to_string(),
+        SelectionKind::Multiple { count } => {
+            format!("{count} selected objects; transforms apply to the complete selection")
+        }
         SelectionKind::Node(_) => "Object (scene node)".to_string(),
         SelectionKind::PathTrack { track_id } => format!("Path track: {track_id}"),
         SelectionKind::PathVertex { idx, .. } => format!("Path point #{idx}"),
@@ -288,7 +292,10 @@ mod tests {
             track_id: "t".into(),
         };
         for kind in [&stamp, &track] {
-            assert!(gimbal_affordance_label(Tool::Move, kind).is_some());
+            assert_eq!(
+                gimbal_affordance_label(Tool::Move, kind).is_some(),
+                !matches!(kind, SelectionKind::Stamp(_))
+            );
             assert!(gimbal_affordance_label(Tool::Rotate, kind).is_some());
             assert!(gimbal_affordance_label(Tool::Scale, kind).is_some());
             assert!(gimbal_affordance_label(Tool::Select, kind).is_none());

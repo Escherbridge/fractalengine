@@ -96,7 +96,7 @@ impl StampSelectionCatalog {
 
 #[derive(Resource, Default)]
 pub(crate) struct StampSelectionRequests {
-    pending: Vec<StampSelectionOrigin>,
+    pending: Vec<(StampSelectionOrigin, super::SelectionMode)>,
     edits: Vec<(
         StampSelectionOrigin,
         fe_runtime::messages::StampOverrideEdit,
@@ -104,7 +104,7 @@ pub(crate) struct StampSelectionRequests {
 }
 impl StampSelectionRequests {
     pub(crate) fn push(&mut self, origin: StampSelectionOrigin) {
-        self.pending.push(origin);
+        self.pending.push((origin, super::SelectionMode::Replace));
     }
     pub(crate) fn push_edit(
         &mut self,
@@ -404,7 +404,7 @@ fn origin_live(
 #[derive(bevy::ecs::system::SystemParam)]
 pub(super) struct StampPickParams<'w, 's> {
     nav: Res<'w, NavigationManager>,
-    path: Res<'w, PathEditorState>,
+    path: ResMut<'w, PathEditorState>,
     cache: Res<'w, PathAssetCache>,
     hierarchy: Res<'w, VerseManager>,
     map: Res<'w, PetalMapState>,
@@ -413,6 +413,11 @@ pub(super) struct StampPickParams<'w, 's> {
     requests: ResMut<'w, StampSelectionRequests>,
 }
 impl StampPickParams<'_, '_> {
+    pub(super) fn clear_components(&mut self) {
+        self.path.selected_point = None;
+        self.path.selected_segment = None;
+    }
+
     pub(super) fn is_stamp(&self, entity: Entity) -> bool {
         self.live
             .get(entity)
@@ -420,7 +425,12 @@ impl StampPickParams<'_, '_> {
                 target_from(marker, instance, &self.state).is_some()
             })
     }
-    pub(super) fn queue(&mut self, entity: Entity, generation: u64) {
+    pub(super) fn queue_mode(
+        &mut self,
+        entity: Entity,
+        generation: u64,
+        mode: super::SelectionMode,
+    ) {
         let Ok((entity, marker, instance, _, proof)) = self.live.get(entity) else {
             return;
         };
@@ -443,15 +453,18 @@ impl StampPickParams<'_, '_> {
         {
             return;
         }
-        self.requests.push(StampSelectionOrigin {
-            source,
-            target: StampTarget {
-                entity,
-                node_id: marker.node_id.clone(),
-                index,
+        self.requests.pending.push((
+            StampSelectionOrigin {
+                source,
+                target: StampTarget {
+                    entity,
+                    node_id: marker.node_id.clone(),
+                    index,
+                },
+                generation,
             },
-            generation,
-        });
+            mode,
+        ));
     }
 }
 
@@ -478,7 +491,12 @@ fn select_context_stamp(
     if entity != *last {
         *last = entity;
         if let Some(entity) = entity {
-            pick.queue(entity, manager.selection_generation);
+            let mode = if manager.members().any(|member| member.entity == entity) {
+                super::SelectionMode::Extend
+            } else {
+                super::SelectionMode::Replace
+            };
+            pick.queue_mode(entity, manager.selection_generation, mode);
         }
     }
 }
@@ -500,7 +518,7 @@ fn dispatch_selections(
     mut ui: ResMut<UiManager>,
     time: Res<crate::notice::NoticeClock>,
 ) {
-    for mut origin in std::mem::take(&mut requests.pending) {
+    for (mut origin, mode) in std::mem::take(&mut requests.pending) {
         if origin.generation != manager.selection_generation
             || !role.role.is_some_and(|role| role.can_view())
             || !source_matches(&origin.source, &nav, &path, &cache, &hierarchy, &map)
@@ -515,7 +533,21 @@ fn dispatch_selections(
             .promoted_node_id(&stamp)
             .filter(|node_id| state.promoted_stamp_for_node(node_id) == Some(&stamp));
         let node_id = promoted.unwrap_or(&origin.target.node_id).to_owned();
-        manager.select_live_stamp(origin.target.entity, node_id.clone());
+        if let Err(reason) = manager.reduce_selection(
+            Some(&origin.source.capture.petal_id),
+            vec![super::SelectionTarget {
+                entity: origin.target.entity,
+                node_id: node_id.clone(),
+            }],
+            mode,
+        ) {
+            ui.show_advisory(reason, time.elapsed_secs_f64());
+            continue;
+        }
+        if manager.selected_entity() != Some(origin.target.entity) {
+            state.clear_selection();
+            continue;
+        }
         if promoted.is_some() {
             manager.bind_promoted_stamp(origin.target.entity, &node_id);
         }
@@ -567,6 +599,10 @@ fn dispatch_selections(
         }
     }
     for (origin, edit) in std::mem::take(&mut requests.edits) {
+        if manager.selection_count() > 1 {
+            ui.show_advisory("Use selection transform controls to edit all selected objects; individual stamp edits require one selected stamp", time.elapsed_secs_f64());
+            continue;
+        }
         if !origin.is_current_selection(&manager)
             || !source_matches(&origin.source, &nav, &path, &cache, &hierarchy, &map)
             || !origin_live(&origin, &live, &state, &nav, &visibility)
@@ -656,7 +692,8 @@ fn maintain_selection_and_catalog(
             }
         }
     }
-    if state.selection_origin.is_none()
+    if manager.selection_count() == 1
+        && state.selection_origin.is_none()
         && path.selected_point.is_none()
         && path.selected_segment.is_none()
     {

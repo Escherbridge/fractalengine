@@ -63,6 +63,9 @@ pub(crate) fn apply(
     node_mgr: &mut NodeManager,
     transform_query: &mut Query<&mut Transform>,
 ) -> Result<(), String> {
+    if node_mgr.selection_count() > 1 {
+        return Err("Use the selection transform controls to apply one checked edit to every selected object".into());
+    }
     let Some(sel) = node_mgr.selected.as_mut() else {
         return Ok(());
     };

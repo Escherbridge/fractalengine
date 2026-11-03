@@ -24,6 +24,15 @@ pub(super) fn broadcast_transform(
     nav: Res<crate::navigation_manager::NavigationManager>,
     clock: Res<crate::notice::NoticeClock>,
 ) {
+    for (entity, restore) in manager.take_cancelled_restores() {
+        if let Ok((mut transform, _)) = transform_query.get_mut(entity) {
+            restore.apply(&mut transform);
+        }
+    }
+    if manager.selection_count() > 1 {
+        return;
+    }
+
     let before = manager.pending_transform_before.take();
     let Some(sel) = manager.selected.as_mut() else {
         return;

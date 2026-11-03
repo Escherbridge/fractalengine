@@ -149,7 +149,9 @@ fn resolve_gimbal(tool: Tool, kind: &SelectionKind) -> Operation {
                 Operation::None
             }
         }
-        SelectionKind::Node(_) | SelectionKind::PathTrack { .. } => {
+        SelectionKind::Node(_)
+        | SelectionKind::PathTrack { .. }
+        | SelectionKind::Multiple { .. } => {
             if matches!(tool, Tool::Move | Tool::Rotate | Tool::Scale) {
                 Operation::BeginGimbalDrag
             } else {

@@ -16,9 +16,7 @@ pub(crate) enum RowSelection {
     #[default]
     None,
     Primary,
-    #[allow(dead_code)] // Reserved for the selection authority's multiple-selection projection.
     Selected,
-    #[allow(dead_code)] // Reserved for the selection authority's group projection.
     Partial,
 }
 
@@ -44,7 +42,7 @@ impl RowSelection {
         }
     }
 
-    fn fill(self, on_path: bool) -> egui::Color32 {
+    pub(crate) fn fill(self, on_path: bool) -> egui::Color32 {
         match self {
             Self::Primary => theme::TREE_PRIMARY_BG,
             Self::Selected => theme::TREE_SELECTED_BG,
@@ -54,7 +52,7 @@ impl RowSelection {
         }
     }
 
-    fn paint(self, painter: &egui::Painter, rect: egui::Rect) {
+    pub(crate) fn paint(self, painter: &egui::Painter, rect: egui::Rect) {
         let (width, color) = match self {
             Self::Primary => (3.0, theme::TREE_PRIMARY_ACCENT),
             Self::Selected => (1.5, theme::TREE_SELECTED_ACCENT),

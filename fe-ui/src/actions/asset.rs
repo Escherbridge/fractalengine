@@ -97,6 +97,13 @@ pub struct StampInteractionState {
 }
 
 impl StampInteractionState {
+    pub(crate) fn promoted_node_id_parts(&self, track: &str, index: usize) -> Option<&str> {
+        self.promoted
+            .iter()
+            .find(|(stamp, _)| stamp.track_node_id == track && stamp.stamp_index == index)
+            .map(|(_, id)| id.as_str())
+    }
+
     pub(crate) fn clear_selection(&mut self) {
         self.selected=None; self.selection_origin=None; self.pending_promotion=None;
         self.selection_promotion=None;

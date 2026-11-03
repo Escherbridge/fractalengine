@@ -217,7 +217,25 @@ pub(super) fn handle_path_segment_interaction(
     rendered_shapes: Query<(&TrackPickShape, &SpawnedNodeMarker)>,
     nav: Res<NavigationManager>,
     visibility: Res<VisibilityState>,
+    manager: Option<Res<super::NodeManager>>,
+    keys: Option<Res<ButtonInput<KeyCode>>>,
 ) {
+    if manager
+        .as_ref()
+        .is_some_and(|manager| manager.selection_count() > 1)
+        || keys.as_ref().is_some_and(|keys| {
+            keys.any_pressed([
+                KeyCode::ControlLeft,
+                KeyCode::ControlRight,
+                KeyCode::SuperLeft,
+                KeyCode::SuperRight,
+                KeyCode::ShiftLeft,
+                KeyCode::ShiftRight,
+            ])
+        })
+    {
+        return;
+    }
     if !arbiter.is_fresh_press() || !arbiter.is_available() {
         return;
     }

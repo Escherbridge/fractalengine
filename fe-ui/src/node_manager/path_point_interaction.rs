@@ -302,6 +302,7 @@ pub(crate) fn collect_foreign_anchors<'a>(
 /// visibility picker rule.
 #[derive(bevy::ecs::system::SystemParam)]
 pub(super) struct ForeignSnapSources<'w, 's> {
+    selection: Option<Res<'w, super::NodeManager>>,
     shapes: Query<
         'w,
         's,
@@ -680,6 +681,20 @@ pub(super) fn handle_path_point_interaction(
     mut arbiter: ResMut<ClickArbiter>,    undo:Res<crate::undo::UndoState>,
 
 ) {
+    if ui_mgr.editor_batch.is_pending() {
+        drag.active = None;
+        pen_drag.active = None;
+        return;
+    }
+    if snap_sources
+        .selection
+        .as_ref()
+        .is_some_and(|manager| manager.selection_count() > 1)
+    {
+        drag.active = None;
+        pen_drag.active = None;
+        return;
+    }
     // Stranded-gesture sweep: a Hover frame (button up) with a live drag means
     // its Release was missed — drop it before it can replay on a later click.
     let phase = arbiter.phase();

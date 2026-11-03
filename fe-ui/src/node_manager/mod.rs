@@ -26,6 +26,8 @@ pub(crate) mod curve;
 /// FR-2 object-aware left-click dispatch model (truth table). See AGENTS.md §dispatch.
 mod dispatch;
 mod gimbal_interaction;
+mod group_gimbal;
+pub(crate) use group_gimbal::tool_capability as selection_tool_capability;
 mod inspector_sync;
 /// hexon_scale FR-9 Measure tool: Tape/Area reducer + viewport anchors. See AGENTS.md §measure-tool.
 pub mod measure;
@@ -42,6 +44,8 @@ mod router;
 /// Typed selection read-model (FR-1): a per-frame projection over the two
 /// selection authorities. See AGENTS.md §selection-read-model.
 mod selection;
+pub(crate) use selected_set::SelectionRequest;
+pub use selected_set::{SelectionMode, SelectionTarget, MAX_SELECTED_NODES};
 mod shortcuts;
 mod sidebar_sync;
 mod transform_broadcast;
@@ -82,7 +86,14 @@ pub use dispatch::{resolve_operation, HandleSide, HitTarget, Operation};
 /// Manager for node selection and active drag. Register via [`NodeManagerPlugin`].
 #[derive(Resource, Default)]
 pub struct NodeManager {
-    pub selected: Option<NodeSelection>,
+    pub(super) selected: Option<NodeSelection>,
+    pub(super) additional: Vec<NodeSelection>,
+    pub(super) primary_order: usize,
+    pub(super) selection_petal: Option<String>,
+    pub(super) selection_anchor: Option<String>,
+    pub(super) pending_selection: Option<SelectionRequest>,
+    pub(super) cancelled_restores: Vec<(Entity, DragRestore)>,
+    pub(super) group_drag: Option<group_gimbal::GroupDrag>,
     pub(crate) selection_generation: u64,
     pub(crate) pending_transform_before: Option<Transform>,
     /// Sidebar click stores the node_id here; `sync_sidebar_to_manager`
@@ -211,6 +222,13 @@ impl GestureParams<'_, '_> {
     /// snapshot — the other five never write world state before their Release,
     /// so dropping the resource is their whole cancel.
     fn cancel_all(&mut self) {
+        self.node_mgr.cancel_group_drag();
+        for (entity, restore) in self.node_mgr.take_cancelled_restores() {
+            if let Ok(mut transform) = self.transforms.get_mut(entity) {
+                restore.apply(&mut transform);
+            }
+        }
+
         self.brush.cancel();
         self.path_point.active = None;
         self.pen_handle.active = None;
@@ -258,41 +276,33 @@ impl NodeManager {
     }
 
     pub fn is_dragging(&self) -> bool {
-        self.selected.as_ref().is_some_and(|s| s.drag.is_some())
+        self.group_drag.is_some() || self.selected.as_ref().is_some_and(|s| s.drag.is_some())
     }
 
     /// Select a node. If the same entity is already selected the drag state
     /// is preserved; selecting a different entity resets drag state.
     pub fn select(&mut self, entity: Entity, node_id: impl Into<String>) {
-        self.pending_navigation_select = None;
-        let node_id = node_id.into();
-        if self.selected.as_ref().map(|s| s.entity) == Some(entity) {
-            // Already selected — keep drag state intact.
-            return;
-        }
-        self.selection_generation = self.selection_generation.wrapping_add(1);
-        self.pending_transform_before=None;
-        self.selected = Some(NodeSelection {
+        let target = SelectionTarget {
             entity,
-            node_id,
-            drag: None,
-            drag_committed: false,
-        });
-    }
-
-    /// Select a validated live stamp and supersede automatic track-selection followups.
-    pub(super) fn select_live_stamp(&mut self, entity: Entity, node_id: String) {
-        self.pending_sidebar_select = None;
-        self.pending_navigation_select = None;
-        self.select(entity, node_id);
+            node_id: node_id.into(),
+        };
+        let petal = self.selection_petal.clone();
+        let _ = self.reduce_selection(petal.as_deref(), vec![target], SelectionMode::Replace);
     }
 
     /// Bind an authoritative promoted address to the same selected live stamp entity.
     pub(crate) fn bind_promoted_stamp(&mut self, entity: Entity, node_id: &str) -> bool {
+        let duplicate = self
+            .members()
+            .any(|member| member.node_id == node_id && member.entity != entity);
+        if duplicate {
+            self.retain_members(|member| member.node_id != node_id || member.entity == entity);
+        }
         let Some(selected) = self
             .selected
-            .as_mut()
-            .filter(|selected| selected.entity == entity)
+            .iter_mut()
+            .chain(self.additional.iter_mut())
+            .find(|member| member.entity == entity)
         else {
             return false;
         };
@@ -304,14 +314,29 @@ impl NodeManager {
     }
 
     pub fn deselect(&mut self) {
-        if self.selected.is_some() {self.selection_generation=self.selection_generation.wrapping_add(1);}
-        self.pending_transform_before=None;
         self.pending_navigation_select = None;
-        self.selected = None;
+        self.pending_selection = None;
+        self.replace_members(Vec::new(), None, None);
+        self.selection_anchor = None;
     }
 
     /// A newer persisted snapshot wins over an unfinished local axis drag.
     pub(crate) fn accept_committed_transform(&mut self, node_id: &str) -> bool {
+        let committed_entity = self
+            .members()
+            .find(|member| member.node_id == node_id)
+            .map(|member| member.entity);
+        let group_interrupted = self
+            .group_drag
+            .as_ref()
+            .is_some_and(|drag| drag.contains_node(node_id));
+        if group_interrupted {
+            self.cancel_group_drag();
+        }
+        if let Some(entity) = committed_entity {
+            self.cancelled_restores
+                .retain(|(restored, _)| *restored != entity);
+        }
         if let Some(selection) = self
             .selected
             .as_mut()
@@ -321,9 +346,9 @@ impl NodeManager {
             let interrupted = selection.drag.is_some() || selection.drag_committed;
             selection.drag = None;
             selection.drag_committed = false;
-            return interrupted;
+            return interrupted || group_interrupted;
         }
-        false
+        group_interrupted
     }
 
     /// Drop an in-flight entity gimbal drag WITHOUT committing it, yielding the
@@ -378,7 +403,11 @@ impl Plugin for NodeManagerPlugin {
             (
                 // MUST stay first: it owns the staged-Escape ladder, so a rung-0
                 // gesture cancel lands before any gesture system runs this frame.
-                shortcuts::handle_tool_shortcuts,
+                (
+                    selected_set::reconcile_selection,
+                    shortcuts::handle_tool_shortcuts,
+                )
+                    .chain(),
                 sidebar_sync::sync_sidebar_to_manager,
                 router::resolve_pointer_frame, // arbitrate left-click ownership for this frame (first)
                 // This registration order is NORMATIVE for `ClickPriority` (D14-A):
@@ -394,7 +423,11 @@ impl Plugin for NodeManagerPlugin {
                 path_handle_interaction::sync_path_handle_markers, // keep handle markers current before their pick
                 path_handle_interaction::handle_path_handle_interaction, // claims PathHandle FIRST — Q7 handle > vertex > gimbal
                 path_gimbal_drag::handle_path_gimbal_drag, // FR-3: claims Gimbal FIRST for a selected vertex/segment
-                gimbal_interaction::handle_gimbal_interaction, // claims Gimbal on axis pick + drag
+                (
+                    group_gimbal::interact,
+                    gimbal_interaction::handle_gimbal_interaction,
+                )
+                    .chain(),
                 path_point_interaction::sync_path_point_markers, // keep markers in sync with edit buffer
                 path_point_interaction::handle_path_point_interaction, // claims PathMarker / PathPlace
                 path_segment_interaction::handle_path_segment_interaction, // claims PathSegment — ribbon-segment select (FR-3)
@@ -456,6 +489,86 @@ mod tests {
         mgr.select(entity(1), "node-1");
         assert!(mgr.is_selected());
         assert_eq!(mgr.selected_entity(), Some(entity(1)));
+        let target = |id: u32| SelectionTarget {
+            entity: entity(id),
+            node_id: format!("node-{id}"),
+        };
+        mgr.reduce_selection(Some("petal"), vec![target(1)], SelectionMode::Replace)
+            .unwrap();
+        let generation = mgr.generation();
+        mgr.reduce_selection(Some("petal"), vec![target(2)], SelectionMode::Toggle)
+            .unwrap();
+        mgr.reduce_selection(Some("petal"), vec![target(3)], SelectionMode::Toggle)
+            .unwrap();
+        assert_eq!(
+            mgr.members()
+                .map(|member| member.node_id.as_str())
+                .collect::<Vec<_>>(),
+            ["node-1", "node-2", "node-3"]
+        );
+        assert_eq!(mgr.primary().unwrap().node_id, "node-3");
+        assert!(mgr.generation() > generation);
+        mgr.reduce_selection(Some("petal"), vec![target(2)], SelectionMode::Toggle)
+            .unwrap();
+        assert_eq!(
+            mgr.members()
+                .map(|member| member.node_id.as_str())
+                .collect::<Vec<_>>(),
+            ["node-1", "node-3"]
+        );
+        mgr.reduce_selection(Some("petal"), vec![target(3)], SelectionMode::Toggle)
+            .unwrap();
+        assert_eq!(mgr.primary().unwrap().node_id, "node-1");
+        let request = SelectionRequest {
+            petal_id: "petal".into(),
+            node_ids: vec!["node-1".into()],
+            mode: SelectionMode::Range,
+            visible_order: vec![
+                "node-1".into(),
+                "node-2".into(),
+                "node-2".into(),
+                "node-3".into(),
+            ],
+        };
+        assert_eq!(mgr.requested_ids(&request), ["node-1", "node-2", "node-3"]);
+        mgr.reduce_requested_selection(&request, vec![target(1), target(2), target(3)])
+            .unwrap();
+        assert_eq!(
+            mgr.primary().unwrap().node_id,
+            "node-1",
+            "reverse ranges retain the clicked primary"
+        );
+        assert_eq!(mgr.selection_count(), 3);
+        let generation = mgr.generation();
+        assert!(mgr
+            .reduce_selection(
+                Some("petal"),
+                vec![target(1), target(1)],
+                SelectionMode::Replace
+            )
+            .is_err());
+        assert!(mgr
+            .reduce_selection(
+                Some("petal"),
+                (1..=257).map(target).collect(),
+                SelectionMode::Replace
+            )
+            .is_err());
+        assert_eq!(
+            mgr.generation(),
+            generation,
+            "a refused set cannot partially change selection"
+        );
+        mgr.reduce_selection(Some("other-petal"), vec![target(4)], SelectionMode::Toggle)
+            .unwrap();
+        assert_eq!(
+            mgr.selection_count(),
+            1,
+            "a Petal change never carries old members"
+        );
+        assert_eq!(mgr.selected_petal(), Some("other-petal"));
+        mgr.deselect();
+        assert!(mgr.members().next().is_none());
     }
 
     #[test]

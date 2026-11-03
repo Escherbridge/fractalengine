@@ -17,6 +17,21 @@ use crate::plugin::ToolState;
 const PICK_PX: f32 = 20.0;
 const RING_PICK_PX: f32 = 14.0;
 
+fn checked_adapter(
+    manager: &NodeManager,
+    nav: Option<&crate::navigation_manager::NavigationManager>,
+    ui: Option<&crate::actions::UiManager>,
+) -> bool {
+    if manager.selection_count() > 1 {
+        return true;
+    }
+    nav.zip(ui).is_some_and(|(nav, ui)| {
+        ui.editor_batch
+            .capture(nav, manager)
+            .is_none_or(crate::editor_batch::has_derived_transform)
+    })
+}
+
 // ---------------------------------------------------------------------------
 // System: hover detection (updates hovered_axis for visual feedback)
 // ---------------------------------------------------------------------------
@@ -30,7 +45,15 @@ pub(super) fn update_hovered_axis(
     aabb_query: Query<&bevy::camera::primitives::Aabb>,
     children_query: Query<&Children>,
     arbiter: Res<ClickArbiter>,
+    nav: Option<Res<crate::navigation_manager::NavigationManager>>,
+    batch_ui: Option<Res<crate::actions::UiManager>>,
 ) {
+    if checked_adapter(&manager, nav.as_deref(), batch_ui.as_deref()) {
+        return;
+    }
+    if manager.selection_count() > 1 {
+        return;
+    }
     manager.hovered_axis = None;
 
     // Same guard set as drag-start (`handle_gimbal_interaction`) and the draw
@@ -96,7 +119,7 @@ pub(super) fn pick_axis(
     )
 }
 
-fn pick_axis_constrained(
+pub(super) fn pick_axis_constrained(
     tool: Tool,
     cursor: Vec2,
     center_3d: Vec3,
@@ -197,7 +220,20 @@ pub(super) fn handle_gimbal_interaction(
     undo: Res<crate::undo::UndoState>,
     petal_map: Option<Res<crate::terrain_map::PetalMapState>>,
     nav: Option<Res<crate::navigation_manager::NavigationManager>>,
+    batch_ui: Option<Res<crate::actions::UiManager>>,
 ) {
+    if checked_adapter(&manager, nav.as_deref(), batch_ui.as_deref()) {
+        return;
+    }
+    if batch_ui
+        .as_ref()
+        .is_some_and(|ui| ui.editor_batch.is_pending())
+    {
+        return;
+    }
+    if manager.selection_count() > 1 {
+        return;
+    }
     // Only the transform gizmo tools run the gimbal. Select has no gizmo; Pen
     // draws paths — running here would let `pick_axis` claim `Gimbal` (highest
     // priority) on a press near a projected axis and start a no-op drag that
@@ -408,7 +444,20 @@ pub(super) fn draw_gimbal_system(
     children_query: Query<&Children>,
     stamp_query: Query<(), With<crate::verse_manager::PathAssetInstance>>,
     gizmos: Gizmos<GimbalGizmoGroup>,
+    nav: Option<Res<crate::navigation_manager::NavigationManager>>,
+    batch_ui: Option<Res<crate::actions::UiManager>>,
 ) {
+    if checked_adapter(&manager, nav.as_deref(), batch_ui.as_deref())
+        && !matches!(
+            selection.kind,
+            SelectionKind::PathVertex { .. } | SelectionKind::PathSegment { .. }
+        )
+    {
+        return;
+    }
+    if manager.selection_count() > 1 {
+        return;
+    }
     // Path selections draw a gimbal at a resolved world point (they have no
     // entity of their own). Vertex/segment handles are a grabbable Move gimbal in
     // EVERY tool (decision 2026-07-19 "grab it wherever it's shown"); a whole

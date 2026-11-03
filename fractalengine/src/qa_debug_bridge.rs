@@ -412,7 +412,7 @@ fn dialog_title(dialog: &ActiveDialog) -> Option<&'static str> {
 
 impl UiState<'_, '_> {
     fn snapshot(&self, ppp: f32, frame: u32) -> Value {
-        let selection = self.nodes.selected.as_ref().and_then(|selected| {
+        let selection = self.nodes.primary().and_then(|selected| {
             let (transform, marker) = self.transforms.get(selected.entity).ok()?;
             let petal = self.nav.active_petal_id.as_deref()?;
             let in_verse = self.verses.verses.iter().filter(|v| Some(v.id.as_str()) == self.nav.active_verse_id.as_deref()).flat_map(|v| &v.fractals).filter(|f| Some(f.id.as_str()) == self.nav.active_fractal_id.as_deref()).flat_map(|f| &f.petals).any(|p| p.id == petal && p.nodes.iter().any(|node| node.id == selected.node_id));

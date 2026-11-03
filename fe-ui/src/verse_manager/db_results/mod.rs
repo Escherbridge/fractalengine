@@ -147,6 +147,107 @@ pub(super) fn apply_db_results(
         caches.spawned.iter().map(|m| m.node_id.clone()).collect();
     let mesh_budget_exceeded = caches.mesh_budget.exceeded;
     for result in reader.read() {
+        let batch_result = if ui_mgr.editor_batch.owns(result) {
+            Some(ui_mgr.editor_batch.route(
+                result,
+                &nav,
+                |projection| committed::editor_batch(projection, &verse_mgr).map(|_| ()),
+                &db_sender.0,
+            ))
+        } else if let DbResult::EditorBatchCommitted { receipt, .. } = result {
+            Some(committed::external_editor_batch(receipt, &verse_mgr).map(Some))
+        } else {
+            None
+        };
+        if let Some(routed) = batch_result {
+            match routed {
+                Ok(Some(projection)) => {
+                    if projection.source == crate::editor_batch::ProjectionSource::LegacyRead {
+                        request_committed_hierarchy(
+                            &mut caches.committed_hierarchy_pending,
+                            &mut nav,
+                        );
+                        for member in &projection.members {
+                            if db_sender
+                                .0
+                                .send(fe_runtime::messages::DbCommand::GetNodeProperties {
+                                    node_id: member.node_id.clone(),
+                                    correlation_id: None,
+                                })
+                                .is_err()
+                            {
+                                bevy::log::warn!(
+                                    "DB channel closed while reloading reconciled legacy selection"
+                                );
+                            }
+                        }
+                        ui_mgr.show_advisory("Selection edit was not saved; stored objects changed and are being reloaded", caches.time.elapsed_secs_f64());
+                        continue;
+                    }
+                    if projection.source == crate::editor_batch::ProjectionSource::UncommittedRead {
+                        ui_mgr.show_advisory(
+                            "Selection edit was not saved; current stored objects were restored",
+                            caches.time.elapsed_secs_f64(),
+                        );
+                    }
+                    if projection.source == crate::editor_batch::ProjectionSource::ExternalCommit {
+                        ui_mgr.editor_batch.invalidate_redo();
+                    }
+                    if let Ok(current) = committed::editor_batch(&projection, &verse_mgr) {
+                        for current in current {
+                            committed::apply(
+                                &current,
+                                &mut verse_mgr,
+                                &mut commands,
+                                &caches.current_nodes,
+                            );
+                            node_mgr.accept_committed_transform(&current.node.node_id);
+                            properties::handle_node_properties_loaded(
+                                &current.node.node_id,
+                                Some(&projection.petal_id),
+                                &current.properties,
+                                &mut path_state,
+                                &node_mgr,
+                                &mut inspector,
+                                &mut caches.primitive,
+                                &mut caches.path_asset,
+                                &mut caches.stamp_state,
+                                &mut caches.earthwork_map,
+                                &mut caches.visibility,
+                                &mut caches.callout_map,
+                            );
+                        }
+                        crate::visibility::groups::apply_registry_loaded(
+                            &mut caches.visibility,
+                            nav.active_petal_id.as_deref(),
+                            &projection.petal_id,
+                            &projection.groups,
+                        );
+                        ui_mgr.editor_batch.queue_projection(&projection);
+                        if projection.source == crate::editor_batch::ProjectionSource::Commit {
+                            ui_mgr.show_toast(
+                                "Complete selection edit saved",
+                                caches.time.elapsed_secs_f64(),
+                            );
+                        } else if projection.source
+                            == crate::editor_batch::ProjectionSource::CurrentRead
+                        {
+                            ui_mgr.show_advisory(
+                                "Selection save confirmed; current stored objects were restored",
+                                caches.time.elapsed_secs_f64(),
+                            );
+                        }
+                    }
+                }
+                Ok(None) => {}
+                Err(error) => {
+                    ui_mgr.editor_batch.report_error(&error);
+                    ui_mgr.show_error(error, caches.time.elapsed_secs_f64());
+                }
+            }
+            continue;
+        }
+
         match caches.primitive.bypass_change_detection().reads.route(
             result,
             &verse_mgr,

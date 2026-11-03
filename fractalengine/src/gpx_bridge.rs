@@ -1761,8 +1761,16 @@ pub fn advance_path_edits(
     mut undo: ResMut<fe_ui::undo::UndoState>,
     mut path_state: Option<ResMut<fe_ui::gis::PathEditorState>>,
     nav: Res<fe_ui::navigation_manager::NavigationManager>,
+    mut ui: Option<ResMut<fe_ui::actions::UiManager>>,
 ) {
-    while let Some(projection) = undo.take_path_projection(&nav) {
+    loop {
+        let projection = ui
+            .as_mut()
+            .and_then(|ui| ui.take_editor_path_projection(&nav))
+            .or_else(|| undo.take_path_projection(&nav));
+        let Some(projection) = projection else {
+            break;
+        };
         if active_terrain.petal_id.as_deref() != Some(projection.petal_id.as_str()) {
             continue;
         }

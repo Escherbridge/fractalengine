@@ -120,6 +120,14 @@ pub(super) fn handle_path_gimbal_drag(
     nav: Res<crate::navigation_manager::NavigationManager>,
     undo: Res<crate::undo::UndoState>,
 ) {
+    if ui_mgr.editor_batch.is_pending() {
+        drag.active = None;
+        return;
+    }
+    if node_mgr.selection_count() > 1 {
+        drag.active = None;
+        return;
+    }
     // Stranded-gesture sweep (finding F4) — the same idiom the four sibling
     // gestures use. A Hover frame means the button is up, so a surviving drag
     // missed its Release (alt-tab mid-drag): drop it. Without this the drag

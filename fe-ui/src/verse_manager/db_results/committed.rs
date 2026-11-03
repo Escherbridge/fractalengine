@@ -7,6 +7,86 @@ use fe_runtime::node_history::{NodeMutationReceipt, stored_rotation_quaternion};
 use super::super::{NodeEntry, VerseManager};
 use crate::plugin::SpawnedNodeMarker;
 
+pub(super) fn external_editor_batch(
+    receipt: &fe_runtime::editor_batch::EditorBatchReceipt,
+    manager: &VerseManager,
+) -> Result<crate::editor_batch::BatchProjection, String> {
+    let scope = manager.verses.iter().find_map(|verse| {
+        verse.fractals.iter().find_map(|fractal| {
+            fractal
+                .petals
+                .iter()
+                .any(|petal| petal.id == receipt.petal_id)
+                .then(|| {
+                    fe_database::build_scope(&verse.id, Some(&fractal.id), Some(&receipt.petal_id))
+                })
+        })
+    });
+    if scope.as_deref() != Some(receipt.scope.as_str())
+        || receipt.members.is_empty()
+        || receipt.members.len() > fe_runtime::editor_batch::MAX_EDITOR_BATCH_TARGETS
+        || receipt.members.iter().enumerate().any(|(index, member)| {
+            receipt.members[..index]
+                .iter()
+                .any(|old| old.node_id == member.node_id)
+        })
+    {
+        return Err(
+            "External selection commit has an incomplete or unexpected target scope".into(),
+        );
+    }
+    let projection = crate::editor_batch::BatchProjection {
+        petal_id: receipt.petal_id.clone(),
+        members: receipt.members.clone(),
+        groups: receipt.groups.clone(),
+        source: crate::editor_batch::ProjectionSource::ExternalCommit,
+    };
+    editor_batch(&projection, manager)?;
+    Ok(projection)
+}
+
+pub(super) fn editor_batch(
+    projection: &crate::editor_batch::BatchProjection,
+    manager: &VerseManager,
+) -> Result<Vec<CommittedNodeMaterialization>, String> {
+    if projection.source == crate::editor_batch::ProjectionSource::LegacyRead {
+        return Ok(Vec::new());
+    }
+    let petal = manager
+        .find_petal(&projection.petal_id)
+        .ok_or("Selection's Petal is not loaded; current hierarchy is required")?;
+    let mut converted = Vec::new();
+    for member in &projection.members {
+        let version = member
+            .history_version
+            .filter(|version| *version > 0)
+            .ok_or("A batch member has no committed version")?;
+        if member.state.node_id != member.node_id
+            || member.state.petal_id != projection.petal_id
+            || !petal.nodes.iter().any(|node| node.id == member.node_id)
+            || manager
+                .committed_versions
+                .get(&member.node_id)
+                .is_some_and(|current| *current > version)
+        {
+            return Err(
+                "A batch member changed or is unavailable; the complete projection was withheld"
+                    .into(),
+            );
+        }
+        let receipt = NodeMutationReceipt {
+            node_id: member.node_id.clone(),
+            history_version: version,
+            state: member.state.clone(),
+            persist: fe_runtime::node_history::PersistStatus::Committed,
+        };
+        converted.push(from_receipt(&receipt, manager).ok_or(
+            "A batch member could not be materialized; the complete projection was withheld",
+        )?);
+    }
+    Ok(converted)
+}
+
 pub(super) enum MaterializationOutcome {
     Applied { transform_changed: bool },
     NeedsHierarchy,

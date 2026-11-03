@@ -24,56 +24,104 @@ pub(super) fn sync_sidebar_to_manager(
     visibility: Res<VisibilityState>,
     mut ui_mgr: ResMut<UiManager>,
     time: Res<crate::notice::NoticeClock>,
+    mut transforms: Query<&mut Transform>,
 ) {
-    let (node_id, mut navigation) = if let Some(node_id) = manager.pending_sidebar_select.take() {
+    use super::{SelectionMode, SelectionTarget};
+    let mut navigation = None;
+    let request = if let Some(request) = manager.pending_selection.take() {
+        request
+    } else if let Some(node_id) = manager.pending_sidebar_select.take() {
         manager.pending_navigation_select = None;
-        (node_id, None)
+        super::SelectionRequest {
+            petal_id: nav.active_petal_id.clone().unwrap_or_default(),
+            node_ids: vec![node_id],
+            mode: SelectionMode::Replace,
+            visible_order: Vec::new(),
+        }
     } else if let Some(pending) = manager.pending_navigation_select.take() {
         if nav.active_petal_id.as_deref() != Some(pending.petal_id.as_str()) {
             return;
         }
-        (pending.node_id.clone(), Some(pending))
+        let request = super::SelectionRequest {
+            petal_id: pending.petal_id.clone(),
+            node_ids: vec![pending.node_id.clone()],
+            mode: SelectionMode::Replace,
+            visible_order: Vec::new(),
+        };
+        navigation = Some(pending);
+        request
     } else {
         return;
     };
-
-    // Consumed either way; a hidden node is never selected and the current
-    // selection is left alone.
-    if !pickable(&node_id, &nav, &visibility) {
-        ui_mgr.show_toast(HIDDEN_SELECT_TOAST, time.elapsed_secs_f64());
+    if nav.active_petal_id.as_deref() != Some(request.petal_id.as_str()) {
         return;
     }
-
-    let active_petal = nav.active_petal_id.as_deref();
-    let stamp_alias = stamps.promoted_stamp_for_node(&node_id);
-    let matched = node_query.iter().find(|(_, marker, instance)| {
-        active_petal.is_some_and(|petal| petal == marker.petal_id)
-            && if let Some(stamp) = stamp_alias {
-                instance.is_some_and(|instance| {
-                    instance.source_track_id == stamp.track_node_id
-                        && instance.petal_id == marker.petal_id
-                }) && crate::verse_manager::parse_stamp_marker_id(&marker.node_id)
-                    == Some((stamp.track_node_id.as_str(), stamp.stamp_index))
-                    && pickable(&marker.node_id, &nav, &visibility)
-            } else {
-                marker.node_id == node_id
-            }
-    });
-
-    if let Some((entity, _, _)) = matched {
-        manager.select(entity, node_id);
-    } else if let Some(mut pending) = navigation.take() {
-        pending.remaining_frames = pending.remaining_frames.saturating_sub(1);
-        if pending.remaining_frames > 0 {
-            manager.pending_navigation_select = Some(pending);
-        } else {
-            ui_mgr.show_toast(
-                "The object did not become available in this petal. Select it again after loading.",
-                time.elapsed_secs_f64(),
-            );
+    let ids = manager.requested_ids(&request);
+    let mut targets = Vec::new();
+    let mut hidden = 0;
+    let mut unavailable = 0;
+    for node_id in &ids {
+        if !pickable(node_id, &nav, &visibility) {
+            hidden += 1;
+            continue;
         }
-    } else {
-        manager.deselect();
+        let stamp_alias = stamps.promoted_stamp_for_node(node_id);
+        let matched = node_query.iter().find(|(_, marker, instance)| {
+            marker.petal_id == request.petal_id
+                && if let Some(stamp) = stamp_alias {
+                    instance.is_some_and(|instance| {
+                        instance.source_track_id == stamp.track_node_id
+                            && instance.petal_id == marker.petal_id
+                    }) && crate::verse_manager::parse_stamp_marker_id(&marker.node_id)
+                        == Some((stamp.track_node_id.as_str(), stamp.stamp_index))
+                        && pickable(&marker.node_id, &nav, &visibility)
+                } else {
+                    marker.node_id == *node_id
+                }
+        });
+        if let Some((entity, _, _)) = matched {
+            if !targets.iter().any(|target: &SelectionTarget| {
+                target.node_id == *node_id || target.entity == entity
+            }) {
+                targets.push(SelectionTarget {
+                    entity,
+                    node_id: node_id.clone(),
+                });
+            }
+        } else {
+            unavailable += 1;
+        }
+    }
+    if targets.is_empty() {
+        if ids.len() > 1 && hidden + unavailable > 0 {
+            ui_mgr.show_advisory(format!("No objects were selected: {hidden} hidden and {unavailable} unavailable. The previous selection was kept."), time.elapsed_secs_f64());
+            return;
+        }
+
+        if hidden > 0 {
+            ui_mgr.show_toast(HIDDEN_SELECT_TOAST, time.elapsed_secs_f64());
+            return;
+        }
+        if let Some(mut pending) = navigation {
+            pending.remaining_frames = pending.remaining_frames.saturating_sub(1);
+            if pending.remaining_frames > 0 {
+                manager.pending_navigation_select = Some(pending);
+            } else {
+                ui_mgr.show_toast("The object did not become available in this petal. Select it again after loading.", time.elapsed_secs_f64());
+            }
+        } else if ids.len() == 1 {
+            manager.deselect();
+        }
+    } else if let Err(reason) = manager.reduce_requested_selection(&request, targets) {
+        ui_mgr.show_advisory(reason, time.elapsed_secs_f64());
+    }
+    if ids.len() > 1 && hidden + unavailable > 0 {
+        ui_mgr.show_advisory(format!("Selected {} available objects; {hidden} hidden and {unavailable} unavailable objects were skipped", manager.selection_count()), time.elapsed_secs_f64());
+    }
+    for (entity, restore) in manager.take_cancelled_restores() {
+        if let Ok(mut transform) = transforms.get_mut(entity) {
+            restore.apply(&mut transform);
+        }
     }
 }
 

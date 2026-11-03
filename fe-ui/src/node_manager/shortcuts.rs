@@ -301,6 +301,19 @@ pub(super) fn handle_tool_shortcuts(
     //   * stale-TRUE on the frame a gesture RELEASES — one extra frame of menu
     //     suppression, harmless.
     // Only the rung-0 cancel below is exact: it writes `false` in this pass.
+    if gestures.node_mgr.pending_selection.is_some()
+        || gestures.node_mgr.pending_sidebar_select.is_some()
+        || gestures.node_mgr.pending_navigation_select.is_some()
+        || gestures
+            .node_mgr
+            .selected_petal()
+            .is_some_and(|petal| nav.active_petal_id.as_deref() != Some(petal))
+    {
+        gestures.cancel_all();
+        tool.terrain.cancel();
+        path_state.selected_point = None;
+        path_state.selected_segment = None;
+    }
     let gesture_active = gestures.any_active() || tool.terrain.is_active();
     if gestures.node_mgr.gesture_active != gesture_active {
         gestures.node_mgr.gesture_active = gesture_active;
@@ -371,7 +384,9 @@ pub(super) fn handle_tool_shortcuts(
                         "Finish or cancel the current gesture before Undo",
                         clock.elapsed_secs_f64(),
                     );
-                } else if let Err(error) = undo_context.undo.replay(
+                } else if let Err(error) = crate::editor_batch::replay(
+                    &mut ui_mgr.editor_batch,
+                    &mut undo_context.undo,
                     command == Shortcut::Redo,
                     &nav,
                     &hierarchy,
@@ -384,6 +399,30 @@ pub(super) fn handle_tool_shortcuts(
             Shortcut::Activate(next) => tool.activate(next, &mut right_sidebar),
             Shortcut::ToggleRightSidebar => right_sidebar.toggle_collapsed(),
             Shortcut::FrameSelection | Shortcut::DeleteSelection => {
+                if gestures.node_mgr.selection_count() > 1 {
+                    if command == Shortcut::FrameSelection {
+                        let ids = gestures
+                            .node_mgr
+                            .members()
+                            .map(|member| {
+                                spawned
+                                    .get(member.entity)
+                                    .ok()
+                                    .map(|marker| marker.node_id.clone())
+                            })
+                            .collect::<Option<Vec<_>>>();
+                        if let Some(ids) = ids {
+                            if let Some(petal) = nav.active_petal_id.clone() {
+                                focus.selection = Some((petal, ids));
+                            }
+                        } else {
+                            ui_mgr.show_advisory("One or more selected objects are unavailable; the complete framing request was refused", clock.elapsed_secs_f64());
+                        }
+                    } else {
+                        ui_mgr.show_advisory("Deleting multiple objects is not supported by this confirmation. Select one object before deleting.", clock.elapsed_secs_f64());
+                    }
+                    return;
+                }
                 let selection = gestures.node_mgr.selected.as_ref();
                 let marker = selection.and_then(|selected| spawned.get(selected.entity).ok());
                 let node = selected_node(selection, marker, &nav, &hierarchy)
@@ -424,6 +463,26 @@ pub(super) fn handle_tool_shortcuts(
         let shift = keyboard.any_pressed([KeyCode::ShiftLeft, KeyCode::ShiftRight]);
         let alt = keyboard.any_pressed([KeyCode::AltLeft, KeyCode::AltRight]);
         if let Some(key) = visibility_key(shift, alt, command_modifier) {
+            if gestures.node_mgr.selection_count() > 1 {
+                match key {
+                    VisibilityKey::IsolateSelection => {
+                        visibility.set_solo(
+                            gestures
+                                .node_mgr
+                                .members()
+                                .map(|member| member.node_id.clone())
+                                .collect(),
+                        );
+                        return;
+                    }
+                    VisibilityKey::HideSelection => {
+                        ui_mgr.show_advisory("Hiding the complete selection needs a checked visibility batch; use a Group eye or select one object", clock.elapsed_secs_f64());
+                        return;
+                    }
+                    VisibilityKey::ShowAll => {}
+                }
+            }
+
             let petal_node_ids: Vec<&str> = nav
                 .active_petal_id
                 .as_deref()

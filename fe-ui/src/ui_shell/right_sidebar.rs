@@ -453,6 +453,8 @@ pub fn render_right_sidebar(
                         .and_then(|petal| hierarchy.find_petal(petal))
                         .is_some_and(|petal| petal.nodes.iter().any(|node| node.id == *id))
                 }),
+            node_mgr,
+            nav,
             local_role,
         ),
         None => {}
@@ -568,10 +570,70 @@ fn render_options_section(
         path_state.selected_point,
         path_state.selected_segment,
     );
+    let kind = if matches!(kind, crate::node_manager::SelectionKind::Node(_)) {
+        match ui_mgr
+            .editor_batch
+            .capture(nav, node_mgr)
+            .and_then(|capture| capture.members.first())
+        {
+            Some(member) if member.stamp_path.is_some() => {
+                crate::node_manager::SelectionKind::Stamp(node_mgr.selected_entity().unwrap())
+            }
+            Some(member) if member.state.properties.contains_key("gpx_points") => {
+                crate::node_manager::SelectionKind::PathTrack {
+                    track_id: member.node_id.clone(),
+                }
+            }
+            _ => kind,
+        }
+    } else {
+        kind
+    };
     // Guard a stale selected index outliving its points (see helper doc).
-    let kind = fresh_path_selection(kind, path_state.points.len());
+    let kind = if node_mgr.selection_count() > 1 {
+        crate::node_manager::SelectionKind::Multiple {
+            count: node_mgr.selection_count(),
+        }
+    } else {
+        fresh_path_selection(kind, path_state.points.len())
+    };
 
     section_chrome(ctx, state, RightSidebarSection::Options, |ui| {
+        if node_mgr.selection_count() > 1 {
+            if matches!(
+                tool.active_tool,
+                crate::panels::toolbar::Tool::Select
+                    | crate::panels::toolbar::Tool::Move
+                    | crate::panels::toolbar::Tool::Rotate
+                    | crate::panels::toolbar::Tool::Scale
+            ) {
+                crate::editor_batch::render(ui, node_mgr, nav, ui_mgr, role);
+                return;
+            }
+            if tool.active_tool == crate::panels::toolbar::Tool::Pen {
+                ui.label("Pen edits one route. Select one path or clear the object selection before drawing.");
+                return;
+            }
+        }
+        if ui_mgr
+            .editor_batch
+            .capture(nav, node_mgr)
+            .is_some_and(crate::editor_batch::has_derived_transform)
+            && !matches!(
+                kind,
+                crate::node_manager::SelectionKind::PathVertex { .. }
+                    | crate::node_manager::SelectionKind::PathSegment { .. }
+            )
+            && matches!(
+                tool.active_tool,
+                crate::panels::toolbar::Tool::Move
+                    | crate::panels::toolbar::Tool::Rotate
+                    | crate::panels::toolbar::Tool::Scale
+            )
+        {
+            crate::editor_batch::ui::render_transform(ui, node_mgr, nav, ui_mgr, role);
+            ui.separator();
+        }
         render_selection_readout(ui, tool.active_tool, &kind, &path_state.points);
         ui.add_space(6.0);
         ui.separator();
@@ -1383,7 +1445,9 @@ fn render_groups_section(
     ui_mgr: &mut UiManager,
     visibility: &VisibilityState,
     active_petal_id: Option<&str>,
-    selected_node_id: Option<&str>,
+    _selected_node_id: Option<&str>,
+    node_mgr: &NodeManager,
+    nav: &NavigationManager,
     local_role: &LocalUserRole,
 ) {
     section_chrome(ctx, state, RightSidebarSection::Groups, |ui| {
@@ -1396,14 +1460,8 @@ fn render_groups_section(
             );
             return;
         };
-        render_groups_controls(
-            ui,
-            ui_mgr,
-            visibility,
-            petal_id,
-            selected_node_id,
-            local_role,
-        );
+        crate::editor_batch::ui::group_controls(ui, node_mgr, nav, ui_mgr, visibility, local_role);
+        render_groups_controls(ui, ui_mgr, visibility, petal_id, None, local_role);
     });
 }
 

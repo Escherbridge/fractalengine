@@ -54,32 +54,14 @@ pub(crate) fn dtos_from_groups(groups: &[Group]) -> Vec<VisibilityGroupDto> {
         .collect()
 }
 
-/// A fresh Group id: the name slugged (`a-z0-9-`, ≤48 chars), suffixed `-2`,
-/// `-3`… until unused. Pure.
-pub(crate) fn next_group_id(name: &str, existing: &[Group]) -> String {
-    let mut base: String = name
-        .trim()
-        .to_lowercase()
-        .chars()
-        .map(|c| if c.is_ascii_alphanumeric() { c } else { '-' })
-        .collect();
-    base = base
-        .split('-')
-        .filter(|part| !part.is_empty())
-        .collect::<Vec<_>>()
-        .join("-");
-    base.truncate(48);
-    if base.is_empty() {
-        base = "group".to_string();
+/// A fresh stable identity, independent of the display name.
+pub(crate) fn next_group_id(_name: &str, existing: &[Group]) -> String {
+    loop {
+        let id = ulid::Ulid::new().to_string();
+        if !existing.iter().any(|group| group.id == id) {
+            return id;
+        }
     }
-    let taken = |id: &str| existing.iter().any(|g| g.id == id);
-    if !taken(&base) {
-        return base;
-    }
-    (2..)
-        .map(|n| format!("{base}-{n}"))
-        .find(|candidate| !taken(candidate))
-        .expect("an unbounded suffix search always finds a free id")
 }
 
 /// Registry with a new visible Group named `name` appended. Pure.
@@ -515,7 +497,10 @@ mod tests {
         let ids = |gs: &[Group]| gs.iter().map(|g| g.id.clone()).collect::<Vec<_>>();
 
         let added = with_group_added(&base, " Roads ");
-        assert_eq!(added.last(), Some(&group("roads", "Roads", true)));
+        let fresh = added.last().unwrap();
+        assert_eq!(fresh.name, "Roads");
+        assert!(fresh.visible);
+        assert!(ulid::Ulid::from_string(&fresh.id).is_ok());
         assert_eq!(&added[..3], &base[..]);
 
         let hidden = with_group_visible(&base, "b", false);
@@ -541,17 +526,23 @@ mod tests {
     }
 
     #[test]
-    fn new_group_ids_are_slugged_and_never_collide() {
+    fn new_group_ids_are_fresh_and_never_reconnect_deleted_memberships() {
         let existing = vec![
             group("utilities", "Utilities", true),
             group("utilities-2", "U", true),
         ];
-        assert_eq!(next_group_id("Utilities", &existing), "utilities-3");
+        let first = next_group_id("Utilities", &existing);
+        let second = next_group_id("Utilities", &existing);
+        assert_ne!(first, second);
+        assert!(ulid::Ulid::from_string(&first).is_ok());
+        assert!(!existing.iter().any(|group| group.id == first));
+        let mut state = VisibilityState::default();
+        state.set_node_group_membership("old-node", vec![first.clone()]);
+        state.replace_groups(vec![group(&second, "Utilities", false)]);
         assert_eq!(
-            next_group_id("  Phase 2: Roads ", &existing),
-            "phase-2-roads"
+            state.group_member_count(&second),
+            0,
+            "same-name replacement cannot reconnect old membership"
         );
-        assert_eq!(next_group_id("!!!", &[]), "group");
-        assert!(next_group_id(&"x".repeat(200), &[]).len() <= 48);
     }
 }

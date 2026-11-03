@@ -493,14 +493,16 @@ fn render_petals(
                 ui,
                 &petals[pi].nodes,
                 nav,
-                verse_name,
-                fractal_name,
-                &petal_name,
+                NodeTreeScope {
+                    verse_name,
+                    fractal_name,
+                    petal_name: &petal_name,
+                    is_active_petal: is_active,
+                    ancestry,
+                },
                 camera_focus,
                 node_mgr,
                 ui_mgr,
-                is_active,
-                ancestry,
                 vis_state,
                 settings,
                 local_role,
@@ -628,35 +630,227 @@ fn apply_node_row_verb(
     }
 }
 
-#[allow(clippy::too_many_arguments)] // one tree level: rows, selection, menu, eyes
+#[derive(Clone, Copy)]
+struct NodeTreeScope<'a> {
+    verse_name: &'a str,
+    fractal_name: &'a str,
+    petal_name: &'a str,
+    is_active_petal: bool,
+    ancestry: NodeAncestry<'a>,
+}
+
+#[derive(Clone, Copy)]
+enum NodeRowFilter<'a> {
+    All,
+    Group(&'a str),
+    Ungrouped,
+}
+
+impl NodeRowFilter<'_> {
+    fn matches(self, id: &str, visibility: &VisibilityState) -> bool {
+        match self {
+            Self::All => true,
+            Self::Group(group) => visibility
+                .node_groups(id)
+                .iter()
+                .any(|member| member == group),
+            Self::Ungrouped => !visibility
+                .node_groups(id)
+                .iter()
+                .any(|id| visibility.groups().iter().any(|group| group.id == *id)),
+        }
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
 fn render_nodes(
     ui: &mut egui::Ui,
     nodes: &[NodeEntry],
     nav: &mut NavigationManager,
-    verse_name: &str,
-    fractal_name: &str,
-    petal_name: &str,
+    scope: NodeTreeScope<'_>,
     camera_focus: &mut CameraFocusTarget,
     node_mgr: &mut crate::node_manager::NodeManager,
     ui_mgr: &mut UiManager,
-    is_active_petal: bool,
-    ancestry: NodeAncestry<'_>,
     vis_state: &mut VisibilityState,
     settings: &crate::settings::AppSettings,
     local_role: &crate::plugin::LocalUserRole,
 ) {
+    if !scope.is_active_petal || vis_state.groups().is_empty() {
+        let order = nodes
+            .iter()
+            .filter(|node| visibility::pickable(&node.id, nav, vis_state))
+            .map(|node| node.id.clone())
+            .collect::<Vec<_>>();
+        render_node_rows(
+            ui,
+            nodes,
+            nav,
+            scope,
+            camera_focus,
+            node_mgr,
+            ui_mgr,
+            vis_state,
+            settings,
+            local_role,
+            NodeRowFilter::All,
+            &order,
+        );
+        return;
+    }
+    let groups = vis_state.groups().to_vec();
+    let sections = groups
+        .iter()
+        .map(|group| {
+            (
+                group.id.as_str(),
+                group.name.as_str(),
+                NodeRowFilter::Group(&group.id),
+            )
+        })
+        .chain(std::iter::once((
+            "ungrouped",
+            "Ungrouped",
+            NodeRowFilter::Ungrouped,
+        )))
+        .collect::<Vec<_>>();
+    let mut visible_order = Vec::new();
+    for (id, _, filter) in &sections {
+        let collapse = egui::collapsing_header::CollapsingState::load_with_default_open(
+            ui.ctx(),
+            ui.make_persistent_id((
+                "petal-node-group",
+                scope.ancestry.petal_id,
+                matches!(filter, NodeRowFilter::Ungrouped),
+                id,
+            )),
+            true,
+        );
+        if collapse.is_open() {
+            for node in nodes.iter().filter(|node| {
+                filter.matches(&node.id, vis_state)
+                    && visibility::pickable(&node.id, nav, vis_state)
+            }) {
+                if !visible_order.contains(&node.id) {
+                    visible_order.push(node.id.clone());
+                }
+            }
+        }
+    }
+    for (id, name, filter) in sections {
+        let members = nodes
+            .iter()
+            .filter(|node| filter.matches(&node.id, vis_state))
+            .map(|node| node.id.clone())
+            .collect::<Vec<_>>();
+        let selected = members
+            .iter()
+            .filter(|id| node_mgr.contains_node(id))
+            .count();
+        let selection = if selected == 0 {
+            RowSelection::None
+        } else if selected < members.len() {
+            RowSelection::Partial
+        } else if node_mgr
+            .primary()
+            .is_some_and(|primary| members.contains(&primary.node_id))
+        {
+            RowSelection::Primary
+        } else {
+            RowSelection::Selected
+        };
+        let collapse = egui::collapsing_header::CollapsingState::load_with_default_open(
+            ui.ctx(),
+            ui.make_persistent_id((
+                "petal-node-group",
+                scope.ancestry.petal_id,
+                matches!(filter, NodeRowFilter::Ungrouped),
+                id,
+            )),
+            true,
+        );
+        let header = collapse.show_header(ui, |ui| {
+            let frame = egui::Frame::NONE.fill(selection.fill(false)).inner_margin(egui::Margin::symmetric(4, 1)).show(ui, |ui| {
+                let target = 24.0_f32.max(20.0 / ui.ctx().pixels_per_point());
+                let response = ui.add_enabled(!members.is_empty(), egui::Button::new(format!("{name}  {selected}/{}", members.len())).truncate()
+                    .frame(false).selected(selected > 0 && selected == members.len()).min_size(egui::vec2(ui.available_width(), target)))
+                    .named(ui, format_args!("Select group {name}"))
+                    .on_hover_text("Select the available members. Ctrl/Cmd toggles the group; the arrow expands it. Hidden members are reported and skipped.");
+                ui.ctx().accesskit_node_builder(response.id, |node| {
+                    node.set_selected(selected > 0 && selected == members.len());
+                    node.set_description(if selected > 0 && selected < members.len() { "Partially selected group" } else { "Petal node group" });
+                });
+                if response.clicked() {
+                    let command = ui.input(|input| input.modifiers.command || input.modifiers.ctrl);
+                    node_mgr.request_selection(scope.ancestry.petal_id, members.clone(), if command { crate::node_manager::SelectionMode::Toggle } else { crate::node_manager::SelectionMode::Replace }, visible_order.clone());
+                }
+            });
+            selection.paint(ui.painter(), frame.response.rect);
+        });
+        let (toggle, _, _) = header.body(|ui| {
+            render_node_rows(
+                ui,
+                nodes,
+                nav,
+                scope,
+                camera_focus,
+                node_mgr,
+                ui_mgr,
+                vis_state,
+                settings,
+                local_role,
+                filter,
+                &visible_order,
+            );
+        });
+        toggle.named(ui, format_args!("Expand or collapse node group {name}"));
+    }
+}
+
+#[allow(clippy::too_many_arguments)] // one tree level: rows, selection, menu, eyes
+fn render_node_rows(
+    ui: &mut egui::Ui,
+    nodes: &[NodeEntry],
+    nav: &mut NavigationManager,
+    scope: NodeTreeScope<'_>,
+    camera_focus: &mut CameraFocusTarget,
+    node_mgr: &mut crate::node_manager::NodeManager,
+    ui_mgr: &mut UiManager,
+    vis_state: &mut VisibilityState,
+    settings: &crate::settings::AppSettings,
+    local_role: &crate::plugin::LocalUserRole,
+    filter: NodeRowFilter<'_>,
+    visible_order: &[String],
+) {
+    let NodeTreeScope {
+        verse_name,
+        fractal_name,
+        petal_name,
+        is_active_petal,
+        ancestry,
+    } = scope;
     let mut node_click: Option<(String, [f32; 3])> = None;
     let mut node_alt_click: Option<(String, String, String)> = None;
     let mut override_write: Option<(String, OverrideState)> = None;
     let mut row_verb: Option<(String, NodeRowVerb)> = None;
 
-    for node in nodes.iter() {
+    for node in nodes
+        .iter()
+        .filter(|node| filter.matches(&node.id, vis_state))
+    {
         let node_id = node.id.clone();
         let node_name = node.name.clone();
         let position = node.position;
         let webpage_url = node.webpage_url.clone().unwrap_or_default();
-        let is_selected =
-            node_mgr.selected.as_ref().map(|s| s.node_id.as_str()) == Some(node_id.as_str());
+        let selection = if node_mgr
+            .primary()
+            .is_some_and(|primary| primary.node_id == node_id)
+        {
+            RowSelection::Primary
+        } else if node_mgr.contains_node(&node_id) {
+            RowSelection::Selected
+        } else {
+            RowSelection::None
+        };
 
         let reason = visibility::node_hidden_reason(&node_id, ancestry, vis_state);
         let effectively_visible = reason == visibility::HiddenReason::NotHidden;
@@ -674,7 +868,7 @@ fn render_nodes(
                 petal_id: Some(ancestry.petal_id),
                 url: Some(&webpage_url),
             },
-            RowSelection::from_primary(is_selected),
+            selection,
             false,
             is_active_petal && effectively_visible,
             nav,
@@ -749,7 +943,17 @@ fn render_nodes(
             node_mgr.request_select_after_navigation(&nid, ancestry.petal_id);
             camera_focus.target = Some((nid, pos));
         } else {
-            node_mgr.request_select_and_frame(&nid, pos, camera_focus);
+            let modifiers = ui.input(|input| input.modifiers);
+            node_mgr.request_selection(
+                ancestry.petal_id,
+                vec![nid.clone()],
+                crate::node_manager::SelectionMode::from_modifiers(
+                    modifiers.command || modifiers.ctrl,
+                    modifiers.shift,
+                ),
+                visible_order.to_vec(),
+            );
+            camera_focus.target = Some((nid, pos));
         }
     }
 
@@ -777,7 +981,14 @@ fn render_nodes(
 
     if let Some((nid, verb)) = row_verb {
         if verb == NodeRowVerb::AddToGroup {
-            node_mgr.pending_sidebar_select = Some(nid.clone());
+            if !node_mgr.contains_node(&nid) {
+                node_mgr.request_selection(
+                    ancestry.petal_id,
+                    vec![nid.clone()],
+                    crate::node_manager::SelectionMode::Replace,
+                    Vec::new(),
+                );
+            }
         }
         let petal_node_ids: Vec<&str> = nodes.iter().map(|n| n.id.as_str()).collect();
         apply_node_row_verb(verb, &nid, &petal_node_ids, ancestry, vis_state, ui_mgr);

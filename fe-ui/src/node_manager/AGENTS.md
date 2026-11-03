@@ -1,5 +1,41 @@
 # fe-ui/src/node_manager — single source of truth for selection
 
+## Ordered selection and group interactions
+
+The primary `NodeSelection` and a disjoint private additional-member vector form one
+ordered set, exposed through `primary()` and `members()`. A primary insertion index
+preserves order without caching a second complete list. `selected_set` owns the reducer;
+membership and primary changes advance its generation. Storage is crate-private and
+external readers use the read-only primary accessor. Scope is one active Petal, capped
+at 256 unique semantic IDs and unique live entities.
+
+Plain tree clicks replace, Ctrl/Cmd toggles, Shift selects a visible range and Ctrl/Cmd
+with Shift extends it. Ranges use first visible occurrences of stable IDs, so membership
+in two displayed Groups never duplicates an object. The clicked node becomes primary;
+removing it chooses the last remaining member. Viewport Ctrl/Cmd toggles and Shift
+extends. A context click on an already selected stamp preserves the set. Alt-click keeps
+the existing per-object options behavior. Group headers select available members and
+report hidden/unavailable members skipped; their arrow alone expands/collapses them.
+
+Petal changes clear the entire set. Hidden or removed members are pruned, while stable
+IDs rebind to replacement entities after a route redraw. Promotion can rebind the same
+live stamp to its canonical stored address. All selection entry paths use the reducer;
+neither sidebar state nor Inspector form state stores another selected set.
+
+`group_gimbal` captures one complete source and originals, previews all members around
+one center, and sends one checked edit at release. Gesture cancellation restores every
+original; incoming committed transforms win over any queued restore for those targets.
+Capabilities intersect across all members. The Inspector and Options use the same typed
+adapters; see `../editor_batch/AGENTS.md` for unsupported geometry and exact Undo rules.
+Single-object path marker/handle/stamp editing refuses plural selection. Brush and
+Measure retain their independent terrain/measurement controls. Pen asks for one route.
+
+F frames all selected available origins. Alt+H isolates the complete set for the session.
+Plural H and Delete explicitly refuse because their existing persistence/confirmation
+paths cover one object; they never silently apply to the primary member. Persisted Group
+eyes remain available. Extending those two bulk operations needs its own checked command
+and confirmation contract, rather than a per-node loop.
+
 ## §brush-tool-and-context-hardening
 
 `brush_interaction.rs` claims before all scene interactions while Brush is

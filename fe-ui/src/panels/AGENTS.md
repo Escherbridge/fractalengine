@@ -551,6 +551,19 @@ compilation, execution and live UI readability/a11y verification remain required
 
 ## Hierarchy rows and local appearance
 
+Active Petals display registered Groups and Ungrouped rows. Membership is non-owning
+and many-to-many; a node may appear in several groups, with the same authoritative
+selection in each occurrence. Primary/additional/partial row projections come directly
+from NodeManager. Group selection reports omitted hidden/unavailable members and uses
+one Petal-local reducer. Right Groups controls create from the complete selection and
+add/remove every selected member through one checked batch. Existing empty-group registry
+controls remain separate. See `../editor_batch/AGENTS.md` and `../node_manager/AGENTS.md`.
+
+Plural Properties and transform Options render the shared complete-selection form.
+Single-object edit producers refuse plural selection; primary-only URL and Data/history
+surfaces state their scope. Common/mixed/presence values come from an owned typed read,
+not the primary object's form buffers.
+
 `tree_entry::Target` carries the clicked row's kind, stable ID and ancestry.
 `tree_entry::row` owns the shared fixed icon/name/visibility/menu layout and
 routes typed presentation commands. Menus never borrow the Inspector's current

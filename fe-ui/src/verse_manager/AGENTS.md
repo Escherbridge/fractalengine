@@ -2,6 +2,13 @@
 
 ## §committed-object-materialization
 
+Owned editor-batch results validate the full request outcome and preflight every member
+before projecting any. Group registry, properties and descriptor caches are updated only
+after that complete admission. Route rows enter the host's existing confirmed path
+projection seam. Pure legacy current snapshots without journal versions request normal
+hierarchy/property hydration; no fictitious committed version is inserted. See
+`../editor_batch/AGENTS.md` for ownership and reconciliation behavior.
+
 `db_results/committed.rs` adapts only current `NodeMaterialized` and `NodeMutationCommitted`
 snapshots. Exact-version history results have no scene-write path. The manager rejects regressing
 commit versions and unexpected parent changes, upserts one tree entry, and retains complete transforms.

@@ -31,6 +31,9 @@ pub(super) fn handle_viewport_click(
     visibility: Res<VisibilityState>,
     mut arbiter: ResMut<ClickArbiter>,
     mut stamps: super::stamp_selection::StampPickParams,
+    keyboard: Option<Res<ButtonInput<KeyCode>>>,
+    mut ui: Option<ResMut<crate::actions::UiManager>>,
+    clock: Option<Res<crate::notice::NoticeClock>>,
 ) {
     // Only act on a fresh left-press that reached the viewport (egui/rect gating
     // already applied by `resolve_pointer_frame`).
@@ -44,14 +47,13 @@ pub(super) fn handle_viewport_click(
     }
     let Some(ray) = arbiter.ray() else { return };
 
-    let active_petal = nav.active_petal_id.as_deref();
+    let Some(active_petal) = nav.active_petal_id.as_deref() else {
+        return;
+    };
     let mut best: Option<(Entity, f32, String)> = None;
 
     for (entity, marker, pick_shape, drawn) in node_query.iter() {
-        if active_petal
-            .map(|pid| pid != marker.petal_id.as_str())
-            .unwrap_or(false)
-        {
+        if active_petal != marker.petal_id {
             continue;
         }
         // D-13/D-14: hidden nodes never win a pick (shared picker rule).
@@ -97,14 +99,52 @@ pub(super) fn handle_viewport_click(
         Some((entity, _, _)) => HitTarget::Node(*entity),
         None => HitTarget::Empty,
     };
+    let command = keyboard.as_ref().is_some_and(|keys| {
+        keys.any_pressed([
+            KeyCode::ControlLeft,
+            KeyCode::ControlRight,
+            KeyCode::SuperLeft,
+            KeyCode::SuperRight,
+        ])
+    });
+    let shift = keyboard
+        .as_ref()
+        .is_some_and(|keys| keys.any_pressed([KeyCode::ShiftLeft, KeyCode::ShiftRight]));
+    let mode = if command {
+        super::SelectionMode::Toggle
+    } else if shift {
+        super::SelectionMode::Extend
+    } else {
+        super::SelectionMode::Replace
+    };
     match resolve_operation(tool.active_tool, &SelectionKind::Empty, hit) {
         Operation::SelectNode(_) => {
             if let Some((entity, _, node_id)) = best {
-                manager.select(entity, node_id);
+                let result = manager.reduce_selection(
+                    Some(active_petal),
+                    vec![super::SelectionTarget { entity, node_id }],
+                    mode,
+                );
+                match result {
+                    Ok(_) => stamps.clear_components(),
+                    Err(reason) => {
+                        if let Some(ui) = ui.as_mut() {
+                            ui.show_advisory(
+                                reason,
+                                clock.as_ref().map_or(0.0, |clock| clock.elapsed_secs_f64()),
+                            );
+                        }
+                    }
+                }
             }
         }
-        Operation::SelectStamp(entity) => stamps.queue(entity, manager.selection_generation),
-        Operation::Deselect => manager.deselect(),
+        Operation::SelectStamp(entity) => {
+            stamps.queue_mode(entity, manager.selection_generation, mode)
+        }
+        Operation::Deselect if !command && !shift => {
+            manager.deselect();
+            stamps.clear_components();
+        }
         // The only other verbs a `Node`/`Empty` hit can produce here are Pen's
         // `PlacePathPoint` (unreachable — `PathPlace` claims the frame first)
         // and Brush's `None` (unreachable — `Brush` claims 2nd in the chain).

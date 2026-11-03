@@ -702,9 +702,15 @@ pub(crate) fn sync_node_visibility(
         commands.entity(entity).insert(Visibility::Inherited);
         hidden_by_us.remove(&entity);
     }
-    if decision.deselect {
-        node_mgr.selected = None;
-    }
+    node_mgr.retain_members(|member| {
+        entities
+            .iter()
+            .find(|(entity, _, _)| *entity == member.entity)
+            .is_some_and(|(_, id, _)| {
+                crate::visibility::pickable(id, &nav, &state)
+                    && crate::visibility::pickable(&member.node_id, &nav, &state)
+            })
+    });
 }
 
 #[cfg(test)]

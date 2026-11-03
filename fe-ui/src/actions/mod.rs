@@ -55,6 +55,11 @@ pub enum UiAction {
     /// Apply the inspector's Position/Rotation/Scale text buffers to the
     /// selected node's `Transform`. See AGENTS.md §inspector-transform.
     ApplyNodeTransform,
+    CheckSelectionSave,
+    SelectionBatch {
+        origin: crate::editor_batch::BatchOrigin,
+        edit: fe_runtime::editor_batch::EditorBatchEdit,
+    },
     /// Create an empty node at a viewport world position in the active petal
     /// (context-menu "Add Empty Node").
     CreateNodeAt {
@@ -602,6 +607,7 @@ pub struct UiManager {
     pub portal: PortalState,
     pub(crate) pending_url_save: Option<portal::PendingUrlSave>,
     pub(crate) url_read_model: url_read_model::UrlReadModel,
+    pub(crate) editor_batch: crate::editor_batch::EditorBatchState,
     pub(crate) portal_feedback: portal::PortalFeedback,
     pub(crate) portal_content_rect: Option<bevy_egui::egui::Rect>,
     pub(crate) context_point_origin: Option<crate::undo::PointEditOrigin>,
@@ -647,6 +653,7 @@ impl Default for UiManager {
             portal: PortalState::Closed,
             pending_url_save: None,
             url_read_model: url_read_model::UrlReadModel::default(),
+            editor_batch: Default::default(),
             portal_feedback: portal::PortalFeedback::default(),
             portal_content_rect: None,
             context_point_origin: None,
@@ -668,6 +675,13 @@ impl Default for UiManager {
 }
 
 impl UiManager {
+    pub fn take_editor_path_projection(
+        &mut self,
+        nav: &crate::navigation_manager::NavigationManager,
+    ) -> Option<crate::undo::PathProjection> {
+        self.editor_batch.take_path_projection(nav)
+    }
+
     pub fn clear_for_terminal_reset(&mut self) {
         let file_dialogs = self.file_dialogs.clone();
         *self = Self { file_dialogs, ..Self::default() };
@@ -1119,6 +1133,40 @@ pub(crate) struct ToolStateParams<'w> {
     active_tool_state: ResMut<'w, crate::plugin::ToolState>,
 }
 
+fn selection_singular_edit(action: &UiAction) -> bool {
+    matches!(
+        action,
+        UiAction::ApplyNodeTransform
+            | UiAction::SetNodeProperty { .. }
+            | UiAction::DeleteNodeProperty { .. }
+            | UiAction::PathAppendPoint { .. }
+            | UiAction::PathAppendSmoothPoint { .. }
+            | UiAction::PathSetAnchorHandles { .. }
+            | UiAction::PathSetAnchorMetadata { .. }
+            | UiAction::PathSetAnchorCorner { .. }
+            | UiAction::ContextSetAnchorCorner { .. }
+            | UiAction::PathRemovePoint { .. }
+            | UiAction::PathMovePointFromGesture { .. }
+            | UiAction::PathMovePointUntracked { .. }
+            | UiAction::PathMovePoint { .. }
+            | UiAction::PathTransformPoints { .. }
+            | UiAction::PathAnnotatePoint { .. }
+            | UiAction::PathSetStyle { .. }
+            | UiAction::PathAssetApply { .. }
+            | UiAction::PathSmoothCurrent { .. }
+            | UiAction::PathAppendShape { .. }
+            | UiAction::ApplyStampOverrides { .. }
+            | UiAction::SetStampScale { .. }
+            | UiAction::SetStampRotation { .. }
+            | UiAction::SlideStampAlongPath { .. }
+            | UiAction::DeleteNode { .. }
+            | UiAction::DuplicateNode { .. }
+            | UiAction::RenameNode { .. }
+            | UiAction::ClearNodeProperties { .. }
+            | UiAction::SetNodeGroups { .. }
+    )
+}
+
 /// Drains all UiActions queued during the egui pass and processes them.
 /// Replaces: forward_webview_open_request, drain_portal_panel_actions, handle_url_save.
 pub(crate) fn process_ui_actions(
@@ -1181,6 +1229,10 @@ pub(crate) fn process_ui_actions(
         ui_mgr.show_advisory("Portal closed because selection changed", now_secs);
     }
 
+    ui_mgr
+        .editor_batch
+        .maintain(&nav, &node_mgr, &verse_mgr, &db_sender.0);
+    ui_mgr.editor_batch.synchronize_history(&mut undo);
     let actions = ui_mgr.drain_actions();
     for action in actions {
         let action = match action {
@@ -1193,7 +1245,42 @@ pub(crate) fn process_ui_actions(
             }
             action => action,
         };
+        if node_mgr.selection_count() > 1 && selection_singular_edit(&action) {
+            ui_mgr.show_advisory("This action edits one object. Select one object, or use the controls that apply to the complete selection.", now_secs);
+            continue;
+        }
+        if ui_mgr.editor_batch.is_pending()
+            && (selection_singular_edit(&action)
+                || matches!(&action, UiAction::SetGroupRegistry { .. }))
+        {
+            ui_mgr.show_advisory(
+                "Wait for the complete selection edit to finish saving or reconciling",
+                now_secs,
+            );
+            continue;
+        }
         match action {
+            UiAction::CheckSelectionSave => match ui_mgr.editor_batch.resolve(&db_sender.0) {
+                Ok(()) => ui_mgr.show_toast("Checking the original selection save?", now_secs),
+                Err(error) => ui_mgr.show_error(error, now_secs),
+            },
+            UiAction::SelectionBatch { origin, edit } => {
+                let result = if !local_role.can_edit() {
+                    Err("Editor access is required for the complete selection".into())
+                } else if undo.is_pending() {
+                    Err("Wait for the previous object edit to finish saving".into())
+                } else if node_mgr.is_dragging() {
+                    Err("Finish or cancel the current selection gesture before applying a form edit".into())
+                } else {
+                    ui_mgr
+                        .editor_batch
+                        .start(origin, edit, &nav, &node_mgr, &db_sender.0)
+                };
+                match result {
+                    Ok(()) => ui_mgr.show_toast("Saving the complete selection?", now_secs),
+                    Err(error) => ui_mgr.show_advisory(error, now_secs),
+                }
+            }
             UiAction::OpenPortal { url } => {
                 if open_portal(&node_mgr, &mut ui_mgr, &url, now_secs).is_some() {
                     browser_commands.write(BrowserCommand::Navigate { url });
@@ -1224,6 +1311,14 @@ pub(crate) fn process_ui_actions(
                 portal::save_url(&db_sender.0, &mut ui_mgr, &verse_mgr, &nav, &node_mgr, &local_role, node_id, url, now_secs);
             }
             UiAction::ApplyNodeTransform => {
+                if ui_mgr
+                    .editor_batch
+                    .capture(&nav, &node_mgr)
+                    .is_none_or(crate::editor_batch::has_derived_transform)
+                {
+                    ui_mgr.show_advisory("Wait for the object's stored state, then use its checked whole-object transform controls", now_secs);
+                    continue;
+                }
                 if undo.is_pending() || node_mgr.gesture_active {ui_mgr.show_advisory("Finish the gesture or wait for the previous edit to save",now_secs);continue;}
                 if let Err(reason) =
                     transform::apply(&inspector, &mut node_mgr, &mut transform_query)

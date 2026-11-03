@@ -45,7 +45,7 @@ pub(crate) fn context(
     if role.role != Some(fe_database::RoleLevel::Owner) || !nav.has_valid_ancestry() {
         return None;
     }
-    let selected = nodes.selected.as_ref()?;
+    let selected = nodes.primary()?;
     let PortalState::Open {
         opened_for_entity, ..
     } = &ui.portal

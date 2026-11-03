@@ -1,5 +1,13 @@
 # fe-ui/src/actions — UiAction queue, split by domain
 
+`SelectionBatch` carries a captured selection origin and one typed complete edit.
+Dispatch rechecks current selection/navigation, edit role and pending gesture/save
+ownership before queueing it. Unported single-object edits explicitly refuse plural
+selection and wait while a selection batch is pending. Registry changes also wait for
+that pending outcome. `CheckSelectionSave` only reads the original request outcome;
+it never resends a write. `UiManager.editor_batch` owns this request/read model, while
+NodeManager remains the only selection authority. See `../editor_batch/AGENTS.md`.
+
 New UiAction variants: `RevealSection { slug }` (idempotent reveal, handler routes
 through RightSidebarState via the ToolStateParams bundle) and `TerrainProposalSelect { id }`.
 

@@ -406,6 +406,7 @@ impl LocalUserRole {
 #[derive(Resource, Default)]
 pub struct CameraFocusTarget {
     pub target: Option<(String, [f32; 3])>,
+    pub(crate) selection: Option<(String, Vec<String>)>,
 }
 
 // ---------------------------------------------------------------------------
@@ -1309,6 +1310,38 @@ fn apply_camera_focus(
     nav: Res<crate::navigation_manager::NavigationManager>,
     visibility: Res<crate::visibility::VisibilityState>,
 ) {
+    if let Some((petal, ids)) = focus_target.selection.take() {
+        focus_target.target = None;
+        if nav.active_petal_id.as_deref() != Some(petal.as_str()) || ids.is_empty() {
+            return;
+        }
+        let positions = ids
+            .iter()
+            .map(|id| {
+                if !crate::visibility::pickable(id, &nav, &visibility) {
+                    return None;
+                }
+                spawned
+                    .iter()
+                    .find(|(marker, _)| marker.node_id == *id && marker.petal_id == petal)
+                    .map(|(_, transform)| transform.translation())
+            })
+            .collect::<Option<Vec<_>>>();
+        if let Some(positions) = positions {
+            let center = positions.iter().copied().sum::<Vec3>() / positions.len() as f32;
+            let radius = positions
+                .iter()
+                .map(|position| position.distance(center))
+                .fold(0.0_f32, f32::max);
+            if let Ok(mut controller) = query.single_mut() {
+                controller.target_focus = Some(center);
+                controller.target_distance = (radius * 2.5)
+                    .max(5.0)
+                    .clamp(controller.min_distance, controller.max_distance);
+            }
+        }
+        return;
+    }
     if let Some((node_id, fallback)) = focus_target.target.take() {
         let ancestry = crate::visibility::active_ancestry(&nav);
         // Never fly to something the user cannot see: DROP the request (it was

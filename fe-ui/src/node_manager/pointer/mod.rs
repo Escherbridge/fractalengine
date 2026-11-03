@@ -70,9 +70,18 @@ pub(super) fn open_track_on_select(
         path_state.stop_editing();
     }
 
+    if manager.selection_count() > 1 {
+        path_state.selected_point = None;
+        path_state.selected_segment = None;
+        *last_selected = None;
+        *last_editing = path_state.editing_track_id.clone();
+        return;
+    }
     let current = manager.selected.as_ref().map(|s| s.node_id.clone());
     if current != *last_selected {
         let prev = std::mem::replace(&mut *last_selected, current.clone());
+        path_state.selected_point = None;
+        path_state.selected_segment = None;
         match current {
             Some(node_id) => {
                 if track_to_open(&node_id, &path_state, &nav, &visibility) {
@@ -157,7 +166,7 @@ fn drop_selection_of_closed_track(manager: &mut NodeManager, closed_track_id: Op
         return;
     };
     if manager.selected.as_ref().map(|s| s.node_id.as_str()) == Some(track_id) {
-        manager.deselect();
+        manager.retain_members(|member| member.node_id != track_id);
     }
 }
 

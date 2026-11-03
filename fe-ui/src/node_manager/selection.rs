@@ -21,6 +21,9 @@ pub enum SelectionKind {
     Empty,
     /// A scene node (glTF / primitive) selected as an ECS entity.
     Node(Entity),
+    Multiple {
+        count: usize,
+    },
     /// A whole path track (its ribbon), keyed by track node id.
     PathTrack { track_id: String },
     /// A single path vertex — index into the edited track's `points`.
@@ -130,6 +133,12 @@ pub(super) fn update_selection_state(
     instances: Query<&crate::verse_manager::PathAssetInstance>,
     stamps: Option<Res<crate::actions::asset::StampInteractionState>>,
 ) {
+    if manager.selection_count() > 1 {
+        selection.kind = SelectionKind::Multiple {
+            count: manager.selection_count(),
+        };
+        return;
+    }
     let node_selected = manager
         .selected
         .as_ref()
