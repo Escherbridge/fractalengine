@@ -64,6 +64,7 @@ pub(crate) async fn read_current_and_need(
     )
     .await?;
     let (mut guards, mut bindings) = permission.into_parts();
+    let mut guard_labels = vec!["authority_ancestry"; guards.len()];
     let mut without_position = raw.clone();
     without_position.as_object_mut().unwrap().remove("position");
     guards.extend([
@@ -71,6 +72,12 @@ pub(crate) async fn read_current_and_need(
         "IF array::len((SELECT VALUE node_id FROM node WHERE node_id=$scene_id AND petal_id=$scene_current_petal AND position=<geometry<point>> [$scene_current_x,$scene_current_z])) != 1 { THROW 'replica current point or ancestry changed'; }".into(),
         "IF (SELECT VALUE encoding::base64::encode(encoding::cbor::encode($this)) FROM node WHERE node_id=$scene_id) != $scene_current_fingerprints { THROW 'replica current row changed'; }".into(),
         CLOCK_FENCE.into(),
+    ]);
+    guard_labels.extend([
+        "node_projection",
+        "point_ancestry",
+        "node_fingerprint",
+        "scene_clock",
     ]);
     let clocks = read_clock(db, id).await?;
     let provenance = match clocks.first() {
@@ -110,6 +117,7 @@ pub(crate) async fn read_current_and_need(
         &mut descriptor,
     )
     .await?;
+    guard_labels.resize(guards.len(), "asset_metadata");
     let state = serde_json::from_value(super::super::node_history::normalize_snapshot(raw)?)?;
     let mut query = db.query(format!(
         "BEGIN TRANSACTION; {}; COMMIT TRANSACTION;",
@@ -118,7 +126,16 @@ pub(crate) async fn read_current_and_need(
     for binding in bindings {
         query = query.bind(binding);
     }
-    query.await?.check()?;
+    let mut response = query.await.map_err(|error| {
+        anyhow::anyhow!(
+            "scene current read transaction request_failed kind {}",
+            error.kind_str()
+        )
+    })?;
+    let errors = response.take_errors();
+    if !errors.is_empty() {
+        return Err(current_read_transaction_error(errors, &guard_labels));
+    }
     if let ReplicaNodeAsset::LocalBlob {
         asset_id,
         content_hash,
@@ -181,6 +198,62 @@ pub(crate) async fn read_current_and_need(
         None
     };
     Ok((current, need))
+}
+
+/// Describe the primary failed fence without exposing database messages or bindings.
+pub(crate) fn current_read_transaction_error(
+    errors: std::collections::HashMap<usize, surrealdb::Error>,
+    guard_labels: &[&'static str],
+) -> anyhow::Error {
+    use surrealdb::types::{ErrorDetails, QueryError};
+    let mut ordered: Vec<_> = errors.into_iter().collect();
+    ordered.sort_by_key(|(index, _)| *index);
+    let selected = ordered
+        .iter()
+        .find(|(_, error)| {
+            !matches!(
+                error.details(),
+                ErrorDetails::Query(Some(QueryError::NotExecuted))
+            )
+        })
+        .or_else(|| ordered.first());
+    let Some((index, error)) = selected else {
+        return anyhow::anyhow!("scene current read transaction error_unavailable");
+    };
+    let stage = if *index == 0 {
+        "begin"
+    } else if let Some(label) = guard_labels.get(*index - 1) {
+        *label
+    } else if *index == guard_labels.len() + 1 {
+        "commit"
+    } else {
+        "unexpected_statement"
+    };
+    let message = error
+        .message()
+        .strip_prefix("An error occurred: ")
+        .unwrap_or(error.message());
+    let reason = if matches!(error.details(), ErrorDetails::Thrown) {
+        match message {
+            "hierarchy authority changed" => "authority_changed",
+            "ambiguous hierarchy identity" => "ancestry_ambiguous",
+            "hierarchy ancestry changed" => "ancestry_changed",
+            "replica current row changed" => "node_changed",
+            "replica current point or ancestry changed" => "point_or_ancestry_changed",
+            "scene version changed" => "scene_clock_changed",
+            "replica current asset metadata changed" => "asset_metadata_changed",
+            _ => "unrecognized_database_error",
+        }
+    } else {
+        match error.details() {
+            ErrorDetails::Query(Some(QueryError::NotExecuted)) => "transaction_aborted",
+            ErrorDetails::Query(Some(QueryError::TimedOut { .. })) => "query_timed_out",
+            ErrorDetails::Query(Some(QueryError::Cancelled)) => "query_cancelled",
+            ErrorDetails::Query(Some(QueryError::TransactionConflict)) => "transaction_conflict",
+            _ => "unrecognized_database_error",
+        }
+    };
+    anyhow::anyhow!("scene current read transaction statement {index} stage {stage} kind {} reason {reason} errors {}", error.kind_str(), ordered.len())
 }
 
 async fn asset_state(

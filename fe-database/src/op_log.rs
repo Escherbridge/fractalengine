@@ -4767,6 +4767,40 @@ mod tests {
                 db.query("CREATE verse CONTENT {verse_id:'scene-v',name:'v',created_by:'did:qa',created_at:'2026-11-02'}; CREATE fractal CONTENT {fractal_id:'scene-f',verse_id:'scene-v',owner_did:'did:qa',name:'f',created_at:'2026-11-02'}; CREATE petal CONTENT {petal_id:'scene-p',fractal_id:'scene-f',name:'p',node_id:'p',created_at:'2026-11-02'}")
                                 .await.unwrap().check().unwrap();
             }
+            // A rolled-back earlier slot must not hide the primary safe fence diagnostic.
+            let mut diagnostic = source.query("BEGIN TRANSACTION; IF false { THROW 'controlled nonfailing guard' }; IF true { THROW 'replica current asset metadata changed' }; COMMIT TRANSACTION;").await.unwrap();
+            let diagnostic = scene::current_read_transaction_error(
+                diagnostic.take_errors(),
+                &["authority_ancestry", "asset_metadata"],
+            )
+            .to_string();
+            assert!(
+                diagnostic.contains("stage asset_metadata")
+                    && diagnostic.contains("reason asset_metadata_changed"),
+                "{diagnostic}"
+            );
+            assert!(!diagnostic.contains("not executed due to a failed transaction"));
+            let diagnostic = scene::current_read_transaction_error(
+                std::collections::HashMap::from([
+                    (
+                        0,
+                        surrealdb::Error::query(
+                            "secret rollback echo".into(),
+                            Some(surrealdb::types::QueryError::NotExecuted),
+                        ),
+                    ),
+                    (
+                        2,
+                        surrealdb::Error::thrown("secret stored value must never escape".into()),
+                    ),
+                ]),
+                &["authority_ancestry", "asset_metadata"],
+            )
+            .to_string();
+            assert!(
+                diagnostic.contains("statement 2") && diagnostic.contains("unrecognized_database_error")
+            );
+            assert!(!diagnostic.contains("secret") && diagnostic.len() < 256);
             let scope = "VERSE#scene-v-FRACTAL#scene-f-PETAL#scene-p";
             let properties = json!({"nested":{"null":null,"measurements":[{"t":1,"value":10.5},null,{"t":2,"value":12}]},"remove_me":{"preserve_before_delete":true}});
             let (id, _) = node_history::create_object(

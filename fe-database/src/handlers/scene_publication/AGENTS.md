@@ -202,3 +202,20 @@ A corrupt/empty/directory entry becomes MissingBlob and produces a bounded Need;
 does not permanently suppress demand merely because a path exists. Existing larger
 local files remain available when verified; missing/invalid files above the transfer
 cap remain TransferLimitExceeded. This read is event-driven, not per-frame hashing.
+
+## Private-current transaction diagnostics
+
+The final read-fence transaction inspects all indexed SDK errors before returning.
+SurrealDB 3.0.5 check() selects the first error, which may be a NotExecuted rollback
+echo hiding the later primary failure. current_read_transaction_error chooses the
+earliest non-NotExecuted error, with a deterministic earliest-echo fallback. It emits
+only the statement index, fixed authority/node/point/clock/asset guard stage, static
+SDK kind, whitelisted fixed reason and error count. Unknown stored/error text, SQL,
+bindings, values and error cause chains never enter this diagnostic. Request-level
+failures expose only a fixed request_failed reason and static SDK kind.
+
+Guard SQL, bindings, actual Viewer/ancestry and full row/asset/clock fences stay intact.
+A diagnostic repair does not establish which QA30 guard failed, resolve its pending
+read retries or authorize a fallback state. The existing operation journey authors
+actual rollback-primary selection and an unknown-secret redaction case. These cases
+remain for the parent-owned final integrated sweep; no new test function is added.
