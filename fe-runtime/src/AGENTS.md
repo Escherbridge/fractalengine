@@ -1062,3 +1062,10 @@ identity must agree, including unavailable assets; tombstone stays in the comple
 Native projection must preserve DB single-writer result order with local receipts, apply full
 properties and resident transforms, and must not send remote paths through a queue that requires
 a positive LOCAL journal version. No remote-only ordinal pretends to order local mutations.
+
+The private ReadReplicatedNodeCurrent {node_id,request_id} command derives current stored ancestry
+and repeats the same actual-recipient Viewer fences. ReplicatedNodeCurrentRead echoes that exact
+node/request with Result<ReplicatedNodeCurrent,String>. Both are GUI-only/unmapped to API reply
+families. Native intent owners coalesce/retry reads and check their captured node/Petal/epoch
+before projection. They must request fresh state after missing-parent hierarchy hydration rather
+than retain/replay a stale remote DTO. Request nonces are not global ordering versions.

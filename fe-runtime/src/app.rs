@@ -1866,6 +1866,13 @@ mod tests {
         assert!(!pending.try_deliver(reply),"a GUI replica current read cannot consume a local/API waiter");
         assert!(legacy_rx.try_recv().is_err());
         assert!(receipt_rx.try_recv().is_err());
+        let read=DbCommand::ReadReplicatedNodeCurrent {node_id:"remote".into(),request_id:"native-epoch-bound".into()};
+        assert!(reply_kind_of_command(&read).is_none());
+        assert!(correlation_of_command(&read).is_none());
+        let read=DbResult::ReplicatedNodeCurrentRead {node_id:"remote".into(),request_id:"native-epoch-bound".into(),result:Err("Viewer unavailable".into())};
+        assert!(reply_kind_of_result(&read).is_none());
+        assert!(correlation_of_result(&read).is_none());
+        assert!(!pending.try_deliver(read));
 
         assert!(
             legacy_rx.try_recv().is_err(),

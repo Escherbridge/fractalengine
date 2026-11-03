@@ -506,6 +506,8 @@ impl CallerAuth {
 
 #[derive(Debug, Clone)]
 pub enum DbCommand {
+    /// Private native current read; actual local Viewer authority is resolved by the DB.
+    ReadReplicatedNodeCurrent { node_id:String, request_id:String },
     ReadEditorBatch {
         scope: String,
         petal_id: String,
@@ -1365,6 +1367,11 @@ pub enum DbResult {
     },
     /// GUI current state after a successful replica apply; has no API reply or local history version.
     ReplicatedNodeCurrent { current: crate::scene_replication::ReplicatedNodeCurrent },
+    /// Private native current-read echo; its request nonce is not a history or ordering version.
+    ReplicatedNodeCurrentRead {
+        node_id:String, request_id:String,
+        result:Result<crate::scene_replication::ReplicatedNodeCurrent,String>,
+    },
     /// Confirmed current state after an ordinary object create/mutation.
     NodeMutationCommitted {
         receipt: crate::node_history::NodeMutationReceipt,
