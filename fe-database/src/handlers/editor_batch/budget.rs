@@ -109,7 +109,11 @@ pub(super) fn reserve(
     };
     capture.members = members;
     capture.groups = all_groups.clone();
-    capture.petal_snapshot = "X".repeat(snapshot_bound(petal_budget_base_bytes, &all_groups));
+    let petal_snapshot_bytes = before
+        .petal_snapshot
+        .len()
+        .max(snapshot_bound(petal_budget_base_bytes, &all_groups));
+    capture.petal_snapshot = "X".repeat(petal_snapshot_bytes);
     capture.deleted_group = Some(EditorDeletedGroup {
         group_id: group_id.clone(),
         registry_before: all_groups.clone(),

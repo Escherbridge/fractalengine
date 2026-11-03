@@ -4027,6 +4027,24 @@ mod tests {
             );
             {
                 let nested = |size: usize| serde_json::json!({"largeBag":{"schema":{"fields":["position","material","measurements"]},"events":[{"sequence":1,"payload":{"text":"x".repeat(size)}}]}});
+                let mut raw = db
+                    .query("SELECT visibility_groups FROM petal WHERE petal_id='tree-other-petal'")
+                    .await
+                    .unwrap()
+                    .check()
+                    .unwrap();
+                let rows: Vec<serde_json::Value> = raw.take(0).unwrap();
+                let mut registry = rows[0]["visibility_groups"]
+                    .as_array()
+                    .cloned()
+                    .unwrap_or_default();
+                registry.push(serde_json::json!({"id":"opaque-budget-row","name":"Opaque registry row","visible":true,"order":-50.0,"future_extension":{"payload":"o".repeat(32768)}}));
+                db.query("UPDATE petal SET visibility_groups=$registry WHERE petal_id='tree-other-petal'")
+                    .bind(("registry", registry))
+                    .await
+                    .unwrap()
+                    .check()
+                    .unwrap();
                 let mut budget_ids = Vec::new();
                 for index in 0..4 {
                     let id = crate::handlers::node_history::create_object_granted(
@@ -4186,6 +4204,8 @@ mod tests {
                 )
                 .await
                 .unwrap();
+                let original_opaque_snapshot = before.petal_snapshot.clone();
+                assert!(original_opaque_snapshot.len() > 32768,"typed DTO reconstruction must not omit large unknown registry bytes from proof accounting");
                 let prepared = editor_batch::prepare(
                     &db,
                     &EditorBatchRequest {
@@ -4206,6 +4226,21 @@ mod tests {
                     "use a byte-tight admission boundary"
                 );
                 editor_batch::commit(&db, prepared).await.unwrap();
+                let mut manifest = db.query("SELECT VALUE payload.group_create_before.petal_snapshot FROM op_log WHERE payload.editor_batch_request_id='qa-lifecycle-large-create'").await.unwrap().check().unwrap();
+                let retained: Vec<String> = manifest.take(0).unwrap();
+                assert_eq!(
+                    retained,
+                    [original_opaque_snapshot],
+                    "durable creation proof retains the complete original opaque snapshot"
+                );
+                let mut raw = db
+                    .query("SELECT visibility_groups FROM petal WHERE petal_id='tree-other-petal'")
+                    .await
+                    .unwrap()
+                    .check()
+                    .unwrap();
+                let rows: Vec<serde_json::Value> = raw.take(0).unwrap();
+                assert!(rows[0]["visibility_groups"].as_array().unwrap().iter().find(|row| row["id"] == "opaque-budget-row").unwrap().get("future_extension").is_none(),"typed registry cleanup removes unknown fields but historical proof bytes remain reserved");
                 let before = editor_batch::read(
                     &db,
                     &plugin_scope,
@@ -4264,6 +4299,7 @@ mod tests {
                 };
                 let mut delete_request = "a".to_string();
                 let mut final_receipt = None;
+                let mut previous_budget = canonical_bytes;
                 for cycle in 0..5_u32 {
                     let before = editor_batch::read_target(
                         &db,
@@ -4290,7 +4326,12 @@ mod tests {
                     )
                     .await
                     .unwrap();
-                    assert_eq!(prepared.check_admission().unwrap(),canonical_bytes,"tiny and maximal escaped IDs/counter widths must have identical canonical reservations");
+                    let reserved = prepared.check_admission().unwrap();
+                    assert!(reserved <= previous_budget,"retaining opaque original bytes may shrink after typed cleanup, never increase on replay");
+                    if cycle > 0 {
+                        assert_eq!(reserved,previous_budget,"tiny and maximal escaped IDs/counter widths must have identical reservations after cleanup");
+                    }
+                    previous_budget = reserved;
                     let deleted = editor_batch::commit(&db, prepared).await.unwrap();
                     if cycle == 4 {
                         final_receipt = Some(deleted);
