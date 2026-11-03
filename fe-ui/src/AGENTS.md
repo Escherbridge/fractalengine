@@ -1230,25 +1230,20 @@ sniffing). Solo is never persisted and hydration never touches it.
 Groups (`VisibilityState.groups`, display order) mirror `petal.visibility_groups`
 and the verse/fractal/petal eyes mirror `view_hidden` (D-1 persisted all
 three levels — a session-only petal eye between two persisted ones would be
-incoherent). Writes: `UiAction::SetGroupRegistry` (whole-registry replace;
-pure transforms `with_group_added/visible/renamed/removed/moved`, `order` =
-display index on the wire, new ids slugged from the name by `next_group_id`),
-`UiAction::SetScopeHidden` (every sidebar scope eye, and Show all re-opens
-the branch's closed eyes so a restart cannot re-hide them), and
-`UiAction::SetNodeGroups` (membership = Phase 3's `SetNodeView { groups }`).
-All are optimistic + `CallerAuth::Local`, correlated `fe-ui:groups:{petal}` /
-`fe-ui:scope-eye:{id}`; a refusal keeps the session value and toasts "Groups
-not saved (you need Editor access)". The Groups editor caps names at
-`MAX_GROUP_NAME_CHARS`, the registry at `MAX_VISIBILITY_GROUPS` and per-node
-membership at `MAX_VIEW_GROUPS` (fe-database's validation bounds), so the UI
-never offers an edit the DB must refuse. Hydration: `load_petal_groups_on_nav_change`
-clears the registry and sends `GetPetalVisibilityGroups` on every petal entry
-(correlated `fe-ui:groups-load:{petal}` — a failed READ is never toasted as
-"not saved");
-`PetalVisibilityGroupsLoaded` (Get, Set echo, or an API write) replaces the
-registry ONLY for the active petal; `HierarchyLoaded` REPLACES the three
-hidden sets (`hydrate_scope_hidden`) — authoritative, so a refused session
-eye lasts until the next hierarchy load. The active petal's eye cannot HIDE
+incoherent). Registry edits use `UiAction::SetGroupRegistry` and a nonblocking
+`ComparePetalVisibilityGroups` against the exact confirmed DTO vector. The display
+changes only on authoritative readback; new IDs are ULIDs. Accepted writes keep
+ownership until matching readback or an explicitly queued current read confirms
+storage. The Check stored Groups action never retries writes. Scope eyes and
+legacy per-node membership retain their existing optimistic `CallerAuth::Local`
+helpers. See `visibility/AGENTS.md` for pending ownership and the required checked
+Delete transaction boundary. The editor caps names, registry size and memberships
+at the database validation limits. Navigation clears the prior registry and queues
+one nonblocking current read; full queues retry the pure read on a later frame.
+`PetalVisibilityGroupsLoaded` updates only the active Petal, preserving exact stored
+order values for the next comparison. `HierarchyLoaded` replaces all three hidden
+scope sets, so a refused session eye lasts until the next hierarchy load.
+The active petal's eye cannot HIDE
 it (D-4), but a petal persisted hidden and then entered keeps an enabled
 "Show petal" eye (`panels/sidebar.rs::petal_eye`), otherwise its contents
 would stay hidden behind a dead eye.

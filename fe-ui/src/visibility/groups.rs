@@ -5,6 +5,8 @@
 
 use std::collections::HashSet;
 
+use crossbeam::channel::TrySendError;
+
 use bevy::prelude::*;
 use fe_runtime::app::DbCommandSender;
 use fe_runtime::messages::{
@@ -119,34 +121,112 @@ pub(crate) fn with_group_moved(groups: &[Group], index: usize, delta: isize) -> 
     next
 }
 
-/// `UiAction::SetGroupRegistry`: optimistic replace of the active registry,
-/// then the authed whole-registry write (`CallerAuth::Local` — the DB resolves
-/// the real role, N-5).
+#[derive(Debug, Clone, Default)]
+pub(super) struct RegistryWrites {
+    confirmed: Option<(String, Vec<VisibilityGroupDto>)>,
+    pending_write: Option<String>,
+    pending_read: Option<(String, std::time::Instant)>,
+}
+
+impl VisibilityState {
+    pub(crate) fn registry_write_pending(&self) -> bool {
+        self.registry_writes.pending_write.is_some()
+    }
+
+    pub(crate) fn registry_read_pending(&self) -> bool {
+        self.registry_writes
+            .pending_read
+            .as_ref()
+            .is_some_and(|(_, queued)| queued.elapsed() < std::time::Duration::from_secs(15))
+    }
+
+    pub(crate) fn registry_ready(&self, petal_id: &str) -> bool {
+        !self.registry_write_pending()
+            && self.registry_writes.pending_read.is_none()
+            && self
+                .registry_writes
+                .confirmed
+                .as_ref()
+                .is_some_and(|(id, _)| id == petal_id)
+    }
+}
+
+/// Admit a checked registry edit without changing its confirmed display.
 pub(crate) fn set_group_registry(
     db_sender: &DbCommandSender,
     state: &mut VisibilityState,
     petal_id: String,
     groups: Vec<Group>,
-) {
-    let dtos = dtos_from_groups(&groups);
-    state.replace_groups(groups);
-    let correlation_id = Some(format!("{GROUPS_CORRELATION_PREFIX}{petal_id}"));
-    if db_sender
-        .0
-        .send(DbCommand::SetPetalVisibilityGroups {
-            petal_id,
-            groups: dtos,
-            auth: CallerAuth::Local,
-            correlation_id,
-        })
-        .is_err()
-    {
-        bevy::log::warn!("db_sender channel closed — SetPetalVisibilityGroups not persisted");
+) -> Result<bool, String> {
+    if !state.registry_ready(&petal_id) {
+        return Err("Wait for stored Groups, or check stored Groups before editing again".into());
     }
+    let expected = &state.registry_writes.confirmed.as_ref().unwrap().1;
+    if expected
+        .iter()
+        .any(|old| !groups.iter().any(|next| next.id == old.id))
+    {
+        return Err(
+            "Group deletion requires a checked membership transaction; no Groups were changed"
+                .into(),
+        );
+    }
+    let proposed = dtos_from_groups(&groups);
+    if groups == state.groups() {
+        return Ok(false);
+    }
+    let correlation = format!("{GROUPS_CORRELATION_PREFIX}{}", ulid::Ulid::new());
+    db_sender
+        .0
+        .try_send(DbCommand::ComparePetalVisibilityGroups {
+            petal_id,
+            expected: expected.clone(),
+            groups: proposed,
+            auth: CallerAuth::Local,
+            correlation_id: Some(correlation.clone()),
+        })
+        .map_err(|error| match error {
+            TrySendError::Full(_) => "Storage is busy; the Groups edit was not queued".to_owned(),
+            TrySendError::Disconnected(_) => {
+                "Storage is disconnected; the Groups edit was not queued".to_owned()
+            }
+        })?;
+    state.registry_writes.pending_write = Some(correlation);
+    Ok(true)
 }
 
-/// `PetalVisibilityGroupsLoaded` (load or write echo, from this GUI or any API
-/// caller): authoritative for the ACTIVE petal only.
+/// Read current storage without retrying an accepted registry write.
+pub(crate) fn check_registry(
+    db_sender: &DbCommandSender,
+    state: &mut VisibilityState,
+    petal_id: String,
+) -> Result<(), String> {
+    if state.registry_read_pending() {
+        return Err("A stored Groups check is already queued".into());
+    }
+    queue_registry_read(db_sender, state, petal_id).map_err(|error| match error {
+        TrySendError::Full(_) => "Storage is busy; the Groups check was not queued".to_owned(),
+        TrySendError::Disconnected(_) => {
+            "Storage is disconnected; the Groups check was not queued".to_owned()
+        }
+    })
+}
+
+fn queue_registry_read(
+    db_sender: &DbCommandSender,
+    state: &mut VisibilityState,
+    petal_id: String,
+) -> Result<(), TrySendError<DbCommand>> {
+    let correlation = format!("{GROUPS_LOAD_CORRELATION_PREFIX}{}", ulid::Ulid::new());
+    db_sender.0.try_send(DbCommand::GetPetalVisibilityGroups {
+        petal_id,
+        correlation_id: Some(correlation.clone()),
+    })?;
+    state.registry_writes.pending_read = Some((correlation, std::time::Instant::now()));
+    Ok(())
+}
+
+/// Admit the active Petal's authoritative registry, retaining exact CAS order values.
 pub(crate) fn apply_registry_loaded(
     state: &mut VisibilityState,
     active_petal_id: Option<&str>,
@@ -154,7 +234,46 @@ pub(crate) fn apply_registry_loaded(
     dtos: &[VisibilityGroupDto],
 ) {
     if active_petal_id == Some(petal_id) {
+        state.registry_writes.confirmed = Some((petal_id.into(), dtos.to_vec()));
         state.replace_groups(groups_from_dtos(dtos));
+    }
+}
+
+pub(crate) fn apply_registry_reply(
+    state: &mut VisibilityState,
+    active_petal_id: Option<&str>,
+    petal_id: &str,
+    dtos: &[VisibilityGroupDto],
+    correlation_id: Option<&str>,
+) {
+    if active_petal_id != Some(petal_id) {
+        return;
+    }
+    if correlation_id.is_some_and(|id| state.registry_writes.pending_write.as_deref() == Some(id)) {
+        state.registry_writes.pending_write = None;
+    }
+    if correlation_id.is_some_and(|id| {
+        state
+            .registry_writes
+            .pending_read
+            .as_ref()
+            .is_some_and(|(pending, _)| pending == id)
+    }) {
+        state.registry_writes.pending_read = None;
+        state.registry_writes.pending_write = None;
+    }
+    apply_registry_loaded(state, active_petal_id, petal_id, dtos);
+}
+
+pub(crate) fn apply_registry_failure(state: &mut VisibilityState, correlation_id: &str) {
+    if state
+        .registry_writes
+        .pending_read
+        .as_ref()
+        .is_some_and(|(pending, _)| pending == correlation_id)
+    {
+        state.registry_writes.pending_read = None;
+        bevy::log::warn!("Stored Groups check failed; confirmed registry was retained");
     }
 }
 
@@ -257,8 +376,7 @@ pub(crate) fn membership_with(
     }
 }
 
-/// Toast copy for a failed GUI Group/eye write, or `None` when the failure
-/// belongs to another request. The session value is kept either way.
+/// Copy for owned Group/eye failures; see visibility/AGENTS.md.
 pub(crate) fn registry_write_failure_toast(
     correlation_id: &str,
     error: &str,
@@ -267,6 +385,9 @@ pub(crate) fn registry_write_failure_toast(
         && !correlation_id.starts_with(SCOPE_EYE_CORRELATION_PREFIX)
     {
         return None;
+    }
+    if correlation_id.starts_with(GROUPS_CORRELATION_PREFIX) {
+        return Some("Groups save not confirmed; check stored Groups before editing again");
     }
     Some(if error.contains("denied") {
         GROUPS_NOT_SAVED_DENIED_TOAST
@@ -286,21 +407,19 @@ pub(crate) fn load_petal_groups_on_nav_change(
     if *last_petal == nav.active_petal_id {
         return;
     }
-    last_petal.clone_from(&nav.active_petal_id);
+    state.registry_writes = RegistryWrites::default();
     state.replace_groups(Vec::new());
     let Some(petal_id) = nav.active_petal_id.clone() else {
+        last_petal.clone_from(&nav.active_petal_id);
         return;
     };
-    let correlation_id = Some(format!("{GROUPS_LOAD_CORRELATION_PREFIX}{petal_id}"));
-    if db_sender
-        .0
-        .send(DbCommand::GetPetalVisibilityGroups {
-            petal_id,
-            correlation_id,
-        })
-        .is_err()
-    {
-        bevy::log::warn!("db_sender channel closed — GetPetalVisibilityGroups not dispatched");
+    match queue_registry_read(&db_sender, &mut state, petal_id) {
+        Ok(()) => last_petal.clone_from(&nav.active_petal_id),
+        Err(TrySendError::Full(_)) => {}
+        Err(TrySendError::Disconnected(_)) => {
+            last_petal.clone_from(&nav.active_petal_id);
+            bevy::log::warn!("Storage disconnected; stored Groups were not requested");
+        }
     }
 }
 
@@ -401,38 +520,144 @@ mod tests {
     }
 
     #[test]
-    fn registry_and_eye_writes_are_optimistic_and_authed() {
-        let (tx, rx) = crossbeam::channel::bounded(4);
+    fn registry_readback_is_checked_and_eyes_remain_authed() {
+        let (tx, rx) = crossbeam::channel::bounded(1);
         let sender = DbCommandSender(tx);
         let mut state = VisibilityState::default();
-
-        set_group_registry(
-            &sender,
-            &mut state,
-            "p1".into(),
-            vec![group("b", "B", true), group("a", "A", false)],
+        let before = vec![dto("b", true, 8.5), dto("a", false, -3.25)];
+        let proposed = vec![group("b", "Renamed", true), group("a", "A", false)];
+        assert!(
+            set_group_registry(&sender, &mut state, "p1".into(), proposed.clone()).is_err(),
+            "unloaded registry cannot be an expected snapshot"
         );
-        assert_eq!(state.groups().len(), 2, "optimistic");
-        match rx.try_recv() {
-            Ok(DbCommand::SetPetalVisibilityGroups {
+        apply_registry_loaded(&mut state, Some("p1"), "p1", &before);
+        let display = state.groups().to_vec();
+        assert_eq!(
+            set_group_registry(&sender, &mut state, "p1".into(), proposed.clone()),
+            Ok(true)
+        );
+        assert_eq!(
+            state.groups(),
+            display,
+            "accepted queue admission is not confirmed persistence"
+        );
+        assert!(state.registry_write_pending());
+        assert!(set_group_registry(&sender, &mut state, "p1".into(), proposed.clone()).is_err());
+        let (written, write_id) = match rx.try_recv().unwrap() {
+            DbCommand::ComparePetalVisibilityGroups {
                 petal_id,
+                expected,
                 groups,
                 auth,
                 correlation_id,
-            }) => {
+            } => {
                 assert_eq!(petal_id, "p1");
-                let wire: Vec<(&str, f64)> =
-                    groups.iter().map(|g| (g.id.as_str(), g.order)).collect();
-                assert_eq!(wire, vec![("b", 0.0), ("a", 1.0)], "order = display index");
-                assert_eq!(auth, CallerAuth::Local);
-                let id = correlation_id.expect("GUI writes are correlated");
                 assert_eq!(
-                    registry_write_failure_toast(&id, "SetPetalVisibilityGroups denied for x"),
-                    Some(GROUPS_NOT_SAVED_DENIED_TOAST)
+                    expected, before,
+                    "CAS retains original stored row order and nonsequential order values"
                 );
+                assert_eq!(auth, CallerAuth::Local);
+                (groups, correlation_id.unwrap())
             }
-            other => panic!("expected SetPetalVisibilityGroups, got {other:?}"),
-        }
+            other => panic!("expected checked registry edit, got {other:?}"),
+        };
+        apply_registry_reply(&mut state, Some("p1"), "p1", &before, Some("other-client"));
+        assert!(
+            state.registry_write_pending(),
+            "unrelated readback cannot release owned write"
+        );
+        apply_registry_failure(&mut state, &write_id);
+        assert!(
+            state.registry_write_pending(),
+            "unknown write outcome requires a read, never a retry"
+        );
+        check_registry(&sender, &mut state, "p1".into()).unwrap();
+        assert!(
+            check_registry(&sender, &mut state, "p1".into()).is_err(),
+            "coalesce pure reads"
+        );
+        let read_id = match rx.try_recv().unwrap() {
+            DbCommand::GetPetalVisibilityGroups { correlation_id, .. } => correlation_id.unwrap(),
+            other => panic!("checking does not retry write: {other:?}"),
+        };
+        apply_registry_reply(&mut state, Some("p2"), "p1", &written, Some(&read_id));
+        assert!(
+            state.registry_write_pending(),
+            "wrong Petal cannot complete active ownership"
+        );
+        apply_registry_reply(&mut state, Some("p1"), "p1", &written, Some(&read_id));
+        assert!(state.registry_ready("p1"));
+        assert_eq!(state.groups(), proposed);
+        assert!(
+            set_group_registry(&sender, &mut state, "p1".into(), Vec::new()).is_err(),
+            "registry CAS must not orphan memberships through delete"
+        );
+        assert!(rx.try_recv().is_err());
+        sender
+            .0
+            .try_send(DbCommand::GetPetalVisibilityGroups {
+                petal_id: "busy".into(),
+                correlation_id: None,
+            })
+            .unwrap();
+        let changed = with_group_renamed(state.groups(), "b", "Busy rename");
+        assert!(
+            set_group_registry(&sender, &mut state, "p1".into(), changed.clone())
+                .unwrap_err()
+                .contains("busy")
+        );
+        assert!(
+            !state.registry_write_pending(),
+            "unsent writes never own pending state"
+        );
+        assert_eq!(state.groups(), proposed);
+        rx.try_recv().unwrap();
+        assert_eq!(
+            registry_write_failure_toast(&write_id, "denied"),
+            Some("Groups save not confirmed; check stored Groups before editing again")
+        );
+        let (closed_tx, closed_rx) = crossbeam::channel::bounded(1);
+        drop(closed_rx);
+        assert!(set_group_registry(
+            &DbCommandSender(closed_tx),
+            &mut state,
+            "p1".into(),
+            changed
+        )
+        .unwrap_err()
+        .contains("disconnected"));
+        assert!(!state.registry_write_pending());
+        assert_eq!(state.groups(), proposed);
+        let next = with_group_renamed(state.groups(), "b", "Confirmed");
+        set_group_registry(&sender, &mut state, "p1".into(), next.clone()).unwrap();
+        let (after, correlation) = match rx.try_recv().unwrap() {
+            DbCommand::ComparePetalVisibilityGroups {
+                groups,
+                correlation_id,
+                ..
+            } => (groups, correlation_id.unwrap()),
+            other => panic!("expected one admitted write: {other:?}"),
+        };
+        apply_registry_reply(&mut state, Some("p1"), "p1", &after, Some(&correlation));
+        assert!(state.registry_ready("p1"));
+        assert_eq!(state.groups(), next);
+        check_registry(&sender, &mut state, "p1".into()).unwrap();
+        rx.try_recv().unwrap();
+        state.registry_writes.pending_read.as_mut().unwrap().1 -=
+            std::time::Duration::from_secs(16);
+        assert!(
+            !state.registry_read_pending(),
+            "a lost pure-read reply can be checked again after its bounded wait"
+        );
+        assert!(!state.registry_ready("p1"), "an expired read permits another check, never a competing write before current readback");
+        check_registry(&sender, &mut state, "p1".into()).unwrap();
+        let id = match rx.try_recv().unwrap() {
+            DbCommand::GetPetalVisibilityGroups { correlation_id, .. } => correlation_id.unwrap(),
+            other => panic!("only reads may retry: {other:?}"),
+        };
+        apply_registry_failure(&mut state, &id);
+        assert!(!state.registry_read_pending());
+        assert!(state.registry_ready("p1"));
 
         set_scope_hidden(&sender, &mut state, ScopeLevel::Fractal, "f1".into(), true);
         assert!(state.is_scope_hidden(ScopeLevel::Fractal, "f1"));

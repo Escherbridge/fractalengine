@@ -472,10 +472,11 @@ pub enum UiAction {
     },
 
     // --- hierarchy_visibility_groups Phases 4-5 ---
-    /// Replace the active petal's whole Group registry: optimistic session
-    /// write + authed `SetPetalVisibilityGroups` (D-3). Produced by the right
-    /// sidebar Groups section, the left sidebar Group eyes and the Layer
-    /// Manager. See `visibility::groups::set_group_registry`.
+    /// Read current Groups without retrying an accepted write.
+    CheckGroupRegistry {
+        petal_id: String,
+    },
+    /// Compare the active Petal's confirmed registry and display only readback.
     SetGroupRegistry {
         petal_id: String,
         groups: Vec<crate::visibility::Group>,
@@ -1269,6 +1270,8 @@ pub(crate) fn process_ui_actions(
             UiAction::SelectionBatch { origin, edit } => {
                 let result = if !local_role.can_edit() {
                     Err("Editor access is required for the complete selection".into())
+                } else if visibility.registry_write_pending() {
+                    Err("Wait for stored Groups before applying another selection edit".into())
                 } else if undo.is_pending() {
                     Err("Wait for the previous object edit to finish saving".into())
                 } else if node_mgr.is_dragging() || node_mgr.gesture_active {
@@ -1893,13 +1896,36 @@ pub(crate) fn process_ui_actions(
                     state,
                 );
             }
+            UiAction::CheckGroupRegistry { petal_id } => {
+                if nav.active_petal_id.as_deref() != Some(petal_id.as_str()) {
+                    ui_mgr.show_advisory("Select this Petal before checking its Groups", now_secs);
+                    continue;
+                }
+                match crate::visibility::groups::check_registry(&db_sender, &mut visibility, petal_id) {
+                    Ok(()) => ui_mgr.show_toast("Checking stored Groups", now_secs),
+                    Err(error) => ui_mgr.show_error(error, now_secs),
+                }
+            }
             UiAction::SetGroupRegistry { petal_id, groups } => {
-                crate::visibility::groups::set_group_registry(
-                    &db_sender,
-                    &mut visibility,
-                    petal_id,
-                    groups,
-                );
+                let result = if !local_role.can_edit() {
+                    Err("Editor access is required to change Groups".into())
+                } else if nav.active_petal_id.as_deref() != Some(petal_id.as_str()) {
+                    Err("Select this Petal before changing its Groups".into())
+                } else {
+                    crate::visibility::groups::set_group_registry(
+                        &db_sender,
+                        &mut visibility,
+                        petal_id,
+                        groups,
+                    )
+                };
+                match result {
+                    Ok(true) => {
+                        ui_mgr.show_toast("Saving Groups; waiting for stored readback", now_secs)
+                    }
+                    Ok(false) => {}
+                    Err(error) => ui_mgr.show_error(error, now_secs),
+                }
             }
             UiAction::SetScopeHidden { level, id, hidden } => {
                 crate::visibility::groups::set_scope_hidden(

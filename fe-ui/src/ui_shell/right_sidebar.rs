@@ -1453,8 +1453,27 @@ fn render_groups_controls(
     selected_node_id: Option<&str>,
     local_role: &LocalUserRole,
 ) {
-    let editable = local_role.can_edit();
-    if !editable {
+    if !visibility.registry_ready(petal_id) {
+        ui.label(if visibility.registry_write_pending() {
+            "Waiting for stored Groups confirmation."
+        } else {
+            "Stored Groups are loading or unavailable."
+        });
+        if ui
+            .add_enabled(
+                !visibility.registry_read_pending(),
+                egui::Button::new("Check stored Groups"),
+            )
+            .named(ui, "Check stored Groups")
+            .clicked()
+        {
+            ui_mgr.push_action(UiAction::CheckGroupRegistry {
+                petal_id: petal_id.into(),
+            });
+        }
+    }
+    let editable = local_role.can_edit() && visibility.registry_ready(petal_id);
+    if !local_role.can_edit() {
         ui.label("Editor access to this petal is required to change Groups.");
     }
     ui.add_enabled_ui(editable, |ui| {
@@ -1648,7 +1667,11 @@ fn render_groups_controls(
         }
     })
     .response
-    .on_disabled_hover_text("Editor access to this petal is required to change Groups.");
+    .on_disabled_hover_text(if local_role.can_edit() {
+        "Wait for stored Groups before changing the registry."
+    } else {
+        "Editor access to this petal is required to change Groups."
+    });
 }
 
 /// Fixed section title/rail and body scroll boundary; see ui_shell/AGENTS.md.
@@ -1783,11 +1806,17 @@ mod tests {
         let unresolved = LocalUserRole::default();
         let mut notices = UiManager::default();
         let mut visibility = VisibilityState::default();
-        visibility.replace_groups(vec![crate::visibility::Group {
-            id: "g1".into(),
-            name: "Original".into(),
-            visible: true,
-        }]);
+        crate::visibility::groups::apply_registry_loaded(
+            &mut visibility,
+            Some("p"),
+            "p",
+            &[fe_runtime::messages::VisibilityGroupDto {
+                id: "g1".into(),
+                name: "Original".into(),
+                visible: true,
+                order: 0.0,
+            }],
+        );
         let group_frame = |role: &LocalUserRole,
                            events: Vec<egui::Event>,
                            time: &mut f64,
@@ -1995,6 +2024,50 @@ mod tests {
         );
         assert!(notices.drain_actions().is_empty());
         assert_eq!(visibility.groups().len(), MAX_VISIBILITY_GROUPS);
+
+        let (registry_tx, registry_rx) = crossbeam::channel::bounded(1);
+        let registry_sender = fe_runtime::app::DbCommandSender(registry_tx);
+        crate::visibility::groups::apply_registry_loaded(
+            &mut visibility,
+            Some("p"),
+            "p",
+            &[fe_runtime::messages::VisibilityGroupDto {
+                id: "g1".into(),
+                name: "Original".into(),
+                visible: true,
+                order: 7.0,
+            }],
+        );
+        crate::visibility::groups::set_group_registry(
+            &registry_sender,
+            &mut visibility,
+            "p".into(),
+            group_ops::with_group_renamed(
+                &[crate::visibility::Group {
+                    id: "g1".into(),
+                    name: "Original".into(),
+                    visible: true,
+                }],
+                "g1",
+                "Pending",
+            ),
+        )
+        .unwrap();
+        registry_rx.try_recv().unwrap();
+        let pending = group_frame(&editor, vec![], &mut time, &visibility, &mut notices);
+        assert!(
+            pending.controls[0].allowed && pending.controls[0].clickable,
+            "the pending registry offers a read-only check"
+        );
+        assert!(
+            pending.controls[1..].iter().all(|control| !control.allowed),
+            "accepted registry edit disables competing registry controls"
+        );
+        assert_eq!(
+            visibility.groups()[0].name,
+            "Original",
+            "pending storage never appears as a saved rename"
+        );
 
         use crate::verse_manager::{FractalEntry, PetalEntry, VerseEntry};
         use fe_runtime::timeseries::{TimeseriesMode, VerseTimeseriesSettings};

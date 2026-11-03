@@ -512,3 +512,7 @@ This is a synchronous primary-UI adapter, not a general cross-thread style scope
 The existing import and shell layout journeys add real Close geometry/click,
 pending suppression, nested Popup style and no-body restoration assertions.
 They have not been run in the source-author lane.
+
+## Confirmed Group registry editing
+
+Registry controls wait for the active Petal registry, then queue a checked proposal without optimistic display changes. Pending edits disable competing registry and batch Group controls while keeping Check stored Groups available. The matching current readback releases ownership; a missing read can be checked again after its bounded wait. Actual registry deletion is refused by this admission path until its separate checked membership/inverse contract is wired. See `../visibility/AGENTS.md`.

@@ -724,12 +724,15 @@ pub(super) fn apply_db_results(
                 crate::visibility::cache::apply_petal_view_state(&mut caches.visibility, entries)
             }
             DbResult::PetalVisibilityGroupsLoaded {
-                petal_id, groups, ..
-            } => crate::visibility::groups::apply_registry_loaded(
+                petal_id,
+                groups,
+                correlation_id,
+            } => crate::visibility::groups::apply_registry_reply(
                 &mut caches.visibility,
                 nav.active_petal_id.as_deref(),
                 petal_id,
                 groups,
+                correlation_id.as_deref(),
             ),
             DbResult::ScopeHiddenSet {
                 level, id, hidden, ..
@@ -738,6 +741,10 @@ pub(super) fn apply_db_results(
                 error,
                 correlation_id,
             } => {
+                crate::visibility::groups::apply_registry_failure(
+                    &mut caches.visibility,
+                    correlation_id,
+                );
                 crate::dialogs::requirements_state::apply(&mut ui_mgr,&nav,correlation_id,Err(error));
                 if let Some(toast) =
                     crate::visibility::cache::view_write_failure_toast(correlation_id, error)

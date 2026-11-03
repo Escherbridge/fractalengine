@@ -74,6 +74,7 @@ pub struct VisibilityState {
     pub(crate) hidden_verses: HashSet<String>,
     /// The active petal's Group registry, in display order (`groups.rs`).
     pub(crate) groups: Vec<Group>,
+    registry_writes: groups::RegistryWrites,
     /// node_id -> group ids it belongs to (persisted `view.groups`, `cache.rs`).
     pub(crate) group_membership: HashMap<String, Vec<String>>,
     /// Transient isolate/solo overlay — never persisted (spec §3.1).

@@ -436,6 +436,7 @@ pub(crate) fn group_controls(
         ui.label(reason);
     }
     let ready = role.can_edit()
+        && !visibility.registry_write_pending()
         && !state.is_pending()
         && state.capture(nav, nodes).is_some()
         && limitation.is_none();
