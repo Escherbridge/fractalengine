@@ -47,6 +47,8 @@ const UNMAPPED_NO_SCHEMA_REASON: &str =
 /// `List*`, `Get*`, `RawQuery`, `CountNodeDescendants`) are intentionally excluded
 /// — see AGENTS.md §inventory-scope for the exact inclusion rule.
 const OTHER_DISPATCHED_MUTATION_KINDS: &[&str] = &[
+    "CommitCheckedEditorBatch",
+    "ComparePetalVisibilityGroups",
     "Seed",
     "CreateNode",
     "GenerateVerseInvite",

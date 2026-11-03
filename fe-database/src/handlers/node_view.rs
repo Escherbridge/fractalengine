@@ -33,6 +33,10 @@ pub(crate) fn validate_view_request(
         }
     }
     if let Some(groups) = groups {
+        let unique: std::collections::HashSet<_> = groups.iter().collect();
+        if unique.len() != groups.len() {
+            return Err("duplicate group membership ID".into());
+        }
         if groups.len() > MAX_VIEW_GROUPS {
             return Err(format!(
                 "too many groups ({} > {MAX_VIEW_GROUPS})",
@@ -49,6 +53,65 @@ pub(crate) fn validate_view_request(
         }
     }
     Ok(())
+}
+
+/// Fence newly added memberships against this exact stored node and Petal registry.
+pub(crate) async fn membership_fence(
+    db: &Db,
+    node_id: &str,
+    value: &serde_json::Value,
+) -> anyhow::Result<(Vec<String>, Vec<(String, serde_json::Value)>)> {
+    use serde_json::{Value, json};
+    let groups: Vec<String> = serde_json::from_value(value.clone())?;
+    validate_view_request(None, Some(&groups)).map_err(anyhow::Error::msg)?;
+    let encoding = super::preconditions::PETAL_TYPED_SNAPSHOT_SQL;
+    let mut read=db.query(format!("SELECT petal_id,properties, {encoding} AS stamp_petal_snapshot FROM node WHERE node_id=$id LIMIT 2"))
+        .bind(("id",node_id.to_owned())).await?.check()?;
+    let nodes: Vec<Value> = read.take(0)?;
+    anyhow::ensure!(nodes.len() == 1, "membership object unavailable");
+    let petal = nodes[0]["petal_id"]
+        .as_str()
+        .ok_or_else(|| anyhow::anyhow!("membership Petal unavailable"))?;
+    let previous: Vec<String> = match nodes[0]["properties"].get(VIEW_GROUPS_KEY) {
+        None | Some(Value::Null) => vec![],
+        Some(value) => serde_json::from_value(value.clone())?,
+    };
+    let mut read=db.query(format!("SELECT visibility_groups, {encoding} AS stamp_petal_snapshot FROM petal WHERE petal_id=$id LIMIT 2"))
+        .bind(("id",petal.to_owned())).await?.check()?;
+    let petals: Vec<Value> = read.take(0)?;
+    anyhow::ensure!(petals.len() == 1, "membership registry unavailable");
+    let registry: Vec<fe_runtime::messages::VisibilityGroupDto> =
+        match petals[0].get("visibility_groups") {
+            None | Some(Value::Null) => vec![],
+            Some(value) => serde_json::from_value(value.clone())?,
+        };
+    anyhow::ensure!(
+        groups
+            .iter()
+            .all(|id| previous.contains(id) || registry.iter().any(|group| &group.id == id)),
+        "new membership refers to an unregistered group"
+    );
+    let guards = vec![
+        format!(
+            "IF (SELECT VALUE {encoding} FROM node WHERE node_id=$membership_node) != [$membership_before] {{ THROW 'membership object changed'; }}"
+        ),
+        format!(
+            "IF (SELECT VALUE {encoding} FROM petal WHERE petal_id=$membership_petal) != [$membership_registry] {{ THROW 'membership registry changed'; }}"
+        ),
+    ];
+    let bindings = vec![
+        ("membership_node".into(), json!(node_id)),
+        ("membership_petal".into(), json!(petal)),
+        (
+            "membership_before".into(),
+            json!(super::preconditions::petal_typed_snapshot(&nodes[0])?),
+        ),
+        (
+            "membership_registry".into(),
+            json!(super::preconditions::petal_typed_snapshot(&petals[0])?),
+        ),
+    ];
+    Ok((guards, bindings))
 }
 
 /// Owning petal id of a LIVE (non-tombstoned) node, or `None` when the node is
@@ -104,6 +167,9 @@ pub(crate) async fn set_node_view_handler(
     actor: &str,
     grant: &fe_runtime::node_history::NodeAccessGrant,
 ) -> anyhow::Result<NodeViewDto> {
+    if let Some(groups) = groups {
+        membership_fence(db, node_id, &serde_json::json!(groups)).await?;
+    }
     match state {
         Some("auto") => {
             delete_entity_property_granted(db, node_id, VIEW_STATE_KEY, actor, grant).await?

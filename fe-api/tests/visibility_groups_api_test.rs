@@ -10,7 +10,7 @@ use axum::http::{Request, StatusCode};
 use serde_json::{json, Value};
 
 use fe_database::handlers::visibility_groups::{
-    get_petal_visibility_groups_reply, set_petal_visibility_groups_reply,
+    get_petal_visibility_groups_reply, set_petal_visibility_groups_reply, set_petal_visibility_groups_checked_reply,
 };
 use fe_runtime::app::PendingApiRequests;
 use fe_runtime::messages::{ApiCommand, DbCommand, DbResult};
@@ -51,6 +51,7 @@ fn serve_db_thread(h: &ApiHarness) {
                     auth,
                     correlation_id,
                 )),
+                DbCommand::ComparePetalVisibilityGroups {petal_id,expected,groups,auth,correlation_id}=>rt.block_on(set_petal_visibility_groups_checked_reply(&db,&local_did,petal_id,groups,auth,correlation_id,Some(expected))),
                 other => DbResult::Error(format!("not serviced by this test: {other:?}")),
             };
             pending.try_deliver(reply);

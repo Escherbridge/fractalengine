@@ -1565,6 +1565,10 @@ pub fn spawn_db_thread_shared(
                         let reply = handlers::visibility_groups::get_petal_visibility_groups_reply(&db, petal_id, correlation_id).await;
                         send_result(&tx, reply);
                     }
+                    Ok(DbCommand::ComparePetalVisibilityGroups {petal_id,expected,groups,auth,correlation_id}) => {
+                        let reply=handlers::visibility_groups::set_petal_visibility_groups_checked_reply(&db,&local_did,petal_id,groups,auth,correlation_id,Some(expected)).await;
+                        send_result(&tx,reply);
+                    }
                     Ok(DbCommand::SetScopeHidden { level, id, hidden, auth, correlation_id }) => {
                         let reply = handlers::visibility_groups::set_scope_hidden_reply(
                             &db, &local_did, level, id, hidden, auth, correlation_id,
@@ -1741,6 +1745,31 @@ pub fn spawn_db_thread_shared(
                             }
                             Err(error)=>send_result(&tx,DbResult::RequestFailed {error:format!("Stamp edit refused: {error:#}"),correlation_id}),
                         }
+                    }
+                    Ok(DbCommand::ReadEditorBatch {scope,petal_id,node_ids,correlation_id}) => {
+                        let reply=match handlers::editor_batch::read(&db,&scope,&petal_id,&node_ids,&local_did).await {
+                            Ok(capture)=>DbResult::EditorBatchLoaded {capture,correlation_id},
+                            Err(error)=>DbResult::RequestFailed {error:format!("Selection read refused: {error:#}"),correlation_id},
+                        };
+                        send_result(&tx,reply);
+                    }
+                    Ok(DbCommand::CommitCheckedEditorBatch {request,correlation_id}) => {
+                        let result=async {
+                            let prepared=handlers::editor_batch::prepare(&db,&request,&correlation_id,&local_did).await?;
+                            handlers::editor_batch::commit(&db,prepared).await
+                        }.await;
+                        let reply=match result {
+                            Ok(receipt)=>DbResult::EditorBatchCommitted {receipt,correlation_id},
+                            Err(error)=>DbResult::RequestFailed {error:format!("Selection edit refused: {error:#}"),correlation_id},
+                        };
+                        send_result(&tx,reply);
+                    }
+                    Ok(DbCommand::ResolveCheckedEditorBatch {scope,petal_id,node_ids,request_id,correlation_id}) => {
+                        let reply=match handlers::editor_batch::resolve(&db,&scope,&petal_id,&node_ids,&request_id,&local_did).await {
+                            Ok(resolution)=>DbResult::EditorBatchResolved {resolution,correlation_id},
+                            Err(error)=>DbResult::RequestFailed {error:format!("Selection reconciliation refused: {error:#}"),correlation_id},
+                        };
+                        send_result(&tx,reply);
                     }
                     Ok(DbCommand::CommitCheckedNodeMutation {node_id,mutation,expected,correlation_id}) => {
                         match handlers::checked_mutation::commit(&db,&node_id,&mutation,&expected,&correlation_id,&local_did).await {

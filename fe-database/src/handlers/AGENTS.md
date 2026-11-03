@@ -432,3 +432,13 @@ requires the existing verified v2 recipient-Manager branch/current grant/proof/m
 It returns only stored-proof confirmation. Cancel after an accepted activation can leave that
 local proof stored; all later issuance still rechecks current authority and no reply may
 restore a canceled navigation generation.
+
+## editor-batches
+
+editor_batch/AGENTS.md owns the checked ordered selection transaction, bounded immutable manifest,
+exact reconciliation, typed route/stamp adapters and Group creation/membership inverses. Stamp
+preparation can be consumed into that containing transaction without committing independently.
+Legacy registry introductions share retained-membership anti-resurrection fences; single-node group
+property writes fence the stored registry before admitting newly added membership IDs. API registry
+patches use expected-registry CAS rather than overwriting a concurrent edit. These local guarantees
+do not graduate the deferred Group P2P/canonical mapping.

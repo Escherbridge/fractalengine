@@ -931,6 +931,13 @@ pub enum DbCommand {
         /// `Some` routes a failure to `RequestFailed`; `None` to `Error`.
         correlation_id: Option<String>,
     },
+    ComparePetalVisibilityGroups {
+        petal_id: String,
+        expected: Vec<VisibilityGroupDto>,
+        groups: Vec<VisibilityGroupDto>,
+        auth: CallerAuth,
+        correlation_id: Option<String>,
+    },
     /// Read a petal's visibility-Group registry (read-only; REST gates Viewer+).
     /// Replies `PetalVisibilityGroupsLoaded`; a missing petal fails.
     GetPetalVisibilityGroups {

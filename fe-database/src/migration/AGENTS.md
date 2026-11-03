@@ -350,3 +350,8 @@ module has no dependents outside fe-database's own tests yet (the W4-9
 equivalence harness is a test binary), and adding one that surfaces shadow data
 through any of those layers before the owner approves a cutover would
 violate this invariant.
+
+CommitCheckedEditorBatch and ComparePetalVisibilityGroups are local mutation families registered
+UnmappedDeferred. EditorTransaction is their legacy atomic intention, not PluginTransaction and not
+a reviewed canonical/P2P materializer. A complete local selection receipt does not establish peer
+atomicity for registry and memberships.

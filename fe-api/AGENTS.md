@@ -1199,11 +1199,11 @@ is a correlated `ApiCommand::DbRequest` (fresh ULID; reply must echo the id
 AND petal) with a 10 s timeout; a malformed registry is a 400 BEFORE the
 round trip (`fe_database::handlers::visibility_groups::validate_groups`, the
 same validator the DB thread runs); a DB refusal/failure is 502 "failed or
-not permitted" (detail logged). **PATCH/DELETE are read-modify-write** under
-a correlated Get→Set pair (`modify_group_core`): a registry write that lands
-between the two is overwritten (last writer wins, the same whole-registry
-merge the column has everywhere — D-3 accepted it; the registry is
-O(groups) and rarely co-edited). MCP `list_visibility_groups` (Viewer) and
+not permitted" (detail logged). **PATCH/DELETE use read-modify-CAS** under a correlated Get/Compare pair
+(`modify_group_core`): a registry write between capture and use refuses instead of losing that edit.
+PUT remains an explicit whole-registry replacement. All registry introductions reject IDs already
+referenced by stored live or tombstoned memberships, preventing legacy deleted-ID resurrection.
+New native Groups use ULIDs while existing API IDs remain stable. MCP `list_visibility_groups` (Viewer) and
 `set_visibility_group` (Editor; `group_id` + `name`/`visible`/`order`, or
 `delete: true`) share these cores.
 

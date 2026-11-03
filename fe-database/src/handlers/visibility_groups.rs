@@ -16,6 +16,48 @@ pub const MAX_VISIBILITY_GROUPS: usize = 256;
 /// Upper bound on a Group name's length (chars, after trimming).
 pub const MAX_GROUP_NAME_CHARS: usize = 80;
 
+/// Refuse reintroduced IDs already referenced by any stored node, including tombstones.
+pub(crate) async fn fence_new_group_ids(
+    db: &Db,
+    petal_id: &str,
+    existing: &[VisibilityGroupDto],
+    incoming: &[String],
+    prefix: &str,
+    guards: &mut Vec<String>,
+    bindings: &mut Vec<(String, serde_json::Value)>,
+) -> anyhow::Result<()> {
+    use serde_json::{Value, json};
+    for (index, id) in incoming
+        .iter()
+        .filter(|id| !existing.iter().any(|group| &group.id == *id))
+        .enumerate()
+    {
+        let name = format!("{prefix}_{index}");
+        let select = format!(
+            "SELECT VALUE node_id FROM node WHERE petal_id=${name}_petal AND properties['view.groups'] CONTAINS ${name}_group LIMIT 1"
+        );
+        let mut response = db
+            .query(select.clone())
+            .bind((format!("{name}_petal"), json!(petal_id)))
+            .bind((format!("{name}_group"), json!(id)))
+            .await?
+            .check()?;
+        let refs: Vec<Value> = response.take(0)?;
+        anyhow::ensure!(
+            refs.is_empty(),
+            "group ID has retained memberships; create a fresh ID instead of resurrecting a removed group"
+        );
+        guards.push(format!(
+            "IF array::len(({select})) != 0 {{ THROW 'group ID has retained memberships'; }}"
+        ));
+        bindings.extend([
+            (format!("{name}_petal"), json!(petal_id)),
+            (format!("{name}_group"), json!(id)),
+        ]);
+    }
+    Ok(())
+}
+
 /// Rejects a malformed registry before any auth or write: ≤256 groups, unique
 /// non-empty ids (≤ the per-node membership id cap), names 1..=80 chars,
 /// finite `order`. Pure.
@@ -114,16 +156,74 @@ async fn write_groups(
     db: &Db,
     petal_id: &str,
     groups: &[VisibilityGroupDto],
+    scope: &str,
+    local_did: &str,
+    auth: &CallerAuth,
+    expected: Option<&[VisibilityGroupDto]>,
 ) -> anyhow::Result<Vec<VisibilityGroupDto>> {
-    let value = serde_json::to_value(groups)?;
-    let mut res = db
-        .query("UPDATE petal SET visibility_groups = $groups WHERE petal_id = $pid RETURN visibility_groups")
-        .bind(("groups", value))
-        .bind(("pid", petal_id.to_string()))
+    use serde_json::{Value, json};
+    let (mut guards, mut bindings) = if matches!(auth, CallerAuth::Local) {
+        super::entity::prepare_scope_permission(db, scope, local_did, fe_policy::RoleLevel::Editor)
+            .await?
+            .into_parts()
+    } else {
+        super::node_history::scope_fence(scope, None)?
+    };
+    let mut read = db
+        .query(format!(
+            "SELECT *, {} AS stamp_petal_snapshot FROM petal WHERE petal_id=$pid LIMIT 2",
+            super::preconditions::PETAL_TYPED_SNAPSHOT_SQL
+        ))
+        .bind(("pid", petal_id.to_owned()))
+        .await?
+        .check()?;
+    let rows: Vec<Value> = read.take(0)?;
+    anyhow::ensure!(rows.len() == 1, "Group Petal unavailable");
+    let existing = groups_from_value(rows[0].get("visibility_groups"));
+    anyhow::ensure!(
+        expected.is_none_or(|wanted| wanted == existing.as_slice()),
+        "Group registry changed since its read"
+    );
+    let ids = groups
+        .iter()
+        .map(|group| group.id.clone())
+        .collect::<Vec<_>>();
+    fence_new_group_ids(
+        db,
+        petal_id,
+        &existing,
+        &ids,
+        "registry_new",
+        &mut guards,
+        &mut bindings,
+    )
+    .await?;
+    guards.push(format!("IF (SELECT VALUE {} FROM petal WHERE petal_id=$pid) != [$registry_snapshot] {{ THROW 'Group registry changed'; }}",super::preconditions::PETAL_TYPED_SNAPSHOT_SQL));
+    bindings.extend([
+        (
+            "registry_snapshot".into(),
+            json!(super::preconditions::petal_typed_snapshot(&rows[0])?),
+        ),
+        ("groups".into(), json!(groups)),
+        ("pid".into(), json!(petal_id)),
+    ]);
+    let slot = guards.len() + 1;
+    guards.push(
+        "UPDATE petal SET visibility_groups=$groups WHERE petal_id=$pid RETURN visibility_groups"
+            .into(),
+    );
+    let mut query = db.query(format!(
+        "BEGIN TRANSACTION; {}; COMMIT TRANSACTION;",
+        guards.join("; ")
+    ));
+    for binding in bindings {
+        query = query.bind(binding);
+    }
+    let mut res = query
         .await?
         .check()
         .map_err(|e| anyhow::anyhow!("SetPetalVisibilityGroups update failed: {e}"))?;
-    let rows: Vec<serde_json::Value> = res.take(0)?;
+    let rows: Vec<serde_json::Value> = res.take(slot)?;
     let Some(row) = rows.first() else {
         anyhow::bail!("SetPetalVisibilityGroups: no petal row matched");
     };
@@ -141,6 +241,27 @@ pub async fn set_petal_visibility_groups_reply(
     auth: CallerAuth,
     correlation_id: Option<String>,
 ) -> DbResult {
+    set_petal_visibility_groups_checked_reply(
+        db,
+        local_did,
+        petal_id,
+        groups,
+        auth,
+        correlation_id,
+        None,
+    )
+    .await
+}
+
+pub async fn set_petal_visibility_groups_checked_reply(
+    db: &Db,
+    local_did: &str,
+    petal_id: String,
+    groups: Vec<VisibilityGroupDto>,
+    auth: CallerAuth,
+    correlation_id: Option<String>,
+    expected: Option<Vec<VisibilityGroupDto>>,
+) -> DbResult {
     if let Err(e) = validate_groups(&groups) {
         return correlated_failure(
             &correlation_id,
@@ -153,10 +274,28 @@ pub async fn set_petal_visibility_groups_reply(
             format!("SetPetalVisibilityGroups: no petal {petal_id}"),
         );
     };
-    if let Err(e) = authorize_edit(db, local_did, &auth, scope, "SetPetalVisibilityGroups").await {
+    if let Err(e) = authorize_edit(
+        db,
+        local_did,
+        &auth,
+        scope.clone(),
+        "SetPetalVisibilityGroups",
+    )
+    .await
+    {
         return correlated_failure(&correlation_id, e);
     }
-    match write_groups(db, &petal_id, &groups).await {
+    match write_groups(
+        db,
+        &petal_id,
+        &groups,
+        &scope,
+        local_did,
+        &auth,
+        expected.as_deref(),
+    )
+    .await
+    {
         Ok(groups) => DbResult::PetalVisibilityGroupsLoaded {
             petal_id,
             groups,

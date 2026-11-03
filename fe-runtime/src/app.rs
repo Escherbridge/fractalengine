@@ -327,6 +327,7 @@ fn correlation_of_command(cmd: &DbCommand) -> Option<&str> {
         | DbCommand::GetPetalTerrain { correlation_id, .. }
         | DbCommand::SetNodeView { correlation_id, .. }
         | DbCommand::SetPetalVisibilityGroups { correlation_id, .. }
+        | DbCommand::ComparePetalVisibilityGroups { correlation_id, .. }
         | DbCommand::GetPetalVisibilityGroups { correlation_id, .. }
         | DbCommand::SetScopeHidden { correlation_id, .. }
         | DbCommand::SetPetalRenderDistance { correlation_id, .. }
@@ -507,7 +508,7 @@ fn reply_kind_of_command(cmd: &DbCommand) -> Option<ReplyKind> {
         SetPetalTerrain { .. } => ReplyKind::PetalTerrainSet,
         SetNodeView { .. } => ReplyKind::NodeViewSet,
         LoadPetalViewState { .. } => ReplyKind::PetalViewState,
-        SetPetalVisibilityGroups { .. } | GetPetalVisibilityGroups { .. } => {
+        SetPetalVisibilityGroups { .. } | ComparePetalVisibilityGroups { .. } | GetPetalVisibilityGroups { .. } => {
             ReplyKind::VisibilityGroups
         }
         SetScopeHidden { .. } => ReplyKind::ScopeHidden,

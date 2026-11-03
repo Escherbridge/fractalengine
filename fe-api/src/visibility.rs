@@ -6,10 +6,10 @@
 
 use std::sync::Arc;
 
+use axum::Extension;
 use axum::extract::{Json, Path, State};
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
-use axum::Extension;
 use fe_database::RoleLevel;
 use fe_identity::api_token::ApiClaims;
 use fe_runtime::messages::{ApiCommand, CallerAuth, DbCommand, DbResult, VisibilityGroupDto};
@@ -17,7 +17,7 @@ use serde::Deserialize;
 
 use crate::auth::require_role_level;
 use crate::endpoint::caller_auth;
-use crate::types::{is_valid_ulid, ApiResponse};
+use crate::types::{ApiResponse, is_valid_ulid};
 
 /// How long a registry read/write waits for the DB thread's correlated echo.
 const VISIBILITY_TIMEOUT_SECS: u64 = 10;
@@ -203,9 +203,7 @@ pub(crate) fn remove_group(
     Ok(groups)
 }
 
-/// Read-modify-write of one Group under a correlated Get→Set pair. Last
-/// writer wins between the two (a concurrent registry write in that window is
-/// overwritten) — documented in AGENTS.md §visibility-groups.
+/// Read-modify-CAS of one Group; see AGENTS.md section visibility-groups.
 pub(crate) async fn modify_group_core(
     state: &crate::server::ApiState,
     petal_id: &str,
@@ -213,7 +211,19 @@ pub(crate) async fn modify_group_core(
     modify: impl FnOnce(Vec<VisibilityGroupDto>) -> Result<Vec<VisibilityGroupDto>, VisibilityError>,
 ) -> Result<Vec<VisibilityGroupDto>, VisibilityError> {
     let current = get_groups_core(state, petal_id).await?;
-    set_groups_core(state, petal_id, modify(current)?, auth).await
+    let groups = modify(current.clone())?;
+    fe_database::handlers::visibility_groups::validate_groups(&groups)
+        .map_err(VisibilityError::Invalid)?;
+    registry_round_trip(state, petal_id, |correlation_id| {
+        DbCommand::ComparePetalVisibilityGroups {
+            petal_id: petal_id.into(),
+            expected: current,
+            groups,
+            auth,
+            correlation_id: Some(correlation_id),
+        }
+    })
+    .await
 }
 
 /// Shared REST gate: role floor → valid petal id → token covers the petal

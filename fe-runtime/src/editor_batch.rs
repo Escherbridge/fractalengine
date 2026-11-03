@@ -2,6 +2,7 @@
 
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
+mod affine;
 
 use crate::{
     messages::{StampOverrideEdit, VisibilityGroupDto},
@@ -54,6 +55,14 @@ pub enum EditorPropertyEdit {
     Delete { key: String },
 }
 
+/// Exact membership representation retained for inverse edits.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub enum EditorMembershipValue {
+    Absent,
+    Null,
+    Groups(Vec<String>),
+}
+
 /// Type-specific mutation; ordinary transforms cannot mutate path/stamp projections.
 #[derive(Debug, Clone)]
 pub enum EditorTargetMutation {
@@ -75,7 +84,9 @@ pub struct EditorTargetEdit {
 pub enum EditorBatchEdit {
     Targets(Vec<EditorTargetEdit>),
     CreateGroup { id: String, name: String },
+    DeleteGroup { group_id: String },
     Membership { group_id: String, member: bool },
+    RestoreMemberships(Vec<EditorMembershipValue>),
 }
 
 #[derive(Debug, Clone)]

@@ -162,6 +162,8 @@ fn a_hide_override_is_authorized_and_survives_a_restart() {
         let petal = h.create_petal();
         let hidden = h.create_node(&petal, "Hidden");
         let plain = h.create_node(&petal, "Plain");
+        h.send(DbCommand::SetPetalVisibilityGroups {petal_id:petal.clone(),groups:vec![fe_runtime::messages::VisibilityGroupDto{id:"utilities".into(),name:"Utilities".into(),visible:true,order:0.0}],auth:editor(),correlation_id:None});
+        assert!(matches!(h.recv(),DbResult::PetalVisibilityGroupsLoaded{..}));
 
         // A Viewer cannot persist visibility — and nothing is written.
         match h.set_view(&hidden, Some("hide"), None, viewer(), None) {

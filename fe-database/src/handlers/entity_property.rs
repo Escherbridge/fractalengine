@@ -21,6 +21,17 @@ pub(crate) async fn set_entity_property_granted(
     super::node_history::authorized_node_scope(db, node_id, grant, actor).await?;
 
     let schema_versions = super::field_def::validate_property(db, node_id, key, value).await?;
+    let (mut statements, mut bindings) = if key == super::node_view::VIEW_GROUPS_KEY {
+        super::node_view::membership_fence(db, node_id, value).await?
+    } else {
+        (Vec::new(), Vec::new())
+    };
+    statements.push("UPDATE node SET properties[$key] = $val WHERE node_id = $node_id".into());
+    bindings.extend([
+        ("node_id".into(), serde_json::json!(node_id)),
+        ("key".into(), serde_json::json!(key)),
+        ("val".into(), value.clone()),
+    ]);
     let data = serde_json::json!({"key":key,"value":value});
     let entry = OpLogEntry {
         lamport_clock: 0,
@@ -33,12 +44,8 @@ pub(crate) async fn set_entity_property_granted(
     super::node_history::commit_mutation(
         db,
         entry,
-        vec!["UPDATE node SET properties[$key] = $val WHERE node_id = $node_id".into()],
-        vec![
-            ("node_id".into(), serde_json::json!(node_id)),
-            ("key".into(), serde_json::json!(key)),
-            ("val".into(), value.clone()),
-        ],
+        statements,
+        bindings,
         actor,
         "property_set",
         data,

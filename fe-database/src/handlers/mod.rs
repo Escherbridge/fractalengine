@@ -4,6 +4,7 @@
 pub(crate) mod checked_mutation;
 pub(crate) mod addressed_join;
 pub(crate) mod addressed_join_v2;
+pub(crate) mod editor_batch;
 pub(crate) mod stamp_overrides;
 pub(crate) mod stamp_promotion;
 pub mod admin;

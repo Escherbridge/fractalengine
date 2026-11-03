@@ -9,6 +9,8 @@ pub struct RoleId(pub String);
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub enum OpType {
+    /// One checked Petal-local selection edit, including its durable exact-request manifest.
+    EditorTransaction,
     /// One admitted atomic batch from a trusted plugin instance.
     PluginTransaction,
     CreatePetal,

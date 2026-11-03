@@ -1024,3 +1024,9 @@ do not pretend to contain a reusable current Petal fingerprint. UI keeps its ori
 Whole-route affine edits preserve timestamp/unknown metadata and transform relative handles.
 StampOverrides uses the existing checked stamped edit contract; default-center origin restrictions
 remain explicit. This local editor command does not graduate its deferred canonical/P2P mapping.
+
+EditorBatchEdit also includes DeleteGroup and RestoreMemberships for exact inverses. DeleteGroup
+refuses uncaptured references; membership inverse values preserve Absent, Null and explicit Groups
+(including empty arrays). EditorAffine.transform_path is the shared f64 anchor/relative-handle math
+used by both native receipt preflight and the writer. ComparePetalVisibilityGroups adds expected
+registry CAS to legacy API PATCH/DELETE while retaining the existing correlated registry reply.

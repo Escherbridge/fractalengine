@@ -21,6 +21,20 @@ pub(crate) struct PreparedStampEdit {
     request_id: String,
 }
 
+pub(crate) struct StampBatchParts {
+    pub statements: Vec<String>,
+    pub bindings: Vec<(String, Value)>,
+    pub facts: Vec<(String, i64, Value)>,
+    pub receipt: NodeMutationReceipt,
+}
+
+impl PreparedStampEdit {
+    /// Consume captured stamp guards and writes into one containing editor transaction.
+    pub(crate) fn into_batch_parts(self) -> StampBatchParts {
+        StampBatchParts {statements:self.statements,bindings:self.bindings,facts:self.facts,receipt:self.receipt}
+    }
+}
+
 /// Capture every read that contributes to the batch before any effect.
 pub(crate) async fn prepare(
     db: &Db,
