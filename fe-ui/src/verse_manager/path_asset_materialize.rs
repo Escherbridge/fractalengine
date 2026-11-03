@@ -187,6 +187,15 @@ pub struct PathAssetApplied {
 }
 
 impl PathAssetApplied {
+    fn same_source(&self, track_id: &str, entry: &PathAssetCacheEntry, world_scale: f32) -> bool {
+        self.applied.get(track_id).is_some_and(|state| {
+            state.admitted
+                && state.descriptor == entry.descriptor
+                && state.points_fingerprint == entry.fingerprint
+                && state.world_scale_bits == world_scale.to_bits()
+        })
+    }
+
     /// `true` when this track's cached inputs match what was last stamped — the
     /// materializer then skips the despawn/respawn entirely.
     fn matches(
@@ -461,7 +470,12 @@ pub(super) fn materialize_path_assets(
     mut render_index: ResMut<StampRenderIndex>,
     mut last_seen: Local<(Option<String>, Option<u64>)>,
     mut commands: Commands,
-    existing: Query<(Entity, &PathAssetInstance)>,
+    existing: Query<(
+        Entity,
+        &PathAssetInstance,
+        &crate::plugin::SpawnedNodeMarker,
+        Option<&StampSelectionSource>,
+    )>,
     residency: super::spawn::ResidencyBudget,
     ledger: Res<super::residency_ledger::ResidencyLedger>,
 ) {
@@ -491,8 +505,11 @@ pub(super) fn materialize_path_assets(
 
     // Orphan cleanup: tear down active-petal stamp groups whose track no longer
     // has a cache entry in this petal (path_asset deleted / node removed).
-    for (entity, inst) in existing.iter() {
-        if stamp_is_orphaned(inst, active_petal, &cache) {
+    for (entity, inst, _, _) in existing.iter() {
+        if inst.petal_id != active_petal
+            || stamp_is_orphaned(inst, active_petal, &cache)
+            || verse_mgr.petal_id_of(&inst.source_track_id) != Some(active_petal)
+        {
             commands.entity(entity).despawn();
             applied.invalidate(&inst.source_track_id);
             render_index.tracks.remove(&inst.source_track_id);
@@ -519,7 +536,7 @@ pub(super) fn materialize_path_assets(
 
     // (Re)stamp every active-petal cached track whose stamp inputs changed.
     for (track_id, entry) in cache.iter() {
-        if entry.petal_id != active_petal {
+        if entry.petal_id != active_petal || verse_mgr.petal_id_of(track_id) != Some(active_petal) {
             continue;
         }
         // T2 FR-3: sparse per-stamp overrides are a stamp input like any other.
@@ -539,13 +556,12 @@ pub(super) fn materialize_path_assets(
             continue; // nothing changed — skip the restamp entirely
         }
 
-        // Despawn the previous group for this track before rebuild (deferred).
-        for (entity, inst) in existing.iter() {
-            if inst.source_track_id == *track_id && inst.petal_id == active_petal {
-                commands.entity(entity).despawn();
-            }
-        }
         if !admitted {
+            for (entity, inst, _, _) in existing.iter() {
+                if inst.source_track_id == *track_id && inst.petal_id == active_petal {
+                    commands.entity(entity).despawn();
+                }
+            }
             render_index.tracks.remove(track_id);
             applied.remember(
                 track_id,
@@ -574,6 +590,38 @@ pub(super) fn materialize_path_assets(
         let sample_positions: Vec<[f32; 3]> = samples.iter().map(|(p, _)| *p).collect();
         let keep = stamps_to_keep(&sample_positions, granted, ledger.camera_position());
         let stamped = keep.len();
+        let group: Vec<_> = existing
+            .iter()
+            .filter(|(_, inst, _, _)| {
+                inst.source_track_id == *track_id && inst.petal_id == active_petal
+            })
+            .collect();
+        let mut reusable = HashMap::new();
+        if applied.same_source(track_id, entry, world_scale) {
+            for (entity, _, marker, proof) in &group {
+                let Some((owner, index)) = parse_stamp_marker_id(&marker.node_id) else {
+                    continue;
+                };
+                if owner == track_id.as_str()
+                    && marker.petal_id == active_petal
+                    && proof.is_some_and(|proof| {
+                        proof.0.descriptor == entry.descriptor
+                            && proof.0.points == entry.points
+                            && proof.0.world_scale == world_scale
+                    })
+                {
+                    reusable.insert(index, *entity);
+                }
+            }
+        }
+        let reuse_group = group.len() == keep.len()
+            && reusable.len() == keep.len()
+            && keep.iter().all(|index| reusable.contains_key(index));
+        if !reuse_group {
+            for (entity, _, _, _) in group {
+                commands.entity(entity).despawn();
+            }
+        }
         // FR-4 seam: per-stamp positions + instance data for the pick index and
         // the instanced-draw batch, built once per restamp (never per frame).
         let mut positions: Vec<[f32; 3]> = Vec::with_capacity(stamped);
@@ -601,17 +649,21 @@ pub(super) fn materialize_path_assets(
                 stamp_index: i as u32,
             });
             let stamp_id = stamp_marker_id(track_id, i);
-            spawn_stamped_entity(
-                &mut commands,
-                &asset_server,
-                &stamp_id,
-                track_id,
-                active_petal,
-                &stamp_id,
-                transform,
-                &entry.descriptor.asset_path,
-                selection_source.clone(),
-            );
+            if reuse_group {
+                commands.entity(reusable[&i]).insert(transform);
+            } else {
+                spawn_stamped_entity(
+                    &mut commands,
+                    &asset_server,
+                    &stamp_id,
+                    track_id,
+                    active_petal,
+                    &stamp_id,
+                    transform,
+                    &entry.descriptor.asset_path,
+                    selection_source.clone(),
+                );
+            }
         }
         render_index.tracks.insert(
             track_id.clone(),

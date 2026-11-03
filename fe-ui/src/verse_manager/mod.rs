@@ -224,6 +224,7 @@ impl Plugin for VerseManagerPlugin {
                 crate::undo::observe_results,
                 lifecycle_events::apply_lifecycle_events,
                 db_results::apply_db_results,
+                petal_respawn::remove_standalone_stamp_projection,
                 residency_ledger::update_residency_ledger,
                 petal_respawn::respawn_on_petal_change,
                 residency_ledger::apply_node_residency,

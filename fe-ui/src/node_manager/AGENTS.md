@@ -982,3 +982,10 @@ requires current Editor access before hydration or semantic binding. Loss of all
 the stamp projection, queued intents and both catalog mirrors; restoring access requires explicit
 selection. The existing App journey covers both role losses after dispatch and before receipt,
 late receipt after regrant, and a fresh authorized reselect through the production dispatcher.
+
+Promoted tree addresses resolve through the validated loaded stamp identity to
+the same live path instance in the active Petal. Both semantic and rendered marker
+visibility remain required. Ground-index context picks also require a matching
+live instance, owner and visibility; an absent or mid-respawn entity yields no
+stamp context rather than a placeholder target. Entity-preserving override
+projection keeps selection stable; genuine source reflow still invalidates it.

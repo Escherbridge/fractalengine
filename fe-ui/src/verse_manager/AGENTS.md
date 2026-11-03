@@ -530,3 +530,30 @@ auto-selection gate before queueing the read. It does not change the cursor or
 advance async user navigation intent. The existing full App journey covers normal
 startup, exit between read and late hierarchy reply, stale receipts after exit,
 repeated reloads, and hydration arriving before any explicit navigation.
+
+## Stable promoted-stamp projection
+
+An addressed stamp remains a member of its owning path's rendered group. Its
+durable NodeEntry is metadata, not a second ordinary scene entity at the stored
+origin. NodeSpawner and the primitive materializer recognize only canonical stamp
+identity plus the complete loaded stamp bag; an ID suffix alone hides nothing.
+Cold assetless nodes first request one bounded property classification. Full queues
+retry on later residency frames, without blocking the UI or inventing a fallback.
+The shared primitive cache records successful classification even for ordinary
+nonprimitive bags. Identity-property writes invalidate that classification.
+Any already-resident ordinary projection is removed after typed stamp hydration.
+
+Empty sparse overrides do not affect a path's render fingerprint. Override-only
+changes update the same per-index entities and rebuild their spatial/draw data
+only when descriptor, complete points, world scale, admission, live source proof
+and rendered index set still match. Source reflow, residency change, missing or
+duplicate entities rebuild the group; no selection is transferred across them.
+The live editor feeder and materializer independently require the hierarchy's
+actual track owner. An old editor surviving until Selection cannot relabel its
+cache or spawn stamps in the newly active Petal.
+
+The existing residency App journey exercises production materialization through
+promotion metadata, scale/rotation/slide projection, ordinary-spawn exclusion,
+Petal leave/re-entry with a late old editor, and a real descriptor reflow. Existing
+sidebar and native selector journeys cover their separate producer boundaries.
+These are authored source checks; root owns execution and runtime acceptance.

@@ -15,7 +15,12 @@ pub(super) const HIDDEN_SELECT_TOAST: &str = "That object is hidden — show it 
 pub(super) fn sync_sidebar_to_manager(
     nav: Res<NavigationManager>,
     mut manager: ResMut<NodeManager>,
-    node_query: Query<(Entity, &SpawnedNodeMarker)>,
+    node_query: Query<(
+        Entity,
+        &SpawnedNodeMarker,
+        Option<&crate::verse_manager::PathAssetInstance>,
+    )>,
+    stamps: Res<crate::actions::asset::StampInteractionState>,
     visibility: Res<VisibilityState>,
     mut ui_mgr: ResMut<UiManager>,
     time: Res<crate::notice::NoticeClock>,
@@ -40,14 +45,22 @@ pub(super) fn sync_sidebar_to_manager(
     }
 
     let active_petal = nav.active_petal_id.as_deref();
-    let matched = node_query.iter().find(|(_, m)| {
-        m.node_id == node_id
-            && active_petal
-                .map(|pid| pid == m.petal_id.as_str())
-                .unwrap_or(true)
+    let stamp_alias = stamps.promoted_stamp_for_node(&node_id);
+    let matched = node_query.iter().find(|(_, marker, instance)| {
+        active_petal.is_some_and(|petal| petal == marker.petal_id)
+            && if let Some(stamp) = stamp_alias {
+                instance.is_some_and(|instance| {
+                    instance.source_track_id == stamp.track_node_id
+                        && instance.petal_id == marker.petal_id
+                }) && crate::verse_manager::parse_stamp_marker_id(&marker.node_id)
+                    == Some((stamp.track_node_id.as_str(), stamp.stamp_index))
+                    && pickable(&marker.node_id, &nav, &visibility)
+            } else {
+                marker.node_id == node_id
+            }
     });
 
-    if let Some((entity, _)) = matched {
+    if let Some((entity, _, _)) = matched {
         manager.select(entity, node_id);
     } else if let Some(mut pending) = navigation.take() {
         pending.remaining_frames = pending.remaining_frames.saturating_sub(1);
@@ -77,6 +90,7 @@ mod tests {
             .init_resource::<NodeManager>()
             .init_resource::<UiManager>()
             .init_resource::<VisibilityState>()
+            .init_resource::<crate::actions::asset::StampInteractionState>()
             .insert_resource(NavigationManager {
                 active_petal_id: Some("p1".into()),
                 ..Default::default()
@@ -222,6 +236,45 @@ mod tests {
             .unwrap()
             .0
             .contains("did not become available"));
+
+        let properties = serde_json::json!({
+            "node_kind":"stamp", "path_id":"path", "owning_path_id":"path", "instance_index":2
+        });
+        crate::actions::asset::hydrate_promoted_stamp(
+            "path#inst-2",
+            &properties,
+            &mut app
+                .world_mut()
+                .resource_mut::<crate::actions::asset::StampInteractionState>(),
+        );
+        let stamp = app
+            .world_mut()
+            .spawn((
+                SpawnedNodeMarker {
+                    node_id: "path::stamp::2".into(),
+                    petal_id: "p1".into(),
+                },
+                crate::verse_manager::PathAssetInstance {
+                    source_track_id: "path".into(),
+                    petal_id: "p1".into(),
+                },
+            ))
+            .id();
+        assert_eq!(
+            sidebar_click(&mut app, "path#inst-2").as_deref(),
+            Some("path#inst-2")
+        );
+        assert_eq!(
+            app.world().resource::<NodeManager>().selected_entity(),
+            Some(stamp)
+        );
+        app.world_mut()
+            .resource_mut::<NavigationManager>()
+            .navigate_to_petal("p2");
+        assert!(
+            sidebar_click(&mut app, "path#inst-2").is_none(),
+            "a persisted address cannot select its other-Petal projection"
+        );
     }
 
     #[test]

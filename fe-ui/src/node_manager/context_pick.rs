@@ -461,14 +461,21 @@ pub(super) fn classify_context_menu(
         nearest_visible_ground_stamp(&stamp_index, active_petal, world[0], world[2], |id| {
             pickable(id, &nav, &visibility)
         })
-        .map(|(track, index)| {
+        .and_then(|(track, index)| {
             let marker_id = stamp_marker_id(&track, index);
             let entity = node_query
                 .iter()
-                .find(|(_, marker, _, _)| marker.node_id == marker_id)
-                .map(|(entity, _, _, _)| entity)
-                .unwrap_or(Entity::PLACEHOLDER);
-            (track, index, entity)
+                .find(|(entity, marker, _, instance)| {
+                    marker.node_id == marker_id
+                        && active_petal == Some(marker.petal_id.as_str())
+                        && instance.is_some_and(|instance| {
+                            instance.source_track_id == track
+                                && instance.petal_id == marker.petal_id
+                        })
+                        && crate::visibility::rendered(drawn.get(*entity).ok())
+                })
+                .map(|(entity, _, _, _)| entity)?;
+            Some((track, index, entity))
         })
     } else {
         None
@@ -517,9 +524,7 @@ pub(super) fn classify_context_menu(
 
 /// Nearest active-petal stamp within [`STAMP_PICK_RADIUS_M`] of ground point
 /// `(x, z)` whose marker id `is_visible` accepts (a hidden stamp falls through
-/// to the next track in sorted order). The caller resolves the live entity
-/// (`Entity::PLACEHOLDER` when the instance is mid-respawn — the stamp verbs
-/// key on the `(track, index)` payload, never on the entity). Pure.
+/// to the next track in sorted order). The caller requires a live owned entity.
 fn nearest_visible_ground_stamp(
     stamp_index: &StampRenderIndex,
     active_petal: Option<&str>,

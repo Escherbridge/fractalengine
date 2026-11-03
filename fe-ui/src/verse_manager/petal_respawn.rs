@@ -27,14 +27,58 @@ pub(super) struct NodeSpawner<'w> {
     materials: ResMut<'w, Assets<StandardMaterial>>,
     images: ResMut<'w, Assets<Image>>,
     primitive_cache: ResMut<'w, PrimitiveDescriptorCache>,
+    stamp_state: Res<'w, crate::actions::asset::StampInteractionState>,
     texture_registry: Res<'w, TextureRegistryRes>,
     mat_assets: Res<'w, PrimitiveMaterialAssets>,
     db_sender: Res<'w, DbCommandSender>,
 }
 
 impl NodeSpawner<'_> {
+    pub(super) fn projection_changed(&self) -> bool {
+        self.primitive_cache.is_changed() || self.stamp_state.is_changed()
+    }
+
+    pub(super) fn is_stamp_projection(&self, node: &NodeEntry) -> bool {
+        self.stamp_state.promoted_stamp_for_node(&node.id).is_some()
+    }
+
+    pub(super) fn classification_pending(&self, node: &NodeEntry) -> bool {
+        node.asset_path.is_none() && !self.primitive_cache.is_classified(&node.id)
+    }
+
     /// Spawn `node` of `petal_id` through its FR-1 branch.
-    pub(super) fn spawn(&mut self, commands: &mut Commands, node: &NodeEntry, petal_id: &str) {
+    pub(super) fn spawn(
+        &mut self,
+        commands: &mut Commands,
+        node: &NodeEntry,
+        petal_id: &str,
+    ) -> bool {
+        if self.classification_pending(node) {
+            if self
+                .primitive_cache
+                .bypass_change_detection()
+                .mark_requested(&node.id)
+            {
+                match self.db_sender.0.try_send(DbCommand::GetNodeProperties {
+                    node_id: node.id.clone(),
+                    correlation_id: None,
+                }) {
+                    Ok(()) => {}
+                    Err(crossbeam::channel::TrySendError::Full(_)) => {
+                        self.primitive_cache
+                            .bypass_change_detection()
+                            .retry_properties(&node.id);
+                    }
+                    Err(crossbeam::channel::TrySendError::Disconnected(_)) => {
+                        bevy::log::warn!("DB channel closed before scene node classification");
+                    }
+                }
+            }
+            return false;
+        }
+        if self.is_stamp_projection(node) {
+            return false;
+        }
         let entity = match spawn_branch(node, &self.primitive_cache) {
             SpawnBranch::Gltf(asset_path) => super::spawn::spawn_node_entity(
                 commands,
@@ -65,34 +109,15 @@ impl NodeSpawner<'_> {
                     material,
                 )
             }
-            SpawnBranch::Fallback => {
-                let entity = super::spawn::spawn_fallback_sign(
-                    commands,
-                    &mut self.meshes,
-                    &mut self.materials,
-                    &node.id,
-                    petal_id,
-                    &node.name,
-                    node.position,
-                );
-                // Cold cache: fetch the property bag once; a primitive
-                // result promotes the sign via `materialize_cached_primitives`.
-                if self.primitive_cache.mark_requested(&node.id)
-                    && self
-                        .db_sender
-                        .0
-                        .send(DbCommand::GetNodeProperties {
-                            node_id: node.id.clone(),
-                            correlation_id: None,
-                        })
-                        .is_err()
-                {
-                    bevy::log::error!(
-                        "db_sender channel closed during node spawn — DB thread may have crashed"
-                    );
-                }
-                entity
-            }
+            SpawnBranch::Fallback => super::spawn::spawn_fallback_sign(
+                commands,
+                &mut self.meshes,
+                &mut self.materials,
+                &node.id,
+                petal_id,
+                &node.name,
+                node.position,
+            ),
         };
         let transform = node.world_transform();
         let (x, y, z) = node.transform.rotation.to_euler(EulerRot::XYZ);
@@ -104,6 +129,22 @@ impl NodeSpawner<'_> {
                 scale: node.transform.scale.to_array(),
             },
         ));
+        true
+    }
+}
+
+pub(super) fn remove_standalone_stamp_projection(
+    stamps: Res<crate::actions::asset::StampInteractionState>,
+    resident: Query<(Entity, &SpawnedNodeMarker), With<super::spawn::ResidentNode>>,
+    mut commands: Commands,
+) {
+    if !stamps.is_changed() {
+        return;
+    }
+    for (entity, marker) in &resident {
+        if stamps.promoted_stamp_for_node(&marker.node_id).is_some() {
+            commands.entity(entity).despawn();
+        }
     }
 }
 
@@ -193,8 +234,9 @@ pub(super) fn respawn_on_petal_change(
                     skipped += 1;
                     continue;
                 }
-                remaining -= 1;
-                spawner.spawn(&mut commands, node, pid);
+                if spawner.spawn(&mut commands, node, pid) {
+                    remaining -= 1;
+                }
             }
             if skipped > 0 {
                 bevy::log::warn!(

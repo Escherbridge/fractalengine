@@ -135,7 +135,11 @@ pub(super) fn handle_node_property_set(
     // FR-1: a `primitive` write anywhere (API, extension, inspector) evicts
     // the cached descriptor and re-fetches, independent of selection.
     let primitive_write = key == PRIMITIVE_PROPERTY_KEY;
-    if primitive_write {
+    let presentation_write = matches!(
+        key,
+        "node_kind" | "path_id" | "owning_path_id" | "instance_index"
+    );
+    if primitive_write || presentation_write {
         primitive_cache.invalidate(node_id);
     }
     // FR-1 path-asset: a `path_asset` write anywhere (Stamp button, API,
@@ -170,7 +174,12 @@ pub(super) fn handle_node_property_set(
         inspector.node_properties_loading = true;
     }
     // Issue the read once when any consumer needs it (idempotent).
-    if refresh_editing_track || for_selected || primitive_write || path_asset_write {
+    if refresh_editing_track
+        || for_selected
+        || primitive_write
+        || path_asset_write
+        || presentation_write
+    {
         let _ = db_sender.0.send(DbCommand::GetNodeProperties {
             node_id: node_id.to_string(),
             correlation_id: None,
@@ -191,7 +200,12 @@ pub(super) fn handle_node_property_deleted(
 ) -> bool {
     // FR-1: evict the cached descriptor before the selection gate below —
     // deletes on unselected nodes must not leave a stale primitive cached.
-    if key == PRIMITIVE_PROPERTY_KEY {
+    if key == PRIMITIVE_PROPERTY_KEY
+        || matches!(
+            key,
+            "node_kind" | "path_id" | "owning_path_id" | "instance_index"
+        )
+    {
         primitive_cache.invalidate(node_id);
     }
     // FR-1 path-asset: a `path_asset` delete evicts the stamp cache entry so

@@ -204,7 +204,10 @@ impl StampInteractionState {
         let mut list: Vec<(usize, StampOverride)> = self
             .overrides
             .iter()
-            .filter(|(stamp, _)| stamp.track_node_id == track)
+            .filter(|(stamp, ov)| {
+                stamp.track_node_id == track
+                    && (ov.scale.is_some() || ov.rotation.is_some() || ov.arc_offset_m.is_some())
+            })
             .map(|(stamp, ov)| (stamp.stamp_index, ov.clone()))
             .collect();
         list.sort_by_key(|(index, _)| *index);

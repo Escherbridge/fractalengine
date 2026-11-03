@@ -498,7 +498,8 @@ pub(super) fn apply_node_residency(
     mut spawner: NodeSpawner,
 ) {
     let epoch = ledger.node_epoch();
-    if *last_epoch == Some(epoch) && !*backlog && added.is_empty() {
+    if *last_epoch == Some(epoch) && !*backlog && added.is_empty() && !spawner.projection_changed()
+    {
         return;
     }
     *last_epoch = Some(epoch);
@@ -535,8 +536,11 @@ pub(super) fn apply_node_residency(
             *backlog = true;
             break;
         }
-        spawner.spawn(&mut commands, node, petal_id);
-        spawned += 1;
+        if spawner.spawn(&mut commands, node, petal_id) {
+            spawned += 1;
+        } else if spawner.classification_pending(node) || !spawner.is_stamp_projection(node) {
+            *backlog = true;
+        }
     }
 }
 
@@ -822,6 +826,10 @@ mod tests {
             render_distance: R,
             ..Default::default()
         };
+        let mut classified = PrimitiveDescriptorCache::default();
+        for node in &nodes {
+            classified.note_properties(&node.id, &serde_json::json!({}));
+        }
         app.insert_resource(nav)
             .insert_resource(tree(nodes))
             .insert_resource(settings)
@@ -835,18 +843,21 @@ mod tests {
             .init_resource::<PathAssetCache>()
             .init_resource::<super::super::PathAssetApplied>()
             .init_resource::<super::super::StampRenderIndex>()
-            .init_resource::<PrimitiveDescriptorCache>()
+            .insert_resource(classified)
             .init_resource::<TextureRegistryRes>()
             .init_resource::<PrimitiveMaterialAssets>()
             .init_resource::<crate::terrain_map::PetalMapState>()
             .init_resource::<crate::actions::asset::StampInteractionState>()
+            .init_resource::<crate::gis::PathEditorState>()
             .add_systems(
                 Update,
                 (
+                    super::super::petal_respawn::remove_standalone_stamp_projection,
                     update_residency_ledger,
                     super::super::petal_respawn::respawn_on_petal_change,
                     apply_node_residency,
                     super::super::primitive_materialize::materialize_cached_primitives,
+                    super::super::path_asset_reconcile::reconcile_path_asset,
                     super::super::path_asset_materialize::materialize_path_assets,
                 )
                     .chain(),
@@ -1074,20 +1085,14 @@ mod tests {
 
     #[test]
     fn a_far_stamp_group_is_evicted_and_restamped_on_return() {
-        let mut app = residency_app(Vec::new());
-        app.world_mut().resource_mut::<PathAssetCache>().upsert(
-            "t1",
-            "p",
-            PathAssetDescriptor {
-                asset_path: "tree.glb".to_string(),
-                spacing_mode: SpacingMode::FixedSpacing,
-                spacing_value: 5.0,
-                count: 0,
-                tangent_align: false,
-            },
-            vec![[100.0, 0.0, 0.0], [110.0, 0.0, 0.0]],
-            7,
-        );
+        let mut app = residency_app(vec![node("t1".into(), [100.0, 0.0, 0.0])]);
+        let route = serde_json::json!({
+            "path_asset": {"asset_path":"tree.glb", "spacing_mode":"fixed_spacing", "spacing_value":5.0, "count":0, "tangent_align":false},
+            "gpx_points": [[100.0,0.0,0.0,0.0],[110.0,0.0,0.0,0.0]]
+        });
+        app.world_mut()
+            .resource_mut::<PathAssetCache>()
+            .note_properties("t1", Some("p"), &route);
         let stamps = |app: &mut App| -> BTreeSet<Entity> {
             let mut query = app
                 .world_mut()
@@ -1119,5 +1124,149 @@ mod tests {
         let returned = stamps(&mut app);
         assert_eq!(returned.len(), resident.len(), "restamped on return");
         assert!(returned.is_disjoint(&resident), "fresh entities");
+
+        let mut markers = app.world_mut().query::<(Entity, &SpawnedNodeMarker)>();
+        let selected = markers
+            .iter(app.world())
+            .find_map(|(entity, marker)| (marker.node_id == "t1::stamp::1").then_some(entity))
+            .unwrap();
+        app.world_mut()
+            .resource_mut::<NodeManager>()
+            .select(selected, "t1::stamp::1");
+        let mut promoted = serde_json::json!({
+            "node_kind":"stamp", "path_id":"t1", "owning_path_id":"t1", "instance_index":1
+        });
+        crate::actions::asset::hydrate_promoted_stamp(
+            "t1#inst-1",
+            &promoted,
+            &mut app
+                .world_mut()
+                .resource_mut::<crate::actions::asset::StampInteractionState>(),
+        );
+        app.world_mut()
+            .resource_mut::<NodeManager>()
+            .bind_promoted_stamp(selected, "t1#inst-1");
+        app.update();
+        assert_eq!(
+            stamps(&mut app),
+            returned,
+            "empty promotion metadata cannot replace live stamps"
+        );
+        assert_eq!(
+            app.world().resource::<NodeManager>().selected_entity(),
+            Some(selected)
+        );
+
+        promoted["stamp.override.scale"] = serde_json::json!([2.0, 3.0, 4.0]);
+        promoted["stamp.override.rotation"] = serde_json::json!([0.0, 1.0, 0.0, 0.0]);
+        promoted["stamp.override.arc_m"] = serde_json::json!(7.5);
+        crate::actions::asset::hydrate_promoted_stamp(
+            "t1#inst-1",
+            &promoted,
+            &mut app
+                .world_mut()
+                .resource_mut::<crate::actions::asset::StampInteractionState>(),
+        );
+        app.world_mut()
+            .resource_mut::<PrimitiveDescriptorCache>()
+            .note_properties("t1#inst-1", &promoted);
+        app.world_mut()
+            .resource_mut::<VerseManager>()
+            .upsert_node("p", node("t1#inst-1".into(), [0.0; 3]));
+        app.update();
+        assert_eq!(
+            stamps(&mut app),
+            returned,
+            "confirmed overrides update the same rendered group"
+        );
+        let actual = app.world().get::<Transform>(selected).unwrap();
+        assert_eq!(actual.translation, Vec3::new(107.5, 0.0, 0.0));
+        assert_eq!(actual.scale, Vec3::new(2.0, 3.0, 4.0));
+        assert!(actual
+            .rotation
+            .abs_diff_eq(Quat::from_rotation_y(std::f32::consts::PI), 0.0001));
+        assert_eq!(
+            app.world().resource::<NodeManager>().selected_entity(),
+            Some(selected)
+        );
+        assert!(
+            !live_nodes(&mut app).contains_key("t1#inst-1"),
+            "typed stamp metadata never spawns an ordinary fallback"
+        );
+        let index = &app
+            .world()
+            .resource::<super::super::StampRenderIndex>()
+            .tracks["t1"];
+        assert_eq!(
+            index.pick_stamp(107.5, 0.0, 0.01),
+            Some(1),
+            "pick projection follows the confirmed slide"
+        );
+
+        {
+            let mut hierarchy = app.world_mut().resource_mut::<VerseManager>();
+            hierarchy.find_verse_mut("v").unwrap().fractals[0]
+                .petals
+                .push(PetalEntry {
+                    id: "other".into(),
+                    ..Default::default()
+                });
+        }
+        {
+            let mut path = app
+                .world_mut()
+                .resource_mut::<crate::gis::PathEditorState>();
+            path.start_editing("t1".into());
+            path.points = crate::gis::decode_gpx_points(&route["gpx_points"]);
+            path.edited_track_path_asset =
+                Some(PathAssetDescriptor::from_json(&route["path_asset"]).unwrap());
+        }
+        app.world_mut()
+            .resource_mut::<NavigationManager>()
+            .navigate_to_petal("other");
+        app.update();
+        app.update();
+        assert!(
+            stamps(&mut app).is_empty(),
+            "an old editor cannot materialize its stamps into the new Petal"
+        );
+        assert_eq!(
+            app.world()
+                .resource::<PathAssetCache>()
+                .get("t1")
+                .unwrap()
+                .petal_id,
+            "p"
+        );
+        assert!(app
+            .world()
+            .resource::<super::super::StampRenderIndex>()
+            .tracks
+            .is_empty());
+
+        app.world_mut()
+            .resource_mut::<NavigationManager>()
+            .navigate_to_petal("p");
+        step_line(&mut app, 104.0);
+        assert_eq!(
+            stamps(&mut app).len(),
+            returned.len(),
+            "re-entry restores only the owning Petal's stamps"
+        );
+        assert!(!live_nodes(&mut app).contains_key("t1#inst-1"));
+        let current = stamps(&mut app);
+        let mut reflow = route.clone();
+        reflow["path_asset"]["spacing_value"] = serde_json::json!(10.0);
+        app.world_mut()
+            .resource_mut::<crate::gis::PathEditorState>()
+            .stop_editing();
+        app.world_mut()
+            .resource_mut::<PathAssetCache>()
+            .note_properties("t1", Some("p"), &reflow);
+        app.update();
+        assert!(
+            stamps(&mut app).is_disjoint(&current),
+            "a genuine descriptor reflow replaces the old identities"
+        );
     }
 }

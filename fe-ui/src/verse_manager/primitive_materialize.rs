@@ -42,6 +42,7 @@ pub(super) type FallbackSignQuery<'w, 's> = Query<
 pub struct PrimitiveDescriptorCache {
     descriptors: HashMap<String, PrimitiveDescriptor>,
     requested: HashSet<String>,
+    classified: HashSet<String>,
 }
 
 impl PrimitiveDescriptorCache {
@@ -54,6 +55,7 @@ impl PrimitiveDescriptorCache {
     /// descriptor, or drop a stale entry when the key is absent/invalid.
     pub fn note_properties(&mut self, node_id: &str, properties: &serde_json::Value) {
         self.requested.remove(node_id);
+        self.classified.insert(node_id.to_owned());
         match properties
             .get(PRIMITIVE_PROPERTY_KEY)
             .and_then(|raw| PrimitiveDescriptor::from_json(raw).ok())
@@ -71,21 +73,31 @@ impl PrimitiveDescriptorCache {
     pub fn invalidate(&mut self, node_id: &str) {
         self.descriptors.remove(node_id);
         self.requested.remove(node_id);
+        self.classified.remove(node_id);
     }
 
     /// Drop everything (database reset).
     pub fn clear(&mut self) {
         self.descriptors.clear();
         self.requested.clear();
+        self.classified.clear();
     }
 
     /// Mark a properties fetch in flight; `true` when the caller should send
     /// `GetNodeProperties` (not cached, not already requested).
     pub fn mark_requested(&mut self, node_id: &str) -> bool {
-        if self.descriptors.contains_key(node_id) {
+        if self.classified.contains(node_id) {
             return false;
         }
         self.requested.insert(node_id.to_string())
+    }
+
+    pub(super) fn is_classified(&self, node_id: &str) -> bool {
+        self.classified.contains(node_id)
+    }
+
+    pub(super) fn retry_properties(&mut self, node_id: &str) {
+        self.requested.remove(node_id);
     }
 }
 
@@ -122,6 +134,7 @@ pub(super) fn materialize_cached_primitives(
     nav: Res<NavigationManager>,
     verse_mgr: Res<VerseManager>,
     cache: Res<PrimitiveDescriptorCache>,
+    stamps: Res<crate::actions::asset::StampInteractionState>,
     ledger: Res<super::residency_ledger::ResidencyLedger>,
     mesh_budget: Res<crate::plugin::MeshInstanceBudget>,
     texture_registry: Res<TextureRegistryRes>,
@@ -155,7 +168,7 @@ pub(super) fn materialize_cached_primitives(
     let mut skipped: usize = 0;
 
     for node in &petal.nodes {
-        if node.asset_path.is_some() {
+        if node.asset_path.is_some() || stamps.promoted_stamp_for_node(&node.id).is_some() {
             continue; // GLTF branch owns asset-backed nodes
         }
         let Some(descriptor) = cache.get(&node.id) else {
@@ -302,6 +315,20 @@ mod tests {
         );
         cache.note_properties("n2", &cube_props());
         assert!(!cache.mark_requested("n2"), "cached node needs no fetch");
+        cache.note_properties("empty", &json!({}));
+        assert!(cache.is_classified("empty"));
+        assert!(
+            !cache.mark_requested("empty"),
+            "a confirmed ordinary fallback is classified once"
+        );
+        cache.invalidate("empty");
+        assert!(!cache.is_classified("empty"));
+        assert!(cache.mark_requested("empty"));
+        cache.retry_properties("empty");
+        assert!(
+            cache.mark_requested("empty"),
+            "a full queue must allow a later attempt"
+        );
     }
 
     #[test]

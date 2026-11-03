@@ -36,6 +36,7 @@ use crate::navigation_manager::NavigationManager;
 /// `fe-ui/src/verse_manager/AGENTS.md` §path-asset-materialization.
 pub(super) fn reconcile_path_asset(
     nav: Res<NavigationManager>,
+    hierarchy: Res<super::VerseManager>,
     path_state: Res<PathEditorState>,
     mut cache: ResMut<PathAssetCache>,
 ) {
@@ -45,6 +46,14 @@ pub(super) fn reconcile_path_asset(
     let Some(track_id) = path_state.editing_track_id.as_deref() else {
         return;
     };
+    if hierarchy.petal_id_of(track_id) != Some(petal_id)
+        || cache
+            .get(track_id)
+            .is_some_and(|entry| entry.petal_id != petal_id)
+        || path_state.points_pending
+    {
+        return;
+    }
     let Some(descriptor) = path_state.edited_track_path_asset.as_ref() else {
         return;
     };
