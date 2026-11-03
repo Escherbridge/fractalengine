@@ -4038,6 +4038,78 @@ mod tests {
                 "startup includes the persisted accepted scene watermark"
             );
 
+            // A same-value local Save changes journal ordering without changing row or scene clock.
+            for absent in [true, false] {
+                let before_row = node_history::snapshot(&failed, &id).await.unwrap();
+                let before_clock = scene::read_clock(&failed, &id).await.unwrap();
+                let mut guards = Vec::new();
+                let mut bindings = Vec::new();
+                let captured =
+                    scene::capture_ordering_fact(&failed, &id, &mut guards, &mut bindings)
+                        .await
+                        .unwrap();
+                assert_eq!(
+                    captured.is_none(),
+                    absent,
+                    "both absent and present latest facts are fenced"
+                );
+                crate::handlers::entity_property::set_entity_property_as(
+                    &failed,
+                    &id,
+                    "nested",
+                    &before_row.as_ref().unwrap()["properties"]["nested"],
+                    "did:qa",
+                )
+                .await
+                .unwrap();
+                assert_eq!(
+                    node_history::snapshot(&failed, &id).await.unwrap(),
+                    before_row
+                );
+                assert_eq!(scene::read_clock(&failed, &id).await.unwrap(), before_clock);
+                let local_fact = node_history::latest(&failed, &id).await.unwrap().unwrap();
+                assert!(local_fact["hlc_timestamp"].as_u64().unwrap() > advanced);
+                if let Some(captured) = captured {
+                    assert!(
+                        local_fact["row_version"].as_i64().unwrap()
+                            > captured["row_version"].as_i64().unwrap()
+                    );
+                }
+                let local_hlc = snapshot_hlc();
+                guards.extend([
+                    "UPDATE node SET name='stale incoming write' WHERE node_id=$scene_id".into(),
+                    "UPDATE node_scene_clock SET publisher='stale incoming write' WHERE node_id=$scene_id".into(),
+                ]);
+                let mut transaction = failed
+                    .query(format!(
+                        "BEGIN TRANSACTION; {}; COMMIT TRANSACTION;",
+                        guards.join(";\n")
+                    ))
+                    .bind(("scene_id", id.clone()));
+                for binding in bindings {
+                    transaction = transaction.bind(binding);
+                }
+                let result = transaction.await.unwrap().check();
+                assert!(
+                    result.is_err(),
+                    "the production ordering guard refuses stale latest-fact/absence capture"
+                );
+                assert!(result
+                    .unwrap_err()
+                    .to_string()
+                    .contains("local scene ordering fact changed"));
+                assert_eq!(
+                    node_history::snapshot(&failed, &id).await.unwrap(),
+                    before_row
+                );
+                assert_eq!(scene::read_clock(&failed, &id).await.unwrap(), before_clock);
+                assert_eq!(
+                    snapshot_hlc(),
+                    local_hlc,
+                    "rejected receive never observes its clock"
+                );
+            }
+
             // Missing parents stay in the ordinary admission queue's Deferred vocabulary.
             let missing = probe_db().await;
             crate::schema::apply_all(&missing).await.unwrap();

@@ -46,10 +46,16 @@ HLC domain with rollover headroom and a maximum five-minute future wall offset b
 received clocks. Accepted row and clock share ONE DB transaction. Only after that transaction
 succeeds is the process HLC advanced, so a subsequent local edit is causally newer. Startup
 restores the maximum persisted scene clock alongside op_log; an unreadable/out-of-domain
-scene watermark fails initialization rather than silently resetting causality.
+scene watermark fails initialization rather than silently resetting causality. The startup
+success handshake and shared handle are published only after all fatal clock recovery and
+process HLC initialization succeed.
 
 The production admission queue carries the actual DB-thread local publisher into receive
 ordering so a locally committed delegated actor is never substituted as a publisher in a tie.
+The exact latest local journal fact (including actor, payload and record identity) or its
+absence is captured with a server-CBOR fingerprint in the same read used for ordering.
+The receive transaction fences that capture before any row/clock write, even when a
+concurrent same-value local Save leaves row bytes and the scene clock unchanged.
 Legacy direct apply wrappers retain their signatures and cannot invent that missing identity.
 Ordering compares original HLC, then authenticated publisher lexical order. Older/equal
 full live rows are ignored without materialization events. Local tombstones dominate every
@@ -137,7 +143,10 @@ establishes those dependencies. Dependency gaps remain explicit even when a node
 Extend the existing real-store op_log journey and existing schema inventory checks; do not
 add parallel HLC test functions. Parent owns the end-of-campaign single test sweep and live
 owned-pair evidence. Source parsing is not runtime SQL, convergence, asset-rendering, or
-failure-recovery proof.
+failure-recovery proof. The existing shared-handle journey also authors an on-disk restart
+with an inadmissible retained watermark and requires SceneClockRecovery instead of startup
+success; the existing op_log journey uses the production ordering capture/guard for absent
+and present latest facts before concurrent same-value Saves. These are unexecuted checks.
 
 ## Current native projection
 

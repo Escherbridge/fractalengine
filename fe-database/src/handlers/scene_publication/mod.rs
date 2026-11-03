@@ -8,6 +8,8 @@ pub(crate) mod wire;
 pub(crate) use current::{echo_applied, read_current};
 pub(crate) use inbound::apply_complete;
 #[cfg(test)]
+pub(crate) use inbound::capture_ordering_fact;
+#[cfg(test)]
 pub(crate) use publisher::prepare;
 pub(crate) use publisher::{publish_after_commit, publish_tombstones_after_commit, recover};
 

@@ -536,9 +536,6 @@ pub fn spawn_db_thread_shared(
                 let _ = startup_tx.send(Err(DbInitError::ApiTokenSchemaApply(e.to_string())));
                 return;
             }
-            // Cloned after use_ns/use_db: the clone's session inherits ns/db.
-            let _ = startup_tx.send(Ok(db.clone()));
-
             // Initialize the Hybrid Logical Clock from the max persisted value
             // so clocks survive restarts.
             {
@@ -566,6 +563,9 @@ pub fn spawn_db_thread_shared(
                 };
                 op_log::init_hlc(max_lc.max(scene_hlc));
             }
+
+            // The shared handle is ready only after fatal clock recovery has succeeded.
+            let _ = startup_tx.send(Ok(db.clone()));
 
             // Derive the local DID from the node keypair (falls back to
             // "local-node" when no keypair is available).

@@ -114,11 +114,9 @@ pub(crate) async fn apply_complete(
     }
     let clocks = read_clock(db, id).await?;
     let mut current = clock_of(&clocks)?;
-    // Unpublished local commits are already real writes; their journal clocks also participate.
-    if let (Some(old), Some(fact)) = (
-        before.first(),
-        super::super::node_history::latest(db, id).await?,
-    ) {
+    // Fence the same journal capture used to order unpublished local commits.
+    let local_fact = capture_ordering_fact(db, id, &mut guards, &mut bindings).await?;
+    if let (Some(old), Some(fact)) = (before.first(), local_fact.as_ref()) {
         if fact["payload"]["journal_version"] == super::super::node_history::JOURNAL_VERSION
             && fact["payload"]["scope"].as_str() == Some(scope.as_str())
             && fact["payload"]["after_state"]
@@ -265,6 +263,30 @@ pub(crate) async fn apply_complete(
         );
         Ok(Some(ReplicatedRowOutcome::Applied))
     }
+}
+
+/// Capture the exact latest local fact or absence and append its transactional ordering fence.
+pub(crate) async fn capture_ordering_fact(
+    db: &Db,
+    id: &str,
+    guards: &mut Vec<String>,
+    bindings: &mut Vec<(String, Value)>,
+) -> anyhow::Result<Option<Value>> {
+    let mut response = db.query("SELECT *, encoding::base64::encode(encoding::cbor::encode($this)) AS scene_fact_fingerprint OMIT id FROM node_log WHERE node_id=$scene_id ORDER BY row_version DESC LIMIT 1 TIMEOUT 5s")
+        .bind(("scene_id", id.to_owned())).await?.check()?;
+    let mut rows: Vec<Value> = response.take(0)?;
+    let mut fingerprints = Vec::with_capacity(rows.len());
+    for row in &mut rows {
+        let fingerprint = row
+            .as_object_mut()
+            .and_then(|row| row.remove("scene_fact_fingerprint"))
+            .filter(Value::is_string)
+            .ok_or_else(|| anyhow::anyhow!("local scene fact fingerprint missing"))?;
+        fingerprints.push(fingerprint);
+    }
+    guards.push("IF (SELECT VALUE encoding::base64::encode(encoding::cbor::encode($this)) FROM node_log WHERE node_id=$scene_id ORDER BY row_version DESC LIMIT 1) != $scene_local_fact_before { THROW 'local scene ordering fact changed'; }".into());
+    bindings.push(("scene_local_fact_before".into(), json!(fingerprints)));
+    Ok(rows.into_iter().next())
 }
 
 async fn changed_admission(

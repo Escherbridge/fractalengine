@@ -105,6 +105,51 @@ fn api_reader_reads_db_thread_writes_through_the_shared_handle() {
     assert_eq!(rows.len(), 1, "exactly the created verse: {rows:?}");
     assert_eq!(rows[0]["verse_id"], verse_id.as_str());
     assert_eq!(rows[0]["name"], "Shared Verse");
+
+    // Persist a schema-valid but inadmissible clock, then exercise the real restart handshake.
+    let reader = spawned.db_thread.shared_db.clone();
+    std::thread::spawn(move || {
+        let runtime = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
+        runtime.block_on(async {
+            reader.query("CREATE node_scene_clock CONTENT {node_id:'invalid-startup-clock',hlc:9223372036854775807,publisher:'did:qa',row_fingerprint:'fixture'}")
+                .await.unwrap().check().unwrap();
+        });
+    }).join().unwrap();
+    spawned.cmd_tx.send(DbCommand::Shutdown).unwrap();
+    assert!(matches!(
+        spawned.res_rx.recv_timeout(TIMEOUT).unwrap(),
+        DbResult::Stopped
+    ));
+    spawned.db_thread.join_handle.join().unwrap();
+    drop(spawned.db_thread.shared_db);
+    let (cmd_tx, cmd_rx) = crossbeam::channel::bounded(1);
+    let (res_tx, res_rx) = crossbeam::channel::bounded(1);
+    let failed = spawn_db_thread_shared(
+        cmd_rx,
+        res_tx,
+        Arc::new(MockBlobStore::new()),
+        None,
+        None,
+        None,
+        None,
+        Some(dir.path().join("fe.db").to_string_lossy().into_owned()),
+        None,
+    );
+    match failed {
+        Err(fe_database::DbInitError::SceneClockRecovery(error)) => assert!(!error.is_empty()),
+        Err(other) => panic!("expected scene-clock startup refusal, got {other}"),
+        Ok(thread) => {
+            drop(cmd_tx);
+            thread.join_handle.join().unwrap();
+            panic!("startup returned a usable shared handle before fatal clock recovery");
+        }
+    }
+    assert!(
+        !res_rx
+            .try_iter()
+            .any(|result| matches!(result, DbResult::Started)),
+        "a refused startup never announces Started"
+    );
 }
 
 #[test]
