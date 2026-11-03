@@ -19,6 +19,7 @@ pub struct CurrentPathProjection {
     pub petal_id: String,
     pub properties: Option<Value>,
     admission: SceneAdmission,
+    editor_before: Option<Value>,
 }
 
 impl CurrentPathProjection {
@@ -34,53 +35,53 @@ impl CurrentPathProjection {
     }
 
     pub fn apply_editor(&self, state: &mut crate::gis::PathEditorState) -> bool {
-        if state.editing_track_id.as_deref() != Some(self.node_id.as_str()) {
-            return false;
-        }
-        let Some(properties) = &self.properties else {
-            state.stop_editing();
-            return false;
-        };
-        let rows = properties
-            .get("gpx_points")
-            .map(crate::gis::decode_gpx_points)
-            .unwrap_or_default();
-        let awaiting_initial = state.points_pending && state.points.is_empty();
-        state.points_pending = false;
-        if !awaiting_initial
-            && (crate::undo::PathEditorPolicy::PreserveChanged { before: None })
-                .preserves(&state.points, &rows)
-        {
-            crate::undo::retain_local_draft(state);
-            return true;
-        }
-        if state.points.len() != rows.len() {
-            state.selected_point = None;
-            state.selected_segment = None;
-        }
-        state.points = rows;
-        false
+        refresh_editor(
+            &self.node_id,
+            self.properties.as_ref(),
+            self.editor_before.as_ref(),
+            state,
+        )
     }
 }
 
-pub(super) fn protect_editor(
+pub(super) fn refresh_editor(
     node_id: &str,
-    properties: &Value,
+    properties: Option<&Value>,
+    before: Option<&Value>,
     state: &mut crate::gis::PathEditorState,
 ) -> bool {
-    if state.editing_track_id.as_deref() != Some(node_id)
-        || (state.points_pending && state.points.is_empty())
-    {
+    if state.editing_track_id.as_deref() != Some(node_id) {
         return false;
     }
-    let Some(points) = properties.get("gpx_points") else {
-        return false;
-    };
-    if (crate::undo::PathEditorPolicy::PreserveChanged { before: None })
-        .preserves(&state.points, &crate::gis::decode_gpx_points(points))
+    let points = properties.and_then(|properties| properties.get("gpx_points"));
+    let rows = points
+        .map(crate::gis::decode_gpx_points)
+        .unwrap_or_default();
+    let awaiting_initial = state.points_pending && state.points.is_empty();
+    state.points_pending = false;
+    if !awaiting_initial
+        && (crate::undo::PathEditorPolicy::PreserveChanged {
+            before: before.cloned(),
+        })
+        .preserves(&state.points, &rows)
     {
         crate::undo::retain_local_draft(state);
         return true;
+    }
+    if points.is_none() {
+        state.stop_editing();
+        return false;
+    }
+    if state.points.len() != rows.len() {
+        state.selected_point = None;
+        state.selected_segment = None;
+    }
+    state.points = rows;
+    if let Some(properties) = properties {
+        state.edited_track_style = crate::gis::TrackStyleFields::from_properties(properties);
+        state.edited_track_path_asset = properties
+            .get(fe_sdk::path_asset::PATH_ASSET_PROPERTY_KEY)
+            .and_then(|raw| fe_sdk::path_asset::PathAssetDescriptor::from_json(raw).ok());
     }
     false
 }
@@ -109,6 +110,16 @@ impl VerseManager {
         petal_id: &str,
         properties: Option<Value>,
     ) -> bool {
+        self.queue_current_path_after(node_id, petal_id, properties, None)
+    }
+
+    pub(super) fn queue_current_path_after(
+        &mut self,
+        node_id: &str,
+        petal_id: &str,
+        properties: Option<Value>,
+        editor_before: Option<Value>,
+    ) -> bool {
         let Some(admission) = self.scene_admission(node_id, petal_id) else {
             return false;
         };
@@ -122,6 +133,7 @@ impl VerseManager {
             properties: properties
                 .map(|properties| super::scene_admission::route_properties(&properties)),
             admission,
+            editor_before,
         });
         true
     }
@@ -195,6 +207,7 @@ pub(super) fn apply(
             None,
             state.asset_id.as_deref(),
         );
+        manager.bind_replica_current(current);
         for (entity, marker, _) in entities {
             if marker.node_id == state.node_id && marker.petal_id == state.petal_id {
                 commands.entity(entity).try_despawn();
@@ -229,7 +242,8 @@ pub(super) fn apply(
         .clone()
         .unwrap_or_else(|| state.node_id.clone());
     let properties = Value::Object(state.properties.clone());
-    if previous.is_some_and(|node| node.world_transform() == transform && node.name == name)
+    if manager.matches_replica_current(current)
+        && previous.is_some_and(|node| node.world_transform() == transform && node.name == name)
         && !asset_changed
         && manager.current_scene_asset_match(
             &state.node_id,
@@ -272,6 +286,7 @@ pub(super) fn apply(
         Some(&properties),
         state.asset_id.as_deref(),
     );
+    manager.bind_replica_current(current);
     let (rx, ry, rz) = transform.rotation.to_euler(EulerRot::XYZ);
     if active_petal_id == Some(state.petal_id.as_str()) {
         for (entity, marker, _) in entities {

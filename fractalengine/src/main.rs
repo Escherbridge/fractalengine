@@ -939,15 +939,15 @@ fn main() {
     app.add_systems(
         bevy::prelude::Update,
         (
-            gpx_bridge::drain_gpx_ops,
-            gpx_bridge::advance_gpx_imports,
-            gpx_bridge::drain_path_ops,
-            gpx_bridge::advance_path_edits,
             gpx_bridge::request_petal_gpx_materialization,
+            gpx_bridge::drain_gpx_ops.run_if(gpx_bridge::path_projection_access),
+            gpx_bridge::advance_gpx_imports.run_if(gpx_bridge::path_projection_access),
+            gpx_bridge::drain_path_ops.run_if(gpx_bridge::path_projection_access),
+            gpx_bridge::advance_path_edits.run_if(gpx_bridge::path_projection_access),
             gpx_bridge::advance_path_materialization,
             // Tag rendered track ribbons selectable (bridges fe-terrain's
             // GpxTrackLine → fe-ui's SpawnedNodeMarker for the viewport picker).
-            gpx_bridge::tag_track_lines_selectable,
+            gpx_bridge::tag_track_lines_selectable.run_if(gpx_bridge::path_projection_access),
         ).chain().after(fe_ui::plugin::UiSet::PostSelection),
     );
     // WebView portal: inline wry overlay + petal portal lifecycle systems.

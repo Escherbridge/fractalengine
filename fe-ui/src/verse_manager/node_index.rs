@@ -389,6 +389,28 @@ mod tests {
         assert!(matches!(mgr.route_replica_read(&late, &nav, 1.0), super::super::replica_reads::Reply::Consumed));
         mgr.accept_scene_role(&scope, "viewer", &nav);
         assert!(mgr.queue_replica_read("node-1", &nav, 1.0));
+        mgr.pump_replica_reads(&nav, &tx, 1.0);
+        let expired_request = match rx.try_recv().unwrap() {
+            fe_runtime::messages::DbCommand::ReadReplicatedNodeCurrent { request_id, .. } => request_id,
+            other => panic!("unexpected current read: {other:?}"),
+        };
+        let current = fe_runtime::scene_replication::ReplicatedNodeCurrent {
+            scope: scope.clone(),
+            state: serde_json::from_value(serde_json::json!({"node_id":"node-1","petal_id":"petal-1","position":[0,0,0],"elevation":0,"rotation":[0,0,0],"scale":[1,1,1],"interactive":false,"created_at":"fixture","edit_seq":1,"properties":{}})).unwrap(),
+            provenance: fe_runtime::scene_replication::ReplicaNodeProvenance::OriginalSceneCommit { hlc: 1, publisher: "fixture".into() },
+            asset: fe_runtime::scene_replication::ReplicaNodeAsset::NoAsset,
+        };
+        let expired = fe_runtime::messages::DbResult::ReplicatedNodeCurrentRead { node_id: "node-1".into(), request_id: expired_request.clone(), result: Ok(current.clone()) };
+        assert!(matches!(mgr.route_replica_read(&expired, &nav, 7.0), super::super::replica_reads::Reply::Consumed), "matching replies expire at use without an intervening pump");
+        assert_eq!(mgr.pending_scene_operations(), 1, "expired reply retains only fresh read need");
+        mgr.pump_replica_reads(&nav, &tx, 9.0);
+        let fresh_request = match rx.try_recv().unwrap() {
+            fe_runtime::messages::DbCommand::ReadReplicatedNodeCurrent { request_id, .. } => request_id,
+            other => panic!("unexpected current read: {other:?}"),
+        };
+        assert_ne!(fresh_request, expired_request);
+        let fresh = fe_runtime::messages::DbResult::ReplicatedNodeCurrentRead { node_id: "node-1".into(), request_id: fresh_request, result: Ok(current) };
+        assert!(matches!(mgr.route_replica_read(&fresh, &nav, 9.0), super::super::replica_reads::Reply::Current(_)));
         let old_incarnation = mgr.scene_incarnation();
         mgr.clear_for_terminal_reset();
         assert_eq!(mgr.pending_scene_operations(), 0);

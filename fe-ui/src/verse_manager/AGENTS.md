@@ -665,3 +665,23 @@ receipts still materialize authoritative snapshots. If a local path draft change
 submission, batch projection protects its rows from pending property hydration, and the
 host repeats the before-baseline comparison before touching editor rows. Retaining a
 draft does not negate a committed save or drop exact pending-write ownership.
+
+## Current replica identity and editor baselines
+
+A repeated current read preserves an active preview only when its full stored row,
+original scene HLC/publisher, scope and resolved asset state have the same canonical
+fingerprint as the previously admitted replica source. Equal visible geometry is
+insufficient. Local receipts have their own positive-history binding; a new peer
+admission always retires that authority, even for a no-op peer edit. Legacy apply
+provenance cannot prove repeated admission and therefore refreshes conservatively.
+
+Each binding retains the prior admitted gpx point baseline. A complete peer update
+compares the open editor with that baseline before replacing it: clean rows advance,
+while rows changed locally are retained. This occurs during FIFO admission and again
+when the host consumes its captured projection, so several queued peer updates do
+not turn a clean older editor into a fictional draft. The same rule handles a row
+that stops being a path. Initial unknown baselines remain conservative.
+
+Private current-read replies check their deadline at routing, before acceptance,
+independently of the later pump. Expired matching nonces retain only read need and
+back off before a fresh nonce; they never apply stale state or retry a mutation.

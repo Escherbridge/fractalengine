@@ -1154,6 +1154,7 @@ struct PendingAnnotateCreate {
 /// (existing node_id vs. content-based petal_id+name, per AGENTS.md §gpx).
 #[derive(Resource, Default)]
 pub struct PendingPathEdits {
+    access_retired: bool,
     checked_reads:HashMap<String,String>,
     materialization_refresh: VecDeque<String>,
     projection_petal_id: Option<String>,
@@ -1190,6 +1191,14 @@ struct DeferredProjection {
 }
 
 impl PendingPathEdits {
+    fn retire_access(&mut self) -> bool {
+        if self.access_retired {
+            return false;
+        }
+        *self = Self { access_retired: true, ..Default::default() };
+        true
+    }
+
     pub fn pending_current_projections(&self) -> usize {
         self.deferred_projections.len() + self.materialization_refresh.len()
     }
@@ -2714,6 +2723,63 @@ fn points_to_export_children(points: &[TimestampedRoutePoint]) -> Vec<ExportNode
     }]
 }
 
+/// Require a resolved Viewer before host path operations.
+pub fn path_projection_access(
+    manager: Res<VerseManager>,
+    role: Option<Res<fe_ui::plugin::LocalUserRole>>,
+) -> bool {
+    can_project_paths(&manager, role.as_deref())
+}
+
+fn can_project_paths(manager: &VerseManager, role: Option<&fe_ui::plugin::LocalUserRole>) -> bool {
+    !manager.scene_access_blocked()
+        && role.is_some_and(|role| role.role.is_some_and(|role| role.can_view()))
+}
+
+#[derive(bevy::ecs::system::SystemParam)]
+pub struct PathAccessRetirement<'w, 's> {
+    role: Option<Res<'w, fe_ui::plugin::LocalUserRole>>,
+    routes: ResMut<'w, TrackRouteMap>,
+    styles: ResMut<'w, TrackStyleMap>,
+    lines: Query<'w, 's, (Entity, &'static GpxTrackLine)>,
+    single_nodes: Query<'w, 's, (Entity, &'static SinglePointTrackNode)>,
+    commands: Commands<'w, 's>,
+    ops: ResMut<'w, PendingPathOps>,
+    imports: ResMut<'w, PendingGpxImports>,
+    import_ops: ResMut<'w, PendingGpxOps>,
+    undo: Option<ResMut<'w, fe_ui::undo::UndoState>>,
+    ui: Option<ResMut<'w, fe_ui::actions::UiManager>>,
+}
+
+impl PathAccessRetirement<'_, '_> {
+    fn retire(
+        &mut self,
+        pending: &mut PendingPathEdits,
+        manager: &mut VerseManager,
+        nav: &fe_ui::navigation_manager::NavigationManager,
+    ) {
+        manager.retire_scene_read_models();
+        if pending.retire_access() {
+            self.routes.routes.clear();
+            self.styles.styles.clear();
+            *self.imports = PendingGpxImports::default();
+            for (entity, _) in &self.lines {
+                self.commands.entity(entity).try_despawn();
+            }
+            for (entity, _) in &self.single_nodes {
+                self.commands.entity(entity).try_despawn();
+            }
+        }
+        *self.ops = PendingPathOps::default();
+        *self.import_ops = PendingGpxOps::default();
+        while self.ui.as_deref_mut()
+            .and_then(|ui| ui.take_editor_path_projection(nav))
+            .or_else(|| self.undo.as_deref_mut()
+                .and_then(|undo| undo.take_path_projection(nav)))
+            .is_some() {}
+    }
+}
+
 /// Refresh a Petal through bounded full-current reads; see src/AGENTS.md.
 pub fn request_petal_gpx_materialization(
     active_terrain: Res<ActivePetalTerrain>,
@@ -2721,16 +2787,18 @@ pub fn request_petal_gpx_materialization(
     nav: Res<fe_ui::navigation_manager::NavigationManager>,
     mut pending: ResMut<PendingPathEdits>,
     mut last: Local<Option<(u128, u64, u64, u64)>>,
-    role: Option<Res<fe_ui::plugin::LocalUserRole>>,
+    mut access: PathAccessRetirement,
 ) {
-    if role.as_ref().and_then(|role| role.role).is_some_and(|role| !role.can_view()) {
-        pending.materialization_refresh.clear();
+    manager.synchronize_scene_navigation(&nav);
+    if !can_project_paths(&manager, access.role.as_deref()) {
+        access.retire(&mut pending, &mut manager, &nav);
+        *last = None;
         return;
     }
+    pending.access_retired = false;
     if active_terrain.petal_id != nav.active_petal_id {
         return;
     }
-    manager.synchronize_scene_navigation(&nav);
     let key = (
         manager.scene_incarnation(),
         manager.scene_hierarchy_revision(),
@@ -2919,6 +2987,56 @@ mod tests {
             1,
             "projection watermark is scoped to one Petal"
         );
+        {
+            use fe_ui::verse_manager::{FractalEntry, NodeEntry, PetalEntry, VerseEntry};
+            let manager = VerseManager::from_verses(vec![VerseEntry {
+                id: "v".into(), name: "V".into(), expanded: true, namespace_id: None,
+                fractals: vec![FractalEntry { id: "f".into(), name: "F".into(), expanded: true,
+                    petals: vec![PetalEntry { id: "p".into(), name: "P".into(), expanded: true, render_distance: None,
+                        nodes: vec![NodeEntry { id: "track".into(), name: "Track".into(), has_asset: false, position: [0.0; 3], transform: Transform::IDENTITY, webpage_url: None, asset_path: None }] }] }],
+            }]);
+            let mut lifecycle = App::new();
+            lifecycle.insert_resource(manager)
+                .insert_resource(fe_ui::navigation_manager::NavigationManager { active_verse_id: Some("v".into()), active_fractal_id: Some("f".into()), active_petal_id: Some("p".into()), ..Default::default() })
+                .insert_resource(ActivePetalTerrain { petal_id: Some("p".into()), ..Default::default() })
+                .insert_resource(fe_ui::plugin::LocalUserRole::default())
+                .init_resource::<PendingPathEdits>()
+                .init_resource::<TrackRouteMap>()
+                .init_resource::<TrackStyleMap>()
+                .init_resource::<PendingPathOps>()
+                .init_resource::<PendingGpxOps>()
+                .init_resource::<PendingGpxImports>()
+                .add_systems(Update, request_petal_gpx_materialization);
+            lifecycle.world_mut().resource_mut::<TrackRouteMap>().routes.insert("track".into(), TrackRoute { points: back.clone(), total_duration_secs: 1.0 });
+            lifecycle.world_mut().resource_mut::<TrackStyleMap>().styles.insert("track".into(), TrackStyle::default());
+            {
+                let mut pending = lifecycle.world_mut().resource_mut::<PendingPathEdits>();
+                pending.in_flight_points.insert("track".into(), back.clone());
+                pending.seed_pending.insert("track".into());
+                pending.projected_versions.insert("track".into(), 8);
+                pending.checked_reads.insert("old".into(), "track".into());
+                pending.deferred_projections.insert("track".into(), DeferredProjection { projection: projection.clone(), deadline: std::time::Instant::now() });
+            }
+            let line = lifecycle.world_mut().spawn(GpxTrackLine { track_node_id: "track".into() }).id();
+            let point = lifecycle.world_mut().spawn(SinglePointTrackNode { track_node_id: "track".into() }).id();
+            lifecycle.update();
+            assert!(lifecycle.world().get_entity(line).is_err() && lifecycle.world().get_entity(point).is_err(), "unknown same-Petal access removes both rendered route forms");
+            let pending = lifecycle.world().resource::<PendingPathEdits>();
+            assert!(pending.access_retired && pending.in_flight_points.is_empty() && pending.seed_pending.is_empty() && pending.projected_versions.is_empty() && pending.checked_reads.is_empty() && pending.deferred_projections.is_empty());
+            assert!(lifecycle.world().resource::<TrackRouteMap>().routes.is_empty());
+            assert!(lifecycle.world().resource::<TrackStyleMap>().styles.is_empty());
+            lifecycle.world_mut().resource_mut::<fe_ui::plugin::LocalUserRole>().role = Some("viewer".into());
+            lifecycle.update();
+            assert!(!lifecycle.world().resource::<PendingPathEdits>().access_retired);
+            assert_eq!(lifecycle.world().resource::<VerseManager>().pending_scene_operations(), 1, "restored Viewer access rehydrates through a fresh complete read intent");
+            lifecycle.world_mut().resource_mut::<fe_ui::plugin::LocalUserRole>().role = Some("none".into());
+            lifecycle.update();
+            assert!(lifecycle.world().resource::<PendingPathEdits>().access_retired);
+            assert_eq!(lifecycle.world().resource::<VerseManager>().pending_scene_operations(), 0, "same-Petal revocation retires newly queued read identities too");
+            lifecycle.world_mut().resource_mut::<fe_ui::plugin::LocalUserRole>().role = Some("viewer".into());
+            lifecycle.update();
+            assert_eq!(lifecycle.world().resource::<VerseManager>().pending_scene_operations(), 1);
+        }
         let rows = projection.editor_rows();
         let nav = fe_ui::navigation_manager::NavigationManager {
             active_verse_id: Some("v".into()),

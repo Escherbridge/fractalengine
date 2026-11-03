@@ -38,6 +38,8 @@ struct Binding {
     path_points_hash: Option<[u8; 32]>,
     route_properties_hash: Option<[u8; 32]>,
     asset_id: Option<String>,
+    replica_identity: Option<[u8; 32]>,
+    editor_points: Option<Value>,
 }
 
 struct Canonical<'a>(&'a Value);
@@ -81,6 +83,7 @@ pub(super) fn route_properties(properties: &Value) -> Value {
         "gis.track.visible",
         "gis.track.closed",
         "gis.track.fill.color",
+        fe_sdk::path_asset::PATH_ASSET_PROPERTY_KEY,
     ];
     Value::Object(
         keys.into_iter()
@@ -106,6 +109,12 @@ impl Default for SceneSources {
 }
 
 impl SceneSources {
+    pub(super) fn retire(&mut self) {
+        if !self.sources.is_empty() {
+            self.clear();
+        }
+    }
+
     pub(super) fn clear(&mut self) {
         self.sources.clear();
         self.hierarchy_revision = self.hierarchy_revision.saturating_add(1);
@@ -117,6 +126,35 @@ impl SceneSources {
 }
 
 impl VerseManager {
+    pub(super) fn current_editor_points(&self, node_id: &str) -> Option<Value> {
+        self.scene_sources
+            .sources
+            .get(node_id)?
+            .editor_points
+            .clone()
+    }
+
+    pub(super) fn matches_replica_current(
+        &self,
+        current: &fe_runtime::scene_replication::ReplicatedNodeCurrent,
+    ) -> bool {
+        replica_identity(current).is_some_and(|identity| {
+            self.scene_sources
+                .sources
+                .get(&current.state.node_id)
+                .is_some_and(|binding| binding.replica_identity == Some(identity))
+        })
+    }
+
+    pub(super) fn bind_replica_current(
+        &mut self,
+        current: &fe_runtime::scene_replication::ReplicatedNodeCurrent,
+    ) {
+        if let Some(binding) = self.scene_sources.sources.get_mut(&current.state.node_id) {
+            binding.replica_identity = replica_identity(current);
+        }
+    }
+
     pub fn synchronize_scene_navigation(
         &mut self,
         nav: &crate::navigation_manager::NavigationManager,
@@ -257,7 +295,7 @@ impl VerseManager {
         properties: &Value,
         asset_id: Option<&str>,
     ) {
-        if history_version > 0 {
+        if history_version > 0 && !self.scene_access_blocked() {
             if let Some(petal_id) = self.petal_id_of(node_id).map(str::to_owned) {
                 let _ = self.admit_scene(
                     node_id,
@@ -308,8 +346,27 @@ impl VerseManager {
                 route_properties_hash: properties
                     .and_then(|properties| properties_hash(&route_properties(properties))),
                 asset_id: asset_id.map(str::to_owned),
+                replica_identity: None,
+                editor_points: properties
+                    .and_then(|properties| properties.get("gpx_points"))
+                    .cloned(),
             },
         );
         self.scene_admission(node_id, petal_id)
     }
+}
+
+fn replica_identity(
+    current: &fe_runtime::scene_replication::ReplicatedNodeCurrent,
+) -> Option<[u8; 32]> {
+    if matches!(
+        current.provenance,
+        fe_runtime::scene_replication::ReplicaNodeProvenance::LegacyReplicaApply
+    ) {
+        return None;
+    }
+    serde_json::to_value(current)
+        .ok()
+        .as_ref()
+        .and_then(properties_hash)
 }

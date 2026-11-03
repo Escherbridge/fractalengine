@@ -1007,7 +1007,11 @@ fn apply_replica_current(
     already_spawned: &mut std::collections::HashSet<String>,
 ) {
     use super::replica_projection::Outcome;
+    if manager.scene_access_blocked() {
+        return;
+    }
     let state = &current.state;
+    let editor_before = manager.current_editor_points(&state.node_id);
     match super::replica_projection::apply(
         current,
         manager,
@@ -1052,7 +1056,7 @@ fn apply_replica_current(
                 ui.show_advisory("Shared object updated; unfinished move cancelled", caches.time.elapsed_secs_f64());
             }
             let properties = serde_json::Value::Object(state.properties.clone());
-            if super::replica_projection::protect_editor(&state.node_id, &properties, path) {
+            if super::replica_projection::refresh_editor(&state.node_id, Some(&properties), editor_before.as_ref(), path) {
                 ui.show_advisory("Shared path changed; your local unsaved draft was retained", caches.time.elapsed_secs_f64());
             }
             properties::handle_node_properties_loaded(
@@ -1080,7 +1084,7 @@ fn apply_replica_current(
     if nav.active_petal_id.as_deref() == Some(state.petal_id.as_str()) {
         let properties = state.tombstone.is_none()
             .then(|| serde_json::Value::Object(state.properties.clone()));
-        if !manager.queue_current_path(&state.node_id, &state.petal_id, properties) {
+        if !manager.queue_current_path_after(&state.node_id, &state.petal_id, properties, editor_before) {
             ui.show_advisory("Shared path refresh is full; reopen this Petal to refresh its geometry", caches.time.elapsed_secs_f64());
         }
     }
@@ -3060,6 +3064,29 @@ mod tests {
         assert_eq!(app.world().get::<Transform>(ordinary).unwrap().translation.x, 23.0, "an identical recovery read does not cancel a newer preview");
         assert!(app.world().resource::<NodeManager>().primary().unwrap().drag_committed);
         assert_eq!(app.world().resource::<VerseManager>().scene_admission("cold-node", "p1"), Some(source));
+        remote.provenance = ReplicaNodeProvenance::OriginalSceneCommit { hlc: 2, publisher: "did:key:fixture".into() };
+        remote.state.edit_seq += 1;
+        app.world_mut().write_message(DbResult::ReplicatedNodeCurrent { current: remote.clone() });
+        app.update();
+        assert_eq!(app.world().get::<Transform>(ordinary).unwrap().translation.x, 22.0, "a new peer commit cancels a preview even when visible values are equal");
+        assert!(!app.world().resource::<VerseManager>().is_current_scene_admission("cold-node", "p1", source));
+        let props = serde_json::Value::Object(remote.state.properties.clone());
+        app.world_mut().resource_mut::<VerseManager>().admit_local_scene("cold-node", 77, &props, None);
+        let local = app.world().resource::<VerseManager>().local_scene_admission("cold-node", "p1", 77).unwrap();
+        remote.provenance = ReplicaNodeProvenance::OriginalSceneCommit { hlc: 3, publisher: "did:key:fixture".into() };
+        app.world_mut().write_message(DbResult::ReplicatedNodeCurrent { current: remote.clone() });
+        app.update();
+        assert!(!app.world().resource::<VerseManager>().is_current_scene_admission("cold-node", "p1", local));
+        assert!(app.world().resource::<VerseManager>().local_scene_admission("cold-node", "p1", 77).is_none(), "equal geometry cannot relabel a stale local path queue as a new peer admission");
+        assert_eq!(app.world().resource::<VerseManager>().scene_admission("cold-node", "p1").unwrap().local_history_version(), None);
+        let mut legacy = remote.clone();
+        legacy.provenance = ReplicaNodeProvenance::LegacyReplicaApply;
+        app.world_mut().write_message(DbResult::ReplicatedNodeCurrent { current: legacy.clone() });
+        app.update();
+        let unknown_identity = app.world().resource::<VerseManager>().scene_admission("cold-node", "p1").unwrap();
+        app.world_mut().write_message(DbResult::ReplicatedNodeCurrent { current: legacy });
+        app.update();
+        assert!(!app.world().resource::<VerseManager>().is_current_scene_admission("cold-node", "p1", unknown_identity), "legacy provenance never proves a repeated admission");
         remote.state.position[0] = 24.0;
         app.world_mut().write_message(DbResult::ReplicatedNodeCurrent { current: remote.clone() });
         app.update();
@@ -3093,6 +3120,44 @@ mod tests {
         app.update();
         assert_eq!(app.world().get::<Transform>(ordinary).unwrap().translation.x, 26.0);
         assert!(!app.world().resource::<VerseManager>().committed_versions.contains_key("cold-node"));
+
+        let mut shared_path = snapshot("remote-path", "p1", [0.0, 0.0, 0.0]);
+        let first_points = json!([[0, 0, 0, 0], [1, 0, 1, 1]]);
+        shared_path.state.properties.insert("gpx_type".into(), json!("track"));
+        shared_path.state.properties.insert("gpx_points".into(), first_points.clone());
+        {
+            let mut path = app.world_mut().resource_mut::<PathEditorState>();
+            path.editing_track_id = Some("remote-path".into());
+            path.points.clear();
+            path.points_pending = true;
+        }
+        app.world_mut().write_message(DbResult::ReplicatedNodeCurrent { current: shared_path.clone() });
+        app.update();
+        assert_eq!(app.world().resource::<PathEditorState>().points, crate::gis::decode_gpx_points(&first_points));
+        let second_points = json!([[2, 0, 0, 0], [3, 0, 1, 1]]);
+        shared_path.state.properties.insert("gpx_points".into(), second_points.clone());
+        shared_path.state.edit_seq += 1;
+        app.world_mut().write_message(DbResult::ReplicatedNodeCurrent { current: shared_path.clone() });
+        app.update();
+        assert_eq!(app.world().resource::<PathEditorState>().points, crate::gis::decode_gpx_points(&second_points), "a clean prior committed editor advances with the peer");
+        app.world_mut().resource_mut::<PathEditorState>().points[0].position[0] = 90.0;
+        shared_path.state.properties.insert("gpx_points".into(), json!([[4, 0, 0, 0], [5, 0, 1, 1]]));
+        shared_path.state.edit_seq += 1;
+        app.world_mut().write_message(DbResult::ReplicatedNodeCurrent { current: shared_path.clone() });
+        app.update();
+        assert_eq!(app.world().resource::<PathEditorState>().points[0].position[0], 90.0, "a later local editor draft survives a peer path change");
+        shared_path.state.properties.remove("gpx_points");
+        app.world_mut().write_message(DbResult::ReplicatedNodeCurrent { current: shared_path.clone() });
+        app.update();
+        assert_eq!(app.world().resource::<PathEditorState>().editing_track_id.as_deref(), Some("remote-path"), "becoming a non-path retains a later local draft");
+        shared_path.state.properties.insert("gpx_points".into(), second_points.clone());
+        app.world_mut().write_message(DbResult::ReplicatedNodeCurrent { current: shared_path.clone() });
+        app.update();
+        app.world_mut().resource_mut::<PathEditorState>().points = crate::gis::decode_gpx_points(&second_points);
+        shared_path.state.properties.remove("gpx_points");
+        app.world_mut().write_message(DbResult::ReplicatedNodeCurrent { current: shared_path });
+        app.update();
+        assert!(app.world().resource::<PathEditorState>().editing_track_id.is_none(), "a clean editor closes when its admitted row stops being a path");
 
         let birth = snapshot("remote-birth", "p1", [4.0, 1.0, 2.0]);
         app.world_mut().write_message(DbResult::ReplicatedNodeCurrent { current: birth.clone() });

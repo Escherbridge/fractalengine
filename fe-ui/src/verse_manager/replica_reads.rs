@@ -98,6 +98,17 @@ impl RefreshIntents {
 }
 
 impl VerseManager {
+    pub fn scene_access_blocked(&self) -> bool {
+        self.replica_reads.blocked
+    }
+
+    pub fn retire_scene_read_models(&mut self) {
+        self.scene_sources.retire();
+        self.current_paths.clear();
+        self.scene_refresh.clear();
+        self.replica_reads.pending.clear();
+    }
+
     pub(super) fn invalidate_scene_access(&mut self, nav: &NavigationManager) {
         self.scene_sources.clear();
         self.current_paths.clear();
@@ -292,7 +303,12 @@ impl ReplicaReads {
         let Some(mut read) = self.pending.remove(node_id) else {
             return Reply::Consumed;
         };
-        let Phase::InFlight { request, owner, .. } = &read.phase else {
+        let Phase::InFlight {
+            request,
+            owner,
+            deadline,
+        } = &read.phase
+        else {
             self.pending.insert(node_id.clone(), read);
             return Reply::Consumed;
         };
@@ -301,6 +317,11 @@ impl ReplicaReads {
             return Reply::Consumed;
         }
         if read.navigation != Navigation::current(nav) {
+            return Reply::Consumed;
+        }
+        if now >= *deadline {
+            read.retry(now);
+            self.pending.insert(node_id.clone(), read);
             return Reply::Consumed;
         }
         if !owner.matches(node_id, manager) {

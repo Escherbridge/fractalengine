@@ -1770,3 +1770,16 @@ The one-use invitation host now consumes typed Owner or delegated Manager Source
 from the actual v2 DB preparation. Metadata includes its exact public proof identity and
 current Access context; the fresh result must match before moving the credential once.
 Owner API-token/operator gates are unchanged and do not assert entity Owner authority.
+
+## Path access retirement
+
+The GPX host chain handles read-model access before draining path/import operations.
+Missing or unresolved local roles, denied roles and the manager's pending role check
+retire host point seeds, read/create waiters, deferred projections, local version
+watermarks and route/style caches, and despawn both line and single-point projections.
+Manager source/read identities are retired too; role-resolution ownership remains.
+Queued path/import intents are discarded while unavailable, with no mutation replay.
+The host producer systems stay gated until a fresh Viewer-or-higher result permits
+rehydration. Returning to the same Petal after a grant starts bounded complete reads;
+old queues, cached paths and equal-looking node identities are not reused as proof.
+Actual committed Undo/editor-batch outcome ownership remains in its existing owner.
