@@ -97,6 +97,22 @@ pub struct StampInteractionState {
 }
 
 impl StampInteractionState {
+    /// Forget a removed promoted row without inventing another promotion result.
+    pub(crate) fn forget_node(&mut self, node_id: &str) {
+        let removed: std::collections::HashSet<_> = self.promoted.iter()
+            .filter_map(|(stamp, id)| (id == node_id || stamp.track_node_id == node_id).then(|| stamp.clone()))
+            .collect();
+        self.promoted.retain(|stamp, _| !removed.contains(stamp));
+        self.loaded_properties.retain(|stamp, _| stamp.track_node_id != node_id && !removed.contains(stamp));
+        self.reconciled_baselines.retain(|stamp| stamp.track_node_id != node_id && !removed.contains(stamp));
+        self.overrides.retain(|stamp, _| stamp.track_node_id != node_id && !removed.contains(stamp));
+        if self.selected.as_ref().is_some_and(|stamp| stamp.track_node_id == node_id || removed.contains(stamp)) {
+            self.clear_selection();
+        } else if self.pending_promotion.as_ref().is_some_and(|stamp| stamp.track_node_id == node_id || removed.contains(stamp)) {
+            self.pending_promotion = None;
+        }
+    }
+
     pub(crate) fn promoted_node_id_parts(&self, track: &str, index: usize) -> Option<&str> {
         self.promoted
             .iter()

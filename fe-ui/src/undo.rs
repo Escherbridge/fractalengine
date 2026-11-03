@@ -253,6 +253,7 @@ pub struct PathProjection {
     pub petal_id: String,
     /// Positive journal version of the confirmed points.
     pub history_version: i64,
+    pub scene_incarnation: u128,
     /// Complete point rows with their original metadata.
     pub points: Value,
     pub editor_policy: PathEditorPolicy,
@@ -261,11 +262,14 @@ impl PathProjection {
     /// Reject stale receipts before the host changes route or editor caches.
     pub fn is_current(&self, manager: &VerseManager) -> bool {
         self.history_version > 0
+            && self.scene_incarnation == manager.scene_incarnation()
             && manager.petal_id_of(&self.node_id) == Some(self.petal_id.as_str())
-            && manager
-                .committed_versions
-                .get(&self.node_id)
-                .is_none_or(|version| *version <= self.history_version)
+            && manager.local_scene_admission(
+                &self.node_id,
+                &self.petal_id,
+                self.history_version,
+            ).is_some()
+            && manager.current_scene_points_match(&self.node_id, &self.petal_id, &self.points)
     }
     /// Preserve a changed local draft while authoritative geometry/history advance.
     pub fn apply_editor(&self, state: &mut crate::gis::PathEditorState) -> bool {
@@ -273,7 +277,8 @@ impl PathProjection {
             return false;
         }
         let rows = self.editor_rows();
-        let retained = self.editor_policy.preserves(&state.points, &rows);
+        let retained = !(state.points_pending && state.points.is_empty())
+            && self.editor_policy.preserves(&state.points, &rows);
         state.points_pending = false;
         if retained {
             retain_local_draft(state);
@@ -401,6 +406,7 @@ impl UndoState {
         node_id: &str,
         petal_id: &str,
         history_version: i64,
+        scene_incarnation: u128,
         points: Value,
         editor_policy: PathEditorPolicy,
     ) {
@@ -419,6 +425,7 @@ impl UndoState {
             node_id: node_id.into(),
             petal_id: petal_id.into(),
             history_version,
+            scene_incarnation,
             points,
             editor_policy,
         });
@@ -1048,6 +1055,7 @@ pub(crate) fn observe_results(
                                     &receipt.node_id,
                                     &receipt.state.petal_id,
                                     receipt.history_version,
+                                    manager.scene_incarnation(),
                                     points.clone(),
                                     editor_policy,
                                 );
@@ -1161,6 +1169,7 @@ pub(crate) fn observe_results(
                             node_id,
                             &current.petal_id,
                             version,
+                            manager.scene_incarnation(),
                             current
                                 .properties
                                 .get("gpx_points")

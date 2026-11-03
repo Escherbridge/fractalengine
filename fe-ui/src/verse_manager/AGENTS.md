@@ -1,5 +1,56 @@
 # fe-ui/src/verse_manager — hierarchy tree + DB result draining
 
+## Admitted replica current state
+
+`replica_projection.rs` consumes only the DB's typed, Viewer-fenced resulting
+current row. It does not convert a remote clock, edit sequence or old local
+journal fact into a local mutation receipt. The manager validates loaded stored
+ancestry, complete renderable TRS and the actual asset identity. It updates
+resident ordinary entities in place, rematerializes changed asset paths through
+the existing residency budgets, and leaves new births to the same spawner.
+Missing parents request one coalesced hierarchy refresh followed by a fresh
+owned current read; the original incomplete projection is never replayed later.
+
+`replica_reads.rs` owns at most256 current-read intents. Accepted reads bind a
+fresh nonce, navigation intent, actual Petal and node-cache epoch. Full channels
+retain unsent reads; five-second timeouts and disconnected/failing reads use
+capped backoff. A hierarchy replacement retires old nonces. An observed related
+role change clears scene source bindings and waits for a fresh effective role;
+the DB's actual Viewer check remains authoritative even before UI role feedback.
+These queues belong to VerseManager, so terminal reset replaces their entire
+state along with the scene manager. No mutation is retried.
+
+`scene_admission.rs` gives admitted render sources a manager incarnation and a
+checked monotonic epoch. Actual local receipts additionally bind their positive
+local journal version; replica/current reads do not. Canonical BLAKE3 hashes bind
+the full property bag and exact path rows without retaining another full bag per
+node. A full current read whose render data is already identical is idempotent:
+it does not cancel a newer preview or clear a draft. Local-history numbers are
+retained only as stale-receipt floors, never attributed to a changed peer row.
+
+The host's local path queues must bind the exact admitted local receipt version
+and manager incarnation. A reader that runs before that admission waits under a
+bounded deadline; it cannot attach the manager's arbitrary newer epoch to an old
+queue item. Current path work carries its admission token at production and is
+discarded when a later admitted source replaces it. Plain property replies never
+mint this proof. A matching completed-save receipt remains the save outcome;
+CurrentRead/UncommittedRead recovery refreshes through the separate full-current
+read protocol rather than inventing a committed journal version.
+
+Complete current bags feed the shared primitive/stamp/visibility/callout/Inspector
+hydration seam. Conflicting local path drafts are retained with an explicit
+stored-state-change advisory. Tombstones remove tree/resident/cache/selection
+ownership, and queue route teardown under the same current-source fence. Asset
+metadata with unavailable bytes retains its identity and no usable path; this
+adapter never claims a successful download or peer historical convergence.
+
+The existing DB-result/residency App journey now also covers remote TRS and rich
+null-bearing data, an idempotent read during a newer preview, actual asset-branch
+rematerialization, current-read nonce/epoch rejection, ordinary births and node
+tombstone cleanup. The existing index journey checks local/current source
+separation, hierarchy invalidation and manager replacement. These are authored
+component checks; no source-author execution or real peer/GPU claim is implied.
+
 ## §committed-object-materialization
 
 Owned editor-batch results validate the full request outcome and preflight every member

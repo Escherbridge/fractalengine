@@ -21,6 +21,9 @@ mod petal_respawn;
 mod primitive_materialize;
 mod primitive_reconcile;
 mod residency_ledger;
+mod replica_projection;
+mod replica_reads;
+mod scene_admission;
 mod scene_property_reads;
 pub(crate) mod spawn;
 
@@ -43,7 +46,10 @@ pub(crate) use path_asset_materialize::StampRenderSource;
 pub use primitive_materialize::PrimitiveDescriptorCache;
 pub use primitive_reconcile::PrimitiveMaterialAssets;
 pub use residency_ledger::{radius_scale_for_pressure, ResidencyLedger};
+pub use replica_projection::CurrentPathProjection;
+pub use scene_admission::SceneAdmission;
 pub(crate) use spawn::MAX_PETAL_NODES;
+pub const SCENE_NODE_HARD_LIMIT: usize = spawn::MAX_PETAL_NODES;
 pub use spawn::{build_primitive_mesh, PathAssetInstance, PrimitiveNode, ResidentNode};
 
 // ---------------------------------------------------------------------------
@@ -117,6 +123,10 @@ pub struct VerseManager {
     pub(crate) committed_versions: std::collections::HashMap<String, i64>,
     pub(crate) node_cache_epochs: std::collections::HashMap<String, u64>,
     pub(crate) next_node_cache_epoch: u64,
+    scene_sources: scene_admission::SceneSources,
+    current_paths: replica_projection::CurrentPaths,
+    scene_refresh: replica_reads::RefreshIntents,
+    replica_reads: replica_reads::ReplicaReads,
     pub(crate) url_asset_ids: std::collections::HashMap<String, Option<String>>,
     pub(crate) url_storage: std::collections::HashMap<String, fe_runtime::messages::NodeUrlStorage>,
 }
@@ -132,6 +142,10 @@ impl VerseManager {
             committed_versions: Default::default(),
             node_cache_epochs: Default::default(),
             next_node_cache_epoch: 0,
+            scene_sources: Default::default(),
+            current_paths: Default::default(),
+            scene_refresh: Default::default(),
+            replica_reads: Default::default(),
             url_asset_ids: Default::default(),
             url_storage: Default::default(),
         };

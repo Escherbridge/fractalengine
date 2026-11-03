@@ -17,6 +17,29 @@ on Petal/navigation/authority reloads and prune removed node IDs. History previe
 this queue. QA debug and portal adapters read NodeManager's primary accessor; their
 actual rendered-entity identity guards are unchanged.
 
+## Admitted scene and route projection
+
+The GPX import/path systems run as one explicit chain after UI PostSelection.
+The UI's FIFO DB-result projection therefore admits the scene source before
+the host consumes its queues, and deferred import spawns are visible before
+route reconciliation. `advance_path_edits` is the current route-render owner:
+it coalesces a matching owned local edit policy with the full current property
+bag, then renders each current node once. Current peer/read snapshots never
+enter the local positive-history queue with a made-up version.
+
+Petal entry and hierarchy replacement build a capped node backlog, admitting
+up to64 refresh intents per frame through VerseManager. Its bounded private
+current-reader owns the actual RPC; no blocking uncorrelated property wave is
+sent by the host. The old property-only renderer has been retired, so a stale
+NodePropertiesLoaded that the UI rejected cannot overwrite a newer route.
+Legacy deletion still tears down all matching routes and icons.
+
+The QA pending count includes manager read/intents/current projections and
+the host's deferred/backlog work. Terminal maintenance clears these host
+queues and route/style maps after dropping their normal schedules. This is
+read-model lifecycle behavior, not evidence that destructive reset or actual
+peer asset/history sharing has been exercised.
+
 ## Confirmed local API address
 
 The existing API-listening fan-out always forwards the actual bound SocketAddr

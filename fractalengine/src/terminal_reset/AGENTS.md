@@ -9,3 +9,9 @@ The lifecycle contract and startup wiring rationale live in `../AGENTS.md` ?term
 - `presentation.rs` renders only maintenance status and terminal Close controls. It cannot restart services or repeat reset.
 
 Normal Update and EguiPrimaryContextPass schedules are dropped at a First boundary; their locals cannot retain a queued mutation worker. PostUpdate/Last platform rendering and cleanup remain installed. A matching receipt and DB join are separate facts. Unconfirmed outcomes keep the process terminal; later receipts may clarify data without resuming producers.
+
+The host also replaces PendingPathEdits, PendingGpxImports, TrackRouteMap and
+TrackStyleMap after invalidating the UI managers. This clears the admitted-current
+projection backlog and parsed route data, rather than retaining inert old scene
+queues until terminal Close. VerseManager replacement clears all private current
+reads, source identities and recovery intents.

@@ -237,6 +237,10 @@ fn freeze_editor(world: &mut World, supervisor: &mut Supervisor) -> Result<(), &
     world.remove_resource::<crate::terrain_bridge::StreamedBundleResults>();
     crate::terrain_bridge::discard_terminal_state(world);
     fe_ui::maintenance::clear_read_models(world);
+    world.insert_resource(crate::gpx_bridge::PendingPathEdits::default());
+    world.insert_resource(crate::gpx_bridge::PendingGpxImports::default());
+    world.insert_resource(fe_terrain::iot::TrackRouteMap::default());
+    world.insert_resource(fe_terrain::iot::TrackStyleMap::default());
     world.insert_resource(fe_runtime::app::RuntimeApiEndpoint::default());
     world.insert_resource(fe_runtime::PeerRegistry::default());
     world.insert_resource(fe_sync::SyncStatus::default());

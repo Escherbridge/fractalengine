@@ -18,12 +18,17 @@ impl VerseManager {
             return true;
         }
         if let Some(previous) = self.petal_id_of(&node.id).map(str::to_owned) {
-            self.remove_node(&previous, &node.id);
+            self.remove_node_entry(&previous, &node.id);
+            self.replica_reads.invalidate_node(&node.id);
         }
         self.add_node(petal_id, node)
     }
 
     fn refresh_node_cache(&mut self, node_id: &str) {
+        self.scene_sources.remove(node_id);
+        self.current_paths.remove(node_id);
+        self.scene_refresh.remove(node_id);
+        self.replica_reads.invalidate_node(node_id);
         self.committed_versions.remove(node_id);
         self.url_asset_ids.remove(node_id);
         self.url_storage.remove(node_id);
@@ -50,6 +55,9 @@ impl VerseManager {
     pub(crate) fn rebuild_node_index(&mut self) {
         self.node_index.clear();
         self.node_cache_epochs.clear();
+        self.scene_sources.clear();
+        self.current_paths.clear();
+        self.replica_reads.invalidate_hierarchy();
         self.url_asset_ids.clear();
         self.url_storage.clear();
         for (vi, verse) in self.verses.iter().enumerate() {
@@ -71,7 +79,7 @@ impl VerseManager {
     /// self-heal-less full-walk fallback for a stale/missing entry). Read-only —
     /// used to tag a node's `path_asset` cache entry with its owning petal (see
     /// `path_asset_materialize`). `None` when the node isn't in the tree.
-    pub(crate) fn petal_id_of(&self, node_id: &str) -> Option<&str> {
+    pub fn petal_id_of(&self, node_id: &str) -> Option<&str> {
         if let Some(&(vi, fi, pi)) = self.node_index.get(node_id) {
             if let Some(petal) = self
                 .verses
@@ -128,12 +136,20 @@ impl VerseManager {
 
     /// Remove a node from a petal (no-op on unknown petal) and drop its index entry.
     pub(crate) fn remove_node(&mut self, petal_id: &str, node_id: &str) {
+        self.remove_node_entry(petal_id, node_id);
+        self.replica_reads.supersede(node_id);
+    }
+
+    fn remove_node_entry(&mut self, petal_id: &str, node_id: &str) {
         if let Some(petal) = self.find_petal_mut(petal_id) {
             petal.nodes.retain(|n| n.id != node_id);
         }
         self.node_index.remove(node_id);
         self.committed_versions.remove(node_id);
         self.node_cache_epochs.remove(node_id);
+        self.scene_sources.remove(node_id);
+        self.current_paths.remove(node_id);
+        self.scene_refresh.remove(node_id);
         self.url_asset_ids.remove(node_id);
         self.url_storage.remove(node_id);
     }
@@ -316,11 +332,67 @@ mod tests {
 
     #[test]
     fn rebuild_indexes_every_node() {
-        let mgr = make_tree();
+        let mut mgr = make_tree();
         assert_eq!(mgr.node_index.len(), 4);
         assert_eq!(mgr.node_index.get("node-1"), Some(&(0, 0, 0)));
         assert_eq!(mgr.node_index.get("node-3"), Some(&(0, 0, 1)));
         assert_eq!(mgr.node_index.get("node-4"), Some(&(1, 0, 0)));
+        let points = serde_json::json!([[0, 0, 0, 0], [1, 0, 1, 0]]);
+        let properties = serde_json::json!({"gpx_points": points, "nested": {"null": null}});
+        mgr.admit_local_scene("node-1", 3, &properties, Some("asset-1"));
+        let local = mgr.local_scene_admission("node-1", "petal-1", 3).unwrap();
+        assert!(mgr.current_scene_points_match("node-1", "petal-1", &points));
+        assert!(!mgr.current_scene_points_match("node-1", "petal-1", &serde_json::json!([])));
+        assert!(mgr.local_scene_admission("node-1", "petal-1", 2).is_none());
+        let replica = mgr.admit_replica_scene("node-1", "petal-1", false, Some(&properties), Some("asset-1")).unwrap();
+        assert!(!mgr.is_current_scene_admission("node-1", "petal-1", local));
+        assert_eq!(replica.local_history_version(), None);
+        assert!(mgr.local_scene_admission("node-1", "petal-1", 3).is_none());
+        mgr.admit_local_scene("node-1", 4, &properties, Some("asset-1"));
+        let newer = mgr.local_scene_admission("node-1", "petal-1", 4).unwrap();
+        assert!(!mgr.is_current_scene_admission("node-1", "petal-1", replica));
+        assert!(mgr.queue_current_path("node-1", "petal-1", Some(properties.clone())));
+        mgr.rebuild_node_index();
+        assert!(!mgr.is_current_scene_admission("node-1", "petal-1", newer));
+        assert!(mgr.take_current_path_projection(Some("petal-1")).is_none());
+        let old_incarnation = mgr.scene_incarnation();
+        let replacement = VerseManager::from_verses(mgr.verses.clone());
+        assert_ne!(replacement.scene_incarnation(), old_incarnation);
+        assert!(!replacement.is_current_scene_admission("node-1", "petal-1", local));
+        let mut nav = crate::navigation_manager::NavigationManager::default();
+        nav.navigate_to_petal_in_fractal("verse-1", "V", "fractal-1", "F", "petal-1");
+        mgr.synchronize_scene_navigation(&nav);
+        mgr.admit_local_scene("node-1", 5, &properties, Some("asset-1"));
+        let before_navigation = mgr.scene_admission("node-1", "petal-1").unwrap();
+        assert!(mgr.queue_current_path("node-1", "petal-1", Some(properties)));
+        assert!(mgr.queue_replica_read("node-1", &nav, 0.0));
+        nav.back_from_petal();
+        mgr.synchronize_scene_navigation(&nav);
+        assert_eq!(mgr.pending_scene_operations(), 0);
+        assert!(!mgr.is_current_scene_admission("node-1", "petal-1", before_navigation));
+        let (tx, rx) = crossbeam::channel::bounded(1);
+        tx.try_send(fe_runtime::messages::DbCommand::LoadHierarchy).unwrap();
+        assert!(mgr.queue_replica_read("node-1", &nav, 0.0));
+        assert!(!mgr.pump_replica_reads(&nav, &tx, 0.0));
+        assert_eq!(mgr.pending_scene_operations(), 1, "Full retains only a read intent");
+        assert!(matches!(rx.try_recv(), Ok(fe_runtime::messages::DbCommand::LoadHierarchy)));
+        mgr.pump_replica_reads(&nav, &tx, 0.0);
+        let request = match rx.try_recv().unwrap() {
+            fe_runtime::messages::DbCommand::ReadReplicatedNodeCurrent { request_id, .. } => request_id,
+            other => panic!("unexpected current read: {other:?}"),
+        };
+        mgr.invalidate_scene_access(&nav);
+        let scope = nav.active_scope().unwrap();
+        mgr.accept_scene_role(&scope, "none", &nav);
+        assert_eq!(mgr.pending_scene_operations(), 0);
+        let late = fe_runtime::messages::DbResult::ReplicatedNodeCurrentRead { node_id: "node-1".into(), request_id: request, result: Err("old access".into()) };
+        assert!(matches!(mgr.route_replica_read(&late, &nav, 1.0), super::super::replica_reads::Reply::Consumed));
+        mgr.accept_scene_role(&scope, "viewer", &nav);
+        assert!(mgr.queue_replica_read("node-1", &nav, 1.0));
+        let old_incarnation = mgr.scene_incarnation();
+        mgr.clear_for_terminal_reset();
+        assert_eq!(mgr.pending_scene_operations(), 0);
+        assert_ne!(mgr.scene_incarnation(), old_incarnation);
     }
 
     #[test]

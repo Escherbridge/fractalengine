@@ -50,7 +50,7 @@ pub(super) fn editor_batch(
     projection: &crate::editor_batch::BatchProjection,
     manager: &VerseManager,
 ) -> Result<Vec<CommittedNodeMaterialization>, String> {
-    if projection.source == crate::editor_batch::ProjectionSource::LegacyRead {
+    if !matches!(projection.source, crate::editor_batch::ProjectionSource::Commit | crate::editor_batch::ProjectionSource::ExternalCommit) {
         return Ok(Vec::new());
     }
     let petal = manager
@@ -65,10 +65,7 @@ pub(super) fn editor_batch(
         if member.state.node_id != member.node_id
             || member.state.petal_id != projection.petal_id
             || !petal.nodes.iter().any(|node| node.id == member.node_id)
-            || manager
-                .committed_versions
-                .get(&member.node_id)
-                .is_some_and(|current| *current > version)
+            || !local_receipt_is_current(manager, &member.node_id, &projection.petal_id, version)
         {
             return Err(
                 "A batch member changed or is unavailable; the complete projection was withheld"
@@ -92,6 +89,12 @@ pub(super) enum MaterializationOutcome {
     Applied { transform_changed: bool },
     NeedsHierarchy,
     Ignored,
+}
+
+fn local_receipt_is_current(manager: &VerseManager, node_id: &str, petal_id: &str, version: i64) -> bool {
+    manager.committed_versions.get(node_id).is_none_or(|known| {
+        *known < version || (*known == version && manager.local_scene_admission(node_id, petal_id, version).is_some())
+    })
 }
 
 /// Admit only a complete committed asset birth matching its routed legacy identity.
@@ -180,11 +183,7 @@ pub(super) fn apply(
     >,
 ) -> MaterializationOutcome {
     let node = &current.node;
-    if manager
-        .committed_versions
-        .get(&node.node_id)
-        .is_some_and(|version| *version > current.history_version)
-    {
+    if !local_receipt_is_current(manager, &node.node_id, &node.petal_id, current.history_version) {
         return MaterializationOutcome::Ignored;
     }
     if manager
@@ -249,6 +248,7 @@ pub(super) fn apply(
     manager
         .committed_versions
         .insert(node.node_id.clone(), current.history_version);
+    manager.admit_local_scene(&node.node_id, current.history_version, &current.properties, current.asset_id.as_deref());
     let mut changed = false;
     for (entity, marker, existing_transform) in entities.iter() {
         if marker.node_id != node.node_id || marker.petal_id != node.petal_id {

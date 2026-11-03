@@ -105,6 +105,32 @@ pub struct VisibilityState {
 }
 
 impl VisibilityState {
+    /// Remove session visibility references for a committed node removal.
+    pub(crate) fn forget_node(&mut self, node_id: &str) {
+        let marker = self.promoted_stamp_marker.remove(node_id);
+        let had_override = self.node_overrides.remove(node_id).is_some();
+        let had_membership = self.group_membership.remove(node_id).is_some();
+        let mut changed = had_override || had_membership;
+        if let Some(marker) = marker.as_ref() {
+            self.promoted_stamp_alias.remove(marker);
+            self.node_overrides.remove(marker);
+            self.group_membership.remove(marker);
+            changed = true;
+        }
+        if let Some(solo) = self.solo.as_mut() {
+            changed |= solo.members.remove(node_id);
+            if let Some(marker) = marker.as_ref() {
+                changed |= solo.members.remove(marker);
+            }
+            if solo.members.is_empty() {
+                self.solo = None;
+            }
+        }
+        if changed {
+            self.bump_epoch();
+        }
+    }
+
     /// Monotonic mutation counter (F3a). See the field doc for why it exists.
     pub fn epoch(&self) -> u64 {
         self.epoch

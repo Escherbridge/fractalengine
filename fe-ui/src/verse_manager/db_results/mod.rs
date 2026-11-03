@@ -28,6 +28,7 @@ use crate::navigation_manager::NavigationManager;
 #[derive(SystemParam)]
 pub(super) struct DescriptorCaches<'w, 's> {
     committed_hierarchy_pending: Local<'s, bool>,
+    undo: Option<ResMut<'w, crate::undo::UndoState>>,
     selection_sources: crate::editor_batch::RenderedSources<'w, 's>,
     primitive: ResMut<'w, super::PrimitiveDescriptorCache>,
     path_asset: ResMut<'w, super::PathAssetCache>,
@@ -147,7 +148,55 @@ pub(super) fn apply_db_results(
     let mut already_spawned: std::collections::HashSet<String> =
         caches.spawned.iter().map(|m| m.node_id.clone()).collect();
     let mesh_budget_exceeded = caches.mesh_budget.exceeded;
+    verse_mgr.synchronize_scene_navigation(&nav);
     for result in reader.read() {
+        verse_mgr.synchronize_scene_navigation(&nav);
+        match result {
+            DbResult::RoleAssigned { scope, .. } | DbResult::RoleRevoked { scope, .. }
+                if nav.active_scope().is_some_and(|active| active == *scope
+                    || active.strip_prefix(scope.as_str()).is_some_and(|tail| tail.starts_with('-'))
+                    || scope.strip_prefix(active.as_str()).is_some_and(|tail| tail.starts_with('-'))) =>
+            {
+                verse_mgr.invalidate_scene_access(&nav);
+            }
+            DbResult::LocalRoleResolved { scope, role } => verse_mgr.accept_scene_role(scope, role, &nav),
+            _ => {}
+        }
+        let replica_current = match result {
+            DbResult::ReplicatedNodeCurrent { current } => {
+                verse_mgr.supersede_replica_read(&current.state.node_id);
+                Some(current)
+            }
+            DbResult::ReplicatedNodeCurrentRead { .. } => {
+                match verse_mgr.route_replica_read(
+                    result,
+                    &nav,
+                    caches.time.elapsed_secs_f64(),
+                ) {
+                    super::replica_reads::Reply::Current(current) => {
+                        Some(current)
+                    }
+                    super::replica_reads::Reply::Consumed => continue,
+                    super::replica_reads::Reply::Unowned => None,
+                }
+            }
+            _ => None,
+        };
+        if let Some(current) = replica_current {
+            apply_replica_current(
+                current,
+                &mut verse_mgr,
+                &mut nav,
+                &mut commands,
+                &mut node_mgr,
+                &mut path_state,
+                &mut inspector,
+                &mut ui_mgr,
+                &mut caches,
+                &mut already_spawned,
+            );
+            continue;
+        }
         let batch_result = if ui_mgr.editor_batch.owns(result) {
             Some(ui_mgr.editor_batch.route(
                 result,
@@ -167,7 +216,8 @@ pub(super) fn apply_db_results(
         if let Some(routed) = batch_result {
             match routed {
                 Ok(Some(projection)) => {
-                    if projection.protect_draft(&mut path_state) {
+                    if matches!(projection.source, crate::editor_batch::ProjectionSource::Commit | crate::editor_batch::ProjectionSource::ExternalCommit)
+                        && projection.protect_draft(&mut path_state) {
                         ui_mgr.show_advisory("Stored path state changed; your newer local draft was retained. The save outcome is shown separately.", caches.time.elapsed_secs_f64());
                     }
                     if projection.source == crate::editor_batch::ProjectionSource::LegacyRead {
@@ -179,11 +229,23 @@ pub(super) fn apply_db_results(
                         ui_mgr.show_advisory("Selection edit was not saved; stored objects changed and are being reloaded", caches.time.elapsed_secs_f64());
                         continue;
                     }
-                    if projection.source == crate::editor_batch::ProjectionSource::UncommittedRead {
-                        ui_mgr.show_advisory(
-                            "Selection edit was not saved; current stored objects were restored",
-                            caches.time.elapsed_secs_f64(),
+                    if matches!(projection.source, crate::editor_batch::ProjectionSource::CurrentRead | crate::editor_batch::ProjectionSource::UncommittedRead) {
+                        crate::visibility::groups::apply_registry_loaded(
+                            &mut caches.visibility,
+                            nav.active_petal_id.as_deref(),
+                            &projection.petal_id,
+                            &projection.groups,
                         );
+                        let mut queued = true;
+                        for member in &projection.members {
+                            queued &= verse_mgr.queue_replica_read(&member.node_id, &nav, caches.time.elapsed_secs_f64());
+                        }
+                        ui_mgr.show_advisory(if queued {
+                            "Selection save outcome resolved; current stored objects are being refreshed"
+                        } else {
+                            "Selection save outcome resolved; current refresh is full. Reopen this Petal to refresh it."
+                        }, caches.time.elapsed_secs_f64());
+                        continue;
                     }
                     if projection.source == crate::editor_batch::ProjectionSource::ExternalCommit {
                         ui_mgr.editor_batch.invalidate_redo();
@@ -211,6 +273,11 @@ pub(super) fn apply_db_results(
                                 &mut caches.visibility,
                                 &mut caches.callout_map,
                             );
+                            if nav.active_petal_id.as_deref() == Some(current.node.petal_id.as_str()) {
+                                if !verse_mgr.queue_current_path(&current.node.node_id, &current.node.petal_id, Some(current.properties.clone())) {
+                                    ui_mgr.show_advisory("Current path refresh is full; reopen this Petal to refresh its geometry", caches.time.elapsed_secs_f64());
+                                }
+                            }
                         }
                         crate::visibility::groups::apply_registry_loaded(
                             &mut caches.visibility,
@@ -218,7 +285,7 @@ pub(super) fn apply_db_results(
                             &projection.petal_id,
                             &projection.groups,
                         );
-                        ui_mgr.editor_batch.queue_projection(&projection);
+                        ui_mgr.editor_batch.queue_projection(&projection, verse_mgr.scene_incarnation());
                         if projection.source == crate::editor_batch::ProjectionSource::Commit {
                             ui_mgr.show_toast(
                                 "Complete selection edit saved",
@@ -352,6 +419,11 @@ pub(super) fn apply_db_results(
                     &mut caches.visibility,
                     &mut caches.callout_map,
                 );
+                if nav.active_petal_id.as_deref() == Some(current.node.petal_id.as_str()) {
+                    if !verse_mgr.queue_current_path(&current.node.node_id, &current.node.petal_id, Some(current.properties.clone())) {
+                        ui_mgr.show_advisory("Current path refresh is full; reopen this Petal to refresh its geometry", caches.time.elapsed_secs_f64());
+                    }
+                }
             }
         }
         inspector
@@ -692,6 +764,17 @@ pub(super) fn apply_db_results(
                 // Resolve the node's owning petal so the path-asset cache entry
                 // knows where to materialize (borrow ends before the handler call).
                 let petal_id = verse_mgr.petal_id_of(node_id).map(str::to_string);
+                let matches_current = petal_id.as_deref().is_some_and(|petal| {
+                    verse_mgr.current_scene_properties_match(node_id, petal, properties)
+                });
+                if !matches_current {
+                    verse_mgr.queue_replica_read(node_id, &nav, caches.time.elapsed_secs_f64());
+                    if petal_id.as_deref().is_some_and(|petal| {
+                        verse_mgr.scene_admission(node_id, petal).is_some()
+                    }) {
+                        continue;
+                    }
+                }
                 if !properties::handle_node_properties_loaded(
                     node_id,
                     petal_id.as_deref(),
@@ -760,6 +843,7 @@ pub(super) fn apply_db_results(
                 }
             }
             DbResult::NodePropertySet { node_id, key, .. } => {
+                verse_mgr.queue_replica_read(node_id, &nav, caches.time.elapsed_secs_f64());
                 if !properties::handle_node_property_set(
                     node_id,
                     key,
@@ -774,6 +858,7 @@ pub(super) fn apply_db_results(
                 }
             }
             DbResult::NodePropertyDeleted { node_id, key, .. } => {
+                verse_mgr.queue_replica_read(node_id, &nav, caches.time.elapsed_secs_f64());
                 if !properties::handle_node_property_deleted(
                     node_id,
                     key,
@@ -889,6 +974,116 @@ pub(super) fn apply_db_results(
         }
     }
     flush_committed_hierarchy(&db_sender, &mut caches.committed_hierarchy_pending);
+    verse_mgr.synchronize_scene_navigation(&nav);
+    while let Some(node) = verse_mgr.take_scene_refresh(&nav) {
+        if !verse_mgr.queue_replica_read(&node, &nav, caches.time.elapsed_secs_f64()) {
+            verse_mgr.request_scene_refresh(&node, &nav);
+            break;
+        }
+    }
+    if verse_mgr.pump_replica_reads(
+        &nav,
+        &db_sender.0,
+        caches.time.elapsed_secs_f64(),
+    ) {
+        ui_mgr.show_advisory(
+            "Some current scene data is unavailable; refresh or reopen this Petal to retry",
+            caches.time.elapsed_secs_f64(),
+        );
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn apply_replica_current(
+    current: &fe_runtime::scene_replication::ReplicatedNodeCurrent,
+    manager: &mut VerseManager,
+    nav: &mut NavigationManager,
+    commands: &mut Commands,
+    nodes: &mut crate::node_manager::NodeManager,
+    path: &mut crate::gis::PathEditorState,
+    inspector: &mut crate::plugin::InspectorFormState,
+    ui: &mut crate::actions::UiManager,
+    caches: &mut DescriptorCaches,
+    already_spawned: &mut std::collections::HashSet<String>,
+) {
+    use super::replica_projection::Outcome;
+    let state = &current.state;
+    match super::replica_projection::apply(
+        current,
+        manager,
+        commands,
+        &caches.current_nodes,
+        nav.active_petal_id.as_deref(),
+    ) {
+        Outcome::NeedsHierarchy => {
+            request_committed_hierarchy(&mut caches.committed_hierarchy_pending, nav);
+            if !manager.queue_replica_read(&state.node_id, nav, caches.time.elapsed_secs_f64()) {
+                ui.show_advisory("Shared object refresh queue is full; reopen this Petal to refresh it", caches.time.elapsed_secs_f64());
+            }
+            return;
+        }
+        Outcome::Invalid => {
+            ui.show_error("Shared object snapshot could not be projected safely", caches.time.elapsed_secs_f64());
+            return;
+        }
+        Outcome::Unchanged => return,
+        Outcome::Removed => {
+            nodes.accept_committed_transform(&state.node_id);
+            nodes.retain_members(|selection| selection.node_id != state.node_id);
+            caches.primitive.invalidate(&state.node_id);
+            caches.path_asset.invalidate(&state.node_id);
+            caches.applied.invalidate(&state.node_id);
+            caches.stamp_state.forget_node(&state.node_id);
+            caches.earthwork_map.forget_node(&state.node_id);
+            caches.callout_map.forget(&state.node_id);
+            caches.visibility.forget_node(&state.node_id);
+            already_spawned.remove(&state.node_id);
+            if path.tracks.iter().any(|row| row.node_id == state.node_id) {
+                path.tracks.retain(|row| row.node_id != state.node_id);
+                path.tracks_pending = false;
+                path.tracks_request_id = None;
+            }
+            if path.editing_track_id.as_deref() == Some(state.node_id.as_str()) {
+                path.stop_editing();
+            }
+        }
+        Outcome::Applied => {
+            if nodes.accept_committed_transform(&state.node_id) {
+                ui.show_advisory("Shared object updated; unfinished move cancelled", caches.time.elapsed_secs_f64());
+            }
+            let properties = serde_json::Value::Object(state.properties.clone());
+            if super::replica_projection::protect_editor(&state.node_id, &properties, path) {
+                ui.show_advisory("Shared path changed; your local unsaved draft was retained", caches.time.elapsed_secs_f64());
+            }
+            properties::handle_node_properties_loaded(
+                &state.node_id,
+                Some(&state.petal_id),
+                &properties,
+                path,
+                nodes,
+                inspector,
+                &mut caches.primitive,
+                &mut caches.path_asset,
+                &mut caches.stamp_state,
+                &mut caches.earthwork_map,
+                &mut caches.visibility,
+                &mut caches.callout_map,
+            );
+        }
+    }
+    ui.editor_batch.invalidate_preview_capture(&state.node_id);
+    ui.editor_batch.invalidate_path_projection(&state.node_id);
+    ui.editor_batch.invalidate_redo();
+    if let Some(undo) = caches.undo.as_deref_mut() {
+        undo.invalidate_path_projection(&state.node_id);
+    }
+    if nav.active_petal_id.as_deref() == Some(state.petal_id.as_str()) {
+        let properties = state.tombstone.is_none()
+            .then(|| serde_json::Value::Object(state.properties.clone()));
+        if !manager.queue_current_path(&state.node_id, &state.petal_id, properties) {
+            ui.show_advisory("Shared path refresh is full; reopen this Petal to refresh its geometry", caches.time.elapsed_secs_f64());
+        }
+    }
 }
 
 /// Finish only the current native import; stale committed results still hydrate above.
@@ -2754,13 +2949,24 @@ mod tests {
             "Full never blocks or fabricates a submitted read"
         );
         app.update();
-        let fourth_read = match full_rx.try_recv().unwrap() {
-            DbCommand::GetNodeProperties {
-                node_id,
-                correlation_id: Some(id),
-            } if node_id == "cold-node" => id,
-            other => panic!("unexpected retained command: {other:?}"),
-        };
+        let mut fourth_read = None;
+        for _ in 0..8 {
+            while let Ok(command) = full_rx.try_recv() {
+                match command {
+                    DbCommand::GetNodeProperties { node_id, correlation_id: Some(id) }
+                        if node_id == "cold-node" => fourth_read = Some(id),
+                    DbCommand::ReadReplicatedNodeCurrent { node_id, request_id } => {
+                        app.world_mut().write_message(DbResult::ReplicatedNodeCurrentRead {
+                            node_id, request_id, result: Err("read-only fixture refusal".into()),
+                        });
+                    }
+                    other => panic!("unexpected retained command: {other:?}"),
+                }
+            }
+            if fourth_read.is_some() { break; }
+            app.update();
+        }
+        let fourth_read = fourth_read.expect("retained property read is admitted after space opens");
         assert!(
             full_rx.try_recv().is_err(),
             "one refresh is retained and coalesced across Full frames"
@@ -2823,6 +3029,103 @@ mod tests {
             vec![ordinary],
             "successful refresh retains exactly one ordinary scene projection"
         );
+
+        use fe_runtime::scene_replication::{ReplicaNodeAsset, ReplicaNodeProvenance, ReplicatedNodeCurrent};
+        let snapshot = |id: &str, petal: &str, position: [f64; 3]| ReplicatedNodeCurrent {
+            scope: fe_database::build_scope("v1", Some("f1"), Some(petal)),
+            state: serde_json::from_value(json!({
+                "node_id": id, "petal_id": petal, "display_name": "Shared object",
+                "asset_id": null, "position": position, "elevation": position[1],
+                "rotation": [0.2, -0.35, 0.6], "scale": [0.75, 1.5, 2.25],
+                "interactive": true, "created_at": "fixture", "edit_seq": 7,
+                "properties": {"complex": {"missing": null, "samples": [{"v": 10.5}, {"v": 12.0}]}}
+            })).unwrap(),
+            provenance: ReplicaNodeProvenance::OriginalSceneCommit { hlc: 1, publisher: "did:key:fixture".into() },
+            asset: ReplicaNodeAsset::NoAsset,
+        };
+        let mut remote = snapshot("cold-node", "p1", [22.0, 3.0, -5.0]);
+        app.world_mut().write_message(DbResult::ReplicatedNodeCurrent { current: remote.clone() });
+        app.update();
+        assert_eq!(app.world().get::<Transform>(ordinary).unwrap().translation, Vec3::new(22.0, 3.0, -5.0));
+        assert_eq!(app.world().get::<Transform>(ordinary).unwrap().scale, Vec3::new(0.75, 1.5, 2.25));
+        assert_eq!(app.world().get::<fe_runtime::messages::DbConfirmedTransform>(ordinary).unwrap().position, [22.0, 3.0, -5.0]);
+        let source = app.world().resource::<VerseManager>().scene_admission("cold-node", "p1").unwrap();
+        assert_eq!(source.local_history_version(), None, "peer current state is not a local history receipt");
+        app.world_mut().resource_mut::<NodeManager>().select(ordinary, "cold-node");
+        let before = *app.world().get::<Transform>(ordinary).unwrap();
+        app.world_mut().resource_mut::<NodeManager>().mark_transform_committed(ordinary, before);
+        app.world_mut().get_mut::<Transform>(ordinary).unwrap().translation.x = 23.0;
+        app.world_mut().write_message(DbResult::ReplicatedNodeCurrent { current: remote.clone() });
+        app.update();
+        assert_eq!(app.world().get::<Transform>(ordinary).unwrap().translation.x, 23.0, "an identical recovery read does not cancel a newer preview");
+        assert!(app.world().resource::<NodeManager>().primary().unwrap().drag_committed);
+        assert_eq!(app.world().resource::<VerseManager>().scene_admission("cold-node", "p1"), Some(source));
+        remote.state.position[0] = 24.0;
+        app.world_mut().write_message(DbResult::ReplicatedNodeCurrent { current: remote.clone() });
+        app.update();
+        assert_eq!(app.world().get::<Transform>(ordinary).unwrap().translation.x, 24.0);
+        assert!(!app.world().resource::<NodeManager>().primary().unwrap().drag_committed);
+        assert_eq!(app.world().resource::<InspectorFormState>().node_properties["complex"]["missing"], serde_json::Value::Null);
+
+        let _ = db_commands.try_iter().collect::<Vec<_>>();
+        app.world_mut().write_message(DbResult::NodePropertiesLoaded { node_id: "cold-node".into(), properties: json!({"stale": true}), correlation_id: None });
+        app.update();
+        let request = db_commands.try_iter().find_map(|command| match command {
+            DbCommand::ReadReplicatedNodeCurrent { node_id, request_id } if node_id == "cold-node" => Some(request_id),
+            _ => None,
+        }).expect("a stale property reply requests a full owned current read");
+        let mut stale = remote.clone();
+        stale.state.position[0] = 99.0;
+        app.world_mut().write_message(DbResult::ReplicatedNodeCurrentRead { node_id: "cold-node".into(), request_id: "ui-replica-current-foreign".into(), result: Ok(stale.clone()) });
+        app.update();
+        assert_eq!(app.world().get::<Transform>(ordinary).unwrap().translation.x, 24.0);
+        let same_entry = app.world().resource::<VerseManager>().all_nodes().find(|node| node.id == "cold-node").unwrap().clone();
+        app.world_mut().resource_mut::<VerseManager>().upsert_node("p1", same_entry);
+        app.world_mut().write_message(DbResult::ReplicatedNodeCurrentRead { node_id: "cold-node".into(), request_id: request, result: Ok(stale) });
+        app.update();
+        assert_eq!(app.world().get::<Transform>(ordinary).unwrap().translation.x, 24.0, "same-looking cache rebuild retires the old read owner");
+        let fresh = db_commands.try_iter().find_map(|command| match command {
+            DbCommand::ReadReplicatedNodeCurrent { node_id, request_id } if node_id == "cold-node" => Some(request_id),
+            _ => None,
+        }).expect("retired current read is replaced with a fresh nonce");
+        remote.state.position[0] = 26.0;
+        app.world_mut().write_message(DbResult::ReplicatedNodeCurrentRead { node_id: "cold-node".into(), request_id: fresh, result: Ok(remote.clone()) });
+        app.update();
+        assert_eq!(app.world().get::<Transform>(ordinary).unwrap().translation.x, 26.0);
+        assert!(!app.world().resource::<VerseManager>().committed_versions.contains_key("cold-node"));
+
+        let birth = snapshot("remote-birth", "p1", [4.0, 1.0, 2.0]);
+        app.world_mut().write_message(DbResult::ReplicatedNodeCurrent { current: birth.clone() });
+        app.update();
+        let births: Vec<_> = residents.iter(app.world()).filter(|(_, marker)| marker.node_id == "remote-birth").map(|(entity, _)| entity).collect();
+        assert_eq!(births.len(), 1, "admitted replica births use the ordinary residency spawner");
+        assert_eq!(app.world().get::<Transform>(births[0]).unwrap().translation, Vec3::new(4.0, 1.0, 2.0));
+        let mut asset_birth = birth;
+        asset_birth.state.asset_id = Some("remote-asset".into());
+        asset_birth.asset = ReplicaNodeAsset::Unavailable { asset_id: "remote-asset".into(), reason: fe_runtime::scene_replication::ReplicaAssetUnavailable::MissingBlob };
+        app.world_mut().write_message(DbResult::ReplicatedNodeCurrent { current: asset_birth.clone() });
+        app.update();
+        let unavailable: Vec<_> = residents.iter(app.world()).filter(|(_, marker)| marker.node_id == "remote-birth").map(|(entity, _)| entity).collect();
+        assert_eq!(unavailable.len(), 1);
+        assert_ne!(unavailable[0], births[0], "a replaced asset binding rematerializes through residency");
+        assert!(app.world().resource::<VerseManager>().all_nodes().find(|node| node.id == "remote-birth").unwrap().asset_path.is_none());
+        asset_birth.asset = ReplicaNodeAsset::LocalBlob { asset_id: "remote-asset".into(), content_hash: "a".repeat(64), content_type: "model/gltf-binary".into(), asset_path: "models/replica.glb".into() };
+        app.world_mut().write_message(DbResult::ReplicatedNodeCurrent { current: asset_birth });
+        app.update();
+        let available: Vec<_> = residents.iter(app.world()).filter(|(_, marker)| marker.node_id == "remote-birth").map(|(entity, _)| entity).collect();
+        assert_eq!(available.len(), 1);
+        assert_ne!(available[0], unavailable[0]);
+        assert!(app.world().get::<bevy::scene::SceneRoot>(available[0]).is_some(), "actual asset availability selects the ordinary SceneRoot branch");
+
+        app.world_mut().resource_mut::<crate::visibility::VisibilityState>().set_node_group_membership("cold-node", vec!["g".into()]);
+        remote.state.tombstone = Some(json!({"deleted": true}));
+        app.world_mut().write_message(DbResult::ReplicatedNodeCurrent { current: remote });
+        app.update();
+        assert!(!app.world().resource::<VerseManager>().all_nodes().any(|node| node.id == "cold-node"));
+        assert!(!app.world().resource::<NodeManager>().contains_node("cold-node"));
+        assert!(app.world().get_entity(ordinary).is_err());
+        assert!(!app.world().resource::<super::super::PrimitiveDescriptorCache>().is_classified("cold-node"));
+        assert!(app.world().resource::<crate::visibility::VisibilityState>().node_groups("cold-node").is_empty());
     }
 
     #[test]

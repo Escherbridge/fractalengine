@@ -433,6 +433,16 @@ pub struct EarthworkNodeMap {
 }
 
 impl EarthworkNodeMap {
+    /// Remove current region projections owned by a removed backing node.
+    pub(crate) fn forget_node(&mut self, node_id: &str) {
+        let regions: Vec<_> = self.nodes.iter()
+            .filter_map(|(region, node)| (node == node_id).then(|| region.clone()))
+            .collect();
+        for region in regions {
+            self.forget_region(&region);
+        }
+    }
+
     /// Stash the material tag until the region's `NodeCreated` echo arrives.
     pub fn stash_pending_material(&mut self, region_id: &str, material: &str) {
         self.pending_materials

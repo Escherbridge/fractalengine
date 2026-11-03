@@ -1,5 +1,13 @@
 # fe-ui/src/actions — UiAction queue, split by domain
 
+## Replica removal cache ownership
+
+StampInteractionState and EarthworkNodeMap expose narrow `forget_node` methods
+for authoritative current-state tombstones. They remove their own aliases and
+render bookkeeping; the scene adapter never edits their private maps or replays
+an accepted write. A stamp's parent-path source is still owned by the existing
+path materializer, and removing a track invalidates its orphaned projections.
+
 `SelectionBatch` carries a captured selection origin and one typed complete edit.
 Dispatch rechecks current selection/navigation, edit role and pending gesture/save
 ownership before queueing it. Every edit kind then passes the shared live

@@ -42,7 +42,7 @@ const TRACK_NAME_KEY: &str = "gis.track.name";
 /// `src/AGENTS.md` §path-editor.
 const GPX_POINTS_KEY: &str = "gpx_points";
 /// Per-track border, visibility, closed-zone, and fill properties. Read
-/// into `TrackStyleMap` by `advance_path_materialization`; written by the Paths
+/// into `TrackStyleMap` by admitted current projections; written by the Paths
 /// tab via `SetNodeProperty`. Absent/invalid → `TrackStyle::default()` (FR-4).
 const TRACK_COLOR_KEY: &str = "gis.track.color";
 const TRACK_WIDTH_KEY: &str = "gis.track.width";
@@ -466,7 +466,12 @@ fn reconcile_track_render(
                 route_map.routes.remove(track_node_id);
                 commands.entity(entity).despawn();
             }
-            if node.is_none() {
+            if force_line_redraw {
+                if let Some(entity) = node {
+                    commands.entity(entity).try_despawn();
+                }
+            }
+            if node.is_none() || force_line_redraw {
                 let p = points[0].position;
                 let position = [p[0] as f32, p[1] as f32, p[2] as f32];
                 spawn_single_point_node(
@@ -1150,8 +1155,11 @@ struct PendingAnnotateCreate {
 #[derive(Resource, Default)]
 pub struct PendingPathEdits {
     checked_reads:HashMap<String,String>,
+    materialization_refresh: VecDeque<String>,
     projection_petal_id: Option<String>,
     projected_versions: HashMap<String, i64>,
+    deferred_projections: HashMap<String, DeferredProjection>,
+    projection_incarnation: Option<u128>,
     reads: HashMap<String, VecDeque<PendingPathRead>>,
     /// FR-4: authored-`CreateTrack` waiters keyed by a process-unique
     /// correlation id (not `(petal_id, name)`) so a same-named GPX import in
@@ -1176,7 +1184,15 @@ pub struct PendingPathEdits {
     seed_pending: std::collections::HashSet<String>,
 }
 
+struct DeferredProjection {
+    projection: fe_ui::undo::PathProjection,
+    deadline: std::time::Instant,
+}
+
 impl PendingPathEdits {
+    pub fn pending_current_projections(&self) -> usize {
+        self.deferred_projections.len() + self.materialization_refresh.len()
+    }
     fn accept_path_projection(&mut self, projection: &fe_ui::undo::PathProjection) -> bool {
         if self.projection_petal_id.as_deref() != Some(projection.petal_id.as_str()) {
             self.projected_versions.clear();
@@ -1768,8 +1784,9 @@ fn prompt_gpx_save_path(
 
 #[derive(bevy::ecs::system::SystemParam)]
 pub struct PathProjectionContext<'w> {
-    manager: Res<'w, VerseManager>,
+    manager: ResMut<'w, VerseManager>,
     clock: Option<Res<'w, fe_ui::notice::NoticeClock>>,
+    styles: Option<ResMut<'w, TrackStyleMap>>,
 }
 
 /// Advances pending path-editor DB round trips as their results arrive.
@@ -1790,9 +1807,21 @@ pub fn advance_path_edits(
     mut path_state: Option<ResMut<fe_ui::gis::PathEditorState>>,
     nav: Res<fe_ui::navigation_manager::NavigationManager>,
     mut ui: Option<ResMut<fe_ui::actions::UiManager>>,
-    projection_context: PathProjectionContext,
+    mut projection_context: PathProjectionContext,
 ) {
-    let manager = &projection_context.manager;
+    let manager = &mut projection_context.manager;
+    manager.synchronize_scene_navigation(&nav);
+    let mut current_projections = HashMap::new();
+    while let Some(projection) = manager.take_current_path_projection(nav.active_petal_id.as_deref()) {
+        if active_terrain.petal_id.as_deref() == Some(projection.petal_id.as_str()) {
+            current_projections.insert(projection.node_id.clone(), projection);
+        }
+    }
+    if pending.projection_incarnation != Some(manager.scene_incarnation()) {
+        pending.deferred_projections.clear();
+        pending.projected_versions.clear();
+        pending.projection_incarnation = Some(manager.scene_incarnation());
+    }
     if pending.projection_petal_id != nav.active_petal_id
         || nav
             .active_petal_id
@@ -1801,6 +1830,7 @@ pub fn advance_path_edits(
             .is_none()
     {
         pending.projected_versions.clear();
+        pending.deferred_projections.clear();
         pending.projection_petal_id = nav.active_petal_id.clone();
     }
     loop {
@@ -1812,8 +1842,43 @@ pub fn advance_path_edits(
             break;
         };
         if active_terrain.petal_id.as_deref() != Some(projection.petal_id.as_str())
-            || !projection.is_current(&manager)
+            || projection.scene_incarnation != manager.scene_incarnation()
         {
+            continue;
+        }
+        if pending.deferred_projections.len() >= 256
+            && !pending.deferred_projections.contains_key(&projection.node_id)
+        {
+            status.error = Some("Confirmed path projection queue is full; refresh this Petal".into());
+            continue;
+        }
+        if pending.deferred_projections.get(&projection.node_id)
+            .is_some_and(|queued| queued.projection.history_version > projection.history_version)
+        {
+            continue;
+        }
+        pending.deferred_projections.insert(projection.node_id.clone(), DeferredProjection {
+            projection,
+            deadline: std::time::Instant::now() + std::time::Duration::from_secs(5),
+        });
+    }
+    let deferred = std::mem::take(&mut pending.deferred_projections);
+    for (node_id, queued) in deferred {
+        let projection = queued.projection;
+        if projection.scene_incarnation != manager.scene_incarnation()
+            || active_terrain.petal_id.as_deref() != Some(projection.petal_id.as_str())
+        {
+            continue;
+        }
+        if !projection.is_current(manager) {
+            if std::time::Instant::now() < queued.deadline
+                && manager.scene_admission(&projection.node_id, &projection.petal_id).is_none()
+            {
+                pending.deferred_projections.insert(node_id, DeferredProjection {
+                    projection,
+                    deadline: queued.deadline,
+                });
+            }
             continue;
         }
         if let Some(petal) = manager.find_petal(&projection.petal_id) {
@@ -1823,6 +1888,14 @@ pub fn advance_path_edits(
         }
         if !pending.accept_path_projection(&projection) {
             continue;
+        }
+        if let Some(current) = current_projections.remove(&projection.node_id) {
+            if let (Some(properties), Some(styles)) = (
+                current.properties.as_ref(),
+                projection_context.styles.as_deref_mut(),
+            ) {
+                styles.styles.insert(projection.node_id.clone(), style_from_properties(properties));
+            }
         }
         let points = json_to_route_points(&projection.points);
         pending
@@ -1865,6 +1938,55 @@ pub fn advance_path_edits(
             ),
             error: None,
         };
+    }
+    for projection in current_projections.into_values() {
+        if active_terrain.petal_id.as_deref() != Some(projection.petal_id.as_str()) {
+            continue;
+        }
+        pending.deferred_projections.remove(&projection.node_id);
+        pending.projected_versions.remove(&projection.node_id);
+        pending.in_flight_points.remove(&projection.node_id);
+        pending.seed_pending.remove(&projection.node_id);
+        let points = projection.properties.as_ref().and_then(|properties| {
+            (properties.get(GPX_TYPE_KEY).and_then(|value| value.as_str()) == Some("track"))
+                .then(|| properties.get(GPX_POINTS_KEY))
+                .flatten()
+                .filter(|points| fe_sdk::path_geometry::decode_anchor_rows(points).is_some())
+                .map(json_to_route_points)
+        });
+        if let Some(styles) = projection_context.styles.as_deref_mut() {
+            if let Some(properties) = projection.properties.as_ref().filter(|_| points.is_some()) {
+                styles.styles.insert(projection.node_id.clone(), style_from_properties(properties));
+            } else {
+                styles.styles.remove(&projection.node_id);
+            }
+        }
+        if let Some(points) = &points {
+            pending.in_flight_points.insert(projection.node_id.clone(), points.clone());
+        } else {
+            route_map.routes.remove(&projection.node_id);
+        }
+        reconcile_track_render(
+            &mut route_map,
+            &mut commands,
+            &mut meshes,
+            &mut materials,
+            &track_lines,
+            &single_nodes,
+            &projection.petal_id,
+            &projection.node_id,
+            points.unwrap_or_default(),
+            true,
+        );
+        let retained = path_state.as_deref_mut()
+            .is_some_and(|state| projection.apply_editor(state));
+        if retained {
+            if let Some(ui) = ui.as_deref_mut() {
+                let now = projection_context.clock.as_ref()
+                    .map_or(0.0, |clock| clock.elapsed_secs_f64());
+                ui.show_advisory("Stored path state refreshed; your newer local draft was retained", now);
+            }
+        }
     }
     if pending.reads.is_empty()
         && pending.creates.is_empty()
@@ -2592,45 +2714,60 @@ fn points_to_export_children(points: &[TimestampedRoutePoint]) -> Vec<ExportNode
     }]
 }
 
-/// FR-4: on petal load/switch, request `GetNodeProperties` for every node in
-/// the newly-active petal so any track carrying `gpx_points` can be
-/// re-materialized by `advance_path_materialization`. Cheap no-op for petals
-/// with no GPX tracks (unmatched results are just ignored downstream).
+/// Refresh a Petal through bounded full-current reads; see src/AGENTS.md.
 pub fn request_petal_gpx_materialization(
     active_terrain: Res<ActivePetalTerrain>,
-    verse_mgr: Res<VerseManager>,
-    db_tx: Res<DbCommandSender>,
+    mut manager: ResMut<VerseManager>,
+    nav: Res<fe_ui::navigation_manager::NavigationManager>,
     mut pending: ResMut<PendingPathEdits>,
-    mut last_revision: Local<u64>,
+    mut last: Local<Option<(u128, u64, u64, u64)>>,
+    role: Option<Res<fe_ui::plugin::LocalUserRole>>,
 ) {
-    if !active_terrain.is_changed() || active_terrain.revision == *last_revision {
+    if role.as_ref().and_then(|role| role.role).is_some_and(|role| !role.can_view()) {
+        pending.materialization_refresh.clear();
         return;
     }
-    *last_revision = active_terrain.revision;
-    // FR-5/MEDIUM-2: drop stale in-flight append buffers on petal switch /
-    // reload. A buffer seeded against the previous petal's DB base (or before
-    // a P2P-sync remote write) must not fast-path a later append — clearing
-    // here forces the next append to re-seed fresh, and prevents unbounded
-    // growth across petal switches.
-    pending.in_flight_points.clear();
-    pending.seed_pending.clear();
-    pending.projected_versions.clear();
-    pending.projection_petal_id = active_terrain.petal_id.clone();
-    let Some(petal_id) = &active_terrain.petal_id else {
+    if active_terrain.petal_id != nav.active_petal_id {
         return;
-    };
-    let Some(petal) = verse_mgr.find_petal(petal_id) else {
-        return;
-    };
-
-    for node in &petal.nodes {
-        db_tx
-            .0
-            .send(DbCommand::GetNodeProperties {
-                node_id: node.id.clone(),
-                correlation_id: None,
-            })
-            .ok();
+    }
+    manager.synchronize_scene_navigation(&nav);
+    let key = (
+        manager.scene_incarnation(),
+        manager.scene_hierarchy_revision(),
+        active_terrain.revision,
+        nav.intent_revision,
+    );
+    if *last != Some(key) {
+        *last = Some(key);
+        pending.in_flight_points.clear();
+        pending.seed_pending.clear();
+        pending.projected_versions.clear();
+        pending.deferred_projections.clear();
+        pending.projection_petal_id = active_terrain.petal_id.clone();
+        pending.materialization_refresh.clear();
+        if let Some(petal) = nav.active_petal_id.as_deref().and_then(|id| manager.find_petal(id)) {
+            let mut seen = std::collections::HashSet::new();
+            pending.materialization_refresh.extend(petal.nodes.iter()
+                .filter(|node| first_seen(&mut seen, &node.id))
+                .take(fe_ui::verse_manager::SCENE_NODE_HARD_LIMIT)
+                .map(|node| node.id.clone()));
+            if petal.nodes.len() > fe_ui::verse_manager::SCENE_NODE_HARD_LIMIT {
+                bevy::log::warn!("Path current-state refresh is limited by the scene node cap");
+            }
+        }
+    }
+    for _ in 0..64 {
+        let Some(node) = pending.materialization_refresh.front() else {
+            break;
+        };
+        if manager.petal_id_of(node) != nav.active_petal_id.as_deref() {
+            pending.materialization_refresh.pop_front();
+            continue;
+        }
+        if !manager.request_scene_refresh(node, &nav) {
+            break;
+        }
+        pending.materialization_refresh.pop_front();
     }
 }
 
@@ -2640,136 +2777,26 @@ fn first_seen(seen: &mut std::collections::HashSet<String>, id: &str) -> bool {
     seen.insert(id.to_string())
 }
 
-/// FR-6: the single projection path from DB events to render state
-/// (`TrackRouteMap` + `GpxTrackLine`). Treats the DB node row as the sole
-/// source of truth: any `NodePropertiesLoaded` carrying a track's current
-/// `gpx_points` (re)materializes its render entity, and any `NodeDeleted`
-/// tears it down — covering both the petal-load batch from
-/// `request_petal_gpx_materialization` and live edits/deletes from the
-/// path editor and GIS panel, through one system instead of per-op
-/// hand-updates of a subset of sinks.
-#[allow(clippy::too_many_arguments)]
+/// Removes deleted legacy routes; current geometry uses the admitted projection queue.
 pub fn advance_path_materialization(
     mut db_results: MessageReader<DbResult>,
-    db_tx: Res<DbCommandSender>,
     mut route_map: ResMut<TrackRouteMap>,
     mut style_map: ResMut<TrackStyleMap>,
-    active_terrain: Res<ActivePetalTerrain>,
     track_lines: Query<(Entity, &GpxTrackLine)>,
     single_nodes: Query<(Entity, &SinglePointTrackNode)>,
-    mut meshes: ResMut<Assets<Mesh>>,
-    mut materials: ResMut<Assets<StandardMaterial>>,
     mut commands: Commands,
 ) {
-    // Per-frame dedupe: petal entry can queue TWO GetNodeProperties for the
-    // same track (petal materialization + fe-ui asset-less fallback); if both
-    // results land in one batch, the second reconcile can't see the first's
-    // deferred spawn and would duplicate the ribbon. First occurrence wins.
-    let mut reconciled: std::collections::HashSet<String> = std::collections::HashSet::new();
     for result in db_results.read() {
-        match result {
-            DbResult::NodePropertiesLoaded {
-                node_id,
-                properties,
-                ..
-            } => {
-                let is_track =
-                    properties.get(GPX_TYPE_KEY).and_then(|v| v.as_str()) == Some("track");
-                if !is_track {
-                    continue;
-                }
-                if !first_seen(&mut reconciled, node_id) {
-                    continue;
-                }
-                // track_styling_20260713: refresh this track's style from its
-                // `gis.track.*` props (FR-3/FR-4: default when absent/invalid)
-                // BEFORE reconciling the render entity, so a fresh spawn reads
-                // the current style. If the style actually changed for an
-                // already-rendered line, despawn it so the reconcile below
-                // respawns it `Without<Mesh3d>` and `render_gpx_tracks` rebuilds
-                // the ribbon with the new color/width (its build is gated on
-                // `Without<Mesh3d>`, mirroring the point-edit force-redraw).
-                let new_style = style_from_properties(properties);
-                let style_changed = style_map.styles.get(node_id).copied() != Some(new_style);
-                style_map.styles.insert(node_id.clone(), new_style);
-                let mut force_line_redraw = false;
-                if style_changed {
-                    for (entity, _) in track_lines.iter().filter(|(_, track)| {
-                        projection_matches_track(&track.track_node_id, node_id)
-                    }) {
-                        commands.entity(entity).despawn();
-                        // The line no longer exists for the reconcile below, so
-                        // it will respawn from scratch — force it even though
-                        // petal-load normally passes `false`.
-                    }
-                    force_line_redraw = true;
-                }
-                let Some(points_json) = properties.get(GPX_POINTS_KEY) else {
-                    continue;
-                };
-                let points = json_to_route_points(points_json);
-                // FR-3: reconcile the render entity against the point count via
-                // the SAME helper the live-edit path uses, so editing 1↔2↔1
-                // never leaks entities regardless of which path fired. Petal-load
-                // runs once per batch, so a matching existing line is left alone
-                // (`force_line_redraw = false`) unless the style just changed.
-                // Best-effort petal id mirrors AnnotatePoint / resolve_projection.
-                let petal_id = active_terrain.petal_id.clone().unwrap_or_default();
-                reconcile_track_render(
-                    &mut route_map,
-                    &mut commands,
-                    &mut meshes,
-                    &mut materials,
-                    &track_lines,
-                    &single_nodes,
-                    &petal_id,
-                    node_id,
-                    points,
-                    force_line_redraw,
-                );
-            }
-            DbResult::NodePropertySet { node_id, key, .. } => {
-                // track_styling_20260713: a live style edit lands as
-                // `NodePropertySet` (no property bag) — re-read the node so the
-                // `NodePropertiesLoaded` arm above refreshes `TrackStyleMap` and
-                // forces the ribbon rebuild. Only for the three style keys so an
-                // unrelated property write doesn't trigger a spurious round trip.
-                if key == TRACK_COLOR_KEY
-                    || key == TRACK_WIDTH_KEY
-                    || key == TRACK_VISIBLE_KEY
-                    || key == TRACK_CLOSED_KEY
-                    || key == TRACK_FILL_COLOR_KEY
-                {
-                    db_tx
-                        .0
-                        .send(DbCommand::GetNodeProperties {
-                            node_id: node_id.clone(),
-                            correlation_id: None,
-                        })
-                        .ok();
-                }
-            }
-            DbResult::NodeDeleted { node_id, .. } => {
-                // Projection teardown: despawn EVERY rendered line and
-                // single-point node for the deleted id (a leaked duplicate must
-                // not survive a `.find()`-single teardown), covering deletes
-                // that bypass PathOp::DeleteTrack's own optimistic cleanup.
-                route_map.routes.remove(node_id);
-                style_map.styles.remove(node_id);
-                for (entity, _) in track_lines
-                    .iter()
-                    .filter(|(_, t)| t.track_node_id == *node_id)
-                {
-                    commands.entity(entity).despawn();
-                }
-                for (entity, _) in single_nodes
-                    .iter()
-                    .filter(|(_, t)| t.track_node_id == *node_id)
-                {
-                    commands.entity(entity).despawn();
-                }
-            }
-            _ => {}
+        let (DbResult::NodeDeleted { node_id, .. } | DbResult::PluginNodeRemoved { node_id, .. }) = result else {
+            continue;
+        };
+        route_map.routes.remove(node_id);
+        style_map.styles.remove(node_id);
+        for (entity, _) in track_lines.iter().filter(|(_, line)| line.track_node_id == *node_id) {
+            commands.entity(entity).try_despawn();
+        }
+        for (entity, _) in single_nodes.iter().filter(|(_, node)| node.track_node_id == *node_id) {
+            commands.entity(entity).try_despawn();
         }
     }
 }
@@ -2855,6 +2882,7 @@ mod tests {
             node_id: "track".into(),
             petal_id: "p".into(),
             history_version: 8,
+            scene_incarnation: 0,
             points: before.clone(),
             editor_policy: fe_ui::undo::PathEditorPolicy::Replace,
         };

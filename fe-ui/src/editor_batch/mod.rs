@@ -147,6 +147,9 @@ impl BatchProjection {
     }
 
     pub(crate) fn protect_draft(&self, path: &mut crate::gis::PathEditorState) -> bool {
+        if path.points_pending && path.points.is_empty() {
+            return false;
+        }
         let Some(member) = self
             .members
             .iter()
@@ -263,7 +266,7 @@ impl EditorBatchState {
         }
     }
 
-    pub(crate) fn queue_projection(&mut self, projection: &BatchProjection) {
+    pub(crate) fn queue_projection(&mut self, projection: &BatchProjection, scene_incarnation: u128) {
         if projection.source == ProjectionSource::LegacyRead {
             return;
         }
@@ -280,6 +283,7 @@ impl EditorBatchState {
                         petal_id: projection.petal_id.clone(),
                         points: points.clone(),
                         history_version,
+                        scene_incarnation,
                         editor_policy: projection.editor_policy(&member.node_id),
                     });
             }
