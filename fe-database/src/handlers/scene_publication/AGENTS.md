@@ -56,6 +56,8 @@ The exact latest local journal fact (including actor, payload and record identit
 absence is captured with a server-CBOR fingerprint in the same read used for ordering.
 The receive transaction fences that capture before any row/clock write, even when a
 concurrent same-value local Save leaves row bytes and the scene clock unchanged.
+The guard selects both row_version and the raw-record fingerprint before ordering; its
+expected object list has that same exact shape, preserving the empty-list absence fence.
 Legacy direct apply wrappers retain their signatures and cannot invent that missing identity.
 Ordering compares original HLC, then authenticated publisher lexical order. Older/equal
 full live rows are ignored without materialization events. Local tombstones dominate every

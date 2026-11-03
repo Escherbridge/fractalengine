@@ -4053,6 +4053,14 @@ mod tests {
                     absent,
                     "both absent and present latest facts are fenced"
                 );
+                let mut unchanged = failed
+                    .query(format!("BEGIN TRANSACTION; {}; COMMIT TRANSACTION;", guards.join(";\n")))
+                    .bind(("scene_id", id.clone()));
+                for binding in bindings.clone() {
+                    unchanged = unchanged.bind(binding);
+                }
+                unchanged.await.unwrap().check()
+                    .expect("unchanged latest-fact/absence guard is valid SQL and matches");
                 crate::handlers::entity_property::set_entity_property_as(
                     &failed,
                     &id,

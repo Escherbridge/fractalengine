@@ -275,17 +275,20 @@ pub(crate) async fn capture_ordering_fact(
     let mut response = db.query("SELECT *, encoding::base64::encode(encoding::cbor::encode($this)) AS scene_fact_fingerprint OMIT id FROM node_log WHERE node_id=$scene_id ORDER BY row_version DESC LIMIT 1 TIMEOUT 5s")
         .bind(("scene_id", id.to_owned())).await?.check()?;
     let mut rows: Vec<Value> = response.take(0)?;
-    let mut fingerprints = Vec::with_capacity(rows.len());
+    let mut ordering_rows = Vec::with_capacity(rows.len());
     for row in &mut rows {
         let fingerprint = row
             .as_object_mut()
             .and_then(|row| row.remove("scene_fact_fingerprint"))
             .filter(Value::is_string)
             .ok_or_else(|| anyhow::anyhow!("local scene fact fingerprint missing"))?;
-        fingerprints.push(fingerprint);
+        ordering_rows.push(json!({
+            "row_version": row["row_version"],
+            "scene_fact_fingerprint": fingerprint,
+        }));
     }
-    guards.push("IF (SELECT VALUE encoding::base64::encode(encoding::cbor::encode($this)) FROM node_log WHERE node_id=$scene_id ORDER BY row_version DESC LIMIT 1) != $scene_local_fact_before { THROW 'local scene ordering fact changed'; }".into());
-    bindings.push(("scene_local_fact_before".into(), json!(fingerprints)));
+    guards.push("IF (SELECT row_version, encoding::base64::encode(encoding::cbor::encode($this)) AS scene_fact_fingerprint FROM node_log WHERE node_id=$scene_id ORDER BY row_version DESC LIMIT 1) != $scene_local_fact_before { THROW 'local scene ordering fact changed'; }".into());
+    bindings.push(("scene_local_fact_before".into(), json!(ordering_rows)));
     Ok(rows.into_iter().next())
 }
 
