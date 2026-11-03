@@ -212,7 +212,7 @@ impl DelegationChain {
                 && last.grant_hlc == hlc
                 && last.issued_at == issued_at
                 && last.expires_at == expires_at
-                && self.0[..self.0.len() - 1] == parent.map_or(&[][..], |chain| &chain.0[..])
+                && &self.0[..self.0.len() - 1] == parent.map_or(&[][..], |chain| &chain.0[..])
         })
     }
 
