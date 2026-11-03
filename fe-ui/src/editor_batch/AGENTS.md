@@ -24,6 +24,18 @@ before channel admission, without changing the draft or creating pending ownersh
 Missing derived geometry/cache refuses; ordinary-only batches require no path cache.
 `EditorBatchState::start` remains the channel owner behind this UI admission seam.
 
+Batch Undo/Redo performs the same live source check after its fresh checked read and
+immediately before inverse admission. `RenderedSources` resolves the original stable
+IDs and promoted-stamp aliases independently of the current selection. Missing,
+hidden, ambiguous, previewed or dirty targets refuse the complete inverse before send.
+Accepted receipts do not pass this admission gate again or pretend to roll back.
+
+Closed-path checks currently refuse with one shared visible capability reason and
+disabled form actions. The prior unconditional closed-shape bypass is removed. Exact
+zone cleanup/decimation belongs to the terrain renderer; restoring this capability
+requires a host-authored complete-source witness on TrackPickShape, which is planned
+as a separate follow-on before feature acceptance, not a permanent regression.
+
 `math.rs` adapts ordinary transforms, whole-route affine edits and promoted stamp
 overrides. Path rows use the runtime's shared f64 affine helper, including relative
 Bezier handles and untouched measurement/time metadata. The pivot is the arithmetic
@@ -96,6 +108,17 @@ when the two queues drain in one frame. Unversioned current reads request normal
 hierarchy/property hydration and report the unknown or unsaved outcome instead. The GPX bridge
 rebuilds the rendered route and current edit buffer from that queue, preserving metadata.
 NodeManager rebinds stable selected IDs to replacement rendered entities after redraw.
+
+Each batch projection carries the owned request's before-path baseline. A later local
+handle/point/time draft is retained when authoritative rows arrive, including edits
+between DB result handling and host queue consumption. Property hydration clears its
+pending-read overwrite flag for that conflict; the host still advances saved geometry
+and history. The editor keeps a persistent draft-retained message and shows an advisory.
+External current projections have no owned baseline, so differing open drafts are
+preserved conservatively. Ordinary checked point projections carry their matching
+pending-history baseline through the same policy. Queued projections can be invalidated
+by stable node ID when another authoritative source supersedes them.
+
 
 ## Verification boundary
 

@@ -40,6 +40,7 @@ pub(super) fn external_editor_batch(
         members: receipt.members.clone(),
         groups: receipt.groups.clone(),
         source: crate::editor_batch::ProjectionSource::ExternalCommit,
+        draft_before: Vec::new(),
     };
     editor_batch(&projection, manager)?;
     Ok(projection)

@@ -28,6 +28,7 @@ use crate::navigation_manager::NavigationManager;
 #[derive(SystemParam)]
 pub(super) struct DescriptorCaches<'w, 's> {
     committed_hierarchy_pending: Local<'s, bool>,
+    selection_sources: crate::editor_batch::RenderedSources<'w, 's>,
     primitive: ResMut<'w, super::PrimitiveDescriptorCache>,
     path_asset: ResMut<'w, super::PathAssetCache>,
     applied: ResMut<'w, super::PathAssetApplied>,
@@ -152,6 +153,10 @@ pub(super) fn apply_db_results(
                 result,
                 &nav,
                 |projection| committed::editor_batch(projection, &verse_mgr).map(|_| ()),
+                |capture| {
+                    if !local_role.can_edit() || node_mgr.gesture_active || node_mgr.is_dragging() { return Err("Edit access changed or a gesture started while Undo was preparing; no inverse was sent".into()); }
+                    caches.selection_sources.validate_replay(capture, &path_state, &caches.path_asset, &caches.stamp_state, &nav, &caches.visibility)
+                },
                 &db_sender.0,
             ))
         } else if let DbResult::EditorBatchCommitted { receipt, .. } = result {
@@ -162,6 +167,9 @@ pub(super) fn apply_db_results(
         if let Some(routed) = batch_result {
             match routed {
                 Ok(Some(projection)) => {
+                    if projection.protect_draft(&mut path_state) {
+                        ui_mgr.show_advisory("Stored path state changed; your newer local draft was retained. The save outcome is shown separately.", caches.time.elapsed_secs_f64());
+                    }
                     if projection.source == crate::editor_batch::ProjectionSource::LegacyRead {
                         request_committed_hierarchy(
                             &mut caches.committed_hierarchy_pending,

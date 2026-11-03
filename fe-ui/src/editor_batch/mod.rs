@@ -3,7 +3,7 @@
 mod interaction;
 pub(crate) use interaction::{SelectionInteraction, TransformRoute};
 mod source;
-pub(crate) use source::SelectionSources;
+pub(crate) use source::{RenderedSources, SelectionSources};
 pub(crate) mod math;
 pub(crate) mod ui;
 mod validation;
@@ -132,6 +132,54 @@ pub(crate) struct BatchProjection {
     pub members: Vec<EditorBatchMember>,
     pub groups: Vec<fe_runtime::messages::VisibilityGroupDto>,
     pub source: ProjectionSource,
+    pub draft_before: Vec<(String, serde_json::Value)>,
+}
+
+impl BatchProjection {
+    pub(crate) fn editor_policy(&self, node_id: &str) -> crate::undo::PathEditorPolicy {
+        crate::undo::PathEditorPolicy::PreserveChanged {
+            before: self
+                .draft_before
+                .iter()
+                .find(|(id, _)| id == node_id)
+                .map(|(_, points)| points.clone()),
+        }
+    }
+
+    pub(crate) fn protect_draft(&self, path: &mut crate::gis::PathEditorState) -> bool {
+        let Some(member) = self
+            .members
+            .iter()
+            .find(|member| path.editing_track_id.as_deref() == Some(member.node_id.as_str()))
+        else {
+            return false;
+        };
+        let Some(points) = member.state.properties.get("gpx_points") else {
+            return false;
+        };
+        if self
+            .editor_policy(&member.node_id)
+            .preserves(&path.points, &crate::gis::decode_gpx_points(points))
+        {
+            crate::undo::retain_local_draft(path);
+            return true;
+        }
+        false
+    }
+}
+
+fn draft_sources(capture: &EditorBatchCapture) -> Vec<(String, serde_json::Value)> {
+    capture
+        .members
+        .iter()
+        .filter_map(|member| {
+            member
+                .state
+                .properties
+                .get("gpx_points")
+                .map(|points| (member.node_id.clone(), points.clone()))
+        })
+        .collect()
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -225,17 +273,22 @@ impl EditorBatchState {
                 continue;
             };
             if let Some(points) = member.state.properties.get("gpx_points") {
-                self.path_projections
-                    .retain(|old| old.node_id != member.node_id);
+                self.invalidate_path_projection(&member.node_id);
                 self.path_projections
                     .push_back(crate::undo::PathProjection {
                         node_id: member.node_id.clone(),
                         petal_id: projection.petal_id.clone(),
                         points: points.clone(),
                         history_version,
+                        editor_policy: projection.editor_policy(&member.node_id),
                     });
             }
         }
+    }
+
+    pub(crate) fn invalidate_path_projection(&mut self, node_id: &str) {
+        self.path_projections
+            .retain(|projection| projection.node_id != node_id);
     }
 
     pub(crate) fn take_path_projection(
@@ -757,6 +810,7 @@ impl EditorBatchState {
         result: &DbResult,
         nav: &NavigationManager,
         preflight: impl Fn(&BatchProjection) -> Result<(), String>,
+        admit_inverse: impl Fn(&EditorBatchCapture) -> Result<(), String>,
         db: &crossbeam::channel::Sender<DbCommand>,
     ) -> Result<Option<BatchProjection>, String> {
         match result {
@@ -783,6 +837,7 @@ impl EditorBatchState {
                         return Err("One or more selected objects or group memberships changed; the complete Undo was refused".into());
                     }
                     let edit = validation::replay_edit(&entry, capture, direction)?;
+                    admit_inverse(capture)?;
                     self.submit(
                         EditorBatchRequest {
                             capture: capture.clone(),
@@ -857,6 +912,7 @@ impl EditorBatchState {
                         petal_id: resolution.current.petal_id.clone(),
                         members: resolution.current.members.clone(),
                         groups: resolution.current.groups.clone(),
+                        draft_before: draft_sources(&pending.request.capture),
                         source,
                     };
                     preflight(&projection)?;
@@ -932,6 +988,7 @@ impl EditorBatchState {
             petal_id: projected.petal_id.clone(),
             members: projected.members.clone(),
             groups: projected.groups.clone(),
+            draft_before: draft_sources(&pending.request.capture),
             source: if current.is_some() {
                 ProjectionSource::CurrentRead
             } else {

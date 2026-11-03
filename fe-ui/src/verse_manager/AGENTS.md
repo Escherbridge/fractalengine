@@ -598,3 +598,14 @@ a scene, satisfy an unrelated API waiter or masquerade as Joined.
 Addressed Join phase results belong to the invitation coordinator. Legacy uncorrelated join
 results cannot finish its request. Hierarchy rebuilding suppresses first-load auto-navigation
 while that coordinator owns the cursor, so intermediate admitted rows do not imply Ready.
+
+## Selection replay admission and draft preservation
+
+The editor-batch fresh-read branch rechecks original live target identity, transforms,
+path drafts and rendering immediately before submitting an inverse. DescriptorCaches
+reuses its existing mutable cache/state borrows and a read-only RenderedSources query;
+there is no duplicate resource borrow or current-selection requirement. Complete valid
+receipts still materialize authoritative snapshots. If a local path draft changed after
+submission, batch projection protects its rows from pending property hydration, and the
+host repeats the before-baseline comparison before touching editor rows. Retaining a
+draft does not negate a committed save or drop exact pending-write ownership.

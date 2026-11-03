@@ -10,8 +10,127 @@ use fe_runtime::editor_batch::{EditorBatchCapture, EditorBatchEdit, EditorBatchM
 
 #[derive(bevy::ecs::system::SystemParam)]
 pub(crate) struct SelectionSources<'w, 's> {
-    shapes: Query<'w, 's, &'static TrackPickShape>,
+    rendered: RenderedSources<'w, 's>,
     cache: Option<Res<'w, PathAssetCache>>,
+}
+
+pub(super) const CLOSED_PATH_REASON: &str = "Checked selection editing of closed paths is unavailable: exact rendered-zone validation is not implemented.";
+
+pub(super) fn closed_path(member: &EditorBatchMember) -> bool {
+    member.stamp_path.is_none()
+        && member
+            .state
+            .properties
+            .get("gis.track.closed")
+            .and_then(serde_json::Value::as_bool)
+            == Some(true)
+}
+
+type ReplayTargets<'w, 's> = Query<
+    'w,
+    's,
+    (
+        Entity,
+        &'static crate::plugin::SpawnedNodeMarker,
+        &'static Transform,
+        Option<&'static Visibility>,
+        Option<&'static crate::verse_manager::PathAssetInstance>,
+        Option<&'static crate::verse_manager::StampSelectionSource>,
+    ),
+>;
+
+#[derive(bevy::ecs::system::SystemParam)]
+pub(crate) struct RenderedSources<'w, 's> {
+    shapes: Query<'w, 's, &'static TrackPickShape>,
+    live: ReplayTargets<'w, 's>,
+}
+
+impl RenderedSources<'_, '_> {
+    pub(crate) fn validate_replay(
+        &self,
+        capture: &EditorBatchCapture,
+        path: &PathEditorState,
+        cache: &PathAssetCache,
+        stamps: &crate::actions::asset::StampInteractionState,
+        nav: &crate::navigation_manager::NavigationManager,
+        visibility: &crate::visibility::VisibilityState,
+    ) -> Result<(), String> {
+        if nav.active_petal_id.as_deref() != Some(capture.petal_id.as_str()) {
+            return Err("Undo targets belong to another Petal; no inverse was sent".into());
+        }
+        let mut entities = Vec::with_capacity(capture.members.len());
+        for member in &capture.members {
+            if closed_path(member) {
+                return Err(CLOSED_PATH_REASON.into());
+            }
+            let stamp = stamps.promoted_stamp_for_node(&member.node_id);
+            let mut candidates =
+                self.live
+                    .iter()
+                    .filter(|(entity, marker, _, drawn, instance, _)| {
+                        marker.petal_id == capture.petal_id
+                            && (marker.node_id == member.node_id
+                                || stamp.is_some_and(|stamp| {
+                                    crate::verse_manager::parse_stamp_marker_id(&marker.node_id)
+                                        == Some((stamp.track_node_id.as_str(), stamp.stamp_index))
+                                }))
+                            && crate::visibility::rendered(*drawn)
+                            && crate::visibility::pickable(&member.node_id, nav, visibility)
+                            && crate::visibility::pickable(&marker.node_id, nav, visibility)
+                            && (member.stamp_path.is_some() || instance.is_none())
+                            && (member.stamp_path.is_some()
+                                || !member.state.properties.contains_key("gpx_points")
+                                || self.shapes.contains(*entity))
+                    });
+            let Some((entity, _, actual, _, instance, proof)) = candidates.next() else {
+                return Err(format!("Undo target {} is not currently available in its owning Petal; no inverse was sent", member.node_id));
+            };
+            if candidates.next().is_some() || entities.contains(&entity) {
+                return Err(
+                    "Undo targets have ambiguous rendered identities; no inverse was sent".into(),
+                );
+            }
+            entities.push(entity);
+            if self.shapes.get(entity).is_ok_and(|shape| shape.closed) {
+                return Err(CLOSED_PATH_REASON.into());
+            }
+            if let Some(instance) = instance {
+                let Some(owner) = &member.stamp_path else {
+                    return Err("Undo stamp source identity changed".into());
+                };
+                let cached = cache.stamp_selection_source(&owner.state.node_id, &capture.petal_id);
+                if instance.source_track_id != owner.state.node_id
+                    || instance.petal_id != capture.petal_id
+                    || !cached
+                        .zip(proof)
+                        .is_some_and(|((_, descriptor, points), proof)| {
+                            proof.0.descriptor == *descriptor
+                                && proof.0.points.as_slice() == points
+                                && proof.0.world_scale == capture.world_scale
+                        })
+                {
+                    return Err(
+                        "Undo stamp render source changed or is unavailable; no inverse was sent"
+                            .into(),
+                    );
+                }
+            }
+            let expected = super::math::member_transform(member, capture.world_scale)?;
+            if !crate::undo::transform_value(&expected)
+                .matches(&crate::undo::transform_value(actual))
+                || !member_matches(
+                    member,
+                    &capture.petal_id,
+                    path,
+                    Some(cache),
+                    self.shapes.get(entity).ok(),
+                )
+            {
+                return Err(format!("Undo target {} has an unsaved draft or changed rendered source; no inverse was sent", member.node_id));
+            }
+        }
+        Ok(())
+    }
 }
 
 impl SelectionSources<'_, '_> {
@@ -43,6 +162,15 @@ impl SelectionSources<'_, '_> {
             if captured.node_id != selected.node_id {
                 return Err("Selection changed before source validation".into());
             }
+            if closed_path(captured)
+                || self
+                    .rendered
+                    .shapes
+                    .get(selected.entity)
+                    .is_ok_and(|shape| shape.closed)
+            {
+                return Err(CLOSED_PATH_REASON.into());
+            }
             if !self.matches(captured, selected.entity, &capture.petal_id, path) {
                 return Err(format!("Selected path or stamp {} has an unsaved draft or changed/unavailable rendered source. Finish or discard that draft before applying the complete selection; nothing was sent.", captured.node_id));
             }
@@ -62,7 +190,7 @@ impl SelectionSources<'_, '_> {
             petal,
             path,
             self.cache.as_deref(),
-            self.shapes.get(entity).ok(),
+            self.rendered.shapes.get(entity).ok(),
         )
     }
 }
@@ -119,8 +247,9 @@ fn member_matches(
     {
         return false;
     }
-    shape.closed
-        || (shape.points.len() == expected.len()
+    !shape.closed
+        && !closed_path(captured)
+        && (shape.points.len() == expected.len()
             && shape
                 .points
                 .iter()

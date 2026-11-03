@@ -4687,6 +4687,7 @@ mod tests {
                     },
                     &nav,
                     |_| Ok(()),
+                    |_| Ok(()),
                     &batch_tx,
                 )
                 .unwrap();
@@ -4786,8 +4787,25 @@ mod tests {
                     centroid: Vec3::X,
                 };
                 let mut source_world = bevy::prelude::World::new();
-                let path_entity = source_world.spawn(shape.clone()).id();
-                let ordinary_entity = source_world.spawn_empty().id();
+                let path_entity = source_world
+                    .spawn((
+                        shape.clone(),
+                        bevy::prelude::Transform::from_translation(Vec3::X),
+                        crate::plugin::SpawnedNodeMarker {
+                            node_id: "a".into(),
+                            petal_id: "petal".into(),
+                        },
+                    ))
+                    .id();
+                let ordinary_entity = source_world
+                    .spawn((
+                        bevy::prelude::Transform::from_xyz(4.0, 0.0, 0.0),
+                        crate::plugin::SpawnedNodeMarker {
+                            node_id: "b".into(),
+                            petal_id: "petal".into(),
+                        },
+                    ))
+                    .id();
                 let mut source_nodes = NodeManager::default();
                 source_nodes
                     .reduce_selection(
@@ -4840,6 +4858,7 @@ mod tests {
                             correlation_id,
                         },
                         &nav,
+                        |_| Ok(()),
                         |_| Ok(()),
                         &source_tx,
                     )
@@ -4914,7 +4933,7 @@ mod tests {
                             "refusal preserves the complete unsaved handles/times draft"
                         );
                     }
-                    path.points = stored_rows;
+                    path.points = stored_rows.clone();
                 }
                 source_world
                     .get_mut::<crate::node_manager::TrackPickShape>(path_entity)
@@ -4941,6 +4960,20 @@ mod tests {
                         "missing stamp source cache cannot fall back to path shape alone"
                     );
                 }
+                source_world
+                    .get_mut::<crate::node_manager::TrackPickShape>(path_entity)
+                    .unwrap()
+                    .closed = true;
+                {
+                    let sources = source_query.get(&source_world);
+                    let error = sources
+                        .validate(&source_capture, &source_nodes, &path)
+                        .unwrap_err();
+                    assert!(
+                        error.contains("closed paths"),
+                        "closed geometry cannot bypass source proof because its anchor positions match"
+                    );
+                }
                 *source_world
                     .get_mut::<crate::node_manager::TrackPickShape>(path_entity)
                     .unwrap() = shape;
@@ -4956,13 +4989,164 @@ mod tests {
                         &source_tx,
                     )
                     .unwrap();
+                let DbCommand::CommitCheckedEditorBatch {
+                    request,
+                    correlation_id,
+                } = source_rx.try_recv().unwrap()
+                else {
+                    panic!("matching sources require one checked complete batch")
+                };
+                assert_eq!(request.capture.members.len(), 2);
+                assert!(source_rx.try_recv().is_err());
+                let mut receipt = EditorBatchReceipt {
+                    request_id: correlation_id.clone(),
+                    scope: source_capture.scope.clone(),
+                    petal_id: "petal".into(),
+                    members: source_capture.members.clone(),
+                    groups: source_capture.groups.clone(),
+                    created_group_id: None,
+                };
+                for member in &mut receipt.members {
+                    member.history_version = Some(2);
+                    member
+                        .state
+                        .properties
+                        .insert("checked-source".into(), json!(true));
+                }
+                path.points[0].handle_out = Some([0.0, 0.0, 5.0]);
+                path.points_pending = true;
+                let after_send_draft = path.points.clone();
+                let projection = source_feedback
+                    .editor_batch
+                    .route(
+                        &DbResult::EditorBatchCommitted {
+                            receipt: receipt.clone(),
+                            correlation_id,
+                        },
+                        &nav,
+                        |_| Ok(()),
+                        |_| Ok(()),
+                        &source_tx,
+                    )
+                    .unwrap()
+                    .unwrap();
                 assert!(
-                    matches!(source_rx.try_recv().unwrap(), DbCommand::CommitCheckedEditorBatch { request, .. } if request.capture.members.len() == 2)
+                    projection.protect_draft(&mut path),
+                    "a draft changed after accepted submission cannot be lost in property hydration"
                 );
+                assert!(!path.points_pending);
+                assert_eq!(path.points, after_send_draft);
                 assert!(
-                    source_rx.try_recv().is_err(),
-                    "matching sources admit one complete batch"
+                    !source_feedback.editor_batch.is_pending(),
+                    "accepted commits remain committed; draft retention is not rollback"
                 );
+                assert!(source_feedback.editor_batch.newest(false).is_some());
+                source_feedback.editor_batch.queue_projection(&projection);
+                let queued = source_feedback
+                    .editor_batch
+                    .take_path_projection(&nav)
+                    .unwrap();
+                assert!(queued.apply_editor(&mut path));
+                assert_eq!(path.points, after_send_draft);
+                path.points = stored_rows.clone();
+                assert!(!projection.protect_draft(&mut path));
+                path.points[0].time_seconds = Some(999.0);
+                let between_result_and_host = path.points.clone();
+                assert!(
+                    queued.apply_editor(&mut path),
+                    "host consumption also fences drafts created after result handling"
+                );
+                assert_eq!(path.points, between_result_and_host);
+                let mut external = projection.clone();
+                external.draft_before.clear();
+                assert!(
+                    external.protect_draft(&mut path),
+                    "unowned commits conservatively preserve a differing open draft"
+                );
+                source_nodes.deselect();
+                let cache = crate::verse_manager::PathAssetCache::default();
+                let stamps = crate::actions::asset::StampInteractionState::default();
+                let visibility = crate::visibility::VisibilityState::default();
+                let mut original_targets = bevy::ecs::system::SystemState::<
+                    crate::editor_batch::RenderedSources,
+                >::new(&mut source_world);
+                let mut fresh = source_capture.clone();
+                fresh.members = receipt.members;
+                fresh.petal_snapshot = "source-after".into();
+                for mode in 0..3 {
+                    if mode > 0 {
+                        path.points = stored_rows.clone();
+                    }
+                    if mode == 1 {
+                        source_world.despawn(ordinary_entity);
+                    }
+                    if mode == 2 {
+                        source_world.spawn((
+                            bevy::prelude::Transform::from_xyz(4.0, 0.0, 0.0),
+                            crate::plugin::SpawnedNodeMarker {
+                                node_id: "b".into(),
+                                petal_id: "petal".into(),
+                            },
+                        ));
+                    }
+                    source_feedback
+                        .editor_batch
+                        .replay(false, &nav, &source_tx)
+                        .unwrap();
+                    let DbCommand::ReadEditorBatch { correlation_id, .. } = source_rx.try_recv().unwrap()
+                    else {
+                        panic!("inverse must first read its original targets")
+                    };
+                    let sources = original_targets.get(&source_world);
+                    let result = source_feedback.editor_batch.route(
+                        &DbResult::EditorBatchLoaded {
+                            capture: fresh.clone(),
+                            correlation_id,
+                        },
+                        &nav,
+                        |_| Ok(()),
+                        |capture| {
+                            sources.validate_replay(capture, &path, &cache, &stamps, &nav, &visibility)
+                        },
+                        &source_tx,
+                    );
+                    if mode < 2 {
+                        let error = result.unwrap_err();
+                        assert!(error.contains(if mode == 0 {
+                            "unsaved draft"
+                        } else {
+                            "not currently available"
+                        }));
+                        assert!(source_rx.try_recv().is_err());
+                        assert!(
+                            !source_feedback.editor_batch.is_pending(),
+                            "a refused inverse read never becomes a submitted write"
+                        );
+                    } else {
+                        result.unwrap();
+                        let DbCommand::CommitCheckedEditorBatch { request, .. } =
+                            source_rx.try_recv().unwrap()
+                        else {
+                            panic!("matching original targets require one checked inverse")
+                        };
+                        assert_eq!(
+                            request
+                                .capture
+                                .members
+                                .iter()
+                                .map(|member| member.node_id.as_str())
+                                .collect::<Vec<_>>(),
+                            ["a", "b"]
+                        );
+                        assert_eq!(
+                            source_nodes.selection_count(),
+                            0,
+                            "inverse source resolution is independent of current selection"
+                        );
+                        assert!(source_feedback.editor_batch.is_pending());
+                        assert!(source_rx.try_recv().is_err());
+                    }
+                }
             }
             let origin = feedback.editor_batch.origin(&selected).unwrap();
             let edits: Vec<_> = capture
@@ -5095,6 +5279,7 @@ mod tests {
                     },
                     &nav,
                     &preflight,
+                    |_| Ok(()),
                     &batch_tx
                 )
                 .is_err());
@@ -5116,6 +5301,7 @@ mod tests {
                     },
                     &nav,
                     &preflight,
+                    |_| Ok(()),
                     &batch_tx
                 )
                 .unwrap()
@@ -5148,6 +5334,7 @@ mod tests {
                     },
                     &nav,
                     &preflight,
+                    |_| Ok(()),
                     &batch_tx,
                 )
                 .unwrap();

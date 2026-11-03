@@ -200,6 +200,50 @@ impl PointEditOrigin {
     }
 }
 
+const DRAFT_RETAINED: &str =
+    "Stored path state changed; local unsaved draft retained. Refresh explicitly to replace it.";
+
+pub(crate) fn retain_local_draft(state: &mut crate::gis::PathEditorState) {
+    state.points_pending = false;
+    state.last_error = Some(DRAFT_RETAINED.into());
+}
+
+#[derive(Debug, Clone)]
+pub enum PathEditorPolicy {
+    Replace,
+    PreserveChanged { before: Option<Value> },
+}
+
+impl PathEditorPolicy {
+    pub fn preserves(
+        &self,
+        current: &[crate::gis::PathPointRow],
+        incoming: &[crate::gis::PathPointRow],
+    ) -> bool {
+        let Self::PreserveChanged { before } = self else {
+            return false;
+        };
+        if same_editor_rows(current, incoming) {
+            return false;
+        }
+        before
+            .as_ref()
+            .is_none_or(|before| !same_editor_rows(current, &crate::gis::decode_gpx_points(before)))
+    }
+}
+
+fn same_editor_rows(left: &[crate::gis::PathPointRow], right: &[crate::gis::PathPointRow]) -> bool {
+    left.len() == right.len()
+        && left.iter().zip(right).all(|(left, right)| {
+            left.position == right.position
+                && left.time_seconds.unwrap_or(0.0) == right.time_seconds.unwrap_or(0.0)
+                && left.handle_in == right.handle_in
+                && left.handle_out == right.handle_out
+                && left.corner == right.corner
+                && left.smoothness == right.smoothness
+        })
+}
+
 /// Authoritative route projection produced only by a matching save or reconciliation.
 #[derive(Debug, Clone)]
 pub struct PathProjection {
@@ -211,6 +255,7 @@ pub struct PathProjection {
     pub history_version: i64,
     /// Complete point rows with their original metadata.
     pub points: Value,
+    pub editor_policy: PathEditorPolicy,
 }
 impl PathProjection {
     /// Reject stale receipts before the host changes route or editor caches.
@@ -222,6 +267,29 @@ impl PathProjection {
                 .get(&self.node_id)
                 .is_none_or(|version| *version <= self.history_version)
     }
+    /// Preserve a changed local draft while authoritative geometry/history advance.
+    pub fn apply_editor(&self, state: &mut crate::gis::PathEditorState) -> bool {
+        if state.editing_track_id.as_deref() != Some(self.node_id.as_str()) {
+            return false;
+        }
+        let rows = self.editor_rows();
+        let retained = self.editor_policy.preserves(&state.points, &rows);
+        state.points_pending = false;
+        if retained {
+            retain_local_draft(state);
+            return true;
+        }
+        if state.last_error.as_deref() == Some(DRAFT_RETAINED) {
+            state.last_error = None;
+        }
+        if rows.len() != state.points.len() {
+            state.selected_point = None;
+            state.selected_segment = None;
+        }
+        state.points = rows;
+        false
+    }
+
     /// Decode the confirmed route for the editor's existing projection.
     pub fn editor_rows(&self) -> Vec<crate::gis::PathPointRow> {
         crate::gis::decode_gpx_points(&self.points)
@@ -297,12 +365,45 @@ impl UndoState {
     pub fn synchronize_navigation(&mut self, nav: &NavigationManager) {
         self.sync(nav);
     }
+    /// Discard queued geometry superseded by another authoritative source.
+    pub(crate) fn invalidate_path_projection(&mut self, node_id: &str) {
+        self.projections
+            .retain(|projection| projection.node_id != node_id);
+    }
+
     /// Drain one confirmed route projection for the host's render bridge.
     pub fn take_path_projection(&mut self, nav: &NavigationManager) -> Option<PathProjection> {
         self.sync(nav);
         self.projections.pop_front()
     }
-    fn project_path(&mut self, node_id: &str, petal_id: &str, history_version: i64, points: Value) {
+    fn pending_editor_policy(&self) -> PathEditorPolicy {
+        let before = self
+            .pending
+            .as_ref()
+            .and_then(|pending| {
+                pending.entry.as_ref().map(|entry| {
+                    if pending.origin == Origin::Undo {
+                        &entry.after
+                    } else {
+                        &entry.before
+                    }
+                })
+            })
+            .and_then(|value| match value {
+                EditValue::PathPoints(points) => Some(points.clone()),
+                _ => None,
+            });
+        PathEditorPolicy::PreserveChanged { before }
+    }
+
+    fn project_path(
+        &mut self,
+        node_id: &str,
+        petal_id: &str,
+        history_version: i64,
+        points: Value,
+        editor_policy: PathEditorPolicy,
+    ) {
         if history_version <= 0
             || self.projections.iter().any(|projection| {
                 projection.node_id == node_id && projection.history_version > history_version
@@ -310,7 +411,7 @@ impl UndoState {
         {
             return;
         }
-        self.projections.retain(|p| p.node_id != node_id);
+        self.invalidate_path_projection(node_id);
         if self.projections.len() >= MAX_ENTRIES {
             self.projections.pop_front();
         }
@@ -319,6 +420,7 @@ impl UndoState {
             petal_id: petal_id.into(),
             history_version,
             points,
+            editor_policy,
         });
     }
     fn request_hydration(&mut self, node_id: &str) {
@@ -937,6 +1039,7 @@ pub(crate) fn observe_results(
                     .as_ref()
                     .and_then(|p| p.entry.as_ref())
                     .is_some_and(|entry| matches!(entry.before, EditValue::PathPoints(_)));
+                let editor_policy = undo.pending_editor_policy();
                 match undo.confirm_history(receipt, &receipt.state) {
                     Ok(()) => {
                         if path {
@@ -946,6 +1049,7 @@ pub(crate) fn observe_results(
                                     &receipt.state.petal_id,
                                     receipt.history_version,
                                     points.clone(),
+                                    editor_policy,
                                 );
                             }
                         }
@@ -1049,6 +1153,7 @@ pub(crate) fn observe_results(
                     }
                 }
                 if let Some(receipt) = receipt {
+                    let editor_policy = undo.pending_editor_policy();
                     if let Err(error) = undo.confirm_history(receipt, current) {
                         ui.show_error(error, now);
                     } else if let Some(version) = confirmed_path_version {
@@ -1061,6 +1166,7 @@ pub(crate) fn observe_results(
                                 .get("gpx_points")
                                 .cloned()
                                 .unwrap_or_else(|| serde_json::json!([])),
+                            editor_policy,
                         );
                     }
                 } else {

@@ -36,6 +36,7 @@ pub(crate) struct SelectionInteraction {
     pub members: Result<Vec<InteractionMember>, String>,
     pub center: Result<Vec3, String>,
     derived: bool,
+    pub source_limitation: Option<&'static str>,
     capabilities: [Result<(), String>; 4],
 }
 
@@ -73,6 +74,9 @@ impl SelectionInteraction {
             Ok(center)
         });
         let capability = |tool, uniform_scale| -> Result<(), String> {
+            if capture.members.iter().any(super::source::closed_path) {
+                return Err(super::source::CLOSED_PATH_REASON.into());
+            }
             let pivot = *center.as_ref().map_err(Clone::clone)?;
             for (source, member) in capture
                 .members
@@ -116,6 +120,11 @@ impl SelectionInteraction {
             derived: capture.members.iter().any(|member| {
                 member.stamp_path.is_some() || member.state.properties.contains_key("gpx_points")
             }),
+            source_limitation: capture
+                .members
+                .iter()
+                .any(super::source::closed_path)
+                .then_some(super::source::CLOSED_PATH_REASON),
             capabilities,
         }
     }

@@ -244,13 +244,17 @@ fn render_form(
             }
         }
         ui.label("Pivot: center of the selected objects. Translation is a world-unit delta; rotation is in degrees; scale values are factors.");
-        let editable = role.can_edit() && !state.is_pending();
+        if let Some(reason) = interaction.source_limitation {
+            ui.label(reason);
+        }
+        let editable =
+            role.can_edit() && !state.is_pending() && interaction.source_limitation.is_none();
         axes(ui, "Move by", &mut state.draft.translation, editable);
         axes(ui, "Rotate by", &mut state.draft.rotation, editable);
         axes(ui, "Scale by", &mut state.draft.scale, editable);
         if ui
             .add_enabled(
-                role.can_edit() && !state.is_pending(),
+                editable,
                 egui::Button::new("Apply selection transform").wrap(),
             )
             .observed(ui)
@@ -340,8 +344,7 @@ fn render_form(
                 ] {
                     if ui
                         .add_enabled(
-                            role.can_edit()
-                                && !state.is_pending()
+                            editable
                                 && !state.draft.property_key.trim().is_empty()
                                 && (!set || value.is_ok()),
                             egui::Button::new(label).wrap(),
@@ -426,7 +429,16 @@ pub(crate) fn group_controls(
     {
         state.refresh();
     }
-    let ready = role.can_edit() && !state.is_pending() && state.capture(nav, nodes).is_some();
+    let limitation = state
+        .interaction(nav, nodes)
+        .and_then(|interaction| interaction.source_limitation);
+    if let Some(reason) = limitation {
+        ui.label(reason);
+    }
+    let ready = role.can_edit()
+        && !state.is_pending()
+        && state.capture(nav, nodes).is_some()
+        && limitation.is_none();
     ui.add_enabled(
         role.can_edit() && !state.is_pending(),
         egui::TextEdit::singleline(&mut state.draft.group_name)

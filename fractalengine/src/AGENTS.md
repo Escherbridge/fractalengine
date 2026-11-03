@@ -6,7 +6,13 @@ projections before the existing Undo queue. Each projection carries a real posit
 journal version. The consumer checks the current owning Petal, known committed versions
 and a bounded consumed-version watermark before rebuilding rendering or editor rows;
 queue order cannot let an older ordinary receipt overwrite a newer batch result.
-Unversioned reconciliation uses normal hierarchy/property hydration. Watermarks reset
+Unversioned reconciliation uses normal hierarchy/property hydration.
+Confirmed projections also carry an editor draft policy. The host always advances
+accepted authoritative geometry, but compares the current draft against the owned
+before-source before replacing editor rows. Changed drafts are retained with a visible
+status/advisory; external sources with no owned baseline preserve differing drafts.
+This check runs at consumption as well as in fe-ui result handling, closing both
+post-submit and result-to-host intervals without relabeling a committed save as failed. Watermarks reset
 on Petal/navigation/authority reloads and prune removed node IDs. History previews have no path into
 this queue. QA debug and portal adapters read NodeManager's primary accessor; their
 actual rendered-entity identity guards are unchanged.

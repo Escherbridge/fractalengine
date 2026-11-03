@@ -1766,6 +1766,12 @@ fn prompt_gpx_save_path(
     })
 }
 
+#[derive(bevy::ecs::system::SystemParam)]
+pub struct PathProjectionContext<'w> {
+    manager: Res<'w, VerseManager>,
+    clock: Option<Res<'w, fe_ui::notice::NoticeClock>>,
+}
+
 /// Advances pending path-editor DB round trips as their results arrive.
 #[allow(clippy::too_many_arguments)]
 pub fn advance_path_edits(
@@ -1784,8 +1790,9 @@ pub fn advance_path_edits(
     mut path_state: Option<ResMut<fe_ui::gis::PathEditorState>>,
     nav: Res<fe_ui::navigation_manager::NavigationManager>,
     mut ui: Option<ResMut<fe_ui::actions::UiManager>>,
-    manager: Res<VerseManager>,
+    projection_context: PathProjectionContext,
 ) {
+    let manager = &projection_context.manager;
     if pending.projection_petal_id != nav.active_petal_id
         || nav
             .active_petal_id
@@ -1833,21 +1840,29 @@ pub fn advance_path_edits(
             points,
             true,
         );
-        if let Some(state) = path_state
+        let retained = path_state
             .as_deref_mut()
             .filter(|state| state.editing_track_id.as_deref() == Some(projection.node_id.as_str()))
-        {
-            let rows = projection.editor_rows();
-            if rows.len() != state.points.len() {
-                state.selected_point = None;
-                state.selected_segment = None;
+            .is_some_and(|state| projection.apply_editor(state));
+        if retained {
+            if let Some(ui) = ui.as_deref_mut() {
+                let now = projection_context
+                    .clock
+                    .as_ref()
+                    .map_or(0.0, |clock| clock.elapsed_secs_f64());
+                ui.show_advisory("Stored path state refreshed; your newer local draft was retained. The save outcome is shown separately.", now);
             }
-            state.points = rows;
-            state.points_pending = false;
         }
         *status = PathEditStatus {
             track_node_id: Some(projection.node_id),
-            message: Some("Point edit confirmed".into()),
+            message: Some(
+                if retained {
+                    "Stored path state applied; local draft retained"
+                } else {
+                    "Point edit confirmed"
+                }
+                .into(),
+            ),
             error: None,
         };
     }
@@ -2841,6 +2856,7 @@ mod tests {
             petal_id: "p".into(),
             history_version: 8,
             points: before.clone(),
+            editor_policy: fe_ui::undo::PathEditorPolicy::Replace,
         };
         let mut pending = PendingPathEdits::default();
         assert!(pending.accept_path_projection(&projection));
