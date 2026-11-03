@@ -9,6 +9,7 @@ pub mod diag15m; // DIAG-15M: temporary render diagnostics
 pub mod distributed_query;
 pub mod entity_access;
 pub mod join_invite;
+pub mod editor_batch;
 pub mod input;
 pub mod ktx2_guard;
 pub mod messages;

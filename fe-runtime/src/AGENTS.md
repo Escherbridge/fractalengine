@@ -1008,3 +1008,19 @@ strict kind tag and unknown-field refusal. Delegated Manager metadata carries on
 proof content hash, never the proof ticket or a capability. Metadata validation binds its
 issuer DID and canonical hash shape; fresh DB source preparation remains the authority check.
 This addition does not change the API Owner-token/operator-input gates or mint any role.
+
+## editor-batches
+
+`editor_batch.rs` defines one ordered, bounded Petal-local capture and checked transaction contract.
+ReadEditorBatch returns every requested stored object or refuses; captures are context, never grants.
+CommitCheckedEditorBatch takes exact versions/states and typed target, property, or Group intents.
+Targets has exactly one edit per captured member in the same order. New Groups use fresh ULIDs;
+membership creation and the registry commit together. Limits are 256 targets and 4 MiB expanded data.
+EditorBatchCommitted carries the exact request ID and a complete ordered resulting set. No single
+member is a partial success. ResolveCheckedEditorBatch takes the original exact ordered IDs and
+returns the immutable prior receipt, if present, plus independently authorized current readback.
+Read/capture anew before an inverse command: receipt members retain versions and full states, but
+do not pretend to contain a reusable current Petal fingerprint. UI keeps its original before capture.
+Whole-route affine edits preserve timestamp/unknown metadata and transform relative handles.
+StampOverrides uses the existing checked stamped edit contract; default-center origin restrictions
+remain explicit. This local editor command does not graduate its deferred canonical/P2P mapping.

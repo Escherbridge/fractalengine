@@ -312,6 +312,9 @@ struct PendingEntry {
 /// that echo one on their reply (see [`PendingApiRequests::try_deliver`]).
 fn correlation_of_command(cmd: &DbCommand) -> Option<&str> {
     match cmd {
+        DbCommand::ReadEditorBatch { correlation_id, .. }
+        | DbCommand::CommitCheckedEditorBatch { correlation_id, .. }
+        | DbCommand::ResolveCheckedEditorBatch { correlation_id, .. } => Some(correlation_id.as_str()),
         DbCommand::InsertIotReadings { correlation_id, .. }
         | DbCommand::MintApiToken { correlation_id, .. }
         | DbCommand::CreateNode { correlation_id, .. }
@@ -349,6 +352,9 @@ fn correlation_of_command(cmd: &DbCommand) -> Option<&str> {
 /// The correlation id a reply echoes (mirror of [`correlation_of_command`]).
 fn correlation_of_result(result: &DbResult) -> Option<&str> {
     match result {
+        DbResult::EditorBatchLoaded { correlation_id, .. }
+        | DbResult::EditorBatchCommitted { correlation_id, .. }
+        | DbResult::EditorBatchResolved { correlation_id, .. } => Some(correlation_id.as_str()),
         DbResult::NodeMaterialized { correlation_id, .. } => Some(correlation_id.as_str()),
         DbResult::IotReadingsInserted { correlation_id, .. }
         | DbResult::ApiTokenMinted { correlation_id, .. }
@@ -390,6 +396,9 @@ fn correlation_of_result(result: &DbResult) -> Option<&str> {
 /// never name a kind.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 enum ReplyKind {
+    EditorBatchLoaded,
+    EditorBatchCommitted,
+    EditorBatchResolved,
     /// GUI-only materialization events have no command/pending queue.
     NodeMaterialized,
     NodeMutationCommitted,
@@ -449,6 +458,9 @@ enum ReplyKind {
 fn reply_kind_of_command(cmd: &DbCommand) -> Option<ReplyKind> {
     use DbCommand::*;
     Some(match cmd {
+        ReadEditorBatch { .. } => ReplyKind::EditorBatchLoaded,
+        CommitCheckedEditorBatch { .. } => ReplyKind::EditorBatchCommitted,
+        ResolveCheckedEditorBatch { .. } => ReplyKind::EditorBatchResolved,
         MintApiToken { .. } => ReplyKind::ApiTokenMinted,
         Ping => ReplyKind::Pong,
         CreateVerse { .. } => ReplyKind::VerseCreated,
@@ -513,6 +525,9 @@ fn reply_kind_of_command(cmd: &DbCommand) -> Option<ReplyKind> {
 fn reply_kind_of_result(result: &DbResult) -> Option<ReplyKind> {
     use DbResult::*;
     Some(match result {
+        EditorBatchLoaded { .. } => ReplyKind::EditorBatchLoaded,
+        EditorBatchCommitted { .. } => ReplyKind::EditorBatchCommitted,
+        EditorBatchResolved { .. } => ReplyKind::EditorBatchResolved,
         ApiTokenMinted { .. } => ReplyKind::ApiTokenMinted,
         NodeMaterialized { .. } => ReplyKind::NodeMaterialized,
         NodeMutationCommitted { .. } => ReplyKind::NodeMutationCommitted,

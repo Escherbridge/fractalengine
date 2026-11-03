@@ -506,6 +506,23 @@ impl CallerAuth {
 
 #[derive(Debug, Clone)]
 pub enum DbCommand {
+    ReadEditorBatch {
+        scope: String,
+        petal_id: String,
+        node_ids: Vec<String>,
+        correlation_id: String,
+    },
+    CommitCheckedEditorBatch {
+        request: crate::editor_batch::EditorBatchRequest,
+        correlation_id: String,
+    },
+    ResolveCheckedEditorBatch {
+        scope: String,
+        petal_id: String,
+        node_ids: Vec<String>,
+        request_id: String,
+        correlation_id: String,
+    },
     /// Commit scale, rotation and slide together under current stamp/route authority.
     PromoteCheckedStamp {
         capture: CheckedStampPromotion,
@@ -1304,6 +1321,18 @@ pub enum DeferralReason {
 
 #[derive(Debug, Clone, Message)]
 pub enum DbResult {
+    EditorBatchLoaded {
+        capture: crate::editor_batch::EditorBatchCapture,
+        correlation_id: String,
+    },
+    EditorBatchCommitted {
+        receipt: crate::editor_batch::EditorBatchReceipt,
+        correlation_id: String,
+    },
+    EditorBatchResolved {
+        resolution: crate::editor_batch::EditorBatchResolution,
+        correlation_id: String,
+    },
     /// Exact persisted outcome for a prior local editor request, never a coordinate guess.
     CheckedNodeMutationResolved {
         node_id: String,

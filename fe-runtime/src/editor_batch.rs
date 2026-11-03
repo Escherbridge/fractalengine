@@ -1,0 +1,104 @@
+//! Checked Petal-local editor batches; see src/AGENTS.md section editor-batches.
+
+use serde::{Deserialize, Serialize};
+use serde_json::Value;
+
+use crate::{
+    messages::{StampOverrideEdit, VisibilityGroupDto},
+    node_history::{NodeRowSnapshot, NodeTransformValue},
+};
+
+pub const MAX_EDITOR_BATCH_TARGETS: usize = 256;
+pub const MAX_EDITOR_BATCH_BYTES: usize = 4 * 1024 * 1024;
+
+/// Stored path context for a promoted stamp, never an authority grant.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct EditorStampPath {
+    pub state: NodeRowSnapshot,
+    pub history_version: Option<i64>,
+}
+
+/// One ordered stored object and its exact capture version.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct EditorBatchMember {
+    pub node_id: String,
+    pub history_version: Option<i64>,
+    pub state: NodeRowSnapshot,
+    pub stamp_path: Option<EditorStampPath>,
+}
+
+/// Scope-checked selection read; writes revalidate every field at use.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct EditorBatchCapture {
+    pub scope: String,
+    pub petal_id: String,
+    pub members: Vec<EditorBatchMember>,
+    pub groups: Vec<VisibilityGroupDto>,
+    pub petal_snapshot: String,
+    pub world_scale: f32,
+}
+
+/// Affine delta: pivot, per-axis scale, unit rotation, then translation.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct EditorAffine {
+    pub pivot: [f64; 3],
+    pub translation: [f64; 3],
+    pub rotation: [f32; 4],
+    pub scale: [f64; 3],
+}
+
+/// Explicit property changes, including deletion distinct from JSON null.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub enum EditorPropertyEdit {
+    Set { key: String, value: Value },
+    Delete { key: String },
+}
+
+/// Type-specific mutation; ordinary transforms cannot mutate path/stamp projections.
+#[derive(Debug, Clone)]
+pub enum EditorTargetMutation {
+    Transform(NodeTransformValue),
+    PathAffine(EditorAffine),
+    PathRestore { points: Value },
+    StampOverrides(StampOverrideEdit),
+    Properties(Vec<EditorPropertyEdit>),
+}
+
+#[derive(Debug, Clone)]
+pub struct EditorTargetEdit {
+    pub node_id: String,
+    pub mutation: EditorTargetMutation,
+}
+
+/// Every edit applies to the complete captured target set or refuses.
+#[derive(Debug, Clone)]
+pub enum EditorBatchEdit {
+    Targets(Vec<EditorTargetEdit>),
+    CreateGroup { id: String, name: String },
+    Membership { group_id: String, member: bool },
+}
+
+#[derive(Debug, Clone)]
+pub struct EditorBatchRequest {
+    pub capture: EditorBatchCapture,
+    pub edit: EditorBatchEdit,
+}
+
+/// Complete immutable outcome; no member receipt implies a partial batch success.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct EditorBatchReceipt {
+    pub request_id: String,
+    pub scope: String,
+    pub petal_id: String,
+    pub members: Vec<EditorBatchMember>,
+    pub groups: Vec<VisibilityGroupDto>,
+    pub created_group_id: Option<String>,
+}
+
+/// Exact prior outcome plus independently guarded current readback.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct EditorBatchResolution {
+    pub request_id: String,
+    pub receipt: Option<EditorBatchReceipt>,
+    pub current: EditorBatchCapture,
+}
