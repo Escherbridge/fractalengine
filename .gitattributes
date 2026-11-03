@@ -1,0 +1,3 @@
+# Keep new QA capture packets byte-identical to their recorded manifests.
+/qa/passes/30/** -text
+/qa/passes/31/** -text

@@ -1,0 +1,116 @@
+{
+  "schema": "fe-qa-local-log-summary-v1",
+  "logs": {
+    "stdout": {
+      "local_path": "C:\\Users\\atooz\\Programming\\fractalengine-workspace\\fractalengine\\.qa\\run\\20261101-191920-658\\starts\\20261103-022956-241-c9bc99324298420d8f420c6e3965a29b\\stdout.log",
+      "bytes": 280808,
+      "sha256": "f98d4b316c5968287abb519cc5c2d25111aa84ddb14d2c6453b48985fcdbd3e0",
+      "line_count": 1852,
+      "structured_levels": {
+        "TRACE": 0,
+        "DEBUG": 0,
+        "INFO": 1438,
+        "WARN": 347,
+        "ERROR": 0
+      },
+      "rust_panic_markers": 0,
+      "compiler_warning_diagnostics": 0,
+      "credential_pattern_counts": {
+        "bearer_value": 0,
+        "jwt_value": 0,
+        "private_key_block": 0,
+        "credential_assignment": 0
+      },
+      "raw_log_copied": false
+    },
+    "stderr": {
+      "local_path": "C:\\Users\\atooz\\Programming\\fractalengine-workspace\\fractalengine\\.qa\\run\\20261101-191920-658\\starts\\20261103-022956-241-c9bc99324298420d8f420c6e3965a29b\\stderr.log",
+      "bytes": 78,
+      "sha256": "b6cec634a99f6d3c0924fa4ba1380c085b6aade7fa51b8e17091880e15d7d2d9",
+      "line_count": 1,
+      "structured_levels": {
+        "TRACE": 0,
+        "DEBUG": 0,
+        "INFO": 0,
+        "WARN": 0,
+        "ERROR": 0
+      },
+      "rust_panic_markers": 0,
+      "compiler_warning_diagnostics": 0,
+      "credential_pattern_counts": {
+        "bearer_value": 0,
+        "jwt_value": 0,
+        "private_key_block": 0,
+        "credential_assignment": 0
+      },
+      "raw_log_copied": false
+    },
+    "sealed_stage": {
+      "local_path": "C:\\Users\\atooz\\Programming\\fractalengine-workspace\\fractalengine\\.omc\\research\\qa30-stage-retry.log",
+      "bytes": 3432,
+      "sha256": "40e88d6d6648f53195f07218686f2aa8da1cb44bdd745105b7107e66c4052ebb",
+      "line_count": 39,
+      "structured_levels": {
+        "TRACE": 0,
+        "DEBUG": 0,
+        "INFO": 0,
+        "WARN": 0,
+        "ERROR": 0
+      },
+      "rust_panic_markers": 0,
+      "compiler_warning_diagnostics": 1,
+      "credential_pattern_counts": {
+        "bearer_value": 0,
+        "jwt_value": 0,
+        "private_key_block": 0,
+        "credential_assignment": 0
+      },
+      "raw_log_copied": false
+    },
+    "launch": {
+      "local_path": "C:\\Users\\atooz\\Programming\\fractalengine-workspace\\fractalengine\\.omc\\research\\qa30-launch-owner.log",
+      "bytes": 836,
+      "sha256": "cb1d404384e0295feb5f5fc1b794093adc20c0e903bae1e8e29a8bee3c22f8fb",
+      "line_count": 8,
+      "structured_levels": {
+        "TRACE": 0,
+        "DEBUG": 0,
+        "INFO": 0,
+        "WARN": 0,
+        "ERROR": 0
+      },
+      "rust_panic_markers": 0,
+      "compiler_warning_diagnostics": 0,
+      "credential_pattern_counts": {
+        "bearer_value": 0,
+        "jwt_value": 0,
+        "private_key_block": 0,
+        "credential_assignment": 0
+      },
+      "raw_log_copied": false
+    },
+    "stop": {
+      "local_path": "C:\\Users\\atooz\\Programming\\fractalengine-workspace\\fractalengine\\.omc\\research\\qa30-stop-owner.log",
+      "bytes": 179,
+      "sha256": "8a88951ae09907d3d63f3e616e3acdb7777ca577bf852acbc617df77fbf93fb5",
+      "line_count": 2,
+      "structured_levels": {
+        "TRACE": 0,
+        "DEBUG": 0,
+        "INFO": 0,
+        "WARN": 0,
+        "ERROR": 0
+      },
+      "rust_panic_markers": 0,
+      "compiler_warning_diagnostics": 0,
+      "credential_pattern_counts": {
+        "bearer_value": 0,
+        "jwt_value": 0,
+        "private_key_block": 0,
+        "credential_assignment": 0
+      },
+      "raw_log_copied": false
+    }
+  },
+  "limits": "Pattern counts are not exhaustive secret detection or a global error-free claim. Values and raw app logs are not copied."
+}
