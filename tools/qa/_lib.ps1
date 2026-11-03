@@ -267,7 +267,7 @@ function Get-QaResumeContext {
     $manifestPath = Join-Path $directory 'current.json'
     $current = Get-Content -LiteralPath $manifestPath -Raw -ErrorAction Stop | ConvertFrom-Json
     if ($current -isnot [pscustomobject] -or $current.process_identity -isnot [pscustomobject] -or
-        $current.stage_manifest -isnot [pscustomobject] -or $current.qa_options -isnot [pscustomobject] -or $current.fixture -notin @('basic','terrain','none')) {
+        $current.stage_manifest -isnot [pscustomobject] -or $current.qa_options -isnot [pscustomobject] -or $current.fixture -notin @('basic','terrain','none','legacy-adoption')) {
         throw 'Run manifest lacks supported restart provenance'
     }
     if (-not [string]::Equals([string]$current.run_dir, $directory, [StringComparison]::OrdinalIgnoreCase) -or

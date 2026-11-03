@@ -5998,6 +5998,34 @@ mod tests {
 
             // Legacy local availability does not invent upload ownership; adoption is explicit.
             {
+                mod fixture_glb {
+                    include!(concat!(
+                        env!("CARGO_MANIFEST_DIR"),
+                        "/examples/legacy_adoption_fixture/generator.rs"
+                    ));
+                }
+                let preparation = "0123456789abcdef0123456789abcdef";
+                let fixture = fixture_glb::generate(preparation).unwrap();
+                assert_eq!(fixture_glb::NAME, "qa_legacy_asymmetric_v1");
+                assert_eq!(fixture, fixture_glb::generate(preparation).unwrap());
+                assert_ne!(
+                    fixture,
+                    fixture_glb::generate("1123456789abcdef0123456789abcdef").unwrap()
+                );
+                let geometry = fixture_glb::verify(&fixture, preparation).unwrap();
+                assert_eq!(geometry["triangles"], 24);
+                assert_eq!(geometry["materials"], 2);
+                assert_eq!(geometry["self_contained"], true);
+                fe_runtime::scene_asset::verify_scene_asset_bytes(
+                    &fixture,
+                    blake3::hash(&fixture).as_bytes(),
+                    "model/gltf-binary",
+                    fixture.len() as u64,
+                )
+                .unwrap();
+                let mut changed_fixture = fixture.clone();
+                changed_fixture[0] ^= 1;
+                assert!(fixture_glb::verify(&changed_fixture, preparation).is_err());
                 let legacy = probe_db().await;
                 crate::schema::apply_all(&legacy).await.unwrap();
                 legacy.query("CREATE verse CONTENT {verse_id:'scene-v',name:'v',created_by:'did:qa',created_at:'2026-11-02'}; CREATE fractal CONTENT {fractal_id:'scene-f',verse_id:'scene-v',owner_did:'did:qa',name:'f',created_at:'2026-11-02'}; CREATE petal CONTENT {petal_id:'scene-p',fractal_id:'scene-f',name:'p',node_id:'p',created_at:'2026-11-02'}").await.unwrap().check().unwrap();

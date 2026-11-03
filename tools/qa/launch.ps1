@@ -8,7 +8,7 @@
 param(
     [string]$Stage,
     [ValidateNotNullOrEmpty()][string]$ResumeRun,
-    [ValidateSet("basic", "terrain", "none")]
+    [ValidateSet("basic", "terrain", "none", "legacy-adoption")]
     [string]$Fixture = "basic",
     [ValidateRange(1,65535)][int]$ApiPort = 8765,
     [switch]$DisableSyntheticInput,
@@ -19,6 +19,7 @@ param(
 
 . "$PSScriptRoot\_lib.ps1"
 . "$PSScriptRoot\_fixture.ps1"
+. "$PSScriptRoot\_legacy_fixture.ps1"
 $QaApiBase = "http://127.0.0.1:$ApiPort"
 $ErrorActionPreference = 'Stop'
 
@@ -98,6 +99,9 @@ if ($resume) {
     if ($owned) { $owned.Dispose() }
     else { Write-Warning 'Root already exited; only recorded descendants can be checked, not children born after its last snapshot' }
     Stop-QaOwnedProcessTree -Identity $prior.process_identity -RecordedDescendants @($prior.descendant_identities)
+    if ($Fixture -eq 'legacy-adoption') {
+        $null = Read-QaLegacyFixture -Context $resume -Stage $stageDir -Phase resume -Lease $lifecycleLease
+    }
 }
 $portProbe = New-Object Net.Sockets.TcpListener([Net.IPAddress]::Loopback, $ApiPort)
 try { $portProbe.Start() } finally { $portProbe.Stop() }
@@ -106,9 +110,13 @@ try { $portProbe.Start() } finally { $portProbe.Stop() }
 if (-not $resume) {
     $ts = (Get-Date).ToString("yyyyMMdd-HHmmss-fff")
     $run = Resolve-QaChildPath -Path (Join-Path $QaRunRoot $ts) -Root $QaRunRoot
-    New-Item -ItemType Directory -Force -Path $run | Out-Null
-    New-Item -ItemType Directory -Force -Path (Join-Path $run "data") | Out-Null
-    New-Item -ItemType Directory -Force -Path (Join-Path $run "fractalengine") | Out-Null
+    if ($Fixture -eq 'legacy-adoption') {
+        $legacyPreparation = New-QaLegacyPreparation -Run $run -Stage $stageDir -Lease $lifecycleLease
+    } else {
+        New-Item -ItemType Directory -Force -Path $run | Out-Null
+        New-Item -ItemType Directory -Force -Path (Join-Path $run "data") | Out-Null
+        New-Item -ItemType Directory -Force -Path (Join-Path $run "fractalengine") | Out-Null
+    }
 
     # Copy the fixture assets into the run-local workspace layout.
     $assetsLink = Join-Path $run "fractalengine\assets"
@@ -126,7 +134,7 @@ $hexonDir = Join-Path $run "hexons"
 
 # Generate and install the requested offline fixture before the GUI opens its store.
 $terrainDescriptor = $null
-if (-not $resume -and $Fixture -ne 'none') {
+if (-not $resume -and $Fixture -in @('basic','terrain')) {
     $terrainBuilder = Join-Path $stageDir 'build_qa_terrain.exe'
     if (-not (Test-Path -LiteralPath $terrainBuilder)) { throw 'Requested fixture requires a staged build_qa_terrain.exe' }
     $builderOutput = & $terrainBuilder $run
@@ -226,8 +234,13 @@ if (-not $readiness.ready) {
     Fail "Authenticated hierarchy readiness failed: $($readiness.terminal_reason); status=$($readiness.last_http_status); reason=$($readiness.last_reason); api_error=$($readiness.last_api_error)"
 }
 $fixtureInfo = if ($resume) { $resume.current.fixture_detail } else { $null }
+if (-not $resume -and $Fixture -eq 'legacy-adoption') {
+    $fixtureInfo = $legacyPreparation
+    $fixtureInfo | Add-Member -NotePropertyName runtime_did -NotePropertyValue (Get-QaLegacyRuntimeDid -Token $bootstrap.Token -VerseId $bootstrap.VerseId)
+    Write-QaLog 'Legacy GLB input prepared; setup only. No adoption has been submitted.'
+}
 $swFixture = [System.Diagnostics.Stopwatch]::StartNew()
-if (-not $resume -and $Fixture -ne 'none') {
+if (-not $resume -and $Fixture -in @('basic','terrain')) {
     $fixtureInfo = New-QaSceneFixture -Name $Fixture -BootstrapToken $bootstrap.Token -TokensPath $tokensPath -Run $run -TerrainDescriptor $terrainDescriptor
     Write-QaLog "Fixture '$Fixture' verified: 3 values sum to 60; terrain petals=$($fixtureInfo.terrain_petal_ids -join ',')"
 }

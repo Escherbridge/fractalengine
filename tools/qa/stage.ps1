@@ -51,6 +51,8 @@ try {
     }
     & cargo build -p fe-format --example seal_hexon -j $Jobs
     if ($LASTEXITCODE -ne 0) { throw "QA archive sealer build failed: $LASTEXITCODE" }
+    & cargo build -p fe-database --example legacy_adoption_fixture -j $Jobs
+    if ($LASTEXITCODE -ne 0) { throw "QA legacy fixture helper build failed: $LASTEXITCODE" }
 } finally {
     Pop-Location
 }
@@ -83,6 +85,10 @@ $sealerSrc = Join-Path $QaRepoRoot 'target/debug/examples/seal_hexon.exe'
 if (-not (Test-Path -LiteralPath $sealerSrc)) { throw 'QA archive sealer is missing after build' }
 Copy-Item -LiteralPath $sealerSrc -Destination (Join-Path $stageDir 'seal_hexon.exe')
 
+$legacyFixtureSrc = Join-Path $QaRepoRoot 'target/debug/examples/legacy_adoption_fixture.exe'
+if (-not (Test-Path -LiteralPath $legacyFixtureSrc)) { throw 'QA legacy fixture helper is missing after build' }
+Copy-Item -LiteralPath $legacyFixtureSrc -Destination (Join-Path $stageDir 'legacy_adoption_fixture.exe')
+
 $manifest = @{
     kind = 'fractalengine-qa-stage-v1'
     source_commit = (& git -C $QaRepoRoot rev-parse HEAD).Trim()
@@ -91,6 +97,7 @@ $manifest = @{
     built_at = (Get-Date).ToUniversalTime().ToString('o')
     exe_sha256 = (Get-FileHash -LiteralPath (Join-Path $stageDir 'fractalengine.exe') -Algorithm SHA256).Hash
     seal_hexon_sha256 = (Get-FileHash -LiteralPath (Join-Path $stageDir 'seal_hexon.exe') -Algorithm SHA256).Hash
+    legacy_fixture_sha256 = (Get-FileHash -LiteralPath (Join-Path $stageDir 'legacy_adoption_fixture.exe') -Algorithm SHA256).Hash
 }
 if ((Get-QaSourceFingerprint) -ne $sourceFingerprint) { throw 'Build inputs changed while staging; rerun stage.ps1' }
 $manifest | ConvertTo-Json | Set-Content -LiteralPath (Join-Path $stageDir 'stage.json') -Encoding UTF8

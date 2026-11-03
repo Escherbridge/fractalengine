@@ -1134,3 +1134,35 @@ Transfer prints submission only. Completed-save replay and compact primary selec
 current checkpoints; additional/partial renderer assertions do not implement multiple selection.
 Isolated group/batch editing is outside this snapshot. No focused PASS is imported into FULL coverage.
 Keep execution_evidence false and the final staged fingerprint null until final owner reconciliation.
+
+
+## Disposable legacy adoption fixture
+
+launch.ps1 -Fixture legacy-adoption exclusively creates a new run and freezes one
+GLB at assets/models/qa_legacy_asymmetric_v1.glb before first startup. Ordinary
+legacy seeding creates its ownerless/unanchored metadata; Genesis does not attach
+this unrecognized stem. This is setup only: no upload, metadata stripping, fictional
+uploader, logical DB writer or adoption. Basic/terrain fixture builders are skipped.
+The staged helper is SHA256-sealed as legacy_fixture_sha256 in stage.json.
+
+legacy-fixture.ps1 -Run <explicit-run> -Phase discovery|baseline|adopted holds the
+shared lifecycle lease/restart lock and requires exact recorded identities absent.
+The helper independently duplicates that lease handle and checks identities before
+and after opening the existing store. Only fixed bounded SELECTs run. Static codes
+replace raw SQL/native errors. Source SHA256/BLAKE3, actual DB presence and complete
+CBOR-derived witness digests bind readback without publishing raw journal payloads.
+See fe-database/examples/AGENTS.md for numeric/time/output/overflow contracts.
+
+Stop and inspect discovery to learn the actual seeded ID and prove 0 references.
+Resume this disposable run; normal authorized APIs create a new namespace-bearing
+Owner Verse, Fractal, one Petal and two existing-asset objects named QA Legacy A/B.
+Keep properties empty. Stop and inspect baseline. Resume; actual native Review/one
+Confirm remains a separate step. Stop and inspect adopted for durable provenance
+and unchanged node/history/bytes. Public asset query policy remains unchanged.
+
+Resume verifies preparation/stage/source, runtime creator, existing Genesis and
+asset before starting; it never regenerates/reseeds. Missing storage or changed
+context refuses. Reports are create-new and cannot erase prior cuts. Do not use
+retained campaign stores. Recorded-child absence is not a complete orphan census.
+Fs bytes do not prove cold iroh state, peer delivery or rendering; recipient bytes
+are never installed by this workflow. Source authorship is not execution evidence.
