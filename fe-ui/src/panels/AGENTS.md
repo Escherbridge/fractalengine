@@ -862,3 +862,13 @@ in-memory egui events. It does not access or forward the host clipboard. The
 journey is authored source until root executes the integrated checks.
 
 The legacy fresh_path_selection fixture helper is compiled only for its existing unit journeys; production tool policy uses the shared checked selection interaction route. Primary selection readouts use the captured display name with the canonical node ID as hover detail and fallback.
+
+
+## Scene asset sharing inspector
+
+The single-object Inspector delegates to scene_assets::render. Availability
+comes from an admitted typed asset descriptor. The Owner review displays the
+verified digest, MIME/size and entire reference set, with virtualized scrolling
+for long sets and a Portal-reference marker. Adoption records responsibility
+for the reviewed local copy; it does not assert original upload or peer
+delivery. Unresolved permissions suppress candidate details and actions.

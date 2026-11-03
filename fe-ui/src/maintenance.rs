@@ -9,6 +9,9 @@ fn reset<T: Resource + Default>(world: &mut World) {
 }
 
 pub fn clear_read_models(world: &mut World) {
+    if let Some(mut assets) = world.get_resource_mut::<crate::scene_assets::SceneAssets>() {
+        assets.retire_for_terminal_reset();
+    }
     if let Some(mut nav) = world.get_resource_mut::<crate::navigation_manager::NavigationManager>()
     {
         nav.back_from_verse();
@@ -53,4 +56,11 @@ pub fn clear_read_models(world: &mut World) {
     reset::<crate::panels::tool_panel::ToolPanelState>(world);
     reset::<crate::scene_analysis::SceneMaterialCache>(world);
     reset::<crate::settings::PetalRenderOverride>(world);
+}
+
+pub fn clear_scene_asset_outcomes_after_database_join(world: &mut World) {
+    reset::<crate::scene_assets::SceneAssets>(world);
+    if let Some(mut ui) = world.get_resource_mut::<crate::actions::UiManager>() {
+        ui.scene_asset_view = Default::default();
+    }
 }

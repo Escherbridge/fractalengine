@@ -27,6 +27,7 @@ use crate::navigation_manager::NavigationManager;
 /// re-materialization (see ../AGENTS.md §db-results).
 #[derive(SystemParam)]
 pub(super) struct DescriptorCaches<'w, 's> {
+    scene_assets: Option<ResMut<'w, crate::scene_assets::SceneAssets>>,
     committed_hierarchy_pending: Local<'s, bool>,
     undo: Option<ResMut<'w, crate::undo::UndoState>>,
     selection_sources: crate::editor_batch::RenderedSources<'w, 's>,
@@ -201,7 +202,14 @@ pub(super) fn apply_db_results(
                 &mut ui_mgr,
                 &mut caches,
                 &mut already_spawned,
+                &asset_server,
             );
+            continue;
+        }
+        if matches!(result, DbResult::SceneAssetNeeded { .. } | DbResult::SceneAssetAdoptionCandidate { .. } | DbResult::SceneAssetAdopted { .. }) {
+            if let Some(assets) = caches.scene_assets.as_deref_mut() {
+                assets.route_db(result, &verse_mgr, &nav, &node_mgr, &local_role, caches.time.elapsed_secs_f64());
+            }
             continue;
         }
         let batch_result = if ui_mgr.editor_batch.owns(result) {
@@ -1012,6 +1020,7 @@ fn apply_replica_current(
     ui: &mut crate::actions::UiManager,
     caches: &mut DescriptorCaches,
     already_spawned: &mut std::collections::HashSet<String>,
+    asset_server: &AssetServer,
 ) {
     use super::replica_projection::Outcome;
     if manager.scene_access_blocked() {
@@ -1025,6 +1034,7 @@ fn apply_replica_current(
         commands,
         &caches.current_nodes,
         nav.active_petal_id.as_deref(),
+        asset_server,
     ) {
         Outcome::NeedsHierarchy => {
             request_committed_hierarchy(&mut caches.committed_hierarchy_pending, nav);
@@ -3240,12 +3250,15 @@ mod tests {
         assert_ne!(unavailable[0], births[0], "a replaced asset binding rematerializes through residency");
         assert!(app.world().resource::<VerseManager>().all_nodes().find(|node| node.id == "remote-birth").unwrap().asset_path.is_none());
         asset_birth.asset = ReplicaNodeAsset::LocalBlob { asset_id: "remote-asset".into(), content_hash: "a".repeat(64), content_type: "model/gltf-binary".into(), asset_path: "models/replica.glb".into() };
-        app.world_mut().write_message(DbResult::ReplicatedNodeCurrent { current: asset_birth });
+        app.world_mut().write_message(DbResult::ReplicatedNodeCurrent { current: asset_birth.clone() });
         app.update();
         let available: Vec<_> = residents.iter(app.world()).filter(|(_, marker)| marker.node_id == "remote-birth").map(|(entity, _)| entity).collect();
         assert_eq!(available.len(), 1);
         assert_ne!(available[0], unavailable[0]);
         assert!(app.world().get::<bevy::scene::SceneRoot>(available[0]).is_some(), "actual asset availability selects the ordinary SceneRoot branch");
+
+        app.add_systems(Update, crate::scene_assets::advance.after(apply_db_results));
+        crate::scene_assets::journey::extend_asset_workflow(&mut app, asset_birth, &db_commands);
 
         app.world_mut().resource_mut::<crate::visibility::VisibilityState>().set_node_group_membership("cold-node", vec!["g".into()]);
         remote.state.tombstone = Some(json!({"deleted": true}));

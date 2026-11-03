@@ -141,6 +141,7 @@ impl VerseManager {
     }
 
     fn remove_node_entry(&mut self, petal_id: &str, node_id: &str) {
+        self.scene_sources.forget_asset_retry(node_id);
         if let Some(petal) = self.find_petal_mut(petal_id) {
             petal.nodes.retain(|n| n.id != node_id);
         }

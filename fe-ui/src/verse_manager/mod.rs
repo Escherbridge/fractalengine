@@ -47,7 +47,7 @@ pub use primitive_materialize::PrimitiveDescriptorCache;
 pub use primitive_reconcile::PrimitiveMaterialAssets;
 pub use residency_ledger::{radius_scale_for_pressure, ResidencyLedger};
 pub use replica_projection::CurrentPathProjection;
-pub use scene_admission::SceneAdmission;
+pub use scene_admission::{SceneAdmission, SceneAssetSource};
 pub(crate) use spawn::MAX_PETAL_NODES;
 pub const SCENE_NODE_HARD_LIMIT: usize = spawn::MAX_PETAL_NODES;
 pub use spawn::{build_primitive_mesh, PathAssetInstance, PrimitiveNode, ResidentNode};

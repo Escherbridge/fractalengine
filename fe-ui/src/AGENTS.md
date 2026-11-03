@@ -1459,3 +1459,13 @@ cannot later reopen or adopt it. The existing native lifecycle journey covers th
 
 
 Ordinary Undo and checked selection history now share the exact owned inverse links in editor_batch/history_chain.rs; see editor_batch/AGENTS.md. The previous ordinary-only next-entry cursor loop is replaced by the same guarded mechanism across chronological controller boundaries.
+
+
+## Native scene asset controls
+
+`scene_assets/` owns the Inspector's explicit Owner local-copy review/adoption
+workflow and bounded peer-asset demand. `UiManager` stores only its derived
+PanelView; accepted writes remain on the independent SceneAssets Resource.
+The advance system runs after the sole sync-event drain and PostSelection,
+while private DB outcomes are routed inline with complete current admissions.
+See `scene_assets/AGENTS.md` for exact ownership and reset boundaries.

@@ -21,3 +21,12 @@ owners and source payloads during freeze. The terminal Update cannot continue
 those workflows. Their resources are replaced only after the database worker
 has actually joined; a quiescence or join failure leaves those owners retained
 in the terminal process. This is separate from clearing pure read/render state.
+
+
+## Native scene asset outcome owners
+
+Freeze discards SceneAssetEventBuffer read hints and retires SceneAssets unsent
+reviews, fetch/read intents and derived views. Accepted adoption candidates and
+request IDs survive freeze/unknown outcomes; only the successful DB worker join
+clears those mutation owners via clear_scene_asset_outcomes_after_database_join.
+A refused/failed join must not discard an accepted write identity.

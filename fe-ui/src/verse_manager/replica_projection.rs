@@ -179,6 +179,7 @@ pub(super) fn apply(
     commands: &mut Commands,
     entities: &Query<(Entity, &SpawnedNodeMarker, &Transform), With<super::spawn::ResidentNode>>,
     active_petal_id: Option<&str>,
+    asset_server: &AssetServer,
 ) -> Outcome {
     let state = &current.state;
     if state.node_id.is_empty()
@@ -226,9 +227,11 @@ pub(super) fn apply(
     if !transform.translation.is_finite() || !transform.scale.is_finite() {
         return Outcome::Invalid;
     }
+    let failed_asset_retry = active_petal_id == Some(state.petal_id.as_str())
+        && current.asset.asset_path().is_some_and(|path| manager.retry_failed_scene_asset(&state.node_id, path, asset_server));
     let previous = manager.all_nodes().find(|node| node.id == state.node_id);
     let asset_path = current.asset.asset_path().map(str::to_owned);
-    let asset_changed = previous.is_some_and(|node| {
+    let asset_changed = failed_asset_retry || previous.is_some_and(|node| {
         node.asset_path != asset_path || node.has_asset != state.asset_id.is_some()
     });
     let same_model = manager.url_asset_ids.get(&state.node_id) == Some(&state.asset_id);

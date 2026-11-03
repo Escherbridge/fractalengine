@@ -488,3 +488,12 @@ The addressed Join coordinator now owns correlation, pending native channels and
 on UiManager.join_flow. join_request remains a rendered pending/error projection plus legacy
 compatibility state. Any dialog replacement cancels the current coordinator and clears the old
 request projection; a following Update performs target-scoped native cleanup.
+
+
+## Scene asset sharing actions
+
+ReviewSceneAssetCopy, AdoptSceneAssetCopy and CancelSceneAssetReview delegate
+to SceneAssets. Adoption is a single-selection action, blocked while selection
+batch state is pending. Confirm carries the displayed preview identity; the
+resource performs a fresh Owner/candidate read and exact comparison before
+submission. Cancel retires unsent review only, never an accepted mutation.

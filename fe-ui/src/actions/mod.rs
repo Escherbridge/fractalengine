@@ -55,6 +55,9 @@ pub enum UiAction {
     /// Apply the inspector's Position/Rotation/Scale text buffers to the
     /// selected node's `Transform`. See AGENTS.md §inspector-transform.
     ApplyNodeTransform,
+    ReviewSceneAssetCopy { node_id: String },
+    AdoptSceneAssetCopy { preview_id: String },
+    CancelSceneAssetReview,
     CheckSelectionSave,
     SelectionBatch {
         origin: crate::editor_batch::BatchOrigin,
@@ -614,6 +617,7 @@ pub struct UiManager {
     pub(crate) pending_url_save: Option<portal::PendingUrlSave>,
     pub(crate) url_read_model: url_read_model::UrlReadModel,
     pub(crate) editor_batch: crate::editor_batch::EditorBatchState,
+    pub(crate) scene_asset_view: crate::scene_assets::PanelView,
     pub(crate) portal_feedback: portal::PortalFeedback,
     pub(crate) portal_content_rect: Option<bevy_egui::egui::Rect>,
     pub(crate) context_point_origin: Option<crate::undo::PointEditOrigin>,
@@ -660,6 +664,7 @@ impl Default for UiManager {
             pending_url_save: None,
             url_read_model: url_read_model::UrlReadModel::default(),
             editor_batch: Default::default(),
+            scene_asset_view: Default::default(),
             portal_feedback: portal::PortalFeedback::default(),
             portal_content_rect: None,
             context_point_origin: None,
@@ -1104,6 +1109,7 @@ pub(crate) struct GisPathParams<'w, 's> {
 /// registration scaffold + `plugin.rs` for registration.
 #[derive(bevy::ecs::system::SystemParam)]
 pub(crate) struct ToolStateParams<'w> {
+    scene_assets: Option<ResMut<'w, crate::scene_assets::SceneAssets>>,
     undo:ResMut<'w,crate::undo::UndoState>,
     tool_panel: ResMut<'w, crate::panels::tool_panel::ToolPanelState>,
     proposal_state: ResMut<'w, ProposalEditState>,
@@ -1144,6 +1150,7 @@ fn selection_singular_edit(action: &UiAction) -> bool {
     matches!(
         action,
         UiAction::ApplyNodeTransform
+            | UiAction::AdoptSceneAssetCopy { .. }
             | UiAction::SetNodeProperty { .. }
             | UiAction::DeleteNodeProperty { .. }
             | UiAction::PathAppendPoint { .. }
@@ -1202,6 +1209,7 @@ pub(crate) fn process_ui_actions(
         selection_sources,
     } = gis;
     let ToolStateParams {
+        mut scene_assets,
         mut undo,
         mut tool_panel,
         mut proposal_state,
@@ -1268,6 +1276,19 @@ pub(crate) fn process_ui_actions(
             continue;
         }
         match action {
+            UiAction::ReviewSceneAssetCopy { node_id } => {
+                if let Some(assets) = scene_assets.as_deref_mut() {
+                    assets.begin_review(&node_id, &mut verse_mgr, &nav, &node_mgr, &local_role, now_secs);
+                } else { ui_mgr.show_advisory("Native scene asset workflow is unavailable", now_secs); }
+            }
+            UiAction::AdoptSceneAssetCopy { preview_id } => {
+                if let Some(assets) = scene_assets.as_deref_mut() {
+                    assets.confirm_review(&preview_id, &verse_mgr, &nav, &node_mgr, &local_role, now_secs);
+                } else { ui_mgr.show_advisory("Native scene asset workflow is unavailable; no adoption was submitted", now_secs); }
+            }
+            UiAction::CancelSceneAssetReview => {
+                if let Some(assets) = scene_assets.as_deref_mut() { assets.cancel_review(); }
+            }
             UiAction::CheckSelectionSave => match ui_mgr.editor_batch.resolve(&db_sender.0) {
                 Ok(()) => ui_mgr.show_toast("Checking the original selection save?", now_secs),
                 Err(error) => ui_mgr.show_error(error, now_secs),

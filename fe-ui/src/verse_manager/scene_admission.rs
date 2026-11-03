@@ -27,6 +27,8 @@ pub(super) struct SceneSources {
     hierarchy_revision: u64,
     navigation: Option<(u64, [Option<String>; 3])>,
     sources: HashMap<String, Binding>,
+    reload_nodes: HashMap<String, String>,
+    reload_paths: HashMap<String, usize>,
 }
 
 struct Binding {
@@ -40,6 +42,14 @@ struct Binding {
     asset_id: Option<String>,
     replica_identity: Option<[u8; 32]>,
     editor_points: Option<Value>,
+    replica_asset: Option<(String, fe_runtime::scene_replication::ReplicaNodeAsset, fe_runtime::scene_replication::ReplicaNodeProvenance)>,
+}
+
+pub struct SceneAssetSource<'a> {
+    pub admission: SceneAdmission,
+    pub scope: &'a str,
+    pub asset: &'a fe_runtime::scene_replication::ReplicaNodeAsset,
+    pub provenance: &'a fe_runtime::scene_replication::ReplicaNodeProvenance,
 }
 
 struct Canonical<'a>(&'a Value);
@@ -104,28 +114,51 @@ impl Default for SceneSources {
             hierarchy_revision: 0,
             navigation: None,
             sources: HashMap::new(),
+            reload_nodes: HashMap::new(),
+            reload_paths: HashMap::new(),
         }
     }
 }
 
 impl SceneSources {
     pub(super) fn retire(&mut self) {
-        if !self.sources.is_empty() {
+        if !self.sources.is_empty() || !self.reload_nodes.is_empty() {
             self.clear();
         }
     }
 
     pub(super) fn clear(&mut self) {
         self.sources.clear();
+        self.reload_nodes.clear();
+        self.reload_paths.clear();
         self.hierarchy_revision = self.hierarchy_revision.saturating_add(1);
     }
 
     pub(super) fn remove(&mut self, node_id: &str) {
         self.sources.remove(node_id);
     }
+
+    pub(super) fn forget_asset_retry(&mut self, node: &str) {
+        if let Some(path) = self.reload_nodes.remove(node) {
+            if let Some(count) = self.reload_paths.get_mut(&path) {
+                *count = count.saturating_sub(1);
+                if *count == 0 { self.reload_paths.remove(&path); }
+            }
+        }
+    }
 }
 
 impl VerseManager {
+    pub(super) fn retry_failed_scene_asset(&mut self, node: &str, path: &str, server: &bevy::prelude::AssetServer) -> bool {
+        if self.scene_sources.reload_nodes.get(node).is_some_and(|known| known == path) { return false; }
+        let Some(reload_path) = super::spawn::failed_scene_asset(server, path) else { return false; };
+        let already_retried = self.scene_sources.reload_paths.contains_key(path);
+        self.scene_sources.forget_asset_retry(node);
+        self.scene_sources.reload_nodes.insert(node.into(), path.into());
+        *self.scene_sources.reload_paths.entry(path.into()).or_default() += 1;
+        if !already_retried { server.reload(reload_path); }
+        true
+    }
     pub(super) fn current_editor_points(&self, node_id: &str) -> Option<Value> {
         self.scene_sources
             .sources
@@ -152,7 +185,33 @@ impl VerseManager {
     ) {
         if let Some(binding) = self.scene_sources.sources.get_mut(&current.state.node_id) {
             binding.replica_identity = replica_identity(current);
+            binding.replica_asset = Some((current.scope.clone(), current.asset.clone(), current.provenance.clone()));
         }
+    }
+
+    pub fn scene_asset_source(&self, node_id: &str, petal_id: &str) -> Option<SceneAssetSource<'_>> {
+        if self.petal_id_of(node_id) != Some(petal_id) { return None; }
+        let admission = self.scene_admission(node_id, petal_id)?;
+        let (scope, asset, provenance) = self.scene_sources.sources.get(node_id)?.replica_asset.as_ref()?;
+        Some(SceneAssetSource { admission, scope, asset, provenance })
+    }
+
+    pub fn scene_asset_id(&self, node_id: &str, petal_id: &str) -> Option<&str> {
+        if self.petal_id_of(node_id) != Some(petal_id) { return None; }
+        self.scene_admission(node_id, petal_id)?;
+        self.scene_sources.sources.get(node_id)?.asset_id.as_deref()
+    }
+
+    pub fn scene_assets_with_ready_hashes(&self, petal_id: &str, hashes: &std::collections::HashSet<String>) -> Vec<String> {
+        self.find_petal(petal_id).into_iter().flat_map(|petal| &petal.nodes).filter(|node| {
+            self.scene_sources.sources.get(&node.id).is_some_and(|binding| {
+                !binding.deleted && binding.petal_id == petal_id
+                    && binding.replica_asset.as_ref().is_some_and(|(_, asset, _)| {
+                        matches!(asset, fe_runtime::scene_replication::ReplicaNodeAsset::LocalBlob { asset_id, content_hash, .. }
+                            if binding.asset_id.as_ref() == Some(asset_id) && hashes.contains(content_hash))
+                    })
+            })
+        }).map(|node| node.id.clone()).collect()
     }
 
     pub fn synchronize_scene_navigation(
@@ -350,6 +409,7 @@ impl VerseManager {
                 editor_points: properties
                     .and_then(|properties| properties.get("gpx_points"))
                     .cloned(),
+                replica_asset: None,
             },
         );
         self.scene_admission(node_id, petal_id)

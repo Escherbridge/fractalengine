@@ -251,6 +251,7 @@ fn freeze_editor(world: &mut World, supervisor: &mut Supervisor) -> Result<(), &
     world.insert_resource(fe_sync::VersePeers::default());
     world.insert_resource(fe_sync::TilesetEventBuffer::default());
     world.insert_resource(fe_sync::StreamedTilesetEventBuffer::default());
+    world.insert_resource(fe_sync::SceneAssetEventBuffer::default());
     world.insert_resource(fe_renderer::scene_analysis::SceneAnalysisSnapshot::default());
     world.insert_resource(fe_terrain::petal_binding::ActivePetalTerrain::default());
     world.insert_resource(fe_terrain::petal_binding::ActiveTileSource::default());
@@ -391,6 +392,7 @@ impl Supervisor {
                 return;
             }
             status.database_joined = true;
+            fe_ui::maintenance::clear_scene_asset_outcomes_after_database_join(world);
             world.insert_resource(crate::gpx_bridge::PendingPathEdits::default());
             world.insert_resource(crate::gpx_bridge::PendingGpxImports::default());
         }

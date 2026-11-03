@@ -83,13 +83,25 @@ impl ResidencyBudget<'_> {
 
 /// Resolve an asset path to a loadable scene path: append `#Scene0` only for
 /// gltf/glb assets that don't already carry a label; pass anything else through.
-fn scene_asset_path(asset_path: &str) -> String {
+pub(super) fn scene_asset_path(asset_path: &str) -> String {
     let is_gltf = asset_path.ends_with(".gltf") || asset_path.ends_with(".glb");
     if is_gltf && !asset_path.contains('#') {
         format!("{}#Scene0", asset_path)
     } else {
         asset_path.to_string()
     }
+}
+
+pub(super) fn failed_scene_asset(asset_server: &AssetServer, asset_path: &str) -> Option<String> {
+    let scene_path = scene_asset_path(asset_path);
+    let base_path = asset_path.split_once('#').map_or(asset_path, |(base, _)| base);
+    let root_failed = asset_server.get_handle_untyped(base_path.to_owned()).is_some_and(|handle| {
+        matches!(asset_server.get_load_state(handle.id()), Some(bevy::asset::LoadState::Failed(_)))
+    });
+    if root_failed { return Some(base_path.to_owned()); }
+    asset_server.get_handle::<Scene>(scene_path.clone()).filter(|handle| {
+        matches!(asset_server.get_load_state(handle.id()), Some(bevy::asset::LoadState::Failed(_)))
+    }).map(|_| scene_path)
 }
 
 pub(super) fn spawn_node_entity(

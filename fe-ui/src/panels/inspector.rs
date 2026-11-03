@@ -229,6 +229,7 @@ fn inspector_tab_body(
                 ui_mgr,
                 asset_status,
             );
+            crate::scene_assets::render(ui, node_mgr, hierarchy, nav, local_role, ui_mgr);
             ui.add_space(2.0);
             crate::panels::annotation_card::annotation_card_section(
                 ui, inspector, node_mgr, ui_mgr,

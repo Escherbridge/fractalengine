@@ -691,3 +691,19 @@ NodeCreated handler does not continue another UI workflow for those IDs. Pen
 first-anchor intent is unsent work: role invalidation or denied edit access clears
 that intent, and a matching late birth cannot restart editing outside its original
 active Petal. Accepted host command outcomes remain with the host's separate owner.
+
+
+## Scene asset descriptor and failed-loader recovery
+
+SceneSources retains the exact admitted asset availability/provenance beside
+its current-source token. Local journal receipts do not fabricate this remote
+asset descriptor. SceneAssetNeeded is routed after the corresponding complete
+current DTO in DB channel order and must match this descriptor before any fetch.
+
+A fresh authorized LocalBlob may recover a prior Bevy failed root or labelled
+Scene handle. The adapter invokes AssetServer::reload on the actual failed URI
+and rematerializes the resident through normal residency. Retry records are
+bounded by known nodes, coalesced by URI and survive same-node cache updates;
+deletion, hierarchy/navigation/access retirement and terminal reset clear them.
+Repeated recovery reads cannot create a reload storm for a permanently invalid
+model. File availability is not a claim that GPU decoding/rendering succeeded.

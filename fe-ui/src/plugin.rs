@@ -858,6 +858,11 @@ impl Plugin for GardenerConsolePlugin {
         app.init_resource::<fe_renderer::camera::CameraPointerRegion>();
         app.add_systems(Update, crate::ui_shell::results_dock::draw_matches);
         app.init_resource::<UiManager>();
+        app.init_resource::<crate::scene_assets::SceneAssets>();
+        app.init_resource::<fe_sync::SceneAssetEventBuffer>();
+        app.add_systems(Update, crate::scene_assets::advance
+            .after(fe_sync::drain_sync_events).after(UiSet::PostSelection)
+            .run_if(fe_runtime::maintenance::editor_running));
         app.init_resource::<PetalMapState>();
         // M2/F6: per-verse timeseries fabric settings surface (mirrors the
         // verse row's ts_* columns; see timeseries_settings.rs).
