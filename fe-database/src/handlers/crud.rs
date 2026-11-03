@@ -1302,34 +1302,36 @@ pub(crate) async fn promote_instance_handler(
     petal_id: &str,
     path_id: &str,
     instance_index: u32,
+    publisher: &str,
+    actor: &str,
+    expected_scope: &str,
 ) -> anyhow::Result<(String, bool)> {
-    require_petal_scope(db, petal_id, "PromoteInstance").await?;
+    let scope = require_petal_scope(db, petal_id, "PromoteInstance").await?;
+    anyhow::ensure!(scope == expected_scope, "promotion ancestry changed");
 
     // DEC-C21 M7: the owning path must belong to the AUTHORIZED petal. A
     // foreign path_id would mint `<foreign>#inst-n` here (squatting the
     // victim's deterministic instance id) — or, via the idempotency probe,
     // hand back a node from another petal. An absent path is tolerated (ids
     // are unguessable ULIDs, so it cannot name another petal's live path).
-    for probe_id in [
-        path_id.to_string(),
-        format!("{path_id}#inst-{instance_index}"),
+    let node_id = format!("{path_id}#inst-{instance_index}");
+    let path_owner = node_petal_id(db, path_id).await?;
+    let target_owner = node_petal_id(db, &node_id).await?;
+    for (probe_id, owner) in [
+        (path_id, path_owner.as_deref()),
+        (node_id.as_str(), target_owner.as_deref()),
     ] {
-        if let Some(owner) = node_petal_id(db, &probe_id).await? {
-            if owner != petal_id {
-                anyhow::bail!(
-                    "PromoteInstance: node {probe_id} belongs to another petal, not {petal_id}"
-                );
-            }
+        if owner.is_some_and(|owner| owner != petal_id) {
+            anyhow::bail!(
+                "PromoteInstance: node {probe_id} belongs to another petal, not {petal_id}"
+            );
         }
     }
-
-    let node_id = format!("{path_id}#inst-{instance_index}");
-    let now = chrono::Utc::now().to_rfc3339();
 
     // Idempotency probe (tolerate an absent `node` table on a fresh DB).
     let existing: Vec<serde_json::Value> = {
         let lookup = db
-            .query("SELECT node_id FROM node WHERE node_id = $nid LIMIT 1")
+            .query("SELECT node_id, petal_id, tombstone FROM node WHERE node_id = $nid LIMIT 2")
             .bind(("nid", node_id.clone()))
             .await
             .map_err(|e| anyhow::anyhow!("PromoteInstance lookup failed: {e}"))?
@@ -1350,6 +1352,39 @@ pub(crate) async fn promote_instance_handler(
         return Ok((node_id, false)); // already promoted — idempotent no-op.
     }
 
+    let permission = super::entity::prepare_scope_permission(
+        db,
+        &scope,
+        publisher,
+        fe_policy::RoleLevel::Editor,
+    )
+    .await?;
+    let (mut statements, mut bindings) = permission.into_parts();
+    let (ancestry, ancestry_bindings) = super::node_history::scope_fence(&scope, None)?;
+    statements.extend(ancestry);
+    bindings.extend(ancestry_bindings);
+    statements.push("IF (SELECT VALUE petal_id FROM node WHERE node_id=$promotion_owner_path) != $promotion_owner_snapshot { THROW 'promotion path owner changed'; }".into());
+    bindings.extend([
+        ("promotion_owner_path".into(), serde_json::json!(path_id)),
+        (
+            "promotion_owner_snapshot".into(),
+            serde_json::json!(path_owner.iter().collect::<Vec<_>>()),
+        ),
+    ]);
+    let properties = serde_json::json!({"node_kind":"stamp","path_id":path_id,"owning_path_id":path_id,"instance_index":instance_index});
+    let birth = super::stamp_promotion::prepare_birth(
+        db,
+        super::stamp_promotion::StampBirthInput {
+            node_id: &node_id,
+            petal_id,
+            path_id,
+            index: instance_index,
+            scope: &scope,
+            actor,
+            properties: &properties,
+        },
+    )
+    .await?;
     let entry = crate::types::OpLogEntry {
         lamport_clock: 0,
         node_id: crate::types::NodeId(node_id.clone()),
@@ -1363,33 +1398,11 @@ pub(crate) async fn promote_instance_handler(
         sig: "00".repeat(64),
         hlc_timestamp: String::new(),
     };
-    crate::op_log::commit_operation(db, entry, |_| async {
-        db.query(
-            "CREATE node CONTENT {
-                node_id: $node_id,
-                petal_id: $petal_id,
-                display_name: $name,
-                asset_id: NONE,
-                position: <geometry<point>> [0.0, 0.0],
-                elevation: 0.0,
-                rotation: [0.0, 0.0, 0.0, 1.0],
-                scale: [1.0, 1.0, 1.0],
-                interactive: true,
-                created_at: $now,
-                properties: { node_kind: 'stamp', path_id: $path_id, \
-                              owning_path_id: $path_id, instance_index: $idx },
-            }",
-        )
-        .bind(("node_id", node_id.clone()))
-        .bind(("petal_id", petal_id.to_string()))
-        .bind(("name", format!("{path_id} #{instance_index}")))
-        .bind(("path_id", path_id.to_string()))
-        .bind(("idx", instance_index as i64))
-        .bind(("now", now.clone()))
-        .await?
-        .check()
-        .map_err(|e| anyhow::anyhow!("PromoteInstance CREATE failed: {e}"))?;
-        Ok(())
+    crate::op_log::commit_operation_atomic_with(db, entry, |hlc| {
+        let (birth_statements, birth_bindings) = birth.into_parts(hlc);
+        statements.extend(birth_statements);
+        bindings.extend(birth_bindings);
+        (statements, bindings)
     })
     .await?;
 
@@ -1950,24 +1963,132 @@ mod asset_ingest_tests {
         .await
         .expect("seed paths");
 
-        let err = promote_instance_handler(&db, "petal-1", "path-foreign", 0)
-            .await
-            .expect_err("foreign path must be refused");
+        let err = promote_instance_handler(
+            &db,
+            "petal-1",
+            "path-foreign",
+            0,
+            "local",
+            "local",
+            "VERSE#verse-1-FRACTAL#fractal-1-PETAL#petal-1",
+        )
+        .await
+        .expect_err("foreign path must be refused");
         assert!(err.to_string().contains("another petal"), "{err}");
         assert_eq!(
             node_petal_id(&db, "path-foreign#inst-0").await.unwrap(),
             None
         );
 
-        let (node_id, newly) = promote_instance_handler(&db, "petal-1", "path-own", 0)
-            .await
-            .expect("own-petal path promotes");
+        let (node_id, newly) = promote_instance_handler(
+            &db,
+            "petal-1",
+            "path-own",
+            0,
+            "local",
+            "local",
+            "VERSE#verse-1-FRACTAL#fractal-1-PETAL#petal-1",
+        )
+        .await
+        .expect("own-petal path promotes");
         assert_eq!(node_id, "path-own#inst-0");
         assert!(newly);
         assert_eq!(
             node_petal_id(&db, &node_id).await.unwrap().as_deref(),
             Some("petal-1")
         );
+
+        let baseline = super::super::node_history::latest(&db, &node_id)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(baseline["row_version"], 1);
+        assert_eq!(baseline["source_did"], "local");
+        assert_eq!(baseline["payload"]["coverage_reason"], "stamp_promoted");
+        assert_eq!(
+            baseline["payload"]["after_state"],
+            super::super::node_history::snapshot(&db, &node_id)
+                .await
+                .unwrap()
+                .unwrap()
+        );
+        let (_, newly) = promote_instance_handler(
+            &db,
+            "petal-1",
+            "path-own",
+            0,
+            "local",
+            "local",
+            "VERSE#verse-1-FRACTAL#fractal-1-PETAL#petal-1",
+        )
+        .await
+        .unwrap();
+        assert!(!newly);
+        assert_eq!(
+            super::super::node_history::latest(&db, &node_id)
+                .await
+                .unwrap()
+                .unwrap(),
+            baseline
+        );
+        db.query("CREATE node CONTENT {node_id:'path-own#inst-1',petal_id:'petal-1',properties:{node_kind:'stamp'}}").await.unwrap().check().unwrap();
+        let (_, newly) = promote_instance_handler(
+            &db,
+            "petal-1",
+            "path-own",
+            1,
+            "local",
+            "local",
+            "VERSE#verse-1-FRACTAL#fractal-1-PETAL#petal-1",
+        )
+        .await
+        .unwrap();
+        assert!(!newly);
+        assert!(
+            super::super::node_history::latest(&db, "path-own#inst-1")
+                .await
+                .unwrap()
+                .is_none(),
+            "legacy rows gain no invented prior coverage"
+        );
+        db.query("DEFINE EVENT fail_legacy_stamp_birth ON TABLE node_log WHEN $after.node_id='path-own#inst-2' THEN { THROW 'induced initial history failure' }").await.unwrap().check().unwrap();
+        promote_instance_handler(
+            &db,
+            "petal-1",
+            "path-own",
+            2,
+            "local",
+            "local",
+            "VERSE#verse-1-FRACTAL#fractal-1-PETAL#petal-1",
+        )
+        .await
+        .expect_err("initial fact failure rolls back row and intention");
+        assert!(node_petal_id(&db, "path-own#inst-2")
+            .await
+            .unwrap()
+            .is_none());
+        assert!(super::super::node_history::latest(&db, "path-own#inst-2")
+            .await
+            .unwrap()
+            .is_none());
+        let ops: Vec<serde_json::Value> = db
+            .query("SELECT * FROM op_log WHERE node_id='path-own#inst-2'")
+            .await
+            .unwrap()
+            .check()
+            .unwrap()
+            .take(0)
+            .unwrap();
+        assert!(ops.is_empty());
+        db.query("UPDATE node SET tombstone={hlc:1,source_did:'local'} WHERE node_id=$id")
+            .bind(("id", node_id.clone()))
+            .await
+            .unwrap()
+            .check()
+            .unwrap();
+        super::super::entity_property::get_entity_properties_handler(&db, &node_id)
+            .await
+            .expect_err("correlated property fallback must not expose tombstoned bags");
     }
 
     #[tokio::test]

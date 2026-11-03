@@ -1804,7 +1804,7 @@ mod tests {
             path_version:None,before_properties:promotion_source.clone(),world_scale:1.0,
         };
         let promotion_node=format!("{undo_node}#inst-1");
-        for race in ["role","path","descriptor","points","terrain","bounds","metadata","collision","schema","journal"] {
+        for race in ["role","path","descriptor","points","terrain","bounds","metadata","collision","schema","journal","birth_journal","history_collision"] {
             let prepared=crate::handlers::stamp_promotion::prepare(&db,&promotion,&format!("qa-promotion-{race}"),"did:qa").await.unwrap();
             match race {
                 "role"=>{db.query("UPDATE verse SET created_by='did:other' WHERE verse_id='tree-10'").await.unwrap().check().unwrap();}
@@ -1816,9 +1816,12 @@ mod tests {
                 "metadata"=>{db.query("UPDATE petal SET view_hidden=false WHERE petal_id='tree-other-petal'").await.unwrap().check().unwrap();}
                 "collision"=>{db.query("CREATE node CONTENT {node_id:$id,petal_id:'tree-other-petal',properties:{node_kind:'ordinary'}}").bind(("id",promotion_node.clone())).await.unwrap().check().unwrap();}
                 "schema"=>{db.query("CREATE field_def CONTENT {field_def_id:'qa-promotion-schema',scope:$scope,entity_type:'node',key:'node_kind',enforced_schema:{version:1,schema:{type:'string'}}}").bind(("scope",plugin_scope.clone())).await.unwrap().check().unwrap();}
+                "birth_journal"=>{db.query("DEFINE EVENT fail_promotion_birth ON TABLE node_log WHEN $after.op='baseline' THEN { THROW 'induced promotion baseline failure' }").await.unwrap().check().unwrap();}
+                "history_collision"=>{db.query("CREATE node_log CONTENT {log_id:'promotion-orphan',node_id:$id,hlc_timestamp:1,op:'created',source_did:'legacy',row_version:1,payload:{},created_at:'legacy'}").bind(("id",promotion_node.clone())).await.unwrap().check().unwrap();}
                 _=>{db.query("DEFINE EVENT fail_checked_promotion ON TABLE node WHEN $after.properties.node_kind='stamp' THEN { THROW 'induced promotion row failure' }").await.unwrap().check().unwrap();}
             }
             let before_ops=op_log_count(&db).await;
+            let before_promotion_history=crate::handlers::node_history::latest(&db,&promotion_node).await.unwrap();
             let refused=crate::handlers::stamp_promotion::commit(&db,prepared).await.expect_err("checked GUI promotion race must roll back");
             if matches!(race,"terrain"|"bounds"|"metadata") {
                 assert!(format!("{refused:#}").contains("stamp map changed during promotion"),"the real map fence must refuse {race}: {refused:#}");
@@ -1826,6 +1829,7 @@ mod tests {
             assert_eq!(op_log_count(&db).await,before_ops);
             let rows:Vec<serde_json::Value>=db.query("SELECT node_id FROM node WHERE node_id=$id").bind(("id",promotion_node.clone())).await.unwrap().take(0).unwrap();
             assert_eq!(rows.len(),usize::from(race=="collision"),"refusal cannot leak a promoted node");
+            assert_eq!(crate::handlers::node_history::latest(&db,&promotion_node).await.unwrap(),before_promotion_history,"refusal cannot rewrite or leak initial history");
             match race {
                 "role"=>{db.query("UPDATE verse SET created_by='did:qa' WHERE verse_id='tree-10'").await.unwrap().check().unwrap();}
                 "path"=>{db.query("UPDATE node SET petal_id='tree-other-petal' WHERE node_id=$id").bind(("id",undo_node.clone())).await.unwrap().check().unwrap();}
@@ -1835,17 +1839,31 @@ mod tests {
                 "metadata"=>{db.query("UPDATE petal SET view_hidden=NONE WHERE petal_id='tree-other-petal'").await.unwrap().check().unwrap();}
                 "collision"=>{db.query("DELETE node WHERE node_id=$id").bind(("id",promotion_node.clone())).await.unwrap().check().unwrap();}
                 "schema"=>{db.query("DELETE field_def WHERE field_def_id='qa-promotion-schema'").await.unwrap().check().unwrap();}
+                "birth_journal"=>{db.query("REMOVE EVENT fail_promotion_birth ON TABLE node_log").await.unwrap().check().unwrap();}
+                "history_collision"=>{db.query("DELETE node_log WHERE log_id='promotion-orphan'").await.unwrap().check().unwrap();}
                 _=>{db.query("REMOVE EVENT fail_checked_promotion ON TABLE node").await.unwrap().check().unwrap();}
             }
         }
         let prepared=crate::handlers::stamp_promotion::prepare(&db,&promotion,"qa-promotion-success","did:qa").await.unwrap();
         let (stamp_node,promoted_properties,newly)=crate::handlers::stamp_promotion::commit(&db,prepared).await.unwrap();
         assert!(newly && promoted_properties["owning_path_id"]==undo_node);
+        let promotion_baseline=crate::handlers::node_history::latest(&db,&stamp_node).await.unwrap().unwrap();
+        assert_eq!(promotion_baseline["row_version"],1);
+        assert_eq!(promotion_baseline["op"],"baseline");
+        assert_eq!(promotion_baseline["source_did"],"did:qa");
+        assert_eq!(promotion_baseline["payload"]["scope"],plugin_scope);
+        let promotion_replay=crate::handlers::node_history::read_granted(&db,&stamp_node,0,200,Some(1),&NodeAccessGrant::Local,"did:qa").await.unwrap();
+        assert_eq!(promotion_replay["availability"],"available");
+        assert_eq!(promotion_replay["state"],serde_json::to_value(serde_json::from_value::<fe_runtime::node_history::NodeRowSnapshot>(crate::handlers::node_history::snapshot(&db,&stamp_node).await.unwrap().unwrap()).unwrap()).unwrap());
+        assert_eq!(promotion_replay["state"]["position"],serde_json::json!([0.0,0.0,0.0]),"journal stores node projection, not path-derived world pose");
+        assert!(crate::handlers::node_history::read_granted(&db,&stamp_node,0,200,None,&NodeAccessGrant::Scoped("VERSE#foreign".into()),"did:qa").await.is_err());
+
         let count_after_promotion=op_log_count(&db).await;
         let existing=crate::handlers::stamp_promotion::prepare(&db,&promotion,"qa-promotion-existing","did:qa").await.unwrap();
         let (same,properties,newly)=crate::handlers::stamp_promotion::commit(&db,existing).await.unwrap();
         assert!(!newly && same==stamp_node && properties==promoted_properties);
         assert_eq!(op_log_count(&db).await,count_after_promotion,"idempotent address checks do not mint operations");
+        assert_eq!(crate::handlers::node_history::latest(&db,&stamp_node).await.unwrap().unwrap(),promotion_baseline,"repeat promotion retains exact history");
         let mut out_of_range=promotion.clone();out_of_range.instance_index=3;
         crate::handlers::stamp_promotion::prepare(&db,&out_of_range,"qa-promotion-out-of-range","did:qa").await.expect_err("index must exist in the identical shared sampler");
         crate::handlers::stamp_promotion::prepare(&db,&promotion,"qa-promotion-viewer","did:tree-viewer").await.expect_err("Viewer inspection cannot promote");
@@ -1891,6 +1909,9 @@ mod tests {
         }
         let prepared=crate::handlers::stamp_overrides::prepare(&db,&stamp_input,"qa-stamp-success","did:qa").await.unwrap();
         let stamp_saved=crate::handlers::stamp_overrides::commit(&db,prepared).await.unwrap();
+        assert_eq!(stamp_saved.history_version,4,"one initial baseline and three atomic property facts");
+        let retained:Vec<serde_json::Value>=db.query("SELECT * OMIT id FROM node_log WHERE node_id=$id AND row_version=1").bind(("id",stamp_node.clone())).await.unwrap().check().unwrap().take(0).unwrap();
+        assert_eq!(retained,vec![promotion_baseline],"Apply preserves the initial history prefix");
         assert_eq!(stamp_saved.state.properties["stamp.override.scale"],serde_json::json!([2.0,1.0,3.0]));
         assert_eq!(stamp_saved.state.properties["stamp.override.rotation"],serde_json::json!([0.0,0.0,0.0,1.0]));
         assert_eq!(stamp_saved.state.properties["stamp.override.arc_m"],serde_json::json!(12.0));

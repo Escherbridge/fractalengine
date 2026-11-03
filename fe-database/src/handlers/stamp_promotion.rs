@@ -16,6 +16,118 @@ pub(crate) struct PreparedPromotion {
     node_id: String,
     properties: Value,
     existing: bool,
+    birth: Option<PreparedStampBirth>,
+}
+
+#[derive(Debug)]
+pub(crate) struct PreparedStampBirth {
+    statements: Vec<String>,
+    bindings: Vec<(String, Value)>,
+    state: Value,
+    scope: String,
+    actor: String,
+    schemas: Value,
+}
+
+pub(crate) struct StampBirthInput<'a> {
+    pub node_id: &'a str,
+    pub petal_id: &'a str,
+    pub path_id: &'a str,
+    pub index: u32,
+    pub scope: &'a str,
+    pub actor: &'a str,
+    pub properties: &'a Value,
+}
+
+/// Prepare a fresh stamp's stored projection and scoped initial baseline together.
+pub(crate) async fn prepare_birth(
+    db: &Db,
+    input: StampBirthInput<'_>,
+) -> anyhow::Result<PreparedStampBirth> {
+    let StampBirthInput {
+        node_id,
+        petal_id,
+        path_id,
+        index,
+        scope,
+        actor,
+        properties,
+    } = input;
+    anyhow::ensure!(
+        node_id == format!("{path_id}#inst-{index}")
+            && properties["node_kind"] == "stamp"
+            && properties["path_id"] == path_id
+            && properties["owning_path_id"] == path_id
+            && properties["instance_index"].as_u64() == Some(u64::from(index))
+            && crate::parse_scope(scope)?.petal_id.as_deref() == Some(petal_id),
+        "stamp birth identity or scope mismatch"
+    );
+    let mut statements = vec![
+        "IF array::len((SELECT VALUE node_id FROM node WHERE node_id=$stamp_birth_id)) != 0 OR array::len((SELECT VALUE log_id FROM node_log WHERE node_id=$stamp_birth_id)) != 0 { THROW 'stamp identity already exists'; }".into(),
+    ];
+    let mut bindings = vec![
+        ("stamp_birth_id".into(), json!(node_id)),
+        (
+            "stamp_birth_scopes".into(),
+            json!(field_def::property_rule_scopes(scope)),
+        ),
+    ];
+    let mut schemas = serde_json::Map::new();
+    for (index, (key, value)) in properties
+        .as_object()
+        .ok_or_else(|| anyhow::anyhow!("stamp properties require an object"))?
+        .iter()
+        .enumerate()
+    {
+        let rules = field_def::capture_property_rules(db, scope, key).await?;
+        if let Value::Object(versions) =
+            field_def::validate_captured_property_rules(scope, key, value, &rules)?
+        {
+            schemas.extend(versions);
+        }
+        let key_name = format!("stamp_birth_key_{index}");
+        let rule_name = format!("stamp_birth_rule_{index}");
+        statements.push(format!(
+            "IF ({}) != ${rule_name} {{ THROW 'stamp creation schema changed'; }}",
+            field_def::PROPERTY_RULES_SQL
+                .replace("$key", &format!("${key_name}"))
+                .replace("$scopes", "$stamp_birth_scopes")
+        ));
+        bindings.extend([(key_name, json!(key)), (rule_name, json!(rules))]);
+    }
+    let state = json!({"node_id":node_id,"petal_id":petal_id,"display_name":format!("{path_id} #{index}"),
+        "position":[0.0,0.0,0.0],"elevation":0.0,"rotation":[0.0,0.0,0.0,1.0],"scale":[1.0,1.0,1.0],
+        "interactive":true,"edit_seq":0,"created_at":chrono::Utc::now().to_rfc3339(),"properties":properties});
+    node_history::check_snapshot_size(&state)?;
+    let mut fields = state.clone();
+    fields.as_object_mut().unwrap().remove("position");
+    bindings.push(("stamp_birth_fields".into(), fields));
+    statements.extend([
+        "CREATE node CONTENT object::extend($stamp_birth_fields,{position:<geometry<point>> [0.0,0.0]})".into(),
+        "CREATE node_log CONTENT $stamp_birth_fact".into(),
+        "IF (SELECT * OMIT id, position FROM node WHERE node_id=$stamp_birth_id) != [$stamp_birth_fields] { THROW 'stamp creation readback changed'; }".into(),
+        "IF array::len((SELECT VALUE node_id FROM node WHERE node_id=$stamp_birth_id AND position=<geometry<point>> [0.0,0.0])) != 1 { THROW 'stamp creation position changed'; }".into(),
+        "IF (SELECT * OMIT id FROM node_log WHERE node_id=$stamp_birth_id) != [$stamp_birth_fact] { THROW 'stamp creation history changed'; }".into(),
+    ]);
+    Ok(PreparedStampBirth {
+        statements,
+        bindings,
+        state,
+        scope: scope.into(),
+        actor: actor.into(),
+        schemas: schemas.into(),
+    })
+}
+
+impl PreparedStampBirth {
+    /// Bind the first fact to the same operation HLC as the node creation.
+    pub(crate) fn into_parts(mut self, hlc: u64) -> (Vec<String>, Vec<(String, Value)>) {
+        self.bindings.push(("stamp_birth_fact".into(),json!({"log_id":ulid::Ulid::new().to_string(),
+            "node_id":self.state["node_id"],"hlc_timestamp":hlc as i64,"op":"baseline","source_did":self.actor,
+            "row_version":1,"created_at":self.state["created_at"],"payload":{"journal_version":node_history::JOURNAL_VERSION,
+                "scope":self.scope,"state":self.state,"after_state":self.state,"coverage_reason":"stamp_promoted","schema_versions":self.schemas}})));
+        (self.statements, self.bindings)
+    }
 }
 
 /// Capture source rows, role, ancestry, schemas and target absence before any effect.
@@ -162,37 +274,25 @@ pub(crate) async fn prepare(
         statements.push("IF array::len((SELECT VALUE node_id FROM node WHERE node_id=$promotion_node)) != 0 { THROW 'stamp node appeared during promotion'; }".into());
         json!({"node_kind":"stamp","path_id":capture.path_id,"owning_path_id":capture.path_id,"instance_index":capture.instance_index})
     };
-    if !existing {
-        for (index, (key, value)) in properties.as_object().unwrap().iter().enumerate() {
-            let rules = field_def::capture_property_rules(db, &scope, key).await?;
-            field_def::validate_captured_property_rules(&scope, key, value, &rules)?;
-            let key_name = format!("promotion_schema_key_{index}");
-            let rule_name = format!("promotion_schema_{index}");
-            statements.push(format!(
-                "IF ({}) != ${rule_name} {{ THROW 'stamp creation schema changed'; }}",
-                field_def::PROPERTY_RULES_SQL
-                    .replace("$key", &format!("${key_name}"))
-                    .replace("$scopes", "$promotion_scopes")
-            ));
-            bindings.extend([(key_name, json!(key)), (rule_name, json!(rules))]);
-        }
-        bindings.push((
-            "promotion_scopes".into(),
-            json!(field_def::property_rule_scopes(&scope)),
-        ));
-        statements.push("CREATE node CONTENT {node_id:$promotion_node,petal_id:$promotion_petal,display_name:$promotion_name,asset_id:NONE,position:<geometry<point>> [0.0,0.0],elevation:0.0,rotation:[0.0,0.0,0.0,1.0],scale:[1.0,1.0,1.0],interactive:true,created_at:$promotion_now,properties:$promotion_properties}".into());
-        bindings.extend([
-            (
-                "promotion_name".into(),
-                json!(format!("{} #{}", capture.path_id, capture.instance_index)),
-            ),
-            (
-                "promotion_now".into(),
-                json!(chrono::Utc::now().to_rfc3339()),
-            ),
-            ("promotion_properties".into(), properties.clone()),
-        ]);
-    }
+    let birth = if !existing {
+        Some(
+            prepare_birth(
+                db,
+                StampBirthInput {
+                    node_id: &node_id,
+                    petal_id: &capture.petal_id,
+                    path_id: &capture.path_id,
+                    index: capture.instance_index,
+                    scope: &scope,
+                    actor,
+                    properties: &properties,
+                },
+            )
+            .await?,
+        )
+    } else {
+        None
+    };
     let entry = OpLogEntry {
         lamport_clock: 0,
         node_id: NodeId(node_id.clone()),
@@ -208,6 +308,7 @@ pub(crate) async fn prepare(
         node_id,
         properties,
         existing,
+        birth,
     })
 }
 
@@ -217,12 +318,13 @@ pub(crate) async fn commit(
     prepared: PreparedPromotion,
 ) -> anyhow::Result<(String, Value, bool)> {
     let PreparedPromotion {
-        statements,
-        bindings,
+        mut statements,
+        mut bindings,
         entry,
         node_id,
         properties,
         existing,
+        birth,
     } = prepared;
     if existing {
         let script = format!(
@@ -235,7 +337,15 @@ pub(crate) async fn commit(
         }
         query.await?.check()?;
     } else {
-        crate::op_log::commit_operation_atomic_with(db, entry, |_| (statements, bindings)).await?;
+        let birth =
+            birth.ok_or_else(|| anyhow::anyhow!("fresh promotion has no prepared birth"))?;
+        crate::op_log::commit_operation_atomic_with(db, entry, |hlc| {
+            let (birth_statements, birth_bindings) = birth.into_parts(hlc);
+            statements.extend(birth_statements);
+            bindings.extend(birth_bindings);
+            (statements, bindings)
+        })
+        .await?;
     }
     Ok((node_id, properties, !existing))
 }

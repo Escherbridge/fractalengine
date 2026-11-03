@@ -293,3 +293,22 @@ real-store journey asserts these distinctions, absent terrain/default metadata p
 bounds, and intervening terrain, bounds and optional metadata changes for both prepare/use paths.
 The terrain race keeps world_scale=1, proving the fence protects the full map rather than scale
 alone. These journey extensions are authored source; root owns execution and independent review.
+
+
+## Promoted stamp birth and readable metadata
+
+Both checked GUI promotion and legacy API promotion use the same prepared stamp
+birth fragment. Only a fresh address receives one scoped journal baseline at
+version 1, committed with its node row and existing NodePromoted intention under
+one operation HLC. State readback, current publisher authority, ancestry, captured
+property schemas, node absence and journal absence are transaction fences. The
+legacy entry preserves its absent-path contract while pinning any existing path
+to the authorized Petal and requiring an identified actor from the dispatcher.
+Existing rows are no-ops; legacy unsupported intervals receive no retroactive
+coverage. Baselines describe stored projection metadata and its owning-path
+reference, including stored origin TRS, rather than claiming the rendered world
+pose. Subsequent atomic override facts retain this initial history prefix.
+
+Property reads reject missing, ambiguous and tombstoned rows. The unset property
+bag of a live row still reads as an empty object. This is shared by the GUI and
+the API's correlated fallback, so a failed read cannot masquerade as empty data.

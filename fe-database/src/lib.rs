@@ -1318,7 +1318,15 @@ pub fn spawn_db_thread_shared(
                             )));
                             continue;
                         }
-                        match handlers::crud::promote_instance_handler(&db, &petal_id, &path_id, instance_index).await {
+                        let actor = match &auth {
+                            fe_runtime::messages::CallerAuth::Local => local_did.as_str(),
+                            fe_runtime::messages::CallerAuth::Identified { did, .. } => did.as_str(),
+                            fe_runtime::messages::CallerAuth::Anonymous => {
+                                send_result(&tx, DbResult::Error("PromoteInstance requires an identified actor".into()));
+                                continue;
+                            }
+                        };
+                        match handlers::crud::promote_instance_handler(&db, &petal_id, &path_id, instance_index, &local_did, actor, &scope).await {
                             Ok((node_id, newly_promoted)) => {
                                 // FR-6: emit NodePromoted only when a row was actually materialized
                                 // (an idempotent no-op is not an op, so it emits nothing).
