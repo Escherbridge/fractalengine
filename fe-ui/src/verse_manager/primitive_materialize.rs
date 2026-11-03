@@ -41,7 +41,7 @@ pub(super) type FallbackSignQuery<'w, 's> = Query<
 #[derive(Resource, Default)]
 pub struct PrimitiveDescriptorCache {
     descriptors: HashMap<String, PrimitiveDescriptor>,
-    requested: HashSet<String>,
+    pub(super) reads: super::scene_property_reads::ScenePropertyReads,
     classified: HashSet<String>,
 }
 
@@ -54,7 +54,7 @@ impl PrimitiveDescriptorCache {
     /// Ingest a `NodePropertiesLoaded` payload: cache the parsed `primitive`
     /// descriptor, or drop a stale entry when the key is absent/invalid.
     pub fn note_properties(&mut self, node_id: &str, properties: &serde_json::Value) {
-        self.requested.remove(node_id);
+        self.reads.remove(node_id);
         self.classified.insert(node_id.to_owned());
         match properties
             .get(PRIMITIVE_PROPERTY_KEY)
@@ -72,32 +72,39 @@ impl PrimitiveDescriptorCache {
     /// Drop a node's cached descriptor + request mark (primitive prop written/deleted).
     pub fn invalidate(&mut self, node_id: &str) {
         self.descriptors.remove(node_id);
-        self.requested.remove(node_id);
+        self.reads.remove(node_id);
         self.classified.remove(node_id);
     }
 
     /// Drop everything (database reset).
     pub fn clear(&mut self) {
         self.descriptors.clear();
-        self.requested.clear();
+        self.reads.clear();
         self.classified.clear();
     }
 
-    /// Mark a properties fetch in flight; `true` when the caller should send
-    /// `GetNodeProperties` (not cached, not already requested).
-    pub fn mark_requested(&mut self, node_id: &str) -> bool {
-        if self.classified.contains(node_id) {
-            return false;
-        }
-        self.requested.insert(node_id.to_string())
+    /// Retain one coalesced property read for the shared nonblocking pump.
+    pub(crate) fn request_properties(&mut self, node_id: &str) -> bool {
+        self.reads.queue(node_id)
+    }
+
+    pub(crate) fn refresh_properties(&mut self, node_id: &str) -> bool {
+        self.reads.remove(node_id);
+        self.reads.queue(node_id)
+    }
+
+    #[cfg(test)]
+    fn mark_requested(&mut self, node_id: &str) -> bool {
+        !self.is_classified(node_id) && !self.reads.contains(node_id) && self.reads.queue(node_id)
+    }
+
+    #[cfg(test)]
+    fn retry_properties(&mut self, node_id: &str) {
+        self.reads.remove(node_id);
     }
 
     pub(super) fn is_classified(&self, node_id: &str) -> bool {
         self.classified.contains(node_id)
-    }
-
-    pub(super) fn retry_properties(&mut self, node_id: &str) {
-        self.requested.remove(node_id);
     }
 }
 
@@ -284,10 +291,7 @@ mod tests {
         let desc = cache.get("n1").expect("descriptor cached");
         assert_eq!(desc.kind, PrimitiveKind::Cube);
         assert_eq!(desc.dims, vec![1.0, 2.0, 3.0]);
-        assert!(
-            !cache.requested.contains("n1"),
-            "request mark cleared on load"
-        );
+        assert!(!cache.reads.contains("n1"), "request mark cleared on load");
     }
 
     #[test]

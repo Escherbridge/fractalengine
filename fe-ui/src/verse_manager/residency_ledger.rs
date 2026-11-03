@@ -536,10 +536,11 @@ pub(super) fn apply_node_residency(
             *backlog = true;
             break;
         }
-        if spawner.spawn(&mut commands, node, petal_id) {
-            spawned += 1;
-        } else if spawner.classification_pending(node) || !spawner.is_stamp_projection(node) {
-            *backlog = true;
+        match spawner.spawn(&mut commands, node, petal_id) {
+            super::petal_respawn::SpawnOutcome::Spawned => spawned += 1,
+            super::petal_respawn::SpawnOutcome::Retry => *backlog = true,
+            super::petal_respawn::SpawnOutcome::Waiting
+            | super::petal_respawn::SpawnOutcome::Projected => {}
         }
     }
 }
@@ -849,9 +850,12 @@ mod tests {
             .init_resource::<crate::terrain_map::PetalMapState>()
             .init_resource::<crate::actions::asset::StampInteractionState>()
             .init_resource::<crate::gis::PathEditorState>()
+            .init_resource::<crate::notice::NoticeClock>()
+            .init_resource::<crate::actions::UiManager>()
             .add_systems(
                 Update,
                 (
+                    super::super::scene_property_reads::flush_scene_property_reads,
                     super::super::petal_respawn::remove_standalone_stamp_projection,
                     update_residency_ledger,
                     super::super::petal_respawn::respawn_on_petal_change,

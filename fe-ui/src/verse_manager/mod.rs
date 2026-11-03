@@ -21,6 +21,7 @@ mod petal_respawn;
 mod primitive_materialize;
 mod primitive_reconcile;
 mod residency_ledger;
+mod scene_property_reads;
 pub(crate) mod spawn;
 
 use bevy::prelude::*;
@@ -224,6 +225,7 @@ impl Plugin for VerseManagerPlugin {
                 crate::undo::observe_results,
                 lifecycle_events::apply_lifecycle_events,
                 db_results::apply_db_results,
+                scene_property_reads::flush_scene_property_reads,
                 petal_respawn::remove_standalone_stamp_projection,
                 residency_ledger::update_residency_ledger,
                 petal_respawn::respawn_on_petal_change,

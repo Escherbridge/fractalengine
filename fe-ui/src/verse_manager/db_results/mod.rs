@@ -147,6 +147,22 @@ pub(super) fn apply_db_results(
         caches.spawned.iter().map(|m| m.node_id.clone()).collect();
     let mesh_budget_exceeded = caches.mesh_budget.exceeded;
     for result in reader.read() {
+        match caches.primitive.bypass_change_detection().reads.route(
+            result,
+            &verse_mgr,
+            caches.time.elapsed_secs_f64(),
+        ) {
+            super::scene_property_reads::Reply::Stale => continue,
+            super::scene_property_reads::Reply::Failed => {
+                ui_mgr.show_error(
+                    "Object properties could not be loaded; retrying shortly",
+                    caches.time.elapsed_secs_f64(),
+                );
+                continue;
+            }
+            super::scene_property_reads::Reply::Unowned
+            | super::scene_property_reads::Reply::Accepted => {}
+        }
         if matches!(result, DbResult::NodeUrlUpdated { .. }) {
             crate::actions::portal::finish_url_save(&mut ui_mgr, &mut verse_mgr, &nav, &node_mgr, result, caches.time.elapsed_secs_f64(), &db_sender.0, &inspector);
             continue;
@@ -2002,6 +2018,7 @@ mod tests {
             .add_systems(
                 Update,
                 (
+                    super::super::scene_property_reads::flush_scene_property_reads,
                     super::super::residency_ledger::update_residency_ledger,
                     super::super::petal_respawn::respawn_on_petal_change,
                     super::super::residency_ledger::apply_node_residency,
@@ -2436,11 +2453,236 @@ mod tests {
         );
         app.world_mut().write_message(reload);
         app.update();
+        assert!(app
+            .world()
+            .resource::<NavigationManager>()
+            .active_verse_id
+            .is_none());
+
+        app.insert_resource(bevy::time::TimeUpdateStrategy::ManualDuration(
+            std::time::Duration::from_secs(1),
+        ));
+        app.insert_resource(tree());
+        app.world_mut()
+            .resource_mut::<NavigationManager>()
+            .navigate_to_petal_in_fractal("v1", "Verse", "f1", "Fractal", "p1");
+        app.world_mut().resource_mut::<NodeManager>().deselect();
+        app.world_mut().resource_mut::<VerseManager>().upsert_node(
+            "p1",
+            NodeEntry {
+                id: "cold-node".into(),
+                name: "Cold object".into(),
+                position: [9.0, 2.0, 1.0],
+                ..Default::default()
+            },
+        );
+        let _ = db_commands.try_iter().collect::<Vec<_>>();
+        app.update();
+        app.update();
+        let reads: Vec<_> = db_commands
+            .try_iter()
+            .filter_map(|command| match command {
+                DbCommand::GetNodeProperties {
+                    node_id,
+                    correlation_id: Some(id),
+                } if node_id == "cold-node" => Some(id),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            reads.len(),
+            1,
+            "the actual cold residency branch admits one correlated classification read"
+        );
+        let first_read = reads[0].clone();
+        let mut residents = app.world_mut().query_filtered::<(Entity, &crate::plugin::SpawnedNodeMarker), With<super::super::ResidentNode>>();
         assert!(
-            app.world()
-                .resource::<NavigationManager>()
-                .active_verse_id
-                .is_none()
+            !residents
+                .iter(app.world())
+                .any(|(_, marker)| marker.node_id == "cold-node"),
+            "an unclassified cold object cannot invent a fallback"
+        );
+        app.world_mut().write_message(DbResult::RequestFailed {
+            correlation_id: first_read.clone(),
+            error: "classification fixture failure".into(),
+        });
+        app.update();
+        assert!(!app
+            .world()
+            .resource::<super::super::PrimitiveDescriptorCache>()
+            .is_classified("cold-node"));
+        assert!(app
+            .world()
+            .resource::<UiManager>()
+            .error_history()
+            .any(|notice| notice
+                .text
+                .contains("Object properties could not be loaded")));
+        app.update();
+        assert!(!db_commands.try_iter().any(|command| matches!(command, DbCommand::GetNodeProperties { node_id, .. } if node_id == "cold-node")),
+            "matching failure leaves bounded backoff, not a per-frame resend");
+        app.update();
+        let second_read = db_commands
+            .try_iter()
+            .find_map(|command| match command {
+                DbCommand::GetNodeProperties {
+                    node_id,
+                    correlation_id: Some(id),
+                } if node_id == "cold-node" => Some(id),
+                _ => None,
+            })
+            .expect("read retries after bounded backoff");
+        assert_ne!(first_read, second_read);
+        app.world_mut().write_message(DbResult::Error(
+            "uncorrelated fixture failure cannot claim a read".into(),
+        ));
+        for _ in 0..5 {
+            app.update();
+        }
+        assert!(!app
+            .world()
+            .resource::<super::super::PrimitiveDescriptorCache>()
+            .is_classified("cold-node"));
+        assert!(!residents
+            .iter(app.world())
+            .any(|(_, marker)| marker.node_id == "cold-node"));
+        app.world_mut()
+            .write_message(DbResult::NodePropertiesLoaded {
+                node_id: "cold-node".into(),
+                properties: json!({}),
+                correlation_id: Some(second_read.clone()),
+            });
+        app.update();
+        assert!(
+            !app.world()
+                .resource::<super::super::PrimitiveDescriptorCache>()
+                .is_classified("cold-node"),
+            "a timed-out reply cannot classify the current attempt"
+        );
+        for _ in 0..3 {
+            app.update();
+        }
+        let third_read = db_commands
+            .try_iter()
+            .find_map(|command| match command {
+                DbCommand::GetNodeProperties {
+                    node_id,
+                    correlation_id: Some(id),
+                } if node_id == "cold-node" => Some(id),
+                _ => None,
+            })
+            .expect("a lost response remains recoverable after deadline and backoff");
+        assert_ne!(second_read, third_read);
+        app.world_mut()
+            .write_message(DbResult::NodePropertiesLoaded {
+                node_id: "cold-node".into(),
+                properties: json!({}),
+                correlation_id: Some(third_read),
+            });
+        app.update();
+        assert!(app
+            .world()
+            .resource::<super::super::PrimitiveDescriptorCache>()
+            .is_classified("cold-node"));
+        let ordinary = residents
+            .iter(app.world())
+            .find_map(|(entity, marker)| (marker.node_id == "cold-node").then_some(entity))
+            .unwrap();
+        assert_eq!(
+            app.world().get::<Transform>(ordinary).unwrap().translation,
+            Vec3::new(9.0, 2.0, 1.0)
+        );
+
+        let original_sender = app.world().resource::<DbCommandSender>().0.clone();
+        let (full_tx, full_rx) = crossbeam::channel::bounded(1);
+        full_tx.try_send(DbCommand::LoadHierarchy).unwrap();
+        app.insert_resource(DbCommandSender(full_tx));
+        app.world_mut().write_message(DbResult::NodePropertySet {
+            node_id: "cold-node".into(),
+            key: "node_kind".into(),
+            correlation_id: None,
+        });
+        app.update();
+        app.update();
+        assert!(app
+            .world()
+            .resource::<super::super::PrimitiveDescriptorCache>()
+            .reads
+            .contains("cold-node"));
+        assert!(matches!(full_rx.try_recv(), Ok(DbCommand::LoadHierarchy)));
+        assert!(
+            full_rx.try_recv().is_err(),
+            "Full never blocks or fabricates a submitted read"
+        );
+        app.update();
+        let fourth_read = match full_rx.try_recv().unwrap() {
+            DbCommand::GetNodeProperties {
+                node_id,
+                correlation_id: Some(id),
+            } if node_id == "cold-node" => id,
+            other => panic!("unexpected retained command: {other:?}"),
+        };
+        assert!(
+            full_rx.try_recv().is_err(),
+            "one refresh is retained and coalesced across Full frames"
+        );
+        let (dead_tx, dead_rx) = crossbeam::channel::bounded(1);
+        drop(dead_rx);
+        app.insert_resource(DbCommandSender(dead_tx));
+        app.world_mut().write_message(DbResult::NodePropertySet {
+            node_id: "cold-node".into(),
+            key: "owning_path_id".into(),
+            correlation_id: None,
+        });
+        app.update();
+        assert!(!app
+            .world()
+            .resource::<super::super::PrimitiveDescriptorCache>()
+            .is_classified("cold-node"));
+        assert!(app
+            .world()
+            .resource::<UiManager>()
+            .error_history()
+            .any(|notice| notice
+                .text
+                .contains("Object properties could not be loaded")));
+        app.insert_resource(DbCommandSender(original_sender));
+        for _ in 0..2 {
+            app.update();
+        }
+        let fifth_read = db_commands
+            .try_iter()
+            .find_map(|command| match command {
+                DbCommand::GetNodeProperties {
+                    node_id,
+                    correlation_id: Some(id),
+                } if node_id == "cold-node" => Some(id),
+                _ => None,
+            })
+            .expect("disconnection recovers through the same retained read coordinator");
+        app.world_mut().write_message(DbResult::NodePropertiesLoaded {
+            node_id:"cold-node".into(), properties:json!({"node_kind":"stamp","path_id":"foreign","owning_path_id":"foreign","instance_index":0}), correlation_id:Some(fourth_read),
+        });
+        app.world_mut()
+            .write_message(DbResult::NodePropertiesLoaded {
+                node_id: "cold-node".into(),
+                properties: json!({}),
+                correlation_id: Some(fifth_read),
+            });
+        app.update();
+        assert!(app
+            .world()
+            .resource::<super::super::PrimitiveDescriptorCache>()
+            .is_classified("cold-node"));
+        let cold: Vec<_> = residents
+            .iter(app.world())
+            .filter(|(_, marker)| marker.node_id == "cold-node")
+            .map(|(entity, _)| entity)
+            .collect();
+        assert_eq!(
+            cold,
+            vec![ordinary],
+            "successful refresh retains exactly one ordinary scene projection"
         );
     }
 
@@ -2601,8 +2843,13 @@ mod tests {
             "stale descriptor must be evicted"
         );
         assert!(
-            matches!(rx.try_recv(), Ok(DbCommand::GetNodeProperties { node_id , correlation_id: None }) if node_id == "n1"),
-            "primitive write must re-fetch even when unselected"
+            rx.try_recv().is_err(),
+            "property handlers only retain read intent"
+        );
+        assert!(!cache.reads.poll(&tx, &tree(), 0.0));
+        assert!(
+            matches!(rx.try_recv(), Ok(DbCommand::GetNodeProperties { node_id, correlation_id: Some(id) })
+            if node_id == "n1" && id.starts_with("ui-scene-properties-"))
         );
     }
 
@@ -2678,8 +2925,10 @@ mod tests {
         );
         assert!(for_selected);
         assert!(ins.node_properties_loading);
+        assert!(rx.try_recv().is_err());
+        assert!(!cache.reads.poll(&tx, &tree(), 0.0));
         assert!(
-            matches!(rx.try_recv(), Ok(DbCommand::GetNodeProperties { node_id , correlation_id: None }) if node_id == "n1")
+            matches!(rx.try_recv(), Ok(DbCommand::GetNodeProperties { node_id, correlation_id: Some(_) }) if node_id == "n1")
         );
     }
 

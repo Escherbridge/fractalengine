@@ -557,3 +557,27 @@ promotion metadata, scale/rotation/slide projection, ordinary-spawn exclusion,
 Petal leave/re-entry with a late old editor, and a real descriptor reflow. Existing
 sidebar and native selector journeys cover their separate producer boundaries.
 These are authored source checks; root owns execution and runtime acceptance.
+
+## Scene-property reads
+
+The existing descriptor cache owns one bounded read coordinator shared by cold
+scene classification and property-write refreshes. Handlers enqueue intent; only
+the per-frame pump sends GetNodeProperties with try_send. Full retains one queued
+read per node. Accepted reads bind a fresh correlation ID to the actual Petal and
+hierarchy node epoch, with a five-second deadline. Superseded, timed-out and
+foreign replies cannot classify a node or feed the property projections.
+
+Matching failure, missing reply and disconnected channel visibly fail that read
+attempt, retain the need for fresh properties, and retry after capped exponential
+backoff from two to 32 seconds. A failure never becomes an ordinary fallback. The
+coordinator holds at most 256 reads; capacity refusal is visible, and cold residency
+retries admission as slots open. Successful replies release their slot. Pending
+read bookkeeping bypasses render change detection, so an accepted or backoff read
+does not force a complete residency scan every frame. Property writes supersede
+older reads and use this same coordinator rather than a blocking channel send.
+
+The existing full DB-result/residency App journey now begins an ordinary node
+cold and covers correlated failure, missing reply and deadline, stale success,
+Full retention, disconnected recovery, then successful fallback classification.
+The existing primitive/property journeys check the retained read boundary. These
+checks are authored only; root owns execution.

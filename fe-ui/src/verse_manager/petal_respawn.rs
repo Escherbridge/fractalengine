@@ -6,8 +6,6 @@
 
 use bevy::ecs::system::SystemParam;
 use bevy::prelude::*;
-use fe_runtime::app::DbCommandSender;
-use fe_runtime::messages::DbCommand;
 
 use super::path_asset_materialize::PathAssetApplied;
 use super::primitive_materialize::{spawn_branch, PrimitiveDescriptorCache, SpawnBranch};
@@ -30,7 +28,13 @@ pub(super) struct NodeSpawner<'w> {
     stamp_state: Res<'w, crate::actions::asset::StampInteractionState>,
     texture_registry: Res<'w, TextureRegistryRes>,
     mat_assets: Res<'w, PrimitiveMaterialAssets>,
-    db_sender: Res<'w, DbCommandSender>,
+}
+
+pub(super) enum SpawnOutcome {
+    Spawned,
+    Waiting,
+    Projected,
+    Retry,
 }
 
 impl NodeSpawner<'_> {
@@ -52,32 +56,20 @@ impl NodeSpawner<'_> {
         commands: &mut Commands,
         node: &NodeEntry,
         petal_id: &str,
-    ) -> bool {
+    ) -> SpawnOutcome {
         if self.classification_pending(node) {
-            if self
+            return if self
                 .primitive_cache
                 .bypass_change_detection()
-                .mark_requested(&node.id)
+                .request_properties(&node.id)
             {
-                match self.db_sender.0.try_send(DbCommand::GetNodeProperties {
-                    node_id: node.id.clone(),
-                    correlation_id: None,
-                }) {
-                    Ok(()) => {}
-                    Err(crossbeam::channel::TrySendError::Full(_)) => {
-                        self.primitive_cache
-                            .bypass_change_detection()
-                            .retry_properties(&node.id);
-                    }
-                    Err(crossbeam::channel::TrySendError::Disconnected(_)) => {
-                        bevy::log::warn!("DB channel closed before scene node classification");
-                    }
-                }
-            }
-            return false;
+                SpawnOutcome::Waiting
+            } else {
+                SpawnOutcome::Retry
+            };
         }
         if self.is_stamp_projection(node) {
-            return false;
+            return SpawnOutcome::Projected;
         }
         let entity = match spawn_branch(node, &self.primitive_cache) {
             SpawnBranch::Gltf(asset_path) => super::spawn::spawn_node_entity(
@@ -129,7 +121,7 @@ impl NodeSpawner<'_> {
                 scale: node.transform.scale.to_array(),
             },
         ));
-        true
+        SpawnOutcome::Spawned
     }
 }
 
@@ -234,7 +226,10 @@ pub(super) fn respawn_on_petal_change(
                     skipped += 1;
                     continue;
                 }
-                if spawner.spawn(&mut commands, node, pid) {
+                if matches!(
+                    spawner.spawn(&mut commands, node, pid),
+                    SpawnOutcome::Spawned
+                ) {
                     remaining -= 1;
                 }
             }

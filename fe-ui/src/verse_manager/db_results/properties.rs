@@ -180,10 +180,7 @@ pub(super) fn handle_node_property_set(
         || path_asset_write
         || presentation_write
     {
-        let _ = db_sender.0.send(DbCommand::GetNodeProperties {
-            node_id: node_id.to_string(),
-            correlation_id: None,
-        });
+        primitive_cache.refresh_properties(node_id);
     }
     for_selected
 }
@@ -207,6 +204,7 @@ pub(super) fn handle_node_property_deleted(
         )
     {
         primitive_cache.invalidate(node_id);
+        primitive_cache.request_properties(node_id);
     }
     // FR-1 path-asset: a `path_asset` delete evicts the stamp cache entry so
     // `materialize_path_assets` tears the orphaned stamp group down (also before
