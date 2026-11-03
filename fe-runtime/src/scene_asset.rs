@@ -17,6 +17,7 @@ pub enum SceneAssetTransferPurpose {
 pub struct SceneAssetTransferRequest {
     pub verse_id: String,
     pub hash: BlobHash,
+    pub node_id: Option<String>,
     pub purpose: SceneAssetTransferPurpose,
     pub deadline: Instant,
 }
@@ -44,4 +45,31 @@ pub struct SceneAssetNeeded {
     pub content_hash: BlobHash,
     pub size_bytes: u64,
     pub provenance: ReplicaNodeProvenance,
+}
+
+/// Owner-reviewed exact local-copy adoption; not a claim about the original uploader.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SceneAssetAdoptionCandidate {
+    pub node_id: String,
+    pub asset_id: String,
+    pub scope: String,
+    pub content_hash: BlobHash,
+    pub content_type: String,
+    pub size_bytes: u64,
+    pub asset_fingerprint: String,
+    pub reference_fingerprints: Vec<SceneAssetReferenceWitness>,
+}
+
+#[derive(Debug, Clone)]
+pub struct SceneAssetAdoptionReceipt {
+    pub candidate: SceneAssetAdoptionCandidate,
+    pub operation_id: String,
+    pub adopter_did: String,
+    pub adopted_at: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct SceneAssetReferenceWitness {
+    pub node_id: String,
+    pub fingerprint: String,
 }
