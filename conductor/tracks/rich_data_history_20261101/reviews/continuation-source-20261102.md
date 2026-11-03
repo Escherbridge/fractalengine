@@ -322,3 +322,39 @@ the toolbar, changing native content rect and invoking reposition. Fixed feedbac
 layout is authoring, without weakening resize invalidation. QA22 evidence review is
 pending; exact app/helper cleanup is saved. Stamp95ad9bd3 recovery correction is
 frozen for re-review; P2P transfer's three blockers are still authoring.
+
+## Source integration and QA23 numeric crash
+
+Independent re-review approved77a0d477+95ad9bd3: queued/in-flight/backoff classification
+has exact attempt correlation, node epoch, actual Petal and deadline; stale replies
+leave before adapters, failures do not classify ordinary, and waiting bookkeeping
+does not wake rendering. Main0bb692e7/d5394179 integrates both. Native geometry37ae
+passed separate review and is main91d785a9; actual resize/cancellation guards remain.
+Its production stage succeeded in180.7seconds with one unused import warning.
+
+QA22 evidence review approves its36inputs/46records, two PNGs, exact six restart
+responses and ECS, persisted model URL, live-helper age261.248296/1800seconds at
+terminal error,11WARN/2ERROR logs and8app/2helper cleanup. No page2/history success.
+
+QA23 evidence review approves37inputs/53records after explicit stderr accounting:
+13WARN/2ERROR are structured stdout counts; stderr separately includes the Rust lock
+panic and one native teardown ERROR. Both original stored rows are unchanged and
+only#inst-2 is added. The stamp editor is populated but QA selection remains null.
+Canonical node GET succeeds; properties/history refuse. First numeric Text times
+out; original stderr supports Context RwLock panic in gardener_ui_system. No Enter,
+other draft fields, Apply or postcrash persistence comparison exists. Recorded eight
+identities are absent, with the unenumerated-child limitation retained.
+
+Independent review approved24f3184d+14ebc06b, mainf40f5d78/e07af7f6. The public
+read-only stamp observation requires actual active ancestry, role, selected entity
+and generation, loaded canonical binding, typed instance, source/render proof and
+visibility, and returns finite actual ECS TRS. Ordinary QA guards remain unchanged.
+Numeric response/context reads now occur before ui.data_mut; its closure stores a
+precomputed boolean. Existing actual helper journeys cover Text/Enter/Paste/Cut,
+arrows and focus finalization, but remain unexecuted. No runtime fix acceptance.
+
+P2P endpoint/widget/input corrections through02d6 passed review except a token read
+that allowed in-place mutation and an unchecked second length. Narrowaff7f1b3 denies
+write sharing and parses one bounded pinned buffer; re-review is pending. Manager-v2
+still needs a detached transport-free Owner-rooted proof; existing role rows are not
+portable cryptographic attestations. D-QA-016 records safe legacy reauthorization.

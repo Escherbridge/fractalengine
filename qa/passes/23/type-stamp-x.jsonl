@@ -1,0 +1,2 @@
+{"new_logs_unavailable": "API at http://127.0.0.1:8882/api/v1/debug/camera did not answer: [WinError 10054] An existing connection was forcibly closed by the remote host"}
+{"code": "http_504", "message": "input injection timed out \u2014 the window did not answer within 5.0s", "refused": true, "status": 504}

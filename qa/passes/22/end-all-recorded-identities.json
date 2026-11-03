@@ -1,0 +1,66 @@
+﻿[
+    {
+        "identity":  {
+                         "pid":  93360,
+                         "start_ticks":  "639292639749003625",
+                         "exe_path":  "C:\\Users\\atooz\\Programming\\fractalengine-workspace\\fractalengine\\.qa\\stage\\44ad28da-20261102162445903\\fractalengine.exe"
+                     },
+        "captured_identity_alive":  false
+    },
+    {
+        "identity":  {
+                         "pid":  90792,
+                         "start_ticks":  "639292639749486945",
+                         "exe_path":  "C:\\Windows\\system32\\conhost.exe"
+                     },
+        "captured_identity_alive":  false
+    },
+    {
+        "identity":  {
+                         "pid":  92884,
+                         "start_ticks":  "639292639775523731",
+                         "exe_path":  "C:\\Program Files (x86)\\Microsoft\\EdgeWebView\\Application\\156.0.4314.58\\msedgewebview2.exe"
+                     },
+        "captured_identity_alive":  false
+    },
+    {
+        "identity":  {
+                         "pid":  92332,
+                         "start_ticks":  "639292639775764431",
+                         "exe_path":  "C:\\Program Files (x86)\\Microsoft\\EdgeWebView\\Application\\156.0.4314.58\\msedgewebview2.exe"
+                     },
+        "captured_identity_alive":  false
+    },
+    {
+        "identity":  {
+                         "pid":  91940,
+                         "start_ticks":  "639292639777051017",
+                         "exe_path":  "C:\\Program Files (x86)\\Microsoft\\EdgeWebView\\Application\\156.0.4314.58\\msedgewebview2.exe"
+                     },
+        "captured_identity_alive":  false
+    },
+    {
+        "identity":  {
+                         "pid":  82964,
+                         "start_ticks":  "639292639777079327",
+                         "exe_path":  "C:\\Program Files (x86)\\Microsoft\\EdgeWebView\\Application\\156.0.4314.58\\msedgewebview2.exe"
+                     },
+        "captured_identity_alive":  false
+    },
+    {
+        "identity":  {
+                         "pid":  90564,
+                         "start_ticks":  "639292639777364499",
+                         "exe_path":  "C:\\Program Files (x86)\\Microsoft\\EdgeWebView\\Application\\156.0.4314.58\\msedgewebview2.exe"
+                     },
+        "captured_identity_alive":  false
+    },
+    {
+        "identity":  {
+                         "pid":  59720,
+                         "start_ticks":  "639292639778187046",
+                         "exe_path":  "C:\\Program Files (x86)\\Microsoft\\EdgeWebView\\Application\\156.0.4314.58\\msedgewebview2.exe"
+                     },
+        "captured_identity_alive":  false
+    }
+]

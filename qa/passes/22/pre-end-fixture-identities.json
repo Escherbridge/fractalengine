@@ -1,0 +1,12 @@
+﻿[
+    {
+        "pid":  91892,
+        "start_ticks":  "639292639467267589",
+        "exe_path":  "C:\\Program Files\\Python312\\python.exe"
+    },
+    {
+        "pid":  8304,
+        "start_ticks":  "639292639467892568",
+        "exe_path":  "C:\\Windows\\system32\\conhost.exe"
+    }
+]

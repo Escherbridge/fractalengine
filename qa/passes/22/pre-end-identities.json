@@ -1,0 +1,12 @@
+﻿[
+    {
+        "pid":  93360,
+        "start_ticks":  "639292639749003625",
+        "exe_path":  "C:\\Users\\atooz\\Programming\\fractalengine-workspace\\fractalengine\\.qa\\stage\\44ad28da-20261102162445903\\fractalengine.exe"
+    },
+    {
+        "pid":  90792,
+        "start_ticks":  "639292639749486945",
+        "exe_path":  "C:\\Windows\\system32\\conhost.exe"
+    }
+]

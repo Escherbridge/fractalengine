@@ -1,0 +1,2 @@
+{"generation_changed": false, "log_after": {"generation": 1, "seq": 340}, "log_watermark": {"generation": 1, "seq": 338}, "new_logs": [{"level": "error", "message": "[message withheld: event scope unavailable or outside active verse]", "seq": 340, "target": "fe_webview::plugin"}], "retention": {"possible_gap": false, "seq_delta": 2, "source_derived_capacity": 2000}}
+{"code": "portal_fixture_changed", "message": "Portal, scope, page, helper or request lifetime changed", "refused": true, "status": 409}

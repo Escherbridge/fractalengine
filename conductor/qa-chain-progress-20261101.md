@@ -4,8 +4,8 @@ date: 2026-11-01
 status: in_progress
 source: ./handoff-20261101-qa-chain.md
 current_writer: /root
-current_slice: QA21 independently approved; QA22 stopped with exact cleanup and repeat native second-link failure; stamp recovery re-review and native fixed-feedback layout authoring; P2P transfer corrections isolated
-parallel_code_worktrees: Stamp recovery re-review; native feedback layout; P2P guarded invitation transfer
+current_slice: QA22/23 focused evidence reviewed; stage91d reproduced stamp numeric crash; observation and context-lock fixes reviewed and integrated e07af7f6; canonical stamp reads/baseline and P2P transfer corrections isolated
+parallel_code_worktrees: Canonical stamp reads and initial history; P2P token snapshot re-review then Manager-v2
 ---
 
 # QA chain continuation
@@ -33,7 +33,35 @@ Starting HEAD: `5bc2aa0`. Existing H3 files are preserved and continued.
 
 ## Current acceptance state
 
-### Latest checkpoint - QA21 approved, QA22 stopped and native failure traced
+### Latest checkpoint - QA23 crash fixed in source, next replay pending
+
+- QA22 independent review approves36inputs/46records, two PNGs and all six complete
+  node/history/replay responses byte-identical across restart, with exact actual asset
+  ECS. Real page1 capture and persisted fixture URL are supported; native second-link
+  failure remains open. Logs11WARN/2ERROR stay explicit; no later404 terminal inference.
+- Independently approved stamp77a/95ad is main0bb692e7/d5394179. Fixed64-point Portal
+  feedback geometry37ae is main91d785a9. Sealed91d built successfully in180.7seconds
+  with one unused import warning. No full checks or tests have run.
+- QA23 freshly promotes Stamp3, adding only#inst-2 while both old rows remain exact.
+  Its populated editor is now reachable. The old QA selection projection omits the
+  canonical/render alias; verified read-only observation24f is nowmainf40f5d78,
+  including unused-import cleanup. No actual selected-stamp ECS acceptance yet.
+- First X text input timed out and the app crashed with an egui Context RwLock panic.
+  No Enter, remaining fields or Apply was submitted; no postcrash persistence read
+  exists. The numeric helper nested response reads under a context write lock.
+  Independently approved14eb hoists those reads; maine07af7f6 awaits live replay.
+- QA23 independent evidence review supports37inputs/53records and the promotion PNG,
+  after correcting stderr accounting. Structured stdout has13WARN/2ERROR; stderr has
+  one Rust panic plus a separately inventoried native teardown ERROR. All eight
+  recorded identities are absent; later unrecorded children were not enumerated.
+- Canonical node GET works, but property GET refuses its composite ID and fresh
+  promotion has no initial history baseline. Shared scoped read and atomic fresh
+  baseline repairs are authoring. Existing-row/legacy history will remain unchanged.
+- No app/helper/Cargo runs. P2P bridge's token-snapshot correctionaff7 awaits review;
+  Manager-v2 Owner-rooted proof is still mandatory, with D-QA-016 recording explicit
+  Owner reauthorization for legacy Managers. Full QA/UX/final sweep/CI/releases remain.
+
+### Previous checkpoint - QA21 approved, QA22 stopped and native failure traced
 
 - QA21 independent review approves72inputs/106records, four PNGs and complete
   stopped logs15WARN/0ERROR. Fresh native import has one exact scoped baseline and
