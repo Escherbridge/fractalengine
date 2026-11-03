@@ -86,6 +86,7 @@ impl PreparedCreation {
         self.state["position"] = json!(position);
         self.state["elevation"] = json!(position[1]);
         self.state["interactive"] = json!(interactive);
+        node_history::check_snapshot_size(&self.state)?;
         let mut expected = self.state.clone();
         expected.as_object_mut().unwrap().remove("position");
         for (name, value) in &mut self.bindings {

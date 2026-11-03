@@ -63,7 +63,13 @@ The complete receiver replaces row contents with an inline geometry cast and com
 replacement with its clock. This preserves property deletion instead of recursively merging
 old keys back. Only nullable TOP-LEVEL declared columns are normalized to absence/NONE;
 nested JSON nulls, including null array elements and null property values, survive exactly.
-Raw local record IDs and wire bookkeeping never enter the node row. Complete snapshot
+Raw local record IDs and wire bookkeeping never enter the node row.
+Live complete snapshots validate all present values against the recipient's already stored
+enforced field definitions through the shared validator. A single bulk capture caps 256
+applicable definitions, fences those exact definitions at write time, and refuses malformed
+or incompatible values. This is enforcement of known local rules, not schema replication.
+Tombstones remain deletion-dominant rather than requiring old data to satisfy later live
+schemas. Final assembled receive SQL/bindings cap at 4 MiB before execution. Complete snapshot
 validation caps rows at 96 KiB and checks the renderer's rotation/finite transform contract.
 
 Legacy markerless partial node rows retain their existing merge path while no complete

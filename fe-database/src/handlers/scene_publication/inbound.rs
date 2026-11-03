@@ -195,6 +195,11 @@ pub(crate) async fn apply_complete(
         json!(without_position),
     ));
     guards.push(CLOCK_FENCE.into());
+    if !incoming_deleted
+        && !capture_schema_fence(db, &scope, &row, &mut guards, &mut bindings).await?
+    {
+        return Ok(Some(ReplicatedRowOutcome::Denied));
+    }
     row.as_object_mut().unwrap().remove(wire::MARKER);
     wire::normalize_optional_columns(&mut row);
     let point = row.as_object_mut().unwrap().remove("position").unwrap();
@@ -217,6 +222,13 @@ pub(crate) async fn apply_complete(
     let script = format!(
         "BEGIN TRANSACTION; {}; COMMIT TRANSACTION;",
         guards.join(";\n")
+    );
+    anyhow::ensure!(
+        script
+            .len()
+            .checked_add(serde_json::to_vec(&bindings)?.len())
+            .is_some_and(|bytes| bytes <= 4 * 1024 * 1024),
+        "complete scene receive transaction exceeds 4 MiB"
     );
     let mut query = db.query(script);
     for binding in bindings {
@@ -279,4 +291,55 @@ async fn changed_admission(
         return Ok(Some(DeferralReason::AuthorRole { did: author.into() }));
     }
     Ok(None)
+}
+
+const SCHEMA_RULES_SQL:&str="SELECT key,field_def_id,scope,enforced_schema FROM field_def WHERE entity_type='node' AND key IN $scene_schema_keys AND enforced_schema!=NONE AND scope IN $scene_schema_scopes ORDER BY key,field_def_id,scope LIMIT 257 TIMEOUT 5s";
+
+async fn capture_schema_fence(
+    db: &Db,
+    scope: &str,
+    row: &Value,
+    guards: &mut Vec<String>,
+    bindings: &mut Vec<(String, Value)>,
+) -> anyhow::Result<bool> {
+    let keys = row
+        .get("properties")
+        .and_then(Value::as_object)
+        .map(|properties| properties.keys().cloned().collect::<Vec<_>>())
+        .unwrap_or_default();
+    let scopes = super::super::field_def::property_rule_scopes(scope);
+    let mut response = db
+        .query(SCHEMA_RULES_SQL)
+        .bind(("scene_schema_keys", keys.clone()))
+        .bind(("scene_schema_scopes", scopes.clone()))
+        .await?
+        .check()?;
+    let rules: Vec<Value> = response.take(0)?;
+    if rules.len() > 256 || serde_json::to_vec(&rules)?.len() > 4 * 1024 * 1024 {
+        tracing::warn!("complete scene receive exceeds known-schema rule bounds");
+        return Ok(false);
+    }
+    for key in &keys {
+        let applicable = rules
+            .iter()
+            .filter(|rule| rule["key"].as_str() == Some(key.as_str()))
+            .cloned()
+            .collect::<Vec<_>>();
+        if let Err(error) = super::super::field_def::validate_captured_property_rules(
+            scope,
+            key,
+            &row["properties"][key],
+            &applicable,
+        ) {
+            tracing::warn!(property=key,%error,"complete scene row violates a known enforced schema");
+            return Ok(false);
+        }
+    }
+    guards.push(format!("IF ({SCHEMA_RULES_SQL}) != $scene_schema_rules {{ THROW 'scene property schema changed'; }}"));
+    bindings.extend([
+        ("scene_schema_keys".into(), json!(keys)),
+        ("scene_schema_scopes".into(), json!(scopes)),
+        ("scene_schema_rules".into(), json!(rules)),
+    ]);
+    Ok(true)
 }
