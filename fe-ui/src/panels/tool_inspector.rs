@@ -171,7 +171,8 @@ pub(crate) fn anchor_readout(kind: &SelectionKind, points: &[PathPointRow]) -> O
 /// `selected_segment` dangling). Pure. A vertex needs `idx < len`; a segment spans
 /// two anchors, so it needs `idx + 1 < len`. Mirrors the drag's own guard
 /// (`path_gimbal_target` returns `None` for an out-of-range target).
-pub(crate) fn fresh_path_selection(kind: SelectionKind, points_len: usize) -> SelectionKind {
+#[cfg(test)]
+fn fresh_path_selection(kind: SelectionKind, points_len: usize) -> SelectionKind {
     match kind {
         SelectionKind::PathVertex { idx, .. } if idx >= points_len => SelectionKind::Empty,
         SelectionKind::PathSegment { idx, .. } if idx + 1 >= points_len => SelectionKind::Empty,

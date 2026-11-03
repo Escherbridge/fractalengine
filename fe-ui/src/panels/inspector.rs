@@ -4622,6 +4622,9 @@ mod tests {
             })).unwrap()
             };
             let mut first = row("a", 0.0);
+            first.display_name = "Readable A".into();
+            let mut second = row("b", 4.0);
+            second.display_name = "Readable B".into();
             first.properties.insert("nullable".into(), Value::Null);
             let capture = EditorBatchCapture {
                 target: Default::default(),
@@ -4638,7 +4641,7 @@ mod tests {
                     EditorBatchMember {
                         node_id: "b".into(),
                         history_version: Some(1),
-                        state: row("b", 4.0),
+                        state: second,
                         stamp_path: None,
                     },
                 ],
@@ -4736,6 +4739,10 @@ mod tests {
                         })
                         .collect::<Vec<_>>();
                     assert!(texts.iter().any(|text| text.contains("2 selected objects")));
+                    assert!(
+                        texts.iter().any(|text| text.contains("Primary: Readable B")),
+                        "primary readout uses the captured human name"
+                    );
                     assert!(texts.iter().any(|text| text.contains("Mixed")));
                     assert!(texts.iter().any(|text| text.contains("Present on 1/2")));
                     assert!(texts

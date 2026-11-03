@@ -580,12 +580,7 @@ fn should_apply(petal_switched: bool, last_epoch: u64, current_epoch: u64) -> bo
     petal_switched || last_epoch != current_epoch
 }
 
-/// Pure decision core for `sync_node_visibility` (F3b minimal-authority
-/// semantics + F12 per-entity ancestry + D-13 force-deselect) — no Bevy
-/// dependency, so it's fully unit-tested without a `World`/`Commands`. Takes
-/// each spawned entity's `(entity, node_id, petal_id)`, the petal ancestry
-/// index, the set of entities THIS module previously hid, and the currently
-/// selected node id; returns what the caller should do.
+/// Pure per-entity visibility writes; see visibility/AGENTS.md.
 struct SyncDecision {
     /// Entities to `insert(Visibility::Hidden)` on and add to the
     /// caller's hidden-by-us set.
@@ -596,9 +591,6 @@ struct SyncDecision {
     /// an entity it didn't hide itself (F3b: don't resurrect ribbons another
     /// writer, e.g. `gis.track.visible`/`LayerStack`, hid on purpose).
     to_restore: Vec<Entity>,
-    /// True if the selected node became effectively hidden this pass and
-    /// should be force-deselected (RATIFICATION D-13).
-    deselect: bool,
 }
 
 fn compute_sync_decision(
@@ -606,11 +598,9 @@ fn compute_sync_decision(
     petal_ancestry: &HashMap<String, (String, String)>,
     hidden_by_us: &HashSet<Entity>,
     state: &VisibilityState,
-    selected_node_id: Option<&str>,
 ) -> SyncDecision {
     let mut to_hide = Vec::new();
     let mut to_restore = Vec::new();
-    let mut deselect = false;
 
     for &(entity, node_id, petal_id) in entities {
         let (fractal_id, verse_id) = petal_ancestry
@@ -629,16 +619,12 @@ fn compute_sync_decision(
             }
         } else {
             to_hide.push(entity);
-            if selected_node_id == Some(node_id) {
-                deselect = true;
-            }
         }
     }
 
     SyncDecision {
         to_hide,
         to_restore,
-        deselect,
     }
 }
 
@@ -659,8 +645,7 @@ fn compute_sync_decision(
 /// ribbons carrying both `SpawnedNodeMarker` and terrain's own visibility
 /// writer) owns. Entries are pruned once their entity despawns.
 ///
-/// D-13: force-deselects `NodeManager.selected` the same frame its node
-/// becomes effectively hidden. Pickers/camera-focus filter via [`pickable`].
+/// D-13: prunes hidden members through NodeManager. Pickers filter via [`pickable`].
 ///
 /// Also re-applies when node entities spawn (late GLTF/ribbon/stamp spawns
 /// after the petal-switch pass) and re-asserts the hide on an entity it hid
@@ -711,15 +696,8 @@ pub(crate) fn sync_node_visibility(
         .iter()
         .map(|(entity, marker)| (entity, marker.node_id.as_str(), marker.petal_id.as_str()))
         .collect();
-    let selected_node_id = node_mgr.primary().map(|s| s.node_id.as_str());
 
-    let decision = compute_sync_decision(
-        &entities,
-        &petal_ancestry,
-        &hidden_by_us,
-        &state,
-        selected_node_id,
-    );
+    let decision = compute_sync_decision(&entities, &petal_ancestry, &hidden_by_us, &state);
 
     for entity in decision.to_hide {
         commands.entity(entity).insert(Visibility::Hidden);
@@ -1047,8 +1025,7 @@ mod tests {
             (Entity::from_bits(1), "n1", "p1"),
             (Entity::from_bits(2), "n3", "p2"),
         ];
-        let decision =
-            compute_sync_decision(&entities, &petal_ancestry, &HashSet::new(), &state, None);
+        let decision = compute_sync_decision(&entities, &petal_ancestry, &HashSet::new(), &state);
 
         assert_eq!(decision.to_hide, vec![Entity::from_bits(1)]);
         assert!(decision.to_restore.is_empty());
@@ -1061,8 +1038,7 @@ mod tests {
         // participation — not panic, not silently vanish.
         let state = VisibilityState::default();
         let entities = [(Entity::from_bits(1), "n1", "missing-petal")];
-        let decision =
-            compute_sync_decision(&entities, &HashMap::new(), &HashSet::new(), &state, None);
+        let decision = compute_sync_decision(&entities, &HashMap::new(), &HashSet::new(), &state);
         assert!(decision.to_hide.is_empty());
     }
 
@@ -1073,8 +1049,7 @@ mod tests {
         let mut state = VisibilityState::default();
         state.set_node_override("n1", OverrideState::Hide);
         let entities = [(Entity::from_bits(1), "n1", "p1")];
-        let decision =
-            compute_sync_decision(&entities, &HashMap::new(), &HashSet::new(), &state, None);
+        let decision = compute_sync_decision(&entities, &HashMap::new(), &HashSet::new(), &state);
         assert_eq!(decision.to_hide, vec![Entity::from_bits(1)]);
     }
 
@@ -1090,8 +1065,7 @@ mod tests {
             (Entity::from_bits(1), "n1", "p1"),
             (Entity::from_bits(2), "n2", "p1"),
         ];
-        let decision =
-            compute_sync_decision(&entities, &HashMap::new(), &hidden_by_us, &state, None);
+        let decision = compute_sync_decision(&entities, &HashMap::new(), &hidden_by_us, &state);
 
         assert_eq!(decision.to_restore, vec![Entity::from_bits(1)]);
         assert!(decision.to_hide.is_empty());
@@ -1106,50 +1080,39 @@ mod tests {
             &HashMap::new(),
             &HashSet::new(), // empty — we never hid entity 9
             &state,
-            None,
         );
         assert!(decision.to_restore.is_empty());
     }
 
-    // --- D-13: force-deselect on hide ---
+    // --- Visibility plans consumed by selection reconciliation ---
 
     #[test]
-    fn compute_sync_decision_force_deselects_when_selected_node_becomes_hidden() {
+    fn compute_sync_decision_hides_overridden_nodes() {
         let mut state = VisibilityState::default();
         state.set_node_override("n1", OverrideState::Hide);
         let entities = [(Entity::from_bits(1), "n1", "p1")];
-        let decision = compute_sync_decision(
-            &entities,
-            &HashMap::new(),
-            &HashSet::new(),
-            &state,
-            Some("n1"),
-        );
-        assert!(decision.deselect);
+        let decision = compute_sync_decision(&entities, &HashMap::new(), &HashSet::new(), &state);
+        assert_eq!(decision.to_hide, vec![Entity::from_bits(1)]);
     }
 
     #[test]
-    fn compute_sync_decision_no_deselect_when_selected_node_stays_visible() {
+    fn compute_sync_decision_leaves_visible_nodes_unchanged() {
         let state = VisibilityState::default();
         let entities = [(Entity::from_bits(1), "n1", "p1")];
-        let decision = compute_sync_decision(
-            &entities,
-            &HashMap::new(),
-            &HashSet::new(),
-            &state,
-            Some("n1"),
-        );
-        assert!(!decision.deselect);
+        let decision = compute_sync_decision(&entities, &HashMap::new(), &HashSet::new(), &state);
+        assert!(decision.to_hide.is_empty());
     }
 
     #[test]
-    fn compute_sync_decision_no_deselect_when_nothing_selected() {
+    fn compute_sync_decision_plans_hidden_nodes_independently_of_selection() {
         let mut state = VisibilityState::default();
         state.set_node_override("n1", OverrideState::Hide);
-        let entities = [(Entity::from_bits(1), "n1", "p1")];
-        let decision =
-            compute_sync_decision(&entities, &HashMap::new(), &HashSet::new(), &state, None);
-        assert!(!decision.deselect);
+        let entities = [
+            (Entity::from_bits(1), "n1", "p1"),
+            (Entity::from_bits(2), "n2", "p1"),
+        ];
+        let decision = compute_sync_decision(&entities, &HashMap::new(), &HashSet::new(), &state);
+        assert_eq!(decision.to_hide, vec![Entity::from_bits(1)]);
     }
 
     // --- F19: memoized hidden count ---
@@ -1300,8 +1263,7 @@ mod tests {
             (Entity::from_bits(3), "track1::stamp::1", "p1"),
             (Entity::from_bits(4), "track1::stamp::2", "p1"), // Show wins
         ];
-        let decision =
-            compute_sync_decision(&entities, &HashMap::new(), &HashSet::new(), &state, None);
+        let decision = compute_sync_decision(&entities, &HashMap::new(), &HashSet::new(), &state);
 
         assert_eq!(
             decision.to_hide,

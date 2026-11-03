@@ -860,3 +860,5 @@ The existing numeric recovery journey now drives the production helper through
 focused Text, Paste, Cut, arrow stepping, Enter and focus-loss finalization using
 in-memory egui events. It does not access or forward the host clipboard. The
 journey is authored source until root executes the integrated checks.
+
+The legacy fresh_path_selection fixture helper is compiled only for its existing unit journeys; production tool policy uses the shared checked selection interaction route. Primary selection readouts use the captured display name with the canonical node ID as hover detail and fallback.

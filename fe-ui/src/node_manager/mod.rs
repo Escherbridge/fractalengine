@@ -93,7 +93,7 @@ pub struct NodeManager {
     selection_anchor: Option<SelectionRow>,
     pub(super) pending_selection: Option<SelectionRequest>,
     cancelled_restores: Vec<CancelledRestore>,
-    pub(super) group_drag: Option<group_gimbal::GroupDrag>,
+    group_drag: Option<group_gimbal::GroupDrag>,
     selection_generation: u64,
     pending_transform_before: Option<Transform>,
     /// Sidebar click stores the node_id here; `sync_sidebar_to_manager`
