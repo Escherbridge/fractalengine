@@ -753,6 +753,11 @@ uses QueryResult. All use RequestFailed on refusal and echo request IDs exactly.
 Typed snapshot/receipt/history DTOs live in node_history.rs. Historical preview
 results are distinct from current-state materializations and never apply to the
 live scene by themselves.
+`NodeAtomicSave` describes an explicitly tagged, validated completed Save without replacing its
+immutable field facts. Optional `atomic_save` and page-entry `replay_availability` metadata distinguish
+audit steps from replayable object states. `InsideAtomicBatch` names the completed Save and omits
+state; `IncompleteAtomicBatch` refuses unverifiable receipt groups. Untagged legacy facts retain
+their prior limits, and available snapshot fields keep their existing representation.
 CreateNode/NodeCreated now also participate in correlation extraction. The GUI-only NodeMaterialized birth
 for CreateObject has its own reply family with no pending command and a fresh ID: they still reach GUI consumers but
 cannot claim another request's pending waiter. The dedicated committed receipt is

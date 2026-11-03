@@ -90,6 +90,18 @@ pub struct NodeHistoryEntry {
     pub payload: Value,
     pub row_version: i64,
     pub created_at: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub atomic_save: Option<NodeAtomicSave>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub replay_availability: Option<HistoryAvailability>,
+}
+
+/// Validated receipt boundary for immutable facts saved in one transaction.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct NodeAtomicSave {
+    pub batch_id: String,
+    pub first_version: i64,
+    pub committed_version: i64,
 }
 
 /// Forward cursor page; historical facts never apply themselves to the live scene.
@@ -106,6 +118,8 @@ pub struct NodeHistoryPage {
 #[serde(rename_all = "snake_case")]
 pub enum HistoryAvailability {
     Available,
+    InsideAtomicBatch,
+    IncompleteAtomicBatch,
     BeforeCoverage,
     IncompleteInterval,
     UnsupportedOperation,
@@ -124,6 +138,8 @@ pub struct NodeStateAtVersion {
     pub baseline_version: Option<i64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub state: Option<NodeRowSnapshot>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub atomic_save: Option<NodeAtomicSave>,
 }
 
 /// Typed full transform used by editor compare-and-swap commands.

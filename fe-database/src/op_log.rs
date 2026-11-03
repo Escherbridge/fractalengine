@@ -1920,6 +1920,157 @@ mod tests {
         let (stamp_receipt,stamp_current)=crate::handlers::checked_mutation::resolve(&db,&stamp_node,"tree-other-petal","qa-stamp-success","did:qa").await.unwrap();
         assert_eq!(stamp_receipt.unwrap().history_version,stamp_saved.history_version);
         assert_eq!(stamp_current.properties,stamp_saved.state.properties);
+        for version in 1..=4 {
+            let replay = crate::handlers::node_history::read_granted(
+                &db,
+                &stamp_node,
+                0,
+                1,
+                Some(version),
+                &NodeAccessGrant::Local,
+                "did:qa",
+            )
+            .await
+            .unwrap();
+            if matches!(version, 2 | 3) {
+                assert_eq!(replay["availability"], "inside_atomic_batch");
+                assert!(
+                    replay.get("state").is_none(),
+                    "an audit field step was never a separately committed snapshot"
+                );
+                assert_eq!(
+                    replay["atomic_save"],
+                    serde_json::json!({"batch_id":"qa-stamp-success","first_version":2,"committed_version":4})
+                );
+                let typed: fe_runtime::node_history::NodeStateAtVersion =
+                    serde_json::from_value(replay).unwrap();
+                assert!(typed.state.is_none());
+            } else {
+                assert_eq!(replay["availability"], "available");
+                if version == 4 {
+                    assert_eq!(
+                        replay["state"],
+                        serde_json::to_value(&stamp_saved.state).unwrap()
+                    );
+                }
+            }
+        }
+        let page = crate::handlers::node_history::read_granted(
+            &db,
+            &stamp_node,
+            2,
+            1,
+            None,
+            &NodeAccessGrant::Local,
+            "did:qa",
+        )
+        .await
+        .unwrap();
+        assert_eq!(page["entries"][0]["row_version"], 3);
+        assert_eq!(page["entries"][0]["atomic_save"]["first_version"], 2);
+        assert_eq!(
+            page["entries"][0]["atomic_save"]["committed_version"], 4,
+            "a page ending inside a Save still names its completed boundary"
+        );
+        assert_eq!(page["next_after_version"], 3);
+        let typed: fe_runtime::node_history::NodeHistoryPage = serde_json::from_value(page).unwrap();
+        assert!(matches!(
+            typed.entries[0].replay_availability,
+            Some(fe_runtime::node_history::HistoryAvailability::InsideAtomicBatch)
+        ));
+        let mut second_save = stamp_input.clone();
+        second_save.history_version = Some(4);
+        second_save.before_properties = serde_json::to_value(&stamp_saved.state.properties).unwrap();
+        second_save.arc_m = 6.0;
+        let prepared = crate::handlers::stamp_overrides::prepare(
+            &db,
+            &second_save,
+            "qa-stamp-next-save",
+            "did:qa",
+        )
+        .await
+        .unwrap();
+        let second_saved = crate::handlers::stamp_overrides::commit(&db, prepared)
+            .await
+            .unwrap();
+        assert_eq!(second_saved.history_version, 7);
+        crate::handlers::entity_property::set_entity_property_granted(
+            &db,
+            &stamp_node,
+            "qa.after_save",
+            &serde_json::json!(true),
+            "did:qa",
+            &NodeAccessGrant::Local,
+        )
+        .await
+        .unwrap();
+        db.query("UPDATE node_log SET hlc_timestamp=42 WHERE node_id=$id")
+            .bind(("id", stamp_node.clone()))
+            .await
+            .unwrap()
+            .check()
+            .unwrap();
+        for (version, first, committed) in [(2, 2, 4), (3, 2, 4), (5, 5, 7), (6, 5, 7)] {
+            let replay = crate::handlers::node_history::read_granted(
+                &db,
+                &stamp_node,
+                0,
+                1,
+                Some(version),
+                &NodeAccessGrant::Local,
+                "did:qa",
+            )
+            .await
+            .unwrap();
+            assert_eq!(replay["availability"], "inside_atomic_batch");
+            assert!(replay.get("state").is_none());
+            assert_eq!(replay["atomic_save"]["first_version"], first);
+            assert_eq!(
+                replay["atomic_save"]["committed_version"], committed,
+                "adjacent Saves sharing HLC remain separate"
+            );
+        }
+        for version in [1, 4, 7, 8] {
+            let replay = crate::handlers::node_history::read_granted(
+                &db,
+                &stamp_node,
+                0,
+                1,
+                Some(version),
+                &NodeAccessGrant::Local,
+                "did:qa",
+            )
+            .await
+            .unwrap();
+            assert_eq!(
+                replay["availability"], "available",
+                "valid pre/post Save and untagged versions stay replayable despite identical HLC"
+            );
+            if version == 8 {
+                assert!(replay.get("atomic_save").is_none());
+                assert_eq!(replay["state"]["properties"]["qa.after_save"], true);
+            }
+        }
+        db.query("UPDATE node_log SET payload.editor_request_id='mismatched-receipt' WHERE node_id=$id AND row_version=7").bind(("id",stamp_node.clone())).await.unwrap().check().unwrap();
+        for version in [5, 6, 7, 8] {
+            let replay = crate::handlers::node_history::read_granted(
+                &db,
+                &stamp_node,
+                0,
+                1,
+                Some(version),
+                &NodeAccessGrant::Local,
+                "did:qa",
+            )
+            .await
+            .unwrap();
+            assert_eq!(replay["availability"], "incomplete_atomic_batch");
+            assert!(
+                replay.get("state").is_none(),
+                "mismatched final markers cannot authorize partial or later replay"
+            );
+        }
+        db.query("UPDATE node_log SET payload.editor_request_id='qa-stamp-next-save' WHERE node_id=$id AND row_version=7").bind(("id",stamp_node.clone())).await.unwrap().check().unwrap();
         let before_plugin_ops = op_log_count(&db).await;
         let invalid = vec![
             PendingOp::SetProperty {

@@ -1939,7 +1939,7 @@ mod tests {
     /// would turn an endpoint into a timeout).
     #[test]
     fn reply_kind_mapping_is_consistent_for_every_awaited_command() {
-        let cases: Vec<(DbCommand, DbResult)> = vec![
+        let mut cases: Vec<(DbCommand, DbResult)> = vec![
             (DbCommand::Ping, DbResult::Pong),
             (
                 DbCommand::CreateVerse {
@@ -2220,6 +2220,38 @@ mod tests {
             ),
         ];
 
+        for availability in ["inside_atomic_batch", "incomplete_atomic_batch"] {
+            let mut wire = serde_json::json!({"node_id":"n","journal_version":1,"current_version":4,
+                    "coverage_start_version":1,"coverage_started_at":"now","supported_operations":["baseline","property_set"],
+                    "order":"per_object_commit_version","event_time_ordering":false,"current_state_verified":true,
+                    "at_version":2,"availability":availability});
+            if availability == "inside_atomic_batch" {
+                wire["atomic_save"] =
+                    serde_json::json!({"batch_id":"save-n","first_version":2,"committed_version":4});
+            }
+            let state: crate::node_history::NodeStateAtVersion =
+                serde_json::from_value(wire.clone()).unwrap();
+            assert!(state.state.is_none());
+            assert_eq!(
+                serde_json::to_value(&state).unwrap(),
+                wire,
+                "unavailable replay never synthesizes a partial snapshot"
+            );
+            cases.push((
+                DbCommand::ReadNodeHistory {
+                    node_id: "n".into(),
+                    after_version: 0,
+                    limit: 1,
+                    at_version: Some(2),
+                    grant: crate::node_history::NodeAccessGrant::Local,
+                    correlation_id: Some("save-read".into()),
+                },
+                DbResult::NodeStateAtVersionLoaded {
+                    state,
+                    correlation_id: Some("save-read".into()),
+                },
+            ));
+        }
         for (cmd, result) in cases {
             let cmd_kind = reply_kind_of_command(&cmd);
             assert!(cmd_kind.is_some(), "no reply family mapped for {cmd:?}");

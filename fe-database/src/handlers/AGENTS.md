@@ -146,7 +146,8 @@ fact rolls back every property, fact and intention. No position/rotation/scale c
 The final fact alone carries the exact request receipt marker, so existing authorized receipt
 resolution can recover one outcome without confusing intermediate property versions.
 The single PropertySet intention records the bounded override batch; the journal retains
-three standard facts and reconstructs ordinary historical versions without a new operation grammar.
+three standard immutable audit facts. Replay exposes the completed Save rather than its interior
+field steps; see atomic-replay below.
 
 Stamp metric bounds use the exact shared flattened Bezier geometry and f32 cumulative
 distances used by the renderer. Captured raw positions/handles are compared before preparation,
@@ -159,6 +160,25 @@ corner code 0/1/2 and smoothness 0..=1. Compact four-slot rows may gain canonica
 exact Undo can restore the original compact shape. Position moves still require untouched metadata.
 The existing receipt journey reorders a route after dispatch before readback and proves no write or
 projection; the real-store journey checks metadata inverse and rejects timestamp/multi-row rewrites.
+
+## atomic-replay
+
+`node_history` resolves explicit `stamp_batch_id` tags independently of page cursors. At most 200
+facts may form a batch; a 201-row probe refuses larger groups. Each fact must be individually
+authorized, contiguous in per-object version order, and share retained scope and actor. The last
+fact must carry matching `stamp_request_id` and `editor_request_id`; earlier facts must carry neither.
+HLC never establishes a transaction boundary. Untagged legacy facts retain their existing replay
+rules because their original transaction boundaries cannot be recovered reliably.
+
+Valid tagged facts carry optional typed `atomic_save` metadata (batch ID, first version and completed
+version). Interior exact cuts return `inside_atomic_batch`, the completed boundary and no state.
+Malformed or incomplete groups return `incomplete_atomic_batch` with no state; unreadable members
+retain the existing scope refusal/redaction. Later replay cannot cross an unverifiable batch.
+Pages preserve every immutable fact and cursor while adding grouping metadata; they never rewrite
+payloads or infer membership from timestamps. Completed Save snapshots retain the existing state
+representation. The existing real-store journey includes interior/final/pre/post cuts, one-fact pages,
+adjacent different batches sharing HLC, and mismatched final markers. It is authored for the final
+integrated sweep, not executed during this source pass.
 
 ## Portal URL transaction
 

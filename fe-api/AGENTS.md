@@ -2168,6 +2168,10 @@ row_version, next_after_version (null at end), journal_version, current_version,
 coverage_start_version/time, supported_operations and current_state_verified.
 GET `/api/v1/nodes/{n}/state?at_version=N` adds availability, exact at_version,
 baseline_version and state only when replay is available. Legacy gaps are explicit.
+Explicitly tagged atomic Saves add optional `atomic_save` grouping metadata to retained history
+entries and state reads. An interior exact cut reports `inside_atomic_batch` and its completed Save
+version with no state; unverifiable receipt groups report `incomplete_atomic_batch`. Page cursors
+still enumerate every audit fact. Snapshot fields for available versions retain their existing shape.
 MCP get_node_history/read_node_at_version/commit_node_mutation share the same core.
 History reads require Viewer at current or retained stored node ancestry; writes
 require Editor at current ancestry. Foreign/unknown share the existing denial.

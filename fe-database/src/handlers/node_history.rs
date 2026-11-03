@@ -1,7 +1,9 @@
 //! Atomic ordinary node journal and bounded replay; see src/AGENTS.md §node-history.
 
-use fe_runtime::node_history::NodeAccessGrant;
-use serde_json::{json, Value};
+use std::collections::BTreeMap;
+
+use fe_runtime::node_history::{NodeAccessGrant, NodeAtomicSave};
+use serde_json::{Value, json};
 
 use crate::{op_log::commit_operation_atomic_with, repo::Db, types::OpLogEntry};
 
@@ -122,6 +124,72 @@ async fn fact_is_authorized(
 fn unavailable_fact(node_id: &str, version: i64) -> Value {
     json!({"log_id":format!("unavailable-{version}"),"node_id":node_id,"hlc_timestamp":0,"op":"unavailable_interval",
         "source_did":"","payload":{"availability":"unavailable_scope"},"row_version":version,"created_at":""})
+}
+
+#[derive(Clone)]
+enum AtomicSaveRead {
+    Untagged,
+    Saved(NodeAtomicSave),
+    Incomplete,
+    UnavailableScope,
+}
+
+/// Resolve explicit receipt tags across page boundaries; see AGENTS.md §atomic-replay.
+async fn atomic_save(
+    db: &Db,
+    row: &Value,
+    node_id: &str,
+    grant: &NodeAccessGrant,
+    local_did: &str,
+) -> anyhow::Result<AtomicSaveRead> {
+    let Some(tag) = row["payload"].get("stamp_batch_id") else {
+        return Ok(AtomicSaveRead::Untagged);
+    };
+    let Some(batch_id) = tag.as_str().filter(|id| !id.is_empty()) else {
+        return Ok(AtomicSaveRead::Incomplete);
+    };
+    let mut response = db.query("SELECT * OMIT id FROM node_log WHERE node_id = $id AND payload.stamp_batch_id = $batch ORDER BY row_version ASC LIMIT 201 TIMEOUT 5s")
+        .bind(("id", node_id.to_string())).bind(("batch", batch_id.to_string())).await?.check()?;
+    let rows: Vec<Value> = response.take(0)?;
+    if rows.is_empty() || rows.len() > 200 {
+        return Ok(AtomicSaveRead::Incomplete);
+    }
+    for fact in &rows {
+        if !fact_is_authorized(db, fact, node_id, grant, local_did).await {
+            return Ok(AtomicSaveRead::UnavailableScope);
+        }
+    }
+    let first_version = row_version(&rows[0])?;
+    let final_index = rows.len() - 1;
+    for (index, fact) in rows.iter().enumerate() {
+        let payload = &fact["payload"];
+        let final_fact = index == final_index;
+        if Some(row_version(fact)?) != first_version.checked_add(index as i64)
+            || fact["op"] != "property_set"
+            || payload["scope"] != row["payload"]["scope"]
+            || fact["source_did"] != row["source_did"]
+            || if final_fact {
+                payload["stamp_request_id"].as_str() != Some(batch_id)
+                    || payload["editor_request_id"].as_str() != Some(batch_id)
+            } else {
+                payload.get("stamp_request_id").is_some()
+                    || payload.get("editor_request_id").is_some()
+            }
+        {
+            return Ok(AtomicSaveRead::Incomplete);
+        }
+    }
+    if !rows
+        .iter()
+        .any(|fact| fact["log_id"] == row["log_id"] && fact["row_version"] == row["row_version"])
+    {
+        return Ok(AtomicSaveRead::Incomplete);
+    }
+    Ok(AtomicSaveRead::Saved(NodeAtomicSave {
+        batch_id: batch_id.to_string(),
+        first_version,
+        committed_version: row_version(&rows[final_index])?,
+    }))
 }
 
 pub(crate) fn check_snapshot_size(value: &Value) -> anyhow::Result<()> {
@@ -375,11 +443,13 @@ pub(crate) fn prepare_change(
         reduce_change(&mut after, op, &data)?;
     }
     if op == "full_transform" {
-        after["edit_seq"] = json!(before["edit_seq"]
-            .as_i64()
-            .unwrap_or(0)
-            .checked_add(1)
-            .ok_or_else(|| anyhow::anyhow!("transform edit sequence exhausted"))?);
+        after["edit_seq"] = json!(
+            before["edit_seq"]
+                .as_i64()
+                .unwrap_or(0)
+                .checked_add(1)
+                .ok_or_else(|| anyhow::anyhow!("transform edit sequence exhausted"))?
+        );
         after["elevation"] = data["position"][1].clone();
     }
     check_snapshot_size(&before)?;
@@ -398,7 +468,11 @@ pub(crate) fn prepare_change(
         json!({"journal_version": JOURNAL_VERSION,
         "scope": scope, "data": data, "after_state": after, "schema_versions": schema_versions}),
     ));
-    Ok(PreparedChange {after, version, facts})
+    Ok(PreparedChange {
+        after,
+        version,
+        facts,
+    })
 }
 
 /// Commit the materialized change, intention, baseline and journal facts together.
@@ -555,8 +629,39 @@ pub(crate) async fn read_granted(
         Value::Null
     };
     let mut visible_rows = Vec::with_capacity(rows.len());
-    for row in rows {
+    let mut batches: BTreeMap<String, AtomicSaveRead> = BTreeMap::new();
+    for mut row in rows {
         if fact_is_authorized(db, &row, node_id, grant, local_did).await {
+            let tag = row["payload"]["stamp_batch_id"].as_str().map(str::to_owned);
+            let boundary = match tag.as_ref().and_then(|tag| batches.get(tag)) {
+                Some(boundary) => boundary.clone(),
+                None => {
+                    let boundary = atomic_save(db, &row, node_id, grant, local_did).await?;
+                    if let Some(tag) = tag {
+                        batches.insert(tag, boundary.clone());
+                    }
+                    boundary
+                }
+            };
+            match boundary {
+                AtomicSaveRead::Untagged => {}
+                AtomicSaveRead::Saved(save) => {
+                    row["replay_availability"] =
+                        json!(if row_version(&row)? == save.committed_version {
+                            "available"
+                        } else {
+                            "inside_atomic_batch"
+                        });
+                    row["atomic_save"] = serde_json::to_value(save)?;
+                }
+                AtomicSaveRead::Incomplete => {
+                    row["replay_availability"] = json!("incomplete_atomic_batch")
+                }
+                AtomicSaveRead::UnavailableScope => {
+                    visible_rows.push(unavailable_fact(node_id, row_version(&row)?));
+                    continue;
+                }
+            }
             visible_rows.push(row);
         } else {
             visible_rows.push(unavailable_fact(node_id, row_version(&row)?));
@@ -590,6 +695,7 @@ async fn replay(
     let mut state = baseline["payload"]["state"].clone();
     let mut expected = start;
     let mut processed = 0;
+    let mut batches: BTreeMap<String, AtomicSaveRead> = BTreeMap::new();
     while expected < target {
         let mut response = db.query("SELECT * OMIT id FROM node_log WHERE node_id = $id AND row_version > $start AND row_version <= $target ORDER BY row_version ASC LIMIT 200 TIMEOUT 5s")
             .bind(("id",node_id.to_string())).bind(("start",expected)).bind(("target",target)).await?.check()?;
@@ -613,6 +719,38 @@ async fn replay(
                 metadata["availability"] = json!("incomplete_interval");
                 return Ok(metadata);
             }
+            let tag = row["payload"]["stamp_batch_id"].as_str().map(str::to_owned);
+            let boundary = match tag.as_ref().and_then(|tag| batches.get(tag)) {
+                Some(boundary) => boundary.clone(),
+                None => {
+                    let boundary = atomic_save(db, row, node_id, grant, local_did).await?;
+                    if let Some(tag) = tag {
+                        batches.insert(tag, boundary.clone());
+                    }
+                    boundary
+                }
+            };
+            match boundary {
+                AtomicSaveRead::Untagged => {}
+                AtomicSaveRead::Saved(save) => {
+                    if target < save.committed_version {
+                        metadata["availability"] = json!("inside_atomic_batch");
+                        metadata["atomic_save"] = serde_json::to_value(save)?;
+                        return Ok(metadata);
+                    }
+                    if target == save.committed_version {
+                        metadata["atomic_save"] = serde_json::to_value(save)?;
+                    }
+                }
+                AtomicSaveRead::Incomplete => {
+                    metadata["availability"] = json!("incomplete_atomic_batch");
+                    return Ok(metadata);
+                }
+                AtomicSaveRead::UnavailableScope => {
+                    metadata["availability"] = json!("unavailable_scope");
+                    return Ok(metadata);
+                }
+            }
             if reduce_change(
                 &mut state,
                 row["op"].as_str().unwrap_or(""),
@@ -624,12 +762,13 @@ async fn replay(
                 return Ok(metadata);
             }
             if row["op"] == "full_transform" {
-                state["edit_seq"] =
-                    json!(state["edit_seq"]
+                state["edit_seq"] = json!(
+                    state["edit_seq"]
                         .as_i64()
                         .unwrap_or(0)
                         .checked_add(1)
-                        .ok_or_else(|| anyhow::anyhow!("transform edit sequence exhausted"))?);
+                        .ok_or_else(|| anyhow::anyhow!("transform edit sequence exhausted"))?
+                );
                 state["elevation"] = state["position"][1].clone();
             }
             if state != row["payload"]["after_state"] {
