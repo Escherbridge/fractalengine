@@ -1854,7 +1854,7 @@ mod tests {
         assert_eq!(promotion_baseline["payload"]["scope"],plugin_scope);
         let promotion_replay=crate::handlers::node_history::read_granted(&db,&stamp_node,0,200,Some(1),&NodeAccessGrant::Local,"did:qa").await.unwrap();
         assert_eq!(promotion_replay["availability"],"available");
-        assert_eq!(promotion_replay["state"],serde_json::to_value(serde_json::from_value::<fe_runtime::node_history::NodeRowSnapshot>(crate::handlers::node_history::snapshot(&db,&stamp_node).await.unwrap().unwrap()).unwrap()).unwrap());
+        assert_eq!(promotion_replay["state"],crate::handlers::node_history::snapshot(&db,&stamp_node).await.unwrap().unwrap());
         assert_eq!(promotion_replay["state"]["position"],serde_json::json!([0.0,0.0,0.0]),"journal stores node projection, not path-derived world pose");
         assert!(crate::handlers::node_history::read_granted(&db,&stamp_node,0,200,None,&NodeAccessGrant::Scoped("VERSE#foreign".into()),"did:qa").await.is_err());
 
