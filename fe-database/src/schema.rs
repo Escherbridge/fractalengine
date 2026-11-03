@@ -306,6 +306,16 @@ define_table! {
 }
 
 define_table! {
+    /// Local materialized scene versions; see handlers/scene_publication/AGENTS.md.
+    table "node_scene_clock" => NodeSceneClock (id: node_id) {
+        node_id: String => "TYPE string",
+        hlc: i64 => "TYPE int ASSERT $value > 0",
+        publisher: String => "TYPE string",
+        row_fingerprint: String => "TYPE string"
+    }
+}
+
+define_table! {
     /// Append-only per-node operation log — INSERT-only, immutable rows
     /// (row_version/HLC semantics: fe-database/src/AGENTS.md §node-log).
     table "node_log" => NodeLog (id: log_id) {
@@ -749,6 +759,9 @@ pub async fn apply_all(db: &crate::repo::Db) -> anyhow::Result<()> {
         .await?
         .check()?;
     Repo::<NodeLog>::apply_schema(db).await?;
+    Repo::<NodeSceneClock>::apply_schema(db).await?;
+    db.query("DEFINE INDEX IF NOT EXISTS idx_node_scene_clock ON TABLE node_scene_clock FIELDS node_id UNIQUE")
+        .await?.check()?;
     db.query("DEFINE INDEX IF NOT EXISTS idx_node_log_version ON TABLE node_log FIELDS node_id, row_version UNIQUE")
         .await?.check()?;
     Repo::<IotReading>::apply_schema(db).await?;
@@ -970,6 +983,7 @@ pub const DEVELOPMENT_RESET_TABLE_NAMES: &[&str] = &[
     "node",
     "asset",
     "node_log",
+    "node_scene_clock",
     "iot_reading",
     "device_format",
     "device_payload",
@@ -1281,6 +1295,9 @@ mod tests {
     #[test]
     fn all_table_names_are_present() {
         assert_eq!(ALL_TABLE_NAMES.len(), 17);
+        assert!(!ALL_TABLE_NAMES.contains(&NodeSceneClock::TABLE_NAME));
+        assert!(DEVELOPMENT_RESET_TABLE_NAMES.contains(&NodeSceneClock::TABLE_NAME));
+        assert!(NodeSceneClock::schema().contains("hlc ON TABLE node_scene_clock TYPE int ASSERT $value > 0"));
         assert!(!ALL_TABLE_NAMES.contains(&JoinDelegationRow::TABLE_NAME));
         assert!(DEVELOPMENT_RESET_TABLE_NAMES.contains(&JoinDelegationRow::TABLE_NAME));
         assert!(JoinDelegationRow::schema().contains("['quarantined', 'active']"));

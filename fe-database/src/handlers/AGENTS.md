@@ -446,3 +446,9 @@ Legacy registry introductions share retained-membership anti-resurrection fences
 property writes fence the stored registry before admitting newly added membership IDs. API registry
 patches use expected-registry CAS rather than overwriting a concurrent edit. These local guarantees
 do not graduate the deferred Group P2P/canonical mapping.
+
+## Committed scene publication
+
+scene_publication/AGENTS.md owns full committed-node publication, durable local provenance, original
+HLC ordering, complete-row receive/clock transactions, bounded replica-open repair and explicit
+asset/model/schema dependency limits. Ordinary post-commit dispatch and plugin state use one seam.

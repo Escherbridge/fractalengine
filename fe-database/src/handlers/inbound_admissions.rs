@@ -9,7 +9,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use fe_runtime::messages::{DeferralReason, ReplicatedRowOutcome};
 
 use crate::handlers::replicated_row::{
-    apply_replicated_row_reporting, ApplyReport, SceneChangeSender,
+    apply_replicated_row_reporting_with_publisher, ApplyReport, SceneChangeSender,
 };
 use crate::repo::Db;
 use crate::role_grants::ROLE_DOC_TABLE;
@@ -60,6 +60,7 @@ type Trigger = (String, DeferralReason);
 /// The deferred-admission queue (§2.4 "Content rows"). Insertion order (`seq`) is age, so
 /// drop-oldest is the first entry of the per-verse or per-author index.
 pub struct InboundAdmissions {
+    local_publisher: Option<String>,
     per_verse_cap: usize,
     per_author_cap: usize,
     next_seq: u64,
@@ -82,9 +83,14 @@ impl InboundAdmissions {
         Self::with_caps(DEFERRED_PER_VERSE, DEFERRED_PER_AUTHOR)
     }
 
+    pub(crate) fn for_local_publisher(publisher:&str)->Self {
+        let mut queue=Self::new();queue.local_publisher=Some(publisher.to_owned());queue
+    }
+
     /// A queue with explicit caps (each clamped to at least 1).
     pub fn with_caps(per_verse_cap: usize, per_author_cap: usize) -> Self {
         Self {
+            local_publisher: None,
             per_verse_cap: per_verse_cap.max(1),
             per_author_cap: per_author_cap.max(1),
             next_seq: 0,
@@ -171,7 +177,7 @@ impl InboundAdmissions {
             record_id: record_id.to_string(),
             author_did: author_did.to_string(),
         };
-        let report = run(db, &key, row_bytes, entity_change_tx).await;
+        let report = run(db, &key, row_bytes, self.local_publisher.as_deref(), entity_change_tx).await;
         let mut reports = vec![row_report(&key, &report.outcome)];
         let mut triggers = VecDeque::new();
         self.settle(key, row_bytes.to_vec(), None, &report, &mut triggers);
@@ -230,7 +236,7 @@ impl InboundAdmissions {
                     continue;
                 };
                 retries += 1;
-                let report = run(db, &row.key, &row.bytes, entity_change_tx).await;
+                let report = run(db, &row.key, &row.bytes, self.local_publisher.as_deref(), entity_change_tx).await;
                 if !matches!(report.outcome, ReplicatedRowOutcome::Deferred(_)) {
                     reports.push(row_report(&row.key, &report.outcome));
                 }
@@ -390,15 +396,17 @@ async fn run(
     db: &Db,
     key: &RowKey,
     bytes: &[u8],
+    local_publisher: Option<&str>,
     entity_change_tx: Option<&SceneChangeSender>,
 ) -> ApplyReport {
-    match apply_replicated_row_reporting(
+    match apply_replicated_row_reporting_with_publisher(
         db,
         &key.verse_id,
         &key.table,
         &key.record_id,
         bytes,
         &key.author_did,
+        local_publisher,
         entity_change_tx,
     )
     .await

@@ -30,6 +30,8 @@ pub enum OpType {
     PropertyDeleted,
     /// Legacy `CreateNode` materialized a durable node row.
     NodeCreated,
+    /// A committed display-name change with an ordinary node journal fact.
+    NodeRenamed,
     /// Legacy `DeleteNode` physically removed a node row and direct waypoints.
     NodeDeleted,
     // Node lifecycle (node_lifecycle_addressing_20260725)

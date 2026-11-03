@@ -71,6 +71,78 @@ pub(crate) struct PreparedCreation {
     materialization: fe_runtime::messages::CommittedNodeMaterialization,
 }
 
+impl PreparedCreation {
+    pub(crate) fn preserve_duplicate_fields(
+        &mut self,
+        position: [f64; 3],
+        interactive: bool,
+    ) -> anyhow::Result<()> {
+        anyhow::ensure!(
+            position
+                .iter()
+                .all(|value| value.is_finite() && (*value as f32).is_finite()),
+            "duplicate source exceeds render precision"
+        );
+        self.state["position"] = json!(position);
+        self.state["elevation"] = json!(position[1]);
+        self.state["interactive"] = json!(interactive);
+        let mut expected = self.state.clone();
+        expected.as_object_mut().unwrap().remove("position");
+        for (name, value) in &mut self.bindings {
+            match name.as_str() {
+                "created_x" => *value = json!(position[0]),
+                "created_z" => *value = json!(position[2]),
+                "creation_expected_node" => *value = json!([expected.clone()]),
+                _ => {}
+            }
+        }
+        let receipt = fe_runtime::node_history::NodeMutationReceipt {
+            node_id: self.id.clone(),
+            history_version: 1,
+            state: serde_json::from_value(self.state.clone())?,
+            persist: fe_runtime::node_history::PersistStatus::Committed,
+        };
+        self.materialization =
+            node_history::materialization(&receipt, self.materialization.node.asset_path.clone())?;
+        Ok(())
+    }
+
+    pub(crate) async fn guard_publisher(
+        &mut self,
+        db: &Db,
+        scope: &str,
+        publisher: &str,
+    ) -> anyhow::Result<()> {
+        let permission =
+            entity::prepare_scope_permission(db, scope, publisher, fe_policy::RoleLevel::Editor)
+                .await?;
+        let (guards, bindings) = permission.into_parts();
+        self.statements.splice(0..0, guards);
+        self.bindings.extend(bindings);
+        Ok(())
+    }
+
+    pub(crate) fn guard_source(&mut self, id: &str, source: &Value) -> anyhow::Result<()> {
+        let mut source = source.clone();
+        let point = source
+            .as_object_mut()
+            .ok_or_else(|| anyhow::anyhow!("duplicate source is not a row"))?
+            .remove("position")
+            .ok_or_else(|| anyhow::anyhow!("duplicate source has no point"))?;
+        self.statements.splice(0..0,[
+            "IF (SELECT * OMIT id, position FROM node WHERE node_id=$duplicate_source) != [$duplicate_before] { THROW 'duplicate source changed'; }".into(),
+            "IF array::len((SELECT VALUE node_id FROM node WHERE node_id=$duplicate_source AND position=<geometry<point>> [$duplicate_x,$duplicate_z])) != 1 { THROW 'duplicate source moved'; }".into(),
+        ]);
+        self.bindings.extend([
+            ("duplicate_source".into(), json!(id)),
+            ("duplicate_before".into(), source),
+            ("duplicate_x".into(), point["coordinates"][0].clone()),
+            ("duplicate_z".into(), point["coordinates"][1].clone()),
+        ]);
+        Ok(())
+    }
+}
+
 fn scene_extension(content_type: &str) -> anyhow::Result<&'static str> {
     match content_type {
         "model/gltf-binary" => Ok("glb"),
@@ -159,7 +231,9 @@ pub(crate) async fn prepare(
             ]);
             (Some(id.to_owned()), Some(path))
         }
-        SceneAsset::Imported(asset) => {
+        SceneAsset::Imported(mut asset) => {
+            asset.row["petal_id"] = json!(petal_id);
+            asset.row["owner_did"] = json!(actor);
             statements.extend([
                 "IF array::len((SELECT VALUE asset_id FROM asset WHERE asset_id=$creation_asset)) != 0 { THROW 'imported asset identity already exists'; }".into(),
                 "CREATE asset CONTENT $creation_imported_asset".into(),
@@ -191,7 +265,7 @@ pub(crate) async fn prepare(
         "IF (SELECT * OMIT id FROM node_log WHERE node_id=$creation_id) != [$created_fact] { THROW 'created object history changed'; }".into(),
     ]);
     if imported_asset {
-        statements.push("IF (SELECT asset_id, name, content_type, size_bytes, content_hash, created_at FROM asset WHERE asset_id=$creation_asset) != [$creation_imported_asset] { THROW 'imported asset readback changed'; }".into());
+        statements.push("IF (SELECT asset_id, name, content_type, size_bytes, content_hash, created_at, petal_id, owner_did FROM asset WHERE asset_id=$creation_asset) != [$creation_imported_asset] { THROW 'imported asset readback changed'; }".into());
     }
     bindings.extend([
         ("creation_id".into(), json!(id)),

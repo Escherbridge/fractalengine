@@ -1064,20 +1064,62 @@ pub(crate) fn tombstone_marker(hlc: u64, source_did: &str) -> serde_json::Value 
 /// clock. See AGENTS.md §lifecycle.
 async fn commit_tombstone_atomic(
     db: &Db,
-    entry: crate::types::OpLogEntry,
+    mut entry: crate::types::OpLogEntry,
     update: &str,
     target: (&str, serde_json::Value),
     source_did: &str,
 ) -> anyhow::Result<()> {
     let (target_name, target_value) = target;
+    let petal = entry.payload["petal_id"]
+        .as_str()
+        .ok_or_else(|| anyhow::anyhow!("delete Petal missing"))?
+        .to_owned();
+    let scope = require_petal_scope(db, &petal, "TombstoneNode").await?;
+    let permission = super::entity::prepare_scope_permission(
+        db,
+        &scope,
+        source_did,
+        fe_policy::RoleLevel::Editor,
+    )
+    .await?;
+    let (mut guards, mut bindings) = permission.into_parts();
+    let predicate = match target_name {
+        "nid" => "(node_id=$nid OR properties.gpx_track_id=$nid)",
+        "ids" => "node_id IN $ids",
+        _ => anyhow::bail!("unknown delete target binding"),
+    };
+    let select=format!("SELECT node_id,petal_id,tombstone FROM node WHERE {predicate} AND tombstone=NONE ORDER BY node_id LIMIT 1025 TIMEOUT 5s");
+    let mut response = db
+        .query(&select)
+        .bind((target_name.to_owned(), target_value.clone()))
+        .await?
+        .check()?;
+    let members: Vec<serde_json::Value> = response.take(0)?;
+    anyhow::ensure!(
+        !members.is_empty() && members.len() <= 1024,
+        "delete requires 1..1024 current members"
+    );
+    anyhow::ensure!(
+        members.iter().all(|row| row["petal_id"] == petal),
+        "delete crosses stored Petal ancestry"
+    );
+    let ids = members
+        .iter()
+        .map(|row| row["node_id"].clone())
+        .collect::<Vec<_>>();
+    entry.payload["tombstoned_ids"] = serde_json::json!(ids);
+    let member_select=format!("SELECT node_id,petal_id,tombstone FROM node WHERE {predicate} AND tombstone=NONE ORDER BY node_id");
+    guards.push(format!(
+        "IF ({member_select}) != $delete_members {{ THROW 'delete member set changed'; }}"
+    ));
+    guards.push(update.to_owned());
+    bindings.extend([
+        ("delete_members".into(), serde_json::json!(members)),
+        (target_name.into(), target_value),
+    ]);
     crate::op_log::commit_operation_atomic_with(db, entry, |lamport| {
-        (
-            vec![update.to_string()],
-            vec![
-                ("ts".to_string(), tombstone_marker(lamport, source_did)),
-                (target_name.to_string(), target_value),
-            ],
-        )
+        bindings.push(("ts".into(), tombstone_marker(lamport, source_did)));
+        (guards, bindings)
     })
     .await?;
     Ok(())
@@ -1450,25 +1492,63 @@ pub(crate) async fn rename_node_handler(
     db: &Db,
     node_id: &str,
     new_name: &str,
+    publisher: &str,
+    actor: &str,
 ) -> anyhow::Result<()> {
     crate::migration::mapping_inventory::record_bypass_for("RenameNode");
-    let update = db
-        .query("UPDATE node SET display_name = $name WHERE node_id = $nid AND tombstone = NONE")
-        .bind(("name", new_name.to_string()))
-        .bind(("nid", node_id.to_string()))
-        .await
-        .map_err(|e| anyhow::anyhow!("RenameNode query failed: {e}"))?
-        .check();
-    let updated: Vec<serde_json::Value> = match update {
-        Ok(mut res) => res
-            .take(0)
-            .map_err(|e| anyhow::anyhow!("RenameNode take failed: {e}"))?,
-        Err(e) if e.to_string().contains("does not exist") => Vec::new(),
-        Err(e) => return Err(anyhow::anyhow!("RenameNode statement failed: {e}")),
+    anyhow::ensure!(
+        !new_name.trim().is_empty() && new_name.len() <= 1024,
+        "invalid node name"
+    );
+    let scope = resolve_node_scope_handler(db, node_id)
+        .await?
+        .ok_or_else(|| anyhow::anyhow!("node scope unavailable"))?;
+    let permission = super::entity::prepare_scope_permission(
+        db,
+        &scope,
+        publisher,
+        fe_policy::RoleLevel::Editor,
+    )
+    .await?;
+    let (mut guards, mut bindings) = permission.into_parts();
+    let mut response=db.query("SELECT * OMIT id FROM node WHERE node_id=$rename_node AND tombstone=NONE LIMIT 2 TIMEOUT 5s")
+        .bind(("rename_node",node_id.to_owned())).await?.check()?;
+    let mut before: Vec<serde_json::Value> = response.take(0)?;
+    anyhow::ensure!(before.len() == 1, "RenameNode matched no unique live node");
+    let mut row = before.remove(0);
+    let point = row.as_object_mut().unwrap().remove("position").unwrap();
+    guards.extend([
+        "IF (SELECT * OMIT id, position FROM node WHERE node_id=$rename_node) != [$rename_before] { THROW 'rename source changed'; }".into(),
+        "IF array::len((SELECT VALUE node_id FROM node WHERE node_id=$rename_node AND position=<geometry<point>> [$rename_x,$rename_z])) != 1 { THROW 'rename source moved'; }".into(),
+        "UPDATE node SET display_name=$rename_name WHERE node_id=$rename_node AND tombstone=NONE".into(),
+    ]);
+    bindings.extend([
+        ("rename_node".into(), serde_json::json!(node_id)),
+        ("rename_before".into(), row),
+        ("rename_x".into(), point["coordinates"][0].clone()),
+        ("rename_z".into(), point["coordinates"][1].clone()),
+        ("rename_name".into(), serde_json::json!(new_name)),
+    ]);
+    let entry = crate::types::OpLogEntry {
+        lamport_clock: 0,
+        hlc_timestamp: String::new(),
+        node_id: crate::types::NodeId(node_id.into()),
+        op_type: crate::types::OpType::NodeRenamed,
+        payload: serde_json::json!({"node_id":node_id,"name":new_name}),
+        sig: "00".repeat(64),
     };
-    if updated.is_empty() {
-        anyhow::bail!("RenameNode matched no live node with node_id = {node_id}");
-    }
+    super::node_history::commit_mutation(
+        db,
+        entry,
+        guards,
+        bindings,
+        actor,
+        "node_renamed",
+        serde_json::json!({"name":new_name}),
+        serde_json::json!({}),
+        &fe_runtime::node_history::NodeAccessGrant::Scoped(scope),
+    )
+    .await?;
     Ok(())
 }
 
@@ -1517,10 +1597,12 @@ fn strip_path_identity_properties(properties: &serde_json::Value) -> serde_json:
 pub(crate) async fn duplicate_node_handler(
     db: &Db,
     node_id: &str,
+    publisher: &str,
+    actor: &str,
 ) -> anyhow::Result<DuplicateNodeOutcome> {
     crate::migration::mapping_inventory::record_bypass_for("DuplicateNode");
     let lookup = db
-        .query("SELECT * FROM node WHERE node_id = $nid AND tombstone = NONE LIMIT 1")
+        .query("SELECT * OMIT id FROM node WHERE node_id = $nid AND tombstone = NONE LIMIT 2")
         .bind(("nid", node_id.to_string()))
         .await
         .map_err(|e| anyhow::anyhow!("DuplicateNode lookup query failed: {e}"))?
@@ -1536,6 +1618,7 @@ pub(crate) async fn duplicate_node_handler(
             ));
         }
     };
+    anyhow::ensure!(rows.len() <= 1, "ambiguous duplicate source");
     let Some(src) = rows.first() else {
         anyhow::bail!("DuplicateNode matched no live node with node_id = {node_id}");
     };
@@ -1551,15 +1634,10 @@ pub(crate) async fn duplicate_node_handler(
     let z = coords[1].as_f64().unwrap_or(0.0) + 1.0;
     let y = src["elevation"].as_f64().unwrap_or(0.0);
 
-    let rotation: [f64; 4] = {
-        let arr = src["rotation"].as_array().cloned().unwrap_or_default();
-        [
-            arr.first().and_then(|v| v.as_f64()).unwrap_or(0.0),
-            arr.get(1).and_then(|v| v.as_f64()).unwrap_or(0.0),
-            arr.get(2).and_then(|v| v.as_f64()).unwrap_or(0.0),
-            arr.get(3).and_then(|v| v.as_f64()).unwrap_or(1.0),
-        ]
-    };
+    let rotation_values: Vec<f64> = serde_json::from_value(src["rotation"].clone())?;
+    let rotation = fe_runtime::node_history::stored_rotation_quaternion(&rotation_values)
+        .ok_or_else(|| anyhow::anyhow!("duplicate source rotation unavailable"))?
+        .map(f64::from);
     let scale: [f64; 3] = {
         let arr = src["scale"].as_array().cloned().unwrap_or_default();
         [
@@ -1570,61 +1648,32 @@ pub(crate) async fn duplicate_node_handler(
     };
     let asset_id: Option<String> = src["asset_id"].as_str().map(String::from);
     let has_asset = asset_id.is_some();
-    let interactive = src["interactive"].as_bool().unwrap_or(false);
     let properties = strip_path_identity_properties(&src["properties"]);
-
-    let new_id = ulid::Ulid::new().to_string();
-    let now = chrono::Utc::now().to_rfc3339();
-    // Geometry fields need the explicit SurrealQL cast; see AGENTS.md §geometry-inserts.
-    db.query(
-        "CREATE node CONTENT {
-            node_id: $node_id,
-            petal_id: $petal_id,
-            display_name: $name,
-            asset_id: $asset_id,
-            position: <geometry<point>> [$x, $z],
-            elevation: $y,
-            rotation: $rotation,
-            scale: $scale,
-            interactive: $interactive,
-            created_at: $now,
-            properties: $props,
-        }",
-    )
-    .bind(("node_id", new_id.clone()))
-    .bind(("petal_id", petal_id.clone()))
-    .bind(("name", name.clone()))
-    .bind(("asset_id", asset_id))
-    .bind(("x", x))
-    .bind(("z", z))
-    .bind(("y", y))
-    .bind(("rotation", rotation.to_vec()))
-    .bind(("scale", scale.to_vec()))
-    .bind(("interactive", interactive))
-    .bind(("now", now))
-    .bind(("props", properties))
-    .await?
-    .check()
-    .map_err(|e| anyhow::anyhow!("DuplicateNode CREATE failed: {e}"))?;
-
-    // Preserve the legacy node-log audit trail; duplicate intent is not yet a
-    // separately specified legacy op-log operation.
-    if let Err(e) = super::node_log::append_node_log(
+    let scope = resolve_node_scope_handler(db, node_id)
+        .await?
+        .ok_or_else(|| anyhow::anyhow!("duplicate source scope unavailable"))?;
+    super::entity::prepare_scope_permission(db, &scope, publisher, fe_policy::RoleLevel::Editor)
+        .await?;
+    let mut prepared = super::object_creation::prepare(
         db,
-        &new_id,
-        "created",
-        "local",
-        &serde_json::json!({
-            "petal_id": petal_id,
-            "name": name,
-            "position": [x, y, z],
-            "duplicated_from": node_id,
-        }),
+        super::object_creation::ObjectCreation {
+            petal_id: &petal_id,
+            name: &name,
+            asset: super::object_creation::SceneAsset::Existing(asset_id.as_deref()),
+            position: [x as f32, y as f32, z as f32],
+            rotation: rotation_values,
+            scale: scale.to_vec(),
+            properties: properties.as_object().unwrap().clone(),
+            actor,
+            grant: &fe_runtime::node_history::NodeAccessGrant::Scoped(scope.clone()),
+        },
     )
-    .await
-    {
-        tracing::warn!("Failed to write node_log for duplicated node {new_id}: {e}");
-    }
+    .await?;
+    prepared.preserve_duplicate_fields([x, y, z], src["interactive"].as_bool().unwrap_or(false))?;
+    prepared.guard_source(node_id, src)?;
+    prepared.guard_publisher(db, &scope, publisher).await?;
+    let materialized = super::object_creation::commit(db, prepared).await?;
+    let new_id = materialized.node.node_id;
 
     tracing::info!("Duplicated node {node_id} -> {new_id} (petal {petal_id})");
     Ok(DuplicateNodeOutcome {

@@ -105,6 +105,20 @@ pub async fn apply_replicated_row_reporting(
     author_did: &str,
     entity_change_tx: Option<&SceneChangeSender>,
 ) -> anyhow::Result<ApplyReport> {
+    apply_replicated_row_reporting_with_publisher(db,verse_id,table,record_id,row_bytes,author_did,None,entity_change_tx).await
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(crate) async fn apply_replicated_row_reporting_with_publisher(
+    db: &Db,
+    verse_id: &str,
+    table: &str,
+    record_id: &str,
+    row_bytes: &[u8],
+    author_did: &str,
+    local_publisher: Option<&str>,
+    entity_change_tx: Option<&SceneChangeSender>,
+) -> anyhow::Result<ApplyReport> {
     tracing::debug!(
         verse_id,
         table,
@@ -154,6 +168,14 @@ pub async fn apply_replicated_row_reporting(
             return Ok(ApplyReport::of(ReplicatedRowOutcome::Deferred(reason)));
         }
     }
+    if table == "node" {
+        if let Some(outcome) = super::scene_publication::apply_complete(
+            db, verse_id, record_id, row_bytes, author_did, local_publisher, entity_change_tx,
+        ).await? {
+            return Ok(ApplyReport::of(outcome));
+        }
+    }
+
     // Per-table semantics: `Timeseries` tables take the append-only union
     // path (A12), everything else the tombstone-aware row merge (N-4).
     let outcome =

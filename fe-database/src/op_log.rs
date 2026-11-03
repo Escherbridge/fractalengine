@@ -102,6 +102,32 @@ pub fn restore_hlc(snapshot: HlcSnapshot) {
     tracing::info!("HLC restored after sim session: wall_ms={wall_ms}, counter={counter}");
 }
 
+/// An admitted remote scene clock, bounded before it can affect local causality.
+pub(crate) struct AdmittedSceneHlc(u64);
+
+pub(crate) fn admit_scene_hlc(packed: u64) -> anyhow::Result<AdmittedSceneHlc> {
+    let wall = packed >> 16;
+    anyhow::ensure!(
+        packed > 0
+            && packed <= i64::MAX as u64 - 0x1_0000
+            && wall <= wall_now_ms().saturating_add(300_000),
+        "scene HLC outside the supported domain or five-minute future bound"
+    );
+    Ok(AdmittedSceneHlc(packed))
+}
+
+/// Observe only after the corresponding scene row and clock commit atomically.
+pub(crate) fn observe_scene_hlc(clock: AdmittedSceneHlc) {
+    let mut guard = HLC_STATE.lock().unwrap_or_else(|error| error.into_inner());
+    let incoming = (clock.0 >> 16, clock.0 & 0xFFFF);
+    let current = guard
+        .as_ref()
+        .map(|state| (state.wall_ms, state.counter))
+        .unwrap_or((wall_now_ms(), 0));
+    let (wall_ms, counter) = current.max(incoming);
+    *guard = Some(HlcState { wall_ms, counter });
+}
+
 /// Next HLC timestamp as `(packed_u64, human_string)`; panics if
 /// [`init_hlc`] has not been called (format: fe-database/src/AGENTS.md §hlc).
 pub fn next_hlc_timestamp() -> (u64, String) {

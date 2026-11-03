@@ -586,6 +586,13 @@ pub(crate) async fn commit_mutation(
 
 fn reduce_change(state: &mut Value, op: &str, data: &Value) -> anyhow::Result<()> {
     match op {
+        "node_renamed" => {
+            let name = data["name"]
+                .as_str()
+                .filter(|name| !name.trim().is_empty() && name.len() <= 1024)
+                .ok_or_else(|| anyhow::anyhow!("invalid journal node name"))?;
+            state["display_name"] = json!(name);
+        }
         "property_set" => {
             let key = data["key"]
                 .as_str()
@@ -619,6 +626,20 @@ fn reduce_change(state: &mut Value, op: &str, data: &Value) -> anyhow::Result<()
         _ => anyhow::bail!("unsupported journal operation {op}"),
     }
     Ok(())
+}
+
+/// Require a completed local Save before publishing its resulting current state.
+pub(crate) async fn require_committed_boundary(
+    db: &Db,
+    row: &Value,
+    node_id: &str,
+    actor: &str,
+) -> anyhow::Result<()> {
+    match atomic_save(db, row, node_id, &NodeAccessGrant::Local, actor).await? {
+        AtomicSaveRead::Untagged => Ok(()),
+        AtomicSaveRead::Saved(save) if row_version(row)? == save.committed_version => Ok(()),
+        _ => anyhow::bail!("scene journal does not end at a completed Save"),
+    }
 }
 
 /// Read a bounded immutable page or reconstruct one exact commit version.
@@ -669,7 +690,7 @@ pub(crate) async fn read_granted(
     let mut metadata = json!({"node_id":node_id, "journal_version": JOURNAL_VERSION,
         "current_version":current_version, "coverage_start_version":coverage_start,
         "coverage_started_at":baseline.and_then(|b|b.get("created_at")),
-        "supported_operations":["baseline","property_set","property_deleted","full_transform"],
+        "supported_operations":["baseline","property_set","property_deleted","full_transform","node_renamed"],
         "order":"per_object_commit_version", "event_time_ordering":false});
     let latest_authorized = fact_is_authorized(db, &latest, node_id, grant, local_did).await;
     let current_matches = snapshot(db, node_id)

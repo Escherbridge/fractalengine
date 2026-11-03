@@ -449,8 +449,6 @@ pub(crate) struct EffectSinks<'a> {
     pub results: &'a crossbeam::channel::Sender<fe_runtime::messages::DbResult>,
     pub scene: Option<&'a super::replicated_row::SceneChangeSender>,
     pub lifecycle: &'a Option<crossbeam::channel::Sender<fe_runtime::messages::LifecycleEvent>>,
-    pub replication: Option<&'a crate::ReplicationSender>,
-    pub blobs: &'a crate::BlobStoreHandle,
 }
 
 /// Publish only the state that survived the atomic commit.
@@ -465,23 +463,6 @@ pub(crate) fn publish(outcome: &BatchOutcome, sinks: EffectSinks<'_>) {
         return;
     };
     for (node_id, state, created, deleted) in &outcome.nodes {
-        let mut row = state.clone();
-        row["position"] =
-            json!({"type":"Point","coordinates":[state["position"][0],state["position"][2]]});
-        match serde_json::to_vec(&row) {
-            Ok(bytes) => crate::replicate_row_with_petal(
-                sinks.replication,
-                sinks.blobs,
-                &parts.verse_id,
-                "node",
-                node_id,
-                &bytes,
-                Some(petal_id.clone()),
-            ),
-            Err(error) => {
-                tracing::error!(%error,node_id,"committed plugin row could not replicate")
-            }
-        }
         if *deleted {
             super::send_result(
                 sinks.results,

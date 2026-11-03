@@ -1937,3 +1937,10 @@ Independent chain snapshots rebind both delegation and holder-ancestry parameter
 share a readiness read transaction. Prepared/issued InviteSource values now carry the actual
 Owner or delegated Manager proof identity, and fresh QA source comparison includes that type
 separately from mutable display metadata. Production dispatch remains Owner-v1 for this review.
+
+## Committed node replica recovery
+
+handlers/scene_publication/AGENTS.md is the authority for the versioned full-node publisher/receiver,
+node_scene_clock local materialization watermark, receive-to-local HLC causality and bounded startup
+repair. Original local journal/op provenance is required; full node state is not NodeDto or historical
+replication. Explicit development reset clears the local watermark; admin projection lists omit it.
