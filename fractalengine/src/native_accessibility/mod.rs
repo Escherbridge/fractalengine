@@ -63,7 +63,7 @@ struct Product<'w> {
     tree: Res<'w, fe_ui::verse_manager::VerseManager>,
     role: Res<'w, fe_ui::plugin::LocalUserRole>,
     topbar: Res<'w, fe_ui::ui_shell::topbar::TopbarState>,
-    modal: Res<'w, fe_ui::ui_shell::modal::ModalManagerState>,
+    modal: Res<'w, fe_ui::ui_shell::ModalManagerState>,
     path: Res<'w, fe_ui::gis::PathEditorState>,
 }
 
@@ -223,7 +223,7 @@ fn quarantine_owned(
     }
     if let Ok(mut queue) = handler.try_lock() {
         queue.clear();
-    }
+    };
 }
 
 fn deliver(

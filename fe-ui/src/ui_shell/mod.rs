@@ -7,6 +7,7 @@
 
 pub mod left_sidebar;
 pub(crate) mod modal;
+pub use modal::ModalManagerState;
 pub mod right_sidebar;
 pub(crate) mod setting_draft;
 pub mod topbar;

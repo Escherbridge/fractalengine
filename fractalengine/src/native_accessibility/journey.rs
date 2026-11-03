@@ -21,7 +21,7 @@ struct Surface {
     tree: fe_ui::verse_manager::VerseManager,
     role: fe_ui::plugin::LocalUserRole,
     topbar: fe_ui::ui_shell::topbar::TopbarState,
-    modal: fe_ui::ui_shell::modal::ModalManagerState,
+    modal: fe_ui::ui_shell::ModalManagerState,
     path: fe_ui::gis::PathEditorState,
     count: usize,
     disabled: bool,
@@ -385,7 +385,7 @@ fn scheduled_output(world: &mut World, entity: Entity) -> ak::ActionRequest {
         world.resource::<fe_ui::verse_manager::VerseManager>(),
         world.resource::<fe_ui::plugin::LocalUserRole>(),
         world.resource::<fe_ui::ui_shell::topbar::TopbarState>(),
-        world.resource::<fe_ui::ui_shell::modal::ModalManagerState>(),
+        world.resource::<fe_ui::ui_shell::ModalManagerState>(),
         world.resource::<fe_ui::gis::PathEditorState>(),
     );
     let mut id = egui::Id::NULL;
@@ -507,7 +507,7 @@ fn extend_scheduled_lifecycle_journey() {
         .init_resource::<fe_ui::verse_manager::VerseManager>()
         .init_resource::<fe_ui::plugin::LocalUserRole>()
         .init_resource::<fe_ui::ui_shell::topbar::TopbarState>()
-        .init_resource::<fe_ui::ui_shell::modal::ModalManagerState>()
+        .init_resource::<fe_ui::ui_shell::ModalManagerState>()
         .init_resource::<fe_ui::gis::PathEditorState>()
         .init_resource::<Flattened>()
         .add_message::<WindowClosed>()
@@ -623,7 +623,7 @@ fn extend_scheduled_lifecycle_journey() {
             app.world()
                 .resource::<fe_ui::ui_shell::topbar::TopbarState>(),
             app.world()
-                .resource::<fe_ui::ui_shell::modal::ModalManagerState>(),
+                .resource::<fe_ui::ui_shell::ModalManagerState>(),
             app.world().resource::<fe_ui::gis::PathEditorState>(),
         );
         assert!(

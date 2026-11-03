@@ -532,3 +532,10 @@ Groups/settings rendering journey adds armed rows at narrow and normal widths an
 two scales, checking complete target bounds, readable one-line Confirm/Cancel,
 editable name space and actual Cancel dispatch without a mutation. These checks
 remain source-authored until the parent integrated sweep.
+
+
+## Host interaction-state observation
+
+ModalManagerState is publicly re-exported at ui_shell for the native accessibility
+host's read-only Resource borrow. The modal implementation module stays crate-private;
+the host observes quarantine eligibility through the existing UI guard.
