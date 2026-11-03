@@ -20,7 +20,11 @@ even when a field is unchanged, and refuse derived identity/path/stamp/view keys
 
 Stamp preparation consumes the existing sealed stamp guards/writes/facts into the containing
 transaction. Its bindings are namespaced as complete SQL variable tokens; guards precede all writes.
-Scale/rotation use override properties, never stored node TRS. Arc must equal the captured stored
+Scale/rotation use override properties, never stored node TRS. StampRestore reuses those same sealed
+source/role/schema guards without executing provisional override writes, then writes/deletes only
+the three named override keys. It preserves original JSON values, explicit null and key absence;
+array shape, finite bounds and quaternion normalization are validated, and restoring inherited arc
+cannot move the origin. Exact inverse edits do not bypass the reserved generic-property restriction. Arc must equal the captured stored
 override or shared-sampler default: group transforms cannot move a stamp's derived origin. A stamp
 and its independently transformed owning path are a conflicting dependency and refuse as a whole.
 
@@ -30,7 +34,9 @@ captured membership. Legacy IDs are preserved. Legacy API registry writes retain
 seal the actual local publisher's Editor authority/ancestry at transaction use, even for Identified callers. New registry IDs cannot resurrect references held by
 any live or tombstoned node; existing legacy/API registry writers share that transactional fence.
 DeleteGroup is the inverse for a fully captured group: an uncaptured stored reference refuses the
-whole delete. No object is deleted. Remaining display-order values stay unchanged; creation appends
+whole delete. UndoCreatedGroup removes that registry entry and restores the captured per-member membership
+representations in the same transaction, preserving preexisting null and explicit empty arrays.
+No object is deleted. Remaining display-order values stay unchanged; creation appends
 at max(order)+1. Normal membership removal deletes an empty key. RestoreMemberships preserves exact
 Absent/Null/Groups representations, including explicit empty arrays, for truthful inverse edits.
 

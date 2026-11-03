@@ -3,6 +3,7 @@
 mod capture;
 mod geometry;
 mod prepare;
+mod stamp;
 
 use crate::{
     repo::Db,

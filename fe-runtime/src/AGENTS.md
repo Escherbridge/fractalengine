@@ -1030,3 +1030,9 @@ refuses uncaptured references; membership inverse values preserve Absent, Null a
 (including empty arrays). EditorAffine.transform_path is the shared f64 anchor/relative-handle math
 used by both native receipt preflight and the writer. ComparePetalVisibilityGroups adds expected
 registry CAS to legacy API PATCH/DELETE while retaining the existing correlated registry reply.
+
+StampRestore adds a typed exact-presence inverse for the three named stamp overrides. Each
+EditorStampOverrideValue is Absent, Null or Value(JSON); the writer validates each named key's
+shape/bounds and source context, retaining original JSON numeric representation. It cannot move
+a derived stamp origin or access other reserved properties. UndoCreatedGroup deletes its registry
+entry and restores every original EditorMembershipValue in the same transaction.

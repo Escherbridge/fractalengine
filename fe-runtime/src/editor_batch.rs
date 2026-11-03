@@ -63,13 +63,34 @@ pub enum EditorMembershipValue {
     Groups(Vec<String>),
 }
 
+/// Exact stored presence for one of the three named stamp override keys.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub enum EditorStampOverrideValue {
+    Absent,
+    Null,
+    Value(Value),
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct EditorStampOverrideSet {
+    pub scale: EditorStampOverrideValue,
+    pub rotation: EditorStampOverrideValue,
+    pub arc_m: EditorStampOverrideValue,
+}
+
 /// Type-specific mutation; ordinary transforms cannot mutate path/stamp projections.
 #[derive(Debug, Clone)]
 pub enum EditorTargetMutation {
     Transform(NodeTransformValue),
     PathAffine(EditorAffine),
-    PathRestore { points: Value },
+    PathRestore {
+        points: Value,
+    },
     StampOverrides(StampOverrideEdit),
+    StampRestore {
+        edit: StampOverrideEdit,
+        overrides: EditorStampOverrideSet,
+    },
     Properties(Vec<EditorPropertyEdit>),
 }
 
@@ -83,9 +104,21 @@ pub struct EditorTargetEdit {
 #[derive(Debug, Clone)]
 pub enum EditorBatchEdit {
     Targets(Vec<EditorTargetEdit>),
-    CreateGroup { id: String, name: String },
-    DeleteGroup { group_id: String },
-    Membership { group_id: String, member: bool },
+    CreateGroup {
+        id: String,
+        name: String,
+    },
+    DeleteGroup {
+        group_id: String,
+    },
+    UndoCreatedGroup {
+        group_id: String,
+        memberships: Vec<EditorMembershipValue>,
+    },
+    Membership {
+        group_id: String,
+        member: bool,
+    },
     RestoreMemberships(Vec<EditorMembershipValue>),
 }
 

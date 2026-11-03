@@ -1,12 +1,12 @@
 //! Prepare all targets before one containing transaction has any effects.
 
-use super::{PreparedBatch, capture, geometry};
+use super::{PreparedBatch, capture, geometry, stamp};
 use crate::{
     handlers::{field_def, node_history, node_view, stamp_overrides, visibility_groups},
     repo::Db,
 };
 use bevy::math::{EulerRot, Quat};
-use fe_runtime::{editor_batch::*, messages::StampOverrideEdit};
+use fe_runtime::editor_batch::*;
 use serde_json::{Value, json};
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -184,12 +184,12 @@ pub(crate) async fn prepare(
                             !transformed_paths.contains(source.state.node_id.as_str()),
                             "selecting a stamp and its transformed owning path is a conflicting batch dependency"
                         );
-                        validate_stamp(edit, member, scope, captured.view.world_scale)?;
+                        stamp::validate(edit, member, scope, captured.view.world_scale)?;
                         let parts = stamp_overrides::prepare(db, edit, request_id, actor)
                             .await?
                             .into_batch_parts();
                         let (statements, mut values) =
-                            namespace(parts.statements, parts.bindings, &prefix);
+                            stamp::namespace(parts.statements, parts.bindings, &prefix);
                         for statement in statements {
                             if statement.trim_start().starts_with("UPDATE ") {
                                 writes.push(statement);
@@ -207,6 +207,54 @@ pub(crate) async fn prepare(
                         node.previous = Some(json!({"row_version":parts.receipt.history_version}));
                         node.facts = parts.facts;
                         stamp_writes = true;
+                    }
+                    EditorTargetMutation::StampRestore { edit, overrides } => {
+                        let source = member.stamp_path.as_ref().ok_or_else(|| {
+                            anyhow::anyhow!("stamp restore target is not promoted")
+                        })?;
+                        anyhow::ensure!(
+                            !transformed_paths.contains(source.state.node_id.as_str()),
+                            "stamp restore conflicts with its transformed owning path"
+                        );
+                        stamp::validate(edit, member, scope, captured.view.world_scale)?;
+                        stamp::validate_restore(
+                            edit,
+                            overrides,
+                            member,
+                            captured.view.world_scale,
+                        )?;
+                        let parts = stamp_overrides::prepare(db, edit, request_id, actor)
+                            .await?
+                            .into_batch_parts();
+                        let (statements, mut values) =
+                            stamp::namespace(parts.statements, parts.bindings, &prefix);
+                        guards.extend(
+                            statements
+                                .into_iter()
+                                .filter(|sql| !sql.trim_start().starts_with("UPDATE ")),
+                        );
+                        bindings.append(&mut values);
+                        for (field, (key, representation)) in [
+                            ("stamp.override.scale", &overrides.scale),
+                            ("stamp.override.rotation", &overrides.rotation),
+                            ("stamp.override.arc_m", &overrides.arc_m),
+                        ]
+                        .into_iter()
+                        .enumerate()
+                        {
+                            let value = stamp::value(representation);
+                            property(
+                                db,
+                                node,
+                                scope,
+                                key,
+                                value.as_ref(),
+                                &format!("{prefix}_restore_{field}"),
+                                &mut guards,
+                                &mut bindings,
+                            )
+                            .await?;
+                        }
                     }
                     EditorTargetMutation::Properties(changes) => {
                         anyhow::ensure!(
@@ -316,7 +364,8 @@ pub(crate) async fn prepare(
                 }
             }
         }
-        EditorBatchEdit::DeleteGroup { group_id } => {
+        EditorBatchEdit::DeleteGroup { group_id }
+        | EditorBatchEdit::UndoCreatedGroup { group_id, .. } => {
             anyhow::ensure!(
                 groups.iter().any(|g| &g.id == group_id),
                 "deleted group is not registered"
@@ -341,24 +390,52 @@ pub(crate) async fn prepare(
                 ("batch_deleted_group".into(), json!(group_id)),
                 ("batch_target_ids".into(), json!(ids)),
             ]);
+            groups.retain(|group| &group.id != group_id);
+            if let EditorBatchEdit::UndoCreatedGroup { memberships, .. } = &request.edit {
+                anyhow::ensure!(
+                    memberships.len() == staged.len(),
+                    "created Group inverse must cover every captured member"
+                );
+                for value in memberships {
+                    if let EditorMembershipValue::Groups(ids) = value {
+                        anyhow::ensure!(
+                            !ids.contains(group_id),
+                            "created Group inverse cannot retain its removed ID"
+                        );
+                    }
+                }
+            }
             for (index, node) in staged.iter_mut().enumerate() {
                 let prefix = format!("batch_member_{index}");
-                membership(
-                    db,
-                    node,
-                    scope,
-                    group_id,
-                    false,
-                    &prefix,
-                    &mut guards,
-                    &mut bindings,
-                )
-                .await?;
+                if let EditorBatchEdit::UndoCreatedGroup { memberships, .. } = &request.edit {
+                    restore_membership(
+                        db,
+                        node,
+                        scope,
+                        &memberships[index],
+                        &groups,
+                        &prefix,
+                        &mut guards,
+                        &mut bindings,
+                    )
+                    .await?;
+                } else {
+                    membership(
+                        db,
+                        node,
+                        scope,
+                        group_id,
+                        false,
+                        &prefix,
+                        &mut guards,
+                        &mut bindings,
+                    )
+                    .await?;
+                }
                 if !node.facts.is_empty() {
                     write_node(node, &prefix, &mut writes, &mut bindings);
                 }
             }
-            groups.retain(|group| &group.id != group_id);
             writes.push("UPDATE petal SET visibility_groups=$batch_new_registry WHERE petal_id=$batch_petal".into());
             bindings.push(("batch_new_registry".into(), json!(groups)));
         }
@@ -368,33 +445,13 @@ pub(crate) async fn prepare(
                 "membership inverse must cover the exact complete selection"
             );
             for (index, (node, representation)) in staged.iter_mut().zip(previous).enumerate() {
-                let old: Vec<String> =
-                    match node.state["properties"].get(node_view::VIEW_GROUPS_KEY) {
-                        None | Some(Value::Null) => vec![],
-                        Some(value) => serde_json::from_value(value.clone())?,
-                    };
-                let value = match representation {
-                    EditorMembershipValue::Absent => None,
-                    EditorMembershipValue::Null => Some(Value::Null),
-                    EditorMembershipValue::Groups(ids) => {
-                        node_view::validate_view_request(None, Some(ids))
-                            .map_err(anyhow::Error::msg)?;
-                        anyhow::ensure!(
-                            ids.iter()
-                                .all(|id| old.contains(id)
-                                    || groups.iter().any(|group| &group.id == id)),
-                            "membership inverse references an unregistered group"
-                        );
-                        Some(json!(ids))
-                    }
-                };
                 let prefix = format!("batch_member_{index}");
-                property(
+                restore_membership(
                     db,
                     node,
                     scope,
-                    node_view::VIEW_GROUPS_KEY,
-                    value.as_ref(),
+                    representation,
+                    &groups,
                     &prefix,
                     &mut guards,
                     &mut bindings,
@@ -503,6 +560,7 @@ fn reserved_property(key: &str) -> bool {
         )
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn property(
     db: &Db,
     node: &mut Staged,
@@ -546,6 +604,7 @@ async fn property(
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn membership(
     db: &Db,
     node: &mut Staged,
@@ -583,6 +642,47 @@ async fn membership(
     .await
 }
 
+#[allow(clippy::too_many_arguments)]
+async fn restore_membership(
+    db: &Db,
+    node: &mut Staged,
+    scope: &str,
+    representation: &EditorMembershipValue,
+    groups: &[fe_runtime::messages::VisibilityGroupDto],
+    prefix: &str,
+    guards: &mut Vec<String>,
+    bindings: &mut Vec<(String, Value)>,
+) -> anyhow::Result<()> {
+    let old: Vec<String> = match node.state["properties"].get(node_view::VIEW_GROUPS_KEY) {
+        None | Some(Value::Null) => vec![],
+        Some(value) => serde_json::from_value(value.clone())?,
+    };
+    let value = match representation {
+        EditorMembershipValue::Absent => None,
+        EditorMembershipValue::Null => Some(Value::Null),
+        EditorMembershipValue::Groups(ids) => {
+            node_view::validate_view_request(None, Some(ids)).map_err(anyhow::Error::msg)?;
+            anyhow::ensure!(
+                ids.iter()
+                    .all(|id| old.contains(id) || groups.iter().any(|group| &group.id == id)),
+                "membership inverse references an unregistered group"
+            );
+            Some(json!(ids))
+        }
+    };
+    property(
+        db,
+        node,
+        scope,
+        node_view::VIEW_GROUPS_KEY,
+        value.as_ref(),
+        prefix,
+        guards,
+        bindings,
+    )
+    .await
+}
+
 fn write_node(
     node: &Staged,
     prefix: &str,
@@ -602,93 +702,4 @@ fn write_node(
     ] {
         bindings.push((format!("{prefix}_{suffix}"), value.clone()));
     }
-}
-
-fn validate_stamp(
-    edit: &StampOverrideEdit,
-    member: &EditorBatchMember,
-    scope: &str,
-    world_scale: f32,
-) -> anyhow::Result<()> {
-    let source = member
-        .stamp_path
-        .as_ref()
-        .ok_or_else(|| anyhow::anyhow!("promoted stamp source unavailable"))?;
-    anyhow::ensure!(
-        edit.node_id == member.node_id
-            && edit.scope == scope
-            && edit.history_version == member.history_version
-            && edit.path_id == source.state.node_id
-            && edit.path_version == source.history_version
-            && edit.before_properties == json!(member.state.properties),
-        "stamp edit does not match the complete selection capture"
-    );
-    let anchors =
-        fe_sdk::path_geometry::decode_anchor_rows(&json!(source.state.properties)["gpx_points"])
-            .ok_or_else(|| anyhow::anyhow!("stamp route unavailable"))?;
-    let points = fe_sdk::path_geometry::flatten_anchor_path(
-        &anchors,
-        fe_sdk::path_geometry::FLATTEN_SAMPLES_PER_SEGMENT,
-    );
-    let total = fe_sdk::path_geometry::polyline_length(&points);
-    let descriptor = fe_sdk::path_asset::PathAssetDescriptor::from_json(
-        &json!(source.state.properties)["path_asset"],
-    )?;
-    let progresses =
-        fe_sdk::path_asset::sample_progresses(&points, &descriptor, total, world_scale);
-    let progress = progresses
-        .get(edit.instance_index)
-        .ok_or_else(|| anyhow::anyhow!("stamp sampler index unavailable"))?;
-    let arc = member
-        .state
-        .properties
-        .get("stamp.override.arc_m")
-        .and_then(Value::as_f64)
-        .map(|v| v as f32)
-        .unwrap_or(*progress * total / world_scale);
-    anyhow::ensure!(
-        edit.arc_m == arc,
-        "group transforms cannot move a stamp's path-derived origin"
-    );
-    Ok(())
-}
-
-fn namespace(
-    statements: Vec<String>,
-    bindings: Vec<(String, Value)>,
-    prefix: &str,
-) -> (Vec<String>, Vec<(String, Value)>) {
-    let names: BTreeSet<_> = bindings.iter().map(|(name, _)| name.as_str()).collect();
-    let statements = statements
-        .into_iter()
-        .map(|sql| {
-            let mut out = String::with_capacity(sql.len());
-            let mut chars = sql.chars().peekable();
-            while let Some(ch) = chars.next() {
-                out.push(ch);
-                if ch == '$' {
-                    let mut name = String::new();
-                    while chars
-                        .peek()
-                        .is_some_and(|ch| ch.is_ascii_alphanumeric() || *ch == '_')
-                    {
-                        name.push(chars.next().unwrap());
-                    }
-                    if names.contains(name.as_str()) {
-                        out.push_str(prefix);
-                        out.push('_');
-                    }
-                    out.push_str(&name);
-                }
-            }
-            out
-        })
-        .collect();
-    (
-        statements,
-        bindings
-            .into_iter()
-            .map(|(name, value)| (format!("{prefix}_{name}"), value))
-            .collect(),
-    )
 }
