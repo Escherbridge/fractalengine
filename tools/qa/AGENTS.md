@@ -177,6 +177,12 @@ are discoverable.
 Commands: `info`, `camera`, `shot`, `move`, `click`, `drag`, `key`, `type`,
 `scroll`, `wait-settle`, and `api`. `shot --help` lists camera/orbit/tile/
 geo/focus poses. Input commands accept `--capture` for a post-action PNG.
+`click` and `drag` also accept repeatable `--modifier ctrl|shift|alt|cmd`, for
+example `click --name Object --modifier ctrl --modifier shift`. These prefixes
+are existing `key_press` commands inside the same pointer input batch. `click --double` repeats the modifier prefix before each click because each pointer
+command consumes its chord. Duplicate modifier flags are collapsed; argparse
+rejects unsupported values before any locator or input request.
+
 Screenshots go to `<run>/shots`, `FE_QA_SHOTS_DIR`, or explicit `--out`.
 Resolved pose metadata is printed alongside the path. The raw `api`
 command is for fixture setup and evidence read-back, not UI gold steps.

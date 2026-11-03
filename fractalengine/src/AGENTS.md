@@ -1311,11 +1311,21 @@ runs between egui EndPass and ProcessOutput.
 
 - **Sticky modifiers.** `ShiftLeft/Right`, `ControlLeft/Right`,
   `AltLeft/Right`, `SuperLeft/Right` key presses stay down through the next
-  non-modifier command and are released after its last frame (or at batch
+  non-modifier command and are released in a separate following frame (or at batch
   end), so `[ControlLeft, KeyS]` is Ctrl+S and `[ShiftLeft, KeyA]` types `A`
   (the "Sticky Keys" accessibility pattern; the v1 vocabulary has no explicit
   chord command). Logical keys follow a US layout; letters upper-case while
   Shift is held, other shifted symbols are not modelled.
+  The release frame contains only modifier releases. bevy_egui 0.39.1 updates
+  `ModifierKeysState` in InitReading before pointer events in FocusContext, and
+  copies that state to RawInput. Releasing Ctrl alongside mouse-up clears it
+  before `.clicked()` reads the chord. The same following-frame rule applies
+  to keys, text, cursor-only moves and wheel input. Repeated pointer commands
+  each need their own modifier prefix in the same batch. No-modifier plans,
+  including the protected five-frame Join protocol, retain their frame counts.
+  The existing input journey uses the dependency's actual
+  `write_modifiers_keys_state_system` and `to_egui_modifiers`, then checks real
+  egui release-frame clicks, every command type and abort cleanup.
 - **Coordinates** are primary-window PHYSICAL pixels (AIS OD-4: the size a
   screenshot PNG reports), converted to logical for `CursorMoved`.
 - **Settle + reply.** After the last input frame, `wait_frames` (validated

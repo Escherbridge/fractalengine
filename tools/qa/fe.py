@@ -564,6 +564,12 @@ def command_move(run, args):
     run_input(run, args, [{"kind": "pointer_move", "x": args.x, "y": args.y}])
 
 
+def pointer_chord(args, command):
+    """Prefix a consuming pointer command with its in-batch modifier keys."""
+    modifiers = dict.fromkeys(getattr(args, "modifier", ()) or ())
+    return [{"kind": "key_press", "key": MODIFIER_KEYS[name]} for name in modifiers] + [command]
+
+
 def command_click(run, args):
     if args.name:
         args.locator_evidence = {}
@@ -572,14 +578,17 @@ def command_click(run, args):
     elif args.x is None or args.y is None:
         raise Refused(0, "missing_coordinates", "click needs X Y or --name TEXT")
     click = {"kind": "pointer_click", "x": args.x, "y": args.y, "button": args.button}
-    run_input(run, args, [click, dict(click)] if args.double else [click])
+    commands = pointer_chord(args, click)
+    if args.double:
+        commands.extend(pointer_chord(args, dict(click)))
+    run_input(run, args, commands)
 
 
 def command_drag(run, args):
-    run_input(run, args, [{
+    run_input(run, args, pointer_chord(args, {
         "kind": "pointer_drag", "button": args.button,
         "from": {"x": args.x1, "y": args.y1}, "to": {"x": args.x2, "y": args.y2},
-    }])
+    }))
 
 
 def command_key(run, args):
@@ -1003,12 +1012,16 @@ def build_parser():
     click.add_argument("--role")
     click.add_argument("--nth", type=int)
     click.add_argument("--button", choices=("left", "right", "middle"), default="left")
+    click.add_argument("--modifier", action="append", choices=("ctrl", "shift", "alt", "cmd"),
+                       help="hold a modifier through the pointer command; repeat to combine")
     click.add_argument("--double", action="store_true")
 
     drag = input_parser("drag", "pointer_drag from x1 y1 to x2 y2", command_drag)
     for name in ("x1", "y1", "x2", "y2"):
         drag.add_argument(name, type=float)
     drag.add_argument("--button", choices=("left", "right", "middle"), default="left")
+    drag.add_argument("--modifier", action="append", choices=("ctrl", "shift", "alt", "cmd"),
+                       help="hold a modifier through the pointer command; repeat to combine")
 
     key = input_parser("key", "key combos in order, e.g. ctrl+z Escape F12 g", command_key)
     key.add_argument("combos", nargs="+")

@@ -456,12 +456,11 @@ fn text_frame(index: usize, text: &str) -> Result<Frame, InputFailure> {
 /// points outside the window, unmapped key names, unsupported control
 /// characters, oversized scrolls. Modifier key presses are sticky: they stay
 /// down through the next non-modifier command (so `[ControlLeft, KeyS]` is
-/// Ctrl+S) and are released after it, or at the end of the batch.
+/// Ctrl+S) and are released in the following frame, or at the end of the batch.
 fn plan_batch(spec: &ValidInputSpec, window_size: UVec2) -> Result<Vec<Frame>, InputFailure> {
     let mut frames: Vec<Frame> = Vec::new();
     let mut held_modifiers: Vec<(KeyCode, Key)> = Vec::new();
     for (index, command) in spec.commands().iter().enumerate() {
-        let first_frame = frames.len();
         match command {
             InputCommand::PointerMove { x, y } => {
                 frames.push(vec![Synthetic::Cursor(in_window(
@@ -547,14 +546,13 @@ fn plan_batch(spec: &ValidInputSpec, window_size: UVec2) -> Result<Vec<Frame>, I
             }
         }
         if !held_modifiers.is_empty() {
-            // A non-modifier command consumed the chord: release after its last frame.
-            if frames.len() == first_frame {
-                frames.push(Frame::new());
-            }
-            let last = frames.last_mut().expect("a frame was just ensured");
-            for (code, logical) in held_modifiers.drain(..) {
-                last.push(key_event(code, logical, ButtonState::Released));
-            }
+            // Keep modifiers through the command's final egui input pass; see AGENTS.md.
+            frames.push(
+                held_modifiers
+                    .drain(..)
+                    .map(|(code, logical)| key_event(code, logical, ButtonState::Released))
+                    .collect(),
+            );
         }
     }
     if !held_modifiers.is_empty() {
@@ -1001,6 +999,7 @@ mod tests {
     use bevy::render::render_resource::{Extent3d, TextureDimension, TextureFormat};
     use bevy::render::view::screenshot::ScreenshotCaptured;
     use bevy::tasks::{AsyncComputeTaskPool, TaskPool};
+    use bevy_egui::input::{write_modifiers_keys_state_system, ModifierKeysState};
     use fe_runtime::input::{
         input_bridge, InputKey, InputReply, InputRequestSender, InputSpec, PointerPoint,
         CAMERA_LOCKED_BY_CAPTURE_CODE, DENIED_CODE,
@@ -1022,17 +1021,23 @@ mod tests {
         sink_text: usize,
         sink_images: usize,
         late_copy: bool,
+        modifier_frames: Vec<ModifierKeysState>,
+        modifier_clicks: Vec<bevy_egui::egui::Modifiers>,
     }
 
     fn render_copy_control(
         mut control: ResMut<CopyControl>,
         buttons: Res<ButtonInput<MouseButton>>,
+        modifiers: Res<ModifierKeysState>,
         windows: Query<&Window, With<PrimaryWindow>>,
         mut outputs: Query<&mut EguiFullOutput>,
     ) {
         use bevy_egui::egui;
         let cursor = windows.single().unwrap().cursor_position();
+        control.modifier_frames.push(*modifiers);
+        let egui_modifiers = modifiers.to_egui_modifiers();
         let mut input = egui::RawInput {
+            modifiers: egui_modifiers,
             screen_rect: Some(egui::Rect::from_min_size(
                 egui::Pos2::ZERO,
                 egui::vec2(800.0, 600.0),
@@ -1051,7 +1056,7 @@ mod tests {
                         pos,
                         button: egui::PointerButton::Primary,
                         pressed,
-                        modifiers: egui::Modifiers::default(),
+                        modifiers: egui_modifiers,
                     });
                 }
             }
@@ -1059,6 +1064,7 @@ mod tests {
             input.events.push(egui::Event::PointerGone);
         }
         let late_copy = std::mem::take(&mut control.late_copy);
+        let mut clicked_modifiers = None;
         let output = control.context.run(input, |ctx| {
             let clicked = egui::Area::new(egui::Id::new("copy-control"))
                 .fixed_pos(egui::pos2(80.0, 35.0))
@@ -1067,11 +1073,17 @@ mod tests {
                         .clicked()
                 })
                 .inner;
+            if clicked {
+                clicked_modifiers = Some(ctx.input(|input| input.modifiers));
+            }
             if clicked || late_copy {
                 ctx.copy_text("clipboard sentinel".into());
                 ctx.copy_image(egui::ColorImage::new([1, 1], vec![egui::Color32::RED]));
             }
         });
+        if let Some(modifiers) = clicked_modifiers {
+            control.modifier_clicks.push(modifiers);
+        }
         control.requested += output
             .platform_output
             .commands
@@ -1124,7 +1136,15 @@ mod tests {
     fn harness() -> Harness {
         AsyncComputeTaskPool::get_or_init(TaskPool::new);
         let mut app = App::new();
-        app.add_plugins(InputPlugin).add_message::<CursorMoved>();
+        app.add_plugins(InputPlugin)
+            .add_message::<CursorMoved>()
+            .init_resource::<ModifierKeysState>()
+            .add_systems(
+                PreUpdate,
+                write_modifiers_keys_state_system
+                    .after(InputSystems)
+                    .after(drive_synthetic_input),
+            );
         let (tx, rx) = input_bridge();
         install(&mut app, rx);
         let mut time = Time::<Real>::default();
@@ -1499,6 +1519,8 @@ mod tests {
         );
         h.app.update();
         assert!(h.keys().just_released(KeyCode::KeyA));
+        assert!(h.keys().pressed(KeyCode::ShiftLeft));
+        h.app.update();
         assert!(h.keys().just_released(KeyCode::ShiftLeft));
         h.app.update();
         assert!(
@@ -1513,6 +1535,137 @@ mod tests {
         h.app.update();
         let output = reply.try_recv().expect("done").result.expect("applied");
         assert_eq!(output.commands_applied, 3);
+
+        // Use bevy_egui's production collector for every consuming command type.
+        for (command, command_frames) in [
+            (click(100.0, 50.0), 2),
+            (InputCommand::PointerMove { x: 100.0, y: 50.0 }, 1),
+            (
+                InputCommand::PointerDrag {
+                    from: PointerPoint { x: 10.0, y: 10.0 },
+                    to: PointerPoint { x: 100.0, y: 50.0 },
+                    button: PointerButton::Left,
+                },
+                3,
+            ),
+            (key("KeyA"), 2),
+            (
+                InputCommand::TextEntry {
+                    text: "shifted".into(),
+                },
+                1,
+            ),
+            (InputCommand::Scroll { dx: 0.0, dy: 1.0 }, 1),
+        ] {
+            let start = h
+                .app
+                .world()
+                .resource::<CopyControl>()
+                .modifier_frames
+                .len();
+            let mut reply = h.send(batch(vec![key("ShiftLeft"), command], 0, false));
+            for _ in 0..=command_frames {
+                h.app.update();
+                assert!(
+                    h.app
+                        .world()
+                        .resource::<ModifierKeysState>()
+                        .shift,
+                    "the production collector retains Shift through the final command frame"
+                );
+                assert!(h.app.world().resource::<SyntheticClipboardGuard>().0);
+                assert!(reply.try_recv().is_err());
+            }
+            h.app.update();
+            assert!(h.keys().just_released(KeyCode::ShiftLeft));
+            assert!(
+                !h.app
+                    .world()
+                    .resource::<ModifierKeysState>()
+                    .shift
+            );
+            assert!(
+                h.app.world().resource::<SyntheticClipboardGuard>().0,
+                "the additional release frame keeps clipboard suppression"
+            );
+            let frames = &h.app.world().resource::<CopyControl>().modifier_frames[start..];
+            assert_eq!(frames.len(), command_frames + 2);
+            assert!(frames[..command_frames + 1].iter().all(|frame| frame.shift));
+            assert!(!frames[command_frames + 1].shift);
+            h.app.update();
+            assert!(reply
+                .try_recv()
+                .expect("reply after modifier release")
+                .result
+                .is_ok());
+            assert!(h.app.world().resource::<SyntheticClipboardGuard>().0);
+            assert!(h.keys().get_pressed().next().is_none());
+        }
+
+        // egui's actual release-frame clicked response must still see the whole chord.
+        let clicks_before = h
+            .app
+            .world()
+            .resource::<CopyControl>()
+            .modifier_clicks
+            .len();
+        let mut reply = h.send(batch(
+            vec![
+                key("ControlLeft"),
+                key("ShiftLeft"),
+                key("AltLeft"),
+                key("SuperLeft"),
+                click(100.0, 50.0),
+                key("ControlLeft"),
+                click(100.0, 50.0),
+                click(100.0, 50.0),
+            ],
+            0,
+            false,
+        ));
+        let answer = (0..20)
+            .find_map(|_| {
+                h.app.update();
+                reply.try_recv().ok()
+            })
+            .expect("three separately consumed pointer commands complete");
+        assert!(answer.result.is_ok());
+        let control = h.app.world().resource::<CopyControl>();
+        let clicks = &control.modifier_clicks[clicks_before..];
+        assert_eq!(clicks.len(), 3);
+        assert!(clicks[0].ctrl && clicks[0].shift && clicks[0].alt);
+        assert!(clicks[1].ctrl && !clicks[1].shift && !clicks[1].alt);
+        assert_eq!(clicks[2], bevy_egui::egui::Modifiers::default());
+        assert!(
+            control.modifier_frames.iter().any(|frame| frame.win),
+            "the production collector also sees Super while the first click is consumed"
+        );
+        assert!(h.keys().get_pressed().next().is_none());
+
+        // Whole-batch preflight still refuses a later clipboard chord before an earlier click.
+        let clicks_before = h
+            .app
+            .world()
+            .resource::<CopyControl>()
+            .modifier_clicks
+            .len();
+        let mut reply = h.send(batch(
+            vec![click(100.0, 50.0), key("ControlLeft"), key("KeyV")],
+            0,
+            false,
+        ));
+        h.app.update();
+        assert_eq!(refusal_code(&mut reply), "clipboard_chord_refused");
+        assert_eq!(
+            h.app
+                .world()
+                .resource::<CopyControl>()
+                .modifier_clicks
+                .len(),
+            clicks_before
+        );
+        assert!(h.keys().get_pressed().next().is_none());
+        assert!(h.mouse().get_pressed().next().is_none());
 
         // A drag, then a scroll.
         let drag = InputCommand::PointerDrag {
@@ -1621,6 +1774,33 @@ mod tests {
             .expect("replied once the PNG encoded");
         let output = answer.result.expect("applied and captured");
         assert_eq!(output.png, Some(direct));
+
+        // Abort during a modifier prefix releases it through the same production collector.
+        let mut reply = h.send(batch(
+            vec![key("ControlLeft"), click(100.0, 50.0)],
+            0,
+            false,
+        ));
+        h.app.update();
+        assert!(
+            h.app
+                .world()
+                .resource::<ModifierKeysState>()
+                .ctrl
+        );
+        h.set_verse("w");
+        h.app.update();
+        assert_eq!(refusal_code(&mut reply), DENIED_CODE);
+        assert!(h.keys().just_released(KeyCode::ControlLeft));
+        assert!(
+            !h.app
+                .world()
+                .resource::<ModifierKeysState>()
+                .ctrl
+        );
+        assert!(h.app.world().resource::<SyntheticClipboardGuard>().0);
+        assert!(h.idle());
+        h.set_verse("v");
 
         // An abandoned caller: the batch stops and nothing stays pressed.
         let reply = h.send(batch(vec![click(70.0, 70.0)], 0, false));
