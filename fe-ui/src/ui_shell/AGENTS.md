@@ -518,3 +518,17 @@ They have not been run in the source-author lane.
 Registry controls wait for the active Petal registry, then queue a checked proposal without optimistic display changes. Pending edits disable competing registry and batch Group controls while keeping Check stored Groups available. The matching current readback releases ownership; a missing read can be checked again after its bounded wait. Actual Delete routes through a complete server-derived Group transaction and one proven chronological Undo; registry CAS still refuses ID removal. See `../visibility/AGENTS.md`.
 
 Rename drafts survive queue/admission refusal and clear when the stored name matches or Escape discards them. Pending batch ownership disables registry mutation controls across the right panel, left Groups eyes and layer manager. The cached loaded-member count is advisory; deletion always checks actual stored membership, and protected tombstoned references produce a counted whole-operation refusal.
+
+
+## Responsive Group registry rows
+
+Group names and the two fixed-size reorder actions share a flexible header row.
+The destructive confirmation receives a separate full-width row, so arming Delete
+cannot squeeze Cancel into the leftover name/reorder gutter. Existing confirmation
+IDs, accessible action names, four-second expiry, outside-click/Cancel behavior and
+Editor/pending/registry gates are unchanged. New-Group input/actions wrap as native
+widgets, while the Add label keeps its unwrapped intrinsic width. The existing
+Groups/settings rendering journey adds armed rows at narrow and normal widths and
+two scales, checking complete target bounds, readable one-line Confirm/Cancel,
+editable name space and actual Cancel dispatch without a mutation. These checks
+remain source-authored until the parent integrated sweep.

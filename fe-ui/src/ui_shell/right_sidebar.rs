@@ -1478,6 +1478,8 @@ fn render_groups_controls(
         ui.label("Editor access to this petal is required to change Groups.");
     }
     ui.add_enabled_ui(editable, |ui| {
+        let target = super::layout_policy::target_size(ui.ctx());
+        ui.spacing_mut().interact_size.y = ui.spacing().interact_size.y.max(target);
         let groups = visibility.groups();
         let push_registry = |ui_mgr: &mut UiManager, next: Vec<crate::visibility::Group>| {
             if !editable {
@@ -1492,7 +1494,7 @@ fn render_groups_controls(
         // Create.
         let new_name_id = egui::Id::new(("groups_section_new_name", petal_id));
         let mut new_name: String = ui.data(|d| d.get_temp(new_name_id)).unwrap_or_default();
-        ui.horizontal(|ui| {
+        ui.horizontal_wrapped(|ui| {
             let edit = ui
                 .add(
                     egui::TextEdit::singleline(&mut new_name)
@@ -1505,7 +1507,10 @@ fn render_groups_controls(
             // The DB refuses an over-long name or a registry past its cap.
             let can_add = !new_name.trim().is_empty() && groups.len() < MAX_VISIBILITY_GROUPS;
             let clicked = ui
-                .add_enabled(can_add, egui::Button::new("Add group"))
+                .add_enabled(
+                    can_add,
+                    egui::Button::new("Add group").wrap_mode(egui::TextWrapMode::Extend),
+                )
                 .observed(ui)
                 .on_disabled_hover_text(if !editable {
                     "Editor access to this petal is required.".to_owned()
@@ -1549,7 +1554,10 @@ fn render_groups_controls(
                 ui.horizontal(|ui| {
                     let mut visible = group.visible;
                     if ui
-                        .checkbox(&mut visible, "")
+                        .add_sized(
+                            egui::Vec2::splat(target),
+                            egui::Checkbox::new(&mut visible, ""),
+                        )
                         .named(ui, format_args!("Show visibility group {}", group.name))
                         .on_hover_text("Show or hide every member of this Group")
                         .changed()
@@ -1564,11 +1572,13 @@ fn render_groups_controls(
                     let mut name: String = ui
                         .data(|d| d.get_temp(buffer_id))
                         .unwrap_or_else(|| group.name.clone());
+                    let name_width = (ui.available_width()
+                        - 2.0 * (target + ui.spacing().item_spacing.x))
+                        .max(target);
                     let edit = ui
-                        .add(
-                            egui::TextEdit::singleline(&mut name)
-                                .char_limit(MAX_GROUP_NAME_CHARS)
-                                .desired_width(120.0),
+                        .add_sized(
+                            egui::vec2(name_width, target),
+                            egui::TextEdit::singleline(&mut name).char_limit(MAX_GROUP_NAME_CHARS),
                         )
                         .named(ui, format_args!("Rename visibility group {}", group.name));
                     let escaped = (edit.has_focus() || edit.lost_focus())
@@ -1593,7 +1603,12 @@ fn render_groups_controls(
                         ui.data_mut(|d| d.remove::<String>(buffer_id));
                     }
                     if ui
-                        .add_enabled(index > 0, egui::Button::new("\u{25B2}").small())
+                        .add_enabled(
+                            index > 0,
+                            egui::Button::new("\u{25B2}")
+                                .small()
+                                .min_size(egui::Vec2::splat(target)),
+                        )
                         .named(ui, format_args!("Move visibility group {} up", group.name))
                         .on_hover_text("Move up")
                         .clicked()
@@ -1603,7 +1618,9 @@ fn render_groups_controls(
                     if ui
                         .add_enabled(
                             index + 1 < groups.len(),
-                            egui::Button::new("\u{25BC}").small(),
+                            egui::Button::new("\u{25BC}")
+                                .small()
+                                .min_size(egui::Vec2::splat(target)),
                         )
                         .named(
                             ui,
@@ -1614,6 +1631,8 @@ fn render_groups_controls(
                     {
                         push_registry(ui_mgr, group_ops::with_group_moved(groups, index, 1));
                     }
+                });
+                ui.horizontal(|ui| {
                     if crate::panels::widgets::confirm_button(
                         ui,
                         ("delete-group", petal_id, &group.id),
@@ -1821,6 +1840,8 @@ mod tests {
                 order: 0.0,
             }],
         );
+        let group_width = std::cell::Cell::new(1000.0);
+        let group_galleys = std::cell::RefCell::<Vec<(String, usize)>>::default();
         let group_frame = |role: &LocalUserRole,
                            events: Vec<egui::Event>,
                            time: &mut f64,
@@ -1828,11 +1849,11 @@ mod tests {
                            notices: &mut UiManager| {
             *time += 0.05;
             super::super::layout_policy::begin_frame(&ctx, true);
-            let _ = ctx.run(
+            let output = ctx.run(
                 egui::RawInput {
                     screen_rect: Some(egui::Rect::from_min_size(
                         egui::Pos2::ZERO,
-                        egui::vec2(1000.0, 800.0),
+                        egui::vec2(group_width.get(), 800.0),
                     )),
                     time: Some(*time),
                     events,
@@ -1841,10 +1862,21 @@ mod tests {
                 |ctx| {
                     super::super::layout_policy::begin_ui_pass(ctx);
                     egui::CentralPanel::default().show(ctx, |ui| {
+                        ui.style_mut().wrap_mode = Some(egui::TextWrapMode::Wrap);
                         render_groups_controls(ui, notices, visibility, "p", Some("node"), role);
                     });
                 },
             );
+            *group_galleys.borrow_mut() = output
+                .shapes
+                .iter()
+                .filter_map(|shape| match &shape.shape {
+                    egui::epaint::Shape::Text(text) => {
+                        Some((text.galley.text().to_owned(), text.galley.rows.len()))
+                    }
+                    _ => None,
+                })
+                .collect();
             super::super::layout_policy::observations(&ctx)
         };
         let group_click = |role: &LocalUserRole,
@@ -2011,6 +2043,65 @@ mod tests {
         assert!(
             matches!(&actions[..], [UiAction::DeleteGroup { petal_id, group_id }] if petal_id == "p" && group_id == "g1")
         );
+        for scale in [1.0, 1.5] {
+            ctx.set_pixels_per_point(scale);
+            for width in [220.0, 280.0, 318.0, 480.0] {
+                group_width.set(width);
+                let resting = group_frame(&editor, vec![], &mut time, &visibility, &mut notices);
+                group_click(
+                    &editor,
+                    resting.controls[6].rect.center(),
+                    &mut time,
+                    &visibility,
+                    &mut notices,
+                );
+                assert!(notices.drain_actions().is_empty(), "arming is not deletion");
+                let armed = group_frame(&editor, vec![], &mut time, &visibility, &mut notices);
+                for control in &armed.controls[2..8] {
+                    assert!(
+                        control.clip.contains_rect(control.rect),
+                        "{width}/{scale}: Group control is clipped: {:?}",
+                        control.rect
+                    );
+                    assert!(
+                        control.hit.width() >= 24.0 && control.hit.height() >= 24.0,
+                        "{width}/{scale}: unusable Group action target"
+                    );
+                }
+                assert!(
+                    armed.controls[3].rect.width() >= 60.0,
+                    "the Group name remains editable beside both reorder actions"
+                );
+                assert!(
+                    armed.controls[6].rect.top() >= armed.controls[3].rect.bottom(),
+                    "confirmation has its own full-width row"
+                );
+                for label in ["Confirm delete", "Cancel"] {
+                    assert!(
+                        group_galleys
+                            .borrow()
+                            .iter()
+                            .any(|(text, rows)| text == label && *rows == 1),
+                        "{width}/{scale}: {label} must be a single readable line"
+                    );
+                }
+                group_click(
+                    &editor,
+                    armed.controls[7].rect.center(),
+                    &mut time,
+                    &visibility,
+                    &mut notices,
+                );
+                assert!(
+                    notices.drain_actions().is_empty(),
+                    "Cancel never queues deletion"
+                );
+                let cancelled = group_frame(&editor, vec![], &mut time, &visibility, &mut notices);
+                assert_eq!(cancelled.controls.len(), resting.controls.len());
+            }
+        }
+        group_width.set(1000.0);
+        ctx.set_pixels_per_point(1.0);
         visibility.replace_groups(
             (0..MAX_VISIBILITY_GROUPS)
                 .map(|index| crate::visibility::Group {
