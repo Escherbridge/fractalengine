@@ -112,6 +112,11 @@ async fn prepare(db: &Db, node_id: &str, actor: &str) -> anyhow::Result<Prepared
         ("adoption_node".into(), json!(node_id)),
         ("adoption_petal".into(), json!(petal)),
     ]);
+    anyhow::ensure!(
+        serde_json::to_vec(&bindings)?.len() + guards.iter().map(String::len).sum::<usize>() + 4096
+            <= 4 * 1024 * 1024,
+        "adoption candidate/read transaction exceeds 4 MiB"
+    );
     Ok(Prepared {
         candidate: SceneAssetAdoptionCandidate {
             node_id: node_id.into(),
@@ -139,8 +144,12 @@ async fn verify_copy(
     tokio::task::spawn_blocking(move || {
         use std::io::Read;
         let mut bytes = Vec::new();
-        std::fs::File::open(path)?
-            .take(MAX_SCENE_ASSET_BYTES + 1)
+        let file = std::fs::File::open(path)?;
+        anyhow::ensure!(
+            file.metadata()?.is_file(),
+            "Adoption copy is not a regular file"
+        );
+        file.take(MAX_SCENE_ASSET_BYTES + 1)
             .read_to_end(&mut bytes)?;
         fe_runtime::scene_asset::verify_scene_asset_bytes(
             &bytes,

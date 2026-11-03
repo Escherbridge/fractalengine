@@ -128,7 +128,11 @@ pub(crate) async fn read_current_and_need(
         if !blobs.has_blob(&crate::hash_from_hex(content_hash)?) {
             asset = ReplicaNodeAsset::Unavailable {
                 asset_id: asset_id.clone(),
-                reason: ReplicaAssetUnavailable::MissingBlob,
+                reason: if descriptor.is_none() {
+                    ReplicaAssetUnavailable::TransferLimitExceeded
+                } else {
+                    ReplicaAssetUnavailable::MissingBlob
+                },
             };
         }
     }
@@ -213,15 +217,20 @@ async fn asset_state(
         "model/gltf+json" => "gltf",
         _ => return Ok(unavailable(ReplicaAssetUnavailable::UnsupportedSceneAsset)),
     };
-    let Some(size) = metadata["size_bytes"]
-        .as_u64()
-        .filter(|size| *size > 0 && *size <= fe_runtime::scene_asset::MAX_SCENE_ASSET_BYTES)
-    else {
+    let Some(size) = metadata["size_bytes"].as_u64().filter(|size| *size > 0) else {
         return Ok(unavailable(ReplicaAssetUnavailable::InvalidMetadata));
     };
-    *descriptor = Some((id.into(), decoded, size));
+    if size <= fe_runtime::scene_asset::MAX_SCENE_ASSET_BYTES {
+        *descriptor = Some((id.into(), decoded, size));
+    }
     if !blobs.has_blob(&decoded) {
-        return Ok(unavailable(ReplicaAssetUnavailable::MissingBlob));
+        return Ok(unavailable(
+            if size > fe_runtime::scene_asset::MAX_SCENE_ASSET_BYTES {
+                ReplicaAssetUnavailable::TransferLimitExceeded
+            } else {
+                ReplicaAssetUnavailable::MissingBlob
+            },
+        ));
     }
     Ok(ReplicaNodeAsset::LocalBlob {
         asset_id: id.into(),

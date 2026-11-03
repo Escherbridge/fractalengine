@@ -48,7 +48,7 @@ pub struct SceneAssetNeeded {
 }
 
 /// Owner-reviewed exact local-copy adoption; not a claim about the original uploader.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct SceneAssetAdoptionCandidate {
     pub node_id: String,
     pub asset_id: String,
@@ -60,7 +60,7 @@ pub struct SceneAssetAdoptionCandidate {
     pub reference_fingerprints: Vec<SceneAssetReferenceWitness>,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct SceneAssetAdoptionReceipt {
     pub candidate: SceneAssetAdoptionCandidate,
     pub operation_id: String,

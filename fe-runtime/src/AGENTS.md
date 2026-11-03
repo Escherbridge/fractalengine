@@ -1089,3 +1089,9 @@ current witness: the job re-admits the same metadata before persisting bytes/rea
 SceneAssetNeeded follows its corresponding current result and names actual missing bytes,
 not a permission or cached path. Hash-ready/failure events must trigger fresh owned reads
 rather than replaying an old DTO. No local journal version or peer atomicity is implied.
+
+SceneAssetAdoptionCandidate/Receipt identify an explicit local-copy publication
+responsibility action. They do not identify an original uploader, grant access,
+or change node history. The UI must bind exact private request owners and refresh
+current state after a durable receipt. TransferLimitExceeded is a missing-byte
+condition only; the peer-transfer cap does not hide existing authorized local files.

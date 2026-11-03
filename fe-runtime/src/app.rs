@@ -1866,6 +1866,18 @@ mod tests {
         assert!(!pending.try_deliver(reply),"a GUI replica current read cannot consume a local/API waiter");
         assert!(legacy_rx.try_recv().is_err());
         assert!(receipt_rx.try_recv().is_err());
+        let (admission_reply,_)=crossbeam::channel::bounded(1);
+        let admission=DbCommand::InspectSceneAssetTransfer {
+            request:crate::scene_asset::SceneAssetTransferRequest {verse_id:"verse".into(),hash:[7;32],node_id:Some("remote".into()),purpose:crate::scene_asset::SceneAssetTransferPurpose::Fetch,deadline:std::time::Instant::now()+std::time::Duration::from_secs(2)},
+            reply:admission_reply,
+        };
+        assert!(reply_kind_of_command(&admission).is_none());assert!(correlation_of_command(&admission).is_none());
+        let needed=DbResult::SceneAssetNeeded {needed:crate::scene_asset::SceneAssetNeeded {
+            verse_id:"verse".into(),scope:"VERSE#verse-FRACTAL#fractal-PETAL#petal".into(),node_id:"remote".into(),asset_id:"asset".into(),content_hash:[7;32],size_bytes:42,provenance:crate::scene_replication::ReplicaNodeProvenance::LegacyReplicaApply,
+        }};
+        assert!(reply_kind_of_result(&needed).is_none());assert!(correlation_of_result(&needed).is_none());assert!(!pending.try_deliver(needed));
+        let adoption=DbCommand::ReadSceneAssetAdoption {node_id:"remote".into(),request_id:"owner-review".into()};
+        assert!(reply_kind_of_command(&adoption).is_none());assert!(correlation_of_command(&adoption).is_none());
         let read=DbCommand::ReadReplicatedNodeCurrent {node_id:"remote".into(),request_id:"native-epoch-bound".into()};
         assert!(reply_kind_of_command(&read).is_none());
         assert!(correlation_of_command(&read).is_none());

@@ -20,6 +20,7 @@ pub enum ReplicaAssetUnavailable {
     InvalidMetadata,
     UnsupportedSceneAsset,
     MissingBlob,
+    TransferLimitExceeded,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
