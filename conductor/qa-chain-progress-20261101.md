@@ -4,8 +4,8 @@ date: 2026-11-01
 status: in_progress
 source: ./handoff-20261101-qa-chain.md
 current_writer: /root
-current_slice: QA18/19 stopped and focused evidence independently approved; combined source through e562696b approved; next stage20 replay of map, creation, forms and native navigation repairs
-parallel_code_worktrees: P2P invite coordination and ownership, isolated code only
+current_slice: QA20 stopped and focused evidence independently approved; QA21 live on sealed44ad source verifies fresh scoped creation and initial full TRS; stamp projection and invitation bridge corrections isolated
+parallel_code_worktrees: Stamp projection/classification recovery; P2P guarded invitation transfer
 ---
 
 # QA chain continuation
@@ -33,7 +33,39 @@ Starting HEAD: `5bc2aa0`. Existing H3 files are preserved and continued.
 
 ## Current acceptance state
 
-### Latest checkpoint - QA18/19 stopped and integrated source e562696b
+### Latest checkpoint - QA20 reviewed and QA21 live on sealed44ad28da
+
+- Sealed44ad28da built without warnings in321.2seconds including offline helpers.
+  QA20 root93560 and all eight recorded identities are absent. Its independent
+  evidence review reproduces58inputs/86records, full original Path row equality,
+  four PNGs and15WARN/1ERROR. Mutable handoff comparisons were removed; durable
+  restart/stage/log/cleanup artifacts support the claims. No clean-log claim.
+- Actual stamp2 promotion now persists its canonical node without changing Path1.
+  Selection then clears (QA-0054); no editor or Apply success. Navigation to PetalA
+  plus fresh Stamp3/2 contexts is independently verified as a UI symptom (QA-0055).
+  Source tracing finds empty-override restamping and stale-editor cache relabeling.
+  Typed persisted stamp fallback duplication is a separate source gap (QA-0056).
+- Isolated77a0d477 repairs stable stamp projection and actual owner gates, but source
+  review requires bounded classification failure/deadline recovery and one retained
+  nonblocking read coordinator. It is not integrated or runtime accepted.
+- QA21 root90980 resumes the same sealed source and retained dataset without reseed.
+  Actual Browse/Import creates one scoped baseline and available version1 replay.
+  Canonical asset placement matches predeclared position, full quaternion and unequal
+  scales before reload; complete selected transform remains equal after Petal re-entry.
+  The rich-object creation route was also exercised separately. Evidence review and
+  same-stage restart comparison remain pending; no FULL/test/convergence acceptance.
+- QA20 measured GLTF inputs and Close at24px for1024/1280/1920 windows. QA21 measured
+  the same controls at30px at scale1.25 and48px at compact scale2; actual native Close
+  dismissed the unsubmitted dialog after restoration. Other form audits remain.
+- Catalog0e19d959 is main7dfee582 after independent source review:143families,
+  1418IDs/1404mandatory, all1375old IDs retained. Audit44ad28da, fingerprint null,
+  execution false. New source changes require another reconciliation.
+- Isolated P2P bridge through3d9a2ab6 failed review: protected locator mismatch,
+  missing recipient input binding at use, and absent listener ownership binding.
+  Combined repairs are assigned; no credential transfer has run. Manager issuance,
+  paired-app acceptance, full QA/UX, final sweep and CI/releases remain mandatory.
+
+### Previous checkpoint - QA18/19 stopped and integrated source e562696b
 
 - QA18 and QA19 used sealed stage84ca20af with the retained dataset and no reseed.
   All recorded app identities and the exact owned web helper are absent. No app

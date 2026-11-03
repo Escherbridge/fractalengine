@@ -268,3 +268,33 @@ P2P re-review closes startup/transient-cursor lease issues but finds a remaining
 MED: Cancel/timeout after Join replaces an already-current Verse replica can close
 it while normal lifecycle sees unchanged cursor and never reopens. Isolated repair
 is assigned; the invite stack remains unintegrated and functionally incomplete.
+
+## QA20 independent evidence and next isolated repairs
+
+Independent QA20 evidence review approved its bounded results after removing mutable
+handoff comparisons and adding the retained stamp-selection PNG. All58original input
+hashes/86JSON records, complete stopped log hashes/line hashes and four PNGs reproduce.
+The original Path row is completely equal after canonical stamp2 promotion. Selection
+remains null and no Apply was exercised. Confirmed PetalA plus fresh stamp contexts
+supports a UI symptom; raw ECS identity was not measured. Three actual window sizes
+have24px GLTF inputs and Close. Earlier misnamed unchanged-size observations are
+explicitly excluded. Fifteen WARN/one ERROR remain; no clean-log/FULL/test claim.
+
+Separate catalog review approved0e19d959, nowmain7dfee582. All1375previous IDs remain
+in order,43are appended and143families retained:1418total/1404mandatory. All281source
+hashes/678control references reproduce audited44ad28da;84actions/49MCP/103REST have
+no missing ownership. Final fingerprint remains null and execution false.
+
+Source tracing explains QA-0054/55 and adds QA-0056: empty override fingerprints
+rebuild selected entities; the pre-selection live feeder can relabel the old Path
+cache into the new Petal; generic persisted stamp hydration permits ordinary fallback
+alongside its derived projection. Isolated77a0d477 addresses these, but independent
+review blocks integration until cold-classification failures have bounded correlated
+recovery and invalidation reads use the same nonblocking coordinator. No tests run.
+
+P2P1f8a31e7/20dca59c/f3160116 passed bounded source review: startup and Join gates
+combine, exact cleanup leases survive transient cursors, and an already-open target
+cannot be replaced by Join. Dormant transfer58f10006/2fe69307/3d9a2ab6 needs three
+corrections: opaque protected locator, recipient masked-input binding on every replay
+frame, and exact API listener/process ownership before authenticated bytes. These
+are authoring in isolation. Owner-rooted Manager proof and paired execution remain.
