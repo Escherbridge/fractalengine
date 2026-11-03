@@ -234,6 +234,7 @@ impl IssueState {
             || source.role != fresh.role
             || source.expiry_hours != fresh.expiry_hours
             || source.manifest != fresh.manifest
+            || source.authority != fresh.authority
         {
             return None;
         }
@@ -348,6 +349,7 @@ impl IssueState {
                     || issued.source.nonce != source.nonce
                     || issued.source.prepared_at != source.prepared_at
                     || issued.source.manifest != source.manifest
+                    || issued.source.authority != source.authority
                 {
                     self.fail("Invitation issuance is unconfirmed because its source changed. Refresh Access before another change.");
                     return;

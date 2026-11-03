@@ -28,8 +28,34 @@ impl std::fmt::Debug for JoinCredential {
     }
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum InviteAuthority {
+    Owner {
+        issuer_did: String,
+    },
+    DelegatedManager {
+        issuer_did: String,
+        proof_id: String,
+    },
+}
+
+impl InviteAuthority {
+    pub fn issuer_did(&self) -> &str {
+        match self {
+            Self::Owner { issuer_did } | Self::DelegatedManager { issuer_did, .. } => issuer_did,
+        }
+    }
+    pub fn proof_id(&self) -> Option<&str> {
+        match self {
+            Self::Owner { .. } => None,
+            Self::DelegatedManager { proof_id, .. } => Some(proof_id),
+        }
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct InviteSource {
+    pub authority: InviteAuthority,
     pub target: EntityAccessTarget,
     pub recipient_did: String,
     pub role: String,

@@ -160,6 +160,7 @@ impl VerifiedDelegationChain {
     pub fn chain(&self) -> &DelegationChain {
         &self.0
     }
+    pub fn depth(&self) -> usize { self.0.0.len() }
     pub fn proof_id(&self) -> anyhow::Result<String> {
         self.last().content_id()
     }

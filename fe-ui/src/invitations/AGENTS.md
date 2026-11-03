@@ -144,3 +144,9 @@ to the submit button is permitted, including its native pointer-down ownership w
 focus is surrendered. Foreign focus/layout/dialog changes abort and drop private pending text.
 The existing real egui Join journey covers success and stale layout/focus/dialog interleavings
 with a deliberately focused plain sink, without claiming transport or role readiness.
+
+
+Prepared/issued source correlation and one-use fresh-source consumption now include typed
+InviteAuthority identity as well as the display manifest. A changed authority/proof cannot
+release the old credential under unchanged labels. Manager UI production activation remains
+separate from these correlation guards until the v2 DB and coordinator seams are reviewed.

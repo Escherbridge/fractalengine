@@ -381,3 +381,37 @@ branch and delegates to current-store proof activation; it has no transport bool
 writer. Native/role/hierarchy scheduling and the final native inspection remain host obligations.
 The ordinary role writer accepts a private ManagerAuthority snapshot only through the dedicated
 delegated-invite entry; all snapshot fences join its existing atomic operation/grant transaction.
+
+
+## Addressed-v2
+
+addressed_join_v2 is the dormant current-authority Prepare/Issue/DB-readiness adapter. Owner-v1
+production dispatch stays unchanged until the coordinator activation review. Prepared sources
+carry a typed actual Owner or DelegatedManager issuer identity; a Manager source pins its
+active proof content hash. Both the initial target lookup and final fenced source read must
+resolve the exact target scope. The full current display manifest is a preparation freshness
+fence, while immutable identity remains the certificate/admission anchor.
+
+Manager preparation and issuance use ManagerAuthority, including the stored active proof row,
+current exact supporting HLCs, normal grantor fixpoint and target/holder ancestry/cache fences.
+A GUI-supplied Owner enum label or proof hash is not authority: each is checked against the
+actual local DB actor and freshly fenced source. Requested validity/depth cannot exceed the
+parent proof. Native ticket validation and complete envelope preflight precede the grant.
+The existing checked role writer returns the actual committed HLC, then every fallible clock,
+certificate, envelope, encoding, credential and final verification step shares one explicit
+post-grant unconfirmed-outcome boundary. Neither helper failure nor timeout authorizes replay.
+
+The v2 DB readiness reader proves local role-side convergence only. It requires the exact
+acceptance member and ordinary issuer grant, immutable identity/current ancestry, effective
+recipient role, and every normally replicated issuer-chain supporting grant at its signed HLC.
+Viewer/Editor recipients verify the signed issuer chain directly; no foreign locally-active
+proof row is required. Manager recipients additionally fence their exact quarantined/active
+local proof acceptance. All current-chain and local proof snapshots join one read transaction,
+with separate binding namespaces when issuer and recipient chains are both present. Ordinary
+missing/revoked/changed support produces pending; DB/structural failures remain errors.
+Certificate/envelope expiry is checked again at the read transaction and afterward.
+
+CurrentChainAuthority is a read-side snapshot and cannot stand in for ManagerAuthority in the
+issue writer: only the latter requires stored local activation. Actual native/role/hierarchy
+checks, correlated finalization and final native reinspection before navigation remain the
+next host integration slice. No handler accepts a native-valid boolean or claims Joined.

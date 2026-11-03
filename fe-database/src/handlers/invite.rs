@@ -322,7 +322,7 @@ mod tests {
                 assert!(!detached.contains(envelope.ticket()), "Portable Manager authority never forwards its write DocTicket");
                 let owner_v2 = crate::join_invite::JoinInvitation::issue_addressed(
                     &fixture.signer, fixture.recipient.clone(), admitted.scope.clone(), crate::join_invite::JoinRole::Manager,
-                    envelope.grant_hlc(), envelope.manifest().clone(), envelope.ticket().into(), clock, 3600, None,
+                    envelope.grant_hlc(), envelope.manifest().clone(), envelope.ticket().into(), clock, 7200, None,
                 ).unwrap();
                 let owner_v2_link = owner_v2.to_link().unwrap();
                 let owner_v2 = crate::join_invite::JoinInvitation::parse(&owner_v2_link, &fixture.recipient, clock).unwrap();
@@ -377,6 +377,63 @@ mod tests {
                 assert!(crate::join_authority::ManagerAuthority::capture(&manager_store,&fixture.recipient,&identity,&admitted.scope,Some(&proof_id),clock).await.is_err(), "Malformed raw proof is refused before it can become authority");
                 manager_store.query("UPDATE join_delegation SET proof_json=$raw WHERE proof_id=$proof")
                     .bind(("proof",proof_id)).bind(("raw",original_raw)).await.unwrap().check().unwrap();
+                let target=fe_runtime::entity_access::EntityAccessTarget {entity_type:fe_runtime::messages::EntityType::Verse,entity_id:VERSE.into(),scope:admitted.scope.clone()};
+                for delegated_role in ["viewer","editor","manager"] {
+                    let recipient=fe_identity::NodeKeypair::generate().to_did_key();
+                    let prepared=super::super::addressed_join_v2::prepare(&manager_store,&fixture.recipient,&target,&recipient,delegated_role,1).await.unwrap();
+                    assert!(matches!(&prepared.authority,fe_runtime::join_invite::InviteAuthority::DelegatedManager {issuer_did,proof_id} if issuer_did==&fixture.recipient && proof_id==&recipient_branch.chain().proof_id().unwrap()));
+                    let endpoint=iroh::EndpointAddr::new(fixture.recipient_signer.to_iroh_secret().public()).with_ip_addr("127.0.0.1:40001".parse().unwrap());
+                    let secret=iroh_docs::NamespaceSecret::from_bytes(&[23u8;32]);
+                    let capability=if delegated_role=="viewer" {iroh_docs::Capability::Read(secret.id())} else {iroh_docs::Capability::Write(secret)};
+                    let ticket=fe_runtime::join_invite::JoinCredential::new(iroh_docs::DocTicket::new(capability,vec![endpoint]).to_string()).unwrap();
+                    let mut forged=prepared.clone();forged.authority=fe_runtime::join_invite::InviteAuthority::Owner {issuer_did:fixture.recipient.clone()};
+                    assert!(super::super::addressed_join_v2::issue(&manager_store,&fixture.recipient,Some(&fixture.recipient_signer),&forged,&ticket,&blobs,None).await.is_err(),"A typed Owner label cannot impersonate the immutable Owner");
+                    let memory=std::sync::Arc::new(fe_runtime::blob_store::mock::MockBlobStore::new());
+                    let output_blobs:crate::BlobStoreHandle=memory.clone();let (publication,published)=crossbeam::channel::bounded(8);
+                    let issued=super::super::addressed_join_v2::issue(&manager_store,&fixture.recipient,Some(&fixture.recipient_signer),&prepared,&ticket,&output_blobs,Some(&publication)).await.unwrap();
+                    assert_eq!(issued.source.authority,prepared.authority);
+                    let observed_now=super::super::addressed_join::now().unwrap();
+                    let actual=crate::join_invite::JoinInvitation::parse(issued.credential.as_str(),&recipient,observed_now).unwrap();
+                    assert_eq!(actual.issuer_did(),fixture.recipient);
+                    let grant=published.try_iter().find(|event|event.table=="role").unwrap();
+                    let grant_bytes=memory.bytes_for(&grant.content_hash).unwrap();
+                    let peer_store=mem_db().await;
+                    super::super::addressed_join::admit_v2(&peer_store,&recipient,&issued.credential).await.unwrap();
+                    assert!(!super::super::addressed_join_v2::ready(&peer_store,&recipient,&issued.credential).await.unwrap());
+                    apply_replicated_row_handler(&peer_store,VERSE,"role",&grant.record_id,&grant_bytes,&fixture.recipient,None).await.unwrap();
+                    assert!(!super::super::addressed_join_v2::ready(&peer_store,&recipient,&issued.credential).await.unwrap(),"Out-of-order recipient grants wait for the normal Owner-rooted authority rows");
+                    apply_replicated_row_handler(&peer_store,VERSE,"role",&fixture.grant.record_id,&fixture.grant_bytes,&fixture.owner,None).await.unwrap();
+                    assert!(super::super::addressed_join_v2::ready(&peer_store,&recipient,&issued.credential).await.unwrap(),"DB readiness requires real normal issuer and recipient grant convergence, without claiming native readiness");
+                    if delegated_role=="manager" {
+                        let branch=actual.recipient_manager_proof(observed_now).unwrap().unwrap();
+                        assert_eq!(branch.chain().depth(),2);
+                        assert!(crate::join_authority::ManagerAuthority::capture(&peer_store,&recipient,&identity,&target.scope,None,observed_now).await.is_err());
+                        super::super::addressed_join::finalize_v2(&peer_store,&recipient,&issued.credential).await.unwrap();
+                        assert!(crate::join_authority::ManagerAuthority::capture(&peer_store,&recipient,&identity,&target.scope,None,observed_now).await.is_ok(),"Only the verified recipient Manager branch can activate its two-link local proof");
+                    }
+                    peer_store.query("UPDATE role_grant SET revoked=true WHERE statement_key=$key")
+                        .bind(("key",fixture.grant.record_id.clone())).await.unwrap().check().unwrap();
+                    assert!(!super::super::addressed_join_v2::ready(&peer_store,&recipient,&issued.credential).await.unwrap(),"A stale role cache cannot hide current local issuer-chain revocation");
+                }
+                let owner_store=managers_store(&fixture.owner).await;
+                let owner_recipient=fe_identity::NodeKeypair::generate().to_did_key();
+                let owner_source=super::super::addressed_join_v2::prepare(&owner_store,&fixture.owner,&target,&owner_recipient,"manager",2).await.unwrap();
+                assert!(matches!(&owner_source.authority,fe_runtime::join_invite::InviteAuthority::Owner {issuer_did} if issuer_did==&fixture.owner));
+                let owner_native=fe_runtime::join_invite::JoinCredential::new(envelope.ticket().into()).unwrap();
+                let issued=super::super::addressed_join_v2::issue(&owner_store,&fixture.owner,Some(&fixture.signer),&owner_source,&owner_native,&blobs,None).await.unwrap();
+                let observed_owner_now=super::super::addressed_join::now().unwrap();
+                let checked=crate::join_invite::JoinInvitation::parse(issued.credential.as_str(),&owner_recipient,observed_owner_now).unwrap();
+                let committed:Vec<serde_json::Value>=owner_store.query("SELECT hlc FROM role_grant WHERE peer_did=$peer").bind(("peer",owner_recipient)).await.unwrap().take(0).unwrap();
+                assert_eq!(committed[0]["hlc"],checked.grant_hlc().to_string());
+                assert_eq!(checked.recipient_manager_proof(observed_owner_now).unwrap().unwrap().chain().supporting_grants().next().unwrap().hlc,checked.grant_hlc(),"Owner v2 signs a portable Manager certificate only with the actual committed grant HLC");
+                let failing_store=managers_store(&fixture.owner).await;
+                let recipient=fe_identity::NodeKeypair::generate().to_did_key();
+                let pending=super::super::addressed_join_v2::prepare(&failing_store,&fixture.owner,&target,&recipient,"manager",2).await.unwrap();
+                failing_store.query("DEFINE FIELD OVERWRITE role ON role TYPE string ASSERT false").await.unwrap().check().unwrap();
+                let failure=super::super::addressed_join_v2::issue(&failing_store,&fixture.owner,Some(&fixture.signer),&pending,&owner_native,&blobs,None).await.unwrap_err();
+                assert!(failure.to_string().contains("unconfirmed") && failure.to_string().contains("may already be stored") && failure.to_string().contains("do not automatically replay"));
+                let persisted:Vec<serde_json::Value>=failing_store.query("SELECT hlc FROM role_grant WHERE peer_did=$peer").bind(("peer",recipient)).await.unwrap().take(0).unwrap();
+                assert_eq!(persisted.len(),1,"A post-commit materialization failure keeps an explicit partial grant outcome and returns no credential");
                 let snapshot=tempfile::NamedTempFile::new().unwrap();
                 crate::admin::dump_to_file(&manager_store,snapshot.path()).await.unwrap();
                 crate::admin::load_from_file(&manager_store,snapshot.path()).await.unwrap();

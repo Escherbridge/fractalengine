@@ -115,11 +115,13 @@ fn checked_proof(
     Ok(verified)
 }
 
+#[derive(Clone)]
 pub(crate) struct ManagerAuthority {
     actor: String,
     scope: String,
     identity: VerseIdentity,
     proof: VerifiedDelegationChain,
+    roles: fe_policy::EffectiveRoles,
     guards: Vec<String>,
     bindings: Vec<(String, Value)>,
 }
@@ -184,7 +186,79 @@ impl ManagerAuthority {
         now: u64,
     ) -> anyhow::Result<Self> {
         let proof = checked_proof(row, actor, identity, scope, now)?;
-        let proof_id = proof.proof_id()?;
+        let mut current =
+            CurrentChainAuthority::capture(db, actor, identity, scope, &proof, now).await?;
+        current.guards.push(format!(
+            "IF ({}) != $delegation_proof_row {{ THROW 'delegation proof changed'; }}",
+            proof_select()
+        ));
+        current.bindings.extend([
+            ("delegation_proof".into(), json!(proof.proof_id()?)),
+            ("delegation_proof_row".into(), json!([row])),
+        ]);
+        Ok(Self {
+            actor: actor.into(),
+            scope: scope.into(),
+            identity: identity.clone(),
+            proof,
+            roles: current.roles,
+            guards: current.guards,
+            bindings: current.bindings,
+        })
+    }
+}
+
+#[derive(Debug)]
+pub(crate) struct AuthorityNotCurrent;
+impl std::fmt::Display for AuthorityNotCurrent {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str("Current Manager proof supporting grants have not converged or changed")
+    }
+}
+impl std::error::Error for AuthorityNotCurrent {}
+fn require_current(current: bool) -> anyhow::Result<()> {
+    if current {
+        Ok(())
+    } else {
+        Err(AuthorityNotCurrent.into())
+    }
+}
+
+pub(crate) struct CurrentChainAuthority {
+    roles: fe_policy::EffectiveRoles,
+    guards: Vec<String>,
+    bindings: Vec<(String, Value)>,
+}
+impl CurrentChainAuthority {
+    pub(crate) fn role_at(&self, peer: &str, scope: &str) -> RoleLevel {
+        self.roles.role_at(peer, scope)
+    }
+    pub(crate) fn scoped_parts(self, index: usize) -> (Vec<String>, Vec<(String, Value)>) {
+        let prefix = format!("join_chain_{index}_");
+        let guards = self
+            .guards
+            .into_iter()
+            .map(|sql| {
+                sql.replace("$delegation_", &format!("${prefix}delegation_"))
+                    .replace("$scoped_query_", &format!("${prefix}scoped_query_"))
+            })
+            .collect();
+        let bindings = self
+            .bindings
+            .into_iter()
+            .map(|(name, value)| (format!("{prefix}{name}"), value))
+            .collect();
+        (guards, bindings)
+    }
+    pub(crate) async fn capture(
+        db: &Db,
+        actor: &str,
+        identity: &VerseIdentity,
+        scope: &str,
+        proof: &VerifiedDelegationChain,
+        now: u64,
+    ) -> anyhow::Result<Self> {
+        proof.chain().verify(actor, identity, scope, now)?;
         let mut snapshot = db
             .query(format!("{IDENTITY_SELECT};{GRANT_SELECT};{HELD_SELECT}"))
             .bind(("delegation_verse", identity.verse_id.clone()))
@@ -201,17 +275,15 @@ impl ManagerAuthority {
         let admitted = statements(&grants, identity, &mut keys)?;
         statements(&held, identity, &mut keys)?;
         let effective = fe_policy::materialize(&identity.owner_did, admitted.iter());
-        anyhow::ensure!(
+        require_current(
             effective
                 .authority(actor, scope)
                 .is_at_least(RoleLevel::Manager),
-            "Current stored Manager authority is unavailable"
-        );
+        )?;
         let mut guards=vec![
             format!("IF ({IDENTITY_SELECT}) != $delegation_identity {{ THROW 'delegation Verse changed'; }}"),
             format!("IF ({GRANT_SELECT}) != $delegation_grants {{ THROW 'delegation grants changed'; }}"),
             format!("IF ({HELD_SELECT}) != $delegation_held {{ THROW 'delegation held grants changed'; }}"),
-            format!("IF ({}) != $delegation_proof_row {{ THROW 'delegation proof changed'; }}",proof_select()),
             "IF time::unix() >= $delegation_expiry { THROW 'delegation proof expired'; }".into(),
         ];
         let mut bindings = vec![
@@ -219,8 +291,6 @@ impl ManagerAuthority {
             ("delegation_identity".into(), json!(verses)),
             ("delegation_grants".into(), json!(grants)),
             ("delegation_held".into(), json!(held)),
-            ("delegation_proof".into(), json!(proof_id)),
-            ("delegation_proof_row".into(), json!([row])),
             ("delegation_expiry".into(), json!(proof.expires_at())),
         ];
         for (index, support) in proof.supporting_grants().enumerate() {
@@ -232,7 +302,7 @@ impl ManagerAuthority {
                         && statement.grantor_did == support.grantor_did
                 })
                 .collect();
-            anyhow::ensure!(
+            require_current(
                 matches.len() == 1
                     && matches[0].role == GrantedRole::Manager
                     && !matches[0].revoked
@@ -241,8 +311,12 @@ impl ManagerAuthority {
                     && effective
                         .authority(&support.peer_did, &support.scope)
                         .is_at_least(RoleLevel::Manager),
-                "Manager supporting grant changed; request Owner reauthorization"
-            );
+            )?;
+            require_current(
+                crate::role_manager::resolve_role(db, &support.peer_did, &support.scope)
+                    .await?
+                    .is_at_least(RoleLevel::Manager),
+            )?;
             let ancestry =
                 prepare_scope_permission(db, &support.scope, &support.peer_did, RoleLevel::Manager)
                     .await?;
@@ -250,20 +324,63 @@ impl ManagerAuthority {
             guards.extend(fences);
             bindings.extend(values);
         }
+        require_current(
+            crate::role_manager::resolve_role(db, actor, scope)
+                .await?
+                .is_at_least(RoleLevel::Manager),
+        )?;
         let target = prepare_scope_permission(db, scope, actor, RoleLevel::Manager).await?;
         let (fences, values) =
             target.scoped_read_fence(crate::join_delegation::MAX_DELEGATION_DEPTH);
         guards.extend(fences);
         bindings.extend(values);
         Ok(Self {
-            actor: actor.into(),
-            scope: scope.into(),
-            identity: identity.clone(),
-            proof,
+            roles: effective,
             guards,
             bindings,
         })
     }
+}
+
+pub(crate) async fn pending_recipient_authority(
+    db: &Db,
+    actor: &str,
+    branch: &RecipientManagerProof,
+    now: u64,
+) -> anyhow::Result<CurrentChainAuthority> {
+    let proof = branch.chain();
+    let id = proof.proof_id()?;
+    let mut response = db
+        .query(proof_select())
+        .bind(("delegation_proof", id.clone()))
+        .await?
+        .check()?;
+    let rows: Vec<Value> = response.take(0)?;
+    anyhow::ensure!(
+        rows.len() == 1
+            && matches!(rows[0]["state"].as_str(), Some("quarantined" | "active"))
+            && rows[0]["admission_nonce"].as_str() == Some(branch.nonce())
+            && rows[0]["invite_signature"].as_str() == Some(branch.signature()),
+        "Recipient proof acceptance changed"
+    );
+    let authority =
+        ManagerAuthority::capture_row(db, actor, proof.identity(), proof.scope(), &rows[0], now)
+            .await?;
+    anyhow::ensure!(
+        authority.proof().proof_id()? == id,
+        "Recipient proof identity changed"
+    );
+    let ManagerAuthority {
+        roles,
+        guards,
+        bindings,
+        ..
+    } = authority;
+    Ok(CurrentChainAuthority {
+        roles,
+        guards,
+        bindings,
+    })
 }
 
 pub(crate) struct QuarantineWrite {

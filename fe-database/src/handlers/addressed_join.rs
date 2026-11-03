@@ -2,7 +2,7 @@
 
 use fe_runtime::{
     entity_access::EntityAccessTarget,
-    join_invite::{InviteSource, IssuedInvitation, JoinAdmission, JoinCredential},
+    join_invite::{InviteAuthority, InviteSource, IssuedInvitation, JoinAdmission, JoinCredential},
 };
 use serde_json::{json, Value};
 
@@ -12,17 +12,17 @@ use crate::{
     BlobStoreHandle, ReplicationSender,
 };
 
-const VERSE_COLUMNS: &str = "verse_id,name,created_by,created_at,namespace_id,default_access,ts_mode,ts_replication_factor,ts_bucket_width_ms";
+pub(super) const VERSE_COLUMNS: &str = "verse_id,name,created_by,created_at,namespace_id,default_access,ts_mode,ts_replication_factor,ts_bucket_width_ms";
 const MEMBER_COLUMNS: &str = "member_id,verse_id,peer_did,status,invited_by,invite_sig";
 
-fn now() -> anyhow::Result<u64> {
+pub(super) fn now() -> anyhow::Result<u64> {
     Ok(std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map_err(|_| anyhow::anyhow!("Invitation clock is unavailable"))?
         .as_secs())
 }
 
-fn decode_manifest(value: &Value) -> anyhow::Result<JoinManifest> {
+pub(super) fn decode_manifest(value: &Value) -> anyhow::Result<JoinManifest> {
     serde_json::from_value(value.clone())
         .map_err(|_| anyhow::anyhow!("Invitation source metadata is unavailable"))
 }
@@ -83,6 +83,7 @@ pub(crate) async fn prepare(
     );
     let manifest = owner_source(db, target, actor).await?;
     Ok(InviteSource {
+        authority:InviteAuthority::Owner {issuer_did:actor.into()},
         target: target.clone(),
         recipient_did: recipient.into(),
         role: role.into(),
@@ -103,6 +104,7 @@ pub(crate) async fn issue(
     replication: Option<&ReplicationSender>,
 ) -> anyhow::Result<IssuedInvitation> {
     let clock = now()?;
+    anyhow::ensure!(matches!(&source.authority,InviteAuthority::Owner {issuer_did} if issuer_did==actor),"Owner-v1 invitation authority changed");
     anyhow::ensure!(
         source.prepared_at <= clock && clock - source.prepared_at <= 60,
         "Invitation preparation expired; refresh Access"
@@ -173,7 +175,7 @@ pub(crate) async fn issue(
     .map_err(|_| anyhow::anyhow!("Invitation issuance is unconfirmed; the checked role grant may already be stored. Refresh Access before another change; do not automatically replay issuance."))
 }
 
-fn same_identity(row: &Value, manifest: &JoinManifest) -> bool {
+pub(super) fn same_identity(row: &Value, manifest: &JoinManifest) -> bool {
     row["verse_id"].as_str() == Some(manifest.verse_id.as_str())
         && row["created_by"].as_str() == Some(manifest.created_by.as_str())
         && row["created_at"].as_str() == Some(manifest.created_at.as_str())

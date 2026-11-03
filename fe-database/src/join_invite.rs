@@ -76,7 +76,7 @@ impl JoinManifest {
         Ok(manifest)
     }
 
-    fn validate(&self) -> anyhow::Result<()> {
+    pub(crate) fn validate(&self) -> anyhow::Result<()> {
         bounded_identifier(&self.verse_id)?;
         canonical_did(&self.created_by)?;
         anyhow::ensure!(

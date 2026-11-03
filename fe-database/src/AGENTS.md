@@ -1928,3 +1928,12 @@ skips local proof activation state; imported Managers require Owner reauthorizat
 real-store journeys now cover quarantine without a grant, ordinary grant convergence, stale
 proof/grant rollback, exact-HLC reauthorization, actual Manager-authored grant and import refusal.
 These are authored assertions only until the parent integrated sweep.
+
+
+The current dormant v2 handler separates signed issuer-chain readiness from local active-proof
+authority for issuing new invitations. CurrentChainAuthority derives ordinary effective roles
+and carries read fences; ManagerAuthority additionally requires a current active stored proof.
+Independent chain snapshots rebind both delegation and holder-ancestry parameters before they
+share a readiness read transaction. Prepared/issued InviteSource values now carry the actual
+Owner or delegated Manager proof identity, and fresh QA source comparison includes that type
+separately from mutable display metadata. Production dispatch remains Owner-v1 for this review.

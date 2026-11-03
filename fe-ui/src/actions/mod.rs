@@ -2422,7 +2422,7 @@ mod tests {
             let (full_native,full_native_rx)=crossbeam::channel::bounded(1);
             full_native.try_send(fe_sync::SyncCommand::CloseVerseReplica {verse_id:"occupied".into()}).unwrap();
             let full_native=fe_sync::SyncCommandSenderRes(full_native);
-            let source=fe_runtime::join_invite::InviteSource {target:captured.clone(),recipient_did:recipient,role:"viewer".into(),expiry_hours:1,prepared_at:0,nonce:ulid::Ulid::new().to_string(),manifest:serde_json::json!({"verse_id":"access-v","name":"Access verse","created_by":issuer,"created_at":"2026-11-01T00:00:00Z","namespace_id":"ab".repeat(32),"default_access":"none","ts_mode":"local","ts_replication_factor":1,"ts_bucket_width_ms":1000})};
+            let source=fe_runtime::join_invite::InviteSource {authority:fe_runtime::join_invite::InviteAuthority::Owner {issuer_did:issuer.clone()},target:captured.clone(),recipient_did:recipient,role:"viewer".into(),expiry_hours:1,prepared_at:0,nonce:ulid::Ulid::new().to_string(),manifest:serde_json::json!({"verse_id":"access-v","name":"Access verse","created_by":issuer,"created_at":"2026-11-01T00:00:00Z","namespace_id":"ab".repeat(32),"default_access":"none","ts_mode":"local","ts_replication_factor":1,"ts_bucket_width_ms":1000})};
             state.apply(&fe_runtime::messages::DbResult::JoinInvitePrepared {request_id,result:Ok(source)},&captured,Some(&issuer),Some(&full_native));
             assert!(!state.busy() && state.error.is_some(),"Full bounded native export returns immediately without a grant/sign command");
             assert!(matches!(full_native_rx.try_recv(),Ok(fe_sync::SyncCommand::CloseVerseReplica {..})) && full_native_rx.try_recv().is_err());
@@ -2433,7 +2433,7 @@ mod tests {
         {
             let issuer=fe_identity::NodeKeypair::generate().to_did_key();
             let recipient=fe_identity::NodeKeypair::generate().to_did_key();
-            let source=fe_runtime::join_invite::InviteSource {target:target.clone(),recipient_did:recipient,role:"viewer".into(),expiry_hours:1,prepared_at:0,nonce:ulid::Ulid::new().to_string(),manifest:serde_json::json!({"created_by":issuer,"verse_id":"access-v","name":"Original"})};
+            let source=fe_runtime::join_invite::InviteSource {authority:fe_runtime::join_invite::InviteAuthority::Owner {issuer_did:issuer.clone()},target:target.clone(),recipient_did:recipient,role:"viewer".into(),expiry_hours:1,prepared_at:0,nonce:ulid::Ulid::new().to_string(),manifest:serde_json::json!({"created_by":issuer,"verse_id":"access-v","name":"Original"})};
             if let ActiveDialog::EntitySettings {access,invite_role_buf,invite_expiry_buf,..}=&mut mgr.active_dialog {
                 *invite_role_buf="viewer".into();*invite_expiry_buf=1;
                 access.invitation=crate::invitations::IssueState::transfer_fixture(source.clone(),fe_runtime::join_invite::JoinCredential::new("sealed-transfer-sentinel".into()).unwrap(),false);
@@ -2443,6 +2443,8 @@ mod tests {
             assert!(mgr.consume_qa_invitation(&wrong,&source,&issuer,1).is_none());
             let mut changed=source.clone();changed.manifest["name"]=serde_json::json!("Changed");
             assert!(mgr.consume_qa_invitation(&metadata,&changed,&issuer,1).is_none(),"A fresh Owner read with changed manifest cannot release the old credential");
+            let mut changed_authority=source.clone();changed_authority.authority=fe_runtime::join_invite::InviteAuthority::DelegatedManager {issuer_did:issuer.clone(),proof_id:"ab".repeat(32)};
+            assert!(mgr.consume_qa_invitation(&metadata,&changed_authority,&issuer,1).is_none(),"Fresh authority identity is fenced separately from the unchanged display manifest");
             let consumed=mgr.consume_qa_invitation(&metadata,&source,&issuer,1).unwrap();
             assert_eq!(consumed.as_str(),"sealed-transfer-sentinel");
             assert!(!format!("{consumed:?}").contains("sealed-transfer-sentinel"));

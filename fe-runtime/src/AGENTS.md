@@ -987,3 +987,10 @@ in redacted wrappers until the explicit no-store one-use response.
 Guarded Join adds an opaque optional constraint to ValidInputSpec through the existing input
 HTTP header. It cannot broaden role, scope, capture or lifetime admission. The recipient lease
 DTO exports only opaque IDs and geometry, never protected names, input values or credentials.
+
+
+InviteSource now includes InviteAuthority: either the actual Owner issuer or the actual
+delegated Manager issuer plus exact proof content hash. This is a typed correlation identity,
+not a trusted caller assertion, token floor or serialized transport capability. DB issuance
+rechecks it against the local actor, current stored proof and ordinary role/ancestry fences.
+Fresh-source consumption and issued-result correlation compare it independently of labels.

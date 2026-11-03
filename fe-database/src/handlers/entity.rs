@@ -15,6 +15,19 @@ pub(crate) struct ParentMutation {
 }
 
 impl ParentMutation {
+    pub(crate) fn with_join_deadline(mut self, deadline: u64) -> Self {
+        self.guards.push("IF time::unix() >= $join_acceptance_deadline { THROW 'invitation acceptance expired'; }".into());
+        self.bindings.push(("join_acceptance_deadline".into(), serde_json::json!(deadline)));
+        self
+    }
+    pub(crate) fn with_join_chain(
+        mut self, authority: crate::join_authority::CurrentChainAuthority, index: usize,
+    ) -> Self {
+        let (guards, bindings) = authority.scoped_parts(index);
+        self.guards.extend(guards);
+        self.bindings.extend(bindings);
+        self
+    }
     pub(crate) fn with_join_delegation(mut self, authority: crate::join_authority::ManagerAuthority) -> Self {
         let (guards,bindings)=authority.into_parts();
         self.guards.extend(guards);self.bindings.extend(bindings);
