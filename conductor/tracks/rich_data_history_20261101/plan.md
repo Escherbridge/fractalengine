@@ -24,10 +24,12 @@ title: Rich data and history execution
 - [ ] Catalog reconciliation and source fingerprint review; changed-region and final full-coverage passes.
 - [ ] Final integrated checks and original campaign CI/tagged artifact publication.
 - [~] Text-sized thin tree icons and explicit primary/additional/partial row states: source integrated and focused26 size/scale/primary evidence independently approved; multiple/partial behavior and final coverage pending.
-- [~] Ordered selection, shared Inspector/Options/tool routing and checked group edits are source-reviewed and integrated through44864962; compilation/live acceptance, closed-route witness and exact group-delete/empty-group inverse remain required.
+- [~] Ordered selection and shared Inspector/Options/tool routing: focused29 independently verifies actual Ctrl/Shift selection, shared numeric translation/rotation/scale and single-step Undo/Redo. Tree reorder QA-0064 and consecutive Undo QA-0065 remain fresh-stage verification gates.
+- [~] Complete checked group deletion, empty-group operations, creation/deletion inverse proofs, stable bounded replay and exact owned history links are source-approved through92039350 and integrated through30fa1b37. Independent integration preservation passed; first production build found role-import and optional-name compile errors, with corrections pending. Group lifecycle live acceptance remains required.
 - [ ] Verify group creation/membership, mixed properties, capability refusals, selection navigation, pivot behavior and persistence; reconcile group sharing with the documented unmapped replication gap.
 - [~] Addressed native Viewer Join: focused28 independently verifies one-use input submission, actual Viewer role and matching hierarchy; shared nodes remain absent (Owner25/recipient0), tracked as QA-0063.
-- [ ] Review and execute committed-node publication/recovery and admitted-current native projection; keep remote state separate from local journal versions and preserve newer local drafts.
+- [~] Committed-node publication/recovery and admitted-current native projection are independently source-approved and integrated through52c88daa, preserving source identity, later drafts and accepted host outcomes. Compilation corrections and actual paired execution remain pending; remote current state never substitutes for local journal versions.
+- [~] Actual mesh-bound closed-path witness authored at47a38391; independent review requires lossless source identity before integration. Full renderer input precision must remain separate from rounded editor-draft comparison.
 - [ ] Complete authorized legacy asset recovery and actual peer blob delivery before accepting imported-object sharing; REST node arrival alone is insufficient.
 - [~] Completed-save history playback: source integrated and focused26 actual boundary/page/native refusal/playback evidence independently approved; malformed-journal journey execution and final coverage pending.
 
