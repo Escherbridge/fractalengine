@@ -131,7 +131,7 @@ impl VerseManager {
             return;
         }
         self.replica_reads.synchronize(nav);
-        self.replica_reads.blocked = !fe_policy::RoleLevel::from(role).can_view();
+        self.replica_reads.blocked = !fe_database::RoleLevel::from(role).can_view();
         self.replica_reads.role_refresh = None;
         self.replica_reads.role_deadline = None;
         if self.replica_reads.blocked {

@@ -163,7 +163,7 @@ pub(super) fn apply_db_results(
             DbResult::LocalRoleResolved { scope, role } => {
                 verse_mgr.accept_scene_role(scope, role, &nav);
                 if nav.active_scope().as_deref() == Some(scope.as_str())
-                    && (verse_mgr.scene_access_blocked() || !fe_policy::RoleLevel::from(role.as_str()).can_edit()) {
+                    && (verse_mgr.scene_access_blocked() || !fe_database::RoleLevel::from(role.as_str()).can_edit()) {
                     path_state.clear_pending_pen_create();
                 }
             }
@@ -2435,7 +2435,7 @@ mod tests {
             .navigate_to_petal_in_fractal("v1", "Verse", "f1", "Fractal", "p1");
         app.world_mut()
             .resource_mut::<crate::plugin::LocalUserRole>()
-            .role = Some(fe_policy::RoleLevel::Editor);
+            .role = Some(fe_database::RoleLevel::Editor);
         app.world_mut().spawn((
             fe_renderer::camera::OrbitCameraController::default(),
             Transform::default(),

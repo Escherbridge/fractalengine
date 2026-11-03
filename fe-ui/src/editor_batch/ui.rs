@@ -159,8 +159,9 @@ fn render_form(
                     .iter()
                     .find(|member| member.node_id == primary.node_id)
             })
-            .map(|member| member.state.display_name.as_str())
-            .filter(|name| !name.trim().is_empty())
+            .and_then(|member| member.state.display_name.as_deref())
+            .map(str::trim)
+            .filter(|name| !name.is_empty())
             .unwrap_or(&primary.node_id);
         ui.add(egui::Label::new(format!("Primary: {name}")).truncate())
             .on_hover_text(&primary.node_id);
