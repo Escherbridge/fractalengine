@@ -243,7 +243,7 @@ fn render_form(
                             }
                         })
                         .collect();
-                    ui.label(format!("{label}: {}", components.join(" ? ")));
+                    ui.label(format!("{label}: {}", components.join("; ")));
                 }
             }
             Err(error) => {
