@@ -181,6 +181,7 @@ pub(super) fn receipt(
     receipt: &EditorBatchReceipt,
     request_id: &str,
     request: &EditorBatchRequest,
+    replay: Option<&HistoryEntry>,
 ) -> Result<(), String> {
     let before = &request.capture;
     if serde_json::to_vec(receipt).map_or(true, |bytes| bytes.len() > MAX_EDITOR_BATCH_BYTES)
@@ -194,8 +195,10 @@ pub(super) fn receipt(
             "Selection receipt is incomplete or unowned; reconciliation is required".into(),
         );
     }
-    if !matches!(&request.edit, EditorBatchEdit::CreateGroup { .. })
-        && receipt.created_group_id.is_some()
+    if !matches!(
+        &request.edit,
+        EditorBatchEdit::CreateGroup { .. } | EditorBatchEdit::RedoCreatedGroup { .. }
+    ) && receipt.created_group_id.is_some()
     {
         return Err("Unexpected created group identity in selection receipt".into());
     }
@@ -217,6 +220,18 @@ pub(super) fn receipt(
                     .fold(-1.0_f64, f64::max)
                     + 1.0,
             });
+        }
+        EditorBatchEdit::RedoCreatedGroup { undo_request_id } => {
+            let entry = replay.ok_or("No owned creation history matches this Redo")?;
+            let EditorBatchEdit::CreateGroup { id, .. } = &entry.forward else {
+                return Err("Redo proof does not belong to a Group creation".into());
+            };
+            if entry.undo_create_request_id.as_ref() != Some(undo_request_id)
+                || receipt.created_group_id.as_deref() != Some(id.as_str())
+            {
+                return Err("Creation Redo receipt differs from its owned proof".into());
+            }
+            groups = entry.after.groups.clone();
         }
         EditorBatchEdit::RestoreDeletedGroup { .. } => {
             groups = before
@@ -268,6 +283,25 @@ pub(super) fn receipt(
                     members.push(id.clone());
                 }
                 write_memberships(&mut expected.properties, members);
+            }
+            EditorBatchEdit::RedoCreatedGroup { .. } => {
+                let entry = replay.ok_or("No owned creation context matches Redo")?;
+                let source = entry
+                    .after
+                    .members
+                    .get(index)
+                    .filter(|member| member.node_id == old.node_id)
+                    .ok_or("Incomplete creation Redo context")?;
+                match source.state.properties.get("view.groups") {
+                    Some(value) => {
+                        expected
+                            .properties
+                            .insert("view.groups".into(), value.clone());
+                    }
+                    None => {
+                        expected.properties.remove("view.groups");
+                    }
+                }
             }
             EditorBatchEdit::DeleteGroup { group_id } => {
                 let mut members = memberships(&expected.properties);
@@ -388,9 +422,13 @@ pub(super) fn replay_edit(
 ) -> Result<EditorBatchEdit, String> {
     let undo = direction == HistoryDirection::Undo;
     match &entry.forward {
-        EditorBatchEdit::CreateGroup { id, name } => {
+        EditorBatchEdit::CreateGroup { id, .. } => {
             return Ok(if undo {
                 EditorBatchEdit::UndoCreatedGroup {
+                    create_request_id: entry
+                        .create_request_id
+                        .clone()
+                        .ok_or("Exact Group creation proof is unavailable; no inverse was sent")?,
                     group_id: id.clone(),
                     memberships: entry
                         .before
@@ -400,9 +438,11 @@ pub(super) fn replay_edit(
                         .collect(),
                 }
             } else {
-                EditorBatchEdit::CreateGroup {
-                    id: id.clone(),
-                    name: name.clone(),
+                EditorBatchEdit::RedoCreatedGroup {
+                    undo_request_id: entry
+                        .undo_create_request_id
+                        .clone()
+                        .ok_or("Exact creation Undo proof is unavailable; no Redo was sent")?,
                 }
             })
         }

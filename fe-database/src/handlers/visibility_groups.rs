@@ -16,16 +16,26 @@ pub const MAX_VISIBILITY_GROUPS: usize = 256;
 /// Upper bound on a Group name's length (chars, after trimming).
 pub const MAX_GROUP_NAME_CHARS: usize = 80;
 
-/// Fence retained references and checked-deleted IDs; see editor_batch/AGENTS.md.
+/// Exact checked-request exclusion; legacy registry callers use None.
+pub(crate) struct NewGroupFence<'a> {
+    pub prefix: &'a str,
+    pub checked_request_id: Option<&'a str>,
+}
+
+/// Fence retained references and checked historical IDs; see editor_batch/AGENTS.md.
 pub(crate) async fn fence_new_group_ids(
     db: &Db,
     petal_id: &str,
     existing: &[VisibilityGroupDto],
     incoming: &[String],
-    prefix: &str,
+    context: NewGroupFence<'_>,
     guards: &mut Vec<String>,
     bindings: &mut Vec<(String, serde_json::Value)>,
 ) -> anyhow::Result<()> {
+    let NewGroupFence {
+        prefix,
+        checked_request_id,
+    } = context;
     fence_unreferenced_group_ids(db, petal_id, existing, incoming, prefix, guards, bindings)
         .await?;
     for (index, id) in incoming
@@ -34,19 +44,24 @@ pub(crate) async fn fence_new_group_ids(
         .enumerate()
     {
         let name = format!("{prefix}_deleted_{index}");
-        let select = format!("SELECT VALUE id FROM op_log WHERE op_type='EditorTransaction' AND payload.receipt.petal_id=${name}_petal AND payload.group_delete_before.target['Group'].group_id=${name}_group LIMIT 1");
+        let select = format!("SELECT VALUE id FROM op_log WHERE op_type='EditorTransaction' AND payload.receipt.petal_id=${name}_petal AND (payload.group_delete_before.target['Group'].group_id=${name}_group OR payload.receipt.created_group_id=${name}_group) AND payload.editor_batch_request_id != ${name}_current LIMIT 1");
         let mut response = db
             .query(select.clone())
             .bind((format!("{name}_petal"), petal_id.to_owned()))
             .bind((format!("{name}_group"), id.clone()))
+            .bind((format!("{name}_current"), String::new()))
             .await?
             .check()?;
         let deleted: Vec<serde_json::Value> = response.take(0)?;
-        anyhow::ensure!(deleted.is_empty(), "checked-deleted Group IDs require their exact durable restore proof; create a fresh ID instead");
-        guards.push(format!("IF array::len(({select})) != 0 {{ THROW 'checked-deleted Group ID requires its restore proof'; }}"));
+        anyhow::ensure!(deleted.is_empty(), "historical Group IDs require their exact durable lifecycle proof; create a fresh ID instead");
+        guards.push(format!("IF array::len(({select})) != 0 {{ THROW 'historical Group ID requires its lifecycle proof'; }}"));
         bindings.extend([
             (format!("{name}_petal"), serde_json::json!(petal_id)),
             (format!("{name}_group"), serde_json::json!(id)),
+            (
+                format!("{name}_current"),
+                serde_json::json!(checked_request_id.unwrap_or("")),
+            ),
         ]);
     }
     Ok(())
@@ -226,7 +241,7 @@ async fn write_groups(
         petal_id,
         &existing,
         &ids,
-        "registry_new",
+        NewGroupFence { prefix: "registry_new", checked_request_id: None },
         &mut guards,
         &mut bindings,
     )

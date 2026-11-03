@@ -1,6 +1,7 @@
 //! One checked editor transaction; see AGENTS.md for the commit/read contract.
 
 mod capture;
+mod creation;
 mod geometry;
 mod groups;
 mod prepare;
@@ -57,6 +58,10 @@ pub(crate) struct PreparedBatch {
     actor: String,
     delete_before: Option<EditorBatchCapture>,
     restore_of: Option<String>,
+    create_before: Option<EditorBatchCapture>,
+    undo_before: Option<EditorBatchCapture>,
+    undo_of: Option<String>,
+    redo_of: Option<String>,
 }
 
 pub(crate) use prepare::prepare;
@@ -72,13 +77,17 @@ pub(crate) async fn commit(db: &Db, prepared: PreparedBatch) -> anyhow::Result<E
         actor,
         delete_before,
         restore_of,
+        create_before,
+        undo_before,
+        undo_of,
+        redo_of,
     } = prepared;
     let entry = OpLogEntry {
         lamport_clock: 0,
         hlc_timestamp: String::new(),
         node_id: NodeId(receipt.petal_id.clone()),
         op_type: OpType::EditorTransaction,
-        payload: json!({"editor_batch_request_id":receipt.request_id,"scope":receipt.scope,"actor_did":actor,"receipt":receipt,"group_delete_before":delete_before,"group_restore_of":restore_of}),
+        payload: json!({"editor_batch_request_id":receipt.request_id,"scope":receipt.scope,"actor_did":actor,"receipt":receipt,"group_delete_before":delete_before,"group_restore_of":restore_of,"group_create_before":create_before,"group_undo_before":undo_before,"group_undo_of":undo_of,"group_redo_of":redo_of}),
         sig: "00".repeat(64),
     };
     guards.insert(0, "IF (SELECT VALUE payload FROM op_log WHERE payload.editor_batch_request_id=$batch_request) != [$batch_manifest_payload] { THROW 'batch manifest differs from the exact current request'; }".into());

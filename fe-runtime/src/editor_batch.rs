@@ -139,7 +139,11 @@ pub enum EditorBatchEdit {
     RestoreDeletedGroup {
         delete_request_id: String,
     },
+    RedoCreatedGroup {
+        undo_request_id: String,
+    },
     UndoCreatedGroup {
+        create_request_id: String,
         group_id: String,
         memberships: Vec<EditorMembershipValue>,
     },

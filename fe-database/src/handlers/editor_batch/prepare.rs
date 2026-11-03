@@ -1,6 +1,6 @@
 //! Prepare all targets before one containing transaction has any effects.
 
-use super::{capture, geometry, groups as group_capture, stamp, PreparedBatch};
+use super::{capture, creation, geometry, groups as group_capture, stamp, PreparedBatch};
 use crate::{
     handlers::{field_def, node_history, node_view, stamp_overrides, visibility_groups},
     repo::Db,
@@ -313,28 +313,67 @@ pub(crate) async fn prepare(
                 }
             }
         }
-        EditorBatchEdit::CreateGroup { id, name } => {
+        EditorBatchEdit::CreateGroup { .. } | EditorBatchEdit::RedoCreatedGroup { .. } => {
+            let replay =
+                if let EditorBatchEdit::RedoCreatedGroup { undo_request_id } = &request.edit {
+                    Some(
+                        creation::prove_redo(
+                            db,
+                            &captured.view,
+                            undo_request_id,
+                            actor,
+                            request_id,
+                            &mut guards,
+                            &mut bindings,
+                        )
+                        .await?,
+                    )
+                } else {
+                    None
+                };
+            let (id, name) = match (&request.edit, &replay) {
+                (EditorBatchEdit::CreateGroup { id, name }, _) => (id, name.as_str()),
+                (_, Some(replay)) => (&replay.group_id, ""),
+                _ => unreachable!(),
+            };
             anyhow::ensure!(
                 ulid::Ulid::from_string(id).is_ok() && !groups.iter().any(|g| &g.id == id),
                 "new group ID must be a fresh ULID"
             );
-            visibility_groups::fence_new_group_ids(
-                db,
-                &captured.view.petal_id,
-                &captured.view.groups,
-                &[id.clone()],
-                "batch_new_group",
-                &mut guards,
-                &mut bindings,
-            )
-            .await?;
-            let order = groups.iter().map(|g| g.order).fold(-1.0_f64, f64::max) + 1.0;
-            groups.push(fe_runtime::messages::VisibilityGroupDto {
-                id: id.clone(),
-                name: name.trim().into(),
-                visible: true,
-                order,
-            });
+            if let Some(replay) = replay.as_ref() {
+                visibility_groups::fence_unreferenced_group_ids(
+                    db,
+                    &captured.view.petal_id,
+                    &captured.view.groups,
+                    &[id.clone()],
+                    "batch_redo_group",
+                    &mut guards,
+                    &mut bindings,
+                )
+                .await?;
+                groups = replay.groups.clone();
+            } else {
+                visibility_groups::fence_new_group_ids(
+                    db,
+                    &captured.view.petal_id,
+                    &captured.view.groups,
+                    &[id.clone()],
+                    visibility_groups::NewGroupFence {
+                        prefix: "batch_new_group",
+                        checked_request_id: Some(request_id),
+                    },
+                    &mut guards,
+                    &mut bindings,
+                )
+                .await?;
+                let order = groups.iter().map(|g| g.order).fold(-1.0_f64, f64::max) + 1.0;
+                groups.push(fe_runtime::messages::VisibilityGroupDto {
+                    id: id.clone(),
+                    name: name.trim().into(),
+                    visible: true,
+                    order,
+                });
+            }
             visibility_groups::validate_groups(&groups).map_err(anyhow::Error::msg)?;
             for (index, node) in staged.iter_mut().enumerate() {
                 membership(
@@ -386,6 +425,25 @@ pub(crate) async fn prepare(
         }
         EditorBatchEdit::DeleteGroup { group_id }
         | EditorBatchEdit::UndoCreatedGroup { group_id, .. } => {
+            if let EditorBatchEdit::UndoCreatedGroup {
+                create_request_id,
+                memberships,
+                ..
+            } = &request.edit
+            {
+                creation::prove_undo(
+                    db,
+                    &captured.view,
+                    create_request_id,
+                    group_id,
+                    memberships,
+                    actor,
+                    request_id,
+                    &mut guards,
+                    &mut bindings,
+                )
+                .await?;
+            }
             anyhow::ensure!(
                 groups.iter().any(|g| &g.id == group_id),
                 "deleted group is not registered"
@@ -609,6 +667,23 @@ pub(crate) async fn prepare(
         actor: actor.into(),
         delete_before: matches!(&request.edit, EditorBatchEdit::DeleteGroup { .. })
             .then(|| request.capture.clone()),
+        create_before: matches!(
+            &request.edit,
+            EditorBatchEdit::CreateGroup { .. } | EditorBatchEdit::RedoCreatedGroup { .. }
+        )
+        .then(|| request.capture.clone()),
+        undo_before: matches!(&request.edit, EditorBatchEdit::UndoCreatedGroup { .. })
+            .then(|| request.capture.clone()),
+        undo_of: match &request.edit {
+            EditorBatchEdit::UndoCreatedGroup {
+                create_request_id, ..
+            } => Some(create_request_id.clone()),
+            _ => None,
+        },
+        redo_of: match &request.edit {
+            EditorBatchEdit::RedoCreatedGroup { undo_request_id } => Some(undo_request_id.clone()),
+            _ => None,
+        },
         restore_of: match &request.edit {
             EditorBatchEdit::RestoreDeletedGroup { delete_request_id } => {
                 Some(delete_request_id.clone())

@@ -5624,6 +5624,188 @@ mod tests {
                 );
             }
             {
+                let mut lifecycle = crate::editor_batch::EditorBatchState::default();
+                let (tx, rx) = crossbeam::channel::unbounded();
+                let group = ulid::Ulid::new().to_string();
+                let registry = vec![fe_runtime::messages::VisibilityGroupDto {
+                    id: group.clone(),
+                    name: "Lifecycle".into(),
+                    visible: true,
+                    order: 0.0,
+                }];
+                let mut current = capture.clone();
+                let mut creation_id = String::new();
+                let mut undo_creation_id = String::new();
+                let mut delete_id = String::new();
+                let mut complete = |controller: &mut crate::editor_batch::EditorBatchState,
+                                    current: &mut EditorBatchCapture| {
+                    let DbCommand::CommitCheckedEditorBatch {
+                        request,
+                        correlation_id,
+                    } = rx.try_recv().unwrap()
+                    else {
+                        panic!("one complete lifecycle write");
+                    };
+                    let mut saved = request.capture.members.clone();
+                    let mut created = None;
+                    let new_groups = match &request.edit {
+                        EditorBatchEdit::CreateGroup { id, .. } => {
+                            assert_eq!(id, &group);
+                            creation_id = correlation_id.clone();
+                            created = Some(group.clone());
+                            registry.clone()
+                        }
+                        EditorBatchEdit::RedoCreatedGroup { undo_request_id } => {
+                            assert_eq!(undo_request_id, &undo_creation_id);
+                            creation_id = correlation_id.clone();
+                            created = Some(group.clone());
+                            registry.clone()
+                        }
+                        EditorBatchEdit::UndoCreatedGroup {
+                            create_request_id, ..
+                        } => {
+                            assert_eq!(
+                                create_request_id, &creation_id,
+                                "Undo must use the latest original or Redo creation receipt"
+                            );
+                            undo_creation_id = correlation_id.clone();
+                            vec![]
+                        }
+                        EditorBatchEdit::DeleteGroup { .. } => {
+                            delete_id = correlation_id.clone();
+                            vec![]
+                        }
+                        EditorBatchEdit::RestoreDeletedGroup { delete_request_id } => {
+                            assert_eq!(delete_request_id, &delete_id);
+                            registry.clone()
+                        }
+                        _ => panic!("supported Group lifecycle command"),
+                    };
+                    for (index, member) in saved.iter_mut().enumerate() {
+                        match &request.edit {
+                            EditorBatchEdit::CreateGroup { .. }
+                            | EditorBatchEdit::RedoCreatedGroup { .. }
+                            | EditorBatchEdit::RestoreDeletedGroup { .. } => {
+                                member
+                                    .state
+                                    .properties
+                                    .insert("view.groups".into(), json!([group]));
+                            }
+                            EditorBatchEdit::DeleteGroup { .. } => {
+                                member.state.properties.remove("view.groups");
+                            }
+                            EditorBatchEdit::UndoCreatedGroup { memberships, .. } => {
+                                match &memberships[index] {
+                                    EditorMembershipValue::Absent => {
+                                        member.state.properties.remove("view.groups");
+                                    }
+                                    EditorMembershipValue::Null => {
+                                        member
+                                            .state
+                                            .properties
+                                            .insert("view.groups".into(), Value::Null);
+                                    }
+                                    EditorMembershipValue::Groups(ids) => {
+                                        member
+                                            .state
+                                            .properties
+                                            .insert("view.groups".into(), json!(ids));
+                                    }
+                                }
+                            }
+                            _ => unreachable!(),
+                        }
+                        member.history_version = member.history_version.map(|v| v + 1);
+                    }
+                    let receipt = EditorBatchReceipt {
+                        target: request.capture.target.clone(),
+                        request_id: correlation_id.clone(),
+                        scope: current.scope.clone(),
+                        petal_id: current.petal_id.clone(),
+                        members: saved.clone(),
+                        groups: new_groups.clone(),
+                        created_group_id: created,
+                    };
+                    controller
+                        .route(
+                            &DbResult::EditorBatchCommitted {
+                                receipt,
+                                correlation_id,
+                            },
+                            &nav,
+                            |_| Ok(()),
+                            |_| Ok(()),
+                            &tx,
+                        )
+                        .unwrap();
+                    current.members = saved;
+                    current.groups = new_groups;
+                };
+                let load = |controller: &mut crate::editor_batch::EditorBatchState,
+                            current: &EditorBatchCapture| {
+                    let DbCommand::ReadEditorBatch {
+                        target,
+                        correlation_id,
+                        ..
+                    } = rx.try_recv().unwrap()
+                    else {
+                        panic!("fresh original lifecycle targets");
+                    };
+                    let mut fresh = current.clone();
+                    fresh.target = target;
+                    if matches!(&fresh.target, EditorBatchTarget::DeletedGroup { .. }) {
+                        fresh.deleted_group = Some(EditorDeletedGroup {
+                            group_id: group.clone(),
+                            registry_before: registry.clone(),
+                            memberships: vec![
+                                EditorMembershipValue::Groups(vec![group.clone()]);
+                                fresh.members.len()
+                            ],
+                        });
+                    }
+                    controller
+                        .route(
+                            &DbResult::EditorBatchLoaded {
+                                capture: fresh,
+                                correlation_id,
+                            },
+                            &nav,
+                            |_| Ok(()),
+                            |_| Ok(()),
+                            &tx,
+                        )
+                        .unwrap();
+                };
+                lifecycle.maintain(&nav, &selected, &hierarchy, &tx);
+                load(&mut lifecycle, &current);
+                lifecycle
+                    .start(
+                        lifecycle.origin(&selected).unwrap(),
+                        EditorBatchEdit::CreateGroup {
+                            id: group.clone(),
+                            name: "Lifecycle".into(),
+                        },
+                        &nav,
+                        &selected,
+                        &tx,
+                    )
+                    .unwrap();
+                complete(&mut lifecycle, &mut current);
+                lifecycle.delete_group(group.clone(), &nav, &tx).unwrap();
+                load(&mut lifecycle, &current);
+                complete(&mut lifecycle, &mut current);
+                for redo in [false, false, true, true, false, false, true, true] {
+                    lifecycle.replay(redo, &nav, &tx).unwrap();
+                    load(&mut lifecycle, &current);
+                    complete(&mut lifecycle, &mut current);
+                }
+                assert!(current.groups.is_empty());
+                assert!(current
+                    .members
+                    .iter()
+                    .all(|member| !member.state.properties.contains_key("view.groups")));
+            }
+            {
                 let mut controller = crate::editor_batch::EditorBatchState::default();
                 let no_selection = NodeManager::default();
                 let (tx, rx) = crossbeam::channel::bounded(2);

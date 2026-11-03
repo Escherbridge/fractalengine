@@ -1075,3 +1075,6 @@ than retain/replay a stale remote DTO. Request nonces are not global ordering ve
 ReadEditorBatch and ResolveCheckedEditorBatch carry EditorBatchTarget. Nodes keeps nonempty explicit IDs; Group expands complete persisted membership on the DB writer, while DeletedGroup resolves the exact original checked deletion request. Captures/receipts echo and validate target context. Zero members are valid only for typed Group contexts, including zero-node Petals; no object version is invented.
 
 RestoreDeletedGroup submits only delete_request_id. EditorDeletedGroup context is server-derived expected-state data containing the original registry and exact memberships, never permission to choose a resurrected ID. The database rederives it from the immutable actor/scope/Petal deletion manifest. Proofs are single-use; a successful Redo delete supplies a new request ID for the next Undo. The existing reply-contract journey covers empty Group read/commit/resolution without new test declarations.
+
+
+Creation replay uses UndoCreatedGroup.create_request_id and RedoCreatedGroup.undo_request_id. The latter carries no client-selected old ID, registry or memberships: the writer derives those from the exact immutable same-actor/scope/Petal creation and Undo manifests. Successful Redo produces a fresh creation request for the next Undo; generic old-ID creation stays refused.

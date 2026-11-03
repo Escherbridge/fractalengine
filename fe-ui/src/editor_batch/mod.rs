@@ -106,6 +106,8 @@ struct HistoryEntry {
     forward: EditorBatchEdit,
     order: u64,
     delete_request_id: Option<String>,
+    create_request_id: Option<String>,
+    undo_create_request_id: Option<String>,
 }
 
 #[derive(Debug)]
@@ -693,6 +695,9 @@ impl EditorBatchState {
         if self.is_pending() {
             return Err("Wait for the current selection edit to finish saving".into());
         }
+        if matches!(&edit, EditorBatchEdit::RedoCreatedGroup { .. }) {
+            return Err("Use chronological Redo with its owned creation Undo proof".into());
+        }
         if !origin.key.matches(nav, nodes) {
             return Err("Selection or Petal changed; the edit was not sent".into());
         }
@@ -1136,7 +1141,12 @@ impl EditorBatchState {
             .pending
             .as_ref()
             .ok_or("No selection edit owns this receipt")?;
-        validation::receipt(receipt, &pending.id, &pending.request)?;
+        validation::receipt(
+            receipt,
+            &pending.id,
+            &pending.request,
+            pending.replay.as_ref(),
+        )?;
         let after = snapshot(receipt, &pending.request.capture);
         let projected = current.unwrap_or(&after);
         let projection = BatchProjection {
@@ -1158,9 +1168,21 @@ impl EditorBatchState {
             forward: pending.request.edit.clone(),
             order: 0,
             delete_request_id: None,
+            create_request_id: None,
+            undo_create_request_id: None,
         });
         if matches!(&pending.request.edit, EditorBatchEdit::DeleteGroup { .. }) {
             entry.delete_request_id = Some(receipt.request_id.clone());
+        }
+        match &pending.request.edit {
+            EditorBatchEdit::CreateGroup { .. } | EditorBatchEdit::RedoCreatedGroup { .. } => {
+                entry.create_request_id = Some(receipt.request_id.clone());
+                entry.undo_create_request_id = None;
+            }
+            EditorBatchEdit::UndoCreatedGroup { .. } => {
+                entry.undo_create_request_id = Some(receipt.request_id.clone())
+            }
+            _ => {}
         }
         let restore = if pending.direction != HistoryDirection::New
             && current.is_none_or(|current| validation::same_state(current, &after))

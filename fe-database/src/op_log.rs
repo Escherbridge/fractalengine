@@ -3303,6 +3303,60 @@ mod tests {
             )
             .await
             .unwrap();
+            let created_exact = editor_batch::commit(&db, prepared).await.unwrap();
+            // Preserve the creation proof through a checked Delete and its own exact Undo.
+            let deleting = editor_batch::read_target(
+                &db,
+                &plugin_scope,
+                "tree-other-petal",
+                &[],
+                &EditorBatchTarget::Group {
+                    group_id: group.clone(),
+                },
+                "did:qa",
+            )
+            .await
+            .unwrap();
+            let prepared = editor_batch::prepare(
+                &db,
+                &EditorBatchRequest {
+                    capture: deleting,
+                    edit: EditorBatchEdit::DeleteGroup {
+                        group_id: group.clone(),
+                    },
+                },
+                "qa-created-group-delete",
+                "did:qa",
+            )
+            .await
+            .unwrap();
+            editor_batch::commit(&db, prepared).await.unwrap();
+            let deleted_target = EditorBatchTarget::DeletedGroup {
+                delete_request_id: "qa-created-group-delete".into(),
+            };
+            let restoring = editor_batch::read_target(
+                &db,
+                &plugin_scope,
+                "tree-other-petal",
+                &ids,
+                &deleted_target,
+                "did:qa",
+            )
+            .await
+            .unwrap();
+            let prepared = editor_batch::prepare(
+                &db,
+                &EditorBatchRequest {
+                    capture: restoring,
+                    edit: EditorBatchEdit::RestoreDeletedGroup {
+                        delete_request_id: "qa-created-group-delete".into(),
+                    },
+                },
+                "qa-created-group-undo-delete",
+                "did:qa",
+            )
+            .await
+            .unwrap();
             editor_batch::commit(&db, prepared).await.unwrap();
             let capture = editor_batch::read(&db, &plugin_scope, "tree-other-petal", &ids, "did:qa")
                 .await
@@ -3312,7 +3366,8 @@ mod tests {
                 &EditorBatchRequest {
                     capture,
                     edit: EditorBatchEdit::UndoCreatedGroup {
-                        group_id: group,
+                        create_request_id: "qa-group-exact-create".into(),
+                        group_id: group.clone(),
                         memberships: vec![
                             EditorMembershipValue::Groups(vec![]),
                             EditorMembershipValue::Null,
@@ -3339,6 +3394,260 @@ mod tests {
                     .is_null(),
                 "one created-Group inverse preserves exact original presence"
             );
+            {
+                let current = editor_batch::read(&db, &plugin_scope, "tree-other-petal", &ids, "did:qa")
+                    .await
+                    .unwrap();
+                let operations = op_log_count(&db).await;
+                for proof in ["forged-creation-undo", "qa-group-exact-create"] {
+                    editor_batch::prepare(
+                        &db,
+                        &EditorBatchRequest {
+                            capture: current.clone(),
+                            edit: EditorBatchEdit::RedoCreatedGroup {
+                                undo_request_id: proof.into(),
+                            },
+                        },
+                        &format!("qa-forged-redo-{proof}"),
+                        "did:qa",
+                    )
+                    .await
+                    .expect_err("only a durable matching creation Undo can authorize Redo");
+                }
+                editor_batch::prepare(
+                    &db,
+                    &EditorBatchRequest {
+                        capture: current.clone(),
+                        edit: EditorBatchEdit::CreateGroup {
+                            id: group.clone(),
+                            name: "Generic resurrection".into(),
+                        },
+                    },
+                    "qa-created-generic-reuse",
+                    "did:qa",
+                )
+                .await
+                .expect_err("generic Create cannot bypass a historical creation proof");
+                db.query("CREATE role:qa_creation_redo_peer CONTENT {peer_did:'did:other',scope:$scope,role:'editor'}").bind(("scope", plugin_scope.clone())).await.unwrap().check().unwrap();
+                let other_current =
+                    editor_batch::read(&db, &plugin_scope, "tree-other-petal", &ids, "did:other")
+                        .await
+                        .unwrap();
+                let cross_actor = editor_batch::prepare(
+                    &db,
+                    &EditorBatchRequest {
+                        capture: other_current,
+                        edit: EditorBatchEdit::RedoCreatedGroup {
+                            undo_request_id: "qa-group-exact-undo".into(),
+                        },
+                    },
+                    "qa-created-cross-actor",
+                    "did:other",
+                )
+                .await
+                .expect_err(
+                    "an authorized different Editor cannot borrow another actor's creation Undo proof",
+                );
+                assert!(cross_actor.to_string().contains("same-actor"));
+                db.query("DELETE role:qa_creation_redo_peer")
+                    .await
+                    .unwrap()
+                    .check()
+                    .unwrap();
+                assert_eq!(op_log_count(&db).await, operations);
+                db.query("UPDATE node SET properties['view.groups']=['unrelated-group'] WHERE node_id=$id")
+                    .bind(("id", ids[0].clone()))
+                    .await
+                    .unwrap()
+                    .check()
+                    .unwrap();
+                let changed_context =
+                    editor_batch::read(&db, &plugin_scope, "tree-other-petal", &ids, "did:qa")
+                        .await
+                        .unwrap();
+                editor_batch::prepare(&db, &EditorBatchRequest { capture: changed_context, edit: EditorBatchEdit::RedoCreatedGroup { undo_request_id: "qa-group-exact-undo".into() } }, "qa-created-wrong-membership-context", "did:qa").await.expect_err("a fresh capture cannot substitute different membership context into the proven lifecycle");
+                db.query("UPDATE node SET properties['view.groups']=[] WHERE node_id=$id")
+                    .bind(("id", ids[0].clone()))
+                    .await
+                    .unwrap()
+                    .check()
+                    .unwrap();
+                let redo = EditorBatchRequest {
+                    capture: current,
+                    edit: EditorBatchEdit::RedoCreatedGroup {
+                        undo_request_id: "qa-group-exact-undo".into(),
+                    },
+                };
+                let prepared = editor_batch::prepare(&db, &redo, "qa-created-source-race", "did:qa")
+                    .await
+                    .unwrap();
+                db.query("UPDATE node SET display_name='Raced creation context' WHERE node_id=$id")
+                    .bind(("id", ids[0].clone()))
+                    .await
+                    .unwrap()
+                    .check()
+                    .unwrap();
+                editor_batch::commit(&db, prepared)
+                    .await
+                    .expect_err("a fresh-context race refuses the whole proven creation Redo");
+                assert_eq!(op_log_count(&db).await, operations);
+                db.query("UPDATE node SET display_name=$name WHERE node_id=$id")
+                    .bind(("id", ids[0].clone()))
+                    .bind(("name", redo.capture.members[0].state.display_name.clone()))
+                    .await
+                    .unwrap()
+                    .check()
+                    .unwrap();
+                let prepared = editor_batch::prepare(&db, &redo, "qa-created-redo", "did:qa")
+                    .await
+                    .unwrap();
+                let competing = editor_batch::prepare(&db, &redo, "qa-created-redo-competing", "did:qa")
+                    .await
+                    .unwrap();
+                let redone = editor_batch::commit(&db, prepared).await.unwrap();
+                assert_eq!(
+                    redone.groups, created_exact.groups,
+                    "creation Redo restores the exact saved registry vector"
+                );
+                assert_eq!(redone.created_group_id.as_deref(), Some(group.as_str()));
+                assert_eq!(
+                    serde_json::to_value(
+                        redone
+                            .members
+                            .iter()
+                            .map(|m| m.state.properties.get("view.groups"))
+                            .collect::<Vec<_>>()
+                    )
+                    .unwrap(),
+                    serde_json::to_value(
+                        created_exact
+                            .members
+                            .iter()
+                            .map(|m| m.state.properties.get("view.groups"))
+                            .collect::<Vec<_>>()
+                    )
+                    .unwrap()
+                );
+                editor_batch::commit(&db, competing)
+                    .await
+                    .expect_err("two prepared Redo requests cannot consume one Undo proof twice");
+                let deleting = editor_batch::read_target(
+                    &db,
+                    &plugin_scope,
+                    "tree-other-petal",
+                    &[],
+                    &EditorBatchTarget::Group {
+                        group_id: group.clone(),
+                    },
+                    "did:qa",
+                )
+                .await
+                .unwrap();
+                let prepared = editor_batch::prepare(
+                    &db,
+                    &EditorBatchRequest {
+                        capture: deleting,
+                        edit: EditorBatchEdit::DeleteGroup {
+                            group_id: group.clone(),
+                        },
+                    },
+                    "qa-created-redo-delete",
+                    "did:qa",
+                )
+                .await
+                .unwrap();
+                editor_batch::commit(&db, prepared).await.unwrap();
+                let restoring = editor_batch::read_target(
+                    &db,
+                    &plugin_scope,
+                    "tree-other-petal",
+                    &ids,
+                    &EditorBatchTarget::DeletedGroup {
+                        delete_request_id: "qa-created-redo-delete".into(),
+                    },
+                    "did:qa",
+                )
+                .await
+                .unwrap();
+                let prepared = editor_batch::prepare(
+                    &db,
+                    &EditorBatchRequest {
+                        capture: restoring,
+                        edit: EditorBatchEdit::RestoreDeletedGroup {
+                            delete_request_id: "qa-created-redo-delete".into(),
+                        },
+                    },
+                    "qa-created-redo-undo-delete",
+                    "did:qa",
+                )
+                .await
+                .unwrap();
+                editor_batch::commit(&db, prepared).await.unwrap();
+                let current = editor_batch::read(&db, &plugin_scope, "tree-other-petal", &ids, "did:qa")
+                    .await
+                    .unwrap();
+                let restored_memberships = vec![
+                    EditorMembershipValue::Groups(vec![]),
+                    EditorMembershipValue::Null,
+                ];
+                let old_undo = EditorBatchRequest {
+                    capture: current.clone(),
+                    edit: EditorBatchEdit::UndoCreatedGroup {
+                        create_request_id: "qa-group-exact-create".into(),
+                        group_id: group.clone(),
+                        memberships: restored_memberships.clone(),
+                    },
+                };
+                editor_batch::prepare(&db, &old_undo, "qa-created-old-create-proof", "did:qa")
+                    .await
+                    .expect_err("old creation proof remains consumed after a later legitimate Redo");
+                let prepared = editor_batch::prepare(
+                    &db,
+                    &EditorBatchRequest {
+                        capture: current,
+                        edit: EditorBatchEdit::UndoCreatedGroup {
+                            create_request_id: "qa-created-redo".into(),
+                            group_id: group.clone(),
+                            memberships: restored_memberships,
+                        },
+                    },
+                    "qa-created-new-undo",
+                    "did:qa",
+                )
+                .await
+                .unwrap();
+                editor_batch::commit(&db, prepared).await.unwrap();
+                let current = editor_batch::read(&db, &plugin_scope, "tree-other-petal", &ids, "did:qa")
+                    .await
+                    .unwrap();
+                editor_batch::prepare(
+                    &db,
+                    &EditorBatchRequest {
+                        capture: current.clone(),
+                        edit: EditorBatchEdit::RedoCreatedGroup {
+                            undo_request_id: "qa-group-exact-undo".into(),
+                        },
+                    },
+                    "qa-created-consumed-redo",
+                    "did:qa",
+                )
+                .await
+                .expect_err("a consumed old Undo proof cannot be reused under a matching reset state");
+                let prepared = editor_batch::prepare(
+                    &db,
+                    &EditorBatchRequest {
+                        capture: current,
+                        edit: EditorBatchEdit::RedoCreatedGroup {
+                            undo_request_id: "qa-created-new-undo".into(),
+                        },
+                    },
+                    "qa-created-new-redo",
+                    "did:qa",
+                )
+                .await
+                .unwrap();
+                editor_batch::commit(&db, prepared).await.unwrap();
+            }
             let dangling = crate::handlers::node_history::create_object_granted(
                 &db,
                 "tree-other-petal",
