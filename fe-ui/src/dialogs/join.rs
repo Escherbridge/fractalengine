@@ -231,6 +231,14 @@ mod tests {
         };
         let _ = ctx.run(raw, |ctx| {
             render_join_dialog(ctx, ui_mgr, db_tx);
+            if ctx.current_pass_index() == 0
+                && ctx.data(|data| {
+                    data.get_temp::<bool>(egui::Id::new("guard_extra_pass"))
+                        .unwrap_or(false)
+                })
+            {
+                ctx.request_discard("guarded Join extra layout pass");
+            }
             if ctx.data(|data| {
                 data.get_temp::<bool>(egui::Id::new("guard_plain_sink"))
                     .unwrap_or(false)
@@ -434,7 +442,10 @@ mod tests {
         }
         assert!(matches!(ui_mgr.active_dialog, ActiveDialog::None));
         assert!(!ui_mgr.join_request.pending, "closing resets the request");
-        for mode in ["success", "layout", "focus", "dialog"] {
+        for mode in [
+            "success", "success-multipass", "layout", "focus", "dialog", "stale-pass", "missed-render",
+        ] {
+            let succeeds = mode.starts_with("success");
             let context = egui::Context::default();
             let mut ui = UiManager::default();
             ui.open_dialog(ActiveDialog::JoinDialog {
@@ -459,6 +470,7 @@ mod tests {
             };
             let input_at = point(lease.input_bounds);
             let submit_at = point(lease.join_bounds);
+            let input_text = format!("fractalengine://join/v1/{}", "x".repeat(4000));
             let mut spec = fe_runtime::input::InputSpec {
                 commands: vec![
                     fe_runtime::input::InputCommand::PointerClick {
@@ -467,7 +479,7 @@ mod tests {
                         button: fe_runtime::input::PointerButton::Left,
                     },
                     fe_runtime::input::InputCommand::TextEntry {
-                        text: "fractalengine://join/v1/guarded-fixture".into(),
+                        text: input_text.clone(),
                     },
                     fe_runtime::input::InputCommand::PointerClick {
                         x: submit_at.x,
@@ -488,6 +500,17 @@ mod tests {
                 &window,
                 &spec
             ));
+            if mode == "stale-pass" {
+                let _ = context.run(egui::RawInput::default(), |_| {});
+                assert!(
+                    !ui.prepare_qa_join_input_frame(&lease.lease_id, 0, "did:key:recipient", 1, &window, &context),
+                    "A completed foreign pass cannot reuse stale Join widget state"
+                );
+                assert!(matches!(&ui.active_dialog,ActiveDialog::JoinDialog {invite_buf} if invite_buf.is_empty()));
+                assert!(!ui.join_flow.active());
+                ui.finish_qa_join_input(&lease.lease_id);
+                continue;
+            }
             for index in 0..2 {
                 assert!(ui.prepare_qa_join_input_frame(
                     &lease.lease_id,
@@ -497,6 +520,10 @@ mod tests {
                     &window,
                     &context
                 ));
+                assert!(
+                    !ui.prepare_qa_join_input_frame(&lease.lease_id, index + 1, "did:key:recipient", 1, &window, &context),
+                    "The next input frame must wait for this prepared frame to render and end its pass"
+                );
                 run_frame(
                     &context,
                     0.1 + index as f64 * 0.1,
@@ -532,16 +559,27 @@ mod tests {
                 "focus" => context
                     .memory_mut(|memory| memory.request_focus(egui::Id::new("guard_plain_input"))),
                 "dialog" => ui.open_dialog(ActiveDialog::None),
+                "missed-render" => {
+                    let _ = context.run(egui::RawInput::default(), |_| {});
+                }
+                "success-multipass" => context.data_mut(|data| {
+                    data.insert_temp(egui::Id::new("guard_extra_pass"), true)
+                }),
                 _ => {}
             }
-            if mode != "success" {
+            if !succeeds {
                 context.data_mut(|data| data.insert_temp(egui::Id::new("guard_plain_sink"), true));
             }
             // No global Text event: the production masked TextEdit owns the private capsule.
             run_frame(&context, 0.3, vec![], &mut ui, &tx);
-            if mode == "success" {
+            context.data_mut(|data| data.insert_temp(egui::Id::new("guard_extra_pass"), false));
+            if succeeds {
                 assert!(
-                    matches!(&ui.active_dialog,ActiveDialog::JoinDialog {invite_buf} if invite_buf=="fractalengine://join/v1/guarded-fixture")
+                    matches!(&ui.active_dialog,ActiveDialog::JoinDialog {invite_buf} if invite_buf==&input_text)
+                );
+                assert!(
+                    !ui.join_flow.active(),
+                    "Completed masked insertion enables Join without queuing admission early"
                 );
                 for index in 3..5 {
                     assert!(ui.prepare_qa_join_input_frame(
@@ -552,6 +590,10 @@ mod tests {
                         &window,
                         &context
                     ));
+                    assert!(
+                        !ui.prepare_qa_join_input_frame(&lease.lease_id, index + 1, "did:key:recipient", 1, &window, &context),
+                        "Join press and release cannot advance without a completed native render"
+                    );
                     run_frame(
                         &context,
                         0.4 + (index - 3) as f64 * 0.1,

@@ -455,3 +455,9 @@ Access invitation controls now admit current Owner/Manager contexts and explain 
 Manager grants require Owner reauthorization and bounded validity. The controller still
 requires fresh stored details and Access snapshots; DB authority/proof/native-ticket checks
 run before any grant or credential is issued. Editor/Viewer contexts cannot issue invitations.
+
+The guarded Join replay captures actual Responses while this dialog renders; its
+PreUpdate guard uses only the last completed viewport/frame/pass snapshot rather
+than egui read_response outside a pass. The private masked TextEdit and real Join
+button additionally check their prepared pass before inserting/submitting. See
+../invitations/AGENTS.md, Completed-pass Join input snapshots.

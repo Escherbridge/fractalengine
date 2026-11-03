@@ -188,3 +188,28 @@ release. The existing API Owner-token floor is separate from entity Manager dele
 is unchanged. Actual masked-widget input leases, owned socket/PID checks, short TTL and
 no-replay/clipboard/diagnostic boundaries remain unchanged. Existing journey extensions here
 verify metadata/correlation only; real paired acceptance remains parent-owned runtime QA.
+
+## Completed-pass Join input snapshots
+
+Guarded replay runs in PreUpdate, outside egui's run/pass. In pinned egui 0.33.3,
+end_pass swaps this_pass and prev_pass; read_response prefers this_pass until the
+next begin_pass clears it. Calling it there can therefore read the pre-text disabled
+Join button, or pre-press pointer ownership. It is not a completed-pass observation.
+
+The real Join renderer now captures native input/submit enabled state, submit
+pointer-down ownership, focus, layer transforms and viewport/frame/pass identities
+alongside its exact controls. PreUpdate consumes only the immediately completed
+frame and final pass, with the same live focus, transforms and interaction layers.
+Every subsequent replay frame requires the preceding prepared frame to have rendered.
+Geometry remains bound to the original lease; enabled and pointer-down values come
+from actual Responses, never inferred from text or supplied by the client.
+
+Private text insertion and actual Join submission additionally require their exact
+prepared render frame/pass. A foreign/skipped pass cannot deliver a retained text
+capsule later. Multipass layout records the final pass for the next PreUpdate;
+accepted input is not reinjected into later layout passes. All dialog-generation,
+recipient/navigation/revision, window/focus, byte/order and one-use guards remain.
+The existing real-egui Join journey now includes a long masked input enabling Join,
+press/release across completed passes, an extra text-layout pass, missing/foreign
+passes and the existing stale geometry/focus/dialog plain-sink refusals. It remains
+authored source evidence until the root-owned integrated execution.

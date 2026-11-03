@@ -17,9 +17,17 @@ struct Controls {
     submit_clip: egui::Rect,
     input_layer: egui::LayerId,
     submit_layer: egui::LayerId,
+    input_transform: egui::emath::TSTransform,
+    submit_transform: egui::emath::TSTransform,
     ppp: f32,
     input_enabled: bool,
+    submit_enabled: bool,
+    submit_pointer_down: bool,
     layers_allowed: bool,
+    focused: Option<egui::Id>,
+    viewport: egui::ViewportId,
+    frame: u64,
+    pass: u64,
 }
 impl Controls {
     fn matches(&self, other: &Self) -> bool {
@@ -31,6 +39,9 @@ impl Controls {
             && self.submit_clip == other.submit_clip
             && self.input_layer == other.input_layer
             && self.submit_layer == other.submit_layer
+            && self.input_transform == other.input_transform
+            && self.submit_transform == other.submit_transform
+            && self.viewport == other.viewport
             && self.ppp.to_bits() == other.ppp.to_bits()
     }
     fn physical(rect: egui::Rect, clip: egui::Rect, ppp: f32) -> Option<[f32; 4]> {
@@ -42,21 +53,27 @@ impl Controls {
             rect.height() * ppp,
         ])
     }
+    fn completed(&self, ctx: &egui::Context) -> bool {
+        self.viewport == ctx.viewport_id()
+            && self.frame.checked_add(1) == Some(ctx.cumulative_frame_nr())
+            && self.pass.checked_add(1) == Some(ctx.cumulative_pass_nr())
+            && self.focused == ctx.memory(|memory| memory.focused())
+    }
     fn live(&self, ctx: &egui::Context) -> bool {
         self.ppp.to_bits() == ctx.pixels_per_point().to_bits()
-            && [
-                (self.input, self.input_rect, self.input_layer),
-                (self.submit, self.submit_rect, self.submit_layer),
-            ]
-            .into_iter()
-            .all(|(id, rect, layer)| {
-                ctx.read_response(id).is_some_and(|response| {
-                    response.layer_id == layer
-                        && ctx.layer_transform_to_global(layer).unwrap_or_default() * response.rect
-                            == rect
-                        && ctx.memory(|memory| memory.allows_interaction(layer))
-                })
-            })
+            && self.input_enabled
+            && self.layers_allowed
+            && self.input_transform
+                == ctx
+                    .layer_transform_to_global(self.input_layer)
+                    .unwrap_or_default()
+            && self.submit_transform
+                == ctx
+                    .layer_transform_to_global(self.submit_layer)
+                    .unwrap_or_default()
+            && [self.input_layer, self.submit_layer]
+                .into_iter()
+                .all(|layer| ctx.memory(|memory| memory.allows_interaction(layer)))
     }
     fn dto(&self, id: String) -> Option<JoinInputLease> {
         Some(JoinInputLease {
@@ -83,6 +100,8 @@ struct Lease {
     prefix: String,
     next_frame: usize,
     current_frame: Option<usize>,
+    prepared_frame: Option<u64>,
+    prepared_pass: Option<u64>,
     pending: Option<String>,
     inserted: bool,
     submitted: bool,
@@ -116,12 +135,20 @@ impl JoinInputState {
             submit_clip: global(submit.layer_id) * submit_clip,
             input_layer: input.layer_id,
             submit_layer: submit.layer_id,
+            input_transform: global(input.layer_id),
+            submit_transform: global(submit.layer_id),
             ppp: ctx.pixels_per_point(),
             input_enabled: input.enabled(),
+            submit_enabled: submit.enabled(),
+            submit_pointer_down: submit.is_pointer_button_down_on(),
             layers_allowed: ctx.memory(|memory| {
                 memory.allows_interaction(input.layer_id)
                     && memory.allows_interaction(submit.layer_id)
             }),
+            focused: ctx.memory(|memory| memory.focused()),
+            viewport: ctx.viewport_id(),
+            frame: ctx.cumulative_frame_nr(),
+            pass: ctx.cumulative_pass_nr(),
         };
         if let Some(lease) = self.lease.as_mut() {
             if !lease.controls.matches(&controls) {
@@ -191,6 +218,8 @@ impl JoinInputState {
             prefix: String::new(),
             next_frame: 0,
             current_frame: None,
+            prepared_frame: None,
+            prepared_pass: None,
             pending: None,
             inserted: false,
             submitted: false,
@@ -291,27 +320,21 @@ impl JoinInputState {
         {
             return false;
         }
-        if !self
-            .controls
-            .as_ref()
-            .is_some_and(|controls| lease.controls.matches(controls))
-        {
+        let Some(controls) = self.controls.as_ref() else {
             return false;
-        }
-        if !ctx
-            .read_response(lease.controls.input)
-            .is_some_and(|response| response.enabled())
-            || !lease.controls.live(ctx)
+        };
+        if !lease.controls.matches(controls)
+            || !controls.completed(ctx)
+            || !controls.live(ctx)
+            || lease
+                .prepared_frame
+                .is_some_and(|frame| controls.frame != frame)
         {
             return false;
         }
         let focus = ctx.memory(|memory| memory.focused());
         let submit_press = lease.chunks.len() + 2;
-        if index >= submit_press
-            && !ctx
-                .read_response(lease.controls.submit)
-                .is_some_and(|response| response.enabled())
-        {
+        if index >= submit_press && !controls.submit_enabled {
             return false;
         }
         if (1..=submit_press).contains(&index) && focus != Some(lease.controls.input) {
@@ -320,10 +343,7 @@ impl JoinInputState {
         if index == submit_press + 1
             && focus != Some(lease.controls.input)
             && focus != Some(lease.controls.submit)
-            && !(focus.is_none()
-                && ctx
-                    .read_response(lease.controls.submit)
-                    .is_some_and(|response| response.is_pointer_button_down_on()))
+            && !(focus.is_none() && controls.submit_pointer_down)
         {
             return false;
         }
@@ -331,6 +351,8 @@ impl JoinInputState {
             return false;
         }
         lease.current_frame = Some(index);
+        lease.prepared_frame = Some(ctx.cumulative_frame_nr());
+        lease.prepared_pass = Some(ctx.cumulative_pass_nr());
         lease.next_frame = index + 1;
         lease.inserted = false;
         if (2..submit_press).contains(&index) {
@@ -340,7 +362,11 @@ impl JoinInputState {
     }
     pub fn begin_event(&self, ctx: &egui::Context) -> Option<String> {
         let lease = self.lease.as_ref()?;
-        if lease.failed || lease.deadline <= Instant::now() {
+        if lease.failed
+            || lease.deadline <= Instant::now()
+            || lease.prepared_frame != Some(ctx.cumulative_frame_nr())
+            || lease.prepared_pass != Some(ctx.cumulative_pass_nr())
+        {
             return None;
         }
         let text = lease.pending.clone()?;
@@ -362,6 +388,8 @@ impl JoinInputState {
             return true;
         }
         let valid = !lease.failed
+            && lease.prepared_frame == Some(ctx.cumulative_frame_nr())
+            && lease.prepared_pass == Some(ctx.cumulative_pass_nr())
             && ctx.input(|input| input.focused)
             && ctx
                 .layer_transform_to_global(lease.controls.input_layer)
@@ -442,6 +470,8 @@ impl JoinInputState {
             return true;
         }
         let valid = !lease.failed
+            && lease.prepared_frame == Some(response.ctx.cumulative_frame_nr())
+            && lease.prepared_pass == Some(response.ctx.cumulative_pass_nr())
             && lease.deadline > Instant::now()
             && response.ctx.input(|input| input.focused)
             && response.ctx.memory(|memory| memory.focused()).map_or_else(
