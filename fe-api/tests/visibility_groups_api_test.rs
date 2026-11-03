@@ -199,6 +199,23 @@ async fn patch_upserts_one_group_and_delete_removes_it() {
         .collect();
     assert_eq!(ids, vec!["utilities", "roads"]);
 
+    let current = stored(&h, &seeded.petal_id, &editor).await;
+    let groups = serde_json::from_value(current.clone()).unwrap();
+    let refused = set_petal_visibility_groups_checked_reply(
+        &h.db,
+        &h.did(),
+        seeded.petal_id.clone(),
+        groups,
+        fe_runtime::messages::CallerAuth::identified("api-editor", "editor"),
+        Some("stale-group-cas".into()),
+        Some(vec![]),
+    )
+    .await;
+    assert!(
+        matches!(refused,DbResult::RequestFailed{ref correlation_id,..} if correlation_id=="stale-group-cas"),
+        "stale PATCH-style registry capture cannot overwrite a concurrent edit"
+    );
+    assert_eq!(stored(&h, &seeded.petal_id, &editor).await, current);
     let (status, _) = send(&h, "DELETE", &format!("{path}/phase-2"), &editor, None).await;
     assert_eq!(status, StatusCode::NOT_FOUND, "deleting an unknown group");
 }

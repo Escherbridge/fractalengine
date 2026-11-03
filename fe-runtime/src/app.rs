@@ -2268,6 +2268,87 @@ mod tests {
                 },
             ));
         }
+        {
+            use crate::editor_batch::*;
+            let capture:EditorBatchCapture=serde_json::from_value(serde_json::json!({"scope":"VERSE#v-FRACTAL#f-PETAL#p","petal_id":"p","groups":[],"petal_snapshot":"opaque","world_scale":1.0,
+                    "members":[{"node_id":"n","history_version":null,"stamp_path":null,"state":{"node_id":"n","petal_id":"p","display_name":"Object","asset_id":null,"position":[0,0,0],"elevation":0,"rotation":[0,0,0],"scale":[1,1,1],"interactive":false,"created_at":"now","edit_seq":0,"properties":{"nested":{"null":null}},"tombstone":null}}]})).unwrap();
+            let receipt = EditorBatchReceipt {
+                request_id: "batch-1".into(),
+                scope: capture.scope.clone(),
+                petal_id: "p".into(),
+                members: capture.members.clone(),
+                groups: vec![],
+                created_group_id: None,
+            };
+            let serialized = serde_json::to_value(&receipt).unwrap();
+            let decoded: EditorBatchReceipt = serde_json::from_value(serialized.clone()).unwrap();
+            assert_eq!(
+                serde_json::to_value(decoded).unwrap(),
+                serialized,
+                "batch receipt retains nulls and unknown legacy versions"
+            );
+            cases.extend([
+                (
+                    DbCommand::ReadEditorBatch {
+                        scope: capture.scope.clone(),
+                        petal_id: "p".into(),
+                        node_ids: vec!["n".into()],
+                        correlation_id: "batch-read".into(),
+                    },
+                    DbResult::EditorBatchLoaded {
+                        capture: capture.clone(),
+                        correlation_id: "batch-read".into(),
+                    },
+                ),
+                (
+                    DbCommand::CommitCheckedEditorBatch {
+                        request: EditorBatchRequest {
+                            capture: capture.clone(),
+                            edit: EditorBatchEdit::Membership {
+                                group_id: "g".into(),
+                                member: true,
+                            },
+                        },
+                        correlation_id: "batch-1".into(),
+                    },
+                    DbResult::EditorBatchCommitted {
+                        receipt: receipt.clone(),
+                        correlation_id: "batch-1".into(),
+                    },
+                ),
+                (
+                    DbCommand::ResolveCheckedEditorBatch {
+                        scope: capture.scope.clone(),
+                        petal_id: "p".into(),
+                        node_ids: vec!["n".into()],
+                        request_id: "batch-1".into(),
+                        correlation_id: "batch-resolve".into(),
+                    },
+                    DbResult::EditorBatchResolved {
+                        resolution: EditorBatchResolution {
+                            request_id: "batch-1".into(),
+                            receipt: Some(receipt),
+                            current: capture,
+                        },
+                        correlation_id: "batch-resolve".into(),
+                    },
+                ),
+                (
+                    DbCommand::ComparePetalVisibilityGroups {
+                        petal_id: "p".into(),
+                        expected: vec![],
+                        groups: vec![],
+                        auth: crate::messages::CallerAuth::Local,
+                        correlation_id: Some("group-cas".into()),
+                    },
+                    DbResult::PetalVisibilityGroupsLoaded {
+                        petal_id: "p".into(),
+                        groups: vec![],
+                        correlation_id: Some("group-cas".into()),
+                    },
+                ),
+            ]);
+        }
         for (cmd, result) in cases {
             let cmd_kind = reply_kind_of_command(&cmd);
             assert!(cmd_kind.is_some(), "no reply family mapped for {cmd:?}");

@@ -2142,6 +2142,853 @@ mod tests {
                 "untagged baselines retain exact and crossing replay behavior"
             );
         }
+        {
+            use crate::handlers::editor_batch;
+            use fe_runtime::editor_batch::*;
+            let mut ids = Vec::new();
+            for name in ["Batch Alpha", "Batch Beta"] {
+                ids.push(
+                    crate::handlers::node_history::create_object_granted(
+                        &db,
+                        "tree-other-petal",
+                        name,
+                        None,
+                        [0.0; 3],
+                        vec![0.0; 3],
+                        vec![1.0; 3],
+                        serde_json::from_value(serde_json::json!({"qa.shared":0})).unwrap(),
+                        "did:qa",
+                        &NodeAccessGrant::Local,
+                    )
+                    .await
+                    .unwrap()
+                    .0,
+                );
+            }
+            let changes = vec![
+                EditorPropertyEdit::Set {
+                    key: "qa.shared".into(),
+                    value: serde_json::json!(7),
+                },
+                EditorPropertyEdit::Set {
+                    key: "qa.nullable".into(),
+                    value: serde_json::Value::Null,
+                },
+            ];
+            let request_for = |capture: EditorBatchCapture| EditorBatchRequest {
+                edit: EditorBatchEdit::Targets(
+                    capture
+                        .members
+                        .iter()
+                        .map(|member| EditorTargetEdit {
+                            node_id: member.node_id.clone(),
+                            mutation: EditorTargetMutation::Properties(changes.clone()),
+                        })
+                        .collect(),
+                ),
+                capture,
+            };
+            let initial = editor_batch::read(&db, &plugin_scope, "tree-other-petal", &ids, "did:qa")
+                .await
+                .unwrap();
+            assert_eq!(
+                initial
+                    .members
+                    .iter()
+                    .map(|m| m.node_id.clone())
+                    .collect::<Vec<_>>(),
+                ids
+            );
+            editor_batch::read(
+                &db,
+                &plugin_scope,
+                "tree-other-petal",
+                &[ids[0].clone(), ids[0].clone()],
+                "did:qa",
+            )
+            .await
+            .expect_err("duplicate selection cannot become a prefix edit");
+            editor_batch::read(
+                &db,
+                &plugin_scope,
+                "tree-other-petal",
+                &vec![ids[0].clone(); 257],
+                "did:qa",
+            )
+            .await
+            .expect_err("selection count is bounded before query expansion");
+            let request = request_for(initial.clone());
+            editor_batch::prepare(&db, &request, "qa-selection-viewer", "did:tree-viewer")
+                .await
+                .expect_err("Viewer cannot submit a checked selection edit");
+            let prepared = editor_batch::prepare(&db, &request, "qa-selection-failure", "did:qa")
+                .await
+                .unwrap();
+            db.query("DEFINE EVENT fail_selection_fact ON TABLE node_log WHEN $after.payload.after_state.display_name='Batch Beta' AND $after.payload.atomic_save_id='qa-selection-failure' THEN { THROW 'induced second selected member failure' }").await.unwrap().check().unwrap();
+            let operations = op_log_count(&db).await;
+            editor_batch::commit(&db, prepared)
+                .await
+                .expect_err("second member failure must roll back nodes, facts and manifest");
+            db.query("REMOVE EVENT fail_selection_fact ON TABLE node_log")
+                .await
+                .unwrap()
+                .check()
+                .unwrap();
+            assert_eq!(op_log_count(&db).await, operations);
+            let unchanged = editor_batch::read(&db, &plugin_scope, "tree-other-petal", &ids, "did:qa")
+                .await
+                .unwrap();
+            assert_eq!(
+                serde_json::to_value(&unchanged).unwrap(),
+                serde_json::to_value(&initial).unwrap()
+            );
+            let prepared = editor_batch::prepare(&db, &request, "qa-selection-properties", "did:qa")
+                .await
+                .unwrap();
+            let saved = editor_batch::commit(&db, prepared).await.unwrap();
+            assert_eq!(saved.members.len(), 2);
+            for member in &saved.members {
+                assert_eq!(member.state.properties["qa.shared"], 7);
+                assert!(
+                    member
+                        .state
+                        .properties
+                        .get("qa.nullable")
+                        .unwrap()
+                        .is_null()
+                );
+                assert_eq!(member.history_version, Some(3));
+            }
+            let resolved = editor_batch::resolve(
+                &db,
+                &plugin_scope,
+                "tree-other-petal",
+                &ids,
+                "qa-selection-properties",
+                "did:qa",
+            )
+            .await
+            .unwrap();
+            assert_eq!(
+                serde_json::to_value(resolved.receipt.unwrap()).unwrap(),
+                serde_json::to_value(&saved).unwrap(),
+                "timeout recovery uses the immutable complete manifest"
+            );
+            editor_batch::resolve(
+                &db,
+                &plugin_scope,
+                "tree-other-petal",
+                &[ids[1].clone(), ids[0].clone()],
+                "qa-selection-properties",
+                "did:qa",
+            )
+            .await
+            .expect_err("receipt cannot satisfy another target order");
+            let operations = op_log_count(&db).await;
+            editor_batch::prepare(&db, &request, "qa-stale-selection", "did:qa")
+                .await
+                .expect_err("stale before-state/version refuses every target");
+            assert_eq!(op_log_count(&db).await, operations);
+            for race in ["role", "position", "registry", "schema", "ancestry"] {
+                let capture =
+                    editor_batch::read(&db, &plugin_scope, "tree-other-petal", &ids, "did:qa")
+                        .await
+                        .unwrap();
+                let request = EditorBatchRequest {
+                    capture: capture.clone(),
+                    edit: EditorBatchEdit::Targets(
+                        capture
+                            .members
+                            .iter()
+                            .map(|member| EditorTargetEdit {
+                                node_id: member.node_id.clone(),
+                                mutation: EditorTargetMutation::Properties(vec![
+                                    EditorPropertyEdit::Set {
+                                        key: "qa.shared".into(),
+                                        value: serde_json::json!(9),
+                                    },
+                                ]),
+                            })
+                            .collect(),
+                    ),
+                };
+                let prepared =
+                    editor_batch::prepare(&db, &request, &format!("qa-selection-{race}"), "did:qa")
+                        .await
+                        .unwrap();
+                match race {
+                    "role" => {
+                        db.query("UPDATE verse SET created_by='did:other' WHERE verse_id='tree-10'")
+                            .await
+                            .unwrap()
+                            .check()
+                            .unwrap();
+                    }
+                    "position" => {
+                        db.query("UPDATE node SET elevation=77.0 WHERE node_id=$id")
+                            .bind(("id", ids[1].clone()))
+                            .await
+                            .unwrap()
+                            .check()
+                            .unwrap();
+                    }
+                    "registry" => {
+                        db.query("UPDATE petal SET visibility_groups=[{id:'race',name:'Race',visible:true,order:0.0}] WHERE petal_id='tree-other-petal'").await.unwrap().check().unwrap();
+                    }
+                    "schema" => {
+                        db.query("CREATE field_def CONTENT {field_def_id:'batch-race-rule',scope:$scope,entity_type:'node',key:'qa.shared',enforced_schema:{version:1,schema:{type:'number'}}}").bind(("scope",plugin_scope.clone())).await.unwrap().check().unwrap();
+                    }
+                    _ => {
+                        db.query("UPDATE node SET petal_id='tree-petal' WHERE node_id=$id")
+                            .bind(("id", ids[1].clone()))
+                            .await
+                            .unwrap()
+                            .check()
+                            .unwrap();
+                    }
+                }
+                let operations = op_log_count(&db).await;
+                editor_batch::commit(&db, prepared)
+                    .await
+                    .expect_err("captured batch guard must be checked at transaction use");
+                assert_eq!(op_log_count(&db).await, operations);
+                assert_eq!(
+                    crate::handlers::node_history::snapshot(&db, &ids[0])
+                        .await
+                        .unwrap()
+                        .unwrap()["properties"]["qa.shared"],
+                    7,
+                    "an unaffected first target cannot leak a subset edit"
+                );
+                match race {
+                    "role" => {
+                        db.query("UPDATE verse SET created_by='did:qa' WHERE verse_id='tree-10'")
+                            .await
+                            .unwrap()
+                            .check()
+                            .unwrap();
+                    }
+                    "position" => {
+                        db.query("UPDATE node SET elevation=0.0 WHERE node_id=$id")
+                            .bind(("id", ids[1].clone()))
+                            .await
+                            .unwrap()
+                            .check()
+                            .unwrap();
+                    }
+                    "registry" => {
+                        db.query(
+                            "UPDATE petal SET visibility_groups=NONE WHERE petal_id='tree-other-petal'",
+                        )
+                        .await
+                        .unwrap()
+                        .check()
+                        .unwrap();
+                    }
+                    "schema" => {
+                        db.query("DELETE field_def WHERE field_def_id='batch-race-rule'")
+                            .await
+                            .unwrap()
+                            .check()
+                            .unwrap();
+                    }
+                    _ => {
+                        db.query("UPDATE node SET petal_id='tree-other-petal' WHERE node_id=$id")
+                            .bind(("id", ids[1].clone()))
+                            .await
+                            .unwrap()
+                            .check()
+                            .unwrap();
+                    }
+                }
+            }
+            let group = ulid::Ulid::new().to_string();
+            let capture = editor_batch::read(&db, &plugin_scope, "tree-other-petal", &ids, "did:qa")
+                .await
+                .unwrap();
+            let request = EditorBatchRequest {
+                capture,
+                edit: EditorBatchEdit::CreateGroup {
+                    id: group.clone(),
+                    name: "Selected objects".into(),
+                },
+            };
+            let prepared = editor_batch::prepare(&db, &request, "qa-group-create-failure", "did:qa")
+                .await
+                .unwrap();
+            db.query("DEFINE EVENT fail_group_member ON TABLE node_log WHEN $after.payload.after_state.display_name='Batch Beta' AND $after.payload.atomic_save_id='qa-group-create-failure' THEN { THROW 'induced group member failure' }").await.unwrap().check().unwrap();
+            let operations = op_log_count(&db).await;
+            editor_batch::commit(&db, prepared)
+                .await
+                .expect_err("Group registry and all memberships commit together");
+            db.query("REMOVE EVENT fail_group_member ON TABLE node_log")
+                .await
+                .unwrap()
+                .check()
+                .unwrap();
+            assert_eq!(op_log_count(&db).await, operations);
+            assert!(
+                editor_batch::read(&db, &plugin_scope, "tree-other-petal", &ids, "did:qa")
+                    .await
+                    .unwrap()
+                    .groups
+                    .is_empty()
+            );
+            let prepared = editor_batch::prepare(&db, &request, "qa-group-create", "did:qa")
+                .await
+                .unwrap();
+            let grouped = editor_batch::commit(&db, prepared).await.unwrap();
+            assert_eq!(grouped.created_group_id.as_deref(), Some(group.as_str()));
+            for member in &grouped.members {
+                assert_eq!(
+                    member.state.properties["view.groups"],
+                    serde_json::json!([group])
+                );
+            }
+            let partial =
+                editor_batch::read(&db, &plugin_scope, "tree-other-petal", &ids[..1], "did:qa")
+                    .await
+                    .unwrap();
+            editor_batch::prepare(
+                &db,
+                &EditorBatchRequest {
+                    capture: partial,
+                    edit: EditorBatchEdit::DeleteGroup {
+                        group_id: group.clone(),
+                    },
+                },
+                "qa-partial-group-inverse",
+                "did:qa",
+            )
+            .await
+            .expect_err("Group inverse refuses uncaptured members");
+            let capture = editor_batch::read(&db, &plugin_scope, "tree-other-petal", &ids, "did:qa")
+                .await
+                .unwrap();
+            let prepared = editor_batch::prepare(
+                &db,
+                &EditorBatchRequest {
+                    capture,
+                    edit: EditorBatchEdit::RestoreMemberships(vec![
+                        EditorMembershipValue::Groups(vec![]),
+                        EditorMembershipValue::Null,
+                    ]),
+                },
+                "qa-group-membership-inverse",
+                "did:qa",
+            )
+            .await
+            .unwrap();
+            let inverse = editor_batch::commit(&db, prepared).await.unwrap();
+            assert_eq!(
+                inverse.members[0].state.properties["view.groups"],
+                serde_json::json!([])
+            );
+            assert!(
+                inverse.members[1]
+                    .state
+                    .properties
+                    .get("view.groups")
+                    .unwrap()
+                    .is_null()
+            );
+            let capture = editor_batch::read(&db, &plugin_scope, "tree-other-petal", &ids, "did:qa")
+                .await
+                .unwrap();
+            let prepared = editor_batch::prepare(
+                &db,
+                &EditorBatchRequest {
+                    capture,
+                    edit: EditorBatchEdit::DeleteGroup {
+                        group_id: group.clone(),
+                    },
+                },
+                "qa-group-delete",
+                "did:qa",
+            )
+            .await
+            .unwrap();
+            let deleted = editor_batch::commit(&db, prepared).await.unwrap();
+            assert!(deleted.groups.is_empty());
+            assert_eq!(
+                deleted.members.len(),
+                2,
+                "deleting a nonowning Group retains its objects"
+            );
+            let group = ulid::Ulid::new().to_string();
+            let capture = editor_batch::read(&db, &plugin_scope, "tree-other-petal", &ids, "did:qa")
+                .await
+                .unwrap();
+            let prepared = editor_batch::prepare(
+                &db,
+                &EditorBatchRequest {
+                    capture,
+                    edit: EditorBatchEdit::CreateGroup {
+                        id: group.clone(),
+                        name: "Exact inverse".into(),
+                    },
+                },
+                "qa-group-exact-create",
+                "did:qa",
+            )
+            .await
+            .unwrap();
+            editor_batch::commit(&db, prepared).await.unwrap();
+            let capture = editor_batch::read(&db, &plugin_scope, "tree-other-petal", &ids, "did:qa")
+                .await
+                .unwrap();
+            let prepared = editor_batch::prepare(
+                &db,
+                &EditorBatchRequest {
+                    capture,
+                    edit: EditorBatchEdit::UndoCreatedGroup {
+                        group_id: group,
+                        memberships: vec![
+                            EditorMembershipValue::Groups(vec![]),
+                            EditorMembershipValue::Null,
+                        ],
+                    },
+                },
+                "qa-group-exact-undo",
+                "did:qa",
+            )
+            .await
+            .unwrap();
+            let exact = editor_batch::commit(&db, prepared).await.unwrap();
+            assert!(exact.groups.is_empty());
+            assert_eq!(
+                exact.members[0].state.properties["view.groups"],
+                serde_json::json!([])
+            );
+            assert!(
+                exact.members[1]
+                    .state
+                    .properties
+                    .get("view.groups")
+                    .unwrap()
+                    .is_null(),
+                "one created-Group inverse preserves exact original presence"
+            );
+            let dangling = crate::handlers::node_history::create_object_granted(
+                &db,
+                "tree-other-petal",
+                "Legacy dangling",
+                None,
+                [0.0; 3],
+                vec![0.0; 3],
+                vec![1.0; 3],
+                serde_json::from_value(serde_json::json!({"view.groups":["legacy-deleted-id"]}))
+                    .unwrap(),
+                "did:qa",
+                &NodeAccessGrant::Local,
+            )
+            .await
+            .unwrap()
+            .0;
+            db.query("UPDATE node SET tombstone={source_did:'legacy',hlc:1} WHERE node_id=$id")
+                .bind(("id", dangling))
+                .await
+                .unwrap()
+                .check()
+                .unwrap();
+            let result = crate::handlers::visibility_groups::set_petal_visibility_groups_reply(
+                &db,
+                "did:qa",
+                "tree-other-petal".into(),
+                vec![fe_runtime::messages::VisibilityGroupDto {
+                    id: "legacy-deleted-id".into(),
+                    name: "Reused".into(),
+                    visible: true,
+                    order: 0.0,
+                }],
+                fe_runtime::messages::CallerAuth::Local,
+                Some("qa-no-resurrection".into()),
+            )
+            .await;
+            assert!(
+                matches!(result, fe_runtime::messages::DbResult::RequestFailed { .. }),
+                "even tombstoned legacy references cannot be resurrected by an API/legacy registry write"
+            );
+            let points = serde_json::json!([[0.0,1.0,2.0,123.5,1.0,0.0,0.0,0.0,0.0,1.0,2,0.5,{"opaque":"keep"}],[3.0,2.0,1.0,456.75]]);
+            let path = crate::handlers::node_history::create_object_granted(
+                &db,
+                "tree-other-petal",
+                "Batch route",
+                None,
+                [0.0; 3],
+                vec![0.0; 3],
+                vec![1.0; 3],
+                serde_json::from_value(serde_json::json!({"gpx_points":points})).unwrap(),
+                "did:qa",
+                &NodeAccessGrant::Local,
+            )
+            .await
+            .unwrap()
+            .0;
+            let capture = editor_batch::read(
+                &db,
+                &plugin_scope,
+                "tree-other-petal",
+                &[path.clone()],
+                "did:qa",
+            )
+            .await
+            .unwrap();
+            let prepared = editor_batch::prepare(
+                &db,
+                &EditorBatchRequest {
+                    capture: capture.clone(),
+                    edit: EditorBatchEdit::Targets(vec![EditorTargetEdit {
+                        node_id: path.clone(),
+                        mutation: EditorTargetMutation::PathAffine(EditorAffine {
+                            pivot: [1.0, 0.0, 1.0],
+                            translation: [10.0, 0.0, -3.0],
+                            rotation: [0.0, 0.0, 0.0, 1.0],
+                            scale: [2.0, 3.0, 4.0],
+                        }),
+                    }]),
+                },
+                "qa-route-affine",
+                "did:qa",
+            )
+            .await
+            .unwrap();
+            let route = editor_batch::commit(&db, prepared).await.unwrap();
+            let transformed = &route.members[0].state.properties["gpx_points"];
+            assert_eq!(transformed[0][0], 9.0);
+            assert_eq!(transformed[0][1], 3.0);
+            assert_eq!(transformed[0][2], 2.0);
+            assert_eq!(transformed[0][4], 2.0);
+            assert_eq!(
+                transformed[0][9], 4.0,
+                "relative handles receive no pivot translation"
+            );
+            for index in [3, 10, 11, 12] {
+                assert_eq!(
+                    transformed[0][index], points[0][index],
+                    "timestamp and trailing metadata remain exact"
+                );
+            }
+            assert_eq!(
+                route.members[0].state.position, capture.members[0].state.position,
+                "whole-path edits never fake a stored node transform"
+            );
+            let capture = editor_batch::read(
+                &db,
+                &plugin_scope,
+                "tree-other-petal",
+                &[path.clone()],
+                "did:qa",
+            )
+            .await
+            .unwrap();
+            let mut bad = points.clone();
+            bad[0][3] = serde_json::json!(999);
+            editor_batch::prepare(
+                &db,
+                &EditorBatchRequest {
+                    capture: capture.clone(),
+                    edit: EditorBatchEdit::Targets(vec![EditorTargetEdit {
+                        node_id: path.clone(),
+                        mutation: EditorTargetMutation::PathRestore { points: bad },
+                    }]),
+                },
+                "qa-route-bad-inverse",
+                "did:qa",
+            )
+            .await
+            .expect_err("route inverse cannot rewrite timestamps");
+            let prepared = editor_batch::prepare(
+                &db,
+                &EditorBatchRequest {
+                    capture,
+                    edit: EditorBatchEdit::Targets(vec![EditorTargetEdit {
+                        node_id: path.clone(),
+                        mutation: EditorTargetMutation::PathRestore {
+                            points: points.clone(),
+                        },
+                    }]),
+                },
+                "qa-route-inverse",
+                "did:qa",
+            )
+            .await
+            .unwrap();
+            assert_eq!(
+                editor_batch::commit(&db, prepared).await.unwrap().members[0]
+                    .state
+                    .properties["gpx_points"],
+                points
+            );
+            let before = editor_batch::read(&db, &plugin_scope, "tree-other-petal", &ids, "did:qa")
+                .await
+                .unwrap();
+            let edits = before
+                .members
+                .iter()
+                .enumerate()
+                .map(|(index, member)| EditorTargetEdit {
+                    node_id: member.node_id.clone(),
+                    mutation: EditorTargetMutation::Transform(
+                        fe_runtime::node_history::NodeTransformValue {
+                            position: [1.0 + index as f64, 2.0, 3.0],
+                            rotation: bevy::math::Quat::from_rotation_y(0.5).to_array(),
+                            scale: [2.0, 3.0, 4.0],
+                        },
+                    ),
+                })
+                .collect();
+            let prepared = editor_batch::prepare(
+                &db,
+                &EditorBatchRequest {
+                    capture: before.clone(),
+                    edit: EditorBatchEdit::Targets(edits),
+                },
+                "qa-selection-transform",
+                "did:qa",
+            )
+            .await
+            .unwrap();
+            let moved = editor_batch::commit(&db, prepared).await.unwrap();
+            for (index, member) in moved.members.iter().enumerate() {
+                assert_eq!(member.state.position, [1.0 + index as f64, 2.0, 3.0]);
+                assert_eq!(member.state.scale, [2.0, 3.0, 4.0]);
+                assert_eq!(
+                    member.state.edit_seq,
+                    before.members[index].state.edit_seq + 1
+                );
+                assert_eq!(
+                    member.state.properties,
+                    before.members[index].state.properties
+                );
+            }
+            let capture = editor_batch::read(&db, &plugin_scope, "tree-other-petal", &ids, "did:qa")
+                .await
+                .unwrap();
+            let edits = before
+                .members
+                .iter()
+                .map(|member| EditorTargetEdit {
+                    node_id: member.node_id.clone(),
+                    mutation: EditorTargetMutation::Transform(
+                        fe_runtime::node_history::NodeTransformValue::from_row(&member.state).unwrap(),
+                    ),
+                })
+                .collect();
+            let prepared = editor_batch::prepare(
+                &db,
+                &EditorBatchRequest {
+                    capture,
+                    edit: EditorBatchEdit::Targets(edits),
+                },
+                "qa-selection-transform-inverse",
+                "did:qa",
+            )
+            .await
+            .unwrap();
+            let restored = editor_batch::commit(&db, prepared).await.unwrap();
+            for (actual, old) in restored.members.iter().zip(&before.members) {
+                assert!(
+                    fe_runtime::node_history::NodeTransformValue::from_row(&actual.state)
+                        .unwrap()
+                        .matches(
+                            &fe_runtime::node_history::NodeTransformValue::from_row(&old.state)
+                                .unwrap()
+                        )
+                );
+            }
+            let mut promote = promotion.clone();
+            promote.instance_index = 0;
+            let prepared = crate::handlers::stamp_promotion::prepare(
+                &db,
+                &promote,
+                "qa-batch-inherited-stamp",
+                "did:qa",
+            )
+            .await
+            .unwrap();
+            let (fresh_stamp, original_properties, _) =
+                crate::handlers::stamp_promotion::commit(&db, prepared)
+                    .await
+                    .unwrap();
+            let capture = editor_batch::read(
+                &db,
+                &plugin_scope,
+                "tree-other-petal",
+                &[fresh_stamp.clone()],
+                "did:qa",
+            )
+            .await
+            .unwrap();
+            let mut edit = stamp_input.clone();
+            edit.node_id = fresh_stamp.clone();
+            edit.instance_index = 0;
+            edit.history_version = capture.members[0].history_version;
+            edit.path_version = capture.members[0]
+                .stamp_path
+                .as_ref()
+                .unwrap()
+                .history_version;
+            edit.before_properties = serde_json::json!(capture.members[0].state.properties);
+            edit.arc_m = 0.0;
+            let mut displaced = edit.clone();
+            displaced.arc_m = 1.0;
+            editor_batch::prepare(
+                &db,
+                &EditorBatchRequest {
+                    capture: capture.clone(),
+                    edit: EditorBatchEdit::Targets(vec![EditorTargetEdit {
+                        node_id: fresh_stamp.clone(),
+                        mutation: EditorTargetMutation::StampOverrides(displaced),
+                    }]),
+                },
+                "qa-stamp-group-position-lock",
+                "did:qa",
+            )
+            .await
+            .expect_err("center-mode group edit cannot move a derived stamp origin");
+            let prepared = editor_batch::prepare(
+                &db,
+                &EditorBatchRequest {
+                    capture: capture.clone(),
+                    edit: EditorBatchEdit::Targets(vec![EditorTargetEdit {
+                        node_id: fresh_stamp.clone(),
+                        mutation: EditorTargetMutation::StampOverrides(edit.clone()),
+                    }]),
+                },
+                "qa-stamp-group-forward",
+                "did:qa",
+            )
+            .await
+            .unwrap();
+            let explicit = editor_batch::commit(&db, prepared).await.unwrap();
+            assert_eq!(
+                explicit.members[0].state.position,
+                capture.members[0].state.position
+            );
+            assert!(
+                explicit.members[0]
+                    .state
+                    .properties
+                    .contains_key("stamp.override.scale")
+            );
+            let capture = editor_batch::read(
+                &db,
+                &plugin_scope,
+                "tree-other-petal",
+                &[fresh_stamp.clone()],
+                "did:qa",
+            )
+            .await
+            .unwrap();
+            edit.history_version = capture.members[0].history_version;
+            edit.before_properties = serde_json::json!(capture.members[0].state.properties);
+            edit.scale = [1.0; 3];
+            let missing = EditorStampOverrideSet {
+                scale: EditorStampOverrideValue::Absent,
+                rotation: EditorStampOverrideValue::Absent,
+                arc_m: EditorStampOverrideValue::Absent,
+            };
+            let mut malformed = missing.clone();
+            malformed.scale = EditorStampOverrideValue::Value(serde_json::json!({"bad":"shape"}));
+            editor_batch::prepare(
+                &db,
+                &EditorBatchRequest {
+                    capture: capture.clone(),
+                    edit: EditorBatchEdit::Targets(vec![EditorTargetEdit {
+                        node_id: fresh_stamp.clone(),
+                        mutation: EditorTargetMutation::StampRestore {
+                            edit: edit.clone(),
+                            overrides: malformed,
+                        },
+                    }]),
+                },
+                "qa-stamp-bad-presence-inverse",
+                "did:qa",
+            )
+            .await
+            .expect_err("typed restore cannot bypass override shape rules");
+            let prepared = editor_batch::prepare(
+                &db,
+                &EditorBatchRequest {
+                    capture,
+                    edit: EditorBatchEdit::Targets(vec![EditorTargetEdit {
+                        node_id: fresh_stamp.clone(),
+                        mutation: EditorTargetMutation::StampRestore {
+                            edit: edit.clone(),
+                            overrides: missing,
+                        },
+                    }]),
+                },
+                "qa-stamp-inherited-inverse",
+                "did:qa",
+            )
+            .await
+            .unwrap();
+            let inherited = editor_batch::commit(&db, prepared).await.unwrap();
+            assert_eq!(
+                serde_json::json!(inherited.members[0].state.properties),
+                original_properties,
+                "stamp Undo restores exact absent override keys without ordinary property bypass"
+            );
+            let long_actor = format!("did:{}", "a".repeat(65532));
+            db.query("UPDATE verse SET created_by=$actor WHERE verse_id='tree-10'")
+                .bind(("actor", long_actor.clone()))
+                .await
+                .unwrap()
+                .check()
+                .unwrap();
+            let capture = editor_batch::read(&db, &plugin_scope, "tree-other-petal", &ids, &long_actor)
+                .await
+                .unwrap();
+            let bounded_request = EditorBatchRequest {
+                capture: capture.clone(),
+                edit: EditorBatchEdit::Targets(
+                    capture
+                        .members
+                        .iter()
+                        .map(|member| EditorTargetEdit {
+                            node_id: member.node_id.clone(),
+                            mutation: EditorTargetMutation::Properties(
+                                (0..32)
+                                    .map(|index| EditorPropertyEdit::Set {
+                                        key: format!("qa.bound.{index}"),
+                                        value: serde_json::json!(index),
+                                    })
+                                    .collect(),
+                            ),
+                        })
+                        .collect(),
+                ),
+            };
+            let prepared = editor_batch::prepare(
+                &db,
+                &bounded_request,
+                "qa-final-envelope-bound",
+                &long_actor,
+            )
+            .await
+            .expect("pre-envelope payload fits while repeated actual fact envelopes do not");
+            let operations = op_log_count(&db).await;
+            let error=editor_batch::commit(&db,prepared).await.expect_err("final manifest and repeated actor/tag/envelope bytes must be bounded before transaction use");
+            assert!(format!("{error:#}").contains("4 MiB"));
+            assert_eq!(op_log_count(&db).await, operations);
+            db.query("UPDATE verse SET created_by='did:qa' WHERE verse_id='tree-10'")
+                .await
+                .unwrap()
+                .check()
+                .unwrap();
+            for id in &ids {
+                assert!(
+                    crate::handlers::node_history::snapshot(&db, id)
+                        .await
+                        .unwrap()
+                        .unwrap()["properties"]
+                        .get("qa.bound.0")
+                        .is_none()
+                );
+            }
+        }
         let before_plugin_ops = op_log_count(&db).await;
         let invalid = vec![
             PendingOp::SetProperty {
