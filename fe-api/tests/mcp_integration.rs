@@ -2699,6 +2699,17 @@ async fn waypoint_and_gpx_tools_round_trip() {
     )
     .await;
     assert_tool_error(&resp, "invalid GPX");
+
+    let promoted = call_tool(&state, &editor, "promote_instance",
+        json!({"petal_id":home.petal,"path_id":home.node,"instance_index":3})).await;
+    let stamp = tool_json(&promoted)["node_id"].as_str().unwrap().to_owned();
+    let read = call_tool(&state, &viewer, "get_properties", json!({"node_id":stamp})).await;
+    assert_eq!(tool_json(&read)["node_id"], stamp);
+    assert_eq!(tool_json(&read)["properties"]["node_kind"], "stamp");
+    let foreign = seed_chain(&model, "foreign-read");
+    let foreign_viewer = claims(&foreign.verse_scope(), "viewer");
+    let refused = call_tool(&state, &foreign_viewer, "get_properties", json!({"node_id":stamp})).await;
+    assert_tool_error(&refused, "not found or not permitted");
 }
 
 #[tokio::test]

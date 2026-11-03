@@ -1,9 +1,6 @@
 use tracing::instrument;
 
-use fe_query::{Filter, QueryBuilder};
-
 use crate::handlers::preconditions::require_node_exists;
-use crate::query_helpers::exec_query;
 use crate::repo::Db;
 use crate::types::{NodeId, OpLogEntry, OpType};
 
@@ -52,31 +49,27 @@ pub(crate) async fn set_entity_property_granted(
     Ok(())
 }
 
-/// Get all custom properties of a node.
-///
-/// Returns the `properties` JSON object, or `{}` if the node has no properties.
+/// Read one live node's custom properties, preserving an unset bag as `{}`.
 #[instrument(skip(db))]
 pub(crate) async fn get_entity_properties_handler(
     db: &Db,
     node_id: &str,
 ) -> anyhow::Result<serde_json::Value> {
-    let q = QueryBuilder::new()
-        .select(&["properties"])
-        .from("node")
-        .filter(Filter::eq("node_id", node_id))
-        .limit(1)
-        .build();
-    let mut res = exec_query(db, &q)
+    let mut res = db
+        .query("SELECT properties FROM node WHERE node_id=$node AND tombstone=NONE LIMIT 2")
+        .bind(("node", node_id.to_owned()))
         .await
-        .map_err(|e| anyhow::anyhow!("GetNodeProperties DB query failed: {e}"))?;
+        .map_err(|e| anyhow::anyhow!("GetNodeProperties DB query failed: {e}"))?
+        .check()?;
 
     let rows: Vec<serde_json::Value> = res
         .take(0)
         .map_err(|e| anyhow::anyhow!("GetNodeProperties take failed: {e}"))?;
 
-    if rows.is_empty() {
-        tracing::warn!(node_id, "GetNodeProperties matched no node — id mismatch?");
-    }
+    anyhow::ensure!(
+        rows.len() == 1,
+        "GetNodeProperties: live node unavailable or ambiguous"
+    );
     let properties = rows
         .first()
         .and_then(|r| r.get("properties"))

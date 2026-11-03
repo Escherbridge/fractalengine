@@ -771,4 +771,44 @@ async fn read_node_returns_each_type_specific_payload() {
     );
     assert_eq!(path_dto["data"]["properties"]["gpx_type"], "track");
     assert_eq!(path_dto["data"]["properties"]["gpx_points"], points);
+
+    let stamp_path = format!("/api/v1/nodes/{}", stamp.replace('#', "%23"));
+    let (_, properties) = h
+        .get(&format!("{stamp_path}/properties"), Some(&token))
+        .await;
+    assert_eq!(properties["ok"], true, "{properties}");
+    assert_eq!(properties["data"]["node_id"], stamp);
+    assert_eq!(
+        properties["data"]["properties"],
+        stamp_dto["data"]["properties"]
+    );
+    let (_, transform) = h
+        .get(&format!("{stamp_path}/transform"), Some(&token))
+        .await;
+    assert_eq!(transform["ok"], true, "{transform}");
+    assert_eq!(transform["data"]["position"], json!([5.0, 1.0, 7.0]));
+
+    let foreign = h.seed_hierarchy().await.unwrap();
+    let foreign_token = h.mint_token(&foreign.verse_scope(), "viewer");
+    for suffix in ["properties", "transform"] {
+        let (_, refused) = h
+            .get(&format!("{stamp_path}/{suffix}"), Some(&foreign_token))
+            .await;
+        assert_eq!(refused["ok"], false);
+        assert_eq!(refused["error"], fe_api::rest::NOT_FOUND_OR_DENIED);
+    }
+    h.db.query("UPDATE node SET tombstone={hlc:1,source_did:'did:test'} WHERE node_id=$node")
+        .bind(("node", stamp))
+        .await
+        .unwrap()
+        .check()
+        .unwrap();
+    for suffix in ["properties", "transform"] {
+        let (_, refused) = h.get(&format!("{stamp_path}/{suffix}"), Some(&token)).await;
+        assert_eq!(refused["ok"], false, "{refused}");
+        assert!(
+            refused["data"].is_null(),
+            "tombstoned data must remain unreadable"
+        );
+    }
 }

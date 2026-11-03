@@ -2247,3 +2247,14 @@ Both revocation-hint reads apply the same JTI and standalone feed-availability p
 ## QA Portal evidence
 
 Authenticated routes are GET `/api/v1/debug/portal-fixture/observe`, POST `/api/v1/debug/portal-fixture/action` with exactly a fixed link operation, and POST `/api/v1/debug/portal-fixture/capture`. All reuse the existing default-off input/Owner QA gate and budget. The dedicated bridge carries token scope and a host-owned five-second deadline. Completion rechecks input posture and Owner role, then calls the shared async `auth::require_current_credential` for durable revocation/reset generation and current expiry with no route-local cache fallback. Missing or unavailable configured auth metadata denies release. Receipt scope, deadline and exact live fixture permit are checked after that async credential read and before native bytes leave the route. Capture returns native image/png bytes plus bounded `x-fe-portal-fixture` metadata; generic diagnostic JSON never contains image base64. No general browser automation API is exposed.
+
+
+## Canonical stamp reads
+
+REST property and stored-transform reads accept the same addressable identifiers
+as the generic node endpoint, including `<path ULID>#inst-<index>`. Validation is
+syntax only: Viewer access and the owning node's stored ancestry still authorize
+each request. Property reads share their direct/correlated core with MCP; both
+read paths reject missing, ambiguous or tombstoned rows. Stored transforms describe
+the node projection and are not advertised as the path-derived rendered pose.
+Generic property writer validation and the stamp translation policy are unchanged.

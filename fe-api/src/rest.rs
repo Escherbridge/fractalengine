@@ -506,7 +506,7 @@ pub async fn get_transform(
             "insufficient permissions",
         ));
     }
-    if !is_valid_ulid(&node_id) {
+    if !crate::endpoint::is_addressable_node_id(&node_id) {
         return Json(ApiResponse::<TransformDto>::error("invalid node_id"));
     }
 
@@ -708,6 +708,33 @@ pub(crate) async fn get_properties_core(
     state: &crate::server::ApiState,
     node_id: &str,
 ) -> Result<PropertiesDto, String> {
+    if let Some(db) = &state.db_reader {
+        let mut response = tokio::time::timeout(
+            std::time::Duration::from_secs(5),
+            db.query("SELECT properties FROM node WHERE node_id=$node AND tombstone=NONE LIMIT 2")
+                .bind(("node", node_id.to_owned())),
+        )
+        .await
+        .map_err(|_| "property read timed out".to_owned())?
+        .map_err(|_| "property read failed".to_owned())?
+        .check()
+        .map_err(|_| "property read failed".to_owned())?;
+        let rows: Vec<serde_json::Value> = response
+            .take(0)
+            .map_err(|_| "property read failed".to_owned())?;
+        if rows.len() != 1 {
+            return Err(NOT_FOUND_OR_DENIED.to_owned());
+        }
+        let properties = rows[0]
+            .get("properties")
+            .filter(|value| !value.is_null())
+            .cloned()
+            .unwrap_or_else(|| serde_json::json!({}));
+        return Ok(PropertiesDto {
+            node_id: node_id.to_owned(),
+            properties,
+        });
+    }
     let correlation_id = ulid::Ulid::new().to_string();
     let cmd = DbCommand::GetNodeProperties {
         node_id: node_id.to_string(),
@@ -775,7 +802,7 @@ pub async fn get_node_properties(
             "insufficient permissions",
         ));
     }
-    if !is_valid_ulid(&node_id) {
+    if !crate::endpoint::is_addressable_node_id(&node_id) {
         return Json(ApiResponse::<PropertiesDto>::error("invalid node_id"));
     }
 
