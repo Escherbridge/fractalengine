@@ -176,6 +176,21 @@ define_table! {
 }
 
 define_table! {
+    /// Local detached Manager proofs; see src/AGENTS.md section join-authority.
+    table "join_delegation" => JoinDelegationRow (id: proof_id) {
+        proof_id: String => "TYPE string ASSERT string::len($value) = 64",
+        verse_id: String => "TYPE string",
+        holder_did: String => "TYPE string",
+        scope: String => "TYPE string",
+        proof_json: String => "TYPE string ASSERT string::len($value) <= 16384",
+        state: String => "TYPE string ASSERT $value IN ['quarantined', 'active']",
+        admission_nonce: String => "TYPE string",
+        invite_signature: String => "TYPE string",
+        expires_at: i64 => "TYPE int"
+    }
+}
+
+define_table! {
     /// Append-only operation log for CRDT convergence.
     table "op_log" => OpLog (id: lamport_clock) {
         lamport_clock:  i64              => "TYPE int",
@@ -714,6 +729,7 @@ pub async fn apply_all(db: &crate::repo::Db) -> anyhow::Result<()> {
     Repo::<RoleGrantRow>::apply_schema(db).await?;
     Repo::<RoleStatementPendingRow>::apply_schema(db).await?;
     Repo::<LocalMigrationMarker>::apply_schema(db).await?;
+    Repo::<JoinDelegationRow>::apply_schema(db).await?;
     Repo::<OpLog>::apply_schema(db).await?;
     Repo::<Node>::apply_schema(db).await?;
     // Backfill nodes created before `edit_seq` existed: DEFAULT only fires
@@ -756,6 +772,8 @@ pub async fn apply_all(db: &crate::repo::Db) -> anyhow::Result<()> {
     Repo::<ObservationHydration>::apply_schema(db).await?;
 
     // Critical indexes for query performance
+    db.query("DEFINE INDEX IF NOT EXISTS idx_join_delegation_proof ON TABLE join_delegation FIELDS proof_id UNIQUE; DEFINE INDEX IF NOT EXISTS idx_join_delegation_holder ON TABLE join_delegation FIELDS verse_id, holder_did")
+        .await?.check()?;
     db.query("DEFINE INDEX IF NOT EXISTS idx_node_petal ON TABLE node FIELDS petal_id")
         .await?
         .check()
@@ -944,6 +962,7 @@ pub const DEVELOPMENT_RESET_TABLE_NAMES: &[&str] = &[
     "role_grant",
     "role_statement_pending",
     "local_migration_marker",
+    "join_delegation",
     "op_log",
     "verse",
     "verse_member",
@@ -1262,6 +1281,9 @@ mod tests {
     #[test]
     fn all_table_names_are_present() {
         assert_eq!(ALL_TABLE_NAMES.len(), 17);
+        assert!(!ALL_TABLE_NAMES.contains(&JoinDelegationRow::TABLE_NAME));
+        assert!(DEVELOPMENT_RESET_TABLE_NAMES.contains(&JoinDelegationRow::TABLE_NAME));
+        assert!(JoinDelegationRow::schema().contains("['quarantined', 'active']"));
         assert!(ALL_TABLE_NAMES.contains(&"iot_reading"));
         assert!(ALL_TABLE_NAMES.contains(&"petal"));
         assert!(ALL_TABLE_NAMES.contains(&"verse_member"));

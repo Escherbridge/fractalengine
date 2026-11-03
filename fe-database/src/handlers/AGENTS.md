@@ -372,3 +372,12 @@ parent proof binding, immutable identity, scope/time/depth attenuation and Owner
 These pure certificate fixtures do not claim current DB authority or activate Manager issuance.
 It separately asserts that an already-issued Owner-v1 join accepts an ordinary Verse rename
 without rebinding Owner/namespace/creation or replacing the current display label.
+
+
+Dormant admit_v2 shares the pinned metadata transaction and adds only a sealed Manager-recipient
+proof quarantine. The active admit entry still parses Owner-v1, so ordinary production behavior
+is preserved until coordinator review. Dormant finalize_v2 verifies a v2 Manager-recipient
+branch and delegates to current-store proof activation; it has no transport boolean or role
+writer. Native/role/hierarchy scheduling and the final native inspection remain host obligations.
+The ordinary role writer accepts a private ManagerAuthority snapshot only through the dedicated
+delegated-invite entry; all snapshot fences join its existing atomic operation/grant transaction.

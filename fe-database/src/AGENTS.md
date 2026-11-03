@@ -1882,3 +1882,49 @@ This sealed transport-free branch is the intended DB quarantine/finalization inp
 a host boolean claiming authority or an unrelated separately supplied certificate. It proves
 no current stored grant and no native readiness by itself. Production activation is deferred
 until the separate DB/current-authority and coordinator slices receive independent review.
+
+
+## Join-authority
+
+join_authority owns local detached-proof quarantine, current Manager authority snapshots and
+recipient proof finalization. It is a dormant DB adapter at this checkpoint: active DB/UI
+commands still use Owner-v1. The private module and v2 adapter entry points temporarily allow
+dead code until the independently reviewed coordinator integration. No native-ready boolean
+is accepted and no DB function claims transport readiness.
+
+join_delegation is a separate local table, not a role or replicated projection. Admission of
+a verified v2 recipient-Manager branch places its exact signed proof, acceptance nonce and
+envelope signature into quarantine in the same metadata transaction. The proof is not active
+authority. The prepend adapter places its immutable-identity/capacity/expiry guards before
+Verse/member effects; all steps still commit or roll back together in that one store.
+
+ManagerAuthority reads raw proof strings only after a 16 KiB byte check, strictly decodes the
+canonical proof, pins its content identity and validates signatures against immutable Verse
+identity. It captures bounded, ordered admitted/held role statements (8192 each), rejects
+malformed or duplicate live keys, derives the ordinary fe-policy grantor fixpoint, and requires
+every SupportingGrant to be the exact nonrevoked Manager statement HLC. An unchanged role cache
+cannot revive an older certificate after revoke/regrant. Every certificate holder scope and
+the requested target also use normal stored ancestry/cache Manager fences. Up to 32 active
+candidate proofs and 64 unexpired stored proofs per holder/Verse bound local cache work.
+
+The same proof row, all admitted/held inputs, immutable identity, expiry, cached authority and
+full ancestry snapshots are appended to the ordinary checked grant transaction. The real
+Manager remains the grantor and only the actual committed HLC is returned. The eventual issue
+handler must preserve the existing explicit partial-outcome boundary after a stored grant.
+Preparing a snapshot is not a claim that it remains current before those fences run at use.
+
+finalize_v2 can only obtain RecipientManagerProof from a verified v2 Manager-recipient branch.
+It rechecks the current supporting grants/effective Manager authority, exact pending proof and
+acceptance membership in the activation transaction. The coordinator must call it only after
+actual native/role/hierarchy readiness, correlate cancellation/revision/deadline, then inspect
+native readiness again before navigation. That coordinator phase is not wired at this checkpoint.
+Cancellation after accepted activation is a truthful stored partial outcome; a proof alone is
+never sufficient for later issuance, which rechecks all current local store inputs. This is
+not a promise of instantaneous global revocation. Certificate expiry does not expire roles.
+
+Schema reset/admin clear include the local proof table. The legacy replicated table-name set
+excludes it. Dumps may preserve public certificates for inspection, but import deliberately
+skips local proof activation state; imported Managers require Owner reauthorization. Existing
+real-store journeys now cover quarantine without a grant, ordinary grant convergence, stale
+proof/grant rollback, exact-HLC reauthorization, actual Manager-authored grant and import refusal.
+These are authored assertions only until the parent integrated sweep.

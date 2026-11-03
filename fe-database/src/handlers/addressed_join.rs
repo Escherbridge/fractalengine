@@ -196,6 +196,25 @@ pub(crate) async fn admit(
     credential: &JoinCredential,
 ) -> anyhow::Result<JoinAdmission> {
     let invitation = JoinInvitation::parse_owner(credential.as_str(), actor, now()?)?;
+    admit_verified(db, actor, &invitation).await
+}
+
+#[allow(dead_code)]
+pub(crate) async fn admit_v2(
+    db: &Db,
+    actor: &str,
+    credential: &JoinCredential,
+) -> anyhow::Result<JoinAdmission> {
+    let invitation = JoinInvitation::parse(credential.as_str(), actor, now()?)?;
+    anyhow::ensure!(invitation.version() == 2, "Expected an addressed-v2 invitation");
+    admit_verified(db, actor, &invitation).await
+}
+
+async fn admit_verified(
+    db: &Db,
+    actor: &str,
+    invitation: &VerifiedJoinInvitation,
+) -> anyhow::Result<JoinAdmission> {
     let manifest = invitation.manifest();
     let verse_select =
         format!("SELECT {VERSE_COLUMNS} FROM verse WHERE verse_id=$join_verse LIMIT 2");
@@ -236,6 +255,12 @@ pub(crate) async fn admit(
     if members.is_empty() {
         statements.push("CREATE verse_member CONTENT $join_member".into());
     }
+    let mut proof_bindings = Vec::new();
+    if let Some(branch) = invitation.recipient_manager_proof(now()?)? {
+        crate::join_authority::prepare_quarantine(db, actor, &branch, now()?)
+            .await?
+            .prepend_to(&mut statements, &mut proof_bindings);
+    }
     invitation.revalidate(actor, now()?)?;
     let script = format!(
         "BEGIN TRANSACTION;{};COMMIT TRANSACTION;",
@@ -243,24 +268,39 @@ pub(crate) async fn admit(
     );
     let mut full_member = member.clone();
     full_member["invite_timestamp"] = json!(chrono::Utc::now().to_rfc3339());
-    db.query(script)
+    let mut query = db.query(script)
         .bind(("join_verse", manifest.verse_id.clone()))
         .bind(("join_nonce", invitation.nonce().to_owned()))
         .bind(("join_verse_before", json!(verses)))
         .bind(("join_member_before", json!(members)))
         .bind(("join_manifest", serde_json::to_value(manifest)?))
         .bind(("join_member", full_member))
-        .bind(("join_expires_at", invitation.expires_at()))
-        .await?
-        .check()?;
+        .bind(("join_expires_at", invitation.expires_at()));
+    for binding in proof_bindings {
+        query = query.bind(binding);
+    }
+    query.await?.check()?;
     Ok(admission(
-        &invitation,
+        invitation,
         verses
             .first()
             .and_then(|row| row["name"].as_str())
             .unwrap_or(&manifest.name)
             .to_owned(),
     ))
+}
+
+#[allow(dead_code)]
+pub(crate) async fn finalize_v2(
+    db: &Db,
+    actor: &str,
+    credential: &JoinCredential,
+) -> anyhow::Result<()> {
+    let invitation = JoinInvitation::parse(credential.as_str(), actor, now()?)?;
+    let branch = invitation.recipient_manager_proof(now()?)?.ok_or_else(|| {
+        anyhow::anyhow!("Only a verified v2 recipient-Manager branch can finalize a proof")
+    })?;
+    crate::join_authority::finalize_recipient(db, actor, &branch, now()?).await
 }
 
 pub(crate) async fn ready(

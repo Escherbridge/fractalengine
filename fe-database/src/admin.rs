@@ -156,6 +156,7 @@ pub enum KnownTable {
     RoleGrant,
     /// Held (Deferred) role statements.
     RoleStatementPending,
+    JoinDelegation,
     OpLog,
     Verse,
     VerseMember,
@@ -174,6 +175,7 @@ impl KnownTable {
         KnownTable::Role,
         KnownTable::RoleGrant,
         KnownTable::RoleStatementPending,
+        KnownTable::JoinDelegation,
         KnownTable::OpLog,
         KnownTable::Verse,
         KnownTable::VerseMember,
@@ -192,6 +194,7 @@ impl KnownTable {
             KnownTable::Role => "role",
             KnownTable::RoleGrant => "role_grant",
             KnownTable::RoleStatementPending => "role_statement_pending",
+            KnownTable::JoinDelegation => "join_delegation",
             KnownTable::OpLog => "op_log",
             KnownTable::Verse => "verse",
             KnownTable::VerseMember => "verse_member",
@@ -212,6 +215,7 @@ impl KnownTable {
             "role" => Some(KnownTable::Role),
             "role_grant" => Some(KnownTable::RoleGrant),
             "role_statement_pending" => Some(KnownTable::RoleStatementPending),
+            "join_delegation" => Some(KnownTable::JoinDelegation),
             "op_log" => Some(KnownTable::OpLog),
             "verse" => Some(KnownTable::Verse),
             "verse_member" => Some(KnownTable::VerseMember),
@@ -303,7 +307,7 @@ pub async fn load_from_file(db: &Db, path: &std::path::Path) -> anyhow::Result<(
                 continue;
             }
         };
-        if known == KnownTable::Role && has_statements {
+        if known == KnownTable::JoinDelegation || known == KnownTable::Role && has_statements {
             continue;
         }
         if let Some(arr) = rows.as_array() {

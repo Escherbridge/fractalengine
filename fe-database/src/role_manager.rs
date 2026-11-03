@@ -178,6 +178,7 @@ async fn issue_local_statement(
     repl_tx: Option<&ReplicationSender>,
     blob_store: &BlobStoreHandle,
     invite_manifest: Option<(&crate::join_invite::JoinManifest,u64)>,
+    delegation: Option<crate::join_authority::ManagerAuthority>,
 ) -> anyhow::Result<fe_policy::RoleStatement> {
     let entry = OpLogEntry {
         lamport_clock: 0,
@@ -199,9 +200,19 @@ async fn issue_local_statement(
     }
     let authority=crate::handlers::entity::prepare_scope_permission(db,scope,caller_did,fe_policy::RoleLevel::Manager).await?;
     let authority = if let Some((manifest,deadline)) = invite_manifest {
-        anyhow::ensure!(owner == caller_did && manifest.created_by == owner, "Fresh invitation requires the pinned Owner");
+        anyhow::ensure!(manifest.created_by == owner, "Invitation Owner identity changed");
+        let authority=if let Some(delegation)=delegation {
+            anyhow::ensure!(delegation.matches(caller_did,scope,&crate::join_delegation::VerseIdentity::from_manifest(manifest)),"Delegated invitation source changed");
+            authority.with_join_delegation(delegation)
+        } else {
+            anyhow::ensure!(owner == caller_did, "Fresh invitation requires the pinned Owner");
+            authority
+        };
         authority.with_invite_manifest(manifest,deadline)
-    } else { authority };
+    } else {
+        anyhow::ensure!(delegation.is_none(), "Delegated invitation lacks its source fence");
+        authority
+    };
     let prior = role_grants::load_effective_roles(db, verse_id).await?;
     let stmt=role_grants::commit_local_statement(db,entry,verse_id,caller_did,peer_did,scope,role,revoked,authority,&owner).await?;
     // A crash before this line is repaired by the startup repartition and re-emit (AC-42).
@@ -234,7 +245,7 @@ pub async fn assign_role_checked(
         return Err(RoleCommandError::ManagerCannotAssignNone.into());
     }
     issue_local_statement(
-        db, &verse_id, caller_did, peer_did, scope, granted, false, repl_tx, blob_store, None,
+        db, &verse_id, caller_did, peer_did, scope, granted, false, repl_tx, blob_store, None, None,
     )
     .await.map(|_| ())
 }
@@ -250,7 +261,37 @@ pub(crate) async fn assign_role_for_invite(
         .ok_or_else(|| anyhow::anyhow!("Unsupported invitation role"))?;
     let (verse_id, owner) = check_role_command(db,caller,recipient,scope,"Invitation role grant").await?;
     anyhow::ensure!(caller == owner && manifest.created_by == owner, "Fresh invitation requires the pinned Owner");
-    let statement = issue_local_statement(db,&verse_id,caller,recipient,scope,granted,false,repl_tx,blob_store,Some((manifest,deadline))).await?;
+    let statement = issue_local_statement(db,&verse_id,caller,recipient,scope,granted,false,repl_tx,blob_store,Some((manifest,deadline)),None).await?;
+    Ok(statement.hlc)
+}
+
+#[allow(dead_code, clippy::too_many_arguments)]
+pub(crate) async fn assign_role_for_delegated_invite(
+    db: &Db,
+    caller: &str,
+    recipient: &str,
+    scope: &str,
+    role: &str,
+    manifest: &crate::join_invite::JoinManifest,
+    deadline: u64,
+    authority: crate::join_authority::ManagerAuthority,
+    repl_tx: Option<&ReplicationSender>,
+    blob_store: &BlobStoreHandle,
+) -> anyhow::Result<u64> {
+    let granted = GrantedRole::parse(role)
+        .filter(|role| *role != GrantedRole::None)
+        .ok_or_else(|| anyhow::anyhow!("Unsupported invitation role"))?;
+    let (verse_id, owner) =
+        check_role_command(db, caller, recipient, scope, "Delegated invitation role grant").await?;
+    anyhow::ensure!(
+        caller != owner && manifest.created_by == owner
+            && authority.matches(caller, scope, &crate::join_delegation::VerseIdentity::from_manifest(manifest)),
+        "Delegated invitation authority changed"
+    );
+    let statement = issue_local_statement(
+        db, &verse_id, caller, recipient, scope, granted, false, repl_tx, blob_store,
+        Some((manifest, deadline)), Some(authority),
+    ).await?;
     Ok(statement.hlc)
 }
 
@@ -278,6 +319,7 @@ pub async fn revoke_role_checked(
         true,
         repl_tx,
         blob_store,
+        None,
         None,
     )
     .await?;

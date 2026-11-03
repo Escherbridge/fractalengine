@@ -329,6 +329,59 @@ mod tests {
                 let recipient_branch = owner_v2.recipient_manager_proof(clock).unwrap().unwrap();
                 assert_eq!(recipient_branch.chain().holder(), fixture.recipient);
                 assert_eq!(recipient_branch.chain().supporting_grants().next().unwrap().hlc, envelope.grant_hlc());
+                // Dormant DB adapters exercise stored authority, without asserting native readiness.
+                let manager_store = mem_db().await;
+                let manager_credential = fe_runtime::join_invite::JoinCredential::new(owner_v2_link.clone()).unwrap();
+                let failed_admission = mem_db().await;
+                failed_admission.query("DEFINE FIELD OVERWRITE invite_timestamp ON verse_member TYPE string ASSERT false").await.unwrap().check().unwrap();
+                assert!(super::super::addressed_join::admit_v2(&failed_admission,&fixture.recipient,&manager_credential).await.is_err());
+                let rolled_back:Vec<serde_json::Value> = failed_admission.query("SELECT proof_id FROM join_delegation").await.unwrap().take(0).unwrap();
+                assert!(rolled_back.is_empty(),"A failed membership transaction cannot leave even a quarantined proof behind");
+                super::super::addressed_join::admit_v2(&manager_store, &fixture.recipient, &manager_credential).await.unwrap();
+                assert!(super::super::addressed_join::finalize_v2(&manager_store, &fixture.recipient, &manager_credential).await.is_err(), "A signed proof cannot manufacture an unconverged role");
+                let pending:Vec<serde_json::Value> = manager_store.query("SELECT state FROM join_delegation").await.unwrap().take(0).unwrap();
+                assert_eq!(pending,vec![serde_json::json!({"state":"quarantined"})]);
+                apply_replicated_row_handler(&manager_store,VERSE,"role",&fixture.grant.record_id,&fixture.grant_bytes,&fixture.owner,None).await.unwrap();
+                assert!(crate::join_authority::ManagerAuthority::capture(&manager_store,&fixture.recipient,&identity,&admitted.scope,None,clock).await.is_err(), "Converged ordinary Manager role does not activate quarantined proof");
+                super::super::addressed_join::finalize_v2(&manager_store, &fixture.recipient, &manager_credential).await.unwrap();
+                let proof_id = recipient_branch.chain().proof_id().unwrap();
+                let captured = crate::join_authority::ManagerAuthority::capture(&manager_store,&fixture.recipient,&identity,&admitted.scope,Some(&proof_id),clock).await.unwrap();
+                let blobs:crate::BlobStoreHandle = std::sync::Arc::new(fe_runtime::blob_store::mock::MockBlobStore::new());
+                let next_peer = fe_identity::NodeKeypair::generate().to_did_key();
+                let issue_deadline = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_secs()+60;
+                let operations_before:Vec<serde_json::Value> = manager_store.query("SELECT count() AS n FROM op_log GROUP ALL").await.unwrap().take(0).unwrap();
+                manager_store.query("UPDATE join_delegation SET state='quarantined' WHERE proof_id=$proof")
+                    .bind(("proof",proof_id.clone())).await.unwrap().check().unwrap();
+                assert!(crate::role_manager::assign_role_for_delegated_invite(&manager_store,&fixture.recipient,&next_peer,&admitted.scope,"viewer",envelope.manifest(),issue_deadline,captured,None,&blobs).await.is_err(), "Proof replacement after capture is fenced in the grant transaction");
+                manager_store.query("UPDATE join_delegation SET state='active' WHERE proof_id=$proof")
+                    .bind(("proof",proof_id.clone())).await.unwrap().check().unwrap();
+                let captured = crate::join_authority::ManagerAuthority::capture(&manager_store,&fixture.recipient,&identity,&admitted.scope,Some(&proof_id),clock).await.unwrap();
+                manager_store.query("UPDATE role_grant SET revoked=true WHERE statement_key=$key")
+                    .bind(("key",fixture.grant.record_id.clone())).await.unwrap().check().unwrap();
+                assert!(crate::role_manager::assign_role_for_delegated_invite(&manager_store,&fixture.recipient,&next_peer,&admitted.scope,"viewer",envelope.manifest(),issue_deadline,captured,None,&blobs).await.is_err(), "A stale materialized Manager cache cannot hide a changed supporting grant");
+                manager_store.query("UPDATE role_grant SET revoked=false, hlc=$clock WHERE statement_key=$key")
+                    .bind(("key",fixture.grant.record_id.clone())).bind(("clock",(envelope.grant_hlc()+1).to_string())).await.unwrap().check().unwrap();
+                assert!(crate::join_authority::ManagerAuthority::capture(&manager_store,&fixture.recipient,&identity,&admitted.scope,Some(&proof_id),clock).await.is_err(), "A new grant clock requires a new portable proof rather than reviving an old certificate");
+                manager_store.query("UPDATE role_grant SET hlc=$clock WHERE statement_key=$key")
+                    .bind(("key",fixture.grant.record_id.clone())).bind(("clock",envelope.grant_hlc().to_string())).await.unwrap().check().unwrap();
+                let operations_after:Vec<serde_json::Value> = manager_store.query("SELECT count() AS n FROM op_log GROUP ALL").await.unwrap().take(0).unwrap();
+                assert_eq!(operations_before,operations_after,"Stale proof/grant fences roll back the operation and grant together");
+                let captured = crate::join_authority::ManagerAuthority::capture(&manager_store,&fixture.recipient,&identity,&admitted.scope,Some(&proof_id),clock).await.unwrap();
+                let committed = crate::role_manager::assign_role_for_delegated_invite(&manager_store,&fixture.recipient,&next_peer,&admitted.scope,"viewer",envelope.manifest(),issue_deadline,captured,None,&blobs).await.unwrap();
+                let statements:Vec<serde_json::Value> = manager_store.query("SELECT grantor_did,role,hlc FROM role_grant WHERE peer_did=$peer")
+                    .bind(("peer",next_peer)).await.unwrap().take(0).unwrap();
+                assert_eq!(statements,vec![serde_json::json!({"grantor_did":fixture.recipient,"role":"viewer","hlc":committed.to_string()})], "Delegated issuance stores an actual ordinary grant under the real Manager identity");
+                let original_raw=serde_json::to_string(recipient_branch.chain().chain()).unwrap();
+                manager_store.query("UPDATE join_delegation SET proof_json=$raw WHERE proof_id=$proof")
+                    .bind(("proof",proof_id.clone())).bind(("raw","e".repeat(crate::join_delegation::MAX_DELEGATION_BYTES))).await.unwrap().check().unwrap();
+                assert!(crate::join_authority::ManagerAuthority::capture(&manager_store,&fixture.recipient,&identity,&admitted.scope,Some(&proof_id),clock).await.is_err(), "Malformed raw proof is refused before it can become authority");
+                manager_store.query("UPDATE join_delegation SET proof_json=$raw WHERE proof_id=$proof")
+                    .bind(("proof",proof_id)).bind(("raw",original_raw)).await.unwrap().check().unwrap();
+                let snapshot=tempfile::NamedTempFile::new().unwrap();
+                crate::admin::dump_to_file(&manager_store,snapshot.path()).await.unwrap();
+                crate::admin::load_from_file(&manager_store,snapshot.path()).await.unwrap();
+                let restored:Vec<serde_json::Value> = manager_store.query("SELECT proof_id FROM join_delegation").await.unwrap().take(0).unwrap();
+                assert!(restored.is_empty(), "Imported data cannot restore local proof activation; Owner reauthorization is explicit");
                 assert!(envelope.recipient_manager_proof(clock).unwrap().is_none(), "Legacy Owner-v1 Manager grants do not invent portable authority");
                 assert!(crate::join_invite::JoinInvitation::parse_owner(&owner_v2_link, &fixture.recipient, clock).is_err(), "Dormant v2 remains outside the active Owner-v1 producer path");
                 let prefix_mismatch = owner_v2_link.replacen(crate::join_invite::JOIN_V2_PREFIX, crate::join_invite::JOIN_PREFIX, 1);
