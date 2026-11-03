@@ -3,15 +3,22 @@
 /// Lossless renderer source row; normalization is documented in src/AGENTS.md.
 #[derive(Debug, Clone, PartialEq)]
 pub struct RouteSourceRow {
+    /// World-space anchor coordinates at renderer precision.
     pub position: [f64; 3],
+    /// Anchor timestamp in seconds.
     pub time_seconds: f64,
+    /// Relative incoming Bezier handle offset.
     pub handle_in: Option<[f64; 3]>,
+    /// Relative outgoing Bezier handle offset.
     pub handle_out: Option<[f64; 3]>,
+    /// Corner classification: 0 Corner, 1 Smooth, or 2 Symmetric.
     pub corner_code: u8,
+    /// Renderer corner-rounding value.
     pub smoothness: f32,
 }
 
 impl RouteSourceRow {
+    /// Normalize handle absence and corner codes using the renderer contract.
     pub fn normalized(mut self) -> Self {
         for handle in [&mut self.handle_in, &mut self.handle_out] {
             if handle.is_some_and(|values| values.iter().all(|v| v.abs() < f64::EPSILON)) {
@@ -26,6 +33,7 @@ impl RouteSourceRow {
         self
     }
 
+    /// Return whether every numeric source component is finite.
     pub fn is_finite(&self) -> bool {
         self.position.iter().all(|v| v.is_finite())
             && self.time_seconds.is_finite()
