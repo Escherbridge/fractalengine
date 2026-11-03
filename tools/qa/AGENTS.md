@@ -1166,3 +1166,20 @@ context refuses. Reports are create-new and cannot erase prior cuts. Do not use
 retained campaign stores. Recorded-child absence is not a complete orphan census.
 Fs bytes do not prove cold iroh state, peer delivery or rendering; recipient bytes
 are never installed by this workflow. Source authorship is not execution evidence.
+
+### Interim legacy helper lifecycle boundary
+
+The child retains its duplicated lifecycle lease and Context pins until OS exit,
+including stdout publication/runtime teardown. `_legacy_runner.cs` uses one 35 s
+absolute deadline across async start, bounded stdin/out/err and exit collection,
+plus 5 s exact-owned termination/join cleanup. Unknown termination intentionally
+retains SafeHandle references until host exit and reports helper_lifetime_unknown;
+no unconfirmed operation releases exclusivity. Only sealed helper JSON/static
+codes are published; raw stderr/native exceptions remain private.
+
+The stopped-store reader now refuses fixture_store_confinement_unavailable before
+ANY SDK open. generate/seal still prepare the fresh canonical GLB, but discovery,
+baseline, adopted and resume cannot succeed. Existing directory scans are not a
+confinement proof for SDK internal opens/housekeeping. Later positive readback must
+use the live app's existing DB owner through a separately reviewed typed surface.
+Do not claim durable adoption/restart/transfer from preparation or this refusal.

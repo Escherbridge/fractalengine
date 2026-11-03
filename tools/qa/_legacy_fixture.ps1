@@ -2,38 +2,32 @@
 
 function Invoke-QaLegacyHelper {
     param([Parameter(Mandatory)]$Request, [Parameter(Mandatory)][string]$Stage,
+          [Parameter(Mandatory)]$Lease,
           [Parameter(Mandatory)][ValidateSet('generate','seal','discovery','baseline','adopted','resume')][string]$Mode)
     $helper = Resolve-QaChildPath -Path (Join-Path $Stage 'legacy_adoption_fixture.exe') -Root $QaStageRoot
-    $pin = $null; $process = $null
+    $pin = $null
     try {
+        if (-not ('QaLegacyHelperOperation' -as [type])) {
+            Add-Type -Path (Join-Path $PSScriptRoot '_legacy_runner.cs') -ErrorAction Stop
+        }
         $pin = [IO.File]::Open($helper, [IO.FileMode]::Open, [IO.FileAccess]::Read, [IO.FileShare]::Read)
         if ((Get-FileHash -LiteralPath $helper -Algorithm SHA256).Hash -cne $Request.legacy_fixture_sha256) { throw 'helper_mismatch' }
         $json = $Request | ConvertTo-Json -Depth 16 -Compress
-        if ([Text.Encoding]::UTF8.GetByteCount($json) -gt 65536) { throw 'request_overflow' }
-        $start = New-Object Diagnostics.ProcessStartInfo
-        $start.FileName = $helper; $start.Arguments = $Mode
-        $start.WorkingDirectory = $QaRepoRoot; $start.UseShellExecute = $false
-        $start.CreateNoWindow = $true
-        $start.RedirectStandardInput = $true; $start.RedirectStandardOutput = $true; $start.RedirectStandardError = $true
-        $process = New-Object Diagnostics.Process; $process.StartInfo = $start
-        if (-not $process.Start()) { throw 'helper_start_failed' }
-        $output = $process.StandardOutput.ReadToEndAsync(); $errors = $process.StandardError.ReadToEndAsync()
-        $process.StandardInput.Write($json); $process.StandardInput.Close()
-        if (-not $process.WaitForExit(35000)) { $process.Kill(); $null = $process.WaitForExit(5000); throw 'helper_deadline' }
-        $text = $output.GetAwaiter().GetResult(); $stderr = $errors.GetAwaiter().GetResult()
-        if ([Text.Encoding]::UTF8.GetByteCount($text) -gt 4194304 -or $stderr.Length -ne 0) { throw 'helper_output_refused' }
-        $result = $text | ConvertFrom-Json
-        if ($process.ExitCode -ne 0 -or $result.ok -ne $true -or $null -eq $result.data) {
+        $reply = [QaLegacyHelperOperation]::Run($helper, $Mode, $QaRepoRoot, $json, $Lease.SafeFileHandle, $pin.SafeFileHandle)
+        $result = $reply.Text | ConvertFrom-Json
+        if ($reply.ExitCode -ne 0 -or $result.ok -ne $true -or $null -eq $result.data) {
             $code = if ([string]$result.code -cmatch '^[a-z_]{1,80}$') { [string]$result.code } else { 'helper_refused' }
             throw $code
         }
         return $result.data
     } catch {
         # Only static helper codes cross this boundary; no native/DB exception text.
-        $message = [string]$_.Exception.Message
+        $errorValue = $_.Exception
+        for ($depth = 0; $depth -lt 4 -and $errorValue.InnerException; $depth++) { $errorValue = $errorValue.InnerException }
+        $message = [string]$errorValue.Message
         if ($message -cnotmatch '^[a-z_]{1,80}$') { $message = 'legacy_fixture_helper_unavailable' }
         throw $message
-    } finally { if ($process) { $process.Dispose() }; if ($pin) { $pin.Dispose() } }
+    } finally { if ($pin) { $pin.Dispose() } }
 }
 
 function New-QaLegacyRequest {
@@ -53,12 +47,12 @@ function New-QaLegacyPreparation {
     param([Parameter(Mandatory)][string]$Run, [Parameter(Mandatory)][string]$Stage, [Parameter(Mandatory)]$Lease)
     if (Test-Path -LiteralPath $Run) { throw 'Legacy preparation requires a new run directory' }
     $request = New-QaLegacyRequest -Run $Run -Stage $Stage -PreparationId ([Guid]::NewGuid().ToString('N')) -Lease $Lease
-    $null = Invoke-QaLegacyHelper -Request $request -Stage $Stage -Mode generate
+    $null = Invoke-QaLegacyHelper -Request $request -Stage $Stage -Lease $Lease -Mode generate
     $source = Resolve-QaChildPath -Path (Join-Path $Run 'assets/models/qa_legacy_asymmetric_v1.glb') -Root $QaRunRoot
     $pin = [IO.File]::Open($source, [IO.FileMode]::Open, [IO.FileAccess]::Read, [IO.FileShare]::Read)
     try {
         $request.input_sha256 = (Get-FileHash -LiteralPath $source -Algorithm SHA256).Hash
-        return Invoke-QaLegacyHelper -Request $request -Stage $Stage -Mode seal
+        return Invoke-QaLegacyHelper -Request $request -Stage $Stage -Lease $Lease -Mode seal
     } finally { $pin.Dispose() }
 }
 
@@ -100,6 +94,6 @@ function Read-QaLegacyFixture {
             if ($owned) { $owned.Dispose(); throw 'Legacy inspection requires the recorded lifetime to be stopped' }
         }
         foreach ($key in @('process_identity','descendant_identities','started_at','bootstrap_verse_id')) { $request[$key] = $current.$key }
-        return Invoke-QaLegacyHelper -Request $request -Stage $Stage -Mode $Phase
+        return Invoke-QaLegacyHelper -Request $request -Stage $Stage -Lease $Lease -Mode $Phase
     } finally { if ($currentPin) { $currentPin.Dispose() }; if ($sourcePin) { $sourcePin.Dispose() }; if ($preparationPin) { $preparationPin.Dispose() } }
 }

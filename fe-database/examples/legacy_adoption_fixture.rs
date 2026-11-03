@@ -41,7 +41,8 @@ async fn run() -> Result<Value> {
         return Err("invalid_fixture_mode");
     }
     let request = input()?;
-    let context = Context::open(&request, mode == "generate")?;
+    // Process-lifetime pins: only OS exit releases the final diagnostic lease.
+    let context = Box::leak(Box::new(Context::open(&request, mode == "generate")?));
     if mode == "generate" {
         for relative in ["data", "fractalengine", "assets", "assets/models"] {
             let path = context.run.join(relative);
