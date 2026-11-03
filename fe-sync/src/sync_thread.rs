@@ -675,6 +675,13 @@ pub fn spawn_sync_thread_with_transport(
                 ));
             }
 
+            let scene_transport=docs_stack.as_ref().map(|stack|Arc::new(IrohBlobTransport::from_stack(stack).with_allowed_relays(
+                relay_config.to_relay_mode().map(|mode|mode.relay_map().urls()).unwrap_or_default(),
+            )));
+            let scene_gate=docs_stack.as_ref().map(|stack|stack.blob_access_gate().scene_assets()).unwrap_or_default();
+            let (scene_publication_tx,mut scene_publication_rx)=tokio::sync::mpsc::channel(128);
+            let mut scene_assets=crate::scene_assets::SceneAssetJobs::new(blob_store.clone(),scene_transport,scene_gate,db_cmd_tx.clone(),evt_tx.clone(),scene_publication_tx);
+
             // Gossip lives inside the stack (one instance, routed by the
             // Router) — a second instance here would never see inbound
             // connections. None in offline mode, like before.
@@ -820,6 +827,11 @@ pub fn spawn_sync_thread_with_transport(
                 drain_reread_queues(&mut fabrics, &replicas, &local_did, &evt_tx, &db_cmd_tx, &docs_stack)
                     .await;
                 tokio::select! {
+                    Some(publication)=scene_publication_rx.recv()=>{
+                        if scene_assets.publication_is_current(&publication) {
+                            handle_write_row_entry(&replicas,&mut pending_writes,fabrics.entry(publication.verse.clone()).or_default(),&blob_store,&local_did,&publication.verse,"asset",&publication.record_id,&publication.row_hash).await;
+                        }
+                    }
                     // Wakes the loop to drain a backlog queued while the
                     // channel was full (§event-outbox / self-drain rule).
                     _ = evt_tx.backlog_ready() => {}
@@ -924,13 +936,12 @@ pub fn spawn_sync_thread_with_transport(
                                 }
                             }
                             Some(SyncCommand::FetchBlob { hash, verse_id }) => {
-                                handle_fetch_blob(
-                                    &blob_store,
-                                    endpoint.as_ref(),
-                                    &hash,
-                                    &verse_id,
-                                    &evt_tx,
-                                );
+                                if !handle_fetch_blob(&blob_store,endpoint.as_ref(),&hash,&verse_id,&evt_tx) {
+                                    scene_assets.fetch(&verse_id,hash);
+                                }
+                            }
+                            Some(SyncCommand::FetchSceneAsset {hash,verse_id,request_id}) => {
+                                scene_assets.fetch_owned(&verse_id,hash,Some(request_id));
                             }
                             Some(command @ (SyncCommand::OpenVerseReplica { .. } | SyncCommand::JoinVerseReplica { .. })) => {
                                 let (verse_id, namespace_id, namespace_secret, cmd_peers, join_reply) = match command {
@@ -990,6 +1001,7 @@ pub fn spawn_sync_thread_with_transport(
                                 )
                                 .await;
                                 joined_leases.forget(&verse_id);
+                                scene_assets.close(&verse_id);
                                 let opened = handle_open_verse_replica(
                                     &mut replicas,
                                     &mut inbound_pumps,
@@ -1021,6 +1033,7 @@ pub fn spawn_sync_thread_with_transport(
                                         tracing::debug!("Replica join caller is no longer waiting");
                                     }
                                 }
+                                if opened.native_ready && replicas.contains_key(&verse_id) {scene_assets.opened(&verse_id,&peers);}
                                 sync_blob_access_gate(
                                     &docs_stack,
                                     &verse_id,
@@ -1039,6 +1052,7 @@ pub fn spawn_sync_thread_with_transport(
                                 // S8b verse binding: ads learned on a verse
                                 // stop counting once this node leaves it.
                                 tileset_providers.forget_verse(&verse_id);
+                                scene_assets.close(&verse_id);
                                 handle_close_verse_replica(
                                     &mut replicas,
                                     &mut inbound_pumps,
@@ -1067,6 +1081,13 @@ pub fn spawn_sync_thread_with_transport(
                                 record_id,
                                 content_hash,
                             }) => {
+                                if table=="asset" {
+                                    match crate::scene_assets::is_scene_row(&blob_store,content_hash).await {
+                                        Ok(true)=>{scene_assets.publish_row(&verse_id,content_hash);continue;}
+                                        Ok(false)=>{},
+                                        Err(error)=>{tracing::warn!(verse_id,"asset metadata publication deferred: {error:#}");continue;}
+                                    }
+                                }
                                 handle_write_row_entry(
                                     &replicas,
                                     &mut pending_writes,
@@ -1248,6 +1269,8 @@ pub fn spawn_sync_thread_with_transport(
             if command_forwarder.join().is_err() {
                 tracing::error!("Sync command forwarder panicked during shutdown");
             }
+
+            scene_assets.shutdown().await;
 
             // Close all open replicas before shutting down.
             for (vid, repl) in replicas.drain() {
@@ -1572,38 +1595,18 @@ fn sync_blob_access_gate(
     }
 }
 
-/// Handle a [`SyncCommand::FetchBlob`].
-///
-/// Phase D stub: checks the local blob store first and emits
-/// [`SyncEvent::BlobReady`] if found.  Otherwise logs a placeholder message
-/// — actual peer discovery and transfer will be added in Phase F.
+/// Preserve the generic local-hit fast path; scene misses use independently admitted jobs.
 fn handle_fetch_blob(
     blob_store: &BlobStoreHandle,
     _endpoint: Option<&SyncEndpoint>,
     hash: &fe_runtime::blob_store::BlobHash,
-    verse_id: &str,
+    _verse_id: &str,
     evt_tx: &dyn EventSink,
-) {
-    let hex = hash_to_hex(hash);
-
-    // Fast path: already have it locally.
+) -> bool {
     if blob_store.has_blob(hash) {
-        tracing::debug!(hash = %hex, "Blob already present locally");
         send_sync_event(evt_tx, SyncEvent::BlobReady { hash: *hash });
-        return;
-    }
-
-    // Phase F: VersePeers lookup would happen here. The VersePeers resource
-    // lives in the Bevy world; a future phase will bridge peer sets into the
-    // sync thread so we can attempt fetches from known peers.
-    // For now, compute the gossip topic to log context.
-    let topic = verse_peers::verse_gossip_topic(verse_id);
-    tracing::info!(
-        hash = %hex,
-        verse_id = %verse_id,
-        gossip_topic = %hex::encode(topic),
-        "Would fetch blob from peers (stub — peer discovery not yet implemented)"
-    );
+        true
+    } else {false}
 }
 
 /// Replay a freshly-opened replica's current entries through the inbound

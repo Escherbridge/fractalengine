@@ -1794,3 +1794,14 @@ journey authors accepted submissions, access loss, late success/failure/property
 confirmation, a retained unknown owner and a new same-name import followed by an
 old duplicate birth. Existing UI journeys cover private results and retired Pen
 continuations. These are authored source checks; root owns execution and live QA.
+
+## scene-peer-assets
+
+The GUI registers fe_sync::SceneAssetEventBuffer beside the streamed tileset buffer.
+fe_sync::drain_sync_events owns the receiver and forwards bounded scene asset ready/
+owned-finality events into this buffer; native projection consumes it after that
+system and refreshes current DB state. Asset-reader misses use nonblocking try_send
+and the sync service admits them only against the one successfully opened native
+Verse when no explicit scope is available. Missing-byte native intents carry their
+actual Verse and request owner instead. Neither this host bridge nor a BlobReady
+event substitutes for current DB scope/asset admission or a local history version.

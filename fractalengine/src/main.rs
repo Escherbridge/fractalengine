@@ -463,14 +463,11 @@ fn main() {
     // locally, it sends a FetchBlob command to the sync thread.
     let sync_cmd_for_miss = sync_cmd_tx.clone();
     let on_miss: fe_runtime::bevy_blob_reader::OnMissCallback = Arc::new(move |hash| {
-        // We don't know the verse_id at the asset-reader level, so use a
-        // placeholder. Phase F will route through VersePeers instead.
-        sync_cmd_for_miss
-            .send(fe_sync::SyncCommand::FetchBlob {
-                hash,
-                verse_id: String::new(),
-            })
-            .ok();
+        if let Err(error)=sync_cmd_for_miss.try_send(fe_sync::SyncCommand::FetchBlob {
+            hash,verse_id:String::new(),
+        }) {
+            tracing::warn!(%error,"Asset-reader miss could not reach the admitted scene transfer queue");
+        }
     });
 
     // Clone the blob-store handle for the API thread (asset endpoints) and the
@@ -523,6 +520,7 @@ fn main() {
     // duplicate advertisement/meta/chunk events for `terrain_bridge`'s
     // streamed-source consumer — see src/AGENTS.md §tileset-p2p.
     app.init_resource::<fe_sync::StreamedTilesetEventBuffer>();
+    app.init_resource::<fe_sync::SceneAssetEventBuffer>();
     app.add_systems(bevy::prelude::Update, fe_sync::drain_sync_events);
 
     // Insert identity, peer, and secret store resources

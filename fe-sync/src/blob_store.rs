@@ -9,8 +9,9 @@
 
 use fe_runtime::blob_store::{canonical_blob_path, BlobHash, BlobStore, DEFAULT_BLOB_DIR_NAME};
 use std::fs;
-use std::io::{self, Write};
+use std::io::{self, Read, Write};
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
 
 /// Overrides [`FsBlobStore::default_path`]'s `data/blobs` default, same
 /// precedence pattern as the relay's `FE_DB_PATH`/`FE_P2P_DIR` (OF-1/S1b).
@@ -29,6 +30,66 @@ fn finish_create_dir(path: &Path, result: io::Result<()>) -> anyhow::Result<()> 
 
 fn ensure_dir(path: &Path) -> anyhow::Result<()> {
     finish_create_dir(path, fs::create_dir_all(path))
+}
+
+static NEXT_TEMP: AtomicU64 = AtomicU64::new(0);
+
+fn existing_matches(path: &Path, hash: &BlobHash, size: u64) -> anyhow::Result<bool> {
+    let file = match fs::File::open(path) {
+        Ok(file) => file,
+        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(false),
+        Err(error) => return Err(error.into()),
+    };
+    let metadata = file.metadata()?;
+    if !metadata.is_file() || metadata.len() != size {
+        return Ok(false);
+    }
+    let mut file = file.take(size.saturating_add(1));
+    let mut hasher = blake3::Hasher::new();
+    let mut buffer = [0u8; 64 * 1024];
+    let mut count = 0u64;
+    loop {
+        let read = file.read(&mut buffer)?;
+        if read == 0 {
+            break;
+        }
+        hasher.update(&buffer[..read]);
+        count += read as u64;
+    }
+    Ok(count == size && hasher.finalize().as_bytes() == hash)
+}
+
+struct TemporaryBlob(PathBuf);
+impl Drop for TemporaryBlob {
+    fn drop(&mut self) {
+        if let Err(error) = fs::remove_file(&self.0) {
+            if error.kind() != io::ErrorKind::NotFound {
+                tracing::warn!(path=%self.0.display(),%error,"Temporary blob cleanup failed");
+            }
+        }
+    }
+}
+
+fn create_temporary(shard: &Path, hash: &BlobHash) -> anyhow::Result<(TemporaryBlob, fs::File)> {
+    for _ in 0..16 {
+        let nonce = NEXT_TEMP.fetch_add(1, Ordering::Relaxed);
+        let path = shard.join(format!(
+            "{}.{}.{}.tmp",
+            hex::encode(hash),
+            std::process::id(),
+            nonce
+        ));
+        match fs::OpenOptions::new()
+            .create_new(true)
+            .write(true)
+            .open(&path)
+        {
+            Ok(file) => return Ok((TemporaryBlob(path), file)),
+            Err(error) if error.kind() == io::ErrorKind::AlreadyExists => continue,
+            Err(error) => return Err(error.into()),
+        }
+    }
+    anyhow::bail!("Unable to allocate a unique blob staging file")
 }
 
 /// On-disk content-addressed blob store.
@@ -101,45 +162,24 @@ impl BlobStore for FsBlobStore {
     fn add_blob(&self, bytes: &[u8]) -> anyhow::Result<BlobHash> {
         let hash: BlobHash = *blake3::hash(bytes).as_bytes();
         let path = self.path_for(&hash);
-
-        if path.exists() {
-            // De-duplication: same content hash = same file, nothing to do.
+        if existing_matches(&path, &hash, bytes.len() as u64)? {
             return Ok(hash);
         }
-
-        let shard_dir = path.parent().expect("path_for always has a parent");
-        ensure_dir(shard_dir)?;
-
-        // Atomic write: write to a temp file in the same directory, then rename.
-        // Same-directory rename is atomic on all mainstream filesystems, so
-        // readers never observe a partially-written blob.
-        let tmp_path = shard_dir.join(format!("{}.tmp", hex::encode(hash)));
-        {
-            let mut f = fs::File::create(&tmp_path)
-                .map_err(|e| anyhow::anyhow!("create {}: {e}", tmp_path.display()))?;
-            f.write_all(bytes)
-                .map_err(|e| anyhow::anyhow!("write {}: {e}", tmp_path.display()))?;
-            f.sync_all()
-                .map_err(|e| anyhow::anyhow!("sync {}: {e}", tmp_path.display()))?;
-        }
-        match fs::rename(&tmp_path, &path) {
+        let shard = path.parent().expect("canonical blob path has a parent");
+        ensure_dir(shard)?;
+        let (temporary, mut file) = create_temporary(shard, &hash)?;
+        file.write_all(bytes)?;
+        file.sync_all()?;
+        drop(file);
+        match fs::rename(&temporary.0, &path) {
             Ok(()) => {}
-            Err(_e) if path.exists() => {
-                // Another writer beat us — our content is identical (same hash).
-                // Clean up temp file and succeed.
-                let _ = fs::remove_file(&tmp_path);
-                tracing::debug!(hash = %hex::encode(hash), "Blob already written by concurrent writer");
-            }
-            Err(e) => {
-                let _ = fs::remove_file(&tmp_path);
-                return Err(anyhow::anyhow!(
-                    "rename {} -> {}: {e}",
-                    tmp_path.display(),
-                    path.display()
-                ));
-            }
+            Err(_) if existing_matches(&path, &hash, bytes.len() as u64)? => {}
+            Err(error) => return Err(anyhow::anyhow!("atomic blob replacement failed: {error}")),
         }
-
+        anyhow::ensure!(
+            existing_matches(&path, &hash, bytes.len() as u64)?,
+            "canonical blob readback differs from its digest"
+        );
         Ok(hash)
     }
 
@@ -244,6 +284,44 @@ mod tests {
         let h1 = store.add_blob(bytes).expect("add1");
         let h2 = store.add_blob(bytes).expect("add2");
         assert_eq!(h1, h2);
+        let canonical = store.get_blob_path(&h1).unwrap();
+        std::fs::write(&canonical, b"corrupt cached bytes").unwrap();
+        assert_eq!(store.add_blob(bytes).unwrap(), h1);
+        assert_eq!(std::fs::read(&canonical).unwrap(), bytes);
+        let store = std::sync::Arc::new(store);
+        let payload = std::sync::Arc::new(vec![0x5au8; 1024 * 1024]);
+        let barrier = std::sync::Arc::new(std::sync::Barrier::new(8));
+        let writers = (0..8)
+            .map(|_| {
+                let store = store.clone();
+                let payload = payload.clone();
+                let barrier = barrier.clone();
+                std::thread::spawn(move || {
+                    barrier.wait();
+                    store.add_blob(&payload).unwrap()
+                })
+            })
+            .collect::<Vec<_>>();
+        let expected = *blake3::hash(&payload).as_bytes();
+        for writer in writers {
+            assert_eq!(writer.join().unwrap(), expected);
+        }
+        assert_eq!(
+            std::fs::read(store.get_blob_path(&expected).unwrap()).unwrap(),
+            *payload
+        );
+        for shard in std::fs::read_dir(tmp.path()).unwrap() {
+            for entry in std::fs::read_dir(shard.unwrap().path()).unwrap() {
+                assert!(
+                    !entry
+                        .unwrap()
+                        .file_name()
+                        .to_string_lossy()
+                        .ends_with(".tmp"),
+                    "each writer cleans only its own staging file"
+                );
+            }
+        }
     }
 
     #[test]

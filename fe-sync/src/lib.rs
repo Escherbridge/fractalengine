@@ -18,6 +18,8 @@ pub mod relay_config;
 pub mod replication;
 pub mod replicator;
 pub mod sharding;
+mod scene_asset_gate;
+mod scene_assets;
 pub mod status;
 pub mod sync_thread;
 pub mod tileset_transfer;
@@ -47,7 +49,7 @@ pub use sharding::{
     PeerDeclaration, ShardId, ShardLedgerEntry, VerseFabric, PEER_DECL_TABLE, SHARD_TABLE,
 };
 pub use status::{
-    drain_sync_events, StreamedTilesetEventBuffer, SyncCommandSenderRes, SyncEventReceiverRes,
+    drain_sync_events, SceneAssetEventBuffer, StreamedTilesetEventBuffer, SyncCommandSenderRes, SyncEventReceiverRes,
     SyncStatus, TilesetEventBuffer,
 };
 pub use sync_thread::{spawn_sync_thread, spawn_sync_thread_with_transport};

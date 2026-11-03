@@ -188,3 +188,10 @@ both local owner and adoption provenance. Missing bytes under a fenced current r
 SceneAssetNeeded AFTER the current result, with identity/hash/size/provenance and no local
 history version. The sync service must independently admit the hint and signal readiness
 only after verified bytes reach the shared store; the UI then requests fresh current state.
+
+Scene dependency envelopes add _fe_scene_asset:1 as a routing hint for the native
+byte-publication adapter. It is not stored as an asset field or used for admission.
+Ordinary asset/API/device publication remains separate; signed scope/author and
+current local upload/adoption proofs still determine authorization. Upgraded sync
+holds marked metadata until verified source bytes are retained; old peers may ignore
+the additive hint and retain their earlier metadata-first behavior.

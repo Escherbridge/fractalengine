@@ -54,6 +54,15 @@ pub struct StreamedTilesetEventBuffer {
     pub events: Vec<SyncEvent>,
 }
 
+/// Single-consumer native scene transfer events; overflow requires fresh current reconciliation.
+#[derive(Resource,Default)]
+pub struct SceneAssetEventBuffer {
+    pub events:Vec<SyncEvent>,
+    pub overflowed:bool,
+}
+
+const MAX_SCENE_ASSET_EVENTS:usize=1024;
+
 /// Most events either tileset buffer holds between drains; past it new events
 /// are dropped (a binary with no consumer — the headless relay — never grows
 /// without bound; see `src/AGENTS.md` §tileset-transfer).
@@ -75,11 +84,19 @@ pub fn drain_sync_events(
     mut status: ResMut<SyncStatus>,
     mut tileset_buf: ResMut<TilesetEventBuffer>,
     mut streamed_buf: Option<ResMut<StreamedTilesetEventBuffer>>,
+    mut scene_buf: Option<ResMut<SceneAssetEventBuffer>>,
 ) {
     let Some(receiver) = receiver else { return };
     let Ok(rx) = receiver.0.lock() else { return };
     let mut dropped = 0usize;
+    let mut scene_dropped=0usize;
     while let Ok(evt) = rx.try_recv() {
+        if matches!(evt,SyncEvent::BlobReady {..}|SyncEvent::SceneAssetFetchFailed {..}|SyncEvent::SceneAssetFetchSettled {..}) {
+            if let Some(buffer)=scene_buf.as_mut() {
+                if buffer.events.len()<MAX_SCENE_ASSET_EVENTS {buffer.events.push(evt.clone());}
+                else {buffer.overflowed=true;scene_dropped+=1;}
+            }
+        }
         match evt {
             SyncEvent::Started { online, node_addr } => {
                 status.online = online;
@@ -101,6 +118,12 @@ pub fn drain_sync_events(
                         tracing::info!(online, "SyncStatus updated: started — no dialable address");
                     }
                 }
+            }
+            SyncEvent::SceneAssetFetchFailed {ref verse_id,hash,ref reason} => {
+                tracing::warn!(verse_id,hash=%fe_runtime::blob_store::hash_to_hex(&hash),reason,"Scene asset remains unavailable");
+            }
+            SyncEvent::SceneAssetFetchSettled {ref verse_id,hash,ref request_ids,ref result} => {
+                tracing::debug!(verse_id,hash=%fe_runtime::blob_store::hash_to_hex(&hash),owners=request_ids.len(),success=result.is_ok(),"Owned scene asset transfer settled");
             }
             SyncEvent::BlobReady { hash } => {
                 tracing::debug!(
@@ -217,6 +240,7 @@ pub fn drain_sync_events(
             }
         }
     }
+    if scene_dropped>0 {tracing::warn!(dropped=scene_dropped,"Native scene asset event buffer overflowed; reconcile current state without inventing transfer completion");}
     if dropped > 0 {
         tracing::warn!(
             dropped,
@@ -249,6 +273,7 @@ mod tests {
             .init_resource::<SyncStatus>()
             .init_resource::<TilesetEventBuffer>()
             .init_resource::<StreamedTilesetEventBuffer>()
+            .init_resource::<SceneAssetEventBuffer>()
             .add_systems(Update, drain_sync_events);
         for frame in 0..3 {
             for i in 0..MAX_BUFFERED_TILESET_EVENTS {
@@ -258,8 +283,14 @@ mod tests {
                 })
                 .unwrap();
             }
+            for index in 0..MAX_SCENE_ASSET_EVENTS+1 {
+                tx.send(SyncEvent::SceneAssetFetchSettled {verse_id:"scene-v".into(),hash:[7;32],request_ids:vec![format!("owner-{frame}-{index}")],result:Ok(())}).unwrap();
+            }
             app.update();
         }
+        let scene=app.world().resource::<SceneAssetEventBuffer>();
+        assert_eq!(scene.events.len(),MAX_SCENE_ASSET_EVENTS);assert!(scene.overflowed);
+        assert!(matches!(&scene.events[0],SyncEvent::SceneAssetFetchSettled {request_ids,..} if request_ids==&vec!["owner-0-0".to_owned()]));
         assert_eq!(
             app.world().resource::<TilesetEventBuffer>().events.len(),
             MAX_BUFFERED_TILESET_EVENTS

@@ -1430,6 +1430,7 @@ async fn apply_anchored_asset_row(
     if let Some(fields) = row.as_object_mut() {
         fields.remove("owner_did");
         fields.remove("publication_provenance");
+        fields.remove(fe_runtime::scene_asset::SCENE_ASSET_ROW_MARKER);
     }
 
     let asset_id = row

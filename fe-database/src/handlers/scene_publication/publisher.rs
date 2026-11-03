@@ -191,6 +191,7 @@ async fn dependencies(
                 object.remove("publication_provenance");
                 object.retain(|_, value| !value.is_null());
             }
+            asset[fe_runtime::scene_asset::SCENE_ASSET_ROW_MARKER]=json!(1);
             let bytes = serde_json::to_vec(&asset)?;
             anyhow::ensure!(
                 bytes.len() <= 32 * 1024,

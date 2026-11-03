@@ -5520,6 +5520,7 @@ mod tests {
             assert_eq!(node.table, "node");
             assert_eq!(metadata.record_id, asset_id);
             let metadata_bytes = concrete.bytes_for(&metadata.content_hash).unwrap();
+            assert_eq!(serde_json::from_slice::<serde_json::Value>(&metadata_bytes).unwrap()[fe_runtime::scene_asset::SCENE_ASSET_ROW_MARKER],1);
             let node_bytes = concrete.bytes_for(&node.content_hash).unwrap();
             assert_eq!(
                 apply_replicated_row_handler(

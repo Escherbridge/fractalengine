@@ -229,6 +229,7 @@ pub struct BlobAccessGate(Arc<GateState>);
 #[derive(Default)]
 struct GateState {
     verse_access: RwLock<HashMap<String, VerseAccessSnapshot>>,
+    scene_assets: crate::scene_asset_gate::SceneAssetGate,
     tracked: RwLock<TrackedContent>,
     /// `connection_id -> did:key`, recorded at `ClientConnected` and
     /// dropped at `ConnectionClosed` — a request event carries no identity
@@ -265,9 +266,17 @@ impl BlobAccessGate {
         tracked.reindex();
         Self(Arc::new(GateState {
             tracked: RwLock::new(tracked),
+            scene_assets: crate::scene_asset_gate::SceneAssetGate::load(path.with_file_name("scene-asset-classification.json")),
             persist_path: Some(path),
             ..GateState::default()
         }))
+    }
+
+    pub(crate) fn scene_assets(&self)->crate::scene_asset_gate::SceneAssetGate {self.0.scene_assets.clone()}
+
+    async fn admits_current_scene(&self,connection_id:u64,hashes:&[[u8;32]])->bool {
+        let Some(did)=self.did_for_connection(connection_id) else {return false};
+        tokio::time::timeout(std::time::Duration::from_secs(3),self.0.scene_assets.admits(&did,hashes)).await.unwrap_or(false)
     }
 
     /// Replace one verse's access snapshot (called after the fabric's role
@@ -574,7 +583,7 @@ fn spawn_blob_access_filter(gate: BlobAccessGate) -> EventSender {
                     let reaches_children = !ranges.is_empty() && !ranges.is_blob();
                     let connection_id = msg.inner.connection_id;
                     let admitted = match gate.get_request_hashes(hash, reaches_children) {
-                        Some(hashes) => gate.admits_connection(connection_id, hashes.iter()),
+                        Some(hashes) => gate.admits_connection(connection_id, hashes.iter()) && gate.admits_current_scene(connection_id,&hashes).await,
                         None => false,
                     };
                     answer_intercepted!(msg, admitted, connection_id, "get");
@@ -588,13 +597,13 @@ fn spawn_blob_access_filter(gate: BlobAccessGate) -> EventSender {
                         .map(|h| (*h).into())
                         .collect();
                     let connection_id = msg.inner.connection_id;
-                    let admitted = gate.admits_connection(connection_id, hashes.iter());
+                    let admitted = gate.admits_connection(connection_id, hashes.iter()) && gate.admits_current_scene(connection_id,&hashes).await;
                     answer_intercepted!(msg, admitted, connection_id, "get_many");
                 }
                 ProviderMessage::ObserveRequestReceived(msg) => {
                     let hash: [u8; 32] = msg.inner.request.hash.into();
                     let connection_id = msg.inner.connection_id;
-                    let admitted = gate.admits_connection(connection_id, std::iter::once(&hash));
+                    let admitted = gate.admits_connection(connection_id, std::iter::once(&hash)) && gate.admits_current_scene(connection_id,&[hash]).await;
                     answer_intercepted!(msg, admitted, connection_id, "observe");
                 }
                 _ => {}
@@ -1095,6 +1104,380 @@ mod tests {
             result.is_ok(),
             "a hash with no tracked tileset context must pass through: {:?}",
             result.err()
+        );
+
+        // Exercise the real native transfer/jobs with a controlled typed admission seam.
+        // Actual DB authority/metadata fences are covered by the existing DB journey.
+        use crate::{event_outbox::EventOutbox, messages::SyncEvent, scene_assets::SceneAssetJobs};
+        use fe_runtime::blob_store::BlobStoreHandle;
+        use fe_runtime::messages::DbCommand;
+        use fe_runtime::scene_asset::{SceneAssetTransferPermit, SceneAssetTransferPurpose};
+        let provider_files: BlobStoreHandle =
+            Arc::new(crate::FsBlobStore::new(provider_dir.path().join("scene-files")).unwrap());
+        let requester_files: BlobStoreHandle =
+            Arc::new(crate::FsBlobStore::new(requester_dir.path().join("scene-files")).unwrap());
+        let json = br#"{"asset":{"version":"2.0"}}"#;
+        let padded = (json.len() + 3) & !3;
+        let total = 20 + padded;
+        let mut glb = Vec::new();
+        glb.extend_from_slice(b"glTF");
+        glb.extend_from_slice(&2u32.to_le_bytes());
+        glb.extend_from_slice(&(total as u32).to_le_bytes());
+        glb.extend_from_slice(&(padded as u32).to_le_bytes());
+        glb.extend_from_slice(&0x4E4F534Au32.to_le_bytes());
+        glb.extend_from_slice(json);
+        glb.resize(total, b' ');
+        let scene_hash = provider_files.add_blob(&glb).unwrap();
+        let asset_id = ulid::Ulid::new().to_string();
+        let row=serde_json::to_vec(&serde_json::json!({"_fe_scene_asset":1,"asset_id":asset_id,"petal_id":"scene-p","content_hash":fe_runtime::blob_store::hash_to_hex(&scene_hash),"content_type":"model/gltf-binary","size_bytes":glb.len()})).unwrap();
+        let row_hash = provider_files.add_blob(&row).unwrap();
+        assert!(crate::scene_assets::is_scene_row(&provider_files, row_hash)
+            .await
+            .unwrap());
+        let mut ordinary: serde_json::Value = serde_json::from_slice(&row).unwrap();
+        ordinary
+            .as_object_mut()
+            .unwrap()
+            .remove(fe_runtime::scene_asset::SCENE_ASSET_ROW_MARKER);
+        let ordinary_hash = provider_files
+            .add_blob(&serde_json::to_vec(&ordinary).unwrap())
+            .unwrap();
+        assert!(
+            !crate::scene_assets::is_scene_row(&provider_files, ordinary_hash)
+                .await
+                .unwrap(),
+            "GLB MIME alone never reroutes ordinary/device metadata"
+        );
+        let permit = SceneAssetTransferPermit {
+            verse_id: "scene-v".into(),
+            petal_id: "scene-p".into(),
+            node_id: "scene-n".into(),
+            asset_id: asset_id.clone(),
+            content_hash: scene_hash,
+            content_type: "model/gltf-binary".into(),
+            size_bytes: glb.len() as u64,
+            asset_fingerprint: "controlled-admission-fixture".into(),
+        };
+        let allowed = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let admission_stop = fe_runtime::service_lifecycle::StopSignal::default();
+        let requester_did = crate::replicator::peer_did_key(&requester_ep.id());
+        let (provider_db, provider_rx) = crossbeam::channel::bounded::<DbCommand>(16);
+        let (requester_db, requester_rx) = crossbeam::channel::bounded::<DbCommand>(16);
+        let spawn_admissions = |rx: crossbeam::channel::Receiver<DbCommand>, source: bool| {
+            let permit = permit.clone();
+            let allowed = allowed.clone();
+            let stop = admission_stop.clone();
+            let requester_did = requester_did.clone();
+            tokio::spawn(async move {
+                while !stop.is_requested() {
+                    while let Ok(command) = rx.try_recv() {
+                        if let DbCommand::InspectSceneAssetTransfer { request, reply } = command {
+                            assert_eq!(request.verse_id, "scene-v");
+                            assert_eq!(request.hash, permit.content_hash);
+                            let valid = match &request.purpose {
+                                SceneAssetTransferPurpose::Publish => source,
+                                SceneAssetTransferPurpose::Fetch => !source,
+                                SceneAssetTransferPurpose::Serve {
+                                    requester_did: actual,
+                                } => {
+                                    source
+                                        && actual == &requester_did
+                                        && allowed.load(std::sync::atomic::Ordering::Acquire)
+                                }
+                            };
+                            let _ = reply.try_send(if valid {
+                                Ok(permit.clone())
+                            } else {
+                                Err("controlled current admission refusal".into())
+                            });
+                        } else {
+                            panic!("unexpected private admission command");
+                        }
+                    }
+                    tokio::time::sleep(std::time::Duration::from_millis(1)).await;
+                }
+            })
+        };
+        let source_admissions = spawn_admissions(provider_rx, true);
+        let receiver_admissions = spawn_admissions(requester_rx, false);
+        let (source_events, _) = crossbeam::channel::bounded(32);
+        let (events_tx, events_rx) = crossbeam::channel::bounded(32);
+        let receiver_outbox = EventOutbox::new(events_tx);
+        let (source_publications, mut publication_rx) = tokio::sync::mpsc::channel(8);
+        let (receiver_publications, _) = tokio::sync::mpsc::channel(8);
+        let mut source_jobs = SceneAssetJobs::new(
+            provider_files.clone(),
+            Some(Arc::new(crate::IrohBlobTransport::from_stack(
+                &provider_stack,
+            ))),
+            provider_stack.blob_access_gate().scene_assets(),
+            Some(provider_db),
+            EventOutbox::new(source_events),
+            source_publications,
+        );
+        let mut receiver_jobs = SceneAssetJobs::new(
+            requester_files.clone(),
+            Some(Arc::new(crate::IrohBlobTransport::from_stack(
+                &requester_stack,
+            ))),
+            requester_stack.blob_access_gate().scene_assets(),
+            Some(requester_db),
+            receiver_outbox.clone(),
+            receiver_publications,
+        );
+        source_jobs.opened("scene-v", &[]);
+        receiver_jobs.opened("scene-v", &[provider_ep.addr()]);
+        source_jobs.publish_row("scene-v", row_hash);
+        let publication =
+            tokio::time::timeout(std::time::Duration::from_secs(20), publication_rx.recv())
+                .await
+                .unwrap()
+                .unwrap();
+        assert!(source_jobs.publication_is_current(&publication));
+        assert_eq!(publication.record_id, asset_id);
+        assert_eq!(publication.row_hash, row_hash);
+        assert!(
+            provider_dir
+                .path()
+                .join("scene-asset-classification.json")
+                .is_file(),
+            "classification precedes metadata emission"
+        );
+        let root = fe_runtime::blob_transport::hash_seq_root(&[scene_hash]);
+        let reloaded = crate::scene_asset_gate::SceneAssetGate::load(
+            provider_dir.path().join("scene-asset-classification.json"),
+        );
+        assert!(
+            !reloaded.admits(&requester_did, &[scene_hash]).await,
+            "restart retains raw scene classification without an authorizer"
+        );
+        assert!(
+            !reloaded.admits(&requester_did, &[root]).await,
+            "retention root cannot fall through the raw-blob policy"
+        );
+        assert!(
+            requester_transport
+                .verify_provider_size(&provider_addr, scene_hash, glb.len() as u64)
+                .await
+                .is_err(),
+            "unknown requester cannot read scene bytes while ordinary row blobs stay unaffected"
+        );
+        allowed.store(true, std::sync::atomic::Ordering::Release);
+        let mut wrong = scene_hash;
+        wrong[0] ^= 1;
+        assert!(fe_runtime::scene_asset::verify_scene_asset_bytes(
+            &glb,
+            &wrong,
+            "model/gltf-binary",
+            glb.len() as u64
+        )
+        .is_err());
+        assert!(
+            requester_transport
+                .verify_provider_size(&provider_addr, scene_hash, glb.len() as u64 - 1)
+                .await
+                .is_err(),
+            "provider size cap refuses before blob fetch"
+        );
+        assert!(requester_transport
+            .read_local(scene_hash)
+            .await
+            .unwrap()
+            .is_none());
+
+        receiver_jobs.fetch_owned("scene-v", scene_hash, Some("scene-owner-a".into()));
+        receiver_jobs.fetch_owned("scene-v", scene_hash, Some("scene-owner-b".into()));
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(20);
+        let mut settled = false;
+        let mut ready = false;
+        while !settled || !ready {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "owned native scene download timed out"
+            );
+            match events_rx.try_recv() {
+                Ok(SyncEvent::SceneAssetFetchSettled {
+                    hash,
+                    request_ids,
+                    result,
+                    ..
+                }) => {
+                    assert_eq!(hash, scene_hash);
+                    assert!(result.is_ok(), "{result:?}");
+                    assert_eq!(request_ids, vec!["scene-owner-a", "scene-owner-b"]);
+                    settled = true;
+                    assert!(
+                        requester_files.has_blob(&scene_hash),
+                        "owned success follows actual shared-store persistence"
+                    );
+                }
+                Ok(SyncEvent::BlobReady { hash }) => {
+                    assert_eq!(hash, scene_hash);
+                    ready = true;
+                }
+                Ok(other) => panic!("unexpected scene success event: {other:?}"),
+                Err(_) => tokio::time::sleep(std::time::Duration::from_millis(5)).await,
+            }
+        }
+        assert_eq!(
+            std::fs::read(requester_files.get_blob_path(&scene_hash).unwrap()).unwrap(),
+            glb
+        );
+        let canonical = requester_files.get_blob_path(&scene_hash).unwrap();
+        std::fs::write(&canonical, b"corrupt pre-existing cache file").unwrap();
+        receiver_jobs.fetch_owned("scene-v", scene_hash, Some("scene-corrupt-readback".into()));
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(20);
+        loop {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "corrupt cache writeback did not settle"
+            );
+            match events_rx.try_recv() {
+                Ok(SyncEvent::SceneAssetFetchSettled {
+                    request_ids,
+                    result,
+                    ..
+                }) => {
+                    assert_eq!(request_ids, vec!["scene-corrupt-readback"]);
+                    assert!(
+                        result.is_ok(),
+                        "verified bytes repair the corrupt canonical cache entry"
+                    );
+                    break;
+                }
+                Ok(SyncEvent::BlobReady { hash }) => {
+                    assert_eq!(hash, scene_hash);
+                    assert_eq!(std::fs::read(&canonical).unwrap(), glb);
+                }
+                Ok(_) => {}
+                Err(_) => tokio::time::sleep(std::time::Duration::from_millis(5)).await,
+            }
+        }
+        while let Ok(event) = events_rx.try_recv() {
+            if let SyncEvent::BlobReady { hash } = event {
+                assert_eq!(hash, scene_hash);
+            }
+        }
+        assert_eq!(std::fs::read(&canonical).unwrap(), glb);
+        allowed.store(false, std::sync::atomic::Ordering::Release);
+        receiver_jobs.fetch_owned("scene-v", scene_hash, Some("scene-revoked".into()));
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(20);
+        loop {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "revoked native transfer did not settle"
+            );
+            match events_rx.try_recv() {
+                Ok(SyncEvent::SceneAssetFetchSettled {
+                    request_ids,
+                    result,
+                    ..
+                }) => {
+                    assert_eq!(request_ids, vec!["scene-revoked"]);
+                    assert!(result.is_err());
+                    break;
+                }
+                Ok(SyncEvent::BlobReady { .. }) => {
+                    panic!("a cached native copy cannot bypass fresh provider admission")
+                }
+                Ok(_) => {}
+                Err(_) => tokio::time::sleep(std::time::Duration::from_millis(5)).await,
+            }
+        }
+        while let Ok(event) = events_rx.try_recv() {
+            assert!(!matches!(event, SyncEvent::BlobReady { .. }));
+        }
+        allowed.store(true, std::sync::atomic::Ordering::Release);
+        receiver_jobs.fetch_owned("scene-v", scene_hash, Some("scene-old-generation".into()));
+        receiver_jobs.close("scene-v");
+        receiver_jobs.opened("scene-v", &[provider_ep.addr()]);
+        receiver_jobs.fetch_owned("scene-v", scene_hash, Some("scene-new-generation".into()));
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(20);
+        let mut old = false;
+        let mut new = false;
+        while !old || !new {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "generation owners did not settle"
+            );
+            match events_rx.try_recv() {
+                Ok(SyncEvent::SceneAssetFetchSettled {
+                    request_ids,
+                    result,
+                    ..
+                }) if request_ids == vec!["scene-old-generation"] => {
+                    assert!(result.is_err());
+                    old = true;
+                }
+                Ok(SyncEvent::SceneAssetFetchSettled {
+                    request_ids,
+                    result,
+                    ..
+                }) => {
+                    assert_eq!(request_ids, vec!["scene-new-generation"]);
+                    assert!(result.is_ok());
+                    new = true;
+                }
+                Ok(_) => {}
+                Err(_) => tokio::time::sleep(std::time::Duration::from_millis(5)).await,
+            }
+        }
+        while events_rx.try_recv().is_ok() {}
+        for owner in 0..69 {
+            receiver_jobs.opened("scene-v", &[provider_ep.addr()]);
+            receiver_jobs.fetch_owned(
+                "scene-v",
+                scene_hash,
+                Some(format!("bounded-owner-{owner}")),
+            );
+        }
+        assert_eq!(
+            receiver_jobs.pending_job_count(),
+            68,
+            "four active slots plus 64 waiting jobs, with no unbounded prefix"
+        );
+        receiver_jobs.close("scene-v");
+        receiver_jobs.shutdown().await;
+        let mut bounded_owners = std::collections::BTreeSet::new();
+        loop {
+            receiver_outbox.flush();
+            match events_rx.try_recv() {
+                Ok(SyncEvent::SceneAssetFetchSettled {
+                    request_ids,
+                    result,
+                    ..
+                }) => {
+                    assert!(result.is_err());
+                    bounded_owners.extend(request_ids);
+                }
+                Ok(SyncEvent::BlobReady { .. }) => {
+                    panic!("closed queued generations cannot announce readiness")
+                }
+                Ok(_) => {}
+                Err(_) => {
+                    if receiver_outbox.backlog_len() == 0 {
+                        break;
+                    }
+                }
+            }
+        }
+        assert_eq!(
+            bounded_owners.len(),
+            69,
+            "queue refusal and every cancelled owner settle without loop self-drain deadlock"
+        );
+        source_jobs.shutdown().await;
+        admission_stop.request();
+        source_admissions.await.unwrap();
+        receiver_admissions.await.unwrap();
+        std::fs::remove_file(provider_dir.path().join("scene-asset-classification.json")).unwrap();
+        let lost = crate::scene_asset_gate::SceneAssetGate::load(
+            provider_dir.path().join("scene-asset-classification.json"),
+        );
+        assert!(!lost.admits(&requester_did, &[scene_hash]).await);
+        assert!(
+            !lost.admits(&requester_did, &[hash]).await,
+            "lost activated registry cannot silently reopen unknown native bytes"
         );
 
         provider_stack.shutdown().await;

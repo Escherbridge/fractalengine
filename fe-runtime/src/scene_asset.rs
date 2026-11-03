@@ -4,6 +4,7 @@ use crate::{blob_store::BlobHash, scene_replication::ReplicaNodeProvenance};
 use std::time::Instant;
 
 pub const MAX_SCENE_ASSET_BYTES: u64 = 256 * 1024 * 1024;
+pub const SCENE_ASSET_ROW_MARKER: &str = "_fe_scene_asset";
 
 /// The DB resolves all identities and authority; a request is never an authority token.
 #[derive(Debug, Clone, PartialEq, Eq)]

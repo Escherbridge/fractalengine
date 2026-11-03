@@ -2004,3 +2004,103 @@ The private scene_asset runtime protocol and DQA020 adoption are described in th
 DB handlers directory. These contracts have no public REST/MCP route and no local
 object-history claim. Their source implementation and tests still require independent
 review and the end-of-campaign integrated sweep before acceptance.
+
+
+### Scene byte lifecycle and authorization
+
+scene_assets owns four active jobs and 64 waiting jobs, a 120-second outer work
+deadline, bounded private DB requests, and at most 16 providers captured from a
+successfully opened native Verse. Requests never supply arbitrary provider URLs.
+IrohBlobTransport applies this node's relay allowlist and pins EndpointId through
+the authenticated connection. Fresh provider-size admission runs even for a native
+cache hit; provider BAO size, content digest, declared size/MIME and the texture
+guard are checked before local persistence. Missing glTF external resources remain
+a separate dependency gap: transferring its root file does not certify those files.
+
+Source bytes are read/verified from the shared canonical store on the blocking
+pool, imported into the native blobs store, and retained by a named one-child
+HashSeq tag. Temporary holds are owned by an RAII guard. Scene metadata is released
+through a bounded internal completion channel only after those bytes are retained,
+with exact open-generation validation. Non-scene metadata keeps its existing row
+publisher. An unsuccessful source job leaves durable metadata for later recovery,
+logs why it was withheld, and never claims delivery. Native named tags remain
+retained until a separately authorized garbage-collection policy removes them.
+
+Recipient jobs re-admit current stored metadata/Viewer authority before and after
+the shared FsBlobStore write. The write and streaming readback verification are
+awaited even after cancellation; shutdown joins all jobs before stopping the native
+stack, so terminal reset cannot outlive a late shared-store write. Close/reopen
+cancels the old job generation, suppresses its success, and cannot settle new request
+owners. Already received bytes are not erased by cancellation or role loss (DQA015).
+No current role guarantee is claimed for an already admitted in-flight remote stream.
+Large existing LOCAL copies remain available independently from the 256 MiB network
+cap; missing larger copies return TransferLimitExceeded instead of entering a job.
+
+### Durable scene classification
+
+Scene content does NOT inherit tileset Published's any-open-Verse permission.
+scene_asset_gate persists a separate deny-by-default hash class for BOTH raw child
+and retention root before either is added to native storage. Native get/get-many/
+observe requests keep existing tileset gates AND require fresh private DB Serve
+admission bound to the authenticated connection DID and stored current asset scope.
+A closed Verse has no current authorizer lease. Receiving a copy never manufactures
+local upload/adoption proof for secondary seeding.
+
+The classification registry and activation marker live beside the native P2P store
+and are never cleared with DB tables or on Close. Entries are never evicted; 16
+contexts/hash and 8 MiB total refuse further publication instead of dropping old
+protection. An activated missing, unreadable or malformed registry denies UNKNOWN
+native content too and refuses new jobs, so restart/reset cannot turn protected
+raw bytes back into the legacy untracked-blob allow path. This state requires a
+separate safe storage recovery; deleting classification while retaining native
+bytes is not a supported repair. Ordinary row-entry raw content remains unchanged
+when the registry is healthy.
+
+### Authored verification limits
+
+The existing DB journey exercises actual scope/role/metadata/adoption transactions.
+The existing real two-stack blob-filter journey additionally drives production
+SceneAssetJobs and IrohBlobTransport over loopback into separate FsBlobStores,
+using an explicitly controlled typed DB-admission fixture. It authors persistence,
+coalesced owner finality, provider revocation despite a native cache hit, old/new
+generation separation, raw/root restart denial and lost-registry refusal. This is
+not an executed test and is not a native two-application database/identity proof.
+Parent owns that live paired verification, the final single test sweep, CI and
+release acceptance. Object history, models and field-definition replication remain
+separate and are not made convergent by blob delivery.
+
+SceneAssetEventBuffer is the sole native projection handoff from drain_sync_events.
+The GUI host registers it; native UI consumes it after that drain system. It caps
+1024 events and sets overflowed on loss. A consumer must reconcile pending owners
+through fresh current reads on overflow, never infer a completed request. Headless
+hosts need not allocate the buffer. The existing undrained-buffer journey authors
+its cap, exact request retention and overflow signal alongside tileset buffers.
+
+The shared FsBlobStore validates existing hash-named files instead of trusting their
+presence, repairs corrupt entries with verified caller bytes, and stages each writer
+in its own create-new same-directory file. Atomic replacement and exact canonical
+readback handle rename races; RAII cleanup removes only that writer's staging file.
+The existing idempotent-add journey authors corrupt-cache repair and simultaneous
+same-hash writes with no remaining temporary files. This narrows false readiness
+from the previous shared temporary filename and existence-only deduplication.
+
+Classification blocks the affected hashes while its durable write is pending. The
+raw/root class file and activation marker are synced before the native add; a write
+failure fails closed for subsequent requests/jobs. Pending counts and class capture
+share one lock order so a request cannot observe new unpublished classification
+contexts between its pending check and snapshot capture.
+
+The node publisher marks scene-asset ENVELOPES with _fe_scene_asset:1 only after its
+normal local provenance/authority preparation. It is a routing hint, never authority;
+Publish/Serve repeat actual current DB admission. The receiver strips the hint along
+with local-only provenance. Unknown marker versions are withheld with a diagnostic.
+Ordinary API/device metadata, including GLB data used only as a sensor payload, keeps
+its original publisher. A later placed-node scene envelope has a distinct row hash,
+so an in-flight pre-placement metadata write cannot coalesce away byte publication.
+Old peers can ignore the hint but do not gain upgraded byte-ready sequencing.
+
+JobLease retains the four-slot resource through async work and clones it into
+uncancellable blocking IO, so rapid Close/reopen cannot accumulate unbounded disk
+workers behind cancelled async jobs. Runtime teardown drains finite blocking tasks
+before the sync OS-thread join. Generic metadata classification reads remain one
+small sequential loop operation, using the same blocking-pool file reader.

@@ -139,6 +139,20 @@ impl IrohBlobTransport {
         Ok(conn)
     }
 
+    /// Require a live provider's authenticated blob policy even when a native cache hit exists.
+    pub(crate) async fn verify_provider_size(&self,provider:&ProviderRef,hash:Hash32,max_bytes:u64)->Result<u64> {
+        let conn=self.connection(provider).await?;
+        bounded(FETCH_TIMEOUT,"admitting scene blob provider",async {
+            let (size,_)=iroh_blobs::get::request::get_verified_size(&conn,&Hash::from(hash)).await
+                .map_err(|error|anyhow!("scene blob provider refused size: {error}"))?;
+            ensure_within_cap(&hash,size,max_bytes)?;Ok(size)
+        }).await
+    }
+
+    pub(crate) fn discard_temporary(&self,hashes:&[Hash32]) {
+        let mut pending=lock(&self.pending);for hash in hashes {pending.remove(hash);}
+    }
+
     /// Fetch `hash` (raw) from `provider` into the local store; local state is honoured.
     ///
     /// Asks for the blob's BAO-verified size first, so a blob over `max_bytes`
