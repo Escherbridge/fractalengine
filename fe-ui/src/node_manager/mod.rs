@@ -67,7 +67,7 @@ use crate::plugin::UiSet;
 /// path_interaction_20260716 (FR-1/FR-4): precise ribbon pick geometry attached
 /// to rendered track lines by the fractalengine gpx bridge. Re-exported so
 /// `fe_ui::node_manager::TrackPickShape` is reachable outside this crate.
-pub use path_segment_interaction::TrackPickShape;
+pub use path_segment_interaction::{TrackPickShape, TrackSourceWitness};
 
 /// FR-1 typed selection read-model, re-exported for the gimbal, the object-aware
 /// left-click dispatch (FR-2), and panels (the tool inspector projects it to name

@@ -1132,6 +1132,7 @@ mod tests {
     fn shape(anchors: &[[f32; 3]], closed: bool) -> TrackPickShape {
         let anchors: Vec<Vec3> = anchors.iter().copied().map(Vec3::from_array).collect();
         TrackPickShape {
+            source_witness: None,
             points: anchors.clone(),
             anchors,
             half_width: 0.5,

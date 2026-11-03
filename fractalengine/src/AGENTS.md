@@ -1805,3 +1805,12 @@ and the sync service admits them only against the one successfully opened native
 Verse when no explicit scope is available. Missing-byte native intents carry their
 actual Verse and request owner instead. Neither this host bridge nor a BlobReady
 event substitutes for current DB scope/asset admission or a local history version.
+## Closed-path source
+
+Track tagging requires RenderedTrackGeometry to match the entity's actual Mesh3d
+asset ID. The host reads its frozen input/style and prepared border/fill geometry;
+it never tags from later live route/style maps. The resulting TrackPickShape binds
+full decoded source rows and its actual picking geometry in a sealed digest used
+by checked selection and Undo source predicates. Closed-path sanitation remains
+owned by fe-terrain and runs once for the mesh and its captured source. Unknown
+or mismatched mesh snapshots remain untagged until rebuilt.

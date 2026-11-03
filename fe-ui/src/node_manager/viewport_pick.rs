@@ -324,6 +324,7 @@ mod tests {
                     petal_id: "p1".into(),
                 },
                 TrackPickShape {
+                    source_witness: None,
                     points: vec![Vec3::ZERO, Vec3::new(10.0, 0.0, 0.0)],
                     anchors: vec![Vec3::ZERO, Vec3::new(10.0, 0.0, 0.0)],
                     half_width: 1.0,

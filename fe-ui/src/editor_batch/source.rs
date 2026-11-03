@@ -14,7 +14,7 @@ pub(crate) struct SelectionSources<'w, 's> {
     cache: Option<Res<'w, PathAssetCache>>,
 }
 
-pub(super) const CLOSED_PATH_REASON: &str = "Checked selection editing of closed paths is unavailable: exact rendered-zone validation is not implemented.";
+pub(super) const CLOSED_PATH_REASON: &str = "The rendered source for closed paths changed or is unavailable. Refresh the path before editing; nothing was submitted.";
 
 pub(super) fn closed_path(member: &EditorBatchMember) -> bool {
     member.stamp_path.is_none()
@@ -64,9 +64,6 @@ impl RenderedSources<'_, '_> {
         );
         let mut entities = Vec::with_capacity(capture.members.len());
         for member in &capture.members {
-            if closed_path(member) {
-                return Err(CLOSED_PATH_REASON.into());
-            }
             let stamp = stamps.promoted_stamp_for_node(&member.node_id);
             let mut candidates =
                 self.live
@@ -104,9 +101,6 @@ impl RenderedSources<'_, '_> {
                 );
             }
             entities.push(entity);
-            if self.shapes.get(entity).is_ok_and(|shape| shape.closed) {
-                return Err(CLOSED_PATH_REASON.into());
-            }
             if let Some(instance) = instance {
                 let Some(owner) = &member.stamp_path else {
                     return Err("Undo stamp source identity changed".into());
@@ -175,15 +169,15 @@ impl SelectionSources<'_, '_> {
             if captured.node_id != selected.node_id {
                 return Err("Selection changed before source validation".into());
             }
-            if closed_path(captured)
-                || self
-                    .shapes
-                    .get(selected.entity)
-                    .is_ok_and(|shape| shape.closed)
-            {
-                return Err(CLOSED_PATH_REASON.into());
-            }
             if !self.matches(captured, selected.entity, &capture.petal_id, path) {
+                if closed_path(captured)
+                    || self
+                        .shapes
+                        .get(selected.entity)
+                        .is_ok_and(|shape| shape.closed)
+                {
+                    return Err(CLOSED_PATH_REASON.into());
+                }
                 return Err(format!("Selected path or stamp {} has an unsaved draft or changed/unavailable rendered source. Finish or discard that draft before applying the complete selection; nothing was sent.", captured.node_id));
             }
         }
@@ -225,10 +219,6 @@ fn member_matches(
     let Some(anchors) = fe_sdk::path_geometry::decode_anchor_rows(points) else {
         return false;
     };
-    let expected = fe_sdk::path_geometry::flatten_anchor_path(
-        &anchors,
-        fe_sdk::path_geometry::FLATTEN_SAMPLES_PER_SEGMENT,
-    );
     if path.editing_track_id.as_deref() == Some(stored_path.node_id.as_str()) {
         let mut stored = crate::gis::decode_gpx_points(points);
         let mut draft = path.points.clone();
@@ -238,8 +228,23 @@ fn member_matches(
         if stored != draft {
             return false;
         }
+        let closed = stored_path
+            .properties
+            .get("gis.track.closed")
+            .and_then(serde_json::Value::as_bool)
+            .unwrap_or(false);
+        let width = crate::gis::TrackStyleFields::width_from_property(
+            stored_path.properties.get("gis.track.width"),
+        );
+        if path.edited_track_style.closed != closed || path.edited_track_style.width != width {
+            return false;
+        }
     }
     if captured.stamp_path.is_some() {
+        let expected = fe_sdk::path_geometry::flatten_anchor_path(
+            &anchors,
+            fe_sdk::path_geometry::FLATTEN_SAMPLES_PER_SEGMENT,
+        );
         return cache
             .and_then(|cache| cache.stamp_selection_source(&stored_path.node_id, petal))
             .is_some_and(|(properties, _, rendered)| {
@@ -259,12 +264,22 @@ fn member_matches(
     {
         return false;
     }
-    !shape.closed
-        && !closed_path(captured)
-        && (shape.points.len() == expected.len()
-            && shape
-                .points
-                .iter()
-                .zip(&expected)
-                .all(|(actual, expected)| actual.abs_diff_eq(Vec3::from_array(*expected), 0.0001)))
+    if shape.closed || closed_path(captured) {
+        let width = crate::gis::TrackStyleFields::width_from_property(
+            captured.state.properties.get("gis.track.width"),
+        );
+        return shape.closed == closed_path(captured)
+            && shape.half_width == width.max(0.01) / 2.0
+            && shape.matches_render_source(points);
+    }
+    let expected = fe_sdk::path_geometry::flatten_anchor_path(
+        &anchors,
+        fe_sdk::path_geometry::FLATTEN_SAMPLES_PER_SEGMENT,
+    );
+    shape.points.len() == expected.len()
+        && shape
+            .points
+            .iter()
+            .zip(&expected)
+            .all(|(actual, expected)| actual.abs_diff_eq(Vec3::from_array(*expected), 0.0001))
 }

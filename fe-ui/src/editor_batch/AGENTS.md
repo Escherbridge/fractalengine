@@ -154,3 +154,26 @@ The existing Inspector journey extends real controller packets through property 
 Creation history retains its latest creation request and the matching successful Undo request. UndoCreatedGroup names the first; RedoCreatedGroup submits only the second. After each confirmed Redo, the new creation receipt becomes the proof for the next Undo. Generic CreateGroup is never reused to resurrect an old ID. Receipt preflight compares a proven Redo with the owned original creation registry vector and exact memberships before recording history or projecting any member; missing owned context refuses while accepted-write ownership remains available for reconciliation. Existing source/draft/render gates and chronological owned-history links apply unchanged.
 
 Group creation explains that large stored values may require smaller groups to preserve Undo/Redo. The capture-times-two check is only the generic local history-memory gate; authoritative initial Group Save admission now reserves the complete unchanged-context lifecycle envelope on the DB writer before persistence. See the database editor_batch/AGENTS.md component table.
+## Verified closed-path sources
+
+Closed whole-path transforms, Group creation and replay now use the shared source
+validation seam rather than a blanket capability refusal. TrackPickShape carries
+an optional host-authored source witness: complete decoded point rows including
+handles, corner/smoothness and time, plus a canonical BLAKE3 digest of its exact
+prepared picking geometry, anchors, closed flag, width, centroid and fill triangles.
+The host constructs it only from the actual mesh-bound renderer snapshot.
+
+The source predicate compares stored/captured point metadata and any open editor
+draft, including closed mode and width, with that witness. Width normalization is
+shared with TrackStyleFields. It does not reproduce closed-zone sanitation or
+triangulation in fe-ui. Missing or stale witnesses, changed handles with equal
+anchors, changed geometry, width/closed mode mismatch or a later draft refuse the
+whole action before a send. Ordinary open-path and stamp predicates retain their
+existing checks. Mathematical tool capabilities can describe closed paths, while
+the actual start/replay boundary still requires current verified sources.
+
+Existing host and Inspector journeys cover renderer-prepared closed geometry,
+late live-map changes, missing/stale geometry proof, equal-anchor handle/corner
+changes, closed transforms/Group creation and replay-source admission. Constructors
+for unrelated picking fixtures explicitly leave the witness unknown. These remain
+authored source checks; actual build, GPU picking and paired QA belong to root.

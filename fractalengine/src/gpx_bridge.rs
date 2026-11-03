@@ -12,10 +12,9 @@ use fe_runtime::messages::{DbCommand, DbResult};
 use fe_terrain::gpx::{compute_stats, parse_gpx_bytes, scene_nodes_to_gpx, GpxData, TrackStats};
 use fe_terrain::iot::animation::{CornerKind, TimestampedRoutePoint, TrackRoute};
 use fe_terrain::iot::{parse_track_color_hex, TrackRouteMap, TrackStyle, TrackStyleMap};
-use fe_terrain::mesh::track::{prepare_track_zone, track_centroid};
 use fe_terrain::petal_binding::ActivePetalTerrain;
 use fe_terrain::projection::Projection;
-use fe_terrain::terrain_plugin::GpxTrackLine;
+use fe_terrain::terrain_plugin::{GpxTrackLine, RenderedTrackGeometry};
 use fe_terrain::ExportNode;
 use fe_ui::gpx_ops::{GpxImportStatus, GpxOp, PendingGpxOps};
 use fe_ui::node_manager::TrackPickShape;
@@ -578,80 +577,48 @@ fn spawn_single_point_node(
     );
 }
 
-/// Make rendered track ribbons viewport-selectable by tagging them with
-/// `fe_ui::plugin::SpawnedNodeMarker` (the component the viewport picker
-/// iterates). `render_gpx_tracks` (fe-terrain) can't attach it — fe-terrain
-/// must not depend on fe-ui — so this crate, which sees both `GpxTrackLine`
-/// and `SpawnedNodeMarker`, tags them here. Runs the frame after the ribbon
-/// mesh appears; `Without<SpawnedNodeMarker>` makes it idempotent. See
-/// `src/AGENTS.md` §gpx track-picking.
-/// Ribbon-mesh track lines not yet tagged selectable.
+/// Tags only the exact mesh-bound render source; see src/AGENTS.md section closed-path source.
 type UntaggedTrackLineQuery<'w, 's> = Query<
     'w,
     's,
-    (Entity, &'static GpxTrackLine),
-    (With<Mesh3d>, Without<fe_ui::plugin::SpawnedNodeMarker>),
+    (
+        Entity,
+        &'static GpxTrackLine,
+        &'static Mesh3d,
+        &'static RenderedTrackGeometry,
+    ),
+    Without<fe_ui::plugin::SpawnedNodeMarker>,
 >;
 
 pub fn tag_track_lines_selectable(
     lines: UntaggedTrackLineQuery,
     active_terrain: Res<ActivePetalTerrain>,
-    route_map: Res<TrackRouteMap>,
-    style_map: Res<TrackStyleMap>,
     mut commands: Commands,
 ) {
-    if lines.is_empty() {
-        return;
-    }
     let petal_id = active_terrain.petal_id.clone().unwrap_or_default();
-    for (entity, line) in lines.iter() {
-        // try_insert: track lines can be despawned (petal switch / track
-        // re-render) between this system and command flush; replacements
-        // re-tag next frame via the Without filter.
-        let mut e = commands.entity(entity);
-        e.try_insert(fe_ui::plugin::SpawnedNodeMarker {
-            node_id: line.track_node_id.clone(),
-            petal_id: petal_id.clone(),
-        });
-        // path_interaction_20260716 (FR-1/FR-4): attach the precise pick
-        // polyline so `handle_viewport_click` ray-tests the actual ribbon (not a
-        // km-scale flat AABB) AND the whole-path gimbal can bake about the SAME
-        // centroid `render_gpx_tracks` anchored the mesh at. Built from the
-        // identical filtered positions the render uses so the baseline matches.
-        if let Some(shape) = track_pick_shape(&route_map, &style_map, &line.track_node_id) {
-            e.try_insert(shape);
+    for (entity, line, mesh, geometry) in &lines {
+        if !geometry.matches_mesh(mesh) {
+            continue;
         }
+        let Some(shape) = track_pick_shape(geometry) else {
+            continue;
+        };
+        commands.entity(entity).try_insert((
+            fe_ui::plugin::SpawnedNodeMarker {
+                node_id: line.track_node_id.clone(),
+                petal_id: petal_id.clone(),
+            },
+            shape,
+        ));
     }
 }
 
-/// FR-1/FR-4: build the [`TrackPickShape`] for `track_node_id` from its current
-/// route + style, or `None` if it has no ≥2-point route yet. Filters non-finite
-/// points exactly like `render_gpx_tracks` so `centroid` equals the render
-/// entity's baseline `Transform` translation.
-fn track_pick_shape(
-    route_map: &TrackRouteMap,
-    style_map: &TrackStyleMap,
-    track_node_id: &str,
-) -> Option<TrackPickShape> {
-    let route = route_map.routes.get(track_node_id)?;
-    // pen_curve_tool_20260722 (Phase 2): flatten the SAME way render_gpx_tracks does
-    // so the pick polyline matches the visible curve.
-    let positions: Vec<[f32; 3]> = fe_terrain::mesh::curve::flatten_route(
-        &route.points,
-        fe_terrain::mesh::curve::SAMPLES_PER_SEGMENT,
-    )
-    .into_iter()
-    .filter(|v| v[0].is_finite() && v[1].is_finite() && v[2].is_finite())
-    .collect();
-    if positions.len() < 2 {
-        return None;
-    }
-    let centroid = track_centroid(&positions);
-    let style = style_map.style_for(track_node_id);
-    let half_width = style.width.max(0.01) / 2.0;
+/// Build precise picking and source proof from the geometry that built the actual mesh.
+fn track_pick_shape(geometry: &RenderedTrackGeometry) -> Option<TrackPickShape> {
+    let style = geometry.style();
     let (mut pick_points, fill_triangles) = if style.closed {
-        let prepared = prepare_track_zone(&positions);
-        let fill_triangles = prepared
+        let prepared = geometry.zone()?;
+        let triangles = prepared
             .triangle_indices
             .as_chunks::<3>()
             .0
@@ -667,15 +634,18 @@ fn track_pick_shape(
             prepared
                 .points
                 .iter()
-                .map(|point| Vec3::from_array(*point))
+                .copied()
+                .map(Vec3::from_array)
                 .collect::<Vec<_>>(),
-            fill_triangles,
+            triangles,
         )
     } else {
         (
-            positions
+            geometry
+                .positions()
                 .iter()
-                .map(|point| Vec3::from_array(*point))
+                .copied()
+                .map(Vec3::from_array)
                 .collect(),
             Vec::new(),
         )
@@ -683,27 +653,24 @@ fn track_pick_shape(
     if style.closed && pick_points.len() >= 3 {
         pick_points.push(pick_points[0]);
     }
-    // Un-flattened anchors: the cross-track snap targets (road_builder FR-5).
-    let anchors = route
-        .points
+    let anchors = geometry
+        .source_points()
         .iter()
-        .map(|p| {
-            Vec3::new(
-                p.position[0] as f32,
-                p.position[1] as f32,
-                p.position[2] as f32,
-            )
-        })
-        .filter(|v| v.is_finite())
+        .map(|point| Vec3::from_array(point.position.map(|value| value as f32)))
+        .filter(|point| point.is_finite())
         .collect();
-    Some(TrackPickShape {
-        points: pick_points,
-        anchors,
-        half_width,
-        closed: style.closed,
-        fill_triangles,
-        centroid: Vec3::new(centroid[0], centroid[1], centroid[2]),
-    })
+    Some(
+        TrackPickShape {
+            source_witness: None,
+            points: pick_points,
+            anchors,
+            half_width: style.width.max(0.01) / 2.0,
+            closed: style.closed,
+            fill_triangles,
+            centroid: Vec3::from_array(geometry.centroid()),
+        }
+        .with_render_source(&route_points_to_json(geometry.source_points())),
+    )
 }
 
 /// Build one draft per `<wpt>` in the file. Out-of-range coordinates are
@@ -3136,7 +3103,8 @@ mod tests {
                 total_duration_secs: 0.0,
             },
         );
-        let shape = track_pick_shape(&route_map, &TrackStyleMap::default(), "t1").unwrap();
+        let geometry = RenderedTrackGeometry::prepare(&route_map.routes["t1"].points, TrackStyle::default()).unwrap();
+        let shape = track_pick_shape(&geometry).unwrap();
         assert!(shape.points.len() > 3, "ribbon is flattened");
         assert_eq!(
             shape.anchors,
@@ -3146,6 +3114,23 @@ mod tests {
                 Vec3::new(20.0, 0.25, 5.5)
             ]
         );
+        let stored = route_points_to_json(&route_map.routes["t1"].points);
+        let closed = RenderedTrackGeometry::prepare(&route_map.routes["t1"].points, TrackStyle { closed: true, width: 1.0, ..Default::default() }).unwrap();
+        let closed_shape = track_pick_shape(&closed).unwrap();
+        assert!(closed_shape.closed && closed_shape.matches_render_source(&stored));
+        assert_eq!(closed_shape.half_width, 0.5);
+        assert_eq!(closed_shape.fill_triangles.len(), closed.zone().unwrap().triangle_indices.len() / 3, "picking uses the renderer's actual accepted triangulation");
+        assert_eq!(closed_shape.points[..closed.zone().unwrap().points.len()], closed.zone().unwrap().points.iter().copied().map(Vec3::from_array).collect::<Vec<_>>());
+        assert!(!closed.matches_mesh(&Mesh3d(Handle::default())), "a prepared input alone is not proof of a built mesh");
+        route_map.routes.get_mut("t1").unwrap().points[1].handle_out = Some([9.0, 0.0, -3.0]);
+        assert!(!closed_shape.matches_render_source(&route_points_to_json(&route_map.routes["t1"].points)), "late live-map input cannot relabel the actual older mesh source");
+        assert!(closed_shape.matches_render_source(&stored));
+        let mut changed_geometry = closed_shape.clone();
+        changed_geometry.points[0].x += 0.5;
+        assert!(!changed_geometry.matches_render_source(&stored), "changed prepared geometry cannot retain a stale source witness");
+        let mut changed_metadata = stored.clone();
+        changed_metadata[1][10] = serde_json::json!(1.0);
+        assert!(!closed_shape.matches_render_source(&changed_metadata), "equal positions with changed corner metadata are a different source");
     }
 
     // pen_curve_tool_20260722 Phase 1: bezier wire-format (4/12-slot) round-trips.

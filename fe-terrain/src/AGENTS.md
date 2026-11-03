@@ -1472,3 +1472,19 @@ outside origin. Volumes use the same world scale and disclosed sampling toleranc
 have analytical overlap4 cubic meters; relief/irregular boundaries remain sampled estimates. Missing samples and
 invalid bounds remain unresolved. Scene changes invalidate retained reports alongside terrain/height changes.
 Optional scene absence never invents a successful empty object analysis.
+
+## Rendered track geometry source
+
+RenderedTrackGeometry is produced by the same build that creates a track Mesh3d.
+It retains the exact typed input points and style, filtered curve positions,
+centroid, and the once-prepared closed polygon/triangulation used by that mesh.
+Fields are read-only outside the renderer. The actual build binds its mesh asset
+ID; a merely prepared snapshot has no mesh binding and cannot be tagged as a
+verified rendered source. The host consumes this snapshot rather than rerunning
+preparation against a possibly newer live TrackRouteMap or TrackStyleMap.
+
+The geometry is in raw Petal-local meters. Neither terrain sampling nor world
+scale participates in the track ribbon/zone build; the stored projected points
+already carry their coordinates. A future geometry-dependent scale, projection,
+terrain or algorithm mode must extend this source contract before checked tools
+can accept it. Color/visibility remain separate render/picking availability gates.

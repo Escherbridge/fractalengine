@@ -30,6 +30,7 @@ const PICK_SLOP: f32 = 0.3;
 /// `Transform` translation, so FR-4 bakes the gimbal delta about it.
 #[derive(Component, Debug, Clone)]
 pub struct TrackPickShape {
+    pub source_witness: Option<TrackSourceWitness>,
     /// Raw world-space polyline points in track order (no y-lift).
     pub points: Vec<Vec3>,
     /// Un-flattened anchor positions in track order, raw world space — the
@@ -43,6 +44,76 @@ pub struct TrackPickShape {
     pub fill_triangles: Vec<[Vec3; 3]>,
     /// Centroid of `points` — the render entity's baseline translation.
     pub centroid: Vec3,
+}
+
+/// Host-authored source rows bound to the exact prepared picking geometry.
+#[derive(Debug, Clone)]
+pub struct TrackSourceWitness {
+    rows: Vec<crate::gis::PathPointRow>,
+    geometry_hash: [u8; 32],
+}
+
+impl TrackPickShape {
+    pub fn with_render_source(mut self, points: &serde_json::Value) -> Self {
+        let mut rows = crate::gis::decode_gpx_points(points);
+        for row in &mut rows {
+            row.time_seconds = Some(row.time_seconds.unwrap_or(0.0));
+        }
+        self.source_witness = Some(TrackSourceWitness {
+            rows,
+            geometry_hash: self.geometry_hash(),
+        });
+        self
+    }
+
+    pub fn matches_render_source(&self, points: &serde_json::Value) -> bool {
+        let Some(witness) = &self.source_witness else {
+            return false;
+        };
+        if !self.centroid.is_finite()
+            || !self.half_width.is_finite()
+            || self.half_width <= 0.0
+            || !self
+                .points
+                .iter()
+                .chain(&self.anchors)
+                .all(|point| point.is_finite())
+            || !self
+                .fill_triangles
+                .iter()
+                .flatten()
+                .all(|point| point.is_finite())
+        {
+            return false;
+        }
+        let mut rows = crate::gis::decode_gpx_points(points);
+        for row in &mut rows {
+            row.time_seconds = Some(row.time_seconds.unwrap_or(0.0));
+        }
+        rows == witness.rows && self.geometry_hash() == witness.geometry_hash
+    }
+
+    fn geometry_hash(&self) -> [u8; 32] {
+        fn append(bytes: &mut Vec<u8>, point: Vec3) {
+            for value in point.to_array() {
+                bytes.extend_from_slice(&value.to_bits().to_le_bytes());
+            }
+        }
+        let mut bytes = vec![1, u8::from(self.closed)];
+        bytes.extend_from_slice(&self.half_width.to_bits().to_le_bytes());
+        append(&mut bytes, self.centroid);
+        for points in [&self.points, &self.anchors] {
+            bytes.extend_from_slice(&(points.len() as u64).to_le_bytes());
+            for point in points {
+                append(&mut bytes, *point);
+            }
+        }
+        bytes.extend_from_slice(&(self.fill_triangles.len() as u64).to_le_bytes());
+        for point in self.fill_triangles.iter().flatten() {
+            append(&mut bytes, *point);
+        }
+        fe_runtime::blob_transport::content_hash(&bytes)
+    }
 }
 
 fn zone_fill_intersection(triangles: &[[Vec3; 3]], origin: Vec3, dir: Vec3) -> Option<(f32, Vec3)> {

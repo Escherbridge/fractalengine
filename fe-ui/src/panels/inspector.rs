@@ -4785,6 +4785,7 @@ mod tests {
                     fe_sdk::path_geometry::FLATTEN_SAMPLES_PER_SEGMENT,
                 );
                 let shape = crate::node_manager::TrackPickShape {
+                    source_witness: None,
                     points: flattened.iter().copied().map(Vec3::from_array).collect(),
                     anchors: anchors
                         .iter()
@@ -4983,6 +4984,46 @@ mod tests {
                         "closed geometry cannot bypass source proof because its anchor positions match"
                     );
                 }
+                let mut closed_capture = source_capture.clone();
+                closed_capture.members[0].state.properties.insert("gis.track.closed".into(), json!(true));
+                closed_capture.members[0].state.properties.insert("gis.track.width".into(), json!(1.0));
+                let mut closed_shape = shape.clone();
+                closed_shape.closed = true;
+                closed_shape = closed_shape.with_render_source(&points);
+                *source_world.get_mut::<crate::node_manager::TrackPickShape>(path_entity).unwrap() = closed_shape.clone();
+                path.edited_track_style.closed = true;
+                path.edited_track_style.width = 1.0;
+                {
+                    let sources = source_query.get(&source_world);
+                    sources.validate(&closed_capture, &source_nodes, &path).unwrap();
+                    let mut stale = closed_capture.clone();
+                    stale.members[0].state.properties.get_mut("gpx_points").unwrap()[0] = json!([0.0, 0.0, 0.0, 17.25, 0.0, 0.0, 0.0, 0.0, 0.0, 3.0, 1.0, 0.5]);
+                    assert!(sources.validate(&stale, &source_nodes, &path).is_err(), "changed handles with equal anchors cannot use an old closed source witness");
+                    stale = closed_capture.clone();
+                    stale.members[0].state.properties.insert("gis.track.width".into(), json!(2.0));
+                    assert!(sources.validate(&stale, &source_nodes, &path).is_err());
+                }
+                let mut replay_sources = bevy::ecs::system::SystemState::<crate::editor_batch::RenderedSources>::new(&mut source_world);
+                replay_sources.get(&source_world).validate_replay(
+                    &closed_capture, &path, &crate::verse_manager::PathAssetCache::default(),
+                    &crate::actions::asset::StampInteractionState::default(), &nav,
+                    &crate::visibility::VisibilityState::default(),
+                ).unwrap();
+                for edit in [crate::editor_batch::affine_edits(&closed_capture, &affine).unwrap(), EditorBatchEdit::CreateGroup { id: ulid::Ulid::new().to_string(), name: "Closed source group".into() }] {
+                    let mut closed_feedback = UiManager::default();
+                    let (closed_tx, closed_rx) = crossbeam::channel::unbounded();
+                    closed_feedback.editor_batch.maintain(&nav, &source_nodes, &hierarchy, &closed_tx);
+                    let DbCommand::ReadEditorBatch { correlation_id, .. } = closed_rx.try_recv().unwrap() else { panic!("closed sources require an owned read"); };
+                    closed_feedback.editor_batch.route(&DbResult::EditorBatchLoaded { capture: closed_capture.clone(), correlation_id }, &nav, |_| Ok(()), |_| Ok(()), &closed_tx).unwrap();
+                    let closed_origin = closed_feedback.editor_batch.origin(&source_nodes).unwrap();
+                    assert!(closed_origin.interaction.capability(crate::panels::toolbar::Tool::Move, false).is_ok());
+                    source_query.get(&source_world).start(&mut closed_feedback.editor_batch, closed_origin, edit, &nav, &source_nodes, &path, &closed_tx).unwrap();
+                    assert!(matches!(closed_rx.try_recv(), Ok(DbCommand::CommitCheckedEditorBatch { .. })), "verified closed paths participate in complete transforms and Group creation");
+                    assert!(closed_rx.try_recv().is_err());
+                }
+                source_world.get_mut::<crate::node_manager::TrackPickShape>(path_entity).unwrap().points[0].x += 1.0;
+                assert!(source_query.get(&source_world).validate(&closed_capture, &source_nodes, &path).is_err());
+                path.edited_track_style = crate::gis::TrackStyleFields::default();
                 *source_world
                     .get_mut::<crate::node_manager::TrackPickShape>(path_entity)
                     .unwrap() = shape;

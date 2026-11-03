@@ -530,6 +530,7 @@ mod tests {
         let ribbon = app
             .world_mut()
             .spawn(TrackPickShape {
+                source_witness: None,
                 points: vec![Vec3::ZERO, Vec3::X],
                 anchors: vec![Vec3::ZERO, Vec3::X],
                 half_width: 0.5,

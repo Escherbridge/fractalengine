@@ -172,6 +172,60 @@ pub struct GpxTrackLine {
     pub track_node_id: String,
 }
 
+/// Exact petal-local source and prepared geometry used to build one track mesh.
+#[derive(Component, Debug, Clone)]
+pub struct RenderedTrackGeometry {
+    source_points: Vec<crate::iot::animation::TimestampedRoutePoint>,
+    style: crate::iot::TrackStyle,
+    positions: Vec<[f32; 3]>,
+    zone: Option<PreparedTrackZone>,
+    centroid: [f32; 3],
+    mesh_id: Option<bevy::asset::AssetId<Mesh>>,
+}
+
+impl RenderedTrackGeometry {
+    pub fn prepare(
+        points: &[crate::iot::animation::TimestampedRoutePoint],
+        style: crate::iot::TrackStyle,
+    ) -> Option<Self> {
+        let positions: Vec<_> =
+            crate::mesh::curve::flatten_route(points, crate::mesh::curve::SAMPLES_PER_SEGMENT)
+                .into_iter()
+                .filter(|point| point.iter().all(|value| value.is_finite()))
+                .collect();
+        if positions.len() < 2 {
+            return None;
+        }
+        Some(Self {
+            centroid: track_centroid(&positions),
+            zone: style.closed.then(|| prepare_track_zone(&positions)),
+            positions,
+            source_points: points.to_vec(),
+            style,
+            mesh_id: None,
+        })
+    }
+
+    pub fn source_points(&self) -> &[crate::iot::animation::TimestampedRoutePoint] {
+        &self.source_points
+    }
+    pub fn style(&self) -> crate::iot::TrackStyle {
+        self.style
+    }
+    pub fn positions(&self) -> &[[f32; 3]] {
+        &self.positions
+    }
+    pub fn zone(&self) -> Option<&PreparedTrackZone> {
+        self.zone.as_ref()
+    }
+    pub fn centroid(&self) -> [f32; 3] {
+        self.centroid
+    }
+    pub fn matches_mesh(&self, mesh: &Mesh3d) -> bool {
+        self.mesh_id == Some(mesh.0.id())
+    }
+}
+
 /// Marker component for GeoJSON overlay source entities.
 #[derive(Component, Clone)]
 pub struct GeoJsonOverlay {
@@ -1157,21 +1211,9 @@ fn render_gpx_tracks(
 
         // pen_curve_tool_20260722 (Phase 2): flatten per-anchor bezier handles into
         // the dense ribbon polyline (all-corner tracks pass through unchanged).
-        let positions: Vec<[f32; 3]> = crate::mesh::curve::flatten_route(
-            &route.points,
-            crate::mesh::curve::SAMPLES_PER_SEGMENT,
-        )
-        .into_iter()
-        .filter(|v| v[0].is_finite() && v[1].is_finite() && v[2].is_finite())
-        .collect();
-
-        if positions.len() < 2 {
-            continue;
-        }
-
-        // FR-3/FR-4: default style reproduces the historic cyan look for tracks
-        // with no persisted `gis.track.*` props.
         let style = style_map.style_for(&track.track_node_id);
+        let Some(mut geometry) = RenderedTrackGeometry::prepare(&route.points, style) else { continue; };
+        let positions = &geometry.positions;
 
         // FR-3 thickness: the ribbon builder extrudes a width-aware triangle
         // strip and bakes the solid color into vertex colors — so the material
@@ -1188,14 +1230,13 @@ fn render_gpx_tracks(
         // centroid — net world position unchanged, but Move/Rotate/Scale now
         // pivot about the path's center. The gpx bridge tags a `TrackPickShape`
         // carrying the SAME centroid so the whole-path bake pivots identically.
-        let centroid = track_centroid(&positions);
+        let centroid = geometry.centroid;
         let rel: Vec<[f32; 3]> = positions
             .iter()
             .map(|p| [p[0] - centroid[0], p[1] - centroid[1], p[2] - centroid[2]])
             .collect();
-        let ribbon = if style.closed {
+        let ribbon = if let Some(prepared) = &geometry.zone {
             let fill = style.fill_color_u8();
-            let prepared = prepare_track_zone(&positions);
             let prepared_relative = PreparedTrackZone {
                 points: prepared
                     .points
@@ -1208,7 +1249,7 @@ fn render_gpx_tracks(
                         ]
                     })
                     .collect(),
-                triangle_indices: prepared.triangle_indices,
+                triangle_indices: prepared.triangle_indices.clone(),
             };
             track_zone_mesh_prepared(
                 &prepared_relative,
@@ -1221,6 +1262,7 @@ fn render_gpx_tracks(
         };
 
         let handle = meshes.add(ribbon);
+        geometry.mesh_id = Some(handle.id());
         let material = materials.add(StandardMaterial {
             base_color: Color::WHITE,
             unlit: true,
@@ -1240,6 +1282,7 @@ fn render_gpx_tracks(
             Mesh3d(handle),
             MeshMaterial3d(material),
             Transform::from_translation(Vec3::new(centroid[0], centroid[1], centroid[2])),
+            geometry,
         ));
         // FR-3 visibility: apply the current visible flag at build time. A later
         // toggle isn't a cheap in-place `Visibility` flip — it persists the
@@ -3004,6 +3047,29 @@ mod tests {
                 (y - expected).abs() < 0.05,
                 "ghost at ({x},{z}) y={y}, expected ~{expected} (relief-following, not a flat lid)"
             );
+        }
+        {
+            use crate::iot::animation::{TimestampedRoutePoint, TrackRoute};
+            app.init_resource::<TrackRouteMap>().init_resource::<TrackStyleMap>()
+                .add_systems(Update, render_gpx_tracks);
+            let points = vec![[0.0, 0.0, 0.0], [8.0, 0.0, 0.0], [4.0, 0.0, 6.0]]
+                .into_iter().map(|position| TimestampedRoutePoint { position, ..Default::default() }).collect();
+            app.world_mut().resource_mut::<TrackRouteMap>().routes.insert("footprint".into(), TrackRoute { points, total_duration_secs: 0.0 });
+            app.world_mut().resource_mut::<TrackStyleMap>().styles.insert("footprint".into(), crate::iot::TrackStyle { closed: true, width: 1.0, ..Default::default() });
+            let line = app.world_mut().spawn(GpxTrackLine { track_node_id: "footprint".into() }).id();
+            app.update();
+            let mesh = app.world().get::<Mesh3d>(line).unwrap().clone();
+            let geometry = app.world().get::<RenderedTrackGeometry>(line).unwrap();
+            assert!(geometry.matches_mesh(&mesh));
+            assert!(!geometry.zone().unwrap().triangle_indices.is_empty());
+            assert_eq!(geometry.source_points()[0].position, [0.0; 3]);
+            app.world_mut().resource_mut::<TrackRouteMap>().routes.get_mut("footprint").unwrap().points[0].position[0] = 99.0;
+            app.world_mut().resource_mut::<TrackStyleMap>().styles.get_mut("footprint").unwrap().width = 5.0;
+            app.update();
+            let geometry = app.world().get::<RenderedTrackGeometry>(line).unwrap();
+            assert_eq!(geometry.source_points()[0].position, [0.0; 3], "a later live-map update cannot relabel an existing mesh's source");
+            assert_eq!(geometry.style().width, 1.0);
+            assert!(geometry.matches_mesh(app.world().get::<Mesh3d>(line).unwrap()));
         }
     }
 

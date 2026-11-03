@@ -374,6 +374,10 @@ impl Default for TrackStyleFields {
 }
 
 impl TrackStyleFields {
+    pub(crate) fn width_from_property(value: Option<&serde_json::Value>) -> f32 {
+        value.and_then(serde_json::Value::as_f64).filter(|width| width.is_finite() && *width > 0.0)
+            .map_or(Self::default().width, |width| width.clamp(0.1, 20.0) as f32)
+    }
     /// Seed the fields from a loaded node-property bag. Missing/invalid values
     /// fall back to that field's default (never panics) — mirrors the bridge's
     /// `style_from_properties`. `#rrggbb`/`#rrggbbaa` (with or without `#`).
@@ -386,11 +390,7 @@ impl TrackStyleFields {
         {
             s.color = color;
         }
-        if let Some(width) = props.get("gis.track.width").and_then(|v| v.as_f64()) {
-            if width.is_finite() && width > 0.0 {
-                s.width = width.clamp(0.1, 20.0) as f32;
-            }
-        }
+        s.width = Self::width_from_property(props.get("gis.track.width"));
         if let Some(visible) = props.get("gis.track.visible").and_then(|v| v.as_bool()) {
             s.visible = visible;
         }
