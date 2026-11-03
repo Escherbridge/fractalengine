@@ -1,0 +1,20 @@
+{
+  "captured_at": "2026-11-03T11:34:22.773460+00:00",
+  "owner_identity": {
+    "pid": 93096,
+    "start_ticks": "639293021548251006",
+    "exe_path": "C:\\Users\\atooz\\Programming\\fractalengine-workspace\\fractalengine\\.qa\\stage\\e5e6987d-20261103042513606\\fractalengine.exe"
+  },
+  "stdout_path": "C:\\Users\\atooz\\Programming\\fractalengine-workspace\\fractalengine\\.qa\\run\\20261101-191920-658\\starts\\20261103-042913-592-224f3a35782e447f83f1342a2a846346\\stdout.log",
+  "bytes_captured": 57265,
+  "sha256": "9aae453b4a7b9941caffcab01ecf088649b60e4cf5d98de597e7a23e165b6c5a",
+  "current_read_error_records": [],
+  "counts": {
+    "INFO": 373,
+    "WARN": 12,
+    "ERROR": 0
+  },
+  "live_log_may_grow": true,
+  "limits": "Only matching current-read errors and severity counts; absence of diagnostics alone does not prove all materialization or rendering.",
+  "raw_log_copied": false
+}

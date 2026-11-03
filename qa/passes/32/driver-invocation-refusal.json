@@ -1,0 +1,9 @@
+{
+  "command": [
+    "ui-state"
+  ],
+  "exit_code": 2,
+  "reason": "invalid CLI command: correct command is state",
+  "application_input_sent": false,
+  "application_failure": false
+}
