@@ -1,0 +1,2832 @@
+{
+  "schema": "fe-qa33-comparison-oracle-v1",
+  "scroll_selection_cuts": [
+    {
+      "file": "owner-affected-visible-ui.jsonl",
+      "frame": 6244,
+      "hierarchy": {
+        "axes": [
+          true,
+          true
+        ],
+        "clip": {
+          "h": 606.0,
+          "w": 220.0,
+          "x": 0.0,
+          "y": 86.0
+        },
+        "content_id": "1649309098613198024",
+        "content_rect": {
+          "h": 1619.0,
+          "w": 220.0,
+          "x": 0.0,
+          "y": -101.0
+        },
+        "content_size": [
+          220.0,
+          1619.0
+        ],
+        "label": "Hierarchy",
+        "layer": "LayerId { Background 5A3E }",
+        "offset": [
+          0.0,
+          189.8050994873047
+        ],
+        "parent_id": "15076918100674134496",
+        "viewport": {
+          "h": 603.0,
+          "w": 220.0,
+          "x": 0.0,
+          "y": 89.0
+        }
+      },
+      "selected_names": [],
+      "rows": [
+        {
+          "id": "8265609869495752140",
+          "name": "Select node Info Panel",
+          "bounds": {
+            "h": 24.0,
+            "w": 64.0,
+            "x": 100.0,
+            "y": -3.0
+          },
+          "selected": false
+        },
+        {
+          "id": "8406334343747572601",
+          "name": "Select node Lucky Duck",
+          "bounds": {
+            "h": 24.0,
+            "w": 64.0,
+            "x": 100.0,
+            "y": 28.0
+          },
+          "selected": false
+        },
+        {
+          "id": "15099665099166763971",
+          "name": "Select node Welcome Beacon",
+          "bounds": {
+            "h": 24.0,
+            "w": 64.0,
+            "x": 100.0,
+            "y": 59.0
+          },
+          "selected": false
+        },
+        {
+          "id": "18154893575551833952",
+          "name": "Select node Cube 1",
+          "bounds": {
+            "h": 24.0,
+            "w": 40.0,
+            "x": 124.0,
+            "y": 296.0
+          },
+          "selected": false
+        },
+        {
+          "id": "11899332702850774324",
+          "name": "Select node Cube 2",
+          "bounds": {
+            "h": 24.0,
+            "w": 40.0,
+            "x": 124.0,
+            "y": 327.0
+          },
+          "selected": false
+        },
+        {
+          "id": "1042672873817943954",
+          "name": "Select node Cube 3",
+          "bounds": {
+            "h": 24.0,
+            "w": 40.0,
+            "x": 124.0,
+            "y": 387.0
+          },
+          "selected": false
+        },
+        {
+          "id": "1286446871156732309",
+          "name": "Select node QA oracle origin",
+          "bounds": {
+            "h": 24.0,
+            "w": 40.0,
+            "x": 124.0,
+            "y": 418.0
+          },
+          "selected": false
+        },
+        {
+          "id": "6705140654294692375",
+          "name": "Select node Earthwork raise r1",
+          "bounds": {
+            "h": 24.0,
+            "w": 40.0,
+            "x": 124.0,
+            "y": 449.0
+          },
+          "selected": false
+        },
+        {
+          "id": "17039876607568230876",
+          "name": "Select node QA report overlap box",
+          "bounds": {
+            "h": 24.0,
+            "w": 40.0,
+            "x": 124.0,
+            "y": 480.0
+          },
+          "selected": false
+        },
+        {
+          "id": "8597925524879282272",
+          "name": "Select node QA Portal 18",
+          "bounds": {
+            "h": 24.0,
+            "w": 40.0,
+            "x": 124.0,
+            "y": 511.0
+          },
+          "selected": false
+        },
+        {
+          "id": "7635148549475020629",
+          "name": "Select node QA Scoped Creation 21",
+          "bounds": {
+            "h": 24.0,
+            "w": 40.0,
+            "x": 124.0,
+            "y": 542.0
+          },
+          "selected": false
+        },
+        {
+          "id": "14913410408525399319",
+          "name": "Select node QA Initial TRS 21",
+          "bounds": {
+            "h": 24.0,
+            "w": 40.0,
+            "x": 124.0,
+            "y": 573.0
+          },
+          "selected": false
+        },
+        {
+          "id": "3316574731065808748",
+          "name": "Select node QA Asset Placement TRS 21",
+          "bounds": {
+            "h": 24.0,
+            "w": 40.0,
+            "x": 124.0,
+            "y": 604.0
+          },
+          "selected": false
+        },
+        {
+          "id": "742474818349067950",
+          "name": "Select node QA oracle origin",
+          "bounds": {
+            "h": 24.0,
+            "w": 64.0,
+            "x": 100.0,
+            "y": 694.0
+          },
+          "selected": false
+        },
+        {
+          "id": "5915073760978667871",
+          "name": "Select node Fleet Alpha",
+          "bounds": {
+            "h": 24.0,
+            "w": 64.0,
+            "x": 100.0,
+            "y": 725.0
+          },
+          "selected": false
+        },
+        {
+          "id": "9814796929619543561",
+          "name": "Select node Fleet Beta",
+          "bounds": {
+            "h": 24.0,
+            "w": 64.0,
+            "x": 100.0,
+            "y": 756.0
+          },
+          "selected": false
+        },
+        {
+          "id": "314754711710761410",
+          "name": "Select node Fleet Alpha",
+          "bounds": {
+            "h": 24.0,
+            "w": 64.0,
+            "x": 100.0,
+            "y": 846.0
+          },
+          "selected": false
+        },
+        {
+          "id": "11817155853062602767",
+          "name": "Select node Fleet Beta",
+          "bounds": {
+            "h": 24.0,
+            "w": 64.0,
+            "x": 100.0,
+            "y": 877.0
+          },
+          "selected": false
+        },
+        {
+          "id": "16011263562815238268",
+          "name": "Select node Fleet Alpha",
+          "bounds": {
+            "h": 24.0,
+            "w": 64.0,
+            "x": 100.0,
+            "y": 967.0
+          },
+          "selected": false
+        },
+        {
+          "id": "17987839800331333052",
+          "name": "Select node Fleet Beta",
+          "bounds": {
+            "h": 24.0,
+            "w": 64.0,
+            "x": 100.0,
+            "y": 998.0
+          },
+          "selected": false
+        },
+        {
+          "id": "15121112293177681049",
+          "name": "Select node Fleet Gamma",
+          "bounds": {
+            "h": 24.0,
+            "w": 64.0,
+            "x": 100.0,
+            "y": 1029.0
+          },
+          "selected": false
+        },
+        {
+          "id": "17876630853277389648",
+          "name": "Select node Fleet Alpha",
+          "bounds": {
+            "h": 24.0,
+            "w": 64.0,
+            "x": 100.0,
+            "y": 1119.0
+          },
+          "selected": false
+        },
+        {
+          "id": "14420779891864971758",
+          "name": "Select node Fleet Beta",
+          "bounds": {
+            "h": 24.0,
+            "w": 64.0,
+            "x": 100.0,
+            "y": 1150.0
+          },
+          "selected": false
+        },
+        {
+          "id": "12113116006402369441",
+          "name": "Select node Fleet Gamma",
+          "bounds": {
+            "h": 24.0,
+            "w": 64.0,
+            "x": 100.0,
+            "y": 1181.0
+          },
+          "selected": false
+        },
+        {
+          "id": "9140692741784644223",
+          "name": "Select node Path 1",
+          "bounds": {
+            "h": 24.0,
+            "w": 64.0,
+            "x": 100.0,
+            "y": 1271.0
+          },
+          "selected": false
+        },
+        {
+          "id": "1383679907380646699",
+          "name": "Select node 01M6EWYT81M0RT4JTTEYN09D5Z #1",
+          "bounds": {
+            "h": 24.0,
+            "w": 64.0,
+            "x": 100.0,
+            "y": 1302.0
+          },
+          "selected": false
+        },
+        {
+          "id": "6386943609679809710",
+          "name": "Select node 01M6EWYT81M0RT4JTTEYN09D5Z #2",
+          "bounds": {
+            "h": 24.0,
+            "w": 64.0,
+            "x": 100.0,
+            "y": 1333.0
+          },
+          "selected": false
+        },
+        {
+          "id": "1259874322834739826",
+          "name": "Select node 01M6EWYT81M0RT4JTTEYN09D5Z #0",
+          "bounds": {
+            "h": 24.0,
+            "w": 64.0,
+            "x": 100.0,
+            "y": 1364.0
+          },
+          "selected": false
+        }
+      ]
+    },
+    {
+      "file": "owner-portal18-ui.jsonl",
+      "frame": 6323,
+      "hierarchy": {
+        "axes": [
+          true,
+          true
+        ],
+        "clip": {
+          "h": 606.0,
+          "w": 220.0,
+          "x": 0.0,
+          "y": 86.0
+        },
+        "content_id": "1649309098613198024",
+        "content_rect": {
+          "h": 1619.0,
+          "w": 220.0,
+          "x": 0.0,
+          "y": -101.0
+        },
+        "content_size": [
+          220.0,
+          1619.0
+        ],
+        "label": "Hierarchy",
+        "layer": "LayerId { Background 5A3E }",
+        "offset": [
+          0.0,
+          189.8050994873047
+        ],
+        "parent_id": "15076918100674134496",
+        "viewport": {
+          "h": 603.0,
+          "w": 220.0,
+          "x": 0.0,
+          "y": 89.0
+        }
+      },
+      "selected_names": [
+        "QA Portal 18"
+      ],
+      "rows": [
+        {
+          "id": "8265609869495752140",
+          "name": "Select node Info Panel",
+          "bounds": {
+            "h": 24.0,
+            "w": 64.0,
+            "x": 100.0,
+            "y": -3.0
+          },
+          "selected": false
+        },
+        {
+          "id": "8406334343747572601",
+          "name": "Select node Lucky Duck",
+          "bounds": {
+            "h": 24.0,
+            "w": 64.0,
+            "x": 100.0,
+            "y": 28.0
+          },
+          "selected": false
+        },
+        {
+          "id": "15099665099166763971",
+          "name": "Select node Welcome Beacon",
+          "bounds": {
+            "h": 24.0,
+            "w": 64.0,
+            "x": 100.0,
+            "y": 59.0
+          },
+          "selected": false
+        },
+        {
+          "id": "18154893575551833952",
+          "name": "Select node Cube 1",
+          "bounds": {
+            "h": 24.0,
+            "w": 40.0,
+            "x": 124.0,
+            "y": 296.0
+          },
+          "selected": false
+        },
+        {
+          "id": "11899332702850774324",
+          "name": "Select node Cube 2",
+          "bounds": {
+            "h": 24.0,
+            "w": 40.0,
+            "x": 124.0,
+            "y": 327.0
+          },
+          "selected": false
+        },
+        {
+          "id": "1042672873817943954",
+          "name": "Select node Cube 3",
+          "bounds": {
+            "h": 24.0,
+            "w": 40.0,
+            "x": 124.0,
+            "y": 387.0
+          },
+          "selected": false
+        },
+        {
+          "id": "1286446871156732309",
+          "name": "Select node QA oracle origin",
+          "bounds": {
+            "h": 24.0,
+            "w": 40.0,
+            "x": 124.0,
+            "y": 418.0
+          },
+          "selected": false
+        },
+        {
+          "id": "6705140654294692375",
+          "name": "Select node Earthwork raise r1",
+          "bounds": {
+            "h": 24.0,
+            "w": 40.0,
+            "x": 124.0,
+            "y": 449.0
+          },
+          "selected": false
+        },
+        {
+          "id": "17039876607568230876",
+          "name": "Select node QA report overlap box",
+          "bounds": {
+            "h": 24.0,
+            "w": 40.0,
+            "x": 124.0,
+            "y": 480.0
+          },
+          "selected": false
+        },
+        {
+          "id": "8597925524879282272",
+          "name": "Select node QA Portal 18",
+          "bounds": {
+            "h": 24.0,
+            "w": 40.0,
+            "x": 124.0,
+            "y": 511.0
+          },
+          "selected": true
+        },
+        {
+          "id": "7635148549475020629",
+          "name": "Select node QA Scoped Creation 21",
+          "bounds": {
+            "h": 24.0,
+            "w": 40.0,
+            "x": 124.0,
+            "y": 542.0
+          },
+          "selected": false
+        },
+        {
+          "id": "14913410408525399319",
+          "name": "Select node QA Initial TRS 21",
+          "bounds": {
+            "h": 24.0,
+            "w": 40.0,
+            "x": 124.0,
+            "y": 573.0
+          },
+          "selected": false
+        },
+        {
+          "id": "3316574731065808748",
+          "name": "Select node QA Asset Placement TRS 21",
+          "bounds": {
+            "h": 24.0,
+            "w": 40.0,
+            "x": 124.0,
+            "y": 604.0
+          },
+          "selected": false
+        },
+        {
+          "id": "742474818349067950",
+          "name": "Select node QA oracle origin",
+          "bounds": {
+            "h": 24.0,
+            "w": 64.0,
+            "x": 100.0,
+            "y": 694.0
+          },
+          "selected": false
+        },
+        {
+          "id": "5915073760978667871",
+          "name": "Select node Fleet Alpha",
+          "bounds": {
+            "h": 24.0,
+            "w": 64.0,
+            "x": 100.0,
+            "y": 725.0
+          },
+          "selected": false
+        },
+        {
+          "id": "9814796929619543561",
+          "name": "Select node Fleet Beta",
+          "bounds": {
+            "h": 24.0,
+            "w": 64.0,
+            "x": 100.0,
+            "y": 756.0
+          },
+          "selected": false
+        },
+        {
+          "id": "314754711710761410",
+          "name": "Select node Fleet Alpha",
+          "bounds": {
+            "h": 24.0,
+            "w": 64.0,
+            "x": 100.0,
+            "y": 846.0
+          },
+          "selected": false
+        },
+        {
+          "id": "11817155853062602767",
+          "name": "Select node Fleet Beta",
+          "bounds": {
+            "h": 24.0,
+            "w": 64.0,
+            "x": 100.0,
+            "y": 877.0
+          },
+          "selected": false
+        },
+        {
+          "id": "16011263562815238268",
+          "name": "Select node Fleet Alpha",
+          "bounds": {
+            "h": 24.0,
+            "w": 64.0,
+            "x": 100.0,
+            "y": 967.0
+          },
+          "selected": false
+        },
+        {
+          "id": "17987839800331333052",
+          "name": "Select node Fleet Beta",
+          "bounds": {
+            "h": 24.0,
+            "w": 64.0,
+            "x": 100.0,
+            "y": 998.0
+          },
+          "selected": false
+        },
+        {
+          "id": "15121112293177681049",
+          "name": "Select node Fleet Gamma",
+          "bounds": {
+            "h": 24.0,
+            "w": 64.0,
+            "x": 100.0,
+            "y": 1029.0
+          },
+          "selected": false
+        },
+        {
+          "id": "17876630853277389648",
+          "name": "Select node Fleet Alpha",
+          "bounds": {
+            "h": 24.0,
+            "w": 64.0,
+            "x": 100.0,
+            "y": 1119.0
+          },
+          "selected": false
+        },
+        {
+          "id": "14420779891864971758",
+          "name": "Select node Fleet Beta",
+          "bounds": {
+            "h": 24.0,
+            "w": 64.0,
+            "x": 100.0,
+            "y": 1150.0
+          },
+          "selected": false
+        },
+        {
+          "id": "12113116006402369441",
+          "name": "Select node Fleet Gamma",
+          "bounds": {
+            "h": 24.0,
+            "w": 64.0,
+            "x": 100.0,
+            "y": 1181.0
+          },
+          "selected": false
+        },
+        {
+          "id": "9140692741784644223",
+          "name": "Select node Path 1",
+          "bounds": {
+            "h": 24.0,
+            "w": 64.0,
+            "x": 100.0,
+            "y": 1271.0
+          },
+          "selected": false
+        },
+        {
+          "id": "1383679907380646699",
+          "name": "Select node 01M6EWYT81M0RT4JTTEYN09D5Z #1",
+          "bounds": {
+            "h": 24.0,
+            "w": 64.0,
+            "x": 100.0,
+            "y": 1302.0
+          },
+          "selected": false
+        },
+        {
+          "id": "6386943609679809710",
+          "name": "Select node 01M6EWYT81M0RT4JTTEYN09D5Z #2",
+          "bounds": {
+            "h": 24.0,
+            "w": 64.0,
+            "x": 100.0,
+            "y": 1333.0
+          },
+          "selected": false
+        },
+        {
+          "id": "1259874322834739826",
+          "name": "Select node 01M6EWYT81M0RT4JTTEYN09D5Z #0",
+          "bounds": {
+            "h": 24.0,
+            "w": 64.0,
+            "x": 100.0,
+            "y": 1364.0
+          },
+          "selected": false
+        }
+      ]
+    },
+    {
+      "file": "owner-creation21-ui.jsonl",
+      "frame": 6404,
+      "hierarchy": {
+        "axes": [
+          true,
+          true
+        ],
+        "clip": {
+          "h": 606.0,
+          "w": 220.0,
+          "x": 0.0,
+          "y": 86.0
+        },
+        "content_id": "1649309098613198024",
+        "content_rect": {
+          "h": 1619.0,
+          "w": 220.0,
+          "x": 0.0,
+          "y": -101.0
+        },
+        "content_size": [
+          220.0,
+          1619.0
+        ],
+        "label": "Hierarchy",
+        "layer": "LayerId { Background 5A3E }",
+        "offset": [
+          0.0,
+          189.8050994873047
+        ],
+        "parent_id": "15076918100674134496",
+        "viewport": {
+          "h": 603.0,
+          "w": 220.0,
+          "x": 0.0,
+          "y": 89.0
+        }
+      },
+      "selected_names": [
+        "QA Scoped Creation 21"
+      ],
+      "rows": [
+        {
+          "id": "8265609869495752140",
+          "name": "Select node Info Panel",
+          "bounds": {
+            "h": 24.0,
+            "w": 64.0,
+            "x": 100.0,
+            "y": -3.0
+          },
+          "selected": false
+        },
+        {
+          "id": "8406334343747572601",
+          "name": "Select node Lucky Duck",
+          "bounds": {
+            "h": 24.0,
+            "w": 64.0,
+            "x": 100.0,
+            "y": 28.0
+          },
+          "selected": false
+        },
+        {
+          "id": "15099665099166763971",
+          "name": "Select node Welcome Beacon",
+          "bounds": {
+            "h": 24.0,
+            "w": 64.0,
+            "x": 100.0,
+            "y": 59.0
+          },
+          "selected": false
+        },
+        {
+          "id": "18154893575551833952",
+          "name": "Select node Cube 1",
+          "bounds": {
+            "h": 24.0,
+            "w": 40.0,
+            "x": 124.0,
+            "y": 296.0
+          },
+          "selected": false
+        },
+        {
+          "id": "11899332702850774324",
+          "name": "Select node Cube 2",
+          "bounds": {
+            "h": 24.0,
+            "w": 40.0,
+            "x": 124.0,
+            "y": 327.0
+          },
+          "selected": false
+        },
+        {
+          "id": "1042672873817943954",
+          "name": "Select node Cube 3",
+          "bounds": {
+            "h": 24.0,
+            "w": 40.0,
+            "x": 124.0,
+            "y": 387.0
+          },
+          "selected": false
+        },
+        {
+          "id": "1286446871156732309",
+          "name": "Select node QA oracle origin",
+          "bounds": {
+            "h": 24.0,
+            "w": 40.0,
+            "x": 124.0,
+            "y": 418.0
+          },
+          "selected": false
+        },
+        {
+          "id": "6705140654294692375",
+          "name": "Select node Earthwork raise r1",
+          "bounds": {
+            "h": 24.0,
+            "w": 40.0,
+            "x": 124.0,
+            "y": 449.0
+          },
+          "selected": false
+        },
+        {
+          "id": "17039876607568230876",
+          "name": "Select node QA report overlap box",
+          "bounds": {
+            "h": 24.0,
+            "w": 40.0,
+            "x": 124.0,
+            "y": 480.0
+          },
+          "selected": false
+        },
+        {
+          "id": "8597925524879282272",
+          "name": "Select node QA Portal 18",
+          "bounds": {
+            "h": 24.0,
+            "w": 40.0,
+            "x": 124.0,
+            "y": 511.0
+          },
+          "selected": false
+        },
+        {
+          "id": "7635148549475020629",
+          "name": "Select node QA Scoped Creation 21",
+          "bounds": {
+            "h": 24.0,
+            "w": 40.0,
+            "x": 124.0,
+            "y": 542.0
+          },
+          "selected": true
+        },
+        {
+          "id": "14913410408525399319",
+          "name": "Select node QA Initial TRS 21",
+          "bounds": {
+            "h": 24.0,
+            "w": 40.0,
+            "x": 124.0,
+            "y": 573.0
+          },
+          "selected": false
+        },
+        {
+          "id": "3316574731065808748",
+          "name": "Select node QA Asset Placement TRS 21",
+          "bounds": {
+            "h": 24.0,
+            "w": 40.0,
+            "x": 124.0,
+            "y": 604.0
+          },
+          "selected": false
+        },
+        {
+          "id": "742474818349067950",
+          "name": "Select node QA oracle origin",
+          "bounds": {
+            "h": 24.0,
+            "w": 64.0,
+            "x": 100.0,
+            "y": 694.0
+          },
+          "selected": false
+        },
+        {
+          "id": "5915073760978667871",
+          "name": "Select node Fleet Alpha",
+          "bounds": {
+            "h": 24.0,
+            "w": 64.0,
+            "x": 100.0,
+            "y": 725.0
+          },
+          "selected": false
+        },
+        {
+          "id": "9814796929619543561",
+          "name": "Select node Fleet Beta",
+          "bounds": {
+            "h": 24.0,
+            "w": 64.0,
+            "x": 100.0,
+            "y": 756.0
+          },
+          "selected": false
+        },
+        {
+          "id": "314754711710761410",
+          "name": "Select node Fleet Alpha",
+          "bounds": {
+            "h": 24.0,
+            "w": 64.0,
+            "x": 100.0,
+            "y": 846.0
+          },
+          "selected": false
+        },
+        {
+          "id": "11817155853062602767",
+          "name": "Select node Fleet Beta",
+          "bounds": {
+            "h": 24.0,
+            "w": 64.0,
+            "x": 100.0,
+            "y": 877.0
+          },
+          "selected": false
+        },
+        {
+          "id": "16011263562815238268",
+          "name": "Select node Fleet Alpha",
+          "bounds": {
+            "h": 24.0,
+            "w": 64.0,
+            "x": 100.0,
+            "y": 967.0
+          },
+          "selected": false
+        },
+        {
+          "id": "17987839800331333052",
+          "name": "Select node Fleet Beta",
+          "bounds": {
+            "h": 24.0,
+            "w": 64.0,
+            "x": 100.0,
+            "y": 998.0
+          },
+          "selected": false
+        },
+        {
+          "id": "15121112293177681049",
+          "name": "Select node Fleet Gamma",
+          "bounds": {
+            "h": 24.0,
+            "w": 64.0,
+            "x": 100.0,
+            "y": 1029.0
+          },
+          "selected": false
+        },
+        {
+          "id": "17876630853277389648",
+          "name": "Select node Fleet Alpha",
+          "bounds": {
+            "h": 24.0,
+            "w": 64.0,
+            "x": 100.0,
+            "y": 1119.0
+          },
+          "selected": false
+        },
+        {
+          "id": "14420779891864971758",
+          "name": "Select node Fleet Beta",
+          "bounds": {
+            "h": 24.0,
+            "w": 64.0,
+            "x": 100.0,
+            "y": 1150.0
+          },
+          "selected": false
+        },
+        {
+          "id": "12113116006402369441",
+          "name": "Select node Fleet Gamma",
+          "bounds": {
+            "h": 24.0,
+            "w": 64.0,
+            "x": 100.0,
+            "y": 1181.0
+          },
+          "selected": false
+        },
+        {
+          "id": "9140692741784644223",
+          "name": "Select node Path 1",
+          "bounds": {
+            "h": 24.0,
+            "w": 64.0,
+            "x": 100.0,
+            "y": 1271.0
+          },
+          "selected": false
+        },
+        {
+          "id": "1383679907380646699",
+          "name": "Select node 01M6EWYT81M0RT4JTTEYN09D5Z #1",
+          "bounds": {
+            "h": 24.0,
+            "w": 64.0,
+            "x": 100.0,
+            "y": 1302.0
+          },
+          "selected": false
+        },
+        {
+          "id": "6386943609679809710",
+          "name": "Select node 01M6EWYT81M0RT4JTTEYN09D5Z #2",
+          "bounds": {
+            "h": 24.0,
+            "w": 64.0,
+            "x": 100.0,
+            "y": 1333.0
+          },
+          "selected": false
+        },
+        {
+          "id": "1259874322834739826",
+          "name": "Select node 01M6EWYT81M0RT4JTTEYN09D5Z #0",
+          "bounds": {
+            "h": 24.0,
+            "w": 64.0,
+            "x": 100.0,
+            "y": 1364.0
+          },
+          "selected": false
+        }
+      ]
+    },
+    {
+      "file": "owner-pair-scrolled-ui.jsonl",
+      "frame": 15780,
+      "hierarchy": {
+        "axes": [
+          true,
+          true
+        ],
+        "clip": {
+          "h": 606.0,
+          "w": 220.0,
+          "x": 0.0,
+          "y": 86.0
+        },
+        "content_id": "1649309098613198024",
+        "content_rect": {
+          "h": 1619.0,
+          "w": 220.0,
+          "x": 0.0,
+          "y": -101.0
+        },
+        "content_size": [
+          220.0,
+          1619.0
+        ],
+        "label": "Hierarchy",
+        "layer": "LayerId { Background 5A3E }",
+        "offset": [
+          0.0,
+          189.8050994873047
+        ],
+        "parent_id": "15076918100674134496",
+        "viewport": {
+          "h": 603.0,
+          "w": 220.0,
+          "x": 0.0,
+          "y": 89.0
+        }
+      },
+      "selected_names": [
+        "QA Portal 18",
+        "QA Scoped Creation 21"
+      ],
+      "rows": [
+        {
+          "id": "8265609869495752140",
+          "name": "Select node Info Panel",
+          "bounds": {
+            "h": 24.0,
+            "w": 64.0,
+            "x": 100.0,
+            "y": -3.0
+          },
+          "selected": false
+        },
+        {
+          "id": "8406334343747572601",
+          "name": "Select node Lucky Duck",
+          "bounds": {
+            "h": 24.0,
+            "w": 64.0,
+            "x": 100.0,
+            "y": 28.0
+          },
+          "selected": false
+        },
+        {
+          "id": "15099665099166763971",
+          "name": "Select node Welcome Beacon",
+          "bounds": {
+            "h": 24.0,
+            "w": 64.0,
+            "x": 100.0,
+            "y": 59.0
+          },
+          "selected": false
+        },
+        {
+          "id": "18154893575551833952",
+          "name": "Select node Cube 1",
+          "bounds": {
+            "h": 24.0,
+            "w": 40.0,
+            "x": 124.0,
+            "y": 296.0
+          },
+          "selected": false
+        },
+        {
+          "id": "11899332702850774324",
+          "name": "Select node Cube 2",
+          "bounds": {
+            "h": 24.0,
+            "w": 40.0,
+            "x": 124.0,
+            "y": 327.0
+          },
+          "selected": false
+        },
+        {
+          "id": "1042672873817943954",
+          "name": "Select node Cube 3",
+          "bounds": {
+            "h": 24.0,
+            "w": 40.0,
+            "x": 124.0,
+            "y": 387.0
+          },
+          "selected": false
+        },
+        {
+          "id": "1286446871156732309",
+          "name": "Select node QA oracle origin",
+          "bounds": {
+            "h": 24.0,
+            "w": 40.0,
+            "x": 124.0,
+            "y": 418.0
+          },
+          "selected": false
+        },
+        {
+          "id": "6705140654294692375",
+          "name": "Select node Earthwork raise r1",
+          "bounds": {
+            "h": 24.0,
+            "w": 40.0,
+            "x": 124.0,
+            "y": 449.0
+          },
+          "selected": false
+        },
+        {
+          "id": "17039876607568230876",
+          "name": "Select node QA report overlap box",
+          "bounds": {
+            "h": 24.0,
+            "w": 40.0,
+            "x": 124.0,
+            "y": 480.0
+          },
+          "selected": false
+        },
+        {
+          "id": "8597925524879282272",
+          "name": "Select node QA Portal 18",
+          "bounds": {
+            "h": 24.0,
+            "w": 40.0,
+            "x": 124.0,
+            "y": 511.0
+          },
+          "selected": true
+        },
+        {
+          "id": "7635148549475020629",
+          "name": "Select node QA Scoped Creation 21",
+          "bounds": {
+            "h": 24.0,
+            "w": 40.0,
+            "x": 124.0,
+            "y": 542.0
+          },
+          "selected": true
+        },
+        {
+          "id": "14913410408525399319",
+          "name": "Select node QA Initial TRS 21",
+          "bounds": {
+            "h": 24.0,
+            "w": 40.0,
+            "x": 124.0,
+            "y": 573.0
+          },
+          "selected": false
+        },
+        {
+          "id": "3316574731065808748",
+          "name": "Select node QA Asset Placement TRS 21",
+          "bounds": {
+            "h": 24.0,
+            "w": 40.0,
+            "x": 124.0,
+            "y": 604.0
+          },
+          "selected": false
+        },
+        {
+          "id": "742474818349067950",
+          "name": "Select node QA oracle origin",
+          "bounds": {
+            "h": 24.0,
+            "w": 64.0,
+            "x": 100.0,
+            "y": 694.0
+          },
+          "selected": false
+        },
+        {
+          "id": "5915073760978667871",
+          "name": "Select node Fleet Alpha",
+          "bounds": {
+            "h": 24.0,
+            "w": 64.0,
+            "x": 100.0,
+            "y": 725.0
+          },
+          "selected": false
+        },
+        {
+          "id": "9814796929619543561",
+          "name": "Select node Fleet Beta",
+          "bounds": {
+            "h": 24.0,
+            "w": 64.0,
+            "x": 100.0,
+            "y": 756.0
+          },
+          "selected": false
+        },
+        {
+          "id": "314754711710761410",
+          "name": "Select node Fleet Alpha",
+          "bounds": {
+            "h": 24.0,
+            "w": 64.0,
+            "x": 100.0,
+            "y": 846.0
+          },
+          "selected": false
+        },
+        {
+          "id": "11817155853062602767",
+          "name": "Select node Fleet Beta",
+          "bounds": {
+            "h": 24.0,
+            "w": 64.0,
+            "x": 100.0,
+            "y": 877.0
+          },
+          "selected": false
+        },
+        {
+          "id": "16011263562815238268",
+          "name": "Select node Fleet Alpha",
+          "bounds": {
+            "h": 24.0,
+            "w": 64.0,
+            "x": 100.0,
+            "y": 967.0
+          },
+          "selected": false
+        },
+        {
+          "id": "17987839800331333052",
+          "name": "Select node Fleet Beta",
+          "bounds": {
+            "h": 24.0,
+            "w": 64.0,
+            "x": 100.0,
+            "y": 998.0
+          },
+          "selected": false
+        },
+        {
+          "id": "15121112293177681049",
+          "name": "Select node Fleet Gamma",
+          "bounds": {
+            "h": 24.0,
+            "w": 64.0,
+            "x": 100.0,
+            "y": 1029.0
+          },
+          "selected": false
+        },
+        {
+          "id": "17876630853277389648",
+          "name": "Select node Fleet Alpha",
+          "bounds": {
+            "h": 24.0,
+            "w": 64.0,
+            "x": 100.0,
+            "y": 1119.0
+          },
+          "selected": false
+        },
+        {
+          "id": "14420779891864971758",
+          "name": "Select node Fleet Beta",
+          "bounds": {
+            "h": 24.0,
+            "w": 64.0,
+            "x": 100.0,
+            "y": 1150.0
+          },
+          "selected": false
+        },
+        {
+          "id": "12113116006402369441",
+          "name": "Select node Fleet Gamma",
+          "bounds": {
+            "h": 24.0,
+            "w": 64.0,
+            "x": 100.0,
+            "y": 1181.0
+          },
+          "selected": false
+        },
+        {
+          "id": "9140692741784644223",
+          "name": "Select node Path 1",
+          "bounds": {
+            "h": 24.0,
+            "w": 64.0,
+            "x": 100.0,
+            "y": 1271.0
+          },
+          "selected": false
+        },
+        {
+          "id": "1383679907380646699",
+          "name": "Select node 01M6EWYT81M0RT4JTTEYN09D5Z #1",
+          "bounds": {
+            "h": 24.0,
+            "w": 64.0,
+            "x": 100.0,
+            "y": 1302.0
+          },
+          "selected": false
+        },
+        {
+          "id": "6386943609679809710",
+          "name": "Select node 01M6EWYT81M0RT4JTTEYN09D5Z #2",
+          "bounds": {
+            "h": 24.0,
+            "w": 64.0,
+            "x": 100.0,
+            "y": 1333.0
+          },
+          "selected": false
+        },
+        {
+          "id": "1259874322834739826",
+          "name": "Select node 01M6EWYT81M0RT4JTTEYN09D5Z #0",
+          "bounds": {
+            "h": 24.0,
+            "w": 64.0,
+            "x": 100.0,
+            "y": 1364.0
+          },
+          "selected": false
+        }
+      ]
+    },
+    {
+      "file": "owner-four-scrolled-ui.jsonl",
+      "frame": 15858,
+      "hierarchy": {
+        "axes": [
+          true,
+          true
+        ],
+        "clip": {
+          "h": 606.0,
+          "w": 220.0,
+          "x": 0.0,
+          "y": 86.0
+        },
+        "content_id": "1649309098613198024",
+        "content_rect": {
+          "h": 1619.0,
+          "w": 220.0,
+          "x": 0.0,
+          "y": -101.0
+        },
+        "content_size": [
+          220.0,
+          1619.0
+        ],
+        "label": "Hierarchy",
+        "layer": "LayerId { Background 5A3E }",
+        "offset": [
+          0.0,
+          189.8050994873047
+        ],
+        "parent_id": "15076918100674134496",
+        "viewport": {
+          "h": 603.0,
+          "w": 220.0,
+          "x": 0.0,
+          "y": 89.0
+        }
+      },
+      "selected_names": [
+        "QA Portal 18",
+        "QA Scoped Creation 21",
+        "QA Initial TRS 21",
+        "QA Asset Placement TRS 21"
+      ],
+      "rows": [
+        {
+          "id": "8265609869495752140",
+          "name": "Select node Info Panel",
+          "bounds": {
+            "h": 24.0,
+            "w": 64.0,
+            "x": 100.0,
+            "y": -3.0
+          },
+          "selected": false
+        },
+        {
+          "id": "8406334343747572601",
+          "name": "Select node Lucky Duck",
+          "bounds": {
+            "h": 24.0,
+            "w": 64.0,
+            "x": 100.0,
+            "y": 28.0
+          },
+          "selected": false
+        },
+        {
+          "id": "15099665099166763971",
+          "name": "Select node Welcome Beacon",
+          "bounds": {
+            "h": 24.0,
+            "w": 64.0,
+            "x": 100.0,
+            "y": 59.0
+          },
+          "selected": false
+        },
+        {
+          "id": "18154893575551833952",
+          "name": "Select node Cube 1",
+          "bounds": {
+            "h": 24.0,
+            "w": 40.0,
+            "x": 124.0,
+            "y": 296.0
+          },
+          "selected": false
+        },
+        {
+          "id": "11899332702850774324",
+          "name": "Select node Cube 2",
+          "bounds": {
+            "h": 24.0,
+            "w": 40.0,
+            "x": 124.0,
+            "y": 327.0
+          },
+          "selected": false
+        },
+        {
+          "id": "1042672873817943954",
+          "name": "Select node Cube 3",
+          "bounds": {
+            "h": 24.0,
+            "w": 40.0,
+            "x": 124.0,
+            "y": 387.0
+          },
+          "selected": false
+        },
+        {
+          "id": "1286446871156732309",
+          "name": "Select node QA oracle origin",
+          "bounds": {
+            "h": 24.0,
+            "w": 40.0,
+            "x": 124.0,
+            "y": 418.0
+          },
+          "selected": false
+        },
+        {
+          "id": "6705140654294692375",
+          "name": "Select node Earthwork raise r1",
+          "bounds": {
+            "h": 24.0,
+            "w": 40.0,
+            "x": 124.0,
+            "y": 449.0
+          },
+          "selected": false
+        },
+        {
+          "id": "17039876607568230876",
+          "name": "Select node QA report overlap box",
+          "bounds": {
+            "h": 24.0,
+            "w": 40.0,
+            "x": 124.0,
+            "y": 480.0
+          },
+          "selected": false
+        },
+        {
+          "id": "8597925524879282272",
+          "name": "Select node QA Portal 18",
+          "bounds": {
+            "h": 24.0,
+            "w": 40.0,
+            "x": 124.0,
+            "y": 511.0
+          },
+          "selected": true
+        },
+        {
+          "id": "7635148549475020629",
+          "name": "Select node QA Scoped Creation 21",
+          "bounds": {
+            "h": 24.0,
+            "w": 40.0,
+            "x": 124.0,
+            "y": 542.0
+          },
+          "selected": true
+        },
+        {
+          "id": "14913410408525399319",
+          "name": "Select node QA Initial TRS 21",
+          "bounds": {
+            "h": 24.0,
+            "w": 40.0,
+            "x": 124.0,
+            "y": 573.0
+          },
+          "selected": true
+        },
+        {
+          "id": "3316574731065808748",
+          "name": "Select node QA Asset Placement TRS 21",
+          "bounds": {
+            "h": 24.0,
+            "w": 40.0,
+            "x": 124.0,
+            "y": 604.0
+          },
+          "selected": true
+        },
+        {
+          "id": "742474818349067950",
+          "name": "Select node QA oracle origin",
+          "bounds": {
+            "h": 24.0,
+            "w": 64.0,
+            "x": 100.0,
+            "y": 694.0
+          },
+          "selected": false
+        },
+        {
+          "id": "5915073760978667871",
+          "name": "Select node Fleet Alpha",
+          "bounds": {
+            "h": 24.0,
+            "w": 64.0,
+            "x": 100.0,
+            "y": 725.0
+          },
+          "selected": false
+        },
+        {
+          "id": "9814796929619543561",
+          "name": "Select node Fleet Beta",
+          "bounds": {
+            "h": 24.0,
+            "w": 64.0,
+            "x": 100.0,
+            "y": 756.0
+          },
+          "selected": false
+        },
+        {
+          "id": "314754711710761410",
+          "name": "Select node Fleet Alpha",
+          "bounds": {
+            "h": 24.0,
+            "w": 64.0,
+            "x": 100.0,
+            "y": 846.0
+          },
+          "selected": false
+        },
+        {
+          "id": "11817155853062602767",
+          "name": "Select node Fleet Beta",
+          "bounds": {
+            "h": 24.0,
+            "w": 64.0,
+            "x": 100.0,
+            "y": 877.0
+          },
+          "selected": false
+        },
+        {
+          "id": "16011263562815238268",
+          "name": "Select node Fleet Alpha",
+          "bounds": {
+            "h": 24.0,
+            "w": 64.0,
+            "x": 100.0,
+            "y": 967.0
+          },
+          "selected": false
+        },
+        {
+          "id": "17987839800331333052",
+          "name": "Select node Fleet Beta",
+          "bounds": {
+            "h": 24.0,
+            "w": 64.0,
+            "x": 100.0,
+            "y": 998.0
+          },
+          "selected": false
+        },
+        {
+          "id": "15121112293177681049",
+          "name": "Select node Fleet Gamma",
+          "bounds": {
+            "h": 24.0,
+            "w": 64.0,
+            "x": 100.0,
+            "y": 1029.0
+          },
+          "selected": false
+        },
+        {
+          "id": "17876630853277389648",
+          "name": "Select node Fleet Alpha",
+          "bounds": {
+            "h": 24.0,
+            "w": 64.0,
+            "x": 100.0,
+            "y": 1119.0
+          },
+          "selected": false
+        },
+        {
+          "id": "14420779891864971758",
+          "name": "Select node Fleet Beta",
+          "bounds": {
+            "h": 24.0,
+            "w": 64.0,
+            "x": 100.0,
+            "y": 1150.0
+          },
+          "selected": false
+        },
+        {
+          "id": "12113116006402369441",
+          "name": "Select node Fleet Gamma",
+          "bounds": {
+            "h": 24.0,
+            "w": 64.0,
+            "x": 100.0,
+            "y": 1181.0
+          },
+          "selected": false
+        },
+        {
+          "id": "9140692741784644223",
+          "name": "Select node Path 1",
+          "bounds": {
+            "h": 24.0,
+            "w": 64.0,
+            "x": 100.0,
+            "y": 1271.0
+          },
+          "selected": false
+        },
+        {
+          "id": "1383679907380646699",
+          "name": "Select node 01M6EWYT81M0RT4JTTEYN09D5Z #1",
+          "bounds": {
+            "h": 24.0,
+            "w": 64.0,
+            "x": 100.0,
+            "y": 1302.0
+          },
+          "selected": false
+        },
+        {
+          "id": "6386943609679809710",
+          "name": "Select node 01M6EWYT81M0RT4JTTEYN09D5Z #2",
+          "bounds": {
+            "h": 24.0,
+            "w": 64.0,
+            "x": 100.0,
+            "y": 1333.0
+          },
+          "selected": false
+        },
+        {
+          "id": "1259874322834739826",
+          "name": "Select node 01M6EWYT81M0RT4JTTEYN09D5Z #0",
+          "bounds": {
+            "h": 24.0,
+            "w": 64.0,
+            "x": 100.0,
+            "y": 1364.0
+          },
+          "selected": false
+        }
+      ]
+    },
+    {
+      "file": "owner-before-background-drag-ui.jsonl",
+      "frame": 15890,
+      "hierarchy": {
+        "axes": [
+          true,
+          true
+        ],
+        "clip": {
+          "h": 606.0,
+          "w": 220.0,
+          "x": 0.0,
+          "y": 86.0
+        },
+        "content_id": "1649309098613198024",
+        "content_rect": {
+          "h": 1619.0,
+          "w": 220.0,
+          "x": 0.0,
+          "y": -101.0
+        },
+        "content_size": [
+          220.0,
+          1619.0
+        ],
+        "label": "Hierarchy",
+        "layer": "LayerId { Background 5A3E }",
+        "offset": [
+          0.0,
+          189.8050994873047
+        ],
+        "parent_id": "15076918100674134496",
+        "viewport": {
+          "h": 603.0,
+          "w": 220.0,
+          "x": 0.0,
+          "y": 89.0
+        }
+      },
+      "selected_names": [
+        "QA Portal 18",
+        "QA Scoped Creation 21",
+        "QA Initial TRS 21",
+        "QA Asset Placement TRS 21"
+      ],
+      "rows": [
+        {
+          "id": "8265609869495752140",
+          "name": "Select node Info Panel",
+          "bounds": {
+            "h": 24.0,
+            "w": 64.0,
+            "x": 100.0,
+            "y": -3.0
+          },
+          "selected": false
+        },
+        {
+          "id": "8406334343747572601",
+          "name": "Select node Lucky Duck",
+          "bounds": {
+            "h": 24.0,
+            "w": 64.0,
+            "x": 100.0,
+            "y": 28.0
+          },
+          "selected": false
+        },
+        {
+          "id": "15099665099166763971",
+          "name": "Select node Welcome Beacon",
+          "bounds": {
+            "h": 24.0,
+            "w": 64.0,
+            "x": 100.0,
+            "y": 59.0
+          },
+          "selected": false
+        },
+        {
+          "id": "18154893575551833952",
+          "name": "Select node Cube 1",
+          "bounds": {
+            "h": 24.0,
+            "w": 40.0,
+            "x": 124.0,
+            "y": 296.0
+          },
+          "selected": false
+        },
+        {
+          "id": "11899332702850774324",
+          "name": "Select node Cube 2",
+          "bounds": {
+            "h": 24.0,
+            "w": 40.0,
+            "x": 124.0,
+            "y": 327.0
+          },
+          "selected": false
+        },
+        {
+          "id": "1042672873817943954",
+          "name": "Select node Cube 3",
+          "bounds": {
+            "h": 24.0,
+            "w": 40.0,
+            "x": 124.0,
+            "y": 387.0
+          },
+          "selected": false
+        },
+        {
+          "id": "1286446871156732309",
+          "name": "Select node QA oracle origin",
+          "bounds": {
+            "h": 24.0,
+            "w": 40.0,
+            "x": 124.0,
+            "y": 418.0
+          },
+          "selected": false
+        },
+        {
+          "id": "6705140654294692375",
+          "name": "Select node Earthwork raise r1",
+          "bounds": {
+            "h": 24.0,
+            "w": 40.0,
+            "x": 124.0,
+            "y": 449.0
+          },
+          "selected": false
+        },
+        {
+          "id": "17039876607568230876",
+          "name": "Select node QA report overlap box",
+          "bounds": {
+            "h": 24.0,
+            "w": 40.0,
+            "x": 124.0,
+            "y": 480.0
+          },
+          "selected": false
+        },
+        {
+          "id": "8597925524879282272",
+          "name": "Select node QA Portal 18",
+          "bounds": {
+            "h": 24.0,
+            "w": 40.0,
+            "x": 124.0,
+            "y": 511.0
+          },
+          "selected": true
+        },
+        {
+          "id": "7635148549475020629",
+          "name": "Select node QA Scoped Creation 21",
+          "bounds": {
+            "h": 24.0,
+            "w": 40.0,
+            "x": 124.0,
+            "y": 542.0
+          },
+          "selected": true
+        },
+        {
+          "id": "14913410408525399319",
+          "name": "Select node QA Initial TRS 21",
+          "bounds": {
+            "h": 24.0,
+            "w": 40.0,
+            "x": 124.0,
+            "y": 573.0
+          },
+          "selected": true
+        },
+        {
+          "id": "3316574731065808748",
+          "name": "Select node QA Asset Placement TRS 21",
+          "bounds": {
+            "h": 24.0,
+            "w": 40.0,
+            "x": 124.0,
+            "y": 604.0
+          },
+          "selected": true
+        },
+        {
+          "id": "742474818349067950",
+          "name": "Select node QA oracle origin",
+          "bounds": {
+            "h": 24.0,
+            "w": 64.0,
+            "x": 100.0,
+            "y": 694.0
+          },
+          "selected": false
+        },
+        {
+          "id": "5915073760978667871",
+          "name": "Select node Fleet Alpha",
+          "bounds": {
+            "h": 24.0,
+            "w": 64.0,
+            "x": 100.0,
+            "y": 725.0
+          },
+          "selected": false
+        },
+        {
+          "id": "9814796929619543561",
+          "name": "Select node Fleet Beta",
+          "bounds": {
+            "h": 24.0,
+            "w": 64.0,
+            "x": 100.0,
+            "y": 756.0
+          },
+          "selected": false
+        },
+        {
+          "id": "314754711710761410",
+          "name": "Select node Fleet Alpha",
+          "bounds": {
+            "h": 24.0,
+            "w": 64.0,
+            "x": 100.0,
+            "y": 846.0
+          },
+          "selected": false
+        },
+        {
+          "id": "11817155853062602767",
+          "name": "Select node Fleet Beta",
+          "bounds": {
+            "h": 24.0,
+            "w": 64.0,
+            "x": 100.0,
+            "y": 877.0
+          },
+          "selected": false
+        },
+        {
+          "id": "16011263562815238268",
+          "name": "Select node Fleet Alpha",
+          "bounds": {
+            "h": 24.0,
+            "w": 64.0,
+            "x": 100.0,
+            "y": 967.0
+          },
+          "selected": false
+        },
+        {
+          "id": "17987839800331333052",
+          "name": "Select node Fleet Beta",
+          "bounds": {
+            "h": 24.0,
+            "w": 64.0,
+            "x": 100.0,
+            "y": 998.0
+          },
+          "selected": false
+        },
+        {
+          "id": "15121112293177681049",
+          "name": "Select node Fleet Gamma",
+          "bounds": {
+            "h": 24.0,
+            "w": 64.0,
+            "x": 100.0,
+            "y": 1029.0
+          },
+          "selected": false
+        },
+        {
+          "id": "17876630853277389648",
+          "name": "Select node Fleet Alpha",
+          "bounds": {
+            "h": 24.0,
+            "w": 64.0,
+            "x": 100.0,
+            "y": 1119.0
+          },
+          "selected": false
+        },
+        {
+          "id": "14420779891864971758",
+          "name": "Select node Fleet Beta",
+          "bounds": {
+            "h": 24.0,
+            "w": 64.0,
+            "x": 100.0,
+            "y": 1150.0
+          },
+          "selected": false
+        },
+        {
+          "id": "12113116006402369441",
+          "name": "Select node Fleet Gamma",
+          "bounds": {
+            "h": 24.0,
+            "w": 64.0,
+            "x": 100.0,
+            "y": 1181.0
+          },
+          "selected": false
+        },
+        {
+          "id": "9140692741784644223",
+          "name": "Select node Path 1",
+          "bounds": {
+            "h": 24.0,
+            "w": 64.0,
+            "x": 100.0,
+            "y": 1271.0
+          },
+          "selected": false
+        },
+        {
+          "id": "1383679907380646699",
+          "name": "Select node 01M6EWYT81M0RT4JTTEYN09D5Z #1",
+          "bounds": {
+            "h": 24.0,
+            "w": 64.0,
+            "x": 100.0,
+            "y": 1302.0
+          },
+          "selected": false
+        },
+        {
+          "id": "6386943609679809710",
+          "name": "Select node 01M6EWYT81M0RT4JTTEYN09D5Z #2",
+          "bounds": {
+            "h": 24.0,
+            "w": 64.0,
+            "x": 100.0,
+            "y": 1333.0
+          },
+          "selected": false
+        },
+        {
+          "id": "1259874322834739826",
+          "name": "Select node 01M6EWYT81M0RT4JTTEYN09D5Z #0",
+          "bounds": {
+            "h": 24.0,
+            "w": 64.0,
+            "x": 100.0,
+            "y": 1364.0
+          },
+          "selected": false
+        }
+      ]
+    },
+    {
+      "file": "owner-after-background-drag-ui.jsonl",
+      "frame": 15957,
+      "hierarchy": {
+        "axes": [
+          true,
+          true
+        ],
+        "clip": {
+          "h": 606.0,
+          "w": 220.0,
+          "x": 0.0,
+          "y": 86.0
+        },
+        "content_id": "1649309098613198024",
+        "content_rect": {
+          "h": 1619.0,
+          "w": 220.0,
+          "x": 0.0,
+          "y": -133.0
+        },
+        "content_size": [
+          220.0,
+          1619.0
+        ],
+        "label": "Hierarchy",
+        "layer": "LayerId { Background 5A3E }",
+        "offset": [
+          0.0,
+          221.81521606445312
+        ],
+        "parent_id": "15076918100674134496",
+        "viewport": {
+          "h": 603.0,
+          "w": 220.0,
+          "x": 0.0,
+          "y": 89.0
+        }
+      },
+      "selected_names": [
+        "QA Portal 18",
+        "QA Scoped Creation 21",
+        "QA Initial TRS 21",
+        "QA Asset Placement TRS 21"
+      ],
+      "rows": [
+        {
+          "id": "8265609869495752140",
+          "name": "Select node Info Panel",
+          "bounds": {
+            "h": 24.0,
+            "w": 64.0,
+            "x": 100.0,
+            "y": -35.0
+          },
+          "selected": false
+        },
+        {
+          "id": "8406334343747572601",
+          "name": "Select node Lucky Duck",
+          "bounds": {
+            "h": 24.0,
+            "w": 64.0,
+            "x": 100.0,
+            "y": -4.0
+          },
+          "selected": false
+        },
+        {
+          "id": "15099665099166763971",
+          "name": "Select node Welcome Beacon",
+          "bounds": {
+            "h": 24.0,
+            "w": 64.0,
+            "x": 100.0,
+            "y": 27.0
+          },
+          "selected": false
+        },
+        {
+          "id": "18154893575551833952",
+          "name": "Select node Cube 1",
+          "bounds": {
+            "h": 24.0,
+            "w": 40.0,
+            "x": 124.0,
+            "y": 264.0
+          },
+          "selected": false
+        },
+        {
+          "id": "11899332702850774324",
+          "name": "Select node Cube 2",
+          "bounds": {
+            "h": 24.0,
+            "w": 40.0,
+            "x": 124.0,
+            "y": 295.0
+          },
+          "selected": false
+        },
+        {
+          "id": "1042672873817943954",
+          "name": "Select node Cube 3",
+          "bounds": {
+            "h": 24.0,
+            "w": 40.0,
+            "x": 124.0,
+            "y": 355.0
+          },
+          "selected": false
+        },
+        {
+          "id": "1286446871156732309",
+          "name": "Select node QA oracle origin",
+          "bounds": {
+            "h": 24.0,
+            "w": 40.0,
+            "x": 124.0,
+            "y": 386.0
+          },
+          "selected": false
+        },
+        {
+          "id": "6705140654294692375",
+          "name": "Select node Earthwork raise r1",
+          "bounds": {
+            "h": 24.0,
+            "w": 40.0,
+            "x": 124.0,
+            "y": 417.0
+          },
+          "selected": false
+        },
+        {
+          "id": "17039876607568230876",
+          "name": "Select node QA report overlap box",
+          "bounds": {
+            "h": 24.0,
+            "w": 40.0,
+            "x": 124.0,
+            "y": 448.0
+          },
+          "selected": false
+        },
+        {
+          "id": "8597925524879282272",
+          "name": "Select node QA Portal 18",
+          "bounds": {
+            "h": 24.0,
+            "w": 40.0,
+            "x": 124.0,
+            "y": 479.0
+          },
+          "selected": true
+        },
+        {
+          "id": "7635148549475020629",
+          "name": "Select node QA Scoped Creation 21",
+          "bounds": {
+            "h": 24.0,
+            "w": 40.0,
+            "x": 124.0,
+            "y": 510.0
+          },
+          "selected": true
+        },
+        {
+          "id": "14913410408525399319",
+          "name": "Select node QA Initial TRS 21",
+          "bounds": {
+            "h": 24.0,
+            "w": 40.0,
+            "x": 124.0,
+            "y": 541.0
+          },
+          "selected": true
+        },
+        {
+          "id": "3316574731065808748",
+          "name": "Select node QA Asset Placement TRS 21",
+          "bounds": {
+            "h": 24.0,
+            "w": 40.0,
+            "x": 124.0,
+            "y": 572.0
+          },
+          "selected": true
+        },
+        {
+          "id": "742474818349067950",
+          "name": "Select node QA oracle origin",
+          "bounds": {
+            "h": 24.0,
+            "w": 64.0,
+            "x": 100.0,
+            "y": 662.0
+          },
+          "selected": false
+        },
+        {
+          "id": "5915073760978667871",
+          "name": "Select node Fleet Alpha",
+          "bounds": {
+            "h": 24.0,
+            "w": 64.0,
+            "x": 100.0,
+            "y": 693.0
+          },
+          "selected": false
+        },
+        {
+          "id": "9814796929619543561",
+          "name": "Select node Fleet Beta",
+          "bounds": {
+            "h": 24.0,
+            "w": 64.0,
+            "x": 100.0,
+            "y": 724.0
+          },
+          "selected": false
+        },
+        {
+          "id": "314754711710761410",
+          "name": "Select node Fleet Alpha",
+          "bounds": {
+            "h": 24.0,
+            "w": 64.0,
+            "x": 100.0,
+            "y": 814.0
+          },
+          "selected": false
+        },
+        {
+          "id": "11817155853062602767",
+          "name": "Select node Fleet Beta",
+          "bounds": {
+            "h": 24.0,
+            "w": 64.0,
+            "x": 100.0,
+            "y": 845.0
+          },
+          "selected": false
+        },
+        {
+          "id": "16011263562815238268",
+          "name": "Select node Fleet Alpha",
+          "bounds": {
+            "h": 24.0,
+            "w": 64.0,
+            "x": 100.0,
+            "y": 935.0
+          },
+          "selected": false
+        },
+        {
+          "id": "17987839800331333052",
+          "name": "Select node Fleet Beta",
+          "bounds": {
+            "h": 24.0,
+            "w": 64.0,
+            "x": 100.0,
+            "y": 966.0
+          },
+          "selected": false
+        },
+        {
+          "id": "15121112293177681049",
+          "name": "Select node Fleet Gamma",
+          "bounds": {
+            "h": 24.0,
+            "w": 64.0,
+            "x": 100.0,
+            "y": 997.0
+          },
+          "selected": false
+        },
+        {
+          "id": "17876630853277389648",
+          "name": "Select node Fleet Alpha",
+          "bounds": {
+            "h": 24.0,
+            "w": 64.0,
+            "x": 100.0,
+            "y": 1087.0
+          },
+          "selected": false
+        },
+        {
+          "id": "14420779891864971758",
+          "name": "Select node Fleet Beta",
+          "bounds": {
+            "h": 24.0,
+            "w": 64.0,
+            "x": 100.0,
+            "y": 1118.0
+          },
+          "selected": false
+        },
+        {
+          "id": "12113116006402369441",
+          "name": "Select node Fleet Gamma",
+          "bounds": {
+            "h": 24.0,
+            "w": 64.0,
+            "x": 100.0,
+            "y": 1149.0
+          },
+          "selected": false
+        },
+        {
+          "id": "9140692741784644223",
+          "name": "Select node Path 1",
+          "bounds": {
+            "h": 24.0,
+            "w": 64.0,
+            "x": 100.0,
+            "y": 1239.0
+          },
+          "selected": false
+        },
+        {
+          "id": "1383679907380646699",
+          "name": "Select node 01M6EWYT81M0RT4JTTEYN09D5Z #1",
+          "bounds": {
+            "h": 24.0,
+            "w": 64.0,
+            "x": 100.0,
+            "y": 1270.0
+          },
+          "selected": false
+        },
+        {
+          "id": "6386943609679809710",
+          "name": "Select node 01M6EWYT81M0RT4JTTEYN09D5Z #2",
+          "bounds": {
+            "h": 24.0,
+            "w": 64.0,
+            "x": 100.0,
+            "y": 1301.0
+          },
+          "selected": false
+        },
+        {
+          "id": "1259874322834739826",
+          "name": "Select node 01M6EWYT81M0RT4JTTEYN09D5Z #0",
+          "bounds": {
+            "h": 24.0,
+            "w": 64.0,
+            "x": 100.0,
+            "y": 1332.0
+          },
+          "selected": false
+        }
+      ]
+    }
+  ],
+  "rows_keep_identity_order": true,
+  "stable_click_offset": 189.8050994873047,
+  "background_drag": {
+    "declared_screen_delta_y": -10,
+    "settled_scroll_delta_y": 32.01011657714844,
+    "selected_set_unchanged": true,
+    "limitation": "Settled scroll includes inertial behavior; no exact ten-pixel scroll or press-frame delta is claimed from native observations."
+  },
+  "stored_comparisons": "stored-data-comparison.json",
+  "all20_responses_byte_identical": true,
+  "registry_byte_identical": true,
+  "history_tail": {
+    "current_version": 106,
+    "coverage_start_version": 34,
+    "full_response_entries": 106,
+    "unavailable_prefix_versions": "1 through33; coverage begins34",
+    "newer_facts": [
+      {
+        "row_version": 103,
+        "created_at": "2026-11-03T11:39:47.105087500+00:00",
+        "log_id": "01M6GKAK116AXAY4AJH0BP6Z8N",
+        "source_did": "did:key:z6Mkf6DVgy9wjsWYUHzUthDSypdNKHwgsuuneDyNUqmKvYsU",
+        "op": "property_set",
+        "data": {
+          "key": "cut_volume_m3",
+          "value": 0.0
+        }
+      },
+      {
+        "row_version": 104,
+        "created_at": "2026-11-03T11:39:47.180840800+00:00",
+        "log_id": "01M6GKAK3CSNBXPAZA79QMPPEB",
+        "source_did": "did:key:z6Mkf6DVgy9wjsWYUHzUthDSypdNKHwgsuuneDyNUqmKvYsU",
+        "op": "property_set",
+        "data": {
+          "key": "fill_volume_m3",
+          "value": 0.0
+        }
+      },
+      {
+        "row_version": 105,
+        "created_at": "2026-11-03T11:39:48.081613100+00:00",
+        "log_id": "01M6GKAKZHMR42SJS94ZCK4GF6",
+        "source_did": "did:key:z6Mkf6DVgy9wjsWYUHzUthDSypdNKHwgsuuneDyNUqmKvYsU",
+        "op": "property_set",
+        "data": {
+          "key": "cut_volume_m3",
+          "value": 0.0
+        }
+      },
+      {
+        "row_version": 106,
+        "created_at": "2026-11-03T11:39:48.148799100+00:00",
+        "log_id": "01M6GKAM1MC95N7P3W32PVT6C8",
+        "source_did": "did:key:z6Mkf6DVgy9wjsWYUHzUthDSypdNKHwgsuuneDyNUqmKvYsU",
+        "op": "property_set",
+        "data": {
+          "key": "fill_volume_m3",
+          "value": 38.83056640625
+        }
+      }
+    ],
+    "tail_initial_final_byte_identical": true,
+    "cause_scope": "Durable operations/times are observed. Missing terrain coverage at those exact frames is source inference, not captured runtime coverage. No corruption or foreign write is asserted."
+  },
+  "state_samples": [
+    {
+      "file": "owner-after-background-drag-state.jsonl",
+      "frame": 15970,
+      "pending": {
+        "db": null,
+        "sync": null,
+        "ui_known": 0
+      },
+      "settled": true,
+      "selection": {
+        "node_id": "01M6FDWKBAE253GYS7HY998BTK",
+        "transform": {
+          "position": [
+            3.25,
+            2.5,
+            -4.75
+          ],
+          "rotation": [
+            0.04272238537669182,
+            -0.19455307722091675,
+            0.2729473114013672,
+            0.9411821365356445
+          ],
+          "scale": [
+            0.75,
+            1.5,
+            2.25
+          ]
+        }
+      },
+      "navigation": {
+        "fractal_id": "01M6D0VZG5ZN7XZMTXE8PWF1YT",
+        "fractal_name": "QA Fractal",
+        "petal_id": "01M6D0VZJ6383Q4HNNET8RSEYF",
+        "petal_name": "Petal A",
+        "verse_id": "01M6D0VZ11XK62MXZ61HENTBTD",
+        "verse_name": "QA Terrain"
+      }
+    },
+    {
+      "file": "owner-creation21-state.jsonl",
+      "frame": 6391,
+      "pending": {
+        "db": null,
+        "sync": null,
+        "ui_known": 0
+      },
+      "settled": true,
+      "selection": {
+        "node_id": "01M6FDKQWF0QVZ44DRZ3H9XDYC",
+        "transform": {
+          "position": [
+            -3.310807228088379,
+            0.0,
+            -10.732170104980469
+          ],
+          "rotation": [
+            0.0,
+            0.0,
+            0.0,
+            1.0
+          ],
+          "scale": [
+            1.0,
+            1.0,
+            1.0
+          ]
+        }
+      },
+      "navigation": {
+        "fractal_id": "01M6D0VZG5ZN7XZMTXE8PWF1YT",
+        "fractal_name": "QA Fractal",
+        "petal_id": "01M6D0VZJ6383Q4HNNET8RSEYF",
+        "petal_name": "Petal A",
+        "verse_id": "01M6D0VZ11XK62MXZ61HENTBTD",
+        "verse_name": "QA Terrain"
+      }
+    },
+    {
+      "file": "owner-final-state.jsonl",
+      "frame": 24681,
+      "pending": {
+        "db": null,
+        "sync": null,
+        "ui_known": 0
+      },
+      "settled": true,
+      "selection": {
+        "node_id": "01M6FDWKBAE253GYS7HY998BTK",
+        "transform": {
+          "position": [
+            3.25,
+            2.5,
+            -4.75
+          ],
+          "rotation": [
+            0.04272238537669182,
+            -0.19455307722091675,
+            0.2729473114013672,
+            0.9411821365356445
+          ],
+          "scale": [
+            0.75,
+            1.5,
+            2.25
+          ]
+        }
+      },
+      "navigation": {
+        "fractal_id": "01M6D0VZG5ZN7XZMTXE8PWF1YT",
+        "fractal_name": "QA Fractal",
+        "petal_id": "01M6D0VZJ6383Q4HNNET8RSEYF",
+        "petal_name": "Petal A",
+        "verse_id": "01M6D0VZ11XK62MXZ61HENTBTD",
+        "verse_name": "QA Terrain"
+      }
+    },
+    {
+      "file": "owner-four-scrolled-state.jsonl",
+      "frame": 15874,
+      "pending": {
+        "db": null,
+        "sync": null,
+        "ui_known": 0
+      },
+      "settled": true,
+      "selection": {
+        "node_id": "01M6FDWKBAE253GYS7HY998BTK",
+        "transform": {
+          "position": [
+            3.25,
+            2.5,
+            -4.75
+          ],
+          "rotation": [
+            0.04272238537669182,
+            -0.19455307722091675,
+            0.2729473114013672,
+            0.9411821365356445
+          ],
+          "scale": [
+            0.75,
+            1.5,
+            2.25
+          ]
+        }
+      },
+      "navigation": {
+        "fractal_id": "01M6D0VZG5ZN7XZMTXE8PWF1YT",
+        "fractal_name": "QA Fractal",
+        "petal_id": "01M6D0VZJ6383Q4HNNET8RSEYF",
+        "petal_name": "Petal A",
+        "verse_id": "01M6D0VZ11XK62MXZ61HENTBTD",
+        "verse_name": "QA Terrain"
+      }
+    },
+    {
+      "file": "owner-pair-scrolled-state.jsonl",
+      "frame": 15793,
+      "pending": {
+        "db": null,
+        "sync": null,
+        "ui_known": 0
+      },
+      "settled": true,
+      "selection": {
+        "node_id": "01M6F3SMGP4PX18QW85M1Y9WDZ",
+        "transform": {
+          "position": [
+            -10.013128280639648,
+            0.0,
+            9.081923484802246
+          ],
+          "rotation": [
+            0.0,
+            0.0,
+            0.0,
+            1.0
+          ],
+          "scale": [
+            1.0,
+            1.0,
+            1.0
+          ]
+        }
+      },
+      "navigation": {
+        "fractal_id": "01M6D0VZG5ZN7XZMTXE8PWF1YT",
+        "fractal_name": "QA Fractal",
+        "petal_id": "01M6D0VZJ6383Q4HNNET8RSEYF",
+        "petal_name": "Petal A",
+        "verse_id": "01M6D0VZ11XK62MXZ61HENTBTD",
+        "verse_name": "QA Terrain"
+      }
+    },
+    {
+      "file": "owner-portal18-state.jsonl",
+      "frame": 6312,
+      "pending": {
+        "db": null,
+        "sync": null,
+        "ui_known": 0
+      },
+      "settled": true,
+      "selection": {
+        "node_id": "01M6F3SMGP4PX18QW85M1Y9WDZ",
+        "transform": {
+          "position": [
+            -10.013128280639648,
+            0.0,
+            9.081923484802246
+          ],
+          "rotation": [
+            0.0,
+            0.0,
+            0.0,
+            1.0
+          ],
+          "scale": [
+            1.0,
+            1.0,
+            1.0
+          ]
+        }
+      },
+      "navigation": {
+        "fractal_id": "01M6D0VZG5ZN7XZMTXE8PWF1YT",
+        "fractal_name": "QA Fractal",
+        "petal_id": "01M6D0VZJ6383Q4HNNET8RSEYF",
+        "petal_name": "Petal A",
+        "verse_id": "01M6D0VZ11XK62MXZ61HENTBTD",
+        "verse_name": "QA Terrain"
+      }
+    },
+    {
+      "file": "owner-started-state.jsonl",
+      "frame": 1423,
+      "pending": {
+        "db": null,
+        "sync": null,
+        "ui_known": 0
+      },
+      "settled": true,
+      "selection": null,
+      "navigation": {
+        "fractal_id": "01M6D0VZG5ZN7XZMTXE8PWF1YT",
+        "fractal_name": "QA Fractal",
+        "petal_id": "01M6D0VZJ6383Q4HNNET8RSEYF",
+        "petal_name": "Petal A",
+        "verse_id": "01M6D0VZ11XK62MXZ61HENTBTD",
+        "verse_name": "QA Terrain"
+      }
+    }
+  ],
+  "screenshots": [
+    {
+      "record": "owner-four-after-drag-shot.jsonl",
+      "source_path": "C:\\Users\\atooz\\Programming\\fractalengine-workspace\\fractalengine\\.qa\\run\\20261101-191920-658\\shots\\053528-906-qa33-four-selected-after-scroll-drag.png",
+      "file": "screenshots/four-after-drag.png",
+      "bytes": 638359,
+      "sha256": "c5ddacae4c1af364f656a44e280742354904531ba1c98d2cb6d261dc7ea8f534",
+      "dimensions": [
+        1280,
+        720
+      ],
+      "visual_review": "pending"
+    },
+    {
+      "record": "owner-scroll-retained-shot.jsonl",
+      "source_path": "C:\\Users\\atooz\\Programming\\fractalengine-workspace\\fractalengine\\.qa\\run\\20261101-191920-658\\shots\\052832-324-qa33-selected-row-scroll-retained.png",
+      "file": "screenshots/scroll-retained.png",
+      "bytes": 617577,
+      "sha256": "cd7659e6db1e642349c3936aa3f76bee7398f911e5d4ca467a45d7d6c52759e6",
+      "dimensions": [
+        1280,
+        720
+      ],
+      "visual_review": "pending"
+    }
+  ],
+  "all8_recorded_identities_absent": true,
+  "scope": "Owner-only pointer retest/history diagnosis. Primary ECS observer only; accessible selected flags are presentation. No A1 UIA, A2/helper/WGC, eligible adoption, peer GPU, full catalog, final tests, CI or release acceptance."
+}

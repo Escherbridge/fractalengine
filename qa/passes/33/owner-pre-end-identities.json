@@ -1,0 +1,47 @@
+﻿{
+    "fresh_census_available":  true,
+    "census_error":  null,
+    "identities":  [
+                       {
+                           "pid":  91876,
+                           "start_ticks":  "639293055444599545",
+                           "exe_path":  "C:\\Users\\atooz\\Programming\\fractalengine-workspace\\fractalengine\\.qa\\stage\\24b5660c-20261103052222933\\fractalengine.exe"
+                       },
+                       {
+                           "pid":  83808,
+                           "start_ticks":  "639293055445343027",
+                           "exe_path":  "C:\\Windows\\system32\\conhost.exe"
+                       },
+                       {
+                           "pid":  102408,
+                           "start_ticks":  "639293055503366172",
+                           "exe_path":  "C:\\Program Files (x86)\\Microsoft\\EdgeWebView\\Application\\156.0.4314.58\\msedgewebview2.exe"
+                       },
+                       {
+                           "pid":  6308,
+                           "start_ticks":  "639293055504138675",
+                           "exe_path":  "C:\\Program Files (x86)\\Microsoft\\EdgeWebView\\Application\\156.0.4314.58\\msedgewebview2.exe"
+                       },
+                       {
+                           "pid":  93564,
+                           "start_ticks":  "639293055506393405",
+                           "exe_path":  "C:\\Program Files (x86)\\Microsoft\\EdgeWebView\\Application\\156.0.4314.58\\msedgewebview2.exe"
+                       },
+                       {
+                           "pid":  107512,
+                           "start_ticks":  "639293055506435309",
+                           "exe_path":  "C:\\Program Files (x86)\\Microsoft\\EdgeWebView\\Application\\156.0.4314.58\\msedgewebview2.exe"
+                       },
+                       {
+                           "pid":  105464,
+                           "start_ticks":  "639293055506916317",
+                           "exe_path":  "C:\\Program Files (x86)\\Microsoft\\EdgeWebView\\Application\\156.0.4314.58\\msedgewebview2.exe"
+                       },
+                       {
+                           "pid":  57016,
+                           "start_ticks":  "639293055507767435",
+                           "exe_path":  "C:\\Program Files (x86)\\Microsoft\\EdgeWebView\\Application\\156.0.4314.58\\msedgewebview2.exe"
+                       }
+                   ],
+    "limitation":  null
+}
