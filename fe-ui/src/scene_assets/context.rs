@@ -20,7 +20,7 @@ pub(super) struct Context {
 }
 
 pub(super) fn owner(role: &LocalUserRole) -> bool {
-    role.role == Some(fe_policy::RoleLevel::Owner)
+    role.role == Some(fe_database::RoleLevel::Owner)
 }
 
 impl Context {

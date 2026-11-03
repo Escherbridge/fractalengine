@@ -550,7 +550,7 @@ pub(crate) fn extend_asset_workflow(
         intent
     );
 
-    app.world_mut().resource_mut::<LocalUserRole>().role = Some(fe_policy::RoleLevel::Owner);
+    app.world_mut().resource_mut::<LocalUserRole>().role = Some(fe_database::RoleLevel::Owner);
     app.world_mut()
         .write_message(DbResult::ReplicatedNodeCurrent { current });
     app.update();
@@ -664,7 +664,7 @@ pub(crate) fn extend_asset_workflow(
         "a new manager cannot reuse a former admitted asset source"
     );
     let editor = LocalUserRole {
-        role: Some(fe_policy::RoleLevel::Editor),
+        role: Some(fe_database::RoleLevel::Editor),
         ..Default::default()
     };
     let editor_frame = Frame {
