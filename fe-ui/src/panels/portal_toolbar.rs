@@ -7,6 +7,42 @@ use crate::accessibility::ResponseExt;
 use crate::actions::{UiAction, UiManager};
 use crate::theme;
 
+const FEEDBACK_HEIGHT: f32 = 64.0;
+
+/// Reserves a stable native viewport while loading and error feedback changes.
+fn render_feedback(ui: &mut egui::Ui, ui_mgr: &UiManager) {
+    let (rect, _) = ui.allocate_exact_size(
+        egui::vec2(ui.available_width(), FEEDBACK_HEIGHT),
+        egui::Sense::hover(),
+    );
+    let mut feedback = ui.new_child(
+        egui::UiBuilder::new()
+            .id_salt("portal-feedback")
+            .max_rect(rect)
+            .layout(egui::Layout::top_down(egui::Align::Min)),
+    );
+    feedback.set_clip_rect(rect.intersect(ui.clip_rect()));
+    egui::ScrollArea::vertical()
+        .id_salt("portal-feedback-scroll")
+        .max_height(FEEDBACK_HEIGHT)
+        .auto_shrink([false, false])
+        .show(&mut feedback, |ui| {
+            if ui_mgr.portal_feedback.loading {
+                ui.horizontal(|ui| {
+                    ui.spinner();
+                    ui.label("Loading page...");
+                });
+            }
+            if let Some(error) = &ui_mgr.portal_feedback.error {
+                ui.add(
+                    egui::Label::new(egui::RichText::new(error).color(theme::STATUS_OFFLINE))
+                        .wrap(),
+                )
+                .on_hover_text(error);
+            }
+        });
+}
+
 pub(crate) fn right_portal_toolbar(ctx: &egui::Context, ui_mgr: &mut UiManager) {
     let max_w = ctx.viewport_rect().width() * 0.8;
     egui::SidePanel::right("portal_toolbar")
@@ -66,25 +102,7 @@ pub(crate) fn right_portal_toolbar(ctx: &egui::Context, ui_mgr: &mut UiManager) 
                 .truncate(),
             )
             .on_hover_text(ui_mgr.portal_url());
-            if ui_mgr.portal_feedback.loading {
-                ui.horizontal(|ui| {
-                    ui.spinner();
-                    ui.label("Loading page...");
-                });
-            }
-            if let Some(error) = &ui_mgr.portal_feedback.error {
-                egui::ScrollArea::vertical()
-                    .id_salt("portal_error")
-                    .max_height(64.0)
-                    .show(ui, |ui| {
-                        ui.add(
-                            egui::Label::new(
-                                egui::RichText::new(error).color(theme::STATUS_OFFLINE),
-                            )
-                            .wrap(),
-                        );
-                    });
-            }
+            render_feedback(ui, ui_mgr);
             ui.separator();
 
             // The rest of the panel is empty — the native webview renders over it.

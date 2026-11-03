@@ -104,6 +104,12 @@ is set.
 - `query_tab.rs` — inspector "Query" tab (ad-hoc SurrealQL).
 - `portal_toolbar.rs` — replaces the inspector panel while a portal webview
   is open (back/url/close row).
+  Loading and error feedback share one fixed64-point slot with clipped, scrollable
+  content and a full error tooltip. This preserves the native viewport rectangle
+  across UrlChanged/loading/PageLoaded/error transitions. Conditional feedback rows
+  used to resize the popup during an admitted anchor navigation, invalidating the
+  native page generation and terminally aborting its pending fixture job. Genuine
+  user geometry changes still flow to the backend and invalidate native work.
 - `gis_panel.rs` — GIS Query panel: an independent floating window (toggled
   from the toolbar, not part of `ActiveDialog`), tab-strip'd into Query /
   Annotations / Layers (`GisPanelTab`, mirrors `inspector.rs`'s tab bar).

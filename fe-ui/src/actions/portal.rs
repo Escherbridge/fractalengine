@@ -39,7 +39,9 @@ pub(crate) fn receive_browser_event(
     }
     use fe_webview::ipc::BrowserEvent;
     match event {
-        BrowserEvent::UrlChanged { url } if fe_webview::security::embedded_preview_allowed(url.as_str()) => {
+        BrowserEvent::UrlChanged { url }
+            if fe_webview::security::embedded_preview_allowed(url.as_str()) =>
+        {
             if let PortalState::Open {
                 current_url,
                 cached_hostname,
@@ -444,6 +446,76 @@ mod tests {
             0.0,
         );
         assert!(!ui.portal_feedback.loading);
+
+        for (width, height, scale) in [
+            (1024.0, 640.0, 1.0),
+            (1280.0, 720.0, 1.0),
+            (1920.0, 1080.0, 1.0),
+            (1280.0, 720.0, 1.25),
+            (1024.0, 640.0, 2.0),
+        ] {
+            use bevy_egui::egui;
+            let ctx = egui::Context::default();
+            ctx.set_pixels_per_point(scale);
+            let mut feedback_ui = super::super::UiManager::default();
+            feedback_ui.portal = ui.portal.clone();
+            let mut frame = 0;
+            let mut render = |feedback_ui: &mut super::super::UiManager| {
+                for _ in 0..3 {
+                    frame += 1;
+                    let _ = ctx.run(
+                        egui::RawInput {
+                            screen_rect: Some(egui::Rect::from_min_size(
+                                egui::Pos2::ZERO,
+                                egui::vec2(width / scale, height / scale),
+                            )),
+                            time: Some(frame as f64 * 0.1),
+                            ..Default::default()
+                        },
+                        |ctx| {
+                            crate::panels::portal_toolbar::right_portal_toolbar(ctx, feedback_ui);
+                        },
+                    );
+                }
+                feedback_ui.portal_content_rect.unwrap()
+            };
+            let ready = render(&mut feedback_ui);
+            assert!(ready.width() > 0.0 && ready.height() > 0.0);
+            receive_browser_event(
+                &mut feedback_ui,
+                &nodes,
+                &BrowserEvent::UrlChanged {
+                    url: "https://example.com/two".parse().unwrap(),
+                },
+                1.0,
+            );
+            assert_eq!(render(&mut feedback_ui), ready,
+                "navigation feedback cannot resize the native viewport at {width}x{height}/{scale}x");
+            receive_browser_event(
+                &mut feedback_ui,
+                &nodes,
+                &BrowserEvent::PageLoaded {
+                    url: "https://example.com/two".parse().unwrap(),
+                },
+                1.1,
+            );
+            assert_eq!(render(&mut feedback_ui), ready);
+            receive_browser_event(
+                &mut feedback_ui,
+                &nodes,
+                &BrowserEvent::Error {
+                    message: "Bounded native browser failure details. ".repeat(40),
+                },
+                1.2,
+            );
+            assert_eq!(
+                render(&mut feedback_ui),
+                ready,
+                "long errors stay scrollable inside the same reserved feedback slot"
+            );
+            feedback_ui.portal_feedback = PortalFeedback::default();
+            assert_eq!(render(&mut feedback_ui), ready);
+        }
         nodes.deselect();
         receive_browser_event(
             &mut ui,
