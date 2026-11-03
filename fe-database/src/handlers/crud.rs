@@ -202,6 +202,7 @@ pub(crate) async fn create_node_as(
 /// Returns the node's `petal_id` (needed by the caller to scope the
 /// `SceneChange::NodeRemoved` event). Bails if no node row matched — see
 /// AGENTS.md §gis for the matched-rows-assertion convention.
+#[cfg(test)]
 #[instrument(skip(db))]
 pub(crate) async fn delete_node_handler(db: &Db, node_id: &str) -> anyhow::Result<String> {
     // An absent `node` table means no nodes exist at all — treat it as
