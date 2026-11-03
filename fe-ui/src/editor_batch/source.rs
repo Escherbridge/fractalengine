@@ -10,7 +10,7 @@ use fe_runtime::editor_batch::{EditorBatchCapture, EditorBatchEdit, EditorBatchM
 
 #[derive(bevy::ecs::system::SystemParam)]
 pub(crate) struct SelectionSources<'w, 's> {
-    rendered: RenderedSources<'w, 's>,
+    shapes: Query<'w, 's, &'static TrackPickShape>,
     cache: Option<Res<'w, PathAssetCache>>,
 }
 
@@ -164,7 +164,6 @@ impl SelectionSources<'_, '_> {
             }
             if closed_path(captured)
                 || self
-                    .rendered
                     .shapes
                     .get(selected.entity)
                     .is_ok_and(|shape| shape.closed)
@@ -190,7 +189,7 @@ impl SelectionSources<'_, '_> {
             petal,
             path,
             self.cache.as_deref(),
-            self.rendered.shapes.get(entity).ok(),
+            self.shapes.get(entity).ok(),
         )
     }
 }
