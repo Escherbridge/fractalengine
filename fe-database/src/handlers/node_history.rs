@@ -691,6 +691,17 @@ async fn replay(
         metadata["availability"] = json!("unavailable_scope");
         return Ok(metadata);
     }
+    match atomic_save(db, baseline, node_id, grant, local_did).await? {
+        AtomicSaveRead::Untagged => {}
+        AtomicSaveRead::UnavailableScope => {
+            metadata["availability"] = json!("unavailable_scope");
+            return Ok(metadata);
+        }
+        AtomicSaveRead::Incomplete | AtomicSaveRead::Saved(_) => {
+            metadata["availability"] = json!("incomplete_atomic_batch");
+            return Ok(metadata);
+        }
+    }
     let start = row_version(baseline)?;
     let mut state = baseline["payload"]["state"].clone();
     let mut expected = start;

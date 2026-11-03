@@ -174,6 +174,9 @@ Valid tagged facts carry optional typed `atomic_save` metadata (batch ID, first 
 version). Interior exact cuts return `inside_atomic_batch`, the completed boundary and no state.
 Malformed or incomplete groups return `incomplete_atomic_batch` with no state; unreadable members
 retain the existing scope refusal/redaction. Later replay cannot cross an unverifiable batch.
+The selected reconstruction baseline passes the same atomic validator before its state is read,
+including exact-baseline requests that need no reducer steps. Baselines must remain untagged;
+a malformed tagged baseline is unavailable in both pages and exact/crossing reconstruction.
 Pages preserve every immutable fact and cursor while adding grouping metadata; they never rewrite
 payloads or infer membership from timestamps. Completed Save snapshots retain the existing state
 representation. The existing real-store journey includes interior/final/pre/post cuts, one-fact pages,

@@ -2071,6 +2071,77 @@ mod tests {
             );
         }
         db.query("UPDATE node_log SET payload.editor_request_id='qa-stamp-next-save' WHERE node_id=$id AND row_version=7").bind(("id",stamp_node.clone())).await.unwrap().check().unwrap();
+        let baseline_rows: Vec<serde_json::Value> = db
+            .query("SELECT * OMIT id FROM node_log WHERE node_id=$id AND row_version=1")
+            .bind(("id", stamp_node.clone()))
+            .await
+            .unwrap()
+            .check()
+            .unwrap()
+            .take(0)
+            .unwrap();
+        db.query("UPDATE node_log SET payload.stamp_batch_id='qa-malformed-baseline', payload.stamp_request_id='qa-malformed-baseline', payload.editor_request_id='qa-malformed-baseline' WHERE node_id=$id AND row_version=1")
+                .bind(("id", stamp_node.clone())).await.unwrap().check().unwrap();
+        let malformed_page = crate::handlers::node_history::read_granted(
+            &db,
+            &stamp_node,
+            0,
+            1,
+            None,
+            &NodeAccessGrant::Local,
+            "did:qa",
+        )
+        .await
+        .unwrap();
+        assert_eq!(
+            malformed_page["entries"][0]["replay_availability"],
+            "incomplete_atomic_batch"
+        );
+        for version in [1, 4, 7, 8] {
+            let replay = crate::handlers::node_history::read_granted(
+                &db,
+                &stamp_node,
+                0,
+                1,
+                Some(version),
+                &NodeAccessGrant::Local,
+                "did:qa",
+            )
+            .await
+            .unwrap();
+            assert_eq!(
+                replay["availability"], malformed_page["entries"][0]["replay_availability"],
+                "exact-baseline and crossing reads must agree with the tagged baseline's page boundary"
+            );
+            assert!(
+                replay.get("state").is_none(),
+                "a tagged baseline cannot bypass atomic validation before reconstruction"
+            );
+        }
+        db.query("UPDATE node_log SET payload=$payload WHERE node_id=$id AND row_version=1")
+            .bind(("id", stamp_node.clone()))
+            .bind(("payload", baseline_rows[0]["payload"].clone()))
+            .await
+            .unwrap()
+            .check()
+            .unwrap();
+        for version in [1, 8] {
+            let replay = crate::handlers::node_history::read_granted(
+                &db,
+                &stamp_node,
+                0,
+                1,
+                Some(version),
+                &NodeAccessGrant::Local,
+                "did:qa",
+            )
+            .await
+            .unwrap();
+            assert_eq!(
+                replay["availability"], "available",
+                "untagged baselines retain exact and crossing replay behavior"
+            );
+        }
         let before_plugin_ops = op_log_count(&db).await;
         let invalid = vec![
             PendingOp::SetProperty {
