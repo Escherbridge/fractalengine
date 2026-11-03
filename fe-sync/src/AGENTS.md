@@ -1988,3 +1988,19 @@ Join preparation refuses a target already present in the replica map before impo
 capability or replacing its pipeline. The GUI advises leaving that Verse before accepting the
 new invitation. A refused request installs no native generation lease and cannot make its later
 conditional cleanup close the existing navigation pipeline; ordinary Open behavior is unchanged.
+
+
+## scene-assets
+
+Scene asset byte transfer is separate from iroh-docs row-content transfer and from
+tileset publishing. Native UI uses FetchSceneAsset with an owned request ID. Jobs
+coalesce equal hash/Verse/open-generation requests, fan out SceneAssetFetchSettled
+for at most 256 exact owners, and also emit BlobReady only after verified shared-store
+persistence. Hash-only failure events are advisory and cannot settle a newer owner.
+The old FetchBlob local-hit behavior remains a compatibility path; misses enter the
+same independently admitted scene jobs, never a separate untrusted provider route.
+
+The private scene_asset runtime protocol and DQA020 adoption are described in the
+DB handlers directory. These contracts have no public REST/MCP route and no local
+object-history claim. Their source implementation and tests still require independent
+review and the end-of-campaign integrated sweep before acceptance.

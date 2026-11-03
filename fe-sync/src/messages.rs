@@ -33,6 +33,8 @@ pub enum SyncCommand {
     /// immediately emits [`SyncEvent::BlobReady`].  Otherwise it attempts a
     /// peer fetch (stub in Phase D — actual discovery comes in Phase F).
     FetchBlob { hash: BlobHash, verse_id: String },
+    /// Owned native asset intent; request IDs identify callers, never history or ordering.
+    FetchSceneAsset { hash: BlobHash, verse_id: String, request_id: String },
     /// Open (or join) an iroh-docs replica for a verse.
     ///
     /// Creates an `IrohDocsReplicator` and opens its document: with the
@@ -189,6 +191,8 @@ pub enum SyncEvent {
     BlobReady { hash: BlobHash },
     /// Final failed or cancelled scene fetch; never implies bytes are available.
     SceneAssetFetchFailed { verse_id: String, hash: BlobHash, reason: String },
+    /// Exact coalesced caller finality, emitted only for the named native requests.
+    SceneAssetFetchSettled { verse_id: String, hash: BlobHash, request_ids: Vec<String>, result: Result<(),String> },
     /// An inbound replicated row was received from a peer and forwarded to
     /// the DB thread via `DbCommand::ApplyReplicatedRow` (A4). The DB thread
     /// applies it as the single writer; the durable outcome comes back as
