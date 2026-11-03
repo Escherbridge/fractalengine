@@ -2259,6 +2259,265 @@ mod tests {
                 );
                 assert_eq!(member.history_version, Some(3));
             }
+            {
+                let capture =
+                    editor_batch::read(&db, &plugin_scope, "tree-other-petal", &ids, "did:qa")
+                        .await
+                        .unwrap();
+                let edits = capture
+                    .members
+                    .iter()
+                    .map(|member| EditorTargetEdit {
+                        node_id: member.node_id.clone(),
+                        mutation: EditorTargetMutation::Properties(vec![
+                            EditorPropertyEdit::Delete {
+                                key: "qa.nullable".into(),
+                            },
+                            EditorPropertyEdit::Set {
+                                key: "qa.second".into(),
+                                value: serde_json::json!(8),
+                            },
+                        ]),
+                    })
+                    .collect();
+                let prepared = editor_batch::prepare(
+                    &db,
+                    &EditorBatchRequest {
+                        capture,
+                        edit: EditorBatchEdit::Targets(edits),
+                    },
+                    "qa-selection-next-properties",
+                    "did:qa",
+                )
+                .await
+                .unwrap();
+                let next = editor_batch::commit(&db, prepared).await.unwrap();
+                assert!(next.members.iter().all(|m| m.history_version == Some(5)));
+                for id in &ids {
+                    db.query("UPDATE node_log SET hlc_timestamp=42 WHERE node_id=$id")
+                        .bind(("id", id.clone()))
+                        .await
+                        .unwrap()
+                        .check()
+                        .unwrap();
+                    for (version, first, last) in [(2, 2, 3), (4, 4, 5)] {
+                        let replay = crate::handlers::node_history::read_granted(
+                            &db,
+                            id,
+                            0,
+                            1,
+                            Some(version),
+                            &NodeAccessGrant::Local,
+                            "did:qa",
+                        )
+                        .await
+                        .unwrap();
+                        assert_eq!(replay["availability"], "inside_atomic_batch");
+                        assert!(replay.get("state").is_none());
+                        assert_eq!(replay["atomic_save"]["first_version"], first);
+                        assert_eq!(replay["atomic_save"]["committed_version"], last);
+                    }
+                    for version in [1, 3, 5] {
+                        let replay = crate::handlers::node_history::read_granted(
+                            &db,
+                            id,
+                            0,
+                            1,
+                            Some(version),
+                            &NodeAccessGrant::Local,
+                            "did:qa",
+                        )
+                        .await
+                        .unwrap();
+                        assert_eq!(replay["availability"], "available");
+                        if version == 5 {
+                            assert!(
+                                replay["state"]["properties"].get("qa.nullable").is_none(),
+                                "generic save replay includes property deletion"
+                            );
+                        }
+                    }
+                    let page = crate::handlers::node_history::read_granted(
+                        &db,
+                        id,
+                        1,
+                        1,
+                        None,
+                        &NodeAccessGrant::Local,
+                        "did:qa",
+                    )
+                    .await
+                    .unwrap();
+                    assert_eq!(page["entries"][0]["row_version"], 2);
+                    assert_eq!(
+                        page["entries"][0]["atomic_save"]["committed_version"], 3,
+                        "generic saved-together metadata crosses the page boundary"
+                    );
+                }
+                let mut read=db.query("SELECT * OMIT id FROM node_log WHERE node_id=$id AND row_version<=5 ORDER BY row_version").bind(("id",ids[0].clone())).await.unwrap().check().unwrap();
+                let originals: Vec<serde_json::Value> = read.take(0).unwrap();
+                for (row, payload) in originals.iter().skip(1).map(|row| {
+                    let mut payload = row["payload"].clone();
+                    if row["row_version"].as_i64().unwrap() <= 3 {
+                        let map = payload.as_object_mut().unwrap();
+                        map.remove("atomic_save_id");
+                        map.remove("atomic_save_request_id");
+                        payload["stamp_batch_id"] = serde_json::json!("same-family-id");
+                        if row["row_version"] == 3 {
+                            payload["stamp_request_id"] = serde_json::json!("same-family-id");
+                            payload["editor_request_id"] = serde_json::json!("same-family-id");
+                        }
+                    } else {
+                        payload["atomic_save_id"] = serde_json::json!("same-family-id");
+                        if row["row_version"] == 5 {
+                            payload["atomic_save_request_id"] = serde_json::json!("same-family-id");
+                            payload["editor_request_id"] = serde_json::json!("same-family-id");
+                        }
+                    }
+                    (row, payload)
+                }) {
+                    db.query("UPDATE node_log SET payload=$payload WHERE node_id=$id AND row_version=$version").bind(("id",ids[0].clone())).bind(("version",row["row_version"].clone())).bind(("payload",payload)).await.unwrap().check().unwrap();
+                }
+                let replay = crate::handlers::node_history::read_granted(
+                    &db,
+                    &ids[0],
+                    0,
+                    1,
+                    Some(5),
+                    &NodeAccessGrant::Local,
+                    "did:qa",
+                )
+                .await
+                .unwrap();
+                assert_eq!(replay["availability"], "available");
+                assert_eq!(replay["atomic_save"]["first_version"], 4);
+                assert_eq!(
+                    replay["atomic_save"]["committed_version"], 5,
+                    "equal identifiers from distinct tag families cannot share a cached boundary"
+                );
+                for row in &originals {
+                    db.query("UPDATE node_log SET payload=$payload WHERE node_id=$id AND row_version=$version").bind(("id",ids[0].clone())).bind(("version",row["row_version"].clone())).bind(("payload",row["payload"].clone())).await.unwrap().check().unwrap();
+                }
+                for fault in ["marker", "dual_tag", "baseline", "scope"] {
+                    let version = if fault == "baseline" { 1 } else { 5 };
+                    let mut payload = originals[(version - 1) as usize]["payload"].clone();
+                    match fault {
+                        "marker" => {
+                            payload["atomic_save_request_id"] = serde_json::json!("wrong-final-marker")
+                        }
+                        "dual_tag" => {
+                            payload["stamp_batch_id"] = serde_json::json!("ambiguous-tag-family")
+                        }
+                        "scope" => {
+                            payload["scope"] =
+                                serde_json::json!("VERSE#foreign-FRACTAL#foreign-PETAL#foreign")
+                        }
+                        _ => {
+                            payload["atomic_save_id"] = serde_json::json!("tagged-baseline");
+                            payload["atomic_save_request_id"] = serde_json::json!("tagged-baseline");
+                            payload["editor_request_id"] = serde_json::json!("tagged-baseline");
+                        }
+                    }
+                    db.query("UPDATE node_log SET payload=$payload WHERE node_id=$id AND row_version=$version").bind(("id",ids[0].clone())).bind(("version",version)).bind(("payload",payload)).await.unwrap().check().unwrap();
+                    for target in if fault == "baseline" {
+                        vec![1, 3, 5]
+                    } else {
+                        vec![4, 5]
+                    } {
+                        let replay = crate::handlers::node_history::read_granted(
+                            &db,
+                            &ids[0],
+                            0,
+                            1,
+                            Some(target),
+                            &NodeAccessGrant::Local,
+                            "did:qa",
+                        )
+                        .await
+                        .unwrap();
+                        assert_eq!(
+                            replay["availability"],
+                            if fault == "scope" {
+                                "unavailable_scope"
+                            } else {
+                                "incomplete_atomic_batch"
+                            }
+                        );
+                        assert!(
+                            replay.get("state").is_none(),
+                            "malformed generic groups/baselines cannot expose an intermediate or crossing state"
+                        );
+                    }
+                    let page = crate::handlers::node_history::read_granted(
+                        &db,
+                        &ids[0],
+                        if fault == "scope" { 3 } else { version - 1 },
+                        1,
+                        None,
+                        &NodeAccessGrant::Local,
+                        "did:qa",
+                    )
+                    .await
+                    .unwrap();
+                    if fault == "scope" {
+                        assert_eq!(page["entries"][0]["op"], "unavailable_interval");
+                        assert!(
+                            page["entries"][0].get("atomic_save").is_none(),
+                            "batch metadata cannot leak through an unreadable member"
+                        );
+                    } else {
+                        assert_eq!(
+                            page["entries"][0]["replay_availability"],
+                            "incomplete_atomic_batch"
+                        );
+                    }
+                    db.query("UPDATE node_log SET payload=$payload WHERE node_id=$id AND row_version=$version").bind(("id",ids[0].clone())).bind(("version",version)).bind(("payload",originals[(version-1) as usize]["payload"].clone())).await.unwrap().check().unwrap();
+                }
+                let snapshot = crate::handlers::node_history::snapshot(&db, &ids[0])
+                    .await
+                    .unwrap()
+                    .unwrap();
+                for version in 6..=206 {
+                    let mut payload = serde_json::json!({"journal_version":1,"scope":plugin_scope,"data":{"key":"qa.shared","value":7},"after_state":snapshot,"atomic_save_id":"qa-overlarge-atomic-group"});
+                    if version == 206 {
+                        payload["atomic_save_request_id"] =
+                            serde_json::json!("qa-overlarge-atomic-group");
+                        payload["editor_request_id"] = serde_json::json!("qa-overlarge-atomic-group");
+                    }
+                    db.query("CREATE node_log CONTENT $row").bind(("row",serde_json::json!({"log_id":format!("qa-overlarge-{version}"),"node_id":ids[0],"hlc_timestamp":42,"op":"property_set","source_did":"did:qa","payload":payload,"row_version":version,"created_at":"fault-fixture"}))).await.unwrap().check().unwrap();
+                }
+                let page = crate::handlers::node_history::read_granted(
+                    &db,
+                    &ids[0],
+                    5,
+                    1,
+                    None,
+                    &NodeAccessGrant::Local,
+                    "did:qa",
+                )
+                .await
+                .unwrap();
+                assert_eq!(
+                    page["entries"][0]["replay_availability"], "incomplete_atomic_batch",
+                    "the 201-row probe refuses groups beyond the 200-fact bound"
+                );
+                for target in [6, 206] {
+                    let replay = crate::handlers::node_history::read_granted(
+                        &db,
+                        &ids[0],
+                        0,
+                        1,
+                        Some(target),
+                        &NodeAccessGrant::Local,
+                        "did:qa",
+                    )
+                    .await
+                    .unwrap();
+                    assert_eq!(replay["availability"], "incomplete_atomic_batch");
+                    assert!(replay.get("state").is_none());
+                }
+                db.query("DELETE node_log WHERE node_id=$id AND payload.atomic_save_id='qa-overlarge-atomic-group'").bind(("id",ids[0].clone())).await.unwrap().check().unwrap();
+            }
             let resolved = editor_batch::resolve(
                 &db,
                 &plugin_scope,
@@ -2760,6 +3019,21 @@ mod tests {
                 assert_eq!(
                     member.state.properties,
                     before.members[index].state.properties
+                );
+                let replay = crate::handlers::node_history::read_granted(
+                    &db,
+                    &member.node_id,
+                    0,
+                    1,
+                    member.history_version,
+                    &NodeAccessGrant::Local,
+                    "did:qa",
+                )
+                .await
+                .unwrap();
+                assert_eq!(
+                    replay["availability"], "available",
+                    "single-fact generic transform boundaries replay normally"
                 );
             }
             let capture = editor_batch::read(&db, &plugin_scope, "tree-other-petal", &ids, "did:qa")

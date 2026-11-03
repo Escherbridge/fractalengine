@@ -163,10 +163,14 @@ projection; the real-store journey checks metadata inverse and rejects timestamp
 
 ## atomic-replay
 
-`node_history` resolves explicit `stamp_batch_id` tags independently of page cursors. At most 200
-facts may form a batch; a 201-row probe refuses larger groups. Each fact must be individually
-authorized, contiguous in per-object version order, and share retained scope and actor. The last
-fact must carry matching `stamp_request_id` and `editor_request_id`; earlier facts must carry neither.
+`node_history` resolves explicit stamp_batch_id and generic atomic_save_id tags independently of
+page cursors. The two families have separate typed cache identities, even when their literal IDs
+match. At most 200 facts may form a batch; a 201-row probe refuses larger groups. Every fact must
+be individually authorized, contiguous in per-object version order, and share retained scope/actor.
+Stamp groups retain property_set-only grammar and matching final stamp_request_id/editor_request_id.
+Generic groups admit property_set/property_deleted/full_transform, with matching final
+atomic_save_request_id/editor_request_id. All earlier receipt markers must be absent. Mixed tag
+families, wrong final markers, tagged baselines and unsupported operations fail closed.
 HLC never establishes a transaction boundary. Untagged legacy facts retain their existing replay
 rules because their original transaction boundaries cannot be recovered reliably.
 

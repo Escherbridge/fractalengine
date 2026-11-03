@@ -1036,3 +1036,8 @@ EditorStampOverrideValue is Absent, Null or Value(JSON); the writer validates ea
 shape/bounds and source context, retaining original JSON numeric representation. It cannot move
 a derived stamp origin or access other reserved properties. UndoCreatedGroup deletes its registry
 entry and restores every original EditorMembershipValue in the same transaction.
+
+Generic editor facts use atomic_save_id and final atomic_save_request_id/editor_request_id. The
+history reader validates these separately from legacy stamp tags and exposes the same NodeAtomicSave
+metadata/availability DTOs, so saved-together native rows need no second grouping authority. Deleted
+properties and full transforms retain their ordinary reducer rules; interior cuts omit state.

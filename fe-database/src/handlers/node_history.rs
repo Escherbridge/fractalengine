@@ -134,6 +134,76 @@ enum AtomicSaveRead {
     UnavailableScope,
 }
 
+#[derive(Clone, PartialEq, Eq, PartialOrd, Ord)]
+enum AtomicSaveTag {
+    Stamp(String),
+    Editor(String),
+}
+
+impl AtomicSaveTag {
+    fn from_row(row: &Value) -> Result<Option<Self>, ()> {
+        let payload = &row["payload"];
+        let (value, stamp) = match (payload.get("stamp_batch_id"), payload.get("atomic_save_id")) {
+            (None, None) => return Ok(None),
+            (Some(value), None) => (value, true),
+            (None, Some(value)) => (value, false),
+            (Some(_), Some(_)) => return Err(()),
+        };
+        let id = value
+            .as_str()
+            .filter(|id| !id.is_empty() && id.len() <= 128)
+            .ok_or(())?
+            .to_owned();
+        Ok(Some(if stamp {
+            Self::Stamp(id)
+        } else {
+            Self::Editor(id)
+        }))
+    }
+
+    fn id(&self) -> &str {
+        match self {
+            Self::Stamp(id) | Self::Editor(id) => id,
+        }
+    }
+    fn field(&self) -> &'static str {
+        match self {
+            Self::Stamp(_) => "stamp_batch_id",
+            Self::Editor(_) => "atomic_save_id",
+        }
+    }
+    fn receipt_field(&self) -> &'static str {
+        match self {
+            Self::Stamp(_) => "stamp_request_id",
+            Self::Editor(_) => "atomic_save_request_id",
+        }
+    }
+    fn accepts_operation(&self, op: &Value) -> bool {
+        match self {
+            Self::Stamp(_) => op == "property_set",
+            Self::Editor(_) => matches!(
+                op.as_str(),
+                Some("property_set" | "property_deleted" | "full_transform")
+            ),
+        }
+    }
+    fn receipt_matches(&self, payload: &Value, final_fact: bool) -> bool {
+        [
+            "stamp_request_id",
+            "atomic_save_request_id",
+            "editor_request_id",
+        ]
+        .into_iter()
+        .all(|key| {
+            if final_fact && (key == self.receipt_field() || key == "editor_request_id") {
+                payload[key].as_str() == Some(self.id())
+            } else {
+                payload.get(key).is_none()
+            }
+        })
+    }
+}
+
 /// Resolve explicit receipt tags across page boundaries; see AGENTS.md §atomic-replay.
 async fn atomic_save(
     db: &Db,
@@ -142,14 +212,13 @@ async fn atomic_save(
     grant: &NodeAccessGrant,
     local_did: &str,
 ) -> anyhow::Result<AtomicSaveRead> {
-    let Some(tag) = row["payload"].get("stamp_batch_id") else {
-        return Ok(AtomicSaveRead::Untagged);
+    let tag = match AtomicSaveTag::from_row(row) {
+        Ok(None) => return Ok(AtomicSaveRead::Untagged),
+        Ok(Some(tag)) => tag,
+        Err(()) => return Ok(AtomicSaveRead::Incomplete),
     };
-    let Some(batch_id) = tag.as_str().filter(|id| !id.is_empty()) else {
-        return Ok(AtomicSaveRead::Incomplete);
-    };
-    let mut response = db.query("SELECT * OMIT id FROM node_log WHERE node_id = $id AND payload.stamp_batch_id = $batch ORDER BY row_version ASC LIMIT 201 TIMEOUT 5s")
-        .bind(("id", node_id.to_string())).bind(("batch", batch_id.to_string())).await?.check()?;
+    let mut response = db.query(format!("SELECT * OMIT id FROM node_log WHERE node_id = $id AND payload.{} = $batch ORDER BY row_version ASC LIMIT 201 TIMEOUT 5s",tag.field()))
+        .bind(("id", node_id.to_string())).bind(("batch", tag.id().to_string())).await?.check()?;
     let rows: Vec<Value> = response.take(0)?;
     if rows.is_empty() || rows.len() > 200 {
         return Ok(AtomicSaveRead::Incomplete);
@@ -165,16 +234,11 @@ async fn atomic_save(
         let payload = &fact["payload"];
         let final_fact = index == final_index;
         if Some(row_version(fact)?) != first_version.checked_add(index as i64)
-            || fact["op"] != "property_set"
+            || !tag.accepts_operation(&fact["op"])
+            || AtomicSaveTag::from_row(fact).ok().flatten().as_ref() != Some(&tag)
             || payload["scope"] != row["payload"]["scope"]
             || fact["source_did"] != row["source_did"]
-            || if final_fact {
-                payload["stamp_request_id"].as_str() != Some(batch_id)
-                    || payload["editor_request_id"].as_str() != Some(batch_id)
-            } else {
-                payload.get("stamp_request_id").is_some()
-                    || payload.get("editor_request_id").is_some()
-            }
+            || !tag.receipt_matches(payload, final_fact)
         {
             return Ok(AtomicSaveRead::Incomplete);
         }
@@ -186,7 +250,7 @@ async fn atomic_save(
         return Ok(AtomicSaveRead::Incomplete);
     }
     Ok(AtomicSaveRead::Saved(NodeAtomicSave {
-        batch_id: batch_id.to_string(),
+        batch_id: tag.id().to_string(),
         first_version,
         committed_version: row_version(&rows[final_index])?,
     }))
@@ -629,10 +693,10 @@ pub(crate) async fn read_granted(
         Value::Null
     };
     let mut visible_rows = Vec::with_capacity(rows.len());
-    let mut batches: BTreeMap<String, AtomicSaveRead> = BTreeMap::new();
+    let mut batches: BTreeMap<AtomicSaveTag, AtomicSaveRead> = BTreeMap::new();
     for mut row in rows {
         if fact_is_authorized(db, &row, node_id, grant, local_did).await {
-            let tag = row["payload"]["stamp_batch_id"].as_str().map(str::to_owned);
+            let tag = AtomicSaveTag::from_row(&row).ok().flatten();
             let boundary = match tag.as_ref().and_then(|tag| batches.get(tag)) {
                 Some(boundary) => boundary.clone(),
                 None => {
@@ -706,7 +770,7 @@ async fn replay(
     let mut state = baseline["payload"]["state"].clone();
     let mut expected = start;
     let mut processed = 0;
-    let mut batches: BTreeMap<String, AtomicSaveRead> = BTreeMap::new();
+    let mut batches: BTreeMap<AtomicSaveTag, AtomicSaveRead> = BTreeMap::new();
     while expected < target {
         let mut response = db.query("SELECT * OMIT id FROM node_log WHERE node_id = $id AND row_version > $start AND row_version <= $target ORDER BY row_version ASC LIMIT 200 TIMEOUT 5s")
             .bind(("id",node_id.to_string())).bind(("start",expected)).bind(("target",target)).await?.check()?;
@@ -730,7 +794,7 @@ async fn replay(
                 metadata["availability"] = json!("incomplete_interval");
                 return Ok(metadata);
             }
-            let tag = row["payload"]["stamp_batch_id"].as_str().map(str::to_owned);
+            let tag = AtomicSaveTag::from_row(row).ok().flatten();
             let boundary = match tag.as_ref().and_then(|tag| batches.get(tag)) {
                 Some(boundary) => boundary.clone(),
                 None => {
