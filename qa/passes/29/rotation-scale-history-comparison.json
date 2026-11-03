@@ -1,0 +1,74 @@
+{
+  "kind": "independent_yaw_uniform_scale_and_observed_older_undo_failure",
+  "pivot": [
+    -6,
+    0,
+    -6
+  ],
+  "position_tolerance_m": 0.0001,
+  "checks": [
+    {
+      "node": "cube1",
+      "yaw90_expected": [
+        0,
+        0,
+        0
+      ],
+      "yaw90_actual": [
+        9.5367431640625e-07,
+        0.0,
+        9.5367431640625e-07
+      ],
+      "yaw90_max_abs_error": 9.5367431640625e-07,
+      "scale_expected_from_actual_before": [
+        3.0000014305114746,
+        0.0,
+        3.0000014305114746
+      ],
+      "scale_actual": [
+        3.000001907348633,
+        0.0,
+        3.000001907348633
+      ],
+      "scale_max_abs_error": 4.76837158203125e-07,
+      "undo_scale_restores_rotation_state": true,
+      "older_undo_refused_without_any_row_change": true,
+      "cleanup_exact_original_row_except_monotonic_edit_seq": true,
+      "cleanup_receipt_authoritative": true
+    },
+    {
+      "node": "cube2",
+      "yaw90_expected": [
+        -12,
+        0,
+        -12
+      ],
+      "yaw90_actual": [
+        -12.000000953674316,
+        0.0,
+        -12.000000953674316
+      ],
+      "yaw90_max_abs_error": 9.5367431640625e-07,
+      "scale_expected_from_actual_before": [
+        -15.000001430511475,
+        0.0,
+        -15.000001430511475
+      ],
+      "scale_actual": [
+        -15.000001907348633,
+        0.0,
+        -15.000001907348633
+      ],
+      "scale_max_abs_error": 4.76837158203125e-07,
+      "undo_scale_restores_rotation_state": true,
+      "older_undo_refused_without_any_row_change": true,
+      "cleanup_exact_original_row_except_monotonic_edit_seq": true,
+      "cleanup_receipt_authoritative": true
+    }
+  ],
+  "coverage_ready": false,
+  "limits": [
+    "Same object fields are inspected at committed cuts; failure/rollback concurrency is not exercised here.",
+    "Cleanup is explicit new confirmed REST mutations; it does not repair or count as successful older Undo."
+  ]
+}

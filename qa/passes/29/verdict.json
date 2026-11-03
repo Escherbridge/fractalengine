@@ -1,0 +1,844 @@
+{
+  "schema": "fe-qa-focused-verdict-v1",
+  "pass": 29,
+  "generated_at": "2026-11-03T07:42:04.965732+00:00",
+  "independent_review": "approved_focused_limits",
+  "verdict": "selection_and_numeric_group_edits_succeed_row_order_and_consecutive_undo_fail",
+  "owned_apps": {
+    "owner": {
+      "run_dir": "C:\\Users\\atooz\\Programming\\fractalengine-workspace\\fractalengine\\.qa\\run\\20261101-191920-658",
+      "api_base": "http://127.0.0.1:8882",
+      "process_identity": {
+        "pid": 90476,
+        "start_ticks": "639292858910253035",
+        "exe_path": "C:\\Users\\atooz\\Programming\\fractalengine-workspace\\fractalengine\\.qa\\stage\\ce31ee6e-20261102234825976\\fractalengine.exe"
+      },
+      "descendant_identities": [
+        {
+          "pid": 94364,
+          "start_ticks": "639292858910733635",
+          "exe_path": "C:\\Windows\\system32\\conhost.exe"
+        },
+        {
+          "pid": 80516,
+          "start_ticks": "639292858954255800",
+          "exe_path": "C:\\Program Files (x86)\\Microsoft\\EdgeWebView\\Application\\156.0.4314.58\\msedgewebview2.exe"
+        },
+        {
+          "pid": 63328,
+          "start_ticks": "639292858954839841",
+          "exe_path": "C:\\Program Files (x86)\\Microsoft\\EdgeWebView\\Application\\156.0.4314.58\\msedgewebview2.exe"
+        },
+        {
+          "pid": 102228,
+          "start_ticks": "639292858957236295",
+          "exe_path": "C:\\Program Files (x86)\\Microsoft\\EdgeWebView\\Application\\156.0.4314.58\\msedgewebview2.exe"
+        },
+        {
+          "pid": 90508,
+          "start_ticks": "639292858957236440",
+          "exe_path": "C:\\Program Files (x86)\\Microsoft\\EdgeWebView\\Application\\156.0.4314.58\\msedgewebview2.exe"
+        },
+        {
+          "pid": 95308,
+          "start_ticks": "639292858957775977",
+          "exe_path": "C:\\Program Files (x86)\\Microsoft\\EdgeWebView\\Application\\156.0.4314.58\\msedgewebview2.exe"
+        },
+        {
+          "pid": 101408,
+          "start_ticks": "639292858959485061",
+          "exe_path": "C:\\Program Files (x86)\\Microsoft\\EdgeWebView\\Application\\156.0.4314.58\\msedgewebview2.exe"
+        }
+      ],
+      "stage_manifest": {
+        "built_at": "2026-11-03T06:48:26.3725020Z",
+        "exe_sha256": "93FC69B9E24E93793C97F7680832CF0332B98488589A36BB1C2BD4E7D1626B35",
+        "source_dirty": true,
+        "kind": "fractalengine-qa-stage-v1",
+        "source_fingerprint": "E1EA0D4C2C66AA683DD8822B55ACAF81C27DF69F313521A89CD0722E2DDA0E26",
+        "source_commit": "ce31ee6e7677a8873fa8a39407763df81c160726",
+        "seal_hexon_sha256": "3CC1FC2D01F04EE396C171D4D43BE877EFCCB84BB0268083843891561F49C583"
+      },
+      "stage_matches_source": true,
+      "stage": "C:\\Users\\atooz\\Programming\\fractalengine-workspace\\fractalengine\\.qa\\stage\\ce31ee6e-20261102234825976",
+      "stdout_path": "C:\\Users\\atooz\\Programming\\fractalengine-workspace\\fractalengine\\.qa\\run\\20261101-191920-658\\starts\\20261102-235809-633-857855bd290c4cb28669e03015f07938\\stdout.log",
+      "stderr_path": "C:\\Users\\atooz\\Programming\\fractalengine-workspace\\fractalengine\\.qa\\run\\20261101-191920-658\\starts\\20261102-235809-633-857855bd290c4cb28669e03015f07938\\stderr.log",
+      "restart": {
+        "attempt": "C:\\Users\\atooz\\Programming\\fractalengine-workspace\\fractalengine\\.qa\\run\\20261101-191920-658\\starts\\20261102-235809-633-857855bd290c4cb28669e03015f07938\\start.json",
+        "preserved_root": "C:\\Users\\atooz\\Programming\\fractalengine-workspace\\fractalengine\\.qa\\run\\20261101-191920-658",
+        "stale_stage_allowed": false,
+        "reseeded": false,
+        "port_changed": false,
+        "previous_start": "C:\\Users\\atooz\\Programming\\fractalengine-workspace\\fractalengine\\.qa\\run\\20261101-191920-658\\starts\\20261102-235809-633-857855bd290c4cb28669e03015f07938\\previous-start.json"
+      }
+    }
+  },
+  "full_catalog_coverage": false,
+  "convergence_claim": false,
+  "integrated_tests_executed": false,
+  "clipboard_accessed": false,
+  "helper_launched": false,
+  "recipient_launched": false,
+  "evidence_inputs": [
+    {
+      "file": "owner-add-cube2-ctrl.jsonl",
+      "bytes": 673,
+      "sha256": "265a8ae7c0c91f4951b51a84c19904ba5343b16651e0ed52d688b87d907e4f23"
+    },
+    {
+      "file": "owner-add-cube2-for-rotation-visible.jsonl",
+      "bytes": 673,
+      "sha256": "0fd10622e6ca28976efc2a49e7229b2a74624058f4f72075c4c96eeeac7cf055"
+    },
+    {
+      "file": "owner-add-cube2-for-rotation.jsonl",
+      "bytes": 352,
+      "sha256": "7b89082671f5c4ff02c56ec57587c08c23c85c200f340933ae2f44355b5da4b5"
+    },
+    {
+      "file": "owner-apply-group-translation-once.jsonl",
+      "bytes": 647,
+      "sha256": "b57667a9c4ecc2e5059b95f5c932ebc4e5daffd782315b7992a3750c1109ed07"
+    },
+    {
+      "file": "owner-apply-group-uniform-scale-once.jsonl",
+      "bytes": 648,
+      "sha256": "07f0893afbc64f13ef85ba3b6e6b8076f9282c0fbf1405838068aff2aa7e7b09"
+    },
+    {
+      "file": "owner-apply-group-yaw90-once.jsonl",
+      "bytes": 647,
+      "sha256": "dcda2a085a221fcb0f44c763cd2f40a4dc446728599203d99c99b41e636146b7"
+    },
+    {
+      "file": "owner-cleanup-current-actual-state.jsonl",
+      "bytes": 1257,
+      "sha256": "7b317cad30dcc327586c758c5bb74221d00503e15e1b8e988eb422229767ba20"
+    },
+    {
+      "file": "owner-cleanup-restore-cube1-explicit-once.jsonl",
+      "bytes": 996,
+      "sha256": "2d34827290893dca45290d8adecb14f09854f4d256cde827c98f500e33aceeab"
+    },
+    {
+      "file": "owner-cleanup-restore-cube2-explicit-once.jsonl",
+      "bytes": 530,
+      "sha256": "519653e3c1789e3634b99cc42db10f672c4bb477896eef083a0c051168b64b12"
+    },
+    {
+      "file": "owner-context.json",
+      "bytes": 5959,
+      "sha256": "3671cc2f691ff58664c6dfffcb3601dc302cdc61c604567256100763fe6d3b94"
+    },
+    {
+      "file": "owner-cube1-after-group-history.jsonl",
+      "bytes": 11367,
+      "sha256": "3ebbc97b4a684d41907a4d8942b42a70b45fee844f1d6da323825d087b2fd0f1"
+    },
+    {
+      "file": "owner-cube1-after-group-redo-row.jsonl",
+      "bytes": 1247,
+      "sha256": "f378fc9efb5d0d868d9dcab5442e9ae71ec287ea7fb8e51f9fa4603fe3641abb"
+    },
+    {
+      "file": "owner-cube1-after-group-row.jsonl",
+      "bytes": 1247,
+      "sha256": "80ea66d1da68424a245ac77ed965f26abf17851de8bce281a28c27df4208f5ab"
+    },
+    {
+      "file": "owner-cube1-after-group-scale-row.jsonl",
+      "bytes": 1284,
+      "sha256": "f8f53d6eef65adea3ef24df6f3cc7669f4107b82e9a763b30938924ed4e9d22d"
+    },
+    {
+      "file": "owner-cube1-after-group-undo-history.jsonl",
+      "bytes": 13100,
+      "sha256": "48bea1cead2b9111da599a5ef37568e74553ffd047f03d4e84343f5cb3ae6437"
+    },
+    {
+      "file": "owner-cube1-after-group-undo-row.jsonl",
+      "bytes": 1243,
+      "sha256": "e0d95c2702185e09c125f7e1e2170cdcb5776272ec67cfa6de74cfc00dc7263d"
+    },
+    {
+      "file": "owner-cube1-after-group-yaw90-row.jsonl",
+      "bytes": 1286,
+      "sha256": "9a5225a6f845f4832b435745b2184ae7d983b9b3d182879015db4b74472e2609"
+    },
+    {
+      "file": "owner-cube1-after-older-undo-attempt-row.jsonl",
+      "bytes": 1286,
+      "sha256": "15bfe83a9c8da81bfbbdef6343e36004e7616fcd9e8b836e463e3765b76f127a"
+    },
+    {
+      "file": "owner-cube1-after-selection-independent-undo-history.jsonl",
+      "bytes": 16581,
+      "sha256": "37fb7af8b2d167cb727765227456710b0582308ef3bb5ce1d9079179f3d927d1"
+    },
+    {
+      "file": "owner-cube1-after-selection-independent-undo-row.jsonl",
+      "bytes": 1243,
+      "sha256": "4d4197ea5112b70371f22f293e434a1bf289b4c9ad07abfa35bf1ebfe5c48761"
+    },
+    {
+      "file": "owner-cube1-after-undo-scale-row.jsonl",
+      "bytes": 1286,
+      "sha256": "15bfe83a9c8da81bfbbdef6343e36004e7616fcd9e8b836e463e3765b76f127a"
+    },
+    {
+      "file": "owner-cube1-before-group-history.jsonl",
+      "bytes": 9622,
+      "sha256": "5199bb927979c3c8f279460ff27e09e43d90097e4d94708d72bdd8969bddf7fa"
+    },
+    {
+      "file": "owner-cube1-before-group-row.jsonl",
+      "bytes": 1243,
+      "sha256": "43d4472ddb98dbd9c581e354130e6058af66f3d928ca916d08897c85d22c24c6"
+    },
+    {
+      "file": "owner-cube1-cleanup-exact-row.jsonl",
+      "bytes": 1243,
+      "sha256": "3cff8519f6b32fb4ad31805d2839155abedcdd95cf5e3957b59652d0053a820a"
+    },
+    {
+      "file": "owner-cube1-history-after-older-undo-refusal.jsonl",
+      "bytes": 22040,
+      "sha256": "265895aa18e0b99e7e4ae4ae6792a630037b3de808a6a59d9bd382ca5b99f43b"
+    },
+    {
+      "file": "owner-cube2-after-group-history.jsonl",
+      "bytes": 3796,
+      "sha256": "bd1e3bf6f19707e3ab130ca5099484f8e4df4b6fac4240d093d1aecb9982357a"
+    },
+    {
+      "file": "owner-cube2-after-group-redo-row.jsonl",
+      "bytes": 780,
+      "sha256": "6933a37dc7d5051ac3790d90065116f1d657f7ef0da54285dfecd5b05486338c"
+    },
+    {
+      "file": "owner-cube2-after-group-row.jsonl",
+      "bytes": 780,
+      "sha256": "1b865acaef905e63d3ef4980e141727f770dfc59030e2a60f3e6c16569a9ec24"
+    },
+    {
+      "file": "owner-cube2-after-group-scale-row.jsonl",
+      "bytes": 822,
+      "sha256": "89afc9bb8fa125c68ee857585dab01926737163e275f9989ecab8eaebb04ef58"
+    },
+    {
+      "file": "owner-cube2-after-group-undo-history.jsonl",
+      "bytes": 5063,
+      "sha256": "ca83f48879445d3037a0c08b29ba829ea2bc0e2dbb983d3b0292994419976ad7"
+    },
+    {
+      "file": "owner-cube2-after-group-undo-row.jsonl",
+      "bytes": 777,
+      "sha256": "7b22c8f948acda744591a27d57de2286165b7ee87318a58f31892b1add394c98"
+    },
+    {
+      "file": "owner-cube2-after-group-yaw90-row.jsonl",
+      "bytes": 822,
+      "sha256": "3d04cbdf24044114410ab09be985a060cbad65963b46a862ecf26a9810e7900e"
+    },
+    {
+      "file": "owner-cube2-after-older-undo-attempt-row.jsonl",
+      "bytes": 822,
+      "sha256": "f5ef728c92b9bcd9aea693def203d2ae842f012f53b6aa3bf7e0e90ffcb901a4"
+    },
+    {
+      "file": "owner-cube2-after-selection-independent-undo-history.jsonl",
+      "bytes": 7604,
+      "sha256": "15d37830b0e8870dc2fe2da77132f40223347fe32a6627816018f4cbcb961f24"
+    },
+    {
+      "file": "owner-cube2-after-selection-independent-undo-row.jsonl",
+      "bytes": 777,
+      "sha256": "cb1604f1954e131b838542f08749abd71f16eea8eab81e4be8d6b6a37145681c"
+    },
+    {
+      "file": "owner-cube2-after-undo-scale-row.jsonl",
+      "bytes": 822,
+      "sha256": "f5ef728c92b9bcd9aea693def203d2ae842f012f53b6aa3bf7e0e90ffcb901a4"
+    },
+    {
+      "file": "owner-cube2-before-group-history.jsonl",
+      "bytes": 1234,
+      "sha256": "f6f7020dbd732b82ca6b8d627a81f19961cda9f84fe735559759c83de99a0cf7"
+    },
+    {
+      "file": "owner-cube2-before-group-row.jsonl",
+      "bytes": 777,
+      "sha256": "014510f450a1919c5984ce7cd8b105b6e68b7eff0f441f3493196a653bc60aaf"
+    },
+    {
+      "file": "owner-cube2-cleanup-exact-row.jsonl",
+      "bytes": 777,
+      "sha256": "0193af93f17fe1e7b246250c15e622d29c44ce86d4a6da30fd194aefbf0b4923"
+    },
+    {
+      "file": "owner-cube2-history-after-older-undo-refusal.jsonl",
+      "bytes": 11685,
+      "sha256": "470894dce5e86ecb64e71b8cd1e87f0adf610b03e8db236fe626dadf488558e2"
+    },
+    {
+      "file": "owner-draft-group-x.jsonl",
+      "bytes": 398,
+      "sha256": "ba2de507c32a4764d9d0a4066d01678a4fbe044904039f2f5d2851f4209699b5"
+    },
+    {
+      "file": "owner-draft-group-y.jsonl",
+      "bytes": 396,
+      "sha256": "07ea0f37204fb70ea67c59dde19cd78063bfb424104ce583fb839e7514ca9a8d"
+    },
+    {
+      "file": "owner-draft-group-z.jsonl",
+      "bytes": 397,
+      "sha256": "308adc47e150470e467aaf4b4995b0e8f12f56c6e1ba28fdb8c43469b4ce6a02"
+    },
+    {
+      "file": "owner-end-all-recorded-identities.json",
+      "bytes": 2774,
+      "sha256": "017d437ded88076056e73cfc940f0dcfb8d7f1a7e098dda546fd4ab022fc8467"
+    },
+    {
+      "file": "owner-finish-group-x.jsonl",
+      "bytes": 397,
+      "sha256": "8884c0cb3e8216e77d9454e6f311556425eb100a0b074d42f26d9a6cdaef2b30"
+    },
+    {
+      "file": "owner-finish-group-y.jsonl",
+      "bytes": 397,
+      "sha256": "d81a70284a8208ecbe7d0ea2d0838e9bcbeed79ee620cedb2075bbddb9699a87"
+    },
+    {
+      "file": "owner-finish-group-z.jsonl",
+      "bytes": 397,
+      "sha256": "36aad532d7f4b34d03f0640fb65b5cb4fae3711977969c2219fec816c983b6bb"
+    },
+    {
+      "file": "owner-focus-group-x.jsonl",
+      "bytes": 642,
+      "sha256": "1af1e61084fba48f6821fa5c5026ec51a8b8193f3c815fa941449a5e25960b3c"
+    },
+    {
+      "file": "owner-focus-group-y.jsonl",
+      "bytes": 647,
+      "sha256": "a7c960bc992b8cbc5fa6669ec2ec0c6f85b6c728e78e5e00f23e07b43452732b"
+    },
+    {
+      "file": "owner-focus-group-z.jsonl",
+      "bytes": 647,
+      "sha256": "4b5d4edda12282031060c5439a2477e2a024074071f8a525db867c38b38ad749"
+    },
+    {
+      "file": "owner-group-after-undo-scale-state.jsonl",
+      "bytes": 1382,
+      "sha256": "75372000aa02720f6936c81549b255df35dfab3878ec0a9f381ebcfaef736100"
+    },
+    {
+      "file": "owner-group-redo-primary1-state.jsonl",
+      "bytes": 1261,
+      "sha256": "a820182e9537af1a3c90e14faffce5f40164e1400f32d9611fc67627364d875d"
+    },
+    {
+      "file": "owner-group-redo-primary2-state.jsonl",
+      "bytes": 1326,
+      "sha256": "7cec6a579e1e0c74ca8d8fc4c8a4178b9333d474cfcffdf5f7de6a5ae63a7375"
+    },
+    {
+      "file": "owner-group-reverse-range-ui.jsonl",
+      "bytes": 242803,
+      "sha256": "94a51cfe865cfd9c1c114f601ba646a972201ecbac96bddd616d5a9707cca44a"
+    },
+    {
+      "file": "owner-group-rotation-draft-ui.jsonl",
+      "bytes": 241851,
+      "sha256": "8deb48116d5c527fc3c70ac119144da7e28137027128e62ea1ab52d480981257"
+    },
+    {
+      "file": "owner-group-scale-draft-ui.jsonl",
+      "bytes": 242824,
+      "sha256": "41259561fb8734589fbc502105cb89fb266047649490c39efaac7c1a1fc06f7a"
+    },
+    {
+      "file": "owner-group-scaled-primary1-state.jsonl",
+      "bytes": 1378,
+      "sha256": "2ba1f7eed5123d08060ff94b373d52849839844a642c2e403f8c2a2ce72adac7"
+    },
+    {
+      "file": "owner-group-translation-after-shot.jsonl",
+      "bytes": 859,
+      "sha256": "2fdfd6189077f25b10f371d374c90b5324dc9451b81739fef1b43ef864ed11c7"
+    },
+    {
+      "file": "owner-group-translation-after-state.jsonl",
+      "bytes": 1326,
+      "sha256": "c22011252c4b3a91ce507e20c4f46b90cc4ff04477673e46e69879dd53b92138"
+    },
+    {
+      "file": "owner-group-translation-after-ui.jsonl",
+      "bytes": 244105,
+      "sha256": "38bfc542f85e1578b99d29b7732d5cda56acc62951d574c07febe89f8c7e7359"
+    },
+    {
+      "file": "owner-group-translation-draft-ui.jsonl",
+      "bytes": 241888,
+      "sha256": "06917b7463954f7613c779ef4060beb8ea92e644321481029ec8b0f1a9a0962f"
+    },
+    {
+      "file": "owner-group-undo-after-select1-state.jsonl",
+      "bytes": 1323,
+      "sha256": "3421025a78845b28261bf5843132380e66d8c84587b92eb73866b6ffd3f7ce48"
+    },
+    {
+      "file": "owner-group-undo-shot.jsonl",
+      "bytes": 893,
+      "sha256": "7a835fbacff1b2b1acb04a184b27eecd5afcb2b87a5d133aae1bf104b49e7600"
+    },
+    {
+      "file": "owner-group-undo-state.jsonl",
+      "bytes": 1323,
+      "sha256": "bc259a2fc20a9d8c874c5fd093da87702bb3ce06a0b4f88f2c3b37785722f8d7"
+    },
+    {
+      "file": "owner-group-undo-ui.jsonl",
+      "bytes": 244093,
+      "sha256": "f0fd8d51ee6eaf560e11df4a9915f0dd0db1ca9985dbbfce96608db668344897"
+    },
+    {
+      "file": "owner-group-yaw90-primary1-range-state.jsonl",
+      "bytes": 1316,
+      "sha256": "f04dfdad3aaa4bf8fa3ba609d467a725f0ccf1d76a176ce3335a5d8a2c99c2b5"
+    },
+    {
+      "file": "owner-group-yaw90-primary2-state.jsonl",
+      "bytes": 1382,
+      "sha256": "af089e869cd41ba72accefef2e28351c01374a19ea6b36256e61fadbb94e456c"
+    },
+    {
+      "file": "owner-group-yaw90-shot.jsonl",
+      "bytes": 859,
+      "sha256": "feac1d650757af74616cba69abcc188a2d0b78cf859aa95d208b661661fdbbe9"
+    },
+    {
+      "file": "owner-group-yaw90-ui.jsonl",
+      "bytes": 245036,
+      "sha256": "d32153c8cded0a0998b6720bbc1a349e8412ee6851988b2f90f0b4f382a8c602"
+    },
+    {
+      "file": "owner-initial-state.jsonl",
+      "bytes": 1118,
+      "sha256": "0b5d75c018a1b9b5eded76f185534334ee480cbbe1e4d8d00bd579d396210924"
+    },
+    {
+      "file": "owner-initial-ui.jsonl",
+      "bytes": 204996,
+      "sha256": "318ba62fa55cd419067d1449e7ee9bd5cb4db452d209a06f00132b026f25fc9f"
+    },
+    {
+      "file": "owner-inspect-cube1-after-redo-visible.jsonl",
+      "bytes": 629,
+      "sha256": "bc4f612d36271f04d6aeb58b74ce4399f4d398640e38645fae3c16c5504c464a"
+    },
+    {
+      "file": "owner-inspect-cube1-after-redo.jsonl",
+      "bytes": 352,
+      "sha256": "f771149f241a7e9c34cf624be3788026d6ef159b812360bc29d966d6d200f1ba"
+    },
+    {
+      "file": "owner-older-group-undo-shot.jsonl",
+      "bytes": 936,
+      "sha256": "a07241ebd7cf59a7b47a020f82461c1c5ae620035d3bb76e592e8e6a61f93f98"
+    },
+    {
+      "file": "owner-older-group-undo-state.jsonl",
+      "bytes": 1443,
+      "sha256": "180c57aff9fdf2dbaf8df76122cb847bbc36fa7414a03110dcc4c91b5331777a"
+    },
+    {
+      "file": "owner-older-group-undo-ui.jsonl",
+      "bytes": 211281,
+      "sha256": "e417446083be789638f1cc20996edca1600367b4ade000106d35f3a5c42502fb"
+    },
+    {
+      "file": "owner-pre-end-identities.json",
+      "bytes": 1630,
+      "sha256": "9637c6f2852d80ac818ed88e45df53736e615ecb7eb5fbfac4fe1f4c92583ac3"
+    },
+    {
+      "file": "owner-redo-group-translation-once.jsonl",
+      "bytes": 484,
+      "sha256": "5378e76e0ee412662c55a7b24e8fcacfd688c0cbc9d383c202f2590d5e196c15"
+    },
+    {
+      "file": "owner-redo-locator-refusal-observe-shot.jsonl",
+      "bytes": 893,
+      "sha256": "078fae4edc26a725a267f695318d318ff4b2564e6ab7bf202e2268fd92af40b2"
+    },
+    {
+      "file": "owner-redo-locator-refusal-observe-state.jsonl",
+      "bytes": 1260,
+      "sha256": "9b5a6b93c4dcb8744eac2282143b553f30c428ad1f4c101e1a3289a840f43225"
+    },
+    {
+      "file": "owner-redo-locator-refusal-observe-ui.jsonl",
+      "bytes": 241880,
+      "sha256": "4a1056c5b8135937ea41dfd66ab01997db32599373a4d2bd7efad40c9d16a929"
+    },
+    {
+      "file": "owner-reverse-range-to-cube1-shift.jsonl",
+      "bytes": 674,
+      "sha256": "cd011e546ed77ec30c88d6f33659e74bcfab3410aab91787c12b91d84b0a38a0"
+    },
+    {
+      "file": "owner-rotation-draft-yaw90.jsonl",
+      "bytes": 396,
+      "sha256": "0f405f97f267c8f9724431f5aa25a28269106a3f30dd368e94dc5e0a07c910e4"
+    },
+    {
+      "file": "owner-rotation-finish-move-x.jsonl",
+      "bytes": 397,
+      "sha256": "7ddf2f1961cc8f4d957b846505b4e8fba8e8f36c1611966bb438ca2601255c4c"
+    },
+    {
+      "file": "owner-rotation-finish-move-y.jsonl",
+      "bytes": 397,
+      "sha256": "77a8019d47329018bd53a2250be25995b970571d695bbd3230119a1c6d0445c8"
+    },
+    {
+      "file": "owner-rotation-finish-move-z.jsonl",
+      "bytes": 397,
+      "sha256": "9d670992cf7ff6e6a7420bc9bfbdede65dc3ebbf3c9f57d284d299f63fe8ea4e"
+    },
+    {
+      "file": "owner-rotation-finish-yaw.jsonl",
+      "bytes": 397,
+      "sha256": "7177f4e0e101fa19085d4e7d12fa7469ee8c507f952a9b6bf09a60aa2c684217"
+    },
+    {
+      "file": "owner-rotation-focus-move-x.jsonl",
+      "bytes": 642,
+      "sha256": "db9671b6262ab84124ad3dac77a5805bbbb2ca412cf09bc532612be5e9b56feb"
+    },
+    {
+      "file": "owner-rotation-focus-move-y.jsonl",
+      "bytes": 647,
+      "sha256": "c7a93f427b9d70ed0a34573a3d71e215c3bb04adff4a86e38b86dfbd80dc1c68"
+    },
+    {
+      "file": "owner-rotation-focus-move-z.jsonl",
+      "bytes": 647,
+      "sha256": "1e88957b9ee525cbeaa8783afa688a64e6519f85335c95cb4893e5569bd31daa"
+    },
+    {
+      "file": "owner-rotation-focus-yaw.jsonl",
+      "bytes": 650,
+      "sha256": "5679420c12e4a641111195d124f4296f72909200487ee9264e930577b896600a"
+    },
+    {
+      "file": "owner-rotation-select-move-x.jsonl",
+      "bytes": 441,
+      "sha256": "9f4ae603e02faf269e700e6d7187902b33f2179989a9d16b70f56a929df12012"
+    },
+    {
+      "file": "owner-rotation-select-move-y.jsonl",
+      "bytes": 441,
+      "sha256": "e31e0be7178104cf95d0c4142b690a7dd21b055cd0e05b0b15fc5e4d90db7786"
+    },
+    {
+      "file": "owner-rotation-select-move-z.jsonl",
+      "bytes": 441,
+      "sha256": "693f64c19ce67ba96c9619c0e10ab98e8cb3e75d68ff357f6a62b6948e51152a"
+    },
+    {
+      "file": "owner-rotation-select-yaw.jsonl",
+      "bytes": 441,
+      "sha256": "96e5654029b08c21babad512a12714c65113883946355ce67346be89661372f5"
+    },
+    {
+      "file": "owner-rotation-zero-move-x.jsonl",
+      "bytes": 395,
+      "sha256": "6bf1ef3e4eff45db86e31270e7640123ad5823590949d7eb2bc42423e29623e0"
+    },
+    {
+      "file": "owner-rotation-zero-move-y.jsonl",
+      "bytes": 395,
+      "sha256": "c596c03feca9eef043a613988948f5ef94357e387f86db833b1f998d66378719"
+    },
+    {
+      "file": "owner-rotation-zero-move-z.jsonl",
+      "bytes": 395,
+      "sha256": "33c9d1507386bdef788b2f4aeca0d75826462fae3a0c66b3198f822302f0409b"
+    },
+    {
+      "file": "owner-scale-draft-x.jsonl",
+      "bytes": 399,
+      "sha256": "c5d0711a988d2726242ca297f28a1883639b4bbc6d87133369a4546b903515c5"
+    },
+    {
+      "file": "owner-scale-draft-y.jsonl",
+      "bytes": 399,
+      "sha256": "ae601cf55fd9b1ecf03320df414296e126bacdbe22fba3fd3ac86d6f366b33cb"
+    },
+    {
+      "file": "owner-scale-draft-z.jsonl",
+      "bytes": 399,
+      "sha256": "0492b1e2beb1d83186d4f19228c1e01f1643706b8556bbcf0514e6b94338b050"
+    },
+    {
+      "file": "owner-scale-finish-x.jsonl",
+      "bytes": 399,
+      "sha256": "69ab32ee5cb8e0f72ea4b7a033816462dc07721073827c52fceca40b91eea43b"
+    },
+    {
+      "file": "owner-scale-finish-y.jsonl",
+      "bytes": 399,
+      "sha256": "5c49322da37b4034556e301191fa7d916d64f84f033936c6fec2d4e5cadbe3ff"
+    },
+    {
+      "file": "owner-scale-finish-yaw.jsonl",
+      "bytes": 399,
+      "sha256": "1fbd6d210a8e2266d32807c6fa420ca574a41704ec611bb40666d4063b2aca63"
+    },
+    {
+      "file": "owner-scale-finish-z.jsonl",
+      "bytes": 399,
+      "sha256": "376c28d5f944772bb88b87ca7c4f6fe06c829e8555d04ac42f01ce2b3a837aac"
+    },
+    {
+      "file": "owner-scale-focus-x.jsonl",
+      "bytes": 646,
+      "sha256": "bc1144496fb52913e057268a31a99b0ac81ae03713f16b380869168d912c1081"
+    },
+    {
+      "file": "owner-scale-focus-y.jsonl",
+      "bytes": 650,
+      "sha256": "cee970b02e9f488ee1039bf69be45e61354da6fda0e3dc179d9f4dc65a50e5ed"
+    },
+    {
+      "file": "owner-scale-focus-yaw.jsonl",
+      "bytes": 652,
+      "sha256": "f9259e1bab43197a4cc61f158b51041af78c4bcc06ad19e44fa67a0c46d04e42"
+    },
+    {
+      "file": "owner-scale-focus-z.jsonl",
+      "bytes": 651,
+      "sha256": "73a66c4391e4794ea4c34c640d3b7115be3f4eb9d1ccb385c0b8b200acc00073"
+    },
+    {
+      "file": "owner-scale-select-x.jsonl",
+      "bytes": 443,
+      "sha256": "558d191f0ceeb508d4ed185aca68c14306a8e56d37f74d0084462936f028cb1d"
+    },
+    {
+      "file": "owner-scale-select-y.jsonl",
+      "bytes": 443,
+      "sha256": "2c79907ac754dd24dbed24bb11d6123e64b6d882f2a8e050e9a7767bdc7a428a"
+    },
+    {
+      "file": "owner-scale-select-yaw.jsonl",
+      "bytes": 443,
+      "sha256": "3d68b7e0a1edd617fdce4d0b9c57947c2f4f87a551c1621ce24e7bf12d25c228"
+    },
+    {
+      "file": "owner-scale-select-z.jsonl",
+      "bytes": 443,
+      "sha256": "0c28dcb3255eb16e6e9e67b7ea90a1be6c02134d7126c6f37472cdf53dd691b1"
+    },
+    {
+      "file": "owner-scale-zero-yaw.jsonl",
+      "bytes": 397,
+      "sha256": "32e93b44a81691d989d7935febc04500b03312b680cfcccf5c460bcef174fd4a"
+    },
+    {
+      "file": "owner-scroll-tree-for-reverse-range.jsonl",
+      "bytes": 453,
+      "sha256": "73ad46ae0c23138d8df5a29a0b8dca3d46d86ac7f04d5428a255a45d6b2b1445"
+    },
+    {
+      "file": "owner-scroll-tree-for-rotation-selection.jsonl",
+      "bytes": 451,
+      "sha256": "6863fdad53da3fb7297c96b7e888d718289a3cfb79251a63c2d1f165bcdcd24f"
+    },
+    {
+      "file": "owner-scroll-tree-to-retained-selection.jsonl",
+      "bytes": 451,
+      "sha256": "31f7840acf0a02debde5757f8a1598fdd5064f376800397939d0ec4234e35e77"
+    },
+    {
+      "file": "owner-scrolled-redo-tree-ui.jsonl",
+      "bytes": 241798,
+      "sha256": "0c3757326fcfc07004fc1cdd9840c546c85ec6cce737f9981a7f4e02281796f0"
+    },
+    {
+      "file": "owner-select-cube1-plain.jsonl",
+      "bytes": 629,
+      "sha256": "c4c898510fd69e2edb1e22534c2b937f1ccb0fd3d05b2a97bfeae86f3d0ee63a"
+    },
+    {
+      "file": "owner-select-group-x-text.jsonl",
+      "bytes": 441,
+      "sha256": "0f4c2e06d867dc503d90f557a3e1030e2ef2a3de53a4d4ed2011bb83d5151fd9"
+    },
+    {
+      "file": "owner-select-group-y-text.jsonl",
+      "bytes": 441,
+      "sha256": "6f54a2e3644e32e3533aa686884b42850b5b799d2fd0ae180b0556983abd016b"
+    },
+    {
+      "file": "owner-select-group-z-text.jsonl",
+      "bytes": 441,
+      "sha256": "8de5061b3b3adf4e4ec843c502f7bc176cf0577539f5ab7c85f2898e9ca142a5"
+    },
+    {
+      "file": "owner-single-selected-after-pair-undo-shot.jsonl",
+      "bytes": 923,
+      "sha256": "3000c6333b5d150d63dc8c9df3d4099b277ff4ba15fd81ad7e235850ac5c77bd"
+    },
+    {
+      "file": "owner-single-selected-after-pair-undo-ui.jsonl",
+      "bytes": 289483,
+      "sha256": "aad8811cd2e16b8e22ce7f127480c81deab9019b96c0ff5e97a53abf420b8c20"
+    },
+    {
+      "file": "owner-start-public.json",
+      "bytes": 5959,
+      "sha256": "3671cc2f691ff58664c6dfffcb3601dc302cdc61c604567256100763fe6d3b94"
+    },
+    {
+      "file": "owner-two-selected-shot.jsonl",
+      "bytes": 859,
+      "sha256": "b0e10405851b30733d76cf9c47d3dcf4bc3c893b39a11ef35e71656d29aa49bd"
+    },
+    {
+      "file": "owner-two-selected-state.jsonl",
+      "bytes": 1255,
+      "sha256": "f98eea9075be199d2f948e8f6b75908195a10028a7c959107d8e14fc670b08d4"
+    },
+    {
+      "file": "owner-two-selected-ui.jsonl",
+      "bytes": 241865,
+      "sha256": "c8c9dabcaab2f50cfb9414fcd92ea73d29c40ee358470308597967373da8ae5b"
+    },
+    {
+      "file": "owner-undo-group-translation-once.jsonl",
+      "bytes": 441,
+      "sha256": "fb7d66b091169862a1ac468c8ae284e66b3acbcfebd6be8bd70f58de733b15aa"
+    },
+    {
+      "file": "owner-undo-latest-group-scale-once.jsonl",
+      "bytes": 443,
+      "sha256": "18ad39d7b3e71fd443a2e7b34bfa03d0cf6931a18e76cd7081ce6f05dac60a5e"
+    },
+    {
+      "file": "owner-undo-next-older-group-rotation-once.jsonl",
+      "bytes": 443,
+      "sha256": "848a9172fc6a686c7c21c7135a6741464d4c75cecfbc31b98f0fb547a33bf0a1"
+    },
+    {
+      "file": "owner-undo-original-pair-after-select1-once.jsonl",
+      "bytes": 441,
+      "sha256": "056428724ba17ca19eb04727c2f05d12162cf3a7d7ee244129fba1333e7fdbed"
+    },
+    {
+      "file": "rotation-scale-history-comparison.json",
+      "bytes": 2015,
+      "sha256": "a8fef3392e1e469dbdce2a09c243c9e7cf31eb1b035fb2a00e6b0caa7bb50a2c"
+    },
+    {
+      "file": "screenshots\\group-yaw90.png",
+      "bytes": 644787,
+      "sha256": "18382423d36b2f7ef2379c729b1ef4d2ba506213129c89b1223cbf7e55fba9ff"
+    },
+    {
+      "file": "screenshots\\older-undo-refusal.png",
+      "bytes": 558001,
+      "sha256": "01cd3a986adf075b37cf3bccb91956fc970f6c72bdb331533bebdf116b752eb3"
+    },
+    {
+      "file": "screenshots\\reordered-selected-rows.png",
+      "bytes": 635342,
+      "sha256": "d4425bc0f274903e62b30281ca650db8825f68c5b33eb441b6b1374cd1099ab8"
+    },
+    {
+      "file": "screenshots\\single-selected-original-pair-undone.png",
+      "bytes": 603302,
+      "sha256": "6c95dbe19cd261cbb4da11a4fc4ff063559ff21e58b9b863a2db6e74020d0b4a"
+    },
+    {
+      "file": "screenshots\\translated-pair.png",
+      "bytes": 638997,
+      "sha256": "2441512c6d08b2cca3c54b98edbc87851b33abb3022ae45094fb8b2b0129d792"
+    },
+    {
+      "file": "screenshots\\two-selected.png",
+      "bytes": 636601,
+      "sha256": "5a689a662465cfaec215240a470ac50c2a3abca8e0ea485f42a858a3dc0e1423"
+    },
+    {
+      "file": "translation-undo-comparison.json",
+      "bytes": 2924,
+      "sha256": "4eb5aa8b7e6b0b4f25d5cc8acc7e829046508f1adeb11c5c4e22512deccac9fd"
+    }
+  ],
+  "parsed_records": 196,
+  "logs": {
+    "stdout": {
+      "bytes": 227298,
+      "sha256": "e412781e48ab4703f031a997f94425759d63f63f68ff4c142ae1e407a8546785",
+      "structured_levels": {
+        "WARN": 25
+      },
+      "rust_panic_markers": 0,
+      "raw_log_copied": false
+    },
+    "stderr": {
+      "bytes": 78,
+      "sha256": "b6cec634a99f6d3c0924fa4ba1380c085b6aade7fa51b8e17091880e15d7d2d9",
+      "structured_levels": {},
+      "rust_panic_markers": 0,
+      "raw_log_copied": false
+    }
+  },
+  "recorded_app_identities_absent": {
+    "owner": 8
+  },
+  "build": {
+    "source_commit": "ce31ee6e7677a8873fa8a39407763df81c160726",
+    "duration_seconds": 392.6,
+    "gui": "4m55s",
+    "helpers_seconds": [
+      55.99,
+      22.81
+    ],
+    "warnings": 4,
+    "build_session_closed": true
+  },
+  "assertions": {
+    "plain_ctrl_multiselection": true,
+    "reverse_shift_range_and_clicked_primary": true,
+    "mixed_inspector_and_whole_selection_scope": true,
+    "literal_translation_and_one_undo_redo": true,
+    "original_pair_undo_with_only_cube1_selected": true,
+    "yaw90_shared_mean_pivot_tolerance_m": 0.0001,
+    "uniform_scale_tolerance_m": 0.0001,
+    "newer_scale_undo_succeeds": true,
+    "older_rotation_undo_refuses_no_partial_row_change": true,
+    "exact_initial_rows_restored_by_NEW_confirmed_mutations_except_monotonic_edit_seq": true
+  },
+  "failures": [
+    "QA-0064: existing node upsert appends selected tree rows, moving them offscreen.",
+    "QA-0065: older overlapping Undo refuses after newer owned inverse increments expected versions."
+  ],
+  "limitations": [
+    "Actual ECS observation is primary-only and sampled at separate selected cuts; no simultaneous complete-selection census.",
+    "Success and explicit shared batch IDs do not exercise failed transaction rollback or concurrent external-update races.",
+    "Only ordinary numeric move/yaw/uniform-scale and basic selection were exercised; no group creation/deletion, mixed-property write, gimbal drag, hidden/derived group, closed-route, role/reset/layout matrix or persisted restart acceptance.",
+    "Generic locator refusals submit zero input; scrolling makes moved rows accessible. A malformed PowerShell wrapper string failed parsing before any call and produced no application action.",
+    "Cleanup uses explicit NEW individual confirmed REST mutations and never counts as successful older Undo. All original data/transform values are restored; append-only history/counters intentionally advance.",
+    "One draft translation form was retained as a reusable delta after Save; future numeric forms are explicitly reset before rotation/scale.",
+    "Compilation warnings remain source-hygiene work. First82f build failed before launch; source compile correction applied before this ce31 stage.",
+    "No native replica adapter, peer asset delivery, full QA/UX, final integrated tests, CI or release acceptance."
+  ],
+  "independent_review_artifact": "qa/passes/29/independent-review.md"
+}
