@@ -2278,3 +2278,14 @@ Petal-origin compatibility lookup and the existing typed-reply identity journey.
 It is not reachable from REST/MCP node-property reads. Private GIS transform
 loading remains a trusted internal seam; public transform GET uses the scoped
 projection. Generic writer identity and stamp translation rules are unchanged.
+
+## QA invitation transfer
+
+GET/POST /api/v1/debug/invitation uses the captured default-off input gate, Owner floor,
+existing rate budget and durable current-credential admission. GET returns actual host identity
+and current public invitation metadata. POST accepts only that exact bounded metadata, over
+a separate capacity-one bridge; no arbitrary credential/token/clipboard payload is accepted.
+The host rechecks the actual pinned Owner with the existing DB source preparation handler
+before one-use consumption. API completion repeats durable credential, deadline and scope
+checks, then serializes the sealed credential only into a no-store response. It is never
+placed in a generic diagnostic Value, Debug payload, trace field or error response.

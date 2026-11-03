@@ -1693,3 +1693,15 @@ Owner, caller scope, input enablement and frame ownership gates remain unchanged
 Synthetic input diagnostics expose only event variants, excluding Key::Character payloads.
 The ordinary injection audit records actor, scope and command count without input text.
 This preserves credentials when the one-use invitation client drives masked Join.
+
+
+## QA invitation
+
+qa_invitation_bridge is a default-off owner-thread coordinator with capacity one and a fixed
+three-second job deadline. Only the open Access panel latest generation can be observed or
+consumed. Actual local DID, active Verse, rendered ViewScope, exact target/recipient/role,
+navigation revision, short consume TTL and caller lifetime are rechecked while pending and
+before release. A fresh readonly PrepareJoinInvite result proves current pinned Owner and
+manifest using existing checked storage fences; the recipient never impersonates the issuer.
+Selection/dialog/generation changes, expiry or a dropped caller discard pending work. No
+credential is retained in host state: its sole release moves from UI into the typed reply.

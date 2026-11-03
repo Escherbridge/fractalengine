@@ -29,6 +29,7 @@ pub mod node_history;
 pub mod operator_gate;
 pub mod property_schema;
 pub mod qa_debug;
+pub mod qa_invitation;
 pub mod qa_portal;
 pub mod query_guard;
 pub mod render_distance;

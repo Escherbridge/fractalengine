@@ -979,3 +979,7 @@ tokens, clipboard selectors or arbitrary operations. Consume names the exact gen
 recipient, role and expiry. Work is bounded to three seconds, with a fifteen-second consume
 lease. Credential-bearing results use redacted JoinCredential and do not serialize as generic
 diagnostics. InputCommand Debug redacts TextEntry for the actual masked Join input path.
+
+QA diagnostic redaction also removes canonical addressed and legacy invitation URI values before
+bounding output. The input audit records counts rather than text, and generated credentials stay
+in redacted wrappers until the explicit no-store one-use response.

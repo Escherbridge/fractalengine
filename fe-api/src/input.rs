@@ -80,6 +80,7 @@ pub fn input_allowed_from_env() -> bool {
 pub struct InputSurface {
     pub portal_fixture: Option<fe_runtime::qa_portal::FixtureSender>,
     pub qa_debug: Option<fe_runtime::qa_debug::QaSender>,
+    pub invitation_transfer: Option<fe_runtime::qa_invitation::TransferSender>,
     /// Operator opt-in, read once at startup ([`input_allowed_from_env`]).
     pub allowed: bool,
     /// API→Bevy input bridge; `None` on headless hosts (relay, every
@@ -101,6 +102,7 @@ impl InputSurface {
         Self {
             portal_fixture: None,
             qa_debug: None,
+            invitation_transfer: None,
             allowed,
             bridge,
             reply_timeout: DEFAULT_INPUT_REPLY_TIMEOUT,
@@ -110,6 +112,10 @@ impl InputSurface {
     pub fn with_qa_debug(mut self, bridge: fe_runtime::qa_debug::QaSender) -> Self {
         self.qa_debug = Some(bridge);
         self
+    }
+
+    pub fn with_invitation_transfer(mut self,bridge:fe_runtime::qa_invitation::TransferSender)->Self {
+        self.invitation_transfer=Some(bridge);self
     }
 
     pub fn with_portal_fixture(mut self, bridge: fe_runtime::qa_portal::FixtureSender) -> Self {

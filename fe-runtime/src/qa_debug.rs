@@ -157,6 +157,10 @@ pub fn redact(text: &str) -> String {
     let mut bearer_next = false;
     let mut start = 0;
     while start < text.len() {
+        if ["fractalengine://join/","fractalengine://invite/"].iter().any(|prefix|text[start..].starts_with(prefix)) {
+            let end=text[start..].find(|c:char|c.is_whitespace() || matches!(c,'"'|'\''|'<'|'>'|'`')).map_or(text.len(),|offset|start+offset);
+            out.push_str("[REDACTED INVITATION]");start=end;continue;
+        }
         let token_char = |c: char| c.is_ascii_alphanumeric() || matches!(c, '_' | '-' | '.');
         let first = text[start..].chars().next().expect("nonempty suffix");
         if bearer_next && !first.is_whitespace() {

@@ -107,3 +107,13 @@ This also covers a navigation-open racing the UI preflight: admission metadata m
 accepted, but the existing native pipeline remains owned and no new join lease is installed.
 A following canceled-request conditional close cannot match that independent pipeline. Existing
 GUI lifecycle and actual cold-read native journeys cover the refusal and preserved live document.
+
+
+## One-use QA transfer
+
+IssueState keeps a separate fifteen-second consume lease after confirmed generation, bounded
+by envelope expiry. Public metadata names the exact current generation and source selection;
+no credential enters UI labels. The host obtains only a source snapshot to perform a fresh
+readonly Owner preparation, then consume_transfer compares its full manifest/target/recipient/
+role/expiry before moving the credential out and invalidating the generation. A second consume
+cannot return it. Existing Access lifecycle reset/selection/Owner guards apply to every read.

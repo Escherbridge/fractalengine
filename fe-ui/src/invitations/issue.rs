@@ -44,6 +44,9 @@ pub(crate) struct IssueState {
     generation: String,
     phase: Phase,
     deadline: Option<Instant>,
+    consume_deadline: Option<Instant>,
+    consume_expires_at: Option<u64>,
+    navigation_revision: Option<u64>,
     pub error: Option<&'static str>,
 }
 
@@ -55,12 +58,56 @@ impl Default for IssueState {
             generation: String::new(),
             phase: Phase::Idle,
             deadline: None,
+            consume_deadline: None,
+            consume_expires_at: None,
+            navigation_revision: None,
             error: None,
         }
     }
 }
 
 impl IssueState {
+    #[cfg(test)]
+    pub(crate) fn transfer_fixture(
+        source: InviteSource,
+        credential: JoinCredential,
+        expired: bool,
+    ) -> Self {
+        let clock = unix_now().unwrap();
+        Self {
+            recipient: source.recipient_did.clone(),
+            selection: Some(Selection {
+                target: source.target.clone(),
+                recipient: source.recipient_did.clone(),
+                role: source.role.clone(),
+                expiry: source.expiry_hours,
+            }),
+            generation: format!("invite-{}", ulid::Ulid::new()),
+            phase: Phase::Ready(IssuedInvitation {
+                source,
+                credential,
+                expires_at: clock + 3600,
+            }),
+            consume_deadline: Some(if expired {
+                Instant::now() - Duration::from_secs(1)
+            } else {
+                Instant::now() + fe_runtime::qa_invitation::CONSUME_TTL
+            }),
+            consume_expires_at: Some(clock + 15),
+            ..Self::default()
+        }
+    }
+    pub(crate) fn bind_navigation(&mut self, revision: u64) {
+        if self
+            .navigation_revision
+            .is_some_and(|current| current != revision)
+        {
+            self.reset();
+        }
+        if self.busy() || matches!(self.phase, Phase::Ready(_)) {
+            self.navigation_revision = Some(revision);
+        }
+    }
     pub fn reset(&mut self) {
         let recipient = std::mem::take(&mut self.recipient);
         *self = Self {
@@ -112,6 +159,8 @@ impl IssueState {
         }
     }
     fn fail(&mut self, error: &'static str) {
+        self.consume_deadline = None;
+        self.consume_expires_at = None;
         self.phase = Phase::Failed;
         self.deadline = None;
         self.error = Some(error);
@@ -123,6 +172,78 @@ impl IssueState {
             }
             _ => None,
         }
+    }
+    pub(crate) fn transfer_metadata(
+        &self,
+        issuer: &str,
+    ) -> Option<fe_runtime::qa_invitation::TransferMetadata> {
+        if self
+            .consume_deadline
+            .is_none_or(|deadline| Instant::now() >= deadline)
+        {
+            return None;
+        }
+        let issued = self.ready()?;
+        if issued
+            .source
+            .manifest
+            .get("created_by")
+            .and_then(serde_json::Value::as_str)
+            != Some(issuer)
+        {
+            return None;
+        }
+        let entity_kind = match issued.source.target.entity_type {
+            fe_runtime::messages::EntityType::Verse => "verse",
+            fe_runtime::messages::EntityType::Fractal => "fractal",
+            fe_runtime::messages::EntityType::Petal => "petal",
+            _ => return None,
+        };
+        Some(fe_runtime::qa_invitation::TransferMetadata {
+            generation: self.generation.clone(),
+            issuer_did: issuer.into(),
+            recipient_did: issued.source.recipient_did.clone(),
+            verse_id: issued.source.manifest.get("verse_id")?.as_str()?.into(),
+            entity_kind: entity_kind.into(),
+            entity_id: issued.source.target.entity_id.clone(),
+            scope: issued.source.target.scope.clone(),
+            role: issued.source.role.clone(),
+            expiry_hours: issued.source.expiry_hours,
+            envelope_expires_at: issued.expires_at,
+            consume_expires_at: self.consume_expires_at?,
+        })
+    }
+    pub(crate) fn transfer_source(
+        &self,
+        expected: &fe_runtime::qa_invitation::TransferMetadata,
+        issuer: &str,
+    ) -> Option<InviteSource> {
+        (self.transfer_metadata(issuer).as_ref() == Some(expected))
+            .then(|| self.ready().map(|issued| issued.source.clone()))
+            .flatten()
+    }
+    pub(crate) fn consume_transfer(
+        &mut self,
+        expected: &fe_runtime::qa_invitation::TransferMetadata,
+        fresh: &InviteSource,
+        issuer: &str,
+    ) -> Option<JoinCredential> {
+        let source = self.transfer_source(expected, issuer)?;
+        if source.target != fresh.target
+            || source.recipient_did != fresh.recipient_did
+            || source.role != fresh.role
+            || source.expiry_hours != fresh.expiry_hours
+            || source.manifest != fresh.manifest
+        {
+            return None;
+        }
+        let Phase::Ready(issued) = std::mem::replace(&mut self.phase, Phase::Idle) else {
+            return None;
+        };
+        self.consume_deadline = None;
+        self.consume_expires_at = None;
+        self.generation.clear();
+        Some(issued.credential)
     }
     pub fn progress(&self) -> Option<&'static str> {
         match self.phase {
@@ -256,6 +377,12 @@ impl IssueState {
                     );
                     return;
                 }
+                self.consume_deadline =
+                    Some(Instant::now() + fe_runtime::qa_invitation::CONSUME_TTL);
+                self.consume_expires_at =
+                    Some(issued.expires_at.min(
+                        clock.saturating_add(fe_runtime::qa_invitation::CONSUME_TTL.as_secs()),
+                    ));
                 self.phase = Phase::Ready(issued.clone());
                 self.deadline = None;
             }

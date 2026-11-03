@@ -84,6 +84,9 @@ mod tests {
         assert!(!format!("{credential:?}").contains("invitation-diagnostic-sentinel"));
         let text=crate::input::InputCommand::TextEntry {text:"invitation-diagnostic-sentinel".into()};
         assert!(!format!("{text:?}").contains("invitation-diagnostic-sentinel"));
+        let redacted=crate::qa_debug::redact("draft=fractalengine://join/v1/invitation-diagnostic-sentinel end");
+        assert!(!redacted.contains("invitation-diagnostic-sentinel") && redacted.contains("end"));
+
 
         use crate::qa_portal::{FixtureCommand, FixtureOp, JOB_LIMIT};
         let expired = FixtureCommand { operation: FixtureOp::Capture, deadline: std::time::Instant::now() - std::time::Duration::from_secs(1) };
@@ -100,6 +103,10 @@ mod tests {
         let (invite_tx,_invite_rx)=crate::qa_invitation::invitation_bridge();
         let command=crate::qa_invitation::TransferCommand {operation:crate::qa_invitation::TransferOperation::Observe,issuer_did:"did:key:owner".into(),deadline:std::time::Instant::now()+crate::qa_invitation::JOB_LIMIT};
         assert!(command.is_current());
+        let mut extended=command.clone();extended.deadline=std::time::Instant::now()+crate::qa_invitation::JOB_LIMIT+std::time::Duration::from_secs(1);
+        assert!(!extended.is_current(),"Internal transfer callers cannot widen the fixed deadline");
+        assert!(serde_json::from_value::<crate::qa_invitation::TransferMetadata>(serde_json::json!({"credential":"not-an-accepted-operation"})).is_err(),"Consume accepts exact metadata, never arbitrary credential or clipboard selectors");
+
         invite_tx.try_send(BridgeRequest::new("invite-one","VERSE#v",command.clone()).0).unwrap();
         assert!(matches!(invite_tx.try_send(BridgeRequest::new("invite-full","VERSE#v",command).0),Err(crossbeam::channel::TrySendError::Full(_))),"Invitation transfer admits at most one queued operation");
 

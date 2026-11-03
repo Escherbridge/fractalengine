@@ -104,6 +104,7 @@ pub(crate) fn drive(
         if let Some((target, state)) =
             crate::dialogs::entity_access::invitation_context(&mut ui.active_dialog)
         {
+            state.bind_navigation(nav.intent_revision());
             state.apply(result, &target, did, sync.as_deref());
         }
         join.apply(result);
@@ -111,6 +112,7 @@ pub(crate) fn drive(
     if let Some((target, state)) =
         crate::dialogs::entity_access::invitation_context(&mut ui.active_dialog)
     {
+        state.bind_navigation(nav.intent_revision());
         state.drive(&target, did, &db.0, sync.as_deref());
     }
     let ready = if handoff.pending() {

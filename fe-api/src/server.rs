@@ -348,6 +348,7 @@ pub fn build_router(state: Arc<ApiState>) -> Router {
         .route("/api/v1/debug/input", post(crate::input::post_input))
         .route("/api/v1/debug/ui-tree", get(crate::qa_debug::ui_tree))
         .route("/api/v1/debug/ui-state", get(crate::qa_debug::ui_state))
+        .route("/api/v1/debug/invitation", get(crate::qa_invitation::observe).post(crate::qa_invitation::consume).layer(axum::extract::DefaultBodyLimit::max(2048)))
         .route("/api/v1/debug/portal-fixture/observe", get(crate::qa_portal::observe))
         .route("/api/v1/debug/portal-fixture/action", post(crate::qa_portal::action).layer(axum::extract::DefaultBodyLimit::max(1024)))
         .route("/api/v1/debug/portal-fixture/capture", post(crate::qa_portal::capture).layer(axum::extract::DefaultBodyLimit::max(1024)))

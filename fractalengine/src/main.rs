@@ -24,6 +24,7 @@ mod qa_debug_bridge;
 mod qa_dev_token;
 mod qa_log;
 mod qa_portal_bridge;
+mod qa_invitation_bridge;
 mod screenshot_bridge;
 mod terrain_bridge;
 mod terminal_reset;
@@ -550,6 +551,7 @@ fn main() {
     let (input_tx, input_rx) = fe_runtime::input::input_bridge();
     let (qa_tx, qa_rx) = fe_runtime::qa_debug::qa_bridge();
     let (portal_fixture_tx, portal_fixture_rx) = fe_runtime::qa_portal::fixture_bridge();
+    let (invitation_transfer_tx,invitation_transfer_rx)=fe_runtime::qa_invitation::invitation_bridge();
     let (transform_broadcast_tx, _) =
         tokio::sync::broadcast::channel::<fe_runtime::messages::TransformUpdate>(1024);
     // Revocation broadcast: Bevy sends revoked JTIs, API thread updates its cache.
@@ -722,7 +724,7 @@ fn main() {
         .with_vision(vision_tx),
         // Agent input surface: OFF unless FE_API_INPUT_ALLOW=1 (read once
         // here; loud WARN when on) — fe-api/AGENTS.md §agent-input-surface.
-        input: fe_api::input::InputSurface::new(qa_enabled, Some(input_tx)).with_qa_debug(qa_tx).with_portal_fixture(portal_fixture_tx),
+        input: fe_api::input::InputSurface::new(qa_enabled, Some(input_tx)).with_qa_debug(qa_tx).with_portal_fixture(portal_fixture_tx).with_invitation_transfer(invitation_transfer_tx),
         listening_tx: Some(api_listening_tx),
     }));
 
@@ -775,6 +777,7 @@ fn main() {
     );
     qa_a11y_timing::install(&mut app, qa_enabled);
     qa_portal_bridge::install(&mut app, qa_enabled, portal_fixture_rx);
+    qa_invitation_bridge::install(&mut app,qa_enabled,invitation_transfer_rx);
 
     // ---- Entity Store (in-memory hot cache) ----
     app.insert_resource(SharedEntityStore(entity_store));

@@ -72,6 +72,7 @@ pub enum TransferReply {
     Observed {
         local_did: String,
         invitation: Option<TransferMetadata>,
+        join_ready_for_input: bool,
     },
     Consumed {
         metadata: TransferMetadata,

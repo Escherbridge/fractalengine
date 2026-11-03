@@ -108,6 +108,9 @@ impl JoinState {
     pub(crate) fn allow_initial_navigation(&self, nav: &NavigationManager) -> bool {
         !self.active() && self.admission_navigation_revision != Some(nav.intent_revision())
     }
+    pub(crate) fn ready_for_input(&self) -> bool {
+        !self.active() && self.cleanup_lease.is_none()
+    }
     pub fn active(&self) -> bool {
         self.input.is_some() || self.attempt.is_some()
     }

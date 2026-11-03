@@ -702,6 +702,26 @@ impl UiManager {
         matches!(&self.active_dialog,ActiveDialog::EntitySettings {access,..} if access.pending_work())
     }
 
+    pub fn qa_join_ready_for_input(&self) -> bool {
+        matches!(&self.active_dialog,ActiveDialog::JoinDialog {invite_buf} if invite_buf.is_empty())
+            && self.join_flow.ready_for_input() && !self.join_request.pending && self.join_request.error.is_none()
+    }
+    pub fn qa_invitation_metadata(&mut self, issuer: &str, navigation_revision:u64) -> Option<fe_runtime::qa_invitation::TransferMetadata> {
+        let (_,state)=crate::dialogs::entity_access::invitation_context(&mut self.active_dialog)?;
+        state.bind_navigation(navigation_revision);
+        state.transfer_metadata(issuer)
+    }
+    pub fn qa_invitation_source(&mut self, expected: &fe_runtime::qa_invitation::TransferMetadata, issuer: &str, navigation_revision:u64) -> Option<fe_runtime::join_invite::InviteSource> {
+        let (_,state)=crate::dialogs::entity_access::invitation_context(&mut self.active_dialog)?;
+        state.bind_navigation(navigation_revision);
+        state.transfer_source(expected,issuer)
+    }
+    pub fn consume_qa_invitation(&mut self, expected: &fe_runtime::qa_invitation::TransferMetadata, fresh: &fe_runtime::join_invite::InviteSource, issuer: &str, navigation_revision:u64) -> Option<fe_runtime::join_invite::JoinCredential> {
+        let (_,state)=crate::dialogs::entity_access::invitation_context(&mut self.active_dialog)?;
+        state.bind_navigation(navigation_revision);
+        state.consume_transfer(expected,fresh,issuer)
+    }
+
     pub fn any_dialog_open(&self) -> bool {
         !matches!(self.active_dialog, ActiveDialog::None)
     }
@@ -2349,6 +2369,29 @@ mod tests {
             state.reset();
         }
 
+        {
+            let issuer=fe_identity::NodeKeypair::generate().to_did_key();
+            let recipient=fe_identity::NodeKeypair::generate().to_did_key();
+            let source=fe_runtime::join_invite::InviteSource {target:target.clone(),recipient_did:recipient,role:"viewer".into(),expiry_hours:1,prepared_at:0,nonce:ulid::Ulid::new().to_string(),manifest:serde_json::json!({"created_by":issuer,"verse_id":"access-v","name":"Original"})};
+            if let ActiveDialog::EntitySettings {access,invite_role_buf,invite_expiry_buf,..}=&mut mgr.active_dialog {
+                *invite_role_buf="viewer".into();*invite_expiry_buf=1;
+                access.invitation=crate::invitations::IssueState::transfer_fixture(source.clone(),fe_runtime::join_invite::JoinCredential::new("sealed-transfer-sentinel".into()).unwrap(),false);
+            }
+            let metadata=mgr.qa_invitation_metadata(&issuer,1).expect("The current ready fixture exposes only exact public metadata");
+            let mut wrong=metadata.clone();wrong.role="editor".into();
+            assert!(mgr.consume_qa_invitation(&wrong,&source,&issuer,1).is_none());
+            let mut changed=source.clone();changed.manifest["name"]=serde_json::json!("Changed");
+            assert!(mgr.consume_qa_invitation(&metadata,&changed,&issuer,1).is_none(),"A fresh Owner read with changed manifest cannot release the old credential");
+            let consumed=mgr.consume_qa_invitation(&metadata,&source,&issuer,1).unwrap();
+            assert_eq!(consumed.as_str(),"sealed-transfer-sentinel");
+            assert!(!format!("{consumed:?}").contains("sealed-transfer-sentinel"));
+            assert!(mgr.consume_qa_invitation(&metadata,&source,&issuer,1).is_none() && mgr.qa_invitation_metadata(&issuer,1).is_none(),"Consumption moves the credential once and invalidates its generation");
+            if let ActiveDialog::EntitySettings {access,..}=&mut mgr.active_dialog {access.invitation=crate::invitations::IssueState::transfer_fixture(source.clone(),fe_runtime::join_invite::JoinCredential::new("expired-transfer-sentinel".into()).unwrap(),true);}
+            assert!(mgr.qa_invitation_metadata(&issuer,1).is_none(),"Expired consume leases cannot observe or release credentials");
+            if let ActiveDialog::EntitySettings {access,..}=&mut mgr.active_dialog {access.invitation=crate::invitations::IssueState::transfer_fixture(source,fe_runtime::join_invite::JoinCredential::new("navigation-transfer-sentinel".into()).unwrap(),false);}
+            assert!(mgr.qa_invitation_metadata(&issuer,1).is_some());
+            assert!(mgr.qa_invitation_metadata(&issuer,2).is_none(),"A navigation intent invalidates the retained invitation even when its Access target is unchanged");
+        }
         crate::dialogs::entity_access::submit(&mut mgr,Access::Revoke {peer_did:"did:key:known-peer".into()},&tx);
         let DbCommand::EntityAccess {request_id:change_id,..}=rx.try_recv().unwrap() else{unreachable!()};
         crate::dialogs::entity_access::apply(&mut mgr,&target,&change_id,&Err("unconfirmed write".into()));
