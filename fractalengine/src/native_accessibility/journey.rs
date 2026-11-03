@@ -344,4 +344,324 @@ pub(crate) fn extend_owned_input_journey() {
         modifiers.modifiers.ctrl,
         "the adapter does not rewrite physical modifier state"
     );
+    extend_scheduled_lifecycle_journey();
+}
+
+// The pinned SDK poll is private; this fixture uses its exact public-map drain boundary.
+fn flattened_poll(
+    handlers: Res<bevy::winit::accessibility::WinitActionRequestHandlers>,
+    mut observed: ResMut<Flattened>,
+) {
+    for (_, handler) in handlers.iter() {
+        while let Some(request) = handler.lock().unwrap().pop_front() {
+            observed.0.push(request.target);
+        }
+    }
+}
+
+#[derive(Resource, Default)]
+struct Flattened(Vec<ak::NodeId>);
+
+#[derive(Resource)]
+struct LateIngress(Handler, ak::ActionRequest);
+
+fn enqueue_after_intake(late: Option<Res<LateIngress>>) {
+    if let Some(late) = late {
+        late.0.lock().unwrap().push_back(late.1.clone());
+    }
+}
+
+fn scheduled_output(world: &mut World, entity: Entity) -> ak::ActionRequest {
+    let ctx = world
+        .get_mut::<bevy_egui::EguiContext>(entity)
+        .unwrap()
+        .get_mut()
+        .clone();
+    let guard = ui::product_guard(
+        &ctx,
+        world.resource::<fe_ui::actions::UiManager>(),
+        world.resource::<fe_ui::node_manager::NodeManager>(),
+        world.resource::<fe_ui::navigation_manager::NavigationManager>(),
+        world.resource::<fe_ui::verse_manager::VerseManager>(),
+        world.resource::<fe_ui::plugin::LocalUserRole>(),
+        world.resource::<fe_ui::ui_shell::topbar::TopbarState>(),
+        world.resource::<fe_ui::ui_shell::modal::ModalManagerState>(),
+        world.resource::<fe_ui::gis::PathEditorState>(),
+    );
+    let mut id = egui::Id::NULL;
+    let output = ctx.run(egui::RawInput::default(), |ctx| {
+        ui::begin_pass(ctx, guard);
+        egui::CentralPanel::default().show(ctx, |ui| {
+            id = ui
+                .button("Scheduled counter")
+                .named(ui, "Scheduled counter")
+                .id;
+        });
+        ui::finish_pass(ctx, guard);
+    });
+    world
+        .get_mut::<bevy_egui::EguiOutput>(entity)
+        .unwrap()
+        .platform_output = output.platform_output;
+    ak::ActionRequest {
+        target: ak::NodeId(id.value()),
+        action: ak::Action::Click,
+        data: None,
+    }
+}
+
+fn begin_scheduled_input(
+    mut contexts: Query<(&mut bevy_egui::EguiContext, &mut bevy_egui::EguiInput)>,
+) {
+    for (mut context, mut input) in &mut contexts {
+        context.get_mut().begin_pass(input.0.take());
+    }
+}
+
+fn freeze_after_begin(world: &mut World) {
+    // A second buffered request has not yet begun; both reservoirs must be retired.
+    let request = world.resource::<LateIngress>().1.clone();
+    let mut inputs = world.query::<&mut bevy_egui::EguiInput>();
+    for mut input in inputs.iter_mut(world) {
+        input
+            .events
+            .push(egui::Event::AccessKitActionRequest(request.clone()));
+        input.events.push(egui::Event::PointerGone);
+    }
+    let mut contexts = world.query::<&mut bevy_egui::EguiContext>();
+    for mut context in contexts.iter_mut(world) {
+        assert!(
+            context.get_mut().input(|input| input
+                .events
+                .iter()
+                .any(|event| matches!(event, egui::Event::AccessKitActionRequest(_)))),
+            "BeginPass has consumed the previously admitted event before retirement"
+        );
+    }
+    let mut terminal = fe_runtime::maintenance::TerminalMode::default();
+    terminal.enter();
+    world.insert_resource(terminal);
+    super::retire(world);
+}
+
+fn terminal_replacement(
+    mut contexts: Query<(&mut bevy_egui::EguiContext, &bevy_egui::EguiInput)>,
+    previous: Res<LateIngress>,
+) {
+    for (mut context, input) in &mut contexts {
+        assert!(
+            !input
+                .events
+                .iter()
+                .any(|event| matches!(event, egui::Event::AccessKitActionRequest(_)))
+        );
+        assert!(
+            input
+                .events
+                .iter()
+                .any(|event| matches!(event, egui::Event::PointerGone))
+        );
+        let ctx = context.get_mut();
+        assert!(!ctx.input(|input| {
+            input
+                .events
+                .iter()
+                .any(|event| matches!(event, egui::Event::AccessKitActionRequest(_)))
+        }));
+        assert!(ctx.input(|input| {
+            input
+                .events
+                .iter()
+                .any(|event| matches!(event, egui::Event::PointerMoved(_)))
+        }));
+        egui::CentralPanel::default().show(ctx, |ui| {
+            let target = ui.button("Scheduled counter");
+            assert_eq!(
+                target.id.value(),
+                previous.1.target.0,
+                "the replacement really recreates the formerly matching target"
+            );
+            assert!(
+                !target.clicked(),
+                "terminal traversal cannot inherit the matching begun native click"
+            );
+        });
+        let _ = ctx.end_pass();
+    }
+}
+
+fn extend_scheduled_lifecycle_journey() {
+    use bevy::a11y::{AccessibilityRequested, AccessibilitySystems};
+    use bevy::window::{PrimaryWindow, WindowClosed, WindowRef};
+    use bevy::winit::accessibility::WinitActionRequestHandlers;
+    use bevy_egui::{EguiContext, PrimaryEguiContext};
+    let mut app = App::new();
+    app.init_resource::<Adapter>()
+        .init_resource::<super::DetachedHandler>()
+        .init_resource::<WinitActionRequestHandlers>()
+        .init_resource::<AccessibilityRequested>()
+        .init_resource::<WindowToEguiContextMap>()
+        .init_resource::<fe_ui::actions::UiManager>()
+        .init_resource::<fe_ui::node_manager::NodeManager>()
+        .init_resource::<fe_ui::navigation_manager::NavigationManager>()
+        .init_resource::<fe_ui::verse_manager::VerseManager>()
+        .init_resource::<fe_ui::plugin::LocalUserRole>()
+        .init_resource::<fe_ui::ui_shell::topbar::TopbarState>()
+        .init_resource::<fe_ui::ui_shell::modal::ModalManagerState>()
+        .init_resource::<fe_ui::gis::PathEditorState>()
+        .init_resource::<Flattened>()
+        .add_message::<WindowClosed>()
+        .add_systems(
+            PostUpdate,
+            super::intake.before(AccessibilitySystems::Update),
+        )
+        .add_systems(
+            PostUpdate,
+            enqueue_after_intake
+                .after(super::intake)
+                .before(AccessibilitySystems::Update),
+        )
+        .add_systems(
+            PostUpdate,
+            flattened_poll.in_set(AccessibilitySystems::Update),
+        )
+        .add_systems(
+            PostUpdate,
+            super::restore.after(AccessibilitySystems::Update),
+        );
+    app.world().resource::<AccessibilityRequested>().set(true);
+    let window = app
+        .world_mut()
+        .spawn((Window::default(), PrimaryWindow))
+        .id();
+    let unrelated_window = app.world_mut().spawn(Window::default()).id();
+    let mut egui = EguiContext::default();
+    egui.get_mut().enable_accesskit();
+    ui::activate(egui.get_mut());
+    let ctx = egui.get_mut().clone();
+    let entity = app
+        .world_mut()
+        .spawn((
+            egui,
+            PrimaryEguiContext,
+            bevy::camera::RenderTarget::Window(WindowRef::Entity(window)),
+        ))
+        .id();
+    {
+        let mut map = app.world_mut().resource_mut::<WindowToEguiContextMap>();
+        map.window_to_contexts
+            .entry(window)
+            .or_default()
+            .insert(entity);
+        map.context_to_window.insert(entity, window);
+    }
+    let handler: Handler = Arc::new(Mutex::new(Default::default()));
+    let unrelated: Handler = Arc::new(Mutex::new(Default::default()));
+    {
+        let mut handlers = app.world_mut().resource_mut::<WinitActionRequestHandlers>();
+        handlers.insert(window, handler.clone());
+        handlers.insert(unrelated_window, unrelated.clone());
+    }
+    let _ = scheduled_output(app.world_mut(), entity);
+    app.update();
+    assert!(app.world().resource::<Adapter>().owns_window(window));
+    for ambiguous in [false, true] {
+        if ambiguous {
+            app.world_mut()
+                .entity_mut(unrelated_window)
+                .insert(PrimaryWindow);
+        } else {
+            app.world_mut().entity_mut(window).remove::<PrimaryWindow>();
+        }
+        let request = scheduled_output(app.world_mut(), entity);
+        handler.lock().unwrap().push_back(request.clone());
+        unrelated.lock().unwrap().push_back(ak::ActionRequest {
+            target: ak::NodeId(888),
+            ..request.clone()
+        });
+        app.world_mut()
+            .insert_resource(LateIngress(handler.clone(), request));
+        let before = app.world().resource::<Flattened>().0.len();
+        app.update();
+        assert_eq!(
+            &app.world().resource::<Flattened>().0[before..],
+            &[ak::NodeId(888)],
+            "zero/two primary windows quarantine the exact former queue, including late ingress, without consuming unrelated input"
+        );
+        assert!(app.world().resource::<Adapter>().owns_window(window));
+        assert!(Arc::ptr_eq(
+            app.world()
+                .resource::<WinitActionRequestHandlers>()
+                .get(&window)
+                .unwrap(),
+            &handler
+        ));
+        app.world_mut().remove_resource::<LateIngress>();
+        app.world_mut().entity_mut(window).insert(PrimaryWindow);
+        app.world_mut()
+            .entity_mut(unrelated_window)
+            .remove::<PrimaryWindow>();
+        let _ = scheduled_output(app.world_mut(), entity);
+        app.update();
+        assert!(
+            handler.lock().unwrap().is_empty(),
+            "fresh output discards late uncertain backlog"
+        );
+        let _ = scheduled_output(app.world_mut(), entity);
+        app.update();
+        let request = scheduled_output(app.world_mut(), entity);
+        handler.lock().unwrap().push_back(request.clone());
+        app.update();
+        let guard = ui::product_guard(
+            &ctx,
+            app.world().resource::<fe_ui::actions::UiManager>(),
+            app.world().resource::<fe_ui::node_manager::NodeManager>(),
+            app.world()
+                .resource::<fe_ui::navigation_manager::NavigationManager>(),
+            app.world().resource::<fe_ui::verse_manager::VerseManager>(),
+            app.world().resource::<fe_ui::plugin::LocalUserRole>(),
+            app.world()
+                .resource::<fe_ui::ui_shell::topbar::TopbarState>(),
+            app.world()
+                .resource::<fe_ui::ui_shell::modal::ModalManagerState>(),
+            app.world().resource::<fe_ui::gis::PathEditorState>(),
+        );
+        assert!(
+            app.world_mut()
+                .resource_mut::<Adapter>()
+                .next(&ctx, guard, Instant::now())
+                .is_some(),
+            "later fresh unique output restores ordinary admission"
+        );
+        // Consume this staged delivery before entering another independent lifetime case.
+        ui::retire(&ctx);
+        app.world_mut().resource_mut::<Adapter>().quarantine();
+        ui::activate(&ctx);
+    }
+    let request = scheduled_output(app.world_mut(), entity);
+    let snapshot = ui::complete(
+        &ctx,
+        app.world()
+            .get::<bevy_egui::EguiOutput>(entity)
+            .unwrap()
+            .platform_output
+            .accesskit_update
+            .as_ref()
+            .unwrap(),
+    )
+    .unwrap();
+    assert!(ui::stage(&ctx, &snapshot, &request));
+    app.world_mut()
+        .insert_resource(LateIngress(handler, request.clone()));
+    app.world_mut()
+        .get_mut::<bevy_egui::EguiInput>(entity)
+        .unwrap()
+        .events
+        .extend([
+            egui::Event::AccessKitActionRequest(request),
+            egui::Event::PointerMoved(egui::pos2(200.0, 200.0)),
+        ]);
+    app.add_systems(PreUpdate, begin_scheduled_input)
+        .add_systems(Update, (freeze_after_begin, terminal_replacement).chain());
+    app.update();
 }

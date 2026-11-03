@@ -235,37 +235,31 @@ pub(crate) fn confirm_button(
 
     if is_armed {
         let mut state = armed.expect("current confirmation arm");
-        let mut confirmed = false;
-        let mut own_click = false;
-        ui.horizontal(|ui| {
+        let (confirm, cancel) = ui.horizontal(|ui| {
             let confirm = ui
                 .add(
                     egui::Button::new(egui::RichText::new(confirm_label).small())
                         .fill(theme::BG_DANGER),
                 )
                 .named(ui, format_args!("Confirm {name}"));
-            record_confirmation(ui.ctx(), &confirm, id);
-            state.confirm = Some(confirm.id);
-            if confirm.clicked() {
-                confirmed = true;
-                own_click = true;
-            }
             let cancel = ui
                 .add(
                     egui::Button::new(egui::RichText::new("Cancel").small()).fill(theme::BG_BUTTON),
                 )
                 .named(ui, format_args!("Cancel {name}"));
-            record_confirmation(ui.ctx(), &cancel, id);
-            state.cancel = Some(cancel.id);
-            if cancel.clicked() {
-                own_click = true;
-            }
-        });
-        // A click this frame that landed on neither Confirm nor Cancel is
-        // "elsewhere" — disarm without firing (same convention as dismissing
-        // an open popover by clicking outside it).
+            (confirm, cancel)
+        }).inner;
+        let Some(established) = state.reconcile(ui.ctx(), confirm.id, cancel.id) else {
+            return false;
+        };
+        // Reconcile both actual identities before accepting either activation.
+        let owner = state.owner();
+        record_confirmation(ui.ctx(), &confirm, owner);
+        record_confirmation(ui.ctx(), &cancel, owner);
+        let own_click = confirm.clicked() || cancel.clicked();
+        let confirmed = established && confirm.clicked();
         let clicked_elsewhere = !own_click && ui.ctx().input(|i| i.pointer.any_click());
-        if confirmed || own_click || clicked_elsewhere {
+        if own_click || clicked_elsewhere {
             ui.ctx().data_mut(|d| d.remove::<Confirmation>(id));
         } else {
             ui.ctx().data_mut(|d| d.insert_temp(id, state));
@@ -275,9 +269,9 @@ pub(crate) fn confirm_button(
         let arm = ui
             .add(egui::Button::new(egui::RichText::new(label).small()).fill(theme::BG_DANGER))
             .named(ui, &name);
-        record_confirmation(ui.ctx(), &arm, id);
+        // Unarmed targets do not carry a previous arm generation.
         if arm.clicked() {
-            let state = Confirmation::new(ui.ctx(), now);
+            let state = Confirmation::new(ui.ctx(), id, now);
             ui.ctx().data_mut(|d| d.insert_temp(id, state));
         }
         false

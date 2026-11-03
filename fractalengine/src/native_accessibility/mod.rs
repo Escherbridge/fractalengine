@@ -185,31 +185,44 @@ pub fn install(app: &mut App) {
             intake
                 .after(EguiPostUpdateSet::PostProcessOutput)
                 .after(fe_ui::ui_shell::topbar::WindowChromeApply)
-                .before(AccessibilitySystems::Update)
-                .run_if(fe_runtime::maintenance::editor_running),
+                .before(AccessibilitySystems::Update),
         )
         .add_systems(PostUpdate, restore.after(AccessibilitySystems::Update));
 }
 
 pub fn retire(world: &mut World) {
-    let held = world
-        .get_resource_mut::<DetachedHandler>()
-        .and_then(|mut held| held.0.take());
-    if let Some((window, handler)) = held {
-        let live = world.get::<Window>(window).is_some();
-        if let Some(mut handlers) = world.get_resource_mut::<WinitActionRequestHandlers>() {
-            let _ = restore_entry(window, handler, &mut handlers, live);
-        }
-    }
-    if world.contains_resource::<Adapter>() {
-        world.insert_resource(Adapter::default());
+    if let Some(mut adapter) = world.get_resource_mut::<Adapter>() {
+        adapter.quarantine();
     }
     let mut contexts = world.query::<(&mut EguiContext, &mut EguiInput)>();
     for (mut context, mut input) in contexts.iter_mut(world) {
-        ui::retire(context.get_mut());
-        input
-            .events
-            .retain(|event| !matches!(event, bevy_egui::egui::Event::AccessKitActionRequest(_)));
+        ui::retire_input(context.get_mut(), &mut input.0);
+    }
+}
+
+// Preserve the exact former queue across the windowless SDK poll, even while retired.
+fn quarantine_owned(
+    adapter: &mut Adapter,
+    handlers: &mut WinitActionRequestHandlers,
+    detached: &mut DetachedHandler,
+) {
+    let Some((window, handler)) = adapter.owned_handler() else {
+        return;
+    };
+    adapter.quarantine();
+    if handlers
+        .get(&window)
+        .is_some_and(|current| Arc::ptr_eq(current, &handler))
+    {
+        if detach(window, handlers, detached).is_none() {
+            return;
+        }
+    } else {
+        // A different handler belongs to a different owner; never remove or drain it.
+        adapter.clear();
+    }
+    if let Ok(mut queue) = handler.try_lock() {
+        queue.clear();
     }
 }
 
@@ -230,28 +243,35 @@ fn deliver(
             .read()
             .any(|entity| adapter.owns_window(entity))
     {
-        adapter.clear();
+        adapter.quarantine();
     }
     let Ok(window) = windows.single() else {
-        adapter.clear();
+        adapter.quarantine();
         return;
     };
+    if adapter
+        .owned_handler()
+        .is_some_and(|(owned, _)| owned != window)
+    {
+        adapter.quarantine();
+        return;
+    }
     let Some(handler) = handlers.get(&window) else {
-        adapter.clear();
+        adapter.quarantine();
         return;
     };
     let Some(entity) = contexts.unique(window) else {
-        adapter.clear();
+        adapter.quarantine();
         return;
     };
     let Ok((_, _, mut context, _, mut input, _, _, _)) = contexts.contexts.get_mut(entity) else {
-        adapter.clear();
+        adapter.quarantine();
         return;
     };
     let ctx = context.get_mut();
     if !requested.get() {
         ui::retire(ctx);
-        adapter.clear();
+        adapter.quarantine();
         return;
     }
     ui::activate(ctx);
@@ -283,35 +303,41 @@ fn intake(
     mut detached: ResMut<DetachedHandler>,
     mut contexts: Contexts,
     product: Product,
+    terminal: Option<Res<fe_runtime::maintenance::TerminalMode>>,
     mut removed_contexts: RemovedComponents<EguiContext>,
     mut removed_windows: RemovedComponents<Window>,
 ) {
-    if removed_contexts
+    let removed = removed_contexts
         .read()
         .any(|entity| adapter.owns_context(entity))
         || removed_windows
             .read()
-            .any(|entity| adapter.owns_window(entity))
+            .any(|entity| adapter.owns_window(entity));
+    let window = windows.single().ok();
+    if removed
+        || terminal.is_some_and(|mode| mode.is_terminal())
+        || window.is_none()
+        || adapter
+            .owned_handler()
+            .is_some_and(|(owned, _)| Some(owned) != window)
     {
-        adapter.clear();
-    }
-    let Ok(window) = windows.single() else {
-        adapter.clear();
+        quarantine_owned(&mut adapter, &mut handlers, &mut detached);
         return;
-    };
+    }
+    let window = window.expect("unique actual primary window");
     let Some(handler) = detach(window, &mut handlers, &mut detached) else {
-        adapter.clear();
+        adapter.quarantine();
         return;
     };
     let Some(entity) = contexts.unique(window) else {
-        adapter.clear();
+        adapter.quarantine();
         if let Ok(mut handler) = handler.try_lock() {
             handler.clear();
         }
         return;
     };
     let Ok((_, _, mut context, _, _, output, _, _)) = contexts.contexts.get_mut(entity) else {
-        adapter.clear();
+        adapter.quarantine();
         if let Ok(mut handler) = handler.try_lock() {
             handler.clear();
         }
@@ -320,7 +346,7 @@ fn intake(
     let ctx = context.get_mut();
     if !requested.get() {
         ui::retire(ctx);
-        adapter.clear();
+        adapter.quarantine();
         if let Ok(mut handler) = handler.try_lock() {
             handler.clear();
         }

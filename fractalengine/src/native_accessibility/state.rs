@@ -14,7 +14,7 @@ const MAX_AGE: Duration = Duration::from_millis(250);
 struct Owner {
     window: Entity,
     context: Entity,
-    egui: egui::Context,
+    egui: Option<egui::Context>,
     handler: Handler,
 }
 
@@ -47,15 +47,26 @@ impl Adapter {
             .is_some_and(|owner| owner.window == entity)
     }
 
-    pub fn clear(&mut self) {
-        if let Some(owner) = self.owner.take() {
-            ui::retire(&owner.egui);
+    pub fn owned_handler(&self) -> Option<(Entity, Handler)> {
+        self.owner
+            .as_ref()
+            .map(|owner| (owner.window, owner.handler.clone()))
+    }
+
+    pub fn quarantine(&mut self) {
+        if let Some(ctx) = self.owner.as_mut().and_then(|owner| owner.egui.take()) {
+            ui::retire(&ctx);
         }
         self.snapshot = None;
         self.pending.clear();
         self.delivered_pass = None;
         self.contention = 0;
         self.discard_ingress = true;
+    }
+
+    pub fn clear(&mut self) {
+        self.quarantine();
+        self.owner = None;
     }
 
     pub fn discard_pending(&mut self) {
@@ -72,7 +83,7 @@ impl Adapter {
         if self.owner.as_ref().is_some_and(|owner| {
             owner.window == window
                 && owner.context == context
-                && owner.egui == *egui
+                && owner.egui.as_ref() == Some(egui)
                 && Arc::ptr_eq(&owner.handler, handler)
         }) {
             return;
@@ -82,7 +93,7 @@ impl Adapter {
         self.owner = Some(Owner {
             window,
             context,
-            egui: egui.clone(),
+            egui: Some(egui.clone()),
             handler: handler.clone(),
         });
     }

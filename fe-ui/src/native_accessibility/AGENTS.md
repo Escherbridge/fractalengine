@@ -20,7 +20,9 @@ Snapshot pass/lifetime and current product Guard bind a staged native event. The
 root rechecks the guard and neutral current input before widgets can synthesize a
 fake click. Data or unstaged/multiple/stale events are removed. A discarded egui pass
 never reinserts an event; only the first pass receives RawInput events. Host retirement
-also removes staged RawInput events so terminal UI cannot inherit an earlier click.
+uses retire_input to remove both buffered RawInput and native events already consumed
+into the current Context InputState. Terminal traversal need not call the editor root
+to refuse an earlier click. Normal physical input is retained.
 
 The product Guard is eligibility, never authority. It compares navigation intent,
 manager/access lifetime, hierarchy revision, primary admitted source, selection generation and real role state; blocks any active
@@ -49,7 +51,11 @@ buttons still execute existing role/confirmation/checked-write handlers.
 ## Confirmation
 
 The shared confirm_button arm now owns its context lifetime and exact previously
-rendered Confirm/Cancel IDs. Snapshot metadata carries the owner salt. A native Click
+rendered Confirm/Cancel IDs, a fresh arm generation, and consecutive egui pass continuity.
+Snapshot metadata carries that exact owner/generation. The first armed render publishes
+its pair without accepting confirmation; later renders must reconcile both actual IDs
+before inspecting either click. A changed pair is never adopted into an existing arm.
+A skipped pass retires the arm on reappearance, even within the 4s deadline. A native Click
 elsewhere disarms BEFORE the helper evaluates an armed state, independent of widget
 traversal order. Missing/recreated context, changed IDs or a mismatched owner disarm.
 Current Confirm still fires once, Cancel never fires; physical outside-click and 4s
@@ -59,6 +65,7 @@ read/copy payloads or weaken the host's separate synthetic clipboard suppression
 journey.rs extends the existing confirmation test rather than declaring another test.
 It authors checks for outside-disarm, stale Confirm, valid two-step use, post-stage
 modal/gesture/modifier change, Focus/data refusal, disabled/missing/duplicate IDs,
-full snapshot replacement/cap and context retirement. It also checks normal copy
+full snapshot replacement/cap, changed control-pair IDs, missing/reappearing helpers,
+arm generations, current Cancel and context retirement. It also checks normal copy
 commands. Parent owns execution and actual UIA delivery acceptance; no native runtime
 or rendering result is proved by these authored assertions.

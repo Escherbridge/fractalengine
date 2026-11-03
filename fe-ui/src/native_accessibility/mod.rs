@@ -67,7 +67,7 @@ struct Widget {
     id: egui::Id,
     layer: egui::LayerId,
     enabled: bool,
-    confirmation: Option<egui::Id>,
+    confirmation: Option<confirmation::Owner>,
 }
 
 #[derive(Clone, Copy)]
@@ -76,7 +76,7 @@ struct Delivery {
     guard: Guard,
     target: ak::NodeId,
     action: ak::Action,
-    confirmation: Option<egui::Id>,
+    confirmation: Option<confirmation::Owner>,
 }
 
 struct Pass {
@@ -86,7 +86,7 @@ struct Pass {
     widgets: HashMap<u64, Widget>,
     invalid: bool,
     delivery: Option<Delivery>,
-    semantic_click: Option<(ak::NodeId, Option<egui::Id>)>,
+    semantic_click: Option<(ak::NodeId, Option<confirmation::Owner>)>,
 }
 
 impl Default for Pass {
@@ -120,7 +120,15 @@ pub fn activate(ctx: &egui::Context) {
 }
 
 pub fn retire(ctx: &egui::Context) {
+    strip_requests(ctx);
     ctx.data_mut(|data| data.remove::<Shared>(key()));
+}
+
+pub fn retire_input(ctx: &egui::Context, input: &mut egui::RawInput) {
+    retire(ctx);
+    input
+        .events
+        .retain(|event| !matches!(event, egui::Event::AccessKitActionRequest(_)));
 }
 
 pub fn neutral_raw(input: &egui::RawInput, ctx: &egui::Context) -> bool {
@@ -265,7 +273,11 @@ pub(crate) fn record(ui: &egui::Ui, response: &egui::Response) {
     );
 }
 
-pub(crate) fn record_confirmation(ctx: &egui::Context, response: &egui::Response, owner: egui::Id) {
+pub(crate) fn record_confirmation(
+    ctx: &egui::Context,
+    response: &egui::Response,
+    owner: confirmation::Owner,
+) {
     if let Some(shared) = shared(ctx) {
         if let Ok(mut pass) = shared.try_lock() {
             if let Some(widget) = pass.widgets.get_mut(&response.id.value()) {

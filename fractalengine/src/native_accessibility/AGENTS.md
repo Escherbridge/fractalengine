@@ -33,8 +33,20 @@ and retain the exact Arc in DetachedHandler. Winit's provider still writes that 
 Bevy's poll sees no owned entry and cannot steal a late request or block on its mutex.
 After AccessibilitySystems::Update, restore only if that exact Window is still live,
 no WindowClosed was observed and no different handler was installed. Never overwrite
-a replacement. Other window entries/queues remain unchanged. Terminal retirement
-also reconciles a held entry before dropping private state.
+a replacement. Other window entries/queues remain unchanged.
+
+Loss of a unique actual PrimaryWindow quarantines the exact former queue instead of
+dropping its ownership. PreUpdate cannot rebind to another window while that queue
+is still mapped. PostUpdate intake also runs during terminal mode: it detaches/refuses
+only the former exact handler and preserves the bracket around every flattened poll,
+including late enqueue. The retained owner has only window/context Entity IDs and
+handler Arc; its egui Context, snapshots, pending requests and source validity are
+retired. A replaced/unmapped/closed owner releases quarantine without removing or
+draining a different handler. Returning to the same unique owner requires fresh output
+and discards uncertain backlog before normal admission. A different primary with the
+old live mapped owner remains conservatively unavailable rather than choosing one.
+Terminal retirement uses the same current-InputState plus buffered-RawInput cleanup;
+it never restores a held entry before its scheduled post-poll reconciliation.
 
 Only this adapter drains the owned queue. No flattened ActionRequest reader exists.
 Unsupported targets/actions/data are consumed once with bounded diagnostic counts.
@@ -63,7 +75,13 @@ journey.rs extends the existing input/clipboard journey with actual pinned handl
 queues and ordinary egui input, without creating OS windows. It authors identity-map,
 late-enqueue bracket/replacement, unrelated-queue, per-pass order, no-replay, age/cap,
 unsupported data/Focus, context/handler/window replacement, contention and missing-output
-checks. Source authoring is not test execution. Parent owns builds, the final integrated
+checks. The existing helper also runs a pure Bevy App through production intake/restore
+and a local stand-in for the pinned SDK private poll (its public-map drain), with zero/
+two primaries, late enqueue, unrelated-window publication, and fresh-output recovery.
+A PreUpdate begin_pass -> Update terminal freeze -> replacement widget traversal
+checks current and buffered input retirement while preserving physical input. No OS
+windows or actual private SDK poll are invoked by that fixture.
+Source authoring is not test execution. Parent owns builds, the final integrated
 test sweep and real native UIA/Viewer/Editor acceptance before any observer uses this.
 
 The upstream ActionRequest has no enqueue timestamp or operation nonce. Its age

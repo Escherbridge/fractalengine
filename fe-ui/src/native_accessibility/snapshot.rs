@@ -1,4 +1,4 @@
-use super::{Guard, MAX_NODES, shared};
+use super::{Guard, MAX_NODES, confirmation::Owner, shared};
 use bevy_egui::egui::{self, accesskit as ak};
 use std::collections::{HashMap, HashSet};
 
@@ -6,7 +6,7 @@ pub struct Snapshot {
     pub(super) lifetime: u128,
     pub(super) pass: u64,
     pub(super) guard: Guard,
-    targets: HashMap<ak::NodeId, (bool, Option<egui::Id>)>,
+    targets: HashMap<ak::NodeId, (bool, Option<Owner>)>,
 }
 
 impl Snapshot {
@@ -27,7 +27,7 @@ impl Snapshot {
                 .is_some_and(|(click, _)| request.action == ak::Action::Click && *click)
     }
 
-    pub(super) fn confirmation(&self, target: ak::NodeId) -> Option<egui::Id> {
+    pub(super) fn confirmation(&self, target: ak::NodeId) -> Option<Owner> {
         self.targets.get(&target).and_then(|(_, owner)| *owner)
     }
 }

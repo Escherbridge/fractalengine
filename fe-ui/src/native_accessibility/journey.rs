@@ -24,6 +24,8 @@ struct Harness {
     hide_other: bool,
     disable_other: bool,
     duplicate: bool,
+    hide_confirmation: bool,
+    layout_revision: u64,
 }
 
 impl Harness {
@@ -55,14 +57,18 @@ impl Harness {
             |ctx| {
                 begin_pass(ctx, guard);
                 egui::CentralPanel::default().show(ctx, |ui| {
-                    if crate::panels::widgets::confirm_button(
-                        ui,
-                        "native-row",
-                        "Delete",
-                        "Confirm delete",
-                        "Delete native row",
-                    ) {
-                        self.fired += 1;
+                    if !self.hide_confirmation {
+                        ui.push_id(self.layout_revision, |ui| {
+                            if crate::panels::widgets::confirm_button(
+                                ui,
+                                "native-row",
+                                "Delete",
+                                "Confirm delete",
+                                "Delete native row",
+                            ) {
+                                self.fired += 1;
+                            }
+                        });
                     }
                     if !self.hide_other {
                         let other = ui
@@ -176,6 +182,60 @@ pub(crate) fn extend_confirmation_journey() {
         "the ordinary current two-step path still confirms once"
     );
     h.layout();
+
+    h.click("Delete native row");
+    h.layout();
+    let previous_pair = h.request("Confirm Delete native row");
+    let arm_id = egui::Id::new("confirm_button_armed_at").with("native-row");
+    let generation = h
+        .ctx
+        .data(|d| d.get_temp::<super::Confirmation>(arm_id))
+        .unwrap()
+        .owner();
+    // A new layout changes actual response IDs without changing the product Guard.
+    h.layout_revision += 1;
+    assert!(stage(&h.ctx, h.snapshot.as_ref().unwrap(), &previous_pair));
+    h.frame(
+        vec![egui::Event::AccessKitActionRequest(previous_pair)],
+        egui::Modifiers::NONE,
+    );
+    assert_eq!(
+        h.fired, 1,
+        "changed current pair cannot inherit an arm or confirm"
+    );
+    assert!(
+        h.ctx
+            .data(|d| d.get_temp::<super::Confirmation>(arm_id))
+            .is_none()
+    );
+    h.layout();
+    h.click("Delete native row");
+    h.layout();
+    let new_generation = h
+        .ctx
+        .data(|d| d.get_temp::<super::Confirmation>(arm_id))
+        .unwrap()
+        .owner();
+    assert!(
+        generation != new_generation,
+        "a new arm has a distinct generation"
+    );
+    h.hide_confirmation = true;
+    h.layout();
+    h.hide_confirmation = false;
+    h.layout();
+    assert!(
+        h.ctx
+            .data(|d| d.get_temp::<super::Confirmation>(arm_id))
+            .is_none(),
+        "a disappeared/reappeared helper disarms before rendering its replacement"
+    );
+    assert_eq!(h.fired, 1);
+    h.click("Delete native row");
+    h.layout();
+    h.click("Cancel Delete native row");
+    h.layout();
+    assert_eq!(h.fired, 1, "the current Cancel disarms without confirming");
 
     let request = h.request("Native other control");
     assert!(stage(&h.ctx, h.snapshot.as_ref().unwrap(), &request));
