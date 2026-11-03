@@ -9,6 +9,11 @@ fn reset<T: Resource + Default>(world: &mut World) {
 }
 
 pub fn clear_read_models(world: &mut World) {
+    let mut contexts = world.query::<(&mut bevy_egui::EguiContext, &mut bevy_egui::EguiInput)>();
+    for (mut context, mut input) in contexts.iter_mut(world) {
+        crate::native_accessibility::retire(context.get_mut());
+        input.events.retain(|event| !matches!(event, bevy_egui::egui::Event::AccessKitActionRequest(_)));
+    }
     if let Some(mut assets) = world.get_resource_mut::<crate::scene_assets::SceneAssets>() {
         assets.retire_for_terminal_reset();
     }

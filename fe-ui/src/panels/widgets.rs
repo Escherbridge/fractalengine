@@ -218,16 +218,7 @@ pub(crate) fn role_denial_reason(
     }
 }
 
-/// Two-step inline confirm for a destructive action (X-06; extracted from the
-/// inspector token-revoke pattern at `inspector.rs:924-970`, read-only during
-/// extraction). The first click arms (shows `label`); a second click within
-/// 4 s on the now-shown `confirm_label` button fires (`true`). The armed
-/// state disarms — reverting to the single `label` button — after 4 s, or
-/// immediately on any click elsewhere this frame (clicking Cancel counts as
-/// "elsewhere" and disarms too, without firing). State lives in egui temp
-/// memory keyed by `id_salt`, so callers need no extra struct field (the
-/// motivating case: single-click destruction with no undo, X-06/X-07).
-/// Two-step confirmation with a contextual accessible action name.
+/// Two-step confirmation with native outside-disarm; see panels/AGENTS.md.
 pub(crate) fn confirm_button(
     ui: &mut egui::Ui,
     id_salt: impl std::hash::Hash,
@@ -238,31 +229,35 @@ pub(crate) fn confirm_button(
     const ARM_SECONDS: f64 = 4.0;
     let id = egui::Id::new("confirm_button_armed_at").with(id_salt);
     let now = ui.ctx().input(|i| i.time);
-    let armed_at: Option<f64> = ui.ctx().data(|d| d.get_temp(id));
-    let is_armed = armed_at.is_some_and(|t| now - t < ARM_SECONDS);
+    use crate::native_accessibility::{Confirmation, confirmation_state, record_confirmation};
+    let armed = confirmation_state(ui.ctx(), id);
+    let is_armed = armed.is_some_and(|state| now - state.at < ARM_SECONDS);
 
     if is_armed {
+        let mut state = armed.expect("current confirmation arm");
         let mut confirmed = false;
         let mut own_click = false;
         ui.horizontal(|ui| {
-            if ui
+            let confirm = ui
                 .add(
                     egui::Button::new(egui::RichText::new(confirm_label).small())
                         .fill(theme::BG_DANGER),
                 )
-                .named(ui, format_args!("Confirm {name}"))
-                .clicked()
-            {
+                .named(ui, format_args!("Confirm {name}"));
+            record_confirmation(ui.ctx(), &confirm, id);
+            state.confirm = Some(confirm.id);
+            if confirm.clicked() {
                 confirmed = true;
                 own_click = true;
             }
-            if ui
+            let cancel = ui
                 .add(
                     egui::Button::new(egui::RichText::new("Cancel").small()).fill(theme::BG_BUTTON),
                 )
-                .named(ui, format_args!("Cancel {name}"))
-                .clicked()
-            {
+                .named(ui, format_args!("Cancel {name}"));
+            record_confirmation(ui.ctx(), &cancel, id);
+            state.cancel = Some(cancel.id);
+            if cancel.clicked() {
                 own_click = true;
             }
         });
@@ -271,16 +266,19 @@ pub(crate) fn confirm_button(
         // an open popover by clicking outside it).
         let clicked_elsewhere = !own_click && ui.ctx().input(|i| i.pointer.any_click());
         if confirmed || own_click || clicked_elsewhere {
-            ui.ctx().data_mut(|d| d.remove::<f64>(id));
+            ui.ctx().data_mut(|d| d.remove::<Confirmation>(id));
+        } else {
+            ui.ctx().data_mut(|d| d.insert_temp(id, state));
         }
         confirmed
     } else {
-        if ui
+        let arm = ui
             .add(egui::Button::new(egui::RichText::new(label).small()).fill(theme::BG_DANGER))
-            .named(ui, &name)
-            .clicked()
-        {
-            ui.ctx().data_mut(|d| d.insert_temp(id, now));
+            .named(ui, &name);
+        record_confirmation(ui.ctx(), &arm, id);
+        if arm.clicked() {
+            let state = Confirmation::new(ui.ctx(), now);
+            ui.ctx().data_mut(|d| d.insert_temp(id, state));
         }
         false
     }
@@ -608,5 +606,6 @@ mod tests {
                 "after 4s with no click, the arm must time out back to the single button"
             );
         });
+        crate::native_accessibility::journey::extend_confirmation_journey();
     }
 }

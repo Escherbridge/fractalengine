@@ -17,6 +17,7 @@ mod asset_bridge;
 mod api_endpoint;
 mod gpx_bridge;
 mod input_bridge;
+mod native_accessibility;
 mod plugin_bridge;
 mod panic_log;
 mod qa_a11y_timing;
@@ -765,6 +766,7 @@ fn main() {
     // Agent input: replay synthetic batches as winit-shaped messages ahead of
     // bevy_input + bevy_egui (src/AGENTS.md §agent-input-surface).
     input_bridge::install(&mut app, input_rx);
+    native_accessibility::install(&mut app);
     qa_debug_bridge::install(
         &mut app,
         qa_enabled,

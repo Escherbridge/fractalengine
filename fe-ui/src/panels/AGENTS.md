@@ -872,3 +872,13 @@ verified digest, MIME/size and entire reference set, with virtualized scrolling
 for long sets and a Portal-reference marker. Adoption records responsibility
 for the reviewed local copy; it does not assert original upload or peer
 delivery. Unresolved permissions suppress candidate details and actions.
+
+
+## Native semantic activation
+
+`gardener_console` brackets widget traversal with ordinary native input guards.
+The shared confirm_button retains context/Confirm/Cancel identity and disarms on
+a native Click elsewhere before evaluating confirmation. Node/Group callbacks
+reject modifier-bearing native activation but preserve ordinary physical Ctrl/Shift
+selection and existing NodeManager routing to Inspector/tool state. See
+`../native_accessibility/AGENTS.md`; no native action bypasses normal GUI handlers.

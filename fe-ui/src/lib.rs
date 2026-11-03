@@ -3,6 +3,7 @@
 #![allow(clippy::too_many_arguments)]
 
 pub mod accessibility;
+pub mod native_accessibility;
 pub mod actions;
 pub mod asset_ops;
 pub mod atlas;

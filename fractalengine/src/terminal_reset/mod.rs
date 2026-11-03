@@ -236,6 +236,7 @@ fn freeze_editor(world: &mut World, supervisor: &mut Supervisor) -> Result<(), &
     world.remove_resource::<crate::terrain_bridge::HexonAssembleResults>();
     world.remove_resource::<crate::terrain_bridge::StreamedBundleResults>();
     crate::terrain_bridge::discard_terminal_state(world);
+    crate::native_accessibility::retire(world);
     fe_ui::maintenance::clear_read_models(world);
     if let Some(mut pending) = world.get_resource_mut::<crate::gpx_bridge::PendingPathEdits>() {
         pending.retire_for_terminal_reset();

@@ -1838,3 +1838,14 @@ actual corner/smoothness value; the compact persistence writer is not a source
 identity encoder. JSON route materialization calls the same decoder, while editor
 PathPointRow comparisons remain lower-precision draft checks. The actual Mesh3d ID
 and prepared geometry digest remain required; no live-map retagging was added.
+
+
+## Ordinary native accessibility adapter
+
+`native_accessibility/` owns the unique primary window/context/handler input seam.
+It brackets Bevy's flattened poll by retaining only the exact owned handler Arc,
+then restores a still-live unreplaced entry. Fresh full-pass metadata and current
+product guards permit one ordinary Click per pass; no flattened second reader,
+HTTP authorization change, direct UiAction injection or capture/helper is added.
+Focus remains unsupported. See `native_accessibility/AGENTS.md` for source/queue
+limits, lifecycle and authored existing-journey coverage.

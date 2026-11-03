@@ -2043,5 +2043,6 @@ mod tests {
         h.app.update();
         assert!(h.idle());
         assert!(!h.mouse().pressed(MouseButton::Left));
+        crate::native_accessibility::journey::extend_owned_input_journey();
     }
 }

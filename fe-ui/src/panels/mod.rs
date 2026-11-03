@@ -155,6 +155,8 @@ pub fn gardener_console(
     volume_report: &crate::panels::volume_report_panel::VolumeReportState,
     settings_session: &mut crate::settings::SettingsSession,
 ) -> egui::Rect {
+    crate::native_accessibility::begin_pass(ctx, crate::native_accessibility::product_guard(
+        ctx, ui_mgr, node_mgr, nav, hierarchy, local_role, topbar_state, modal, path_state));
     crate::ui_shell::layout_policy::begin_ui_pass(ctx);
     crate::ui_shell::layout_policy::apply_style(ctx);
     // Repair conditional editor state; see `panels/AGENTS.md` §numeric-boundary.
@@ -416,6 +418,8 @@ pub fn gardener_console(
         let _ = guarded(modal, "toast", || render_toast(ctx, ui_mgr));
     }
 
+    crate::native_accessibility::finish_pass(ctx, crate::native_accessibility::product_guard(
+        ctx, ui_mgr, node_mgr, nav, hierarchy, local_role, topbar_state, modal, path_state));
     viewport_response.response.rect
 }
 

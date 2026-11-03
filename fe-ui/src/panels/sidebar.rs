@@ -790,7 +790,7 @@ fn render_nodes(
                     node.set_selected(selected > 0 && selected == members.len());
                     node.set_description(if selected > 0 && selected < members.len() { "Partially selected group" } else { "Petal node group" });
                 });
-                if response.clicked() {
+                if response.clicked() && crate::native_accessibility::selection_allowed(ui.ctx(), &response) {
                     let command = ui.input(|input| input.modifiers.command || input.modifiers.ctrl);
                     node_mgr.request_selection(scope.ancestry.petal_id, members.clone(), if command { crate::node_manager::SelectionMode::Toggle } else { crate::node_manager::SelectionMode::Replace }, visible_order.clone());
                 }
@@ -924,7 +924,7 @@ fn render_node_rows(
         } else {
             label_resp.on_hover_text(format!("Enter {petal_name} to select this object. Hidden objects must be shown before selection."))
         };
-        if label_resp.clicked() {
+        if label_resp.clicked() && crate::native_accessibility::selection_allowed(ui.ctx(), &label_resp) {
             if is_alt && is_active_petal && local_role.can_edit() {
                 node_alt_click = Some((node_id.clone(), node_name.clone(), webpage_url));
             } else {

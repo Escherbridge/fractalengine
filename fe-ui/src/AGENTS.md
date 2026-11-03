@@ -1469,3 +1469,13 @@ PanelView; accepted writes remain on the independent SceneAssets Resource.
 The advance system runs after the sole sync-event drain and PostSelection,
 while private DB outcomes are routed inline with complete current admissions.
 See `scene_assets/AGENTS.md` for exact ownership and reset boundaries.
+
+
+## Ordinary native accessibility input
+
+`native_accessibility/` supplies bounded completed-pass response validity and the
+UI-root current product guard. It is independent of QA HTTP control and entity
+authorization. The host owns exact per-window queue consumption; existing
+NodeManager/Inspector/tool and checked-write routes execute actual clicks. Initial
+support is Click+None only; Focus/modal/text/scroll support is not claimed. See
+`native_accessibility/AGENTS.md` for confirmation, neutral modifiers and reset.
