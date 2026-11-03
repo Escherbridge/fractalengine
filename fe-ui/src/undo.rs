@@ -207,10 +207,21 @@ pub struct PathProjection {
     pub node_id: String,
     /// Stored petal owning the confirmed route.
     pub petal_id: String,
+    /// Positive journal version of the confirmed points.
+    pub history_version: i64,
     /// Complete point rows with their original metadata.
     pub points: Value,
 }
 impl PathProjection {
+    /// Reject stale receipts before the host changes route or editor caches.
+    pub fn is_current(&self, manager: &VerseManager) -> bool {
+        self.history_version > 0
+            && manager.petal_id_of(&self.node_id) == Some(self.petal_id.as_str())
+            && manager
+                .committed_versions
+                .get(&self.node_id)
+                .is_none_or(|version| *version <= self.history_version)
+    }
     /// Decode the confirmed route for the editor's existing projection.
     pub fn editor_rows(&self) -> Vec<crate::gis::PathPointRow> {
         crate::gis::decode_gpx_points(&self.points)
@@ -221,6 +232,8 @@ impl PathProjection {
 #[derive(Resource, Default)]
 pub struct UndoState {
     projections: VecDeque<PathProjection>,
+    hydration_nodes: VecDeque<String>,
+    hydration_hierarchy: bool,
     navigation: Option<[String; 3]>,
     scope: Option<String>,
     petal_id: Option<String>,
@@ -277,6 +290,8 @@ impl UndoState {
         self.redo.clear();
         self.pending = None;
         self.projections.clear();
+        self.hydration_nodes.clear();
+        self.hydration_hierarchy = false;
     }
     /// Recheck the actual navigation resource at a host bridge boundary.
     pub fn synchronize_navigation(&mut self, nav: &NavigationManager) {
@@ -287,7 +302,14 @@ impl UndoState {
         self.sync(nav);
         self.projections.pop_front()
     }
-    fn project_path(&mut self, node_id: &str, petal_id: &str, points: Value) {
+    fn project_path(&mut self, node_id: &str, petal_id: &str, history_version: i64, points: Value) {
+        if history_version <= 0
+            || self.projections.iter().any(|projection| {
+                projection.node_id == node_id && projection.history_version > history_version
+            })
+        {
+            return;
+        }
         self.projections.retain(|p| p.node_id != node_id);
         if self.projections.len() >= MAX_ENTRIES {
             self.projections.pop_front();
@@ -295,8 +317,50 @@ impl UndoState {
         self.projections.push_back(PathProjection {
             node_id: node_id.into(),
             petal_id: petal_id.into(),
+            history_version,
             points,
         });
+    }
+    fn request_hydration(&mut self, node_id: &str) {
+        self.hydration_hierarchy = true;
+        if !self.hydration_nodes.iter().any(|id| id == node_id) {
+            if self.hydration_nodes.len() >= MAX_ENTRIES {
+                self.hydration_nodes.pop_front();
+            }
+            self.hydration_nodes.push_back(node_id.into());
+        }
+    }
+    fn flush_hydration(&mut self, db: &crossbeam::channel::Sender<DbCommand>) {
+        if self.hydration_hierarchy {
+            match db.try_send(DbCommand::LoadHierarchy) {
+                Ok(()) => self.hydration_hierarchy = false,
+                Err(crossbeam::channel::TrySendError::Full(_)) => return,
+                Err(crossbeam::channel::TrySendError::Disconnected(_)) => {
+                    bevy::log::warn!("Database connection closed while hydrating the current path");
+                    self.hydration_hierarchy = false;
+                    self.hydration_nodes.clear();
+                    return;
+                }
+            }
+        }
+        while let Some(node_id) = self.hydration_nodes.front() {
+            match db.try_send(DbCommand::GetNodeProperties {
+                node_id: node_id.clone(),
+                correlation_id: None,
+            }) {
+                Ok(()) => {
+                    self.hydration_nodes.pop_front();
+                }
+                Err(crossbeam::channel::TrySendError::Full(_)) => return,
+                Err(crossbeam::channel::TrySendError::Disconnected(_)) => {
+                    bevy::log::warn!(
+                        "Database connection closed while hydrating current path properties"
+                    );
+                    self.hydration_nodes.clear();
+                    return;
+                }
+            }
+        }
     }
     #[cfg(test)]
     pub(crate) fn history_counts(&self) -> (usize, usize) {
@@ -851,7 +915,7 @@ impl UndoState {
 
 pub(crate) fn observe_results(
     mut results: MessageReader<DbResult>,
-    nav: Res<NavigationManager>,
+    mut nav: ResMut<NavigationManager>,
     mut undo: ResMut<UndoState>,
     db: Res<fe_runtime::app::DbCommandSender>,
     mut ui: ResMut<crate::actions::UiManager>,
@@ -880,6 +944,7 @@ pub(crate) fn observe_results(
                                 undo.project_path(
                                     &receipt.node_id,
                                     &receipt.state.petal_id,
+                                    receipt.history_version,
                                     points.clone(),
                                 );
                             }
@@ -939,20 +1004,28 @@ pub(crate) fn observe_results(
                     && p.generation == undo.generation
             }) =>
             {
-                if undo
+                let path = undo
                     .pending
                     .as_ref()
-                    .and_then(|p| p.entry.as_ref())
-                    .is_some_and(|e| matches!(e.before, EditValue::PathPoints(_)))
-                {
-                    undo.project_path(
-                        node_id,
-                        &current.petal_id,
-                        current
-                            .properties
-                            .get("gpx_points")
-                            .cloned()
-                            .unwrap_or_else(|| serde_json::json!([])),
+                    .and_then(|pending| pending.entry.as_ref())
+                    .is_some_and(|entry| matches!(entry.before, EditValue::PathPoints(_)));
+                let confirmed_path_version = receipt
+                    .as_ref()
+                    .filter(|_| path)
+                    .filter(|receipt| {
+                        receipt.node_id == *node_id
+                            && receipt.history_version > 0
+                            && serde_json::to_value(&receipt.state)
+                                .ok()
+                                .zip(serde_json::to_value(current).ok())
+                                .is_some_and(|(saved, current)| saved == current)
+                    })
+                    .map(|receipt| receipt.history_version);
+                if path && confirmed_path_version.is_none() {
+                    undo.request_hydration(node_id);
+                    nav.suppress_initial_auto_navigation();
+                    ui.show_advisory(
+                        "Path reconciliation has no current version; refreshing authoritative state. The edit is unsaved or its current outcome is unknown.", now,
                     );
                 }
                 if let Some(cache) = path_cache.as_deref_mut() {
@@ -978,6 +1051,17 @@ pub(crate) fn observe_results(
                 if let Some(receipt) = receipt {
                     if let Err(error) = undo.confirm_history(receipt, current) {
                         ui.show_error(error, now);
+                    } else if let Some(version) = confirmed_path_version {
+                        undo.project_path(
+                            node_id,
+                            &current.petal_id,
+                            version,
+                            current
+                                .properties
+                                .get("gpx_points")
+                                .cloned()
+                                .unwrap_or_else(|| serde_json::json!([])),
+                        );
                     }
                 } else {
                     let pending = undo.pending.take().unwrap();
@@ -989,7 +1073,14 @@ pub(crate) fn observe_results(
                         }
                         undo.redo.clear();
                     }
-                    ui.show_advisory("Edit was not committed; current stored state restored", now);
+                    ui.show_advisory(
+                        if path {
+                            "Edit was not committed; refreshing the current stored path"
+                        } else {
+                            "Edit was not committed; current stored state restored"
+                        },
+                        now,
+                    );
                 }
             }
             DbResult::DatabaseReset { .. } => {
@@ -997,6 +1088,8 @@ pub(crate) fn observe_results(
                 undo.navigation = None;
                 undo.generation = undo.generation.wrapping_add(1);
                 undo.projections.clear();
+                undo.hydration_nodes.clear();
+                undo.hydration_hierarchy = false;
                 undo.undo.clear();
                 undo.redo.clear();
                 undo.pending = None;
@@ -1037,4 +1130,5 @@ pub(crate) fn observe_results(
             ui.show_error(error, now);
         }
     }
+    undo.flush_hydration(&db.0);
 }

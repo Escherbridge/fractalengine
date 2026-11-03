@@ -1150,6 +1150,8 @@ struct PendingAnnotateCreate {
 #[derive(Resource, Default)]
 pub struct PendingPathEdits {
     checked_reads:HashMap<String,String>,
+    projection_petal_id: Option<String>,
+    projected_versions: HashMap<String, i64>,
     reads: HashMap<String, VecDeque<PendingPathRead>>,
     /// FR-4: authored-`CreateTrack` waiters keyed by a process-unique
     /// correlation id (not `(petal_id, name)`) so a same-named GPX import in
@@ -1172,6 +1174,26 @@ pub struct PendingPathEdits {
     /// this window enqueues onto `reads` without issuing a redundant seed read,
     /// so overlapping appends serialize against one read instead of racing two.
     seed_pending: std::collections::HashSet<String>,
+}
+
+impl PendingPathEdits {
+    fn accept_path_projection(&mut self, projection: &fe_ui::undo::PathProjection) -> bool {
+        if self.projection_petal_id.as_deref() != Some(projection.petal_id.as_str()) {
+            self.projected_versions.clear();
+            self.projection_petal_id = Some(projection.petal_id.clone());
+        }
+        if projection.history_version <= 0
+            || self
+                .projected_versions
+                .get(&projection.node_id)
+                .is_some_and(|version| *version > projection.history_version)
+        {
+            return false;
+        }
+        self.projected_versions
+            .insert(projection.node_id.clone(), projection.history_version);
+        true
+    }
 }
 
 #[derive(bevy::ecs::system::SystemParam)]
@@ -1762,7 +1784,18 @@ pub fn advance_path_edits(
     mut path_state: Option<ResMut<fe_ui::gis::PathEditorState>>,
     nav: Res<fe_ui::navigation_manager::NavigationManager>,
     mut ui: Option<ResMut<fe_ui::actions::UiManager>>,
+    manager: Res<VerseManager>,
 ) {
+    if pending.projection_petal_id != nav.active_petal_id
+        || nav
+            .active_petal_id
+            .as_deref()
+            .and_then(|id| manager.find_petal(id))
+            .is_none()
+    {
+        pending.projected_versions.clear();
+        pending.projection_petal_id = nav.active_petal_id.clone();
+    }
     loop {
         let projection = ui
             .as_mut()
@@ -1771,7 +1804,17 @@ pub fn advance_path_edits(
         let Some(projection) = projection else {
             break;
         };
-        if active_terrain.petal_id.as_deref() != Some(projection.petal_id.as_str()) {
+        if active_terrain.petal_id.as_deref() != Some(projection.petal_id.as_str())
+            || !projection.is_current(&manager)
+        {
+            continue;
+        }
+        if let Some(petal) = manager.find_petal(&projection.petal_id) {
+            pending
+                .projected_versions
+                .retain(|id, _| petal.nodes.iter().any(|node| node.id == *id));
+        }
+        if !pending.accept_path_projection(&projection) {
             continue;
         }
         let points = json_to_route_points(&projection.points);
@@ -2556,6 +2599,8 @@ pub fn request_petal_gpx_materialization(
     // growth across petal switches.
     pending.in_flight_points.clear();
     pending.seed_pending.clear();
+    pending.projected_versions.clear();
+    pending.projection_petal_id = active_terrain.petal_id.clone();
     let Some(petal_id) = &active_terrain.petal_id else {
         return;
     };
@@ -2790,28 +2835,136 @@ mod tests {
         assert_eq!(back[0].handle_out, Some([1.0, 0.0, -0.5]));
         assert_eq!(back[0].corner, CornerKind::Symmetric);
         assert!((back[0].smoothness - 0.5).abs() < f32::EPSILON);
-        let before=route_points_to_json(&back);
-        let projection=fe_ui::undo::PathProjection {node_id:"track".into(),petal_id:"p".into(),points:before.clone()};
-        let rows=projection.editor_rows();
-        let nav=fe_ui::navigation_manager::NavigationManager {active_verse_id:Some("v".into()),active_fractal_id:Some("f".into()),active_petal_id:Some("p".into()),..Default::default()};
-        let mut undo=fe_ui::undo::UndoState::default();
-        let request=undo.reserve_path(&nav,"track",0,rows[0].position,[4.0,3.0,6.0],Some(7),&rows).unwrap().unwrap();
+        let before = route_points_to_json(&back);
+        let projection = fe_ui::undo::PathProjection {
+            node_id: "track".into(),
+            petal_id: "p".into(),
+            history_version: 8,
+            points: before.clone(),
+        };
+        let mut pending = PendingPathEdits::default();
+        assert!(pending.accept_path_projection(&projection));
+        let older = fe_ui::undo::PathProjection {
+            history_version: 7,
+            ..projection.clone()
+        };
+        assert!(
+            !pending.accept_path_projection(&older),
+            "ordinary v7 cannot overwrite a consumed batch v8"
+        );
+        let unknown = fe_ui::undo::PathProjection {
+            history_version: 0,
+            ..projection.clone()
+        };
+        assert!(
+            !pending.accept_path_projection(&unknown),
+            "legacy reads cannot invent a committed version"
+        );
+        assert!(
+            !projection.is_current(&VerseManager::default()),
+            "missing objects cannot regain rendered routes"
+        );
+        let other_petal = fe_ui::undo::PathProjection {
+            petal_id: "other".into(),
+            history_version: 1,
+            ..projection.clone()
+        };
+        assert!(pending.accept_path_projection(&other_petal));
+        assert_eq!(
+            pending.projected_versions.len(),
+            1,
+            "projection watermark is scoped to one Petal"
+        );
+        let rows = projection.editor_rows();
+        let nav = fe_ui::navigation_manager::NavigationManager {
+            active_verse_id: Some("v".into()),
+            active_fractal_id: Some("f".into()),
+            active_petal_id: Some("p".into()),
+            ..Default::default()
+        };
+        let mut undo = fe_ui::undo::UndoState::default();
+        let request = undo
+            .reserve_path(
+                &nav,
+                "track",
+                0,
+                rows[0].position,
+                [4.0, 3.0, 6.0],
+                Some(7),
+                &rows,
+            )
+            .unwrap()
+            .unwrap();
         let current:fe_runtime::node_history::NodeRowSnapshot=serde_json::from_value(serde_json::json!({"node_id":"track","petal_id":"p","position":[0.0,0.0,0.0],"elevation":0.0,"rotation":[0.0,0.0,0.0],"scale":[1.0,1.0,1.0],"interactive":false,"created_at":"test","edit_seq":0,"properties":{"gpx_points":before}})).unwrap();
-        let (tx,rx)=crossbeam::channel::unbounded();undo.commit_path(&nav,&request,&current,&tx).unwrap();
-        let DbCommand::CommitCheckedNodeMutation {mutation:fe_runtime::messages::NodeMutation::PropertySet {value,..},expected,correlation_id,..}=rx.try_recv().unwrap() else {panic!("point move requires committed receipt contract")};
-        assert_eq!(correlation_id,request);assert_eq!(expected.history_version,Some(7));
-        assert_eq!(value[0].as_array().unwrap()[3..],before[0].as_array().unwrap()[3..]);
-        assert!(undo.is_pending());assert!(undo.take_path_projection(&nav).is_none(),"no render projection before matching receipt");
-        let mut authored=fe_ui::undo::UndoState::default();let mut authored_rows=rows.clone();authored_rows[0].time_seconds=None;
-        let id=authored.reserve_path(&nav,"track",0,authored_rows[0].position,[4.0,3.0,6.0],Some(7),&authored_rows).unwrap().unwrap();
-        authored.commit_path(&nav,&id,&current,&tx).unwrap();
-        let DbCommand::CommitCheckedNodeMutation {mutation:fe_runtime::messages::NodeMutation::PropertySet {value,..},..}=rx.try_recv().unwrap() else {panic!("authored timestamp encoding must remain editable")};assert_eq!(value[0][3],before[0][3]);
-        for (fractal,petal) in [("f","another-petal"),("another-fractal","p")] {
-            let mut delayed=fe_ui::undo::UndoState::default();let id=delayed.reserve_path(&nav,"track",0,rows[0].position,[4.0,3.0,6.0],Some(7),&rows).unwrap().unwrap();
-            let changed=fe_ui::navigation_manager::NavigationManager {active_verse_id:Some("v".into()),active_fractal_id:Some(fractal.into()),active_petal_id:Some(petal.into()),..Default::default()};
-            assert!(delayed.commit_path(&changed,&id,&current,&tx).is_err());assert!(rx.try_recv().is_err());
+        let (tx, rx) = crossbeam::channel::unbounded();
+        undo.commit_path(&nav, &request, &current, &tx).unwrap();
+        let DbCommand::CommitCheckedNodeMutation {
+            mutation: fe_runtime::messages::NodeMutation::PropertySet { value, .. },
+            expected,
+            correlation_id,
+            ..
+        } = rx.try_recv().unwrap()
+        else {
+            panic!("point move requires committed receipt contract")
+        };
+        assert_eq!(correlation_id, request);
+        assert_eq!(expected.history_version, Some(7));
+        assert_eq!(
+            value[0].as_array().unwrap()[3..],
+            before[0].as_array().unwrap()[3..]
+        );
+        assert!(undo.is_pending());
+        assert!(
+            undo.take_path_projection(&nav).is_none(),
+            "no render projection before matching receipt"
+        );
+        let mut authored = fe_ui::undo::UndoState::default();
+        let mut authored_rows = rows.clone();
+        authored_rows[0].time_seconds = None;
+        let id = authored
+            .reserve_path(
+                &nav,
+                "track",
+                0,
+                authored_rows[0].position,
+                [4.0, 3.0, 6.0],
+                Some(7),
+                &authored_rows,
+            )
+            .unwrap()
+            .unwrap();
+        authored.commit_path(&nav, &id, &current, &tx).unwrap();
+        let DbCommand::CommitCheckedNodeMutation {
+            mutation: fe_runtime::messages::NodeMutation::PropertySet { value, .. },
+            ..
+        } = rx.try_recv().unwrap()
+        else {
+            panic!("authored timestamp encoding must remain editable")
+        };
+        assert_eq!(value[0][3], before[0][3]);
+        for (fractal, petal) in [("f", "another-petal"), ("another-fractal", "p")] {
+            let mut delayed = fe_ui::undo::UndoState::default();
+            let id = delayed
+                .reserve_path(
+                    &nav,
+                    "track",
+                    0,
+                    rows[0].position,
+                    [4.0, 3.0, 6.0],
+                    Some(7),
+                    &rows,
+                )
+                .unwrap()
+                .unwrap();
+            let changed = fe_ui::navigation_manager::NavigationManager {
+                active_verse_id: Some("v".into()),
+                active_fractal_id: Some(fractal.into()),
+                active_petal_id: Some(petal.into()),
+                ..Default::default()
+            };
+            assert!(delayed.commit_path(&changed, &id, &current, &tx).is_err());
+            assert!(rx.try_recv().is_err());
         }
-
     }
 
     #[test]
