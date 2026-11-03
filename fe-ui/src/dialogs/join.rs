@@ -11,9 +11,7 @@ use crate::theme;
 use fe_runtime::join_invite::JoinCredential;
 use fe_runtime::messages::DbCommand;
 
-/// How long a sent Join locks the dialog. Every join replies typed
-/// (`VerseJoined`/`JoinVerseFailed`), so this only fires when the DB thread
-/// died mid-request — without it Cancel and the close-X would never return.
+/// Deadline for the dialog's pending projection.
 const JOIN_LOCK_TIMEOUT_SECONDS: f64 = 30.0;
 
 const MAX_INVITE_BYTES: usize = 64 * 1024;

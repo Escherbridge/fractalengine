@@ -51,6 +51,9 @@ const OTHER_DISPATCHED_MUTATION_KINDS: &[&str] = &[
     "CreateNode",
     "GenerateVerseInvite",
     "JoinVerseByInvite",
+    "IssueJoinInvite",
+    "AdmitJoinInvite",
+    "FinalizeJoinProof",
     "ResetDatabase",
     "UpdateNodeTransform",
     "UpdateNodeUrl",
@@ -309,6 +312,12 @@ mod tests {
     #[test]
     fn observation_family_maps_under_the_spec10_schema_and_d_cl20_stays_refused() {
         let mut inventory = MappingInventory::seeded();
+        for kind in ["IssueJoinInvite", "AdmitJoinInvite", "FinalizeJoinProof"] {
+            assert!(matches!(inventory.status(kind), Some(MappingStatus::UnmappedDeferred { .. })));
+        }
+        for kind in ["PrepareJoinInvite", "CheckJoinReadiness"] {
+            assert!(inventory.status(kind).is_none());
+        }
         let unmapped_before = inventory.unmapped_count();
         inventory
             .register_observation_family()

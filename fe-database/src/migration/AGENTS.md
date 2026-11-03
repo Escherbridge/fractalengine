@@ -30,6 +30,11 @@ startup per §2.2's "MUST state its mode in diagnostics."
 
 ## §mapping-inventory / §inventory-scope
 
+Addressed invitation issuance, admission and Manager-proof finalization are registered
+as deferred mutation kinds. Preparation and readiness inspect current authority without
+publishing state and remain outside this inventory. Local proof activation and the
+checked role writer do not establish a canonical mapping or paired convergence.
+
 `MappingInventory` (`mapping_inventory.rs`) is seeded from a **hand-written**
 list of every currently-dispatched `DbCommand` (`fe-runtime/src/messages.rs`)
 mutation variant, split into the six permanently-deferred D-CL20 kinds

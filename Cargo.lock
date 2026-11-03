@@ -5219,6 +5219,8 @@ dependencies = [
  "fe-sdk",
  "fe-terrain",
  "hex",
+ "iroh",
+ "iroh-docs",
  "rand 0.8.6",
  "serde",
  "serde_json",
