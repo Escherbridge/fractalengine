@@ -4801,6 +4801,138 @@ mod tests {
                 diagnostic.contains("statement 2") && diagnostic.contains("unrecognized_database_error")
             );
             assert!(!diagnostic.contains("secret") && diagnostic.len() < 256);
+            // Schema-less legacy type witnesses stay exact without rebinding decoded JSON.
+            let metadata_db = probe_db().await;
+            for mutation in [
+                "asset_id=$replacement",
+                "petal_id=NULL",
+                "owner_did=NULL",
+                "content_hash=$replacement_hash",
+                "content_type='model/gltf+json'",
+                "size_bytes=4.0",
+            ] {
+                let fixture = ulid::Ulid::new().to_string();
+                let replacement = ulid::Ulid::new().to_string();
+                let hash = "00".repeat(32);
+                let (_, missing) = scene::capture_asset_metadata(&metadata_db, &fixture)
+                    .await
+                    .unwrap();
+                assert!(missing.is_empty());
+                metadata_db.query("CREATE asset SET asset_id=$fixture,name='metadata fixture',content_hash=$hash,content_type='model/gltf-binary',size_bytes=4,created_at='2026-11-03',petal_id=NONE,owner_did=NONE")
+                .bind(("fixture",fixture.clone())).bind(("hash",hash)).await.unwrap().check().unwrap();
+                assert!(
+                    metadata_db
+                        .query(format!(
+                            "BEGIN TRANSACTION; {}; COMMIT TRANSACTION;",
+                            scene::asset_metadata_fence()
+                        ))
+                        .bind(("scene_current_asset", fixture.clone()))
+                        .bind(("scene_current_asset_fingerprints", missing))
+                        .await
+                        .unwrap()
+                        .check()
+                        .is_err(),
+                    "asset creation must invalidate an absent snapshot"
+                );
+                let (rows, fingerprints) = scene::capture_asset_metadata(&metadata_db, &fixture)
+                    .await
+                    .unwrap();
+                assert_eq!(rows.len(), 1);
+                metadata_db
+                    .query(format!(
+                        "BEGIN TRANSACTION; {}; COMMIT TRANSACTION;",
+                        scene::asset_metadata_fence()
+                    ))
+                    .bind(("scene_current_asset", fixture.clone()))
+                    .bind(("scene_current_asset_fingerprints", fingerprints.clone()))
+                    .await
+                    .unwrap()
+                    .check()
+                    .unwrap();
+                metadata_db
+                    .query("UPDATE asset SET name='unfenced descriptive rename' WHERE asset_id=$fixture")
+                    .bind(("fixture", fixture.clone()))
+                    .await
+                    .unwrap()
+                    .check()
+                    .unwrap();
+                metadata_db
+                    .query(format!(
+                        "BEGIN TRANSACTION; {}; COMMIT TRANSACTION;",
+                        scene::asset_metadata_fence()
+                    ))
+                    .bind(("scene_current_asset", fixture.clone()))
+                    .bind(("scene_current_asset_fingerprints", fingerprints.clone()))
+                    .await
+                    .unwrap()
+                    .check()
+                    .unwrap();
+                metadata_db
+                    .query(format!(
+                        "UPDATE asset SET {mutation} WHERE asset_id=$fixture"
+                    ))
+                    .bind(("fixture", fixture.clone()))
+                    .bind(("replacement", replacement.clone()))
+                    .bind(("replacement_hash", "11".repeat(32)))
+                    .await
+                    .unwrap()
+                    .check()
+                    .unwrap();
+                assert!(
+                    metadata_db
+                        .query(format!(
+                            "BEGIN TRANSACTION; {}; COMMIT TRANSACTION;",
+                            scene::asset_metadata_fence()
+                        ))
+                        .bind(("scene_current_asset", fixture.clone()))
+                        .bind(("scene_current_asset_fingerprints", fingerprints))
+                        .await
+                        .unwrap()
+                        .check()
+                        .is_err(),
+                    "each captured field/type remains fenced: {mutation}"
+                );
+                let current_id = if mutation == "asset_id=$replacement" {
+                    &replacement
+                } else {
+                    &fixture
+                };
+                let (_, fresh) = scene::capture_asset_metadata(&metadata_db, current_id)
+                    .await
+                    .unwrap();
+                metadata_db
+                    .query(format!(
+                        "BEGIN TRANSACTION; {}; COMMIT TRANSACTION;",
+                        scene::asset_metadata_fence()
+                    ))
+                    .bind(("scene_current_asset", current_id.clone()))
+                    .bind(("scene_current_asset_fingerprints", fresh.clone()))
+                    .await
+                    .unwrap()
+                    .check()
+                    .unwrap();
+                metadata_db
+                    .query("DELETE asset WHERE asset_id=$fixture")
+                    .bind(("fixture", current_id.clone()))
+                    .await
+                    .unwrap()
+                    .check()
+                    .unwrap();
+                assert!(
+                    metadata_db
+                        .query(format!(
+                            "BEGIN TRANSACTION; {}; COMMIT TRANSACTION;",
+                            scene::asset_metadata_fence()
+                        ))
+                        .bind(("scene_current_asset", current_id.clone()))
+                        .bind(("scene_current_asset_fingerprints", fresh))
+                        .await
+                        .unwrap()
+                        .check()
+                        .is_err(),
+                    "asset deletion must invalidate its captured snapshot"
+                );
+            }
             let scope = "VERSE#scene-v-FRACTAL#scene-f-PETAL#scene-p";
             let properties = json!({"nested":{"null":null,"measurements":[{"t":1,"value":10.5},null,{"t":2,"value":12}]},"remove_me":{"preserve_before_delete":true}});
             let (id, _) = node_history::create_object(

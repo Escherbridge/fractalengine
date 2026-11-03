@@ -256,6 +256,40 @@ pub(crate) fn current_read_transaction_error(
     anyhow::anyhow!("scene current read transaction statement {index} stage {stage} kind {} reason {reason} errors {}", error.kind_str(), ordered.len())
 }
 
+const ASSET_METADATA_COLUMNS: &str =
+    "asset_id,petal_id,owner_did,content_hash,content_type,size_bytes";
+
+/// Capture decoded metadata and exact typed witnesses from the same server projection.
+pub(crate) async fn capture_asset_metadata(
+    db: &Db,
+    id: &str,
+) -> anyhow::Result<(Vec<Value>, Vec<String>)> {
+    let projection = format!("SELECT {ASSET_METADATA_COLUMNS} FROM asset WHERE asset_id=$scene_current_asset LIMIT 2 TIMEOUT 5s");
+    let mut response = db.query(format!("SELECT VALUE {{ metadata: $this, fingerprint: encoding::base64::encode(encoding::cbor::encode($this)) }} FROM ({projection}) TIMEOUT 5s"))
+        .bind(("scene_current_asset", id.to_owned())).await?.check()?;
+    let captured: Vec<Value> = response.take(0)?;
+    let mut rows = Vec::with_capacity(captured.len());
+    let mut fingerprints = Vec::with_capacity(captured.len());
+    for captured in captured {
+        let metadata = captured
+            .get("metadata")
+            .filter(|value| value.is_object())
+            .ok_or_else(|| anyhow::anyhow!("replica current asset projection unavailable"))?;
+        let fingerprint = captured["fingerprint"]
+            .as_str()
+            .filter(|value| !value.is_empty())
+            .ok_or_else(|| anyhow::anyhow!("replica current asset witness unavailable"))?;
+        rows.push(metadata.clone());
+        fingerprints.push(fingerprint.to_owned());
+    }
+    Ok((rows, fingerprints))
+}
+
+/// Compare the same six typed fields, row count and order without JSON rebinding.
+pub(crate) fn asset_metadata_fence() -> String {
+    format!("IF (SELECT VALUE encoding::base64::encode(encoding::cbor::encode($this)) FROM (SELECT {ASSET_METADATA_COLUMNS} FROM asset WHERE asset_id=$scene_current_asset)) != $scene_current_asset_fingerprints {{ THROW 'replica current asset metadata changed'; }}")
+}
+
 async fn asset_state(
     db: &Db,
     blobs: &BlobStoreHandle,
@@ -272,13 +306,14 @@ async fn asset_state(
         asset_id: id.into(),
         reason,
     };
-    let mut response=db.query("SELECT asset_id,petal_id,owner_did,content_hash,content_type,size_bytes FROM asset WHERE asset_id=$scene_current_asset LIMIT 2 TIMEOUT 5s")
-        .bind(("scene_current_asset",id.to_owned())).await?.check()?;
-    let rows: Vec<Value> = response.take(0)?;
-    guards.push("IF (SELECT asset_id,petal_id,owner_did,content_hash,content_type,size_bytes FROM asset WHERE asset_id=$scene_current_asset) != $scene_current_asset_rows { THROW 'replica current asset metadata changed'; }".into());
+    let (rows, fingerprints) = capture_asset_metadata(db, id).await?;
+    guards.push(asset_metadata_fence());
     bindings.extend([
         ("scene_current_asset".into(), json!(id)),
-        ("scene_current_asset_rows".into(), json!(rows)),
+        (
+            "scene_current_asset_fingerprints".into(),
+            json!(fingerprints),
+        ),
     ]);
     if rows.is_empty() {
         return Ok(unavailable(ReplicaAssetUnavailable::MissingMetadata));

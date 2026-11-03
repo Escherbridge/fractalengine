@@ -219,3 +219,22 @@ A diagnostic repair does not establish which QA30 guard failed, resolve its pend
 read retries or authorize a fallback state. The existing operation journey authors
 actual rollback-primary selection and an unknown-secret redaction case. These cases
 remain for the parent-owned final integrated sweep; no new test function is added.
+
+## Exact current asset projection witness
+
+QA31's controlled retry identified the asset_metadata guard, but did not identify
+which retained field/type differed. The six-field snapshot must not be rebound as
+serde_json values for SQL equality: pinned SurrealDB converts NONE and NULL to JSON
+null, then binds that JSON null as SQL NULL; other typed values can also lose type.
+Capture the decoded projection and a server-computed CBOR/base64 witness together
+in one SELECT over the same projected subquery. Final fencing recomputes that exact
+six-field projection's witnesses and compares every row/count/order before returning.
+The opaque string witnesses never pass through JSON as typed database metadata.
+
+JSON rows remain interpretation only. Keep actual Viewer/ancestry, node row/geometry/
+fingerprint and scene-clock guards, and the same availability/file-verification rules.
+Do not widen this witness to unrelated asset fields or capture data and witness with
+two independent reads. The existing operation journey covers unchanged absent fields,
+NONE-to-NULL and integer-to-float changes in schema-less legacy fixtures, every captured
+field, creation/deletion and an unrelated descriptive rename. Existing full current/
+legacy/Viewer journeys still apply; source authoring is not runtime evidence.
