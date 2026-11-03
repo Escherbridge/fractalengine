@@ -1,0 +1,208 @@
+{
+  "kind": "normal_scoped_rest_read_using_actual_published_roles",
+  "scope": "VERSE#01M6D0VZ11XK62MXZ61HENTBTD",
+  "debug_owner_floor_unchanged": true,
+  "requests": [
+    {
+      "side": "owner",
+      "published_role": "owner",
+      "method": "GET",
+      "path": "/api/v1/nodes/01M6D0VZSPGMEPRBB47TSJB80V",
+      "status": 200,
+      "response_sha256": "0cac5109e09f085264cfc27e3551d803304b253d53ef9dcc67fc4ac077bde9a0",
+      "response": {
+        "ok": true,
+        "data": {
+          "node_id": "01M6D0VZSPGMEPRBB47TSJB80V",
+          "address": "fe://01M6D0VZ11XK62MXZ61HENTBTD/01M6D0VZG5ZN7XZMTXE8PWF1YT/01M6D0VZJ6383Q4HNNET8RSEYF/01M6D0VZSPGMEPRBB47TSJB80V",
+          "scope": "VERSE#01M6D0VZ11XK62MXZ61HENTBTD-FRACTAL#01M6D0VZG5ZN7XZMTXE8PWF1YT-PETAL#01M6D0VZJ6383Q4HNNET8RSEYF",
+          "kind": null,
+          "data": {
+            "asset_id": "01M6D0VZQ5M1MRW8FJAQ03K6ZP",
+            "created_at": "2026-11-02T02:19:30.998593100+00:00",
+            "display_name": "Cube 1",
+            "edit_seq": 0,
+            "elevation": 0.0,
+            "id": "node:z35qlkrqt9tn9g6o2qar",
+            "interactive": true,
+            "node_id": "01M6D0VZSPGMEPRBB47TSJB80V",
+            "petal_id": "01M6D0VZJ6383Q4HNNET8RSEYF",
+            "position": {
+              "coordinates": [
+                -12.0,
+                0.0
+              ],
+              "type": "Point"
+            },
+            "properties": {
+              "00_complex": {
+                "meta": null,
+                "processing": {
+                  "method": "grid edit",
+                  "sequence": 3
+                },
+                "samples": [
+                  {
+                    "t": "2026-11-01T00:00:00Z",
+                    "value": 10.5
+                  },
+                  {
+                    "t": "2026-11-01T00:01:00Z",
+                    "value": 12
+                  },
+                  {
+                    "t": "2026-11-01T00:02:00Z",
+                    "value": 15.75
+                  }
+                ],
+                "sensor": {
+                  "calibration": {
+                    "gain": 2,
+                    "offset": 1.25
+                  },
+                  "id": "probe-7",
+                  "valid": true
+                }
+              },
+              "01_series": [
+                {
+                  "t": "2026-11-01T00:00:00Z",
+                  "v": 10.5
+                },
+                {
+                  "t": "2026-11-01T00:01:00Z",
+                  "v": 12
+                },
+                null,
+                [
+                  1,
+                  2,
+                  3
+                ]
+              ],
+              "02_number": -150.25,
+              "03_bool": false,
+              "04_string": "  first\nsecond\tcrab  ",
+              "qa_fixture": "terrain",
+              "qa_role": "value",
+              "qa_value": 10
+            },
+            "rotation": [
+              0.0,
+              0.0,
+              0.0
+            ],
+            "scale": [
+              1.0,
+              1.0,
+              1.0
+            ]
+          }
+        },
+        "error": null
+      }
+    },
+    {
+      "side": "owner",
+      "published_role": "owner",
+      "method": "GET",
+      "path": "/api/v1/nodes/01M6D0VZSPGMEPRBB47TSJB80V/properties",
+      "status": 200,
+      "response_sha256": "dbbbe0f35f8517dda1056ce49fc5090a8d17af887559d3746c58965d871b5fa0",
+      "response": {
+        "ok": true,
+        "data": {
+          "node_id": "01M6D0VZSPGMEPRBB47TSJB80V",
+          "properties": {
+            "00_complex": {
+              "meta": null,
+              "processing": {
+                "method": "grid edit",
+                "sequence": 3
+              },
+              "samples": [
+                {
+                  "t": "2026-11-01T00:00:00Z",
+                  "value": 10.5
+                },
+                {
+                  "t": "2026-11-01T00:01:00Z",
+                  "value": 12
+                },
+                {
+                  "t": "2026-11-01T00:02:00Z",
+                  "value": 15.75
+                }
+              ],
+              "sensor": {
+                "calibration": {
+                  "gain": 2,
+                  "offset": 1.25
+                },
+                "id": "probe-7",
+                "valid": true
+              }
+            },
+            "01_series": [
+              {
+                "t": "2026-11-01T00:00:00Z",
+                "v": 10.5
+              },
+              {
+                "t": "2026-11-01T00:01:00Z",
+                "v": 12
+              },
+              null,
+              [
+                1,
+                2,
+                3
+              ]
+            ],
+            "02_number": -150.25,
+            "03_bool": false,
+            "04_string": "  first\nsecond\tcrab  ",
+            "qa_fixture": "terrain",
+            "qa_role": "value",
+            "qa_value": 10
+          }
+        },
+        "error": null
+      }
+    },
+    {
+      "side": "owner",
+      "published_role": "owner",
+      "method": "GET",
+      "path": "/api/v1/nodes/01M6D0VZSPGMEPRBB47TSJB80V/address",
+      "status": 200,
+      "response_sha256": "3260078fe36660a54ccdcb9364b81475e2ac1c41a7aa6c2f86ad13756ed3fc09",
+      "response": {
+        "ok": true,
+        "data": {
+          "node_id": "01M6D0VZSPGMEPRBB47TSJB80V",
+          "address": "fe://01M6D0VZ11XK62MXZ61HENTBTD/01M6D0VZG5ZN7XZMTXE8PWF1YT/01M6D0VZJ6383Q4HNNET8RSEYF/01M6D0VZSPGMEPRBB47TSJB80V",
+          "scope": "VERSE#01M6D0VZ11XK62MXZ61HENTBTD-FRACTAL#01M6D0VZG5ZN7XZMTXE8PWF1YT-PETAL#01M6D0VZJ6383Q4HNNET8RSEYF",
+          "verse_id": "01M6D0VZ11XK62MXZ61HENTBTD",
+          "fractal_id": "01M6D0VZG5ZN7XZMTXE8PWF1YT",
+          "petal_id": "01M6D0VZJ6383Q4HNNET8RSEYF"
+        },
+        "error": null
+      }
+    },
+    {
+      "side": "recipient",
+      "published_role": "viewer",
+      "method": "GET",
+      "path": "/api/v1/nodes/01M6D0VZSPGMEPRBB47TSJB80V",
+      "status": 200,
+      "response_sha256": "ea999e51a3137dabbf31d809e02d52bf8db928fcb90c68e3572789e1bb8c8344",
+      "response": {
+        "ok": false,
+        "data": null,
+        "error": "not found or not permitted"
+      }
+    }
+  ],
+  "success": false
+}
