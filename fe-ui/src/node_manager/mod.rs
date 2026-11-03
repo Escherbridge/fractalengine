@@ -44,7 +44,7 @@ mod router;
 /// selection authorities. See AGENTS.md §selection-read-model.
 mod selected_set;
 mod selection;
-pub(crate) use selected_set::SelectionRequest;
+pub(crate) use selected_set::{SelectionRequest, SelectionRow, SelectionSection};
 pub use selected_set::{SelectionMode, SelectionTarget, MAX_SELECTED_NODES};
 mod shortcuts;
 mod sidebar_sync;
@@ -90,7 +90,7 @@ pub struct NodeManager {
     additional: Vec<NodeSelection>,
     primary_order: usize,
     selection_petal: Option<String>,
-    selection_anchor: Option<String>,
+    selection_anchor: Option<SelectionRow>,
     pub(super) pending_selection: Option<SelectionRequest>,
     cancelled_restores: Vec<CancelledRestore>,
     pub(super) group_drag: Option<group_gimbal::GroupDrag>,
@@ -540,15 +540,17 @@ mod tests {
         mgr.reduce_selection(Some("petal"), vec![target(3)], SelectionMode::Toggle)
             .unwrap();
         assert_eq!(mgr.primary().unwrap().node_id, "node-1");
+        mgr.selection_anchor = Some(SelectionRow::all("petal", "node-3"));
         let request = SelectionRequest {
             petal_id: "petal".into(),
             node_ids: vec!["node-1".into()],
             mode: SelectionMode::Range,
+            clicked_row: None,
             visible_order: vec![
-                "node-1".into(),
-                "node-2".into(),
-                "node-2".into(),
-                "node-3".into(),
+                SelectionRow::all("petal", "node-1"),
+                SelectionRow::all("petal", "node-2"),
+                SelectionRow::all("petal", "node-2"),
+                SelectionRow::all("petal", "node-3"),
             ],
         };
         assert_eq!(mgr.requested_ids(&request), ["node-1", "node-2", "node-3"]);
@@ -560,6 +562,20 @@ mod tests {
             "reverse ranges retain the clicked primary"
         );
         assert_eq!(mgr.selection_count(), 3);
+        let row = |group: &str, node: &str| SelectionRow {
+            petal_id: "petal".into(), section: SelectionSection::Group(group.into()), node_id: node.into()
+        };
+        let aliases = vec![row("a", "node-1"), row("a", "node-2"), row("b", "node-1"), row("b", "node-3")];
+        mgr.request_row_selection(aliases[2].clone(), SelectionMode::Replace, aliases.clone());
+        let clicked = mgr.pending_selection.take().unwrap();
+        mgr.reduce_requested_selection(&clicked, vec![target(1)]).unwrap();
+        mgr.request_row_selection(aliases[3].clone(), SelectionMode::Range, aliases.clone());
+        let range = mgr.pending_selection.take().unwrap();
+        assert_eq!(mgr.requested_ids(&range), ["node-1", "node-3"], "range starts at the clicked second alias, not the first semantic match");
+        mgr.request_row_selection(aliases[0].clone(), SelectionMode::Range, aliases);
+        let reverse = mgr.pending_selection.take().unwrap();
+        assert_eq!(mgr.requested_ids(&reverse), ["node-1", "node-2"], "deduplicate semantic IDs only after extracting the visual range");
+        mgr.reduce_requested_selection(&request, vec![target(1), target(2), target(3)]).unwrap();
         let generation = mgr.generation();
         assert!(mgr
             .reduce_selection(

@@ -1045,3 +1045,7 @@ inferred from text alone and no stored origin TRS substitutes for the rendered p
 The existing native selector/promotion App journey checks this seam, including
 numeric ECS pose and stale generation, ancestry, pending replacement, missing typed
 instance, hidden rendering and incomplete property binding. Root owns execution.
+
+### Visual row range anchors
+
+Shift ranges use the clicked stable Petal/section/node row identity. A node may appear in several Groups, so the visible row sequence retains aliases until after the inclusive range is extracted. Only then are semantic node IDs deduplicated for the single manager-owned selection set. Header/viewport selection clears the visual anchor; a missing or collapsed anchor falls back to the clicked row.

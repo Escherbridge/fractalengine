@@ -37,6 +37,7 @@ pub(super) fn sync_sidebar_to_manager(
             node_ids: vec![node_id],
             mode: SelectionMode::Replace,
             visible_order: Vec::new(),
+            clicked_row: None,
         }
     } else if let Some(pending) = manager.pending_navigation_select.take() {
         if nav.active_petal_id.as_deref() != Some(pending.petal_id.as_str()) {
@@ -47,6 +48,7 @@ pub(super) fn sync_sidebar_to_manager(
             node_ids: vec![pending.node_id.clone()],
             mode: SelectionMode::Replace,
             visible_order: Vec::new(),
+            clicked_row: None,
         };
         navigation = Some(pending);
         request

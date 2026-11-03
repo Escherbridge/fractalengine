@@ -647,6 +647,19 @@ enum NodeRowFilter<'a> {
 }
 
 impl NodeRowFilter<'_> {
+    fn row(self, petal_id: &str, node_id: &str) -> crate::node_manager::SelectionRow {
+        use crate::node_manager::{SelectionRow, SelectionSection};
+        SelectionRow {
+            petal_id: petal_id.into(),
+            node_id: node_id.into(),
+            section: match self {
+                Self::All => SelectionSection::All,
+                Self::Group(id) => SelectionSection::Group(id.into()),
+                Self::Ungrouped => SelectionSection::Ungrouped,
+            },
+        }
+    }
+
     fn matches(self, id: &str, visibility: &VisibilityState) -> bool {
         match self {
             Self::All => true,
@@ -679,7 +692,7 @@ fn render_nodes(
         let order = nodes
             .iter()
             .filter(|node| visibility::pickable(&node.id, nav, vis_state))
-            .map(|node| node.id.clone())
+            .map(|node| NodeRowFilter::All.row(scope.ancestry.petal_id, &node.id))
             .collect::<Vec<_>>();
         render_node_rows(
             ui,
@@ -730,9 +743,7 @@ fn render_nodes(
                 filter.matches(&node.id, vis_state)
                     && visibility::pickable(&node.id, nav, vis_state)
             }) {
-                if !visible_order.contains(&node.id) {
-                    visible_order.push(node.id.clone());
-                }
+                visible_order.push(filter.row(scope.ancestry.petal_id, &node.id));
             }
         }
     }
@@ -819,7 +830,7 @@ fn render_node_rows(
     settings: &crate::settings::AppSettings,
     local_role: &crate::plugin::LocalUserRole,
     filter: NodeRowFilter<'_>,
-    visible_order: &[String],
+    visible_order: &[crate::node_manager::SelectionRow],
 ) {
     let NodeTreeScope {
         verse_name,
@@ -944,9 +955,8 @@ fn render_node_rows(
             camera_focus.target = Some((nid, pos));
         } else {
             let modifiers = ui.input(|input| input.modifiers);
-            node_mgr.request_selection(
-                ancestry.petal_id,
-                vec![nid.clone()],
+            node_mgr.request_row_selection(
+                filter.row(ancestry.petal_id, &nid),
                 crate::node_manager::SelectionMode::from_modifiers(
                     modifiers.command || modifiers.ctrl,
                     modifiers.shift,

@@ -127,12 +127,37 @@ pub struct SelectionTarget {
     pub node_id: String,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum SelectionSection {
+    All,
+    Group(String),
+    Ungrouped,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct SelectionRow {
+    pub petal_id: String,
+    pub section: SelectionSection,
+    pub node_id: String,
+}
+
+impl SelectionRow {
+    pub(crate) fn all(petal_id: &str, node_id: &str) -> Self {
+        Self {
+            petal_id: petal_id.into(),
+            section: SelectionSection::All,
+            node_id: node_id.into(),
+        }
+    }
+}
+
 #[derive(Debug, Clone)]
 pub(crate) struct SelectionRequest {
     pub petal_id: String,
     pub node_ids: Vec<String>,
     pub mode: SelectionMode,
-    pub visible_order: Vec<String>,
+    pub visible_order: Vec<SelectionRow>,
+    pub clicked_row: Option<SelectionRow>,
 }
 
 impl NodeManager {
@@ -175,7 +200,7 @@ impl NodeManager {
         petal_id: &str,
         node_ids: Vec<String>,
         mode: SelectionMode,
-        visible_order: Vec<String>,
+        visible_order: Vec<SelectionRow>,
     ) {
         self.pending_sidebar_select = None;
         self.pending_navigation_select = None;
@@ -184,7 +209,23 @@ impl NodeManager {
             node_ids,
             mode,
             visible_order,
+            clicked_row: None,
         });
+    }
+
+    pub(crate) fn request_row_selection(
+        &mut self,
+        row: SelectionRow,
+        mode: SelectionMode,
+        visible_order: Vec<SelectionRow>,
+    ) {
+        self.request_selection(
+            &row.petal_id,
+            vec![row.node_id.clone()],
+            mode,
+            visible_order,
+        );
+        self.pending_selection.as_mut().unwrap().clicked_row = Some(row);
     }
 
     pub(super) fn requested_ids(&self, request: &SelectionRequest) -> Vec<String> {
@@ -194,24 +235,27 @@ impl NodeManager {
         ) {
             return request.node_ids.clone();
         }
-        let Some(target) = request.node_ids.last() else {
+        let Some(target_id) = request.node_ids.last() else {
             return Vec::new();
         };
-        let mut visible = Vec::new();
-        for id in &request.visible_order {
-            if !visible.contains(id) {
-                visible.push(id.clone());
+        let fallback = SelectionRow::all(&request.petal_id, target_id);
+        let target = request.clicked_row.as_ref().unwrap_or(&fallback);
+        let anchor = self.selection_anchor.as_ref().unwrap_or(target);
+        let range = request
+            .visible_order
+            .iter()
+            .position(|row| row == anchor)
+            .zip(request.visible_order.iter().position(|row| row == target));
+        let Some((a, b)) = range else {
+            return vec![target_id.clone()];
+        };
+        let mut ids = Vec::new();
+        for row in &request.visible_order[a.min(b)..=a.max(b)] {
+            if row.petal_id == request.petal_id && !ids.contains(&row.node_id) {
+                ids.push(row.node_id.clone());
             }
         }
-        let anchor = self.selection_anchor.as_ref().unwrap_or(target);
-        let range = visible
-            .iter()
-            .position(|id| id == anchor)
-            .zip(visible.iter().position(|id| id == target));
-        range.map_or_else(
-            || vec![target.clone()],
-            |(a, b)| visible[a.min(b)..=a.max(b)].to_vec(),
-        )
+        ids
     }
 
     /// Apply one complete validated input, preserving insertion order and uniqueness.
@@ -229,12 +273,19 @@ impl NodeManager {
         request: &SelectionRequest,
         targets: Vec<SelectionTarget>,
     ) -> Result<bool, &'static str> {
-        self.reduce_selection_with_primary(
+        let changed = self.reduce_selection_with_primary(
             Some(&request.petal_id),
             targets,
             request.mode,
             request.node_ids.last().map(String::as_str),
-        )
+        )?;
+        if !matches!(
+            request.mode,
+            SelectionMode::Range | SelectionMode::ExtendRange
+        ) {
+            self.selection_anchor.clone_from(&request.clicked_row);
+        }
+        Ok(changed)
     }
 
     fn reduce_selection_with_primary(
@@ -315,7 +366,7 @@ impl NodeManager {
             .or_else(|| next.last().map(|member| member.node_id.clone()));
         let changed = self.replace_members(next, primary.as_deref(), petal_id);
         if !matches!(mode, SelectionMode::Range | SelectionMode::ExtendRange) {
-            self.selection_anchor = clicked;
+            self.selection_anchor = None;
         }
         self.pending_navigation_select = None;
         self.pending_sidebar_select = None;
