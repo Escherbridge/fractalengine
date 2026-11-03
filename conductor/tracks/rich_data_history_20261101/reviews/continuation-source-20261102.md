@@ -298,3 +298,27 @@ cannot be replaced by Join. Dormant transfer58f10006/2fe69307/3d9a2ab6 needs thr
 corrections: opaque protected locator, recipient masked-input binding on every replay
 frame, and exact API listener/process ownership before authenticated bytes. These
 are authoring in isolation. Owner-rooted Manager proof and paired execution remain.
+
+## QA21 independent evidence
+
+Independent review approves72original hashes/106JSON records, immutable restart and
+lifetime provenance, four PNGs and15WARN/0ERROR complete stopped logs. Fresh native
+import has exactly one scoped baseline with actual DID and available version1 replay;
+normalized node/baseline/replay hash ae2bb8f78213c4da050e30a89ec2a90abcba350102cfb5c869ccc7d8139e769e
+reproduces. Canonical asset placement normalized state hash
+f70690952d19aae967ce7206a9f528eb1658a1451f8e0f2251a96674b1b67c2e reproduces;
+initial ECS matches XYZ/scale exactly and independent full quaternion within
+7.346138142239056e-8. Ordered frames22693/25397/27820/29997 prove exact selected
+transform across PetalB→A reentry. Scale1.25/2 inputs and Close measure30/48px.
+
+The rich-object route remains separate, oracle timing is qualified, two locator
+refusals are retained, and no shared-asset Portal write or QA22 acceptance is inferred.
+All eight captured identities are absent. FULL/convergence/integrated tests remain false.
+
+QA22 separately retains six identical restart node/history/replay readbacks and exact
+asset ECS, but its native second anchor still fails after real page1 capture. Source
+trace finds a self-induced geometry generation: UrlChanged adds loading feedback to
+the toolbar, changing native content rect and invoking reposition. Fixed feedback
+layout is authoring, without weakening resize invalidation. QA22 evidence review is
+pending; exact app/helper cleanup is saved. Stamp95ad9bd3 recovery correction is
+frozen for re-review; P2P transfer's three blockers are still authoring.

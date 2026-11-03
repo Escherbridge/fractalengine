@@ -1,0 +1,31 @@
+{
+  "request": {
+    "name": "QA Asset Placement TRS 21",
+    "asset_id": "01M6FDKQW8H9MQ6MXY476Y01PQ",
+    "position": [
+      3.25,
+      2.5,
+      -4.75
+    ],
+    "rotation": [
+      0.2,
+      -0.35,
+      0.6
+    ],
+    "scale": [
+      0.75,
+      1.5,
+      2.25
+    ]
+  },
+  "expected_quaternion_xyzw": [
+    0.04272238220073768,
+    -0.19455307260541296,
+    0.27294729188281175,
+    0.9411820630742631
+  ],
+  "rotation_convention": "intrinsic XYZ radians; qx*qy*qz",
+  "declared_before_submission": true,
+  "endpoint": "/api/v1/verses/01M6D0VZ11XK62MXZ61HENTBTD/fractals/01M6D0VZG5ZN7XZMTXE8PWF1YT/petals/01M6D0VZJ6383Q4HNNET8RSEYF/nodes",
+  "route_contract": "CreateNodeRequest asset_id -> place_asset_core -> GltfImported committed materialization"
+}

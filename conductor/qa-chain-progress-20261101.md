@@ -4,8 +4,8 @@ date: 2026-11-01
 status: in_progress
 source: ./handoff-20261101-qa-chain.md
 current_writer: /root
-current_slice: QA20 stopped and focused evidence independently approved; QA21 live on sealed44ad source verifies fresh scoped creation and initial full TRS; stamp projection and invitation bridge corrections isolated
-parallel_code_worktrees: Stamp projection/classification recovery; P2P guarded invitation transfer
+current_slice: QA21 independently approved; QA22 stopped with exact cleanup and repeat native second-link failure; stamp recovery re-review and native fixed-feedback layout authoring; P2P transfer corrections isolated
+parallel_code_worktrees: Stamp recovery re-review; native feedback layout; P2P guarded invitation transfer
 ---
 
 # QA chain continuation
@@ -33,7 +33,31 @@ Starting HEAD: `5bc2aa0`. Existing H3 files are preserved and continued.
 
 ## Current acceptance state
 
-### Latest checkpoint - QA20 reviewed and QA21 live on sealed44ad28da
+### Latest checkpoint - QA21 approved, QA22 stopped and native failure traced
+
+- QA21 independent review approves72inputs/106records, four PNGs and complete
+  stopped logs15WARN/0ERROR. Fresh native import has one exact scoped baseline and
+  available version1 replay with matching initial ECS. Canonical asset placement
+  independently matches full initial TRS and exact selected transform after reentry.
+  UI scales1.25/2 retain30/48px inputs and Close. Full/tests/convergence remain false.
+- QA22 restarted the same sealed source while a fresh helper was alive. All six
+  complete node/history/replay responses from QA21 remain identical after restart,
+  and the asset's complete live transform is unchanged. Evidence review is pending.
+- Actual persisted Portal fixture URL was read back; real native page1 loaded and
+  captured. The second anchor again returned409changed and terminal backend ERROR.
+  The helper was alive; no expiry attribution. A relative-output path mistake was
+  refused before capture and retained; corrected shots/ output captured successfully.
+  A later404 follows object selection change and is not terminal-state proof.
+- Source trace finds UrlChanged loading feedback changes native content geometry,
+  triggering the intended reposition generation invalidation. A fixed bounded status
+  slot is authoring in isolation; actual geometry invalidations remain mandatory.
+- QA22 root93360 plus all eight recorded app identities, and helper91892 plus its
+  conhost, are absent. No app/helper/Cargo is running. Stamp77a0d477+95ad9bd3 awaits
+  independent re-review; P2P bridge repairs and Manager issuance remain unfinished.
+- Full catalog/UX convergence, campaign-end integrated sweep, exact-SHA CI and
+  tagged downloadable release acceptance remain required.
+
+### Previous checkpoint - QA20 reviewed and QA21 live on sealed44ad28da
 
 - Sealed44ad28da built without warnings in321.2seconds including offline helpers.
   QA20 root93560 and all eight recorded identities are absent. Its independent
