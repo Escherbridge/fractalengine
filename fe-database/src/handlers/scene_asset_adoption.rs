@@ -81,7 +81,11 @@ async fn prepare(db: &Db, node_id: &str, actor: &str) -> anyhow::Result<Prepared
         .ok_or_else(|| anyhow::anyhow!("missing metadata fingerprint"))?;
     let mut response=db.query(format!("{REFERENCES}; SELECT node_id,petal_id FROM node WHERE asset_id=$adoption_asset ORDER BY node_id LIMIT 257 TIMEOUT 2s; SELECT payload_id FROM device_payload WHERE asset_ids CONTAINS $adoption_asset LIMIT 1 TIMEOUT 2s; SELECT petal_id, encoding::base64::encode(encoding::cbor::encode($this)) AS fingerprint FROM model WHERE asset_id=$adoption_asset LIMIT 2 TIMEOUT 2s"))
         .bind(("adoption_asset",asset_id.to_owned())).await?.check()?;
-    let references: Vec<SceneAssetReferenceWitness> = response.take(0)?;
+    let reference_rows: Vec<Value> = response.take(0)?;
+    let references: Vec<SceneAssetReferenceWitness> = reference_rows
+        .into_iter()
+        .map(serde_json::from_value)
+        .collect::<Result<_, _>>()?;
     let locations: Vec<Value> = response.take(1)?;
     let payloads: Vec<Value> = response.take(2)?;
     let models: Vec<Value> = response.take(3)?;

@@ -5821,6 +5821,7 @@ dependencies = [
  "fe-plugin",
  "fe-renderer",
  "fe-runtime",
+ "fe-sdk",
  "fe-sync",
  "fe-terrain",
  "fe-ui",
