@@ -510,61 +510,12 @@ pub async fn get_transform(
         return Json(ApiResponse::<TransformDto>::error("invalid node_id"));
     }
 
-    // Resolve node scope for enforcement
-    if crate::rest::authorized_node_scope(&state, &claims, &node_id)
-        .await
-        .is_none()
-    {
-        return Json(ApiResponse::<TransformDto>::error(
-            crate::rest::NOT_FOUND_OR_DENIED,
-        ));
-    }
-
-    if let Some(ref db) = state.db_reader {
-        // Direct query — bypass crossbeam channel
-        match tokio::time::timeout(
-            std::time::Duration::from_secs(5),
-            direct_get_node_transform(db, &node_id),
-        )
-        .await
-        {
-            Ok(Ok(Some(transform))) => Json(ApiResponse::success(transform)),
-            Ok(Ok(None)) => Json(ApiResponse::<TransformDto>::error("node not found")),
-            Ok(Err(e)) => Json(ApiResponse::<TransformDto>::error(format!(
-                "query failed: {e}"
-            ))),
-            Err(_) => Json(ApiResponse::<TransformDto>::error("request timed out")),
-        }
-    } else {
-        // Fallback: channel-based query
-        let (reply_tx, reply_rx) = tokio::sync::oneshot::channel();
-        let cmd = ApiCommand::DbRequest {
-            cmd: DbCommand::GetNodeTransform {
-                node_id: node_id.clone(),
-            },
-            reply_tx,
-        };
-        if state.api_cmd_tx.send(cmd).is_err() {
-            return Json(ApiResponse::<TransformDto>::error(
-                "internal channel closed",
-            ));
-        }
-        match tokio::time::timeout(std::time::Duration::from_secs(5), reply_rx).await {
-            Ok(Ok(DbResult::NodeTransformLoaded {
-                position,
-                rotation,
-                scale,
-                ..
-            })) => Json(ApiResponse::success(TransformDto {
-                position,
-                rotation,
-                scale,
-            })),
-            Ok(Ok(DbResult::Error(e))) => Json(ApiResponse::<TransformDto>::error(e)),
-            Ok(Ok(_)) => Json(ApiResponse::<TransformDto>::error("unexpected response")),
-            Ok(Err(_)) => Json(ApiResponse::<TransformDto>::error("request cancelled")),
-            Err(_) => Json(ApiResponse::<TransformDto>::error("request timed out")),
-        }
+    let Some(scope) = authorized_node_scope(&state, &claims, &node_id).await else {
+        return Json(ApiResponse::<TransformDto>::error(NOT_FOUND_OR_DENIED));
+    };
+    match scoped_node_projection(&state, &node_id, &scope).await {
+        Ok(row) => Json(ApiResponse::success(transform_from_row(&row))),
+        Err(error) => Json(ApiResponse::<TransformDto>::error(error)),
     }
 }
 
@@ -703,38 +654,81 @@ pub(crate) async fn delete_property_as(
     })
 }
 
-/// Property-read core shared by REST + MCP (caller has authorized).
+/// Fixed payload read bound to the captured authorized ancestry.
+const SCOPED_NODE_PROJECTION: &str = "SELECT node_id, petal_id, position, elevation, rotation, scale, properties FROM node WHERE node_id=$read_node AND tombstone=NONE AND petal_id=$read_petal
+    AND array::len((SELECT VALUE node_id FROM node WHERE node_id=$read_node))=1
+    AND array::len((SELECT VALUE petal_id FROM petal WHERE petal_id=$read_petal))=1
+    AND array::len((SELECT VALUE petal_id FROM petal WHERE petal_id=$read_petal AND fractal_id=$read_fractal AND tombstone=NONE))=1
+    AND array::len((SELECT VALUE fractal_id FROM fractal WHERE fractal_id=$read_fractal))=1
+    AND array::len((SELECT VALUE fractal_id FROM fractal WHERE fractal_id=$read_fractal AND verse_id=$read_verse AND tombstone=NONE))=1
+    AND array::len((SELECT VALUE verse_id FROM verse WHERE verse_id=$read_verse))=1
+    AND array::len((SELECT VALUE verse_id FROM verse WHERE verse_id=$read_verse AND tombstone=NONE))=1 LIMIT 2";
+
+async fn scoped_node_projection(
+    state: &crate::server::ApiState,
+    node_id: &str,
+    authorized_scope: &str,
+) -> Result<serde_json::Value, String> {
+    let denied = || NOT_FOUND_OR_DENIED.to_owned();
+    let scope = fe_database::parse_scope(authorized_scope).map_err(|_| denied())?;
+    let petal = scope.petal_id.ok_or_else(denied)?;
+    let fractal = scope.fractal_id.ok_or_else(denied)?;
+    let rows = crate::gis::run_select(
+        state,
+        SCOPED_NODE_PROJECTION,
+        vec![
+            ("read_node".into(), serde_json::json!(node_id)),
+            ("read_petal".into(), serde_json::json!(&petal)),
+            ("read_fractal".into(), serde_json::json!(fractal)),
+            ("read_verse".into(), serde_json::json!(scope.verse_id)),
+        ],
+    )
+    .await
+    .ok_or_else(denied)?;
+    if rows.len() != 1
+        || rows[0]["node_id"].as_str() != Some(node_id)
+        || rows[0]["petal_id"].as_str() != Some(petal.as_str())
+    {
+        return Err(denied());
+    }
+    rows.into_iter().next().ok_or_else(denied)
+}
+
+fn transform_from_row(row: &serde_json::Value) -> crate::types::TransformDto {
+    let coords = &row["position"]["coordinates"];
+    crate::types::TransformDto {
+        position: [
+            coords[0].as_f64().unwrap_or(0.0) as f32,
+            row["elevation"].as_f64().unwrap_or(0.0) as f32,
+            coords[1].as_f64().unwrap_or(0.0) as f32,
+        ],
+        rotation: parse_f32_array3(&row["rotation"], 0.0),
+        scale: parse_f32_array3(&row["scale"], 1.0),
+    }
+}
+
+/// Read properties from the exact live authorized hierarchy.
 pub(crate) async fn get_properties_core(
     state: &crate::server::ApiState,
     node_id: &str,
+    authorized_scope: &str,
 ) -> Result<PropertiesDto, String> {
-    if let Some(db) = &state.db_reader {
-        let mut response = tokio::time::timeout(
-            std::time::Duration::from_secs(5),
-            db.query("SELECT properties FROM node WHERE node_id=$node AND tombstone=NONE LIMIT 2")
-                .bind(("node", node_id.to_owned())),
-        )
-        .await
-        .map_err(|_| "property read timed out".to_owned())?
-        .map_err(|_| "property read failed".to_owned())?
-        .check()
-        .map_err(|_| "property read failed".to_owned())?;
-        let rows: Vec<serde_json::Value> = response
-            .take(0)
-            .map_err(|_| "property read failed".to_owned())?;
-        if rows.len() != 1 {
-            return Err(NOT_FOUND_OR_DENIED.to_owned());
-        }
-        let properties = rows[0]
+    let row = scoped_node_projection(state, node_id, authorized_scope).await?;
+    Ok(PropertiesDto {
+        node_id: node_id.to_owned(),
+        properties: row
             .get("properties")
-            .filter(|value| !value.is_null())
+            .filter(|v| !v.is_null())
             .cloned()
-            .unwrap_or_else(|| serde_json::json!({}));
-        return Ok(PropertiesDto {
-            node_id: node_id.to_owned(),
-            properties,
-        });
-    }
+            .unwrap_or_else(|| serde_json::json!({})),
+    })
+}
+
+/// Internal legacy petal-origin lookup; never an API node-read authorization seam.
+async fn legacy_properties_core(
+    state: &crate::server::ApiState,
+    node_id: &str,
+) -> Result<PropertiesDto, String> {
     let correlation_id = ulid::Ulid::new().to_string();
     let cmd = DbCommand::GetNodeProperties {
         node_id: node_id.to_string(),
@@ -806,17 +800,11 @@ pub async fn get_node_properties(
         return Json(ApiResponse::<PropertiesDto>::error("invalid node_id"));
     }
 
-    // Resolve node scope for enforcement — deny if resolution fails
-    if crate::rest::authorized_node_scope(&state, &claims, &node_id)
-        .await
-        .is_none()
-    {
-        return Json(ApiResponse::<PropertiesDto>::error(
-            crate::rest::NOT_FOUND_OR_DENIED,
-        ));
-    }
+    let Some(scope) = authorized_node_scope(&state, &claims, &node_id).await else {
+        return Json(ApiResponse::<PropertiesDto>::error(NOT_FOUND_OR_DENIED));
+    };
 
-    match get_properties_core(&state, &node_id).await {
+    match get_properties_core(&state, &node_id, &scope).await {
         Ok(dto) => Json(ApiResponse::success(dto)),
         Err(e) => Json(ApiResponse::<PropertiesDto>::error(e)),
     }
@@ -2107,7 +2095,7 @@ async fn load_petal_projection(
         }
     }
 
-    let properties = get_properties_core(state, petal_id).await.ok()?.properties;
+    let properties = legacy_properties_core(state, petal_id).await.ok()?.properties;
     let lat = properties.get("origin_lat")?.as_f64()?;
     let lon = properties.get("origin_lon")?.as_f64()?;
     let ele = properties
@@ -2494,7 +2482,7 @@ mod tests {
             revoked_jtis: Arc::new(tokio::sync::RwLock::new(HashSet::new())),
             blob_store: None,
             cors_origins: vec![],
-            db_reader: Some(Arc::new(ReadDb::new(db))),
+            db_reader: Some(Arc::new(ReadDb::new(db.clone()))),
             query_rate_limiter: tokio::sync::Mutex::new(std::collections::HashMap::new()),
             entity_store: None,
             tileset_registry: None,
@@ -2598,7 +2586,7 @@ mod tests {
                         0 => set_property_core(&state, "node", "key".into(), serde_json::json!(10))
                             .await
                             .map(|_| ()),
-                        1 => get_properties_core(&state, "node").await.map(|_| ()),
+                        1 => legacy_properties_core(&state, "node").await.map(|_| ()),
                         _ => delete_property_core(&state, "node", "key")
                             .await
                             .map(|_| ()),
@@ -2826,6 +2814,118 @@ mod tests {
                         "operation {operation}, identity fault {fault}"
                     );
                 }
+            }
+        }
+
+        // Capture authorization, then change ancestry before the payload read.
+        let node = "01J00000000000000000000000#inst-2";
+        db.query("CREATE node:read_primary SET node_id=$node, petal_id='petal-1', position=<geometry<point>> [2.0,4.0], elevation=3.0, rotation=[0,0,0,1], scale=[1,1,1], created_at='now', properties={answer:42}")
+            .bind(("node", node.to_owned())).await.unwrap().check().unwrap();
+        let captured = authorized_node_scope(&state, &claims, node).await.unwrap();
+        assert_eq!(captured, "VERSE#v1-FRACTAL#f1-PETAL#petal-1");
+        let mut read_state = Arc::try_unwrap(state).ok().expect("exclusive test state");
+        for fallback in [false, true] {
+            if fallback {
+                read_state.db_reader = None;
+            }
+            for fault in 0..13 {
+                let mutation = match fault {
+                    1 => "UPDATE node:read_primary SET petal_id='elsewhere'",
+                    2 => "UPDATE petal SET fractal_id='elsewhere' WHERE petal_id='petal-1'",
+                    3 => "UPDATE fractal SET verse_id='elsewhere' WHERE fractal_id='f1'",
+                    4 => "UPDATE node:read_primary SET tombstone={hlc:1,source_did:'actor'}",
+                    5 => "CREATE node:read_duplicate SET node_id=$node, petal_id='elsewhere', position=<geometry<point>> [0.0,0.0], rotation=[0,0,0,1], scale=[1,1,1], created_at='now'",
+                    6 => "CREATE petal:read_duplicate SET petal_id='petal-1', fractal_id='elsewhere', name='P', node_id='anchor', created_at='now'",
+                    7 => "CREATE fractal:read_duplicate SET fractal_id='f1', verse_id='elsewhere', owner_did='actor', name='F', created_at='now'",
+                    8 => "CREATE verse:read_duplicate SET verse_id='v1', name='V', created_by='actor', created_at='now'",
+                    9 => "UPDATE node:read_primary UNSET properties",
+                    10 => "UPDATE node:read_primary SET node_id='missing-original'",
+                    _ => "RETURN true",
+                };
+                // Both readers receive the same captured scope and fixed SQL.
+                let result = if fallback {
+                    let call = get_properties_core(&read_state, node, &captured);
+                    let respond = async {
+                        let ApiCommand::DbRequest {
+                            cmd:
+                                DbCommand::RawQuery {
+                                    sql,
+                                    vars,
+                                    correlation_id,
+                                },
+                            reply_tx,
+                        } = api_cmd_rx
+                            .recv_timeout(std::time::Duration::from_secs(1))
+                            .unwrap()
+                        else {
+                            panic!("expected scoped RawQuery");
+                        };
+                        assert_eq!(sql, SCOPED_NODE_PROJECTION);
+                        db.query(mutation)
+                            .bind(("node", node.to_owned()))
+                            .await
+                            .unwrap()
+                            .check()
+                            .unwrap();
+                        let reply = fe_database::handlers::raw_query::raw_query_reply(
+                            &db,
+                            &sql,
+                            &vars,
+                            correlation_id,
+                        )
+                        .await;
+                        let reply = match (fault, reply) {
+                            (11, DbResult::QueryResult { data, .. }) => DbResult::QueryResult {
+                                data,
+                                correlation_id: Some("wrong".into()),
+                            },
+                            (12, _) => DbResult::Error("wrong family".into()),
+                            (_, reply) => reply,
+                        };
+                        reply_tx.send(reply).unwrap();
+                    };
+                    let (result, ()) = tokio::join!(call, respond);
+                    result
+                } else {
+                    if fault >= 11 {
+                        continue;
+                    }
+                    db.query(mutation)
+                        .bind(("node", node.to_owned()))
+                        .await
+                        .unwrap()
+                        .check()
+                        .unwrap();
+                    let result = get_properties_core(&read_state, node, &captured).await;
+                    if fault == 0 {
+                        let row = scoped_node_projection(&read_state, node, &captured)
+                            .await
+                            .unwrap();
+                        assert_eq!(transform_from_row(&row).position, [2.0, 3.0, 4.0]);
+                    }
+                    result
+                };
+                if fault == 0 || fault == 9 {
+                    let properties = result.unwrap().properties;
+                    assert_eq!(
+                        properties,
+                        if fault == 0 {
+                            serde_json::json!({"answer":42})
+                        } else {
+                            serde_json::json!({})
+                        }
+                    );
+                } else {
+                    assert_eq!(
+                        result.unwrap_err(),
+                        NOT_FOUND_OR_DENIED,
+                        "fallback={fallback}, fault={fault}"
+                    );
+                }
+                db.query("DELETE node:read_duplicate; DELETE petal:read_duplicate; DELETE fractal:read_duplicate; DELETE verse:read_duplicate;
+                    UPDATE node:read_primary SET node_id=$node,petal_id='petal-1',tombstone=NONE,properties={answer:42};
+                    UPDATE petal SET fractal_id='f1' WHERE petal_id='petal-1'; UPDATE fractal SET verse_id='v1' WHERE fractal_id='f1';")
+                    .bind(("node",node.to_owned())).await.unwrap().check().unwrap();
             }
         }
     }

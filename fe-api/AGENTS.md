@@ -2258,3 +2258,19 @@ each request. Property reads share their direct/correlated core with MCP; both
 read paths reject missing, ambiguous or tombstoned rows. Stored transforms describe
 the node projection and are not advertised as the path-derived rendered pose.
 Generic property writer validation and the stamp translation policy are unchanged.
+
+### Scoped property and stored-transform reads
+
+REST property and stored-transform reads retain the exact DB-resolved scope
+that authorization accepted. MCP property reads pass the dispatcher's same
+captured scope. One fixed SELECT binds the live node payload to that exact
+Petal/Fractal/Verse chain and requires each identity to be globally unique in
+the same statement. The guarded direct reader and strictly correlated RawQuery
+fallback execute identical SQL. A missing, moved, duplicated or tombstoned row
+is a denial; only a proven live row can return an empty property bag.
+
+The separately named private legacy property helper serves only the internal
+Petal-origin compatibility lookup and the existing typed-reply identity journey.
+It is not reachable from REST/MCP node-property reads. Private GIS transform
+loading remains a trusted internal seam; public transform GET uses the scoped
+projection. Generic writer identity and stamp translation rules are unchanged.

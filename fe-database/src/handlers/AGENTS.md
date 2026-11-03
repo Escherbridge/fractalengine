@@ -312,3 +312,10 @@ pose. Subsequent atomic override facts retain this initial history prefix.
 Property reads reject missing, ambiguous and tombstoned rows. The unset property
 bag of a live row still reads as an empty object. This is shared by the GUI and
 the API's correlated fallback, so a failed read cannot masquerade as empty data.
+
+The legacy promotion no-op also captures the same publisher authority, exact
+ancestry and path-owner snapshot as fresh promotion. It accepts exactly one
+live typed stamp with matching path/index/Petal metadata, and rechecks that
+projected target snapshot in a guards-only transaction before returning. A
+no-op never writes a row, baseline, intention or lifecycle event; incompatible,
+tombstoned and ambiguous targets are refused, including legacy uncovered rows.

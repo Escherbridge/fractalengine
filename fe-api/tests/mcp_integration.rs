@@ -671,6 +671,24 @@ fn db_command(m: &mut Model, cmd: DbCommand, store: Option<&BlobStoreHandle>) ->
             vars,
             correlation_id,
         } => {
+            if sql.starts_with("SELECT node_id, petal_id, position, elevation, rotation, scale, properties FROM node WHERE node_id=$read_node") {
+                let bound = |key: &str| vars.get(key).and_then(|v| v.as_str()).unwrap_or_default();
+                let (nid,pid,fid,vid) = (bound("read_node"),bound("read_petal"),bound("read_fractal"),bound("read_verse"));
+                let expected = fe_database::build_scope(vid,Some(fid),Some(pid));
+                let unique = m.nodes.iter().filter(|n| n.id==nid).count()==1
+                    && m.petals.iter().filter(|(id,_,_)| id==pid).count()==1
+                    && m.fractals.iter().filter(|(id,_,_)| id==fid).count()==1
+                    && m.verses.iter().filter(|(id,_)| id==vid).count()==1;
+                let data = if unique && m.petal_scope(pid).as_deref()==Some(expected.as_str()) {
+                    m.nodes.iter().filter(|n| n.id==nid && n.petal_id==pid).map(|n| json!({
+                        "node_id":n.id,"petal_id":n.petal_id,
+                        "position":{"type":"Point","coordinates":[n.position[0],n.position[2]]},
+                        "elevation":n.position[1],"rotation":n.rotation,"scale":n.scale,
+                        "properties":n.properties,
+                    })).collect()
+                } else { vec![] };
+                return DbResult::QueryResult { data, correlation_id };
+            }
             if sql.starts_with("SELECT scope FROM field_def") {
                 let data = vars
                     .get("id")

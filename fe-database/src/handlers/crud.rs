@@ -1328,30 +1328,6 @@ pub(crate) async fn promote_instance_handler(
         }
     }
 
-    // Idempotency probe (tolerate an absent `node` table on a fresh DB).
-    let existing: Vec<serde_json::Value> = {
-        let lookup = db
-            .query("SELECT node_id, petal_id, tombstone FROM node WHERE node_id = $nid LIMIT 2")
-            .bind(("nid", node_id.clone()))
-            .await
-            .map_err(|e| anyhow::anyhow!("PromoteInstance lookup failed: {e}"))?
-            .check();
-        match lookup {
-            Ok(mut res) => res
-                .take(0)
-                .map_err(|e| anyhow::anyhow!("PromoteInstance take failed: {e}"))?,
-            Err(e) if e.to_string().contains("does not exist") => Vec::new(),
-            Err(e) => {
-                return Err(anyhow::anyhow!(
-                    "PromoteInstance lookup statement failed: {e}"
-                ));
-            }
-        }
-    };
-    if !existing.is_empty() {
-        return Ok((node_id, false)); // already promoted — idempotent no-op.
-    }
-
     let permission = super::entity::prepare_scope_permission(
         db,
         &scope,
@@ -1371,6 +1347,62 @@ pub(crate) async fn promote_instance_handler(
             serde_json::json!(path_owner.iter().collect::<Vec<_>>()),
         ),
     ]);
+
+    // Idempotency probe (tolerate an absent `node` table on a fresh DB).
+    let existing: Vec<serde_json::Value> = {
+        let lookup = db
+            .query("SELECT node_id, petal_id, tombstone, properties FROM node WHERE node_id = $nid LIMIT 2")
+            .bind(("nid", node_id.clone()))
+            .await
+            .map_err(|e| anyhow::anyhow!("PromoteInstance lookup failed: {e}"))?
+            .check();
+        match lookup {
+            Ok(mut res) => res
+                .take(0)
+                .map_err(|e| anyhow::anyhow!("PromoteInstance take failed: {e}"))?,
+            Err(e) if e.to_string().contains("does not exist") => Vec::new(),
+            Err(e) => {
+                return Err(anyhow::anyhow!(
+                    "PromoteInstance lookup statement failed: {e}"
+                ));
+            }
+        }
+    };
+    if !existing.is_empty() {
+        anyhow::ensure!(existing.len() == 1, "ambiguous promoted stamp identity");
+        let target = &existing[0];
+        anyhow::ensure!(
+            target["petal_id"] == petal_id
+                && target
+                    .get("tombstone")
+                    .is_none_or(serde_json::Value::is_null)
+                && target["properties"]["node_kind"] == "stamp"
+                && target["properties"]["path_id"] == path_id
+                && target["properties"]["owning_path_id"] == path_id
+                && target["properties"]["instance_index"].as_u64()
+                    == Some(u64::from(instance_index)),
+            "stamp node identity collision"
+        );
+        statements.push("IF (SELECT node_id, petal_id, tombstone, properties FROM node WHERE node_id=$promotion_existing_id) != $promotion_existing_snapshot { THROW 'promoted stamp changed'; }".into());
+        bindings.extend([
+            ("promotion_existing_id".into(), serde_json::json!(node_id)),
+            (
+                "promotion_existing_snapshot".into(),
+                serde_json::json!(existing),
+            ),
+        ]);
+        let script = format!(
+            "BEGIN TRANSACTION; {}; COMMIT TRANSACTION;",
+            statements.join(";\n")
+        );
+        let mut query = db.query(script);
+        for (key, value) in bindings {
+            query = query.bind((key, value));
+        }
+        query.await?.check()?;
+        return Ok((node_id, false));
+    }
+
     let properties = serde_json::json!({"node_kind":"stamp","path_id":path_id,"owning_path_id":path_id,"instance_index":instance_index});
     let birth = super::stamp_promotion::prepare_birth(
         db,
@@ -2031,7 +2063,7 @@ mod asset_ingest_tests {
                 .unwrap(),
             baseline
         );
-        db.query("CREATE node CONTENT {node_id:'path-own#inst-1',petal_id:'petal-1',properties:{node_kind:'stamp'}}").await.unwrap().check().unwrap();
+        db.query("CREATE node CONTENT {node_id:'path-own#inst-1',petal_id:'petal-1',properties:{node_kind:'stamp',path_id:'path-own',owning_path_id:'path-own',instance_index:1}}").await.unwrap().check().unwrap();
         let (_, newly) = promote_instance_handler(
             &db,
             "petal-1",
@@ -2051,6 +2083,33 @@ mod asset_ingest_tests {
                 .is_none(),
             "legacy rows gain no invented prior coverage"
         );
+        promote_instance_handler(
+            &db,"petal-1","path-own",1,"foreign","foreign",
+            "VERSE#verse-1-FRACTAL#fractal-1-PETAL#petal-1",
+        ).await.expect_err("existing target still requires current publisher authority");
+        let before_ops: Vec<serde_json::Value> = db
+            .query("SELECT * OMIT id FROM op_log ORDER BY hlc_timestamp")
+            .await
+            .unwrap()
+            .check()
+            .unwrap()
+            .take(0)
+            .unwrap();
+        for mutation in [
+            "UPDATE node SET properties.node_kind='other' WHERE node_id='path-own#inst-1'",
+            "UPDATE node SET properties.path_id='other' WHERE node_id='path-own#inst-1'",
+            "UPDATE node SET properties.owning_path_id='other' WHERE node_id='path-own#inst-1'",
+            "UPDATE node SET properties.instance_index=9 WHERE node_id='path-own#inst-1'",
+            "UPDATE node SET tombstone={hlc:1,source_did:'local'} WHERE node_id='path-own#inst-1'",
+            "CREATE node:duplicate_existing_stamp CONTENT {node_id:'path-own#inst-1',petal_id:'petal-1',properties:{node_kind:'stamp',path_id:'path-own',owning_path_id:'path-own',instance_index:1}}",
+        ] {
+            db.query(mutation).await.unwrap().check().unwrap();
+            promote_instance_handler(&db,"petal-1","path-own",1,"local","local","VERSE#verse-1-FRACTAL#fractal-1-PETAL#petal-1").await.expect_err("incompatible existing target must be refused");
+            assert!(super::super::node_history::latest(&db,"path-own#inst-1").await.unwrap().is_none());
+            let after_ops:Vec<serde_json::Value>=db.query("SELECT * OMIT id FROM op_log ORDER BY hlc_timestamp").await.unwrap().check().unwrap().take(0).unwrap();
+            assert_eq!(after_ops,before_ops,"refused no-op writes no intention");
+            db.query("DELETE node:duplicate_existing_stamp; UPDATE node SET tombstone=NONE,properties={node_kind:'stamp',path_id:'path-own',owning_path_id:'path-own',instance_index:1} WHERE node_id='path-own#inst-1'").await.unwrap().check().unwrap();
+        }
         db.query("DEFINE EVENT fail_legacy_stamp_birth ON TABLE node_log WHEN $after.node_id='path-own#inst-2' THEN { THROW 'induced initial history failure' }").await.unwrap().check().unwrap();
         promote_instance_handler(
             &db,

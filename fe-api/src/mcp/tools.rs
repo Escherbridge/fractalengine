@@ -435,8 +435,12 @@ pub(super) fn set_property(call: ToolCall<'_>) -> ToolFuture<'_> {
 
 pub(super) fn get_properties(call: ToolCall<'_>) -> ToolFuture<'_> {
     Box::pin(async move {
-        let dto =
-            crate::rest::get_properties_core(call.state, str_arg(call.args, "node_id")).await?;
+        let dto = crate::rest::get_properties_core(
+            call.state,
+            str_arg(call.args, "node_id"),
+            call.scope.ok_or(crate::rest::NOT_FOUND_OR_DENIED)?,
+        )
+        .await?;
         Ok(serde_json::to_value(dto).unwrap_or_default())
     })
 }
