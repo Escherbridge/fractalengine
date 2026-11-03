@@ -62,6 +62,7 @@ pub mod atlas;
 pub mod canon_log;
 pub mod handlers;
 pub mod invite;
+pub mod join_delegation;
 pub mod join_invite;
 pub mod join_ticket;
 pub mod merge;

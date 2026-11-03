@@ -377,7 +377,7 @@ pub(crate) fn canonical_did(did: &str) -> anyhow::Result<()> {
     Ok(())
 }
 
-fn bounded_identifier(id: &str) -> anyhow::Result<()> {
+pub(crate) fn bounded_identifier(id: &str) -> anyhow::Result<()> {
     anyhow::ensure!(
         !id.is_empty()
             && id.len() <= 128

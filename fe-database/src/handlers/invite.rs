@@ -229,6 +229,7 @@ mod tests {
         signer: fe_identity::NodeKeypair,
         owner: String,
         recipient: String,
+        recipient_signer: fe_identity::NodeKeypair,
         credential: fe_runtime::join_invite::JoinCredential,
         grant: crate::ReplicationEvent,
         grant_bytes: Vec<u8>,
@@ -238,7 +239,8 @@ mod tests {
         crate::op_log::init_hlc(0);
         let owner_key = fe_identity::NodeKeypair::generate();
         let owner = owner_key.to_did_key();
-        let recipient = fe_identity::NodeKeypair::generate().to_did_key();
+        let recipient_signer = fe_identity::NodeKeypair::generate();
+        let recipient = recipient_signer.to_did_key();
         let source = managers_store(&owner).await;
         let target = fe_runtime::entity_access::EntityAccessTarget {
             entity_type: fe_runtime::messages::EntityType::Verse,
@@ -286,6 +288,7 @@ mod tests {
             signer: owner_key,
             owner,
             recipient,
+            recipient_signer,
             credential: issued.credential,
             grant,
             grant_bytes,
@@ -308,6 +311,45 @@ mod tests {
             let pinned = verse_row(&invitee).await;
             assert_eq!(pinned["created_by"], fixture.owner);
             assert_eq!(pinned["created_at"], CREATED_AT);
+            if role == "manager" {
+                use crate::join_delegation::{DelegationChain, VerseIdentity};
+                let clock = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_secs();
+                let envelope = crate::join_invite::JoinInvitation::parse_owner(fixture.credential.as_str(), &fixture.recipient, clock).unwrap();
+                let identity = VerseIdentity::from_manifest(envelope.manifest());
+                let proof = DelegationChain::issue(&fixture.signer, fixture.recipient.clone(), admitted.scope.clone(), envelope.grant_hlc(), identity.clone(), clock, clock + 3600, None).unwrap();
+                assert_eq!(proof.supporting_grants().next().unwrap().hlc, envelope.grant_hlc());
+                let detached = serde_json::to_string(proof.chain()).unwrap();
+                assert!(!detached.contains(envelope.ticket()), "Portable Manager authority never forwards its write DocTicket");
+                let mut renamed = envelope.manifest().clone();
+                renamed.name = "A renamed Verse".into();
+                assert_eq!(identity, VerseIdentity::from_manifest(&renamed), "Mutable display labels never define Owner identity");
+                let descendant = format!("{}-FRACTAL#child", admitted.scope);
+                let next = fe_identity::NodeKeypair::generate();
+                let child = DelegationChain::issue(&fixture.recipient_signer, next.to_did_key(), descendant.clone(), 1, identity.clone(), clock, clock + 1800, Some(&proof)).unwrap();
+                assert!(child.chain().verify(&next.to_did_key(), &identity, &descendant, clock).is_ok());
+                assert!(child.chain().verify(&next.to_did_key(), &identity, &admitted.scope, clock).is_err(), "A child proof cannot recover broader Verse authority");
+                assert!(DelegationChain::issue(&fixture.recipient_signer, next.to_did_key(), descendant.clone(), 1, identity.clone(), clock, clock + 3601, Some(&proof)).is_err(), "Certificate lifetime cannot exceed its parent");
+                assert!(DelegationChain::issue(&fixture.recipient_signer, fixture.owner.clone(), descendant.clone(), 1, identity.clone(), clock, clock + 1800, Some(&proof)).is_err(), "Delegation never assigns Owner");
+                assert!(DelegationChain::issue(&fixture.recipient_signer, fixture.recipient.clone(), descendant.clone(), 1, identity.clone(), clock, clock + 1800, Some(&proof)).is_err(), "Delegation cannot certify its own issuer");
+                assert!(DelegationChain::issue(&fixture.recipient_signer, next.to_did_key(), descendant.clone(), 1, identity.clone(), clock, clock + 1800, None).is_err(), "A local Manager key cannot invent an Owner root");
+                let mut tampered = serde_json::to_value(child.chain()).unwrap();
+                tampered[1]["parent_id"] = serde_json::json!("00".repeat(32));
+                assert!(serde_json::from_value::<DelegationChain>(tampered).unwrap().verify(&next.to_did_key(), &identity, &descendant, clock).is_err(), "Signed parent proof identity prevents chain substitution");
+                assert!(proof.chain().verify(&fixture.recipient, &identity, &admitted.scope, clock + 3600).is_err());
+                let mut wrong_identity = identity.clone();
+                wrong_identity.namespace_id = "cd".repeat(32);
+                assert!(proof.chain().verify(&fixture.recipient, &wrong_identity, &admitted.scope, clock).is_err());
+                let mut corrupted = serde_json::to_value(proof.chain()).unwrap();
+                corrupted[0]["signature"] = serde_json::json!("00".repeat(64));
+                assert!(serde_json::from_value::<DelegationChain>(corrupted).unwrap().verify(&fixture.recipient, &identity, &admitted.scope, clock).is_err());
+                let keys: Vec<_> = (1..crate::join_delegation::MAX_DELEGATION_DEPTH).map(|_|fe_identity::NodeKeypair::generate()).collect();
+                let mut bounded = proof.clone();
+                for (index, key) in keys.iter().enumerate() {
+                    let issuer = if index == 0 { &fixture.recipient_signer } else { &keys[index - 1] };
+                    bounded = DelegationChain::issue(issuer, key.to_did_key(), admitted.scope.clone(), 1, identity.clone(), clock, clock + 1800, Some(&bounded)).unwrap();
+                }
+                assert!(DelegationChain::issue(keys.last().unwrap(), next.to_did_key(), admitted.scope.clone(), 1, identity, clock, clock + 1800, Some(&bounded)).is_err(), "Finite depth requires Owner reauthorization rather than an unbounded proof");
+            }
             assert!(
                 !super::super::addressed_join::ready(
                     &invitee,
@@ -344,6 +386,11 @@ mod tests {
                     .to_string(),
                 role
             );
+            invitee.query("UPDATE verse SET name='Renamed after issuance' WHERE verse_id=$verse")
+                .bind(("verse", VERSE.to_owned())).await.unwrap().check().unwrap();
+            let renamed = super::super::addressed_join::admit(&invitee, &fixture.recipient, &fixture.credential).await.unwrap();
+            assert_eq!(renamed.verse_name, "Renamed after issuance");
+            assert!(super::super::addressed_join::ready(&invitee, &fixture.recipient, &fixture.credential).await.unwrap(), "Owner-v1 joins pin immutable identity and survive ordinary display-name changes");
             let initial = verse_row(&invitee).await;
             super::super::addressed_join::admit(&invitee, &fixture.recipient, &fixture.credential)
                 .await

@@ -365,3 +365,10 @@ warns and replaces an existing namespace. Its existing real-store journeys now
 cover actual Owner issuance for all three recipient roles, normal grant replay,
 revocation, identity conflicts, membership rollback and captured-source refusal.
 Native transport convergence remains the separate real read-ticket journey.
+
+
+The existing addressed real-store journey also exercises detached delegation signatures,
+parent proof binding, immutable identity, scope/time/depth attenuation and Owner/self refusal.
+These pure certificate fixtures do not claim current DB authority or activate Manager issuance.
+It separately asserts that an already-issued Owner-v1 join accepts an ordinary Verse rename
+without rebinding Owner/namespace/creation or replacing the current display label.

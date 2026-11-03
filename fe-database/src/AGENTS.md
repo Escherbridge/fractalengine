@@ -1836,3 +1836,31 @@ the owner's normally replicated, nonrevoked grant at least that new clock plus
 actual effective role and ancestry. A public default Viewer or older cached grant
 cannot fabricate convergence. Manager issuance still requires its owner-rooted
 delegation proof and is not enabled by this Owner-only slice.
+
+
+## Join-delegation
+
+join_delegation is a pure, transport-free certificate module for legacy hierarchy Manager
+authority. It does not use the canonical-log interim authority adapter, which lacks portable
+legacy scope history. Certificates contain no invitation envelope or DocTicket. Each signed
+certificate binds a canonical audience DID, exact Manager grant HLC, canonical full scope,
+immutable Verse id/Owner/creation/namespace, issue/expiry times and its parent proof content
+hash. Domain-separated fixed-order signing and content hashing are distinct. Display names
+and mutable manifest settings are not identity anchors. Existing Owner-v1 admission/readiness
+already ignores name changes while pinning those immutable fields; a real-store journey now
+asserts rename preservation. Prepare-to-issue still intentionally fences the captured source.
+
+A verified chain has an Owner root, matching successive issuer/audience identities, no cycles
+or Owner recipients, maximum depth eight and 16 KiB serialized proof budget. Scope and time
+can only attenuate; expiration is bounded by the existing thirty-day invitation ceiling. An
+issuer at the depth bound may not create another Manager proof. These limits govern portable
+invitation authority and do not shorten or extend ordinary role access or erase capabilities.
+
+VerifiedDelegationChain seals signature verification only. Its SupportingGrant records are
+requirements for current ordinary role statements, never fabricated grants or DB authority.
+The DB integration must require exact nonrevoked Manager statement HLCs, current effective
+authority and ancestry, and fence the proof rows and grant inputs at use in the same issuance
+transaction. Received proofs remain quarantined until actual Join readiness. Existing Managers
+without a portable proof require explicit Owner reauthorization (DQA016); cached role rows or
+unsigned local op records are not portable evidence. At this checkpoint the module is dormant:
+Owner-v1 remains the active envelope/producer and no Manager issuer is enabled.
