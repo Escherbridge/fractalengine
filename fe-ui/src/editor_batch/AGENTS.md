@@ -177,3 +177,11 @@ late live-map changes, missing/stale geometry proof, equal-anchor handle/corner
 changes, closed transforms/Group creation and replay-source admission. Constructors
 for unrelated picking fixtures explicitly leave the witness unknown. These remain
 authored source checks; actual build, GPU picking and paired QA belong to root.
+
+The closed witness compares shared SDK RouteSourceRow values at actual renderer
+precision (f64 coordinates, handles and time; f32 smoothness). Editor drafts still
+use their separate f32 projection. Existing Inspector assertions include inactive
+incoming handle changes 1.0 -> 1.000000001 and zero -> 1e-8: identical editor rows
+must not admit a mismatched renderer source. Host assertions cover every typed row
+slot and deliberate missing-time/zero-handle equivalence. These are source-authored,
+unexecuted assertions, not native QA evidence.

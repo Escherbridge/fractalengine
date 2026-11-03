@@ -49,20 +49,27 @@ pub struct TrackPickShape {
 /// Host-authored source rows bound to the exact prepared picking geometry.
 #[derive(Debug, Clone)]
 pub struct TrackSourceWitness {
-    rows: Vec<crate::gis::PathPointRow>,
+    rows: Vec<fe_sdk::path_geometry::RouteSourceRow>,
     geometry_hash: [u8; 32],
 }
 
 impl TrackPickShape {
-    pub fn with_render_source(mut self, points: &serde_json::Value) -> Self {
-        let mut rows = crate::gis::decode_gpx_points(points);
-        for row in &mut rows {
-            row.time_seconds = Some(row.time_seconds.unwrap_or(0.0));
-        }
-        self.source_witness = Some(TrackSourceWitness {
-            rows,
-            geometry_hash: self.geometry_hash(),
-        });
+    pub fn with_render_source(self, points: &serde_json::Value) -> Self {
+        self.with_render_source_rows(fe_sdk::path_geometry::decode_route_source(points))
+    }
+
+    pub fn with_render_source_rows(
+        mut self,
+        rows: Vec<fe_sdk::path_geometry::RouteSourceRow>,
+    ) -> Self {
+        let rows: Vec<_> = rows.into_iter().map(|row| row.normalized()).collect();
+        self.source_witness = rows
+            .iter()
+            .all(|row| row.is_finite())
+            .then(|| TrackSourceWitness {
+                rows,
+                geometry_hash: self.geometry_hash(),
+            });
         self
     }
 
@@ -86,10 +93,7 @@ impl TrackPickShape {
         {
             return false;
         }
-        let mut rows = crate::gis::decode_gpx_points(points);
-        for row in &mut rows {
-            row.time_seconds = Some(row.time_seconds.unwrap_or(0.0));
-        }
+        let rows = fe_sdk::path_geometry::decode_route_source(points);
         rows == witness.rows && self.geometry_hash() == witness.geometry_hash
     }
 

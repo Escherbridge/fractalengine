@@ -246,3 +246,20 @@ selection captures now call the same implementation; empty/single/degenerate pat
 clamping and segment-boundary behavior are unchanged. Its cumulative distances come
 from the existing shared accumulator. The native reconciliation journeys remain the
 behavior checks for that sampler. This adds no engine dependency to the SDK.
+
+## Lossless renderer route source
+
+path_geometry::RouteSourceRow is the shared typed decode contract for host route
+materialization and closed-path source witnesses. Positions, timestamps and handles
+retain f64 precision; smoothness retains the renderer's existing f32 precision.
+The editor's PathPointRow remains a separate f32 draft projection and cannot prove
+render-source identity. The host feeds witnesses directly from frozen typed rows,
+without passing through the compact persistence writer.
+
+Normalization preserves the existing renderer decoder: missing/non-numeric time
+becomes zero; absent, incomplete or all-below-f64-EPSILON handles become absent;
+unknown corner codes and smooth/symmetric corners without handles become Corner;
+missing smoothness becomes zero. Numeric corner codes use the existing i64 code
+conversion. Compact and equivalent zero-handle rows compare equally, while inactive
+handles and sub-f32 position/handle changes remain distinct. Non-finite typed source
+rows cannot mint a witness. This is decoding, not zone sanitation or triangulation.

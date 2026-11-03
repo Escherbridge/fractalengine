@@ -291,54 +291,19 @@ fn route_points_to_json(points: &[TimestampedRoutePoint]) -> serde_json::Value {
     )
 }
 
-/// Read a 3-slot handle offset starting at `base`; `None` if any slot is absent
-/// or the whole vector is ~zero (zero == absent, keeps legacy 4-slot rows -> None).
-fn read_handle(a: &[serde_json::Value], base: usize) -> Option<[f64; 3]> {
-    let x = a.get(base)?.as_f64()?;
-    let y = a.get(base + 1)?.as_f64()?;
-    let z = a.get(base + 2)?.as_f64()?;
-    if x.abs() < f64::EPSILON && y.abs() < f64::EPSILON && z.abs() < f64::EPSILON {
-        None
-    } else {
-        Some([x, y, z])
-    }
-}
-
-/// Decode a `gpx_points` JSON value back into route points. Malformed/short
-/// entries are skipped rather than failing the whole track (best-effort —
-/// mirrors the writer's own tolerance for missing fields).
+/// Decode persisted rows through the shared lossless renderer-source contract.
 fn json_to_route_points(value: &serde_json::Value) -> Vec<TimestampedRoutePoint> {
-    value
-        .as_array()
-        .map(|arr| {
-            arr.iter()
-                .filter_map(|entry| {
-                    let a = entry.as_array()?;
-                    let x = a.first()?.as_f64()?;
-                    let y = a.get(1)?.as_f64()?;
-                    let z = a.get(2)?.as_f64()?;
-                    let t = a.get(3).and_then(|v| v.as_f64()).unwrap_or(0.0);
-                    let handle_in = read_handle(a, 4);
-                    let handle_out = read_handle(a, 7);
-                    let mut corner =
-                        CornerKind::from_code(a.get(10).and_then(|v| v.as_f64()).unwrap_or(0.0));
-                    let smoothness = a.get(11).and_then(|v| v.as_f64()).unwrap_or(0.0) as f32;
-                    // Open Q6: a claimed-smooth anchor with no handles is malformed.
-                    if corner != CornerKind::Corner && handle_in.is_none() && handle_out.is_none() {
-                        corner = CornerKind::Corner;
-                    }
-                    Some(TimestampedRoutePoint {
-                        position: [x, y, z],
-                        time_seconds: t,
-                        handle_in,
-                        handle_out,
-                        corner,
-                        smoothness,
-                    })
-                })
-                .collect()
+    fe_sdk::path_geometry::decode_route_source(value)
+        .into_iter()
+        .map(|row| TimestampedRoutePoint {
+            position: row.position,
+            time_seconds: row.time_seconds,
+            handle_in: row.handle_in,
+            handle_out: row.handle_out,
+            corner: CornerKind::from_code(f64::from(row.corner_code)),
+            smoothness: row.smoothness,
         })
-        .unwrap_or_default()
+        .collect()
 }
 
 /// Widen a fe-ui smooth-anchor op payload (f32 + corner code) into the
@@ -669,7 +634,20 @@ fn track_pick_shape(geometry: &RenderedTrackGeometry) -> Option<TrackPickShape> 
             fill_triangles,
             centroid: Vec3::from_array(geometry.centroid()),
         }
-        .with_render_source(&route_points_to_json(geometry.source_points())),
+        .with_render_source_rows(
+            geometry
+                .source_points()
+                .iter()
+                .map(|point| fe_sdk::path_geometry::RouteSourceRow {
+                    position: point.position,
+                    time_seconds: point.time_seconds,
+                    handle_in: point.handle_in,
+                    handle_out: point.handle_out,
+                    corner_code: point.corner.to_code() as u8,
+                    smoothness: point.smoothness,
+                })
+                .collect(),
+        ),
     )
 }
 
@@ -3131,6 +3109,89 @@ mod tests {
         let mut changed_metadata = stored.clone();
         changed_metadata[1][10] = serde_json::json!(1.0);
         assert!(!closed_shape.matches_render_source(&changed_metadata), "equal positions with changed corner metadata are a different source");
+        for (original, changed) in [(1.0, 1.000000001), (0.0, 1e-8)] {
+            let mut precise_source = json_to_route_points(&stored);
+            precise_source[0].handle_in = Some([original, 0.0, 0.0]);
+            let precise_geometry = RenderedTrackGeometry::prepare(
+                &precise_source,
+                TrackStyle {
+                    closed: true,
+                    width: 1.0,
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+            let precise_shape = track_pick_shape(&precise_geometry).unwrap();
+            let exact = route_points_to_json(&precise_source);
+            assert!(precise_shape.matches_render_source(&exact));
+            precise_source[0].handle_in = Some([changed, 0.0, 0.0]);
+            let changed = route_points_to_json(&precise_source);
+            assert!(
+                !precise_shape.matches_render_source(&changed),
+                "inactive f64 handles cannot collapse to the editor's lower precision"
+            );
+        }
+        for slot in [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11] {
+            let mut complete = json_to_route_points(&stored);
+            complete[0].position = [1.0, 2.0, 3.0];
+            complete[0].time_seconds = 7.25;
+            complete[0].handle_in = Some([1.0, 2.0, 3.0]);
+            complete[0].handle_out = Some([4.0, 5.0, 6.0]);
+            complete[0].corner = CornerKind::Smooth;
+            complete[0].smoothness = 0.5;
+            let geometry = RenderedTrackGeometry::prepare(
+                &complete,
+                TrackStyle {
+                    closed: true,
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+            let witness = track_pick_shape(&geometry).unwrap();
+            let mut changed = route_points_to_json(&complete);
+            let original = changed[0][slot].as_f64().unwrap();
+            changed[0][slot] = serde_json::json!(
+                original
+                    + if slot == 10 {
+                        1.0
+                    } else if slot == 11 {
+                        0.125
+                    } else {
+                        1e-9
+                    }
+            );
+            assert!(
+                !witness.matches_render_source(&changed),
+                "all typed source slots retain their renderer precision: {slot}"
+            );
+        }
+        let mut compact = stored.clone();
+        compact[0] = serde_json::json!([0.0, 0.25, 0.0]);
+        assert!(
+            closed_shape.matches_render_source(&compact),
+            "missing time and stored zero are equivalent"
+        );
+        compact[0] = serde_json::json!([0.0, 0.25, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 2.0, 0.0]);
+        assert!(
+            closed_shape.matches_render_source(&compact),
+            "zero handles and handle-free corner normalization are shared with the renderer"
+        );
+        let mut negative_smoothness = json_to_route_points(&stored);
+        negative_smoothness[0].smoothness = -0.5;
+        let negative_geometry = RenderedTrackGeometry::prepare(
+            &negative_smoothness,
+            TrackStyle {
+                closed: true,
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        assert!(
+            !track_pick_shape(&negative_geometry)
+                .unwrap()
+                .matches_render_source(&stored),
+            "frozen typed metadata cannot pass through compact persistence encoding"
+        );
     }
 
     // pen_curve_tool_20260722 Phase 1: bezier wire-format (4/12-slot) round-trips.

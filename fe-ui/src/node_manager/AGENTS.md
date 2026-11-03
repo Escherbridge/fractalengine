@@ -1055,3 +1055,9 @@ source rows to the prepared picking geometry; closed checked operations refuse
 an absent witness. Its row and geometry payload is private, and changing public
 shape geometry after capture invalidates the digest. Picking-only fixtures do
 not invent a witness. See ../editor_batch/AGENTS.md section verified closed paths.
+
+The closed source witness stores shared lossless RouteSourceRow values, rather than
+PathPointRow editor projections. Host typed rows bypass compact JSON persistence;
+SDK normalization and finite checks apply before capture. Geometry hashing is
+unchanged. Exact f64 source identity and f32 open-editor draft agreement are separate
+checks; neither can substitute for the other.

@@ -1,5 +1,99 @@
 //! Shared Bezier route geometry; see src/AGENTS.md section path geometry.
 
+/// Lossless renderer source row; normalization is documented in src/AGENTS.md.
+#[derive(Debug, Clone, PartialEq)]
+pub struct RouteSourceRow {
+    pub position: [f64; 3],
+    pub time_seconds: f64,
+    pub handle_in: Option<[f64; 3]>,
+    pub handle_out: Option<[f64; 3]>,
+    pub corner_code: u8,
+    pub smoothness: f32,
+}
+
+impl RouteSourceRow {
+    pub fn normalized(mut self) -> Self {
+        for handle in [&mut self.handle_in, &mut self.handle_out] {
+            if handle.is_some_and(|values| values.iter().all(|v| v.abs() < f64::EPSILON)) {
+                *handle = None;
+            }
+        }
+        if !matches!(self.corner_code, 1 | 2)
+            || (self.handle_in.is_none() && self.handle_out.is_none())
+        {
+            self.corner_code = 0;
+        }
+        self
+    }
+
+    pub fn is_finite(&self) -> bool {
+        self.position.iter().all(|v| v.is_finite())
+            && self.time_seconds.is_finite()
+            && self
+                .handle_in
+                .iter()
+                .chain(&self.handle_out)
+                .flatten()
+                .all(|v| v.is_finite())
+            && self.smoothness.is_finite()
+    }
+}
+
+/// Decode the renderer's typed source without the editor's f32 coordinate projection.
+pub fn decode_route_source(value: &serde_json::Value) -> Vec<RouteSourceRow> {
+    fn handle(row: &[serde_json::Value], base: usize) -> Option<[f64; 3]> {
+        let values = [
+            row.get(base)?.as_f64()?,
+            row.get(base + 1)?.as_f64()?,
+            row.get(base + 2)?.as_f64()?,
+        ];
+        Some(values)
+    }
+    value
+        .as_array()
+        .map(|rows| {
+            rows.iter()
+                .filter_map(|entry| {
+                    let row = entry.as_array()?;
+                    let position = [
+                        row.first()?.as_f64()?,
+                        row.get(1)?.as_f64()?,
+                        row.get(2)?.as_f64()?,
+                    ];
+                    let handle_in = handle(row, 4);
+                    let handle_out = handle(row, 7);
+                    let corner_code = match row
+                        .get(10)
+                        .and_then(serde_json::Value::as_f64)
+                        .unwrap_or(0.0) as i64
+                    {
+                        1 => 1,
+                        2 => 2,
+                        _ => 0,
+                    };
+                    Some(
+                        RouteSourceRow {
+                            position,
+                            time_seconds: row
+                                .get(3)
+                                .and_then(serde_json::Value::as_f64)
+                                .unwrap_or(0.0),
+                            handle_in,
+                            handle_out,
+                            corner_code,
+                            smoothness: row
+                                .get(11)
+                                .and_then(serde_json::Value::as_f64)
+                                .unwrap_or(0.0) as f32,
+                        }
+                        .normalized(),
+                    )
+                })
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
 /// Subdivision count used by stamp consumers.
 pub const FLATTEN_SAMPLES_PER_SEGMENT: usize = 16;
 /// Position with optional relative incoming and outgoing handle offsets.

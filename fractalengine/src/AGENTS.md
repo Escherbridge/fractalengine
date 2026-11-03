@@ -1814,3 +1814,10 @@ full decoded source rows and its actual picking geometry in a sealed digest used
 by checked selection and Undo source predicates. Closed-path sanitation remains
 owned by fe-terrain and runs once for the mesh and its captured source. Unknown
 or mismatched mesh snapshots remain untagged until rebuilt.
+
+The host and UI witness share SDK RouteSourceRow normalization. Frozen renderer
+rows feed the witness directly, retaining f64 positions/handles/time and every
+actual corner/smoothness value; the compact persistence writer is not a source
+identity encoder. JSON route materialization calls the same decoder, while editor
+PathPointRow comparisons remain lower-precision draft checks. The actual Mesh3d ID
+and prepared geometry digest remain required; no live-map retagging was added.

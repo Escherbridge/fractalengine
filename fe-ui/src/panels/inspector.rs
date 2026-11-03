@@ -5003,6 +5003,45 @@ mod tests {
                     stale.members[0].state.properties.insert("gis.track.width".into(), json!(2.0));
                     assert!(sources.validate(&stale, &source_nodes, &path).is_err());
                 }
+                for (original, changed) in [(1.0, 1.000000001), (0.0, 1e-8)] {
+                    let mut precise_capture = closed_capture.clone();
+                    let mut precise_points = points.clone();
+                    precise_points[0] =
+                        json!([0.0, 0.0, 0.0, 0.0, original, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]);
+                    precise_capture.members[0]
+                        .state
+                        .properties
+                        .insert("gpx_points".into(), precise_points.clone());
+                    *source_world
+                        .get_mut::<crate::node_manager::TrackPickShape>(path_entity)
+                        .unwrap() = closed_shape.clone().with_render_source(&precise_points);
+                    path.points = crate::gis::decode_gpx_points(&precise_points);
+                    source_query
+                        .get(&source_world)
+                        .validate(&precise_capture, &source_nodes, &path)
+                        .unwrap();
+                    precise_points[0][4] = json!(changed);
+                    assert_eq!(
+                        path.points,
+                        crate::gis::decode_gpx_points(&precise_points),
+                        "the draft projection intentionally cannot distinguish this renderer-source change"
+                    );
+                    precise_capture.members[0]
+                        .state
+                        .properties
+                        .insert("gpx_points".into(), precise_points);
+                    assert!(
+                        source_query
+                            .get(&source_world)
+                            .validate(&precise_capture, &source_nodes, &path)
+                            .is_err(),
+                        "the lossless closed witness still refuses an inactive f64 handle change"
+                    );
+                }
+                path.points = crate::gis::decode_gpx_points(&points);
+                *source_world
+                    .get_mut::<crate::node_manager::TrackPickShape>(path_entity)
+                    .unwrap() = closed_shape.clone();
                 let mut replay_sources = bevy::ecs::system::SystemState::<crate::editor_batch::RenderedSources>::new(&mut source_world);
                 replay_sources.get(&source_world).validate_replay(
                     &closed_capture, &path, &crate::verse_manager::PathAssetCache::default(),
