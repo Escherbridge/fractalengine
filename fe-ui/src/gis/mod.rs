@@ -520,7 +520,8 @@ impl PathEditorState {
     /// is pending — so a foreign `NodeCreated` (GPX import, create-entity
     /// dialog) can never flush the pen point onto the wrong node. See
     /// `pen_autocreate_track_20260713` + AGENTS.md §path-editor.
-    pub(crate) fn take_pending_pen_create_if(
+    #[cfg(test)]
+    fn take_pending_pen_create_if(
         &mut self,
         correlation_id: &str,
     ) -> Option<PendingPenCreate> {
@@ -528,6 +529,26 @@ impl PathEditorState {
             Some(p) if p.correlation_id == correlation_id => self.pending_pen_create.take(),
             _ => None,
         }
+    }
+
+    pub(crate) fn take_pending_pen_create_in_context(
+        &mut self,
+        correlation_id: &str,
+        nav: &crate::navigation_manager::NavigationManager,
+        manager: &crate::verse_manager::VerseManager,
+    ) -> Option<PendingPenCreate> {
+        if !self
+            .pending_pen_create
+            .as_ref()
+            .is_some_and(|pen| pen.correlation_id == correlation_id)
+        {
+            return None;
+        }
+        self.pending_pen_create.take().filter(|pen| {
+            pen.context
+                .as_ref()
+                .is_some_and(|context| context.matches(nav, manager))
+        })
     }
 
     /// Clears the pending Pen auto-create unconditionally, returning `true` if
@@ -546,6 +567,7 @@ impl PathEditorState {
 /// hijack-proof. See `fe-ui/src/AGENTS.md` §path-editor.
 #[derive(Debug, Clone, PartialEq, Default)]
 pub struct PendingPenCreate {
+    pub(crate) context: Option<PenCreationContext>,
     pub correlation_id: String,
     pub first_point: [f32; 3],
     /// pen_curve_tool_20260722 (FR-4 must-fix): the first anchor's bezier
@@ -555,6 +577,52 @@ pub struct PendingPenCreate {
     pub handle_out: Option<[f32; 3]>,
     pub corner: CornerKind,
     pub smoothness: f32,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct PenCreationContext {
+    navigation_revision: u64,
+    hierarchy: [Option<String>; 3],
+    manager_incarnation: u128,
+    access_generation: Option<u128>,
+}
+
+impl PenCreationContext {
+    pub(crate) fn capture(
+        nav: &crate::navigation_manager::NavigationManager,
+        manager: &crate::verse_manager::VerseManager,
+    ) -> Self {
+        Self {
+            navigation_revision: nav.intent_revision,
+            hierarchy: [
+                nav.active_verse_id.clone(),
+                nav.active_fractal_id.clone(),
+                nav.active_petal_id.clone(),
+            ],
+            manager_incarnation: manager.scene_incarnation(),
+            access_generation: manager.scene_access_generation(),
+        }
+    }
+
+    fn matches(
+        &self,
+        nav: &crate::navigation_manager::NavigationManager,
+        manager: &crate::verse_manager::VerseManager,
+    ) -> bool {
+        !manager.scene_access_blocked()
+            && self.navigation_revision == nav.intent_revision
+            && self.manager_incarnation == manager.scene_incarnation()
+            && self.access_generation == manager.scene_access_generation()
+            && self
+                .hierarchy
+                .iter()
+                .zip([
+                    &nav.active_verse_id,
+                    &nav.active_fractal_id,
+                    &nav.active_petal_id,
+                ])
+                .all(|(before, current)| before == current)
+    }
 }
 
 /// Process-unique correlation id for a Pen auto-created track. fe-ui-side twin
@@ -829,6 +897,7 @@ mod tests {
         let mut s = PathEditorState::default();
         s.pending_pen_create = Some(PendingPenCreate {
             correlation_id: "pen-track:9".to_string(),
+            context: None,
             first_point: [1.0, 0.0, 2.0],
             handle_in: Some([-0.5, 0.0, 0.0]),
             handle_out: Some([0.5, 0.0, 0.0]),

@@ -1702,9 +1702,10 @@ mod tests {
     // --- pen auto-create flush (pen_autocreate_track FR-2 + pen_curve FR-4) ---
 
     /// Handle-less pending stash; tests layer bezier fields via struct update.
-    fn pen_stash(cid: &str) -> PendingPenCreate {
+    fn pen_stash(cid: &str, nav: &NavigationManager, manager: &VerseManager) -> PendingPenCreate {
         PendingPenCreate {
             correlation_id: cid.into(),
+            context: Some(crate::gis::PenCreationContext::capture(nav, manager)),
             first_point: [1.0, 2.0, 3.0],
             ..Default::default()
         }
@@ -1722,7 +1723,7 @@ mod tests {
             handle_out: Some([4.0, -0.5, 5.0]),
             corner: CornerKind::Symmetric,
             smoothness: 0.42,
-            ..pen_stash("pen-track:t1")
+            ..pen_stash("pen-track:t1", &nav, &mgr)
         });
         nodes::handle_node_created(
             "n2",
@@ -1778,7 +1779,7 @@ mod tests {
             handle_out: Some([2.0, 0.0, 2.0]),
             corner: CornerKind::Smooth,
             smoothness: 1.0,
-            ..pen_stash("pen-track:t2")
+            ..pen_stash("pen-track:t2", &nav, &mgr)
         });
         nodes::handle_node_created(
             "n2",
@@ -1821,7 +1822,7 @@ mod tests {
         let nav = NavigationManager { active_petal_id: Some("p1".into()), ..Default::default() };
         let mut ui = UiManager::default();
         let mut path_state = PathEditorState::default();
-        path_state.pending_pen_create = Some(pen_stash("pen-track:t3"));
+        path_state.pending_pen_create = Some(pen_stash("pen-track:t3", &nav, &mgr));
         nodes::handle_node_created(
             "n2",
             "p1",
@@ -1851,6 +1852,44 @@ mod tests {
             }
             other => panic!("expected legacy PathAppendPoint, got {other:?}"),
         }
+        nodes::handle_node_created(
+            "n2", "p1", "Track", false, Some("pen-track:t3"), [0.0; 3],
+            &mut mgr, &nav, &mut ui, &mut path_state, &tx,
+            &mut crate::actions::terrain_proposal::EarthworkNodeMap::default(),
+            &mut crate::actions::dimension_callout::DimensionCalloutMap::default(),
+        );
+        assert!(ui.drain_actions().is_empty(), "a duplicate birth cannot append the first anchor twice");
+        assert_eq!(path_state.editing_track_id.as_deref(), Some("n2"));
+        assert_eq!(mgr.all_nodes().filter(|node| node.id == "n2").count(), 1);
+
+        for changed in 0..4 {
+            let mut manager = tree();
+            let mut navigation = NavigationManager::default();
+            navigation.navigate_to_petal_in_fractal("v1", "V", "f1", "F", "p1");
+            let mut editor = PathEditorState::default();
+            editor.pending_pen_create = Some(pen_stash("pen-track:late", &navigation, &manager));
+            match changed {
+                0 => navigation.navigate_to_petal_in_fractal("v1", "V", "f1", "F", "p1"),
+                1 => {
+                    manager.invalidate_scene_access(&navigation);
+                    manager.accept_scene_role(&navigation.active_scope().unwrap(), "owner", &navigation);
+                }
+                2 => manager = VerseManager::from_verses(manager.verses.clone()),
+                _ => editor.pending_pen_create.as_mut().unwrap().context = None,
+            }
+            let intent = navigation.intent_revision;
+            let mut pending_ui = UiManager::default();
+            nodes::handle_node_created(
+                "late-pen", "p1", "Track", false, Some("pen-track:late"), [0.0; 3],
+                &mut manager, &navigation, &mut pending_ui, &mut editor, &tx,
+                &mut crate::actions::terrain_proposal::EarthworkNodeMap::default(),
+                &mut crate::actions::dimension_callout::DimensionCalloutMap::default(),
+            );
+            assert!(editor.editing_track_id.is_none() && pending_ui.drain_actions().is_empty(), "late Pen birth cannot continue after context change {changed}");
+            assert!(!editor.has_pending_pen_create(), "matching obsolete first-anchor intent is retired");
+            assert_eq!(navigation.intent_revision, intent);
+            assert_eq!(navigation.active_petal_id.as_deref(), Some("p1"));
+        }
     }
 
     #[test]
@@ -1862,7 +1901,7 @@ mod tests {
         let mut path_state = PathEditorState::default();
         path_state.pending_pen_create = Some(PendingPenCreate {
             handle_out: Some([1.0, 0.0, 0.0]),
-            ..pen_stash("pen-track:t4")
+            ..pen_stash("pen-track:t4", &nav, &mgr)
         });
         nodes::handle_node_created(
             "n2",
@@ -1889,7 +1928,7 @@ mod tests {
         );
         assert!(path_state.editing_track_id.is_none());
         let private_id = format!("{}fixture", crate::path_ops::HOST_PATH_REQUEST_PREFIX);
-        path_state.pending_pen_create = Some(pen_stash(&private_id));
+        path_state.pending_pen_create = Some(pen_stash(&private_id, &nav, &mgr));
         nodes::handle_node_created(
             "private-node", "p1", "Track", false, Some(&private_id), [0.0; 3],
             &mut mgr, &nav, &mut ui, &mut path_state, &tx,
@@ -1899,7 +1938,7 @@ mod tests {
         assert!(path_state.has_pending_pen_create(), "private host outcomes cannot satisfy even an equal-looking UI pending ID");
         assert!(ui.drain_actions().is_empty() && path_state.editing_track_id.is_none());
         mgr.invalidate_scene_access(&nav);
-        path_state.pending_pen_create = Some(pen_stash("pen-track:retired"));
+        path_state.pending_pen_create = Some(pen_stash("pen-track:retired", &nav, &mgr));
         nodes::handle_node_created(
             "retired-node", "p1", "Track", false, Some("pen-track:retired"), [0.0; 3],
             &mut mgr, &nav, &mut ui, &mut path_state, &tx,
@@ -1916,7 +1955,7 @@ mod tests {
         let nav = NavigationManager { active_petal_id: Some("p1".into()), ..Default::default() };
         let mut ui = UiManager::default();
         let mut path_state = PathEditorState::default();
-        path_state.pending_pen_create = Some(pen_stash("pen-track:t5"));
+        path_state.pending_pen_create = Some(pen_stash("pen-track:t5", &nav, &mgr));
         nodes::handle_node_created(
             "n2",
             "p1",

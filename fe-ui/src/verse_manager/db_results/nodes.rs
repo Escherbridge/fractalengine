@@ -29,20 +29,22 @@ pub(super) fn handle_node_created(
     earthwork_map: &mut crate::actions::terrain_proposal::EarthworkNodeMap,
     callout_map: &mut crate::actions::dimension_callout::DimensionCalloutMap,
 ) {
-    verse_mgr.add_node(
-        petal_id,
-        NodeEntry {
-            transform: Default::default(),
-            id: id.to_string(),
-            name: name.to_string(),
-            has_asset,
-            // camera_focus_clip_20260716 FR-1: echoed from `NodeCreated` instead
-            // of a hardcoded origin (see spec §Root causes for the stale-focus bug).
-            position,
-            webpage_url: None,
-            asset_path: None,
-        },
-    );
+    if verse_mgr.petal_id_of(id).is_none() {
+        verse_mgr.add_node(
+            petal_id,
+            NodeEntry {
+                transform: Default::default(),
+                id: id.to_string(),
+                name: name.to_string(),
+                has_asset,
+                // camera_focus_clip_20260716 FR-1: echoed from `NodeCreated` instead
+                // of a hardcoded origin (see spec §Root causes for the stale-focus bug).
+                position,
+                webpage_url: None,
+                asset_path: None,
+            },
+        );
+    }
     if verse_mgr.scene_access_blocked()
         || correlation_id.is_some_and(crate::path_ops::is_host_path_request)
     {
@@ -101,7 +103,7 @@ pub(super) fn handle_node_created(
     // foreign create (GPX import / create-entity dialog) carries a
     // different id (or `None`), so it can never hijack the pen flush.
     if let Some(cid) = correlation_id.filter(|_| in_active_petal) {
-        if let Some(pen) = path_state.take_pending_pen_create_if(cid) {
+        if let Some(pen) = path_state.take_pending_pen_create_in_context(cid, nav, verse_mgr) {
             path_state.start_editing(id.to_string());
             // pen_curve_tool_20260722 (FR-4): a press-drag first anchor keeps
             // its handles through the deferred echo; a plain click stays on

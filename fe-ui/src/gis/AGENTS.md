@@ -64,3 +64,19 @@ The panel synchronizes the active Petal even while closed, clears both buffers o
 and auto-loads Annotations once per Petal; failed refreshes require an explicit retry. A successful
 empty reply renders `0 results`. Unknown and older-Petal request IDs cannot claim this buffer.
 Share TTL accepts only integer seconds 1..=86400, matching fe-api; invalid drafts produce no curl.
+
+## Pending Pen continuation context
+
+PendingPenCreate separates the unsent first-anchor continuation from the host's
+accepted CreateNode outcome. The production producer captures navigation intent
+revision, actual hierarchy IDs, VerseManager incarnation and access generation
+when it stashes that anchor. The result consumer checks that original context
+at use before starting an edit session or enqueuing any append. A matching reply
+with a missing or obsolete context consumes only the unsent intent. Foreign IDs
+leave the intended continuation alone; duplicate matching replies cannot append
+twice. Accepted host creation ownership remains independent and drains normally.
+
+The raw matching/take helper exists only in state-only tests. Production callers
+must use the context-checked consume seam. The existing result-handler journey
+covers same-Petal navigation intent changes, fresh access after invalidation,
+manager replacement, ordinary matching success once and duplicate birth refusal.

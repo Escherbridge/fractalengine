@@ -302,6 +302,7 @@ pub(crate) fn collect_foreign_anchors<'a>(
 /// visibility picker rule.
 #[derive(bevy::ecs::system::SystemParam)]
 pub(super) struct ForeignSnapSources<'w, 's> {
+    hierarchy: Option<Res<'w, crate::verse_manager::VerseManager>>,
     selection: Option<Res<'w, super::NodeManager>>,
     shapes: Query<
         'w,
@@ -435,11 +436,13 @@ fn apply_snapped_point_release(
 /// Resolve a completed pen gesture: append onto the edited track, or stash the
 /// FULL first-anchor payload (handles included — the FR-4 must-fix) under a
 /// correlation id for the deferred auto-create echo. See AGENTS.md §pen-tool.
+#[allow(clippy::too_many_arguments)]
 fn release_pen_gesture(
     mut pen: PenHandleDragState,
     default_kind: CornerKind,
     path_state: &mut PathEditorState,
     nav: &NavigationManager,
+    manager: Option<&crate::verse_manager::VerseManager>,
     foreign: &[SnapCandidate],
     world_scale: f64,
     ui_mgr: &mut UiManager,
@@ -502,6 +505,10 @@ fn release_pen_gesture(
     if path_state.has_pending_pen_create() {
         return;
     }
+    let Some(manager) = manager.filter(|manager| !manager.scene_access_blocked()) else {
+        path_state.last_error = Some("Scene context is unavailable; no Pen track was requested".into());
+        return;
+    };
     let Some(petal_id) = nav.active_petal_id.clone() else {
         return; // unreachable: AutoCreate requires a (matching) active petal
     };
@@ -509,6 +516,7 @@ fn release_pen_gesture(
         .unwrap_or((None, None, CornerKind::Corner, 0.0));
     let correlation_id = crate::gis::next_pen_correlation_id();
     path_state.pending_pen_create = Some(crate::gis::PendingPenCreate {
+        context: Some(crate::gis::PenCreationContext::capture(nav, manager)),
         correlation_id: correlation_id.clone(),
         first_point: pen.anchor,
         handle_in,
@@ -776,6 +784,7 @@ pub(super) fn handle_path_point_interaction(
                 tool_panel.pen_new_anchor_kind,
                 &mut path_state,
                 &nav,
+                snap_sources.hierarchy.as_deref(),
                 &foreign,
                 petal_map.world_scale,
                 &mut ui_mgr,
@@ -1105,6 +1114,7 @@ mod tests {
             CornerKind::Corner,
             &mut path_state,
             &nav,
+            None,
             &[],
             1.0,
             &mut ui,
