@@ -55,6 +55,8 @@ pub(crate) async fn commit(db: &Db, prepared: PreparedBatch) -> anyhow::Result<E
         payload: json!({"editor_batch_request_id":receipt.request_id,"scope":receipt.scope,"actor_did":actor,"receipt":receipt}),
         sig: "00".repeat(64),
     };
+    guards.insert(0, "IF (SELECT VALUE payload FROM op_log WHERE payload.editor_batch_request_id=$batch_request) != [$batch_manifest_payload] { THROW 'batch manifest differs from the exact current request'; }".into());
+    bindings.push(("batch_manifest_payload".into(), entry.payload.clone()));
     let mut last = std::collections::BTreeMap::new();
     for (index, (id, op, _, _)) in facts.iter().enumerate() {
         if op != "baseline" {

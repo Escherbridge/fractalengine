@@ -57,3 +57,7 @@ Ordinary per-object journal versions remain separate from global or measurement/
 CommitCheckedEditorBatch and ComparePetalVisibilityGroups remain UnmappedDeferred in the canonical
 inventory. Neither the local manifest nor legacy registry/property notifications establish an atomic
 P2P group wire contract; that requires separately reviewed mapping, transport and paired convergence.
+
+## Current manifest ownership
+
+The atomic seam creates its op-log intention before caller guards. Batch guards therefore require exactly one current request manifest, and compare that entire stored payload to the internally assembled actor/scope/receipt payload before materializations or facts. Zero is not the success count. A preexisting request ID produces a second intention and refuses the whole transaction, rolling back the new intention as well. The additional payload binding participates in the final expanded 4 MiB budget. Op-log serialization strips only top-level nulls; nested exact receipt nulls remain intact.

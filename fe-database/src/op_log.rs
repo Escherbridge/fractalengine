@@ -2245,7 +2245,9 @@ mod tests {
             let prepared = editor_batch::prepare(&db, &request, "qa-selection-properties", "did:qa")
                 .await
                 .unwrap();
+            let before_first_batch = op_log_count(&db).await;
             let saved = editor_batch::commit(&db, prepared).await.unwrap();
+            assert_eq!(op_log_count(&db).await, before_first_batch + 1, "the current checked batch manifest is admitted exactly once, not mistaken for a preexisting request");
             assert_eq!(saved.members.len(), 2);
             for member in &saved.members {
                 assert_eq!(member.state.properties["qa.shared"], 7);
@@ -2543,6 +2545,37 @@ mod tests {
             )
             .await
             .expect_err("receipt cannot satisfy another target order");
+            let duplicate_capture =
+                editor_batch::read(&db, &plugin_scope, "tree-other-petal", &ids, "did:qa")
+                    .await
+                    .unwrap();
+            let duplicate_request = EditorBatchRequest {
+                capture: duplicate_capture.clone(),
+                edit: request.edit.clone(),
+            };
+            let duplicate =
+                editor_batch::prepare(&db, &duplicate_request, "qa-selection-properties", "did:qa")
+                    .await
+                    .unwrap();
+            let before_duplicate = op_log_count(&db).await;
+            editor_batch::commit(&db, duplicate)
+                .await
+                .expect_err("a fresh capture cannot reuse an already committed request identity");
+            assert_eq!(
+                op_log_count(&db).await,
+                before_duplicate,
+                "the duplicate intention and all facts roll back"
+            );
+            let after_duplicate =
+                editor_batch::read(&db, &plugin_scope, "tree-other-petal", &ids, "did:qa")
+                    .await
+                    .unwrap();
+            assert_eq!(
+                serde_json::to_value(after_duplicate).unwrap(),
+                serde_json::to_value(duplicate_capture).unwrap(),
+                "duplicate refusal leaves the complete current capture unchanged"
+            );
+
             let operations = op_log_count(&db).await;
             editor_batch::prepare(&db, &request, "qa-stale-selection", "did:qa")
                 .await

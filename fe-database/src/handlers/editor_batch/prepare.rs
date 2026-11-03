@@ -530,7 +530,7 @@ pub(crate) async fn prepare(
         })
         .collect();
     capture::bounded(&(&request.capture, &receipt, &facts, &bindings))?;
-    guards.push("IF array::len((SELECT VALUE id FROM op_log WHERE payload.editor_batch_request_id=$batch_request)) != 0 { THROW 'batch request already committed; reconcile its receipt'; }".into());
+    guards.push("IF array::len((SELECT VALUE id FROM op_log WHERE payload.editor_batch_request_id=$batch_request)) != 1 { THROW 'batch request already committed; reconcile its receipt'; }".into());
     bindings.push(("batch_request".into(), json!(request_id)));
     guards.extend(writes);
     Ok(PreparedBatch {
