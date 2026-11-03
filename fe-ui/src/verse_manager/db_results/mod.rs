@@ -158,8 +158,15 @@ pub(super) fn apply_db_results(
                     || scope.strip_prefix(active.as_str()).is_some_and(|tail| tail.starts_with('-'))) =>
             {
                 verse_mgr.invalidate_scene_access(&nav);
+                path_state.clear_pending_pen_create();
             }
-            DbResult::LocalRoleResolved { scope, role } => verse_mgr.accept_scene_role(scope, role, &nav),
+            DbResult::LocalRoleResolved { scope, role } => {
+                verse_mgr.accept_scene_role(scope, role, &nav);
+                if nav.active_scope().as_deref() == Some(scope.as_str())
+                    && (verse_mgr.scene_access_blocked() || !fe_policy::RoleLevel::from(role.as_str()).can_edit()) {
+                    path_state.clear_pending_pen_create();
+                }
+            }
             _ => {}
         }
         let replica_current = match result {
@@ -564,7 +571,7 @@ pub(super) fn apply_db_results(
                 petal_id,
                 name,
                 *has_asset,
-                correlation_id.as_deref(),
+                correlation_id.as_deref().filter(|id| local_role.can_edit() || crate::path_ops::is_host_path_request(id)),
                 *position,
                 &mut verse_mgr,
                 &nav,
@@ -1707,7 +1714,7 @@ mod tests {
     fn pen_flush_with_handles_appends_smooth_point_with_all_fields() {
         let (tx, _rx) = sender();
         let mut mgr = tree();
-        let nav = NavigationManager::default();
+        let nav = NavigationManager { active_petal_id: Some("p1".into()), ..Default::default() };
         let mut ui = UiManager::default();
         let mut path_state = PathEditorState::default();
         path_state.pending_pen_create = Some(PendingPenCreate {
@@ -1764,7 +1771,7 @@ mod tests {
         // A press-drag first anchor typically carries only handle_out.
         let (tx, _rx) = sender();
         let mut mgr = tree();
-        let nav = NavigationManager::default();
+        let nav = NavigationManager { active_petal_id: Some("p1".into()), ..Default::default() };
         let mut ui = UiManager::default();
         let mut path_state = PathEditorState::default();
         path_state.pending_pen_create = Some(PendingPenCreate {
@@ -1811,7 +1818,7 @@ mod tests {
     fn pen_flush_without_handles_appends_plain_point() {
         let (tx, _rx) = sender();
         let mut mgr = tree();
-        let nav = NavigationManager::default();
+        let nav = NavigationManager { active_petal_id: Some("p1".into()), ..Default::default() };
         let mut ui = UiManager::default();
         let mut path_state = PathEditorState::default();
         path_state.pending_pen_create = Some(pen_stash("pen-track:t3"));
@@ -1850,7 +1857,7 @@ mod tests {
     fn pen_flush_skipped_on_correlation_mismatch() {
         let (tx, _rx) = sender();
         let mut mgr = tree();
-        let nav = NavigationManager::default();
+        let nav = NavigationManager { active_petal_id: Some("p1".into()), ..Default::default() };
         let mut ui = UiManager::default();
         let mut path_state = PathEditorState::default();
         path_state.pending_pen_create = Some(PendingPenCreate {
@@ -1881,13 +1888,32 @@ mod tests {
             "stash must survive for the real echo"
         );
         assert!(path_state.editing_track_id.is_none());
+        let private_id = format!("{}fixture", crate::path_ops::HOST_PATH_REQUEST_PREFIX);
+        path_state.pending_pen_create = Some(pen_stash(&private_id));
+        nodes::handle_node_created(
+            "private-node", "p1", "Track", false, Some(&private_id), [0.0; 3],
+            &mut mgr, &nav, &mut ui, &mut path_state, &tx,
+            &mut crate::actions::terrain_proposal::EarthworkNodeMap::default(),
+            &mut crate::actions::dimension_callout::DimensionCalloutMap::default(),
+        );
+        assert!(path_state.has_pending_pen_create(), "private host outcomes cannot satisfy even an equal-looking UI pending ID");
+        assert!(ui.drain_actions().is_empty() && path_state.editing_track_id.is_none());
+        mgr.invalidate_scene_access(&nav);
+        path_state.pending_pen_create = Some(pen_stash("pen-track:retired"));
+        nodes::handle_node_created(
+            "retired-node", "p1", "Track", false, Some("pen-track:retired"), [0.0; 3],
+            &mut mgr, &nav, &mut ui, &mut path_state, &tx,
+            &mut crate::actions::terrain_proposal::EarthworkNodeMap::default(),
+            &mut crate::actions::dimension_callout::DimensionCalloutMap::default(),
+        );
+        assert!(ui.drain_actions().is_empty() && path_state.editing_track_id.is_none(), "a late accepted birth cannot restart editing or append after access loss");
     }
 
     #[test]
     fn pen_flush_skipped_when_echo_has_no_correlation_id() {
         let (tx, _rx) = sender();
         let mut mgr = tree();
-        let nav = NavigationManager::default();
+        let nav = NavigationManager { active_petal_id: Some("p1".into()), ..Default::default() };
         let mut ui = UiManager::default();
         let mut path_state = PathEditorState::default();
         path_state.pending_pen_create = Some(pen_stash("pen-track:t5"));

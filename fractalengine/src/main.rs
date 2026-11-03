@@ -940,9 +940,10 @@ fn main() {
         bevy::prelude::Update,
         (
             gpx_bridge::request_petal_gpx_materialization,
-            gpx_bridge::drain_gpx_ops.run_if(gpx_bridge::path_projection_access),
-            gpx_bridge::advance_gpx_imports.run_if(gpx_bridge::path_projection_access),
-            gpx_bridge::drain_path_ops.run_if(gpx_bridge::path_projection_access),
+            gpx_bridge::advance_host_outcomes,
+            gpx_bridge::drain_gpx_ops.run_if(gpx_bridge::path_write_access),
+            gpx_bridge::advance_gpx_imports.run_if(gpx_bridge::path_write_access),
+            gpx_bridge::drain_path_ops.run_if(gpx_bridge::path_write_access),
             gpx_bridge::advance_path_edits.run_if(gpx_bridge::path_projection_access),
             gpx_bridge::advance_path_materialization,
             // Tag rendered track ribbons selectable (bridges fe-terrain's

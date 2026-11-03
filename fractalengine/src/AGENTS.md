@@ -427,43 +427,14 @@ layer wiring are **out of scope here** (per `metadata.json`, that's W-B's
   parent/child relation would need a new schema column + `DbCommand`
   variant, which is out of scope (`fe-database/src/lib.rs` is quarantined).
   Standalone waypoints (no track in the file) get no `gpx_track_id`.
-- **Correlating `CreateNode`'s fire-and-forget result.** `DbCommandSender`
-  is fire-and-forget and `DbResult` is a broadcast Bevy `Message` with no
-  request ID — unlike `ApiCommand::DbRequest`'s `PendingApiRequests`
-  correlation (oneshot channels), a plain ECS system has no such mechanism.
-  `gpx_bridge.rs` correlates by content: a `PendingGpxImports` resource
-  keeps a `HashMap<(petal_id, name), VecDeque<...>>` of "what to do when the
-  next matching `DbResult::NodeCreated` arrives" (set the track's stat
-  properties + create its waypoints; set a waypoint's type/title/track-link
-  properties). The DB thread's dispatch loop is a single sequential
-  `loop { rx.recv() ... await ... send_result() }` (`fe-database/src/lib.rs`)
-  with **no per-command concurrency**, so results for a given caller's
-  commands arrive in the same relative order they were sent — the
-  `VecDeque` per key correctly disambiguates duplicate names (e.g. two
-  waypoints both literally named "Camp") in FIFO order.
-- **FR-4 correlation id (closes the authored-track vs. import race).** The
-  original `(petal_id, name)` content match had a residual risk: an authored
-  `PathOp::CreateTrack` and a same-named GPX import created in the same frame
-  window both consumed the one `DbResult::NodeCreated` stream, so either could
-  steal the other's result. `DbCommand::CreateNode` / `DbResult::NodeCreated`
-  now carry an optional `correlation_id: Option<String>` echoed unchanged by
-  the DB dispatch (`fe-database/src/lib.rs`). The authored-`CreateTrack` path
-  (`drain_path_ops`) keys `PendingPathEdits::creates` by the op's
-  `correlation_id`, so `advance_path_edits` matches by id, never by tuple.
-  **The id source depends on the caller** (HIGH-1/HIGH-2): the `PathOp::CreateTrack`
-  now carries `correlation_id: Option<String>` — the fe-ui **Pen auto-create**
-  supplies its own (`gis::next_pen_correlation_id`, `pen-track:{n}`) so fe-ui's
-  own deferred flush can match the echoed id (see `fe-ui/src/AGENTS.md`
-  §path-editor); the manual "New Path" button leaves it `None`, for which the
-  bridge generates a `next_authored_track_correlation_id` (`authored-track:{n}`,
-  an atomic counter — no new crate dep) exactly as before. Either way the command
-  goes out with a `Some(id)`. The import/annotate paths send `correlation_id:
-  None`; `advance_gpx_imports` ignores any `Some(_)` result and
-  `advance_path_edits`'s annotate branch only handles `None` — so the two streams
-  are partitioned and can never cross-consume. Duplicate-name import waypoints
-  still FIFO-disambiguate via `(petal_id, name)` as before (that path is not the
-  racing one). The id is optional/additive: every non-track `CreateNode` sender
-  passes `None` and keeps the legacy content correlation.
+- **Exact host request correlation.** Native GPX track/waypoint imports,
+  manual track creation and annotation births now carry private `host-path:{ulid}`
+  IDs through the existing CreateNode/NodeCreated contract. Each accepted request
+  retains its original parent, name, position and continuation payload; no import
+  or annotation consumer matches a Petal/name tuple. Pen auto-creation retains its
+  existing unique `pen-track:{n}` ID, and its unsent first-anchor continuation is
+  retired on access loss. Creation and initialization-property results are owned
+  independently; see ?host-path-outcomes for lifecycle and capacity rules.
 - **Projection (petal terrain origin).** Per spec, points project through
   the *petal's* terrain origin, not an arbitrary bbox-center. The only
   already-resident state carrying a resolved terrain origin is
@@ -1783,3 +1754,43 @@ The host producer systems stay gated until a fresh Viewer-or-higher result permi
 rehydration. Returning to the same Petal after a grant starts bounded complete reads;
 old queues, cached paths and equal-looking node identities are not reused as proof.
 Actual committed Undo/editor-batch outcome ownership remains in its existing owner.
+
+
+## ?host-path-outcomes ? accepted requests across access changes
+
+Host submission uses nonblocking try_send and acquires an Accepted owner only on
+successful channel submission. Creation owners retain exact command identity and
+source payload. Initialization properties have their own private IDs and retain
+node, key and submitted value until the matching NodePropertySet or RequestFailed.
+A generic Error cannot guess which request failed. IDs never match by Petal/name;
+a late old birth cannot fulfill a newly submitted same-name import or annotation.
+
+There are at most 256 accepted creation owners in each host workflow and 256
+accepted property owners per workflow. Pending imported track sources together
+retain at most the existing scene cap of route-point/waypoint rows. Capacity or
+Full/disconnected submission refusal issues no write and reports the unsubmitted
+portion; already accepted siblings remain owned. An unanswered accepted request
+reports unknown after five seconds and retains its owner/payload without replay or
+expiry eviction. It continues contributing to the QA pending observation. These
+limits can refuse new work while old outcomes remain unknown; no background retry
+or success is inferred from a timeout.
+
+Access retirement clears unsent operations, read seeds and render caches separately
+from accepted writes. Accepted creates, annotation births and property confirmations
+become outcome-only. The always-running advance_host_outcomes consumer has no DB
+sender, Commands or navigation resource: it consumes late confirmations/failures
+and reports partial or unknown status, but cannot initialize a retired birth, create
+its children, retry a write, render it or move the cursor. Viewer access permits
+fresh route reads; continuation/mutation producers require Editor. A manager-owned
+access generation catches role invalidation and resolution within one DB batch;
+manager incarnation and navigation intent changes also retire prior continuations.
+The generic UI handler may add a known durable private birth to the tree, but cannot
+flush a Pen anchor or run another creation workflow for that private result.
+
+Terminal RESET still replaces PendingPathEdits and PendingGpxImports only after
+its existing DB-worker quiescence fence. That terminal lifecycle is the explicit
+place where remaining accepted outcome ownership is discarded. The existing App
+journey authors accepted submissions, access loss, late success/failure/property
+confirmation, a retained unknown owner and a new same-name import followed by an
+old duplicate birth. Existing UI journeys cover private results and retired Pen
+continuations. These are authored source checks; root owns execution and live QA.

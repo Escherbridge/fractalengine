@@ -77,6 +77,7 @@ impl Read {
 
 #[derive(Default)]
 pub(super) struct ReplicaReads {
+    access_generation: Option<u128>,
     pending: HashMap<String, Read>,
     navigation: Option<Navigation>,
     blocked: bool,
@@ -98,6 +99,10 @@ impl RefreshIntents {
 }
 
 impl VerseManager {
+    pub fn scene_access_generation(&self) -> Option<u128> {
+        self.replica_reads.access_generation
+    }
+
     pub fn scene_access_blocked(&self) -> bool {
         self.replica_reads.blocked
     }
@@ -110,6 +115,7 @@ impl VerseManager {
     }
 
     pub(super) fn invalidate_scene_access(&mut self, nav: &NavigationManager) {
+        self.replica_reads.access_generation = Some(ulid::Ulid::new().into());
         self.scene_sources.clear();
         self.current_paths.clear();
         self.scene_refresh.0.clear();

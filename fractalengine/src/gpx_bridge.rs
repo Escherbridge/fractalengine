@@ -84,15 +84,9 @@ fn style_from_properties(properties: &serde_json::Value) -> TrackStyle {
     style
 }
 
-/// FR-4: process-unique id for the authored-`CreateTrack` path so its
-/// `NodeCreated` result is disambiguated by an explicit correlation id rather
-/// than the ambiguous `(petal_id, name)` tuple the GPX-import path also uses —
-/// which could otherwise let a same-named import steal the authored result.
-/// See `src/AGENTS.md` §path-editor.
+/// Private process-unique identity for a host-authored track request.
 fn next_authored_track_correlation_id() -> String {
-    use std::sync::atomic::{AtomicU64, Ordering};
-    static COUNTER: AtomicU64 = AtomicU64::new(0);
-    format!("authored-track:{}", COUNTER.fetch_add(1, Ordering::Relaxed))
+    host_request_id()
 }
 
 fn enqueue_track_delete(db_tx: &DbCommandSender, track_node_id: &str) -> Result<(), &'static str> {
@@ -774,10 +768,135 @@ fn prepare_import(
 // Bevy resources + systems (DB-command correlation — see AGENTS.md §gpx)
 // ---------------------------------------------------------------------------
 
+const MAX_HOST_OUTCOMES: usize = 256;
+
+fn host_request_id() -> String {
+    format!(
+        "{}{}",
+        fe_ui::path_ops::HOST_PATH_REQUEST_PREFIX,
+        ulid::Ulid::new()
+    )
+}
+
+struct Accepted<T> {
+    payload: T,
+    retired: bool,
+    started: std::time::Instant,
+    unknown_reported: bool,
+}
+
+impl<T> Accepted<T> {
+    fn new(payload: T) -> Self {
+        Self {
+            payload,
+            retired: false,
+            started: std::time::Instant::now(),
+            unknown_reported: false,
+        }
+    }
+
+    fn report_unknown(&mut self) -> bool {
+        if self.unknown_reported || self.started.elapsed() < std::time::Duration::from_secs(5) {
+            return false;
+        }
+        self.unknown_reported = true;
+        true
+    }
+}
+
+struct PropertyWrite {
+    node_id: String,
+    key: String,
+    value: serde_json::Value,
+}
+
+#[derive(Default)]
+struct PropertyOutcomes(HashMap<String, Accepted<PropertyWrite>>);
+
+struct PropertySettlement {
+    request_id: String,
+    node_id: String,
+    retired: bool,
+    error: Option<String>,
+}
+
+impl PropertyOutcomes {
+    fn submit(
+        &mut self,
+        sender: &DbCommandSender,
+        node_id: &str,
+        key: &str,
+        value: serde_json::Value,
+    ) -> Result<String, String> {
+        if self.0.len() >= MAX_HOST_OUTCOMES {
+            return Err(
+                "Accepted property outcomes are full; no further write was submitted".into(),
+            );
+        }
+        let request_id = host_request_id();
+        sender
+            .0
+            .try_send(DbCommand::SetNodeProperty {
+                node_id: node_id.into(),
+                key: key.into(),
+                value: value.clone(),
+                correlation_id: Some(request_id.clone()),
+            })
+            .map_err(|_| {
+                "Database queue unavailable; property write was not submitted".to_string()
+            })?;
+        self.0.insert(
+            request_id.clone(),
+            Accepted::new(PropertyWrite {
+                node_id: node_id.into(),
+                key: key.into(),
+                value,
+            }),
+        );
+        Ok(request_id)
+    }
+
+    fn retire(&mut self) {
+        for request in self.0.values_mut() {
+            request.retired = true;
+        }
+    }
+
+    fn route(&mut self, result: &DbResult) -> Option<PropertySettlement> {
+        let (request_id, error) = match result {
+            DbResult::NodePropertySet {
+                node_id,
+                key,
+                correlation_id: Some(id),
+            } if self.0.get(id).is_some_and(|owner| {
+                owner.payload.node_id == *node_id && owner.payload.key == *key
+            }) =>
+            {
+                (id, None)
+            }
+            DbResult::RequestFailed {
+                correlation_id,
+                error,
+            } if self.0.contains_key(correlation_id) => (correlation_id, Some(error.clone())),
+            _ => return None,
+        };
+        let owner = self.0.remove(request_id)?;
+        drop(owner.payload.value);
+        Some(PropertySettlement {
+            request_id: request_id.clone(),
+            node_id: owner.payload.node_id,
+            retired: owner.retired,
+            error,
+        })
+    }
+}
+
 /// A track node's `CreateNode` was sent; once its `DbResult::NodeCreated`
 /// arrives, set these stat properties and create these waypoint children.
 struct PendingTrackImport {
     petal_id: String,
+    name: String,
+    position: [f32; 3],
     stats_props: Vec<(String, serde_json::Value)>,
     waypoints: Vec<GpxNodeDraft>,
     route_points: Vec<TimestampedRoutePoint>,
@@ -786,18 +905,114 @@ struct PendingTrackImport {
 /// A waypoint node's `CreateNode` was sent; once its `DbResult::NodeCreated`
 /// arrives, set its type/title/(optional) track-link properties.
 struct PendingWaypointImport {
+    petal_id: String,
+    position: [f32; 3],
     title: String,
     track_node_id: Option<String>,
 }
 
-/// Correlates fire-and-forget `CreateNode` commands with their eventual
-/// `DbResult::NodeCreated` by `(petal_id, name)` — see AGENTS.md §gpx for why
-/// this content-based FIFO match (rather than a request ID) is the best
-/// available option given the existing command/result channel shape.
+/// Exact accepted import outcomes; see src/AGENTS.md ?host-path-outcomes.
 #[derive(Resource, Default)]
 pub struct PendingGpxImports {
-    tracks: HashMap<(String, String), VecDeque<PendingTrackImport>>,
-    waypoints: HashMap<(String, String), VecDeque<PendingWaypointImport>>,
+    tracks: HashMap<String, Accepted<PendingTrackImport>>,
+    waypoints: HashMap<String, Accepted<PendingWaypointImport>>,
+    properties: PropertyOutcomes,
+}
+
+impl PendingGpxImports {
+    pub fn retire_for_terminal_reset(&mut self) {
+        self.retire();
+    }
+    pub fn pending_outcomes(&self) -> usize {
+        self.tracks.len() + self.waypoints.len() + self.properties.0.len()
+    }
+
+    fn retire(&mut self) {
+        for request in self.tracks.values_mut() {
+            request.retired = true;
+        }
+        for request in self.waypoints.values_mut() {
+            request.retired = true;
+        }
+        self.properties.retire();
+    }
+
+    fn submit_track(
+        &mut self,
+        sender: &DbCommandSender,
+        petal_id: &str,
+        track: PreparedTrack,
+    ) -> Result<(), String> {
+        if self.tracks.len() + self.waypoints.len() >= MAX_HOST_OUTCOMES {
+            return Err("Accepted import outcomes are full; no track was submitted".into());
+        }
+        let retained_rows: usize = self
+            .tracks
+            .values()
+            .map(|request| request.payload.route_points.len() + request.payload.waypoints.len())
+            .sum();
+        if retained_rows
+            .saturating_add(track.route_points.len())
+            .saturating_add(track.waypoints.len())
+            > fe_ui::verse_manager::SCENE_NODE_HARD_LIMIT
+        {
+            return Err("Import outcome source capacity is full; no track was submitted".into());
+        }
+        let request_id = host_request_id();
+        sender
+            .0
+            .try_send(DbCommand::CreateNode {
+                petal_id: petal_id.into(),
+                name: track.draft.name.clone(),
+                position: track.draft.position,
+                correlation_id: Some(request_id.clone()),
+            })
+            .map_err(|_| "Database queue unavailable; track was not submitted".to_string())?;
+        self.tracks.insert(
+            request_id,
+            Accepted::new(PendingTrackImport {
+                petal_id: petal_id.into(),
+                name: track.draft.name,
+                position: track.draft.position,
+                stats_props: track.draft.properties,
+                waypoints: track.waypoints,
+                route_points: track.route_points,
+            }),
+        );
+        Ok(())
+    }
+
+    fn submit_waypoint(
+        &mut self,
+        sender: &DbCommandSender,
+        petal_id: &str,
+        waypoint: GpxNodeDraft,
+        track_node_id: Option<String>,
+    ) -> Result<(), String> {
+        if self.tracks.len() + self.waypoints.len() >= MAX_HOST_OUTCOMES {
+            return Err("Accepted import outcomes are full; no waypoint was submitted".into());
+        }
+        let request_id = host_request_id();
+        sender
+            .0
+            .try_send(DbCommand::CreateNode {
+                petal_id: petal_id.into(),
+                name: waypoint.name.clone(),
+                position: waypoint.position,
+                correlation_id: Some(request_id.clone()),
+            })
+            .map_err(|_| "Database queue unavailable; waypoint was not submitted".to_string())?;
+        self.waypoints.insert(
+            request_id,
+            Accepted::new(PendingWaypointImport {
+                petal_id: petal_id.into(),
+                position: waypoint.position,
+                title: waypoint.name,
+                track_node_id,
+            }),
+        );
+        Ok(())
+    }
 }
 
 /// Drains `PendingGpxOps` each frame: parse the file, resolve the petal's
@@ -811,208 +1026,114 @@ pub fn drain_gpx_ops(
     mut pending: ResMut<PendingGpxImports>,
     mut status: ResMut<GpxImportStatus>,
 ) {
-    if ops.0.is_empty() {
-        return;
-    }
-
     for op in ops.0.drain(..) {
         let GpxOp::ImportFile { petal_id, path } = op;
-        match prepare_import(&petal_id, &path, &active_terrain) {
-            Ok(prepared) => {
-                let track_count = prepared.track.is_some() as u32;
-                let waypoint_count = (prepared.standalone_waypoints.len()
-                    + prepared
-                        .track
-                        .as_ref()
-                        .map(|t| t.waypoints.len())
-                        .unwrap_or(0)) as u32;
-
-                if let Some(track) = prepared.track {
-                    let key = (petal_id.clone(), track.draft.name.clone());
-                    db_tx
-                        .0
-                        .send(DbCommand::CreateNode {
-                            petal_id: petal_id.clone(),
-                            name: track.draft.name.clone(),
-                            position: track.draft.position,
-                            correlation_id: None,
-                        })
-                        .ok();
-                    pending
-                        .tracks
-                        .entry(key)
-                        .or_default()
-                        .push_back(PendingTrackImport {
-                            petal_id: petal_id.clone(),
-                            stats_props: track.draft.properties,
-                            waypoints: track.waypoints,
-                            route_points: track.route_points,
-                        });
-                }
-
-                for wp in prepared.standalone_waypoints {
-                    let key = (petal_id.clone(), wp.name.clone());
-                    db_tx
-                        .0
-                        .send(DbCommand::CreateNode {
-                            petal_id: petal_id.clone(),
-                            name: wp.name.clone(),
-                            position: wp.position,
-                            correlation_id: None,
-                        })
-                        .ok();
-                    pending
-                        .waypoints
-                        .entry(key)
-                        .or_default()
-                        .push_back(PendingWaypointImport {
-                            title: wp.name,
-                            track_node_id: None,
-                        });
-                }
-
-                tracing::info!(petal_id = %petal_id, track_count, waypoint_count, "GPX import queued");
-                *status = GpxImportStatus {
-                    petal_id: Some(petal_id),
-                    track_count,
-                    waypoint_count,
-                    error: None,
-                };
+        let mut accepted_tracks = 0;
+        let mut accepted_waypoints = 0;
+        let submitted = prepare_import(&petal_id, &path, &active_terrain).and_then(|prepared| {
+            if let Some(track) = prepared.track {
+                pending.submit_track(&db_tx, &petal_id, track)?;
+                accepted_tracks += 1;
             }
-            Err(e) => {
-                tracing::warn!(petal_id = %petal_id, path = %path.display(), "GPX import failed: {e}");
-                *status = GpxImportStatus {
-                    petal_id: Some(petal_id),
-                    track_count: 0,
-                    waypoint_count: 0,
-                    error: Some(e),
-                };
+            for waypoint in prepared.standalone_waypoints {
+                pending.submit_waypoint(&db_tx, &petal_id, waypoint, None)?;
+                accepted_waypoints += 1;
             }
-        }
+            Ok(())
+        });
+        *status = GpxImportStatus {
+            petal_id: Some(petal_id), track_count: accepted_tracks,
+            waypoint_count: accepted_waypoints,
+            error: submitted.err().map(|error| format!("Import submission incomplete: {error}. Accepted requests remain owned; no write was retried.")),
+        };
     }
 }
 
-/// Advances pending GPX imports as their `CreateNode` results arrive: sets
-/// the track's cached stats + spawns its waypoint children, then sets each
-/// waypoint's type/title/track-link properties once its own node exists.
+/// Continues only current, exact owned import births; retired outcomes drain separately.
 pub fn advance_gpx_imports(
     mut db_results: MessageReader<DbResult>,
     db_tx: Res<DbCommandSender>,
     mut pending: ResMut<PendingGpxImports>,
     mut route_map: ResMut<TrackRouteMap>,
     mut commands: Commands,
+    mut status: ResMut<GpxImportStatus>,
 ) {
-    if pending.tracks.is_empty() && pending.waypoints.is_empty() {
-        return;
-    }
-
     for result in db_results.read() {
         let DbResult::NodeCreated {
             id,
             petal_id,
             name,
-            correlation_id,
+            position,
+            correlation_id: Some(request_id),
             ..
         } = result
         else {
             continue;
         };
-        // FR-4: the GPX-import path only owns results with no correlation id.
-        // A `Some(_)` id belongs to the authored-`CreateTrack` path
-        // (`advance_path_edits`), which matches by that id — skip so a
-        // same-named authored track can't steal this system's `NodeCreated`.
-        if correlation_id.is_some() {
+        if pending.tracks.get(request_id).is_some_and(|owner| {
+            !owner.retired
+                && owner.payload.petal_id == *petal_id
+                && owner.payload.name == *name
+                && owner.payload.position == *position
+        }) {
+            let track = pending.tracks.remove(request_id).unwrap().payload;
+            let mut failure = None;
+            for (key, value) in track.stats_props {
+                if let Err(error) = pending.properties.submit(&db_tx, id, &key, value) {
+                    failure = Some(error);
+                    break;
+                }
+            }
+            if failure.is_none() {
+                for waypoint in track.waypoints {
+                    if let Err(error) =
+                        pending.submit_waypoint(&db_tx, &track.petal_id, waypoint, Some(id.clone()))
+                    {
+                        failure = Some(error);
+                        break;
+                    }
+                }
+            }
+            if failure.is_none() && track.route_points.len() >= 2 {
+                match pending.properties.submit(
+                    &db_tx,
+                    id,
+                    GPX_POINTS_KEY,
+                    route_points_to_json(&track.route_points),
+                ) {
+                    Ok(_) => spawn_track_route(
+                        &mut route_map,
+                        &mut commands,
+                        id,
+                        track.route_points,
+                        None,
+                    ),
+                    Err(error) => failure = Some(error),
+                }
+            }
+            if let Some(error) = failure {
+                status.error = Some(format!("Import node exists, but initialization is partial: {error}. Accepted requests remain owned."));
+            }
             continue;
         }
-        let key = (petal_id.clone(), name.clone());
-
-        if let Some(queue) = pending.tracks.get_mut(&key) {
-            if let Some(track) = queue.pop_front() {
-                if queue.is_empty() {
-                    pending.tracks.remove(&key);
-                }
-                for (prop_key, value) in track.stats_props {
-                    db_tx
-                        .0
-                        .send(DbCommand::SetNodeProperty {
-                            node_id: id.clone(),
-                            key: prop_key,
-                            value,
-                            correlation_id: None,
-                        })
-                        .ok();
-                }
-                for wp in track.waypoints {
-                    let wp_key = (track.petal_id.clone(), wp.name.clone());
-                    db_tx
-                        .0
-                        .send(DbCommand::CreateNode {
-                            petal_id: track.petal_id.clone(),
-                            name: wp.name.clone(),
-                            position: wp.position,
-                            correlation_id: None,
-                        })
-                        .ok();
-                    pending
-                        .waypoints
-                        .entry(wp_key)
-                        .or_default()
-                        .push_back(PendingWaypointImport {
-                            title: wp.name,
-                            track_node_id: Some(id.clone()),
-                        });
-                }
-                // FR-4: persist trackpoints as `gpx_points` so the render half
-                // survives a session reload, not just this frame's TrackRouteMap.
-                if track.route_points.len() >= 2 {
-                    db_tx
-                        .0
-                        .send(DbCommand::SetNodeProperty {
-                            node_id: id.clone(),
-                            key: GPX_POINTS_KEY.to_string(),
-                            value: route_points_to_json(&track.route_points),
-                            correlation_id: None,
-                        })
-                        .ok();
-                    spawn_track_route(&mut route_map, &mut commands, id, track.route_points, None);
-                }
-                continue;
+        if pending.waypoints.get(request_id).is_some_and(|owner| {
+            !owner.retired
+                && owner.payload.petal_id == *petal_id
+                && owner.payload.title == *name
+                && owner.payload.position == *position
+        }) {
+            let waypoint = pending.waypoints.remove(request_id).unwrap().payload;
+            let mut properties = vec![
+                (GPX_TYPE_KEY, serde_json::json!("waypoint")),
+                (ANNOTATION_TITLE_KEY, serde_json::json!(waypoint.title)),
+            ];
+            if let Some(track) = waypoint.track_node_id {
+                properties.push((GPX_TRACK_ID_KEY, serde_json::json!(track)));
             }
-        }
-
-        if let Some(queue) = pending.waypoints.get_mut(&key) {
-            if let Some(wp) = queue.pop_front() {
-                if queue.is_empty() {
-                    pending.waypoints.remove(&key);
-                }
-                db_tx
-                    .0
-                    .send(DbCommand::SetNodeProperty {
-                        node_id: id.clone(),
-                        key: GPX_TYPE_KEY.to_string(),
-                        value: serde_json::json!("waypoint"),
-                        correlation_id: None,
-                    })
-                    .ok();
-                db_tx
-                    .0
-                    .send(DbCommand::SetNodeProperty {
-                        node_id: id.clone(),
-                        key: ANNOTATION_TITLE_KEY.to_string(),
-                        value: serde_json::json!(wp.title),
-                        correlation_id: None,
-                    })
-                    .ok();
-                if let Some(track_id) = wp.track_node_id {
-                    db_tx
-                        .0
-                        .send(DbCommand::SetNodeProperty {
-                            node_id: id.clone(),
-                            key: GPX_TRACK_ID_KEY.to_string(),
-                            value: serde_json::json!(track_id),
-                            correlation_id: None,
-                        })
-                        .ok();
+            for (key, value) in properties {
+                if let Err(error) = pending.properties.submit(&db_tx, id, key, value) {
+                    status.error = Some(format!("Waypoint exists, but initialization is partial: {error}. Accepted requests remain owned."));
+                    break;
                 }
             }
         }
@@ -1128,32 +1249,31 @@ fn drain_queued_appends(
     applied
 }
 
-/// A `CreateTrack` node's `CreateNode` was sent; once `NodeCreated` arrives,
-/// mark it as an (empty) track. No extra fields needed — the properties to
-/// set are fixed (`gpx_type = "track"`, `gpx_points = []`).
-struct PendingTrackCreate;
+/// Accepted CreateTrack payload before initialization writes.
+struct PendingTrackCreate {
+    petal_id: String,
+    name: String,
+    position: [f32; 3],
+}
 
-/// FR-4: tracks which of a just-created track's identity `SetNodeProperty`
-/// keys have confirmed via `DbResult::NodePropertySet`. `PathEditStatus` is
-/// only flipped to success once this set is empty — replaces the old
-/// optimistic "success on NodeCreated" behavior (gpx_bridge.rs:714 prior to
-/// this track) that could report success even if a property write silently
-/// failed downstream.
-type PendingPropertyConfirms = std::collections::HashSet<&'static str>;
+/// Exact accepted property request IDs still needed for track initialization.
+type PendingPropertyConfirms = std::collections::HashSet<String>;
 
 /// An `AnnotatePoint` waypoint's `CreateNode` was sent; once `NodeCreated`
 /// arrives, set its type/title/body/color annotation properties.
 struct PendingAnnotateCreate {
+    petal_id: String,
+    position: [f32; 3],
     title: String,
     body: String,
     color: String,
 }
 
-/// Correlates in-flight path-editor DB round trips. Separate maps because
-/// `GetNodeProperties`/`CreateNode` results are disambiguated differently
-/// (existing node_id vs. content-based petal_id+name, per AGENTS.md §gpx).
+/// Owns accepted host outcomes and transient path read/render state.
 #[derive(Resource, Default)]
 pub struct PendingPathEdits {
+    access_generation: Option<u128>,
+    outcome_navigation: Option<(u128, u64)>,
     access_retired: bool,
     checked_reads:HashMap<String,String>,
     materialization_refresh: VecDeque<String>,
@@ -1166,10 +1286,12 @@ pub struct PendingPathEdits {
     /// correlation id (not `(petal_id, name)`) so a same-named GPX import in
     /// the same window can never steal this path's `NodeCreated` — the tuple
     /// was the ambiguity that FR-4 closes. One waiter per id (unique ⇒ no FIFO).
-    creates: HashMap<String, PendingTrackCreate>,
-    annotate_creates: HashMap<(String, String), VecDeque<PendingAnnotateCreate>>,
+    creates: HashMap<String, Accepted<PendingTrackCreate>>,
+    annotate_creates: HashMap<String, Accepted<PendingAnnotateCreate>>,
     /// FR-4: node_id -> still-unconfirmed property keys for a just-created track.
     track_property_confirms: HashMap<String, PendingPropertyConfirms>,
+    property_outcomes: PropertyOutcomes,
+    failed_track_properties: std::collections::HashSet<String>,
     /// FR-5: authoritative in-flight point list per track, once seeded from
     /// the first `GetNodeProperties` read. Subsequent `AppendPoint` ops for
     /// the same track mutate this directly and flush one `SetNodeProperty`
@@ -1190,17 +1312,238 @@ struct DeferredProjection {
     deadline: std::time::Instant,
 }
 
+/// Drains accepted outcomes without a database sender or any write continuation.
+pub fn advance_host_outcomes(
+    mut results: MessageReader<DbResult>,
+    mut paths: ResMut<PendingPathEdits>,
+    mut imports: ResMut<PendingGpxImports>,
+    mut status: ResMut<PathEditStatus>,
+    mut import_status: ResMut<GpxImportStatus>,
+) {
+    for result in results.read() {
+        if let Some(settled) = paths.property_outcomes.route(result) {
+            let group = paths
+                .track_property_confirms
+                .get_mut(&settled.node_id)
+                .map(|requests| {
+                    requests.remove(&settled.request_id);
+                    requests.is_empty()
+                });
+            if group.is_some() && settled.error.is_some() {
+                paths
+                    .failed_track_properties
+                    .insert(settled.node_id.clone());
+            }
+            if group == Some(true) {
+                paths.track_property_confirms.remove(&settled.node_id);
+                let failed = paths.failed_track_properties.remove(&settled.node_id);
+                *status = PathEditStatus { track_node_id: Some(settled.node_id),
+                    message: (!failed).then(|| if settled.retired { "Previously submitted track initialization writes confirmed after access changed" } else { "Track created" }.into()),
+                    error: failed.then(|| "Track exists but one or more initialization writes failed; no write was retried".into()),
+                };
+            } else if let Some(error) = settled.error {
+                *status = PathEditStatus {
+                    track_node_id: Some(settled.node_id),
+                    message: None,
+                    error: Some(format!(
+                        "Previously submitted property request {} failed: {error}",
+                        settled.request_id
+                    )),
+                };
+            } else if settled.retired {
+                *status = PathEditStatus { track_node_id: Some(settled.node_id), message: Some("Previously submitted property write confirmed after access changed; no continuation was submitted".into()), error: None };
+            }
+        }
+        if let Some(settled) = imports.properties.route(result) {
+            if settled.retired || settled.error.is_some() {
+                import_status.error = Some(match settled.error {
+                    Some(error) => format!("Import property request {} failed: {error}; the import may be partial", settled.request_id),
+                    None => format!("Previously submitted import property for {} confirmed after access changed; no further import step was submitted", settled.node_id),
+                });
+            }
+        }
+        match result {
+            DbResult::NodeCreated {
+                id,
+                petal_id,
+                name,
+                position,
+                correlation_id: Some(request_id),
+                ..
+            } => {
+                if paths.creates.get(request_id).is_some_and(|owner| {
+                    owner.retired
+                        && owner.payload.petal_id == *petal_id
+                        && owner.payload.name == *name
+                        && owner.payload.position == *position
+                }) {
+                    paths.creates.remove(request_id);
+                    *status = PathEditStatus { track_node_id: Some(id.clone()), message: Some("Previously submitted node was created after access changed; track initialization was not submitted".into()), error: None };
+                }
+                if paths.annotate_creates.get(request_id).is_some_and(|owner| {
+                    owner.retired
+                        && owner.payload.petal_id == *petal_id
+                        && owner.payload.title == *name
+                        && owner.payload.position == *position
+                }) {
+                    paths.annotate_creates.remove(request_id);
+                    *status = PathEditStatus { track_node_id: Some(id.clone()), message: Some("Previously submitted annotation node was created after access changed; annotation properties were not submitted".into()), error: None };
+                }
+                let retired_import = imports.tracks.get(request_id).is_some_and(|owner| {
+                    owner.retired
+                        && owner.payload.petal_id == *petal_id
+                        && owner.payload.name == *name
+                        && owner.payload.position == *position
+                }) || imports.waypoints.get(request_id).is_some_and(|owner| {
+                    owner.retired
+                        && owner.payload.petal_id == *petal_id
+                        && owner.payload.title == *name
+                        && owner.payload.position == *position
+                });
+                if retired_import {
+                    imports.tracks.remove(request_id);
+                    imports.waypoints.remove(request_id);
+                    import_status.petal_id = Some(petal_id.clone());
+                    import_status.error = Some(format!("Previously submitted import node {id} was created after access changed; remaining import steps were not submitted"));
+                }
+            }
+            DbResult::RequestFailed {
+                correlation_id,
+                error,
+            } => {
+                if paths.creates.remove(correlation_id).is_some()
+                    || paths.annotate_creates.remove(correlation_id).is_some()
+                {
+                    *status = PathEditStatus { track_node_id: Some(correlation_id.clone()), message: None, error: Some(format!("Previously submitted node creation failed: {error}; no write was retried")) };
+                }
+                let failed_import = imports
+                    .tracks
+                    .remove(correlation_id)
+                    .map(|owner| owner.payload.petal_id)
+                    .or_else(|| {
+                        imports
+                            .waypoints
+                            .remove(correlation_id)
+                            .map(|owner| owner.payload.petal_id)
+                    });
+                if let Some(petal_id) = failed_import {
+                    import_status.petal_id = Some(petal_id);
+                    import_status.error = Some(format!("Previously submitted import creation failed: {error}; accepted sibling requests remain owned"));
+                }
+            }
+            _ => {}
+        }
+    }
+    let unknown_path = paths.creates.values_mut().any(Accepted::report_unknown)
+        || paths
+            .annotate_creates
+            .values_mut()
+            .any(Accepted::report_unknown)
+        || paths
+            .property_outcomes
+            .0
+            .values_mut()
+            .any(Accepted::report_unknown);
+    if unknown_path {
+        status.error = Some("Previously submitted path request outcome is unknown; its owner and payload are retained, and no write was retried".into());
+    }
+    let unknown_import = imports.tracks.values_mut().any(Accepted::report_unknown)
+        || imports.waypoints.values_mut().any(Accepted::report_unknown)
+        || imports
+            .properties
+            .0
+            .values_mut()
+            .any(Accepted::report_unknown);
+    if unknown_import {
+        import_status.error = Some("Previously submitted import outcome is unknown; its owner and payload are retained, and no write was retried".into());
+    }
+}
+
 impl PendingPathEdits {
+    pub fn retire_for_terminal_reset(&mut self) {
+        self.retire_access();
+    }
+    fn submit_create(
+        &mut self,
+        sender: &DbCommandSender,
+        request_id: String,
+        petal_id: String,
+        name: String,
+    ) -> Result<(), String> {
+        if self.creates.len() + self.annotate_creates.len() >= MAX_HOST_OUTCOMES
+            || self.creates.contains_key(&request_id)
+        {
+            return Err("Accepted creation outcomes are full or the request ID is already owned; no create was submitted".into());
+        }
+        sender
+            .0
+            .try_send(DbCommand::CreateNode {
+                petal_id: petal_id.clone(),
+                name: name.clone(),
+                position: [0.0; 3],
+                correlation_id: Some(request_id.clone()),
+            })
+            .map_err(|_| {
+                "Database queue unavailable; track creation was not submitted".to_string()
+            })?;
+        self.creates.insert(
+            request_id,
+            Accepted::new(PendingTrackCreate {
+                petal_id,
+                name,
+                position: [0.0; 3],
+            }),
+        );
+        Ok(())
+    }
+
+    fn retire_outcomes(&mut self) {
+        for owner in self.creates.values_mut() {
+            owner.retired = true;
+        }
+        for owner in self.annotate_creates.values_mut() {
+            owner.retired = true;
+        }
+        self.property_outcomes.retire();
+        self.reads.clear();
+        self.checked_reads.clear();
+        self.seed_pending.clear();
+    }
+
     fn retire_access(&mut self) -> bool {
         if self.access_retired {
             return false;
         }
-        *self = Self { access_retired: true, ..Default::default() };
+        let mut creates = std::mem::take(&mut self.creates);
+        let mut annotate_creates = std::mem::take(&mut self.annotate_creates);
+        let mut property_outcomes = std::mem::take(&mut self.property_outcomes);
+        for owner in creates.values_mut() {
+            owner.retired = true;
+        }
+        for owner in annotate_creates.values_mut() {
+            owner.retired = true;
+        }
+        property_outcomes.retire();
+        let track_property_confirms = std::mem::take(&mut self.track_property_confirms);
+        let failed_track_properties = std::mem::take(&mut self.failed_track_properties);
+        *self = Self {
+            access_retired: true,
+            creates,
+            annotate_creates,
+            property_outcomes,
+            track_property_confirms,
+            failed_track_properties,
+            ..Default::default()
+        };
         true
     }
 
     pub fn pending_current_projections(&self) -> usize {
-        self.deferred_projections.len() + self.materialization_refresh.len()
+        self.deferred_projections.len()
+            + self.materialization_refresh.len()
+            + self.creates.len()
+            + self.annotate_creates.len()
+            + self.property_outcomes.0.len()
     }
     fn accept_path_projection(&mut self, projection: &fe_ui::undo::PathProjection) -> bool {
         if self.projection_petal_id.as_deref() != Some(projection.petal_id.as_str()) {
@@ -1321,28 +1664,12 @@ pub fn drain_path_ops(
                 name,
                 correlation_id,
             } => {
-                // FR-4: tag this authored create with a process-unique id and
-                // key the waiter by it, so `advance_path_edits` matches the
-                // eventual `NodeCreated` by id — not the `(petal_id, name)`
-                // tuple a concurrent same-named GPX import also uses.
-                //
-                // HIGH-1/HIGH-2 (pen_autocreate correlation-id fix): reuse the
-                // fe-ui-supplied id when present (the Pen auto-create needs the
-                // SAME id echoed back so fe-ui's deferred flush can match it);
-                // only the manual "New Path" button leaves it `None`, for which
-                // we generate a bridge-side id exactly as before.
+                // Pen retains its UI request ID; manual creation gets a private host ID.
                 let correlation_id =
                     correlation_id.unwrap_or_else(next_authored_track_correlation_id);
-                db_tx
-                    .0
-                    .send(DbCommand::CreateNode {
-                        petal_id: petal_id.clone(),
-                        name: name.clone(),
-                        position: [0.0; 3],
-                        correlation_id: Some(correlation_id.clone()),
-                    })
-                    .ok();
-                pending.creates.insert(correlation_id, PendingTrackCreate);
+                if let Err(error) = pending.submit_create(&db_tx, correlation_id, petal_id, name) {
+                    status.error = Some(error);
+                }
             }
             PathOp::DeleteTrack { track_node_id } => {
                 // FR-2: use the real DeleteNode primitive (FR-1) instead of
@@ -2045,132 +2372,34 @@ pub fn advance_path_edits(
                     error: Some(error.clone()),
                 };
             }
-            DbResult::NodeCreated {
-                id,
-                petal_id,
-                name,
-                correlation_id,
-                ..
-            } => {
-                // FR-4: authored `CreateTrack` results carry the unique id set
-                // in `drain_path_ops`; match them by that id so a same-named
-                // GPX import can't consume this result (and vice versa). The
-                // annotate-waypoint path below still uses `(petal_id, name)`
-                // but only for results with no correlation id.
-                if let Some(cid) = correlation_id {
-                    let Some(_create) = pending.creates.remove(cid) else {
-                        continue;
-                    };
-                    // FR-4: don't report success yet — wait for all three
-                    // SetNodeProperty confirms (NodePropertySet) below before
-                    // flipping PathEditStatus, so a silently-failed property
-                    // write surfaces as an error instead of a false "created".
-                    pending.track_property_confirms.insert(
-                        id.clone(),
-                        [GPX_TYPE_KEY, GPX_POINTS_KEY, TRACK_NAME_KEY]
-                            .into_iter()
-                            .collect(),
-                    );
-                    db_tx
-                        .0
-                        .send(DbCommand::SetNodeProperty {
-                            node_id: id.clone(),
-                            key: GPX_TYPE_KEY.to_string(),
-                            value: serde_json::json!("track"),
-                            correlation_id: None,
-                        })
-                        .ok();
-                    db_tx
-                        .0
-                        .send(DbCommand::SetNodeProperty {
-                            node_id: id.clone(),
-                            key: GPX_POINTS_KEY.to_string(),
-                            value: serde_json::Value::Array(vec![]),
-                            correlation_id: None,
-                        })
-                        .ok();
-                    db_tx
-                        .0
-                        .send(DbCommand::SetNodeProperty {
-                            node_id: id.clone(),
-                            key: TRACK_NAME_KEY.to_string(),
-                            value: serde_json::json!(name.clone()),
-                            correlation_id: None,
-                        })
-                        .ok();
-                    // Status is set once all three property confirms land — see
-                    // the `DbResult::NodePropertySet` arm below.
+            DbResult::NodeCreated { id, petal_id, name, position, correlation_id: Some(request_id), .. } => {
+                if pending.creates.get(request_id).is_some_and(|owner| !owner.retired && owner.payload.petal_id == *petal_id && owner.payload.name == *name && owner.payload.position == *position) {
+                    pending.creates.remove(request_id);
+                    let mut confirmations = PendingPropertyConfirms::new();
+                    for (key, value) in [(GPX_TYPE_KEY, serde_json::json!("track")), (GPX_POINTS_KEY, serde_json::json!([])), (TRACK_NAME_KEY, serde_json::json!(name))] {
+                        match pending.property_outcomes.submit(&db_tx, id, key, value) {
+                            Ok(request) => { confirmations.insert(request); }
+                            Err(error) => {
+                                pending.failed_track_properties.insert(id.clone());
+                                status.error = Some(format!("Track node exists; initialization is partial: {error}"));
+                                break;
+                            }
+                        }
+                    }
+                    if !confirmations.is_empty() {
+                        pending.track_property_confirms.insert(id.clone(), confirmations);
+                    } else {
+                        pending.failed_track_properties.remove(id);
+                    }
                     continue;
                 }
-
-                let annotate_key = (petal_id.clone(), name.clone());
-                if let Some(queue) = pending.annotate_creates.get_mut(&annotate_key) {
-                    if let Some(annotate) = queue.pop_front() {
-                        if queue.is_empty() {
-                            pending.annotate_creates.remove(&annotate_key);
+                if pending.annotate_creates.get(request_id).is_some_and(|owner| !owner.retired && owner.payload.petal_id == *petal_id && owner.payload.title == *name && owner.payload.position == *position) {
+                    let annotate = pending.annotate_creates.remove(request_id).unwrap().payload;
+                    for (key, value) in [(GPX_TYPE_KEY, serde_json::json!("waypoint")), (ANNOTATION_TITLE_KEY, serde_json::json!(annotate.title)), (ANNOTATION_BODY_KEY, serde_json::json!(annotate.body)), (ANNOTATION_COLOR_KEY, serde_json::json!(annotate.color))] {
+                        if let Err(error) = pending.property_outcomes.submit(&db_tx, id, key, value) {
+                            status.error = Some(format!("Annotation node exists; initialization is partial: {error}"));
+                            break;
                         }
-                        db_tx
-                            .0
-                            .send(DbCommand::SetNodeProperty {
-                                node_id: id.clone(),
-                                key: GPX_TYPE_KEY.to_string(),
-                                value: serde_json::json!("waypoint"),
-                                correlation_id: None,
-                            })
-                            .ok();
-                        db_tx
-                            .0
-                            .send(DbCommand::SetNodeProperty {
-                                node_id: id.clone(),
-                                key: ANNOTATION_TITLE_KEY.to_string(),
-                                value: serde_json::json!(annotate.title),
-                                correlation_id: None,
-                            })
-                            .ok();
-                        db_tx
-                            .0
-                            .send(DbCommand::SetNodeProperty {
-                                node_id: id.clone(),
-                                key: ANNOTATION_BODY_KEY.to_string(),
-                                value: serde_json::json!(annotate.body),
-                                correlation_id: None,
-                            })
-                            .ok();
-                        db_tx
-                            .0
-                            .send(DbCommand::SetNodeProperty {
-                                node_id: id.clone(),
-                                key: ANNOTATION_COLOR_KEY.to_string(),
-                                value: serde_json::json!(annotate.color),
-                                correlation_id: None,
-                            })
-                            .ok();
-                        *status = PathEditStatus {
-                            track_node_id: Some(id.clone()),
-                            message: Some("Point annotated".to_string()),
-                            error: None,
-                        };
-                        continue;
-                    }
-                }
-
-                // Non-authored (`correlation_id: None`) results with no
-                // matching annotate waiter fall through — the import path
-                // (`advance_gpx_imports`) or materialization handles them.
-            }
-            DbResult::NodePropertySet { node_id, key, .. } => {
-                // FR-4: gate CreateTrack's success status on the actual
-                // property confirms instead of the optimistic set that used
-                // to happen on NodeCreated above.
-                if let Some(pending_keys) = pending.track_property_confirms.get_mut(node_id) {
-                    pending_keys.remove(key.as_str());
-                    if pending_keys.is_empty() {
-                        pending.track_property_confirms.remove(node_id);
-                        *status = PathEditStatus {
-                            track_node_id: Some(node_id.clone()),
-                            message: Some("Track created".to_string()),
-                            error: None,
-                        };
                     }
                 }
             }
@@ -2548,21 +2777,15 @@ pub fn advance_path_edits(
                             };
                             continue;
                         };
-                        let key = (petal_id.clone(), title.clone());
-                        db_tx
-                            .0
-                            .send(DbCommand::CreateNode {
-                                petal_id,
-                                name: title.clone(),
-                                position,
-                                correlation_id: None,
-                            })
-                            .ok();
-                        pending
-                            .annotate_creates
-                            .entry(key)
-                            .or_default()
-                            .push_back(PendingAnnotateCreate { title, body, color });
+                        if pending.creates.len() + pending.annotate_creates.len() >= MAX_HOST_OUTCOMES {
+                            status.error = Some("Accepted annotation outcomes are full; no node was submitted".into());
+                            continue;
+                        }
+                        let request_id = host_request_id();
+                        match db_tx.0.try_send(DbCommand::CreateNode { petal_id: petal_id.clone(), name: title.clone(), position, correlation_id: Some(request_id.clone()) }) {
+                            Ok(()) => { pending.annotate_creates.insert(request_id, Accepted::new(PendingAnnotateCreate { petal_id, position, title, body, color })); }
+                            Err(_) => status.error = Some("Database queue unavailable; annotation node was not submitted".into()),
+                        }
                     }
                     PendingPathRead::ExportGpx { save_path } => {
                         let export_node = ExportNode {
@@ -2630,23 +2853,6 @@ pub fn advance_path_edits(
                             );
                         }
                     }
-                }
-            }
-            DbResult::Error(msg) if msg.starts_with("Set node property failed") => {
-                // FR-4: surface the entity_property.rs "matched no node"
-                // failure (or any other SetNodeProperty error) against
-                // whichever track is still awaiting its property confirms —
-                // `Error` carries no node_id to correlate precisely, so this
-                // is a best-effort match consistent with the existing
-                // untagged-error routing idiom in db_results.rs.
-                if let Some((node_id, _)) = pending.track_property_confirms.iter().next() {
-                    let node_id = node_id.clone();
-                    pending.track_property_confirms.remove(&node_id);
-                    *status = PathEditStatus {
-                        track_node_id: Some(node_id),
-                        message: None,
-                        error: Some(msg.clone()),
-                    };
                 }
             }
             _ => {}
@@ -2731,6 +2937,13 @@ pub fn path_projection_access(
     can_project_paths(&manager, role.as_deref())
 }
 
+pub fn path_write_access(
+    manager: Res<VerseManager>,
+    role: Option<Res<fe_ui::plugin::LocalUserRole>>,
+) -> bool {
+    !manager.scene_access_blocked() && role.is_some_and(|role| role.can_edit())
+}
+
 fn can_project_paths(manager: &VerseManager, role: Option<&fe_ui::plugin::LocalUserRole>) -> bool {
     !manager.scene_access_blocked()
         && role.is_some_and(|role| role.role.is_some_and(|role| role.can_view()))
@@ -2738,6 +2951,8 @@ fn can_project_paths(manager: &VerseManager, role: Option<&fe_ui::plugin::LocalU
 
 #[derive(bevy::ecs::system::SystemParam)]
 pub struct PathAccessRetirement<'w, 's> {
+    path_status: Option<ResMut<'w, PathEditStatus>>,
+    import_status: Option<ResMut<'w, GpxImportStatus>>,
     role: Option<Res<'w, fe_ui::plugin::LocalUserRole>>,
     routes: ResMut<'w, TrackRouteMap>,
     styles: ResMut<'w, TrackStyleMap>,
@@ -2760,9 +2975,19 @@ impl PathAccessRetirement<'_, '_> {
     ) {
         manager.retire_scene_read_models();
         if pending.retire_access() {
+            if pending.creates.len() + pending.annotate_creates.len() + pending.property_outcomes.0.len() > 0 {
+                if let Some(status) = self.path_status.as_deref_mut() {
+                    status.error = Some("Access changed with accepted path requests outstanding; outcomes remain owned and no continuation will be submitted".into());
+                }
+            }
+            if self.imports.pending_outcomes() > 0 {
+                if let Some(status) = self.import_status.as_deref_mut() {
+                    status.error = Some("Access changed with accepted import requests outstanding; the import may be partial and outcomes remain owned".into());
+                }
+            }
             self.routes.routes.clear();
             self.styles.styles.clear();
-            *self.imports = PendingGpxImports::default();
+            self.imports.retire();
             for (entity, _) in &self.lines {
                 self.commands.entity(entity).try_despawn();
             }
@@ -2790,10 +3015,26 @@ pub fn request_petal_gpx_materialization(
     mut access: PathAccessRetirement,
 ) {
     manager.synchronize_scene_navigation(&nav);
+    let generation = manager.scene_access_generation();
+    let outcome_navigation = (manager.scene_incarnation(), nav.intent_revision);
+    if pending.access_generation != generation
+        || pending.outcome_navigation.is_some_and(|owner| owner != outcome_navigation)
+    {
+        access.retire(&mut pending, &mut manager, &nav);
+        pending.access_generation = generation;
+        *last = None;
+    }
+    pending.outcome_navigation = Some(outcome_navigation);
     if !can_project_paths(&manager, access.role.as_deref()) {
         access.retire(&mut pending, &mut manager, &nav);
         *last = None;
         return;
+    }
+    if !access.role.as_ref().is_some_and(|role| role.can_edit()) {
+        pending.retire_outcomes();
+        access.imports.retire();
+        *access.ops = PendingPathOps::default();
+        *access.import_ops = PendingGpxOps::default();
     }
     pending.access_retired = false;
     if active_terrain.petal_id != nav.active_petal_id {
@@ -2999,14 +3240,45 @@ mod tests {
             lifecycle.insert_resource(manager)
                 .insert_resource(fe_ui::navigation_manager::NavigationManager { active_verse_id: Some("v".into()), active_fractal_id: Some("f".into()), active_petal_id: Some("p".into()), ..Default::default() })
                 .insert_resource(ActivePetalTerrain { petal_id: Some("p".into()), ..Default::default() })
-                .insert_resource(fe_ui::plugin::LocalUserRole::default())
+                .insert_resource(fe_ui::plugin::LocalUserRole { role: Some("owner".into()) })
                 .init_resource::<PendingPathEdits>()
                 .init_resource::<TrackRouteMap>()
                 .init_resource::<TrackStyleMap>()
                 .init_resource::<PendingPathOps>()
                 .init_resource::<PendingGpxOps>()
                 .init_resource::<PendingGpxImports>()
-                .add_systems(Update, request_petal_gpx_materialization);
+                .init_resource::<PathEditStatus>()
+                .init_resource::<GpxImportStatus>()
+                .add_message::<DbResult>();
+            let (accepted_tx, accepted_commands) = crossbeam::channel::unbounded();
+            let accepted_sender = DbCommandSender(accepted_tx);
+            lifecycle.insert_resource(DbCommandSender(accepted_sender.0.clone()))
+                .add_systems(Update, (request_petal_gpx_materialization, advance_host_outcomes, advance_gpx_imports.run_if(path_write_access)).chain());
+            lifecycle.update();
+            let old_create = host_request_id();
+            let failed_create = host_request_id();
+            let delayed_create = host_request_id();
+            let property_request;
+            {
+                let mut pending = lifecycle.world_mut().resource_mut::<PendingPathEdits>();
+                pending.submit_create(&accepted_sender, old_create.clone(), "p".into(), "Same name".into()).unwrap();
+                pending.submit_create(&accepted_sender, failed_create.clone(), "p".into(), "Failure".into()).unwrap();
+                pending.submit_create(&accepted_sender, delayed_create.clone(), "p".into(), "Delayed".into()).unwrap();
+                property_request = pending.property_outcomes.submit(&accepted_sender, "track", GPX_POINTS_KEY, before.clone()).unwrap();
+                pending.track_property_confirms.insert("track".into(), [property_request.clone()].into_iter().collect());
+            }
+            let import_plan = || PreparedTrack { draft: GpxNodeDraft { name: "Same name".into(), position: [0.0; 3], properties: vec![(GPX_TYPE_KEY.into(), serde_json::json!("track"))] }, waypoints: vec![], route_points: back.clone() };
+            let old_import;
+            let failed_waypoint;
+            {
+                let mut pending = lifecycle.world_mut().resource_mut::<PendingGpxImports>();
+                pending.submit_track(&accepted_sender, "p", import_plan()).unwrap();
+                old_import = pending.tracks.keys().next().unwrap().clone();
+                pending.submit_waypoint(&accepted_sender, "p", GpxNodeDraft { name: "Waypoint".into(), position: [1.0; 3], properties: vec![] }, None).unwrap();
+                failed_waypoint = pending.waypoints.keys().next().unwrap().clone();
+            }
+            assert_eq!(accepted_commands.try_iter().count(), 6, "only successful channel submissions acquire outcome owners");
+            lifecycle.world_mut().resource_mut::<fe_ui::plugin::LocalUserRole>().role = None;
             lifecycle.world_mut().resource_mut::<TrackRouteMap>().routes.insert("track".into(), TrackRoute { points: back.clone(), total_duration_secs: 1.0 });
             lifecycle.world_mut().resource_mut::<TrackStyleMap>().styles.insert("track".into(), TrackStyle::default());
             {
@@ -3025,6 +3297,38 @@ mod tests {
             assert!(pending.access_retired && pending.in_flight_points.is_empty() && pending.seed_pending.is_empty() && pending.projected_versions.is_empty() && pending.checked_reads.is_empty() && pending.deferred_projections.is_empty());
             assert!(lifecycle.world().resource::<TrackRouteMap>().routes.is_empty());
             assert!(lifecycle.world().resource::<TrackStyleMap>().styles.is_empty());
+            assert!(lifecycle.world().resource::<PendingPathEdits>().creates[&old_create].retired);
+            assert_eq!(lifecycle.world().resource::<PendingPathEdits>().creates[&old_create].payload.name, "Same name");
+            assert_eq!(route_points_to_json(&lifecycle.world().resource::<PendingGpxImports>().tracks[&old_import].payload.route_points), before, "accepted import source payload survives access retirement");
+            lifecycle.world_mut().resource_mut::<PendingPathEdits>().creates.get_mut(&delayed_create).unwrap().started -= std::time::Duration::from_secs(6);
+            lifecycle.update();
+            assert!(lifecycle.world().resource::<PathEditStatus>().error.as_deref().unwrap().contains("unknown"));
+            assert!(lifecycle.world().resource::<PendingPathEdits>().creates.contains_key(&delayed_create), "timeouts report unknown without dropping or replaying accepted requests");
+            lifecycle.world_mut().write_message(DbResult::NodeCreated { id: "old-created".into(), petal_id: "p".into(), name: "Same name".into(), has_asset: false, correlation_id: Some(old_create.clone()), position: [0.0; 3] });
+            lifecycle.world_mut().write_message(DbResult::RequestFailed { correlation_id: failed_create.clone(), error: "fixture denied".into() });
+            lifecycle.world_mut().write_message(DbResult::NodePropertySet { node_id: "track".into(), key: GPX_POINTS_KEY.into(), correlation_id: Some(property_request) });
+            lifecycle.world_mut().write_message(DbResult::NodeCreated { id: "old-import".into(), petal_id: "p".into(), name: "Same name".into(), has_asset: false, correlation_id: Some(old_import.clone()), position: [0.0; 3] });
+            lifecycle.world_mut().write_message(DbResult::RequestFailed { correlation_id: failed_waypoint, error: "fixture denied".into() });
+            lifecycle.update();
+            let pending = lifecycle.world().resource::<PendingPathEdits>();
+            assert!(!pending.creates.contains_key(&old_create) && !pending.creates.contains_key(&failed_create));
+            assert!(pending.creates.contains_key(&delayed_create));
+            assert!(pending.property_outcomes.0.is_empty() && pending.track_property_confirms.is_empty());
+            assert_eq!(lifecycle.world().resource::<PendingGpxImports>().pending_outcomes(), 0);
+            assert!(accepted_commands.try_recv().is_err(), "late accepted births and property confirmations cannot issue continuation writes while unavailable");
+            lifecycle.world_mut().resource_mut::<fe_ui::plugin::LocalUserRole>().role = Some("owner".into());
+            lifecycle.update();
+            lifecycle.world_mut().resource_mut::<PendingGpxImports>().submit_track(&accepted_sender, "p", import_plan()).unwrap();
+            let new_import = lifecycle.world().resource::<PendingGpxImports>().tracks.keys().next().unwrap().clone();
+            assert_ne!(new_import, old_import);
+            assert!(matches!(accepted_commands.try_recv(), Ok(DbCommand::CreateNode { correlation_id: Some(ref id), .. }) if *id == new_import));
+            lifecycle.world_mut().write_message(DbResult::NodeCreated { id: "old-import".into(), petal_id: "p".into(), name: "Same name".into(), has_asset: false, correlation_id: Some(old_import), position: [0.0; 3] });
+            lifecycle.update();
+            assert!(lifecycle.world().resource::<PendingGpxImports>().tracks.contains_key(&new_import), "a late old birth cannot satisfy a new same-name/Petal import");
+            assert!(accepted_commands.try_recv().is_err(), "no properties or child births continue from the stale tuple");
+            lifecycle.world_mut().write_message(DbResult::RequestFailed { correlation_id: new_import, error: "fixture terminal".into() });
+            lifecycle.update();
+            assert_eq!(lifecycle.world().resource::<PendingGpxImports>().pending_outcomes(), 0);
             lifecycle.world_mut().resource_mut::<fe_ui::plugin::LocalUserRole>().role = Some("viewer".into());
             lifecycle.update();
             assert!(!lifecycle.world().resource::<PendingPathEdits>().access_retired);

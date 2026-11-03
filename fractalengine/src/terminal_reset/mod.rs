@@ -154,7 +154,7 @@ fn tick(world: &mut World) {
         if status.phase == Phase::Quiescing {
             supervisor.poll_quiescence(world, &mut status);
         }
-        supervisor.poll_database(&mut status);
+        supervisor.poll_database(world, &mut status);
         if matches!(status.phase, Phase::Quiescing | Phase::Clearing)
             && supervisor
                 .started
@@ -237,8 +237,12 @@ fn freeze_editor(world: &mut World, supervisor: &mut Supervisor) -> Result<(), &
     world.remove_resource::<crate::terrain_bridge::StreamedBundleResults>();
     crate::terrain_bridge::discard_terminal_state(world);
     fe_ui::maintenance::clear_read_models(world);
-    world.insert_resource(crate::gpx_bridge::PendingPathEdits::default());
-    world.insert_resource(crate::gpx_bridge::PendingGpxImports::default());
+    if let Some(mut pending) = world.get_resource_mut::<crate::gpx_bridge::PendingPathEdits>() {
+        pending.retire_for_terminal_reset();
+    }
+    if let Some(mut pending) = world.get_resource_mut::<crate::gpx_bridge::PendingGpxImports>() {
+        pending.retire_for_terminal_reset();
+    }
     world.insert_resource(fe_terrain::iot::TrackRouteMap::default());
     world.insert_resource(fe_terrain::iot::TrackStyleMap::default());
     world.insert_resource(fe_runtime::app::RuntimeApiEndpoint::default());
@@ -366,7 +370,7 @@ impl Supervisor {
         }
     }
 
-    fn poll_database(&mut self, status: &mut Status) {
+    fn poll_database(&mut self, world: &mut World, status: &mut Status) {
         if !self.clear_sent || self.database_outcome_processed {
             return;
         }
@@ -387,6 +391,8 @@ impl Supervisor {
                 return;
             }
             status.database_joined = true;
+            world.insert_resource(crate::gpx_bridge::PendingPathEdits::default());
+            world.insert_resource(crate::gpx_bridge::PendingGpxImports::default());
         }
         let Some((cleared, error)) = self.receipt.take() else {
             return;

@@ -15,3 +15,9 @@ TrackStyleMap after invalidating the UI managers. This clears the admitted-curre
 projection backlog and parsed route data, rather than retaining inert old scene
 queues until terminal Close. VerseManager replacement clears all private current
 reads, source identities and recovery intents.
+
+Host GPX/path requests already accepted by the DB retain their outcome-only
+owners and source payloads during freeze. The terminal Update cannot continue
+those workflows. Their resources are replaced only after the database worker
+has actually joined; a quiescence or join failure leaves those owners retained
+in the terminal process. This is separate from clearing pure read/render state.

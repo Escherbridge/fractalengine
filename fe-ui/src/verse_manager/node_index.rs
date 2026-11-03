@@ -382,12 +382,15 @@ mod tests {
             other => panic!("unexpected current read: {other:?}"),
         };
         mgr.invalidate_scene_access(&nav);
+        let access_generation = mgr.scene_access_generation();
+        assert!(access_generation.is_some());
         let scope = nav.active_scope().unwrap();
         mgr.accept_scene_role(&scope, "none", &nav);
         assert_eq!(mgr.pending_scene_operations(), 0);
         let late = fe_runtime::messages::DbResult::ReplicatedNodeCurrentRead { node_id: "node-1".into(), request_id: request, result: Err("old access".into()) };
         assert!(matches!(mgr.route_replica_read(&late, &nav, 1.0), super::super::replica_reads::Reply::Consumed));
         mgr.accept_scene_role(&scope, "viewer", &nav);
+        assert_eq!(mgr.scene_access_generation(), access_generation, "a resolved role cannot erase the invalidation generation observed by host outcome owners");
         assert!(mgr.queue_replica_read("node-1", &nav, 1.0));
         mgr.pump_replica_reads(&nav, &tx, 1.0);
         let expired_request = match rx.try_recv().unwrap() {

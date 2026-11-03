@@ -391,6 +391,7 @@ struct UiState<'w, 's> {
     gpx: Res<'w, fe_ui::gpx_ops::PendingGpxOps>,
     path: Res<'w, fe_ui::path_ops::PendingPathOps>,
     path_projection: Option<Res<'w, crate::gpx_bridge::PendingPathEdits>>,
+    import_outcomes: Option<Res<'w, crate::gpx_bridge::PendingGpxImports>>,
     gis: Res<'w, fe_ui::gis::GisPanelState>,
     diagnostic: UiDiagnostics<'w>,
 }
@@ -454,6 +455,7 @@ impl UiState<'_, '_> {
             + self.path.0.len()
             + self.verses.pending_scene_operations()
             + self.path_projection.as_ref().map_or(0, |pending| pending.pending_current_projections())
+            + self.import_outcomes.as_ref().map_or(0, |pending| pending.pending_outcomes())
             + usize::from(self.ui.join_request.pending)
             + usize::from(self.ui.gltf_import_request.pending)
             + usize::from(self.ui.target_access_pending());

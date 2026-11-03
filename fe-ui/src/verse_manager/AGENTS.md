@@ -685,3 +685,9 @@ that stops being a path. Initial unknown baselines remain conservative.
 Private current-read replies check their deadline at routing, before acceptance,
 independently of the later pump. Expired matching nonces retain only read need and
 back off before a fresh nonce; they never apply stale state or retry a mutation.
+
+Private host-path creation outcomes may update the known tree, but the generic
+NodeCreated handler does not continue another UI workflow for those IDs. Pen
+first-anchor intent is unsent work: role invalidation or denied edit access clears
+that intent, and a matching late birth cannot restart editing outside its original
+active Petal. Accepted host command outcomes remain with the host's separate owner.

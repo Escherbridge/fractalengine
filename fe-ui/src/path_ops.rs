@@ -4,6 +4,12 @@
 
 use bevy::prelude::*;
 
+pub const HOST_PATH_REQUEST_PREFIX: &str = "host-path:";
+
+pub fn is_host_path_request(request_id: &str) -> bool {
+    request_id.starts_with(HOST_PATH_REQUEST_PREFIX)
+}
+
 /// Path-editor operation requested by the UI; drained by the main binary's
 /// GPX bridge (`fractalengine/src/gpx_bridge.rs`). fe-ui only ever produces
 /// these — it never reads/writes `gpx_points` itself.

@@ -43,6 +43,11 @@ pub(super) fn handle_node_created(
             asset_path: None,
         },
     );
+    if verse_mgr.scene_access_blocked()
+        || correlation_id.is_some_and(crate::path_ops::is_host_path_request)
+    {
+        return;
+    }
     let in_active_petal = nav.active_petal_id.as_deref() == Some(petal_id);
     // T3 (D-A8/N-10): an `earthwork:{region_id}` correlation binds the created
     // node to its region and writes the endpoint property bag (node_kind /
@@ -95,7 +100,7 @@ pub(super) fn handle_node_created(
     // the pending create — NOT on a content heuristic. A concurrent
     // foreign create (GPX import / create-entity dialog) carries a
     // different id (or `None`), so it can never hijack the pen flush.
-    if let Some(cid) = correlation_id {
+    if let Some(cid) = correlation_id.filter(|_| in_active_petal) {
         if let Some(pen) = path_state.take_pending_pen_create_if(cid) {
             path_state.start_editing(id.to_string());
             // pen_curve_tool_20260722 (FR-4): a press-drag first anchor keeps
