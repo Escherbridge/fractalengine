@@ -4767,6 +4767,203 @@ mod tests {
                     );
                 }
             }
+            {
+                let points = json!([[0.0, 0.0, 0.0, 17.25], [2.0, 0.0, 0.0, 18.5]]);
+                let anchors = fe_sdk::path_geometry::decode_anchor_rows(&points).unwrap();
+                let flattened = fe_sdk::path_geometry::flatten_anchor_path(
+                    &anchors,
+                    fe_sdk::path_geometry::FLATTEN_SAMPLES_PER_SEGMENT,
+                );
+                let shape = crate::node_manager::TrackPickShape {
+                    points: flattened.iter().copied().map(Vec3::from_array).collect(),
+                    anchors: anchors
+                        .iter()
+                        .map(|anchor| Vec3::from_array(anchor.0))
+                        .collect(),
+                    half_width: 0.5,
+                    closed: false,
+                    fill_triangles: vec![],
+                    centroid: Vec3::X,
+                };
+                let mut source_world = bevy::prelude::World::new();
+                let path_entity = source_world.spawn(shape.clone()).id();
+                let ordinary_entity = source_world.spawn_empty().id();
+                let mut source_nodes = NodeManager::default();
+                source_nodes
+                    .reduce_selection(
+                        Some("petal"),
+                        vec![
+                            SelectionTarget {
+                                entity: path_entity,
+                                node_id: "a".into(),
+                            },
+                            SelectionTarget {
+                                entity: ordinary_entity,
+                                node_id: "b".into(),
+                            },
+                        ],
+                        SelectionMode::Replace,
+                    )
+                    .unwrap();
+                let mut source_capture = capture.clone();
+                source_capture.members[0]
+                    .state
+                    .properties
+                    .insert("gpx_points".into(), points.clone());
+                let group_id = ulid::Ulid::new().to_string();
+                source_capture
+                    .groups
+                    .push(fe_runtime::messages::VisibilityGroupDto {
+                        id: group_id.clone(),
+                        name: "Source fixture".into(),
+                        visible: true,
+                        order: 0.0,
+                    });
+                let mut path = crate::gis::PathEditorState::default();
+                path.editing_track_id = Some("a".into());
+                path.points = crate::gis::decode_gpx_points(&points);
+                let stored_rows = path.points.clone();
+                let mut source_feedback = UiManager::default();
+                let (source_tx, source_rx) = crossbeam::channel::unbounded();
+                source_feedback
+                    .editor_batch
+                    .maintain(&nav, &source_nodes, &hierarchy, &source_tx);
+                let DbCommand::ReadEditorBatch { correlation_id, .. } = source_rx.try_recv().unwrap()
+                else {
+                    panic!("source fixture requires a real captured batch read")
+                };
+                source_feedback
+                    .editor_batch
+                    .route(
+                        &DbResult::EditorBatchLoaded {
+                            capture: source_capture.clone(),
+                            correlation_id,
+                        },
+                        &nav,
+                        |_| Ok(()),
+                        &source_tx,
+                    )
+                    .unwrap();
+                let origin = source_feedback.editor_batch.origin(&source_nodes).unwrap();
+                let properties = EditorBatchEdit::Targets(
+                    source_capture
+                        .members
+                        .iter()
+                        .map(|member| EditorTargetEdit {
+                            node_id: member.node_id.clone(),
+                            mutation: EditorTargetMutation::Properties(vec![EditorPropertyEdit::Set {
+                                key: "checked-source".into(),
+                                value: json!(true),
+                            }]),
+                        })
+                        .collect(),
+                );
+                let affine = EditorAffine {
+                    pivot: origin
+                        .interaction
+                        .center
+                        .as_ref()
+                        .unwrap()
+                        .to_array()
+                        .map(f64::from),
+                    translation: [1.0, 0.0, 0.0],
+                    rotation: [0.0, 0.0, 0.0, 1.0],
+                    scale: [1.0; 3],
+                };
+                let transforms = crate::editor_batch::affine_edits(&source_capture, &affine).unwrap();
+                let mut source_query = bevy::ecs::system::SystemState::<
+                    crate::editor_batch::SelectionSources,
+                >::new(&mut source_world);
+                {
+                    let sources = source_query.get(&source_world);
+                    sources
+                        .validate(&source_capture, &source_nodes, &path)
+                        .unwrap();
+                    path.points[0].handle_out = Some([0.0, 0.0, 3.0]);
+                    let draft = path.points.clone();
+                    assert!(!source_nodes.gesture_active && !source_nodes.is_dragging());
+                    assert!(path.selected_point.is_none() && path.selected_segment.is_none());
+                    for edit in [
+                        transforms,
+                        properties.clone(),
+                        EditorBatchEdit::CreateGroup {
+                            id: ulid::Ulid::new().to_string(),
+                            name: "Refused draft".into(),
+                        },
+                        EditorBatchEdit::Membership {
+                            group_id,
+                            member: true,
+                        },
+                    ] {
+                        let error = sources
+                            .start(
+                                &mut source_feedback.editor_batch,
+                                origin.clone(),
+                                edit,
+                                &nav,
+                                &source_nodes,
+                                &path,
+                                &source_tx,
+                            )
+                            .unwrap_err();
+                        assert!(error.contains("unsaved draft"));
+                        assert!(!source_feedback.editor_batch.is_pending());
+                        assert!(source_rx.try_recv().is_err(), "transform, property and group forms must refuse before any write when a path draft differs");
+                        assert_eq!(
+                            path.points, draft,
+                            "refusal preserves the complete unsaved handles/times draft"
+                        );
+                    }
+                    path.points = stored_rows;
+                }
+                source_world
+                    .get_mut::<crate::node_manager::TrackPickShape>(path_entity)
+                    .unwrap()
+                    .points[0]
+                    .x += 9.0;
+                {
+                    let sources = source_query.get(&source_world);
+                    assert!(
+                        sources
+                            .validate(&source_capture, &source_nodes, &path)
+                            .is_err(),
+                        "a changed rendered path refuses even with a matching editor draft"
+                    );
+                    let mut stamp_capture = source_capture.clone();
+                    stamp_capture.members[0].stamp_path = Some(EditorStampPath {
+                        state: source_capture.members[0].state.clone(),
+                        history_version: Some(1),
+                    });
+                    assert!(
+                        sources
+                            .validate(&stamp_capture, &source_nodes, &path)
+                            .is_err(),
+                        "missing stamp source cache cannot fall back to path shape alone"
+                    );
+                }
+                *source_world
+                    .get_mut::<crate::node_manager::TrackPickShape>(path_entity)
+                    .unwrap() = shape;
+                let sources = source_query.get(&source_world);
+                sources
+                    .start(
+                        &mut source_feedback.editor_batch,
+                        origin,
+                        properties,
+                        &nav,
+                        &source_nodes,
+                        &path,
+                        &source_tx,
+                    )
+                    .unwrap();
+                assert!(
+                    matches!(source_rx.try_recv().unwrap(), DbCommand::CommitCheckedEditorBatch { request, .. } if request.capture.members.len() == 2)
+                );
+                assert!(
+                    source_rx.try_recv().is_err(),
+                    "matching sources admit one complete batch"
+                );
+            }
             let origin = feedback.editor_batch.origin(&selected).unwrap();
             let edits: Vec<_> = capture
                 .members

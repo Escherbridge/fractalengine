@@ -2,7 +2,12 @@
 
 `SelectionBatch` carries a captured selection origin and one typed complete edit.
 Dispatch rechecks current selection/navigation, edit role and pending gesture/save
-ownership before queueing it. Unported single-object edits explicitly refuse plural
+ownership before queueing it. Every edit kind then passes the shared live
+`SelectionSources::start` guard: unsaved path drafts, stale rendered paths or missing
+stamp sources refuse property and Group forms as well as geometric edits, because any
+successful batch can project a full stored snapshot. The guard shares PathEditorState
+through the existing mutable GIS bundle; it adds no second resource borrow or draft
+copy used as authority. Unported single-object edits explicitly refuse plural
 selection and wait while a selection batch is pending. Registry changes also wait for
 that pending outcome. `CheckSelectionSave` only reads the original request outcome;
 it never resends a write. `UiManager.editor_batch` owns this request/read model, while

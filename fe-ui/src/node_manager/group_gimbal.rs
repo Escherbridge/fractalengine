@@ -84,74 +84,8 @@ fn transformed(before: Transform, affine: &EditorAffine) -> Transform {
 
 #[derive(bevy::ecs::system::SystemParam)]
 pub(super) struct PathPreviewContext<'w, 's> {
-    shapes: Query<'w, 's, &'static super::TrackPickShape>,
+    sources: crate::editor_batch::SelectionSources<'w, 's>,
     path: Res<'w, crate::gis::PathEditorState>,
-    cache: Res<'w, crate::verse_manager::PathAssetCache>,
-}
-
-impl PathPreviewContext<'_, '_> {
-    fn matches(
-        &self,
-        captured: &fe_runtime::editor_batch::EditorBatchMember,
-        entity: Entity,
-        petal: &str,
-    ) -> bool {
-        let stored_path = captured
-            .stamp_path
-            .as_ref()
-            .map(|path| &path.state)
-            .unwrap_or(&captured.state);
-        let Some(points) = stored_path.properties.get("gpx_points") else {
-            return true;
-        };
-        let Some(anchors) = fe_sdk::path_geometry::decode_anchor_rows(points) else {
-            return false;
-        };
-        let expected = fe_sdk::path_geometry::flatten_anchor_path(
-            &anchors,
-            fe_sdk::path_geometry::FLATTEN_SAMPLES_PER_SEGMENT,
-        );
-        if self.path.editing_track_id.as_deref() == Some(stored_path.node_id.as_str()) {
-            let mut stored = crate::gis::decode_gpx_points(points);
-            let mut draft = self.path.points.clone();
-            for row in stored.iter_mut().chain(&mut draft) {
-                row.time_seconds = Some(row.time_seconds.unwrap_or(0.0));
-            }
-            if stored != draft {
-                return false;
-            }
-        }
-        if captured.stamp_path.is_some() {
-            return self
-                .cache
-                .stamp_selection_source(&stored_path.node_id, petal)
-                .is_some_and(|(properties, _, rendered)| {
-                    properties == &serde_json::Value::Object(stored_path.properties.clone())
-                        && rendered == expected
-                });
-        }
-        let Ok(shape) = self.shapes.get(entity) else {
-            return false;
-        };
-        if shape.anchors.len() != anchors.len()
-            || !shape
-                .anchors
-                .iter()
-                .zip(&anchors)
-                .all(|(actual, expected)| actual.abs_diff_eq(Vec3::from_array(expected.0), 0.0001))
-        {
-            return false;
-        }
-        shape.closed
-            || (shape.points.len() == expected.len()
-                && shape
-                    .points
-                    .iter()
-                    .zip(&expected)
-                    .all(|(actual, expected)| {
-                        actual.abs_diff_eq(Vec3::from_array(*expected), 0.0001)
-                    }))
-    }
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -193,7 +127,12 @@ pub(super) fn interact(
             && drag.originals.iter().zip(&drag.origin.capture.members).all(
                 |((entity, _), captured)| {
                     transforms.contains(*entity)
-                        && paths.matches(captured, *entity, &drag.origin.capture.petal_id)
+                        && paths.sources.matches(
+                            captured,
+                            *entity,
+                            &drag.origin.capture.petal_id,
+                            &paths.path,
+                        )
                 },
             );
         if !current
@@ -208,8 +147,15 @@ pub(super) fn interact(
             if drag.moved {
                 let edit = affine_edits(&drag.origin.capture, &drag.affine);
                 let result = edit.and_then(|edit| {
-                    ui.editor_batch
-                        .start(drag.origin, edit, &nav, &manager, &db.0)
+                    paths.sources.start(
+                        &mut ui.editor_batch,
+                        drag.origin,
+                        edit,
+                        &nav,
+                        &manager,
+                        &paths.path,
+                        &db.0,
+                    )
                 });
                 match result {
                     Ok(()) => ui.show_toast("Saving the complete selection…", now),
@@ -381,7 +327,12 @@ pub(super) fn interact(
             ui.show_advisory("The rendered selection differs from its stored capture; refresh before transforming", now);
             return;
         }
-        if !paths.matches(captured, selected.entity, &origin.capture.petal_id) {
+        if !paths.sources.matches(
+            captured,
+            selected.entity,
+            &origin.capture.petal_id,
+            &paths.path,
+        ) {
             ui.show_advisory("A selected path or stamp has unsaved, changed or unavailable rendered geometry; the complete transform was refused", now);
             return;
         }

@@ -13,6 +13,17 @@ CheckedWholeObject or PathSubSelection. Idle rendering does not decode complete 
 The cache grants no authority: navigation/selection generation, real history versions,
 role and live path source/draft checks still fence use and held gestures.
 
+`source.rs` is the shared live admission fence for every UI selection batch. Both
+form dispatch and gimbal release call `SelectionSources::start`; its per-member
+predicate is also rechecked during held previews. It compares the open editor's full
+decoded point rows (handles, corner settings and times included) with captured rows,
+then verifies rendered path anchors/polyline or the stamp's exact cached path source.
+This applies to property and Group operations too: their full-snapshot projections
+could otherwise replace an unsaved path draft. A mismatch refuses the complete batch
+before channel admission, without changing the draft or creating pending ownership.
+Missing derived geometry/cache refuses; ordinary-only batches require no path cache.
+`EditorBatchState::start` remains the channel owner behind this UI admission seam.
+
 `math.rs` adapts ordinary transforms, whole-route affine edits and promoted stamp
 overrides. Path rows use the runtime's shared f64 affine helper, including relative
 Bezier handles and untouched measurement/time metadata. The pivot is the arithmetic
@@ -93,5 +104,8 @@ primary removal, reverse ranges, duplicates, size limits and Petal transitions. 
 existing Inspector editing journey extends native rendering to three widths/scales,
 common/mixed/missing/null values, explicit primary-only URL labeling, accessible fields
 and target sizes. It also exercises complete typed reads, partial-receipt rejection
-before projection, busy/disconnected channels, coalesced pure reads and one complete inverse request. These are source-authored checks;
+before projection, busy/disconnected channels, coalesced pure reads and one complete inverse request.
+Its existing ECS fixture also exercises inactive handle drafts, property/transform/
+Group refusal before any send, changed rendering, missing stamp source and one complete
+admission after matching sources are restored. These are source-authored checks;
 the parent campaign owns compilation, execution, live QA and acceptance.

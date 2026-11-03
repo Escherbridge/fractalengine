@@ -2,6 +2,8 @@
 
 mod interaction;
 pub(crate) use interaction::{SelectionInteraction, TransformRoute};
+mod source;
+pub(crate) use source::SelectionSources;
 pub(crate) mod math;
 pub(crate) mod ui;
 mod validation;

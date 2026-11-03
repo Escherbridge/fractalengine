@@ -30,8 +30,10 @@ Incoming optimistic REST/WebSocket transform previews invalidate matching gestur
 captures before applying, while retaining confirmed history/rollback authority unchanged.
 Their subsequent real receipts establish committed authority. Unaffected group members
 restore their originals; the externally changed member keeps its incoming pose.
-Capabilities intersect across all members. The Inspector and Options use the same typed
-adapters; see `../editor_batch/AGENTS.md` for unsupported geometry and exact Undo rules.
+Capabilities intersect across all members. Gimbal start/hold/release and all batch
+forms use the same live source predicate in `editor_batch/source.rs`; form metadata
+and Group operations also refuse an unsaved selected path draft. The Inspector and
+Options use the same typed adapters; see `../editor_batch/AGENTS.md` for unsupported geometry and exact Undo rules.
 Single-object path marker/handle/stamp editing refuses plural selection. Brush and
 Measure retain their independent terrain/measurement controls. Pen asks for one route.
 

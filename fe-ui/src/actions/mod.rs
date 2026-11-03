@@ -1083,11 +1083,12 @@ fn open_path_in_options(
 /// new panel surfaces (Query/Annotations/Layers/Paths tabs) land — mirrors
 /// `plugin::MiscUiParams`.
 #[derive(bevy::ecs::system::SystemParam)]
-pub(crate) struct GisPathParams<'w> {
+pub(crate) struct GisPathParams<'w, 's> {
     gis_panel: ResMut<'w, crate::gis::GisPanelState>,
     gpx_ops: ResMut<'w, crate::gpx_ops::PendingGpxOps>,
     path_state: ResMut<'w, crate::gis::PathEditorState>,
     path_ops: ResMut<'w, crate::path_ops::PendingPathOps>,
+    selection_sources: crate::editor_batch::SelectionSources<'w, 's>,
 }
 
 /// Tool-panel + proposal state PLUS the Wave-1 interaction-state stubs
@@ -1192,6 +1193,7 @@ pub(crate) fn process_ui_actions(
         mut gpx_ops,
         mut path_state,
         mut path_ops,
+        selection_sources,
     } = gis;
     let ToolStateParams {
         mut undo,
@@ -1275,9 +1277,7 @@ pub(crate) fn process_ui_actions(
                     && !matches!(ui_mgr.editor_batch.transform_route(&nav, &node_mgr, Some(&path_state)), crate::editor_batch::TransformRoute::OrdinarySingle | crate::editor_batch::TransformRoute::CheckedWholeObject) {
                     Err("Clear the path sub-selection and wait for stored state before applying a whole-object transform".into())
                 } else {
-                    ui_mgr
-                        .editor_batch
-                        .start(origin, edit, &nav, &node_mgr, &db_sender.0)
+                    selection_sources.start(&mut ui_mgr.editor_batch, origin, edit, &nav, &node_mgr, &path_state, &db_sender.0)
                 };
                 match result {
                     Ok(()) => ui_mgr.show_toast("Saving the complete selection?", now_secs),
