@@ -506,6 +506,11 @@ impl CallerAuth {
 
 #[derive(Debug, Clone)]
 pub enum DbCommand {
+    /// Private bounded current admission; no public route, mutation or peer effect.
+    InspectSceneAssetTransfer {
+        request: crate::scene_asset::SceneAssetTransferRequest,
+        reply: crossbeam::channel::Sender<Result<crate::scene_asset::SceneAssetTransferPermit, String>>,
+    },
     /// Private native current read; actual local Viewer authority is resolved by the DB.
     ReadReplicatedNodeCurrent { node_id:String, request_id:String },
     ReadEditorBatch {
@@ -1332,6 +1337,8 @@ pub enum DeferralReason {
 
 #[derive(Debug, Clone, Message)]
 pub enum DbResult {
+    /// Emitted after the corresponding current result, without a local-history claim.
+    SceneAssetNeeded { needed: crate::scene_asset::SceneAssetNeeded },
     EditorBatchLoaded {
         capture: crate::editor_batch::EditorBatchCapture,
         correlation_id: String,

@@ -25,6 +25,7 @@ pub mod qa_invitation;
 pub mod qa_portal;
 pub mod qa_web;
 pub mod safe_id;
+pub mod scene_asset;
 pub mod scene_materials;
 pub mod scene_replication;
 pub mod service_lifecycle;

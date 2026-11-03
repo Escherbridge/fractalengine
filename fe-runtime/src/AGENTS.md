@@ -1078,3 +1078,14 @@ RestoreDeletedGroup submits only delete_request_id. EditorDeletedGroup context i
 
 
 Creation replay uses UndoCreatedGroup.create_request_id and RedoCreatedGroup.undo_request_id. The latter carries no client-selected old ID, registry or memberships: the writer derives those from the exact immutable same-actor/scope/Petal creation and Undo manifests. Successful Redo produces a fresh creation request for the next Undo; generic old-ID creation stays refused.
+
+## scene-asset-transfer
+
+scene_asset is a private native transfer protocol. InspectSceneAssetTransfer carries an
+absolute deadline and a private single-result channel, never public API correlation.
+The DB derives actual local identity, stored ancestry and current Viewer/Editor roles.
+Publish/Serve also require retained local upload provenance. A permit is only an exact
+current witness: the job re-admits the same metadata before persisting bytes/readiness.
+SceneAssetNeeded follows its corresponding current result and names actual missing bytes,
+not a permission or cached path. Hash-ready/failure events must trigger fresh owned reads
+rather than replaying an old DTO. No local journal version or peer atomicity is implied.

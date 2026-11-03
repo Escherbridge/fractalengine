@@ -187,6 +187,8 @@ pub enum SyncEvent {
     },
     /// A blob is now available in the local blob store.
     BlobReady { hash: BlobHash },
+    /// Final failed or cancelled scene fetch; never implies bytes are available.
+    SceneAssetFetchFailed { verse_id: String, hash: BlobHash, reason: String },
     /// An inbound replicated row was received from a peer and forwarded to
     /// the DB thread via `DbCommand::ApplyReplicatedRow` (A4). The DB thread
     /// applies it as the single writer; the durable outcome comes back as
