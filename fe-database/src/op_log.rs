@@ -3630,6 +3630,917 @@ mod tests {
         assert_eq!(op_log_count(&url_db).await,shared_after_capture+3,"first Save, clear and update each commit once");
 
 
+        // Committed full-scene publication, original clocks and durable peer readback.
+        {
+            use crate::handlers::replicated_row::apply_replicated_row_handler;
+            use crate::handlers::{node_history, scene_publication as scene};
+            use fe_runtime::messages::{DeferralReason, ReplicatedRowOutcome};
+            use serde_json::json;
+            let source = probe_db().await;
+            let peer = probe_db().await;
+            for db in [&source, &peer] {
+                crate::schema::apply_all(db).await.unwrap();
+                db.query("CREATE verse CONTENT {verse_id:'scene-v',name:'v',created_by:'did:qa',created_at:'2026-11-02'}; CREATE fractal CONTENT {fractal_id:'scene-f',verse_id:'scene-v',owner_did:'did:qa',name:'f',created_at:'2026-11-02'}; CREATE petal CONTENT {petal_id:'scene-p',fractal_id:'scene-f',name:'p',node_id:'p',created_at:'2026-11-02'}")
+                                .await.unwrap().check().unwrap();
+            }
+            let scope = "VERSE#scene-v-FRACTAL#scene-f-PETAL#scene-p";
+            let properties = json!({"nested":{"null":null,"measurements":[{"t":1,"value":10.5},null,{"t":2,"value":12}]},"remove_me":{"preserve_before_delete":true}});
+            let (id, _) = node_history::create_object(
+                &source,
+                "scene-p",
+                "Complex",
+                None,
+                [2.0, 3.0, 4.0],
+                vec![0.0; 3],
+                vec![1.0; 3],
+                properties.as_object().unwrap().clone(),
+                "did:qa",
+            )
+            .await
+            .unwrap();
+            let concrete = std::sync::Arc::new(fe_runtime::blob_store::mock::MockBlobStore::new());
+            let blobs: crate::BlobStoreHandle = concrete.clone();
+            let (tx, rx) = crossbeam::channel::bounded(256);
+            let original_fact = node_history::latest(&source, &id).await.unwrap().unwrap();
+            scene::prepare(&source, &id, "did:qa")
+                .await
+                .unwrap()
+                .emit(&source, &blobs, &tx)
+                .await
+                .unwrap();
+            let event = rx.try_recv().unwrap();
+            assert_eq!(event.table, "node");
+            assert_eq!(event.verse_id, "scene-v");
+            assert_eq!(event.petal_id.as_deref(), Some("scene-p"));
+            let first_bytes = concrete.bytes_for(&event.content_hash).unwrap();
+            let first: serde_json::Value = serde_json::from_slice(&first_bytes).unwrap();
+            assert_eq!(
+                first["_fe_scene"]["hlc"],
+                original_fact["hlc_timestamp"].as_u64().unwrap().to_string()
+            );
+            assert_eq!(first["_fe_scene"]["publisher"], "did:qa");
+            assert_eq!(first["properties"], properties);
+            assert!(first.get("asset_id").is_none());
+            assert!(first.get("id").is_none());
+            assert_eq!(
+                apply_replicated_row_handler(
+                    &peer,
+                    "scene-v",
+                    "node",
+                    &id,
+                    &first_bytes,
+                    "did:qa",
+                    None
+                )
+                .await
+                .unwrap(),
+                ReplicatedRowOutcome::Applied
+            );
+            assert_eq!(
+                node_history::snapshot(&peer, &id).await.unwrap(),
+                node_history::snapshot(&source, &id).await.unwrap()
+            );
+            assert!(
+                node_history::latest(&peer, &id).await.unwrap().is_none(),
+                "current-row convergence never invents historical journal convergence"
+            );
+            let projected = scene::read_current(&peer, &blobs, "scene-v", &id, "did:viewer")
+                .await
+                .unwrap();
+            assert_eq!(projected.scope, scope);
+            assert_eq!(
+                projected.state.properties,
+                properties.as_object().unwrap().clone()
+            );
+            assert!(matches!(
+                projected.asset,
+                fe_runtime::scene_replication::ReplicaNodeAsset::NoAsset
+            ));
+            assert!(
+                matches!(projected.provenance,fe_runtime::scene_replication::ReplicaNodeProvenance::OriginalSceneCommit {hlc,..} if hlc==original_fact["hlc_timestamp"].as_u64().unwrap())
+            );
+            let (projection_tx, projection_rx) = crossbeam::channel::bounded(8);
+            scene::echo_applied(
+                &peer,
+                &blobs,
+                "did:viewer",
+                &projection_tx,
+                vec![crate::handlers::inbound_admissions::RowReport {
+                    verse_id: "scene-v".into(),
+                    table: "node".into(),
+                    record_id: id.clone(),
+                    outcome: ReplicatedRowOutcome::Applied,
+                }],
+            )
+            .await;
+            assert!(matches!(
+                projection_rx.try_recv().unwrap(),
+                fe_runtime::messages::DbResult::ReplicatedRowApplied { .. }
+            ));
+            assert!(
+                matches!(projection_rx.try_recv().unwrap(),fe_runtime::messages::DbResult::ReplicatedNodeCurrent {current} if current.state.node_id==id)
+            );
+            scene::echo_applied(
+                &peer,
+                &blobs,
+                "did:viewer",
+                &projection_tx,
+                vec![crate::handlers::inbound_admissions::RowReport {
+                    verse_id: "scene-v".into(),
+                    table: "node".into(),
+                    record_id: id.clone(),
+                    outcome: ReplicatedRowOutcome::NotApplicable,
+                }],
+            )
+            .await;
+            projection_rx.try_recv().unwrap();
+            assert!(
+                projection_rx.try_recv().is_err(),
+                "ignored/stale rows emit no native current projection"
+            );
+
+            assert!(
+                scene::prepare(&peer, &id, "did:qa").await.is_err(),
+                "inbound-only state is not automatically re-signed by another current Editor"
+            );
+            let mut wrong_author = first.clone();
+            wrong_author["_fe_scene"]["publisher"] = json!("did:other");
+            assert_eq!(
+                apply_replicated_row_handler(
+                    &peer,
+                    "scene-v",
+                    "node",
+                    &id,
+                    &serde_json::to_vec(&wrong_author).unwrap(),
+                    "did:qa",
+                    None
+                )
+                .await
+                .unwrap(),
+                ReplicatedRowOutcome::Denied
+            );
+            let mut malformed = first.clone();
+            malformed["_fe_scene"]
+                .as_object_mut()
+                .unwrap()
+                .remove("hlc");
+            malformed["_fe_scene"]["other"] = json!("replacement");
+            assert_eq!(
+                apply_replicated_row_handler(
+                    &peer,
+                    "scene-v",
+                    "node",
+                    &id,
+                    &serde_json::to_vec(&malformed).unwrap(),
+                    "did:qa",
+                    None
+                )
+                .await
+                .unwrap(),
+                ReplicatedRowOutcome::Denied
+            );
+            let mut unrenderable = first.clone();
+            unrenderable["scale"] = json!([1e100, 1.0, 1.0]);
+            assert_eq!(
+                apply_replicated_row_handler(
+                    &peer,
+                    "scene-v",
+                    "node",
+                    &id,
+                    &serde_json::to_vec(&unrenderable).unwrap(),
+                    "did:qa",
+                    None
+                )
+                .await
+                .unwrap(),
+                ReplicatedRowOutcome::Denied
+            );
+            let before_clock = snapshot_hlc();
+            let mut future = first.clone();
+            future["_fe_scene"]["hlc"] = json!(u64::MAX.to_string());
+            assert_eq!(
+                apply_replicated_row_handler(
+                    &peer,
+                    "scene-v",
+                    "node",
+                    &id,
+                    &serde_json::to_vec(&future).unwrap(),
+                    "did:qa",
+                    None
+                )
+                .await
+                .unwrap(),
+                ReplicatedRowOutcome::Denied
+            );
+            assert_eq!(
+                snapshot_hlc(),
+                before_clock,
+                "denied clocks do not advance local causality"
+            );
+
+            node_history::authorize_scope(
+                &source,
+                &NodeAccessGrant::Local,
+                "did:qa",
+                scope,
+                fe_policy::RoleLevel::Editor,
+            )
+            .await
+            .unwrap();
+            crate::handlers::entity_property::delete_entity_property_as(
+                &source,
+                &id,
+                "remove_me",
+                "did:qa",
+            )
+            .await
+            .unwrap();
+            crate::handlers::entity_property::set_entity_property_as(
+                &source,
+                &id,
+                "explicit_null",
+                &json!(null),
+                "did:qa",
+            )
+            .await
+            .unwrap();
+            crate::handlers::transform::update_node_transform_as(
+                &source,
+                &id,
+                [9.0, 8.0, 7.0],
+                [0.2, 0.4, 0.6],
+                [2.0, 3.0, 4.0],
+                "did:qa",
+            )
+            .await
+            .unwrap();
+            scene::prepare(&source, &id, "did:qa")
+                .await
+                .unwrap()
+                .emit(&source, &blobs, &tx)
+                .await
+                .unwrap();
+            let second = rx.try_recv().unwrap();
+            let second_bytes = concrete.bytes_for(&second.content_hash).unwrap();
+            peer.query("CREATE field_def CONTENT {field_def_id:'scene-known-schema',scope:$scope,entity_type:'node',key:'explicit_null',enforced_schema:{version:1,schema:{type:'string'}}}").bind(("scope",scope)).await.unwrap().check().unwrap();
+            assert_eq!(
+                apply_replicated_row_handler(
+                    &peer,
+                    "scene-v",
+                    "node",
+                    &id,
+                    &second_bytes,
+                    "did:qa",
+                    None
+                )
+                .await
+                .unwrap(),
+                ReplicatedRowOutcome::Denied,
+                "full snapshots cannot bypass recipient enforced schemas"
+            );
+            peer.query("DELETE field_def WHERE field_def_id='scene-known-schema'")
+                .await
+                .unwrap()
+                .check()
+                .unwrap();
+            assert_eq!(
+                apply_replicated_row_handler(
+                    &peer,
+                    "scene-v",
+                    "node",
+                    &id,
+                    &second_bytes,
+                    "did:qa",
+                    None
+                )
+                .await
+                .unwrap(),
+                ReplicatedRowOutcome::Applied
+            );
+            let current = node_history::snapshot(&peer, &id).await.unwrap().unwrap();
+            assert_eq!(current["position"], json!([9.0, 8.0, 7.0]));
+            assert_eq!(current["properties"]["nested"], properties["nested"]);
+            assert!(
+                current["properties"].get("remove_me").is_none(),
+                "a complete snapshot removes old nested keys"
+            );
+            assert_eq!(
+                current["properties"].get("explicit_null"),
+                Some(&json!(null)),
+                "explicit property null is distinct from deletion"
+            );
+            assert_eq!(
+                apply_replicated_row_handler(
+                    &peer,
+                    "scene-v",
+                    "node",
+                    &id,
+                    &first_bytes,
+                    "did:qa",
+                    None
+                )
+                .await
+                .unwrap(),
+                ReplicatedRowOutcome::NotApplicable
+            );
+            assert_eq!(
+                node_history::snapshot(&peer, &id).await.unwrap().unwrap(),
+                current
+            );
+            let mut markerless: serde_json::Value = serde_json::from_slice(&first_bytes).unwrap();
+            markerless.as_object_mut().unwrap().remove("_fe_scene");
+            assert_eq!(
+                apply_replicated_row_handler(
+                    &peer,
+                    "scene-v",
+                    "node",
+                    &id,
+                    &serde_json::to_vec(&markerless).unwrap(),
+                    "did:qa",
+                    None
+                )
+                .await
+                .unwrap(),
+                ReplicatedRowOutcome::NotApplicable
+            );
+            let mut alias = markerless.clone();
+            alias["node_id"] = json!(&id);
+            assert_eq!(
+                apply_replicated_row_handler(
+                    &peer,
+                    "scene-v",
+                    "node",
+                    "different-wire-key",
+                    &serde_json::to_vec(&alias).unwrap(),
+                    "did:qa",
+                    None
+                )
+                .await
+                .unwrap(),
+                ReplicatedRowOutcome::Denied
+            );
+
+            // A failed clock write rolls back the full row and cannot advance the process HLC.
+            let failed = probe_db().await;
+            crate::schema::apply_all(&failed).await.unwrap();
+            failed.query("CREATE verse CONTENT {verse_id:'scene-v',name:'v',created_by:'did:qa',created_at:'2026-11-02'}; CREATE fractal CONTENT {fractal_id:'scene-f',verse_id:'scene-v',owner_did:'did:qa',name:'f',created_at:'2026-11-02'}; CREATE petal CONTENT {petal_id:'scene-p',fractal_id:'scene-f',name:'p',node_id:'p',created_at:'2026-11-02'}; DEFINE EVENT fail_scene_clock ON TABLE node_scene_clock WHEN $event='CREATE' THEN {THROW 'induced scene clock failure'}")
+                            .await.unwrap().check().unwrap();
+            let mut advancing: serde_json::Value = serde_json::from_slice(&second_bytes).unwrap();
+            let advanced = next_hlc_timestamp().0 + 1;
+            advancing["_fe_scene"]["hlc"] = json!(advanced.to_string());
+            let before_clock = snapshot_hlc();
+            assert!(apply_replicated_row_handler(
+                &failed,
+                "scene-v",
+                "node",
+                &id,
+                &serde_json::to_vec(&advancing).unwrap(),
+                "did:qa",
+                None
+            )
+            .await
+            .is_err());
+            assert!(node_history::snapshot(&failed, &id)
+                .await
+                .unwrap()
+                .is_none());
+            assert!(scene::read_clock(&failed, &id).await.unwrap().is_empty());
+            assert_eq!(snapshot_hlc(), before_clock);
+            failed
+                .query("REMOVE EVENT fail_scene_clock ON TABLE node_scene_clock")
+                .await
+                .unwrap()
+                .check()
+                .unwrap();
+            assert_eq!(
+                apply_replicated_row_handler(
+                    &failed,
+                    "scene-v",
+                    "node",
+                    &id,
+                    &serde_json::to_vec(&advancing).unwrap(),
+                    "did:qa",
+                    None
+                )
+                .await
+                .unwrap(),
+                ReplicatedRowOutcome::Applied
+            );
+            assert!(
+                next_hlc_timestamp().0 > advanced,
+                "a local commit follows the received original HLC"
+            );
+            assert_eq!(scene::persisted_hlc(&failed).await.unwrap(), advanced);
+            let retained_scene_clock = scene::persisted_hlc(&failed).await.unwrap();
+            init_hlc(retained_scene_clock);
+            assert!(
+                next_hlc_timestamp().0 > advanced,
+                "startup includes the persisted accepted scene watermark"
+            );
+
+            // Missing parents stay in the ordinary admission queue's Deferred vocabulary.
+            let missing = probe_db().await;
+            crate::schema::apply_all(&missing).await.unwrap();
+            missing.query("CREATE verse CONTENT {verse_id:'scene-v',name:'v',created_by:'did:qa',created_at:'2026-11-02'}").await.unwrap().check().unwrap();
+            assert_eq!(
+                apply_replicated_row_handler(
+                    &missing,
+                    "scene-v",
+                    "node",
+                    &id,
+                    &first_bytes,
+                    "did:qa",
+                    None
+                )
+                .await
+                .unwrap(),
+                ReplicatedRowOutcome::Deferred(DeferralReason::Parent {
+                    table: "petal".into(),
+                    id: "scene-p".into()
+                })
+            );
+
+            // Preparation and use-time publication both retain exact current authority and row fences.
+            let prepared = scene::prepare(&source, &id, "did:qa").await.unwrap();
+            source
+                .query("UPDATE verse SET created_by='did:other' WHERE verse_id='scene-v'")
+                .await
+                .unwrap()
+                .check()
+                .unwrap();
+            assert!(prepared.emit(&source, &blobs, &tx).await.is_err());
+            assert!(rx.try_recv().is_err());
+            source
+                .query("UPDATE verse SET created_by='did:qa' WHERE verse_id='scene-v'")
+                .await
+                .unwrap()
+                .check()
+                .unwrap();
+            assert!(scene::prepare(&source, &id, "did:viewer").await.is_err());
+            let prepared = scene::prepare(&source, &id, "did:qa").await.unwrap();
+            source
+                .query("UPDATE node SET properties.uncovered=1 WHERE node_id=$id")
+                .bind(("id", id.clone()))
+                .await
+                .unwrap()
+                .check()
+                .unwrap();
+            assert!(prepared.emit(&source, &blobs, &tx).await.is_err());
+            assert!(rx.try_recv().is_err());
+            assert!(
+                scene::prepare(&source, &id, "did:qa").await.is_err(),
+                "uncovered local/current drift is not re-signed"
+            );
+            source.query("UPDATE node SET properties=object::remove(properties,'uncovered') WHERE node_id=$id").bind(("id",id.clone())).await.unwrap().check().unwrap();
+            let prepared = scene::prepare(&source, &id, "did:qa").await.unwrap();
+            let (full_tx, full_rx) = crossbeam::channel::bounded(1);
+            full_tx.try_send(second.clone()).unwrap();
+            assert!(prepared.emit(&source, &blobs, &full_tx).await.is_err());
+            full_rx.try_recv().unwrap();
+            scene::prepare(&source, &id, "did:qa")
+                .await
+                .unwrap()
+                .emit(&source, &blobs, &full_tx)
+                .await
+                .unwrap();
+            let retry = full_rx.try_recv().unwrap();
+            assert_eq!(
+                retry.content_hash, second.content_hash,
+                "queue failure retries the same original state/clock"
+            );
+
+            // Distinct authenticated API actors remain local commits, not foreign journal ingress.
+            let (delegated, _) = node_history::create_object_granted(
+                &source,
+                "scene-p",
+                "Delegated",
+                None,
+                [0.0; 3],
+                vec![0.0; 3],
+                vec![1.0; 3],
+                serde_json::Map::new(),
+                "did:client",
+                &NodeAccessGrant::Scoped(scope.into()),
+            )
+            .await
+            .unwrap();
+            assert_eq!(
+                node_history::latest(&source, &delegated)
+                    .await
+                    .unwrap()
+                    .unwrap()["source_did"],
+                "did:client"
+            );
+            scene::prepare(&source, &delegated, "did:qa")
+                .await
+                .unwrap()
+                .emit(&source, &blobs, &tx)
+                .await
+                .unwrap();
+            rx.try_recv().unwrap();
+
+            // Local tombstones retain their original operation HLC and dominate stale live rows.
+            crate::handlers::crud::tombstone_node_handler(&source, &id, "did:qa")
+                .await
+                .unwrap();
+            scene::prepare(&source, &id, "did:qa")
+                .await
+                .unwrap()
+                .emit(&source, &blobs, &tx)
+                .await
+                .unwrap();
+            let event = rx.try_recv().unwrap();
+            let deleted = concrete.bytes_for(&event.content_hash).unwrap();
+            let deleted_value: serde_json::Value = serde_json::from_slice(&deleted).unwrap();
+            assert_eq!(
+                deleted_value["_fe_scene"]["hlc"],
+                deleted_value["tombstone"]["hlc"]
+                    .as_u64()
+                    .unwrap()
+                    .to_string()
+            );
+            assert_eq!(
+                apply_replicated_row_handler(&peer, "scene-v", "node", &id, &deleted, "did:qa", None)
+                    .await
+                    .unwrap(),
+                ReplicatedRowOutcome::AppliedTombstone
+            );
+            assert_eq!(
+                apply_replicated_row_handler(
+                    &peer,
+                    "scene-v",
+                    "node",
+                    &id,
+                    &second_bytes,
+                    "did:qa",
+                    None
+                )
+                .await
+                .unwrap(),
+                ReplicatedRowOutcome::SkippedTombstoned
+            );
+            let report = scene::recover(&source, &blobs, Some(&tx), "did:qa", "scene-v")
+                .await
+                .unwrap();
+            assert_eq!(report.examined, 2);
+            assert_eq!(report.enqueued, 2);
+            assert_eq!(report.deferred, 0);
+            assert_eq!(rx.try_iter().count(), 2);
+
+            // A real local API actor is distinct from the authenticated publisher in equal-HLC ties.
+            let (tie_id, _) = node_history::create_object_granted(
+                &source,
+                "scene-p",
+                "Tie",
+                None,
+                [0.0; 3],
+                vec![0.0; 3],
+                vec![1.0; 3],
+                serde_json::Map::new(),
+                "did:zzclient",
+                &NodeAccessGrant::Scoped(scope.into()),
+            )
+            .await
+            .unwrap();
+            scene::prepare(&source, &tie_id, "did:qa")
+                .await
+                .unwrap()
+                .emit(&source, &blobs, &tx)
+                .await
+                .unwrap();
+            let local = rx.try_recv().unwrap();
+            let mut winner: serde_json::Value =
+                serde_json::from_slice(&concrete.bytes_for(&local.content_hash).unwrap()).unwrap();
+            winner["_fe_scene"]["publisher"] = json!("did:ra");
+            winner["properties"]["peer_winner"] = json!(true);
+            source
+                .query("CREATE role CONTENT {peer_did:'did:ra',scope:$scope,role:'editor'}")
+                .bind(("scope", scope))
+                .await
+                .unwrap()
+                .check()
+                .unwrap();
+            let mut admissions =
+                crate::handlers::inbound_admissions::InboundAdmissions::for_local_publisher("did:qa");
+            let reports = admissions
+                .apply(
+                    &source,
+                    "scene-v",
+                    "node",
+                    &tie_id,
+                    &serde_json::to_vec(&winner).unwrap(),
+                    "did:ra",
+                    None,
+                )
+                .await;
+            assert_eq!(
+                reports[0].outcome,
+                ReplicatedRowOutcome::Applied,
+                "tiebreak uses actual publisher, never delegated journal actor"
+            );
+            assert!(
+                scene::prepare(&source, &tie_id, "did:qa").await.is_err(),
+                "automatic recovery does not re-sign changed foreign state"
+            );
+            crate::handlers::entity_property::set_entity_property_as(
+                &source,
+                &tie_id,
+                "peer_winner",
+                &json!(false),
+                "did:qa",
+            )
+            .await
+            .unwrap();
+            let edited = node_history::latest(&source, &tie_id)
+                .await
+                .unwrap()
+                .unwrap();
+            assert!(
+                edited["hlc_timestamp"].as_u64().unwrap()
+                    > winner["_fe_scene"]["hlc"]
+                        .as_str()
+                        .unwrap()
+                        .parse::<u64>()
+                        .unwrap()
+            );
+            scene::prepare(&source, &tie_id, "did:qa")
+                .await
+                .unwrap()
+                .emit(&source, &blobs, &tx)
+                .await
+                .unwrap();
+            rx.try_recv().unwrap();
+
+            // Imported metadata is anchored/ordered, while missing bytes stay explicitly unavailable.
+            use crate::handlers::object_creation::{ImportedSceneAsset, ObjectCreation, SceneAsset};
+            use fe_runtime::scene_replication::{ReplicaAssetUnavailable, ReplicaNodeAsset};
+            let asset_bytes = b"admitted scene content fixture";
+            let hash = blobs.add_blob(asset_bytes).unwrap();
+            let hash = crate::hash_to_hex(&hash);
+            let asset = ImportedSceneAsset::new(
+                "scene fixture",
+                "model/gltf-binary",
+                &hash,
+                asset_bytes.len(),
+            )
+            .unwrap();
+            let asset_id = asset.id().to_owned();
+            let prepared = crate::handlers::object_creation::prepare(
+                &source,
+                ObjectCreation {
+                    petal_id: "scene-p",
+                    name: "Imported",
+                    asset: SceneAsset::Imported(asset),
+                    position: [1.0, 2.0, 3.0],
+                    rotation: vec![0.0; 3],
+                    scale: vec![1.0; 3],
+                    properties: serde_json::Map::new(),
+                    actor: "did:qa",
+                    grant: &NodeAccessGrant::Local,
+                },
+            )
+            .await
+            .unwrap();
+            let imported = crate::handlers::object_creation::commit(&source, prepared)
+                .await
+                .unwrap();
+            scene::prepare(&source, &imported.node.node_id, "did:qa")
+                .await
+                .unwrap()
+                .emit(&source, &blobs, &tx)
+                .await
+                .unwrap();
+            let metadata = rx.try_recv().unwrap();
+            let node = rx.try_recv().unwrap();
+            assert_eq!(metadata.table, "asset");
+            assert_eq!(node.table, "node");
+            assert_eq!(metadata.record_id, asset_id);
+            let metadata_bytes = concrete.bytes_for(&metadata.content_hash).unwrap();
+            let node_bytes = concrete.bytes_for(&node.content_hash).unwrap();
+            assert_eq!(
+                apply_replicated_row_handler(
+                    &peer,
+                    "scene-v",
+                    "node",
+                    &imported.node.node_id,
+                    &node_bytes,
+                    "did:qa",
+                    None
+                )
+                .await
+                .unwrap(),
+                ReplicatedRowOutcome::Applied
+            );
+            let peer_concrete = std::sync::Arc::new(fe_runtime::blob_store::mock::MockBlobStore::new());
+            let peer_blobs: crate::BlobStoreHandle = peer_concrete.clone();
+            let absent = scene::read_current(
+                &peer,
+                &peer_blobs,
+                "scene-v",
+                &imported.node.node_id,
+                "did:viewer",
+            )
+            .await
+            .unwrap();
+            assert!(matches!(
+                absent.asset,
+                ReplicaNodeAsset::Unavailable {
+                    reason: ReplicaAssetUnavailable::MissingMetadata,
+                    ..
+                }
+            ));
+            assert_eq!(
+                apply_replicated_row_handler(
+                    &peer,
+                    "scene-v",
+                    "asset",
+                    &asset_id,
+                    &metadata_bytes,
+                    "did:qa",
+                    None
+                )
+                .await
+                .unwrap(),
+                ReplicatedRowOutcome::Applied
+            );
+            let absent = scene::read_current(
+                &peer,
+                &peer_blobs,
+                "scene-v",
+                &imported.node.node_id,
+                "did:viewer",
+            )
+            .await
+            .unwrap();
+            assert!(matches!(
+                absent.asset,
+                ReplicaNodeAsset::Unavailable {
+                    reason: ReplicaAssetUnavailable::MissingBlob,
+                    ..
+                }
+            ));
+            peer_blobs.add_blob(asset_bytes).unwrap();
+            scene::echo_applied(
+                &peer,
+                &peer_blobs,
+                "did:viewer",
+                &projection_tx,
+                vec![crate::handlers::inbound_admissions::RowReport {
+                    verse_id: "scene-v".into(),
+                    table: "asset".into(),
+                    record_id: asset_id.clone(),
+                    outcome: ReplicatedRowOutcome::Applied,
+                }],
+            )
+            .await;
+            projection_rx.try_recv().unwrap();
+            let fe_runtime::messages::DbResult::ReplicatedNodeCurrent { current } =
+                projection_rx.try_recv().unwrap()
+            else {
+                panic!("asset arrival produces a fresh affected-node current read")
+            };
+            assert_eq!(current.state.asset_id.as_deref(), Some(asset_id.as_str()));
+            assert_eq!(current.asset.asset_id(), current.state.asset_id.as_deref());
+            assert!(
+                matches!(&current.asset,ReplicaNodeAsset::LocalBlob {asset_path,..} if asset_path==&format!("blob://{hash}.glb"))
+            );
+            assert_eq!(
+                current.provenance, absent.provenance,
+                "asset availability can refresh at the same original node version"
+            );
+            assert!(projection_rx.try_recv().is_err());
+            peer.query("UPDATE asset SET petal_id='foreign' WHERE asset_id=$id")
+                .bind(("id", asset_id.clone()))
+                .await
+                .unwrap()
+                .check()
+                .unwrap();
+            let unavailable = scene::read_current(
+                &peer,
+                &peer_blobs,
+                "scene-v",
+                &imported.node.node_id,
+                "did:viewer",
+            )
+            .await
+            .unwrap();
+            assert!(matches!(
+                unavailable.asset,
+                ReplicaNodeAsset::Unavailable {
+                    reason: ReplicaAssetUnavailable::ForeignAnchor,
+                    ..
+                }
+            ));
+
+            // Local rename and duplicate retain complete ordinary provenance and exact source fields.
+            crate::handlers::crud::rename_node_handler(
+                &source,
+                &delegated,
+                "Renamed",
+                "did:qa",
+                "did:client",
+            )
+            .await
+            .unwrap();
+            scene::prepare(&source, &delegated, "did:qa")
+                .await
+                .unwrap()
+                .emit(&source, &blobs, &tx)
+                .await
+                .unwrap();
+            rx.try_recv().unwrap();
+            assert_eq!(
+                node_history::latest(&source, &delegated)
+                    .await
+                    .unwrap()
+                    .unwrap()["op"],
+                "node_renamed"
+            );
+            source.query("UPDATE node SET position=<geometry<point>> [1.000000000123,2.000000000321],interactive=false WHERE node_id=$id").bind(("id",imported.node.node_id.clone())).await.unwrap().check().unwrap();
+            let original = node_history::snapshot(&source, &imported.node.node_id)
+                .await
+                .unwrap()
+                .unwrap();
+            let expected_copy_position = json!([
+                original["position"][0].as_f64().unwrap() + 1.0,
+                original["position"][1].as_f64().unwrap(),
+                original["position"][2].as_f64().unwrap() + 1.0
+            ]);
+            let copy = crate::handlers::crud::duplicate_node_handler(
+                &source,
+                &imported.node.node_id,
+                "did:qa",
+                "did:client",
+            )
+            .await
+            .unwrap();
+            let copied = node_history::snapshot(&source, &copy.node_id)
+                .await
+                .unwrap()
+                .unwrap();
+            assert_eq!(copied["position"], expected_copy_position);
+            assert_eq!(copied["interactive"], false);
+            assert_eq!(copied["asset_id"], asset_id);
+            scene::prepare(&source, &copy.node_id, "did:qa")
+                .await
+                .unwrap()
+                .emit(&source, &blobs, &tx)
+                .await
+                .unwrap();
+            assert_eq!(rx.try_iter().count(), 2);
+
+            // The 1025th candidate refuses before any node prefix is emitted.
+            let oversized = probe_db().await;
+            crate::schema::apply_all(&oversized).await.unwrap();
+            oversized.query("CREATE verse CONTENT {verse_id:'scene-v',name:'v',created_by:'did:qa',created_at:'2026-11-02'}; CREATE fractal CONTENT {fractal_id:'scene-f',verse_id:'scene-v',owner_did:'did:qa',name:'f',created_at:'2026-11-02'}; CREATE petal CONTENT {petal_id:'scene-p',fractal_id:'scene-f',name:'p',node_id:'p',created_at:'2026-11-02'}").await.unwrap().check().unwrap();
+            let statements=(0..1025).map(|index|format!("CREATE node SET node_id='limit-{index}',petal_id='scene-p',position=<geometry<point>> [0.0,0.0],rotation=[0.0,0.0,0.0],scale=[1.0,1.0,1.0],created_at='2026-11-02';")).collect::<String>();
+            oversized.query(statements).await.unwrap().check().unwrap();
+            assert!(
+                scene::recover(&oversized, &blobs, Some(&tx), "did:qa", "scene-v")
+                    .await
+                    .unwrap_err()
+                    .to_string()
+                    .contains("1024")
+            );
+            assert!(rx.try_recv().is_err());
+            // The byte cap is checked across the whole eligible recovery plan before enqueue.
+            oversized
+                .query("DELETE node")
+                .await
+                .unwrap()
+                .check()
+                .unwrap();
+            for index in 0..145 {
+                node_history::create_object(
+                    &oversized,
+                    "scene-p",
+                    &format!("large-{index}"),
+                    None,
+                    [0.0; 3],
+                    vec![0.0; 3],
+                    vec![1.0; 3],
+                    json!({"payload":"x".repeat(60_000)})
+                        .as_object()
+                        .unwrap()
+                        .clone(),
+                    "did:qa",
+                )
+                .await
+                .unwrap();
+            }
+            assert!(
+                scene::recover(&oversized, &blobs, Some(&tx), "did:qa", "scene-v")
+                    .await
+                    .unwrap_err()
+                    .to_string()
+                    .contains("8 MiB")
+            );
+            assert!(
+                rx.try_recv().is_err(),
+                "oversized plans never enqueue a misleading prefix"
+            );
+        }
+
     }
 
     /// A fixed fake clock source for the override tests (a real test would
