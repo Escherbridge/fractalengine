@@ -1456,3 +1456,6 @@ continues; mismatched handoffs are retained until accepted cleanup rather than d
 Terminal clear_read_models also replaces the separate ReplicaHandoff resource. Native shutdown
 owns any remaining transport close; terminal invalidation only drops the obsolete UI lease and
 cannot later reopen or adopt it. The existing native lifecycle journey covers this reset adjunct.
+
+
+Ordinary Undo and checked selection history now share the exact owned inverse links in editor_batch/history_chain.rs; see editor_batch/AGENTS.md. The previous ordinary-only next-entry cursor loop is replaced by the same guarded mechanism across chronological controller boundaries.

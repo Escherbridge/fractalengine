@@ -1,5 +1,6 @@
 //! Checked selection editing and bounded history; see editor_batch/AGENTS.md.
 
+pub(crate) mod history_chain;
 mod interaction;
 pub(crate) use interaction::{SelectionInteraction, TransformRoute};
 mod source;
@@ -223,6 +224,7 @@ pub(crate) struct EditorBatchState {
     legacy_hydration: VecDeque<String>,
     read: Option<ReadRequest>,
     pending: Option<PendingWrite>,
+    owned_restores: VecDeque<history_chain::OwnedRestore>,
     undo: VecDeque<HistoryEntry>,
     redo: Vec<HistoryEntry>,
     path_projections: VecDeque<crate::undo::PathProjection>,
@@ -249,6 +251,12 @@ fn snapshot(receipt: &EditorBatchReceipt, original: &EditorBatchCapture) -> Edit
 
 impl EditorBatchState {
     pub(crate) fn synchronize_history(&mut self, undo: &mut crate::undo::UndoState) {
+        for link in undo.take_owned_restores() {
+            self.rebase_history(&link);
+        }
+        for link in self.owned_restores.drain(..) {
+            undo.rebase_history(&link);
+        }
         if self.invalidate_legacy_redo {
             undo.invalidate_redo();
             self.invalidate_legacy_redo = false;
@@ -256,6 +264,18 @@ impl EditorBatchState {
         if self.legacy_generation != undo.normal_generation() {
             self.redo.clear();
             self.legacy_generation = undo.normal_generation();
+        }
+    }
+
+    fn rebase_history(&mut self, link: &history_chain::OwnedRestore) {
+        if link.redo {
+            for entry in &mut self.redo {
+                link.rebase_capture(&mut entry.before);
+            }
+        } else {
+            for entry in &mut self.undo {
+                link.rebase_capture(&mut entry.after);
+            }
         }
     }
 
@@ -480,6 +500,7 @@ impl EditorBatchState {
                 .as_ref()
                 .map(|ids| ids.each_ref().map(String::as_str))
         {
+            self.owned_restores.clear();
             self.undo.clear();
             self.redo.clear();
             self.history_scope = navigation.map(|ids| ids.map(str::to_owned));
@@ -1141,6 +1162,22 @@ impl EditorBatchState {
         if matches!(&pending.request.edit, EditorBatchEdit::DeleteGroup { .. }) {
             entry.delete_request_id = Some(receipt.request_id.clone());
         }
+        let restore = if pending.direction != HistoryDirection::New
+            && current.is_none_or(|current| validation::same_state(current, &after))
+        {
+            let restored = if pending.direction == HistoryDirection::Undo {
+                &entry.before
+            } else {
+                &entry.after
+            };
+            Some(history_chain::OwnedRestore::batch(
+                restored,
+                &after,
+                pending.direction == HistoryDirection::Redo,
+            ))
+        } else {
+            None
+        };
         entry.order = crate::undo::next_history_order();
         let scope_matches = self.history_scope.as_ref().is_some_and(|ids| {
             ids[2] == receipt.petal_id
@@ -1163,6 +1200,10 @@ impl EditorBatchState {
                     entry.after = after;
                     self.undo.push_back(entry);
                 }
+            }
+            if let Some(link) = restore {
+                self.rebase_history(&link);
+                history_chain::queue(&mut self.owned_restores, link);
             }
             while self.undo.len() + self.redo.len() > MAX_HISTORY
                 || self

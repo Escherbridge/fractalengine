@@ -312,6 +312,7 @@ pub struct UndoState {
     petal_id: Option<String>,
     generation: u64,
     normal_generation: u64,
+    owned_restores: VecDeque<crate::editor_batch::history_chain::OwnedRestore>,
     undo: VecDeque<Entry>,
     redo: Vec<Entry>,
     pending: Option<Pending>,
@@ -331,6 +332,39 @@ fn request_id() -> String {
 }
 
 impl UndoState {
+    pub(crate) fn take_owned_restores(
+        &mut self,
+    ) -> VecDeque<crate::editor_batch::history_chain::OwnedRestore> {
+        std::mem::take(&mut self.owned_restores)
+    }
+
+    pub(crate) fn rebase_history(
+        &mut self,
+        link: &crate::editor_batch::history_chain::OwnedRestore,
+    ) {
+        let update = |entry: &mut Entry| {
+            let (version, expected) = if link.redo {
+                (&mut entry.before_version, &entry.before)
+            } else {
+                (&mut entry.after_version, &entry.after)
+            };
+            if let Some(saved) = link.ordinary_version(
+                &entry.scope,
+                &entry.petal_id,
+                &entry.node_id,
+                *version,
+                &expected.expected(),
+            ) {
+                *version = Some(saved);
+            }
+        };
+        if link.redo {
+            self.redo.iter_mut().for_each(update);
+        } else {
+            self.undo.iter_mut().for_each(update);
+        }
+    }
+
     pub(crate) fn normal_generation(&self) -> u64 {
         self.normal_generation
     }
@@ -359,6 +393,7 @@ impl UndoState {
         });
         self.petal_id = nav.active_petal_id.clone();
         self.generation = self.generation.wrapping_add(1);
+        self.owned_restores.clear();
         self.undo.clear();
         self.redo.clear();
         self.pending = None;
@@ -956,19 +991,34 @@ impl UndoState {
         let pending = self.pending.take().unwrap();
         let mut entry = pending.entry.unwrap();
         entry.order = next_history_order();
-        let previous_target = if pending.origin == Origin::Undo {
-            entry.before_version
+        let restore = if current_is_receipt && pending.origin != Origin::Normal {
+            let (version, restored) = if pending.origin == Origin::Undo {
+                (entry.before_version, &entry.before)
+            } else {
+                (entry.after_version, &entry.after)
+            };
+            crate::editor_batch::history_chain::OwnedRestore::ordinary(
+                entry.scope.clone(),
+                entry.petal_id.clone(),
+                entry.node_id.clone(),
+                version,
+                restored.expected(),
+                fe_runtime::editor_batch::EditorBatchMember {
+                    node_id: entry.node_id.clone(),
+                    history_version: Some(receipt.history_version),
+                    state: receipt.state.clone(),
+                    stamp_path: None,
+                },
+                pending.origin == Origin::Redo,
+            )
         } else {
-            entry.after_version
+            None
         };
         if pending.origin == Origin::Undo {
             entry.before_version = Some(receipt.history_version);
         } else {
             entry.after_version = Some(receipt.history_version);
         }
-        let node_id = entry.node_id.clone();
-        let scope = entry.scope.clone();
-        let petal_id = entry.petal_id.clone();
         match pending.origin {
             Origin::Normal => {
                 self.normal_generation = self.normal_generation.wrapping_add(1);
@@ -984,26 +1034,9 @@ impl UndoState {
                 self.undo.push_back(entry);
             }
         }
-        if current_is_receipt && previous_target.is_some() && pending.origin != Origin::Normal {
-            let next = if pending.origin == Origin::Undo {
-                self.undo.iter_mut().rev().find(|entry| {
-                    entry.node_id == node_id && entry.scope == scope && entry.petal_id == petal_id
-                })
-            } else {
-                self.redo.iter_mut().rev().find(|entry| {
-                    entry.node_id == node_id && entry.scope == scope && entry.petal_id == petal_id
-                })
-            };
-            if let Some(next) = next {
-                let (version, state) = if pending.origin == Origin::Undo {
-                    (&mut next.after_version, &next.after)
-                } else {
-                    (&mut next.before_version, &next.before)
-                };
-                if *version == previous_target && state.matches_state(current) {
-                    *version = Some(receipt.history_version);
-                }
-            }
+        if let Some(link) = restore {
+            self.rebase_history(&link);
+            crate::editor_batch::history_chain::queue(&mut self.owned_restores, link);
         }
         while self.undo.len() + self.redo.len() > MAX_ENTRIES
             || self
@@ -1205,6 +1238,7 @@ pub(crate) fn observe_results(
                 undo.projections.clear();
                 undo.hydration_nodes.clear();
                 undo.hydration_hierarchy = false;
+                undo.owned_restores.clear();
                 undo.undo.clear();
                 undo.redo.clear();
                 undo.pending = None;

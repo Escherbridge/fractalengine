@@ -4622,9 +4622,9 @@ mod tests {
             })).unwrap()
             };
             let mut first = row("a", 0.0);
-            first.display_name = "Readable A".into();
+            first.display_name = Some("Readable A".into());
             let mut second = row("b", 4.0);
-            second.display_name = "Readable B".into();
+            second.display_name = Some("Readable B".into());
             first.properties.insert("nullable".into(), Value::Null);
             let capture = EditorBatchCapture {
                 target: Default::default(),
@@ -5362,6 +5362,267 @@ mod tests {
                 batch_rx.try_recv().is_err(),
                 "Undo cannot submit only a subset"
             );
+            {
+                let mut chain = crate::editor_batch::EditorBatchState::default();
+                let (tx, rx) = crossbeam::channel::unbounded();
+                let mut current = capture.clone();
+                let load = |controller: &mut crate::editor_batch::EditorBatchState,
+                            current: &EditorBatchCapture| {
+                    controller.maintain(&nav, &selected, &hierarchy, &tx);
+                    let DbCommand::ReadEditorBatch { correlation_id, .. } = rx.try_recv().unwrap() else {
+                        panic!("fresh complete selection read");
+                    };
+                    controller
+                        .route(
+                            &DbResult::EditorBatchLoaded {
+                                capture: current.clone(),
+                                correlation_id,
+                            },
+                            &nav,
+                            |_| Ok(()),
+                            |_| Ok(()),
+                            &tx,
+                        )
+                        .unwrap();
+                };
+                let complete = |controller: &mut crate::editor_batch::EditorBatchState,
+                                current: &mut EditorBatchCapture| {
+                    let DbCommand::CommitCheckedEditorBatch {
+                        request,
+                        correlation_id,
+                    } = rx.try_recv().unwrap()
+                    else {
+                        panic!("one checked history command");
+                    };
+                    let EditorBatchEdit::Targets(targets) = &request.edit else {
+                        panic!("typed object edits");
+                    };
+                    let mut saved = request.capture.members.clone();
+                    for (member, edit) in saved.iter_mut().zip(targets) {
+                        match &edit.mutation {
+                            EditorTargetMutation::Properties(properties) => {
+                                for property in properties {
+                                    match property {
+                                        EditorPropertyEdit::Set { key, value } => {
+                                            member.state.properties.insert(key.clone(), value.clone());
+                                        }
+                                        EditorPropertyEdit::Delete { key } => {
+                                            member.state.properties.remove(key);
+                                        }
+                                    }
+                                }
+                            }
+                            EditorTargetMutation::Transform(value) => {
+                                let (x, y, z) = Quat::from_array(value.rotation).to_euler(EulerRot::XYZ);
+                                member.state.position = value.position;
+                                member.state.elevation = value.position[1];
+                                member.state.rotation = [x, y, z].map(f64::from).to_vec();
+                                member.state.scale = value.scale;
+                                member.state.edit_seq += 1;
+                            }
+                            _ => panic!("unsupported fixture mutation"),
+                        }
+                        member.history_version = member.history_version.map(|v| v + 1);
+                    }
+                    let receipt = EditorBatchReceipt {
+                        target: request.capture.target.clone(),
+                        request_id: correlation_id.clone(),
+                        scope: current.scope.clone(),
+                        petal_id: current.petal_id.clone(),
+                        members: saved.clone(),
+                        groups: current.groups.clone(),
+                        created_group_id: None,
+                    };
+                    controller
+                        .route(
+                            &DbResult::EditorBatchCommitted {
+                                receipt,
+                                correlation_id,
+                            },
+                            &nav,
+                            |_| Ok(()),
+                            |_| Ok(()),
+                            &tx,
+                        )
+                        .unwrap();
+                    current.members = saved;
+                };
+                load(&mut chain, &current);
+                let properties = current
+                    .members
+                    .iter()
+                    .map(|member| EditorTargetEdit {
+                        node_id: member.node_id.clone(),
+                        mutation: EditorTargetMutation::Properties(vec![EditorPropertyEdit::Set {
+                            key: "chain".into(),
+                            value: json!(true),
+                        }]),
+                    })
+                    .collect();
+                chain
+                    .start(
+                        chain.origin(&selected).unwrap(),
+                        EditorBatchEdit::Targets(properties),
+                        &nav,
+                        &selected,
+                        &tx,
+                    )
+                    .unwrap();
+                complete(&mut chain, &mut current);
+                load(&mut chain, &current);
+                let transforms = current
+                    .members
+                    .iter()
+                    .map(|member| {
+                        let mut value =
+                            fe_runtime::node_history::NodeTransformValue::from_row(&member.state).unwrap();
+                        value.position[0] += 2.0;
+                        EditorTargetEdit {
+                            node_id: member.node_id.clone(),
+                            mutation: EditorTargetMutation::Transform(value),
+                        }
+                    })
+                    .collect();
+                chain
+                    .start(
+                        chain.origin(&selected).unwrap(),
+                        EditorBatchEdit::Targets(transforms),
+                        &nav,
+                        &selected,
+                        &tx,
+                    )
+                    .unwrap();
+                complete(&mut chain, &mut current);
+                for redo in [false, false, true, true] {
+                    chain.replay(redo, &nav, &tx).unwrap();
+                    let DbCommand::ReadEditorBatch { correlation_id, .. } = rx.try_recv().unwrap() else {
+                        panic!("inverse fresh read");
+                    };
+                    chain
+                        .route(
+                            &DbResult::EditorBatchLoaded {
+                                capture: current.clone(),
+                                correlation_id,
+                            },
+                            &nav,
+                            |_| Ok(()),
+                            |_| Ok(()),
+                            &tx,
+                        )
+                        .unwrap();
+                    complete(&mut chain, &mut current);
+                }
+                assert!(current
+                    .members
+                    .iter()
+                    .all(|member| member.state.properties.get("chain") == Some(&json!(true))));
+                // An external same-value write has a distinct revision and is never a local link.
+                current.members[0].history_version = current.members[0].history_version.map(|v| v + 1);
+                chain.replay(false, &nav, &tx).unwrap();
+                let DbCommand::ReadEditorBatch { correlation_id, .. } = rx.try_recv().unwrap() else {
+                    panic!("conflict fresh read");
+                };
+                assert!(chain
+                    .route(
+                        &DbResult::EditorBatchLoaded {
+                            capture: current.clone(),
+                            correlation_id
+                        },
+                        &nav,
+                        |_| Ok(()),
+                        |_| Ok(()),
+                        &tx
+                    )
+                    .is_err());
+                assert!(
+                    rx.try_recv().is_err(),
+                    "same-value external revisions cannot authorize an inverse"
+                );
+
+                use crate::editor_batch::history_chain::OwnedRestore;
+                let original = capture.clone();
+                let mut saved = original.clone();
+                saved.members[0].history_version = Some(8);
+                saved.members[0].state.edit_seq = 7;
+                let mut subset = original.clone();
+                subset.members.truncate(1);
+                let mut subset_saved = saved.clone();
+                subset_saved.members.truncate(1);
+                let link = OwnedRestore::batch(&subset, &subset_saved, false);
+                let mut expected = original.clone();
+                link.rebase_capture(&mut expected);
+                assert_eq!(expected.members[0].history_version, Some(8));
+                assert_eq!(
+                    expected.members[1].history_version,
+                    Some(1),
+                    "untouched members keep their strict original versions"
+                );
+                let mut external = original.clone();
+                external.members[0].history_version = Some(2);
+                link.rebase_capture(&mut external);
+                assert_eq!(external.members[0].history_version, Some(2));
+                let mut dependent = original.clone();
+                dependent.members[1].stamp_path = Some(EditorStampPath {
+                    state: original.members[0].state.clone(),
+                    history_version: Some(1),
+                });
+                link.rebase_capture(&mut dependent);
+                assert_eq!(
+                    dependent.members[1]
+                        .stamp_path
+                        .as_ref()
+                        .unwrap()
+                        .history_version,
+                    Some(8)
+                );
+                let ordinary = OwnedRestore::ordinary(
+                    original.scope.clone(),
+                    original.petal_id.clone(),
+                    "a".into(),
+                    Some(1),
+                    fe_runtime::node_history::NodeEditBefore::Transform(
+                        fe_runtime::node_history::NodeTransformValue::from_row(&original.members[0].state)
+                            .unwrap(),
+                    ),
+                    saved.members[0].clone(),
+                    false,
+                )
+                .unwrap();
+                let mut cross = original.clone();
+                ordinary.rebase_capture(&mut cross);
+                assert_eq!(
+                    cross.members[0].history_version,
+                    Some(8),
+                    "ordinary inverse advances a linked complete batch expectation"
+                );
+                assert_eq!(
+                    link.ordinary_version(
+                        &original.scope,
+                        &original.petal_id,
+                        "a",
+                        Some(1),
+                        &fe_runtime::node_history::NodeEditBefore::Transform(
+                            fe_runtime::node_history::NodeTransformValue::from_row(
+                                &original.members[0].state
+                            )
+                            .unwrap()
+                        )
+                    ),
+                    Some(8),
+                    "batch inverse advances a linked ordinary expectation"
+                );
+                let mut changed_property = original.clone();
+                changed_property.members[0]
+                    .state
+                    .properties
+                    .insert("external".into(), json!(true));
+                ordinary.rebase_capture(&mut changed_property);
+                assert_eq!(
+                    changed_property.members[0].history_version,
+                    Some(1),
+                    "ordinary links never bless unrelated snapshot fields"
+                );
+            }
             {
                 let mut controller = crate::editor_batch::EditorBatchState::default();
                 let no_selection = NodeManager::default();
