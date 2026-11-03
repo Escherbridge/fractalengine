@@ -1037,3 +1037,23 @@ starting the helper still cannot itself grant permission or prove embedded brows
 prepare/relaunch the exact controlled fixture and test the live listener/policy boundaries.
 
 The current followup includes terminal Settings Reset, typed Portal storage/explicit initialization, fixed native fixture APIs and durable REST/legacy WebSocket credential validity. Explicit action ownership keys must name a parsed UiAction variant; stale names fail generation instead of falling through silently. The current stamp viewport/context/index producers carry live origins and the terminal watcher retains its original process/EOF evidence. F143 separates actual observer admission from synthetic validator-only cases; the latter provide zero application coverage. P2P QA-0050 remains pending source reconciliation. Generation does not clear that list or grant a final fingerprint.
+
+## One-use invitation transfer
+
+fe.py --run <owner-run> transfer-invite --recipient-run <recipient-run> consumes only the
+latest actual GUI-generated invitation. The Owner Access panel must remain open, and the
+recipient must have a clean empty masked Join dialog. Observe the recipient actual DID from
+GET /api/v1/debug/invitation before generating the addressed invitation for that DID. The
+separate consume endpoint is default-off with input and Owner gates; its fifteen-second
+lease is not the envelope lifetime. Expiry or a changed target requires explicit generation.
+
+invite_transfer.py retains both Windows process handles, matching the recorded executable
+and creation ticks before use and checking liveness around requests. SDK signatures follow
+local Windows SDK10.0.22621.0 processthreadsapi.h, winbase.h and synchapi.h. It pins actual
+host-returned DIDs, exact generation/target/recipient/role and distinct run origins. Consumption
+and the actual masked text-plus-Join-button input batch are each sent once, without call()
+retry, clipboard reads, argument echo, log capture, screenshots or credential files/artifacts.
+Only public metadata and an unconfirmed-until-real-readiness submission receipt are printed.
+The credential response and input text remain in process memory; failure after consumption
+requires a new invitation and must not replay the batch. Existing A8 clipboard suppression
+remains in force. Root owns eventual two-app runtime execution; source presence is not QA PASS.

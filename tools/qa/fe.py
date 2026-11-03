@@ -554,6 +554,11 @@ def parse_combo(combo):
     return keys
 
 
+def command_transfer_invite(run, args):
+    from invite_transfer import transfer
+    emit(transfer(sys.modules[__name__], run, args))
+
+
 def command_move(run, args):
     run_input(run, args, [{"kind": "pointer_move", "x": args.x, "y": args.y}])
 
@@ -1024,6 +1029,11 @@ def build_parser():
     settle.add_argument("--interval", type=float, default=0.15)
     settle.add_argument("--stable-polls", type=int, default=3)
     settle.set_defaults(func=command_wait_settle)
+
+    invitation = sub.add_parser("transfer-invite", help="consume the latest GUI invitation once and drive masked Join in another owned app")
+    invitation.add_argument("--recipient-run", required=True)
+    invitation.add_argument("--recipient-verse")
+    invitation.set_defaults(func=command_transfer_invite)
 
     api = sub.add_parser("api", help="raw REST call with a verse token (fixtures/probes only)")
     api.add_argument("method")
