@@ -320,6 +320,32 @@ mod tests {
                 assert_eq!(proof.supporting_grants().next().unwrap().hlc, envelope.grant_hlc());
                 let detached = serde_json::to_string(proof.chain()).unwrap();
                 assert!(!detached.contains(envelope.ticket()), "Portable Manager authority never forwards its write DocTicket");
+                let owner_v2 = crate::join_invite::JoinInvitation::issue_addressed(
+                    &fixture.signer, fixture.recipient.clone(), admitted.scope.clone(), crate::join_invite::JoinRole::Manager,
+                    envelope.grant_hlc(), envelope.manifest().clone(), envelope.ticket().into(), clock, 3600, None,
+                ).unwrap();
+                let owner_v2_link = owner_v2.to_link().unwrap();
+                let owner_v2 = crate::join_invite::JoinInvitation::parse(&owner_v2_link, &fixture.recipient, clock).unwrap();
+                let recipient_branch = owner_v2.recipient_manager_proof(clock).unwrap().unwrap();
+                assert_eq!(recipient_branch.chain().holder(), fixture.recipient);
+                assert_eq!(recipient_branch.chain().supporting_grants().next().unwrap().hlc, envelope.grant_hlc());
+                assert!(envelope.recipient_manager_proof(clock).unwrap().is_none(), "Legacy Owner-v1 Manager grants do not invent portable authority");
+                assert!(crate::join_invite::JoinInvitation::parse_owner(&owner_v2_link, &fixture.recipient, clock).is_err(), "Dormant v2 remains outside the active Owner-v1 producer path");
+                let prefix_mismatch = owner_v2_link.replacen(crate::join_invite::JOIN_V2_PREFIX, crate::join_invite::JOIN_PREFIX, 1);
+                assert!(crate::join_invite::JoinInvitation::parse(&prefix_mismatch, &fixture.recipient, clock).is_err());
+                let viewer = fe_identity::NodeKeypair::generate().to_did_key();
+                let manager_endpoint = iroh::EndpointAddr::new(fixture.recipient_signer.to_iroh_secret().public())
+                    .with_ip_addr("127.0.0.1:40001".parse().unwrap());
+                let viewer_ticket = iroh_docs::DocTicket::new(iroh_docs::Capability::Read(iroh_docs::NamespaceSecret::from_bytes(&[23u8;32]).id()), vec![manager_endpoint]).to_string();
+                let manager_envelope = crate::join_invite::JoinInvitation::issue_addressed(
+                    &fixture.recipient_signer, viewer.clone(), admitted.scope.clone(), crate::join_invite::JoinRole::Viewer,
+                    1, envelope.manifest().clone(), viewer_ticket, clock, 1800, Some(recipient_branch.chain()),
+                ).unwrap();
+                assert!(!serde_json::to_string(&manager_envelope).unwrap().contains(envelope.ticket()), "Manager authority sent to a Viewer contains no earlier write ticket");
+                let manager_envelope = crate::join_invite::JoinInvitation::parse(&manager_envelope.to_link().unwrap(), &viewer, clock).unwrap();
+                assert_eq!(manager_envelope.issuer_did(), fixture.recipient);
+                assert!(manager_envelope.issuer_delegation(clock).unwrap().is_some());
+                assert!(manager_envelope.recipient_manager_proof(clock).unwrap().is_none());
                 let mut renamed = envelope.manifest().clone();
                 renamed.name = "A renamed Verse".into();
                 assert_eq!(identity, VerseIdentity::from_manifest(&renamed), "Mutable display labels never define Owner identity");

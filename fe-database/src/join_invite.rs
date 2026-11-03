@@ -6,10 +6,14 @@ use fe_identity::NodeKeypair;
 use serde::{Deserialize, Serialize};
 
 pub const JOIN_PREFIX: &str = "fractalengine://join/v1/";
+pub const JOIN_V2_PREFIX: &str = "fractalengine://join/v2/";
 pub const MAX_INVITE_BYTES: usize = 64 * 1024;
 pub const MAX_TICKET_BYTES: usize = 32 * 1024;
 pub const MAX_LIFETIME_SECONDS: u64 = 30 * 24 * 60 * 60;
 const SIGNING_DOMAIN: &[u8] = b"FractalEngine addressed join invitation v1\0";
+const SIGNING_DOMAIN_V2: &[u8] = b"FractalEngine addressed join invitation v2\0";
+
+use crate::join_delegation::{DelegationChain, VerifiedDelegationChain, VerseIdentity};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -119,6 +123,10 @@ pub struct JoinInvitation {
     expires_at: u64,
     manifest: JoinManifest,
     ticket: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    authority_chain: Option<DelegationChain>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    recipient_delegation: Option<DelegationChain>,
     signature: String,
 }
 
@@ -138,7 +146,80 @@ impl std::fmt::Debug for JoinInvitation {
 #[derive(Debug, Clone)]
 pub struct VerifiedJoinInvitation(JoinInvitation, crate::join_ticket::NativeJoinTicket);
 
+/// A verified v2 recipient-Manager branch; contains no transport credential.
+#[derive(Debug, Clone)]
+pub struct RecipientManagerProof {
+    chain: VerifiedDelegationChain,
+    nonce: String,
+    signature: String,
+    issuer_did: String,
+    expires_at: u64,
+}
+
+impl RecipientManagerProof {
+    pub fn chain(&self) -> &VerifiedDelegationChain {
+        &self.chain
+    }
+    pub fn nonce(&self) -> &str {
+        &self.nonce
+    }
+    pub fn signature(&self) -> &str {
+        &self.signature
+    }
+    pub fn issuer_did(&self) -> &str {
+        &self.issuer_did
+    }
+    pub fn expires_at(&self) -> u64 {
+        self.expires_at
+    }
+}
+
 impl VerifiedJoinInvitation {
+    pub fn version(&self) -> u8 {
+        self.0.version
+    }
+    pub fn issuer_delegation(&self, now: u64) -> anyhow::Result<Option<VerifiedDelegationChain>> {
+        self.revalidate(self.recipient_did(), now)?;
+        self.0
+            .authority_chain
+            .as_ref()
+            .map(|chain| {
+                chain.verify(
+                    self.issuer_did(),
+                    &VerseIdentity::from_manifest(self.manifest()),
+                    self.scope(),
+                    now,
+                )
+            })
+            .transpose()
+    }
+    pub fn recipient_manager_proof(
+        &self,
+        now: u64,
+    ) -> anyhow::Result<Option<RecipientManagerProof>> {
+        self.revalidate(self.recipient_did(), now)?;
+        if self.0.version != 2 || self.role() != JoinRole::Manager {
+            return Ok(None);
+        }
+        let chain = self
+            .0
+            .recipient_delegation
+            .as_ref()
+            .ok_or_else(|| anyhow::anyhow!("Manager invitation lacks a portable proof"))?
+            .verify(
+                self.recipient_did(),
+                &VerseIdentity::from_manifest(self.manifest()),
+                self.scope(),
+                now,
+            )?;
+        Ok(Some(RecipientManagerProof {
+            chain,
+            nonce: self.nonce().into(),
+            signature: self.signature().into(),
+            issuer_did: self.issuer_did().into(),
+            expires_at: self.expires_at(),
+        }))
+    }
     pub fn native_ticket(&self) -> &crate::join_ticket::NativeJoinTicket {
         &self.1
     }
@@ -206,6 +287,71 @@ impl JoinInvitation {
             expires_at,
             manifest,
             ticket,
+            authority_chain: None,
+            recipient_delegation: None,
+            signature: String::new(),
+        };
+        invitation.validate(&invitation.recipient_did, now)?;
+        crate::join_ticket::NativeJoinTicket::parse(
+            &invitation.ticket,
+            &invitation.manifest.namespace_id,
+            invitation.role,
+            &invitation.issuer_did,
+        )?;
+        invitation.signature = hex::encode(keypair.sign(&invitation.canonical_bytes()?).to_bytes());
+        invitation.to_link()?;
+        Ok(invitation)
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub fn issue_addressed(
+        keypair: &NodeKeypair,
+        recipient_did: String,
+        scope: String,
+        role: JoinRole,
+        grant_hlc: u64,
+        manifest: JoinManifest,
+        ticket: String,
+        now: u64,
+        lifetime_seconds: u64,
+        authority: Option<&VerifiedDelegationChain>,
+    ) -> anyhow::Result<Self> {
+        let expires_at = now
+            .checked_add(lifetime_seconds)
+            .ok_or_else(|| anyhow::anyhow!("Invitation expiry is out of range"))?;
+        let identity = VerseIdentity::from_manifest(&manifest);
+        let recipient_delegation = if role == JoinRole::Manager {
+            Some(
+                DelegationChain::issue(
+                    keypair,
+                    recipient_did.clone(),
+                    scope.clone(),
+                    grant_hlc,
+                    identity,
+                    now,
+                    expires_at,
+                    authority,
+                )?
+                .chain()
+                .clone(),
+            )
+        } else {
+            None
+        };
+        let mut invitation = Self {
+            version: 2,
+            nonce: ulid::Ulid::new().to_string(),
+            issuer_did: keypair.to_did_key(),
+            recipient_did,
+            scope,
+            role,
+            grant_hlc,
+            issued_at: now,
+            expires_at,
+            manifest,
+            ticket,
+            authority_chain: authority.map(|proof| proof.chain().clone()),
+            recipient_delegation,
             signature: String::new(),
         };
         invitation.validate(&invitation.recipient_did, now)?;
@@ -221,8 +367,13 @@ impl JoinInvitation {
     }
 
     pub fn to_link(&self) -> anyhow::Result<String> {
+        let prefix = match self.version {
+            1 => JOIN_PREFIX,
+            2 => JOIN_V2_PREFIX,
+            _ => anyhow::bail!("Unsupported invitation version"),
+        };
         let link = format!(
-            "{JOIN_PREFIX}{}",
+            "{prefix}{}",
             URL_SAFE_NO_PAD.encode(serde_json::to_vec(self)?)
         );
         anyhow::ensure!(
@@ -237,13 +388,30 @@ impl JoinInvitation {
         recipient_did: &str,
         now: u64,
     ) -> anyhow::Result<VerifiedJoinInvitation> {
+        let invitation = Self::parse(link, recipient_did, now)?;
+        anyhow::ensure!(
+            invitation.version() == 1,
+            "This producer accepts Owner-v1 invitations only"
+        );
+        Ok(invitation)
+    }
+
+    pub fn parse(
+        link: &str,
+        recipient_did: &str,
+        now: u64,
+    ) -> anyhow::Result<VerifiedJoinInvitation> {
         anyhow::ensure!(
             link.len() <= MAX_INVITE_BYTES,
             "Invitation exceeds its size limit"
         );
-        let encoded = link.strip_prefix(JOIN_PREFIX).ok_or_else(|| {
-            anyhow::anyhow!("Unsupported invitation version; request a new addressed invitation")
-        })?;
+        let (version, encoded) = if let Some(encoded) = link.strip_prefix(JOIN_PREFIX) {
+            (1, encoded)
+        } else if let Some(encoded) = link.strip_prefix(JOIN_V2_PREFIX) {
+            (2, encoded)
+        } else {
+            anyhow::bail!("Unsupported invitation version; request a new addressed invitation")
+        };
         let raw = URL_SAFE_NO_PAD
             .decode(encoded)
             .map_err(|_| anyhow::anyhow!("Invalid invitation encoding"))?;
@@ -253,6 +421,10 @@ impl JoinInvitation {
         );
         let invitation: Self = serde_json::from_slice(&raw)
             .map_err(|_| anyhow::anyhow!("Invalid invitation envelope"))?;
+        anyhow::ensure!(
+            invitation.version == version,
+            "Invitation version prefix does not match its envelope"
+        );
         invitation.verify(recipient_did, now)?;
         let native = crate::join_ticket::NativeJoinTicket::parse(
             &invitation.ticket,
@@ -264,7 +436,10 @@ impl JoinInvitation {
     }
 
     fn validate(&self, recipient_did: &str, now: u64) -> anyhow::Result<()> {
-        anyhow::ensure!(self.version == 1, "Unsupported invitation version");
+        anyhow::ensure!(
+            matches!(self.version, 1 | 2),
+            "Unsupported invitation version"
+        );
         canonical_did(&self.issuer_did)?;
         canonical_did(&self.recipient_did)?;
         anyhow::ensure!(
@@ -272,8 +447,8 @@ impl JoinInvitation {
             "Invitation is addressed to another peer"
         );
         anyhow::ensure!(
-            self.recipient_did != self.issuer_did,
-            "Invitation recipient is already the Owner"
+            self.recipient_did != self.issuer_did && self.recipient_did != self.manifest.created_by,
+            "Invitation cannot target its issuer or the Verse Owner"
         );
         anyhow::ensure!(
             self.grant_hlc > 0,
@@ -285,10 +460,14 @@ impl JoinInvitation {
             "Invalid invitation nonce"
         );
         self.manifest.validate()?;
-        anyhow::ensure!(
-            self.issuer_did == self.manifest.created_by,
-            "Fresh invitation requires the pinned Verse Owner"
-        );
+        if self.version == 1 {
+            anyhow::ensure!(
+                self.issuer_did == self.manifest.created_by
+                    && self.authority_chain.is_none()
+                    && self.recipient_delegation.is_none(),
+                "Owner-v1 invitation cannot carry delegated authority"
+            );
+        }
         let parts = crate::parse_scope(&self.scope)
             .map_err(|_| anyhow::anyhow!("Invalid invitation scope"))?;
         for id in std::iter::once(&parts.verse_id)
@@ -316,6 +495,9 @@ impl JoinInvitation {
                     .is_some_and(|lifetime| lifetime > 0 && lifetime <= MAX_LIFETIME_SECONDS),
             "Invitation has expired or its lifetime is invalid"
         );
+        if self.version == 2 {
+            self.validate_delegation(now)?;
+        }
         anyhow::ensure!(
             !self.ticket.is_empty()
                 && self.ticket.len() <= MAX_TICKET_BYTES
@@ -327,6 +509,53 @@ impl JoinInvitation {
                     .any(|b| b.is_ascii_whitespace() || b.is_ascii_control()),
             "Invalid invitation ticket encoding"
         );
+        Ok(())
+    }
+
+    fn validate_delegation(&self, now: u64) -> anyhow::Result<()> {
+        let identity = VerseIdentity::from_manifest(&self.manifest);
+        if self.issuer_did == self.manifest.created_by {
+            anyhow::ensure!(
+                self.authority_chain.is_none(),
+                "Owner authority cannot be replaced by a delegated proof"
+            );
+        } else {
+            let authority = self
+                .authority_chain
+                .as_ref()
+                .ok_or_else(|| {
+                    anyhow::anyhow!("Manager requires Owner reauthorization with a portable proof")
+                })?
+                .verify(&self.issuer_did, &identity, &self.scope, now)?;
+            anyhow::ensure!(
+                self.issued_at >= authority.issued_at()
+                    && self.expires_at <= authority.expires_at(),
+                "Invitation exceeds issuer delegation validity"
+            );
+        }
+        if self.role == JoinRole::Manager {
+            let chain = self
+                .recipient_delegation
+                .as_ref()
+                .ok_or_else(|| anyhow::anyhow!("Manager invitation lacks a portable proof"))?;
+            chain.verify(&self.recipient_did, &identity, &self.scope, now)?;
+            anyhow::ensure!(
+                chain.matches_recipient_grant(
+                    self.authority_chain.as_ref(),
+                    &self.issuer_did,
+                    &self.scope,
+                    self.grant_hlc,
+                    self.issued_at,
+                    self.expires_at
+                ),
+                "Recipient Manager proof does not match its signed grant"
+            );
+        } else {
+            anyhow::ensure!(
+                self.recipient_delegation.is_none(),
+                "A non-Manager recipient cannot receive Manager authority"
+            );
+        }
         Ok(())
     }
 
@@ -347,7 +576,12 @@ impl JoinInvitation {
     }
 
     fn canonical_bytes(&self) -> anyhow::Result<Vec<u8>> {
-        let mut bytes = SIGNING_DOMAIN.to_vec();
+        let mut bytes = if self.version == 2 {
+            SIGNING_DOMAIN_V2
+        } else {
+            SIGNING_DOMAIN
+        }
+        .to_vec();
         // Fixed-order tuple encoding keeps every signed field unambiguous.
         bytes.extend(serde_json::to_vec(&(
             self.version,
@@ -362,6 +596,12 @@ impl JoinInvitation {
             &self.manifest,
             &self.ticket,
         ))?);
+        if self.version == 2 {
+            bytes.extend(serde_json::to_vec(&(
+                &self.authority_chain,
+                &self.recipient_delegation,
+            ))?);
+        }
         Ok(bytes)
     }
 }

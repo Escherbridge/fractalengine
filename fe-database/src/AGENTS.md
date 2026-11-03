@@ -1864,3 +1864,21 @@ transaction. Received proofs remain quarantined until actual Join readiness. Exi
 without a portable proof require explicit Owner reauthorization (DQA016); cached role rows or
 unsigned local op records are not portable evidence. At this checkpoint the module is dormant:
 Owner-v1 remains the active envelope/producer and no Manager issuer is enabled.
+
+
+### Dormant addressed-v2 envelope adapter
+
+The pure issue_addressed/parse APIs support an Owner or delegated Manager issuer. V2 signs
+the full existing envelope plus its exact issuer chain and optional recipient Manager chain
+under a distinct domain and URI version. V1 signed bytes and parse_owner remain compatible;
+the active DB/UI producer and consumer still use v1 at this checkpoint. Prefix/envelope
+version mismatches and delegated fields on v1 are refused without fallback.
+
+RecipientManagerProof can only be obtained from a fully verified v2 Manager-recipient branch.
+The recipient certificate must extend the exact signed issuer chain and match the envelope
+issuer, recipient, scope, grant HLC and issue/expiry times. Viewer/Editor envelopes cannot carry
+a recipient Manager proof. Manager issuer validity is bounded by its current proof interval.
+This sealed transport-free branch is the intended DB quarantine/finalization input; it avoids
+a host boolean claiming authority or an unrelated separately supplied certificate. It proves
+no current stored grant and no native readiness by itself. Production activation is deferred
+until the separate DB/current-authority and coordinator slices receive independent review.

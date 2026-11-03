@@ -169,8 +169,14 @@ impl VerifiedDelegationChain {
     pub fn scope(&self) -> &str {
         &self.last().scope
     }
+    pub fn identity(&self) -> &VerseIdentity {
+        &self.last().identity
+    }
     pub fn expires_at(&self) -> u64 {
         self.last().expires_at
+    }
+    pub fn issued_at(&self) -> u64 {
+        self.last().issued_at
     }
     pub fn supporting_grants(&self) -> impl Iterator<Item = SupportingGrant> + '_ {
         self.0 .0.iter().map(|certificate| SupportingGrant {
@@ -189,6 +195,26 @@ impl VerifiedDelegationChain {
 }
 
 impl DelegationChain {
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn matches_recipient_grant(
+        &self,
+        parent: Option<&Self>,
+        issuer: &str,
+        scope: &str,
+        hlc: u64,
+        issued_at: u64,
+        expires_at: u64,
+    ) -> bool {
+        self.0.last().is_some_and(|last| {
+            last.issuer_did == issuer
+                && last.scope == scope
+                && last.grant_hlc == hlc
+                && last.issued_at == issued_at
+                && last.expires_at == expires_at
+                && self.0[..self.0.len() - 1] == parent.map_or(&[][..], |chain| &chain.0[..])
+        })
+    }
+
     pub fn verify(
         &self,
         holder: &str,
