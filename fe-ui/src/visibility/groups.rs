@@ -104,6 +104,7 @@ pub(crate) fn with_group_renamed(groups: &[Group], id: &str, name: &str) -> Vec<
 }
 
 /// Registry without `id` (members keep the dangling id, which hides nothing). Pure.
+#[cfg(test)]
 pub(crate) fn with_group_removed(groups: &[Group], id: &str) -> Vec<Group> {
     groups.iter().filter(|g| g.id != id).cloned().collect()
 }
