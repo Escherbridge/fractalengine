@@ -1189,7 +1189,7 @@ pub(crate) fn process_ui_actions(
     mut node_mgr: ResMut<crate::node_manager::NodeManager>,
     mut transform_query: Query<&mut Transform>,
     mut browser_commands: MessageWriter<BrowserCommand>,
-    verse_mgr: ResMut<crate::verse_manager::VerseManager>,
+    mut verse_mgr: ResMut<crate::verse_manager::VerseManager>,
     db_sender: Res<fe_runtime::app::DbCommandSender>,
     sync_sender: Option<Res<fe_sync::SyncCommandSenderRes>>,
     mut petal_map: ResMut<PetalMapState>,
