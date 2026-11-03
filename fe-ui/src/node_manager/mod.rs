@@ -94,8 +94,8 @@ pub struct NodeManager {
     pub(super) pending_selection: Option<SelectionRequest>,
     cancelled_restores: Vec<CancelledRestore>,
     pub(super) group_drag: Option<group_gimbal::GroupDrag>,
-    pub(crate) selection_generation: u64,
-    pub(crate) pending_transform_before: Option<Transform>,
+    selection_generation: u64,
+    pending_transform_before: Option<Transform>,
     /// Sidebar click stores the node_id here; `sync_sidebar_to_manager`
     /// resolves the ECS Entity and calls `select()`.
     pub pending_sidebar_select: Option<String>,
