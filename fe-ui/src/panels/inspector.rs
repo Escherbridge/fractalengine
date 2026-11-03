@@ -39,13 +39,16 @@ pub(crate) fn right_inspector(
     db_tx: &crossbeam::channel::Sender<DbCommand>,
     nav: &NavigationManager,
     asset_status: &crate::asset_ops::AssetDownloadStatus,
+    path_state: &crate::gis::PathEditorState,
 ) {
+    let transform_route = ui_mgr
+        .editor_batch
+        .transform_route(nav, node_mgr, Some(path_state));
     sync_property_editor_scope(inspector, node_mgr, ui.ctx().input(|input| input.time));
     synchronize_token_target(
         inspector,
         node_mgr
-            .selected
-            .as_ref()
+            .primary()
             .map(|selection| selection.node_id.as_str()),
         &build_nav_scope(nav),
         local_role.can_manage(),
@@ -87,6 +90,7 @@ pub(crate) fn right_inspector(
                         db_tx,
                         nav,
                         asset_status,
+                        transform_route,
                     );
                 });
         },
@@ -188,6 +192,7 @@ fn inspector_tab_body(
     db_tx: &crossbeam::channel::Sender<DbCommand>,
     nav: &NavigationManager,
     asset_status: &AssetDownloadStatus,
+    transform_route: crate::editor_batch::TransformRoute,
 ) {
     if node_mgr.selection_count() > 1 {
         if inspector.active_tab() == InspectorTab::Properties {
@@ -208,8 +213,10 @@ fn inspector_tab_body(
     }
     match inspector.active_tab() {
         InspectorTab::Properties => {
-            if node_mgr.selected.is_none() {
-                ui.label("Select an object in the hierarchy or viewport to inspect its properties.");
+            if node_mgr.primary().is_none() {
+                ui.label(
+                    "Select an object in the hierarchy or viewport to inspect its properties.",
+                );
                 return;
             }
             ui.add_space(4.0);
@@ -227,14 +234,21 @@ fn inspector_tab_body(
                 ui, inspector, node_mgr, ui_mgr,
             );
             ui.add_space(2.0);
-            if ui_mgr
-                .editor_batch
-                .capture(nav, node_mgr)
-                .is_some_and(crate::editor_batch::has_derived_transform)
-            {
-                crate::editor_batch::ui::render_transform(ui, node_mgr, nav, ui_mgr, local_role);
-            } else {
-                inspector_transform_section(ui, inspector, node_mgr, ui_mgr, local_role);
+            match transform_route {
+                crate::editor_batch::TransformRoute::OrdinarySingle => {
+                    inspector_transform_section(ui, inspector, node_mgr, ui_mgr, local_role)
+                }
+                crate::editor_batch::TransformRoute::CheckedWholeObject => {
+                    crate::editor_batch::ui::render_transform(ui, node_mgr, nav, ui_mgr, local_role)
+                }
+                crate::editor_batch::TransformRoute::PathSubSelection => {
+                    ui.label("A path point or segment is selected. Use its Options controls or clear the path sub-selection to transform the whole object.");
+                }
+                crate::editor_batch::TransformRoute::Waiting => {
+                    ui.label(
+                        "Loading the selected object's stored state before enabling transforms.",
+                    );
+                }
             }
             ui.add_space(2.0);
             inspector_url_meta_section(ui, inspector, node_mgr, ui_mgr, local_role, hierarchy);
@@ -279,7 +293,7 @@ fn inspector_entity_section(
         ui.add_space(4.0);
         // Rendered OUTSIDE a Grid (F1): a Grid cell ignores `set_max_width`,
         // which is the width-blowout bug `clipped_value*` exists to avoid.
-        if let Some(sel) = &node_mgr.selected {
+        if let Some(sel) = node_mgr.primary() {
             ui.horizontal(|ui| {
                 ui.label(
                     egui::RichText::new("Node ID")
@@ -574,7 +588,7 @@ fn inspector_transform_section(
     ui_mgr: &mut UiManager,
     local_role: &LocalUserRole,
 ) {
-    if node_mgr.selected.is_none() {
+    if node_mgr.primary().is_none() {
         ui.label("Select an object to edit its transform.");
         return;
     }
@@ -630,7 +644,7 @@ fn inspector_transform_section(
                     commit = true;
                 }
             });
-            if commit && node_mgr.selected.is_some() && local_role.can_edit() {
+            if commit && node_mgr.primary().is_some() && local_role.can_edit() {
                 ui_mgr.push_action(UiAction::ApplyNodeTransform);
             }
             ui.add_space(4.0);
@@ -652,7 +666,7 @@ fn inspector_url_meta_section(
     local_role: &LocalUserRole,
     hierarchy: &VerseManager,
 ) {
-    if node_mgr.selected.is_none() {
+    if node_mgr.primary().is_none() {
         ui.label("Select an object to inspect its Portal URL.");
         return;
     }
@@ -680,11 +694,11 @@ fn inspector_url_meta_section(
         )
         .named(ui, "Portal URL")
         .on_disabled_hover_text("Editor access is required to edit this object's Portal URL.");
-        if node_mgr.selected.as_ref().is_some_and(|selected| ui_mgr.url_read_model.is_reading(&selected.node_id)) {
+        if node_mgr.primary().is_some_and(|selected| ui_mgr.url_read_model.is_reading(&selected.node_id)) {
             ui.horizontal(|ui| { ui.spinner(); ui.label("Refreshing stored Portal URL…"); });
         }
 
-        let storage = node_mgr.selected.as_ref().and_then(|selected| hierarchy.node_url_storage(&selected.node_id));
+        let storage = node_mgr.primary().and_then(|selected| hierarchy.node_url_storage(&selected.node_id));
         if let Some(explanation) = storage.and_then(|storage| storage.explanation()) {
             ui.add(egui::Label::new(egui::RichText::new(explanation).small().color(theme::TEXT_DIM)).wrap());
         }
@@ -718,7 +732,7 @@ fn inspector_url_meta_section(
                     .min_size(egui::vec2(ui.available_width(), 28.0)),
             )
             .named(ui, "Save Portal URL")
-            .on_disabled_hover_text(if node_mgr.selected.is_none() {
+            .on_disabled_hover_text(if node_mgr.primary().is_none() {
                 "Select a node to save its Portal URL."
             } else if !editable {
                 "Editor access is required to save this Portal URL."
@@ -985,7 +999,7 @@ fn inspector_api_access_section(
     local_role: &LocalUserRole,
     ui_mgr: &mut UiManager,
 ) {
-    let node_id = match node_mgr.selected.as_ref() {
+    let node_id = match node_mgr.primary() {
         Some(sel) => &sel.node_id,
         None => {
             ui.label("Select a node to manage API access and create a scoped token.");
@@ -1586,9 +1600,7 @@ fn sync_property_editor_scope(
     node_mgr: &NodeManager,
     now: f64,
 ) {
-    let selected = node_mgr
-        .selected
-        .as_ref()
+    let selected = node_mgr.primary()
         .map(|selection| selection.node_id.as_str());
     if inspector.property_editor.set_scope(selected) {
         inspector.prop_add_key_buf.clear();
@@ -2004,7 +2016,7 @@ fn inspector_properties_section(
     )
     .default_open(true)
     .show(ui, |ui| {
-        let Some(selection) = node_mgr.selected.as_ref() else {
+        let Some(selection) = node_mgr.primary() else {
             ui.label("No node selected");
             return;
         };
@@ -2149,7 +2161,7 @@ fn inspector_schema_section(
     .show(ui, |ui| {
         ui.add_space(4.0);
 
-        if node_mgr.selected.is_none() {
+        if node_mgr.primary().is_none() {
             ui.label(
                 egui::RichText::new("No node selected")
                     .small()
@@ -2506,7 +2518,7 @@ mod tests {
             assert_eq!(inspector.node_properties, stored);
             assert_eq!(inspector.prop_add_value_buf, invalid);
             assert!(inspector.property_editor.add_error.is_some());
-            assert_eq!(nodes.selected.as_ref().unwrap().node_id, "node-1");
+            assert_eq!(nodes.primary().unwrap().node_id, "node-1");
         }
         inspector.prop_add_key_buf = "config".into();
         inspector.prop_add_type_buf = "string".into();
@@ -2641,7 +2653,7 @@ mod tests {
         inspector.node_properties = json!({});
         inspector.node_properties_loading = true;
         sync_property_editor_scope(&mut inspector, &nodes, 55.0);
-        assert_eq!(nodes.selected.as_ref().unwrap().node_id, "node-2");
+        assert_eq!(nodes.primary().unwrap().node_id, "node-2");
         assert!(inspector.prop_add_key_buf.is_empty() && inspector.prop_add_value_buf.is_empty());
         assert_eq!(inspector.prop_add_type_buf, "string");
         assert!(inspector.property_editor.drafts.is_empty());
@@ -3044,6 +3056,7 @@ mod tests {
                             &db_sender.0,
                             &nav,
                             &crate::asset_ops::AssetDownloadStatus::default(),
+                            &crate::gis::PathEditorState::default(),
                         );
                     });
                 },
@@ -3538,6 +3551,7 @@ mod tests {
                                 &target_tx,
                                 &NavigationManager::default(),
                                 &AssetDownloadStatus::default(),
+                                crate::editor_batch::TransformRoute::OrdinarySingle,
                             ),
                             1 => inspector_transform_section(ui, form, nodes, feedback, role),
                             2 => inspector_url_meta_section(ui, form, nodes, feedback, role, &VerseManager::default()),
@@ -3998,7 +4012,7 @@ mod tests {
             assert!(notices.drain_actions().is_empty());
             assert_eq!(polish.external_url, invalid);
             assert_eq!(
-                polish_nodes.selected.as_ref().unwrap().node_id,
+                polish_nodes.primary().unwrap().node_id,
                 "polish-node"
             );
         }
@@ -4184,7 +4198,7 @@ mod tests {
             Some("polish-node")
         );
         assert_eq!(
-            polish_nodes.selected.as_ref().unwrap().node_id,
+            polish_nodes.primary().unwrap().node_id,
             "polish-node"
         );
         assert_eq!(polish.api_token_request.scope, scope);
@@ -4308,6 +4322,7 @@ mod tests {
                                 &navigation_tx,
                                 &nav,
                                 &AssetDownloadStatus::default(),
+                                &crate::gis::PathEditorState::default(),
                             );
                         });
                     },
@@ -4540,7 +4555,7 @@ mod tests {
             }
             assert_eq!(form.query_sql_buf, "SELECT * FROM node LIMIT 7");
             assert_eq!(form.prop_add_key_buf, "retained-property-draft");
-            assert_eq!(selected.selected.as_ref().unwrap().node_id, "node-1");
+            assert_eq!(selected.primary().unwrap().node_id, "node-1");
             assert!(navigation_rx
                 .try_iter()
                 .all(|command| matches!(command, DbCommand::ListApiTokensByScope { .. })));
@@ -4704,6 +4719,7 @@ mod tests {
                                     &batch_tx,
                                     &nav,
                                     &AssetDownloadStatus::default(),
+                                    &crate::gis::PathEditorState::default(),
                                 )
                             });
                         },
@@ -4752,7 +4768,7 @@ mod tests {
                 }
             }
             let origin = feedback.editor_batch.origin(&selected).unwrap();
-            let edits = capture
+            let edits: Vec<_> = capture
                 .members
                 .iter()
                 .map(|member| EditorTargetEdit {
@@ -4763,6 +4779,52 @@ mod tests {
                     }]),
                 })
                 .collect();
+            let (busy_tx, busy_rx) = crossbeam::channel::bounded(1);
+            busy_tx
+                .try_send(DbCommand::GetNodeProperties {
+                    node_id: "queue-fill".into(),
+                    correlation_id: None,
+                })
+                .unwrap();
+            let edit = EditorBatchEdit::Targets(edits.clone());
+            assert!(feedback
+                .editor_batch
+                .start(origin.clone(), edit.clone(), &nav, &selected, &busy_tx)
+                .unwrap_err()
+                .contains("busy"));
+            assert!(
+                !feedback.editor_batch.is_pending(),
+                "an unsent write must never become pending"
+            );
+            let (closed_tx, closed_rx) = crossbeam::channel::bounded(1);
+            drop(closed_rx);
+            assert!(feedback
+                .editor_batch
+                .start(origin.clone(), edit, &nav, &selected, &closed_tx)
+                .unwrap_err()
+                .contains("closed"));
+            assert!(!feedback.editor_batch.is_pending());
+            let mut coalesced = crate::editor_batch::EditorBatchState::default();
+            coalesced.maintain(&nav, &selected, &hierarchy, &busy_tx);
+            coalesced.maintain(&nav, &selected, &hierarchy, &busy_tx);
+            assert!(matches!(
+                busy_rx.try_recv().unwrap(),
+                DbCommand::GetNodeProperties { .. }
+            ));
+            coalesced.maintain(&nav, &selected, &hierarchy, &busy_tx);
+            assert!(matches!(
+                busy_rx.try_recv().unwrap(),
+                DbCommand::ReadEditorBatch { .. }
+            ));
+            coalesced.maintain(&nav, &selected, &hierarchy, &busy_tx);
+            assert!(
+                busy_rx.try_recv().is_err(),
+                "an accepted read is not resent by frame maintenance"
+            );
+            assert_eq!(
+                feedback.editor_batch.transform_route(&nav, &selected, None),
+                crate::editor_batch::TransformRoute::CheckedWholeObject
+            );
             feedback
                 .editor_batch
                 .start(
@@ -4782,6 +4844,29 @@ mod tests {
             };
             assert_eq!(request.capture.members.len(), 2);
             assert!(batch_rx.try_recv().is_err(), "no per-node save loop");
+            busy_tx
+                .try_send(DbCommand::GetNodeProperties {
+                    node_id: "queue-fill".into(),
+                    correlation_id: None,
+                })
+                .unwrap();
+            feedback.editor_batch.resolve(&busy_tx).unwrap();
+            assert!(feedback.editor_batch.is_pending());
+            assert!(matches!(
+                busy_rx.try_recv().unwrap(),
+                DbCommand::GetNodeProperties { .. }
+            ));
+            feedback
+                .editor_batch
+                .maintain(&nav, &selected, &hierarchy, &busy_tx);
+            assert!(
+                matches!(busy_rx.try_recv().unwrap(), DbCommand::ResolveCheckedEditorBatch { request_id, .. } if request_id == correlation_id)
+            );
+            assert!(
+                busy_rx.try_recv().is_err(),
+                "accepted writes reconcile through reads only"
+            );
+
             let mut receipt = EditorBatchReceipt {
                 request_id: correlation_id.clone(),
                 scope: capture.scope.clone(),

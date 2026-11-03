@@ -14,9 +14,7 @@ use crate::plugin::InspectorFormState;
 /// async property-load/set/delete results against stomping a different
 /// node's buffers after the user has switched selection mid-round-trip.
 pub(super) fn is_for_selected_node(node_mgr: &NodeManager, node_id: &str) -> bool {
-    node_mgr
-        .selected
-        .as_ref()
+    node_mgr.primary()
         .is_some_and(|s| s.node_id == node_id)
 }
 

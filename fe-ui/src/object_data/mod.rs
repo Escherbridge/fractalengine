@@ -82,9 +82,7 @@ pub(crate) fn synchronize(
     let can_view = role.role.is_some_and(|role| role.can_view());
     if can_view
         && state.target.as_ref().is_some_and(|target| {
-            nodes
-                .selected
-                .as_ref()
+            nodes.primary()
                 .is_some_and(|selected| selected.node_id == target.node_id)
                 && nav.active_verse_id.as_deref() == Some(target.verse_id.as_str())
                 && nav.active_fractal_id.as_deref() == Some(target.fractal_id.as_str())
@@ -94,7 +92,7 @@ pub(crate) fn synchronize(
     {
         return;
     }
-    let target = nodes.selected.as_ref().and_then(|selected| {
+    let target = nodes.primary().and_then(|selected| {
         if !can_view {
             return None;
         }

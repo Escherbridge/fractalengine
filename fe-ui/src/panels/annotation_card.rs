@@ -19,7 +19,7 @@ pub(crate) fn annotation_card_section(
     node_mgr: &NodeManager,
     ui_mgr: &mut UiManager,
 ) {
-    let Some(sel) = node_mgr.selected.as_ref() else {
+    let Some(sel) = node_mgr.primary() else {
         return;
     };
     let node_id = sel.node_id.clone();

@@ -221,7 +221,7 @@ fn render_verse_tree(
                         RowSelection::from_primary(
                             is_active_verse
                                 && nav.active_fractal_id.is_none()
-                                && node_mgr.selected.is_none(),
+                                && node_mgr.primary().is_none(),
                         ),
                         is_active_verse,
                         own_visible,
@@ -347,7 +347,7 @@ fn render_fractals(
                             url: None,
                         },
                         RowSelection::from_primary(
-                            is_active && nav.active_petal_id.is_none() && node_mgr.selected.is_none(),
+                            is_active && nav.active_petal_id.is_none() && node_mgr.primary().is_none(),
                         ),
                         is_active,
                         own_visible,
@@ -462,7 +462,7 @@ fn render_petals(
                             petal_id: Some(&petal_id),
                             url: None,
                         },
-                        RowSelection::from_primary(is_active && node_mgr.selected.is_none()),
+                        RowSelection::from_primary(is_active && node_mgr.primary().is_none()),
                         is_active,
                         own_visible,
                         nav,

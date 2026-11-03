@@ -39,7 +39,7 @@ fn query_templates(nav: &NavigationManager, node_mgr: &NodeManager) -> Vec<(&'st
     if nav.active_petal_id.is_none() {
         return templates;
     }
-    if let Some(sel) = node_mgr.selected.as_ref() {
+    if let Some(sel) = node_mgr.primary() {
         let id = sql_literal(&sel.node_id);
         templates.push((
             "This node",

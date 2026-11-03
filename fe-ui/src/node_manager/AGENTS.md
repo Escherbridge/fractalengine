@@ -5,7 +5,7 @@
 The primary `NodeSelection` and a disjoint private additional-member vector form one
 ordered set, exposed through `primary()` and `members()`. A primary insertion index
 preserves order without caching a second complete list. `selected_set` owns the reducer;
-membership and primary changes advance its generation. Storage is crate-private and
+membership and primary changes advance its generation. Storage is private to NodeManager and its implementation modules;
 external readers use the read-only primary accessor. Scope is one active Petal, capped
 at 256 unique semantic IDs and unique live entities.
 
@@ -24,7 +24,12 @@ neither sidebar state nor Inspector form state stores another selected set.
 
 `group_gimbal` captures one complete source and originals, previews all members around
 one center, and sends one checked edit at release. Gesture cancellation restores every
-original; incoming committed transforms win over any queued restore for those targets.
+original. Queued restores retain both captured semantic ID and live entity, so a later
+receipt removes an obsolete restore even after deselection or entity replacement.
+Incoming optimistic REST/WebSocket transform previews invalidate matching gestures and
+captures before applying, while retaining confirmed history/rollback authority unchanged.
+Their subsequent real receipts establish committed authority. Unaffected group members
+restore their originals; the externally changed member keeps its incoming pose.
 Capabilities intersect across all members. The Inspector and Options use the same typed
 adapters; see `../editor_batch/AGENTS.md` for unsupported geometry and exact Undo rules.
 Single-object path marker/handle/stamp editing refuses plural selection. Brush and

@@ -51,7 +51,7 @@ pub(super) fn reconcile_selected_primitive(
     mut primitives: PrimitiveEntityQuery,
     fallback_signs: FallbackSignQuery,
 ) {
-    let Some(ref sel) = node_mgr.selected else {
+    let Some(sel) = node_mgr.primary() else {
         return;
     };
     let Some(petal_id) = nav.active_petal_id.as_deref() else {

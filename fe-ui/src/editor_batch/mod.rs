@@ -1,9 +1,11 @@
 //! Checked selection editing and bounded history; see editor_batch/AGENTS.md.
 
+mod interaction;
+pub(crate) use interaction::{SelectionInteraction, TransformRoute};
 pub(crate) mod math;
 pub(crate) mod ui;
 mod validation;
-pub(crate) use math::{affine_edits, center};
+pub(crate) use math::affine_edits;
 pub(crate) use ui::render;
 
 use crate::{
@@ -79,6 +81,7 @@ impl SelectionKey {
 pub struct BatchOrigin {
     key: SelectionKey,
     pub capture: EditorBatchCapture,
+    pub(crate) interaction: Arc<SelectionInteraction>,
 }
 impl BatchOrigin {
     pub(crate) fn matches(&self, nav: &NavigationManager, nodes: &NodeManager) -> bool {
@@ -106,6 +109,7 @@ struct ReadRequest {
     id: String,
     key: SelectionKey,
     replay: Option<(HistoryEntry, HistoryDirection)>,
+    accepted: bool,
     started: Instant,
 }
 
@@ -116,6 +120,7 @@ struct PendingWrite {
     replay: Option<HistoryEntry>,
     direction: HistoryDirection,
     resolve_id: Option<String>,
+    resolve_queued: bool,
     started: Instant,
 }
 
@@ -143,6 +148,8 @@ pub(crate) struct EditorBatchState {
     invalidate_legacy_redo: bool,
     legacy_generation: u64,
     capture: Option<Arc<EditorBatchCapture>>,
+    interaction: Option<Arc<SelectionInteraction>>,
+    legacy_hydration: VecDeque<String>,
     read: Option<ReadRequest>,
     pending: Option<PendingWrite>,
     undo: VecDeque<HistoryEntry>,
@@ -156,11 +163,6 @@ fn id() -> String {
     format!("ui-editor-batch-{}", ulid::Ulid::new())
 }
 
-pub(crate) fn has_derived_transform(capture: &EditorBatchCapture) -> bool {
-    capture.members.iter().any(|member| {
-        member.stamp_path.is_some() || member.state.properties.contains_key("gpx_points")
-    })
-}
 fn snapshot(receipt: &EditorBatchReceipt, original: &EditorBatchCapture) -> EditorBatchCapture {
     EditorBatchCapture {
         scope: receipt.scope.clone(),
@@ -216,6 +218,10 @@ impl EditorBatchState {
             return;
         }
         for member in &projection.members {
+            let Some(history_version) = member.history_version.filter(|version| *version > 0)
+            else {
+                continue;
+            };
             if let Some(points) = member.state.properties.get("gpx_points") {
                 self.path_projections
                     .retain(|old| old.node_id != member.node_id);
@@ -224,6 +230,7 @@ impl EditorBatchState {
                         node_id: member.node_id.clone(),
                         petal_id: projection.petal_id.clone(),
                         points: points.clone(),
+                        history_version,
                     });
             }
         }
@@ -267,6 +274,60 @@ impl EditorBatchState {
             .cloned()
     }
 
+    pub(crate) fn interaction(
+        &self,
+        nav: &NavigationManager,
+        nodes: &NodeManager,
+    ) -> Option<&SelectionInteraction> {
+        self.key
+            .as_ref()
+            .filter(|key| key.matches(nav, nodes))
+            .and(self.interaction.as_deref())
+    }
+
+    pub(crate) fn interaction_shared(
+        &self,
+        nav: &NavigationManager,
+        nodes: &NodeManager,
+    ) -> Option<Arc<SelectionInteraction>> {
+        self.key
+            .as_ref()
+            .filter(|key| key.matches(nav, nodes))
+            .and(self.interaction.as_ref())
+            .cloned()
+    }
+
+    pub(crate) fn queue_legacy_hydration(&mut self, members: &[EditorBatchMember]) {
+        for member in members {
+            if self.legacy_hydration.len() < MAX_EDITOR_BATCH_TARGETS
+                && !self.legacy_hydration.contains(&member.node_id)
+            {
+                self.legacy_hydration.push_back(member.node_id.clone());
+            }
+        }
+    }
+
+    pub(crate) fn invalidate_preview_capture(&mut self, node_id: &str) {
+        if self
+            .key
+            .as_ref()
+            .is_some_and(|key| key.ids.iter().any(|id| id == node_id))
+            || self.capture.as_ref().is_some_and(|capture| {
+                capture.members.iter().any(|member| {
+                    member
+                        .stamp_path
+                        .as_ref()
+                        .is_some_and(|path| path.state.node_id == node_id)
+                })
+            })
+        {
+            self.capture = None;
+            self.interaction = None;
+            self.read = None;
+            self.error = Some("An external transform preview changed the selection; refresh after its save outcome is known".into());
+        }
+    }
+
     pub(crate) fn origin(&self, nodes: &NodeManager) -> Result<BatchOrigin, String> {
         let key = self.key.as_ref().ok_or("Select objects in an open Petal")?;
         if !nodes.selection_is_settled()
@@ -284,6 +345,10 @@ impl EditorBatchState {
         }
         Ok(BatchOrigin {
             key: key.clone(),
+            interaction: self
+                .interaction
+                .clone()
+                .ok_or("Loading selected-object interaction geometry")?,
             capture: self.capture.as_deref().cloned().ok_or_else(|| {
                 self.error
                     .clone()
@@ -299,6 +364,27 @@ impl EditorBatchState {
         hierarchy: &VerseManager,
         db: &crossbeam::channel::Sender<DbCommand>,
     ) {
+        for _ in 0..8 {
+            let Some(node_id) = self.legacy_hydration.front() else {
+                break;
+            };
+            match db.try_send(DbCommand::GetNodeProperties {
+                node_id: node_id.clone(),
+                correlation_id: None,
+            }) {
+                Ok(()) => {
+                    self.legacy_hydration.pop_front();
+                }
+                Err(crossbeam::channel::TrySendError::Full(_)) => break,
+                Err(crossbeam::channel::TrySendError::Disconnected(_)) => {
+                    bevy::log::warn!(
+                        "DB channel closed while reloading reconciled legacy selection"
+                    );
+                    self.legacy_hydration.clear();
+                    break;
+                }
+            }
+        }
         let navigation = nav
             .active_verse_id
             .as_deref()
@@ -334,6 +420,12 @@ impl EditorBatchState {
                     .committed_versions
                     .get(&member.node_id)
                     .is_some_and(|version| member.history_version != Some(*version))
+                    || member.stamp_path.as_ref().is_some_and(|path| {
+                        hierarchy
+                            .committed_versions
+                            .get(&path.state.node_id)
+                            .is_some_and(|version| path.history_version != Some(*version))
+                    })
             })
         });
         if changed || stale {
@@ -342,6 +434,7 @@ impl EditorBatchState {
                 self.draft = Default::default();
             }
             self.capture = None;
+            self.interaction = None;
             self.error = None;
             if self.read.as_ref().is_none_or(|read| read.replay.is_none()) {
                 self.read = None;
@@ -357,7 +450,7 @@ impl EditorBatchState {
         if self
             .read
             .as_ref()
-            .is_some_and(|read| read.started.elapsed() >= TIMEOUT)
+            .is_some_and(|read| read.accepted && read.started.elapsed() >= TIMEOUT)
         {
             self.error = Some(
                 "Selected-object read timed out. Refresh to retry; no edit was submitted.".into(),
@@ -379,27 +472,48 @@ impl EditorBatchState {
                         Some("Promote every selected stamp before editing this selection".into());
                     return;
                 }
-                let request_id = id();
-                match db.send(DbCommand::ReadEditorBatch {
-                    scope: key.scope.clone(),
-                    petal_id: key.petal_id.clone(),
-                    node_ids: key.ids.clone(),
-                    correlation_id: request_id.clone(),
-                }) {
-                    Ok(()) => {
-                        self.read = Some(ReadRequest {
-                            id: request_id,
-                            key,
-                            replay: None,
-                            started: Instant::now(),
-                        })
-                    }
-                    Err(_) => {
-                        self.error = Some(
-                            "Database connection closed; selected objects could not be read".into(),
-                        )
-                    }
-                }
+                self.read = Some(ReadRequest {
+                    id: id(),
+                    key,
+                    replay: None,
+                    accepted: false,
+                    started: Instant::now(),
+                });
+            }
+        }
+        if let Err(error) = self.flush_read(db) {
+            self.error = Some(error);
+        }
+        if self
+            .pending
+            .as_ref()
+            .is_some_and(|pending| pending.resolve_queued)
+        {
+            if let Err(error) = self.flush_resolution(db) {
+                self.error = Some(error);
+            }
+        }
+    }
+
+    fn flush_read(&mut self, db: &crossbeam::channel::Sender<DbCommand>) -> Result<(), String> {
+        let Some(read) = self.read.as_mut().filter(|read| !read.accepted) else {
+            return Ok(());
+        };
+        match db.try_send(DbCommand::ReadEditorBatch {
+            scope: read.key.scope.clone(),
+            petal_id: read.key.petal_id.clone(),
+            node_ids: read.key.ids.clone(),
+            correlation_id: read.id.clone(),
+        }) {
+            Ok(()) => {
+                read.accepted = true;
+                read.started = Instant::now();
+                Ok(())
+            }
+            Err(crossbeam::channel::TrySendError::Full(_)) => Ok(()),
+            Err(crossbeam::channel::TrySendError::Disconnected(_)) => {
+                self.read = None;
+                Err("Database connection closed; selected objects could not be read and no edit was submitted".into())
             }
         }
     }
@@ -407,12 +521,14 @@ impl EditorBatchState {
     pub(crate) fn report_error(&mut self, error: &str) {
         self.error = Some(error.to_owned());
         self.capture = None;
+        self.interaction = None;
     }
 
     pub(crate) fn refresh(&mut self) {
         if !self.is_pending() {
             self.error = None;
             self.capture = None;
+            self.interaction = None;
             self.read = None;
         }
     }
@@ -465,20 +581,29 @@ impl EditorBatchState {
     ) -> Result<(), String> {
         validation::edit(&request)?;
         let request_id = id();
-        db.send(DbCommand::CommitCheckedEditorBatch {
+        db.try_send(DbCommand::CommitCheckedEditorBatch {
             request: request.clone(),
             correlation_id: request_id.clone(),
         })
-        .map_err(|_| "Database connection closed; no selection edit was queued")?;
+        .map_err(|error| match error {
+            crossbeam::channel::TrySendError::Full(_) => {
+                "Database queue is busy; no selection edit was queued. Apply again when ready."
+            }
+            crossbeam::channel::TrySendError::Disconnected(_) => {
+                "Database connection closed; no selection edit was queued"
+            }
+        })?;
         self.pending = Some(PendingWrite {
             id: request_id,
             request,
             replay,
             direction,
             resolve_id: None,
+            resolve_queued: false,
             started: Instant::now(),
         });
         self.capture = None;
+        self.interaction = None;
         self.read = None;
         self.error = None;
         Ok(())
@@ -491,8 +616,32 @@ impl EditorBatchState {
         let Some(pending) = self.pending.as_mut() else {
             return Err("There is no submitted selection save to check; an Undo read may still be preparing its edit".into());
         };
-        let resolve_id = id();
-        db.send(DbCommand::ResolveCheckedEditorBatch {
+        if pending.resolve_id.is_some()
+            && !pending.resolve_queued
+            && pending.started.elapsed() < TIMEOUT
+        {
+            return Ok(());
+        }
+        if !pending.resolve_queued {
+            pending.resolve_id = None;
+        }
+        pending.resolve_queued = true;
+        self.flush_resolution(db)
+    }
+
+    fn flush_resolution(
+        &mut self,
+        db: &crossbeam::channel::Sender<DbCommand>,
+    ) -> Result<(), String> {
+        let Some(pending) = self
+            .pending
+            .as_mut()
+            .filter(|pending| pending.resolve_queued)
+        else {
+            return Ok(());
+        };
+        let resolve_id = pending.resolve_id.get_or_insert_with(id).clone();
+        match db.try_send(DbCommand::ResolveCheckedEditorBatch {
             scope: pending.request.capture.scope.clone(),
             petal_id: pending.request.capture.petal_id.clone(),
             node_ids: pending
@@ -503,14 +652,20 @@ impl EditorBatchState {
                 .map(|member| member.node_id.clone())
                 .collect(),
             request_id: pending.id.clone(),
-            correlation_id: resolve_id.clone(),
-        })
-        .map_err(|_| {
-            "Saved selection outcome is unknown; database connection closed. No write was retried."
-        })?;
-        pending.resolve_id = Some(resolve_id);
-        pending.started = Instant::now();
-        Ok(())
+            correlation_id: resolve_id,
+        }) {
+            Ok(()) => {
+                pending.resolve_queued = false;
+                pending.started = Instant::now();
+                Ok(())
+            }
+            Err(crossbeam::channel::TrySendError::Full(_)) => Ok(()),
+            Err(crossbeam::channel::TrySendError::Disconnected(_)) => {
+                pending.resolve_queued = false;
+                pending.resolve_id = None;
+                Err("Saved selection outcome is unknown; database connection closed. No write was retried.".into())
+            }
+        }
     }
 
     pub(crate) fn newest(&self, redo: bool) -> Option<u64> {
@@ -568,13 +723,6 @@ impl EditorBatchState {
             .map(|member| member.node_id.clone())
             .collect::<Vec<_>>();
         let request_id = id();
-        db.send(DbCommand::ReadEditorBatch {
-            scope: scope.clone(),
-            petal_id: petal.into(),
-            node_ids: ids.clone(),
-            correlation_id: request_id.clone(),
-        })
-        .map_err(|_| "Database connection closed; no Undo was queued")?;
         self.read = Some(ReadRequest {
             id: request_id,
             key: SelectionKey {
@@ -588,6 +736,7 @@ impl EditorBatchState {
                     petal.to_owned(),
                 ],
             },
+            accepted: false,
             replay: Some((
                 entry,
                 if redo {
@@ -598,7 +747,7 @@ impl EditorBatchState {
             )),
             started: Instant::now(),
         });
-        Ok(())
+        self.flush_read(db)
     }
 
     pub(crate) fn route(
@@ -642,6 +791,7 @@ impl EditorBatchState {
                         db,
                     )?;
                 } else if self.key.as_ref() == Some(&read.key) {
+                    self.interaction = Some(Arc::new(SelectionInteraction::capture(capture)));
                     self.capture = Some(Arc::new(capture.clone()));
                     self.error = None;
                 }
@@ -687,6 +837,7 @@ impl EditorBatchState {
                     if unchanged {
                         self.pending = None;
                         self.capture = None;
+                        self.interaction = None;
                         self.error = Some("Selection edit was not committed; the captured stored state is unchanged.".into());
                         return Err(self.error.clone().unwrap());
                     }
@@ -709,6 +860,7 @@ impl EditorBatchState {
                     preflight(&projection)?;
                     self.pending = None;
                     self.capture = None;
+                    self.interaction = None;
                     self.error = Some(
                         "Selection edit was not committed. Current stored objects were restored."
                             .into(),
@@ -748,6 +900,10 @@ impl EditorBatchState {
                 .as_ref()
                 .is_some_and(|pending| pending.resolve_id.as_ref() == Some(correlation_id)) =>
             {
+                if let Some(pending) = self.pending.as_mut() {
+                    pending.resolve_id = None;
+                    pending.resolve_queued = false;
+                }
                 self.error = Some(format!(
                     "Saved selection outcome is unknown: {error}. No write was retried."
                 ));
@@ -832,6 +988,7 @@ impl EditorBatchState {
         }
         self.error = None;
         self.capture = None;
+        self.interaction = None;
         Ok(Some(projection))
     }
 }

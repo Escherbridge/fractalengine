@@ -66,7 +66,7 @@ pub(crate) fn apply(
     if node_mgr.selection_count() > 1 {
         return Err("Use the selection transform controls to apply one checked edit to every selected object".into());
     }
-    let Some(sel) = node_mgr.selected.as_mut() else {
+    let Some(entity) = node_mgr.selected_entity() else {
         return Ok(());
     };
     let parsed = match parse_inspector_transform(inspector) {
@@ -76,7 +76,7 @@ pub(crate) fn apply(
             return Err(reason);
         }
     };
-    let Ok(mut transform) = transform_query.get_mut(sel.entity) else {
+    let Ok(mut transform) = transform_query.get_mut(entity) else {
         return Ok(());
     };
 
@@ -90,8 +90,10 @@ pub(crate) fn apply(
     );
     transform.scale = parsed.scale;
 
-    sel.drag_committed = true;
-    node_mgr.pending_transform_before = Some(before);
+    if let Err(error) = node_mgr.mark_transform_committed(entity, before) {
+        *transform = before;
+        return Err(error);
+    }
     Ok(())
 }
 

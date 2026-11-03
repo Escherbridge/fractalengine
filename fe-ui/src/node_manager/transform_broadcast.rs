@@ -111,13 +111,19 @@ pub(super) fn broadcast_transform(
 pub(super) fn apply_inbound_transforms(
     inbound_rx: Option<Res<fe_runtime::app::InboundTransformReceiver>>,
     mut node_query: Query<(Entity, &mut Transform, &SpawnedNodeMarker)>,
-    mut commands: Commands,
+    mut batch_ui: ResMut<crate::actions::UiManager>,
     mut verse_mgr: ResMut<crate::verse_manager::VerseManager>,
+    mut manager: ResMut<NodeManager>,
 ) {
     let Some(rx) = inbound_rx else { return };
 
     // Drain all pending updates (non-blocking)
     while let Ok(update) = rx.0.try_recv() {
+        manager.invalidate_external_preview(&update.node_id);
+        batch_ui
+            .editor_batch
+            .invalidate_preview_capture(&update.node_id);
+
         verse_mgr.update_node_transform(
             &update.node_id,
             Transform {
@@ -132,7 +138,7 @@ pub(super) fn apply_inbound_transforms(
             },
         );
         let mut found = false;
-        for (entity, mut transform, marker) in node_query.iter_mut() {
+        for (_, mut transform, marker) in node_query.iter_mut() {
             if marker.node_id == update.node_id {
                 transform.translation =
                     Vec3::new(update.position[0], update.position[1], update.position[2]);
@@ -143,15 +149,7 @@ pub(super) fn apply_inbound_transforms(
                     update.rotation[2],
                 );
                 transform.scale = Vec3::new(update.scale[0], update.scale[1], update.scale[2]);
-                // Stamp the entity with the DB-acknowledged (confirmed) transform
-                // so that rollback logic can read it back if needed.
-                commands
-                    .entity(entity)
-                    .try_insert(fe_runtime::messages::DbConfirmedTransform {
-                        position: update.position,
-                        rotation: update.rotation,
-                        scale: update.scale,
-                    });
+                // The API broadcast is an optimistic preview, not a committed receipt.
                 found = true;
                 bevy::log::info!(
                     "API transform applied: node={} pos=[{:.2}, {:.2}, {:.2}]",

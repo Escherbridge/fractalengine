@@ -1269,8 +1269,11 @@ pub(crate) fn process_ui_actions(
                     Err("Editor access is required for the complete selection".into())
                 } else if undo.is_pending() {
                     Err("Wait for the previous object edit to finish saving".into())
-                } else if node_mgr.is_dragging() {
+                } else if node_mgr.is_dragging() || node_mgr.gesture_active {
                     Err("Finish or cancel the current selection gesture before applying a form edit".into())
+                } else if matches!(&edit, fe_runtime::editor_batch::EditorBatchEdit::Targets(targets) if targets.iter().any(|target| !matches!(&target.mutation, fe_runtime::editor_batch::EditorTargetMutation::Properties(_))))
+                    && !matches!(ui_mgr.editor_batch.transform_route(&nav, &node_mgr, Some(&path_state)), crate::editor_batch::TransformRoute::OrdinarySingle | crate::editor_batch::TransformRoute::CheckedWholeObject) {
+                    Err("Clear the path sub-selection and wait for stored state before applying a whole-object transform".into())
                 } else {
                     ui_mgr
                         .editor_batch
@@ -1311,15 +1314,11 @@ pub(crate) fn process_ui_actions(
                 portal::save_url(&db_sender.0, &mut ui_mgr, &verse_mgr, &nav, &node_mgr, &local_role, node_id, url, now_secs);
             }
             UiAction::ApplyNodeTransform => {
-                if ui_mgr
-                    .editor_batch
-                    .capture(&nav, &node_mgr)
-                    .is_none_or(crate::editor_batch::has_derived_transform)
-                {
+                if ui_mgr.editor_batch.transform_route(&nav, &node_mgr, Some(&path_state)) != crate::editor_batch::TransformRoute::OrdinarySingle {
                     ui_mgr.show_advisory("Wait for the object's stored state, then use its checked whole-object transform controls", now_secs);
                     continue;
                 }
-                if undo.is_pending() || node_mgr.gesture_active {ui_mgr.show_advisory("Finish the gesture or wait for the previous edit to save",now_secs);continue;}
+                if undo.is_pending() || node_mgr.gesture_active || node_mgr.is_dragging() {ui_mgr.show_advisory("Finish the gesture or wait for the previous edit to save",now_secs);continue;}
                 if let Err(reason) =
                     transform::apply(&inspector, &mut node_mgr, &mut transform_query)
                 {
@@ -1721,7 +1720,7 @@ pub(crate) fn process_ui_actions(
             UiAction::SelectStamp {origin} => {stamp_requests.push(origin);}
             UiAction::InspectStampNode {node_id} => {
                 if stamp_state.selected().is_some_and(|stamp|stamp_state.promoted_node_id(stamp)==Some(node_id.as_str()))
-                    && node_mgr.selected.as_ref().is_some_and(|selected|selected.node_id==node_id) {
+                    && node_mgr.primary().is_some_and(|selected|selected.node_id==node_id) {
                     right_sidebar.reveal_slug("inspector");
                 } else {ui_mgr.show_advisory("Select the current promoted stamp before opening its node",now_secs);}
             }

@@ -684,7 +684,7 @@ pub(crate) fn sync_node_visibility(
         .iter()
         .map(|(entity, marker)| (entity, marker.node_id.as_str(), marker.petal_id.as_str()))
         .collect();
-    let selected_node_id = node_mgr.selected.as_ref().map(|s| s.node_id.as_str());
+    let selected_node_id = node_mgr.primary().map(|s| s.node_id.as_str());
 
     let decision = compute_sync_decision(
         &entities,

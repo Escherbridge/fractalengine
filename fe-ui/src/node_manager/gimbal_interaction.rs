@@ -21,14 +21,13 @@ fn checked_adapter(
     manager: &NodeManager,
     nav: Option<&crate::navigation_manager::NavigationManager>,
     ui: Option<&crate::actions::UiManager>,
+    path: Option<&crate::gis::PathEditorState>,
 ) -> bool {
-    if manager.selection_count() > 1 {
-        return true;
-    }
     nav.zip(ui).is_some_and(|(nav, ui)| {
-        ui.editor_batch
-            .capture(nav, manager)
-            .is_none_or(crate::editor_batch::has_derived_transform)
+        !matches!(
+            ui.editor_batch.transform_route(nav, manager, path),
+            crate::editor_batch::TransformRoute::OrdinarySingle
+        )
     })
 }
 
@@ -47,8 +46,9 @@ pub(super) fn update_hovered_axis(
     arbiter: Res<ClickArbiter>,
     nav: Option<Res<crate::navigation_manager::NavigationManager>>,
     batch_ui: Option<Res<crate::actions::UiManager>>,
+    route_path: Option<Res<crate::gis::PathEditorState>>,
 ) {
-    if checked_adapter(&manager, nav.as_deref(), batch_ui.as_deref()) {
+    if checked_adapter(&manager, nav.as_deref(), batch_ui.as_deref(), route_path.as_deref()) {
         return;
     }
     if manager.selection_count() > 1 {
@@ -221,8 +221,9 @@ pub(super) fn handle_gimbal_interaction(
     petal_map: Option<Res<crate::terrain_map::PetalMapState>>,
     nav: Option<Res<crate::navigation_manager::NavigationManager>>,
     batch_ui: Option<Res<crate::actions::UiManager>>,
+    route_path: Option<Res<crate::gis::PathEditorState>>,
 ) {
-    if checked_adapter(&manager, nav.as_deref(), batch_ui.as_deref()) {
+    if checked_adapter(&manager, nav.as_deref(), batch_ui.as_deref(), route_path.as_deref()) {
         return;
     }
     if batch_ui
@@ -447,7 +448,7 @@ pub(super) fn draw_gimbal_system(
     nav: Option<Res<crate::navigation_manager::NavigationManager>>,
     batch_ui: Option<Res<crate::actions::UiManager>>,
 ) {
-    if checked_adapter(&manager, nav.as_deref(), batch_ui.as_deref())
+    if checked_adapter(&manager, nav.as_deref(), batch_ui.as_deref(), Some(&path_state))
         && !matches!(
             selection.kind,
             SelectionKind::PathVertex { .. } | SelectionKind::PathSegment { .. }

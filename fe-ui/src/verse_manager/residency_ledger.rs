@@ -453,7 +453,7 @@ pub(super) fn update_residency_ledger(
     };
     let selected = node_mgr
         .as_deref()
-        .and_then(|m| m.selected.as_ref())
+        .and_then(|m| m.primary())
         .map(|s| s.node_id.as_str());
     let cap = residency.settings.entity_cap.min(MAX_PETAL_NODES);
     let budget_exceeded = residency.mesh_budget.exceeded;

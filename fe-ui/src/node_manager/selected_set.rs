@@ -293,6 +293,13 @@ impl NodeManager {
                 }
             }
         }
+        if next.iter().enumerate().any(|(index, member)| {
+            next[..index].iter().any(|previous| {
+                previous.node_id == member.node_id || previous.entity == member.entity
+            })
+        }) {
+            return Err("The complete selection contains a semantic or rendered-entity alias; no member was changed");
+        }
         if next.len() > MAX_SELECTED_NODES {
             return Err("Select at most 256 objects at a time");
         }
@@ -333,8 +340,13 @@ impl NodeManager {
             return false;
         }
         self.cancel_group_drag();
-        if let Some(restore) = self.cancel_axis_drag() {
-            self.cancelled_restores.push(restore);
+        let previous_id = self.primary().map(|primary| primary.node_id.clone());
+        if let Some((entity, transform)) = self.cancel_axis_drag() {
+            self.cancelled_restores.push(super::CancelledRestore {
+                entity,
+                node_id: previous_id.unwrap(),
+                transform,
+            });
         }
         let index = primary.and_then(|id| targets.iter().position(|target| target.node_id == id));
         let mut members: Vec<NodeSelection> = targets
@@ -375,5 +387,8 @@ impl NodeManager {
 
     pub(super) fn take_cancelled_restores(&mut self) -> Vec<(Entity, DragRestore)> {
         std::mem::take(&mut self.cancelled_restores)
+            .into_iter()
+            .map(|restore| (restore.entity, restore.transform))
+            .collect()
     }
 }

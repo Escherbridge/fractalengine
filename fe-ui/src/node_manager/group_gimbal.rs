@@ -7,7 +7,7 @@ use super::{
 };
 use crate::{
     actions::UiManager,
-    editor_batch::{affine_edits, center, math::member_transform, BatchOrigin},
+    editor_batch::{affine_edits, BatchOrigin, TransformRoute},
     gimbal::{GimbalAxis, GimbalGizmoGroup},
     navigation_manager::NavigationManager,
     panels::toolbar::Tool,
@@ -43,51 +43,22 @@ impl GroupDrag {
 impl NodeManager {
     pub(super) fn cancel_group_drag(&mut self) {
         if let Some(drag) = self.group_drag.take() {
-            self.cancelled_restores
-                .extend(drag.originals.into_iter().map(|(entity, transform)| {
-                    (
+            self.cancelled_restores.extend(
+                drag.originals
+                    .into_iter()
+                    .zip(drag.origin.capture.members)
+                    .map(|((entity, transform), member)| super::CancelledRestore {
                         entity,
-                        DragRestore {
+                        node_id: member.node_id,
+                        transform: DragRestore {
                             translation: transform.translation,
                             rotation: transform.rotation,
                             scale: transform.scale,
                         },
-                    )
-                }));
+                    }),
+            );
         }
     }
-}
-
-pub(crate) fn tool_capability(
-    capture: &fe_runtime::editor_batch::EditorBatchCapture,
-    tool: Tool,
-    uniform_scale: bool,
-) -> Result<(), String> {
-    let pivot = center(capture)?;
-    for member in &capture.members {
-        let transform = member_transform(member, capture.world_scale)?;
-        if let Some(path) = &member.stamp_path {
-            if capture
-                .members
-                .iter()
-                .any(|member| member.node_id == path.state.node_id)
-            {
-                return Err("A path and its stamp cannot be transformed together".into());
-            }
-            if tool == Tool::Move || !transform.translation.abs_diff_eq(pivot, 0.0001) {
-                return Err("The selection includes a path-locked stamp; this center-based tool would move it off its path".into());
-            }
-        }
-        if tool == Tool::Scale
-            && !uniform_scale
-            && member.stamp_path.is_none()
-            && !member.state.properties.contains_key("gpx_points")
-            && transform.rotation.dot(Quat::IDENTITY).abs() < 1.0 - 0.000001
-        {
-            return Err("Axis scaling of a rotated selected object would require an unsupported shear; uniform numeric scaling remains available".into());
-        }
-    }
-    Ok(())
 }
 
 fn restore(originals: &[(Entity, Transform)], transforms: &mut Query<&mut Transform>) {
@@ -212,11 +183,19 @@ pub(super) fn interact(
                     .committed_versions
                     .get(&member.node_id)
                     .is_none_or(|version| member.history_version == Some(*version))
+                    && member.stamp_path.as_ref().is_none_or(|path| {
+                        hierarchy
+                            .committed_versions
+                            .get(&path.state.node_id)
+                            .is_none_or(|version| path.history_version == Some(*version))
+                    })
             })
-            && drag
-                .originals
-                .iter()
-                .all(|(entity, _)| transforms.contains(*entity));
+            && drag.originals.iter().zip(&drag.origin.capture.members).all(
+                |((entity, _), captured)| {
+                    transforms.contains(*entity)
+                        && paths.matches(captured, *entity, &drag.origin.capture.petal_id)
+                },
+            );
         if !current
             || arbiter.is_fresh_press()
             || (!mouse.pressed(MouseButton::Left) && !mouse.just_released(MouseButton::Left))
@@ -335,20 +314,23 @@ pub(super) fn interact(
     {
         return;
     }
-    let Some(capture) = ui.editor_batch.capture(&nav, &manager) else {
-        return;
-    };
-    if manager.selection_count() == 1
-        && (!crate::editor_batch::has_derived_transform(capture)
-            || paths.path.selected_point.is_some()
-            || paths.path.selected_segment.is_some())
+    if ui
+        .editor_batch
+        .transform_route(&nav, &manager, Some(&paths.path))
+        != TransformRoute::CheckedWholeObject
     {
         return;
     }
-    if tool_capability(capture, tool.active_tool, tool.snap.uniform_scale).is_err() {
+    let Some(interaction) = ui.editor_batch.interaction(&nav, &manager) else {
+        return;
+    };
+    if interaction
+        .capability(tool.active_tool, tool.snap.uniform_scale)
+        .is_err()
+    {
         return;
     }
-    let Ok(pivot) = center(capture) else {
+    let Ok(pivot) = interaction.center.as_ref().copied() else {
         return;
     };
     let Some(cursor) = windows.single().ok().and_then(Window::cursor_position) else {
@@ -380,8 +362,12 @@ pub(super) fn interact(
         }
     };
     let mut originals = Vec::new();
-    for (selected, captured) in manager.members().zip(&origin.capture.members) {
-        let expected = member_transform(captured, origin.capture.world_scale);
+    let Ok(members) = origin.interaction.members.as_ref() else {
+        return;
+    };
+    for ((selected, captured), expected) in
+        manager.members().zip(&origin.capture.members).zip(members)
+    {
         let Ok(actual) = transforms.get(selected.entity) else {
             ui.show_advisory(
                 "A selected object is unavailable; no transform started",
@@ -389,9 +375,9 @@ pub(super) fn interact(
             );
             return;
         };
-        if !expected.is_ok_and(|expected| {
-            crate::undo::transform_value(&expected).matches(&crate::undo::transform_value(actual))
-        }) {
+        if !crate::undo::transform_value(&expected.transform)
+            .matches(&crate::undo::transform_value(actual))
+        {
             ui.show_advisory("The rendered selection differs from its stored capture; refresh before transforming", now);
             return;
         }

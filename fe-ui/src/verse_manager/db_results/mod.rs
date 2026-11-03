@@ -167,20 +167,7 @@ pub(super) fn apply_db_results(
                             &mut caches.committed_hierarchy_pending,
                             &mut nav,
                         );
-                        for member in &projection.members {
-                            if db_sender
-                                .0
-                                .send(fe_runtime::messages::DbCommand::GetNodeProperties {
-                                    node_id: member.node_id.clone(),
-                                    correlation_id: None,
-                                })
-                                .is_err()
-                            {
-                                bevy::log::warn!(
-                                    "DB channel closed while reloading reconciled legacy selection"
-                                );
-                            }
-                        }
+                        ui_mgr.editor_batch.queue_legacy_hydration(&projection.members);
                         ui_mgr.show_advisory("Selection edit was not saved; stored objects changed and are being reloaded", caches.time.elapsed_secs_f64());
                         continue;
                     }
@@ -364,7 +351,7 @@ pub(super) fn apply_db_results(
             .invalidate(nav.active_verse_id.as_deref());
         if tokens::handle_inspector_token_failure(
             result,
-            node_mgr.selected.as_ref().map(|selection| selection.node_id.as_str()),
+            node_mgr.primary().map(|selection| selection.node_id.as_str()),
             &crate::panels::inspector::build_nav_scope(&nav),
             local_role.can_manage(),
             &mut inspector,
@@ -625,7 +612,7 @@ pub(super) fn apply_db_results(
             DbResult::ApiTokenMinted { .. } => {
                 if tokens::handle_api_token_minted(
                     result,
-                    node_mgr.selected.as_ref().map(|selection| selection.node_id.as_str()),
+                    node_mgr.primary().map(|selection| selection.node_id.as_str()),
                     &crate::panels::inspector::build_nav_scope(&nav),
                     local_role.can_manage(),
                     &mut ui_mgr,
@@ -2140,7 +2127,7 @@ mod tests {
             app.world().resource::<InspectorFormState>().node_properties,
             json!({"existing":"untouched"})
         );
-        assert!(app.world().resource::<NodeManager>().selected.is_none());
+        assert!(app.world().resource::<NodeManager>().primary().is_none());
 
         app.init_asset::<Mesh>()
             .init_asset::<StandardMaterial>()

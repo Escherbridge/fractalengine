@@ -137,9 +137,7 @@ pub(crate) fn save_url(
         ui.show_advisory("Wait for the current URL save confirmation", now);
         return;
     }
-    if nodes
-        .selected
-        .as_ref()
+    if nodes.primary()
         .map(|selected| selected.node_id.as_str())
         != Some(node_id.as_str())
     {
@@ -187,9 +185,7 @@ pub(crate) fn save_url(
             request_id,
             node_id,
             scope,
-            selection: nodes
-                .selected
-                .as_ref()
+            selection: nodes.primary()
                 .map(|selected| selected.node_id.clone()),
             started: now,
             submitted,
@@ -233,9 +229,7 @@ pub(crate) fn finish_url_save(
     let current = now - pending.started <= 30.0
         && nav.active_scope().as_ref() == Some(expected_scope)
         && node_scope(hierarchy, node_id).as_ref() == Some(expected_scope)
-        && nodes
-            .selected
-            .as_ref()
+        && nodes.primary()
             .map(|selected| selected.node_id.as_str())
             == pending.selection.as_deref();
     let newer_draft =
@@ -327,7 +321,7 @@ pub(crate) fn compute_save_url(
     node_mgr: &NodeManager,
     inspector: &InspectorFormState,
 ) -> SaveUrlOutcome {
-    let Some(node_id) = node_mgr.selected.as_ref().map(|s| s.node_id.clone()) else {
+    let Some(node_id) = node_mgr.primary().map(|s| s.node_id.clone()) else {
         return SaveUrlOutcome::NoSelection;
     };
     match validate_url(&inspector.external_url) {

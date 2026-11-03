@@ -205,9 +205,7 @@ fn request_with_baseline(
     let anchor = CacheAnchor::capture(hierarchy, node_id).ok_or_else(|| {
         "URL cache identity is unavailable or its current value exceeds the read limit".to_owned()
     })?;
-    let form = nodes
-        .selected
-        .as_ref()
+    let form = nodes.primary()
         .filter(|selected| selected.node_id == node_id)
         .filter(|_| {
             nav.active_scope().as_ref() == Some(&anchor.scope)
@@ -372,9 +370,7 @@ pub(crate) fn finish_read(
                 ) {
                     ui.show_advisory(reason, now);
                 }
-            } else if nodes
-                .selected
-                .as_ref()
+            } else if nodes.primary()
                 .is_some_and(|selected| selected.node_id == *node_id)
                 && nav.active_scope().as_ref() == Some(expected_scope)
             {
@@ -406,9 +402,7 @@ pub(crate) fn finish_read(
     }
     hierarchy.confirm_node_url_snapshot(snapshot);
     if let Some(form) = owner.form {
-        if nodes
-            .selected
-            .as_ref()
+        if nodes.primary()
             .is_some_and(|selected| selected.entity == form.entity && selected.node_id == *node_id)
             && nav.active_scope().as_ref() == Some(expected_scope)
             && inspector.external_url == form.baseline
@@ -431,9 +425,7 @@ pub(crate) fn maintain(
     let obsolete = ui.pending_url_save.as_ref().is_some_and(|pending| {
         now - pending.started > READ_TIMEOUT
             || nav.active_scope().as_deref() != Some(pending.scope.as_str())
-            || nodes
-                .selected
-                .as_ref()
+            || nodes.primary()
                 .map(|selected| selected.node_id.as_str())
                 != pending.selection.as_deref()
     });

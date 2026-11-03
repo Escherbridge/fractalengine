@@ -14,7 +14,7 @@ use super::dispatch::{resolve_operation, HitTarget, Operation};
 use super::gimbal_interaction::{axis_screen_dir, axis_vec, pick_axis};
 use super::path_point_interaction::PathPointMarker;
 use super::router::{sweep_stranded_drag, ClickArbiter, ClickPriority};
-use super::selection::{path_gimbal_target, project_selection, SelectionKind};
+use super::selection::{path_gimbal_target, SelectionKind};
 use super::NodeManager;
 use crate::actions::{UiAction, UiManager};
 use crate::gimbal::GimbalAxis;
@@ -218,16 +218,7 @@ pub(super) fn handle_path_gimbal_drag(
 
     // Current typed selection (computed fresh here — `SelectionState` is projected
     // late in the chain, so reading it directly would be a frame stale).
-    let node_selected = node_mgr
-        .selected
-        .as_ref()
-        .map(|s| (s.entity, s.node_id.as_str()));
-    let kind = project_selection(
-        node_selected,
-        path_state.editing_track_id.as_deref(),
-        path_state.selected_point,
-        path_state.selected_segment,
-    );
+    let kind = ui_mgr.editor_batch.selection_kind(&nav, &node_mgr, &path_state);
     if !matches!(
         kind,
         SelectionKind::PathVertex { .. } | SelectionKind::PathSegment { .. }

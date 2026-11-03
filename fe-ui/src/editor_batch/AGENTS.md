@@ -5,6 +5,14 @@
 keys a complete ordered database capture to the current navigation and selection
 generation; neither cached values nor local edit roles grant backend authority.
 
+`interaction.rs` builds one bounded geometry/capability read model when a complete
+capture is accepted. It caches member kind, render origin/TRS, shared center and the
+Move/Rotate/axis-scale/uniform-scale capability intersection. Inspector, Options,
+actions and both gimbal adapters share `TransformRoute`: Waiting, OrdinarySingle,
+CheckedWholeObject or PathSubSelection. Idle rendering does not decode complete paths.
+The cache grants no authority: navigation/selection generation, real history versions,
+role and live path source/draft checks still fence use and held gestures.
+
 `math.rs` adapts ordinary transforms, whole-route affine edits and promoted stamp
 overrides. Path rows use the runtime's shared f64 affine helper, including relative
 Bezier handles and untouched measurement/time metadata. The pivot is the arithmetic
@@ -36,6 +44,13 @@ local Undo entry. Unowned read/history results never enter that projection path.
 
 ## Persistence, reconciliation and Undo
 
+All selection-channel operations use `try_send`. Full read queues coalesce the latest
+selection read and each owned resolution read; frame maintenance retries only those
+pure reads. A rejected unsent write stays out of pending state and requires a new
+explicit Apply. Disconnected queues report their distinct failure. Legacy hydration
+coalesces at most 256 node reads and drains at most eight per frame; hierarchy refresh
+uses its existing coalesced owner. Accepted writes are never automatically replayed.
+
 Each accepted input sends one `CommitCheckedEditorBatch`. There is no per-node save
 loop and no subset fallback. Gimbal previews derive from immutable captured originals;
 release restores those originals while the checked request saves. Selection, source,
@@ -62,7 +77,12 @@ empty/populated membership representations in one transaction. Typed `StampResto
 preserves the same presence distinctions for the three named stamp overrides; it does
 not bypass reserved-property rules. An inherited arc still cannot move a stamp origin.
 
-Confirmed route rows enter the existing host path projection queue. The GPX bridge
+Confirmed route rows enter the existing host path projection queue with their actual
+positive history version. The host checks owning Petal and newer known committed
+versions, plus a bounded per-Petal consumed-version watermark, before any geometry or
+editor-buffer mutation. Old ordinary receipts cannot overwrite newer batch geometry
+when the two queues drain in one frame. Unversioned current reads request normal
+hierarchy/property hydration and report the unknown or unsaved outcome instead. The GPX bridge
 rebuilds the rendered route and current edit buffer from that queue, preserving metadata.
 NodeManager rebinds stable selected IDs to replacement rendered entities after redraw.
 
@@ -73,5 +93,5 @@ primary removal, reverse ranges, duplicates, size limits and Petal transitions. 
 existing Inspector editing journey extends native rendering to three widths/scales,
 common/mixed/missing/null values, explicit primary-only URL labeling, accessible fields
 and target sizes. It also exercises complete typed reads, partial-receipt rejection
-before projection and one complete inverse request. These are source-authored checks;
+before projection, busy/disconnected channels, coalesced pure reads and one complete inverse request. These are source-authored checks;
 the parent campaign owns compilation, execution, live QA and acceptance.

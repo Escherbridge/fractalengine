@@ -129,7 +129,7 @@ fn render_source_selector(
                     .observed(ui)
                     .clicked()
                 {
-                    if let Some(sel) = node_mgr.selected.as_ref() {
+                    if let Some(sel) = node_mgr.primary() {
                         gis_state.egress.node_id_buf = sel.node_id.clone();
                     }
                 }

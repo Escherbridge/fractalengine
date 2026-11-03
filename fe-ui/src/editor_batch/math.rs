@@ -148,23 +148,6 @@ pub(super) fn stamp_edit(
     })
 }
 
-pub(crate) fn center(capture: &EditorBatchCapture) -> Result<Vec3, String> {
-    if capture.members.is_empty() {
-        return Err("Select at least one object".into());
-    }
-    let mut center = bevy::math::DVec3::ZERO;
-    for member in &capture.members {
-        center += member_transform(member, capture.world_scale)?
-            .translation
-            .as_dvec3();
-    }
-    let center = (center / capture.members.len() as f64).as_vec3();
-    if !center.is_finite() {
-        return Err("Selection center is outside the supported numeric range".into());
-    }
-    Ok(center)
-}
-
 pub(crate) fn affine_edits(
     capture: &EditorBatchCapture,
     affine: &EditorAffine,

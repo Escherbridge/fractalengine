@@ -335,9 +335,7 @@ fn render_query_section(
                     .observed(ui)
                     .clicked()
                 {
-                    let center = node_mgr
-                        .selected
-                        .as_ref()
+                    let center = node_mgr.primary()
                         .and_then(|sel| verse_mgr.all_nodes().find(|n| n.id == sel.node_id))
                         .map(|n| {
                             [

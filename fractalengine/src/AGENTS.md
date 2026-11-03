@@ -2,8 +2,12 @@
 
 Checked selection route commits and Undo feed the same `PathProjection` consumer as
 ordinary point edits. `advance_path_edits` drains UiManager's confirmed selection
-projections before the existing Undo queue, checks the active Petal, rebuilds route
-rendering and refreshes the current editor rows. History previews have no path into
+projections before the existing Undo queue. Each projection carries a real positive
+journal version. The consumer checks the current owning Petal, known committed versions
+and a bounded consumed-version watermark before rebuilding rendering or editor rows;
+queue order cannot let an older ordinary receipt overwrite a newer batch result.
+Unversioned reconciliation uses normal hierarchy/property hydration. Watermarks reset
+on Petal/navigation/authority reloads and prune removed node IDs. History previews have no path into
 this queue. QA debug and portal adapters read NodeManager's primary accessor; their
 actual rendered-entity identity guards are unchanged.
 

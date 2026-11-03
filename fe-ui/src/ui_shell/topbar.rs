@@ -971,9 +971,11 @@ mod tests {
             active_tool: Tool::Pen,
             ..Default::default()
         };
-        let node_mgr = crate::node_manager::NodeManager {
-            gesture_active: true,
-            ..Default::default()
+        #[allow(clippy::field_reassign_with_default)]
+        let node_mgr = {
+            let mut nodes = crate::node_manager::NodeManager::default();
+            nodes.gesture_active = true;
+            nodes
         };
         stash_input_context(
             &ctx,

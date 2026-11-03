@@ -27,7 +27,6 @@ pub(crate) mod curve;
 mod dispatch;
 mod gimbal_interaction;
 mod group_gimbal;
-pub(crate) use group_gimbal::tool_capability as selection_tool_capability;
 mod inspector_sync;
 /// hexon_scale FR-9 Measure tool: Tape/Area reducer + viewport anchors. See AGENTS.md §measure-tool.
 pub mod measure;
@@ -43,6 +42,7 @@ mod pointer;
 mod router;
 /// Typed selection read-model (FR-1): a per-frame projection over the two
 /// selection authorities. See AGENTS.md §selection-read-model.
+mod selected_set;
 mod selection;
 pub(crate) use selected_set::SelectionRequest;
 pub use selected_set::{SelectionMode, SelectionTarget, MAX_SELECTED_NODES};
@@ -86,13 +86,13 @@ pub use dispatch::{resolve_operation, HandleSide, HitTarget, Operation};
 /// Manager for node selection and active drag. Register via [`NodeManagerPlugin`].
 #[derive(Resource, Default)]
 pub struct NodeManager {
-    pub(super) selected: Option<NodeSelection>,
-    pub(super) additional: Vec<NodeSelection>,
-    pub(super) primary_order: usize,
-    pub(super) selection_petal: Option<String>,
-    pub(super) selection_anchor: Option<String>,
+    selected: Option<NodeSelection>,
+    additional: Vec<NodeSelection>,
+    primary_order: usize,
+    selection_petal: Option<String>,
+    selection_anchor: Option<String>,
     pub(super) pending_selection: Option<SelectionRequest>,
-    pub(super) cancelled_restores: Vec<(Entity, DragRestore)>,
+    cancelled_restores: Vec<CancelledRestore>,
     pub(super) group_drag: Option<group_gimbal::GroupDrag>,
     pub(crate) selection_generation: u64,
     pub(crate) pending_transform_before: Option<Transform>,
@@ -132,6 +132,12 @@ pub struct NodeSelection {
     /// Pulses `true` for one frame when a drag is released so the broadcast
     /// system can write the final transform to the DB and peers.
     pub drag_committed: bool,
+}
+
+struct CancelledRestore {
+    entity: Entity,
+    node_id: String,
+    transform: DragRestore,
 }
 
 /// An in-progress gimbal axis drag.
@@ -267,6 +273,23 @@ impl NodeManager {
         focus.target = Some((node_id.to_owned(), fallback));
     }
 
+    pub(crate) fn mark_transform_committed(
+        &mut self,
+        entity: Entity,
+        before: Transform,
+    ) -> Result<(), String> {
+        if self.selection_count() != 1 || self.selected_entity() != Some(entity) {
+            return Err("Selection changed before the transform could be committed".into());
+        }
+        self.selected.as_mut().unwrap().drag_committed = true;
+        self.pending_transform_before = Some(before);
+        Ok(())
+    }
+
+    pub(crate) fn invalidate_external_preview(&mut self, node_id: &str) {
+        self.invalidate_transform_preview(node_id);
+    }
+
     pub fn is_selected(&self) -> bool {
         self.selected.is_some()
     }
@@ -322,10 +345,10 @@ impl NodeManager {
 
     /// A newer persisted snapshot wins over an unfinished local axis drag.
     pub(crate) fn accept_committed_transform(&mut self, node_id: &str) -> bool {
-        let committed_entity = self
-            .members()
-            .find(|member| member.node_id == node_id)
-            .map(|member| member.entity);
+        self.invalidate_transform_preview(node_id)
+    }
+
+    fn invalidate_transform_preview(&mut self, node_id: &str) -> bool {
         let group_interrupted = self
             .group_drag
             .as_ref()
@@ -333,16 +356,14 @@ impl NodeManager {
         if group_interrupted {
             self.cancel_group_drag();
         }
-        if let Some(entity) = committed_entity {
-            self.cancelled_restores
-                .retain(|(restored, _)| *restored != entity);
-        }
+        self.cancelled_restores
+            .retain(|restore| restore.node_id != node_id);
         if let Some(selection) = self
             .selected
             .as_mut()
             .filter(|selection| selection.node_id == node_id)
         {
-            self.pending_transform_before=None;
+            self.pending_transform_before = None;
             let interrupted = selection.drag.is_some() || selection.drag_committed;
             selection.drag = None;
             selection.drag_committed = false;
@@ -559,6 +580,24 @@ mod tests {
             generation,
             "a refused set cannot partially change selection"
         );
+        for mode in [SelectionMode::Extend, SelectionMode::Toggle] {
+            assert!(mgr
+                .reduce_selection(
+                    Some("petal"),
+                    vec![SelectionTarget {
+                        entity: entity(1),
+                        node_id: "alias-for-existing-entity".into()
+                    }],
+                    mode
+                )
+                .is_err());
+            assert_eq!(
+                mgr.generation(),
+                generation,
+                "post-merge entity aliases refuse the complete operation"
+            );
+            assert_eq!(mgr.selection_count(), 3);
+        }
         mgr.reduce_selection(Some("other-petal"), vec![target(4)], SelectionMode::Toggle)
             .unwrap();
         assert_eq!(
@@ -567,8 +606,33 @@ mod tests {
             "a Petal change never carries old members"
         );
         assert_eq!(mgr.selected_petal(), Some("other-petal"));
+        mgr.selected.as_mut().unwrap().drag = Some(AxisDrag {
+            axis: crate::gimbal::GimbalAxis::X,
+            start_cursor: Vec2::ZERO,
+            start_pos: Vec3::ZERO,
+            start_rot: Quat::IDENTITY,
+            start_scale: Vec3::ONE,
+            axis_screen_dir: Vec2::X,
+        });
         mgr.deselect();
         assert!(mgr.members().next().is_none());
+        mgr.accept_committed_transform("node-4");
+        assert!(
+            mgr.take_cancelled_restores().is_empty(),
+            "a receipt for a deselected node removes its old queued restore by semantic ID"
+        );
+        mgr.select(entity(4), "node-4");
+        mgr.selected.as_mut().unwrap().drag = Some(AxisDrag {
+            axis: GimbalAxis::X,
+            start_cursor: Vec2::ZERO,
+            axis_screen_dir: Vec2::X,
+            start_pos: Vec3::ZERO,
+            start_rot: Quat::IDENTITY,
+            start_scale: Vec3::ONE,
+        });
+        mgr.deselect();
+        mgr.invalidate_external_preview("node-4");
+        assert!(mgr.take_cancelled_restores().is_empty(), "optimistic incoming transforms also fence obsolete restores without becoming committed history");
     }
 
     #[test]
@@ -1370,6 +1434,10 @@ mod tests {
             "path_asset".into(),
             serde_json::json!({"asset_path":"blob://tree.glb","spacing_value":2.0}),
         );
+        {
+            let mut ui = app.world_mut().resource_mut::<crate::actions::UiManager>();
+            while let Some((notice, _)) = ui.active_notice(0.0) { let id = notice.id; ui.dismiss_notice(id); }
+        }
         app.world_mut()
             .write_message(DbResult::CheckedNodeMutationResolved {
                 node_id: "node-1".into(),
@@ -1384,15 +1452,7 @@ mod tests {
                 correlation_id: resolve_id,
             });
         app.update();
-        assert_eq!(
-            app.world()
-                .resource::<crate::undo::UndoState>()
-                .queued_path_projection()
-                .unwrap()
-                .points,
-            newer_points,
-            "historical success must never replace the authorized current route"
-        );
+        assert!(app.world().resource::<crate::undo::UndoState>().queued_path_projection().is_none(), "unversioned current reads cannot enter the committed projection queue");
         assert_eq!(
             app.world()
                 .resource::<crate::verse_manager::PathAssetCache>()
@@ -1400,6 +1460,10 @@ mod tests {
                 .unwrap()[0],
             [100.0, 3.0, 200.0]
         );
+        let hydration = rx.try_iter().collect::<Vec<_>>();
+        assert!(hydration.iter().any(|command| matches!(command, DbCommand::LoadHierarchy)));
+        assert!(hydration.iter().any(|command| matches!(command, DbCommand::GetNodeProperties { node_id, .. } if node_id == "node-1")));
+        assert!(app.world().resource::<crate::actions::UiManager>().active_notice(0.0).is_some_and(|(notice, _)| notice.text.contains("no current version")));
         let rows = crate::gis::decode_gpx_points(&newer_points);
         let old_read =
             app.world_mut()

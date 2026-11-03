@@ -24,7 +24,7 @@ pub(crate) fn asset_card_section(
     ui_mgr: &mut UiManager,
     status: &AssetDownloadStatus,
 ) {
-    let Some(sel) = node_mgr.selected.as_ref() else {
+    let Some(sel) = node_mgr.primary() else {
         return;
     };
     let node = verse_mgr.all_nodes().find(|n| n.id == sel.node_id);

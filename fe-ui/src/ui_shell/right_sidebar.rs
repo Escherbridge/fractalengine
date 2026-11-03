@@ -25,9 +25,9 @@ use crate::asset_ops::AssetDownloadStatus;
 use crate::dialogs::ActiveDialog;
 use crate::gis::PathEditorState;
 use crate::navigation_manager::NavigationManager;
-use crate::node_manager::{project_selection, NodeManager};
+use crate::node_manager::NodeManager;
 use crate::panels::tool_inspector::{
-    anchor_readout, fresh_path_selection, gimbal_affordance_label, selection_summary,
+    anchor_readout, gimbal_affordance_label, selection_summary,
 };
 use crate::panels::tool_panel::ToolPanelState;
 use crate::panels::volume_report_panel::VolumeReportState;
@@ -357,6 +357,7 @@ pub fn render_right_sidebar(
             db_tx,
             nav,
             asset_status,
+            path_state,
         ),
         Some(RightSidebarSection::Options) => render_options_section(
             ctx,
@@ -443,9 +444,7 @@ pub fn render_right_sidebar(
             ui_mgr,
             visibility,
             nav.active_petal_id.as_deref(),
-            node_mgr
-                .selected
-                .as_ref()
+            node_mgr.primary()
                 .map(|s| s.node_id.as_str())
                 .filter(|id| {
                     nav.active_petal_id
@@ -518,6 +517,7 @@ fn render_inspector_section(
     db_tx: &crossbeam::channel::Sender<DbCommand>,
     nav: &NavigationManager,
     asset_status: &AssetDownloadStatus,
+    path_state: &PathEditorState,
 ) {
     section_chrome(ctx, state, RightSidebarSection::Inspector, |ui| {
         inspector::right_inspector(
@@ -530,6 +530,7 @@ fn render_inspector_section(
             db_tx,
             nav,
             asset_status,
+            path_state,
         );
     });
 }
@@ -557,46 +558,16 @@ fn render_options_section(
     active_petal_id: Option<&str>,
     measure_state: &mut crate::node_manager::measure::MeasureState,
     measure_world_scale: f64,
-    nav:&NavigationManager,
-    petal_map:&PetalMapState,
-    role:&LocalUserRole,
+    nav: &NavigationManager,
+    petal_map: &PetalMapState,
+    role: &LocalUserRole,
 ) {
-    let kind = project_selection(
-        node_mgr
-            .selected
-            .as_ref()
-            .map(|s| (s.entity, s.node_id.as_str())),
-        path_state.editing_track_id.as_deref(),
-        path_state.selected_point,
-        path_state.selected_segment,
-    );
-    let kind = if matches!(kind, crate::node_manager::SelectionKind::Node(_)) {
-        match ui_mgr
-            .editor_batch
-            .capture(nav, node_mgr)
-            .and_then(|capture| capture.members.first())
-        {
-            Some(member) if member.stamp_path.is_some() => {
-                crate::node_manager::SelectionKind::Stamp(node_mgr.selected_entity().unwrap())
-            }
-            Some(member) if member.state.properties.contains_key("gpx_points") => {
-                crate::node_manager::SelectionKind::PathTrack {
-                    track_id: member.node_id.clone(),
-                }
-            }
-            _ => kind,
-        }
-    } else {
-        kind
-    };
-    // Guard a stale selected index outliving its points (see helper doc).
-    let kind = if node_mgr.selection_count() > 1 {
-        crate::node_manager::SelectionKind::Multiple {
-            count: node_mgr.selection_count(),
-        }
-    } else {
-        fresh_path_selection(kind, path_state.points.len())
-    };
+    let kind = ui_mgr
+        .editor_batch
+        .selection_kind(nav, node_mgr, path_state);
+    let route = ui_mgr
+        .editor_batch
+        .transform_route(nav, node_mgr, Some(path_state));
 
     section_chrome(ctx, state, RightSidebarSection::Options, |ui| {
         if node_mgr.selection_count() > 1 {
@@ -615,15 +586,7 @@ fn render_options_section(
                 return;
             }
         }
-        if ui_mgr
-            .editor_batch
-            .capture(nav, node_mgr)
-            .is_some_and(crate::editor_batch::has_derived_transform)
-            && !matches!(
-                kind,
-                crate::node_manager::SelectionKind::PathVertex { .. }
-                    | crate::node_manager::SelectionKind::PathSegment { .. }
-            )
+        if route == crate::editor_batch::TransformRoute::CheckedWholeObject
             && matches!(
                 tool.active_tool,
                 crate::panels::toolbar::Tool::Move
@@ -634,7 +597,21 @@ fn render_options_section(
             crate::editor_batch::ui::render_transform(ui, node_mgr, nav, ui_mgr, role);
             ui.separator();
         }
-        render_selection_readout(ui, tool.active_tool, &kind, &path_state.points);
+        if route == crate::editor_batch::TransformRoute::Waiting && node_mgr.selection_count() > 0 {
+            ui.label("Loading stored selection state before enabling object transforms.");
+        }
+        let capability = ui_mgr
+            .editor_batch
+            .interaction(nav, node_mgr)
+            .map(|interaction| interaction.capability(tool.active_tool, tool.snap.uniform_scale));
+        render_selection_readout(
+            ui,
+            tool.active_tool,
+            &kind,
+            &path_state.points,
+            route != crate::editor_batch::TransformRoute::Waiting
+                && capability.is_none_or(|value| value.is_ok()),
+        );
         ui.add_space(6.0);
         ui.separator();
         ui.add_space(6.0);
@@ -667,6 +644,7 @@ fn render_selection_readout(
     active_tool: crate::panels::toolbar::Tool,
     kind: &crate::node_manager::SelectionKind,
     points: &[crate::gis::PathPointRow],
+    gimbal_available: bool,
 ) {
     ui.label(
         egui::RichText::new("SELECTION")
@@ -688,7 +666,9 @@ fn render_selection_readout(
     }
     // Gimbal-active affordance exactly when a gimbal is drawn (mirrors
     // `gimbal_interaction.rs`'s draw/interact rule).
-    if let Some(affordance) = gimbal_affordance_label(active_tool, kind) {
+    if let Some(affordance) =
+        gimbal_affordance_label(active_tool, kind).filter(|_| gimbal_available)
+    {
         ui.add_space(4.0);
         ui.label(
             egui::RichText::new(affordance)

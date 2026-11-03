@@ -1,6 +1,6 @@
 //! Shared selection and group controls; see editor_batch/AGENTS.md.
 
-use super::{affine_edits, center, EditorBatchState};
+use super::{affine_edits, EditorBatchState};
 use crate::{
     accessibility::ResponseExt,
     actions::{UiAction, UiManager},
@@ -179,14 +179,11 @@ fn render_form(
         state.refresh();
     }
     let captured = state.capture_shared(nav, nodes);
-    if let Some(capture) = captured {
+    let interaction = state.interaction_shared(nav, nodes);
+    if let (Some(capture), Some(interaction)) = (captured, interaction) {
         ui.separator();
         ui.strong("Current values");
-        let transforms = capture
-            .members
-            .iter()
-            .map(|member| super::math::member_transform(member, capture.world_scale))
-            .collect::<Result<Vec<_>, _>>();
+        let transforms = interaction.members.as_ref();
         match transforms {
             Ok(transforms) => {
                 for (label, values) in [
@@ -194,7 +191,7 @@ fn render_form(
                         "Position",
                         transforms
                             .iter()
-                            .map(|value| value.translation)
+                            .map(|value| value.transform.translation)
                             .collect::<Vec<_>>(),
                     ),
                     (
@@ -202,7 +199,7 @@ fn render_form(
                         transforms
                             .iter()
                             .map(|value| {
-                                let (x, y, z) = value.rotation.to_euler(EulerRot::XYZ);
+                                let (x, y, z) = value.transform.rotation.to_euler(EulerRot::XYZ);
                                 Vec3::new(x, y, z) * (180.0 / std::f32::consts::PI)
                             })
                             .collect::<Vec<_>>(),
@@ -211,7 +208,7 @@ fn render_form(
                         "Scale",
                         transforms
                             .iter()
-                            .map(|value| value.scale)
+                            .map(|value| value.transform.scale)
                             .collect::<Vec<_>>(),
                     ),
                 ] {
@@ -242,9 +239,7 @@ fn render_form(
             ("Rotate", crate::panels::toolbar::Tool::Rotate),
             ("Axis Scale", crate::panels::toolbar::Tool::Scale),
         ] {
-            if let Err(reason) =
-                crate::node_manager::selection_tool_capability(&capture, tool, false)
-            {
+            if let Err(reason) = interaction.capability(tool, false) {
                 ui.label(format!("{label}: {reason}"));
             }
         }
@@ -266,7 +261,12 @@ fn render_form(
                 let rotation = parse(&state.draft.rotation)? * (std::f32::consts::PI / 180.0);
                 let scale = parse(&state.draft.scale)?;
                 let affine = EditorAffine {
-                    pivot: center(&capture)?.to_array().map(f64::from),
+                    pivot: interaction
+                        .center
+                        .as_ref()
+                        .map_err(Clone::clone)?
+                        .to_array()
+                        .map(f64::from),
                     translation: translation.to_array().map(f64::from),
                     rotation: Quat::from_euler(EulerRot::XYZ, rotation.x, rotation.y, rotation.z)
                         .to_array(),
