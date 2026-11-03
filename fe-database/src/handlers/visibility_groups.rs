@@ -158,17 +158,14 @@ async fn write_groups(
     groups: &[VisibilityGroupDto],
     scope: &str,
     local_did: &str,
-    auth: &CallerAuth,
+    _auth: &CallerAuth,
     expected: Option<&[VisibilityGroupDto]>,
 ) -> anyhow::Result<Vec<VisibilityGroupDto>> {
     use serde_json::{Value, json};
-    let (mut guards, mut bindings) = if matches!(auth, CallerAuth::Local) {
+    let (mut guards, mut bindings) =
         super::entity::prepare_scope_permission(db, scope, local_did, fe_policy::RoleLevel::Editor)
             .await?
-            .into_parts()
-    } else {
-        super::node_history::scope_fence(scope, None)?
-    };
+            .into_parts();
     let mut read = db
         .query(format!(
             "SELECT *, {} AS stamp_petal_snapshot FROM petal WHERE petal_id=$pid LIMIT 2",

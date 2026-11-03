@@ -24,6 +24,7 @@ pub(crate) async fn read(
     Ok(captured.view)
 }
 
+#[derive(Debug)]
 pub(crate) struct PreparedBatch {
     guards: Vec<String>,
     bindings: Vec<(String, Value)>,
@@ -53,19 +54,43 @@ pub(crate) async fn commit(db: &Db, prepared: PreparedBatch) -> anyhow::Result<E
         payload: json!({"editor_batch_request_id":receipt.request_id,"scope":receipt.scope,"actor_did":actor,"receipt":receipt}),
         sig: "00".repeat(64),
     };
-    crate::op_log::commit_operation_atomic_with(db,entry,|hlc| {
-        let mut last=std::collections::BTreeMap::new();
-        for (index,(id,op,_,_)) in facts.iter().enumerate() {if op!="baseline" {last.insert(id.clone(),index);}}
-        for (index,(id,op,version,payload)) in facts.iter_mut().enumerate() {
-            if op!="baseline" {payload["atomic_save_id"]=json!(receipt.request_id);}
-            if last.get(id)==Some(&index) {payload["atomic_save_request_id"]=json!(receipt.request_id);payload["editor_request_id"]=json!(receipt.request_id);}
-            let name=format!("batch_fact_{index}");
-            guards.push(format!("CREATE node_log CONTENT ${name}"));
-            bindings.push((name,json!({"log_id":ulid::Ulid::new().to_string(),"node_id":id,"hlc_timestamp":hlc as i64,"op":op,"source_did":actor,"payload":payload,"row_version":version,"created_at":chrono::Utc::now().to_rfc3339()})));
+    let mut last = std::collections::BTreeMap::new();
+    for (index, (id, op, _, _)) in facts.iter().enumerate() {
+        if op != "baseline" {
+            last.insert(id.clone(), index);
         }
-        guards.extend(checks);
-        (guards,bindings)
-    }).await?;
+    }
+    let mut envelope_slots = Vec::with_capacity(facts.len());
+    for (index, (id, op, version, payload)) in facts.iter_mut().enumerate() {
+        if op != "baseline" {
+            payload["atomic_save_id"] = json!(receipt.request_id);
+        }
+        if last.get(id) == Some(&index) {
+            payload["atomic_save_request_id"] = json!(receipt.request_id);
+            payload["editor_request_id"] = json!(receipt.request_id);
+        }
+        let name = format!("batch_fact_{index}");
+        guards.push(format!("CREATE node_log CONTENT ${name}"));
+        envelope_slots.push(bindings.len());
+        bindings.push((name,json!({"log_id":ulid::Ulid::new().to_string(),"node_id":id,"hlc_timestamp":i64::MIN,"op":op,"source_did":actor,"payload":payload,"row_version":version,"created_at":chrono::Utc::now().to_rfc3339()})));
+    }
+    guards.extend(checks);
+    let mut maximum_entry = entry.clone();
+    maximum_entry.lamport_clock = u64::MAX;
+    maximum_entry.hlc_timestamp = "18446744073709551615:FFFFFFFFFFFFFFFF".into();
+    capture::bounded(&(
+        maximum_entry,
+        &guards,
+        &bindings,
+        "BEGIN TRANSACTION;\nCREATE op_log CONTENT $__op_entry;\nCOMMIT TRANSACTION;",
+    ))?;
+    crate::op_log::commit_operation_atomic_with(db, entry, |hlc| {
+        for slot in envelope_slots {
+            bindings[slot].1["hlc_timestamp"] = json!(hlc as i64);
+        }
+        (guards, bindings)
+    })
+    .await?;
     Ok(receipt)
 }
 

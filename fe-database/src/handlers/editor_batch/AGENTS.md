@@ -5,7 +5,10 @@ or Editor. It rejects missing, tombstoned, duplicate or foreign targets, preserv
 and captures full raw node/point/history fences plus the exact server-encoded Petal row. Promoted
 stamp identity and owning path snapshots are included. Reads execute all captured fences before
 returning. Captures are expected-state data, never an authority grant. The serialized DB writer
-remains mandatory. Bounds are 256 targets and 4 MiB of expanded capture/receipt/facts/bindings.
+remains mandatory. Bounds are 256 targets and 4 MiB of expanded capture/receipt/facts/bindings. Commit rechecks the
+fully assembled manifest, SQL and bindings after fact IDs, record times, save tags and final markers
+exist. Maximum-width signed/unsigned HLC values and a conservative clock-string envelope reserve
+the only fields populated by the atomic seam; replacing them with actual clocks cannot increase size.
 
 `prepare.rs` compares the submitted capture to a fresh authorized one before preparing any effects.
 Targets must have exactly one typed edit per ordered captured member. Ordinary transforms reject
@@ -23,7 +26,8 @@ and its independently transformed owning path are a conflicting dependency and r
 
 Groups remain nonowning, many-to-many Petal collections. CreateGroup validates a fresh ULID, bounded
 registry/name, and absence of retained references before atomically adding the registry and every
-captured membership. Legacy IDs are preserved. New registry IDs cannot resurrect references held by
+captured membership. Legacy IDs are preserved. Legacy API registry writes retain their caller-role admission and also
+seal the actual local publisher's Editor authority/ancestry at transaction use, even for Identified callers. New registry IDs cannot resurrect references held by
 any live or tombstoned node; existing legacy/API registry writers share that transactional fence.
 DeleteGroup is the inverse for a fully captured group: an uncaptured stored reference refuses the
 whole delete. No object is deleted. Remaining display-order values stay unchanged; creation appends
