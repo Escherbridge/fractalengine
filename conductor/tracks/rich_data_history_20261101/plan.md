@@ -24,8 +24,11 @@ title: Rich data and history execution
 - [ ] Catalog reconciliation and source fingerprint review; changed-region and final full-coverage passes.
 - [ ] Final integrated checks and original campaign CI/tagged artifact publication.
 - [~] Text-sized thin tree icons and explicit primary/additional/partial row states: source integrated and focused26 size/scale/primary evidence independently approved; multiple/partial behavior and final coverage pending.
-- [ ] Extend the authoritative NodeManager selection set and Petal group actions across tree, Inspector, viewport and tools; implement checked atomic group edits and single-action Undo.
+- [~] Ordered selection, shared Inspector/Options/tool routing and checked group edits are source-reviewed and integrated through44864962; compilation/live acceptance, closed-route witness and exact group-delete/empty-group inverse remain required.
 - [ ] Verify group creation/membership, mixed properties, capability refusals, selection navigation, pivot behavior and persistence; reconcile group sharing with the documented unmapped replication gap.
+- [~] Addressed native Viewer Join: focused28 independently verifies one-use input submission, actual Viewer role and matching hierarchy; shared nodes remain absent (Owner25/recipient0), tracked as QA-0063.
+- [ ] Review and execute committed-node publication/recovery and admitted-current native projection; keep remote state separate from local journal versions and preserve newer local drafts.
+- [ ] Complete authorized legacy asset recovery and actual peer blob delivery before accepting imported-object sharing; REST node arrival alone is insufficient.
 - [~] Completed-save history playback: source integrated and focused26 actual boundary/page/native refusal/playback evidence independently approved; malformed-journal journey execution and final coverage pending.
 
 Current checkout ownership and immutable source commits are tracked in the campaign ledger and
