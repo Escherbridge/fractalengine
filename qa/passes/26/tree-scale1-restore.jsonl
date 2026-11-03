@@ -1,0 +1,3 @@
+{"accepted": true, "action": {"action": "ui_scale", "factor": 1.0}}
+{"open_windows": ["Inspector"], "window_state": {"height": 900, "maximized": false, "minimized": false, "ui_scale": 1.0, "width": 1600}}
+{"generation_changed": false, "log_after": {"generation": 1, "seq": 405}, "log_watermark": {"generation": 1, "seq": 405}, "new_logs": [], "retention": {"possible_gap": false, "seq_delta": 0, "source_derived_capacity": 2000}}

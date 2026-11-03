@@ -400,3 +400,22 @@ probe, accepted commands are not replayed, and fresh QA consumption repeats exac
 typed current authority preparation. Source approval does not establish paired
 runtime success. New command/reply classifiers, lock dependency edges and newer
 main forms/reset/observer/startup seams require careful integration review.
+
+## QA26 approval and collaboration integration
+
+Independent QA26 evidence review approves99 input hashes/127 records, seven PNGs,
+API1/4/7 versus interior2/3/5/6, one-fact page boundaries and native requested
+2/4/7/4/7 without modifying actual ECS or current stored facts. Thin primary rows
+are accessible at all five observations; reduced height19.9921875px is retained
+exactly. Narrow coverage remains incomplete. No-helper controls are disabled before
+click and fixture404 is separate from native navigation/expiry evidence. Stopped
+logs15WARN/0ERROR,71-byte stderr, no Rust panic and eight absent identities match.
+
+Main42ba78fe..98b87747 integration received separate source approval after adding
+the three new mutating commands to the deferred inventory. Existing creation/TRS,
+native-import lifecycle, stamp read coordinator/actual-pose observer, reset resources,
+initial navigation latch and independent Join intent revisions are preserved. Core
+reviewed P2P authority/coordinator/transfer modules match the frozen lane. Maina794
+records minimal offline lock edges with no package upgrades; first production build
+finds a slice-vs-reference E0277, and reviewed3394 borrows that slice. Retry and actual
+paired execution remain required. These source approvals do not close QA-0050.

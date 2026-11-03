@@ -1,0 +1,18 @@
+{
+  "node_response_unchanged": true,
+  "all_seven_original_audit_facts_unchanged": true,
+  "available_exact_versions": [
+    1,
+    4,
+    7
+  ],
+  "interior_versions_without_state": [
+    2,
+    3,
+    5,
+    6
+  ],
+  "single_fact_pagination_resolves_complete_explicit_batches": true,
+  "no_writes_submitted": true,
+  "scope": "focused actual new-stage API; UI and malformed-journal checks remain separate"
+}

@@ -4,8 +4,8 @@ date: 2026-11-01
 status: in_progress
 source: ./handoff-20261101-qa-chain.md
 current_writer: /root
-current_slice: QA24/25 independently reviewed; sealed 9b43 stage live in QA26 with completed-save API and native Inspector checks passing; compact tree verified at three sizes and two extra scales
-parallel_code_worktrees: Checked multi-object batch storage; selection/groups/Inspector/tools; P2P Manager production activation
+current_slice: QA24 through QA26 independently reviewed and stopped; reviewed P2P stack integrated through 3394a04a, production build retry underway; checked group batch and interaction implementation isolated
+parallel_code_worktrees: Checked multi-object batch corrections and adapters; selection/groups/Inspector/tools
 ---
 
 # QA chain continuation
@@ -33,7 +33,30 @@ Starting HEAD: `5bc2aa0`. Existing H3 files are preserved and continued.
 
 ## Current acceptance state
 
-### Latest checkpoint - focused QA24/25 succeeded with explicit qualifications
+### Latest checkpoint - QA26 reviewed; collaboration source integrated
+
+- Independent QA26 evidence review approves99 hashed inputs,127 parsed records and
+  seven inspected PNGs. Actual completed-save API/native playback, unchanged live
+  pose/current node/audit facts, thin primary selection at three sizes and extra
+  scales, disabled no-helper Portal and scoped404 are supported. Full/convergence,
+  malformed-journal execution and comprehensive keyboard/layout coverage remain false.
+- QA26 stopped logs15WARN/0ERROR,71-byte absent-helper stderr and no Rust panic match
+  independently. All eight captured app identities are absent and the wrapper closed.
+- Reviewed P2P lane throughc79c7cf2 is integratedmain98b87747. Separate integration
+  review verifies existing creation/TRS/import receipts, stamp observer, read coordinator,
+  reset resources, startup latch/intent revision and native form targets survive.
+  Maina794a195 adds the three deferred mutation inventory entries and only the two
+  existing iroh dependency edges to Cargo.lock. Offline resolution succeeds, no upgrades.
+- First production build finds E0277 in the chain-prefix comparison. Independently
+  reviewed3394a04a borrows the left slice; production retry is underway. No app/helper
+  is live, no paired Join/Manager/convergence acceptance or final tests are claimed.
+- Group batch sourcec3c78870/c4ca00bc remains isolated. Independent review requires
+  actual API publisher authority at transaction use and a final expanded4MiB bound;
+  correctiond4e0cc85 is frozen for re-review. Exact inherited stamp override restoration,
+  generic atomic-save history tags and existing journeys remain in progress, alongside
+  the native selection/Inspector/tool/Undo implementation. No subset fallback is accepted.
+
+### Previous checkpoint - focused QA24/25 succeeded with explicit qualifications
 
 - QA24 sealed162d completed all five stamp numeric drafts and two explicit Saves without
   the earlier crash. Fresh canonical properties and scoped actor baselinev1 succeed;
@@ -67,7 +90,7 @@ Starting HEAD: `5bc2aa0`. Existing H3 files are preserved and continued.
   Step4-to7-to4 and Play-to7 pass focused checks. Stored facts and live pose stay unchanged.
   Tree captures at1280/1024/1600 and.75/2scales show thin glyphs and clear primary row;
   narrow measured layout has no violations, with coverage gaps still explicit.
-  QA26 evidence review is pending. No integrated tests, FULL catalog,
+  QA26 evidence review subsequently passed as recorded above. No integrated tests, FULL catalog,
   convergence, five live UX audits, CI or tagged release acceptance is claimed.
 
 ### Previous checkpoint - QA23 crash fixed in source, next replay pending

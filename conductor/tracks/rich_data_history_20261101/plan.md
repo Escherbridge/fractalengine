@@ -23,10 +23,10 @@ title: Rich data and history execution
 - [~] Real Both scenario: all38 functional checks passed in13; exact object/history/local-data restart passed, distributed restart failed QA-0035. Repair integrated, fresh build/live proof pending.
 - [ ] Catalog reconciliation and source fingerprint review; changed-region and final full-coverage passes.
 - [ ] Final integrated checks and original campaign CI/tagged artifact publication.
-- [~] Text-sized thin tree icons and explicit primary/additional/partial row states: source independently approved and integrated; focused26 size/scale/primary checks executed, evidence review and final coverage pending.
+- [~] Text-sized thin tree icons and explicit primary/additional/partial row states: source integrated and focused26 size/scale/primary evidence independently approved; multiple/partial behavior and final coverage pending.
 - [ ] Extend the authoritative NodeManager selection set and Petal group actions across tree, Inspector, viewport and tools; implement checked atomic group edits and single-action Undo.
 - [ ] Verify group creation/membership, mixed properties, capability refusals, selection navigation, pivot behavior and persistence; reconcile group sharing with the documented unmapped replication gap.
-- [~] Completed-save history playback: source independently approved and integrated; focused26 actual boundary/page/native refusal and playback checks executed, evidence review and malformed-journal journey execution pending.
+- [~] Completed-save history playback: source integrated and focused26 actual boundary/page/native refusal/playback evidence independently approved; malformed-journal journey execution and final coverage pending.
 
 Current checkout ownership and immutable source commits are tracked in the campaign ledger and
 `.omc/state/qa-chain-session.json`. Only the main owner runs Cargo or applications. Other authors remain in
