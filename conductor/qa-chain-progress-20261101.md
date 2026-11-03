@@ -4,8 +4,8 @@ date: 2026-11-01
 status: in_progress
 source: ./handoff-20261101-qa-chain.md
 current_writer: /root
-current_slice: QA24 through QA26 independently reviewed and stopped; reviewed P2P stack integrated through 3394a04a, production build retry underway; checked group batch and interaction implementation isolated
-parallel_code_worktrees: Checked multi-object batch corrections and adapters; selection/groups/Inspector/tools
+current_slice: QA27 paired issuance and retained Viewer grant reviewed; consumed masked submission refused and both apps stopped; checked group storage integrated through 6639f15c; Join frame fix and selection UI in review/authoring
+parallel_code_worktrees: Guarded Join completed-pass correction; selection/groups/Inspector/tools
 ---
 
 # QA chain continuation
@@ -33,7 +33,38 @@ Starting HEAD: `5bc2aa0`. Existing H3 files are preserved and continued.
 
 ## Current acceptance state
 
-### Latest checkpoint - QA26 reviewed; collaboration source integrated
+### Latest checkpoint - QA27 partial outcome reviewed; batch storage integrated
+
+- Sealed09923b5d builds without warnings in160.8s. Owner79556 and recipient80072
+  have distinct actual DIDs, stores and ports. Actual Owner Access generates addressed
+  v2 Viewer invitations, and refreshed stored Access confirms that recipient's Viewer grant.
+- The one-use client consumes a fresh generation, then the native input guard refuses
+  guarded_join_changed after52.695ms, three commands/five frames. Masked text is present
+  and Join enabled, but the recipient remains at its exact original Genesis navigation.
+  No Ready/Joined/native/role convergence is claimed and consumed input is never replayed.
+- QA27's earlier KeyError is a recording-wrapper pre-call failure with no transfer effect;
+  it is corrected before the later attempt. Scope gating, clipped/occluded menu refusals,
+  unsupported --id wrapper use and unused short-lease expiry remain qualified observations.
+- Independent evidence review approves77 hashes/105 records, two masked/public PNGs,
+  Owner11WARN/0ERROR and recipient9WARN/0ERROR, no Rust panic and eight absent identities
+  per app. Raw/JSON secret scans find no JWT-like or addressed URI payload. Both apps,
+  the launch wrapper and all captured descendants are stopped; no helper/Cargo is live.
+- QA-0062 is the guarded input temporal-response issue. Pinned egui source explains an
+  older response outside a render pass, consistent with the observed failure but without
+  a unique predicate receipt. Fixfcf9a01a captures actual completed-render responses and
+  remains isolated under independent review; no runtime repair claim yet.
+- Reviewed group storage is maind48bbe4d/5935e9aa/ef5a440e/8372105e/33c8f2ab/6639f15c.
+  Independent preservation review approves its exact storage/history implementation and
+  distinct runtime/P2P routing. It includes typed exact Group/stamp inverses, current
+  publisher guards and the expanded transaction bound. Compilation and native UI remain.
+- Reviewed catalog47da114a audits099 source:145families/1529IDs/1515mandatory, all1418
+  old IDs retained, final fingerprint null and execution false. Integrated batch storage
+  and forthcoming selection UI require another source reconciliation before FULL passes.
+- Selection/Inspector/group tools and Undo are still authoring in isolation. No final
+  integrated checks, five live UX audits, FULL/convergence, paired acceptance, CI or
+  tagged-release downloads are claimed complete.
+
+### Previous checkpoint - QA26 reviewed; collaboration source integrated
 
 - Independent QA26 evidence review approves99 hashed inputs,127 parsed records and
   seven inspected PNGs. Actual completed-save API/native playback, unchanged live

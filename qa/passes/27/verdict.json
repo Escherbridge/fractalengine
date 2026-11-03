@@ -1,0 +1,596 @@
+{
+  "schema": "fe-qa-focused-verdict-v1",
+  "pass": 27,
+  "generated_at": "2026-11-03T04:31:00.556108+00:00",
+  "independent_review": "approved_qualified_failure_and_partial_effect_by_p2p_typed_adapter_review",
+  "verdict": "owner_issuance_and_stored_viewer_grant_succeed_consumed_masked_submission_refused",
+  "owned_apps": {
+    "owner": {
+      "run_dir": "C:\\Users\\atooz\\Programming\\fractalengine-workspace\\fractalengine\\.qa\\run\\20261101-191920-658",
+      "api_base": "http://127.0.0.1:8882",
+      "process_identity": {
+        "pid": 79556,
+        "start_ticks": "639292755912682086",
+        "exe_path": "C:\\Users\\atooz\\Programming\\fractalengine-workspace\\fractalengine\\.qa\\stage\\09923b5d-20261102210533940\\fractalengine.exe"
+      },
+      "descendant_identities": [
+        {
+          "pid": 97616,
+          "start_ticks": "639292755913253545",
+          "exe_path": "C:\\Windows\\system32\\conhost.exe"
+        },
+        {
+          "pid": 98828,
+          "start_ticks": "639292755958169705",
+          "exe_path": "C:\\Program Files (x86)\\Microsoft\\EdgeWebView\\Application\\156.0.4314.58\\msedgewebview2.exe"
+        },
+        {
+          "pid": 75568,
+          "start_ticks": "639292755958745187",
+          "exe_path": "C:\\Program Files (x86)\\Microsoft\\EdgeWebView\\Application\\156.0.4314.58\\msedgewebview2.exe"
+        },
+        {
+          "pid": 88456,
+          "start_ticks": "639292755960850232",
+          "exe_path": "C:\\Program Files (x86)\\Microsoft\\EdgeWebView\\Application\\156.0.4314.58\\msedgewebview2.exe"
+        },
+        {
+          "pid": 86964,
+          "start_ticks": "639292755960869273",
+          "exe_path": "C:\\Program Files (x86)\\Microsoft\\EdgeWebView\\Application\\156.0.4314.58\\msedgewebview2.exe"
+        },
+        {
+          "pid": 44928,
+          "start_ticks": "639292755961182697",
+          "exe_path": "C:\\Program Files (x86)\\Microsoft\\EdgeWebView\\Application\\156.0.4314.58\\msedgewebview2.exe"
+        },
+        {
+          "pid": 86068,
+          "start_ticks": "639292755962008558",
+          "exe_path": "C:\\Program Files (x86)\\Microsoft\\EdgeWebView\\Application\\156.0.4314.58\\msedgewebview2.exe"
+        }
+      ],
+      "stage_manifest": {
+        "built_at": "2026-11-03T04:05:34.2105656Z",
+        "exe_sha256": "15A07D7EEBD1CF6AE14C0A1A31CCC346DFC01DB5809EDE6FC07F472999F7C17F",
+        "source_dirty": true,
+        "kind": "fractalengine-qa-stage-v1",
+        "source_fingerprint": "1535CD248B59753F9BB473A3958272C4B7E98F71F55D8F45E68BF93F7F107736",
+        "source_commit": "09923b5daf16af848944db34fd7fff5e04ad5c25",
+        "seal_hexon_sha256": "345E749E67455BA76FC7A87538229F16DF55063ED83970B80F705651AB963B15"
+      },
+      "stage_matches_source": true,
+      "stage": "C:\\Users\\atooz\\Programming\\fractalengine-workspace\\fractalengine\\.qa\\stage\\09923b5d-20261102210533940",
+      "stdout_path": "C:\\Users\\atooz\\Programming\\fractalengine-workspace\\fractalengine\\.qa\\run\\20261101-191920-658\\starts\\20261102-210629-636-70cb5459ac8e44238a559829cf39a112\\stdout.log",
+      "stderr_path": "C:\\Users\\atooz\\Programming\\fractalengine-workspace\\fractalengine\\.qa\\run\\20261101-191920-658\\starts\\20261102-210629-636-70cb5459ac8e44238a559829cf39a112\\stderr.log",
+      "restart": {
+        "attempt": "C:\\Users\\atooz\\Programming\\fractalengine-workspace\\fractalengine\\.qa\\run\\20261101-191920-658\\starts\\20261102-210629-636-70cb5459ac8e44238a559829cf39a112\\start.json",
+        "preserved_root": "C:\\Users\\atooz\\Programming\\fractalengine-workspace\\fractalengine\\.qa\\run\\20261101-191920-658",
+        "stale_stage_allowed": false,
+        "reseeded": false,
+        "port_changed": false,
+        "previous_start": "C:\\Users\\atooz\\Programming\\fractalengine-workspace\\fractalengine\\.qa\\run\\20261101-191920-658\\starts\\20261102-210629-636-70cb5459ac8e44238a559829cf39a112\\previous-start.json"
+      }
+    },
+    "recipient": {
+      "run_dir": "C:\\Users\\atooz\\Programming\\fractalengine-workspace\\fractalengine\\.qa\\run\\20261102-210645-583",
+      "api_base": "http://127.0.0.1:8883",
+      "process_identity": {
+        "pid": 80072,
+        "start_ticks": "639292756056149035",
+        "exe_path": "C:\\Users\\atooz\\Programming\\fractalengine-workspace\\fractalengine\\.qa\\stage\\09923b5d-20261102210533940\\fractalengine.exe"
+      },
+      "descendant_identities": [
+        {
+          "pid": 93012,
+          "start_ticks": "639292756057837069",
+          "exe_path": "C:\\Windows\\system32\\conhost.exe"
+        },
+        {
+          "pid": 91484,
+          "start_ticks": "639292756096884630",
+          "exe_path": "C:\\Program Files (x86)\\Microsoft\\EdgeWebView\\Application\\156.0.4314.58\\msedgewebview2.exe"
+        },
+        {
+          "pid": 93408,
+          "start_ticks": "639292756097096067",
+          "exe_path": "C:\\Program Files (x86)\\Microsoft\\EdgeWebView\\Application\\156.0.4314.58\\msedgewebview2.exe"
+        },
+        {
+          "pid": 91776,
+          "start_ticks": "639292756099934727",
+          "exe_path": "C:\\Program Files (x86)\\Microsoft\\EdgeWebView\\Application\\156.0.4314.58\\msedgewebview2.exe"
+        },
+        {
+          "pid": 97156,
+          "start_ticks": "639292756099959478",
+          "exe_path": "C:\\Program Files (x86)\\Microsoft\\EdgeWebView\\Application\\156.0.4314.58\\msedgewebview2.exe"
+        },
+        {
+          "pid": 91224,
+          "start_ticks": "639292756100352524",
+          "exe_path": "C:\\Program Files (x86)\\Microsoft\\EdgeWebView\\Application\\156.0.4314.58\\msedgewebview2.exe"
+        },
+        {
+          "pid": 93788,
+          "start_ticks": "639292756101431676",
+          "exe_path": "C:\\Program Files (x86)\\Microsoft\\EdgeWebView\\Application\\156.0.4314.58\\msedgewebview2.exe"
+        }
+      ],
+      "stage_manifest": {
+        "built_at": "2026-11-03T04:05:34.2105656Z",
+        "exe_sha256": "15A07D7EEBD1CF6AE14C0A1A31CCC346DFC01DB5809EDE6FC07F472999F7C17F",
+        "source_dirty": true,
+        "kind": "fractalengine-qa-stage-v1",
+        "source_fingerprint": "1535CD248B59753F9BB473A3958272C4B7E98F71F55D8F45E68BF93F7F107736",
+        "source_commit": "09923b5daf16af848944db34fd7fff5e04ad5c25",
+        "seal_hexon_sha256": "345E749E67455BA76FC7A87538229F16DF55063ED83970B80F705651AB963B15"
+      },
+      "stage_matches_source": true,
+      "stage": "C:\\Users\\atooz\\Programming\\fractalengine-workspace\\fractalengine\\.qa\\stage\\09923b5d-20261102210533940",
+      "stdout_path": "C:\\Users\\atooz\\Programming\\fractalengine-workspace\\fractalengine\\.qa\\run\\20261102-210645-583\\stdout.log",
+      "stderr_path": "C:\\Users\\atooz\\Programming\\fractalengine-workspace\\fractalengine\\.qa\\run\\20261102-210645-583\\stderr.log"
+    }
+  },
+  "full_catalog_coverage": false,
+  "convergence_claim": false,
+  "integrated_tests_executed": false,
+  "clipboard_accessed": false,
+  "credential_replayed": false,
+  "helper_launched": false,
+  "evidence_inputs": [
+    {
+      "file": "owner-access-after-consumed-refusal-ui.jsonl",
+      "bytes": 230109,
+      "sha256": "fa900c16d801cecc99513b829b963e6793d02ee85aa1647b95de88f7a04b30f8"
+    },
+    {
+      "file": "owner-access-tab-ui.jsonl",
+      "bytes": 225695,
+      "sha256": "b35b7d001e6e145b2c0100e0a9804241af41f6ffc93d08992dce7987520e0576"
+    },
+    {
+      "file": "owner-addressed-draft-ui.jsonl",
+      "bytes": 225868,
+      "sha256": "04cd1d6edd6dc7e8c3a436e8b3058809086e8b96f30e4a6e7423cac5d1c1dfd9"
+    },
+    {
+      "file": "owner-after-consume-public-observe.jsonl",
+      "bytes": 164,
+      "sha256": "808379708e82693050b76c7e8254cb7febe04ed1ffd1907a4340a1bbcc5217e0"
+    },
+    {
+      "file": "owner-after-consumed-refusal-warnings.jsonl",
+      "bytes": 692,
+      "sha256": "5399e83994eac6d8e57c111e6dbe73de00d494d3397c758af7121615e4a835c7"
+    },
+    {
+      "file": "owner-after-generate-public-observe.jsonl",
+      "bytes": 703,
+      "sha256": "cae2827904be3b259660f1a90c884a27c4fa277315309160612266ae3c02b357"
+    },
+    {
+      "file": "owner-after-generate-ui.jsonl",
+      "bytes": 226889,
+      "sha256": "53fd82e2076df630ca8ab5bcda357aa7ff08a54461b49f0fec056020eb75fe25"
+    },
+    {
+      "file": "owner-after-petal-back-state.jsonl",
+      "bytes": 1092,
+      "sha256": "0b29f565f1a28fab9dd2ebb9a1871bfe66713a2643bea085cee0b4e8d6302a33"
+    },
+    {
+      "file": "owner-after-petal-back-ui.jsonl",
+      "bytes": 226482,
+      "sha256": "e32012c9f311aa298a9faf7d6bbc95eba729cb7819721d1c6f09c33d451b914b"
+    },
+    {
+      "file": "owner-at-verse-menu-ui.jsonl",
+      "bytes": 209709,
+      "sha256": "3b5b5f802507a97880d459809e878a84308e6c7d504df1543bdab13a3d94af36"
+    },
+    {
+      "file": "owner-at-verse-state.jsonl",
+      "bytes": 1057,
+      "sha256": "01cd6c561dc0e1881cbeafb861fdb90729abd19bcce6ed3a9e4ab5f2aab74156"
+    },
+    {
+      "file": "owner-back-to-petal-list.jsonl",
+      "bytes": 627,
+      "sha256": "52fa79c81a38cd6ecd586926b79f420d8d693637b3fcb5ff997d7db6620dae3f"
+    },
+    {
+      "file": "owner-before-scope-back-state.jsonl",
+      "bytes": 1120,
+      "sha256": "ba2575256e16aabbd95aa5aad8a654b27e0a9c9148a00417c1a91d6362c1d97f"
+    },
+    {
+      "file": "owner-before-scope-back-ui.jsonl",
+      "bytes": 204881,
+      "sha256": "49a0e796c9dd90cb186f833f57921d714051a536042a33e52456237849033ae6"
+    },
+    {
+      "file": "owner-browse-verse-fractals.jsonl",
+      "bytes": 647,
+      "sha256": "8cdb14a8b2154eb757c562f461965f7107244ecd5b3216b1eaaf051f7ae97cec"
+    },
+    {
+      "file": "owner-close-scoped-menu.jsonl",
+      "bytes": 398,
+      "sha256": "01e6d75f833d0969d72f5aec598adf97bc901a9cb01879181eb9c307ed411761"
+    },
+    {
+      "file": "owner-close-verse-menu-escape.jsonl",
+      "bytes": 398,
+      "sha256": "916081a5500e5c1e6fd2cf65281fc5889b80e7833d705682a9843bd3e26bd2a6"
+    },
+    {
+      "file": "owner-corrected-driver-public-observe.jsonl",
+      "bytes": 703,
+      "sha256": "49dfc5bf475a081d12fdb5a4e8e5877ccab9690b19dad4103228ab061bc9b1e6"
+    },
+    {
+      "file": "owner-end-all-recorded-identities.json",
+      "bytes": 2772,
+      "sha256": "0791c4f16912fa2c499ad57a0c8c438abd7df2c93a560ab510428d87ab93f18d"
+    },
+    {
+      "file": "owner-enter-verse-scope-clear.jsonl",
+      "bytes": 355,
+      "sha256": "e9d9225f650ee72aafc670f6a24bb36bbdf4be81f3201c15998737216d0d6ece"
+    },
+    {
+      "file": "owner-enter-verse-scope.jsonl",
+      "bytes": 355,
+      "sha256": "a940d086a3363038012b3ef6821f3eec9d7e57a755b62b9d3a93a7f0d4397e55"
+    },
+    {
+      "file": "owner-enter-visible-verse-scope.jsonl",
+      "bytes": 632,
+      "sha256": "5a093b743a8edf131ff52e29af3a94067956f116edd734f6f4f1827313580eaa"
+    },
+    {
+      "file": "owner-expired-transfer-public-observe.jsonl",
+      "bytes": 164,
+      "sha256": "808379708e82693050b76c7e8254cb7febe04ed1ffd1907a4340a1bbcc5217e0"
+    },
+    {
+      "file": "owner-focus-owner-minimize.jsonl",
+      "bytes": 452,
+      "sha256": "9d1cf4e996cb78b54bff2ad212123c85c6ff88a3182b0e1627852fa45a8d6e97"
+    },
+    {
+      "file": "owner-focus-owner-restore.jsonl",
+      "bytes": 454,
+      "sha256": "46c1755fbffcf63eeae13ae8d229ee9ada52cf8e007f6891e78a78958ce840a5"
+    },
+    {
+      "file": "owner-focus-owner-ui.jsonl",
+      "bytes": 204879,
+      "sha256": "6ade26c0d0c76cf14a1106fbad3676a979088eb068215f89f526f6de1190a760"
+    },
+    {
+      "file": "owner-fresh-viewer-public-observe.jsonl",
+      "bytes": 703,
+      "sha256": "b95c528d3ad45bdda28b3eec930f33ab3b75da78c0dcaf86269ffb60d58ec056"
+    },
+    {
+      "file": "owner-generate-fresh-viewer-after-lease-expired.jsonl",
+      "bytes": 646,
+      "sha256": "28a07760916beddbb4bcef614a4ba72dd30a54fcb250e3ed75732785f9b71e92"
+    },
+    {
+      "file": "owner-generate-viewer-for-corrected-driver.jsonl",
+      "bytes": 646,
+      "sha256": "5784acc22d9526a3deb6920564bfc5116dd132bb477b7e39e0901c0fdde7031b"
+    },
+    {
+      "file": "owner-generate-viewer-invitation-once.jsonl",
+      "bytes": 646,
+      "sha256": "e1b7c9181b2323508c86e784f3eec21055699ae2a7a45bc2580acdaf5cdb5686"
+    },
+    {
+      "file": "owner-initial-invitation-observe.jsonl",
+      "bytes": 164,
+      "sha256": "808379708e82693050b76c7e8254cb7febe04ed1ffd1907a4340a1bbcc5217e0"
+    },
+    {
+      "file": "owner-initial-state.jsonl",
+      "bytes": 1118,
+      "sha256": "400f8a09f5a6ed0e8890de93f20e99f10b3820dfd871341ec8c592491d969e42"
+    },
+    {
+      "file": "owner-initial-ui.jsonl",
+      "bytes": 204996,
+      "sha256": "ed91208cf3823845b938a5bae558773101f1eda6156cb9be51b8b7eb5e3d997e"
+    },
+    {
+      "file": "owner-open-access-tab.jsonl",
+      "bytes": 626,
+      "sha256": "4ebae6591ca0ec1a012e9c22da16b01bfba4e9b6b5d424a769445454567898a5"
+    },
+    {
+      "file": "owner-open-at-verse-menu.jsonl",
+      "bytes": 644,
+      "sha256": "f8fa7b5305b58d9c8195efb21977df699d06db40a31154b8caddaecc57ea0f99"
+    },
+    {
+      "file": "owner-open-at-verse-options.jsonl",
+      "bytes": 648,
+      "sha256": "401995a423b3bb201780d64e95e6874d2bf625a06971ae77124e75c7f4bc2264"
+    },
+    {
+      "file": "owner-open-scope-verse-menu.jsonl",
+      "bytes": 644,
+      "sha256": "6d8a63bfae664f483d57ca8fb80180f6d21ab51a895d81732dcf7526bfdc3b24"
+    },
+    {
+      "file": "owner-open-verse-menu.jsonl",
+      "bytes": 644,
+      "sha256": "ee7d71023ba58352f9855187874a013ad7e98a8408e7afb9d891c58d9ecd3126"
+    },
+    {
+      "file": "owner-open-verse-options.jsonl",
+      "bytes": 364,
+      "sha256": "ab3a0826299c5a31602b39978c0ea331423368f0683ebe03c377abfa32b1db9d"
+    },
+    {
+      "file": "owner-pre-end-identities.json",
+      "bytes": 1628,
+      "sha256": "5f424aa4c1231248632812117f090e3f224b06c1a26541a4e1935b8251258458"
+    },
+    {
+      "file": "owner-refresh-access-after-consumed-refusal.jsonl",
+      "bytes": 639,
+      "sha256": "ecde1d8f29fd270c74e657f901c4d53bdfb7436c0f7b90f816a10a75a554180a"
+    },
+    {
+      "file": "owner-reopen-verse-menu.jsonl",
+      "bytes": 641,
+      "sha256": "0a93563224536ef82a4079bda636337b90db9efe0f040cae8cccba0bcbe29c27"
+    },
+    {
+      "file": "owner-reopened-verse-menu-ui.jsonl",
+      "bytes": 209279,
+      "sha256": "8cb2b5d0d4aa211c1d0aa314b1b6c5b1fe5793379969d60fdd301ab65525d44c"
+    },
+    {
+      "file": "owner-scope-scroll-tree-top.jsonl",
+      "bytes": 451,
+      "sha256": "7c246ace84f79174a103cfdd698128bcf526c37253d3b6878d308db843701e83"
+    },
+    {
+      "file": "owner-scope-tree-top-ui.jsonl",
+      "bytes": 204998,
+      "sha256": "304acfe3519539fbd617467fbe41a2cd5eadd62d6980dd8a83e85b014380e66a"
+    },
+    {
+      "file": "owner-scope-verse-menu-ui.jsonl",
+      "bytes": 209401,
+      "sha256": "0da7035610a14f75782745f71bf90c30e9b63d5e17ae7a17e340dbe9aaa406ba"
+    },
+    {
+      "file": "owner-set-recipient-did.jsonl",
+      "bytes": 1073,
+      "sha256": "610f332abef10492b1ef02e776cdf93aba972df2b3ab166b8e53fadd344f67c0"
+    },
+    {
+      "file": "owner-start-public.json",
+      "bytes": 5957,
+      "sha256": "a1ce1e96327d3b2657842460de082868f90cd7e0df6b56a28bf3148d39cbc215"
+    },
+    {
+      "file": "owner-stored-viewer-role-shot.jsonl",
+      "bytes": 881,
+      "sha256": "559778383249bd71a56bae02eb602bf22a5cfe06c9223378723cce1a416b1a18"
+    },
+    {
+      "file": "owner-transfer-viewer-corrected-driver-once.jsonl",
+      "bytes": 180,
+      "sha256": "71c9bd894b060224501cc19b29599fb9c10b59500c150a6c23eea3edc4156f23"
+    },
+    {
+      "file": "owner-verse-menu-ui.jsonl",
+      "bytes": 209279,
+      "sha256": "5ea948257bc7d7f4dff094a6b2959affee37f32b0f8a25e7470ab99c47bbb5e1"
+    },
+    {
+      "file": "owner-verse-options-ui.jsonl",
+      "bytes": 219940,
+      "sha256": "357e1bd0906a76092752dbffaaad3d3d2e78d90f038d5e2de34fb08d42946a13"
+    },
+    {
+      "file": "owner-verse-scope-state.jsonl",
+      "bytes": 1120,
+      "sha256": "2c16f34866284d213a489bc8fbc87b946dd84903456de5a573d6f4a2f39ccecb"
+    },
+    {
+      "file": "owner-wait-corrected-driver-invite.jsonl",
+      "bytes": 74,
+      "sha256": "1d2172e3ba01ba4cb7bdd9a77b40a0fa26697f6ba45bf8d0d3c20e6f0aa81e67"
+    },
+    {
+      "file": "owner-wait-fresh-invite-ready.jsonl",
+      "bytes": 74,
+      "sha256": "1d2172e3ba01ba4cb7bdd9a77b40a0fa26697f6ba45bf8d0d3c20e6f0aa81e67"
+    },
+    {
+      "file": "pair-context.json",
+      "bytes": 11148,
+      "sha256": "c625a61a31df95dd436585983911b6d753d4e1102fb40214b6ada0d4810c6e30"
+    },
+    {
+      "file": "recipient-after-transfer-public-observe.jsonl",
+      "bytes": 164,
+      "sha256": "33e0ef4091f19b82d7e2d9ee521019b1b8610c037917f5e0b2ab1d128166457d"
+    },
+    {
+      "file": "recipient-after-transfer-state.jsonl",
+      "bytes": 1074,
+      "sha256": "383a6ac8778706418364c48b6c5bd07981105a9b26996d450a4a48f8e711cc58"
+    },
+    {
+      "file": "recipient-after-transfer-ui.jsonl",
+      "bytes": 81406,
+      "sha256": "f241349545e624877616ace591b33981f5d7e0b197987cb63a7a3dc6f10717b6"
+    },
+    {
+      "file": "recipient-after-transfer-warnings.jsonl",
+      "bytes": 252,
+      "sha256": "fee3c39f6b1a8bdacd403d4498b6956ca322a3eaadc967d6b70f53c06c357dc7"
+    },
+    {
+      "file": "recipient-clean-join-observe.jsonl",
+      "bytes": 367,
+      "sha256": "8ce19d90e32bb112c53d259b317d29138c16529125620f47e6ddc507e5d7f0f1"
+    },
+    {
+      "file": "recipient-clean-join-ui.jsonl",
+      "bytes": 81395,
+      "sha256": "71f101e79724c61e3ecde4c5ffbad7b0a3ad1c4d6455f606462f99634127492c"
+    },
+    {
+      "file": "recipient-end-all-recorded-identities.json",
+      "bytes": 2772,
+      "sha256": "d7aebe26aa48a433a43086fea4daca1925f8443d87da2105eeb34c319cc67fc1"
+    },
+    {
+      "file": "recipient-end-warnings-before-fix.jsonl",
+      "bytes": 252,
+      "sha256": "9d1a076eaa4ba8ed9f111f8ab26c868e2680fb1d6c6fe52f2a69438e243534cf"
+    },
+    {
+      "file": "recipient-focus-recipient-minimize.jsonl",
+      "bytes": 452,
+      "sha256": "ee5568e9d4e0e71c6beb0676060cefb9b5330d312fc8109a5e09668b5efa7caf"
+    },
+    {
+      "file": "recipient-focus-recipient-restore.jsonl",
+      "bytes": 454,
+      "sha256": "0655c50776830636f839a13c285ee40bc7f647e5da4f354433cdb2676b2e88da"
+    },
+    {
+      "file": "recipient-guarded-refusal-log.json",
+      "bytes": 427,
+      "sha256": "16e3228cb8c58d85a76260344aec4ae810462d87b1613cfd19263c6e90455eb9"
+    },
+    {
+      "file": "recipient-initial-invitation-observe.jsonl",
+      "bytes": 164,
+      "sha256": "33e0ef4091f19b82d7e2d9ee521019b1b8610c037917f5e0b2ab1d128166457d"
+    },
+    {
+      "file": "recipient-initial-state.jsonl",
+      "bytes": 1058,
+      "sha256": "108c9418d0ec1733b72d93387b8d0be2a642f9a2582324f5bc5e868b9a088437"
+    },
+    {
+      "file": "recipient-initial-ui.jsonl",
+      "bytes": 73827,
+      "sha256": "7687df33fab8ae415d780e1dec5440f33e6f232178b166031265fb46eeab1bc8"
+    },
+    {
+      "file": "recipient-open-clean-join.jsonl",
+      "bytes": 642,
+      "sha256": "47ead24c62507cf95281e58e8054592e36d2043e3c0fb7f6b089067e7b73e5fa"
+    },
+    {
+      "file": "recipient-pre-end-identities.json",
+      "bytes": 1628,
+      "sha256": "b286e047f055b8b800f02cbedc12a172c14630250cb917a584363f3afc16334a"
+    },
+    {
+      "file": "recipient-read-only-join-after-refusal-ui.jsonl",
+      "bytes": 81406,
+      "sha256": "cb67c39dd931559f8d67ccc32ef372f805f78d29501b1b1d0b620cf9ba82b4e0"
+    },
+    {
+      "file": "recipient-refused-join-masked-shot.jsonl",
+      "bytes": 740,
+      "sha256": "e547795b864b42dee31a455024880726887ce1d43090ddeb2b9848607f68d305"
+    },
+    {
+      "file": "screenshots\\owner-stored-viewer.png",
+      "bytes": 372030,
+      "sha256": "93c78a3701dda03555957b6cea1b4f73193a1e23be5a5c8626bd625966ba52da"
+    },
+    {
+      "file": "screenshots\\recipient-masked-refusal.png",
+      "bytes": 209346,
+      "sha256": "9ae67779e9a101bc1f61497a260d66edb101801e3cbb825c5ff07bc838560a99"
+    },
+    {
+      "file": "transfer-driver-precall-failure.json",
+      "bytes": 758,
+      "sha256": "cf9eeac0cc2d6cd2944624aefefe28863582dc4dcabf1fb2c83da62596f2bf6e"
+    }
+  ],
+  "parsed_records": 105,
+  "logs": {
+    "owner": {
+      "stdout": {
+        "bytes": 118267,
+        "sha256": "11651250d59cfad316cfaae2aa7f13f0cfdd835792eac947bb07dce3cc55e5c5",
+        "structured_levels": {
+          "WARN": 11
+        },
+        "rust_panic_markers": 0,
+        "raw_log_copied": false
+      },
+      "stderr": {
+        "bytes": 71,
+        "sha256": "f69f89bb6189730e2507c34b4aadedb03cd5257a134a1d408927ba74bc290c4e",
+        "structured_levels": {},
+        "rust_panic_markers": 0,
+        "raw_log_copied": false
+      }
+    },
+    "recipient": {
+      "stdout": {
+        "bytes": 109573,
+        "sha256": "76af7060998414e3a05ee0b256b2a4652d96a2169f27e8303feb1da029a7dec0",
+        "structured_levels": {
+          "WARN": 9
+        },
+        "rust_panic_markers": 0,
+        "raw_log_copied": false
+      },
+      "stderr": {
+        "bytes": 0,
+        "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "structured_levels": {},
+        "rust_panic_markers": 0,
+        "raw_log_copied": false
+      }
+    }
+  },
+  "recorded_app_identities_absent": {
+    "owner": 8,
+    "recipient": 8
+  },
+  "secret_scan": {
+    "jwt_like_matches": 0,
+    "addressed_invitation_uri_matches": 0,
+    "includes_raw_stdout_stderr": true,
+    "raw_secrets_emitted": false
+  },
+  "assertions": {
+    "distinct_owned_apps_and_actual_dids": true,
+    "real_owner_v2_viewer_issuance": true,
+    "actual_owner_access_readback_recipient_viewer": true,
+    "unused_short_lease_expired": true,
+    "fresh_generation_consumed_once_client_report": true,
+    "actual_input_guard_refusal_logged": true,
+    "recipient_still_original_genesis_join_open": true,
+    "no_ready_join_or_native_success_claim": true
+  },
+  "limitations": [
+    "Source/executable hashes and build duration are launch/build attestations, not independently recomputed here.",
+    "Precall wrapper KeyError occurred before entering transfer. Its module registration was fixed; no credential was consumed by that failed wrapper.",
+    "Consumed transfer reports unconfirmed masked submission; native guard logged guarded_join_changed. Recipient password is visibly populated and Join enabled, but no button completion or new navigation is accepted.",
+    "Owner grant is a confirmed retained partial effect. No old credential or batch is replayed.",
+    "Initial menu refusals include exact-scope gating and clipped/occluded row geometry; later real Back/breadcrumb navigation enabled Options. An unsupported --id wrapper invocation submitted no input.",
+    "No native Join/role/hierarchy-ready/Manager/viewer-read-only/peer-convergence/download/cancellation acceptance.",
+    "Likely stale egui completed-pass response cause is a separate source investigation; repair is not installed or verified in this pass."
+  ]
+}

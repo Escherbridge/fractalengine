@@ -1,0 +1,128 @@
+﻿{
+    "owner":  {
+                  "run_dir":  "C:\\Users\\atooz\\Programming\\fractalengine-workspace\\fractalengine\\.qa\\run\\20261101-191920-658",
+                  "api_base":  "http://127.0.0.1:8882",
+                  "process_identity":  {
+                                           "pid":  79556,
+                                           "start_ticks":  "639292755912682086",
+                                           "exe_path":  "C:\\Users\\atooz\\Programming\\fractalengine-workspace\\fractalengine\\.qa\\stage\\09923b5d-20261102210533940\\fractalengine.exe"
+                                       },
+                  "descendant_identities":  [
+                                                {
+                                                    "pid":  97616,
+                                                    "start_ticks":  "639292755913253545",
+                                                    "exe_path":  "C:\\Windows\\system32\\conhost.exe"
+                                                },
+                                                {
+                                                    "pid":  98828,
+                                                    "start_ticks":  "639292755958169705",
+                                                    "exe_path":  "C:\\Program Files (x86)\\Microsoft\\EdgeWebView\\Application\\156.0.4314.58\\msedgewebview2.exe"
+                                                },
+                                                {
+                                                    "pid":  75568,
+                                                    "start_ticks":  "639292755958745187",
+                                                    "exe_path":  "C:\\Program Files (x86)\\Microsoft\\EdgeWebView\\Application\\156.0.4314.58\\msedgewebview2.exe"
+                                                },
+                                                {
+                                                    "pid":  88456,
+                                                    "start_ticks":  "639292755960850232",
+                                                    "exe_path":  "C:\\Program Files (x86)\\Microsoft\\EdgeWebView\\Application\\156.0.4314.58\\msedgewebview2.exe"
+                                                },
+                                                {
+                                                    "pid":  86964,
+                                                    "start_ticks":  "639292755960869273",
+                                                    "exe_path":  "C:\\Program Files (x86)\\Microsoft\\EdgeWebView\\Application\\156.0.4314.58\\msedgewebview2.exe"
+                                                },
+                                                {
+                                                    "pid":  44928,
+                                                    "start_ticks":  "639292755961182697",
+                                                    "exe_path":  "C:\\Program Files (x86)\\Microsoft\\EdgeWebView\\Application\\156.0.4314.58\\msedgewebview2.exe"
+                                                },
+                                                {
+                                                    "pid":  86068,
+                                                    "start_ticks":  "639292755962008558",
+                                                    "exe_path":  "C:\\Program Files (x86)\\Microsoft\\EdgeWebView\\Application\\156.0.4314.58\\msedgewebview2.exe"
+                                                }
+                                            ],
+                  "stage_manifest":  {
+                                         "built_at":  "2026-11-03T04:05:34.2105656Z",
+                                         "exe_sha256":  "15A07D7EEBD1CF6AE14C0A1A31CCC346DFC01DB5809EDE6FC07F472999F7C17F",
+                                         "source_dirty":  true,
+                                         "kind":  "fractalengine-qa-stage-v1",
+                                         "source_fingerprint":  "1535CD248B59753F9BB473A3958272C4B7E98F71F55D8F45E68BF93F7F107736",
+                                         "source_commit":  "09923b5daf16af848944db34fd7fff5e04ad5c25",
+                                         "seal_hexon_sha256":  "345E749E67455BA76FC7A87538229F16DF55063ED83970B80F705651AB963B15"
+                                     },
+                  "stage_matches_source":  true,
+                  "stage":  "C:\\Users\\atooz\\Programming\\fractalengine-workspace\\fractalengine\\.qa\\stage\\09923b5d-20261102210533940",
+                  "stdout_path":  "C:\\Users\\atooz\\Programming\\fractalengine-workspace\\fractalengine\\.qa\\run\\20261101-191920-658\\starts\\20261102-210629-636-70cb5459ac8e44238a559829cf39a112\\stdout.log",
+                  "stderr_path":  "C:\\Users\\atooz\\Programming\\fractalengine-workspace\\fractalengine\\.qa\\run\\20261101-191920-658\\starts\\20261102-210629-636-70cb5459ac8e44238a559829cf39a112\\stderr.log",
+                  "restart":  {
+                                  "attempt":  "C:\\Users\\atooz\\Programming\\fractalengine-workspace\\fractalengine\\.qa\\run\\20261101-191920-658\\starts\\20261102-210629-636-70cb5459ac8e44238a559829cf39a112\\start.json",
+                                  "preserved_root":  "C:\\Users\\atooz\\Programming\\fractalengine-workspace\\fractalengine\\.qa\\run\\20261101-191920-658",
+                                  "stale_stage_allowed":  false,
+                                  "reseeded":  false,
+                                  "port_changed":  false,
+                                  "previous_start":  "C:\\Users\\atooz\\Programming\\fractalengine-workspace\\fractalengine\\.qa\\run\\20261101-191920-658\\starts\\20261102-210629-636-70cb5459ac8e44238a559829cf39a112\\previous-start.json"
+                              }
+              },
+    "recipient":  {
+                      "run_dir":  "C:\\Users\\atooz\\Programming\\fractalengine-workspace\\fractalengine\\.qa\\run\\20261102-210645-583",
+                      "api_base":  "http://127.0.0.1:8883",
+                      "process_identity":  {
+                                               "pid":  80072,
+                                               "start_ticks":  "639292756056149035",
+                                               "exe_path":  "C:\\Users\\atooz\\Programming\\fractalengine-workspace\\fractalengine\\.qa\\stage\\09923b5d-20261102210533940\\fractalengine.exe"
+                                           },
+                      "descendant_identities":  [
+                                                    {
+                                                        "pid":  93012,
+                                                        "start_ticks":  "639292756057837069",
+                                                        "exe_path":  "C:\\Windows\\system32\\conhost.exe"
+                                                    },
+                                                    {
+                                                        "pid":  91484,
+                                                        "start_ticks":  "639292756096884630",
+                                                        "exe_path":  "C:\\Program Files (x86)\\Microsoft\\EdgeWebView\\Application\\156.0.4314.58\\msedgewebview2.exe"
+                                                    },
+                                                    {
+                                                        "pid":  93408,
+                                                        "start_ticks":  "639292756097096067",
+                                                        "exe_path":  "C:\\Program Files (x86)\\Microsoft\\EdgeWebView\\Application\\156.0.4314.58\\msedgewebview2.exe"
+                                                    },
+                                                    {
+                                                        "pid":  91776,
+                                                        "start_ticks":  "639292756099934727",
+                                                        "exe_path":  "C:\\Program Files (x86)\\Microsoft\\EdgeWebView\\Application\\156.0.4314.58\\msedgewebview2.exe"
+                                                    },
+                                                    {
+                                                        "pid":  97156,
+                                                        "start_ticks":  "639292756099959478",
+                                                        "exe_path":  "C:\\Program Files (x86)\\Microsoft\\EdgeWebView\\Application\\156.0.4314.58\\msedgewebview2.exe"
+                                                    },
+                                                    {
+                                                        "pid":  91224,
+                                                        "start_ticks":  "639292756100352524",
+                                                        "exe_path":  "C:\\Program Files (x86)\\Microsoft\\EdgeWebView\\Application\\156.0.4314.58\\msedgewebview2.exe"
+                                                    },
+                                                    {
+                                                        "pid":  93788,
+                                                        "start_ticks":  "639292756101431676",
+                                                        "exe_path":  "C:\\Program Files (x86)\\Microsoft\\EdgeWebView\\Application\\156.0.4314.58\\msedgewebview2.exe"
+                                                    }
+                                                ],
+                      "stage_manifest":  {
+                                             "built_at":  "2026-11-03T04:05:34.2105656Z",
+                                             "exe_sha256":  "15A07D7EEBD1CF6AE14C0A1A31CCC346DFC01DB5809EDE6FC07F472999F7C17F",
+                                             "source_dirty":  true,
+                                             "kind":  "fractalengine-qa-stage-v1",
+                                             "source_fingerprint":  "1535CD248B59753F9BB473A3958272C4B7E98F71F55D8F45E68BF93F7F107736",
+                                             "source_commit":  "09923b5daf16af848944db34fd7fff5e04ad5c25",
+                                             "seal_hexon_sha256":  "345E749E67455BA76FC7A87538229F16DF55063ED83970B80F705651AB963B15"
+                                         },
+                      "stage_matches_source":  true,
+                      "stage":  "C:\\Users\\atooz\\Programming\\fractalengine-workspace\\fractalengine\\.qa\\stage\\09923b5d-20261102210533940",
+                      "stdout_path":  "C:\\Users\\atooz\\Programming\\fractalengine-workspace\\fractalengine\\.qa\\run\\20261102-210645-583\\stdout.log",
+                      "stderr_path":  "C:\\Users\\atooz\\Programming\\fractalengine-workspace\\fractalengine\\.qa\\run\\20261102-210645-583\\stderr.log"
+                  }
+}

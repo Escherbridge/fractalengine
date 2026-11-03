@@ -419,3 +419,25 @@ reviewed P2P authority/coordinator/transfer modules match the frozen lane. Maina
 records minimal offline lock edges with no package upgrades; first production build
 finds a slice-vs-reference E0277, and reviewed3394 borrows that slice. Retry and actual
 paired execution remain required. These source approvals do not close QA-0050.
+
+## Paired QA27 and checked group storage
+
+QA27 independent review approves77 inputs/105 records and two PNGs: actual Owner-v2
+Viewer issuance and refreshed retained grant succeed, but the one-use input guard
+refuses after masked text is inserted. Recipient navigation remains exactly Genesis;
+no native Joined or role convergence is inferred. Raw log hashes and counts are
+Owner11WARN/0ERROR,recipient9WARN/0ERROR,no panic; all8+8 captured identities are absent.
+Pre-call wrapper failure, unused lease expiry and scope/clipped-menu refusals remain
+separate. Completed-pass fixfcf9a01a is isolated and requires review/runtime proof.
+
+Independent storage review approvesc3c78870/c4ca00bc afterd4e0cc85's actual publisher
+use-time authorization and final expanded4MiB bound. Exact StampRestore/UndoCreatedGroup
+inverse282cdc8a, existing journeys e843ff64 and generic atomic-save readerc33a7aaf
+also pass separate source review. Main integration through6639f15c preserves their
+exact production files plus P2P dispatcher/exports/routing; the mapping stays deferred.
+This supplies no executed SQL, group UI, Undo, compilation or convergence acceptance.
+
+The catalog's independent critic approves47da114a:145families1529IDs1515mandatory,
+all1418 old rows retained,111 additive IDs,290 normalized source hashes matching099,
+null final fingerprint/execution false. Semantic state-machine obligations are manual
+in addition to lexical source discovery. Batch/UI source needs subsequent reconciliation.
