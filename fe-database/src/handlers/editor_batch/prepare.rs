@@ -12,6 +12,11 @@ use std::collections::{BTreeMap, BTreeSet};
 
 pub(super) const OUTSIDE_GROUP_MEMBERS_SQL: &str = "SELECT VALUE node_id FROM node WHERE petal_id=$batch_petal AND properties['view.groups'] CONTAINS $batch_deleted_group AND node_id NOT IN $batch_target_ids LIMIT 1";
 
+pub(super) const REQUEST_GUARD: &str = "IF array::len((SELECT VALUE id FROM op_log WHERE payload.editor_batch_request_id=$batch_request)) != 1 { THROW 'batch request already committed; reconcile its receipt'; }";
+pub(super) const REGISTRY_WRITE: &str =
+    "UPDATE petal SET visibility_groups=$batch_new_registry WHERE petal_id=$batch_petal";
+pub(super) const REGISTRY_CHECK: &str = "IF (SELECT VALUE visibility_groups FROM petal WHERE petal_id=$batch_petal) != [$batch_new_registry] { THROW 'batch registry differs from receipt'; }";
+
 struct Staged {
     state: Value,
     previous: Option<Value>,
@@ -398,7 +403,7 @@ pub(crate) async fn prepare(
                     );
                 }
             }
-            writes.push("UPDATE petal SET visibility_groups=$batch_new_registry WHERE petal_id=$batch_petal".into());
+            writes.push(REGISTRY_WRITE.into());
             bindings.push(("batch_new_registry".into(), json!(groups)));
             created_group_id = Some(id.clone());
         }
@@ -516,7 +521,7 @@ pub(crate) async fn prepare(
                     write_node(node, &prefix, &mut writes, &mut bindings);
                 }
             }
-            writes.push("UPDATE petal SET visibility_groups=$batch_new_registry WHERE petal_id=$batch_petal".into());
+            writes.push(REGISTRY_WRITE.into());
             bindings.push(("batch_new_registry".into(), json!(groups)));
         }
         EditorBatchEdit::RestoreDeletedGroup { .. } => {
@@ -562,7 +567,7 @@ pub(crate) async fn prepare(
                     write_node(node, &prefix, &mut writes, &mut bindings);
                 }
             }
-            writes.push("UPDATE petal SET visibility_groups=$batch_new_registry WHERE petal_id=$batch_petal".into());
+            writes.push(REGISTRY_WRITE.into());
             bindings.push(("batch_new_registry".into(), json!(groups)));
         }
         EditorBatchEdit::RestoreMemberships(previous) => {
@@ -643,7 +648,7 @@ pub(crate) async fn prepare(
         );
     }
     if receipt.groups != captured.view.groups {
-        checks.push("IF (SELECT VALUE visibility_groups FROM petal WHERE petal_id=$batch_petal) != [$batch_new_registry] { THROW 'batch registry differs from receipt'; }".into());
+        checks.push(REGISTRY_CHECK.into());
     }
     let facts: Vec<_> = staged
         .into_iter()
@@ -655,7 +660,7 @@ pub(crate) async fn prepare(
         })
         .collect();
     capture::bounded(&(&request.capture, &receipt, &facts, &bindings))?;
-    guards.push("IF array::len((SELECT VALUE id FROM op_log WHERE payload.editor_batch_request_id=$batch_request)) != 1 { THROW 'batch request already committed; reconcile its receipt'; }".into());
+    guards.push(REQUEST_GUARD.into());
     bindings.push(("batch_request".into(), json!(request_id)));
     guards.extend(writes);
     Ok(PreparedBatch {
@@ -665,6 +670,7 @@ pub(crate) async fn prepare(
         checks,
         receipt,
         actor: actor.into(),
+        petal_budget_base_bytes: captured.petal_budget_base_bytes,
         provenance: super::Provenance {
             group_delete_before: matches!(&request.edit, EditorBatchEdit::DeleteGroup { .. })
                 .then(|| request.capture.clone()),

@@ -4050,6 +4050,7 @@ mod tests {
                 let group = ulid::Ulid::new().to_string();
                 let mut accepted = None;
                 let mut rejected = false;
+                let mut first_rejected_size = None;
                 for size in [4096, 8192, 16384, 32768, 49152] {
                     for id in &budget_ids {
                         db.query("UPDATE node SET properties=$properties WHERE node_id=$id")
@@ -4084,10 +4085,12 @@ mod tests {
                     .await
                     .unwrap();
                     match prepared.check_admission() {
-                        Ok(()) => accepted = Some(size),
+                        Ok(_) => accepted = Some(size),
                         Err(error) => {
                             assert!(format!("{error:#}").contains("lifecycle reservation"),"the initial transaction fits but its future lifecycle must be reserved: {error:#}");
-                            let actual_error = editor_batch::commit(&db, prepared).await.expect_err("the actual initial Save must reject before the atomic seam too");
+                            let actual_error = editor_batch::commit(&db, prepared).await.expect_err(
+                                "the actual initial Save must reject before the atomic seam too",
+                            );
                             assert!(format!("{actual_error:#}").contains("lifecycle reservation"));
                             assert_eq!(
                                 op_log_count(&db).await,
@@ -4108,14 +4111,62 @@ mod tests {
                                 serde_json::to_value(unchanged).unwrap()
                             );
                             rejected = true;
+                            first_rejected_size = Some(size);
                             break;
                         }
                     }
                 }
-                let admitted_size = accepted.expect("a useful nested property bag must remain admissible");
+                let mut admitted_size =
+                    accepted.expect("a useful nested property bag must remain admissible");
                 assert!(
                     admitted_size >= 8192 && rejected,
                     "exercise both sides of the complete lifecycle boundary"
+                );
+                let mut ceiling = first_rejected_size.unwrap();
+                while ceiling - admitted_size > 1 {
+                    let size = admitted_size + (ceiling - admitted_size) / 2;
+                    for id in &budget_ids {
+                        db.query("UPDATE node SET properties=$properties WHERE node_id=$id")
+                            .bind(("id", id.clone()))
+                            .bind(("properties", nested(size)))
+                            .await
+                            .unwrap()
+                            .check()
+                            .unwrap();
+                    }
+                    let capture = editor_batch::read(
+                        &db,
+                        &plugin_scope,
+                        "tree-other-petal",
+                        &budget_ids,
+                        "did:qa",
+                    )
+                    .await
+                    .unwrap();
+                    let prepared = editor_batch::prepare(
+                        &db,
+                        &EditorBatchRequest {
+                            capture,
+                            edit: EditorBatchEdit::CreateGroup {
+                                id: group.clone(),
+                                name: "Reserved lifecycle".into(),
+                            },
+                        },
+                        "a",
+                        "did:qa",
+                    )
+                    .await
+                    .unwrap();
+                    if prepared.check_admission().is_ok() {
+                        admitted_size = size;
+                    } else {
+                        ceiling = size;
+                    }
+                }
+                assert_eq!(
+                    ceiling,
+                    admitted_size + 1,
+                    "reservation tested at the last admissible bag byte"
                 );
                 for id in &budget_ids {
                     db.query("UPDATE node SET properties=$properties WHERE node_id=$id")
@@ -4149,6 +4200,11 @@ mod tests {
                 )
                 .await
                 .unwrap();
+                let canonical_bytes = prepared.check_admission().unwrap();
+                assert!(
+                    MAX_EDITOR_BATCH_BYTES - canonical_bytes < 256,
+                    "use a byte-tight admission boundary"
+                );
                 editor_batch::commit(&db, prepared).await.unwrap();
                 let before = editor_batch::read(
                     &db,
@@ -4198,97 +4254,97 @@ mod tests {
                 .await
                 .unwrap();
                 editor_batch::commit(&db, prepared).await.unwrap();
-                let before = editor_batch::read_target(
-                    &db,
-                    &plugin_scope,
-                    "tree-other-petal",
-                    &[],
-                    &EditorBatchTarget::Group {
-                        group_id: group.clone(),
-                    },
-                    "did:qa",
-                )
-                .await
-                .unwrap();
-                let prepared = editor_batch::prepare(
-                    &db,
-                    &EditorBatchRequest {
-                        capture: before,
-                        edit: EditorBatchEdit::DeleteGroup {
+                let wide_id = |ordinal: u32| {
+                    format!(
+                        "{}{}{}",
+                        "\0".repeat(126),
+                        char::from_u32(1 + ordinal / 7).unwrap(),
+                        char::from_u32(1 + ordinal % 7).unwrap()
+                    )
+                };
+                let mut delete_request = "a".to_string();
+                let mut final_receipt = None;
+                for cycle in 0..5_u32 {
+                    let before = editor_batch::read_target(
+                        &db,
+                        &plugin_scope,
+                        "tree-other-petal",
+                        &[],
+                        &EditorBatchTarget::Group {
                             group_id: group.clone(),
                         },
-                    },
-                    "qa-lifecycle-large-delete",
-                    "did:qa",
-                )
-                .await
-                .unwrap();
-                let deleted = editor_batch::commit(&db, prepared).await.unwrap();
-                let deleted_ids = deleted
-                    .members
-                    .iter()
-                    .map(|m| m.node_id.clone())
-                    .collect::<Vec<_>>();
-                let before = editor_batch::read_target(
-                    &db,
-                    &plugin_scope,
-                    "tree-other-petal",
-                    &deleted_ids,
-                    &EditorBatchTarget::DeletedGroup {
-                        delete_request_id: "qa-lifecycle-large-delete".into(),
-                    },
-                    "did:qa",
-                )
-                .await
-                .unwrap();
-                let prepared = editor_batch::prepare(
-                    &db,
-                    &EditorBatchRequest {
-                        capture: before,
-                        edit: EditorBatchEdit::RestoreDeletedGroup {
-                            delete_request_id: "qa-lifecycle-large-delete".into(),
+                        "did:qa",
+                    )
+                    .await
+                    .unwrap();
+                    let prepared = editor_batch::prepare(
+                        &db,
+                        &EditorBatchRequest {
+                            capture: before,
+                            edit: EditorBatchEdit::DeleteGroup {
+                                group_id: group.clone(),
+                            },
                         },
-                    },
-                    "qa-lifecycle-large-restore",
-                    "did:qa",
-                )
-                .await
-                .unwrap();
-                editor_batch::commit(&db, prepared).await.unwrap();
-                let before = editor_batch::read_target(
-                    &db,
-                    &plugin_scope,
-                    "tree-other-petal",
-                    &[],
-                    &EditorBatchTarget::Group {
-                        group_id: group.clone(),
-                    },
-                    "did:qa",
-                )
-                .await
-                .unwrap();
-                let prepared = editor_batch::prepare(
-                    &db,
-                    &EditorBatchRequest {
-                        capture: before,
-                        edit: EditorBatchEdit::DeleteGroup {
-                            group_id: group.clone(),
+                        &delete_request,
+                        "did:qa",
+                    )
+                    .await
+                    .unwrap();
+                    assert_eq!(prepared.check_admission().unwrap(),canonical_bytes,"tiny and maximal escaped IDs/counter widths must have identical canonical reservations");
+                    let deleted = editor_batch::commit(&db, prepared).await.unwrap();
+                    if cycle == 4 {
+                        final_receipt = Some(deleted);
+                        break;
+                    }
+                    let deleted_ids = deleted
+                        .members
+                        .iter()
+                        .map(|m| m.node_id.clone())
+                        .collect::<Vec<_>>();
+                    let before = editor_batch::read_target(
+                        &db,
+                        &plugin_scope,
+                        "tree-other-petal",
+                        &deleted_ids,
+                        &EditorBatchTarget::DeletedGroup {
+                            delete_request_id: delete_request.clone(),
                         },
-                    },
-                    "qa-lifecycle-large-redo-delete",
-                    "did:qa",
-                )
-                .await
-                .unwrap();
-                let final_receipt = editor_batch::commit(&db, prepared).await.unwrap();
+                        "did:qa",
+                    )
+                    .await
+                    .unwrap();
+                    let prepared = editor_batch::prepare(
+                        &db,
+                        &EditorBatchRequest {
+                            capture: before,
+                            edit: EditorBatchEdit::RestoreDeletedGroup {
+                                delete_request_id: delete_request.clone(),
+                            },
+                        },
+                        &wide_id(cycle * 2),
+                        "did:qa",
+                    )
+                    .await
+                    .unwrap();
+                    editor_batch::commit(&db, prepared).await.unwrap();
+                    delete_request = wide_id(cycle * 2 + 1);
+                }
+                let final_receipt = final_receipt.unwrap();
                 assert!(final_receipt
                     .members
                     .iter()
                     .all(|m| serde_json::to_value(&m.state.properties).unwrap() == nested(admitted_size)));
+                assert!(
+                    final_receipt
+                        .members
+                        .iter()
+                        .all(|m| m.history_version.unwrap() >= 10),
+                    "actual owned facts cross a decimal counter-width boundary"
+                );
                 assert_eq!(
                     op_log_count(&db).await,
-                    operations + 6,
-                    "all six admitted operations are whole atomic lifecycle receipts"
+                    operations + 12,
+                    "Create/Undo/Redo plus five Deletes and four Restores remain whole atomic receipts"
                 );
             }
             let long_actor = format!("did:{}", "a".repeat(65532));

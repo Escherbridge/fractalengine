@@ -16,6 +16,7 @@ pub(super) struct StoredNode {
 
 pub(super) struct Captured {
     pub view: EditorBatchCapture,
+    pub petal_budget_base_bytes: usize,
     pub nodes: Vec<StoredNode>,
     pub guards: Vec<String>,
     pub bindings: Vec<(String, Value)>,
@@ -121,7 +122,7 @@ pub(super) async fn prepare_nodes(
     let (mut guards, mut bindings) = permission.into_parts();
     let mut response = db
         .query(format!(
-            "SELECT *, {} AS stamp_petal_snapshot FROM petal WHERE petal_id=$petal LIMIT 2",
+            "SELECT *, {} AS stamp_petal_snapshot, encoding::base64::encode(encoding::cbor::encode(object::remove($this, 'visibility_groups'))) AS batch_budget_base FROM petal WHERE petal_id=$petal LIMIT 2",
             preconditions::PETAL_TYPED_SNAPSHOT_SQL
         ))
         .bind(("petal", petal_id.to_owned()))
@@ -130,6 +131,11 @@ pub(super) async fn prepare_nodes(
     let rows: Vec<Value> = response.take(0)?;
     anyhow::ensure!(rows.len() == 1, "ambiguous batch Petal");
     let petal_snapshot = preconditions::petal_typed_snapshot(&rows[0])?.to_owned();
+    let petal_budget_base_bytes = rows[0]["batch_budget_base"]
+        .as_str()
+        .filter(|value| !value.is_empty() && value.len() <= MAX_EDITOR_BATCH_BYTES)
+        .ok_or_else(|| anyhow::anyhow!("typed Petal lifecycle budget basis unavailable"))?
+        .len();
     let groups = match rows[0].get("visibility_groups") {
         None | Some(Value::Null) => vec![],
         Some(value) => serde_json::from_value(value.clone())?,
@@ -213,6 +219,7 @@ pub(super) async fn prepare_nodes(
     bounded(&view)?;
     Ok(Captured {
         view,
+        petal_budget_base_bytes,
         nodes,
         guards,
         bindings,

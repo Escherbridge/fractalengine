@@ -26,7 +26,7 @@ fn membership(member: &EditorBatchMember) -> anyhow::Result<EditorMembershipValu
 }
 
 fn snapshot_bound(
-    before: &EditorBatchCapture,
+    registry_omitted_base_bytes: usize,
     groups: &[fe_runtime::messages::VisibilityGroupDto],
 ) -> usize {
     const MAX_CBOR_HEAD: usize = 9;
@@ -50,8 +50,8 @@ fn snapshot_bound(
                     + FLOAT64
             })
             .sum::<usize>();
-    let property_cbor = MAX_CBOR_HEAD + "visibility_groups".len() + registry_cbor;
-    before.petal_snapshot.len() + 4 * property_cbor.div_ceil(3) + 4
+    let property_cbor = MAX_CBOR_HEAD + MAX_CBOR_HEAD + "visibility_groups".len() + registry_cbor;
+    registry_omitted_base_bytes + 4 * property_cbor.div_ceil(3) + 4
 }
 
 fn member_bound(
@@ -60,10 +60,12 @@ fn member_bound(
 ) -> anyhow::Result<EditorBatchMember> {
     let mut result = before.clone();
     result.state = larger(&before.state, &after.state)?;
+    result.state.edit_seq = i64::MIN;
     result.history_version = Some(i64::MAX);
     if let (Some(old), Some(new)) = (&before.stamp_path, &after.stamp_path) {
         let path = result.stamp_path.as_mut().unwrap();
         path.state = larger(&old.state, &new.state)?;
+        path.state.edit_seq = i64::MIN;
         path.history_version = Some(i64::MAX);
     }
     Ok(result)
@@ -76,7 +78,8 @@ pub(super) fn reserve(
     sql: &[String],
     bindings: &[(String, Value)],
     actor: &str,
-) -> anyhow::Result<()> {
+    petal_budget_base_bytes: usize,
+) -> anyhow::Result<usize> {
     anyhow::ensure!(
         after
             .members
@@ -106,7 +109,7 @@ pub(super) fn reserve(
     };
     capture.members = members;
     capture.groups = all_groups.clone();
-    capture.petal_snapshot = "X".repeat(snapshot_bound(before, &all_groups));
+    capture.petal_snapshot = "X".repeat(snapshot_bound(petal_budget_base_bytes, &all_groups));
     capture.deleted_group = Some(EditorDeletedGroup {
         group_id: group_id.clone(),
         registry_before: all_groups.clone(),
@@ -151,10 +154,23 @@ pub(super) fn reserve(
             schema_versions = larger(&schema_versions, &versions)?;
         }
     }
-    let mut future_sql = vec![
+    let mut future_sql: Vec<String> = sql
+        .iter()
+        .filter(|statement| {
+            statement.contains("$entity_")
+                || statement.contains("$batch_petal_snapshot")
+                || (statement.contains("$batch_member_") && statement.contains("_rules"))
+        })
+        .cloned()
+        .collect();
+    future_sql.extend([
+        super::MANIFEST_GUARD.into(),
+        prepare::REQUEST_GUARD.into(),
+        prepare::REGISTRY_WRITE.into(),
+        prepare::REGISTRY_CHECK.into(),
         creation::proof_guard("budget_future_creation_origin"),
         creation::proof_guard("budget_future_creation_undo"),
-    ];
+    ]);
     for (marker, prefix) in [
         ("group_undo_of", "budget_future_creation_origin"),
         ("group_redo_of", "budget_future_creation_undo"),
@@ -189,13 +205,29 @@ pub(super) fn reserve(
         ("budget_future_creation_undo_payload", &manifest),
         ("budget_future_own_manifest_payload", &manifest),
     ];
-    let mut future_bindings = vec![
+    let mut future_bindings: Vec<(String, Value)> = bindings
+        .iter()
+        .filter(|(name, _)| {
+            name.starts_with("entity_")
+                || (name.starts_with("batch_member_")
+                    && ["_rules", "_key", "_scopes"]
+                        .iter()
+                        .any(|suffix| name.ends_with(suffix)))
+        })
+        .cloned()
+        .collect();
+    future_bindings.extend([
         ("budget_future_registry".into(), json!(all_groups)),
         (
             "budget_future_petal_snapshot".into(),
             json!(capture.petal_snapshot),
         ),
-    ];
+        ("budget_future_own_request".into(), json!(request)),
+        (
+            "budget_future_petal_identity".into(),
+            json!(before.petal_id),
+        ),
+    ]);
     for prefix in [
         "budget_future_creation_origin",
         "budget_future_creation_undo",
@@ -260,14 +292,36 @@ pub(super) fn reserve(
             &mut future_bindings,
         );
         if let Some(path) = &member.stamp_path {
+            if !before
+                .members
+                .iter()
+                .any(|m| m.node_id == path.state.node_id)
+            {
+                if let Some(binding) = bindings
+                    .iter()
+                    .find(|(name, _)| name == &format!("batch_path_{index}_history"))
+                {
+                    future_bindings.push(binding.clone());
+                }
+            }
             let state = serde_json::to_value(&path.state)?;
             let mut path_fact = fact.clone();
             path_fact["node_id"] = json!(path.state.node_id);
             path_fact["payload"]["after_state"] = state.clone();
             path_fact["payload"]["state"] = state.clone();
+            let mut raw = bindings
+                .iter()
+                .find(|(name, _)| name == &format!("batch_path_{index}_before"))
+                .and_then(|(_, value)| value.as_array())
+                .and_then(|rows| rows.first())
+                .cloned()
+                .unwrap_or_else(|| json!({}));
+            raw.as_object_mut()
+                .unwrap()
+                .extend(state.as_object().unwrap().clone());
             let node = capture::StoredNode {
                 state: state.clone(),
-                raw: state,
+                raw,
                 previous: Some(path_fact),
             };
             capture::fence(
@@ -285,6 +339,13 @@ pub(super) fn reserve(
         ));
         future_bindings.push((format!("budget_future_fact_{index}"), fact));
     }
-    anyhow::ensure!(bytes(&(maximum_entry,sql,bindings,"BEGIN TRANSACTION;\nCREATE op_log CONTENT $__op_entry;\nCOMMIT TRANSACTION;",future_entry,future_sql,future_proofs,future_bindings))? <= MAX_EDITOR_BATCH_BYTES, "Group save exceeds the complete 4 MiB Undo/Redo lifecycle reservation; use fewer objects or smaller stored property bags");
-    Ok(())
+    let reserved_bytes = bytes(&(
+        "BEGIN TRANSACTION;\nCREATE op_log CONTENT $__op_entry;\nCOMMIT TRANSACTION;",
+        future_entry,
+        future_sql,
+        future_proofs,
+        future_bindings,
+    ))?;
+    anyhow::ensure!(reserved_bytes <= MAX_EDITOR_BATCH_BYTES, "Group save exceeds the complete 4 MiB Undo/Redo lifecycle reservation; use fewer objects or smaller stored property bags");
+    Ok(reserved_bytes)
 }

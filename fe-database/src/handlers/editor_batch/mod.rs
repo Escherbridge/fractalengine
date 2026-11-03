@@ -58,6 +58,7 @@ pub(crate) struct PreparedBatch {
     receipt: EditorBatchReceipt,
     actor: String,
     provenance: Provenance,
+    petal_budget_base_bytes: usize,
 }
 
 #[derive(Debug, Clone, Default, serde::Serialize)]
@@ -107,14 +108,18 @@ struct CompiledBatch {
     bindings: Vec<(String, Value)>,
     envelope_slots: Vec<usize>,
     receipt: EditorBatchReceipt,
+    #[cfg(test)]
+    reserved_bytes: Option<usize>,
 }
 
 #[cfg(test)]
 impl PreparedBatch {
-    pub(crate) fn check_admission(&self) -> anyhow::Result<()> {
-        compile(self.clone()).map(|_| ())
+    pub(crate) fn check_admission(&self) -> anyhow::Result<usize> {
+        compile(self.clone()).map(|compiled| compiled.reserved_bytes.unwrap_or(0))
     }
 }
+
+pub(super) const MANIFEST_GUARD: &str = "IF (SELECT VALUE payload FROM op_log WHERE payload.editor_batch_request_id=$batch_request) != [$batch_manifest_payload] { THROW 'batch manifest differs from the exact current request'; }";
 
 fn compile(prepared: PreparedBatch) -> anyhow::Result<CompiledBatch> {
     let PreparedBatch {
@@ -125,6 +130,7 @@ fn compile(prepared: PreparedBatch) -> anyhow::Result<CompiledBatch> {
         receipt,
         actor,
         provenance,
+        petal_budget_base_bytes,
     } = prepared;
     let entry = OpLogEntry {
         lamport_clock: 0,
@@ -134,7 +140,7 @@ fn compile(prepared: PreparedBatch) -> anyhow::Result<CompiledBatch> {
         payload: manifest_payload(&receipt, &actor, &provenance),
         sig: "00".repeat(64),
     };
-    guards.insert(0, "IF (SELECT VALUE payload FROM op_log WHERE payload.editor_batch_request_id=$batch_request) != [$batch_manifest_payload] { THROW 'batch manifest differs from the exact current request'; }".into());
+    guards.insert(0, MANIFEST_GUARD.into());
     bindings.push(("batch_manifest_payload".into(), entry.payload.clone()));
     let mut last = std::collections::BTreeMap::new();
     for (index, (id, op, _, _)) in facts.iter().enumerate() {
@@ -185,15 +191,27 @@ fn compile(prepared: PreparedBatch) -> anyhow::Result<CompiledBatch> {
         .as_ref()
         .filter(|_| provenance.group_redo_of.is_none())
         .or(provenance.group_delete_before.as_ref());
-    if let Some(before) = initial {
-        budget::reserve(before, &receipt, &maximum_entry, &guards, &bindings, &actor)?;
-    }
+    let _reserved_bytes = initial
+        .map(|before| {
+            budget::reserve(
+                before,
+                &receipt,
+                &maximum_entry,
+                &guards,
+                &bindings,
+                &actor,
+                petal_budget_base_bytes,
+            )
+        })
+        .transpose()?;
     Ok(CompiledBatch {
         entry,
         statements: guards,
         bindings,
         envelope_slots,
         receipt,
+        #[cfg(test)]
+        reserved_bytes: _reserved_bytes,
     })
 }
 
@@ -205,6 +223,7 @@ pub(crate) async fn commit(db: &Db, prepared: PreparedBatch) -> anyhow::Result<E
         mut bindings,
         envelope_slots,
         receipt,
+        ..
     } = compile(prepared)?;
     crate::op_log::commit_operation_atomic_with(db, entry, |hlc| {
         for slot in envelope_slots {
