@@ -1913,7 +1913,7 @@ Manager remains the grantor and only the actual committed HLC is returned. The e
 handler must preserve the existing explicit partial-outcome boundary after a stored grant.
 Preparing a snapshot is not a claim that it remains current before those fences run at use.
 
-finalize_v2 can only obtain RecipientManagerProof from a verified v2 Manager-recipient branch.
+The bounded production finalize_before can only obtain RecipientManagerProof from a verified v2 Manager-recipient branch.
 It rechecks the current supporting grants/effective Manager authority, exact pending proof and
 acceptance membership in the activation transaction. The coordinator must call it only after
 actual native/role/hierarchy readiness, correlate cancellation/revision/deadline, then inspect

@@ -192,3 +192,8 @@ The simplified TestPeer explicitly refuses the four local desktop invitation
 phases with their exact correlated result families. It does not export a ticket,
 create a foreign-owner Verse or report readiness. Production DB and native read-
 ticket journeys provide the real storage and transport assertions.
+
+
+The simplified peer model refuses FinalizeJoinProof with a correlated JoinProofFinalized
+error. It cannot claim the actual desktop native/role/hierarchy checks or local proof
+activation. This keeps ordinary mock transport behavior distinct from QA-0050 readiness.

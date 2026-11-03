@@ -27,6 +27,7 @@ pub(super) fn decode_manifest(value: &Value) -> anyhow::Result<JoinManifest> {
         .map_err(|_| anyhow::anyhow!("Invitation source metadata is unavailable"))
 }
 
+#[allow(dead_code)]
 async fn owner_source(
     db: &Db,
     target: &EntityAccessTarget,
@@ -67,6 +68,7 @@ async fn owner_source(
     })
 }
 
+#[allow(dead_code)]
 pub(crate) async fn prepare(
     db: &Db,
     actor: &str,
@@ -94,6 +96,7 @@ pub(crate) async fn prepare(
     })
 }
 
+#[allow(dead_code)]
 pub(crate) async fn issue(
     db: &Db,
     actor: &str,
@@ -201,7 +204,6 @@ pub(crate) async fn admit(
     admit_verified(db, actor, &invitation).await
 }
 
-#[allow(dead_code)]
 pub(crate) async fn admit_v2(
     db: &Db,
     actor: &str,
@@ -292,17 +294,17 @@ async fn admit_verified(
     ))
 }
 
-#[allow(dead_code)]
-pub(crate) async fn finalize_v2(
-    db: &Db,
-    actor: &str,
-    credential: &JoinCredential,
+pub(crate) async fn finalize_before(
+    db:&Db,actor:&str,credential:&JoinCredential,deadline:std::time::Instant,
 ) -> anyhow::Result<()> {
-    let invitation = JoinInvitation::parse(credential.as_str(), actor, now()?)?;
-    let branch = invitation.recipient_manager_proof(now()?)?.ok_or_else(|| {
-        anyhow::anyhow!("Only a verified v2 recipient-Manager branch can finalize a proof")
-    })?;
-    crate::join_authority::finalize_recipient(db, actor, &branch, now()?).await
+    let remaining=deadline.saturating_duration_since(std::time::Instant::now());
+    anyhow::ensure!(remaining.as_secs()>0 && remaining<=std::time::Duration::from_secs(30),"Proof finalization request expired or exceeds its deadline bound");
+    let clock=now()?;
+    let until=clock.checked_add(remaining.as_secs()).ok_or_else(||anyhow::anyhow!("Invalid finalization deadline"))?;
+    let invitation=JoinInvitation::parse(credential.as_str(),actor,clock)?;
+    let branch=invitation.recipient_manager_proof(clock)?
+        .ok_or_else(||anyhow::anyhow!("Only a verified v2 recipient-Manager branch can finalize a proof"))?;
+    crate::join_authority::finalize_recipient_until(db,actor,&branch,clock,until).await
 }
 
 pub(crate) async fn ready(

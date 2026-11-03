@@ -489,6 +489,11 @@ impl TestPeer {
                                 tracing::warn!("Test peer invitation reply channel closed");
                             }
                         }
+                        Ok(DbCommand::FinalizeJoinProof {request_id,..}) => {
+                            if db_result_tx.send(DbResult::JoinProofFinalized {request_id,result:Err("Proof finalization requires actual desktop native and role readiness".into())}).is_err() {
+                                tracing::warn!("Test peer proof finalization reply channel closed");
+                            }
+                        }
                         Ok(DbCommand::TerminalDevelopmentReset { request_id, .. }) => {
                             if db_result_tx.send(DbResult::TerminalDevelopmentReset { request_id, cleared: false, error: Some("Terminal reset is unavailable in a running test peer".into()) }).is_err() {
                                 tracing::warn!("DB result channel closed during refused terminal reset");

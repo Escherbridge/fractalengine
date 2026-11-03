@@ -3,7 +3,6 @@
 
 pub(crate) mod checked_mutation;
 pub(crate) mod addressed_join;
-#[allow(dead_code)]
 pub(crate) mod addressed_join_v2;
 pub(crate) mod stamp_overrides;
 pub(crate) mod stamp_promotion;

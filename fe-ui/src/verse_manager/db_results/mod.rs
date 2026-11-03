@@ -164,7 +164,7 @@ pub(super) fn apply_db_results(
             | super::scene_property_reads::Reply::Accepted => {}
         }
         if matches!(result, DbResult::JoinInvitePrepared { .. } | DbResult::JoinInviteIssued { .. }
-            | DbResult::JoinInviteAdmitted { .. } | DbResult::JoinReadinessChecked { .. }) {
+            | DbResult::JoinInviteAdmitted { .. } | DbResult::JoinReadinessChecked { .. } | DbResult::JoinProofFinalized { .. }) {
             continue;
         }
         if matches!(result, DbResult::NodeUrlUpdated { .. }) {

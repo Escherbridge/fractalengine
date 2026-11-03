@@ -79,7 +79,7 @@ def transfer_owned(qa,owner,recipient,args,transport_context):
         consumed = request(owner, "POST", owner_token, expected)
         try:
             credential = consumed.get("invitation")
-            if consumed.get("metadata") != expected or not isinstance(credential, str) or not credential.startswith("fractalengine://join/v1/") or not credential.isascii() or not 0 < len(credential.encode("utf-8")) <= 65536:
+            if consumed.get("metadata") != expected or not isinstance(credential, str) or not credential.startswith(("fractalengine://join/v1/","fractalengine://join/v2/")) or not credential.isascii() or not 0 < len(credential.encode("utf-8")) <= 65536:
                 raise ValueError()
             after_owner = request(owner, "GET", owner_token)
             after_recipient = request(recipient, "GET", recipient_token)

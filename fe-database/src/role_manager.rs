@@ -265,7 +265,7 @@ pub(crate) async fn assign_role_for_invite(
     Ok(statement.hlc)
 }
 
-#[allow(dead_code, clippy::too_many_arguments)]
+#[allow(clippy::too_many_arguments)]
 pub(crate) async fn assign_role_for_delegated_invite(
     db: &Db,
     caller: &str,

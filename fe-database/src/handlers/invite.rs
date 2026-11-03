@@ -338,12 +338,13 @@ mod tests {
                 let rolled_back:Vec<serde_json::Value> = failed_admission.query("SELECT proof_id FROM join_delegation").await.unwrap().take(0).unwrap();
                 assert!(rolled_back.is_empty(),"A failed membership transaction cannot leave even a quarantined proof behind");
                 super::super::addressed_join::admit_v2(&manager_store, &fixture.recipient, &manager_credential).await.unwrap();
-                assert!(super::super::addressed_join::finalize_v2(&manager_store, &fixture.recipient, &manager_credential).await.is_err(), "A signed proof cannot manufacture an unconverged role");
+                assert!(super::super::addressed_join::finalize_before(&manager_store, &fixture.recipient, &manager_credential,std::time::Instant::now()+std::time::Duration::from_secs(29)).await.is_err(), "A signed proof cannot manufacture an unconverged role");
                 let pending:Vec<serde_json::Value> = manager_store.query("SELECT state FROM join_delegation").await.unwrap().take(0).unwrap();
                 assert_eq!(pending,vec![serde_json::json!({"state":"quarantined"})]);
                 apply_replicated_row_handler(&manager_store,VERSE,"role",&fixture.grant.record_id,&fixture.grant_bytes,&fixture.owner,None).await.unwrap();
                 assert!(crate::join_authority::ManagerAuthority::capture(&manager_store,&fixture.recipient,&identity,&admitted.scope,None,clock).await.is_err(), "Converged ordinary Manager role does not activate quarantined proof");
-                super::super::addressed_join::finalize_v2(&manager_store, &fixture.recipient, &manager_credential).await.unwrap();
+                assert!(super::super::addressed_join::finalize_before(&manager_store,&fixture.recipient,&manager_credential,std::time::Instant::now()-std::time::Duration::from_secs(1)).await.is_err(),"An expired production deadline cannot activate proof even after roles converge");
+                super::super::addressed_join::finalize_before(&manager_store, &fixture.recipient, &manager_credential,std::time::Instant::now()+std::time::Duration::from_secs(29)).await.unwrap();
                 let proof_id = recipient_branch.chain().proof_id().unwrap();
                 let captured = crate::join_authority::ManagerAuthority::capture(&manager_store,&fixture.recipient,&identity,&admitted.scope,Some(&proof_id),clock).await.unwrap();
                 let blobs:crate::BlobStoreHandle = std::sync::Arc::new(fe_runtime::blob_store::mock::MockBlobStore::new());
@@ -408,7 +409,7 @@ mod tests {
                         let branch=actual.recipient_manager_proof(observed_now).unwrap().unwrap();
                         assert_eq!(branch.chain().depth(),2);
                         assert!(crate::join_authority::ManagerAuthority::capture(&peer_store,&recipient,&identity,&target.scope,None,observed_now).await.is_err());
-                        super::super::addressed_join::finalize_v2(&peer_store,&recipient,&issued.credential).await.unwrap();
+                        super::super::addressed_join::finalize_before(&peer_store,&recipient,&issued.credential,std::time::Instant::now()+std::time::Duration::from_secs(29)).await.unwrap();
                         assert!(crate::join_authority::ManagerAuthority::capture(&peer_store,&recipient,&identity,&target.scope,None,observed_now).await.is_ok(),"Only the verified recipient Manager branch can activate its two-link local proof");
                     }
                     peer_store.query("UPDATE role_grant SET revoked=true WHERE statement_key=$key")

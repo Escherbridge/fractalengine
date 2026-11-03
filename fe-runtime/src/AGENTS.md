@@ -994,3 +994,10 @@ delegated Manager issuer plus exact proof content hash. This is a typed correlat
 not a trusted caller assertion, token floor or serialized transport capability. DB issuance
 rechecks it against the local actor, current stored proof and ordinary role/ancestry fences.
 Fresh-source consumption and issued-result correlation compare it independently of labels.
+
+
+FinalizeJoinProof/JoinProofFinalized are correlated internal desktop proof-storage phases.
+The command carries a redacted JoinCredential and the original bounded monotonic deadline;
+the result reports only storage confirmation, never native readiness or fabricated role.
+They do not create a REST/MCP mutation door. Production DB and ordinary read-model dispatch
+route the receipt only to its Join coordinator; unsupported peer models refuse explicitly.

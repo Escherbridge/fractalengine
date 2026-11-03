@@ -438,3 +438,9 @@ at any phase; retained metadata/capability effects are explained inline. Input i
 locked during a request. Input changes, selection changes and dialog replacement invalidate
 the generation before any reply can navigate. See ../invitations/AGENTS.md for ownership.
 This replaces the older section join-flow's legacy close-on-DB-success behavior.
+
+
+Manager-recipient v2 joins have a correlated proof-finalization wait between the real native/
+role/hierarchy checks and the final native reinspection. Cancel copy explicitly includes a
+possibly stored Manager proof. The actual Join button/masked input and byte/geometry guards
+remain the submission path; a proof receipt is not a Joined or native-ready assertion.

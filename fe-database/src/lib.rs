@@ -62,7 +62,6 @@ pub mod atlas;
 pub mod canon_log;
 pub mod handlers;
 pub mod invite;
-#[allow(dead_code)]
 mod join_authority;
 pub mod join_delegation;
 pub mod join_invite;
@@ -998,11 +997,11 @@ pub fn spawn_db_thread_shared(
                         }
                     }
                     Ok(DbCommand::PrepareJoinInvite { target, recipient_did, role, expiry_hours, request_id }) => {
-                        let result = handlers::addressed_join::prepare(&db,&local_did,&target,&recipient_did,&role,expiry_hours).await;
+                        let result = handlers::addressed_join_v2::prepare(&db,&local_did,&target,&recipient_did,&role,expiry_hours).await;
                         send_result(&tx,DbResult::JoinInvitePrepared {request_id,result:result.map_err(|error|error.to_string())});
                     }
                     Ok(DbCommand::IssueJoinInvite { source, ticket, request_id }) => {
-                        let result = handlers::addressed_join::issue(&db,&local_did,keypair.as_ref(),&source,&ticket,&blob_store,repl_tx.as_ref()).await;
+                        let result = handlers::addressed_join_v2::issue(&db,&local_did,keypair.as_ref(),&source,&ticket,&blob_store,repl_tx.as_ref()).await;
                         if result.is_ok() {
                             if let Some(verse) = role_grants::verse_of_scope(&source.target.scope) {
                                 echo_rows(admissions.retry_author_roles(&db,&verse,entity_change_tx.as_ref()).await);
@@ -1011,12 +1010,20 @@ pub fn spawn_db_thread_shared(
                         send_result(&tx,DbResult::JoinInviteIssued {request_id,result:result.map_err(|error|error.to_string())});
                     }
                     Ok(DbCommand::AdmitJoinInvite { credential, request_id }) => {
-                        let result = handlers::addressed_join::admit(&db,&local_did,&credential).await;
+                        let result = if credential.as_str().starts_with(join_invite::JOIN_V2_PREFIX) {
+                            handlers::addressed_join::admit_v2(&db,&local_did,&credential).await
+                        } else {handlers::addressed_join::admit(&db,&local_did,&credential).await};
                         send_result(&tx,DbResult::JoinInviteAdmitted {request_id,result:result.map_err(|error|error.to_string())});
                     }
                     Ok(DbCommand::CheckJoinReadiness { credential, request_id }) => {
-                        let result = handlers::addressed_join::ready(&db,&local_did,&credential).await;
+                        let result = if credential.as_str().starts_with(join_invite::JOIN_V2_PREFIX) {
+                            handlers::addressed_join_v2::ready(&db,&local_did,&credential).await
+                        } else {handlers::addressed_join::ready(&db,&local_did,&credential).await};
                         send_result(&tx,DbResult::JoinReadinessChecked {request_id,result:result.map_err(|error|error.to_string())});
+                    }
+                    Ok(DbCommand::FinalizeJoinProof {credential,request_id,deadline}) => {
+                        let result=handlers::addressed_join::finalize_before(&db,&local_did,&credential,deadline).await;
+                        send_result(&tx,DbResult::JoinProofFinalized {request_id,result:result.map_err(|error|error.to_string())});
                     }
                     Ok(DbCommand::EntityAccess { target, action, request_id }) => {
                         let result=handlers::entity_access::execute(&db,&blob_store,repl_tx.as_ref(),&local_did,&target,&action,keypair.as_ref(),|jti| send_result(&tx,DbResult::ApiTokenRevoked { jti:jti.to_owned() })).await;

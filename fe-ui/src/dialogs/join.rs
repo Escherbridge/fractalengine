@@ -168,7 +168,7 @@ pub fn render_join_dialog(
         if let Some(submit) = submit_response {
             join_input.record(&input_response, &submit, input_clip, submit_clip);
         }
-        if pending {ui.label("Cancel stops waiting. Accepted metadata and imported capabilities may remain stored.");}
+        if pending {ui.label("Cancel stops waiting. Accepted metadata, Manager proof and imported capabilities may remain stored.");}
     });
 
     // `invite_buf`'s borrow into `ui_mgr.active_dialog` ended above, so
@@ -579,5 +579,22 @@ mod tests {
             }
             ui.finish_qa_join_input(&lease.lease_id);
         }
+        let (commands,replies)=crossbeam::channel::bounded(1);
+        commands.try_send(DbCommand::LoadHierarchy).unwrap();
+        let credential=JoinCredential::new("finalization-correlation-fixture".into()).unwrap();
+        let deadline=std::time::Instant::now()+std::time::Duration::from_secs(30);
+        let mut gate=crate::invitations::ProofFinalization::default();
+        assert!(!gate.submit(&commands,&credential,"generation-A",deadline),"A full bounded queue leaves finalization definitely unsubmitted and never blocks the frame");
+        assert!(matches!(replies.try_recv(),Ok(DbCommand::LoadHierarchy)));
+        assert!(gate.submit(&commands,&credential,"generation-A",deadline));
+        let DbCommand::FinalizeJoinProof {request_id,deadline:actual_deadline,..}=replies.try_recv().unwrap() else {panic!("Only a typed finalization request may be emitted")};
+        assert_eq!(actual_deadline,deadline);
+        assert!(!gate.submit(&commands,&credential,"generation-A",deadline),"An accepted finalization is never automatically replayed");
+        assert!(!gate.confirm("generation-stale-finalize"));
+        assert!(gate.confirm(&request_id) && gate.confirmed());
+        assert!(!gate.confirm(&request_id),"Duplicate replies cannot complete another phase");
+        let mut canceled=crate::invitations::ProofFinalization::default();
+        assert!(!canceled.confirm(&request_id),"A canceled/replaced generation cannot accept a late proof receipt");
+        assert!(replies.try_recv().is_err());
     }
 }

@@ -479,11 +479,12 @@ pub(crate) async fn prepare_quarantine(
     })
 }
 
-pub(crate) async fn finalize_recipient(
+pub(crate) async fn finalize_recipient_until(
     db: &Db,
     actor: &str,
     branch: &RecipientManagerProof,
     now: u64,
+    deadline: u64,
 ) -> anyhow::Result<()> {
     let proof = branch.chain();
     let id = proof.proof_id()?;
@@ -525,6 +526,7 @@ pub(crate) async fn finalize_recipient(
         "IF ({member_select}) != $delegation_members {{ THROW 'recipient acceptance changed'; }}"
     );
     current
+        .with_join_deadline(deadline.min(branch.expires_at()))
         .with_join_delegation(authority)
         .commit(
             db,

@@ -52,6 +52,53 @@ enum Stage {
         request_id: String,
     },
     RoleReady,
+    Finalizing,
+}
+
+#[derive(Debug, Default)]
+pub(crate) struct ProofFinalization {
+    request_id: Option<String>,
+    confirmed: bool,
+}
+impl ProofFinalization {
+    pub(crate) fn submit(
+        &mut self,
+        db: &Sender<DbCommand>,
+        credential: &JoinCredential,
+        generation: &str,
+        deadline: Instant,
+    ) -> bool {
+        if self.request_id.is_some() || Instant::now() >= deadline {
+            return false;
+        }
+        let id = format!("{generation}-finalize");
+        if db
+            .try_send(DbCommand::FinalizeJoinProof {
+                credential: credential.clone(),
+                request_id: id.clone(),
+                deadline,
+            })
+            .is_err()
+        {
+            bevy::log::warn!("Join proof finalization could not be queued");
+            return false;
+        }
+        self.request_id = Some(id);
+        true
+    }
+    pub(crate) fn matches(&self, id: &str) -> bool {
+        self.request_id.as_deref() == Some(id) && !self.confirmed
+    }
+    pub(crate) fn confirm(&mut self, id: &str) -> bool {
+        if !self.matches(id) {
+            return false;
+        }
+        self.confirmed = true;
+        true
+    }
+    pub(crate) fn confirmed(&self) -> bool {
+        self.confirmed
+    }
 }
 
 #[derive(Debug)]
@@ -66,6 +113,7 @@ struct Attempt {
     replica_requested: bool,
     hierarchy_requested: bool,
     check_round: u32,
+    finalization: ProofFinalization,
 }
 
 #[derive(Debug)]
@@ -264,6 +312,17 @@ impl JoinState {
                     Err(_) => self.fail("Current scope access is no longer confirmed. Acceptance may remain stored; inspect stored Access before another attempt."),
                 }
             }
+            DbResult::JoinProofFinalized {request_id,result}
+                if matches!(attempt.stage,Stage::Finalizing) && attempt.finalization.matches(request_id) => {
+                match result {
+                    Ok(()) => {
+                        attempt.finalization.confirm(request_id);
+                        attempt.stage=Stage::RoleReady;
+                        self.status=Some("Manager proof stored; confirming the current live replica before navigation...");
+                    }
+                    Err(_)=>self.fail("Manager proof finalization is unconfirmed; accepted metadata or proof may remain stored. Refresh stored Access; do not replay this acceptance."),
+                }
+            }
             _ => {}
         }
     }
@@ -285,7 +344,7 @@ impl JoinState {
                 self.fail("Live P2P is unavailable. Nothing was submitted.");
                 return None;
             }
-            let Ok(invitation) = JoinInvitation::parse_owner(input.credential.as_str(), did, clock)
+            let Ok(invitation) = JoinInvitation::parse(input.credential.as_str(), did, clock)
             else {
                 self.fail("This addressed invitation is invalid, expired, or intended for another identity. Older links cannot bootstrap a fresh join; ask the Owner for a new addressed invitation.");
                 return None;
@@ -324,6 +383,7 @@ impl JoinState {
                 replica_requested: false,
                 hierarchy_requested: false,
                 check_round: 0,
+                finalization: ProofFinalization::default(),
             });
             self.status =
                 Some("Valid invitation; admitting pinned Verse identity and membership...");
@@ -398,9 +458,41 @@ impl JoinState {
                         attempt.stage = Stage::Waiting(Instant::now() + Duration::from_millis(250));
                         self.status = Some("Waiting for a successful live sync with the issuer...");
                     } else if *after_role {
+                        if Instant::now() >= attempt.deadline {
+                            self.fail("Join deadline expired before final confirmation; acceptance or proof may remain stored.");
+                            return None;
+                        }
                         if let Some(destination) =
                             destination(&attempt.invitation, &attempt.generation, hierarchy)
                         {
+                            let Some(clock) = unix_now() else {
+                                self.fail("Join clock became unavailable; acceptance or proof may remain stored.");
+                                return None;
+                            };
+                            let requires_proof = match attempt
+                                .invitation
+                                .recipient_manager_proof(clock)
+                            {
+                                Ok(branch) => branch.is_some(),
+                                Err(_) => {
+                                    self.fail("The invitation is no longer valid; acceptance may remain stored.");
+                                    return None;
+                                }
+                            };
+                            if requires_proof && !attempt.finalization.confirmed() {
+                                if !attempt.finalization.submit(
+                                    db,
+                                    &attempt.credential,
+                                    &attempt.generation,
+                                    attempt.deadline,
+                                ) {
+                                    self.fail("Manager proof finalization was not queued. Acceptance remains unconfirmed; inspect stored Access before another invitation.");
+                                    return None;
+                                }
+                                attempt.stage = Stage::Finalizing;
+                                self.status=Some("Live sync, role and hierarchy confirmed; storing the checked Manager proof...");
+                                return None;
+                            }
                             self.attempt = None;
                             self.status =
                                 Some("Ready: live issuer sync and stored scope access confirmed.");

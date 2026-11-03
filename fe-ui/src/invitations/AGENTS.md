@@ -150,3 +150,23 @@ Prepared/issued source correlation and one-use fresh-source consumption now incl
 InviteAuthority identity as well as the display manifest. A changed authority/proof cannot
 release the old credential under unchanged labels. Manager UI production activation remains
 separate from these correlation guards until the v2 DB and coordinator seams are reviewed.
+
+
+## V2 proof-finalization coordination
+
+The real Join controller accepts strict v1/v2 envelopes. A v2 Manager recipient reaches proof
+finalization only after ordinary role readiness, loaded target hierarchy and the actual
+post-role native readiness probe. ProofFinalization is a one-submission correlation gate, not
+authority: bounded queue refusal is definite, accepted commands are never replayed, and only
+the matching pending receipt can confirm it. The receipt returns to RoleReady and requires a
+new actual native inspection before navigation. A later native failure re-enters read-only
+convergence checks without replaying proof activation, admission or a grant.
+
+Attempt revision/cursor/DID/nonce/deadline guards and retained navigation suppression remain
+authoritative through this phase. Cancel drops the correlation gate; late finalization
+receipts cannot navigate. Metadata, an activated local Manager proof or imported capability
+can remain stored after cancellation or an unknown result, which the dialog explains. The
+existing masked Join journey additionally exercises full bounded finalization admission,
+accepted-command no-replay and stale/duplicate receipt correlation without claiming native QA.
+Owner Access now receives v2 production output; Manager issuer controls are the following
+activation slice. Existing Owner-v1 joins remain compatible and do not invent Manager proofs.

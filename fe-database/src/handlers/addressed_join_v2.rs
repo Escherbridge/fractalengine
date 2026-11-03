@@ -1,4 +1,4 @@
-//! Dormant current-authority v2 adapters; see handlers/AGENTS.md section addressed-v2.
+//! Current-authority v2 adapters; see handlers/AGENTS.md section addressed-v2.
 
 use fe_policy::RoleLevel;
 use fe_runtime::{

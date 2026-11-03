@@ -714,6 +714,11 @@ pub enum DbCommand {
         credential: crate::join_invite::JoinCredential,
         request_id: String,
     },
+    FinalizeJoinProof {
+        credential: crate::join_invite::JoinCredential,
+        request_id: String,
+        deadline: std::time::Instant,
+    },
     // --- Entity Settings: Access management ---
     /// Resolve effective roles for a list of peers at a scope.
     ResolveRolesForPeers {
@@ -1482,6 +1487,10 @@ pub enum DbResult {
     JoinReadinessChecked {
         request_id: String,
         result: Result<bool, String>,
+    },
+    JoinProofFinalized {
+        request_id: String,
+        result: Result<(), String>,
     },
     PeerRolesResolved {
         scope: String,

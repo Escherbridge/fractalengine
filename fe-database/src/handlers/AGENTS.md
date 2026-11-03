@@ -376,7 +376,7 @@ without rebinding Owner/namespace/creation or replacing the current display labe
 
 Dormant admit_v2 shares the pinned metadata transaction and adds only a sealed Manager-recipient
 proof quarantine. The active admit entry still parses Owner-v1, so ordinary production behavior
-is preserved until coordinator review. Dormant finalize_v2 verifies a v2 Manager-recipient
+is preserved until coordinator review. The bounded finalize_before verifies a v2 Manager-recipient
 branch and delegates to current-store proof activation; it has no transport boolean or role
 writer. Native/role/hierarchy scheduling and the final native inspection remain host obligations.
 The ordinary role writer accepts a private ManagerAuthority snapshot only through the dedicated
@@ -415,3 +415,20 @@ CurrentChainAuthority is a read-side snapshot and cannot stand in for ManagerAut
 issue writer: only the latter requires stored local activation. Actual native/role/hierarchy
 checks, correlated finalization and final native reinspection before navigation remain the
 next host integration slice. No handler accepts a native-valid boolean or claims Joined.
+
+
+### Production v2 routing and bounded finalization
+
+Production Prepare/Issue now use the reviewed v2 adapter. Admission/readiness dispatch selects
+recognized v2 links explicitly and retains strict Owner-v1 compatibility otherwise; invalid
+new links never fall back to legacy bootstrap. Earlier dormant-checkpoint notes describe the
+review stages, not the current dispatcher. Legacy Owner-v1 producer helpers remain test/
+compatibility references. No DB worker awaits native sync or claims a live replica.
+
+FinalizeJoinProof is an internal correlated desktop command with a monotonic request deadline
+from the original Join attempt. The DB accepts at most thirty seconds remaining, converts a
+conservative remaining interval into an additional transaction-time activation bound, and
+requires the existing verified v2 recipient-Manager branch/current grant/proof/member fences.
+It returns only stored-proof confirmation. Cancel after an accepted activation can leave that
+local proof stored; all later issuance still rechecks current authority and no reply may
+restore a canceled navigation generation.

@@ -5,6 +5,8 @@ mod join;
 pub(crate) mod join_input;
 pub(crate) use issue::IssueState;
 pub(crate) use join::JoinState;
+#[cfg(test)]
+pub(crate) use join::ProofFinalization;
 
 use bevy::prelude::*;
 use fe_runtime::{app::DbCommandSender, messages::DbResult};

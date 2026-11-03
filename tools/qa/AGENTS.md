@@ -1098,3 +1098,9 @@ with controlled kernel seams: exactly read/delete sharing, one checked size, no 
 read, existing-writer refusal, in-place mutation exclusion, and strict/complete buffer parsing.
 These source-contract fixtures were authored without native calls or credential files and do
 not replace the parent-owned Windows publication/runtime checks.
+
+
+The one-use paired client accepts the recognized v2 prefix as well as Owner-v1 only after
+the existing exact-owned-app/current-GUI-credential consume workflow. It still sends the
+actual masked text and Join controls through the guarded lease and reports submission only.
+V2 signature/current role/proof/native validation remains in the normal application path.

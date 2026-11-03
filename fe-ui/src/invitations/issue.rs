@@ -360,7 +360,7 @@ impl IssueState {
                     );
                     return;
                 };
-                let valid = fe_database::join_invite::JoinInvitation::parse_owner(
+                let valid = fe_database::join_invite::JoinInvitation::parse(
                     issued.credential.as_str(),
                     &issued.source.recipient_did,
                     clock,
