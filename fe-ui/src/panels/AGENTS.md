@@ -821,3 +821,14 @@ ribbon priority. The numeric draft alone never persists or selects; only an avai
 target produces a captured request. Viewer can inspect and Editor can promote/apply, with actual
 role/source/scene checks repeated at dispatch and DB use. Catalog source/targets are immutable Arc
 values, avoiding per-frame copies of routes and properties.
+
+## Numeric stamp edit intent
+
+stamp_numeric_field retains explicit input intent while a numeric text draft is
+being finalized. It resolves every Response and Context read before taking the
+egui data write lock; that closure only stores the already computed boolean.
+Response focus queries can read Context and must never run inside data_mut.
+The existing numeric recovery journey now drives the production helper through
+focused Text, Paste, Cut, arrow stepping, Enter and focus-loss finalization using
+in-memory egui events. It does not access or forward the host clipboard. The
+journey is authored source until root executes the integrated checks.

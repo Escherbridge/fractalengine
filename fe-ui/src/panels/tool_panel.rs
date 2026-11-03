@@ -533,7 +533,8 @@ fn stamp_numeric_field(
     suffix: &str,
     name: &str,
 ) -> bool {
-    let was_focused = ui.memory(|memory| memory.has_focus(ui.next_auto_id()));
+    let widget_id = ui.next_auto_id();
+    let was_focused = ui.memory(|memory| memory.has_focus(widget_id));
     let input_edit = ui.input(|input| {
         input.events.iter().any(|event| match event {
             egui::Event::Text(_) | egui::Event::Paste(_) | egui::Event::Cut => true,
@@ -564,13 +565,10 @@ fn stamp_numeric_field(
     let intent = ui.data(|data| data.get_temp::<bool>(intent_key).unwrap_or(false))
         || response.dragged()
         || ((was_focused || response.has_focus()) && input_edit);
-    ui.data_mut(|data| {
-        data.insert_temp(
-            intent_key,
-            intent && !response.lost_focus() && !response.drag_stopped(),
-        )
-    });
-    if response.changed() && intent {
+    let retain_intent = intent && !response.lost_focus() && !response.drag_stopped();
+    let changed = response.changed() && intent;
+    ui.data_mut(|data| data.insert_temp(intent_key, retain_intent));
+    if changed {
         *value = draft;
         true
     } else {
@@ -1368,5 +1366,131 @@ mod tests {
         ]
         .into_iter()
         .all(f32::is_finite));
+
+        let ctx = egui::Context::default();
+        let mut time = 0.0;
+        let mut value = 1.0;
+        let mut frame = |events: Vec<egui::Event>, focus: Option<bool>, value: &mut f32| {
+            time += 0.05;
+            let mut widget = egui::Id::NULL;
+            let mut changed = false;
+            crate::ui_shell::layout_policy::begin_frame(&ctx, true);
+            let _ = ctx.run(
+                egui::RawInput {
+                    screen_rect: Some(egui::Rect::from_min_size(
+                        egui::Pos2::ZERO,
+                        egui::vec2(400.0, 200.0),
+                    )),
+                    time: Some(time),
+                    events,
+                    ..Default::default()
+                },
+                |ctx| {
+                    crate::ui_shell::layout_policy::begin_ui_pass(ctx);
+                    egui::CentralPanel::default().show(ctx, |ui| {
+                        widget = ui.next_auto_id();
+                        if let Some(focus) = focus {
+                            ui.memory_mut(|memory| {
+                                if focus {
+                                    memory.request_focus(widget);
+                                } else {
+                                    memory.surrender_focus(widget);
+                                }
+                            });
+                        }
+                        changed = stamp_numeric_field(
+                            ui,
+                            value,
+                            0.01..=100.0,
+                            0.1,
+                            "",
+                            "",
+                            "Numeric stamp fixture",
+                        );
+                    });
+                },
+            );
+            let retained = ctx.data(|data| {
+                data.get_temp::<bool>(widget.with("stamp-numeric-user-intent"))
+                    .unwrap_or(false)
+            });
+            (
+                changed,
+                ctx.memory(|memory| memory.has_focus(widget)),
+                retained,
+            )
+        };
+        frame(vec![], None, &mut value);
+        assert_eq!(frame(vec![], Some(true), &mut value), (false, true, false));
+        let typed = frame(vec![egui::Event::Text("1.2".into())], None, &mut value);
+        assert!(
+            typed.0 && typed.1 && typed.2,
+            "focused text completes the real helper and retains finalization intent"
+        );
+        assert!((value - 1.2).abs() < 0.0001);
+        let entered = frame(
+            vec![egui::Event::Key {
+                key: egui::Key::Enter,
+                physical_key: None,
+                pressed: true,
+                repeat: false,
+                modifiers: egui::Modifiers::NONE,
+            }],
+            None,
+            &mut value,
+        );
+        assert!(
+            !entered.1 && !entered.2,
+            "Enter finalizes without retaining an old edit intent"
+        );
+        assert!((value - 1.2).abs() < 0.0001);
+        frame(vec![], Some(true), &mut value);
+        let pasted = frame(vec![egui::Event::Paste("2.5".into())], None, &mut value);
+        assert!(pasted.0 && pasted.1 && pasted.2);
+        assert!((value - 2.5).abs() < 0.0001);
+        frame(
+            vec![egui::Event::Key {
+                key: egui::Key::A,
+                physical_key: None,
+                pressed: true,
+                repeat: false,
+                modifiers: egui::Modifiers {
+                    ctrl: true,
+                    command: true,
+                    ..Default::default()
+                },
+            }],
+            None,
+            &mut value,
+        );
+        let cut = frame(vec![egui::Event::Cut], None, &mut value);
+        assert!(
+            cut.1 && cut.2 && value.is_finite(),
+            "Cut preserves a finite draft while its text is empty"
+        );
+        frame(vec![egui::Event::Text("3.5".into())], None, &mut value);
+        assert!((value - 3.5).abs() < 0.0001);
+        for (key, expected) in [(egui::Key::ArrowUp, 3.6), (egui::Key::ArrowDown, 3.5)] {
+            let stepped = frame(
+                vec![egui::Event::Key {
+                    key,
+                    physical_key: None,
+                    pressed: true,
+                    repeat: false,
+                    modifiers: egui::Modifiers::NONE,
+                }],
+                None,
+                &mut value,
+            );
+            assert!(stepped.0 && stepped.1 && stepped.2);
+            assert!((value - expected).abs() < 0.0001);
+        }
+        let blurred = frame(vec![], Some(false), &mut value);
+        assert!(
+            !blurred.1 && !blurred.2,
+            "focus loss clears retained intent after finalization"
+        );
+        assert_eq!(frame(vec![], None, &mut value), (false, false, false));
+        assert!((value - 3.5).abs() < 0.0001);
     }
 }
