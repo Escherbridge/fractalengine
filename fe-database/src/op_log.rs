@@ -4025,6 +4025,272 @@ mod tests {
                 original_properties,
                 "stamp Undo restores exact absent override keys without ordinary property bypass"
             );
+            {
+                let nested = |size: usize| serde_json::json!({"largeBag":{"schema":{"fields":["position","material","measurements"]},"events":[{"sequence":1,"payload":{"text":"x".repeat(size)}}]}});
+                let mut budget_ids = Vec::new();
+                for index in 0..4 {
+                    let id = crate::handlers::node_history::create_object_granted(
+                        &db,
+                        "tree-other-petal",
+                        &format!("Lifecycle boundary {index}"),
+                        None,
+                        [0.0; 3],
+                        vec![0.0; 3],
+                        vec![1.0; 3],
+                        serde_json::from_value(nested(4096)).unwrap(),
+                        "did:qa",
+                        &NodeAccessGrant::Local,
+                    )
+                    .await
+                    .unwrap()
+                    .0;
+                    budget_ids.push(id);
+                }
+                let operations = op_log_count(&db).await;
+                let group = ulid::Ulid::new().to_string();
+                let mut accepted = None;
+                let mut rejected = false;
+                for size in [4096, 8192, 16384, 32768, 49152] {
+                    for id in &budget_ids {
+                        db.query("UPDATE node SET properties=$properties WHERE node_id=$id")
+                            .bind(("id", id.clone()))
+                            .bind(("properties", nested(size)))
+                            .await
+                            .unwrap()
+                            .check()
+                            .unwrap();
+                    }
+                    let before = editor_batch::read(
+                        &db,
+                        &plugin_scope,
+                        "tree-other-petal",
+                        &budget_ids,
+                        "did:qa",
+                    )
+                    .await
+                    .unwrap();
+                    let prepared = editor_batch::prepare(
+                        &db,
+                        &EditorBatchRequest {
+                            capture: before.clone(),
+                            edit: EditorBatchEdit::CreateGroup {
+                                id: group.clone(),
+                                name: "Reserved lifecycle".into(),
+                            },
+                        },
+                        "qa-lifecycle-boundary-probe",
+                        "did:qa",
+                    )
+                    .await
+                    .unwrap();
+                    match prepared.check_admission() {
+                        Ok(()) => accepted = Some(size),
+                        Err(error) => {
+                            assert!(format!("{error:#}").contains("lifecycle reservation"),"the initial transaction fits but its future lifecycle must be reserved: {error:#}");
+                            let actual_error = editor_batch::commit(&db, prepared).await.expect_err("the actual initial Save must reject before the atomic seam too");
+                            assert!(format!("{actual_error:#}").contains("lifecycle reservation"));
+                            assert_eq!(
+                                op_log_count(&db).await,
+                                operations,
+                                "no initial manifest or member prefix may persist after lifecycle refusal"
+                            );
+                            let unchanged = editor_batch::read(
+                                &db,
+                                &plugin_scope,
+                                "tree-other-petal",
+                                &budget_ids,
+                                "did:qa",
+                            )
+                            .await
+                            .unwrap();
+                            assert_eq!(
+                                serde_json::to_value(before).unwrap(),
+                                serde_json::to_value(unchanged).unwrap()
+                            );
+                            rejected = true;
+                            break;
+                        }
+                    }
+                }
+                let admitted_size = accepted.expect("a useful nested property bag must remain admissible");
+                assert!(
+                    admitted_size >= 8192 && rejected,
+                    "exercise both sides of the complete lifecycle boundary"
+                );
+                for id in &budget_ids {
+                    db.query("UPDATE node SET properties=$properties WHERE node_id=$id")
+                        .bind(("id", id.clone()))
+                        .bind(("properties", nested(admitted_size)))
+                        .await
+                        .unwrap()
+                        .check()
+                        .unwrap();
+                }
+                let before = editor_batch::read(
+                    &db,
+                    &plugin_scope,
+                    "tree-other-petal",
+                    &budget_ids,
+                    "did:qa",
+                )
+                .await
+                .unwrap();
+                let prepared = editor_batch::prepare(
+                    &db,
+                    &EditorBatchRequest {
+                        capture: before,
+                        edit: EditorBatchEdit::CreateGroup {
+                            id: group.clone(),
+                            name: "Reserved lifecycle".into(),
+                        },
+                    },
+                    "qa-lifecycle-large-create",
+                    "did:qa",
+                )
+                .await
+                .unwrap();
+                editor_batch::commit(&db, prepared).await.unwrap();
+                let before = editor_batch::read(
+                    &db,
+                    &plugin_scope,
+                    "tree-other-petal",
+                    &budget_ids,
+                    "did:qa",
+                )
+                .await
+                .unwrap();
+                let prepared = editor_batch::prepare(
+                    &db,
+                    &EditorBatchRequest {
+                        capture: before,
+                        edit: EditorBatchEdit::UndoCreatedGroup {
+                            create_request_id: "qa-lifecycle-large-create".into(),
+                            group_id: group.clone(),
+                            memberships: vec![EditorMembershipValue::Absent; budget_ids.len()],
+                        },
+                    },
+                    "qa-lifecycle-large-undo",
+                    "did:qa",
+                )
+                .await
+                .unwrap();
+                editor_batch::commit(&db, prepared).await.unwrap();
+                let before = editor_batch::read(
+                    &db,
+                    &plugin_scope,
+                    "tree-other-petal",
+                    &budget_ids,
+                    "did:qa",
+                )
+                .await
+                .unwrap();
+                let prepared = editor_batch::prepare(
+                    &db,
+                    &EditorBatchRequest {
+                        capture: before,
+                        edit: EditorBatchEdit::RedoCreatedGroup {
+                            undo_request_id: "qa-lifecycle-large-undo".into(),
+                        },
+                    },
+                    "qa-lifecycle-large-redo",
+                    "did:qa",
+                )
+                .await
+                .unwrap();
+                editor_batch::commit(&db, prepared).await.unwrap();
+                let before = editor_batch::read_target(
+                    &db,
+                    &plugin_scope,
+                    "tree-other-petal",
+                    &[],
+                    &EditorBatchTarget::Group {
+                        group_id: group.clone(),
+                    },
+                    "did:qa",
+                )
+                .await
+                .unwrap();
+                let prepared = editor_batch::prepare(
+                    &db,
+                    &EditorBatchRequest {
+                        capture: before,
+                        edit: EditorBatchEdit::DeleteGroup {
+                            group_id: group.clone(),
+                        },
+                    },
+                    "qa-lifecycle-large-delete",
+                    "did:qa",
+                )
+                .await
+                .unwrap();
+                let deleted = editor_batch::commit(&db, prepared).await.unwrap();
+                let deleted_ids = deleted
+                    .members
+                    .iter()
+                    .map(|m| m.node_id.clone())
+                    .collect::<Vec<_>>();
+                let before = editor_batch::read_target(
+                    &db,
+                    &plugin_scope,
+                    "tree-other-petal",
+                    &deleted_ids,
+                    &EditorBatchTarget::DeletedGroup {
+                        delete_request_id: "qa-lifecycle-large-delete".into(),
+                    },
+                    "did:qa",
+                )
+                .await
+                .unwrap();
+                let prepared = editor_batch::prepare(
+                    &db,
+                    &EditorBatchRequest {
+                        capture: before,
+                        edit: EditorBatchEdit::RestoreDeletedGroup {
+                            delete_request_id: "qa-lifecycle-large-delete".into(),
+                        },
+                    },
+                    "qa-lifecycle-large-restore",
+                    "did:qa",
+                )
+                .await
+                .unwrap();
+                editor_batch::commit(&db, prepared).await.unwrap();
+                let before = editor_batch::read_target(
+                    &db,
+                    &plugin_scope,
+                    "tree-other-petal",
+                    &[],
+                    &EditorBatchTarget::Group {
+                        group_id: group.clone(),
+                    },
+                    "did:qa",
+                )
+                .await
+                .unwrap();
+                let prepared = editor_batch::prepare(
+                    &db,
+                    &EditorBatchRequest {
+                        capture: before,
+                        edit: EditorBatchEdit::DeleteGroup {
+                            group_id: group.clone(),
+                        },
+                    },
+                    "qa-lifecycle-large-redo-delete",
+                    "did:qa",
+                )
+                .await
+                .unwrap();
+                let final_receipt = editor_batch::commit(&db, prepared).await.unwrap();
+                assert!(final_receipt
+                    .members
+                    .iter()
+                    .all(|m| serde_json::to_value(&m.state.properties).unwrap() == nested(admitted_size)));
+                assert_eq!(
+                    op_log_count(&db).await,
+                    operations + 6,
+                    "all six admitted operations are whole atomic lifecycle receipts"
+                );
+            }
             let long_actor = format!("did:{}", "a".repeat(65532));
             db.query("UPDATE verse SET created_by=$actor WHERE verse_id='tree-10'")
                 .bind(("actor", long_actor.clone()))

@@ -152,3 +152,5 @@ The existing Inspector journey extends real controller packets through property 
 ## Creation lifecycle replay
 
 Creation history retains its latest creation request and the matching successful Undo request. UndoCreatedGroup names the first; RedoCreatedGroup submits only the second. After each confirmed Redo, the new creation receipt becomes the proof for the next Undo. Generic CreateGroup is never reused to resurrect an old ID. Receipt preflight compares a proven Redo with the owned original creation registry vector and exact memberships before recording history or projecting any member; missing owned context refuses while accepted-write ownership remains available for reconciliation. Existing source/draft/render gates and chronological owned-history links apply unchanged.
+
+Group creation explains that large stored values may require smaller groups to preserve Undo/Redo. The capture-times-two check is only the generic local history-memory gate; authoritative initial Group Save admission now reserves the complete unchanged-context lifecycle envelope on the DB writer before persistence. See the database editor_batch/AGENTS.md component table.

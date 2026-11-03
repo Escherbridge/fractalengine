@@ -83,3 +83,28 @@ RedoCreatedGroup carries only undo_request_id. The writer loads both original cr
 The generic historical-ID guard still refuses checked-deleted IDs and now also checked-created IDs. Its preflight read excludes no intention; only the transaction guard excludes the exact current request, after the first exact-own-manifest guard proves it. Legacy registry/CAS writers receive no exclusion. Typed Redo and proven deletion restoration use the explicitly named retained-reference fence instead of weakening generic admission. Old unproven creation receipts refuse with an unavailable-proof error.
 
 Expanded proof payloads participate in the existing final 4 MiB bound. Existing database and Inspector journeys add Create/Delete/UndoDelete/UndoCreate/RedoCreate/RedoDelete, repeated fresh proofs, forged/consumed/cross-actor proofs, competing prepared requests and current-source races. These additions are source-authored and unexecuted in this lane.
+
+## Complete lifecycle reservation
+
+Normal CreateGroup and each fresh DeleteGroup reserve their unchanged-context Undo/Redo storage envelope before the atomic seam inserts any intention. Proven inverse/creation Redo operations retain their actual 4 MiB envelope check, without recursively reserving their proof history. The ceiling remains 4 MiB. compile is the single production assembler for manifest/self-payload binding, tagged facts, SQL and bindings; the existing boundary journey calls its nonpersisting admission adapter and then the real commit path.
+
+The reservation serializes named components rather than multiplying a capture by an unexplained factor:
+
+| Component | Conservative source and coverage |
+| --- | --- |
+| Current complete plan | The actual maximum-clock entry, SQL and complete bindings retain unchanged role/ancestry, schema snapshots, original opaque source rows and preexisting journal envelopes. |
+| Two future source proofs | Each uses a maximal manifest built by the production manifest serializer. All three supported before-capture slots are populated together, even though a real operation populates at most one, plus the complete receipt and every proof marker. This bounds creation plus Undo proofs, and the smaller single deletion proof. |
+| Future own intention and self binding | The same maximal payload is serialized once in a maximum-clock OpLogEntry and once in its exact manifest-payload binding. |
+| Future captured objects and paths | The production capture fence serializes full raw state and a conservative full journal envelope for every target and promoted owning-path context. Each node chooses the larger before/after membership snapshot; unrelated properties remain complete. Original raw extra columns remain in the current plan. |
+| Future writes, checks and facts | Production write/confirmation helpers supply complete property/TRS bindings and SQL. A per-target fact includes both possible baseline state slots, largest membership data, current schema versions and all final receipt tags. One such envelope also occupies each latest-history fence. Future unchanged-context mutations are continuous single facts; any first-mutation baseline already exists in the current plan. |
+| Registry and proof SQL | Both registry variants are retained together. The actual proof/consumption, complete-membership and retained-reference query builders supply future SQL; maximum-width target/request/actor/scope bindings are explicit. |
+
+Every future request string reserves 128 bytes of control characters, which JSON escapes to the maximum six output bytes per input byte. Node IDs, actor, scope and property bags remain unchanged. Positive versions use i64::MAX; fact cursor/HLC envelopes use the longer signed width. ULIDs reserve 26 bytes and record timestamps reserve the longer Chrono extreme RFC3339 length. Initial receipts must retain two positive journal-version slots for one Undo and one Redo.
+
+The opaque Petal snapshot is never decoded or trusted as client authority. Its possible growth is bounded by appending the full replacement registry's CBOR maximum to the existing encoded length: nine-byte container/string heads, UTF-8 string bytes, a one-byte bool and nine-byte float per row, then base64 four-byte blocks plus one alignment block. The registry model retains both variants, and the placeholder remains ASCII like the server's base64. Existing data are preserved byte-for-byte in every actual guard.
+
+Original and proposed nonabsent membership values are also validated against the captured unchanged schema snapshot, so saving a Group cannot newly promise an inverse that its current schema already forbids. Later external role/schema/source changes remain legitimate conflict boundaries. Size reservations do not grant authority, replace any proof, inflate limits or bypass actual final-envelope checks.
+
+The existing database journey searches both sides of the lifecycle boundary using otherwise-valid nested property bags and real DB preparation, confirms rejection leaves no manifest/member prefix, then actually commits the last admitted size through Create/Undo/Redo/Delete/Restore/RedoDelete. No new test declaration is added; source-authoring has not executed the journey.
+
+The installed SurrealDB 3.0.5 encoding path was inspected read-only: fnc/encoding.rs converts to public values and rpc/format/cbor/convert.rs maps the registry's float, bool, text, arrays and objects directly to CBOR primitives. Decimal/date/record tags are not introduced by writing the typed Group DTO. This verifies the registry-only growth bound; the rest of the opaque typed Petal encoding is retained unchanged.

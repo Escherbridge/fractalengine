@@ -25,6 +25,10 @@ pub(super) fn validate_target(target: &EditorBatchTarget) -> anyhow::Result<()> 
 
 const MEMBERS: &str = "SELECT node_id, tombstone FROM node WHERE petal_id=$group_petal AND properties['view.groups'] CONTAINS $group_id ORDER BY node_id LIMIT 257";
 
+pub(super) fn complete_member_guard() -> String {
+    "IF (SELECT VALUE node_id FROM node WHERE petal_id=$group_petal AND properties['view.groups'] CONTAINS $group_id ORDER BY node_id LIMIT 257) != $group_members { THROW 'complete Group membership changed'; }".into()
+}
+
 async fn member_ids(db: &Db, petal: &str, group: &str) -> anyhow::Result<Vec<String>> {
     let mut response = db
         .query(MEMBERS)
@@ -126,7 +130,7 @@ pub(super) async fn prepare_target(
                     .any(|group| group.id == *group_id),
                 "Group is not registered in this Petal"
             );
-            captured.guards.push("IF (SELECT VALUE node_id FROM node WHERE petal_id=$group_petal AND properties['view.groups'] CONTAINS $group_id ORDER BY node_id LIMIT 257) != $group_members { THROW 'complete Group membership changed'; }".into());
+            captured.guards.push(complete_member_guard());
             captured.bindings.extend([
                 ("group_petal".into(), json!(petal)),
                 ("group_id".into(), json!(group_id)),
@@ -166,8 +170,8 @@ struct DeleteProof {
     actor: String,
 }
 
-const PROOF: &str = "SELECT VALUE payload FROM op_log WHERE op_type='EditorTransaction' AND payload.editor_batch_request_id=$deleted_request AND payload.scope=$deleted_scope AND payload.actor_did=$deleted_actor LIMIT 2";
-const CONSUMED: &str = "SELECT VALUE id FROM op_log WHERE op_type='EditorTransaction' AND payload.group_restore_of=$deleted_request AND payload.editor_batch_request_id != $deleted_restoring_request LIMIT 1";
+pub(super) const PROOF: &str = "SELECT VALUE payload FROM op_log WHERE op_type='EditorTransaction' AND payload.editor_batch_request_id=$deleted_request AND payload.scope=$deleted_scope AND payload.actor_did=$deleted_actor LIMIT 2";
+pub(super) const CONSUMED: &str = "SELECT VALUE id FROM op_log WHERE op_type='EditorTransaction' AND payload.group_restore_of=$deleted_request AND payload.editor_batch_request_id != $deleted_restoring_request LIMIT 1";
 
 async fn load_delete(
     db: &Db,

@@ -466,6 +466,7 @@ pub(crate) fn group_controls(
             .char_limit(80),
     )
     .named(ui, "Name group from selection");
+    ui.small("Large stored values may require smaller groups to keep Undo and Redo available.");
     if ui
         .add_enabled(
             ready && !state.draft.group_name.trim().is_empty(),

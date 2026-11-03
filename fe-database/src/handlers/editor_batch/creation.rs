@@ -13,6 +13,14 @@ struct Manifest {
     receipt: EditorBatchReceipt,
 }
 
+pub(super) fn proof_guard(prefix: &str) -> String {
+    format!("IF (SELECT VALUE payload FROM op_log WHERE op_type='EditorTransaction' AND payload.editor_batch_request_id=${prefix}_request AND payload.scope=${prefix}_scope AND payload.actor_did=${prefix}_actor LIMIT 2) != [${prefix}_payload] {{ THROW 'Group lifecycle proof changed'; }}")
+}
+
+pub(super) fn consumption_select(marker: &str, prefix: &str) -> String {
+    format!("SELECT VALUE id FROM op_log WHERE op_type='EditorTransaction' AND payload.{marker}=${prefix}_request AND payload.editor_batch_request_id != ${prefix}_current LIMIT 1")
+}
+
 impl Manifest {
     async fn load(
         db: &Db,
@@ -74,7 +82,7 @@ impl Manifest {
     }
 
     fn fence(&self, prefix: &str, guards: &mut Vec<String>, bindings: &mut Vec<(String, Value)>) {
-        guards.push(format!("IF (SELECT VALUE payload FROM op_log WHERE op_type='EditorTransaction' AND payload.editor_batch_request_id=${prefix}_request AND payload.scope=${prefix}_scope AND payload.actor_did=${prefix}_actor LIMIT 2) != [${prefix}_payload] {{ THROW 'Group lifecycle proof changed'; }}"));
+        guards.push(proof_guard(prefix));
         bindings.extend([
             (format!("{prefix}_request"), json!(self.id)),
             (format!("{prefix}_scope"), json!(self.scope)),
@@ -92,7 +100,7 @@ impl Manifest {
         guards: &mut Vec<String>,
         bindings: &mut Vec<(String, Value)>,
     ) -> anyhow::Result<()> {
-        let select = format!("SELECT VALUE id FROM op_log WHERE op_type='EditorTransaction' AND payload.{marker}=${prefix}_request AND payload.editor_batch_request_id != ${prefix}_current LIMIT 1");
+        let select = consumption_select(marker, prefix);
         let mut query = db
             .query(select.clone())
             .bind((format!("{prefix}_request"), self.id.clone()))

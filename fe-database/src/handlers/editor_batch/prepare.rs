@@ -10,6 +10,8 @@ use fe_runtime::editor_batch::*;
 use serde_json::{json, Value};
 use std::collections::{BTreeMap, BTreeSet};
 
+pub(super) const OUTSIDE_GROUP_MEMBERS_SQL: &str = "SELECT VALUE node_id FROM node WHERE petal_id=$batch_petal AND properties['view.groups'] CONTAINS $batch_deleted_group AND node_id NOT IN $batch_target_ids LIMIT 1";
+
 struct Staged {
     state: Value,
     previous: Option<Value>,
@@ -448,7 +450,7 @@ pub(crate) async fn prepare(
                 groups.iter().any(|g| &g.id == group_id),
                 "deleted group is not registered"
             );
-            let select = "SELECT VALUE node_id FROM node WHERE petal_id=$batch_petal AND properties['view.groups'] CONTAINS $batch_deleted_group AND node_id NOT IN $batch_target_ids LIMIT 1";
+            let select = OUTSIDE_GROUP_MEMBERS_SQL;
             let mut read = db
                 .query(select)
                 .bind(("batch_petal", captured.view.petal_id.clone()))
@@ -632,15 +634,13 @@ pub(crate) async fn prepare(
             .as_object_mut()
             .expect("stored object")
             .remove("position");
-        let prefix = format!("batch_confirm_{index}");
-        bindings.extend([
-            (format!("{prefix}_id"), json!(ids[index])),
-            (format!("{prefix}_state"), json!([expected])),
-            (format!("{prefix}_x"), node.state["position"][0].clone()),
-            (format!("{prefix}_z"), node.state["position"][2].clone()),
-        ]);
-        checks.push(format!("IF (SELECT * OMIT id, position FROM node WHERE node_id=${prefix}_id) != ${prefix}_state {{ THROW 'batch materialization differs from receipt'; }}"));
-        checks.push(format!("IF array::len((SELECT VALUE node_id FROM node WHERE node_id=${prefix}_id AND position=<geometry<point>> [${prefix}_x,${prefix}_z])) != 1 {{ THROW 'batch materialized position differs from receipt'; }}"));
+        confirm_node(
+            &node.state,
+            expected,
+            &format!("batch_confirm_{index}"),
+            &mut checks,
+            &mut bindings,
+        );
     }
     if receipt.groups != captured.view.groups {
         checks.push("IF (SELECT VALUE visibility_groups FROM petal WHERE petal_id=$batch_petal) != [$batch_new_registry] { THROW 'batch registry differs from receipt'; }".into());
@@ -665,30 +665,34 @@ pub(crate) async fn prepare(
         checks,
         receipt,
         actor: actor.into(),
-        delete_before: matches!(&request.edit, EditorBatchEdit::DeleteGroup { .. })
+        provenance: super::Provenance {
+            group_delete_before: matches!(&request.edit, EditorBatchEdit::DeleteGroup { .. })
+                .then(|| request.capture.clone()),
+            group_create_before: matches!(
+                &request.edit,
+                EditorBatchEdit::CreateGroup { .. } | EditorBatchEdit::RedoCreatedGroup { .. }
+            )
             .then(|| request.capture.clone()),
-        create_before: matches!(
-            &request.edit,
-            EditorBatchEdit::CreateGroup { .. } | EditorBatchEdit::RedoCreatedGroup { .. }
-        )
-        .then(|| request.capture.clone()),
-        undo_before: matches!(&request.edit, EditorBatchEdit::UndoCreatedGroup { .. })
-            .then(|| request.capture.clone()),
-        undo_of: match &request.edit {
-            EditorBatchEdit::UndoCreatedGroup {
-                create_request_id, ..
-            } => Some(create_request_id.clone()),
-            _ => None,
-        },
-        redo_of: match &request.edit {
-            EditorBatchEdit::RedoCreatedGroup { undo_request_id } => Some(undo_request_id.clone()),
-            _ => None,
-        },
-        restore_of: match &request.edit {
-            EditorBatchEdit::RestoreDeletedGroup { delete_request_id } => {
-                Some(delete_request_id.clone())
-            }
-            _ => None,
+            group_undo_before: matches!(&request.edit, EditorBatchEdit::UndoCreatedGroup { .. })
+                .then(|| request.capture.clone()),
+            group_undo_of: match &request.edit {
+                EditorBatchEdit::UndoCreatedGroup {
+                    create_request_id, ..
+                } => Some(create_request_id.clone()),
+                _ => None,
+            },
+            group_redo_of: match &request.edit {
+                EditorBatchEdit::RedoCreatedGroup { undo_request_id } => {
+                    Some(undo_request_id.clone())
+                }
+                _ => None,
+            },
+            group_restore_of: match &request.edit {
+                EditorBatchEdit::RestoreDeletedGroup { delete_request_id } => {
+                    Some(delete_request_id.clone())
+                }
+                _ => None,
+            },
         },
     })
 }
@@ -831,6 +835,52 @@ async fn restore_membership(
         bindings,
     )
     .await
+}
+
+fn confirm_node(
+    state: &Value,
+    expected: Value,
+    prefix: &str,
+    checks: &mut Vec<String>,
+    bindings: &mut Vec<(String, Value)>,
+) {
+    bindings.extend([
+        (format!("{prefix}_id"), state["node_id"].clone()),
+        (format!("{prefix}_state"), json!([expected])),
+        (format!("{prefix}_x"), state["position"][0].clone()),
+        (format!("{prefix}_z"), state["position"][2].clone()),
+    ]);
+    checks.push(format!("IF (SELECT * OMIT id, position FROM node WHERE node_id=${prefix}_id) != ${prefix}_state {{ THROW 'batch materialization differs from receipt'; }}"));
+    checks.push(format!("IF array::len((SELECT VALUE node_id FROM node WHERE node_id=${prefix}_id AND position=<geometry<point>> [${prefix}_x,${prefix}_z])) != 1 {{ THROW 'batch materialized position differs from receipt'; }}"));
+}
+
+pub(super) fn reserve_materialization(
+    state: &Value,
+    index: usize,
+) -> (Vec<String>, Vec<(String, Value)>) {
+    let node = Staged {
+        state: state.clone(),
+        previous: None,
+        facts: vec![],
+    };
+    let mut sql = Vec::new();
+    let mut bindings = Vec::new();
+    write_node(
+        &node,
+        &format!("budget_future_member_{index}"),
+        &mut sql,
+        &mut bindings,
+    );
+    let mut expected = state.clone();
+    expected.as_object_mut().unwrap().remove("position");
+    confirm_node(
+        state,
+        expected,
+        &format!("budget_future_confirm_{index}"),
+        &mut sql,
+        &mut bindings,
+    );
+    (sql, bindings)
 }
 
 fn write_node(

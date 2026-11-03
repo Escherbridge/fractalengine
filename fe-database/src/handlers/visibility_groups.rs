@@ -67,6 +67,10 @@ pub(crate) async fn fence_new_group_ids(
     Ok(())
 }
 
+pub(crate) fn retained_group_select(prefix: &str) -> String {
+    format!("SELECT VALUE node_id FROM node WHERE petal_id=${prefix}_petal AND properties['view.groups'] CONTAINS ${prefix}_group LIMIT 1")
+}
+
 /// Retained-reference fence for proof-backed restoration; see editor_batch/AGENTS.md.
 pub(crate) async fn fence_unreferenced_group_ids(
     db: &Db,
@@ -84,9 +88,7 @@ pub(crate) async fn fence_unreferenced_group_ids(
         .enumerate()
     {
         let name = format!("{prefix}_{index}");
-        let select = format!(
-            "SELECT VALUE node_id FROM node WHERE petal_id=${name}_petal AND properties['view.groups'] CONTAINS ${name}_group LIMIT 1"
-        );
+        let select = retained_group_select(&name);
         let mut response = db
             .query(select.clone())
             .bind((format!("{name}_petal"), json!(petal_id)))

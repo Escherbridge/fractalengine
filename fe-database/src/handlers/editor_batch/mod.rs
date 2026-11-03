@@ -1,5 +1,6 @@
 //! One checked editor transaction; see AGENTS.md for the commit/read contract.
 
+mod budget;
 mod capture;
 mod creation;
 mod geometry;
@@ -48,7 +49,7 @@ pub(crate) async fn read_target(
     Ok(captured.view)
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub(crate) struct PreparedBatch {
     guards: Vec<String>,
     bindings: Vec<(String, Value)>,
@@ -56,18 +57,66 @@ pub(crate) struct PreparedBatch {
     checks: Vec<String>,
     receipt: EditorBatchReceipt,
     actor: String,
-    delete_before: Option<EditorBatchCapture>,
-    restore_of: Option<String>,
-    create_before: Option<EditorBatchCapture>,
-    undo_before: Option<EditorBatchCapture>,
-    undo_of: Option<String>,
-    redo_of: Option<String>,
+    provenance: Provenance,
+}
+
+#[derive(Debug, Clone, Default, serde::Serialize)]
+struct Provenance {
+    group_delete_before: Option<EditorBatchCapture>,
+    group_restore_of: Option<String>,
+    group_create_before: Option<EditorBatchCapture>,
+    group_undo_before: Option<EditorBatchCapture>,
+    group_undo_of: Option<String>,
+    group_redo_of: Option<String>,
+}
+
+fn manifest_payload(receipt: &EditorBatchReceipt, actor: &str, provenance: &Provenance) -> Value {
+    let mut payload = json!({"editor_batch_request_id":receipt.request_id,"scope":receipt.scope,"actor_did":actor,"receipt":receipt});
+    payload.as_object_mut().unwrap().extend(
+        serde_json::to_value(provenance)
+            .unwrap()
+            .as_object()
+            .unwrap()
+            .clone(),
+    );
+    payload
+}
+
+struct FactIdentity {
+    log_id: String,
+    created_at: String,
+    hlc_timestamp: i64,
+}
+
+fn fact_envelope(
+    id: &str,
+    op: &str,
+    version: i64,
+    payload: &Value,
+    actor: &str,
+    identity: FactIdentity,
+) -> Value {
+    json!({"log_id":identity.log_id,"node_id":id,"hlc_timestamp":identity.hlc_timestamp,"op":op,"source_did":actor,"payload":payload,"row_version":version,"created_at":identity.created_at})
 }
 
 pub(crate) use prepare::prepare;
 
-/// Persist the manifest, every materialization and every fact in the same transaction.
-pub(crate) async fn commit(db: &Db, prepared: PreparedBatch) -> anyhow::Result<EditorBatchReceipt> {
+struct CompiledBatch {
+    entry: OpLogEntry,
+    statements: Vec<String>,
+    bindings: Vec<(String, Value)>,
+    envelope_slots: Vec<usize>,
+    receipt: EditorBatchReceipt,
+}
+
+#[cfg(test)]
+impl PreparedBatch {
+    pub(crate) fn check_admission(&self) -> anyhow::Result<()> {
+        compile(self.clone()).map(|_| ())
+    }
+}
+
+fn compile(prepared: PreparedBatch) -> anyhow::Result<CompiledBatch> {
     let PreparedBatch {
         mut guards,
         mut bindings,
@@ -75,19 +124,14 @@ pub(crate) async fn commit(db: &Db, prepared: PreparedBatch) -> anyhow::Result<E
         checks,
         receipt,
         actor,
-        delete_before,
-        restore_of,
-        create_before,
-        undo_before,
-        undo_of,
-        redo_of,
+        provenance,
     } = prepared;
     let entry = OpLogEntry {
         lamport_clock: 0,
         hlc_timestamp: String::new(),
         node_id: NodeId(receipt.petal_id.clone()),
         op_type: OpType::EditorTransaction,
-        payload: json!({"editor_batch_request_id":receipt.request_id,"scope":receipt.scope,"actor_did":actor,"receipt":receipt,"group_delete_before":delete_before,"group_restore_of":restore_of,"group_create_before":create_before,"group_undo_before":undo_before,"group_undo_of":undo_of,"group_redo_of":redo_of}),
+        payload: manifest_payload(&receipt, &actor, &provenance),
         sig: "00".repeat(64),
     };
     guards.insert(0, "IF (SELECT VALUE payload FROM op_log WHERE payload.editor_batch_request_id=$batch_request) != [$batch_manifest_payload] { THROW 'batch manifest differs from the exact current request'; }".into());
@@ -110,23 +154,63 @@ pub(crate) async fn commit(db: &Db, prepared: PreparedBatch) -> anyhow::Result<E
         let name = format!("batch_fact_{index}");
         guards.push(format!("CREATE node_log CONTENT ${name}"));
         envelope_slots.push(bindings.len());
-        bindings.push((name,json!({"log_id":ulid::Ulid::new().to_string(),"node_id":id,"hlc_timestamp":i64::MIN,"op":op,"source_did":actor,"payload":payload,"row_version":version,"created_at":chrono::Utc::now().to_rfc3339()})));
+        bindings.push((
+            name,
+            fact_envelope(
+                id,
+                op,
+                *version,
+                payload,
+                &actor,
+                FactIdentity {
+                    log_id: ulid::Ulid::new().to_string(),
+                    created_at: chrono::Utc::now().to_rfc3339(),
+                    hlc_timestamp: i64::MIN,
+                },
+            ),
+        ));
     }
     guards.extend(checks);
     let mut maximum_entry = entry.clone();
     maximum_entry.lamport_clock = u64::MAX;
     maximum_entry.hlc_timestamp = "18446744073709551615:FFFFFFFFFFFFFFFF".into();
     capture::bounded(&(
-        maximum_entry,
+        &maximum_entry,
         &guards,
         &bindings,
         "BEGIN TRANSACTION;\nCREATE op_log CONTENT $__op_entry;\nCOMMIT TRANSACTION;",
     ))?;
+    let initial = provenance
+        .group_create_before
+        .as_ref()
+        .filter(|_| provenance.group_redo_of.is_none())
+        .or(provenance.group_delete_before.as_ref());
+    if let Some(before) = initial {
+        budget::reserve(before, &receipt, &maximum_entry, &guards, &bindings, &actor)?;
+    }
+    Ok(CompiledBatch {
+        entry,
+        statements: guards,
+        bindings,
+        envelope_slots,
+        receipt,
+    })
+}
+
+/// Persist the complete admitted envelope in one existing atomic transaction.
+pub(crate) async fn commit(db: &Db, prepared: PreparedBatch) -> anyhow::Result<EditorBatchReceipt> {
+    let CompiledBatch {
+        entry,
+        statements,
+        mut bindings,
+        envelope_slots,
+        receipt,
+    } = compile(prepared)?;
     crate::op_log::commit_operation_atomic_with(db, entry, |hlc| {
         for slot in envelope_slots {
             bindings[slot].1["hlc_timestamp"] = json!(hlc as i64);
         }
-        (guards, bindings)
+        (statements, bindings)
     })
     .await?;
     Ok(receipt)
