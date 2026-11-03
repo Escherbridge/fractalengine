@@ -24,40 +24,27 @@ impl TreeIcon {
 
     pub(crate) fn paint(self, painter: &egui::Painter, rect: egui::Rect, color: egui::Color32) {
         let center = rect.center();
-        let radius = rect.width().min(rect.height()) * 0.32;
-        let stroke = egui::Stroke::new(1.5, color);
-        let outline = egui::Stroke::new(3.5, theme::TEXT_MUTED);
+        let radius = (rect.width().min(rect.height()).clamp(2.0, 20.0) - 1.25) * 0.5;
+        let stroke = egui::Stroke::new(1.25, color);
         match self {
             Self::Circle => {
-                painter.circle_stroke(center, radius + 1.0, outline);
-                painter.circle_filled(center, radius, color);
+                painter.circle_filled(center, radius * 0.8, color);
             }
             Self::Ring => {
-                painter.circle_stroke(center, radius, outline);
                 painter.circle_stroke(center, radius, stroke);
             }
             Self::Square => {
                 painter.rect_stroke(
                     egui::Rect::from_center_size(center, egui::vec2(radius * 1.6, radius * 1.6)),
                     1.0,
-                    outline,
-                    egui::StrokeKind::Outside,
-                );
-                painter.rect_filled(
-                    egui::Rect::from_center_size(center, egui::vec2(radius * 1.6, radius * 1.6)),
-                    1.0,
-                    color,
+                    stroke,
+                    egui::StrokeKind::Inside,
                 );
             }
             Self::Cross => {
                 for angle in [0.0_f32, std::f32::consts::FRAC_PI_2] {
                     let arm = egui::vec2(angle.cos(), angle.sin()) * radius;
-                    painter.line_segment(
-                        [center - arm, center + arm],
-                        egui::Stroke::new(5.0, theme::TEXT_MUTED),
-                    );
-                    painter
-                        .line_segment([center - arm, center + arm], egui::Stroke::new(3.0, color));
+                    painter.line_segment([center - arm, center + arm], stroke);
                 }
             }
             _ => {
@@ -78,7 +65,6 @@ impl TreeIcon {
                 };
                 for i in 0..sides {
                     let line = [point(i), point((i + 1) % sides)];
-                    painter.line_segment(line, outline);
                     painter.line_segment(line, stroke);
                 }
             }

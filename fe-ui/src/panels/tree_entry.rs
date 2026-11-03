@@ -10,6 +10,86 @@ use crate::settings::AppSettings;
 use crate::theme;
 use bevy_egui::egui;
 
+/// Presentation projected from the selection authority, independently of navigation.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum RowSelection {
+    #[default]
+    None,
+    Primary,
+    #[allow(dead_code)] // Reserved for the selection authority's multiple-selection projection.
+    Selected,
+    #[allow(dead_code)] // Reserved for the selection authority's group projection.
+    Partial,
+}
+
+impl RowSelection {
+    pub(crate) fn from_primary(selected: bool) -> Self {
+        if selected {
+            Self::Primary
+        } else {
+            Self::None
+        }
+    }
+
+    fn is_selected(self) -> bool {
+        matches!(self, Self::Primary | Self::Selected)
+    }
+
+    fn description(self) -> &'static str {
+        match self {
+            Self::None => "Not selected",
+            Self::Primary => "Primary selection",
+            Self::Selected => "Selected",
+            Self::Partial => "Partially selected group",
+        }
+    }
+
+    fn fill(self, on_path: bool) -> egui::Color32 {
+        match self {
+            Self::Primary => theme::TREE_PRIMARY_BG,
+            Self::Selected => theme::TREE_SELECTED_BG,
+            Self::Partial => theme::TREE_PARTIAL_BG,
+            Self::None if on_path => theme::BG_BUTTON_ALT,
+            Self::None => egui::Color32::TRANSPARENT,
+        }
+    }
+
+    fn paint(self, painter: &egui::Painter, rect: egui::Rect) {
+        let (width, color) = match self {
+            Self::Primary => (3.0, theme::TREE_PRIMARY_ACCENT),
+            Self::Selected => (1.5, theme::TREE_SELECTED_ACCENT),
+            Self::Partial => (1.5, theme::TREE_SELECTED_ACCENT),
+            Self::None => return,
+        };
+        let x = rect.left() + width * 0.5;
+        let top = rect.top() + 3.0;
+        let bottom = rect.bottom() - 3.0;
+        if self == Self::Partial {
+            let segment = (bottom - top) / 5.0;
+            for index in [0, 2, 4] {
+                let y = top + index as f32 * segment;
+                painter.line_segment(
+                    [egui::pos2(x, y), egui::pos2(x, y + segment)],
+                    egui::Stroke::new(width, color),
+                );
+            }
+        } else {
+            painter.line_segment(
+                [egui::pos2(x, top), egui::pos2(x, bottom)],
+                egui::Stroke::new(width, color),
+            );
+        }
+        if self == Self::Primary {
+            painter.rect_stroke(
+                rect,
+                2.0,
+                egui::Stroke::new(1.0, color),
+                egui::StrokeKind::Inside,
+            );
+        }
+    }
+}
+
 #[derive(Clone, Copy)]
 pub(crate) struct Target<'a> {
     pub kind: EntryKind,
@@ -118,7 +198,7 @@ fn menu(ui: &mut egui::Ui, target: Target<'_>, can_edit: bool, command: &mut Opt
 pub(crate) fn row(
     ui: &mut egui::Ui,
     target: Target<'_>,
-    selected: bool,
+    selection: RowSelection,
     on_path: bool,
     enabled: bool,
     navigation: &NavigationManager,
@@ -159,17 +239,11 @@ pub(crate) fn row(
         };
     let mut command = None;
     let mut eye_clicked = false;
-    let fill = if selected {
-        theme::TREE_SELECTED_BG
-    } else if on_path {
-        theme::BG_BUTTON_ALT
-    } else {
-        egui::Color32::TRANSPARENT
-    };
+    let selected = selection.is_selected();
     let inner = ui
         .push_id(("tree_entry", target.kind.label(), target.id), |ui| {
-            egui::Frame::NONE
-                .fill(fill)
+            let frame = egui::Frame::NONE
+                .fill(selection.fill(on_path))
                 .inner_margin(egui::Margin::symmetric(2, 1))
                 .show(ui, |ui| {
                     ui.set_min_height(26.0_f32.max(20.0 / ui.ctx().pixels_per_point()));
@@ -182,9 +256,19 @@ pub(crate) fn row(
                             egui::vec2(target_size, target_size),
                             egui::Sense::hover(),
                         );
-                        appearance
-                            .icon
-                            .paint(ui.painter(), icon_rect, appearance.color32());
+                        let glyph_size = egui::TextStyle::Button
+                            .resolve(ui.style())
+                            .size
+                            .min(icon_rect.width())
+                            .min(icon_rect.height());
+                        appearance.icon.paint(
+                            ui.painter(),
+                            egui::Rect::from_center_size(
+                                icon_rect.center(),
+                                egui::Vec2::splat(glyph_size),
+                            ),
+                            appearance.color32(),
+                        );
                         let mut text = egui::RichText::new(target.name).color(if !enabled {
                             theme::TEXT_MUTED
                         } else if selected {
@@ -218,6 +302,10 @@ pub(crate) fn row(
                                 ),
                             )
                             .on_hover_text(target.name);
+                        ui.ctx().accesskit_node_builder(response.id, |node| {
+                            node.set_selected(selected);
+                            node.set_description(selection.description());
+                        });
                         response.context_menu(|ui| {
                             menu(ui, target, can_edit, &mut command);
                             extra_menu(ui);
@@ -255,8 +343,9 @@ pub(crate) fn row(
                         response
                     })
                     .inner
-                })
-                .inner
+                });
+            selection.paint(ui.painter(), frame.response.rect);
+            frame.inner
         })
         .inner;
     match command {

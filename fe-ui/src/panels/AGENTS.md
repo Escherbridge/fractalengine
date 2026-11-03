@@ -569,8 +569,15 @@ not editable stored-value guesses.
 The existing NavigationManager remains the hierarchy cursor and NodeManager
 remains the node-selection authority. A current hierarchy name is a no-op;
 other names navigate with full ancestry, while only native chevrons collapse.
-Selected rows have a strong fill and selected button semantics; active ancestors
-use a quieter path fill. Visibility remains an independent 24-point gutter.
+`RowSelection` is a presentation projection, never a second selection store.
+Current singular selection maps through `from_primary`; future multi-selection
+and group callers can supply `Selected` and `Partial` from their authority.
+Primary rows have a full-row fill, outline, solid accent and strong name;
+additional selected rows have a quieter fill and thinner solid accent. Partial
+groups use a segmented accent and are not announced as fully selected. AccessKit
+receives explicit selected state and a selection description while names and
+native button roles stay stable. Navigation ancestors use a separate quieter
+path fill. Visibility remains an independent 24-point gutter.
 Horizontal scrolling keeps row controls reachable at narrow widths, with a
 220-point tree content floor and 12-point indentation. Inactive-petal node names
 enter their complete petal ancestry and request bounded deferred selection.
@@ -580,11 +587,19 @@ mutual-exclusion family. Its actual circular hue/saturation wheel and numeric
 Hue/Saturation/Brightness controls sit alongside the named vector-icon palette;
 hex input uses strict #RRGGBB. The preview and Reset alter only the draft until
 Save; Cancel/Escape discard it. An invalid hex or deleted target cannot save.
-Vector symbols retain an outline for very dark/light selected colors, without
-depending on font glyph coverage. These are per-device display preferences in
+Row symbols fit the row-label text size inside the existing icon slot, with one
+1.25-point stroke and no thick backing outline; the Circle remains a small solid
+disc. The same vector geometry serves the larger palette preview, capped at
+20 points, without depending on font glyph coverage. These are per-device display preferences in
 AppSettings, keyed by hierarchy kind plus stable entry ID, not replicated scene
 properties. Existing debounced settings persistence and QA-root isolation apply.
 No custom color replaces selection or visibility state.
+
+The existing sidebar render journey covers four selection projections at
+220/320/480-point widths and 0.75/1/2 display scales. It checks selected semantics,
+full accessible names, text-sized thin Star geometry, full-row selection fill and
+24-logical/20-physical targets. This is authored source until the root campaign's
+integrated checks execute; it does not claim multi-selection or group behavior.
 
 The sidebar no longer hosts Reset Database or the old Space count grid. Moving
 the reset action to the campaign's application Danger Zone remains a separate

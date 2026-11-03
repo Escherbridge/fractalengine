@@ -5,7 +5,7 @@ use bevy_egui::egui;
 use crate::accessibility::ResponseExt;
 
 use super::tree_appearance::EntryKind;
-use super::tree_entry::{self, Target};
+use super::tree_entry::{self, RowSelection, Target};
 use crate::actions::{UiAction, UiManager};
 use crate::atlas::DashboardState;
 use crate::dialogs::{ActiveDialog, CreateKind};
@@ -218,9 +218,11 @@ fn render_verse_tree(
                             petal_id: None,
                             url: None,
                         },
-                        is_active_verse
-                            && nav.active_fractal_id.is_none()
-                            && node_mgr.selected.is_none(),
+                        RowSelection::from_primary(
+                            is_active_verse
+                                && nav.active_fractal_id.is_none()
+                                && node_mgr.selected.is_none(),
+                        ),
                         is_active_verse,
                         own_visible,
                         nav,
@@ -344,7 +346,9 @@ fn render_fractals(
                             petal_id: None,
                             url: None,
                         },
-                        is_active && nav.active_petal_id.is_none() && node_mgr.selected.is_none(),
+                        RowSelection::from_primary(
+                            is_active && nav.active_petal_id.is_none() && node_mgr.selected.is_none(),
+                        ),
                         is_active,
                         own_visible,
                         nav,
@@ -458,7 +462,7 @@ fn render_petals(
                             petal_id: Some(&petal_id),
                             url: None,
                         },
-                        is_active && node_mgr.selected.is_none(),
+                        RowSelection::from_primary(is_active && node_mgr.selected.is_none()),
                         is_active,
                         own_visible,
                         nav,
@@ -670,7 +674,7 @@ fn render_nodes(
                 petal_id: Some(ancestry.petal_id),
                 url: Some(&webpage_url),
             },
-            is_selected,
+            RowSelection::from_primary(is_selected),
             false,
             is_active_petal && effectively_visible,
             nav,
@@ -955,86 +959,181 @@ mod tests {
             EntryKind::Verse.key("same-id")
         );
 
+        use bevy_egui::egui;
         for width in [220.0, 320.0, 480.0] {
-            let ctx = bevy_egui::egui::Context::default();
-            let input = bevy_egui::egui::RawInput {
-                screen_rect: Some(bevy_egui::egui::Rect::from_min_size(
-                    bevy_egui::egui::Pos2::ZERO,
-                    bevy_egui::egui::vec2(width, 300.0),
-                )),
-                ..Default::default()
-            };
-            let mut response = None;
-            let mut toggle_response = None;
-            crate::ui_shell::layout_policy::begin_frame(&ctx, true);
-            let _ = ctx.run(input, |ctx| {
-                bevy_egui::egui::CentralPanel::default().show(ctx, |ui| {
-                    super::configure_tree_spacing(ui);
-                    let header = bevy_egui::egui::collapsing_header::CollapsingState::load_with_default_open(ui.ctx(), ui.make_persistent_id("test_tree_expansion"), true)
-                        .show_header(ui, |ui| {
-                    let (name, _) = crate::panels::tree_entry::row(
-                        ui,
-                        crate::panels::tree_entry::Target {
-                            kind: EntryKind::Node,
-                            id: "n1",
-                            name: "Long object name with meaningful suffix",
-                            verse_id: "v1",
-                            fractal_id: Some("f1"),
-                            petal_id: Some("p1"),
-                            url: None,
-                        },
-                        true,
-                        false,
-                        true,
-                        &crate::navigation_manager::NavigationManager {
-                            active_verse_id: Some("v1".into()),
-                            active_fractal_id: Some("f1".into()),
-                            active_petal_id: Some("p1".into()),
-                            ..Default::default()
-                        },
-                        &crate::plugin::LocalUserRole {
-                            role: Some(fe_database::RoleLevel::Owner),
-                        },
-                        &settings,
-                        &mut manager,
-                        |ui| {
-                            super::eye_button(
+            for scale in [0.75, 1.0, 2.0] {
+                for selection in [
+                    super::RowSelection::None,
+                    super::RowSelection::Primary,
+                    super::RowSelection::Selected,
+                    super::RowSelection::Partial,
+                ] {
+                    let ctx = egui::Context::default();
+                    ctx.set_pixels_per_point(scale);
+                    ctx.enable_accesskit();
+                    let input = egui::RawInput {
+                        screen_rect: Some(egui::Rect::from_min_size(
+                            egui::Pos2::ZERO,
+                            egui::vec2(width, 300.0),
+                        )),
+                        ..Default::default()
+                    };
+                    let mut response = None;
+                    let mut toggle_response = None;
+                    crate::ui_shell::layout_policy::begin_frame(&ctx, true);
+                    let output = ctx.run(input, |ctx| {
+                        egui::CentralPanel::default().show(ctx, |ui| {
+                            super::configure_tree_spacing(ui);
+                            let header =
+                                egui::collapsing_header::CollapsingState::load_with_default_open(
+                                    ui.ctx(),
+                                    ui.make_persistent_id("test_tree_expansion"),
+                                    true,
+                                )
+                                .show_header(ui, |ui| {
+                                    let (name, _) = crate::panels::tree_entry::row(
+                                        ui,
+                                        crate::panels::tree_entry::Target {
+                                            kind: EntryKind::Node,
+                                            id: "n1",
+                                            name: "Long object name with meaningful suffix",
+                                            verse_id: "v1",
+                                            fractal_id: Some("f1"),
+                                            petal_id: Some("p1"),
+                                            url: None,
+                                        },
+                                        selection,
+                                        false,
+                                        true,
+                                        &crate::navigation_manager::NavigationManager {
+                                            active_verse_id: Some("v1".into()),
+                                            active_fractal_id: Some("f1".into()),
+                                            active_petal_id: Some("p1".into()),
+                                            ..Default::default()
+                                        },
+                                        &crate::plugin::LocalUserRole {
+                                            role: Some(fe_database::RoleLevel::Owner),
+                                        },
+                                        &settings,
+                                        &mut manager,
+                                        |ui| {
+                                            super::eye_button(
+                                                ui,
+                                                crate::visibility::glyph_for_bool(true),
+                                                true,
+                                                "Hide node",
+                                                "Hide test node",
+                                            )
+                                        },
+                                        |_| {},
+                                    );
+                                    response = Some(name);
+                                });
+                            let (toggle, _, _) = header.body(|ui| ui.label("Expanded content"));
+                            toggle_response = Some(crate::accessibility::ResponseExt::named(
+                                toggle,
                                 ui,
-                                crate::visibility::glyph_for_bool(true),
-                                true,
-                                "Hide node",
-                                "Hide test node",
-                            )
-                        },
-                        |_| {},
-                    );
-                    response = Some(name);
+                                "Expand or collapse test entry",
+                            ));
                         });
-                    let (toggle, _, _) = header.body(|ui| ui.label("Expanded content"));
-                    toggle_response = Some(crate::accessibility::ResponseExt::named(toggle, ui, "Expand or collapse test entry"));
-                });
-            });
-            let toggle = toggle_response.unwrap();
-            assert!(toggle.rect.width() >= 24.0 && toggle.rect.height() >= 24.0);
-            assert!(toggle.interact_rect.width() >= 24.0 && toggle.interact_rect.height() >= 24.0);
-            let response = response.unwrap();
-            assert!(response.rect.width() >= 24.0 && response.rect.height() >= 24.0);
-            let observed = crate::ui_shell::layout_policy::observations(&ctx);
-            assert!(observed
-                .controls
-                .iter()
-                .any(|control| control.id == response.id.value() && control.hit.width() >= 24.0));
-            for control in &observed.controls {
-                if control.clickable || control.draggable {
+                    });
+                    let toggle = toggle_response.unwrap();
+                    assert!(toggle.rect.width() >= 24.0 && toggle.rect.height() >= 24.0);
                     assert!(
-                        control.hit.width() >= 24.0 && control.hit.height() >= 24.0,
-                        "tree action: {:?}",
-                        control.hit
+                        toggle.interact_rect.width() >= 24.0 && toggle.interact_rect.height() >= 24.0
                     );
+                    let response = response.unwrap();
+                    assert!(response.rect.width() >= 24.0 && response.rect.height() >= 24.0);
+                    let accessible = output
+                        .platform_output
+                        .accesskit_update
+                        .as_ref()
+                        .unwrap()
+                        .nodes
+                        .iter()
+                        .find_map(|(_, node)| {
+                            (node.label()
+                                == Some("Select node Long object name with meaningful suffix"))
+                            .then_some(node)
+                        })
+                        .expect("the row retains its full accessible name");
+                    assert_eq!(
+                        accessible.is_selected(),
+                        Some(matches!(
+                            selection,
+                            super::RowSelection::Primary | super::RowSelection::Selected
+                        ))
+                    );
+                    assert_eq!(
+                        accessible.description(),
+                        Some(match selection {
+                            super::RowSelection::None => "Not selected",
+                            super::RowSelection::Primary => "Primary selection",
+                            super::RowSelection::Selected => "Selected",
+                            super::RowSelection::Partial => "Partially selected group",
+                        })
+                    );
+                    let glyph_segments = output
+                        .shapes
+                        .iter()
+                        .filter_map(|shape| match &shape.shape {
+                            egui::epaint::Shape::LineSegment { points, stroke }
+                                if stroke.color == egui::Color32::from_rgb(20, 30, 40) =>
+                            {
+                                Some((points, stroke))
+                            }
+                            _ => None,
+                        })
+                        .collect::<Vec<_>>();
+                    assert_eq!(
+                        glyph_segments.len(),
+                        10,
+                        "the chosen Star remains the row icon"
+                    );
+                    let mut glyph_bounds = egui::Rect::NOTHING;
+                    for (points, stroke) in glyph_segments {
+                        assert_eq!(stroke.width, 1.25, "no chunky backing outline");
+                        glyph_bounds.extend_with(points[0]);
+                        glyph_bounds.extend_with(points[1]);
+                    }
+                    assert!(
+                        glyph_bounds.width() <= 14.0 && glyph_bounds.height() <= 14.0,
+                        "glyphs stay text-sized independently of the hit target: {glyph_bounds:?}"
+                    );
+                    let expected_fill = match selection {
+                        super::RowSelection::Primary => crate::theme::TREE_PRIMARY_BG,
+                        super::RowSelection::Selected => crate::theme::TREE_SELECTED_BG,
+                        super::RowSelection::Partial => crate::theme::TREE_PARTIAL_BG,
+                        super::RowSelection::None => egui::Color32::TRANSPARENT,
+                    };
+                    if selection != super::RowSelection::None {
+                        assert!(
+                            output.shapes.iter().any(|shape| matches!(&shape.shape,
+                            egui::epaint::Shape::Rect(rect) if rect.fill == expected_fill
+                                && rect.rect.contains_rect(response.rect))),
+                            "selection fill covers the complete row, independently of icon color"
+                        );
+                    }
+                    let observed = crate::ui_shell::layout_policy::observations(&ctx);
+                    assert!(observed.controls.iter().any(
+                        |control| control.id == response.id.value() && control.hit.width() >= 24.0
+                    ));
+                    for control in &observed.controls {
+                        if control.clickable || control.draggable {
+                            assert!(
+                                control.hit.width() >= 24.0 && control.hit.height() >= 24.0,
+                                "tree action: {:?}",
+                                control.hit
+                            );
+                            assert!(
+                                control.hit.width() * scale >= 20.0
+                                    && control.hit.height() * scale >= 20.0
+                            );
+                        }
+                    }
                 }
             }
         }
-        use bevy_egui::egui;
         fn texts(shape: &egui::epaint::Shape, out: &mut Vec<String>) {
             match shape {
                 egui::epaint::Shape::Text(text) => out.push(text.galley.text().to_owned()),
@@ -1516,7 +1615,7 @@ mod tests {
                                 petal_id: Some("p"),
                                 url: None,
                             },
-                            true,
+                            super::RowSelection::Primary,
                             true,
                             true,
                             &nav,

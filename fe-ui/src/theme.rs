@@ -35,7 +35,11 @@ pub const STATUS_OFFLINE_DOT: Color32 = Color32::from_rgb(180, 60, 60);
 
 // Tree hierarchy
 pub const TREE_NODE_ICON: Color32 = Color32::from_rgb(140, 180, 220);
-pub const TREE_SELECTED_BG: Color32 = Color32::from_rgb(40, 55, 80);
+pub const TREE_PRIMARY_BG: Color32 = Color32::from_rgb(49, 66, 92);
+pub const TREE_SELECTED_BG: Color32 = Color32::from_rgb(37, 49, 68);
+pub const TREE_PARTIAL_BG: Color32 = Color32::from_rgb(33, 40, 52);
+pub const TREE_PRIMARY_ACCENT: Color32 = Color32::from_rgb(165, 205, 250);
+pub const TREE_SELECTED_ACCENT: Color32 = Color32::from_rgb(115, 157, 207);
 pub const BG_CONTEXT_MENU: Color32 = Color32::from_rgb(30, 30, 40);
 pub const BG_DIALOG: Color32 = Color32::from_rgb(28, 28, 38);
 
