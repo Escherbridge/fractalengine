@@ -1840,6 +1840,33 @@ mod tests {
             },
             correlation_id: "unknown-materialization".into(),
         }));
+        let replica = crate::scene_replication::ReplicatedNodeCurrent {
+            scope: "VERSE#v-FRACTAL#f-PETAL#p".into(),
+            state: serde_json::from_value(serde_json::json!({
+                "node_id":"remote","petal_id":"p","display_name":"remote","asset_id":"missing-asset",
+                "position":[1.0,2.0,3.0],"elevation":2.0,"rotation":[0.0,0.0,0.0],"scale":[1.0,1.0,1.0],
+                "interactive":true,"created_at":"2026-11-02","edit_seq":4,
+                "properties":{"nested":{"measurement":null}},"tombstone":null
+            })).unwrap(),
+            provenance: crate::scene_replication::ReplicaNodeProvenance::OriginalSceneCommit {
+                hlc: 42, publisher:"did:peer".into(),
+            },
+            asset: crate::scene_replication::ReplicaNodeAsset::Unavailable {
+                asset_id:"missing-asset".into(), reason:crate::scene_replication::ReplicaAssetUnavailable::MissingBlob,
+            },
+        };
+        assert_eq!(replica.asset.asset_id(),replica.state.asset_id.as_deref());
+        assert!(replica.asset.asset_path().is_none());
+        let value=serde_json::to_value(&replica).unwrap();
+        assert!(value.get("history_version").is_none());
+        assert_eq!(value["state"]["properties"]["nested"]["measurement"],serde_json::Value::Null);
+        let reply=DbResult::ReplicatedNodeCurrent {current:replica};
+        assert!(correlation_of_result(&reply).is_none());
+        assert!(reply_kind_of_result(&reply).is_none());
+        assert!(!pending.try_deliver(reply),"a GUI replica current read cannot consume a local/API waiter");
+        assert!(legacy_rx.try_recv().is_err());
+        assert!(receipt_rx.try_recv().is_err());
+
         assert!(
             legacy_rx.try_recv().is_err(),
             "GUI birth cannot consume legacy API create waiter"

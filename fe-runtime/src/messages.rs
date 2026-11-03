@@ -1363,6 +1363,8 @@ pub enum DbResult {
         node: CommittedNodeMaterialization,
         correlation_id: String,
     },
+    /// GUI current state after a successful replica apply; has no API reply or local history version.
+    ReplicatedNodeCurrent { current: crate::scene_replication::ReplicatedNodeCurrent },
     /// Confirmed current state after an ordinary object create/mutation.
     NodeMutationCommitted {
         receipt: crate::node_history::NodeMutationReceipt,

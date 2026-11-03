@@ -1041,3 +1041,24 @@ Generic editor facts use atomic_save_id and final atomic_save_request_id/editor_
 history reader validates these separately from legacy stamp tags and exposes the same NodeAtomicSave
 metadata/availability DTOs, so saved-together native rows need no second grouping authority. Deleted
 properties and full transforms retain their ordinary reducer rules; interior cuts omit state.
+
+## Replica current node projection
+
+scene_replication.rs owns ReplicatedNodeCurrent, the full durable current row plus exact stored
+scope, original scene commit HLC/authenticated publisher or LegacyReplicaApply provenance, and
+explicit local asset availability. It has NO local history_version and is never a
+NodeMutationReceipt/CommittedNodeMaterialization. Node journals remain local; an old or absent
+local fact cannot order or certify an inbound write. DbResult::ReplicatedNodeCurrent is GUI-only,
+uncorrelated and unmapped by pending API reply-family/correlation adapters.
+
+DB emits after a successful Applied/AppliedTombstone node result, including admitted deferred
+retries, from a bounded actual-recipient Viewer/ancestry/row+clock-fenced current read. A later
+settled same-key row can be reflected honestly as CURRENT with its exact persisted provenance.
+Asset metadata arrival can refresh availability at the same node commit version; unavailable
+metadata/blob must not be rendered as a ready asset path. LocalBlob exposes only a validated
+content-addressed blob URI whose actual bytes are present locally. State.asset_id and asset
+identity must agree, including unavailable assets; tombstone stays in the complete state.
+
+Native projection must preserve DB single-writer result order with local receipts, apply full
+properties and resident transforms, and must not send remote paths through a queue that requires
+a positive LOCAL journal version. No remote-only ordinal pretends to order local mutations.
