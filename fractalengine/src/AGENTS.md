@@ -1314,12 +1314,28 @@ runs between egui EndPass and ProcessOutput.
 | command | frames |
 |---|---|
 | `pointer_move` | cursor |
-| `pointer_click` | cursor + press · release |
-| `pointer_drag` | cursor(from) + press · cursor(to) · release |
+| `pointer_click` | cursor · press · release (protected Join exception below) |
+| `pointer_drag` | cursor(from) · press · cursor(to) · release |
 | `key_press` | press · release (modifiers: see below) |
 | `text_entry` | ONE frame: each control-free run is one `Key::Character(run)` press+release (egui reads it as `Event::Text`), `\n`/`\r\n` → Enter, `\t` → Tab |
 | `scroll` | wheel |
 
+- **Pointer start.** Ordinary clicks and drags position in a separate frame before
+  pressing, within the same `ActiveInjection`. egui 0.33.3 permits a click-only
+  child button and a drag-only ScrollArea background to share the press. A
+  same-frame teleport/press therefore lets the background subtract the unrelated
+  prior-cursor delta from its retained offset. The positioning-only frame makes
+  press-time delta zero; subsequent declared drag movement remains ordinary input.
+  Cursor restoration, clipboard suppression, whole-batch preflight, the 64-command
+  limit and the 4.5-second wall-clock cap stay in force. The longest ordinary
+  64-drag plan is now 256 input frames; slow/long requests can still time out.
+  The existing populated-area journey seeds its offset once, checks exact-row
+  clicks through settle and modifier release, and checks declared drag displacement.
+  **Exception:** the protected Join lease retains same-frame cursor/press and its
+  fixed five-frame single-chunk capsule. Its secret insertion, focus, geometry,
+  revision and submit guards are indexed by those frames in
+  `fe-ui/src/invitations/join_input.rs`; none change here. That modal capsule is
+  separately guarded, and is not covered by ordinary ScrollArea timing acceptance.
 - **Sticky modifiers.** `ShiftLeft/Right`, `ControlLeft/Right`,
   `AltLeft/Right`, `SuperLeft/Right` key presses stay down through the next
   non-modifier command and are released in a separate following frame (or at batch
@@ -1332,8 +1348,9 @@ runs between egui EndPass and ProcessOutput.
   copies that state to RawInput. Releasing Ctrl alongside mouse-up clears it
   before `.clicked()` reads the chord. The same following-frame rule applies
   to keys, text, cursor-only moves and wheel input. Repeated pointer commands
-  each need their own modifier prefix in the same batch. No-modifier plans,
-  including the protected five-frame Join protocol, retain their frame counts.
+  each need their own modifier prefix in the same batch. Modifiers also remain
+  held through the new positioning frame. The protected five-frame Join protocol
+  retains its existing frame counts and guard indexes.
   The existing input journey uses the dependency's actual
   `write_modifiers_keys_state_system` and `to_egui_modifiers`, then checks real
   egui release-frame clicks, every command type and abort cleanup.

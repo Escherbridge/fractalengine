@@ -451,6 +451,12 @@ fn text_frame(index: usize, text: &str) -> Result<Frame, InputFailure> {
     Ok(frame)
 }
 
+/// Settle the pointer before pressing; see AGENTS.md §agent-input-surface.
+fn plan_pointer_press(frames: &mut Vec<Frame>, at: Vec2, button: MouseButton) {
+    frames.push(vec![Synthetic::Cursor(at)]);
+    frames.push(vec![Synthetic::Button(button, ButtonState::Pressed)]);
+}
+
 /// Turn a validated batch into per-frame synthetic events, refusing (before
 /// anything is injected) whatever only the Bevy side can judge: pointer
 /// points outside the window, unmapped key names, unsupported control
@@ -474,20 +480,22 @@ fn plan_batch(spec: &ValidInputSpec, window_size: UVec2) -> Result<Vec<Frame>, I
             InputCommand::PointerClick { x, y, button } => {
                 let at = in_window(index, "x/y", *x, *y, window_size)?;
                 let button = mouse_button(*button);
-                frames.push(vec![
-                    Synthetic::Cursor(at),
-                    Synthetic::Button(button, ButtonState::Pressed),
-                ]);
+                if spec.join_lease().is_some() {
+                    // Preserve the separately guarded Join capsule's exact frame indexes.
+                    frames.push(vec![
+                        Synthetic::Cursor(at),
+                        Synthetic::Button(button, ButtonState::Pressed),
+                    ]);
+                } else {
+                    plan_pointer_press(&mut frames, at, button);
+                }
                 frames.push(vec![Synthetic::Button(button, ButtonState::Released)]);
             }
             InputCommand::PointerDrag { from, to, button } => {
                 let start = in_window(index, "from", from.x, from.y, window_size)?;
                 let end = in_window(index, "to", to.x, to.y, window_size)?;
                 let button = mouse_button(*button);
-                frames.push(vec![
-                    Synthetic::Cursor(start),
-                    Synthetic::Button(button, ButtonState::Pressed),
-                ]);
+                plan_pointer_press(&mut frames, start, button);
                 frames.push(vec![Synthetic::Cursor(end)]);
                 frames.push(vec![Synthetic::Button(button, ButtonState::Released)]);
             }
@@ -1014,6 +1022,15 @@ mod tests {
     #[derive(Resource, Default)]
     struct SeenInUpdate(Vec<Option<Vec2>>);
 
+    #[derive(Default)]
+    struct ScrollControl {
+        seed_offset: Option<f32>,
+        samples: Vec<(f32, bevy_egui::egui::Vec2)>,
+        target: Option<bevy_egui::egui::Rect>,
+        viewport: Option<bevy_egui::egui::Rect>,
+        selected: Vec<(usize, bevy_egui::egui::Modifiers)>,
+    }
+
     #[derive(Resource, Default)]
     struct CopyControl {
         context: bevy_egui::egui::Context,
@@ -1023,6 +1040,7 @@ mod tests {
         late_copy: bool,
         modifier_frames: Vec<ModifierKeysState>,
         modifier_clicks: Vec<bevy_egui::egui::Modifiers>,
+        scroll: Option<ScrollControl>,
     }
 
     fn render_copy_control(
@@ -1065,6 +1083,9 @@ mod tests {
         }
         let late_copy = std::mem::take(&mut control.late_copy);
         let mut clicked_modifiers = None;
+        let mut scroll = control.scroll.take();
+        let mut scroll_sample = None;
+        let mut selected_row = None;
         let output = control.context.run(input, |ctx| {
             let clicked = egui::Area::new(egui::Id::new("copy-control"))
                 .fixed_pos(egui::pos2(80.0, 35.0))
@@ -1080,7 +1101,48 @@ mod tests {
                 ctx.copy_text("clipboard sentinel".into());
                 ctx.copy_image(egui::ColorImage::new([1, 1], vec![egui::Color32::RED]));
             }
+            if let Some(scroll) = scroll.as_mut() {
+                let output = egui::Area::new(egui::Id::new("scroll-control"))
+                    .fixed_pos(egui::pos2(300.0, 80.0))
+                    .show(ctx, |ui| {
+                        ui.set_width(220.0);
+                        let mut area = egui::ScrollArea::vertical()
+                            .id_salt("populated-rows")
+                            .max_height(240.0)
+                            .auto_shrink([false, false]);
+                        if let Some(offset) = scroll.seed_offset.take() {
+                            area = area.vertical_scroll_offset(offset);
+                        }
+                        area.show(ui, |ui| {
+                            for row in 0..40 {
+                                let response = ui.add_sized(
+                                    [200.0, 24.0],
+                                    egui::Button::new(format!("Select row {row}"))
+                                        .sense(egui::Sense::click()),
+                                );
+                                if row == 8 {
+                                    scroll.target = Some(response.rect);
+                                }
+                                if response.clicked() {
+                                    selected_row = Some((row, ctx.input(|i| i.modifiers)));
+                                }
+                            }
+                        })
+                    })
+                    .inner;
+                scroll.viewport = Some(output.inner_rect);
+                scroll_sample = Some((output.state.offset.y, ctx.input(|i| i.pointer.delta())));
+            }
         });
+        if let Some(scroll) = scroll.as_mut() {
+            if let Some(sample) = scroll_sample {
+                scroll.samples.push(sample);
+            }
+            if let Some(row) = selected_row {
+                scroll.selected.push(row);
+            }
+        }
+        control.scroll = scroll;
         if let Some(modifiers) = clicked_modifiers {
             control.modifier_clicks.push(modifiers);
         }
@@ -1272,7 +1334,40 @@ mod tests {
         protected.require_join_lease("join-input-fixture").unwrap();
         let frames=plan_batch(&protected,UVec2::splat(100)).unwrap();
         assert_eq!(frames.len(),5);
-        assert_eq!(frames[2],vec![Synthetic::GuardedJoinText],"Guarded text never becomes global KeyboardInput with a logical secret");
+        for (index, at) in [(0, Vec2::splat(10.0)), (3, Vec2::splat(20.0))] {
+            assert_eq!(
+                frames[index],
+                vec![
+                    Synthetic::Cursor(at),
+                    Synthetic::Button(MouseButton::Left, ButtonState::Pressed)
+                ],
+                "only the fixed-index guarded Join capsule retains same-frame positioning/press"
+            );
+            assert_eq!(
+                frames[index + 1],
+                vec![Synthetic::Button(MouseButton::Left, ButtonState::Released)]
+            );
+        }
+        assert_eq!(
+            frames[2],
+            vec![Synthetic::GuardedJoinText],
+            "Guarded text never becomes global KeyboardInput with a logical secret"
+        );
+        let bounded = batch(
+            vec![
+                InputCommand::PointerDrag {
+                    from: PointerPoint { x: 10.0, y: 10.0 },
+                    to: PointerPoint { x: 20.0, y: 20.0 },
+                    button: PointerButton::Left,
+                };
+                fe_runtime::input::MAX_COMMANDS_PER_REQUEST
+            ],
+            0,
+            false,
+        )
+        .validate()
+        .unwrap();
+        assert_eq!(plan_batch(&bounded, UVec2::splat(100)).unwrap().len(), 256);
         assert!(!format!("{frames:?}").contains("protected-fixture"));
         {
             use bevy_egui::egui::accesskit as ak;
@@ -1329,9 +1424,14 @@ mod tests {
         assert_eq!(h.last_update_cursor(), None);
         assert!(h.mouse().get_just_pressed().next().is_none());
 
-        // A click with a 2-frame settle: press frame, release frame, 2 settle
-        // frames, then the reply on the next frame.
+        // A click positions first, then presses/releases before its two settle frames.
         let mut reply = h.send(batch(vec![click(100.0, 50.0)], 2, false));
+        h.app.update();
+        assert!(
+            !h.mouse().pressed(MouseButton::Left),
+            "positioning cannot press"
+        );
+        assert_eq!(h.last_update_cursor(), Some(Vec2::new(100.0, 50.0)));
         h.app.update();
         assert!(
             h.mouse().just_pressed(MouseButton::Left),
@@ -1538,7 +1638,7 @@ mod tests {
 
         // Use bevy_egui's production collector for every consuming command type.
         for (command, command_frames) in [
-            (click(100.0, 50.0), 2),
+            (click(100.0, 50.0), 3),
             (InputCommand::PointerMove { x: 100.0, y: 50.0 }, 1),
             (
                 InputCommand::PointerDrag {
@@ -1546,7 +1646,7 @@ mod tests {
                     to: PointerPoint { x: 100.0, y: 50.0 },
                     button: PointerButton::Left,
                 },
-                3,
+                4,
             ),
             (key("KeyA"), 2),
             (
@@ -1642,6 +1742,128 @@ mod tests {
         );
         assert!(h.keys().get_pressed().next().is_none());
 
+        // The real planner/Bevy collector feeds a populated egui area with drag scrolling enabled.
+        {
+            let mut scrolled = harness();
+            let scroll = ScrollControl {
+                seed_offset: Some(120.0),
+                ..Default::default()
+            };
+            scrolled.app.world_mut().resource_mut::<CopyControl>().scroll = Some(scroll);
+            scrolled
+                .app
+                .world_mut()
+                .get_mut::<Window>(scrolled.window)
+                .unwrap()
+                .set_physical_cursor_position(Some(DVec2::new(720.0, 0.0)));
+            for _ in 0..3 {
+                scrolled.app.update();
+            }
+            let (target, baseline) = {
+                let control = scrolled.app.world().resource::<CopyControl>();
+                let scroll = control.scroll.as_ref().unwrap();
+                let target = scroll.target.unwrap().center();
+                assert!(scroll.viewport.unwrap().contains(target));
+                let baseline = scroll.samples.last().unwrap().0;
+                assert_eq!(baseline, 120.0, "seeded once, never forced after input");
+                assert!(
+                    target.y > baseline,
+                    "the old press-frame teleport would clamp the offset to zero"
+                );
+                (target, baseline)
+            };
+            for modified in [false, true] {
+                let mut commands = Vec::new();
+                if modified {
+                    commands.push(key("ControlLeft"));
+                }
+                commands.push(click(target.x, target.y));
+                let mut reply = scrolled.send(batch(commands, 2, false));
+                let mut completed = false;
+                for _ in 0..10 {
+                    scrolled.app.update();
+                    let control = scrolled.app.world().resource::<CopyControl>();
+                    let (offset, delta) = *control.scroll.as_ref().unwrap().samples.last().unwrap();
+                    assert_eq!(
+                        offset, baseline,
+                        "position/press/release/settle cannot move the scroll offset"
+                    );
+                    if scrolled.mouse().just_pressed(MouseButton::Left) {
+                        assert_eq!(
+                            delta,
+                            bevy_egui::egui::Vec2::ZERO,
+                            "press sees no unrelated teleport delta"
+                        );
+                    }
+                    if let Ok(answer) = reply.try_recv() {
+                        assert!(answer.result.is_ok());
+                        completed = true;
+                        break;
+                    }
+                }
+                assert!(completed);
+                let control = scrolled.app.world().resource::<CopyControl>();
+                let selected = &control.scroll.as_ref().unwrap().selected;
+                assert_eq!(
+                    selected.len(),
+                    if modified { 2 } else { 1 },
+                    "each click selects exactly one row"
+                );
+                assert_eq!(selected.last().unwrap().0, 8);
+                assert_eq!(selected.last().unwrap().1.ctrl, modified);
+                assert!(!scrolled.mouse().pressed(MouseButton::Left));
+                assert!(scrolled.keys().get_pressed().next().is_none());
+            }
+            // Drag start also settles first; only the declared ten-pixel motion scrolls.
+            let mut reply = scrolled.send(batch(
+                vec![
+                    key("ShiftLeft"),
+                    InputCommand::PointerDrag {
+                        from: PointerPoint {
+                            x: target.x,
+                            y: target.y,
+                        },
+                        to: PointerPoint {
+                            x: target.x,
+                            y: target.y - 10.0,
+                        },
+                        button: PointerButton::Left,
+                    },
+                ],
+                0,
+                false,
+            ));
+            for frame in 0..6 {
+                scrolled.app.update();
+                let control = scrolled.app.world().resource::<CopyControl>();
+                let (offset, delta) = *control.scroll.as_ref().unwrap().samples.last().unwrap();
+                if frame <= 2 {
+                    assert_eq!(offset, baseline);
+                }
+                if frame == 2 {
+                    assert!(scrolled.mouse().just_pressed(MouseButton::Left));
+                    assert_eq!(delta, bevy_egui::egui::Vec2::ZERO);
+                }
+                if frame == 3 {
+                    assert_eq!(
+                        offset,
+                        baseline + 10.0,
+                        "only declared drag displacement applies"
+                    );
+                    assert!(control.modifier_frames.last().unwrap().shift);
+                }
+                if frame == 4 {
+                    assert!(control.modifier_frames.last().unwrap().shift);
+                }
+                if frame == 5 {
+                    assert!(!control.modifier_frames.last().unwrap().shift);
+                }
+            }
+            scrolled.app.update();
+            assert!(reply.try_recv().unwrap().result.is_ok());
+            assert!(!scrolled.mouse().pressed(MouseButton::Left));
+        }
+
         // Whole-batch preflight still refuses a later clipboard chord before an earlier click.
         let clicks_before = h
             .app
@@ -1676,6 +1898,9 @@ mod tests {
         let scroll = InputCommand::Scroll { dx: 0.0, dy: -3.0 };
         let mut reply = h.send(batch(vec![drag, scroll], 0, false));
         h.app.update();
+        assert!(!h.mouse().pressed(MouseButton::Left));
+        assert_eq!(h.last_update_cursor(), Some(Vec2::new(10.0, 10.0)));
+        h.app.update();
         assert!(h.mouse().just_pressed(MouseButton::Left));
         assert_eq!(h.last_update_cursor(), Some(Vec2::new(10.0, 10.0)));
         h.app.update();
@@ -1697,6 +1922,8 @@ mod tests {
         let mut second = h.send(batch(vec![click(30.0, 30.0)], 0, false));
         h.app.update();
         assert_eq!(refusal_code(&mut second), "input_in_progress");
+        assert!(!h.mouse().pressed(MouseButton::Left));
+        h.app.update();
         assert!(h.mouse().pressed(MouseButton::Left));
         h.set_verse("w");
         let copied_before_abort = h.app.world().resource::<CopyControl>().sink_text;
@@ -1720,6 +1947,8 @@ mod tests {
         // A posed capture takes the camera mid-batch: refused, button released.
         let mut reply = h.send(batch(vec![click(40.0, 40.0)], 0, false));
         h.app.update();
+        h.app.update();
+        assert!(h.mouse().pressed(MouseButton::Left));
         h.app.world_mut().insert_resource(CameraCaptureLock);
         h.app.update();
         assert_eq!(refusal_code(&mut reply), CAMERA_LOCKED_BY_CAPTURE_CODE);
@@ -1729,6 +1958,8 @@ mod tests {
         // Wall-clock cap: a stalled frame loop yields a typed timeout.
         let mut reply = h.send(batch(vec![click(50.0, 50.0)], 100, false));
         h.app.update();
+        h.app.update();
+        assert!(h.mouse().pressed(MouseButton::Left));
         h.app
             .world_mut()
             .resource_mut::<Time<Real>>()
@@ -1804,6 +2035,8 @@ mod tests {
 
         // An abandoned caller: the batch stops and nothing stays pressed.
         let reply = h.send(batch(vec![click(70.0, 70.0)], 0, false));
+        h.app.update();
+        assert!(!h.mouse().pressed(MouseButton::Left));
         h.app.update();
         assert!(h.mouse().pressed(MouseButton::Left));
         drop(reply);
