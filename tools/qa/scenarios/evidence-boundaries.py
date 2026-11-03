@@ -549,6 +549,18 @@ for label, raw, expected in [
     results.append({"case": "owned-token-" + label, "expected_accepted": expected, "accepted": accepted,
                     "passed": accepted == expected and contract, "contract": observed,
                     "boundary": "production snapshot with controlled kernel sharing/read seams; no token file or native API execution"})
+from invite_transfer import authority_matches
+for label, authority, expected in [
+        ("owner", {"kind":"owner","issuer_did":"did:key:fixture"}, True),
+        ("manager", {"kind":"delegated_manager","issuer_did":"did:key:fixture","proof_id":"ab"*32}, True),
+        ("wrong-issuer", {"kind":"owner","issuer_did":"did:key:other"}, False),
+        ("missing-proof", {"kind":"delegated_manager","issuer_did":"did:key:fixture"}, False),
+        ("bad-proof", {"kind":"delegated_manager","issuer_did":"did:key:fixture","proof_id":"AB"*32}, False),
+        ("owner-extra-proof", {"kind":"owner","issuer_did":"did:key:fixture","proof_id":"ab"*32}, False)]:
+    accepted=authority_matches(authority,"did:key:fixture")
+    results.append({"case":"typed-invitation-authority-"+label,"expected_accepted":expected,"accepted":accepted,
+                    "passed":accepted==expected,
+                    "boundary":"production public metadata shape/issuer constraint only; no signature, native or application QA claim"})
 summary = {"scope": "offline synthetic validator fixtures; zero application checkpoint coverage",
            "passed": all(result["passed"] for result in results), "cases": results}
 (output / "results.json").write_text(json.dumps(summary, indent=2), encoding="utf-8")

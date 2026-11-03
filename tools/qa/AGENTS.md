@@ -1104,3 +1104,11 @@ The one-use paired client accepts the recognized v2 prefix as well as Owner-v1 o
 the existing exact-owned-app/current-GUI-credential consume workflow. It still sends the
 actual masked text and Join controls through the guarded lease and reports submission only.
 V2 signature/current role/proof/native validation remains in the normal application path.
+
+
+Paired transfer public metadata now strictly identifies actual Owner or delegated Manager
+issuer authority and its canonical public proof hash. The client rejects mismatched issuer,
+missing/ambiguous/unknown authority fields, then requires unchanged exact metadata throughout
+the existing owned-GUI consume workflow. It does not implement alternate signature/auth or
+readiness logic. Existing offline boundary fixtures exercise this production metadata-shape
+helper only and claim zero application/signature/native coverage.

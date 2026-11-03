@@ -1714,3 +1714,9 @@ recipient identity, navigation/dialog/input revision, exact primary window and w
 proof; the renderer repeats checks at the insertion and real Join-click boundaries. Every job
 exit clears its private lease. Success requires the actual button response, not merely planned
 frames. Ordinary unguarded input retains its existing behavior and clipboard suppression.
+
+
+The one-use invitation host now consumes typed Owner or delegated Manager SourceAuthority
+from the actual v2 DB preparation. Metadata includes its exact public proof identity and
+current Access context; the fresh result must match before moving the credential once.
+Owner API-token/operator gates are unchanged and do not assert entity Owner authority.

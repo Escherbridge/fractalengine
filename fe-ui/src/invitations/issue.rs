@@ -1,10 +1,10 @@
-//! Owner invitation state machine; see AGENTS.md.
+//! Current-issuer invitation state machine; see AGENTS.md.
 
 use crossbeam::channel::{Receiver, Sender};
 use fe_database::join_invite::{JoinManifest, JoinRole};
 use fe_runtime::{
     entity_access::EntityAccessTarget,
-    join_invite::{InviteSource, IssuedInvitation, JoinCredential},
+    join_invite::{InviteAuthority, InviteSource, IssuedInvitation, JoinCredential},
     messages::{DbCommand, DbResult},
 };
 use fe_sync::{
@@ -184,13 +184,14 @@ impl IssueState {
             return None;
         }
         let issued = self.ready()?;
-        if issued
-            .source
-            .manifest
-            .get("created_by")
-            .and_then(serde_json::Value::as_str)
-            != Some(issuer)
-        {
+        if !issued.source.authority.valid_for(issuer) {
+            return None;
+        }
+        let owner = issued.source.manifest.get("created_by")?.as_str()?;
+        if match &issued.source.authority {
+            InviteAuthority::Owner { .. } => owner != issuer,
+            InviteAuthority::DelegatedManager { .. } => owner == issuer,
+        } {
             return None;
         }
         let entity_kind = match issued.source.target.entity_type {
@@ -200,6 +201,7 @@ impl IssueState {
             _ => return None,
         };
         Some(fe_runtime::qa_invitation::TransferMetadata {
+            authority: issued.source.authority.clone(),
             generation: self.generation.clone(),
             issuer_did: issuer.into(),
             recipient_did: issued.source.recipient_did.clone(),
@@ -249,7 +251,7 @@ impl IssueState {
     pub fn progress(&self) -> Option<&'static str> {
         match self.phase {
             Phase::Queued | Phase::Preparing => {
-                Some("Checking Owner identity and current scope...")
+                Some("Checking current issuer authority and scope...")
             }
             Phase::Exporting { .. } => Some("Preparing the live replica capability..."),
             Phase::Issuing { .. } => {
@@ -280,7 +282,13 @@ impl IssueState {
                     && matches!(self.phase, Phase::Preparing) =>
             {
                 let Ok(source) = result else {
-                    self.fail("Invitation preparation was refused. Refresh stored Access and check the recipient.");
+                    let needs_reauthorization = result
+                        .as_ref()
+                        .err()
+                        .is_some_and(|message| message.contains("reauthorization"));
+                    self.fail(if needs_reauthorization {
+                        "Manager authority needs Owner reauthorization or a shorter invitation lifetime. Refresh stored Access before another change."
+                    } else {"Invitation preparation was refused. Refresh stored Access and check the recipient."});
                     return;
                 };
                 if !self.source_matches(source, target) {
@@ -306,8 +314,13 @@ impl IssueState {
                     self.fail("Unsupported invitation role.");
                     return;
                 };
-                if manifest.created_by != did {
-                    self.fail("The local identity is no longer the pinned Owner.");
+                let current_authority = source.authority.valid_for(did)
+                    && match &source.authority {
+                        InviteAuthority::Owner { .. } => manifest.created_by == did,
+                        InviteAuthority::DelegatedManager { .. } => manifest.created_by != did,
+                    };
+                if !current_authority {
+                    self.fail("The prepared authority does not match this local issuer. Refresh stored Access.");
                     return;
                 }
                 let (reply, receiver) = crossbeam::channel::bounded(1);
@@ -366,7 +379,21 @@ impl IssueState {
                     clock,
                 )
                 .is_ok_and(|invitation| {
+                    let authority_matches = match (
+                        &issued.source.authority,
+                        invitation.issuer_delegation(clock),
+                    ) {
+                        (InviteAuthority::Owner { .. }, Ok(None)) => {
+                            invitation.manifest().created_by == did.unwrap_or_default()
+                        }
+                        (InviteAuthority::DelegatedManager { proof_id, .. }, Ok(Some(proof))) => {
+                            proof.proof_id().ok().as_deref() == Some(proof_id.as_str())
+                        }
+                        _ => false,
+                    };
                     invitation.issuer_did() == did.unwrap_or_default()
+                        && issued.source.authority.valid_for(invitation.issuer_did())
+                        && authority_matches
                         && invitation.scope() == issued.source.target.scope
                         && invitation.role().as_str() == issued.source.role
                         && serde_json::to_value(invitation.manifest()).ok().as_ref()

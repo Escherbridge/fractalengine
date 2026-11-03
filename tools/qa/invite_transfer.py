@@ -5,6 +5,17 @@ import math
 from owned_run_http import OwnedRunTransport
 
 
+def authority_matches(authority,issuer):
+    if not isinstance(authority,dict) or authority.get("issuer_did")!=issuer:
+        return False
+    if authority.get("kind")=="owner":
+        return set(authority)=={"kind","issuer_did"}
+    if authority.get("kind")=="delegated_manager":
+        proof=authority.get("proof_id")
+        return set(authority)=={"kind","issuer_did","proof_id"} and isinstance(proof,str) and len(proof)==64 and all(c in "0123456789abcdef" for c in proof)
+    return False
+
+
 def join_controls(qa,observation):
     lease=observation.get("join_input_lease")
     if not isinstance(lease,dict) or not isinstance(lease.get("lease_id"),str) or not lease["lease_id"].startswith("join-input-"):
@@ -65,7 +76,7 @@ def transfer_owned(qa,owner,recipient,args,transport_context):
         expected = owner_observation.get("invitation")
         if not isinstance(issuer, str) or not isinstance(recipient_did, str) or issuer == recipient_did or not isinstance(expected, dict):
             raise qa.Refused(0, "addressed_invitation_required", "Generate an addressed invitation for the other owned app first")
-        if expected.get("issuer_did") != issuer or expected.get("recipient_did") != recipient_did or expected.get("verse_id") != owner_verse:
+        if expected.get("issuer_did") != issuer or expected.get("recipient_did") != recipient_did or expected.get("verse_id") != owner_verse or not authority_matches(expected.get("authority"),issuer):
             raise qa.Refused(0, "recipient_identity_mismatch", "The current GUI invitation must name the actual other app identity")
         if recipient_observation.get("join_ready_for_input") is not True:
             raise qa.Refused(0, "clean_join_required", "Open a clean, empty Join dialog on the recipient before transferring")
@@ -108,5 +119,6 @@ def transfer_owned(qa,owner,recipient,args,transport_context):
             body = None
         return {"transfer": "consumed_once", "input_submitted": True, "commands_applied":outcome["commands_applied"],
                 "issuer_did": issuer, "recipient_did": recipient_did,
+                "issuer_authority":expected["authority"],
                 "generation": expected["generation"], "scope": expected["scope"], "role": expected["role"],
                 "join_ready": "pending_real_transport_and_role_confirmation"}

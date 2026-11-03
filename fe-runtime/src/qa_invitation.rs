@@ -14,6 +14,7 @@ pub const CONSUME_TTL: Duration = Duration::from_secs(15);
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct TransferMetadata {
+    pub authority: crate::join_invite::InviteAuthority,
     pub generation: String,
     pub issuer_did: String,
     pub recipient_did: String,
@@ -29,7 +30,8 @@ pub struct TransferMetadata {
 
 impl TransferMetadata {
     pub fn validate(&self) -> bool {
-        self.generation.len() <= 64
+        self.authority.valid_for(&self.issuer_did)
+            && self.generation.len() <= 64
             && self.generation.starts_with("invite-")
             && self.issuer_did.len() <= 128
             && self.issuer_did.starts_with("did:key:")

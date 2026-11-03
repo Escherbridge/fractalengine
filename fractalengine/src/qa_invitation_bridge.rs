@@ -1,4 +1,4 @@
-//! Owner-thread one-use invitation transfer; see src/AGENTS.md section QA invitation.
+//! Current-authority one-use invitation transfer; see src/AGENTS.md section QA invitation.
 
 use bevy::prelude::*;
 use fe_runtime::{
@@ -223,7 +223,7 @@ fn serve(
             {
                 request.reply(Err(QaFailure {
                     code: "invitation_transfer_busy",
-                    message: "Current Owner verification could not be queued",
+                    message: "Current issuer authority verification could not be queued",
                 }));
                 return;
             }

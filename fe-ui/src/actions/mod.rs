@@ -2439,6 +2439,11 @@ mod tests {
                 access.invitation=crate::invitations::IssueState::transfer_fixture(source.clone(),fe_runtime::join_invite::JoinCredential::new("sealed-transfer-sentinel".into()).unwrap(),false);
             }
             let metadata=mgr.qa_invitation_metadata(&issuer,1).expect("The current ready fixture exposes only exact public metadata");
+            assert!(metadata.validate());
+            let encoded=serde_json::to_value(&metadata).unwrap();
+            assert_eq!(encoded["authority"]["kind"],"owner");
+            let mut ambiguous=encoded.clone();ambiguous["authority"]["proof_id"]=serde_json::json!("ab".repeat(32));
+            assert!(serde_json::from_value::<fe_runtime::qa_invitation::TransferMetadata>(ambiguous).is_err(),"Owner wire metadata cannot smuggle an unsigned alternative proof field");
             let mut wrong=metadata.clone();wrong.role="editor".into();
             assert!(mgr.consume_qa_invitation(&wrong,&source,&issuer,1).is_none());
             let mut changed=source.clone();changed.manifest["name"]=serde_json::json!("Changed");
@@ -2451,9 +2456,29 @@ mod tests {
             assert!(mgr.consume_qa_invitation(&metadata,&source,&issuer,1).is_none() && mgr.qa_invitation_metadata(&issuer,1).is_none(),"Consumption moves the credential once and invalidates its generation");
             if let ActiveDialog::EntitySettings {access,..}=&mut mgr.active_dialog {access.invitation=crate::invitations::IssueState::transfer_fixture(source.clone(),fe_runtime::join_invite::JoinCredential::new("expired-transfer-sentinel".into()).unwrap(),true);}
             assert!(mgr.qa_invitation_metadata(&issuer,1).is_none(),"Expired consume leases cannot observe or release credentials");
-            if let ActiveDialog::EntitySettings {access,..}=&mut mgr.active_dialog {access.invitation=crate::invitations::IssueState::transfer_fixture(source,fe_runtime::join_invite::JoinCredential::new("navigation-transfer-sentinel".into()).unwrap(),false);}
+            if let ActiveDialog::EntitySettings {access,..}=&mut mgr.active_dialog {access.invitation=crate::invitations::IssueState::transfer_fixture(source.clone(),fe_runtime::join_invite::JoinCredential::new("navigation-transfer-sentinel".into()).unwrap(),false);}
             assert!(mgr.qa_invitation_metadata(&issuer,1).is_some());
             assert!(mgr.qa_invitation_metadata(&issuer,2).is_none(),"A navigation intent invalidates the retained invitation even when its Access target is unchanged");
+            let mut manager_source=source.clone();
+            manager_source.authority=fe_runtime::join_invite::InviteAuthority::DelegatedManager {issuer_did:issuer.clone(),proof_id:"ab".repeat(32)};
+            manager_source.manifest["created_by"]=serde_json::json!(fe_identity::NodeKeypair::generate().to_did_key());
+            if let ActiveDialog::EntitySettings {access,details,..}=&mut mgr.active_dialog {
+                access.snapshot.as_mut().unwrap().local_role="manager".into();
+                details.loaded.as_mut().unwrap().role="manager".into();
+                access.invitation=crate::invitations::IssueState::transfer_fixture(manager_source.clone(),fe_runtime::join_invite::JoinCredential::new("manager-transfer-sentinel".into()).unwrap(),false);
+            }
+            let metadata=mgr.qa_invitation_metadata(&issuer,1).expect("A Manager context exposes its typed proof identity, not an Owner label");
+            assert_eq!(metadata.authority,manager_source.authority);
+            let encoded=serde_json::to_value(&metadata).unwrap();
+            assert_eq!(encoded["authority"]["kind"],"delegated_manager");
+            assert!(serde_json::from_value::<fe_runtime::qa_invitation::TransferMetadata>(encoded).unwrap().validate());
+            let mut changed_proof=manager_source.clone();changed_proof.authority=fe_runtime::join_invite::InviteAuthority::DelegatedManager {issuer_did:issuer.clone(),proof_id:"cd".repeat(32)};
+            assert!(mgr.consume_qa_invitation(&metadata,&changed_proof,&issuer,1).is_none(),"A freshly changed Manager proof cannot release an older generated credential");
+            assert_eq!(mgr.consume_qa_invitation(&metadata,&manager_source,&issuer,1).unwrap().as_str(),"manager-transfer-sentinel");
+            if let ActiveDialog::EntitySettings {access,details,..}=&mut mgr.active_dialog {
+                access.snapshot.as_mut().unwrap().local_role="owner".into();
+                details.loaded.as_mut().unwrap().role="owner".into();
+            }
         }
         crate::dialogs::entity_access::submit(&mut mgr,Access::Revoke {peer_did:"did:key:known-peer".into()},&tx);
         let DbCommand::EntityAccess {request_id:change_id,..}=rx.try_recv().unwrap() else{unreachable!()};

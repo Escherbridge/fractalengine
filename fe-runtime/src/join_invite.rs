@@ -28,7 +28,8 @@ impl std::fmt::Debug for JoinCredential {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 pub enum InviteAuthority {
     Owner {
         issuer_did: String,
@@ -50,6 +51,15 @@ impl InviteAuthority {
             Self::Owner { .. } => None,
             Self::DelegatedManager { proof_id, .. } => Some(proof_id),
         }
+    }
+    pub fn valid_for(&self, issuer: &str) -> bool {
+        self.issuer_did() == issuer
+            && self.proof_id().is_none_or(|id| {
+                id.len() == 64
+                    && id
+                        .bytes()
+                        .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+            })
     }
 }
 

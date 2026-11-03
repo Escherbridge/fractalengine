@@ -429,14 +429,17 @@ pub(crate) fn invite_controls(
 ) -> bool {
     ui.separator();
     ui.label("Invite a peer to this scope");
-    let owner = state
+    let can_issue = state
         .snapshot
         .as_ref()
-        .is_some_and(|snapshot| snapshot.local_role == "owner");
-    if !owner {
+        .is_some_and(|snapshot| matches!(snapshot.local_role.as_str(),"owner"|"manager"));
+    if !can_issue {
         state.invitation.reset();
-        ui.label("Fresh addressed invitations currently require the Verse Owner. Manager-issued invitations await delegation proof support.");
+        ui.label("Only the current Owner or an authorized Manager can issue addressed invitations.");
         return false;
+    }
+    if state.snapshot.as_ref().is_some_and(|snapshot|snapshot.local_role=="manager") {
+        ui.label("Manager invitations require a current Owner-rooted proof. Older Manager grants need Owner reauthorization; choose a lifetime within that proof.");
     }
     if state.invitation.recipient.is_empty() {
         let owner_did = state.snapshot.as_ref().map(|s| s.local_did.as_str());
@@ -526,13 +529,13 @@ pub(crate) fn invitation_context(
     };
     let valid = *active_tab == SettingsTab::Access
         && details.can_write()
-        && details.loaded.as_ref().is_some_and(|d| d.role == "owner")
+        && details.loaded.as_ref().is_some_and(|d| matches!(d.role.as_str(),"owner"|"manager"))
         && !access.read_required
         && !access.waiting()
         && access
             .snapshot
             .as_ref()
-            .is_some_and(|s| s.local_role == "owner");
+            .is_some_and(|s| matches!(s.local_role.as_str(),"owner"|"manager"));
     let Some(target) = target.filter(|_| valid) else {
         access.invitation.reset();
         return None;

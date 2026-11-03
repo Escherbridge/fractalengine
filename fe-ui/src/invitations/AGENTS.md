@@ -170,3 +170,21 @@ existing masked Join journey additionally exercises full bounded finalization ad
 accepted-command no-replay and stale/duplicate receipt correlation without claiming native QA.
 Owner Access now receives v2 production output; Manager issuer controls are the following
 activation slice. Existing Owner-v1 joins remain compatible and do not invent Manager proofs.
+
+
+## Manager Access and fresh transfer authority
+
+Owner and Manager Access contexts now drive the reviewed issuer preparation/export/signing
+path. Manager preparation requires stored active Owner-rooted proof; uncertified older grants
+receive explicit Owner-reauthorization/lifetime guidance. UI role labels are visibility only.
+Prepared sources must match the actual local issuer kind/DID; issued envelopes must verify
+the same issuer proof content hash before becoming Ready. The normal signature/native-ticket
+parser still rejects a Manager claiming Owner or an unrelated write capability.
+
+One-use metadata carries the same typed public authority. Current Access target/generation,
+recipient, role, lifetime, local DID and navigation remain required. Fresh DB preparation on
+consume rechecks actual local authority, and any changed kind/proof hash or manifest refuses
+release. The existing API Owner-token floor is separate from entity Manager delegation and
+is unchanged. Actual masked-widget input leases, owned socket/PID checks, short TTL and
+no-replay/clipboard/diagnostic boundaries remain unchanged. Existing journey extensions here
+verify metadata/correlation only; real paired acceptance remains parent-owned runtime QA.

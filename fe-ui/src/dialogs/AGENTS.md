@@ -444,3 +444,9 @@ Manager-recipient v2 joins have a correlated proof-finalization wait between the
 role/hierarchy checks and the final native reinspection. Cancel copy explicitly includes a
 possibly stored Manager proof. The actual Join button/masked input and byte/geometry guards
 remain the submission path; a proof receipt is not a Joined or native-ready assertion.
+
+
+Access invitation controls now admit current Owner/Manager contexts and explain that older
+Manager grants require Owner reauthorization and bounded validity. The controller still
+requires fresh stored details and Access snapshots; DB authority/proof/native-ticket checks
+run before any grant or credential is issued. Editor/Viewer contexts cannot issue invitations.

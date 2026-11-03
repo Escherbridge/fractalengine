@@ -1001,3 +1001,10 @@ The command carries a redacted JoinCredential and the original bounded monotonic
 the result reports only storage confirmation, never native readiness or fabricated role.
 They do not create a REST/MCP mutation door. Production DB and ordinary read-model dispatch
 route the receipt only to its Join coordinator; unsupported peer models refuse explicitly.
+
+
+QA invitation TransferMetadata includes the exact typed InviteAuthority, serialized with a
+strict kind tag and unknown-field refusal. Delegated Manager metadata carries only its public
+proof content hash, never the proof ticket or a capability. Metadata validation binds its
+issuer DID and canonical hash shape; fresh DB source preparation remains the authority check.
+This addition does not change the API Owner-token/operator-input gates or mint any role.
