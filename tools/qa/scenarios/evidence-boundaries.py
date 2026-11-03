@@ -463,6 +463,33 @@ for label, expected in terminal_cases:
         "passed": completed.returncode == (0 if expected else 2), "command": command,
         "stdout": completed.stdout, "stderr": completed.stderr,
         "limit": "synthetic final-audit data; retained live process/writer-release observation is not executed"})
+# Controlled socket-owner interleavings exercise the production pre-send guard without networking.
+from types import SimpleNamespace, MethodType
+from owned_run_http import OwnedRun, PinnedConnection
+for label, rows_before, rows_at_send, expected in [
+        ("matching", [("127.0.0.1",8765,"127.0.0.1",51000,42)], None, True),
+        ("pid-mismatch", [("127.0.0.1",8765,"127.0.0.1",51000,99)], None, False),
+        ("rebind-before-auth", [("127.0.0.1",8765,"127.0.0.1",51000,42)], [("127.0.0.1",8765,"127.0.0.1",51000,99)], False),
+        ("tuple-mismatch", [("127.0.0.1",8765,"127.0.0.1",51001,42)], None, False),
+        ("ambiguous-owner", [("127.0.0.1",8765,"127.0.0.1",51000,42),("127.0.0.1",8765,"127.0.0.1",51000,99)], None, False)]:
+    sent, reported = [], list(rows_before)
+    owner=SimpleNamespace(host="127.0.0.1",port=8765,identity={"pid":42},files=SimpleNamespace(check_live=lambda:None),owners=SimpleNamespace(rows=lambda:reported))
+    owner.check_live=MethodType(OwnedRun.check_live,owner)
+    owner.prove_socket=MethodType(OwnedRun.prove_socket,owner)
+    stream=SimpleNamespace(getsockname=lambda:("127.0.0.1",51000),getpeername=lambda:("127.0.0.1",8765),sendall=lambda data:sent.append(bytes(data)))
+    connection=PinnedConnection(owner,1.0);connection.sock=stream
+    accepted=True
+    try:
+        if rows_at_send is not None:
+            owner.prove_socket(stream)
+            reported=rows_at_send
+        connection.send(b"Authorization: Bearer offline-fixture-only\r\n")
+    except ValueError:
+        accepted=False
+    results.append({"case":"owned-api-"+label,"expected_accepted":expected,"accepted":accepted,
+                    "passed":accepted==expected and len(sent)==(1 if expected else 0),
+                    "authenticated_writes":len(sent),
+                    "boundary":"production retained-stream pre-send owner guard; controlled OS rows, no network/runtime acceptance"})
 summary = {"scope": "offline synthetic validator fixtures; zero application checkpoint coverage",
            "passed": all(result["passed"] for result in results), "cases": results}
 (output / "results.json").write_text(json.dumps(summary, indent=2), encoding="utf-8")

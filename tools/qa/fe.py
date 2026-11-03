@@ -197,29 +197,29 @@ def refusal_from(status, raw):
     return Refused(status, payload.get("code") or "http_%d" % status, message, payload.get("field"))
 
 
-def api_alive(run):
+def api_alive(run, transport=None):
     """True once /api/v1/health answers; polled briefly so a dying host is seen dead."""
     time.sleep(0.5)
     for _ in range(3):
         try:
-            http(run, "GET", "/api/v1/health", timeout=3.0)
+            (transport or http)(run, "GET", "/api/v1/health", timeout=3.0)
             return True
         except NotRunning:
             time.sleep(0.5)
     return False
 
 
-def call(run, method, path, token, body=None, timeout=40.0):
+def call(run, method, path, token, body=None, timeout=40.0, transport=None):
     """Request with a bounded retry on rate-limit / single-flight refusals."""
     for attempt in range(RETRY_ATTEMPTS):
-        status, headers, raw = http(run, method, path, token, body, timeout)
+        status, headers, raw = (transport or http)(run, method, path, token, body, timeout)
         if 200 <= status < 300:
             return status, headers, raw
         refusal = refusal_from(status, raw)
         if (status == 429 or (status == 409 and refusal.code in TRANSIENT_REFUSALS)) and attempt + 1 < RETRY_ATTEMPTS:
             time.sleep(RETRY_SLEEP_SECONDS)
             continue
-        if status >= 500 and not api_alive(run):
+        if status >= 500 and not api_alive(run, transport):
             # A 5xx whose host then stops answering is a crash, not a refusal.
             raise NotRunning("app died during %s %s (%s: %s) - read <run>/stderr.log"
                              % (method, path, refusal.code, refusal.message))
@@ -235,30 +235,30 @@ def active_cache_path(run):
     return os.path.join(run["run_dir"], "fe-active-verse.txt")
 
 
-def read_camera_with(run, token):
+def read_camera_with(run, token, transport=None):
     for attempt in range(RETRY_ATTEMPTS):
-        status, _headers, raw = http(run, "GET", "/api/v1/debug/camera", token, timeout=10.0)
+        status, _headers, raw = (transport or http)(run, "GET", "/api/v1/debug/camera", token, timeout=10.0)
         if status != 429 or attempt + 1 == RETRY_ATTEMPTS:
             break
         time.sleep(0.25)
     return status, raw
 
 
-def resolve_token(run, verse=None):
+def resolve_token(run, verse=None, transport=None, use_cache=True, token_snapshot=None):
     """(verse_id, token, camera_state). Probes owner tokens against GET /camera."""
-    tokens = load_tokens(run)
+    tokens = token_snapshot if token_snapshot is not None else load_tokens(run)
     if verse:
         token = tokens.get("tokens", {}).get(verse)
         if not token:
             raise Refused(0, "no_token_for_verse", "tokens.json has no token for verse " + verse)
-        status, raw = read_camera_with(run, token)
+        status, raw = read_camera_with(run, token, transport)
         if status != 200:
             raise refusal_from(status, raw)
         return verse, token, decode_object(raw)
 
     candidates = owner_verses(tokens)
     cache = active_cache_path(run)
-    if os.path.exists(cache):
+    if use_cache and os.path.exists(cache):
         with open(cache, "r", encoding="utf-8") as handle:
             cached = handle.read().strip()
         if cached in candidates:
@@ -267,10 +267,11 @@ def resolve_token(run, verse=None):
     last = None
     for candidate in candidates:
         token = tokens["tokens"][candidate]
-        status, raw = read_camera_with(run, token)
+        status, raw = read_camera_with(run, token, transport)
         if status == 200:
-            with open(cache, "w", encoding="utf-8") as handle:
-                handle.write(candidate)
+            if use_cache:
+                with open(cache, "w", encoding="utf-8") as handle:
+                    handle.write(candidate)
             return candidate, token, decode_object(raw)
         last = refusal_from(status, raw)
         if status != 404:
@@ -666,10 +667,10 @@ def command_api(run, args):
     sys.stdout.write(raw.decode("utf-8", "replace") + "\n")
 
 
-def probe(run, path, verse=None, params=None):
-    _verse, token, _camera = resolve_token(run, verse)
+def probe(run, path, verse=None, params=None, transport=None, use_cache=True):
+    _verse, token, _camera = resolve_token(run, verse, transport, use_cache)
     query = "?" + urllib.parse.urlencode(params) if params else ""
-    _status, _headers, raw = call(run, "GET", "/api/v1/debug/" + path + query, token)
+    _status, _headers, raw = call(run, "GET", "/api/v1/debug/" + path + query, token, transport=transport)
     return decode_object(raw)
 
 

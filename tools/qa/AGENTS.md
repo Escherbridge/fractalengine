@@ -1057,3 +1057,28 @@ Only public metadata and an unconfirmed-until-real-readiness submission receipt 
 The credential response and input text remain in process memory; failure after consumption
 requires a new invitation and must not replay the batch. Existing A8 clipboard suppression
 remains in force. Root owns eventual two-app runtime execution; source presence is not QA PASS.
+
+
+### Invitation transport ownership
+
+owned_run_http reuses WindowsLease to pin canonical current.json, the exact run-local token
+file and executable/creation-time process handles. Numeric loopback origin and process metadata
+are captured from the pinned record. Every HTTP connection is established without credentials,
+then GetExtendedTcpTable OWNER_PID_CONNECTIONS proves its exact server-side local/remote
+address/port tuple belongs uniquely to the recorded PID. The check repeats before every send.
+Authorization and bodies travel only on that retained checked connection; a new listener cannot
+receive them by rebinding a URL. There is no redirect, proxy or DNS fallback. Table/response
+reads are bounded. Signatures/row layouts follow local WindowsSDK10.0.22621 iphlpapi.h,
+tcpmib.h and iprtrmib.h. Both handles remain live-checked around the operation.
+
+The transfer client injects this transport into token/camera/UI preflight too and disables the
+active-verse cache, so no authenticated preliminary request escapes the same socket proof and
+no cache file is written. Existing evidence-boundaries fixtures cover controlled wrong-PID,
+wrong-tuple, ambiguous-owner and rebind-before-auth refusal with zero authenticated writes.
+These offline fixtures do not substitute for root-owned native paired execution.
+
+The token leaf is read as one bounded handle-pinned version with read/write/delete sharing,
+then closed immediately. The existing atomic owner-only publisher may replace tokens.json
+without being blocked by a long transfer. Only the exact run-local non-reparse file is read;
+its token map stays in memory and is injected into token resolution. current.json and parent
+identity guards remain retained. Existing durable API credential checks reject obsolete tokens.

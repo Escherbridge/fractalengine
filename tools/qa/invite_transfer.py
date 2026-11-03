@@ -1,72 +1,11 @@
 """One-use invitation handoff between pinned owned apps; see AGENTS.md."""
 
-import contextlib
-import ctypes
-from ctypes import wintypes
 import json
-import ntpath
-import os
+from owned_run_http import OwnedRunTransport
 
 
-class OwnedApp:
-    """Retain an exact process handle through the complete transfer."""
-
-    def __init__(self, qa, run):
-        self.qa = qa
-        self.identity = qa.require_object(run.get("process_identity"), "owned process identity")
-        self.handle = None
-
-    def __enter__(self):
-        if os.name != "nt":
-            raise self.qa.Refused(0, "owned_run_required", "Invitation transfer requires Windows owned-run handles")
-        self.kernel = ctypes.WinDLL("kernel32", use_last_error=True)
-        self.kernel.OpenProcess.argtypes = [wintypes.DWORD, wintypes.BOOL, wintypes.DWORD]
-        self.kernel.OpenProcess.restype = wintypes.HANDLE
-        self.kernel.CloseHandle.argtypes = [wintypes.HANDLE]
-        self.kernel.CloseHandle.restype = wintypes.BOOL
-        self.kernel.WaitForSingleObject.argtypes = [wintypes.HANDLE, wintypes.DWORD]
-        self.kernel.WaitForSingleObject.restype = wintypes.DWORD
-        self.kernel.QueryFullProcessImageNameW.argtypes = [wintypes.HANDLE, wintypes.DWORD, wintypes.LPWSTR, ctypes.POINTER(wintypes.DWORD)]
-        self.kernel.QueryFullProcessImageNameW.restype = wintypes.BOOL
-        self.kernel.GetProcessTimes.argtypes = [wintypes.HANDLE] + [ctypes.POINTER(wintypes.FILETIME)] * 4
-        self.kernel.GetProcessTimes.restype = wintypes.BOOL
-        pid = self.identity.get("pid")
-        ticks = self.identity.get("start_ticks")
-        image = self.identity.get("exe_path")
-        if type(pid) is not int or not 0 < pid <= 0xFFFFFFFF or not isinstance(ticks, str) or not ticks.isdecimal() or not isinstance(image, str) or not ntpath.isabs(image):
-            raise self.qa.Refused(0, "owned_run_required", "Complete owned process identity is required")
-        self.handle = self.kernel.OpenProcess(0x1000 | 0x100000, False, pid)
-        if not self.handle:
-            raise self.qa.Refused(0, "owned_run_required", "The recorded app lifetime cannot be pinned")
-        try:
-            creation, exit_time, kernel_time, user_time = (wintypes.FILETIME() for _ in range(4))
-            if not self.kernel.GetProcessTimes(self.handle, ctypes.byref(creation), ctypes.byref(exit_time), ctypes.byref(kernel_time), ctypes.byref(user_time)):
-                raise self.qa.Refused(0, "owned_run_required", "The pinned app creation time is unavailable")
-            actual_ticks = (creation.dwHighDateTime << 32 | creation.dwLowDateTime) + 504911232000000000
-            capacity = wintypes.DWORD(32768)
-            actual_image = ctypes.create_unicode_buffer(capacity.value)
-            if not self.kernel.QueryFullProcessImageNameW(self.handle, 0, actual_image, ctypes.byref(capacity)):
-                raise self.qa.Refused(0, "owned_run_required", "The pinned app executable is unavailable")
-            if actual_ticks != int(ticks) or ntpath.normcase(ntpath.normpath(actual_image.value)) != ntpath.normcase(ntpath.normpath(image)):
-                raise self.qa.Refused(0, "owned_run_required", "The recorded app lifetime or executable changed")
-            self.check()
-            return self
-        except BaseException:
-            self.__exit__(None, None, None)
-            raise
-
-    def check(self):
-        if self.kernel.WaitForSingleObject(self.handle, 0) != 258:
-            raise self.qa.Refused(0, "owned_run_ended", "A pinned app lifetime ended; transfer is unconfirmed")
-
-    def __exit__(self, *_):
-        if self.handle:
-            self.kernel.CloseHandle(self.handle)
-            self.handle = None
-
-
-def join_controls(qa, run, verse):
-    tree = qa.probe(run, "ui-tree", verse)
+def join_controls(qa, run, verse, transport):
+    tree = qa.probe(run, "ui-tree", verse, transport=transport, use_cache=False)
     nodes = qa.tree_nodes(tree)
     window = qa.require_object(tree.get("window"), "primary window")
     clip = {"x": 0, "y": 0, "w": window.get("width"), "h": window.get("height")}
@@ -93,23 +32,28 @@ def transfer(qa, owner, args):
     recipient = qa.load_run(args.recipient_run)
     if owner["run_dir"] == recipient["run_dir"] or owner["api_base"] == recipient["api_base"]:
         raise qa.Refused(0, "distinct_owned_runs_required", "Invitation transfer requires two distinct owned apps")
-    with contextlib.ExitStack() as stack:
-        owned = [stack.enter_context(OwnedApp(qa, run)) for run in (owner, recipient)]
-        if owned[0].identity["pid"] == owned[1].identity["pid"]:
-            raise qa.Refused(0, "distinct_owned_runs_required", "The two run records must identify different app lifetimes")
+    try:
+        transport_context=OwnedRunTransport((owner,recipient))
+        return transfer_owned(qa,owner,recipient,args,transport_context)
+    except qa.Refused:
+        raise
+    except Exception:
+        raise qa.Refused(0,"owned_transfer_unconfirmed","Owned endpoint or transfer verification failed; no batch may be replayed") from None
 
-        def check():
-            for app in owned:
-                app.check()
 
+def transfer_owned(qa,owner,recipient,args,transport_context):
+    with transport_context as transport:
+        owner_app,recipient_app=transport.runs
+        owner,recipient=owner_app.run,recipient_app.run
+        check=transport.check_live
         check()
-        owner_verse, owner_token, _ = qa.resolve_token(owner, args.verse)
-        recipient_verse, recipient_token, _ = qa.resolve_token(recipient, args.recipient_verse)
+        owner_verse, owner_token, _ = qa.resolve_token(owner,args.verse,transport=transport,use_cache=False,token_snapshot=owner_app.tokens)
+        recipient_verse, recipient_token, _ = qa.resolve_token(recipient,args.recipient_verse,transport=transport,use_cache=False,token_snapshot=recipient_app.tokens)
         check()
 
         def request(run, method, token, body=None):
             check()
-            status, headers, raw = qa.http(run, method, "/api/v1/debug/invitation", token, body, timeout=5.0)
+            status, headers, raw = transport(run, method, "/api/v1/debug/invitation", token, body, timeout=5.0)
             check()
             cache_control = next((value for key, value in headers.items() if key.casefold() == "cache-control"), None)
             if not 200 <= status < 300 or cache_control != "no-store":
@@ -133,7 +77,7 @@ def transfer(qa, owner, args):
             raise qa.Refused(0, "recipient_identity_mismatch", "The current GUI invitation must name the actual other app identity")
         if recipient_observation.get("join_ready_for_input") is not True:
             raise qa.Refused(0, "clean_join_required", "Open a clean, empty Join dialog on the recipient before transferring")
-        text_at, join_at = join_controls(qa, recipient, recipient_verse)
+        text_at, join_at = join_controls(qa, recipient, recipient_verse, transport)
         check()
         # Recheck both actual DIDs after locating controls, before one-use consumption.
         current_owner = request(owner, "GET", owner_token)
@@ -157,7 +101,7 @@ def transfer(qa, owner, args):
             if len(json.dumps(body).encode("utf-8")) > 65536:
                 raise ValueError()
             check()
-            status, _, _ = qa.http(recipient, "POST", "/api/v1/debug/input", recipient_token, body, timeout=30.0)
+            status, _, _ = transport(recipient, "POST", "/api/v1/debug/input", recipient_token, body, timeout=30.0)
             check()
             if not 200 <= status < 300:
                 raise ValueError()
