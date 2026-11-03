@@ -127,6 +127,94 @@ type LiveStamps<'w, 's> = Query<
     ),
 >;
 
+/// Current semantic stamp identity and its actual rendered transform.
+pub struct PromotedStampObservation<'a> {
+    pub entity: Entity,
+    pub node_id: &'a str,
+    pub path_id: &'a str,
+    pub instance_index: usize,
+    pub transform: &'a Transform,
+}
+
+/// Read-only adapter over the existing selection authority and source fences.
+#[derive(bevy::ecs::system::SystemParam)]
+pub struct PromotedStampReader<'w, 's> {
+    manager: Res<'w, NodeManager>,
+    state: Res<'w, StampInteractionState>,
+    nav: Res<'w, NavigationManager>,
+    hierarchy: Res<'w, VerseManager>,
+    path: Res<'w, PathEditorState>,
+    cache: Res<'w, PathAssetCache>,
+    map: Res<'w, PetalMapState>,
+    visibility: Res<'w, VisibilityState>,
+    role: Res<'w, LocalUserRole>,
+    live: LiveStamps<'w, 's>,
+    transforms: Query<'w, 's, &'static Transform>,
+}
+
+impl PromotedStampReader<'_, '_> {
+    pub fn current(&self) -> Option<PromotedStampObservation<'_>> {
+        let selected = self.manager.selected.as_ref()?;
+        let origin = self.state.selection_origin.as_ref()?;
+        let stamp = self.state.selected()?;
+        let [verse, fractal, petal] = navigation(&self.nav)?;
+        let owning_path_in_cursor = self
+            .hierarchy
+            .verses
+            .iter()
+            .find(|entry| entry.id == verse)?
+            .fractals
+            .iter()
+            .find(|entry| entry.id == fractal)?
+            .petals
+            .iter()
+            .find(|entry| entry.id == petal)?
+            .nodes
+            .iter()
+            .any(|node| node.id == stamp.track_node_id);
+        if !owning_path_in_cursor
+            || !self.role.role.is_some_and(|role| role.can_view())
+            || self.state.promoted_stamp_for_node(&selected.node_id) != Some(stamp)
+            || !origin.is_current_selection(&self.manager)
+            || !origin.is_target(selected.entity, &stamp.track_node_id, stamp.stamp_index)
+            || !source_matches(
+                &origin.source,
+                &self.nav,
+                &self.path,
+                &self.cache,
+                &self.hierarchy,
+                &self.map,
+            )
+            || !origin_live(origin, &self.live, &self.state, &self.nav, &self.visibility)
+            || !pickable(&selected.node_id, &self.nav, &self.visibility)
+        {
+            return None;
+        }
+        let (_, marker, instance, _, _) = self.live.get(selected.entity).ok()?;
+        let instance = instance?;
+        if instance.source_track_id != stamp.track_node_id
+            || instance.petal_id != petal
+            || marker.petal_id != petal
+        {
+            return None;
+        }
+        let transform = self.transforms.get(selected.entity).ok()?;
+        if !transform.translation.is_finite()
+            || !transform.rotation.is_finite()
+            || !transform.scale.is_finite()
+        {
+            return None;
+        }
+        Some(PromotedStampObservation {
+            entity: selected.entity,
+            node_id: &selected.node_id,
+            path_id: &stamp.track_node_id,
+            instance_index: stamp.stamp_index,
+            transform,
+        })
+    }
+}
+
 fn scale(map: &PetalMapState) -> f32 {
     let value = map.world_scale as f32;
     if value.is_finite() && value > 0.0 {

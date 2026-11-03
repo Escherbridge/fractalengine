@@ -989,3 +989,16 @@ visibility remain required. Ground-index context picks also require a matching
 live instance, owner and visibility; an absent or mid-respawn entity yields no
 stamp context rather than a placeholder target. Entity-preserving override
 projection keeps selection stable; genuine source reflow still invalidates it.
+
+## Promoted-stamp observation
+
+PromotedStampReader is a read-only SystemParam over the existing authorities.
+It exposes canonical identity plus the selected live entity's actual Transform
+only while generation, retained origin, full loaded stamp identity, typed instance,
+render source, visibility, view role and actual owning-Path ancestry all match.
+Fresh promotion may lack an ordinary NodeEntry for the canonical address; the
+owning Path must still exist under the active Verse/Fractal/Petal. No address is
+inferred from text alone and no stored origin TRS substitutes for the rendered pose.
+The existing native selector/promotion App journey checks this seam, including
+numeric ECS pose and stale generation, ancestry, pending replacement, missing typed
+instance, hidden rendering and incomplete property binding. Root owns execution.

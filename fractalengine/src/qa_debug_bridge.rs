@@ -386,6 +386,7 @@ struct UiState<'w, 's> {
     inspector: Res<'w, fe_ui::plugin::InspectorFormState>,
     viewport: Res<'w, ViewportRect>,
     transforms: Query<'w, 's, (&'static Transform, &'static SpawnedNodeMarker)>,
+    stamps: fe_ui::node_manager::PromotedStampReader<'w, 's>,
     asset: Res<'w, fe_ui::asset_ops::PendingAssetOps>,
     gpx: Res<'w, fe_ui::gpx_ops::PendingGpxOps>,
     path: Res<'w, fe_ui::path_ops::PendingPathOps>,
@@ -416,7 +417,10 @@ impl UiState<'_, '_> {
             let petal = self.nav.active_petal_id.as_deref()?;
             let in_verse = self.verses.verses.iter().filter(|v| Some(v.id.as_str()) == self.nav.active_verse_id.as_deref()).flat_map(|v| &v.fractals).filter(|f| Some(f.id.as_str()) == self.nav.active_fractal_id.as_deref()).flat_map(|f| &f.petals).any(|p| p.id == petal && p.nodes.iter().any(|node| node.id == selected.node_id));
             (marker.petal_id == petal && marker.node_id == selected.node_id && in_verse).then(|| json!({"node_id":selected.node_id,"transform":{"position":transform.translation.to_array(),"rotation":transform.rotation.to_array(),"scale":transform.scale.to_array()}}))
-        });
+        }).or_else(|| self.stamps.current().map(|stamp| {
+            json!({"node_id":stamp.node_id,"kind":"stamp","path_id":stamp.path_id,"instance_index":stamp.instance_index,
+                "transform":{"position":stamp.transform.translation.to_array(),"rotation":stamp.transform.rotation.to_array(),"scale":stamp.transform.scale.to_array()}})
+        }));
         let terrain_diagnostic = selected_terrain_diagnostic(
             selection
                 .as_ref()

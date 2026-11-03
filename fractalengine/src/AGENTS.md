@@ -1678,3 +1678,13 @@ API session shutdown and dev-token file invalidation accompany the durable crede
 `qa_portal_bridge` is the small owner-thread coordinator for fixed native fixture operations. It captures the active full hierarchy scope and exact selected Portal entity/node, requires the local Owner role and existing ViewScope containment, then rechecks them while pending and before reply. A close, selection/scope/role change, dropped caller or five-second deadline cancels the backend job. Native session/page/visibility and live helper checks remain in the backend, so the binary never enumerates or captures host windows. Idle frames do no context cloning or native work.
 
 Native fixture admission and release additionally require the selected entity actual SpawnedNodeMarker to match its selected node and the active Petal. Existing scope-change coverage exercises the Portal context owner, selection/open state, role loss and changed Petal snapshots. The API completion credential check will use the independently owned durable auth helper once that prerequisite is frozen; current code retains the existing expiry/revocation-cache checks in addition to scope/role/permit fences.
+
+## QA selected stamp pose
+
+UiState preserves the ordinary marker/node/tree selection guard. Its separate
+promoted-stamp projection consumes fe-ui's PromotedStampReader, which verifies the
+current semantic binding and owning Path ancestry before returning the actual ECS
+Transform. The snapshot labels the canonical stamp address, owning Path and index;
+it never treats the persisted metadata row's origin TRS as the rendered position.
+This read-only projection adds no command route or permission bypass. Existing QA
+Owner, caller scope, input enablement and frame ownership gates remain unchanged.

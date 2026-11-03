@@ -1,7 +1,6 @@
 //! Selection-safe property hydration; API replies route independently before these handlers.
 
 use fe_runtime::app::DbCommandSender;
-use fe_runtime::messages::DbCommand;
 use fe_sdk::path_asset::PATH_ASSET_PROPERTY_KEY;
 use fe_sdk::primitive::PRIMITIVE_PROPERTY_KEY;
 

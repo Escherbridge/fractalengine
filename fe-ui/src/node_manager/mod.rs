@@ -52,7 +52,7 @@ pub use terrain_authoring::{TerrainAuthoringCommit, TerrainAuthoringState};
 pub(crate) use terrain_authoring::shape_at;
 mod viewport_pick;
 mod stamp_selection;
-pub use stamp_selection::StampSelectionOrigin;
+pub use stamp_selection::{PromotedStampObservation, PromotedStampReader, StampSelectionOrigin};
 pub(crate) use stamp_selection::{StampSelectionCatalog, StampSelectionRequests};
 
 use bevy::prelude::*;

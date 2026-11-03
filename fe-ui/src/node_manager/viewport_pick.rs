@@ -812,6 +812,25 @@ mod tests {
         }
         let late_capture = capture.clone();
         let late_request = promotion_request.clone();
+        let observe = |app: &mut App| {
+            let mut state = bevy::ecs::system::SystemState::<
+                crate::node_manager::PromotedStampReader,
+            >::new(app.world_mut());
+            let reader = state.get(app.world());
+            reader.current().map(|stamp| {
+                (
+                    stamp.entity,
+                    stamp.node_id.to_owned(),
+                    stamp.path_id.to_owned(),
+                    stamp.instance_index,
+                    *stamp.transform,
+                )
+            })
+        };
+        assert!(
+            observe(&mut app).is_none(),
+            "a pending promotion is not a durable stamp observation"
+        );
         app.world_mut().write_message(DbResult::CheckedStampPromoted {capture,node_id:"t1#inst-1".into(),
             properties:serde_json::json!({"node_kind":"stamp","path_id":"t1","owning_path_id":"t1","instance_index":1}),newly_promoted:true,correlation_id:promotion_request});
         app.update();
@@ -831,6 +850,99 @@ mod tests {
             "t1::stamp::1",
             "the live marker fence is preserved"
         );
+        assert!(
+            app.world()
+                .resource::<crate::verse_manager::VerseManager>()
+                .all_nodes()
+                .all(|node| node.id != "t1#inst-1"),
+            "fresh promotion need not have an ordinary tree entry"
+        );
+        let original_transform = *app.world().get::<Transform>(stamp).unwrap();
+        let rendered_transform = Transform {
+            translation: Vec3::new(5.25, 1.5, -0.75),
+            rotation: Quat::from_rotation_y(0.4),
+            scale: Vec3::new(1.25, 0.75, 2.0),
+        };
+        app.world_mut().entity_mut(stamp).insert(rendered_transform);
+        assert_eq!(observe(&mut app), Some((stamp, "t1#inst-1".into(), "t1".into(), 1, rendered_transform)),
+            "the read seam reports the selected entity's actual ECS pose under its canonical promoted address");
+        {
+            let mut hierarchy = app
+                .world_mut()
+                .resource_mut::<crate::verse_manager::VerseManager>();
+            hierarchy.verses[0].fractals[0].id = "other-fractal".into();
+        }
+        assert!(
+            observe(&mut app).is_none(),
+            "a same-Petal/path label under different actual ancestry is insufficient"
+        );
+        app.world_mut()
+            .resource_mut::<crate::verse_manager::VerseManager>()
+            .verses[0]
+            .fractals[0]
+            .id = "f".into();
+        let generation = app.world().resource::<NodeManager>().selection_generation;
+        app.world_mut()
+            .resource_mut::<NodeManager>()
+            .selection_generation = generation.wrapping_add(1);
+        assert!(
+            observe(&mut app).is_none(),
+            "the retained origin must match the exact current selection generation"
+        );
+        app.world_mut()
+            .resource_mut::<NodeManager>()
+            .selection_generation = generation;
+        app.world_mut()
+            .resource_mut::<NodeManager>()
+            .pending_sidebar_select = Some("n1".into());
+        assert!(
+            observe(&mut app).is_none(),
+            "a queued replacement cannot leave an observable stamp selection"
+        );
+        app.world_mut()
+            .resource_mut::<NodeManager>()
+            .pending_sidebar_select = None;
+        app.world_mut()
+            .entity_mut(stamp)
+            .remove::<crate::verse_manager::PathAssetInstance>();
+        assert!(
+            observe(&mut app).is_none(),
+            "a marker string without an actual typed instance is insufficient"
+        );
+        app.world_mut()
+            .entity_mut(stamp)
+            .insert(crate::verse_manager::PathAssetInstance {
+                source_track_id: "t1".into(),
+                petal_id: "p1".into(),
+            });
+        app.world_mut().entity_mut(stamp).insert(Visibility::Hidden);
+        assert!(
+            observe(&mut app).is_none(),
+            "hidden rendered instances are not observations"
+        );
+        app.world_mut()
+            .entity_mut(stamp)
+            .insert(Visibility::Inherited);
+        crate::actions::asset::hydrate_promoted_stamp(
+            "t1#inst-1",
+            &serde_json::json!({"node_kind":"stamp","path_id":"t1","instance_index":1}),
+            &mut app
+                .world_mut()
+                .resource_mut::<crate::actions::asset::StampInteractionState>(),
+        );
+        assert!(
+            observe(&mut app).is_none(),
+            "canonical text cannot replace the complete loaded property binding"
+        );
+        crate::actions::asset::hydrate_promoted_stamp(
+            "t1#inst-1",
+            &serde_json::json!({"node_kind":"stamp","path_id":"t1","owning_path_id":"t1","instance_index":1}),
+            &mut app
+                .world_mut()
+                .resource_mut::<crate::actions::asset::StampInteractionState>(),
+        );
+        assert_eq!(observe(&mut app).unwrap().4, rendered_transform);
+        app.world_mut().entity_mut(stamp).insert(original_transform);
         native(vec![], &mut time, &mut app);
         assert!(
             app.world()
