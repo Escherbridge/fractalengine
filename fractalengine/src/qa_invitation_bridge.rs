@@ -82,6 +82,7 @@ fn serve(
     db: Res<fe_runtime::app::DbCommandSender>,
     mut results: MessageReader<DbResult>,
     view: crate::vision_bridge::ViewScope,
+    windows: Query<(Entity, &Window), With<bevy::window::PrimaryWindow>>,
 ) {
     let Some(identity) = identity else {
         host.pending = None;
@@ -176,10 +177,24 @@ fn serve(
                     nav.active_verse_id.as_deref() == Some(metadata.verse_id.as_str())
                         && scope_covers(&request.caller_scope, &metadata.scope)
                 });
+            let join_input_lease = windows.single().ok().and_then(|(entity, window)| {
+                ui.qa_join_input_lease(
+                    issuer,
+                    nav.intent_revision,
+                    fe_runtime::qa_invitation::JoinInputWindow {
+                        window_id: entity.to_bits(),
+                        width: window.physical_width(),
+                        height: window.physical_height(),
+                        scale_bits: f64::from(window.scale_factor()).to_bits(),
+                        focused: window.focused,
+                    },
+                )
+            });
             request.reply(Ok(TransferReply::Observed {
                 local_did: issuer.into(),
                 invitation,
                 join_ready_for_input: ui.qa_join_ready_for_input(),
+                join_input_lease,
             }));
         }
         TransferOperation::Consume(expected) => {

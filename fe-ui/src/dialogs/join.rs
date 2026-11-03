@@ -21,6 +21,11 @@ const MAX_INVITE_BYTES: usize = 64 * 1024;
 struct InviteBuffer<'a> {
     value: &'a mut String,
     rejected: &'a mut bool,
+    guarded: Option<(
+        &'a egui::Context,
+        &'a mut crate::invitations::join_input::JoinInputState,
+    )>,
+    clip: egui::Rect,
 }
 
 impl egui::TextBuffer for InviteBuffer<'_> {
@@ -35,9 +40,19 @@ impl egui::TextBuffer for InviteBuffer<'_> {
             *self.rejected = true;
             return 0;
         }
+        if let Some((ctx, guard)) = self.guarded.as_mut() {
+            if !guard.insert_allowed(ctx, text, char_index, self.value, self.clip) {
+                return 0;
+            }
+        }
         egui::TextBuffer::insert_text(self.value, text, char_index)
     }
     fn delete_char_range(&mut self, range: std::ops::Range<usize>) {
+        if let Some((_, guard)) = self.guarded.as_mut() {
+            if !guard.delete_allowed(&range) {
+                return;
+            }
+        }
         egui::TextBuffer::delete_char_range(self.value, range);
     }
 }
@@ -58,6 +73,7 @@ pub fn render_join_dialog(
     let progress = ui_mgr.join_flow.progress();
     let error = ui_mgr.join_request.error.clone();
 
+    let join_input = &mut ui_mgr.join_input;
     let ActiveDialog::JoinDialog { ref mut invite_buf } = ui_mgr.active_dialog else {
         return;
     };
@@ -89,7 +105,14 @@ pub fn render_join_dialog(
         ui.label("Paste your addressed invitation to join its scope:");
         ui.add_space(4.0);
 
-        let mut buffer = InviteBuffer {value: invite_buf, rejected: &mut oversized};
+        let owned_event = join_input.begin_event(ui.ctx());
+        let input_clip = ui.clip_rect();
+        let mut buffer = InviteBuffer {
+            value: invite_buf,
+            rejected: &mut oversized,
+            guarded: Some((ctx, &mut *join_input)),
+            clip: input_clip,
+        };
         let response = ui.add_enabled(
             !pending,
             egui::TextEdit::singleline(&mut buffer)
@@ -102,6 +125,10 @@ pub fn render_join_dialog(
                 .font(egui::TextStyle::Monospace),
         )
         .named(ui, "Verse invite string");
+        join_input.end_event(ui.ctx(), owned_event, invite_buf);
+        let input_response = response.clone();
+        let mut submit_response = None;
+        let mut submit_clip = input_clip;
         input_changed = response.changed() || oversized;
 
         if oversized {
@@ -115,13 +142,17 @@ pub fn render_join_dialog(
         ui.add_space(4.0);
         ui.horizontal(|ui| {
             let can_join = !pending && !oversized && invite_buf.len() <= MAX_INVITE_BYTES && !invite_buf.trim().is_empty();
-            if ui
-                .add_enabled(can_join, egui::Button::new("Join"))
-                .observed(ui)
-                .clicked()
-            {
+            let response = ui
+                .push_id("guarded_join_submit", |ui| {
+                    ui.add_enabled(can_join, egui::Button::new("Join"))
+                })
+                .inner
+                .observed(ui);
+            submit_clip = ui.clip_rect();
+            if response.clicked() && join_input.submit_allowed(&response, invite_buf, submit_clip) {
                 invite_to_send = Some(invite_buf.trim().to_string());
             }
+            submit_response = Some(response);
             if pending {
                 ui.add(egui::Spinner::new().size(14.0));
                 ui.label(progress.unwrap_or("Joining..."));
@@ -134,6 +165,9 @@ pub fn render_join_dialog(
                 close = true;
             }
         });
+        if let Some(submit) = submit_response {
+            join_input.record(&input_response, &submit, input_clip, submit_clip);
+        }
         if pending {ui.label("Cancel stops waiting. Accepted metadata and imported capabilities may remain stored.");}
     });
 
@@ -141,6 +175,9 @@ pub fn render_join_dialog(
     // `ui_mgr` as a whole can be mutated again from here down.
     if input_changed {
         ui_mgr.join_flow.input_changed();
+        ui_mgr
+            .join_input
+            .revision_changed(ui_mgr.join_flow.input_revision());
         ui_mgr.join_request.reset();
     }
     if let Some(invite_string) = invite_to_send {
@@ -192,6 +229,18 @@ mod tests {
         };
         let _ = ctx.run(raw, |ctx| {
             render_join_dialog(ctx, ui_mgr, db_tx);
+            if ctx.data(|data| {
+                data.get_temp::<bool>(egui::Id::new("guard_plain_sink"))
+                    .unwrap_or(false)
+            }) {
+                let id = egui::Id::new("guard_plain_input");
+                ctx.memory_mut(|memory| memory.request_focus(id));
+                let mut value = ctx.data(|data| data.get_temp::<String>(id).unwrap_or_default());
+                egui::CentralPanel::default().show(ctx, |ui| {
+                    ui.add(egui::TextEdit::singleline(&mut value).id(id));
+                });
+                ctx.data_mut(|data| data.insert_temp(id, value));
+            }
         });
     }
 
@@ -297,6 +346,8 @@ mod tests {
         let mut bounded = InviteBuffer {
             value: &mut draft,
             rejected: &mut rejected,
+            guarded: None,
+            clip: egui::Rect::EVERYTHING,
         };
         assert_eq!(
             egui::TextBuffer::insert_text(
@@ -373,5 +424,160 @@ mod tests {
         }
         assert!(matches!(ui_mgr.active_dialog, ActiveDialog::None));
         assert!(!ui_mgr.join_request.pending, "closing resets the request");
+        for mode in ["success", "layout", "focus", "dialog"] {
+            let context = egui::Context::default();
+            let mut ui = UiManager::default();
+            ui.open_dialog(ActiveDialog::JoinDialog {
+                invite_buf: String::new(),
+            });
+            run_frame(&context, 0.0, vec![], &mut ui, &tx);
+            run_frame(&context, 0.01, vec![], &mut ui, &tx);
+            let window = fe_runtime::qa_invitation::JoinInputWindow {
+                window_id: 1,
+                width: 600,
+                height: 400,
+                scale_bits: 1.0f64.to_bits(),
+                focused: true,
+            };
+            let lease = ui
+                .qa_join_input_lease("did:key:recipient", 1, window.clone())
+                .expect(
+                    "Actual masked Join responses produce an opaque lease without a password name",
+                );
+            let point = |bounds: [f32; 4]| {
+                egui::pos2(bounds[0] + bounds[2] / 2.0, bounds[1] + bounds[3] / 2.0)
+            };
+            let input_at = point(lease.input_bounds);
+            let submit_at = point(lease.join_bounds);
+            let mut spec = fe_runtime::input::InputSpec {
+                commands: vec![
+                    fe_runtime::input::InputCommand::PointerClick {
+                        x: input_at.x,
+                        y: input_at.y,
+                        button: fe_runtime::input::PointerButton::Left,
+                    },
+                    fe_runtime::input::InputCommand::TextEntry {
+                        text: "fractalengine://join/v1/guarded-fixture".into(),
+                    },
+                    fe_runtime::input::InputCommand::PointerClick {
+                        x: submit_at.x,
+                        y: submit_at.y,
+                        button: fe_runtime::input::PointerButton::Left,
+                    },
+                ],
+                wait_frames: Some(0),
+                capture_after: Some(false),
+            }
+            .validate()
+            .unwrap();
+            spec.require_join_lease(&lease.lease_id).unwrap();
+            assert!(ui.admit_qa_join_input(
+                &lease.lease_id,
+                "did:key:recipient",
+                1,
+                &window,
+                &spec
+            ));
+            for index in 0..2 {
+                assert!(ui.prepare_qa_join_input_frame(
+                    &lease.lease_id,
+                    index,
+                    "did:key:recipient",
+                    1,
+                    &window,
+                    &context
+                ));
+                run_frame(
+                    &context,
+                    0.1 + index as f64 * 0.1,
+                    vec![
+                        egui::Event::PointerMoved(input_at),
+                        egui::Event::PointerButton {
+                            pos: input_at,
+                            button: egui::PointerButton::Primary,
+                            pressed: index == 0,
+                            modifiers: egui::Modifiers::NONE,
+                        },
+                    ],
+                    &mut ui,
+                    &tx,
+                );
+            }
+            assert!(ui.prepare_qa_join_input_frame(
+                &lease.lease_id,
+                2,
+                "did:key:recipient",
+                1,
+                &window,
+                &context
+            ));
+            match mode {
+                "layout" => {
+                    context.style_mut(|style| {
+                        style
+                            .text_styles
+                            .insert(egui::TextStyle::Monospace, egui::FontId::monospace(48.0));
+                    });
+                }
+                "focus" => context
+                    .memory_mut(|memory| memory.request_focus(egui::Id::new("guard_plain_input"))),
+                "dialog" => ui.open_dialog(ActiveDialog::None),
+                _ => {}
+            }
+            if mode != "success" {
+                context.data_mut(|data| data.insert_temp(egui::Id::new("guard_plain_sink"), true));
+            }
+            // No global Text event: the production masked TextEdit owns the private capsule.
+            run_frame(&context, 0.3, vec![], &mut ui, &tx);
+            if mode == "success" {
+                assert!(
+                    matches!(&ui.active_dialog,ActiveDialog::JoinDialog {invite_buf} if invite_buf=="fractalengine://join/v1/guarded-fixture")
+                );
+                for index in 3..5 {
+                    assert!(ui.prepare_qa_join_input_frame(
+                        &lease.lease_id,
+                        index,
+                        "did:key:recipient",
+                        1,
+                        &window,
+                        &context
+                    ));
+                    run_frame(
+                        &context,
+                        0.4 + (index - 3) as f64 * 0.1,
+                        vec![
+                            egui::Event::PointerMoved(submit_at),
+                            egui::Event::PointerButton {
+                                pos: submit_at,
+                                button: egui::PointerButton::Primary,
+                                pressed: index == 3,
+                                modifiers: egui::Modifiers::NONE,
+                            },
+                        ],
+                        &mut ui,
+                        &tx,
+                    );
+                }
+                assert!(ui.qa_join_input_completed(&lease.lease_id) && ui.join_flow.active(),"Only the actual Join button response queues the ordinary asynchronous Join flow; no Ready is fabricated");
+            } else {
+                assert!(
+                    !ui.qa_join_input_completed(&lease.lease_id)
+                        && !ui.prepare_qa_join_input_frame(
+                            &lease.lease_id,
+                            3,
+                            "did:key:recipient",
+                            1,
+                            &window,
+                            &context
+                        )
+                );
+                assert!(context.data(|data|data.get_temp::<String>(egui::Id::new("guard_plain_input")).unwrap_or_default()).is_empty(),"Stale layout/focus/dialog cannot redirect the private credential event into a plain editor");
+                assert!(
+                    !ui.join_flow.active(),
+                    "A stale actual Join response cannot submit the private input"
+                );
+            }
+            ui.finish_qa_join_input(&lease.lease_id);
+        }
     }
 }

@@ -157,11 +157,15 @@ class OwnedRun:
             raise ValueError("the retained API socket does not belong to the exact owned app")
         self.check_live()
 
-    def request(self, method, path, token=None, body=None, timeout=40.0):
+    def request(self, method, path, token=None, body=None, timeout=40.0, join_input_lease=None):
         if method not in ("GET", "POST") or not path.startswith("/api/v1/") or path.startswith("//") or any(c in path for c in "\r\n"):
             raise ValueError("owned HTTP requires a fixed relative API request")
         data = None if body is None else json.dumps(body).encode("utf-8")
         headers = {"Connection": "close"}
+        if join_input_lease is not None:
+            if not isinstance(join_input_lease,str) or len(join_input_lease)>64 or not join_input_lease.startswith("join-input-") or not all(c.isascii() and (c.isalnum() or c=="-") for c in join_input_lease):
+                raise ValueError("invalid guarded Join constraint")
+            headers["X-FE-Join-Lease"]=join_input_lease
         if token:
             headers["Authorization"] = "Bearer " + token
         if data is not None:
@@ -203,9 +207,9 @@ class OwnedRunTransport:
     def check_live(self):
         self.files.check_live()
 
-    def __call__(self, run, method, path, token=None, body=None, timeout=40.0):
+    def __call__(self, run, method, path, token=None, body=None, timeout=40.0, join_input_lease=None):
         directory = canonical(run["run_dir"])
         matches = [owned for owned in self.runs if owned.run_directory == directory]
         if len(matches) != 1:
             raise ValueError("request does not identify one pinned owned run")
-        return matches[0].request(method, path, token, body, timeout)
+        return matches[0].request(method, path, token, body, timeout, join_input_lease)

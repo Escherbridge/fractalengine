@@ -13,7 +13,7 @@ use bevy::prelude::*;
 use bevy::render::view::screenshot::Screenshot;
 use bevy::time::Real;
 use bevy::window::{CursorMoved, PrimaryWindow};
-use bevy_egui::{EguiFullOutput, EguiPostUpdateSet, EguiPreUpdateSet};
+use bevy_egui::{EguiContext, EguiFullOutput, EguiPostUpdateSet, EguiPreUpdateSet, PrimaryEguiContext};
 use fe_renderer::camera::CameraCaptureLock;
 use fe_runtime::input::{
     camera_locked_by_capture, denied, InputCommand, InputFailure, InputFailureClass, InputOp,
@@ -50,7 +50,7 @@ pub struct SyntheticClipboardGuard(bool);
 #[derive(Resource, Default)]
 pub struct RealCursor(Option<Option<DVec2>>);
 
-/// One synthetic input event, exactly what winit would have delivered.
+/// One planned native-shaped event or protected Join text marker.
 #[derive(Clone, PartialEq)]
 enum Synthetic {
     /// Pointer to a primary-window physical-pixel point.
@@ -62,11 +62,12 @@ enum Synthetic {
         state: ButtonState,
     },
     Scroll(Vec2),
+    GuardedJoinText,
 }
 
 impl std::fmt::Debug for Synthetic {
     fn fmt(&self,f:&mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        let name=match self {Self::Cursor(..)=>"Cursor",Self::Button(..)=>"Button",Self::Key {..}=>"Key",Self::Scroll(..)=>"Scroll"};
+        let name=match self {Self::Cursor(..)=>"Cursor",Self::Button(..)=>"Button",Self::Key {..}=>"Key",Self::Scroll(..)=>"Scroll",Self::GuardedJoinText=>"GuardedJoinText"};
         f.debug_struct(name).finish_non_exhaustive()
     }
 }
@@ -112,6 +113,62 @@ pub struct SyntheticWriters<'w> {
     buttons: MessageWriter<'w, MouseButtonInput>,
     wheel: MessageWriter<'w, MouseWheel>,
     keys: MessageWriter<'w, KeyboardInput>,
+}
+
+#[derive(SystemParam)]
+pub struct GuardedJoinContext<'w, 's> {
+    ui: Option<ResMut<'w, fe_ui::actions::UiManager>>,
+    identity: Option<Res<'w, fe_identity::NodeIdentity>>,
+    contexts: Query<'w, 's, &'static mut EguiContext, With<PrimaryEguiContext>>,
+}
+impl GuardedJoinContext<'_, '_> {
+    fn admit(
+        &mut self,
+        id: &str,
+        nav: Option<&NavigationManager>,
+        entity: Entity,
+        window: &Window,
+        spec: &ValidInputSpec,
+    ) -> bool {
+        let (Some(ui), Some(identity), Some(nav)) =
+            (self.ui.as_deref_mut(), self.identity.as_deref(), nav)
+        else {
+            return false;
+        };
+        ui.admit_qa_join_input(id, &identity.did, nav.intent_revision, &join_window(entity, window), spec)
+    }
+    fn prepare_frame(
+        &mut self,
+        id: &str,
+        index: usize,
+        nav: Option<&NavigationManager>,
+        entity: Entity,
+        window: &Window,
+    ) -> bool {
+        let (Some(ui), Some(identity), Some(nav), Ok(mut context)) = (
+            self.ui.as_deref_mut(), self.identity.as_deref(), nav, self.contexts.single_mut(),
+        ) else {
+            return false;
+        };
+        ui.prepare_qa_join_input_frame(
+            id, index, &identity.did, nav.intent_revision, &join_window(entity, window), context.get_mut(),
+        )
+    }
+}
+fn join_window(entity: Entity, window: &Window) -> fe_runtime::qa_invitation::JoinInputWindow {
+    fe_runtime::qa_invitation::JoinInputWindow {
+        window_id: entity.to_bits(),
+        width: window.physical_width(),
+        height: window.physical_height(),
+        scale_bits: f64::from(window.scale_factor()).to_bits(),
+        focused: window.focused,
+    }
+}
+fn join_guard_refusal() -> InputFailure {
+    unresolvable(
+        "guarded_join_changed",
+        "The guarded masked Join context changed; input stopped without replay".into(),
+    )
 }
 
 /// Register the input bridge resources and systems (the one wiring `main.rs`
@@ -463,6 +520,10 @@ fn plan_batch(spec: &ValidInputSpec, window_size: UVec2) -> Result<Vec<Frame>, I
                 frames.push(vec![key_event(code, logical, ButtonState::Released)]);
             }
             InputCommand::TextEntry { text } => {
+                if spec.join_lease().is_some() {
+                    frames.push(vec![Synthetic::GuardedJoinText]);
+                    continue;
+                }
                 // A single-character run under Control/Super is a key chord to
                 // bevy_egui (`Key::from_name("v")`), not text.
                 if holds_command_modifier(&held_modifiers) {
@@ -561,6 +622,7 @@ impl ActiveInjection {
                         self.held_keys.push((*code, logical.clone()));
                     }
                 }
+                Synthetic::GuardedJoinText => {} // Applied only by the protected TextEdit event capsule.
                 Synthetic::Scroll(delta) => {
                     writers.wheel.write(MouseWheel {
                         unit: MouseScrollUnit::Line,
@@ -664,6 +726,7 @@ pub fn drive_synthetic_input(
     mut windows: Query<(Entity, &mut Window), With<PrimaryWindow>>,
     mut writers: SyntheticWriters,
     mut commands: Commands,
+    mut guarded: GuardedJoinContext,
 ) {
     clipboard_guard.0 = job.0.is_some();
     let locked = capture_lock.is_some();
@@ -677,6 +740,15 @@ pub fn drive_synthetic_input(
         match admit(&request, job.0.is_some(), locked, covered, window) {
             Ok(frames) => {
                 let InputOp::Inject(spec) = &request.op;
+                if let Some(id) = spec.join_lease() {
+                    let accepted = windows.single().ok().is_some_and(|(entity, window)| {
+                        guarded.admit(id, nav.as_deref(), entity, window, spec)
+                    });
+                    if !accepted {
+                        request.reply(Err(join_guard_refusal()));
+                        continue;
+                    }
+                }
                 tracing::info!(
                     correlation_id = %request.correlation_id,
                     commands = spec.commands().len(),
@@ -719,7 +791,7 @@ pub fn drive_synthetic_input(
     let Ok((window_entity, mut window)) = windows.single_mut() else {
         let active = job.0.take().expect("checked above");
         let failure = window_failure(None).expect("no window is always a refusal");
-        finish(active, Err(failure), None, &mut writers, &mut commands);
+        finish(active, Err(failure), None, &mut writers, &mut commands,guarded.ui.as_deref_mut());
         return;
     };
     let elapsed = time.elapsed().saturating_sub(active.started);
@@ -762,8 +834,23 @@ pub fn drive_synthetic_input(
             Some((window_entity, real_pointer)),
             &mut writers,
             &mut commands,
+            guarded.ui.as_deref_mut(),
         );
         return;
+    }
+
+    let InputOp::Inject(spec) = &active.request.op;
+    if let Some(id) = spec.join_lease() {
+        let ready = if matches!(active.phase, Phase::Injecting) {
+            guarded.prepare_frame(id, active.next_frame, nav.as_deref(), window_entity, &window)
+        } else {
+            guarded.ui.as_deref().is_some_and(|ui| ui.qa_join_input_completed(id))
+        };
+        if !ready {
+            let active=job.0.take().expect("checked active input");
+            finish(active,Err(join_guard_refusal()),Some((window_entity,window.cursor_position())),&mut writers,&mut commands,guarded.ui.as_deref_mut());
+            return;
+        }
     }
 
     // `Some(png?)` once the job is done; `None` while it still runs.
@@ -832,6 +919,7 @@ pub fn drive_synthetic_input(
             Some((window_entity, real_pointer)),
             &mut writers,
             &mut commands,
+            guarded.ui.as_deref_mut(),
         );
         return;
     }
@@ -857,7 +945,14 @@ fn finish(
     window: Option<(Entity, Option<Vec2>)>,
     writers: &mut SyntheticWriters,
     commands: &mut Commands,
+    ui: Option<&mut fe_ui::actions::UiManager>,
 ) {
+    let InputOp::Inject(spec) = &active.request.op;
+    if let Some(id) = spec.join_lease() {
+        if let Some(ui) = ui {
+            ui.finish_qa_join_input(id);
+        }
+    }
     if let Some((window, real_pointer)) = window {
         active.release_held(window, writers);
         if let (Some(_), Some(position)) = (active.cursor, real_pointer) {
@@ -1153,6 +1248,12 @@ mod tests {
     /// caller. Every assertion goes red if its branch inverts.
     #[test]
     fn synthetic_input_replays_as_real_bevy_input_and_refuses_at_arrival_and_at_use() {
+        let mut protected = batch(vec![click(10.0, 10.0),InputCommand::TextEntry {text:"fractalengine://join/v1/protected-fixture".into()},click(20.0,20.0)],0,false).validate().unwrap();
+        protected.require_join_lease("join-input-fixture").unwrap();
+        let frames=plan_batch(&protected,UVec2::splat(100)).unwrap();
+        assert_eq!(frames.len(),5);
+        assert_eq!(frames[2],vec![Synthetic::GuardedJoinText],"Guarded text never becomes global KeyboardInput with a logical secret");
+        assert!(!format!("{frames:?}").contains("protected-fixture"));
         {
             use bevy_egui::egui::accesskit as ak;
             let mut root = ak::Node::new(ak::Role::Window);

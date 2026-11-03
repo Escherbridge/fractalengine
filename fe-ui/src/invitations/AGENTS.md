@@ -117,3 +117,30 @@ no credential enters UI labels. The host obtains only a source snapshot to perfo
 readonly Owner preparation, then consume_transfer compares its full manifest/target/recipient/
 role/expiry before moving the credential out and invalidating the generation. A second consume
 cannot return it. Existing Access lifecycle reset/selection/Owner guards apply to every read.
+
+
+## Guarded Join input
+
+The recipient Observe response exposes only opaque actual widget IDs and clipped physical
+geometry, preserving blank PasswordInput names/values in the generic accessibility tree.
+A short one-use input lease binds the actual dialog generation, input revision, recipient DID,
+navigation intent, primary-window entity/size/scale/focus, and real widget/layer/clip geometry.
+The existing authenticated input door accepts its opaque constraint in X-FE-Join-Lease; it is
+an additional restriction, never an authorization subject or a direct Join operation.
+
+Admission permits only a left click inside the masked input, bounded ASCII TextEntry chunks,
+and a left click inside the captured Join control, with no keys, captures or settle frames.
+Every replay frame rechecks current domain, window, focus and widget identity. Text frames
+use a private capsule rather than global keyboard events: the renderer inserts a temporary
+egui Text event immediately before the actual password TextEdit, then removes it immediately
+afterward. The existing TextBuffer adapter validates the current-pass response geometry,
+layer, clip, focus and exact append at insert_text. It never assigns invite_buf on behalf of
+the host. A plain editor rendered before or afterward cannot receive that private event.
+
+The normal Join button response must be actually clicked under the matching lease and current
+geometry before its existing handler queues JoinState. Only that observed response permits a
+successful input receipt; there is no direct Join/auth/state-completion shortcut. Focus moving
+to the submit button is permitted, including its native pointer-down ownership when keyboard
+focus is surrendered. Foreign focus/layout/dialog changes abort and drop private pending text.
+The existing real egui Join journey covers success and stale layout/focus/dialog interleavings
+with a deliberately focused plain sink, without claiming transport or role readiness.

@@ -335,6 +335,7 @@ pub fn gardener_console(
                     )
                 });
                 let _ = guarded(modal, "dialog_join", || {
+                    ui_mgr.validate_qa_join_input_domain(node_identity.map(|identity|identity.did.as_str()),nav.intent_revision());
                     crate::dialogs::render_join_dialog(ctx, ui_mgr, db_tx)
                 });
                 let _ = guarded(modal, "dialog_peer_debug", || {

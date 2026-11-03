@@ -2289,3 +2289,8 @@ The host rechecks the actual pinned Owner with the existing DB source preparatio
 before one-use consumption. API completion repeats durable credential, deadline and scope
 checks, then serializes the sealed credential only into a no-store response. It is never
 placed in a generic diagnostic Value, Debug payload, trace field or error response.
+
+The existing debug/input route accepts optional X-FE-Join-Lease as a constrained recipient UI
+lease. It keeps the input opt-in/Owner/rate/scope checks, additionally repeats durable credential
+checks around the guarded request, and delegates exact fixed-batch/frame/widget admission to
+the native input host. No new direct Join, arbitrary text broker or authorization path exists.

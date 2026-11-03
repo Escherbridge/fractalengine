@@ -983,3 +983,7 @@ diagnostics. InputCommand Debug redacts TextEntry for the actual masked Join inp
 QA diagnostic redaction also removes canonical addressed and legacy invitation URI values before
 bounding output. The input audit records counts rather than text, and generated credentials stay
 in redacted wrappers until the explicit no-store one-use response.
+
+Guarded Join adds an opaque optional constraint to ValidInputSpec through the existing input
+HTTP header. It cannot broaden role, scope, capture or lifetime admission. The recipient lease
+DTO exports only opaque IDs and geometry, never protected names, input values or credentials.

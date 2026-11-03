@@ -609,6 +609,8 @@ pub struct UiManager {
     pub sidebar_open: bool,
     /// Which floating dialog is currently open (at most one).
     pub active_dialog: ActiveDialog,
+    pub(crate) dialog_generation: u64,
+    pub(crate) join_input: crate::invitations::join_input::JoinInputState,
     /// Live notice queue (OD-1), capped at `NOTICE_QUEUE_CAP`.
     notices: VecDeque<Notice>,
     /// Ring of the most recently shown `Error` notices, newest-pushed
@@ -650,6 +652,8 @@ impl Default for UiManager {
             context_point_origin: None,
             sidebar_open: true,
             active_dialog: ActiveDialog::None,
+            dialog_generation: 0,
+            join_input: crate::invitations::join_input::JoinInputState::default(),
             notices: VecDeque::new(),
             error_history: VecDeque::new(),
             held_notice: None,
@@ -702,6 +706,61 @@ impl UiManager {
         matches!(&self.active_dialog,ActiveDialog::EntitySettings {access,..} if access.pending_work())
     }
 
+    pub fn validate_qa_join_input_domain(&mut self, recipient: Option<&str>, nav: u64) {
+        self.join_input.validate_domain(recipient, nav, self.dialog_generation);
+    }
+    pub fn qa_join_input_lease(
+        &mut self,
+        recipient: &str,
+        nav: u64,
+        window: fe_runtime::qa_invitation::JoinInputWindow,
+    ) -> Option<fe_runtime::qa_invitation::JoinInputLease> {
+        if !self.qa_join_ready_for_input() {
+            return None;
+        }
+        self.join_input.mint(
+            recipient, nav, self.dialog_generation, self.join_flow.input_revision(), window,
+        )
+    }
+    pub fn admit_qa_join_input(
+        &mut self,
+        id: &str,
+        recipient: &str,
+        nav: u64,
+        window: &fe_runtime::qa_invitation::JoinInputWindow,
+        spec: &fe_runtime::input::ValidInputSpec,
+    ) -> bool {
+        let ActiveDialog::JoinDialog { invite_buf } = &self.active_dialog else {
+            return false;
+        };
+        self.join_input.admit(
+            id, recipient, nav, self.dialog_generation, self.join_flow.input_revision(),
+            invite_buf, window, spec.commands(), spec.wait_frames(), spec.capture_after(),
+        )
+    }
+    pub fn prepare_qa_join_input_frame(
+        &mut self,
+        id: &str,
+        index: usize,
+        recipient: &str,
+        nav: u64,
+        window: &fe_runtime::qa_invitation::JoinInputWindow,
+        ctx: &bevy_egui::egui::Context,
+    ) -> bool {
+        let ActiveDialog::JoinDialog { invite_buf } = &self.active_dialog else {
+            return false;
+        };
+        self.join_input.prepare(
+            id, index, recipient, nav, self.dialog_generation,
+            self.join_flow.input_revision(), invite_buf, window, ctx,
+        )
+    }
+    pub fn qa_join_input_completed(&self, id: &str) -> bool {
+        self.join_input.completed(id)
+    }
+    pub fn finish_qa_join_input(&mut self, id: &str) {
+        self.join_input.finish(id);
+    }
     pub fn qa_join_ready_for_input(&self) -> bool {
         matches!(&self.active_dialog,ActiveDialog::JoinDialog {invite_buf} if invite_buf.is_empty())
             && self.join_flow.ready_for_input() && !self.join_request.pending && self.join_request.error.is_none()
@@ -735,6 +794,8 @@ impl UiManager {
     }
 
     fn replace_dialog(&mut self, dialog: ActiveDialog) {
+        self.dialog_generation = self.dialog_generation.wrapping_add(1);
+        self.join_input.invalidate();
         self.join_flow.cancel();
         self.join_request.reset();
         self.context_point_origin = None;

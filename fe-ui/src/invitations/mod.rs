@@ -2,6 +2,7 @@
 
 mod issue;
 mod join;
+pub(crate) mod join_input;
 pub(crate) use issue::IssueState;
 pub(crate) use join::JoinState;
 

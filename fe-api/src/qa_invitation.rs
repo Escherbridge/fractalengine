@@ -119,7 +119,8 @@ pub async fn observe(
                 local_did,
                 invitation,
                 join_ready_for_input,
-            }) => Json(json!({"ok":true,"data":{"local_did":local_did,"invitation":invitation,"join_ready_for_input":join_ready_for_input}}))
+                join_input_lease,
+            }) => Json(json!({"ok":true,"data":{"local_did":local_did,"invitation":invitation,"join_ready_for_input":join_ready_for_input,"join_input_lease":join_input_lease}}))
                 .into_response(),
             Err(response) => response,
             _ => refusal(StatusCode::CONFLICT),

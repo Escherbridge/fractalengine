@@ -1705,3 +1705,12 @@ before release. A fresh readonly PrepareJoinInvite result proves current pinned 
 manifest using existing checked storage fences; the recipient never impersonates the issuer.
 Selection/dialog/generation changes, expiry or a dropped caller discard pending work. No
 credential is retained in host state: its sole release moves from UI into the typed reply.
+
+
+Guarded Join input retains the ordinary authenticated InputOp and real pointer replay, but
+TextEntry frames carry a private marker rather than global KeyboardInput text. The existing
+actual masked TextEdit consumes its scoped egui text capsule. Per-frame host checks include
+recipient identity, navigation/dialog/input revision, exact primary window and widget/focus
+proof; the renderer repeats checks at the insertion and real Join-click boundaries. Every job
+exit clears its private lease. Success requires the actual button response, not merely planned
+frames. Ordinary unguarded input retains its existing behavior and clipboard suppression.

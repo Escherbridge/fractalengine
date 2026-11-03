@@ -363,9 +363,21 @@ pub(crate) async fn run_inject(
     claims: &ApiClaims,
     spec: ValidInputSpec,
 ) -> Result<InputOutput, InputError> {
+    let guarded = spec.join_lease().is_some();
+    if guarded {
+        crate::auth::require_current_credential(state, claims)
+            .await
+            .map_err(|_| InputError::Failure(fe_runtime::input::denied()))?;
+    }
     check_capture_after_gate(state, claims, &spec).await?;
     audit_inject(claims, &spec);
-    request_inject(state, &claims.scope, spec).await
+    let result = request_inject(state, &claims.scope, spec).await;
+    if guarded {
+        crate::auth::require_current_credential(state, claims)
+            .await
+            .map_err(|_| InputError::Failure(fe_runtime::input::denied()))?;
+    }
+    result
 }
 
 /// The ONE parse-and-validate path for an injection request, shared by both
@@ -428,13 +440,24 @@ fn parse_and_validate(body: &[u8]) -> Result<ValidInputSpec, InputRefusal> {
 pub async fn post_input(
     State(state): State<Arc<ApiState>>,
     Extension(claims): Extension<ApiClaims>,
+    headers: axum::http::HeaderMap,
     body: Bytes,
 ) -> Response {
     let outcome = async {
         INPUT_GATE
             .admit(state.input.allowed, &state, &claims)
             .await?;
-        let spec = parse_and_validate(&body).map_err(InputError::Refusal)?;
+        let mut spec = parse_and_validate(&body).map_err(InputError::Refusal)?;
+        if let Some(lease) = headers.get("x-fe-join-lease") {
+            let lease = lease.to_str().map_err(|_| {
+                InputError::Refusal(fe_runtime::input::InputRefusal {
+                    code: "invalid_join_lease",
+                    field: None,
+                    message: "Invalid guarded Join lease".into(),
+                })
+            })?;
+            spec.require_join_lease(lease).map_err(InputError::Refusal)?;
+        }
         run_inject(&state, &claims, spec).await
     };
     match outcome.await {

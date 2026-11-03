@@ -180,9 +180,28 @@ pub struct ValidInputSpec {
     commands: Vec<InputCommand>,
     wait_frames: u32,
     capture_after: bool,
+    join_lease: Option<String>,
 }
 
 impl ValidInputSpec {
+    pub fn join_lease(&self) -> Option<&str> {
+        self.join_lease.as_deref()
+    }
+    pub fn require_join_lease(&mut self, lease: &str) -> Result<(), InputRefusal> {
+        if lease.len() > 64
+            || !lease.starts_with("join-input-")
+            || !lease.bytes().all(|c| c.is_ascii_alphanumeric() || c == b'-')
+        {
+            return Err(InputRefusal::new(
+                "invalid_join_lease",
+                None,
+                "Invalid guarded Join lease",
+            ));
+        }
+        self.join_lease = Some(lease.into());
+        Ok(())
+    }
+
     pub fn commands(&self) -> &[InputCommand] {
         &self.commands
     }
@@ -240,6 +259,7 @@ impl InputSpec {
             commands: self.commands,
             wait_frames,
             capture_after,
+            join_lease: None,
         })
     }
 }
@@ -437,6 +457,11 @@ mod tests {
     /// capacity. Each assertion would go red if its branch inverted.
     #[test]
     fn input_spec_validation_defaults_and_bridge_journey() {
+        let mut tagged=InputSpec {commands:vec![click(10.0,10.0)],..Default::default()}.validate().unwrap();
+        assert!(tagged.join_lease().is_none());
+        assert!(tagged.require_join_lease("arbitrary/header").is_err());
+        tagged.require_join_lease("join-input-opaque").unwrap();
+        assert_eq!(tagged.join_lease(),Some("join-input-opaque"));
         let credential = "eyJhbGciOiJFZERTQSJ9.eyJzdWIiOiJzZWNyZXQifQ.c2lnbmF0dXJl";
         let redacted =
             crate::qa_debug::redact(&format!("value=\"{credential}\" Bearer opaque-credential"));

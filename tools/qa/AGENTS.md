@@ -1082,3 +1082,10 @@ then closed immediately. The existing atomic owner-only publisher may replace to
 without being blocked by a long transfer. Only the exact run-local non-reparse file is read;
 its token map stays in memory and is injected into token resolution. current.json and parent
 identity guards remain retained. Existing durable API credential checks reject obsolete tokens.
+
+Recipient input now uses the opaque actual-widget lease from Observe rather than a password
+name lookup; generic PasswordInput names and values remain protected. The client verifies the
+same lease before and after source consumption, sends the fixed focus/text/Join batch with
+X-FE-Join-Lease, and accepts only the actual commands-applied receipt. The host confines text
+to the actual masked TextEdit and rechecks each frame and mutation/click boundary. A dialog,
+layout, focus, navigation, identity or window change stops the batch without replay or Ready.

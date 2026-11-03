@@ -1,31 +1,23 @@
 """One-use invitation handoff between pinned owned apps; see AGENTS.md."""
 
 import json
+import math
 from owned_run_http import OwnedRunTransport
 
 
-def join_controls(qa, run, verse, transport):
-    tree = qa.probe(run, "ui-tree", verse, transport=transport, use_cache=False)
-    nodes = qa.tree_nodes(tree)
-    window = qa.require_object(tree.get("window"), "primary window")
-    clip = {"x": 0, "y": 0, "w": window.get("width"), "h": window.get("height")}
-    controls = {item["id"]: item for item in tree.get("layout", {}).get("controls", [])}
-
-    def center(name, role, enabled):
-        matches = [node for node in nodes if node["name"] == name and node["role"] == role
-                   and not node.get("hidden") and (not enabled or node.get("enabled"))]
-        if len(matches) != 1:
-            raise qa.Refused(0, "join_control_unavailable", "The clean masked Join controls are not uniquely available")
-        node = matches[0]
-        facts = controls.get(node["id"])
-        if facts is None:
-            raise qa.Refused(0, "join_control_unavailable", "Observed Join control geometry is required")
-        visible = qa.locator_rectangle(node.get("bounds"), facts, clip)
-        if visible is None:
-            raise qa.Refused(0, "join_control_unavailable", "The actual Join control is outside the current modal")
-        return visible["x"] + visible["w"] / 2, visible["y"] + visible["h"] / 2
-
-    return center("Verse invite string", "passwordinput", True), center("Join", "button", False)
+def join_controls(qa,observation):
+    lease=observation.get("join_input_lease")
+    if not isinstance(lease,dict) or not isinstance(lease.get("lease_id"),str) or not lease["lease_id"].startswith("join-input-"):
+        raise qa.Refused(0,"join_control_unavailable","A fresh native masked Join input lease is required")
+    points=[]
+    for key in ("input_bounds","join_bounds"):
+        bounds=lease.get(key)
+        if not isinstance(bounds,list) or len(bounds)!=4 or any(type(value) not in (int,float) or not math.isfinite(value) for value in bounds) or bounds[2]<=0 or bounds[3]<=0:
+            raise qa.Refused(0,"join_control_unavailable","Guarded Join geometry is unavailable")
+        points.append((bounds[0]+bounds[2]/2,bounds[1]+bounds[3]/2))
+    if not all(isinstance(lease.get(key),str) and lease[key].isdigit() for key in ("input_widget","join_widget")):
+        raise qa.Refused(0,"join_control_unavailable","Opaque native Join widget identities are required")
+    return lease,points[0],points[1]
 
 
 def transfer(qa, owner, args):
@@ -77,12 +69,12 @@ def transfer_owned(qa,owner,recipient,args,transport_context):
             raise qa.Refused(0, "recipient_identity_mismatch", "The current GUI invitation must name the actual other app identity")
         if recipient_observation.get("join_ready_for_input") is not True:
             raise qa.Refused(0, "clean_join_required", "Open a clean, empty Join dialog on the recipient before transferring")
-        text_at, join_at = join_controls(qa, recipient, recipient_verse, transport)
+        lease,text_at,join_at=join_controls(qa,recipient_observation)
         check()
         # Recheck both actual DIDs after locating controls, before one-use consumption.
         current_owner = request(owner, "GET", owner_token)
         current_recipient = request(recipient, "GET", recipient_token)
-        if current_owner.get("local_did") != issuer or current_owner.get("invitation") != expected or current_recipient.get("local_did") != recipient_did or current_recipient.get("join_ready_for_input") is not True:
+        if current_owner.get("local_did") != issuer or current_owner.get("invitation") != expected or current_recipient.get("local_did") != recipient_did or current_recipient.get("join_ready_for_input") is not True or current_recipient.get("join_input_lease")!=lease:
             raise qa.Refused(0, "recipient_identity_mismatch", "An app identity, invitation generation or clean Join context changed before consumption")
         consumed = request(owner, "POST", owner_token, expected)
         try:
@@ -91,19 +83,21 @@ def transfer_owned(qa,owner,recipient,args,transport_context):
                 raise ValueError()
             after_owner = request(owner, "GET", owner_token)
             after_recipient = request(recipient, "GET", recipient_token)
-            if after_owner.get("local_did") != issuer or after_recipient.get("local_did") != recipient_did or after_recipient.get("join_ready_for_input") is not True:
+            if after_owner.get("local_did") != issuer or after_recipient.get("local_did") != recipient_did or after_recipient.get("join_ready_for_input") is not True or after_recipient.get("join_input_lease")!=lease:
                 raise ValueError()
-            commands = [{"kind": "pointer_click", "x": text_at[0], "y": text_at[1], "button": "left"},
-                        {"kind": "key_press", "key": "ControlLeft"}, {"kind": "key_press", "key": "KeyA"}]
+            commands = [{"kind": "pointer_click", "x": text_at[0], "y": text_at[1], "button": "left"}]
             commands.extend({"kind": "text_entry", "text": credential[index:index+4096]} for index in range(0, len(credential), 4096))
             commands.append({"kind": "pointer_click", "x": join_at[0], "y": join_at[1], "button": "left"})
-            body = {"commands": commands, "wait_frames": 1, "capture_after": False}
+            body = {"commands": commands, "wait_frames": 0, "capture_after": False}
             if len(json.dumps(body).encode("utf-8")) > 65536:
                 raise ValueError()
             check()
-            status, _, _ = transport(recipient, "POST", "/api/v1/debug/input", recipient_token, body, timeout=30.0)
+            status, _, raw = transport(recipient, "POST", "/api/v1/debug/input", recipient_token, body, timeout=30.0,join_input_lease=lease["lease_id"])
             check()
             if not 200 <= status < 300:
+                raise ValueError()
+            outcome=json.loads(raw)
+            if outcome.get("ok") is not True or outcome.get("commands_applied")!=len(commands):
                 raise ValueError()
         except Exception:
             raise qa.Refused(0, "masked_join_submission_unconfirmed", "The invitation was consumed but masked Join submission is unconfirmed; do not replay it") from None
@@ -112,7 +106,7 @@ def transfer_owned(qa,owner,recipient,args,transport_context):
             credential = None
             commands = None
             body = None
-        return {"transfer": "consumed_once", "input_submitted": True,
+        return {"transfer": "consumed_once", "input_submitted": True, "commands_applied":outcome["commands_applied"],
                 "issuer_did": issuer, "recipient_did": recipient_did,
                 "generation": expected["generation"], "scope": expected["scope"], "role": expected["role"],
                 "join_ready": "pending_real_transport_and_role_confirmation"}

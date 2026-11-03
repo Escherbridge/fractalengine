@@ -67,12 +67,31 @@ impl TransferCommand {
     }
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct JoinInputWindow {
+    pub window_id: u64,
+    pub width: u32,
+    pub height: u32,
+    pub scale_bits: u64,
+    pub focused: bool,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct JoinInputLease {
+    pub lease_id: String,
+    pub input_widget: String,
+    pub join_widget: String,
+    pub input_bounds: [f32; 4],
+    pub join_bounds: [f32; 4],
+}
+
 #[derive(Debug)]
 pub enum TransferReply {
     Observed {
         local_did: String,
         invitation: Option<TransferMetadata>,
         join_ready_for_input: bool,
+        join_input_lease: Option<JoinInputLease>,
     },
     Consumed {
         metadata: TransferMetadata,
