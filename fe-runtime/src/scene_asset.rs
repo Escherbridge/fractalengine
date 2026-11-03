@@ -73,3 +73,43 @@ pub struct SceneAssetReferenceWitness {
     pub node_id: String,
     pub fingerprint: String,
 }
+
+/// Verify bounded canonical bytes independently of any transport or metadata authority.
+pub fn verify_scene_asset_bytes(
+    bytes: &[u8],
+    hash: &BlobHash,
+    content_type: &str,
+    size_bytes: u64,
+) -> anyhow::Result<()> {
+    anyhow::ensure!(
+        size_bytes > 0 && size_bytes <= MAX_SCENE_ASSET_BYTES && bytes.len() as u64 == size_bytes,
+        "scene asset size differs from bounded metadata"
+    );
+    anyhow::ensure!(
+        *blake3::hash(bytes).as_bytes() == *hash,
+        "scene asset digest mismatch"
+    );
+    let extension = match content_type {
+        "model/gltf-binary" => {
+            anyhow::ensure!(
+                bytes.starts_with(b"glTF"),
+                "GLB MIME requires a GLB container"
+            );
+            "glb"
+        }
+        "model/gltf+json" => {
+            let document: serde_json::Value = serde_json::from_slice(bytes)?;
+            anyhow::ensure!(
+                document["asset"]["version"]
+                    .as_str()
+                    .is_some_and(|version| version.starts_with("2.")),
+                "glTF MIME requires a glTF 2 document"
+            );
+            "gltf"
+        }
+        _ => anyhow::bail!("unsupported scene asset MIME"),
+    };
+    crate::ktx2_guard::check_asset_bytes(bytes, Some(extension))
+        .map_err(|error| anyhow::anyhow!("scene asset refused: {error}"))?;
+    Ok(())
+}

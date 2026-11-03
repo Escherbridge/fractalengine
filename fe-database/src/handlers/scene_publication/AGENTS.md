@@ -158,7 +158,9 @@ successful asset metadata applies. Deferred retry outcomes go through this same 
 retries after local role changes. A batch caps 1024 current node refreshes; asset lookup probes
 reference 1025 and refuses overflow rather than refreshing an unlabelled prefix. Each read
 uses actual recipient Viewer authority, exact stored scope/row/point/server fingerprint, clock
-and asset metadata fences. Assets expose a blob URI only for validated scene MIME/hash and
+and asset metadata fences. LOCAL legacy asset availability follows stored node reference
+reach even when uploader/anchor fields are absent; an explicit foreign anchor still refuses.
+This does not authorize publication, which separately requires upload or explicit adoption proof. Assets expose a blob URI only for validated scene MIME/hash and
 actual local byte presence, rechecked after the read transaction.
 
 The GUI-only ReplicatedNodeCurrent DTO has full NodeRowSnapshot, scope, honest original scene
@@ -175,3 +177,14 @@ matches and request fresh data after hierarchy hydration, not replay a held DTO.
 
 These local legacy/journal improvements leave RenameNode/DuplicateNode permanent D-CL20
 UnmappedDeferred, including their bypass counters. No canonical intent mapping is promoted.
+
+
+## Explicit publication responsibility
+
+Ownerless/unanchored legacy copies are never assigned an inferred uploader from a baseline.
+The explicit DQA020 adoption action is documented in handlers/AGENTS.md. Publication accepts
+only its exact LOCAL operation proof or retained local upload ownership. Wire metadata strips
+both local owner and adoption provenance. Missing bytes under a fenced current read emit
+SceneAssetNeeded AFTER the current result, with identity/hash/size/provenance and no local
+history version. The sync service must independently admit the hint and signal readiness
+only after verified bytes reach the shared store; the UI then requests fresh current state.

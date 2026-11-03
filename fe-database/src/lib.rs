@@ -1753,14 +1753,33 @@ pub fn spawn_db_thread_shared(
                             Err(error)=>send_result(&tx,DbResult::RequestFailed {error:format!("Stamp edit refused: {error:#}"),correlation_id}),
                         }
                     }
+                    Ok(DbCommand::ReadSceneAssetAdoption {node_id,request_id}) => {
+                        let result=if request_id.is_empty() || request_id.len()>128 {Err(anyhow::anyhow!("invalid adoption request"))}
+                            else {handlers::scene_asset_adoption::read(&db,&blob_store,&node_id,&local_did).await};
+                        send_result(&tx,DbResult::SceneAssetAdoptionCandidate {node_id,request_id,result:result.map_err(|error|error.to_string())});
+                    }
+                    Ok(DbCommand::AdoptSceneAsset {candidate,request_id}) => {
+                        let result=handlers::scene_asset_adoption::adopt(&db,&blob_store,&candidate,&local_did,&request_id).await;
+                        if result.is_ok() {
+                            handlers::scene_publication::publish_after_commit(&db,&blob_store,repl_tx.as_ref(),&local_did,&candidate.node_id).await;
+                        }
+                        send_result(&tx,DbResult::SceneAssetAdopted {request_id,result:result.map_err(|error|error.to_string())});
+                    }
+                    Ok(DbCommand::InspectSceneAssetTransfer {request,reply}) => {
+                        let result=handlers::scene_asset_transfer::inspect(&db,&request,&local_did).await
+                            .map_err(|error|{tracing::debug!("scene asset admission refused: {error:#}");"Scene asset is unavailable, changed or unauthorized".to_owned()});
+                        if reply.try_send(result).is_err() { tracing::debug!("Scene asset admission owner expired"); }
+                    }
                     Ok(DbCommand::ReadReplicatedNodeCurrent {node_id,request_id}) => {
                         let result=async {
                             anyhow::ensure!(!node_id.is_empty() && node_id.len()<=1024 && !request_id.is_empty() && request_id.len()<=128,"invalid replica read request");
                             let scope=handlers::crud::resolve_node_scope_handler(&db,&node_id).await?.ok_or_else(||anyhow::anyhow!("replica current target unavailable"))?;
                             let verse=crate::parse_scope(&scope)?.verse_id;
-                            handlers::scene_publication::read_current(&db,&blob_store,&verse,&node_id,&local_did).await
+                            handlers::scene_publication::read_current_and_need(&db,&blob_store,&verse,&node_id,&local_did).await
                         }.await.map_err(|error|{tracing::warn!(node_id,"private replica current read deferred: {error:#}");"Current shared object is unavailable or changed; refresh before retrying.".to_owned()});
+                        let (result,needed)=match result {Ok((current,needed))=>(Ok(current),needed),Err(error)=>(Err(error),None)};
                         send_result(&tx,DbResult::ReplicatedNodeCurrentRead {node_id,request_id,result});
+                        if let Some(needed)=needed {send_result(&tx,DbResult::SceneAssetNeeded {needed});}
                     }
                     Ok(DbCommand::ReadEditorBatch {scope,petal_id,node_ids,target,correlation_id}) => {
                         let reply=match handlers::editor_batch::read_target(&db,&scope,&petal_id,&node_ids,&target,&local_did).await {

@@ -5583,6 +5583,18 @@ mod tests {
                     ..
                 }
             ));
+            scene::echo_applied(&peer,&peer_blobs,"did:viewer",&projection_tx,vec![crate::handlers::inbound_admissions::RowReport {
+                verse_id:"scene-v".into(),table:"asset".into(),record_id:asset_id.clone(),outcome:ReplicatedRowOutcome::Applied,
+            }]).await;
+            projection_rx.try_recv().unwrap();
+            assert!(matches!(projection_rx.try_recv().unwrap(),fe_runtime::messages::DbResult::ReplicatedNodeCurrent {..}));
+            let fe_runtime::messages::DbResult::SceneAssetNeeded {needed}=projection_rx.try_recv().unwrap() else {panic!("missing bytes need follows current result")};
+            assert_eq!(needed.node_id,imported.node.node_id);
+            assert_eq!(needed.asset_id,asset_id);
+            assert_eq!(crate::hash_to_hex(&needed.content_hash),hash);
+            assert_eq!(needed.size_bytes,asset_bytes.len() as u64);
+            assert_eq!(needed.provenance,absent.provenance);
+            assert!(projection_rx.try_recv().is_err());
             peer_blobs.add_blob(asset_bytes).unwrap();
             scene::echo_applied(
                 &peer,
@@ -5692,6 +5704,236 @@ mod tests {
                 .await
                 .unwrap();
             assert_eq!(rx.try_iter().count(), 2);
+
+            // Legacy local availability does not invent upload ownership; adoption is explicit.
+            {
+                struct DiskSceneBlobs {
+                    root: std::path::PathBuf,
+                }
+                impl fe_runtime::blob_store::BlobStore for DiskSceneBlobs {
+                    fn add_blob(&self, bytes: &[u8]) -> anyhow::Result<[u8; 32]> {
+                        let hash = *blake3::hash(bytes).as_bytes();
+                        let path = fe_runtime::blob_store::canonical_blob_path(&self.root, &hash);
+                        std::fs::create_dir_all(path.parent().unwrap())?;
+                        std::fs::write(path, bytes)?;
+                        Ok(hash)
+                    }
+                    fn get_blob_path(&self, hash: &[u8; 32]) -> Option<std::path::PathBuf> {
+                        let path = fe_runtime::blob_store::canonical_blob_path(&self.root, hash);
+                        path.is_file().then_some(path)
+                    }
+                    fn has_blob(&self, hash: &[u8; 32]) -> bool {
+                        self.get_blob_path(hash).is_some()
+                    }
+                    fn remove_blob(&self, hash: &[u8; 32]) -> anyhow::Result<()> {
+                        if let Some(path) = self.get_blob_path(hash) {
+                            std::fs::remove_file(path)?;
+                        }
+                        Ok(())
+                    }
+                }
+                let legacy = probe_db().await;
+                crate::schema::apply_all(&legacy).await.unwrap();
+                legacy.query("CREATE verse CONTENT {verse_id:'scene-v',name:'v',created_by:'did:qa',created_at:'2026-11-02'}; CREATE fractal CONTENT {fractal_id:'scene-f',verse_id:'scene-v',owner_did:'did:qa',name:'f',created_at:'2026-11-02'}; CREATE petal CONTENT {petal_id:'scene-p',fractal_id:'scene-f',name:'p',node_id:'p',created_at:'2026-11-02'}").await.unwrap().check().unwrap();
+                let disk_dir = tempfile::tempdir().unwrap();
+                let disk: crate::BlobStoreHandle = std::sync::Arc::new(DiskSceneBlobs {
+                    root: disk_dir.path().to_owned(),
+                });
+                let bytes = br#"{"asset":{"version":"2.0"}}"#;
+                let digest = disk.add_blob(bytes).unwrap();
+                let imported_asset = ImportedSceneAsset::new(
+                    "legacy",
+                    "model/gltf+json",
+                    &crate::hash_to_hex(&digest),
+                    bytes.len(),
+                )
+                .unwrap();
+                let legacy_asset = imported_asset.id().to_owned();
+                let created = crate::handlers::object_creation::prepare(
+                    &legacy,
+                    ObjectCreation {
+                        petal_id: "scene-p",
+                        name: "legacy",
+                        asset: SceneAsset::Imported(imported_asset),
+                        position: [4.0, 5.0, 6.0],
+                        rotation: vec![0.0; 3],
+                        scale: vec![1.0; 3],
+                        properties: serde_json::Map::new(),
+                        actor: "did:qa",
+                        grant: &NodeAccessGrant::Local,
+                    },
+                )
+                .await
+                .unwrap();
+                let created = crate::handlers::object_creation::commit(&legacy, created)
+                    .await
+                    .unwrap();
+                let node_id = &created.node.node_id;
+                legacy
+                    .query("UPDATE asset SET owner_did=NONE,petal_id=NONE WHERE asset_id=$asset")
+                    .bind(("asset", legacy_asset.clone()))
+                    .await
+                    .unwrap()
+                    .check()
+                    .unwrap();
+                let before = node_history::snapshot(&legacy, node_id).await.unwrap();
+                let history = node_history::latest(&legacy, node_id).await.unwrap();
+                let local = scene::read_current(&legacy, &disk, "scene-v", node_id, "did:viewer")
+                    .await
+                    .unwrap();
+                assert!(
+                    matches!(local.asset, ReplicaNodeAsset::LocalBlob { .. }),
+                    "existing scoped LOCAL read need not pretend publication ownership"
+                );
+                let unproven = scene::prepare(&legacy, node_id, "did:qa").await.unwrap();
+                assert_eq!(
+                    unproven.emit(&legacy, &disk, &tx).await.unwrap(),
+                    1,
+                    "unproven asset metadata remains deferred"
+                );
+                rx.try_recv().unwrap();
+                assert!(rx.try_recv().is_err());
+                assert!(crate::handlers::scene_asset_adoption::read(
+                    &legacy,
+                    &disk,
+                    node_id,
+                    "did:viewer"
+                )
+                .await
+                .is_err());
+                legacy.query("CREATE node CONTENT {node_id:'legacy-foreign-reference',petal_id:'foreign-p',asset_id:$asset,name:'foreign',position:<geometry<point>> [0,0],elevation:0,rotation:[0,0,0],scale:[1,1,1],interactive:true,edit_seq:0,created_at:'2026-11-02'}")
+                    .bind(("asset",legacy_asset.clone())).await.unwrap().check().unwrap();
+                assert!(
+                    crate::handlers::scene_asset_adoption::read(&legacy, &disk, node_id, "did:qa")
+                        .await
+                        .is_err(),
+                    "one foreign or unknown reference refuses adoption"
+                );
+                legacy
+                    .query("DELETE node WHERE node_id='legacy-foreign-reference'")
+                    .await
+                    .unwrap()
+                    .check()
+                    .unwrap();
+                let candidate =
+                    crate::handlers::scene_asset_adoption::read(&legacy, &disk, node_id, "did:qa")
+                        .await
+                        .unwrap();
+                let mut stale = candidate.clone();
+                stale.size_bytes += 1;
+                assert!(crate::handlers::scene_asset_adoption::adopt(
+                    &legacy,
+                    &disk,
+                    &stale,
+                    "did:qa",
+                    "stale-adoption"
+                )
+                .await
+                .is_err());
+                let canonical = disk.get_blob_path(&digest).unwrap();
+                std::fs::write(&canonical, b"different bytes").unwrap();
+                assert!(crate::handlers::scene_asset_adoption::adopt(
+                    &legacy,
+                    &disk,
+                    &candidate,
+                    "did:qa",
+                    "mismatched-copy"
+                )
+                .await
+                .is_err());
+                std::fs::write(&canonical, bytes).unwrap();
+                let adopted = crate::handlers::scene_asset_adoption::adopt(
+                    &legacy,
+                    &disk,
+                    &candidate,
+                    "did:qa",
+                    "explicit-adoption",
+                )
+                .await
+                .unwrap();
+                assert_eq!(adopted.candidate, candidate);
+                assert_eq!(adopted.adopter_did, "did:qa");
+                assert_eq!(
+                    node_history::snapshot(&legacy, node_id).await.unwrap(),
+                    before
+                );
+                assert_eq!(
+                    node_history::latest(&legacy, node_id).await.unwrap(),
+                    history,
+                    "adoption changes no object history"
+                );
+                let mut metadata=legacy.query("SELECT owner_did,petal_id,publication_provenance FROM asset WHERE asset_id=$asset").bind(("asset",legacy_asset.clone())).await.unwrap().check().unwrap();
+                let metadata: Vec<serde_json::Value> = metadata.take(0).unwrap();
+                assert!(metadata[0]["owner_did"].is_null());
+                assert_eq!(metadata[0]["petal_id"], "scene-p");
+                assert_eq!(
+                    metadata[0]["publication_provenance"]["kind"],
+                    "explicit_local_copy_adoption"
+                );
+                scene::prepare(&legacy, node_id, "did:qa")
+                    .await
+                    .unwrap()
+                    .emit(&legacy, &disk, &tx)
+                    .await
+                    .unwrap();
+                let metadata_event = rx.try_recv().unwrap();
+                assert_eq!(metadata_event.table, "asset");
+                rx.try_recv().unwrap();
+                let wire = std::fs::read(disk.get_blob_path(&metadata_event.content_hash).unwrap())
+                    .unwrap();
+                let wire: serde_json::Value = serde_json::from_slice(&wire).unwrap();
+                assert!(wire.get("owner_did").is_none());
+                assert!(wire.get("publication_provenance").is_none());
+                use fe_runtime::scene_asset::{
+                    SceneAssetTransferPurpose, SceneAssetTransferRequest,
+                };
+                let request = SceneAssetTransferRequest {
+                    verse_id: "scene-v".into(),
+                    hash: digest,
+                    node_id: Some(node_id.clone()),
+                    purpose: SceneAssetTransferPurpose::Publish,
+                    deadline: std::time::Instant::now() + std::time::Duration::from_secs(5),
+                };
+                let permit =
+                    crate::handlers::scene_asset_transfer::inspect(&legacy, &request, "did:qa")
+                        .await
+                        .unwrap();
+                assert_eq!(permit.asset_id, legacy_asset);
+                let serve = SceneAssetTransferRequest {
+                    purpose: SceneAssetTransferPurpose::Serve {
+                        requester_did: "did:viewer".into(),
+                    },
+                    ..request.clone()
+                };
+                assert!(
+                    crate::handlers::scene_asset_transfer::inspect(&legacy, &serve, "did:qa")
+                        .await
+                        .is_ok()
+                );
+                legacy
+                    .query("UPDATE verse SET default_access='none' WHERE verse_id='scene-v'")
+                    .await
+                    .unwrap()
+                    .check()
+                    .unwrap();
+                assert!(
+                    crate::handlers::scene_asset_transfer::inspect(&legacy, &serve, "did:qa")
+                        .await
+                        .is_err()
+                );
+                assert!(
+                    crate::handlers::scene_asset_adoption::adopt(
+                        &legacy,
+                        &disk,
+                        &candidate,
+                        "did:qa",
+                        "replay-adoption"
+                    )
+                    .await
+                    .is_err(),
+                    "adoption cannot silently overwrite an existing responsibility"
+                );
+            }
 
             // The 1025th candidate refuses before any node prefix is emitted.
             let oversized = probe_db().await;

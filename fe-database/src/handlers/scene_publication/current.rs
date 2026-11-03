@@ -11,7 +11,7 @@ use fe_runtime::{
 use serde_json::{json, Value};
 use std::collections::BTreeSet;
 
-/// Read current row, provenance and available asset under recipient Viewer authority.
+#[cfg(test)]
 pub(crate) async fn read_current(
     db: &Db,
     blobs: &BlobStoreHandle,
@@ -19,6 +19,20 @@ pub(crate) async fn read_current(
     id: &str,
     actor: &str,
 ) -> anyhow::Result<ReplicatedNodeCurrent> {
+    Ok(read_current_and_need(db, blobs, verse, id, actor).await?.0)
+}
+
+/// Read current row, provenance and available asset under recipient Viewer authority.
+pub(crate) async fn read_current_and_need(
+    db: &Db,
+    blobs: &BlobStoreHandle,
+    verse: &str,
+    id: &str,
+    actor: &str,
+) -> anyhow::Result<(
+    ReplicatedNodeCurrent,
+    Option<fe_runtime::scene_asset::SceneAssetNeeded>,
+)> {
     let mut response=db.query("SELECT * OMIT id FROM node WHERE node_id=$scene_id LIMIT 2 TIMEOUT 5s; SELECT VALUE encoding::base64::encode(encoding::cbor::encode($this)) FROM node WHERE node_id=$scene_id LIMIT 2 TIMEOUT 5s")
         .bind(("scene_id",id.to_owned())).await?.check()?;
     let rows: Vec<Value> = response.take(0)?;
@@ -85,7 +99,17 @@ pub(crate) async fn read_current(
         ("scene_current_fingerprints".into(), json!(fingerprints)),
         ("scene_clock_before".into(), json!(clocks)),
     ]);
-    let mut asset = asset_state(db, blobs, &raw, actor, &mut guards, &mut bindings).await?;
+    let mut descriptor = None;
+    let mut asset = asset_state(
+        db,
+        blobs,
+        &raw,
+        actor,
+        &mut guards,
+        &mut bindings,
+        &mut descriptor,
+    )
+    .await?;
     let state = serde_json::from_value(super::super::node_history::normalize_snapshot(raw)?)?;
     let mut query = db.query(format!(
         "BEGIN TRANSACTION; {}; COMMIT TRANSACTION;",
@@ -108,21 +132,44 @@ pub(crate) async fn read_current(
             };
         }
     }
-    Ok(ReplicatedNodeCurrent {
+    let current = ReplicatedNodeCurrent {
         scope,
         state,
         provenance,
         asset,
-    })
+    };
+    let need = if matches!(
+        current.asset,
+        ReplicaNodeAsset::Unavailable {
+            reason: ReplicaAssetUnavailable::MissingBlob,
+            ..
+        }
+    ) {
+        descriptor.map(|(asset_id, content_hash, size_bytes)| {
+            fe_runtime::scene_asset::SceneAssetNeeded {
+                verse_id: verse.into(),
+                scope: current.scope.clone(),
+                node_id: id.into(),
+                asset_id,
+                content_hash,
+                size_bytes,
+                provenance: current.provenance.clone(),
+            }
+        })
+    } else {
+        None
+    };
+    Ok((current, need))
 }
 
 async fn asset_state(
     db: &Db,
     blobs: &BlobStoreHandle,
     row: &Value,
-    actor: &str,
+    _actor: &str,
     guards: &mut Vec<String>,
     bindings: &mut Vec<(String, Value)>,
+    descriptor: &mut Option<(String, fe_runtime::blob_store::BlobHash, u64)>,
 ) -> anyhow::Result<ReplicaNodeAsset> {
     let Some(id) = row["asset_id"].as_str() else {
         return Ok(ReplicaNodeAsset::NoAsset);
@@ -131,10 +178,10 @@ async fn asset_state(
         asset_id: id.into(),
         reason,
     };
-    let mut response=db.query("SELECT asset_id,petal_id,owner_did,content_hash,content_type FROM asset WHERE asset_id=$scene_current_asset LIMIT 2 TIMEOUT 5s")
+    let mut response=db.query("SELECT asset_id,petal_id,owner_did,content_hash,content_type,size_bytes FROM asset WHERE asset_id=$scene_current_asset LIMIT 2 TIMEOUT 5s")
         .bind(("scene_current_asset",id.to_owned())).await?.check()?;
     let rows: Vec<Value> = response.take(0)?;
-    guards.push("IF (SELECT asset_id,petal_id,owner_did,content_hash,content_type FROM asset WHERE asset_id=$scene_current_asset) != $scene_current_asset_rows { THROW 'replica current asset metadata changed'; }".into());
+    guards.push("IF (SELECT asset_id,petal_id,owner_did,content_hash,content_type,size_bytes FROM asset WHERE asset_id=$scene_current_asset) != $scene_current_asset_rows { THROW 'replica current asset metadata changed'; }".into());
     bindings.extend([
         ("scene_current_asset".into(), json!(id)),
         ("scene_current_asset_rows".into(), json!(rows)),
@@ -149,9 +196,6 @@ async fn asset_state(
     match metadata["petal_id"].as_str() {
         Some(petal) if row["petal_id"].as_str() != Some(petal) => {
             return Ok(unavailable(ReplicaAssetUnavailable::ForeignAnchor))
-        }
-        None if metadata["owner_did"].as_str() != Some(actor) => {
-            return Ok(unavailable(ReplicaAssetUnavailable::UnanchoredMetadata))
         }
         _ => {}
     }
@@ -169,6 +213,13 @@ async fn asset_state(
         "model/gltf+json" => "gltf",
         _ => return Ok(unavailable(ReplicaAssetUnavailable::UnsupportedSceneAsset)),
     };
+    let Some(size) = metadata["size_bytes"]
+        .as_u64()
+        .filter(|size| *size > 0 && *size <= fe_runtime::scene_asset::MAX_SCENE_ASSET_BYTES)
+    else {
+        return Ok(unavailable(ReplicaAssetUnavailable::InvalidMetadata));
+    };
+    *descriptor = Some((id.into(), decoded, size));
     if !blobs.has_blob(&decoded) {
         return Ok(unavailable(ReplicaAssetUnavailable::MissingBlob));
     }
@@ -236,9 +287,12 @@ pub(crate) async fn echo_applied(
         return;
     }
     for (verse, id) in nodes {
-        match read_current(db, blobs, &verse, &id, actor).await {
-            Ok(current) => {
-                super::super::send_result(tx, DbResult::ReplicatedNodeCurrent { current })
+        match read_current_and_need(db, blobs, &verse, &id, actor).await {
+            Ok((current, needed)) => {
+                super::super::send_result(tx, DbResult::ReplicatedNodeCurrent { current });
+                if let Some(needed) = needed {
+                    super::super::send_result(tx, DbResult::SceneAssetNeeded { needed });
+                }
             }
             Err(error) => tracing::warn!(
                 node_id = id,

@@ -174,15 +174,13 @@ async fn dependencies(
     let mut dependencies = Vec::new();
     let mut deferred = 0;
     if let Some(id) = row["asset_id"].as_str() {
-        let mut response=db.query("SELECT asset_id, name, content_type, size_bytes, content_hash, created_at, owner_did, petal_id FROM asset WHERE asset_id=$scene_asset LIMIT 2 TIMEOUT 5s; SELECT asset_id FROM model WHERE asset_id=$scene_asset LIMIT 1 TIMEOUT 5s")
+        let mut response=db.query("SELECT asset_id, name, content_type, size_bytes, content_hash, created_at, owner_did, petal_id, publication_provenance FROM asset WHERE asset_id=$scene_asset LIMIT 2 TIMEOUT 5s; SELECT asset_id FROM model WHERE asset_id=$scene_asset LIMIT 1 TIMEOUT 5s")
             .bind(("scene_asset",id.to_owned())).await?.check()?;
         let assets: Vec<Value> = response.take(0)?;
         let models: Vec<Value> = response.take(1)?;
         if assets.len() == 1
             && assets[0]["petal_id"] == row["petal_id"]
-            && assets[0]["owner_did"]
-                .as_str()
-                .is_some_and(|owner| !owner.is_empty() && owner.len() <= 512)
+            && super::super::scene_asset_transfer::publication_proof(db,&assets[0],scope,guards,bindings).await?
             && assets[0]["content_hash"]
                 .as_str()
                 .is_some_and(|hash| crate::hash_from_hex(hash).is_ok())
@@ -190,6 +188,7 @@ async fn dependencies(
             let mut asset = assets[0].clone();
             if let Some(object) = asset.as_object_mut() {
                 object.remove("owner_did");
+                object.remove("publication_provenance");
                 object.retain(|_, value| !value.is_null());
             }
             let bytes = serde_json::to_vec(&asset)?;
@@ -198,7 +197,7 @@ async fn dependencies(
                 "scene asset metadata exceeds 32 KiB"
             );
             dependencies.push(("asset".into(), id.into(), bytes));
-            guards.push("IF (SELECT asset_id, name, content_type, size_bytes, content_hash, created_at, owner_did, petal_id FROM asset WHERE asset_id=$scene_asset) != $scene_asset_before { THROW 'scene asset changed'; }".into());
+            guards.push("IF (SELECT asset_id, name, content_type, size_bytes, content_hash, created_at, owner_did, petal_id, publication_provenance FROM asset WHERE asset_id=$scene_asset) != $scene_asset_before { THROW 'scene asset changed'; }".into());
             bindings.extend([
                 ("scene_asset".into(), json!(id)),
                 ("scene_asset_before".into(), json!(assets)),

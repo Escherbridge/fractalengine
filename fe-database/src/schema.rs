@@ -301,7 +301,8 @@ define_table! {
         /// Reach + quota rules: fe-api/AGENTS.md §assets, §asset-ingest.
         owner_did:    Option<String> => "TYPE option<string>",
         /// Anchor petal the upload was authorized against; `NONE` on legacy rows.
-        petal_id:     Option<String> => "TYPE option<string>"
+        petal_id:     Option<String> => "TYPE option<string>",
+        publication_provenance: Option<serde_json::Value> => "TYPE option<object> FLEXIBLE"
     }
 }
 

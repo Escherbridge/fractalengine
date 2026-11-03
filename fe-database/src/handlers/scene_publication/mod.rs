@@ -5,7 +5,9 @@ mod inbound;
 mod publisher;
 pub(crate) mod wire;
 
-pub(crate) use current::{echo_applied, read_current};
+pub(crate) use current::{echo_applied, read_current_and_need};
+#[cfg(test)]
+pub(crate) use current::read_current;
 pub(crate) use inbound::apply_complete;
 #[cfg(test)]
 pub(crate) use inbound::capture_ordering_fact;

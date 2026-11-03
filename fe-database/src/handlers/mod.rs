@@ -37,6 +37,8 @@ pub(crate) mod preconditions;
 pub mod raw_query;
 pub mod rbac;
 pub mod replicated_row;
+pub(crate) mod scene_asset_adoption;
+pub(crate) mod scene_asset_transfer;
 pub mod scene_materials;
 pub(crate) mod scene_publication;
 pub mod scoped_query;

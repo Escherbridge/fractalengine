@@ -452,3 +452,41 @@ do not graduate the deferred Group P2P/canonical mapping.
 scene_publication/AGENTS.md owns full committed-node publication, durable local provenance, original
 HLC ordering, complete-row receive/clock transactions, bounded replica-open repair and explicit
 asset/model/schema dependency limits. Ordinary post-commit dispatch and plugin state use one seam.
+
+
+## scene-asset-transfer and explicit legacy adoption
+
+InspectSceneAssetTransfer is a private bounded query with a deadline and private reply.
+Fetch requires actual local Viewer at the stored current reference scope. Publish and
+Serve require actual local Editor, retained local upload/adoption proof and exact asset
+metadata; Serve also captures the authenticated connection requester's current Viewer
+authority. Metadata, live reference, ancestry and role guards execute in one transaction.
+One hash probes at most 17 metadata identities (16 permitted), and each identity probes
+257 live references (256 permitted); ambiguous/oversize inputs never produce a prefix.
+
+DQA020 adoption is an explicit new Owner action, not reconstruction of upload ownership.
+ReadSceneAssetAdoption prepares a reviewable candidate for an ownerless/unanchored local
+copy. All retained node references (including tombstones) must be bounded and in the one
+Petal, with no device-payload references. Actual Owner of that scope is required. The
+canonical local bytes must agree with bounded digest, MIME and size. AdoptSceneAsset
+re-derives and compares the exact candidate, re-verifies bytes, and fences raw metadata,
+all reference fingerprints, live target, roles and ancestry before one operation commit.
+It preserves asset ID/bytes and node TRS/properties/history. The added publication_provenance
+records explicit_local_copy_adoption, actual adopter, time and operation ID; owner_did is
+not invented. Publish/Serve require the matching LOCAL immutable adoption operation.
+Inbound rows strip this local provenance and cannot create upload/adoption proof.
+The new mutation remains UnmappedDeferred in the canonical mapping inventory.
+
+LOCAL availability is separate: a current stored node reference plus actual scope Viewer
+can read an unowned legacy local copy under the established API reference-reach policy.
+Current reads still fence exact row/asset/ancestry and actual local bytes, and reject a
+foreign explicit Petal anchor. That local read never authorizes publishing the bytes.
+
+The adoption final payload/SQL/bindings budget reserves 4096 additional bytes for the
+ordinary operation envelope, fixed SQL wrapper, separators, original HLC and timestamp.
+Those bounded fields are the only values added by the shared commit helper; no facts
+or expanded batch payload is generated after this admission bound. Metadata captures
+are limited to 64 KiB, and transfer bytes to 256 MiB. The existing op_log journey authors
+Owner refusal, stale adoption refusal, explicit provenance/no uploader fiction, unchanged
+node/history, exact adoption publication proof, fresh missing-byte demand order and live
+Serve role revocation. No execution or real peer/blob/render proof is claimed here.

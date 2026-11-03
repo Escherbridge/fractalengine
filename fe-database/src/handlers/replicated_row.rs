@@ -179,7 +179,7 @@ pub(crate) async fn apply_replicated_row_reporting_with_publisher(
     // Per-table semantics: `Timeseries` tables take the append-only union
     // path (A12), everything else the tombstone-aware row merge (N-4).
     let outcome =
-        dispatch_by_mode(db, verse_id, table, record_id, row_bytes, entity_change_tx).await?;
+        dispatch_by_mode(db, verse_id, table, record_id, row_bytes, author_did, entity_change_tx).await?;
     let mut report = ApplyReport::of(outcome);
     if let (Some((known_before, owner_before)), ReplicatedRowOutcome::Applied) =
         (manifest_before, &report.outcome)
@@ -312,6 +312,7 @@ async fn dispatch_by_mode(
     table: &str,
     record_id: &str,
     row_bytes: &[u8],
+    author_did: &str,
     entity_change_tx: Option<&SceneChangeSender>,
 ) -> anyhow::Result<ReplicatedRowOutcome> {
     match ReplicationMode::for_table(table) {
@@ -319,7 +320,7 @@ async fn dispatch_by_mode(
             apply_timeseries_row(db, verse_id, table, record_id, row_bytes).await
         }
         ReplicationMode::Row => {
-            apply_row_mode(db, table, record_id, row_bytes, entity_change_tx).await
+            apply_row_mode(db, verse_id, table, record_id, row_bytes, author_did, entity_change_tx).await
         }
     }
 }
@@ -410,9 +411,11 @@ async fn apply_timeseries_row(
 /// inbound path has row semantics for.
 async fn apply_row_mode(
     db: &Db,
+    verse_id: &str,
     table: &str,
     record_id: &str,
     row_bytes: &[u8],
+    author_did: &str,
     entity_change_tx: Option<&SceneChangeSender>,
 ) -> anyhow::Result<ReplicatedRowOutcome> {
     match table {
@@ -434,7 +437,7 @@ async fn apply_row_mode(
         "node" => apply_node_row(db, record_id, row_bytes, entity_change_tx).await,
         // R5 (CDL-SPEC10 A3): insert-if-absent, never overwrite, anchored
         // rows only — see `apply_anchored_asset_row`.
-        "asset" => apply_anchored_asset_row(db, record_id, row_bytes).await,
+        "asset" => apply_anchored_asset_row(db, verse_id, record_id, row_bytes, author_did).await,
         // R5 (CDL-SPEC10 A3): Row mode, insert-if-absent, immutable per key
         // (the admission gate already enforced the Manager+ floor and the
         // verse match) — see `apply_device_format_row`.
@@ -1393,8 +1396,10 @@ async fn apply_static_row(
 /// to THIS replica's verse before this function runs.
 async fn apply_anchored_asset_row(
     db: &Db,
+    verse_id: &str,
     record_id: &str,
     row_bytes: &[u8],
+    author_did: &str,
 ) -> anyhow::Result<ReplicatedRowOutcome> {
     // An empty entry is the iroh-docs `del` marker; `asset` has no tombstone
     // semantics (GC is the only deletion path) — not applicable, like the
@@ -1424,6 +1429,7 @@ async fn apply_anchored_asset_row(
     // uploader (`src/AGENTS.md` §device-payload).
     if let Some(fields) = row.as_object_mut() {
         fields.remove("owner_did");
+        fields.remove("publication_provenance");
     }
 
     let asset_id = row
@@ -1432,11 +1438,7 @@ async fn apply_anchored_asset_row(
         .map(str::to_string)
         .unwrap_or_else(|| record_id.to_string());
     if asset_id != record_id {
-        tracing::warn!(
-            record_id,
-            asset_id = %asset_id,
-            "replicated asset row id differs from the wire key — trusting the payload"
-        );
+        return Ok(ReplicatedRowOutcome::Denied);
     }
 
     if row_exists(db, "asset", "asset_id", &asset_id).await? {
@@ -1447,11 +1449,70 @@ async fn apply_anchored_asset_row(
         return Ok(ReplicatedRowOutcome::Applied);
     }
 
-    db.query("CREATE asset CONTENT $row")
-        .bind(("row", row))
+    let petal = row["petal_id"].as_str().unwrap();
+    let Some(scope) = super::crud::resolve_petal_scope_handler(db, petal).await? else {
+        return Ok(ReplicatedRowOutcome::Deferred(DeferralReason::Parent {
+            table: "petal".into(),
+            id: petal.into(),
+        }));
+    };
+    if crate::parse_scope(&scope)?.verse_id != verse_id {
+        return Ok(ReplicatedRowOutcome::Denied);
+    }
+    let permission = super::entity::prepare_scope_permission(
+        db,
+        &scope,
+        author_did,
+        fe_policy::RoleLevel::Editor,
+    )
+    .await?;
+    let (mut guards, mut bindings) = permission.into_parts();
+    let references="SELECT node_id,petal_id FROM node WHERE asset_id=$inbound_scene_asset ORDER BY node_id LIMIT 257 TIMEOUT 2s";
+    let payloads="SELECT payload_id,petal_id FROM device_payload WHERE asset_ids CONTAINS $inbound_scene_asset ORDER BY payload_id LIMIT 257 TIMEOUT 2s";
+    let mut response = db
+        .query(format!("{references}; {payloads}"))
+        .bind(("inbound_scene_asset", asset_id.clone()))
         .await?
-        .check()
-        .map_err(|e| anyhow::anyhow!("replicated asset create failed: {e}"))?;
+        .check()?;
+    let nodes: Vec<serde_json::Value> = response.take(0)?;
+    let payload_rows: Vec<serde_json::Value> = response.take(1)?;
+    if nodes.len() > 256
+        || payload_rows.len() > 256
+        || nodes
+            .iter()
+            .chain(&payload_rows)
+            .any(|reference| reference["petal_id"] != petal)
+    {
+        return Ok(ReplicatedRowOutcome::Denied);
+    }
+    guards.extend([
+        format!("IF ({references}) != $inbound_scene_nodes {{ THROW 'asset reference set changed'; }}"),
+        format!("IF ({payloads}) != $inbound_scene_payloads {{ THROW 'asset payload reference set changed'; }}"),
+        "IF array::len((SELECT asset_id FROM asset WHERE asset_id=$inbound_scene_asset)) != 0 { THROW 'asset identity appeared'; }".into(),
+        "CREATE asset CONTENT $inbound_scene_row".into(),
+    ]);
+    bindings.extend([
+        ("inbound_scene_asset".into(), serde_json::json!(asset_id)),
+        ("inbound_scene_nodes".into(), serde_json::json!(nodes)),
+        (
+            "inbound_scene_payloads".into(),
+            serde_json::json!(payload_rows),
+        ),
+        ("inbound_scene_row".into(), row),
+    ]);
+    let script = format!(
+        "BEGIN TRANSACTION; {}; COMMIT TRANSACTION;",
+        guards.join(";\n")
+    );
+    anyhow::ensure!(
+        script.len() + serde_json::to_vec(&bindings)?.len() <= 4 * 1024 * 1024,
+        "asset receive transaction exceeds 4 MiB"
+    );
+    let mut query = db.query(script);
+    for binding in bindings {
+        query = query.bind(binding);
+    }
+    query.await?.check()?;
     Ok(ReplicatedRowOutcome::Applied)
 }
 
