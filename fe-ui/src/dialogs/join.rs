@@ -27,6 +27,10 @@ struct InviteBuffer<'a> {
 }
 
 impl egui::TextBuffer for InviteBuffer<'_> {
+    fn type_id(&self) -> std::any::TypeId {
+        std::any::TypeId::of::<InviteBuffer<'static>>()
+    }
+
     fn is_mutable(&self) -> bool {
         true
     }
@@ -347,6 +351,14 @@ mod tests {
             guarded: None,
             clip: egui::Rect::EVERYTHING,
         };
+        assert_eq!(
+            egui::TextBuffer::type_id(&bounded),
+            std::any::TypeId::of::<InviteBuffer<'static>>()
+        );
+        assert_ne!(
+            egui::TextBuffer::type_id(&bounded),
+            std::any::TypeId::of::<String>()
+        );
         assert_eq!(
             egui::TextBuffer::insert_text(
                 &mut bounded,

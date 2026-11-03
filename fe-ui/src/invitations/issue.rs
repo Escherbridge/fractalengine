@@ -198,7 +198,6 @@ impl IssueState {
             fe_runtime::messages::EntityType::Verse => "verse",
             fe_runtime::messages::EntityType::Fractal => "fractal",
             fe_runtime::messages::EntityType::Petal => "petal",
-            _ => return None,
         };
         Some(fe_runtime::qa_invitation::TransferMetadata {
             authority: issued.source.authority.clone(),

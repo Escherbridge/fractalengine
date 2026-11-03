@@ -425,6 +425,11 @@ The Join editor wraps egui's TextBuffer to enforce the UTF-8 byte ceiling, since
 char_limit counts Unicode scalar values. Oversized insertions are refused as a whole;
 oversized externally prefilled buffers are cleared before rendering and cannot submit.
 
+The wrapper's required egui0.33.3 type_id identifies InviteBuffer with erased borrow
+lifetimes, following the pinned borrowed-buffer implementations. It never reports String's
+identity: identifying as an unguarded buffer would be incorrect for downcasting consumers.
+Insertion and deletion continue through the guarded wrapper methods.
+
 Its actual TextEdit min_size uses the shared logical/physical target floor; interact_size alone
 does not size egui text editors. The existing Join journey reads the native response geometry.
 
