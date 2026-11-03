@@ -44,6 +44,30 @@ required. The source investigation is `.omc/research/qa-rich-data-simulation-pla
    Hierarchy mutations require stored authorization and an atomic cascade; temporarily disabled controls do not
    constitute final acceptance of the requested deletion workflow.
 
+## Selection and Petal groups extension
+
+The tree, right Inspector and viewport tools share NodeManager's selected set and active primary object.
+Plain click replaces, Ctrl/Cmd toggles and Shift selects a visible range; active-Petal navigation clears
+selection. Row glyphs follow text size with thin strokes, retaining accessible hit targets. Primary,
+additional, partial-group and navigation-path states remain distinguishable from chosen icon colors.
+
+Reuse existing Petal visibility groups as nonowning many-to-many collections. New groups use fresh stable
+IDs, preserve legacy IDs and retain their objects on deletion. Creating a group from selection commits
+the registry and all memberships atomically after current authorization and target validation. Group
+selection reports hidden or unavailable members that were excluded.
+
+The Inspector shows the selected count, primary, common values and mixed values. Primary-only data such
+as a single object's history is explicitly labeled. Tools expose the common capability intersection;
+unsupported mixed operations refuse as a whole. Supported group transformations use an explicit shared
+selection-center pivot, capture all original poses and versions once, restore all on cancellation, and
+commit atomically with one Undo action. Paths and derived stamps require their own truthful adapters.
+Existing group commands have an unmapped replication gap; local success cannot establish peer sharing.
+
+History playback exposes completed saves. Individual field audit facts remain available, but an interior
+atomic-save cut returns no reconstructed state and points to the completed boundary. Explicit validated
+batch identities distinguish adjacent saves even when timestamps match. Malformed tagged baselines
+and incomplete groups fail closed. See decision ledger D-QA-017 through D-QA-019.
+
 ## Independent gold scenario
 
 Alpha/Beta/Gamma carry nested calibration and metadata. Raw readings arrive in timestamp order T0,T2,T1. Alpha's

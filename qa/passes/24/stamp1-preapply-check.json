@@ -1,0 +1,13 @@
+{
+  "measured_draft_values": {
+    "Selected stamp X scale multiplier": 1.2,
+    "Selected stamp Y scale multiplier": 0.8,
+    "Selected stamp Z scale multiplier": 1.4,
+    "Selected stamp yaw in degrees": 30.0,
+    "Selected stamp distance along path in meters": 8.0
+  },
+  "button_enabled": true,
+  "history_unchanged_before_apply": true,
+  "actual_ecs_unchanged_before_apply": true,
+  "source_ui_sha256": "37dafbe51ac7cfab509eeafc2f3fdcae37facd07e42e5a8eec5007b9abdf73b1"
+}

@@ -1,0 +1,40 @@
+{
+  "prospective_position_passed": true,
+  "component_abs_errors": [
+    1.058321745794899e-07,
+    0.0,
+    7.031477355923244e-08
+  ],
+  "component_abs_tolerance": 0.0001,
+  "actual_pose": {
+    "position": [
+      -3.0023653507232666,
+      0.0,
+      -3.097015142440796
+    ],
+    "rotation": [
+      0.0,
+      0.2588190734386444,
+      0.0,
+      0.9659258723258972
+    ],
+    "scale": [
+      1.2000000476837158,
+      0.800000011920929,
+      1.399999976158142
+    ]
+  },
+  "scale_and_rotation_unchanged": true,
+  "owning_path_response_unchanged": true,
+  "baseline_and_previous_save_facts_unchanged": true,
+  "current_version": 7,
+  "new_batch_versions": [
+    5,
+    6,
+    7
+  ],
+  "new_batch_id": "ui-stamp-save-01M6FP4PCAN7N40SC11P0JZ529",
+  "single_explicit_apply": true,
+  "replay7_matches_stored_override": true,
+  "qualification": "Live old-stage API still exposes interior batch cuts; independently approved read-side boundary repair is not installed in this process. Replay is stored override data, not actual derived ECS pose."
+}

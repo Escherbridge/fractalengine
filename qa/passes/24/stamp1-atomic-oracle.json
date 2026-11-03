@@ -1,0 +1,59 @@
+{
+  "node_id": "01M6EWYT81M0RT4JTTEYN09D5Z#inst-0",
+  "initial_stored_row": {
+    "created_at": "2026-11-03T02:27:33.698853800+00:00",
+    "display_name": "01M6EWYT81M0RT4JTTEYN09D5Z #0",
+    "edit_seq": 0,
+    "elevation": 0.0,
+    "id": "node:b7f0vf8ffmm0udcstemm",
+    "interactive": true,
+    "node_id": "01M6EWYT81M0RT4JTTEYN09D5Z#inst-0",
+    "petal_id": "01M6EWQC18EZX7ZMAHHCF84611",
+    "position": {
+      "coordinates": [
+        0.0,
+        0.0
+      ],
+      "type": "Point"
+    },
+    "properties": {
+      "instance_index": 0,
+      "node_kind": "stamp",
+      "owning_path_id": "01M6EWYT81M0RT4JTTEYN09D5Z",
+      "path_id": "01M6EWYT81M0RT4JTTEYN09D5Z"
+    },
+    "rotation": [
+      0.0,
+      0.0,
+      0.0,
+      1.0
+    ],
+    "scale": [
+      1.0,
+      1.0,
+      1.0
+    ]
+  },
+  "scale_multiplier": [
+    1.2,
+    0.8,
+    1.4
+  ],
+  "yaw_degrees": 30.0,
+  "arc_m": 8.0,
+  "expected_rendered_position": [
+    3.0,
+    0.0,
+    -3.0
+  ],
+  "expected_rendered_rotation_xyzw": [
+    0.0,
+    0.25881904510252074,
+    0.0,
+    0.9659258262890683
+  ],
+  "position_basis": "first straight segment [-5,0,-3] to [5,0,-3], arc8 at world_scale1",
+  "float_tolerance": 1e-06,
+  "declared_before_input_claim": true,
+  "stored_projection_trs_is_not_rendered_pose": true
+}

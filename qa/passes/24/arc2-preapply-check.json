@@ -1,0 +1,12 @@
+{
+  "draft_values": {
+    "Selected stamp X scale multiplier": 1.2,
+    "Selected stamp Y scale multiplier": 0.8,
+    "Selected stamp Z scale multiplier": 1.4,
+    "Selected stamp yaw in degrees": 30.0,
+    "Selected stamp distance along path in meters": 2.0
+  },
+  "history_unchanged": true,
+  "ecs_unchanged": true,
+  "prospective_oracle_sha256": "798cbe8b795a8a7ade9eab572c9c72fe868272f13e16bc703886e70b15e0b131"
+}

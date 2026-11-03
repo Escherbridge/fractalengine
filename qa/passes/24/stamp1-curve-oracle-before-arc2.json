@@ -1,0 +1,165 @@
+{
+  "method": "Independent binary64 Bernstein evaluation at 16 chords per handled cubic; relative stored control offsets; Euclidean prefix lengths and linear arc interpolation. Does not call application helpers or read observed ECS pose.",
+  "source_path": "qa\\passes\\24\\path-before-stamp1.jsonl",
+  "source_sha256": "5ff63649d1dd00997b2104899dace41f2dec83f8318431723802753de1638195",
+  "controls": [
+    [
+      [
+        -5.0,
+        0.0,
+        -3.0
+      ],
+      [
+        -5.0,
+        0.0,
+        -3.0
+      ],
+      [
+        4.142507016658783,
+        0.0,
+        -3.5144957900047302
+      ],
+      [
+        5.0,
+        0.0,
+        -3.0
+      ]
+    ],
+    [
+      [
+        5.0,
+        0.0,
+        -3.0
+      ],
+      [
+        5.857492983341217,
+        0.0,
+        -2.4855042099952698
+      ],
+      [
+        5.0,
+        0.0,
+        3.0
+      ],
+      [
+        5.0,
+        0.0,
+        3.0
+      ]
+    ],
+    [
+      [
+        5.0,
+        0.0,
+        3.0
+      ],
+      [
+        -5.0,
+        0.0,
+        3.0
+      ]
+    ]
+  ],
+  "prefix_lengths": [
+    0.0,
+    0.10303914246077228,
+    0.39508100569468657,
+    0.8505146782390802,
+    1.443733232735025,
+    2.1491350293249276,
+    2.9411255946253227,
+    3.794120415669931,
+    4.68254924107736,
+    5.580862982077816,
+    6.463545355584974,
+    7.3051337940911445,
+    8.080260120886427,
+    8.763738526287147,
+    9.330786267994794,
+    9.757716354382495,
+    10.025128720252626,
+    10.232792128642199,
+    10.507003501654626,
+    10.853840603081172,
+    11.265915769628165,
+    11.7313018787587,
+    12.236263440669914,
+    12.766225722940398,
+    13.306176534855192,
+    13.840854728022263,
+    14.354847529716567,
+    14.832644732742416,
+    15.25867074232068,
+    15.617304485816284,
+    15.892892299353848,
+    16.069756562516584,
+    16.13220166629959,
+    26.13220166629959
+  ],
+  "total_length": 26.13220166629959,
+  "predeclared_next_arc2": {
+    "distance": 2,
+    "bracket_indices": [
+      4,
+      5
+    ],
+    "prefix": [
+      1.443733232735025,
+      2.1491350293249276
+    ],
+    "bracket_points": [
+      [
+        -3.5580849507823586,
+        0.0,
+        -3.072350970469415
+      ],
+      [
+        -2.8533768826309824,
+        0.0,
+        -3.1036276920785895
+      ]
+    ],
+    "weight": 0.7885814438722931,
+    "position": [
+      -3.002365244891092,
+      0.0,
+      -3.0970152127555695
+    ],
+    "component_abs_tolerance": 0.0001
+  },
+  "retrospective_arc8": {
+    "distance": 8,
+    "bracket_indices": [
+      11,
+      12
+    ],
+    "prefix": [
+      7.3051337940911445,
+      8.080260120886427
+    ],
+    "bracket_points": [
+      [
+        2.3006958582118386,
+        0.0,
+        -3.227980922572897
+      ],
+      [
+        3.075745147652924,
+        0.0,
+        -3.2170529114082456
+      ]
+    ],
+    "weight": 0.8964554316994261,
+    "position": [
+      2.9954930035660805,
+      0.0,
+      -3.2181844476066734
+    ],
+    "component_abs_tolerance": 0.0005,
+    "qualification": "Computed after observing arc8; explains curved fixture geometry and is not a prospective gold oracle."
+  },
+  "superseded_oracle": {
+    "path": "qa/passes/24/stamp1-atomic-oracle.json",
+    "issue": "Original arc8 position incorrectly assumed the first segment was straight; preserve this original artifact and do not claim its position assertion passed."
+  }
+}

@@ -358,3 +358,45 @@ that allowed in-place mutation and an unchecked second length. Narrowaff7f1b3 de
 write sharing and parses one bounded pinned buffer; re-review is pending. Manager-v2
 still needs a detached transport-free Owner-rooted proof; existing role rows are not
 portable cryptographic attestations. D-QA-016 records safe legacy reauthorization.
+
+## Completed-save playback, tree presentation and focused QA24/25
+
+Independent source review approved5f981b9f/3c359640 after correction08f754e1.
+The reader resolves explicit node+batch identity outside page boundaries, validates
+bounded contiguous individually authorized facts and exact final markers, and
+returns no state for interior or malformed cuts. Selected tagged baselines pass
+the same validator before reconstruction. Untagged history stays unchanged.
+The native browser groups audit rows and steps through completed boundaries;
+exact manual interior requests retain the requested version and explain refusal.
+Main3483a868/51129485/7beb44d6 integrate these reviewed changes; no execution yet.
+
+Independent presentation review approved8566bde8, main9b43e133. Text-sized icons
+use one1.25-point stroke inside unchanged targets. Primary/additional/partial row
+projections expose explicit accessible selection descriptions and full names.
+Current callers still project singular authority; this is not multi-selection.
+Live narrow/color/keyboard verification remains required.
+
+P2P dormant typed adapter3a957a5a passed separate authority review. It fences the
+actual signer, Owner or active delegated Manager proof, complete current manifest
+and ancestry, committed grant HLC and explicit post-grant unconfirmed outcome.
+Foreign readiness-chain evidence is separate from active local issuance proof.
+Production activation and paired runtime acceptance remain separate gates.
+
+QA24/25 evidence was authored by the main app owner and passed independent review.
+Its qualified oracle, per-field facts, timeout, corrected driver refusals, native
+page/history/refusal captures and exact cleanup are recorded in each pass's notes
+and verdict. These focused passes do not satisfy full coverage or convergence.
+
+The independent reviewer recomputed all166 inventoried hashes,225 parsed records,
+raw stopped log hashes/counters and exact cleanup receipts, independently rebuilt
+the curved arc2 oracle, checked the pre-Apply hash binding and viewed seven PNGs.
+The wrong original straight oracle remains invalid, and the old interior replay
+gap remains distinct from database transaction atomicity. QA24 logs16WARN/1ERROR,
+QA25 logs11WARN/1ERROR, and no Rust panic are explicitly retained.
+
+Separate activation review approved129a193e/c79c7cf2. Manager finalization follows
+actual native/role/hierarchy readiness, matching receipts require another native
+probe, accepted commands are not replayed, and fresh QA consumption repeats exact
+typed current authority preparation. Source approval does not establish paired
+runtime success. New command/reply classifiers, lock dependency edges and newer
+main forms/reset/observer/startup seams require careful integration review.

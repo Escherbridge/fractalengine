@@ -4,8 +4,8 @@ date: 2026-11-01
 status: in_progress
 source: ./handoff-20261101-qa-chain.md
 current_writer: /root
-current_slice: QA22/23 focused evidence reviewed; stage91d reproduced stamp numeric crash; observation and context-lock fixes reviewed and integrated e07af7f6; canonical stamp reads/baseline and P2P transfer corrections isolated
-parallel_code_worktrees: Canonical stamp reads and initial history; P2P token snapshot re-review then Manager-v2
+current_slice: QA24/25 independently reviewed; sealed 9b43 stage live in QA26 with completed-save API and native Inspector checks passing; compact tree verified at three sizes and two extra scales
+parallel_code_worktrees: Checked multi-object batch storage; selection/groups/Inspector/tools; P2P Manager production activation
 ---
 
 # QA chain continuation
@@ -33,7 +33,44 @@ Starting HEAD: `5bc2aa0`. Existing H3 files are preserved and continued.
 
 ## Current acceptance state
 
-### Latest checkpoint - QA23 crash fixed in source, next replay pending
+### Latest checkpoint - focused QA24/25 succeeded with explicit qualifications
+
+- QA24 sealed162d completed all five stamp numeric drafts and two explicit Saves without
+  the earlier crash. Fresh canonical properties and scoped actor baselinev1 succeed;
+  the old Stamp3 postcrash row is unchanged. Drafts leave history and actual ECS unchanged.
+- The original arc8 oracle incorrectly assumed a straight first segment. It is retained
+  and not counted as passing. A separate binary64 Bernstein/chord calculation was frozen
+  before the arc2 edit; actual ECS error is at most1.06e-7m against tolerance1e-4m.
+  Scale/yaw, the original Path response and prior history prefix remain unchanged.
+- Saves retain field audit facts2..4 and5..7, with distinct explicit batch IDs. Old-stage
+  interior replay returns logical intermediate values. Reviewed completed-save playback
+  and malformed-baseline guards are main3483a868/51129485/7beb44d6; live proof pending.
+- Leaving for PetalA clears selection/editor context and produces no foreign stored
+  path/stamp rows. Reentry restores the exact selected rendered pose and persisted row/history.
+  The click applied but wait30 exceeded the input deadline during terrain loading; it
+  was not repeated. Whole-world duplicate ECS census is still unproved.
+- QA25 same-stage restart preserves the complete saved stamp row/history. Real native
+  page1 and page2 captures, Back, Forward, Reload and guarded third-link refusal succeed.
+  A following native capture still shows page2; closing the actual Portal makes the
+  fixture surface refuse404. Permit expiry and race/negative matrices remain open.
+- Both focused verdicts passed independent evidence review. Full stopped stdout is
+  QA24:16WARN/1ERROR and QA25:11WARN/1ERROR; no Rust panic. The24 input timeout and25
+  deliberate native refusal remain explicit. Eight recorded app identities per lifetime
+  and both helper identities are absent. The previous launch wrapper is closed.
+- Independently reviewed compact tree8566 is main9b43e133. Multiple selection is not
+  supplied by that visual slice. D-QA-017..019 and the rich-data spec now require shared
+  selection/Inspector/tools, atomic group edits and one Undo; two isolated authors work
+  on checked batch storage and native interaction. P2P typed adapter3a is source-approved;
+  production activation129a/c79c also passed separate source review; paired runtime remains.
+- Sealed9b43 built without warnings in319.2s and is live as root92980 inQA26, no helper.
+  Completed1/4/7 replay, no-state interior2/3/5/6, one-fact pagination, native refusal/CTA,
+  Step4-to7-to4 and Play-to7 pass focused checks. Stored facts and live pose stay unchanged.
+  Tree captures at1280/1024/1600 and.75/2scales show thin glyphs and clear primary row;
+  narrow measured layout has no violations, with coverage gaps still explicit.
+  QA26 evidence review is pending. No integrated tests, FULL catalog,
+  convergence, five live UX audits, CI or tagged release acceptance is claimed.
+
+### Previous checkpoint - QA23 crash fixed in source, next replay pending
 
 - QA22 independent review approves36inputs/46records, two PNGs and all six complete
   node/history/replay responses byte-identical across restart, with exact actual asset

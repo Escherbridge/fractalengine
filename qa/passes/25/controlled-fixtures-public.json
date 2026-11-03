@@ -1,0 +1,33 @@
+﻿{
+    "origin":  "http://127.0.0.1:8890",
+    "lifetime_seconds":  1800,
+    "archive_sha256":  "26b5e723f1257657bae6fc98284d3a68632cd4e2846bbc831475f37cede23893",
+    "registry_uri":  "qa-analytic-terrain@1.0.0",
+    "mode":  "normal",
+    "prepared_with":  {
+                          "stage":  "C:\\Users\\atooz\\Programming\\fractalengine-workspace\\fractalengine\\.qa\\stage\\162d5496-20261102192105950",
+                          "verification":  "RequireSealed with publisher pin",
+                          "helper_sha256":  "46F09A5B49695BA0223F14C74843BB35D33132EB34642F9301B07D28015C1382"
+                      },
+    "instance_dir":  "C:\\Users\\atooz\\Programming\\fractalengine-workspace\\fractalengine\\.qa\\run\\20261101-191920-658\\controlled-fixtures\\cf0982f70249474b9220c5ad79d5d6a5",
+    "process_identity":  {
+                             "pid":  66664,
+                             "start_ticks":  "639292726564087740",
+                             "exe_path":  "C:\\Program Files\\Python312\\python.exe"
+                         },
+    "descendant_identities":  [
+                                  {
+                                      "pid":  12792,
+                                      "start_ticks":  "639292726564695284",
+                                      "exe_path":  "C:\\Windows\\system32\\conhost.exe"
+                                  }
+                              ],
+    "python_exe":  "C:\\Program Files\\Python312\\python.exe",
+    "web_url":  "http://127.0.0.1:8890/web/one",
+    "available_downloads":  "P2P advertisement fixture required; HTTP registry is a separate route",
+    "run_dir":  "C:\\Users\\atooz\\Programming\\fractalengine-workspace\\fractalengine\\.qa\\run\\20261101-191920-658",
+    "web_policy":  "Loopback remains refused by production Portal policy; requires separately reviewed exact-origin QA allowance",
+    "instance":  "cf0982f70249474b9220c5ad79d5d6a5",
+    "schema":  "fe-qa-controlled-fixtures-v1",
+    "archive_path":  "C:\\Users\\atooz\\Programming\\fractalengine-workspace\\fractalengine\\.qa\\run\\20261101-191920-658\\controlled-fixtures\\cf0982f70249474b9220c5ad79d5d6a5\\registry.hexon"
+}
