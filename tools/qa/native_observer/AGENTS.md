@@ -146,6 +146,11 @@ The compiler subprocess receives the verified installer directory on PATH becaus
 VsDevCmd invokes vswhere by name. The build script restores its prior process
 PATH in finally and preserves NoDefaultCurrentDirectoryInExePath; no user or
 machine environment setting is changed.
+Compiler lines go to the host stream so stage.ps1's manifest collection cannot
+hide diagnostics. SDK VSCMD_DEBUG is absent only during the compiler subprocess
+to prevent environment-log generation; the caller's value is restored afterward.
+The lean Windows header requires an explicit ole2.h include before UIAutomation.h
+so SDK interface and OLE Automation declarations exist before UIA forward types.
 No observer command compiles or uses an unstaged arbitrary helper.
 
 `launch.ps1 -NativeObserver -DisableSyntheticInput` creates a fresh bootstrap

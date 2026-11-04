@@ -23,11 +23,14 @@ $manifest = Join-Path $PSScriptRoot 'worker.manifest'
 $source = Join-Path $PSScriptRoot 'worker.cpp'
 $command = 'call "' + $vcvars + '" x64 10.0.22621.0 >nul && cl.exe /nologo /std:c++20 /MT /EHsc /W4 /utf-8 /permissive- /D_WIN32_WINNT=0x0A00 /DUNICODE /D_UNICODE "' + $source + '" /Fo"' + $object + '" /Fe"' + $exe + '" /link /SUBSYSTEM:CONSOLE /MANIFEST:EMBED /MANIFESTINPUT:"' + $manifest + '" ole32.lib oleaut32.lib uiautomationcore.lib user32.lib advapi32.lib bcrypt.lib dwmapi.lib'
 $nativeBuildPreviousPath = $env:Path
+$nativeBuildPreviousDebug = $env:VSCMD_DEBUG
 try {
     $env:Path = (Split-Path -Parent $vswhere) + ';' + $nativeBuildPreviousPath
-    & $env:ComSpec /d /s /c $command
+    Remove-Item Env:VSCMD_DEBUG -ErrorAction SilentlyContinue
+    & $env:ComSpec /d /s /c $command | ForEach-Object { Write-Host $_ }
 } finally {
     $env:Path = $nativeBuildPreviousPath
+    $env:VSCMD_DEBUG = $nativeBuildPreviousDebug
 }
 if ($LASTEXITCODE -ne 0 -or -not (Test-Path -LiteralPath $exe)) { throw 'Native helper build failed' }
 $sourceLines = foreach ($name in @('build.ps1', 'worker.cpp', 'worker.manifest', 'worker_protocol.hpp')) {

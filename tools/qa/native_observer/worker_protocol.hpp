@@ -8,6 +8,7 @@
 #define NOMINMAX
 #endif
 #include <windows.h>
+#include <ole2.h>
 #include <bcrypt.h>
 #include <UIAutomation.h>
 #include <algorithm>
