@@ -16,6 +16,7 @@ impl ResponseExt for egui::Response {
     fn observed(self, ui: &egui::Ui) -> Self {
         crate::ui_shell::layout_policy::record_response(ui, &self);
         crate::native_accessibility::record(ui, &self);
+        crate::native_accessibility::surface::observe(ui.ctx(), &self);
         self
     }
 

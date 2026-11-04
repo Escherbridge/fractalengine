@@ -111,6 +111,7 @@ impl FileDialogs {
         &self,
         request: FileDialogRequest<'_>,
     ) -> Result<Option<DialogPath>, DialogFailure> {
+        let _surface = crate::native_accessibility::surface::NativeDialog::enter();
         self.0.choose(request)
     }
     pub fn lease_path(

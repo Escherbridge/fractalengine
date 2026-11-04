@@ -321,6 +321,7 @@ impl InspectorFormState {
 
     /// Change tabs and discard API secrets and pending ownership on exit.
     pub fn set_active_tab(&mut self, tab: InspectorTab) {
+        if self.active_tab != tab { crate::native_accessibility::surface::transition(); }
         self.active_tab = tab;
         if tab != InspectorTab::ApiAccess {
             self.generated_api_token = None;

@@ -102,3 +102,13 @@ VIS-001 source correction is independently approved and integrated from isolated
 header and bounded text. Review: reviews/hierarchy-card-source-review.md. A fresh
 production build and actual screenshot/action matrix are still pending; VIS-001
 remains open. The new visual-checklist.md records the required inspection states.
+
+
+The corrected native A2 witness (9902 plus5a51daa1) has independent functional,
+security and exact integration-preservation approval. The integrated index keeps
+26/27 full source blobs exact; the host documentation retains all main content
+plus the exact new suffix. Four source blockers are addressed. Compilation,
+actual native delivery/publication/lifecycle, helper/navigation/selected-Inspector
+profiles and trustworthy capture are still pending. No WGC success is claimed.
+Both focused visual runs are stopped; all16 recorded identities were checked
+absent. QA34/35 packets are frozen for independent evidence review.

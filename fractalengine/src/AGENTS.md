@@ -1854,3 +1854,12 @@ limits, lifecycle and authored existing-journey coverage.
 qa_debug_bridge's AssetAuditPending owns at most one metadata read. Existing QA current-context and same-frame navigation gates admit it; the owner additionally captures cursor identities and NavigationManager intent_revision. Submission uses bounded DB try_send without a generic blocking API DB round trip. Each host poll refuses closed/expired/navigation-changed/out-of-scope owners, then matches only SceneAssetPublicationRead with the exact nonce and expected node/operation shape. Foreign/wrong-family/late results never consume a newer owner. No native review/adoption state is read or changed, and successful DTO conversion performs no scene projection or demand enqueue.
 
 The DB enforces fresh stored caller/local Owner and full native-state fences; this host owner is correlation/lifetime control, not authorization. The private eight-second deadline survives both queued hops. A timed-out read can finish harmlessly on the single DB worker but its late reply has no live slot. Audit metadata is not file, render, peer delivery or local-history proof.
+
+
+## Native window/context observation witness
+
+native_window_witness owns the actual retained HWND property and completed AccessKit
+root identity/status, using native_accessibility's narrow read-only ownership seam.
+It has no operator input, helper, capture or HTTP/role authority. UI surface metadata
+only supports the controlled empty Properties Inspector profile; any selected-object
+Inspector still needs its separate audit. See native_window_witness/AGENTS.md.

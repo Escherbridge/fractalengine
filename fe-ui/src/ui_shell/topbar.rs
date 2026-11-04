@@ -486,6 +486,7 @@ pub fn render_close_confirmation(
     let Ok(ctx) = contexts.ctx_mut() else {
         return;
     };
+    crate::native_accessibility::surface::popup(ctx);
     egui::Modal::new(egui::Id::new("close-fractalengine-confirmation")).show(ctx, |ui| {
         ui.heading("Close FractalEngine?");
         ui.label("Close this window and end the current session?");
@@ -624,6 +625,7 @@ fn help_button(ui: &mut egui::Ui, keyboard_toggle: bool) {
         .id(id)
         .close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside)
         .show(|ui| {
+            crate::native_accessibility::surface::popup(ui.ctx());
             ui.set_max_width(420.0_f32.min((ui.ctx().viewport_rect().width() - 32.0).max(160.0)));
             egui::ScrollArea::vertical().max_height((ui.ctx().viewport_rect().height() - 100.0).max(120.0)).show(ui, |ui| {
                 ui.heading("Keyboard and pointer controls");

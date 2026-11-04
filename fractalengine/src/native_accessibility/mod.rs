@@ -170,7 +170,47 @@ fn unique_context(
     actual
 }
 
+#[derive(SystemParam)]
+pub(super) struct Ownership<'w, 's> {
+    windows: Query<'w, 's, Entity, (With<PrimaryWindow>, With<Window>)>,
+    contexts: Contexts<'w, 's>,
+    handlers: Res<'w, WinitActionRequestHandlers>,
+    adapter: Res<'w, Adapter>,
+    held: Res<'w, DetachedHandler>,
+    product: Product<'w>,
+}
+
+pub(super) struct OwnedRoot {
+    pub window: Entity,
+    pub context: Entity,
+    pub egui: bevy_egui::egui::Context,
+    handler: Handler,
+    pub guard: ui::Guard,
+}
+
+impl OwnedRoot {
+    pub fn same_lifetime(&self, other: &Self) -> bool {
+        self.window == other.window && self.context == other.context && self.egui == other.egui
+            && Arc::ptr_eq(&self.handler, &other.handler)
+    }
+}
+
+impl Ownership<'_, '_> {
+    pub fn current(&mut self) -> Option<OwnedRoot> {
+        let window = self.windows.single().ok()?;
+        let entity = self.contexts.unique(window)?;
+        let handler = self.handlers.get(&window).or_else(|| self.held.0.as_ref()
+            .filter(|(held, _)| *held == window).map(|(_, handler)| handler))?;
+        let (_, _, mut context, _, _, _, _, _) = self.contexts.contexts.get_mut(entity).ok()?;
+        let ctx = context.get_mut();
+        if !self.adapter.matches(window, entity, ctx, handler) { return None; }
+        Some(OwnedRoot { window, context: entity, egui: ctx.clone(), handler: handler.clone(),
+            guard: self.product.guard(ctx) })
+    }
+}
+
 pub fn install(app: &mut App) {
+    crate::native_window_witness::install(app);
     app.init_resource::<Adapter>()
         .init_resource::<DetachedHandler>()
         .add_systems(
@@ -191,6 +231,7 @@ pub fn install(app: &mut App) {
 }
 
 pub fn retire(world: &mut World) {
+    crate::native_window_witness::retire(world);
     if let Some(mut adapter) = world.get_resource_mut::<Adapter>() {
         adapter.quarantine();
     }

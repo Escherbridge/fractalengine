@@ -132,6 +132,7 @@ impl Target<'_> {
 }
 
 fn menu(ui: &mut egui::Ui, target: Target<'_>, can_edit: bool, command: &mut Option<Command>) {
+    crate::native_accessibility::surface::popup(ui.ctx());
     ui.spacing_mut().interact_size.y = 24.0_f32.max(20.0 / ui.ctx().pixels_per_point());
     ui.add(egui::Label::new(egui::RichText::new(target.name).strong()).truncate())
         .on_hover_text(target.name);

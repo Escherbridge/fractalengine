@@ -345,6 +345,7 @@ pub(crate) fn extend_owned_input_journey() {
         "the adapter does not rewrite physical modifier state"
     );
     extend_scheduled_lifecycle_journey();
+    crate::native_window_witness::journey::extend_existing_journey();
 }
 
 // The pinned SDK poll is private; this fixture uses its exact public-map drain boundary.

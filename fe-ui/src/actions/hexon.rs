@@ -292,6 +292,7 @@ pub(crate) fn set_render_override(
 
 pub(crate) fn manifest_open(ui_mgr: &mut UiManager, petal_id: String, petal_name: String, scope: Option<String>) {
     bevy::log::info!("PetalManifest: open dialog for petal {petal_id} ({petal_name})");
+    crate::native_accessibility::surface::transition();
     ui_mgr.active_dialog = ActiveDialog::PetalManifest {
         petal_id,
         petal_name,

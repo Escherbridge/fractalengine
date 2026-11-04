@@ -87,3 +87,13 @@ test sweep and real native UIA/Viewer/Editor acceptance before any observer uses
 The upstream ActionRequest has no enqueue timestamp or operation nonce. Its age
 before host intake cannot be proved; the 250ms bound starts at actual host admission,
 not OS submission. No input-consumption acknowledgement is invented from this bound.
+
+## Read-only native root ownership
+
+Ownership is a host-private read-only SystemParam seam for the separate actual-HWND
+witness. It calls the same unique_context validator, current Product guard and exact
+Adapter matches predicate used by ordinary input binding. A mapped or detached handler
+must still match the live actual Context/handler; quarantine cannot produce ownership.
+It neither exposes mutable adapter state nor changes queue admission/restoration. The
+window witness is installed/retired beside this adapter; no helper/capture action is
+added by the seam. See ../native_window_witness/AGENTS.md.

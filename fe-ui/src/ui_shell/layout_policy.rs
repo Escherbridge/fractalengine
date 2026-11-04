@@ -218,6 +218,7 @@ pub fn bounded_window<'a>(
     ctx: &egui::Context,
     title: impl Into<egui::WidgetText>,
 ) -> egui::Window<'a> {
+    crate::native_accessibility::surface::popup(ctx);
     let screen = ctx.viewport_rect();
     egui::Window::new(title)
         .constrain_to(screen.shrink(8.0))

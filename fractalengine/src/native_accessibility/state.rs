@@ -47,6 +47,11 @@ impl Adapter {
             .is_some_and(|owner| owner.window == entity)
     }
 
+    pub(super) fn matches(&self, window: Entity, context: Entity, egui: &egui::Context, handler: &Handler) -> bool {
+        self.owner.as_ref().is_some_and(|owner| owner.window == window && owner.context == context
+            && owner.egui.as_ref() == Some(egui) && Arc::ptr_eq(&owner.handler, handler))
+    }
+
     pub fn owned_handler(&self) -> Option<(Entity, Handler)> {
         self.owner
             .as_ref()
@@ -80,12 +85,7 @@ impl Adapter {
         egui: &egui::Context,
         handler: &Handler,
     ) {
-        if self.owner.as_ref().is_some_and(|owner| {
-            owner.window == window
-                && owner.context == context
-                && owner.egui.as_ref() == Some(egui)
-                && Arc::ptr_eq(&owner.handler, handler)
-        }) {
+        if self.matches(window, context, egui, handler) {
             return;
         }
         self.clear();

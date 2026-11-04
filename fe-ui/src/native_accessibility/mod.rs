@@ -4,6 +4,7 @@ mod confirmation;
 #[cfg(test)]
 pub(crate) mod journey;
 mod snapshot;
+pub mod surface;
 
 use bevy_egui::egui::{self, accesskit as ak};
 use std::{
@@ -26,6 +27,8 @@ pub struct Guard {
     selection: u64,
     role: Option<fe_database::RoleLevel>,
     ready: bool,
+    capture_view: bool,
+    capture_labels_clear: bool,
 }
 
 pub fn product_guard(
@@ -51,6 +54,9 @@ pub fn product_guard(
         access: manager.scene_access_generation(),
         selection: nodes.generation(),
         role: role.role,
+        capture_view: role.role.is_some_and(|role| role.can_view())
+            && !manager.scene_access_blocked(),
+        capture_labels_clear: path.editing_track_id.is_none() || path.points.is_empty(),
         ready: matches!(ui.active_dialog, crate::dialogs::ActiveDialog::None)
             && !topbar.close_pending
             && modal.disabled_panels.is_empty()
@@ -120,6 +126,7 @@ pub fn activate(ctx: &egui::Context) {
 }
 
 pub fn retire(ctx: &egui::Context) {
+    surface::retire(ctx);
     strip_requests(ctx);
     ctx.data_mut(|data| data.remove::<Shared>(key()));
 }

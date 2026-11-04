@@ -18,6 +18,7 @@ mod api_endpoint;
 mod gpx_bridge;
 mod input_bridge;
 mod native_accessibility;
+mod native_window_witness;
 mod plugin_bridge;
 mod panic_log;
 mod qa_a11y_timing;

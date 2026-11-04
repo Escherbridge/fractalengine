@@ -519,6 +519,7 @@ pub(crate) fn render_preview_readout_overlay(
     if !terrain_tools_active {
         return;
     }
+    crate::native_accessibility::surface::popup(ctx);
     egui::Area::new(egui::Id::new("terrain_preview_readout"))
         .anchor(egui::Align2::RIGHT_BOTTOM, egui::vec2(-320.0, -48.0))
         .show(ctx, |ui| {

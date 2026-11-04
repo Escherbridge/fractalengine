@@ -819,6 +819,7 @@ impl UiManager {
     }
 
     fn replace_dialog(&mut self, dialog: ActiveDialog) {
+        crate::native_accessibility::surface::transition();
         self.dialog_generation = self.dialog_generation.wrapping_add(1);
         self.join_input.invalidate();
         self.join_flow.cancel();
@@ -1055,6 +1056,7 @@ fn open_portal(
 ) -> Option<url::Url> {
     match portal::compute_open_portal(node_mgr, url) {
         portal::OpenPortalOutcome::Navigate(new_state, parsed) => {
+            crate::native_accessibility::surface::native_overlay_unproved();
             bevy::log::info!("Portal: forwarding Navigate for URL: {parsed}");
             ui_mgr.portal = new_state;
             ui_mgr.portal_feedback = portal::PortalFeedback::opening();

@@ -170,6 +170,7 @@ fn footer_actions(
         .close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside)
         .layout(egui::Layout::top_down(egui::Align::Min))
         .show(|ui| {
+            crate::native_accessibility::surface::popup(ui.ctx());
             bounded_details(ui, |ui| {
                 ui.heading("Status details");
                 if let Some(counts) = details.counts {
@@ -208,6 +209,7 @@ fn footer_actions(
             .close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside)
             .layout(egui::Layout::top_down(egui::Align::Min))
             .show(|ui| {
+                crate::native_accessibility::surface::popup(ui.ctx());
                 bounded_details(ui, |ui| {
                     ui.heading("Identity warning");
                     ui.add(egui::Label::new(message).wrap());
@@ -252,6 +254,7 @@ fn footer_actions(
         .close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside)
         .layout(egui::Layout::top_down(egui::Align::Min))
         .show(|ui| {
+            crate::native_accessibility::surface::popup(ui.ctx());
             bounded_details(ui, |ui| {
                 ui.heading("Error history");
                 let mut empty = true;

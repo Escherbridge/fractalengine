@@ -26,6 +26,7 @@ struct Harness {
     duplicate: bool,
     hide_confirmation: bool,
     layout_revision: u64,
+    positive_surface: bool,
 }
 
 impl Harness {
@@ -56,6 +57,15 @@ impl Harness {
             },
             |ctx| {
                 begin_pass(ctx, guard);
+                if self.positive_surface {
+                    super::surface::begin(ctx, guard);
+                    use super::surface::Producer;
+                    for producer in [Producer::Topbar, Producer::Status, Producer::Tree,
+                        Producer::Inspector, Producer::Results, Producer::Viewport,
+                        Producer::Transient, Producer::Data] {
+                        super::surface::enter(ctx, producer, true);
+                    }
+                }
                 egui::CentralPanel::default().show(ctx, |ui| {
                     if !self.hide_confirmation {
                         ui.push_id(self.layout_revision, |ui| {
@@ -84,6 +94,9 @@ impl Harness {
                     }
                 });
                 finish_pass(ctx, guard);
+                if self.positive_surface {
+                    super::surface::finish(ctx, guard, true);
+                }
             },
         );
         self.copies += output.platform_output.commands.iter().filter(|command| matches!(command, egui::OutputCommand::CopyText(text) if text == "ordinary native copy")).count();
@@ -357,4 +370,42 @@ pub(crate) fn extend_confirmation_journey() {
         !stage(&h.ctx, &snapshot, &request),
         "context read-model retirement cannot reuse former admissions"
     );
+    super::surface::extend_existing_journey(product_guard(&h.ctx, &h.ui, &h.nodes, &h.nav,
+        &h.tree, &h.role, &h.topbar, &h.modal, &h.path));
+
+    h.hide_confirmation = true;
+    h.positive_surface = true;
+    h.role.role = Some(fe_database::RoleLevel::Viewer);
+    h.layout();
+    let rendered = h.snapshot.as_ref().unwrap().guard();
+    let surface = super::surface::snapshot(&h.ctx, rendered).unwrap();
+    h.nav.navigate_to_petal("native-later-petal");
+    let current = product_guard(&h.ctx, &h.ui, &h.nodes, &h.nav,
+        &h.tree, &h.role, &h.topbar, &h.modal, &h.path);
+    assert!(rendered != current);
+    assert!(super::surface::snapshot(&h.ctx, current).is_none(),
+        "navigation after a completed output cannot retag its old surface");
+    assert!(complete(&h.ctx, h.update.as_ref().unwrap()).unwrap().guard() == rendered,
+        "actual completed output keeps its original Guard");
+    h.layout();
+    let rendered = h.snapshot.as_ref().unwrap().guard();
+    assert!(super::surface::snapshot(&h.ctx, rendered).is_some());
+    h.nodes.select(bevy::prelude::Entity::from_raw_u32(701).unwrap(), "native-new-primary");
+    let current = product_guard(&h.ctx, &h.ui, &h.nodes, &h.nav,
+        &h.tree, &h.role, &h.topbar, &h.modal, &h.path);
+    assert!(super::surface::snapshot(&h.ctx, current).is_none(),
+        "a new primary after annotation cannot retain completed authority");
+    assert!(surface != super::surface::snapshot(&h.ctx, rendered).unwrap());
+    h.nodes.deselect();
+    h.role.role = Some(fe_database::RoleLevel::None);
+    h.layout();
+    assert!(super::surface::snapshot(&h.ctx, h.snapshot.as_ref().unwrap().guard()).is_none(),
+        "resolved No access is not a positive capture role");
+    h.role.role = Some(fe_database::RoleLevel::Viewer);
+    h.path.editing_track_id = Some("native-label-track".into());
+    h.path.points.push(crate::gis::PathPointRow::default());
+    h.layout();
+    assert!(super::surface::snapshot(&h.ctx, h.snapshot.as_ref().unwrap().guard()).is_none(),
+        "late Background path labels remain outside the empty capture profile");
+
 }

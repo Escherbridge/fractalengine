@@ -157,12 +157,16 @@ pub fn gardener_console(
 ) -> egui::Rect {
     crate::native_accessibility::begin_pass(ctx, crate::native_accessibility::product_guard(
         ctx, ui_mgr, node_mgr, nav, hierarchy, local_role, topbar_state, modal, path_state));
+    use crate::native_accessibility::surface::{self, Producer};
+    surface::begin(ctx, crate::native_accessibility::product_guard(
+        ctx, ui_mgr, node_mgr, nav, hierarchy, local_role, topbar_state, modal, path_state));
     crate::ui_shell::layout_policy::begin_ui_pass(ctx);
     crate::ui_shell::layout_policy::apply_style(ctx);
     // Repair conditional editor state; see `panels/AGENTS.md` §numeric-boundary.
     path_editor_card::sanitize_path_editor_numeric_state(path_state);
     tool_panel::sync_stamp_editor(tool_panel,stamp_state,path_state,nav,hierarchy,local_role,petal_map.world_scale);
 
+    surface::enter(ctx, Producer::Topbar, !topbar_state.close_pending);
     // Topbar (FR-4): tool switcher, deselect, Data/Tools/Settings/Maps.
     let _ = guarded(modal, "topbar", || {
         crate::ui_shell::topbar::render_topbar(
@@ -178,6 +182,9 @@ pub fn gardener_console(
     });
     // Never guarded: hosts the persistent guard-error segment below (Q-5) —
     // if this itself were quarantined, a disabled panel's error would vanish.
+    surface::enter(ctx, Producer::Status, identity_banner.message.is_none()
+        && modal.last_error.is_none() && ui_mgr.active_notice(ctx.input(|input| input.time)).is_none()
+        && ui_mgr.error_history().next().is_none());
     status_bar::status_bar(
         ctx,
         dashboard,
@@ -192,6 +199,7 @@ pub fn gardener_console(
         node_identity,
     );
 
+    surface::enter(ctx, Producer::Tree, left_state.user_intent);
     // Left sidebar (FR-3 shell_ux_sidebar): user-sticky. The manager applies
     // `sidebar.open = user_intent` only — the old per-frame `!right_open` stomp
     // is GONE (D-A11). Selection / right-section open no longer collapse it.
@@ -213,6 +221,11 @@ pub fn gardener_console(
         )
     });
 
+    if inspector.active_tab() == crate::plugin::InspectorTab::ApiAccess { surface::credential(ctx); }
+    surface::enter(ctx, Producer::Inspector, node_mgr.selection_count() == 0
+        && inspector.active_tab() == crate::plugin::InspectorTab::Properties
+        && crate::ui_shell::right_sidebar::active_section(right_state, false, ui_mgr.portal_is_open())
+            == Some(crate::ui_shell::right_sidebar::RightSidebarSection::Inspector));
     // Each right section owns its quarantine boundary.
     crate::ui_shell::right_sidebar::render_right_sidebar(
         ctx,
@@ -244,6 +257,7 @@ pub fn gardener_console(
     );
 
 
+    surface::enter(ctx, Producer::Results, !inspector.query_results.open);
     crate::ui_shell::results_dock::render(
         ctx,
         &mut inspector.query_results,
@@ -254,6 +268,7 @@ pub fn gardener_console(
         ui_mgr,
     );
 
+    surface::enter(ctx, Producer::Viewport, nav.active_petal_id.is_some() && !ui_mgr.portal_is_open());
     let viewport_response =
         egui::CentralPanel::default()
             .frame(egui::Frame::NONE)
@@ -294,6 +309,11 @@ pub fn gardener_console(
         "transient layer must keep at most one dialog-family overlay visible"
     );
 
+    if matches!(ui_mgr.active_dialog, ActiveDialog::JoinDialog { .. } | ActiveDialog::EntitySettings { .. }) {
+        surface::credential(ctx);
+    }
+    surface::enter(ctx, Producer::Transient, matches!(ui_mgr.active_dialog, ActiveDialog::None)
+        && !visibility.toast);
     // Dialog-family layers only here (Toast is handled after `gis_panel`
     // below — see that block's comment for why the split preserves today's
     // paint order exactly).
@@ -391,6 +411,7 @@ pub fn gardener_console(
     // NOT part of `transient_order()` (only 3 variants: Dialog/ContextMenu/
     // Toast), so it renders outside that loop, but its position preserves
     // today's layering: toast always paints last/topmost.
+    surface::enter(ctx, Producer::Data, !gis_panel.open);
     let _ = guarded(modal, "gis_panel", || {
         gis_panel::render_gis_panel(
             ctx,
@@ -418,6 +439,12 @@ pub fn gardener_console(
         let _ = guarded(modal, "toast", || render_toast(ctx, ui_mgr));
     }
 
+    surface::finish(ctx, crate::native_accessibility::product_guard(
+        ctx, ui_mgr, node_mgr, nav, hierarchy, local_role, topbar_state, modal, path_state),
+        node_mgr.selection_count() == 0 && inspector.active_tab() == crate::plugin::InspectorTab::Properties
+        && !ui_mgr.portal_is_open() && !gis_panel.open && !inspector.query_results.open
+        && identity_banner.message.is_none() && modal.last_error.is_none()
+        && ui_mgr.active_notice(ctx.input(|input| input.time)).is_none());
     crate::native_accessibility::finish_pass(ctx, crate::native_accessibility::product_guard(
         ctx, ui_mgr, node_mgr, nav, hierarchy, local_role, topbar_state, modal, path_state));
     viewport_response.response.rect

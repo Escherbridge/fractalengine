@@ -373,6 +373,7 @@ pub fn render(
                                             }
                                         }
                                         response.context_menu(|ui| {
+                                            crate::native_accessibility::surface::popup(ui.ctx());
                                             if ui
                                                 .button("Copy cell")
                                                 .named(
