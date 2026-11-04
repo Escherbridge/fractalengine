@@ -45,6 +45,8 @@ reviewed slice. Historical evidence stays linked rather than rewritten.
 
 ## P3: full UX and feature coverage
 
+Use [the screenshot inspection checklist](./visual-checklist.md) for the changed hierarchy workflow and subsequent UI fixes.
+
 - [ ] VIS-001: fix the reproduced hierarchy-card Petal label wrapping one character per line at 1280x720; inspect corrected card/breadcrumb/count/menu layout and neighboring sizes/scales against evidence/hierarchy-card-wrapping-before.png.
 - [ ] Inspect actual screenshots during every changed workflow; record and fix visible clipping, overlap, wrapping, spacing, contrast, empty/black output and selection glitches before acceptance. Preserve before/after images and state/size/scale; geometry checks alone do not pass visual review.
 

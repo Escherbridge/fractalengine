@@ -95,3 +95,10 @@ The user has now replaced/started the goal. The new attached objective was read
 and matches goal-service.txt; the service reports active. The earlier usage-limit
 and replacement-refusal entries describe the preserved baseline, not current
 service status. Continue the expanded objective from this checkpoint.
+
+
+VIS-001 source correction is independently approved and integrated from isolated
+1d3297de: explicit vertical card layout, actual frame margins, measured breadcrumb
+header and bounded text. Review: reviews/hierarchy-card-source-review.md. A fresh
+production build and actual screenshot/action matrix are still pending; VIS-001
+remains open. The new visual-checklist.md records the required inspection states.

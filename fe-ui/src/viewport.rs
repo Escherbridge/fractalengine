@@ -172,35 +172,121 @@ fn bounded_browser(
     show_join: bool,
 ) -> Option<BrowserAction> {
     let mut action = None;
-    ui.scope_builder(egui::UiBuilder::new().max_rect(rect).layout(egui::Layout::top_down(egui::Align::Min)),|ui| {
-        ui.set_clip_rect(ui.clip_rect().intersect(rect));
-        ui.add(egui::Label::new(egui::RichText::new(title).heading()).truncate()).on_hover_text(title);ui.add_space(6.0);
-        if show_join && ui.add_sized([120.0,26.0],egui::Button::new("Join a verse...")).named(ui,"Join a verse from browser").clicked(){action=Some(BrowserAction::Join);}
-        let area=egui::ScrollArea::vertical().id_salt(("hierarchy_browser",browser_key)).max_height(ui.available_height().max(1.0));
-        crate::ui_shell::layout_policy::scroll(ui,title,[false,true],area,|ui| {
-            let gap=12.0;let width=ui.available_width().max(1.0);
-            let columns=((width+gap)/212.0).floor().max(1.0) as usize;
-            let card_width=((width-gap*(columns.saturating_sub(1)) as f32)/columns as f32).clamp(80.0,260.0);
-            egui::Grid::new(("hierarchy_cards",browser_key)).spacing(egui::vec2(gap,gap)).show(ui,|ui| {
-                for (index,card) in cards.iter().enumerate() {
-                    ui.push_id(card.id,|ui| {
-                    egui::Frame::NONE.fill(theme::BG_PANEL).stroke(egui::Stroke::new(1.0,theme::TEXT_DIM)).corner_radius(6.0).inner_margin(egui::Margin::same(8)).show(ui,|ui| {
-                        ui.set_width((card_width-16.0).max(48.0));
-                        ui.horizontal(|ui| {
-                            let name_width=(ui.available_width()-34.0).max(24.0);
-                            if ui.add_sized([name_width,28.0],egui::Button::new(card.name).truncate()).named(ui,format_args!("Open {} {}",card.kind_name(),card.name)).on_hover_text(format!("{}\n{}",card.name,card.id)).clicked(){action=Some(BrowserAction::Open(index));}
-                            if ui.add_sized([26.0,28.0],egui::Button::new("...")).named(ui,format_args!("Options for {} {}",card.kind_name(),card.name)).on_hover_text("View stored settings, access and ownership options").clicked(){action=Some(BrowserAction::Options(index));}
-                        });
-                        ui.label(format!("{} {}",card.count,if card.count==1 {card.noun}else{card.plural}));
+    ui.scope_builder(
+        egui::UiBuilder::new()
+            .max_rect(rect)
+            .layout(egui::Layout::top_down(egui::Align::Min)),
+        |ui| {
+            ui.set_clip_rect(ui.clip_rect().intersect(rect));
+            ui.add(egui::Label::new(egui::RichText::new(title).heading()).truncate())
+                .on_hover_text(title);
+            ui.add_space(6.0);
+            if show_join
+                && ui
+                    .add_sized([120.0, 26.0], egui::Button::new("Join a verse..."))
+                    .named(ui, "Join a verse from browser")
+                    .clicked()
+            {
+                action = Some(BrowserAction::Join);
+            }
+            let area = egui::ScrollArea::both()
+                .id_salt(("hierarchy_browser", browser_key))
+                .max_height(ui.available_height().max(1.0));
+            crate::ui_shell::layout_policy::scroll(ui, title, [true, true], area, |ui| {
+                let gap = 12.0;
+                let width = ui.available_width().max(1.0);
+                let columns = ((width + gap) / 212.0).floor().max(1.0) as usize;
+                let card_width = ((width - gap * columns.saturating_sub(1) as f32)
+                    / columns as f32)
+                    .clamp(80.0, 260.0);
+                egui::Grid::new(("hierarchy_cards", browser_key))
+                    .spacing(egui::vec2(gap, gap))
+                    .min_col_width(card_width)
+                    .max_col_width(card_width)
+                    .show(ui, |ui| {
+                        for (index, card) in cards.iter().enumerate() {
+                            if let Some(card_action) = browser_card(ui, card, index, card_width) {
+                                action = Some(card_action);
+                            }
+                            if (index + 1) % columns == 0 {
+                                ui.end_row();
+                            }
+                        }
+                        if ui
+                            .add_enabled(
+                                can_create,
+                                egui::Button::new(new_label)
+                                    .truncate()
+                                    .min_size(egui::vec2(card_width, 72.0)),
+                            )
+                            .named(ui, new_label)
+                            .on_disabled_hover_text(
+                                "Manager role at the current entry is required to create a child.",
+                            )
+                            .clicked()
+                        {
+                            action = Some(BrowserAction::Create);
+                        }
                     });
-                    });
-                    if (index+1)%columns==0 {ui.end_row();}
+                if cards.is_empty() {
+                    ui.label("This entry has no children yet.");
                 }
-                let response=ui.add_enabled(can_create,egui::Button::new(new_label).min_size(egui::vec2(card_width,72.0))).named(ui,new_label).on_disabled_hover_text("Manager role at the current entry is required to create a child.");
-                if response.clicked(){action=Some(BrowserAction::Create);}
             });
-            if cards.is_empty(){ui.label("This entry has no children yet.");}
-        });
+        },
+    );
+    action
+}
+
+fn browser_card(
+    ui: &mut egui::Ui,
+    card: &BrowserCard<'_>,
+    index: usize,
+    width: f32,
+) -> Option<BrowserAction> {
+    let mut action = None;
+    let frame = egui::Frame::NONE
+        .fill(theme::BG_PANEL)
+        .stroke(egui::Stroke::new(1.0, theme::TEXT_DIM))
+        .corner_radius(6.0)
+        .inner_margin(egui::Margin::same(8));
+    let content_width = (width - frame.total_margin().sum().x).max(1.0);
+    ui.push_id(card.id, |ui| {
+        ui.allocate_ui_with_layout(
+            egui::vec2(width, 72.0),
+            egui::Layout::top_down(egui::Align::Min),
+            |ui| {
+                frame.show(ui, |ui| {
+                    ui.set_width(content_width);
+                    ui.horizontal(|ui| {
+                        let name_width =
+                            (content_width - 26.0 - ui.spacing().item_spacing.x).max(1.0);
+                        if ui
+                            .add_sized([name_width, 28.0], egui::Button::new(card.name).truncate())
+                            .named(ui, format_args!("Open {} {}", card.kind_name(), card.name))
+                            .on_hover_text(format!("{}\n{}", card.name, card.id))
+                            .clicked()
+                        {
+                            action = Some(BrowserAction::Open(index));
+                        }
+                        if ui
+                            .add_sized([26.0, 28.0], egui::Button::new("..."))
+                            .named(ui, format_args!("Options for {} {}", card.kind_name(), card.name))
+                            .on_hover_text("View stored settings, access and ownership options")
+                            .clicked()
+                        {
+                            action = Some(BrowserAction::Options(index));
+                        }
+                    });
+                    let count = format!(
+                        "{} {}",
+                        card.count,
+                        if card.count == 1 { card.noun } else { card.plural }
+                    );
+                    ui.add(egui::Label::new(&count).truncate())
+                        .on_hover_text(count);
+                });
+            },
+        );
     });
     action
 }
@@ -224,14 +310,49 @@ impl BrowserCard<'_> {
     }
 }
 
+fn browser_body(
+    ui: &mut egui::Ui,
+    rect: egui::Rect,
+    nav: &mut NavigationManager,
+    depth: u8,
+    hierarchy: &VerseManager,
+) -> Option<egui::Rect> {
+    let header = ui.scope_builder(
+        egui::UiBuilder::new()
+            .max_rect(rect)
+            .layout(egui::Layout::top_down(egui::Align::Min)),
+        |ui| {
+            ui.set_clip_rect(ui.clip_rect().intersect(rect));
+            breadcrumbs(ui, nav, depth, hierarchy)
+        },
+    );
+    if header.inner {
+        return None;
+    }
+    let top = (header.response.rect.bottom() + 8.0).min(rect.bottom());
+    Some(egui::Rect::from_min_max(
+        egui::pos2(rect.left(), top),
+        rect.max,
+    ))
+}
+
 fn breadcrumb_button(ui: &mut egui::Ui, name: &str, id: &str, label: &str) -> bool {
-    ui.add_sized(
-        [ui.available_width().clamp(32.0, 140.0), 26.0],
-        egui::Button::new(name).truncate(),
-    )
-    .named(ui, label)
-    .on_hover_text(format!("{name}\n{id}"))
-    .clicked()
+    let text_width = ui
+        .painter()
+        .layout_no_wrap(
+            name.to_owned(),
+            egui::TextStyle::Button.resolve(ui.style()),
+            ui.visuals().text_color(),
+        )
+        .size()
+        .x;
+    let width = (text_width + 2.0 * ui.spacing().button_padding.x)
+        .clamp(32.0, 140.0)
+        .min(ui.max_rect().width());
+    ui.add_sized([width, 26.0], egui::Button::new(name).truncate())
+        .named(ui, label)
+        .on_hover_text(format!("{name}\n{id}"))
+        .clicked()
 }
 
 fn breadcrumbs(
@@ -378,19 +499,9 @@ pub fn viewport_fractal_browser(
     ui_mgr: &mut UiManager,
     local_role: &LocalUserRole,
 ) {
-    let mut changed = false;
-    ui.scope_builder(
-        egui::UiBuilder::new().max_rect(egui::Rect::from_min_size(
-            rect.min,
-            egui::vec2(rect.width(), 60.0),
-        )),
-        |ui| {
-            changed = breadcrumbs(ui, nav, 1, hierarchy);
-        },
-    );
-    if changed {
+    let Some(body) = browser_body(ui, rect, nav, 1, hierarchy) else {
         return;
-    }
+    };
     let Some(verse) = hierarchy
         .verses
         .iter()
@@ -422,7 +533,6 @@ pub fn viewport_fractal_browser(
         },
         verse.name
     );
-    let body = egui::Rect::from_min_max(rect.min + egui::vec2(0.0, 62.0), rect.max);
     match bounded_browser(
         ui,
         body,
@@ -457,19 +567,9 @@ pub fn viewport_petal_browser(
     ui_mgr: &mut UiManager,
     local_role: &LocalUserRole,
 ) {
-    let mut changed = false;
-    ui.scope_builder(
-        egui::UiBuilder::new().max_rect(egui::Rect::from_min_size(
-            rect.min,
-            egui::vec2(rect.width(), 60.0),
-        )),
-        |ui| {
-            changed = breadcrumbs(ui, nav, 2, hierarchy);
-        },
-    );
-    if changed {
+    let Some(body) = browser_body(ui, rect, nav, 2, hierarchy) else {
         return;
-    }
+    };
     let Some(verse) = hierarchy
         .verses
         .iter()
@@ -504,7 +604,6 @@ pub fn viewport_petal_browser(
         if cards.len() == 1 { "petal" } else { "petals" },
         fractal.name
     );
-    let body = egui::Rect::from_min_max(rect.min + egui::vec2(0.0, 62.0), rect.max);
     match bounded_browser(
         ui,
         body,
@@ -549,10 +648,10 @@ pub(crate) fn browser_access_render_journey() {
         name: "Long readable verse name ".repeat(8),
         fractals: vec![FractalEntry {
             id: "browser-f".into(),
-            name: "Fractal name".into(),
+            name: "Long readable fractal name ".repeat(8),
             petals: vec![PetalEntry {
                 id: "browser-p".into(),
-                name: "Petal name".into(),
+                name: "Long readable petal name ".repeat(8),
                 ..Default::default()
             }],
             ..Default::default()
@@ -568,6 +667,8 @@ pub(crate) fn browser_access_render_journey() {
     }
     let (sender, receiver) = crossbeam::channel::unbounded();
     for size in [
+        egui::vec2(180.0, 480.0),
+        egui::vec2(360.0, 480.0),
         egui::vec2(1024.0, 768.0),
         egui::vec2(1280.0, 720.0),
         egui::vec2(1920.0, 1080.0),
@@ -588,7 +689,7 @@ pub(crate) fn browser_access_render_journey() {
                              manager: &mut UiManager,
                              contents: &VerseManager| {
                 time += 1.0 / 60.0;
-                let _ = ctx.run(
+                let output = ctx.run(
                     egui::RawInput {
                         screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, size)),
                         time: Some(time),
@@ -638,6 +739,36 @@ pub(crate) fn browser_access_render_journey() {
                         });
                     },
                 );
+                if !contents.verses.is_empty() {
+                    let count = ["1 fractal", "1 petal", "0 nodes"][depth];
+                    let text = output
+                        .shapes
+                        .iter()
+                        .find_map(|shape| match &shape.shape {
+                            egui::epaint::Shape::Text(text) if text.galley.job.text == count => {
+                                Some(text)
+                            }
+                            _ => None,
+                        })
+                        .expect("First hierarchy card paints its actual child count");
+                    assert_eq!(text.galley.rows.len(), 1, "Counts stay on one readable row");
+                    let observed = crate::ui_shell::layout_policy::observations(&ctx);
+                    let options = observed
+                        .controls
+                        .iter()
+                        .find(|control| {
+                            control.clickable && (control.rect.width() - 26.0).abs() < 0.1
+                        })
+                        .expect("First card retains its Options target");
+                    assert!(
+                        text.pos.y >= options.rect.bottom(),
+                        "Child count belongs below the card actions, never beside them"
+                    );
+                    assert!(
+                        text.pos.x >= 0.0 && text.pos.x + text.galley.size().x <= size.x,
+                        "Count stays inside the available browser width"
+                    );
+                }
                 crate::ui_shell::layout_policy::observations(&ctx)
             };
             frame(vec![], &mut nav, &mut manager, &hierarchy);

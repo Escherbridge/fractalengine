@@ -1403,6 +1403,16 @@ pending ownership, generated token/client and reveal state synchronously.
 
 viewport.rs shares one bounded card renderer across Verse/Fractal/Petal browsers. Options is always visible; it opens target-bound EntityDetails and never derives target permissions from the active navigation role. Creation remains advisory Manager-gated at the current parent and is authorized again by the DB. Stable scroll/grid IDs use hierarchy identity rather than mutable names/counts; per-card IDs preserve focus across list updates. Human ancestor buttons call NavigationManager methods and stop rendering the old branch immediately after a route change. Empty Verse browsing offers the existing Join flow. Counts name the actual hierarchy kind and peer counts remain reported observations.
 
+Each card owns an explicit vertical child layout before drawing its frame; Grid
+cells otherwise inherit horizontal flow and can squeeze the count beside the
+name/options row. Card width includes the frame's actual margins, and count/name
+text truncates with full hover text. Normal widths reflow into columns; an
+extremely narrow browser can scroll horizontally to preserve the 26px Options
+target. Breadcrumb buttons use bounded natural widths, and browser content starts
+below the measured wrapped header instead of a fixed-height reservation. The
+existing render journey adds narrow widths, long names, and count-row geometry;
+these authored assertions still require the integrated sweep and live verification.
+
 Petal hints use a wrapped, backed, noninteractive Area anchored inside the viewport. Tool text reflects actual Pen/Brush/Measure behavior and the shared shortcut table. These changes do not alter picking, gimbal state or terrain calculations. Existing numeric render journey invokes the browser pointer/clip flow at three sizes; authored assertions are not execution evidence.
 
 
