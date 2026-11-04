@@ -1,0 +1,1 @@
+{"code": "no_active_verse_covered", "message": "no owner token covers the active view (no verse open, or the open verse is not owned by this node) - last refusal: not found or not permitted", "refused": true, "status": 404}

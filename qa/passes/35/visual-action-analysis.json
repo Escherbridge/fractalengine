@@ -1,0 +1,833 @@
+{
+  "schema": "fe-qa-visual-action-analysis-v1",
+  "pass_number": 35,
+  "screenshots": [
+    {
+      "record": "owner-create-card-shot.jsonl",
+      "source_path": "C:\\Users\\atooz\\Programming\\fractalengine-workspace\\fractalengine\\.qa\\run\\20261104-073857-380\\shots\\074230-784-qa35-create-card.png",
+      "file": "screenshots/create-card.png",
+      "dimensions": [
+        1280,
+        720
+      ],
+      "bytes": 259301,
+      "sha256": "18a32636a594a27c582ac8100e9fa9d2fac991da841ec58d430f5cfd2986a25a",
+      "author_image_inspected": true,
+      "independent_visual_review": "pending"
+    },
+    {
+      "record": "owner-options-card-shot.jsonl",
+      "source_path": "C:\\Users\\atooz\\Programming\\fractalengine-workspace\\fractalengine\\.qa\\run\\20261104-073857-380\\shots\\074045-290-qa35-options-card.png",
+      "file": "screenshots/options-card.png",
+      "dimensions": [
+        1280,
+        720
+      ],
+      "bytes": 243132,
+      "sha256": "d94fe5082a37caa1e60b85fb907208e1346f6cfe2fa60e9d25ee5a7334aa7cd2",
+      "author_image_inspected": true,
+      "independent_visual_review": "pending"
+    },
+    {
+      "record": "owner-scale125-1024-shot.jsonl",
+      "source_path": "C:\\Users\\atooz\\Programming\\fractalengine-workspace\\fractalengine\\.qa\\run\\20261104-073857-380\\shots\\073948-593-qa35-scale125-1024.png",
+      "file": "screenshots/scale125-1024.png",
+      "dimensions": [
+        1024,
+        720
+      ],
+      "bytes": 190890,
+      "sha256": "f2c2c7f134e00e62b695c9d74ec699991d33a621d7dbbbbe09ec4f20bdf69bb4",
+      "author_image_inspected": true,
+      "independent_visual_review": "pending"
+    },
+    {
+      "record": "owner-scale125-shot.jsonl",
+      "source_path": "C:\\Users\\atooz\\Programming\\fractalengine-workspace\\fractalengine\\.qa\\run\\20261104-073857-380\\shots\\073946-892-qa35-scale125.png",
+      "file": "screenshots/scale125.png",
+      "dimensions": [
+        1280,
+        720
+      ],
+      "bytes": 231332,
+      "sha256": "24d83a0113def28b66a06f62d0bda72d9817851f55e907c694ee3bd8f2324eca",
+      "author_image_inspected": true,
+      "independent_visual_review": "pending"
+    },
+    {
+      "record": "owner-scale200-1024-shot.jsonl",
+      "source_path": "C:\\Users\\atooz\\Programming\\fractalengine-workspace\\fractalengine\\.qa\\run\\20261104-073857-380\\shots\\073950-241-qa35-scale200-1024.png",
+      "file": "screenshots/scale200-1024.png",
+      "dimensions": [
+        1024,
+        720
+      ],
+      "bytes": 186861,
+      "sha256": "18c5f9083528811d1cec876cf9600ad589bcee30b8f1edae58389db1810e9caf",
+      "author_image_inspected": true,
+      "independent_visual_review": "pending"
+    }
+  ],
+  "layouts": [
+    {
+      "file": "owner-scale125-1024-layout.jsonl",
+      "frame": 2811,
+      "layout_pass": 2813,
+      "measured_violations": 0,
+      "unknown_count": 12,
+      "unknown_reasons": [
+        "hit_rectangle_uninstrumented"
+      ],
+      "coverage_complete": false,
+      "observed_controls": 54,
+      "observed_texts": 0,
+      "panels": {
+        "1 fractal in Genesis Verse": {
+          "intentional_scroll_content": 0,
+          "unknown": 1,
+          "violations": 0
+        },
+        "Inspector": {
+          "intentional_scroll_content": 0,
+          "unknown": 1,
+          "violations": 0
+        },
+        "window/chrome or uninstrumented region": {
+          "intentional_scroll_content": 0,
+          "unknown": 10,
+          "violations": 0
+        }
+      }
+    },
+    {
+      "file": "owner-scale125-layout.jsonl",
+      "frame": 2709,
+      "layout_pass": 2711,
+      "measured_violations": 0,
+      "unknown_count": 12,
+      "unknown_reasons": [
+        "hit_rectangle_uninstrumented"
+      ],
+      "coverage_complete": false,
+      "observed_controls": 54,
+      "observed_texts": 0,
+      "panels": {
+        "1 fractal in Genesis Verse": {
+          "intentional_scroll_content": 0,
+          "unknown": 1,
+          "violations": 0
+        },
+        "Inspector": {
+          "intentional_scroll_content": 0,
+          "unknown": 1,
+          "violations": 0
+        },
+        "window/chrome or uninstrumented region": {
+          "intentional_scroll_content": 0,
+          "unknown": 10,
+          "violations": 0
+        }
+      }
+    },
+    {
+      "file": "owner-scale200-1024-layout.jsonl",
+      "frame": 2911,
+      "layout_pass": 2913,
+      "measured_violations": 0,
+      "unknown_count": 21,
+      "unknown_reasons": [
+        "control_clip_scroll_path_uninstrumented",
+        "hit_rectangle_uninstrumented",
+        "outside_window_scroll_or_overlay_uninstrumented",
+        "overlap_layer_or_composite_unknown"
+      ],
+      "coverage_complete": false,
+      "observed_controls": 54,
+      "observed_texts": 0,
+      "panels": {
+        "1 fractal in Genesis Verse": {
+          "intentional_scroll_content": 0,
+          "unknown": 1,
+          "violations": 0
+        },
+        "Hierarchy": {
+          "intentional_scroll_content": 19,
+          "unknown": 0,
+          "violations": 0
+        },
+        "Inspector": {
+          "intentional_scroll_content": 1,
+          "unknown": 0,
+          "violations": 0
+        },
+        "window": {
+          "intentional_scroll_content": 0,
+          "unknown": 3,
+          "violations": 0
+        },
+        "window/chrome or uninstrumented region": {
+          "intentional_scroll_content": 0,
+          "unknown": 17,
+          "violations": 0
+        }
+      }
+    }
+  ],
+  "states": [
+    {
+      "file": "owner-final-state.jsonl",
+      "frame": 16492,
+      "window": {
+        "height": 720,
+        "maximized": false,
+        "minimized": false,
+        "ui_scale": 1.0,
+        "width": 1280
+      },
+      "pixels_per_point": 1.0,
+      "viewport": {
+        "h": 652.0,
+        "w": 854.40625,
+        "x": 161.59375,
+        "y": 40.0
+      },
+      "navigation": {
+        "fractal_id": null,
+        "fractal_name": "",
+        "petal_id": null,
+        "petal_name": null,
+        "verse_id": "01M6KFZEEQ116J3R9BT0BGKDTS",
+        "verse_name": "Genesis Verse"
+      },
+      "open_windows": [
+        "Inspector"
+      ],
+      "pending": {
+        "db": null,
+        "sync": null,
+        "ui_known": 0
+      },
+      "settled": true
+    },
+    {
+      "file": "owner-options-card-state.jsonl",
+      "frame": 6136,
+      "window": {
+        "height": 720,
+        "maximized": false,
+        "minimized": false,
+        "ui_scale": 1.0,
+        "width": 1280
+      },
+      "pixels_per_point": 1.0,
+      "viewport": {
+        "h": 652.0,
+        "w": 854.40625,
+        "x": 161.59375,
+        "y": 40.0
+      },
+      "navigation": {
+        "fractal_id": null,
+        "fractal_name": "",
+        "petal_id": null,
+        "petal_name": null,
+        "verse_id": "01M6KFZEEQ116J3R9BT0BGKDTS",
+        "verse_name": "Genesis Verse"
+      },
+      "open_windows": [
+        "Inspector",
+        "Entity settings",
+        "Fractal Settings \u2014 Genesis Fractal"
+      ],
+      "pending": {
+        "db": null,
+        "sync": null,
+        "ui_known": 0
+      },
+      "settled": true
+    },
+    {
+      "file": "owner-scale125-1024-state.jsonl",
+      "frame": 2751,
+      "window": {
+        "height": 720,
+        "maximized": false,
+        "minimized": false,
+        "ui_scale": 1.25,
+        "width": 1024
+      },
+      "pixels_per_point": 1.25,
+      "viewport": {
+        "h": 635.0,
+        "w": 460.78125,
+        "x": 275.0,
+        "y": 50.0
+      },
+      "navigation": {
+        "fractal_id": null,
+        "fractal_name": "",
+        "petal_id": null,
+        "petal_name": null,
+        "verse_id": "01M6KFZEEQ116J3R9BT0BGKDTS",
+        "verse_name": "Genesis Verse"
+      },
+      "open_windows": [
+        "Inspector"
+      ],
+      "pending": {
+        "db": null,
+        "sync": null,
+        "ui_known": 0
+      },
+      "settled": true
+    },
+    {
+      "file": "owner-scale125-state.jsonl",
+      "frame": 2634,
+      "window": {
+        "height": 720,
+        "maximized": false,
+        "minimized": false,
+        "ui_scale": 1.25,
+        "width": 1280
+      },
+      "pixels_per_point": 1.25,
+      "viewport": {
+        "h": 635.0,
+        "w": 605.0,
+        "x": 275.0,
+        "y": 50.0
+      },
+      "navigation": {
+        "fractal_id": null,
+        "fractal_name": "",
+        "petal_id": null,
+        "petal_name": null,
+        "verse_id": "01M6KFZEEQ116J3R9BT0BGKDTS",
+        "verse_name": "Genesis Verse"
+      },
+      "open_windows": [
+        "Inspector"
+      ],
+      "pending": {
+        "db": null,
+        "sync": null,
+        "ui_known": 0
+      },
+      "settled": true
+    },
+    {
+      "file": "owner-scale200-1024-state.jsonl",
+      "frame": 2856,
+      "window": {
+        "height": 720,
+        "maximized": false,
+        "minimized": false,
+        "ui_scale": 2.0,
+        "width": 1024
+      },
+      "pixels_per_point": 2.0,
+      "viewport": {
+        "h": 584.0,
+        "w": 460.8125,
+        "x": 323.1875,
+        "y": 80.0
+      },
+      "navigation": {
+        "fractal_id": null,
+        "fractal_name": "",
+        "petal_id": null,
+        "petal_name": null,
+        "verse_id": "01M6KFZEEQ116J3R9BT0BGKDTS",
+        "verse_name": "Genesis Verse"
+      },
+      "open_windows": [
+        "Inspector"
+      ],
+      "pending": {
+        "db": null,
+        "sync": null,
+        "ui_known": 0
+      },
+      "settled": true
+    }
+  ],
+  "accessible_card_samples": [
+    {
+      "file": "owner-create-card-ui.jsonl",
+      "frame": 12462,
+      "nodes": [
+        {
+          "id": "6435816324014535472",
+          "role": "button",
+          "name": "Open fractal Genesis Fractal",
+          "bounds": {
+            "h": 24.0,
+            "w": 88.0,
+            "x": 76.0,
+            "y": 126.0
+          }
+        },
+        {
+          "id": "17368598665609260971",
+          "role": "button",
+          "name": "Open petal Genesis Petal",
+          "bounds": {
+            "h": 24.0,
+            "w": 64.0,
+            "x": 100.0,
+            "y": 157.0
+          }
+        },
+        {
+          "id": "14367327206810953297",
+          "role": "button",
+          "name": "Open fractal Genesis Fractal",
+          "bounds": {
+            "h": 28.0,
+            "w": 149.59375,
+            "x": 171.0,
+            "y": 113.0
+          }
+        },
+        {
+          "id": "4424779708743986193",
+          "role": "button",
+          "name": "Options for fractal Genesis Fractal",
+          "bounds": {
+            "h": 28.0,
+            "w": 26.0,
+            "x": 328.59375,
+            "y": 113.0
+          }
+        },
+        {
+          "id": "7591352078380526477",
+          "role": "label",
+          "name": "1 petal",
+          "bounds": {
+            "h": 15.0,
+            "w": 39.3125,
+            "x": 171.0,
+            "y": 144.0
+          }
+        },
+        {
+          "id": "6330882555501399620",
+          "role": "textrun",
+          "name": "1 petal",
+          "bounds": {
+            "h": 15.0,
+            "w": 39.3125,
+            "x": 171.0,
+            "y": 144.0
+          }
+        },
+        {
+          "id": "14702500670881959133",
+          "role": "button",
+          "name": "+ New Fractal",
+          "bounds": {
+            "h": 72.0,
+            "w": 201.59375,
+            "x": 375.59375,
+            "y": 104.0
+          }
+        }
+      ]
+    },
+    {
+      "file": "owner-final-ui.jsonl",
+      "frame": 16508,
+      "nodes": [
+        {
+          "id": "6435816324014535472",
+          "role": "button",
+          "name": "Open fractal Genesis Fractal",
+          "bounds": {
+            "h": 24.0,
+            "w": 88.0,
+            "x": 76.0,
+            "y": 126.0
+          }
+        },
+        {
+          "id": "17368598665609260971",
+          "role": "button",
+          "name": "Open petal Genesis Petal",
+          "bounds": {
+            "h": 24.0,
+            "w": 64.0,
+            "x": 100.0,
+            "y": 157.0
+          }
+        },
+        {
+          "id": "14367327206810953297",
+          "role": "button",
+          "name": "Open fractal Genesis Fractal",
+          "bounds": {
+            "h": 28.0,
+            "w": 149.59375,
+            "x": 171.0,
+            "y": 113.0
+          }
+        },
+        {
+          "id": "4424779708743986193",
+          "role": "button",
+          "name": "Options for fractal Genesis Fractal",
+          "bounds": {
+            "h": 28.0,
+            "w": 26.0,
+            "x": 328.59375,
+            "y": 113.0
+          }
+        },
+        {
+          "id": "7591352078380526477",
+          "role": "label",
+          "name": "1 petal",
+          "bounds": {
+            "h": 15.0,
+            "w": 39.3125,
+            "x": 171.0,
+            "y": 144.0
+          }
+        },
+        {
+          "id": "6330882555501399620",
+          "role": "textrun",
+          "name": "1 petal",
+          "bounds": {
+            "h": 15.0,
+            "w": 39.3125,
+            "x": 171.0,
+            "y": 144.0
+          }
+        },
+        {
+          "id": "14702500670881959133",
+          "role": "button",
+          "name": "+ New Fractal",
+          "bounds": {
+            "h": 72.0,
+            "w": 201.59375,
+            "x": 375.59375,
+            "y": 104.0
+          }
+        }
+      ]
+    },
+    {
+      "file": "owner-options-card-ui.jsonl",
+      "frame": 6120,
+      "nodes": [
+        {
+          "id": "6435816324014535472",
+          "role": "button",
+          "name": "Open fractal Genesis Fractal",
+          "bounds": {
+            "h": 24.0,
+            "w": 88.0,
+            "x": 76.0,
+            "y": 126.0
+          }
+        },
+        {
+          "id": "17368598665609260971",
+          "role": "button",
+          "name": "Open petal Genesis Petal",
+          "bounds": {
+            "h": 24.0,
+            "w": 64.0,
+            "x": 100.0,
+            "y": 157.0
+          }
+        },
+        {
+          "id": "14367327206810953297",
+          "role": "button",
+          "name": "Open fractal Genesis Fractal",
+          "bounds": {
+            "h": 28.0,
+            "w": 149.59375,
+            "x": 171.0,
+            "y": 113.0
+          }
+        },
+        {
+          "id": "4424779708743986193",
+          "role": "button",
+          "name": "Options for fractal Genesis Fractal",
+          "bounds": {
+            "h": 28.0,
+            "w": 26.0,
+            "x": 328.59375,
+            "y": 113.0
+          }
+        },
+        {
+          "id": "7591352078380526477",
+          "role": "label",
+          "name": "1 petal",
+          "bounds": {
+            "h": 15.0,
+            "w": 39.3125,
+            "x": 171.0,
+            "y": 144.0
+          }
+        },
+        {
+          "id": "6330882555501399620",
+          "role": "textrun",
+          "name": "1 petal",
+          "bounds": {
+            "h": 15.0,
+            "w": 39.3125,
+            "x": 171.0,
+            "y": 144.0
+          }
+        },
+        {
+          "id": "14702500670881959133",
+          "role": "button",
+          "name": "+ New Fractal",
+          "bounds": {
+            "h": 72.0,
+            "w": 201.59375,
+            "x": 375.59375,
+            "y": 104.0
+          }
+        }
+      ]
+    },
+    {
+      "file": "owner-scale125-ui.jsonl",
+      "frame": 2649,
+      "nodes": [
+        {
+          "id": "6435816324014535472",
+          "role": "button",
+          "name": "Open fractal Genesis Fractal",
+          "bounds": {
+            "h": 30.0,
+            "w": 110.0,
+            "x": 95.0,
+            "y": 157.5
+          }
+        },
+        {
+          "id": "17368598665609260971",
+          "role": "button",
+          "name": "Open petal Genesis Petal",
+          "bounds": {
+            "h": 30.0,
+            "w": 80.0,
+            "x": 125.0,
+            "y": 196.484375
+          }
+        },
+        {
+          "id": "14367327206810953297",
+          "role": "button",
+          "name": "Open fractal Genesis Fractal",
+          "bounds": {
+            "h": 35.0,
+            "w": 222.5,
+            "x": 286.25,
+            "y": 141.25
+          }
+        },
+        {
+          "id": "4424779708743986193",
+          "role": "button",
+          "name": "Options for fractal Genesis Fractal",
+          "bounds": {
+            "h": 35.0,
+            "w": 32.5,
+            "x": 518.75,
+            "y": 141.25
+          }
+        },
+        {
+          "id": "7591352078380526477",
+          "role": "label",
+          "name": "1 petal",
+          "bounds": {
+            "h": 18.984375,
+            "w": 49.140625,
+            "x": 286.25,
+            "y": 180.0
+          }
+        },
+        {
+          "id": "6330882555501399620",
+          "role": "textrun",
+          "name": "1 petal",
+          "bounds": {
+            "h": 18.984375,
+            "w": 49.140625,
+            "x": 286.25,
+            "y": 180.0
+          }
+        },
+        {
+          "id": "14702500670881959133",
+          "role": "button",
+          "name": "+ New Fractal",
+          "bounds": {
+            "h": 90.0,
+            "w": 287.5,
+            "x": 577.5,
+            "y": 130.0
+          }
+        }
+      ]
+    }
+  ],
+  "actual_actions": [
+    {
+      "file": "owner-create-card-cancel.jsonl",
+      "locator": {
+        "geometry_source": "observed_hit_clip_window",
+        "id": "10197970061618792702",
+        "name": "Cancel",
+        "role": "button",
+        "visible_rect": {
+          "h": 25.0,
+          "w": 46.3125,
+          "x": 554.125,
+          "y": 223.0
+        }
+      },
+      "commands": [
+        {
+          "button": "left",
+          "kind": "pointer_click",
+          "x": 577.28125,
+          "y": 235.5
+        }
+      ],
+      "outcome": {
+        "commands_applied": 1,
+        "ok": true,
+        "wait_frames_used": 5
+      }
+    },
+    {
+      "file": "owner-create-card-open.jsonl",
+      "locator": {
+        "geometry_source": "observed_hit_clip_window",
+        "id": "14702500670881959133",
+        "name": "+ New Fractal",
+        "role": "button",
+        "visible_rect": {
+          "h": 72.0,
+          "w": 201.59375,
+          "x": 375.59375,
+          "y": 104.0
+        }
+      },
+      "commands": [
+        {
+          "button": "left",
+          "kind": "pointer_click",
+          "x": 476.390625,
+          "y": 140.0
+        }
+      ],
+      "outcome": {
+        "commands_applied": 1,
+        "ok": true,
+        "wait_frames_used": 5
+      }
+    },
+    {
+      "file": "owner-options-card-close.jsonl",
+      "locator": {
+        "geometry_source": "bounds_window_fallback_clip_unknown",
+        "id": "17341884631870542768",
+        "name": "Close window",
+        "role": "button",
+        "visible_rect": {
+          "h": 24.0,
+          "w": 24.0,
+          "x": 866.0,
+          "y": 122.0
+        }
+      },
+      "commands": [
+        {
+          "button": "left",
+          "kind": "pointer_click",
+          "x": 878.0,
+          "y": 134.0
+        }
+      ],
+      "outcome": {
+        "commands_applied": 1,
+        "ok": true,
+        "wait_frames_used": 5
+      }
+    },
+    {
+      "file": "owner-options-card-open.jsonl",
+      "locator": {
+        "geometry_source": "observed_hit_clip_window",
+        "id": "4424779708743986193",
+        "name": "Options for fractal Genesis Fractal",
+        "role": "button",
+        "visible_rect": {
+          "h": 28.0,
+          "w": 26.0,
+          "x": 328.59375,
+          "y": 113.0
+        }
+      },
+      "commands": [
+        {
+          "button": "left",
+          "kind": "pointer_click",
+          "x": 341.59375,
+          "y": 127.0
+        }
+      ],
+      "outcome": {
+        "commands_applied": 1,
+        "ok": true,
+        "wait_frames_used": 20
+      }
+    }
+  ],
+  "refusals": {},
+  "create_cancel": {
+    "complete_hierarchy_byte_identical": true,
+    "sha256": "095cc1f2ebe57590053b317e19ce4cad492bfcc4453872a4ddaba3ca84ad04b8",
+    "source_comparison": "create-cancel-comparison.json",
+    "counts": {
+      "verses": 1,
+      "fractals": 1,
+      "petals": 1,
+      "nodes": 3
+    },
+    "scope": "Actual Create dialog opened then canceled; no create submission."
+  },
+  "visual_findings": {
+    "VIS-001": {
+      "status": "focused_positive_pending_independent_review",
+      "observation": "Count1 petal is horizontal/readable in the recorded Verse-to-Fractals cards; count3 nodes is horizontal/readable in the recorded Fractal-to-Petals cards. This is the known small Genesis fixture.",
+      "limits": "All-Verses cards, large counts, long names and extreme narrow layouts remain unverified. QA35 scale images exercise the1-petal Fractal card only; they do not prove3-node Petal-card scaling."
+    },
+    "VIS-002": {
+      "status": "open",
+      "observation": "Actual title/breadcrumb text remains visually interfered with by the scene grid. Zero measured layout violations do not establish readable visual composition."
+    },
+    "VIS-003": {
+      "status": "open_investigation",
+      "evidence_packet": "../35",
+      "observation": "Session panel allocation is narrower after the2x scale excursion. Recorded physical/logical geometry is evidence; underlying cause is not established by this packet."
+    }
+  },
+  "coverage_limits": "Every saved layout check reports zero measured violations but incomplete coverage, unknown controls and zero observed text measurements. Actual screenshots reveal open issues. No all-visual-clean, all-three-hierarchy-level, OS-DPI, full-catalog/gold/convergence, normal UIA/WGC, adoption, peer rendering, final tests, CI or release acceptance."
+}

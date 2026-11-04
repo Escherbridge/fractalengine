@@ -1,0 +1,25 @@
+{
+  "schema": "fe-qa-focused-verdict-v1",
+  "pass_number": 34,
+  "generated_at": "2026-11-04T14:52:30.407025+00:00",
+  "independent_review": "approved_focused",
+  "verdict": "focused_card_wrapping_and_actions_with_open_visual_findings",
+  "source_commit": "9cdd31325b83f5870bad78d7c8d949ff40f7bdd2",
+  "stage": "9cdd3132-20261104072325049",
+  "source_dirty": true,
+  "production_stage_seconds": 223.8,
+  "launch_seconds": 14.4,
+  "screenshot_count": 5,
+  "all8_recorded_identities_absent": true,
+  "shared_cleanup_total": 16,
+  "full_test_sweep_executed": false,
+  "full_coverage": false,
+  "gold_pass_credit": false,
+  "convergence_credit": false,
+  "VIS001_scope": "Focused small-count card readability only; independent review pending",
+  "open_findings": [
+    "VIS-002",
+    "VIS-003"
+  ],
+  "reviewed_manifest_sha256": "bcb12de4995097144f0d73f0e905df42708368587b368ae702e132fce4d2eda5"
+}

@@ -1,0 +1,63 @@
+{
+  "owner": {
+    "run_dir": "C:\\Users\\atooz\\Programming\\fractalengine-workspace\\fractalengine\\.qa\\run\\20261104-073857-380",
+    "pid": 116612,
+    "process_identity": {
+      "pid": 116612,
+      "start_ticks": "639293999374194220",
+      "exe_path": "C:\\Users\\atooz\\Programming\\fractalengine-workspace\\fractalengine\\.qa\\stage\\9cdd3132-20261104072325049\\fractalengine.exe"
+    },
+    "descendant_identities": [
+      {
+        "pid": 118980,
+        "start_ticks": "639293999374761559",
+        "exe_path": "C:\\Windows\\system32\\conhost.exe"
+      },
+      {
+        "pid": 114924,
+        "start_ticks": "639293999405052724",
+        "exe_path": "C:\\Program Files (x86)\\Microsoft\\EdgeWebView\\Application\\156.0.4314.58\\msedgewebview2.exe"
+      },
+      {
+        "pid": 85872,
+        "start_ticks": "639293999405335183",
+        "exe_path": "C:\\Program Files (x86)\\Microsoft\\EdgeWebView\\Application\\156.0.4314.58\\msedgewebview2.exe"
+      },
+      {
+        "pid": 93928,
+        "start_ticks": "639293999406329222",
+        "exe_path": "C:\\Program Files (x86)\\Microsoft\\EdgeWebView\\Application\\156.0.4314.58\\msedgewebview2.exe"
+      },
+      {
+        "pid": 89420,
+        "start_ticks": "639293999406368884",
+        "exe_path": "C:\\Program Files (x86)\\Microsoft\\EdgeWebView\\Application\\156.0.4314.58\\msedgewebview2.exe"
+      },
+      {
+        "pid": 101064,
+        "start_ticks": "639293999406674308",
+        "exe_path": "C:\\Program Files (x86)\\Microsoft\\EdgeWebView\\Application\\156.0.4314.58\\msedgewebview2.exe"
+      },
+      {
+        "pid": 120720,
+        "start_ticks": "639293999407581462",
+        "exe_path": "C:\\Program Files (x86)\\Microsoft\\EdgeWebView\\Application\\156.0.4314.58\\msedgewebview2.exe"
+      }
+    ],
+    "stage_manifest": {
+      "exe_sha256": "27261FA333F1CE8944D8AF470F59F93814B87BDF4809138FD961C1D0ACF20299",
+      "legacy_fixture_sha256": "3DAEC6E00E32E3FD079C72B28ED8412EB61FC84885CEAD2F100AB9CD9608D9B1",
+      "source_fingerprint": "C8A3011C3D19ABADCB7B826DF51D883EB811736A453B272E5F54669367617374",
+      "kind": "fractalengine-qa-stage-v1",
+      "seal_hexon_sha256": "64BDA76E2548A34D12DA0B84A1D09CC98CA6FDD51560AA5CEB2638B16E5CE02E",
+      "built_at": "2026-11-04T14:23:25.3268049Z",
+      "source_commit": "9cdd31325b83f5870bad78d7c8d949ff40f7bdd2",
+      "source_dirty": true
+    },
+    "stage_matches_source": true,
+    "fixture": "none",
+    "started_at": "2026-11-04T07:38:57.5905960-07:00",
+    "bootstrap_verse_id": "01M6KFZEEQ116J3R9BT0BGKDTS"
+  },
+  "scope": "focused VIS-001 scale/action continuation, not full coverage"
+}

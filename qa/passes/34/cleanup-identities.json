@@ -1,0 +1,146 @@
+﻿[
+    {
+        "run":  "20261104-072401-246",
+        "identity":  {
+                         "pid":  108820,
+                         "start_ticks":  "639293990429553026",
+                         "exe_path":  "C:\\Users\\atooz\\Programming\\fractalengine-workspace\\fractalengine\\.qa\\stage\\9cdd3132-20261104072325049\\fractalengine.exe"
+                     },
+        "original_identity_present":  false
+    },
+    {
+        "run":  "20261104-072401-246",
+        "identity":  {
+                         "pid":  116536,
+                         "start_ticks":  "639293990430251717",
+                         "exe_path":  "C:\\Windows\\system32\\conhost.exe"
+                     },
+        "original_identity_present":  false
+    },
+    {
+        "run":  "20261104-072401-246",
+        "identity":  {
+                         "pid":  95656,
+                         "start_ticks":  "639293990487709540",
+                         "exe_path":  "C:\\Program Files (x86)\\Microsoft\\EdgeWebView\\Application\\156.0.4314.58\\msedgewebview2.exe"
+                     },
+        "original_identity_present":  false
+    },
+    {
+        "run":  "20261104-072401-246",
+        "identity":  {
+                         "pid":  1208,
+                         "start_ticks":  "639293990488409474",
+                         "exe_path":  "C:\\Program Files (x86)\\Microsoft\\EdgeWebView\\Application\\156.0.4314.58\\msedgewebview2.exe"
+                     },
+        "original_identity_present":  false
+    },
+    {
+        "run":  "20261104-072401-246",
+        "identity":  {
+                         "pid":  120720,
+                         "start_ticks":  "639293990490515995",
+                         "exe_path":  "C:\\Program Files (x86)\\Microsoft\\EdgeWebView\\Application\\156.0.4314.58\\msedgewebview2.exe"
+                     },
+        "original_identity_present":  false
+    },
+    {
+        "run":  "20261104-072401-246",
+        "identity":  {
+                         "pid":  90628,
+                         "start_ticks":  "639293990490528180",
+                         "exe_path":  "C:\\Program Files (x86)\\Microsoft\\EdgeWebView\\Application\\156.0.4314.58\\msedgewebview2.exe"
+                     },
+        "original_identity_present":  false
+    },
+    {
+        "run":  "20261104-072401-246",
+        "identity":  {
+                         "pid":  107124,
+                         "start_ticks":  "639293990490854404",
+                         "exe_path":  "C:\\Program Files (x86)\\Microsoft\\EdgeWebView\\Application\\156.0.4314.58\\msedgewebview2.exe"
+                     },
+        "original_identity_present":  false
+    },
+    {
+        "run":  "20261104-072401-246",
+        "identity":  {
+                         "pid":  117840,
+                         "start_ticks":  "639293990491723316",
+                         "exe_path":  "C:\\Program Files (x86)\\Microsoft\\EdgeWebView\\Application\\156.0.4314.58\\msedgewebview2.exe"
+                     },
+        "original_identity_present":  false
+    },
+    {
+        "run":  "20261104-073857-380",
+        "identity":  {
+                         "pid":  116612,
+                         "start_ticks":  "639293999374194220",
+                         "exe_path":  "C:\\Users\\atooz\\Programming\\fractalengine-workspace\\fractalengine\\.qa\\stage\\9cdd3132-20261104072325049\\fractalengine.exe"
+                     },
+        "original_identity_present":  false
+    },
+    {
+        "run":  "20261104-073857-380",
+        "identity":  {
+                         "pid":  118980,
+                         "start_ticks":  "639293999374761559",
+                         "exe_path":  "C:\\Windows\\system32\\conhost.exe"
+                     },
+        "original_identity_present":  false
+    },
+    {
+        "run":  "20261104-073857-380",
+        "identity":  {
+                         "pid":  114924,
+                         "start_ticks":  "639293999405052724",
+                         "exe_path":  "C:\\Program Files (x86)\\Microsoft\\EdgeWebView\\Application\\156.0.4314.58\\msedgewebview2.exe"
+                     },
+        "original_identity_present":  false
+    },
+    {
+        "run":  "20261104-073857-380",
+        "identity":  {
+                         "pid":  85872,
+                         "start_ticks":  "639293999405335183",
+                         "exe_path":  "C:\\Program Files (x86)\\Microsoft\\EdgeWebView\\Application\\156.0.4314.58\\msedgewebview2.exe"
+                     },
+        "original_identity_present":  false
+    },
+    {
+        "run":  "20261104-073857-380",
+        "identity":  {
+                         "pid":  93928,
+                         "start_ticks":  "639293999406329222",
+                         "exe_path":  "C:\\Program Files (x86)\\Microsoft\\EdgeWebView\\Application\\156.0.4314.58\\msedgewebview2.exe"
+                     },
+        "original_identity_present":  false
+    },
+    {
+        "run":  "20261104-073857-380",
+        "identity":  {
+                         "pid":  89420,
+                         "start_ticks":  "639293999406368884",
+                         "exe_path":  "C:\\Program Files (x86)\\Microsoft\\EdgeWebView\\Application\\156.0.4314.58\\msedgewebview2.exe"
+                     },
+        "original_identity_present":  false
+    },
+    {
+        "run":  "20261104-073857-380",
+        "identity":  {
+                         "pid":  101064,
+                         "start_ticks":  "639293999406674308",
+                         "exe_path":  "C:\\Program Files (x86)\\Microsoft\\EdgeWebView\\Application\\156.0.4314.58\\msedgewebview2.exe"
+                     },
+        "original_identity_present":  false
+    },
+    {
+        "run":  "20261104-073857-380",
+        "identity":  {
+                         "pid":  120720,
+                         "start_ticks":  "639293999407581462",
+                         "exe_path":  "C:\\Program Files (x86)\\Microsoft\\EdgeWebView\\Application\\156.0.4314.58\\msedgewebview2.exe"
+                     },
+        "original_identity_present":  false
+    }
+]

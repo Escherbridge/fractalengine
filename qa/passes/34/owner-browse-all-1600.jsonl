@@ -1,0 +1,2 @@
+{"new_logs_unavailable": "no owner token covers the active view (no verse open, or the open verse is not owned by this node) - last refusal: not found or not permitted"}
+{"code": "not_found_or_denied", "message": "not found or not permitted", "refused": true, "status": 404}

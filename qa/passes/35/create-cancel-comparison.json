@@ -1,0 +1,7 @@
+{
+  "raw_byte_identical": true,
+  "json_equal": true,
+  "before_sha256": "095cc1f2ebe57590053b317e19ce4cad492bfcc4453872a4ddaba3ca84ad04b8",
+  "after_sha256": "095cc1f2ebe57590053b317e19ce4cad492bfcc4453872a4ddaba3ca84ad04b8",
+  "scope": "complete hierarchy response before and after opening/canceling Create; no submission"
+}
