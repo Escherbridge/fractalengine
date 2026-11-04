@@ -1,0 +1,24 @@
+{
+    "baseline":  "a77cabbee465a690749eba684d8299e51c716b82",
+    "planSha256":  "7fb4b79a1cdd734a7336159936e76b7025d7f9203724828554a8676c564bf23b",
+    "files":  [
+                  {
+                      "path":  "tools/qa/native_observer/worker.cpp",
+                      "bytes":  44445,
+                      "sha256":  "da27fe8405ec5e5bd8b78b4f002fc53fc62fde4d79e97d776cf3e549e8a982ee"
+                  },
+                  {
+                      "path":  "tools/qa/native_observer/controller.py",
+                      "bytes":  16097,
+                      "sha256":  "0d4c87f67f19d7a21d2b9136b54ab2fd66b3751372812ce225f43f3463e17ec0"
+                  },
+                  {
+                      "path":  "tools/qa/native_observer/AGENTS.md",
+                      "bytes":  26705,
+                      "sha256":  "ab56fc920dcb95174cf894028ceb3e1a5b9e8eea56f81788b3b54b33590e8549"
+                  }
+              ],
+    "newRegisteredTests":  0,
+    "runtimeEvidence":  false,
+    "observedCodeUnchanged":  true
+}

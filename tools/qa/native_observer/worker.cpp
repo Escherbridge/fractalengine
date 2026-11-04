@@ -200,11 +200,22 @@ public:
     }
 };
 
-std::wstring window_class(HWND window) {
+std::wstring window_class(HWND window, const char* code = "window_identity_refused") {
     std::array<wchar_t, 256> name{};
     int count = GetClassNameW(window, name.data(), static_cast<int>(name.size()));
-    require(count > 0 && count < static_cast<int>(name.size() - 1), "window_identity_refused");
+    require(count > 0 && count < static_cast<int>(name.size() - 1), code);
     return std::wstring(name.data(), count);
+}
+
+void no_native_children(HWND window, const char* code) {
+    struct Children { unsigned count = 0; bool refused = false; } children;
+    EnumChildWindows(window, [](HWND, LPARAM value) -> BOOL {
+        auto data = reinterpret_cast<Children*>(value);
+        if (++data->count > 128) { data->refused = true; return FALSE; }
+        data->refused = true;
+        return TRUE;
+    }, reinterpret_cast<LPARAM>(&children));
+    require(!children.refused && IsWindow(window), code);
 }
 
 void window_current(HWND window, DWORD pid) {
@@ -217,41 +228,97 @@ void window_current(HWND window, DWORD pid) {
         && IsWindowVisible(window) && !IsIconic(window) && window_class(window) == L"fractalengine"
         && SUCCEEDED(DwmGetWindowAttribute(window, DWMWA_CLOAKED, &cloaked, sizeof(cloaked))) && cloaked == 0
         && object_name(GetThreadDesktop(thread)) == L"Default", "window_identity_refused");
-    struct Children { unsigned count = 0; bool refused = false; } children;
-    EnumChildWindows(window, [](HWND, LPARAM value) -> BOOL {
-        auto data = reinterpret_cast<Children*>(value);
-        if (++data->count > 128) { data->refused = true; return FALSE; }
-        data->refused = true;
-        return TRUE;
-    }, reinterpret_cast<LPARAM>(&children));
-    require(!children.refused && IsWindow(window), "native_child_refused");
+    no_native_children(window, "native_child_refused");
 }
 
-HWND discover_window(DWORD pid) {
+bool winit_service_signature(DWORD style, DWORD extended, const RECT& outer, const RECT& client) {
+    auto zero = [](const RECT& rect) { return rect.left == 0 && rect.top == 0 && rect.right == 0 && rect.bottom == 0; };
+    constexpr DWORD expected_style = static_cast<DWORD>(WS_VISIBLE | WS_POPUP);
+    constexpr DWORD expected_extended = WS_EX_NOACTIVATE | WS_EX_TRANSPARENT | WS_EX_LAYERED | WS_EX_TOOLWINDOW;
+    return style == expected_style && extended == expected_extended
+        && zero(outer) && zero(client);
+}
+
+void service_current(HWND window, DWORD pid, DWORD thread) {
+    DWORD actual = 0;
+    require(IsWindow(window) && thread && GetWindowThreadProcessId(window, &actual) == thread && actual == pid
+        && GetAncestor(window, GA_ROOT) == window && !GetParent(window) && !GetWindow(window, GW_OWNER)
+        && window_class(window, "window_service_identity_refused") == L"Winit Thread Event Target"
+        && IsWindowVisible(window), "window_service_identity_refused");
+    RECT outer{}, client{};
+    require(GetWindowRect(window, &outer) && GetClientRect(window, &client), "window_service_geometry_refused");
+    require(winit_service_signature(static_cast<DWORD>(GetWindowLongPtrW(window, GWL_STYLE)),
+        static_cast<DWORD>(GetWindowLongPtrW(window, GWL_EXSTYLE)), outer, client), "window_service_signature_refused");
+    no_native_children(window, "window_service_children_refused");
+}
+
+struct WindowSet {
+    HWND root = nullptr, service = nullptr;
+    DWORD root_thread = 0, service_thread = 0;
+    void current(DWORD pid, Deadline& deadline) const;
+};
+
+WindowSet inspect_windows(DWORD pid, Deadline& deadline) {
+    enum class Kind { Root, Service, Hidden };
+    struct Entry { HWND window = nullptr; DWORD thread = 0; Kind kind = Kind::Hidden; };
     struct Windows {
         DWORD pid;
-        std::array<HWND, 8> candidates{};
-        unsigned count = 0, candidate_count = 0;
+        std::array<Entry, 8> entries{};
+        unsigned count = 0;
         const char* refusal = nullptr;
         void refuse(const char* code) { if (!refusal) refusal = code; }
     } windows{pid};
     BOOL complete = EnumWindows([](HWND window, LPARAM value) -> BOOL {
         auto data = reinterpret_cast<Windows*>(value);
-        DWORD owner = 0; GetWindowThreadProcessId(window, &owner);
+        DWORD owner = 0;
+        DWORD thread = GetWindowThreadProcessId(window, &owner);
+        if (!thread) { data->refuse("window_enumeration_refused"); return FALSE; }
         if (owner != data->pid) return TRUE;
         if (++data->count > 8) { data->refuse("window_owned_count_refused"); return FALSE; }
         std::array<wchar_t, 256> name{};
-        if (!GetClassNameW(window, name.data(), static_cast<int>(name.size()))) { data->refuse("window_class_query_refused"); return FALSE; }
-        if (std::wstring_view(name.data()) == L"fractalengine") data->candidates[data->candidate_count++] = window;
+        int count = GetClassNameW(window, name.data(), static_cast<int>(name.size()));
+        if (count <= 0 || count >= static_cast<int>(name.size() - 1)) { data->refuse("window_class_query_refused"); return FALSE; }
+        auto& entry = data->entries[data->count - 1];
+        entry.window = window; entry.thread = thread;
+        auto kind = std::wstring_view(name.data(), count);
+        if (kind == L"fractalengine") entry.kind = Kind::Root;
+        else if (kind == L"Winit Thread Event Target") entry.kind = Kind::Service;
         else if (IsWindowVisible(window)) data->refuse("window_unexpected_visible_refused");
         return TRUE;
     }, reinterpret_cast<LPARAM>(&windows));
     if (windows.refusal) throw Refusal{windows.refusal};
     require(complete, "window_enumeration_refused");
-    require(windows.candidate_count != 0, "window_root_missing");
-    require(windows.candidate_count == 1, "window_roots_multiple");
-    window_current(windows.candidates[0], pid);
-    return windows.candidates[0];
+    WindowSet result;
+    for (unsigned index = 0; index < windows.count; ++index) {
+        deadline.check();
+        const auto& entry = windows.entries[index];
+        if (entry.kind == Kind::Root) {
+            require(!result.root, "window_roots_multiple");
+            result.root = entry.window; result.root_thread = entry.thread;
+        } else if (entry.kind == Kind::Service) {
+            require(!result.service, "window_services_multiple");
+            result.service = entry.window; result.service_thread = entry.thread;
+        }
+    }
+    require(result.root != nullptr, "window_root_missing");
+    window_current(result.root, pid);
+    require(GetWindowThreadProcessId(result.root, nullptr) == result.root_thread, "window_set_changed");
+    if (result.service) {
+        require(result.service_thread == result.root_thread, "window_service_identity_refused");
+        service_current(result.service, pid, result.service_thread);
+    }
+    window_current(result.root, pid);
+    deadline.check();
+    return result;
+}
+
+void WindowSet::current(DWORD pid, Deadline& deadline) const {
+    auto observed = inspect_windows(pid, deadline);
+    require(observed.root == root && observed.root_thread == root_thread
+        && observed.service == service && observed.service_thread == service_thread, "window_set_changed");
+    window_current(root, pid);
+    require(GetWindowThreadProcessId(root, nullptr) == root_thread, "window_set_changed");
+    deadline.check();
 }
 
 struct Witness {
@@ -607,8 +674,14 @@ void operation(const Request& request, Deadline& deadline, Receipt& receipt) {
     dpi_context(); deadline.check();
     Watcher watcher(request.pid, receipt);
     receipt.watch_first = watcher.sequence();
-    HWND window = discover_window(request.pid);
-    watcher.check(); process.check(); deadline.check();
+    const WindowSet windows = inspect_windows(request.pid, deadline);
+    HWND window = windows.root;
+    auto boundary = [&] {
+        deadline.check(); watcher.check(); process.check();
+        windows.current(request.pid, deadline);
+        watcher.current(); process.check(); deadline.check();
+    };
+    boundary();
     checked(CoInitializeEx(nullptr, COINIT_MULTITHREADED), "com_unavailable");
     struct Apartment { ~Apartment() { CoUninitialize(); } } apartment;
     Com<IUIAutomation> automation;
@@ -624,7 +697,7 @@ void operation(const Request& request, Deadline& deadline, Receipt& receipt) {
     Tree discovered;
     std::optional<Witness> admitted;
     while (!admitted) {
-        deadline.check(); watcher.check(); process.check(); window_current(window, request.pid);
+        boundary();
         require(runtime_id(outer.get()) == outer_runtime, "root_identity_changed");
         discovered = walk(automation.get(), walker.get(), outer.get(), window, read_only, deadline);
         if (discovered.marked) {
@@ -647,23 +720,22 @@ void operation(const Request& request, Deadline& deadline, Receipt& receipt) {
         original = current;
         return current;
     };
-    auto boundary = [&] {
-        deadline.check(); watcher.check(); process.check(); window_current(window, request.pid);
-    };
     boundary(); fresh_root();
     if (!request.invoke) {
         auto validated = walk(automation.get(), walker.get(), outer.get(), window, read_only, deadline, nullptr, marked.get());
         require(validated.marked && validated.marked_runtime == marked_runtime && validated.marked_ancestry == marked_ancestry, "root_identity_changed");
         boundary(); auto current = fresh_root();
         receipt.root_hash = sha256(current.record); receipt.watch_last = watcher.sequence(); receipt.code = "observed";
-        watcher.current(); process.check(); deadline.check();
+        boundary();
         emit(receipt);
         return;
     }
     require(original.navigation, "profile_refused"); neutral_input(window);
+    boundary();
     auto selected = walk(automation.get(), walker.get(), outer.get(), window, request, deadline, nullptr, marked.get());
     require(selected.marked && selected.marked_runtime == marked_runtime && selected.marked_ancestry == marked_ancestry
         && selected.matching == 1 && selected.target.has_value(), "target_unavailable");
+    boundary();
     Target target = std::move(*selected.target);
     target.signature = sha256(original.stable_source() + '|' + target.signature);
     receipt.target_hash = target.signature;
@@ -676,7 +748,7 @@ void operation(const Request& request, Deadline& deadline, Receipt& receipt) {
         boundary(); neutral_input(window); original_target(target, request);
         auto current = fresh_root();
         receipt.root_hash = sha256(current.record);
-        watcher.current(); process.check(); deadline.check();
+        boundary();
         return current;
     };
     auto intent_source = preflight();
@@ -687,7 +759,7 @@ void operation(const Request& request, Deadline& deadline, Receipt& receipt) {
     receipt.method_returned = true;
     receipt.code = SUCCEEDED(receipt.method) ? "submitted_outcome_unknown" : "invoke_failed_outcome_unknown";
     try {
-        boundary(); original_target(target, request); fresh_root();
+        boundary(); original_target(target, request); fresh_root(); boundary();
     } catch (const Refusal&) {
         if (SUCCEEDED(receipt.method)) receipt.code = "submitted_state_changed";
     }

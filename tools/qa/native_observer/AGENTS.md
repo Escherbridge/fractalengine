@@ -56,6 +56,58 @@ every such visible window still refuses. No additional discovery, raw titles,
 class strings, window counts/handles or names enter output. The controller allowlist
 accepts these six codes and retains window_ambiguous for older staged workers.
 
+## Strict winit visual service
+
+The independently reviewed QA44 plan permits one exact zero-area visual service
+from locked winit0.30.13 alongside the original primary, not a class exemption.
+inspect_windows retains a bounded eight-entry owned-window census including the
+service. It requires exactly one fractalengine primary and at most one exact
+Winit Thread Event Target; cross-window thread checks happen after collection,
+independent of visit order. A failed identity/class query or truncated class refuses.
+Other visible windows, including Portal and dialogs, still refuse. Other hidden
+windows retain the existing policy and are reconsidered by each complete census.
+
+service_current requires valid same-process/same-root-thread identity, ownerless
+top-level/no parent, the exact class and visible state, successful zero-origin and
+zero-size window/client rectangles, and no native descendants under the existing
+128-child refusal discipline. winit_service_signature is the production pure
+geometry/style seam: normalized 32-bit style must be exactly0x90000000 and extended
+style exactly0x080800a0. There is no extra-bit mask, offscreen/size tolerance or
+WS_CLIPSIBLINGS allowance. Same-class malformed services refuse even while hidden.
+The source recipe is winit0.30.13 windows/event_loop.rs:904-961; WinUser.h SDK22621
+defines the named style bits. Strict runtime mismatch remains unavailable.
+
+WindowSet holds original root/service HWNDs and threads. Its const current method
+compares each fully validated census to those originals; initial service absence
+is immutable too. It never adopts a new service or root or repairs a signature.
+The original primary checks are preserved, with their unchanged child check shared
+through no_native_children. Root identity/thread is rechecked after census/profile
+validation. Service facts do not enter UIA, output hashes, private host grants or
+the retained target/pattern; the service is never an action target.
+
+The shared operation boundary brackets each complete set validation with the
+original watcher/process/deadline checks. It covers provider activation waits,
+target acquisition/preflight, both sides of durable intent, final pre-Invoke,
+post-return reporting and immediately before positive observe output. The last
+preflight boundary follows all target/property reads. All work uses the original
+five-second deadline and unchanged private one-second host proof. No selector,
+provider, target, source identity or proof is renewed. Unknown progress or changed
+root/service/presence/style/geometry/relationship refuses; post-intent remains spent.
+
+The original CREATE/DESTROY watcher and sampled enumeration limitations remain:
+quiescence is not proof that styles/geometry never changed between reads, and
+public class/HWND facts are not unforgeable lifetime identity. No message, hide,
+focus/activation, user-data/title read or window mutation is introduced. The visual
+service can receive WM_INPUT/WM_PAINT for the event loop; it is not input-free.
+
+Output keeps the existing observed success code and worker exit rule. Only fixed
+service/retained-set refusal strings are added to the controller allowlist, keeping
+legacy codes. observed cannot independently distinguish service present from
+absent; do not claim a live service-profile match from that code alone. QA44's actual
+unexpected class remains unproved. No test-mode, capture or generic action channel
+is added. Controlled malformed facts and actual native observation/Invoke remain
+separate root-owned acceptance gates; source authoring provides no execution credit.
+
 ElementFromHandle is called once for that admitted HWND. Initial provider
 activation may wait only on this original outer root for a unique marked root;
 it does not replace FromHandle or repair an admitted root. Only after positive
