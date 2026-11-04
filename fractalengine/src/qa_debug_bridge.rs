@@ -178,6 +178,7 @@ pub fn install(
             PostUpdate,
             serve
                 .after(EguiPostUpdateSet::ProcessOutput)
+                .before(crate::native_window_witness::ProviderHandoff)
                 .before(fe_ui::ui_shell::topbar::WindowChromeApply),
         );
     }

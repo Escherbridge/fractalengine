@@ -11,6 +11,7 @@ pub(super) fn quarantined() -> bool { HOLD.load(Ordering::SeqCst) }
 
 pub(super) fn install(app: &mut App) {
     app.add_systems(PostUpdate, prepare
+        .in_set(super::ProviderHandoff)
         .after(EguiPostUpdateSet::ProcessOutput)
         .before(annotate)
         .before(bevy_egui::update_accessibility_system)

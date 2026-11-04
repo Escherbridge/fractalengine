@@ -1,5 +1,14 @@
 # Actual native window/context witness
 
+## Owner QA observation ordering
+
+The guarded Owner QA service reads the current completed physical-ID AccessKit
+output after egui ProcessOutput and before ProviderHandoff. Native processing then
+remaps or suppresses that same output before the Windows publisher. An inactive
+native handler therefore cannot erase the Owner observation before it is served.
+This ordering adds no retained snapshot, native activation or authorization bypass;
+existing Owner, scope, opt-in and redaction checks remain in the QA service.
+
 This is ordinary read-only accessibility metadata, not a QA endpoint or authority.
 The application publishes one positive x64 integer HWND property named
 FractalEngine.NativeContext.v1 and matches it in the actual completed AccessKit root

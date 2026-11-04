@@ -19,6 +19,10 @@ use fe_ui::native_accessibility::{self as ui, surface::SurfaceSnapshot};
 use std::sync::OnceLock;
 
 const ROOT_ID: &str = "fe.native.window.v1";
+
+#[derive(SystemSet, Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub(crate) struct ProviderHandoff;
+
 static PROCESS: OnceLock<Option<windows::Process>> = OnceLock::new();
 
 struct NativeWindow {
