@@ -132,7 +132,7 @@ pub(crate) fn enter(ctx: &egui::Context, producer: Producer, supported: bool) {
             egui::Id::new("fe-unsupported-surface").with(producer as u16),
             |node| {
                 node.set_role(egui::accesskit::Role::GenericContainer);
-                node.set_automation_id("fe.surface.other.v1");
+                node.set_author_id("fe.surface.other.v1");
             },
         );
     }
@@ -155,7 +155,7 @@ pub(crate) fn credential(ctx: &egui::Context) {
     popup(ctx);
     ctx.accesskit_node_builder(egui::Id::new("fe-sensitive-surface-v1"), |node| {
         node.set_role(egui::accesskit::Role::GenericContainer);
-        node.set_automation_id("fe.surface.credential.v1");
+        node.set_author_id("fe.surface.credential.v1");
     });
 }
 

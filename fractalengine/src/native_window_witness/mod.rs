@@ -271,7 +271,7 @@ fn annotate(
         reject(&mut witness);
         return;
     };
-    node.set_automation_id(ROOT_ID);
+    node.set_author_id(ROOT_ID);
     node.set_description(status);
     witness.prepared = Some(Prepared { surface, guard: completed.guard(), tick });
 }

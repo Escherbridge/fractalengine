@@ -31,8 +31,8 @@
   },
   "verification": {
     "conductor_review": "approved; reviews/conductor-scope-review.md",
-    "production_build": "baseline_passed_zero_warnings",
-    "focused_evidence": "through_pass33_not_full_coverage",
+    "production_build": "9cdd3132 passed; combined515b88fc failed E0599, three reviewed SDK replacements integrated, retry pending",
+    "focused_evidence": "QA34/35 committed3062a9ab, full+publication approved, 88 raw staged blobs exact; not full coverage",
     "final_catalog": "pending",
     "two_clean_full_passes": "pending",
     "five_live_ux_audits_and_synthesis": "pending",

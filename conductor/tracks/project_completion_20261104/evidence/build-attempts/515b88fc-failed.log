@@ -1,0 +1,48 @@
+[08:03:27.252] Building fractalengine and offline QA terrain helpers...
+   Compiling fe-runtime v0.1.0 (C:\Users\atooz\Programming\fractalengine-workspace\fractalengine\fe-runtime)
+   Compiling fe-format v0.1.0 (C:\Users\atooz\Programming\fractalengine-workspace\fractalengine\fe-format)
+   Compiling fe-query v0.1.0 (C:\Users\atooz\Programming\fractalengine-workspace\fractalengine\fe-query)
+   Compiling fe-network v0.1.0 (C:\Users\atooz\Programming\fractalengine-workspace\fractalengine\fe-network)
+   Compiling fe-database v0.1.0 (C:\Users\atooz\Programming\fractalengine-workspace\fractalengine\fe-database)
+   Compiling fe-hexon v0.1.0 (C:\Users\atooz\Programming\fractalengine-workspace\fractalengine\fe-hexon)
+   Compiling fe-plugin v0.1.0 (C:\Users\atooz\Programming\fractalengine-workspace\fractalengine\fe-plugin)
+   Compiling fe-renderer v0.1.0 (C:\Users\atooz\Programming\fractalengine-workspace\fractalengine\fe-renderer)
+   Compiling fe-terrain v0.1.0 (C:\Users\atooz\Programming\fractalengine-workspace\fractalengine\fe-terrain)
+   Compiling fe-webview v0.1.0 (C:\Users\atooz\Programming\fractalengine-workspace\fractalengine\fe-webview)
+   Compiling fe-sync v0.1.0 (C:\Users\atooz\Programming\fractalengine-workspace\fractalengine\fe-sync)
+   Compiling fe-ui v0.1.0 (C:\Users\atooz\Programming\fractalengine-workspace\fractalengine\fe-ui)
+   Compiling fe-api v0.1.0 (C:\Users\atooz\Programming\fractalengine-workspace\fractalengine\fe-api)
+error[E0599]: no method named `set_automation_id` found for mutable reference `&mut bevy_egui::egui::accesskit::Node` in the current scope
+   --> fe-ui\src\native_accessibility\surface.rs:135:22
+    |
+135 |                 node.set_automation_id("fe.surface.other.v1");
+    |                      ^^^^^^^^^^^^^^^^^
+    |
+help: there is a method `set_author_id` with a similar name
+    |
+135 -                 node.set_automation_id("fe.surface.other.v1");
+135 +                 node.set_author_id("fe.surface.other.v1");
+    |
+
+error[E0599]: no method named `set_automation_id` found for mutable reference `&mut bevy_egui::egui::accesskit::Node` in the current scope
+   --> fe-ui\src\native_accessibility\surface.rs:158:14
+    |
+158 |         node.set_automation_id("fe.surface.credential.v1");
+    |              ^^^^^^^^^^^^^^^^^
+    |
+help: there is a method `set_author_id` with a similar name
+    |
+158 -         node.set_automation_id("fe.surface.credential.v1");
+158 +         node.set_author_id("fe.surface.credential.v1");
+    |
+
+For more information about this error, try `rustc --explain E0599`.
+error: could not compile `fe-ui` (lib) due to 2 previous errors
+warning: build failed, waiting for other jobs to finish...
+GUI build failed: 101
+At C:\Users\atooz\Programming\fractalengine-workspace\fractalengine\tools\qa\stage.ps1:45 char:32
++ ...  if ($LASTEXITCODE -ne 0) { throw "GUI build failed: $LASTEXITCODE" }
++                                 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    + CategoryInfo          : OperationStopped: (GUI build failed: 101:String) [], RuntimeException
+    + FullyQualifiedErrorId : GUI build failed: 101
+ 

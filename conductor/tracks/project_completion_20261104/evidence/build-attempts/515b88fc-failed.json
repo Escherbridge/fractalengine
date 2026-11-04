@@ -1,0 +1,11 @@
+{
+  "source_commit": "515b88fc",
+  "session": 96041,
+  "exit_code": 1,
+  "stage_created": false,
+  "app_launched": false,
+  "errors": "two E0599 set_automation_id calls in fe-ui; same invalid host call corrected before retry",
+  "log_sha256": "6ab8949a3ca6c2af879c0d4449f33f1fcb1ae9a69fe2099e2bc5e9e1dcf03c47",
+  "correction": "three exact set_author_id replacements; Windows backend mapping source-verified and independently reviewed",
+  "full_test_sweep": false
+}

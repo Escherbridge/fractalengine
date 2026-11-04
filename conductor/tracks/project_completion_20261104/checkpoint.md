@@ -141,3 +141,13 @@ main changes. The insertion was applied at its original section rather than
 assuming an EOF append. Fresh combined build/screenshots remain pending. VIS-003
 preferred panel-width preservation is authored in its isolated checkout under
 the independently approved public-divider design.
+
+
+QA34/35 publication committed3062a9ab after full and bookkeeping reviews: all88
+staged packet files match raw bytes and review anchors. The combined515b88fc
+production build failed (exit1, no stage/app) on unsupported AccessKit setters;
+all three setters now use the pinned Windows provider-backed set_author_id after
+independent review. See evidence/build-attempts and native-sdk-author-id-review.
+VIS-003 implementation is frozen for two independent source reviews; no preferred
+width fix or header contrast live acceptance is claimed yet. The final integrated
+sweep, CI and release remain pending.
