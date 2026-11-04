@@ -132,3 +132,12 @@ fixture behavior. Terminal reset now retires native input and volume intent,
 while retaining accepted outcomes until the actual successful DB-worker join.
 QA-0069 is still open: combined compilation and live volume/source/navigation/
 late-receipt/new-gesture/reset acceptance have not yet run.
+
+
+VIS-002 header contrast source is independently approved and integrated: opaque
+existing-theme breadcrumb/title strips with measured layout. Exact reviewed
+viewport bytes and the exact inserted directory note preserve all volume/native
+main changes. The insertion was applied at its original section rather than
+assuming an EOF append. Fresh combined build/screenshots remain pending. VIS-003
+preferred panel-width preservation is authored in its isolated checkout under
+the independently approved public-divider design.

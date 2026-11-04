@@ -1413,6 +1413,12 @@ below the measured wrapped header instead of a fixed-height reservation. The
 existing render journey adds narrow widths, long names, and count-row geometry;
 these authored assertions still require the integrated sweep and live verification.
 
+Hierarchy browser breadcrumbs and titles use opaque BG_PANEL frames with modest
+padding so the world grid cannot compete with navigation text. Only those bounded
+header rows are backed; the remaining viewport keeps its scene and grid. Measured
+header geometry includes this padding before placing the cards. This is browser
+chrome only and does not change active-Petal scene hints, controls, or navigation.
+
 Petal hints use a wrapped, backed, noninteractive Area anchored inside the viewport. Tool text reflects actual Pen/Brush/Measure behavior and the shared shortcut table. These changes do not alter picking, gimbal state or terrain calculations. Existing numeric render journey invokes the browser pointer/clip flow at three sizes; authored assertions are not execution evidence.
 
 

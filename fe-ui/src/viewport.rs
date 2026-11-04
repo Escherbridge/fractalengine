@@ -178,8 +178,19 @@ fn bounded_browser(
             .layout(egui::Layout::top_down(egui::Align::Min)),
         |ui| {
             ui.set_clip_rect(ui.clip_rect().intersect(rect));
-            ui.add(egui::Label::new(egui::RichText::new(title).heading()).truncate())
-                .on_hover_text(title);
+            egui::Frame::NONE
+                .fill(theme::BG_PANEL)
+                .inner_margin(egui::Margin::same(6))
+                .show(ui, |ui| {
+                    ui.set_width(ui.available_width());
+                    ui.add(
+                        egui::Label::new(
+                            egui::RichText::new(title).heading().color(theme::TEXT_BRIGHT),
+                        )
+                        .truncate(),
+                    )
+                    .on_hover_text(title);
+                });
             ui.add_space(6.0);
             if show_join
                 && ui
@@ -323,7 +334,14 @@ fn browser_body(
             .layout(egui::Layout::top_down(egui::Align::Min)),
         |ui| {
             ui.set_clip_rect(ui.clip_rect().intersect(rect));
-            breadcrumbs(ui, nav, depth, hierarchy)
+            egui::Frame::NONE
+                .fill(theme::BG_PANEL)
+                .inner_margin(egui::Margin::same(6))
+                .show(ui, |ui| {
+                    ui.set_width(ui.available_width());
+                    breadcrumbs(ui, nav, depth, hierarchy)
+                })
+                .inner
         },
     );
     if header.inner {
