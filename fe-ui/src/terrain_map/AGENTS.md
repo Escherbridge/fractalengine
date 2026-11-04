@@ -91,3 +91,13 @@ UI and DB share bounded declaration validation. Old serialized residency/fallbac
 metadata is decoded and preserved by the common document helper, not edited or
 activated here. The requirements dialog roundtrips petal.hexon_manifest through
 local correlated DB commands; it does not drive render-distance or auto-fetch.
+
+
+## Confirmed raw terrain identity
+
+PetalMapState caches its raw JSON fingerprint only in confirm_terrain_document,
+called by the actual active-Petal DB echo. replace_terrain_document handles
+navigation clears and optimistic GIS/proposal/layer edits and invalidates that
+identity. Volume admission reads the cached confirmed value; ordinary ResMut
+borrows and unchanged UI frames cannot trigger recursive JSON hashing. A parsed
+or rounded-equal config is not a substitute for this raw stored identity.

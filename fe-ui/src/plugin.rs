@@ -881,6 +881,7 @@ impl Plugin for GardenerConsolePlugin {
         app.init_resource::<crate::actions::terrain_proposal::SculptToolState>();
         // T3: earthwork region↔node bookkeeping + volume changed-value gate.
         app.init_resource::<crate::actions::terrain_proposal::EarthworkNodeMap>();
+        app.init_resource::<crate::actions::earthwork_volumes::VolumePersistence>();
         // terrain_proposal_delta_viz_20261025 S3: live preview readout —
         // `None` until `drain_preview_reports` sees a `ProposalPreviewReport`
         // (ProposalPreview itself is insert/remove-only, not init'd: its
@@ -951,11 +952,13 @@ impl Plugin for GardenerConsolePlugin {
         // T3 shared seam: fe-terrain's TerrainPlugin also registers this;
         // add_message twice is idempotent (same pattern as BrowserCommand).
         app.add_message::<fe_renderer::terrain_overlay::EarthworkVolumeReport>();
+        app.init_resource::<fe_renderer::terrain_overlay::EarthworkVolumeState>();
+        app.init_resource::<fe_renderer::terrain_overlay::EarthworkTerrainBinding>();
         // T3: persist bake-reported cut/fill volumes onto region nodes
         // (changed-value gated inside the system).
         app.add_systems(
-            Update,
-            crate::actions::terrain_proposal::persist_earthwork_volumes,
+            PostUpdate,
+            crate::actions::earthwork_volumes::persist,
         );
         // terrain_proposal_delta_viz_20261025 S3 (FR-3): publish the armed
         // tool's live preview + mirror its report. S2 (fe-terrain) is this

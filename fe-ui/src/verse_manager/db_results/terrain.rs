@@ -83,7 +83,7 @@ pub(super) fn handle_petal_terrain_loaded(
         .and_then(|t| t.get("scale_bounds"))
         .and_then(|v| serde_json::from_value::<[f64; 2]>(v.clone()).ok());
     // Keep the raw doc for the GIS Layer Manager's mutate-and-round-trip flow.
-    petal_map.terrain_json = terrain.clone();
+    petal_map.confirm_terrain_document(terrain.clone());
     petal_map.loaded = true;
     // Rehydrate the palette mirror from whatever `proposals` the doc actually
     // holds — an absent/malformed array rehydrates to empty (still marks

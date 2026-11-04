@@ -43,7 +43,8 @@
     "legacy_helper_fresh_launch": "passed preparation/authenticated startup in30.5s with corrected C#; exact stop exit0; adoption/restart unverified",
     "visual_acceptance": "VIS-001 hierarchy-card wrapping reproduced in inspected1280x720 screenshot; open",
     "visual_followup_review": "approved subject to exact staged evidence bytes; reviews/visual-followup-review.md",
-    "native_witness": "four corrections source-approved both lenses and exact integration reviewed; compile/native/helper/capture pending"
+    "native_witness": "four corrections source-approved both lenses and exact integration reviewed; compile/native/helper/capture pending",
+    "volume_ownership": "full corrected stack source-approved functional/security and exact integration; build/live QA69 acceptance pending"
   },
   "final_publication_authorized": true,
   "release_gate": "All required implementation/reviews/live QA and integrated checks complete; exact-commit CI green before immutable tag; all Release jobs and seven downloaded archive checksums verified"

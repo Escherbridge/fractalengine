@@ -8,6 +8,7 @@ use fe_format::manifest::ElevationEncoding;
 #[derive(Debug, Clone)]
 pub struct PetalTerrainAssignment {
     pub petal_id: String,
+    pub raw_source_fingerprint: Option<[u8; 32]>,
     pub config: Option<TerrainConfig>,
 }
 
@@ -93,7 +94,7 @@ pub fn config_for_tileset(info: &crate::tiles::TilesetInfo) -> TerrainConfig {
 
 /// Mean decoded elevation (meters) of one elevation tile; `None` when undecodable or flat.
 pub fn mean_tile_elevation(png: &[u8], source: &ElevationSourceKind) -> Option<f64> {
-    use crate::tiles::{decode_png_pixels, ElevationDecoder, TerrainRgbDecoder, TerrariumDecoder};
+    use crate::tiles::{ElevationDecoder, TerrainRgbDecoder, TerrariumDecoder, decode_png_pixels};
     let (pixels, w, h) = decode_png_pixels(png).ok()?;
     if w == 0 || h == 0 {
         return None;
@@ -116,7 +117,7 @@ mod render_support {
 
     use super::PetalTerrainAssignment;
     use crate::config::{ElevationSourceKind, TerrainConfig};
-    use crate::layers::{layer_type_from_config_name, LayerStack, LayerType, MapLayer};
+    use crate::layers::{LayerStack, LayerType, MapLayer, layer_type_from_config_name};
     use crate::terrain_plugin::{GeoJsonOverlay, GeoJsonProcessed, GpxTrackLine, TerrainChunk};
     use crate::tiles::{
         CompositeTileSource, DiskTileCache, TileCoord, TileResidency, TilesetRegistry,
@@ -133,6 +134,9 @@ mod render_support {
     /// Live terrain state for the active petal.
     #[derive(bevy::prelude::Resource, Default)]
     pub struct ActivePetalTerrain {
+        pub raw_source_fingerprint: Option<[u8; 32]>,
+        pub assignment_fingerprint: Option<[u8; 32]>,
+        pub input_scale_valid: bool,
         pub petal_id: Option<String>,
         pub config: Option<TerrainConfig>,
         /// Bumped on every applied assignment.
@@ -201,6 +205,20 @@ mod render_support {
         let mut grounding = None;
 
         active.petal_id = Some(assignment.petal_id.clone());
+        active.raw_source_fingerprint = assignment.raw_source_fingerprint;
+        active.input_scale_valid = assignment.config.as_ref().is_some_and(|config| {
+            fe_renderer::terrain_overlay::EarthworkTerrainBinding::valid_scale(
+                config.world_scale,
+                config.scale_bounds,
+            )
+        });
+        active.assignment_fingerprint = assignment
+            .config
+            .as_ref()
+            .and_then(|config| serde_json::to_vec(config).ok())
+            .map(|bytes| {
+                fe_renderer::terrain_overlay::EarthworkTerrainBinding::fingerprint_config(&bytes)
+            });
         active.config = assignment.config.clone();
         active.revision += 1;
 

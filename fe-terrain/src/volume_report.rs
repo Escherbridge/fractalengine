@@ -208,16 +208,8 @@ pub fn selection_volume_report(
     // -- composite total: one combined surface, record order (see doc above) --
     let composite_proposed = |x: f32, z: f32| combined_height(base, proposals, &composite, x, z);
     let total = cut_fill_volume(base, &composite_proposed, selection, step, world_scale);
-    let mut expected_samples = 0;
-    let mut sampled_pairs = 0;
-    for_each_cell(selection, step, |x, z| {
-        expected_samples += 1;
-        if base(x, z).is_some_and(f32::is_finite)
-            && composite_proposed(x, z).is_some_and(f32::is_finite)
-        {
-            sampled_pairs += 1;
-        }
-    });
+    let expected_samples = total.expected_cells;
+    let sampled_pairs = total.sampled_cells;
 
     // -- geometric overlap pass: purely footprint containment, no heights --
     let item_count = proposals.len() + regions.len();

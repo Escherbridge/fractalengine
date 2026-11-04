@@ -3285,7 +3285,10 @@ mod tests {
             let mut lifecycle = App::new();
             lifecycle.insert_resource(manager)
                 .insert_resource(fe_ui::navigation_manager::NavigationManager { active_verse_id: Some("v".into()), active_fractal_id: Some("f".into()), active_petal_id: Some("p".into()), ..Default::default() })
-                .insert_resource(ActivePetalTerrain { petal_id: Some("p".into()), ..Default::default() })
+                .insert_resource(ActivePetalTerrain {
+                    raw_source_fingerprint: None,
+                    assignment_fingerprint: None,
+                    input_scale_valid: false, petal_id: Some("p".into()), ..Default::default() })
                 .insert_resource(fe_ui::plugin::LocalUserRole { role: Some("owner".into()) })
                 .init_resource::<PendingPathEdits>()
                 .init_resource::<TrackRouteMap>()
@@ -4123,6 +4126,9 @@ mod tests {
         let stats = compute_stats(&data);
         let expected_origin = Projection::new(1.0, 2.0, 3.0);
         let active = ActivePetalTerrain {
+            raw_source_fingerprint: None,
+            assignment_fingerprint: None,
+            input_scale_valid: false,
             petal_id: Some("petal-1".to_string()),
             config: Some(TerrainConfig {
                 origin: expected_origin.clone(),
@@ -4142,6 +4148,9 @@ mod tests {
         let data = parse(SAMPLE_GPX);
         let stats = compute_stats(&data);
         let active = ActivePetalTerrain {
+            raw_source_fingerprint: None,
+            assignment_fingerprint: None,
+            input_scale_valid: false,
             petal_id: Some("some-other-petal".to_string()),
             config: Some(TerrainConfig::default()),
             revision: 1,

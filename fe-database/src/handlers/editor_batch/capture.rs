@@ -215,6 +215,7 @@ pub(super) async fn prepare_nodes(
         groups,
         petal_snapshot,
         world_scale,
+        terrain_source_fingerprint: rows[0].get("terrain").and_then(terrain_source_fingerprint),
     };
     bounded(&view)?;
     Ok(Captured {

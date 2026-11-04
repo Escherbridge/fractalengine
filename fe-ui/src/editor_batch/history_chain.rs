@@ -136,6 +136,7 @@ impl OwnedRestore {
         }
         if let Restored::Batch(original) = &self.restored {
             if original.world_scale != expected.world_scale
+                || original.terrain_source_fingerprint != expected.terrain_source_fingerprint
                 || !equal(&original.groups, &expected.groups)
             {
                 return;

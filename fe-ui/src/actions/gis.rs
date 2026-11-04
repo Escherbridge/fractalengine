@@ -119,7 +119,7 @@ pub(crate) fn set_layer(
         Ok(()) => {
             // Optimistic local update; DbResult::PetalTerrainLoaded confirms
             // (mirrors actions::hexon::set_petal_map_scale).
-            petal_map.terrain_json = Some(updated);
+            petal_map.replace_terrain_document(Some(updated));
         }
         Err(_) => {
             bevy::log::warn!(
@@ -156,7 +156,7 @@ pub(crate) fn set_view_mode(
         correlation_id: None,
     }) {
         Ok(()) => {
-            petal_map.terrain_json = Some(updated);
+            petal_map.replace_terrain_document(Some(updated));
         }
         Err(_) => {
             bevy::log::warn!(

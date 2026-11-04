@@ -8,6 +8,7 @@ pub(crate) use source::{RenderedSources, SelectionSources};
 pub(crate) mod math;
 pub(crate) mod ui;
 mod validation;
+pub(crate) use validation::capture as validate_capture;
 pub(crate) use math::affine_edits;
 pub(crate) use ui::render;
 
@@ -248,6 +249,7 @@ fn snapshot(receipt: &EditorBatchReceipt, original: &EditorBatchCapture) -> Edit
         groups: receipt.groups.clone(),
         petal_snapshot: original.petal_snapshot.clone(),
         world_scale: original.world_scale,
+        terrain_source_fingerprint: original.terrain_source_fingerprint,
     }
 }
 

@@ -262,7 +262,8 @@ sparse per-stamp overrides.
 
 ## §sculpt — commit line + earthwork endpoint rows (sculpt_earthwork_regions T3 integration, 2026-07-26)
 
-All in `terrain_proposal.rs`; region JSON mirrors `fe_terrain::sculpt::
+`terrain_proposal.rs` owns authored regions; `earthwork_volumes.rs` owns background
+measurement persistence. Region JSON mirrors `fe_terrain::sculpt::
 EarthworkRegion` by contract (fe-ui must NOT depend on fe-terrain).
 
 - **Commit line (was the missing seam).** The viewport Brush snapshots the
@@ -281,17 +282,15 @@ EarthworkRegion` by contract (fe-ui must NOT depend on fe-terrain).
   sends `CreateNode` at the footprint's vertex-mean centroid (petal-local
   world units) with `correlation_id = "earthwork:{region_id}"`.
   `db_results/nodes.rs` consumes the echo (pen-tool consume idiom: echoed-id
-  match only): binds `EarthworkNodeMap` (region_id→node_id), consumes the
+  match only): binds `EarthworkNodeMap` (Petal+region_id→node_id), consumes the
   stashed material, and writes the contract bag — literal fe-query keys
-  `node_kind="earthwork_region"`, `material`, `region_id`, and zeroed
-  `cut_volume_m3`/`fill_volume_m3`.
-- **Volumes.** fe-terrain's bake publishes `fe_renderer::terrain_overlay::
-  EarthworkVolumeReport`; `persist_earthwork_volumes` (registered in
-  `plugin.rs`, message add is idempotent) maps region→node and sends
-  `SetNodeProperty` ONLY when `(cut, fill)` differs from the last persisted
-  pair (`EarthworkNodeMap` cache; bake re-fires per revision — the DB is not
-  spammed). Unknown region → debug (node not created/hydrated yet; next
-  revision re-fires). Hydration seeds the gate from the persisted values.
+  `node_kind="earthwork_region"`, `material` and `region_id`. Volume keys are
+  absent until a complete measurement commits.
+- **Volumes.** Terrain-owned reports distinguish unavailable coverage from full
+  finite pairs, including true zero. The separate earthwork_volumes owner uses
+  one checked atomic cut/fill save and exact outcome reconciliation. See
+  section earthwork-volume-ownership; channel acceptance and hydration are not
+  confirmation, and user selection/Undo ownership remains separate.
 - **Delete.** `handle_delete_region` drops the record (Q-2 revert) AND
   tombstones the node (`TombstoneNode{auth: CallerAuth::Local}`, N-4/N-5)
   when the map knows it — the endpoint contract stays honest.
@@ -497,3 +496,77 @@ to SceneAssets. Adoption is a single-selection action, blocked while selection
 batch state is pending. Confirm carries the displayed preview identity; the
 resource performs a fresh Owner/candidate read and exact comparison before
 submission. Cancel retires unsent review only, never an accepted mutation.
+
+## earthwork-volume-ownership
+
+terrain_proposal owns Petal-local region/node aliases and pending endpoint
+metadata. Duplicate nodes for one Petal/region are ambiguous and refuse lookup.
+Hydration removes stale aliases and never confirms a measurement save. New
+endpoint bags omit volume keys until a real complete measurement commits.
+
+earthwork_volumes owns one bounded background read or save independently of
+NodeManager selection, editor_batch UI history and ordinary Undo. Its existing
+brush/volume journey now lives in earthwork_volumes_journey.rs beside that owner;
+no test declaration was added. The original producer and DB history journeys
+extend the source/coverage/atomic-pair contract as well.
+
+Admission requires actual navigation ancestry, known editable scene access, the
+exact Petal/node alias, latest terrain-owned report, current pristine height
+generation, finite full lattice coverage, valid source scale and matching raw DB
+assignment/parsed assignment/operational source. Hash raw JSON only at the actual
+confirmed terrain-document replacement seam; ordinary mutable UI borrows do not
+rehash it. Optimistic replacements clear that confirmed identity. An exact ReadEditorBatch Nodes capture must identify one live
+earthwork node with the same region and the same stored terrain fingerprint.
+Path/stamp projections are excluded. A fresh capture of newer DB terrain cannot
+bless a lagging UI measurement. Capture alone cannot prove runtime coverage.
+
+Equal stored cut/fill consumes the pure recalculation without a save. Otherwise
+one Properties target contains both Set fields, using the existing checked batch
+transaction. Full keeps an unsent queue with half-second admission backoff;
+Disconnected before acceptance is not pending persistence. A15s accepted timeout
+or typed failure causes only Resolve of the original request and ordered target.
+Pure reads coalesce/retry with new nonces; an accepted mutation is never replayed.
+No automatic field rebase occurs after a conflicting or uncommitted outcome.
+The handled measurement stays suppressed across role/UI-incarnation changes until
+the actual producer measurement source changes.
+
+Only a complete exact owned receipt can advance the confirmed pair/version.
+VolumePersistence is an independent Resource; UiManager holds only VolumeView.
+The Update DB dispatcher recognizes every owned read, direct commit, Resolve and
+failure before ordinary batch/replica routing. Before any version/admission/cache
+mutation, projection_receipt requires the original nonretired demand's current
+terrain/height/region/navigation/access/incarnation and original node source/epoch.
+The resolved receipt additionally requires exact current capture/member equality.
+Whole committed preflight then admits both direct and resolved outcomes through
+the same property-only projection. No generic GetNodeProperties/replica refresh
+is queued by this owner, and no Transform, DbConfirmedTransform, NodeManager or
+user Undo mutation occurs for a volume pair. An invalid or stale owned packet
+cannot fall through to generic full-row projection.
+
+Projection success is distinct from outcome recognition. An exact completed save
+is drained even after source/access retirement, but current confirmation is
+withheld. Equal stored pairs need no save or incidental full-row refresh; a pure
+read does not invent a positive journal confirmation. Current confirmation
+retains only small source/version data. The bounded state is at most256 current
+region statuses/demands, one4MiB capture and one read/write owner. The derived view
+is copied only when its statuses differ.
+
+Terminal clear_read_models retires unsent work and clears display/measurement
+state before replacing UiManager; accepted unknown writes and their exact Resolve
+identity remain in the independent Resource. PostUpdate terminal mode emits no
+read, write or Resolve and does not repopulate the view. The terminal channel
+observer can drain an exact valid outcome without projection. Otherwise ownership
+survives until clear_retained_outcomes_after_database_join, called by the host's
+existing Supervisor only after its actual owned DB worker joins successfully.
+An abnormal join returns before that callback; it cannot clear unknown saves.
+This is the existing trusted host lifecycle hook, not a proof constructed from
+an arbitrary joined thread.
+
+The existing owner and real dispatcher journeys cover direct/Resolve projection,
+same-Petal terrain/height and node-epoch changes, access loss, retired requests,
+newer preview/commit pulse/selection/Undo retention, no generic hydration escape,
+actual UiManager reset and terminal PostUpdate command suppression. Their host
+cleanup-callback assertions do not claim to execute a real DB reset/join.
+No background save manufactures a user Undo entry, object event-time measurement,
+P2P batch atomicity or geometry/coverage proof from a DB row. Retained false-zero
+history remains unchanged and auditable.

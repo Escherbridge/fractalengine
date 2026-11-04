@@ -112,3 +112,23 @@ actual native delivery/publication/lifecycle, helper/navigation/selected-Inspect
 profiles and trustworthy capture are still pending. No WGC success is claimed.
 Both focused visual runs are stopped; all16 recorded identities were checked
 absent. QA34/35 packets are frozen for independent evidence review.
+
+
+Independent QA34/35 evidence review approves the focused small-count VIS-001
+result: readable1petal/3nodes at actual1280/1024/1600 widths and1.25/2 scales,
+card navigation and Options/Close, Create/Cancel with exact unchanged hierarchy.
+All16 recorded identities are absent. Preserve ambiguous-locator pre-input refusal
+and Browse-All404/lost-scope gap with no replay. All-Verses cards, long names,
+large counts and extreme widths remain unverified. Layout checks reported zero
+measured violations but incomplete text coverage; actual images keep VIS-002
+header contrast and VIS-003 session panel-width loss open. VIS-003 is confirmed by
+source investigation and has an independently reviewed implementation design.
+
+
+The full volume stack bef56e79 plus3ed94d8b now has functional/security and exact
+integration-preservation approval. All43 source contributions retain their gates;
+35fullblobs are exact and the eight known overlaps preserve main native/audit/
+fixture behavior. Terminal reset now retires native input and volume intent,
+while retaining accepted outcomes until the actual successful DB-worker join.
+QA-0069 is still open: combined compilation and live volume/source/navigation/
+late-receipt/new-gesture/reset acceptance have not yet run.

@@ -116,3 +116,19 @@ The existing boundary journey now binary-searches to the last admitted nested-ba
 Flexible registry rows may contain unknown fields or legacy typed numeric representations absent from VisibilityGroupDto. Every maximal proof capture therefore retains the greater of the ACTUAL original encoded petal_snapshot byte length and the canonical registry-omitted-plus-typed-registry bound. This accounts for the immutable historical before snapshot even when a typed registry write later drops unknown row fields. The opaque floor can shrink after that cleanup; it cannot increase in subsequent unchanged-context replay, while canonical request/counter/history widths stay fixed.
 
 The existing byte-tight lifecycle journey now inserts a 32 KiB unknown flexible registry-row extension before preparation. It checks that the full original encoded snapshot is retained in the durable creation proof, confirms typed cleanup occurred, completes creation Undo/Redo, then requires nonincreasing reservations and successful repeated Delete/Restore cycles with maximum request escaping and widening journal cursors. No new test declaration or execution is introduced.
+
+## Earthwork terrain source binding
+
+capture.rs fingerprints terrain from the SAME Petal row already used for the
+opaque typed snapshot and metric scale. The shared canonical JSON identity is
+additional expected-state data; the existing full-view comparison and containing
+transaction's typed Petal/node/role/schema/history fences remain unchanged.
+Missing terrain yields None, never a fabricated valid source. Generic batch and
+Group budgets continue measuring the complete serialized capture, including this
+fixed-width optional witness. No separate DB read or terrain mutation is added.
+
+The existing history journey adds one earthwork target with two Set properties,
+induced second-field fact failure/complete rollback, current-DB/new-source capture,
+post-capture terrain refusal, real zero and exact durable receipt resolution.
+Runtime sample coverage is an additional producer admission check, not a property
+of this capture. Source authoring is not execution evidence.

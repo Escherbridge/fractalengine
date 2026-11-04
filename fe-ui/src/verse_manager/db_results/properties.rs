@@ -66,8 +66,8 @@ pub(super) fn handle_node_properties_loaded(
         }
     }
     // T3 hydration: an earthwork region node (`node_kind == "earthwork_region"`)
-    // re-binds region_id→node_id + seeds the volume gate (§sculpt).
-    crate::actions::terrain_proposal::hydrate_earthwork_region(node_id, properties, earthwork_map);
+    // re-binds Petal+region identity without confirming a measurement save.
+    crate::actions::terrain_proposal::hydrate_earthwork_region(node_id, petal_id, properties, earthwork_map);
     // HS-P6-CALLOUT hydration: a dimension callout node
     // (`node_kind == "dimension_callout"`) re-binds node_id→geometry so a
     // saved callout survives reload (§dimension-callout).

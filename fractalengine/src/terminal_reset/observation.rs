@@ -9,26 +9,30 @@ pub(super) fn drain_terminal_channels(
     supervisor: &mut Supervisor,
     status: &mut Status,
 ) {
-    if let Some(receiver) = world.get_resource::<fe_runtime::app::DbResultReceiver>() {
-        if let Ok(rx) = receiver.0.lock() {
-            for _ in 0..fe_runtime::CHANNEL_BUFFER {
-                let Ok(result) = rx.try_recv() else {
-                    break;
-                };
-                if let DbResult::TerminalDevelopmentReset {
-                    request_id,
-                    cleared,
-                    error,
-                } = result
-                {
-                    if supervisor.clear_sent
-                        && status.request_id.as_deref() == Some(request_id.as_str())
-                        && supervisor.receipt.is_none()
-                    {
-                        status.cleared = Some(cleared);
-                        supervisor.receipt = Some((cleared, error));
-                    }
-                }
+    let results: Vec<_> = world
+        .get_resource::<fe_runtime::app::DbResultReceiver>()
+        .and_then(|receiver| {
+            receiver
+                .0
+                .lock()
+                .ok()
+                .map(|rx| rx.try_iter().take(fe_runtime::CHANNEL_BUFFER).collect())
+        })
+        .unwrap_or_default();
+    for result in results {
+        fe_ui::maintenance::observe_terminal_db_result(world, &result);
+        if let DbResult::TerminalDevelopmentReset {
+            request_id,
+            cleared,
+            error,
+        } = result
+        {
+            if supervisor.clear_sent
+                && status.request_id.as_deref() == Some(request_id.as_str())
+                && supervisor.receipt.is_none()
+            {
+                status.cleared = Some(cleared);
+                supervisor.receipt = Some((cleared, error));
             }
         }
     }

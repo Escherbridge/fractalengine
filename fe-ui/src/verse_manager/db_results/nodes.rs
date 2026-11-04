@@ -53,16 +53,16 @@ pub(super) fn handle_node_created(
     let in_active_petal = nav.active_petal_id.as_deref() == Some(petal_id);
     // T3 (D-A8/N-10): an `earthwork:{region_id}` correlation binds the created
     // node to its region and writes the endpoint property bag (node_kind /
-    // material / region_id / zeroed volumes — the bake report fills volumes
+    // material / region_id; volumes remain absent until complete samples — the bake report fills volumes
     // async). Mirrors the pen consume idiom below: echoed-id match only, so a
     // concurrent foreign create can never hijack the bind.
     if let Some(region_id) = correlation_id
         .and_then(crate::actions::terrain_proposal::earthwork_region_id_from_correlation)
     {
         let material = earthwork_map
-            .take_pending_material(region_id)
+            .take_pending_material(petal_id, region_id)
             .unwrap_or_else(|| "earth".to_string());
-        earthwork_map.record(region_id, id);
+        earthwork_map.record(petal_id, region_id, id);
         for (key, value) in
             crate::actions::terrain_proposal::earthwork_node_properties(region_id, &material)
         {

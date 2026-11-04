@@ -1863,3 +1863,28 @@ root identity/status, using native_accessibility's narrow read-only ownership se
 It has no operator input, helper, capture or HTTP/role authority. UI surface metadata
 only supports the controlled empty Properties Inspector profile; any selected-object
 Inspector still needs its separate audit. See native_window_witness/AGENTS.md.
+## Earthwork raw assignment continuity
+
+terrain_bridge binds only an active PetalTerrainLoaded echo. It fingerprints the
+complete confirmed raw JSON using runtime's canonical hasher, records the exact
+parsed assignment identity, and carries the raw fingerprint on the same terrain
+assignment. ActivePetalTerrain retains that identity across normal tileset-driven
+scale/encoding/grounding reconciliation; the producer fingerprints the operational
+config separately. A newer raw document cannot retag rounded-equal old geometry.
+Missing source identity is unavailable for background persistence.
+
+Unrelated GPX, vision, screenshot and lazy-tile fixtures mechanically supply
+None/false for new unbacked source fields; their behavior is unchanged. The
+existing active-Petal forwarding journey checks the same raw witness on the
+assignment. No native observer, asset-audit or transfer surface is modified.
+
+
+## Terminal earthwork outcome ownership
+
+The existing Supervisor's actual DB JoinHandle remains the lifecycle authority.
+After its successful join, clear_retained_outcomes_after_database_join clears
+scene-asset and background-volume owners together. The abnormal-join branch
+returns before that hook. Freeze retires unsent volume intent through
+clear_read_models but retains accepted unknown saves independently of UiManager.
+Bounded terminal DB drains let that owner recognize exact outcomes without any
+current scene projection or new command; no generic joined-thread proof is used.

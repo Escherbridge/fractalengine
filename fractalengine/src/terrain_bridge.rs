@@ -8,12 +8,12 @@ use bevy::prelude::*;
 
 use fe_runtime::messages::DbResult;
 use fe_terrain::petal_binding::{
-    terrain_config_from_petal_json, ActiveTileSource, PetalTerrainAssignment,
-    SharedTilesetRegistry, TerrainAssignmentMsg,
+    ActiveTileSource, PetalTerrainAssignment, SharedTilesetRegistry, TerrainAssignmentMsg,
+    terrain_config_from_petal_json,
 };
 use fe_terrain::ruler_plugin::RulerSettings;
-use fe_terrain::splat::{view_mode_from_terrain_json, TerrainViewModeMsg};
-use fe_terrain::terrain_plugin::{ProposalOverlayBudget, MAX_PROPOSAL_OVERLAYS};
+use fe_terrain::splat::{TerrainViewModeMsg, view_mode_from_terrain_json};
+use fe_terrain::terrain_plugin::{MAX_PROPOSAL_OVERLAYS, ProposalOverlayBudget};
 use fe_terrain::tiles::{HexonTileSource, StreamedTileSource, TileBundleDemand, TilesetRegistry};
 use fe_ui::navigation_manager::NavigationManager;
 use fe_ui::plugin::{
@@ -130,6 +130,7 @@ pub fn bridge_petal_terrain(
     nav: Res<NavigationManager>,
     mut assignments: MessageWriter<TerrainAssignmentMsg>,
     mut view_modes: MessageWriter<TerrainViewModeMsg>,
+    mut volume_binding: ResMut<fe_renderer::terrain_overlay::EarthworkTerrainBinding>,
 ) {
     for result in db_results.read() {
         // Correlated (API-initiated) sets apply too — see fe-runtime §api-reply-correlation.
@@ -144,8 +145,27 @@ pub fn bridge_petal_terrain(
                 continue;
             }
             let config = terrain.as_ref().and_then(terrain_config_from_petal_json);
+            volume_binding.petal_id = Some(petal_id.clone());
+            volume_binding.raw_fingerprint = terrain
+                .as_ref()
+                .and_then(fe_runtime::editor_batch::terrain_source_fingerprint);
+            volume_binding.input_scale_valid = config.as_ref().is_some_and(|config| {
+                fe_renderer::terrain_overlay::EarthworkTerrainBinding::valid_scale(
+                    config.world_scale,
+                    config.scale_bounds,
+                )
+            });
+            volume_binding.config_fingerprint = config
+                .as_ref()
+                .and_then(|config| serde_json::to_vec(config).ok())
+                .map(|bytes| {
+                    fe_renderer::terrain_overlay::EarthworkTerrainBinding::fingerprint_config(
+                        &bytes,
+                    )
+                });
             assignments.write(TerrainAssignmentMsg(PetalTerrainAssignment {
                 petal_id: petal_id.clone(),
+                raw_source_fingerprint: volume_binding.raw_fingerprint,
                 config,
             }));
             // view_mode is an additive JSON field TerrainConfig drops — forward raw.
@@ -311,7 +331,9 @@ impl HexonMutationWorker {
             None => job,
         };
         let (tx, rx) = crossbeam::channel::unbounded::<HexonMutationJob>();
-        let Some(lease) = fe_runtime::maintenance::begin_job() else { return; };
+        let Some(lease) = fe_runtime::maintenance::begin_job() else {
+            return;
+        };
         let spawned = std::thread::Builder::new()
             .name("hexon-store-mutations".to_string())
             .spawn(move || {
@@ -1991,6 +2013,9 @@ mod tests {
         let mut app = App::new();
         app.init_resource::<AppSettings>()
             .insert_resource(ActivePetalTerrain {
+                raw_source_fingerprint: None,
+                assignment_fingerprint: None,
+                input_scale_valid: false,
                 petal_id: Some("petal".into()),
                 config: Some(TerrainConfig {
                     enabled: true,
@@ -2057,6 +2082,7 @@ mod tests {
     fn only_the_active_petals_terrain_reaches_the_runtime() {
         let mut app = App::new();
         app.add_message::<DbResult>()
+            .init_resource::<fe_renderer::terrain_overlay::EarthworkTerrainBinding>()
             .add_message::<TerrainAssignmentMsg>()
             .add_message::<TerrainViewModeMsg>()
             .insert_resource(NavigationManager {
@@ -2080,6 +2106,24 @@ mod tests {
         assert_eq!(assignments.len(), 1, "{assignments:?}");
         assert_eq!(assignments[0].petal_id, "petal-a");
         assert!(assignments[0].config.as_ref().is_some_and(|c| c.enabled));
+        let expected = match loaded("petal-a", true, Some("api-2")) {
+            DbResult::PetalTerrainLoaded {
+                terrain: Some(terrain),
+                ..
+            } => fe_runtime::editor_batch::terrain_source_fingerprint(&terrain),
+            _ => unreachable!(),
+        };
+        assert_eq!(
+            assignments[0].raw_source_fingerprint, expected,
+            "the same confirmed raw document travels with its assignment"
+        );
+        let source = app
+            .world()
+            .resource::<fe_renderer::terrain_overlay::EarthworkTerrainBinding>();
+        assert_eq!(source.petal_id.as_deref(), Some("petal-a"));
+        assert_eq!(source.raw_fingerprint, expected);
+        assert!(source.input_scale_valid);
+
         assert_eq!(
             app.world_mut()
                 .resource_mut::<Messages<TerrainViewModeMsg>>()
@@ -2088,6 +2132,42 @@ mod tests {
             1,
             "view mode follows the same active-petal filter"
         );
+        let mut previous: Option<(Vec<u8>, [u8; 32])> = None;
+        for delta in [1.000000001_f64, 1.0] {
+            let mut raw = serde_json::to_value(fe_terrain::config::TerrainConfig {
+                enabled: true,
+                ..Default::default()
+            })
+            .unwrap();
+            raw["proposals"] = serde_json::json!([{"id":"precision-region","op":"raise","material":"earth","delta":delta,"footprint":[[0,0],[1,0],[0,1]]}]);
+            let fingerprint = fe_runtime::editor_batch::terrain_source_fingerprint(&raw).unwrap();
+            app.world_mut().write_message(DbResult::PetalTerrainLoaded {
+                petal_id: "petal-a".into(),
+                terrain: Some(raw),
+                correlation_id: None,
+            });
+            app.update();
+            let forwarded = app
+                .world_mut()
+                .resource_mut::<Messages<TerrainAssignmentMsg>>()
+                .drain()
+                .next()
+                .unwrap()
+                .0;
+            assert_eq!(forwarded.raw_source_fingerprint, Some(fingerprint));
+            let parsed = serde_json::to_vec(&forwarded.config).unwrap();
+            if let Some((old_parsed, old_raw)) = previous {
+                assert_eq!(
+                    old_parsed, parsed,
+                    "typed f32 geometry can remain identical"
+                );
+                assert_ne!(
+                    old_raw, fingerprint,
+                    "raw confirmed source precision still travels on its own exact assignment"
+                );
+            }
+            previous = Some((parsed, fingerprint));
+        }
     }
 
     fn synthetic_tileset_manifest(id: &str) -> fe_format::manifest::HexonManifest {
@@ -3779,6 +3859,9 @@ mod tests {
         publisher_did: &str,
     ) -> fe_terrain::petal_binding::ActivePetalTerrain {
         fe_terrain::petal_binding::ActivePetalTerrain {
+            raw_source_fingerprint: None,
+            assignment_fingerprint: None,
+            input_scale_valid: false,
             petal_id: Some("petal-pinned".into()),
             config: Some(fe_terrain::config::TerrainConfig {
                 enabled: true,
@@ -4469,10 +4552,11 @@ mod tests {
             }
             other => panic!("expected CancelTilesetDownload, got {other:?}"),
         }
-        assert!(!app
-            .world()
-            .resource::<KnownTilesetPublishers>()
-            .0
-            .contains_key("bad"));
+        assert!(
+            !app.world()
+                .resource::<KnownTilesetPublishers>()
+                .0
+                .contains_key("bad")
+        );
     }
 }

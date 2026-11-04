@@ -95,7 +95,7 @@ fn render_view_mode_row(
             });
             if ui.add(btn).observed(ui).clicked() && !active {
                 if let Some(current_doc) = &petal_map.terrain_json {
-                    petal_map.terrain_json = Some(gis::set_view_mode_field(current_doc, mode));
+                    petal_map.replace_terrain_document(Some(gis::set_view_mode_field(current_doc, mode)));
                 }
                 ui_mgr.push_action(UiAction::GisSetViewMode {
                     petal_id: petal_id.to_string(),
@@ -150,8 +150,7 @@ fn render_overlay_row(
             .named(ui, format_args!("{} opacity", row.name));
         if resp.changed() {
             if let Some(current) = &petal_map.terrain_json {
-                petal_map.terrain_json =
-                    Some(gis::set_layer_field(current, name, None, Some(opacity)));
+                petal_map.replace_terrain_document(Some(gis::set_layer_field(current, name, None, Some(opacity))));
             }
         }
         if resp.drag_stopped() || (resp.changed() && !resp.dragged()) {

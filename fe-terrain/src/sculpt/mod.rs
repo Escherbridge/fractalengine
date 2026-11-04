@@ -292,8 +292,7 @@ pub fn composite_proposed_height(regions: &[CompositeRegion], base_y: f32, x: f3
     let mut h = base_y;
     for r in regions {
         if r.footprint.contains(x, z) {
-            if let Some(p) = proposed_height(r.op, Some(h), r.target, r.delta, r.mean, r.strength)
-            {
+            if let Some(p) = proposed_height(r.op, Some(h), r.target, r.delta, r.mean, r.strength) {
                 h = p;
             }
         }
@@ -310,9 +309,20 @@ pub struct CutFill {
     pub cut_m3: f64,
     pub fill_m3: f64,
     pub scaled: bool,
+    pub expected_cells: u64,
+    pub sampled_cells: u64,
 }
 
 impl CutFill {
+    /// Only full finite real-unit coverage is a persistable measurement, including true zero.
+    pub fn complete(&self) -> bool {
+        self.scaled
+            && self.expected_cells > 0
+            && self.expected_cells == self.sampled_cells
+            && self.cut_m3.is_finite()
+            && self.fill_m3.is_finite()
+    }
+
     /// Net = fill − cut (positive when the region net-adds material).
     pub fn net_m3(&self) -> f64 {
         self.fill_m3 - self.cut_m3
@@ -339,9 +349,17 @@ pub fn cut_fill_volume(
     let cell_area_m2 = (grid_step as f64 / s) * (grid_step as f64 / s);
     let mut cut = 0.0f64;
     let mut fill = 0.0f64;
+    let mut expected_cells = 0;
+    let mut sampled_cells = 0;
     for_each_cell(footprint, grid_step, |x, z| {
+        expected_cells += 1;
         if let (Some(b), Some(p)) = (base(x, z), proposed(x, z)) {
-            let dh_m = (p - b) as f64 / s;
+            let delta = p - b;
+            if !b.is_finite() || !p.is_finite() || !delta.is_finite() {
+                return;
+            }
+            sampled_cells += 1;
+            let dh_m = delta as f64 / s;
             if dh_m > 0.0 {
                 fill += dh_m * cell_area_m2;
             } else if dh_m < 0.0 {
@@ -353,6 +371,8 @@ pub fn cut_fill_volume(
         cut_m3: cut,
         fill_m3: fill,
         scaled,
+        expected_cells,
+        sampled_cells,
     }
 }
 
@@ -762,6 +782,38 @@ mod tests {
         let cf = region.cut_fill(&base, 0.25, 1.0);
         assert!(cf.cut_m3.abs() < 1.0);
         assert!((cf.fill_m3 - 200.0).abs() / 200.0 < 0.02);
+        assert!(cf.complete());
+        assert!(cf.expected_cells > 0);
+        assert_eq!(cf.sampled_cells, cf.expected_cells);
+        let missing = region.cut_fill(&|_, _| None, 0.25, 1.0);
+        assert_eq!(missing.expected_cells, cf.expected_cells);
+        assert_eq!(missing.sampled_cells, 0);
+        assert!(
+            !missing.complete(),
+            "missing cover is unavailable, never a measured zero"
+        );
+        let partial = region.cut_fill(&|x, _| (x < 5.0).then_some(0.0), 0.25, 1.0);
+        assert!(partial.sampled_cells > 0 && partial.sampled_cells < partial.expected_cells);
+        assert!(!partial.complete());
+        assert!(
+            !region
+                .cut_fill(&|_, _| Some(f32::NAN), 0.25, 1.0)
+                .complete()
+        );
+        let mut no_change = region.clone();
+        no_change.delta = Some(0.0);
+        let zero = no_change.cut_fill(&base, 0.25, 1.0);
+        assert!(
+            zero.complete(),
+            "finite full coverage permits a true numeric zero"
+        );
+        assert_eq!((zero.cut_m3, zero.fill_m3), (0.0, 0.0));
+        assert!(!no_change.cut_fill(&base, 0.25, 0.0).complete());
+        assert!(!no_change.cut_fill(&base, 0.0, 1.0).complete());
+        assert!(
+            !no_change.cut_fill(&base, 0.000001, 1.0).complete(),
+            "refused oversized lattice cannot claim full zero coverage"
+        );
     }
 
     #[test]
@@ -878,7 +930,12 @@ mod tests {
         let far = EarthworkRegion {
             id: "far".into(),
             op: SculptOp::Raise,
-            footprint: vec![[500.0, 500.0], [520.0, 500.0], [520.0, 520.0], [500.0, 520.0]],
+            footprint: vec![
+                [500.0, 500.0],
+                [520.0, 500.0],
+                [520.0, 520.0],
+                [500.0, 520.0],
+            ],
             material: "earth".into(),
             target_height: None,
             delta: Some(1.0),
@@ -896,7 +953,8 @@ mod tests {
 
         let fp = smooth.footprint_shape();
         let step = region_grid_step(fp.bounds());
-        let composite = |x: f32, z: f32| base(x, z).map(|b| composite_proposed_height(&with_far, b, x, z));
+        let composite =
+            |x: f32, z: f32| base(x, z).map(|b| composite_proposed_height(&with_far, b, x, z));
         assert_eq!(
             cut_fill_volume(&base, &composite, &fp, step, 1.0),
             smooth.cut_fill(&base, step, 1.0),

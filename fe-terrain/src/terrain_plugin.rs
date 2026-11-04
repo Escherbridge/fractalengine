@@ -14,27 +14,27 @@ use crate::delta_viz::DeltaLattice;
 use crate::iot::{TrackRouteMap, TrackStyleMap};
 use crate::layers::{LayerId, LayerStack, LayerType};
 use crate::lod_ring::{
-    capture_chunk_allowance, chunk_retained_by_any_focus, max_ring_radius_for_budget,
-    nearest_focus_index, ring_offsets, ring_radius_tiles, spawn_despawn_radii,
-    stale_for_nearest_focus, upsample_factor_for_height, view_radius_world, FocusReach,
-    DESPAWN_HYSTERESIS, MAX_STREAMING_FOCI, MAX_UPSAMPLE, VIEW_RADIUS_FACTOR, ZOOM_BASE_HEIGHT_M,
+    DESPAWN_HYSTERESIS, FocusReach, MAX_STREAMING_FOCI, MAX_UPSAMPLE, VIEW_RADIUS_FACTOR,
+    ZOOM_BASE_HEIGHT_M, capture_chunk_allowance, chunk_retained_by_any_focus,
+    max_ring_radius_for_budget, nearest_focus_index, ring_offsets, ring_radius_tiles,
+    spawn_despawn_radii, stale_for_nearest_focus, upsample_factor_for_height, view_radius_world,
 };
 use crate::mesh::interp::upsample_bilinear;
 use crate::mesh::terrain::terrain_mesh;
 use crate::mesh::track::{
-    prepare_track_zone, track_centroid, track_mesh, track_zone_mesh_prepared,
-    ColorMode as TrackColorMode, PreparedTrackZone,
+    ColorMode as TrackColorMode, PreparedTrackZone, prepare_track_zone, track_centroid, track_mesh,
+    track_zone_mesh_prepared,
 };
 use crate::petal_binding::{
-    apply_terrain_assignments, mean_tile_elevation, ActivePetalTerrain, ActiveTileSource,
-    TerrainAssignmentMsg,
+    ActivePetalTerrain, ActiveTileSource, TerrainAssignmentMsg, apply_terrain_assignments,
+    mean_tile_elevation,
 };
 use crate::projection::Projection;
 use crate::scale::{scale_elevations, scale_local, scaled_tile_size, world_to_real_height};
-use crate::sculpt::{lattice_grid_step, region_grid_step, EARTHWORK_LATTICE};
+use crate::sculpt::{EARTHWORK_LATTICE, lattice_grid_step, region_grid_step};
 use crate::tiles::{
-    decode_png_pixels, ElevationDecoder, LoadedTile, Residency, TerrainRgbDecoder,
-    TerrariumDecoder, TileBundleDemand, TileCoord, TileResidency,
+    ElevationDecoder, LoadedTile, Residency, TerrainRgbDecoder, TerrariumDecoder, TileBundleDemand,
+    TileCoord, TileResidency, decode_png_pixels,
 };
 use fe_renderer::camera::{CaptureCamera, StreamingFocus};
 use fe_renderer::terrain_height::{HeightTile, TerrainHeightField};
@@ -340,6 +340,7 @@ pub struct ProposalPreviewEntity;
 #[derive(Component)]
 pub struct EarthworkBaked {
     pub revision: u64,
+    pub height_generation: Option<u64>,
 }
 
 /// Pristine (pre-bake) local vertex Y snapshot for a chunk mesh, taken before
@@ -353,6 +354,7 @@ pub struct PristineChunkHeights(pub Vec<f32>);
 pub struct EarthworkBakeState {
     last_revision: Option<u64>,
     warned_revision: Option<u64>,
+    last_height_generation: Option<u64>,
 }
 
 /// Configuration for terrain LOD thresholds.
@@ -595,6 +597,7 @@ impl Plugin for TerrainPlugin {
             .init_resource::<ProposalOverlayBudget>()
             .init_resource::<HeatmapOverlayToggle>()
             .init_resource::<EarthworkBakeState>()
+            .init_resource::<fe_renderer::terrain_overlay::EarthworkVolumeState>()
             .init_resource::<BakedHeatmapRenderState>()
             .init_resource::<HeatmapVertexUsage>()
             .insert_resource(LayerStack::new())
@@ -1212,7 +1215,9 @@ fn render_gpx_tracks(
         // pen_curve_tool_20260722 (Phase 2): flatten per-anchor bezier handles into
         // the dense ribbon polyline (all-corner tracks pass through unchanged).
         let style = style_map.style_for(&track.track_node_id);
-        let Some(mut geometry) = RenderedTrackGeometry::prepare(&route.points, style) else { continue; };
+        let Some(mut geometry) = RenderedTrackGeometry::prepare(&route.points, style) else {
+            continue;
+        };
         let positions = &geometry.positions;
 
         // FR-3 thickness: the ribbon builder extrudes a width-aware triangle
@@ -1846,6 +1851,7 @@ fn bake_earthwork_regions(
     active: Res<ActivePetalTerrain>,
     height_field: Option<Res<TerrainHeightField>>,
     mut state: ResMut<EarthworkBakeState>,
+    mut volume_state: ResMut<fe_renderer::terrain_overlay::EarthworkVolumeState>,
     chunks: Query<
         (
             Entity,
@@ -1864,6 +1870,9 @@ fn bake_earthwork_regions(
     let revision_changed = state.last_revision != Some(revision);
     state.last_revision = Some(revision);
 
+    let height_generation = height_field.as_ref().map(|field| field.generation());
+    let height_changed = state.last_height_generation != height_generation;
+    state.last_height_generation = height_generation;
     let config = active.config.as_ref().filter(|c| c.enabled);
     let regions = config.map(config_earthwork_regions).unwrap_or_default();
 
@@ -1884,7 +1893,8 @@ fn bake_earthwork_regions(
 
     let mut baked_any = false;
     for (entity, tx, mesh3d, baked, pristine) in chunks.iter() {
-        if baked.is_some_and(|b| b.revision == revision) {
+        if baked.is_some_and(|b| b.revision == revision && b.height_generation == height_generation)
+        {
             continue; // up to date for this revision
         }
         let Some(mesh) = meshes.get(&mesh3d.0) else {
@@ -1894,7 +1904,10 @@ fn bake_earthwork_regions(
             .attribute(Mesh::ATTRIBUTE_POSITION)
             .and_then(|a| a.as_float3())
         else {
-            commands.entity(entity).insert(EarthworkBaked { revision });
+            commands.entity(entity).insert(EarthworkBaked {
+                revision,
+                height_generation,
+            });
             continue;
         };
         // Working copy restored to pristine Y (the snapshot is the pre-bake truth).
@@ -1954,25 +1967,74 @@ fn bake_earthwork_regions(
                 baked_any = true;
             }
         }
-        commands.entity(entity).insert(EarthworkBaked { revision });
+        commands.entity(entity).insert(EarthworkBaked {
+            revision,
+            height_generation,
+        });
     }
 
-    // Publish real-unit volumes once per revision (and again as late chunks
-    // extend field coverage — fe-ui's changed-value gate absorbs the re-fires).
-    if (revision_changed || baked_any) && !regions.is_empty() {
-        let petal_id = active.petal_id.clone().unwrap_or_default();
-        let world_scale = config.map(|c| c.effective_world_scale()).unwrap_or(1.0);
+    if revision_changed || height_changed || baked_any {
+        use fe_renderer::terrain_overlay::{
+            EarthworkVolumePair, EarthworkVolumeReport, EarthworkVolumeSource,
+        };
+        volume_state.reports.clear();
+        volume_state.source = None;
+        let Some(config) = config else {
+            return;
+        };
+        let Some(petal_id) = active.petal_id.as_ref() else {
+            return;
+        };
+        let Ok(encoded) = serde_json::to_vec(config) else {
+            return;
+        };
+        let world_scale = config.effective_world_scale();
+        let source = EarthworkVolumeSource {
+            petal_id: petal_id.clone(),
+            terrain_revision: revision,
+            height_generation: height_generation.unwrap_or(0),
+            config_fingerprint:
+                fe_renderer::terrain_overlay::EarthworkTerrainBinding::fingerprint_config(&encoded),
+            raw_source_fingerprint: active.raw_source_fingerprint,
+            assignment_fingerprint: active.assignment_fingerprint,
+            world_scale,
+        };
+        volume_state.source = Some(source.clone());
+        let valid_scale = fe_renderer::terrain_overlay::EarthworkTerrainBinding::valid_scale(
+            config.world_scale,
+            config.scale_bounds,
+        ) && active.input_scale_valid
+            && active.raw_source_fingerprint.is_some()
+            && active.assignment_fingerprint.is_some();
+        if regions.len() > 256 {
+            return;
+        }
         for region in &regions {
-            // Standalone per-region figure (unrelated to the composite one-truth
-            // concern above): each region's own grid step from its own bounds.
+            if region.id.len() > 512
+                || regions.iter().filter(|other| other.id == region.id).count() != 1
+            {
+                continue;
+            }
+            let Ok(encoded) = serde_json::to_vec(region) else {
+                continue;
+            };
             let grid_step = region_grid_step(region.footprint_shape().bounds());
             let cf = region.cut_fill(&base, grid_step, world_scale);
-            reports.write(fe_renderer::terrain_overlay::EarthworkVolumeReport {
-                petal_id: petal_id.clone(),
+            let report = EarthworkVolumeReport {
+                source: source.clone(),
                 region_id: region.id.clone(),
-                cut_m3: cf.cut_m3,
-                fill_m3: cf.fill_m3,
-            });
+                region_fingerprint: *blake3::hash(&encoded).as_bytes(),
+                expected_cells: cf.expected_cells,
+                sampled_cells: cf.sampled_cells,
+                pair: (valid_scale && cf.complete()).then_some(EarthworkVolumePair {
+                    cut_m3: cf.cut_m3,
+                    fill_m3: cf.fill_m3,
+                }),
+            };
+            volume_state
+                .reports
+                .insert(region.id.clone(), report.clone());
+            reports.write(report);
         }
     }
 }
@@ -2933,6 +2995,9 @@ mod tests {
             .insert_resource(LayerStack::new())
             .insert_resource(TerrainHeightField::default())
             .insert_resource(ActivePetalTerrain {
+                raw_source_fingerprint: None,
+                assignment_fingerprint: None,
+                input_scale_valid: false,
                 petal_id: Some("petal".into()),
                 config: Some(TerrainConfig {
                     enabled: true,
@@ -3050,24 +3115,69 @@ mod tests {
         }
         {
             use crate::iot::animation::{TimestampedRoutePoint, TrackRoute};
-            app.init_resource::<TrackRouteMap>().init_resource::<TrackStyleMap>()
+            app.init_resource::<TrackRouteMap>()
+                .init_resource::<TrackStyleMap>()
                 .add_systems(Update, render_gpx_tracks);
             let points = vec![[0.0, 0.0, 0.0], [8.0, 0.0, 0.0], [4.0, 0.0, 6.0]]
-                .into_iter().map(|position| TimestampedRoutePoint { position, ..Default::default() }).collect();
-            app.world_mut().resource_mut::<TrackRouteMap>().routes.insert("footprint".into(), TrackRoute { points, total_duration_secs: 0.0 });
-            app.world_mut().resource_mut::<TrackStyleMap>().styles.insert("footprint".into(), crate::iot::TrackStyle { closed: true, width: 1.0, ..Default::default() });
-            let line = app.world_mut().spawn(GpxTrackLine { track_node_id: "footprint".into() }).id();
+                .into_iter()
+                .map(|position| TimestampedRoutePoint {
+                    position,
+                    ..Default::default()
+                })
+                .collect();
+            app.world_mut()
+                .resource_mut::<TrackRouteMap>()
+                .routes
+                .insert(
+                    "footprint".into(),
+                    TrackRoute {
+                        points,
+                        total_duration_secs: 0.0,
+                    },
+                );
+            app.world_mut()
+                .resource_mut::<TrackStyleMap>()
+                .styles
+                .insert(
+                    "footprint".into(),
+                    crate::iot::TrackStyle {
+                        closed: true,
+                        width: 1.0,
+                        ..Default::default()
+                    },
+                );
+            let line = app
+                .world_mut()
+                .spawn(GpxTrackLine {
+                    track_node_id: "footprint".into(),
+                })
+                .id();
             app.update();
             let mesh = app.world().get::<Mesh3d>(line).unwrap().clone();
             let geometry = app.world().get::<RenderedTrackGeometry>(line).unwrap();
             assert!(geometry.matches_mesh(&mesh));
             assert!(!geometry.zone().unwrap().triangle_indices.is_empty());
             assert_eq!(geometry.source_points()[0].position, [0.0; 3]);
-            app.world_mut().resource_mut::<TrackRouteMap>().routes.get_mut("footprint").unwrap().points[0].position[0] = 99.0;
-            app.world_mut().resource_mut::<TrackStyleMap>().styles.get_mut("footprint").unwrap().width = 5.0;
+            app.world_mut()
+                .resource_mut::<TrackRouteMap>()
+                .routes
+                .get_mut("footprint")
+                .unwrap()
+                .points[0]
+                .position[0] = 99.0;
+            app.world_mut()
+                .resource_mut::<TrackStyleMap>()
+                .styles
+                .get_mut("footprint")
+                .unwrap()
+                .width = 5.0;
             app.update();
             let geometry = app.world().get::<RenderedTrackGeometry>(line).unwrap();
-            assert_eq!(geometry.source_points()[0].position, [0.0; 3], "a later live-map update cannot relabel an existing mesh's source");
+            assert_eq!(
+                geometry.source_points()[0].position,
+                [0.0; 3],
+                "a later live-map update cannot relabel an existing mesh's source"
+            );
             assert_eq!(geometry.style().width, 1.0);
             assert!(geometry.matches_mesh(app.world().get::<Mesh3d>(line).unwrap()));
         }
@@ -3380,6 +3490,9 @@ mod tests {
             .insert_resource(LayerStack::new())
             .insert_resource(TerrainHeightField::default())
             .insert_resource(ActivePetalTerrain {
+                raw_source_fingerprint: None,
+                assignment_fingerprint: None,
+                input_scale_valid: false,
                 petal_id: Some("petal".into()),
                 config: Some(TerrainConfig {
                     enabled: true,
@@ -3543,6 +3656,9 @@ mod tests {
             .insert_resource(LayerStack::new())
             .insert_resource(TerrainHeightField::default())
             .insert_resource(ActivePetalTerrain {
+                raw_source_fingerprint: None,
+                assignment_fingerprint: None,
+                input_scale_valid: false,
                 petal_id: Some("petal".into()),
                 config: Some(TerrainConfig {
                     enabled: true,
@@ -3924,6 +4040,9 @@ mod tests {
             .init_resource::<CapturedVolumeResults>()
             .insert_resource(TerrainHeightField::default())
             .insert_resource(ActivePetalTerrain {
+                raw_source_fingerprint: None,
+                assignment_fingerprint: None,
+                input_scale_valid: false,
                 petal_id: Some(petal_id.into()),
                 config: Some(TerrainConfig {
                     enabled: true,
@@ -4064,6 +4183,87 @@ mod tests {
             app.world().resource::<CapturedVolumeResults>().0.len(),
             count,
             "unbinding discards the retained request even if the same petal is rebound"
+        );
+        // The persistence producer must remeasure on coverage changes with no resident mesh.
+        use fe_renderer::terrain_overlay::{EarthworkVolumeReport, EarthworkVolumeState};
+        let mut bake = App::new();
+        bake.add_plugins(MinimalPlugins)
+            .init_resource::<Assets<Mesh>>()
+            .init_resource::<TerrainHeightField>()
+            .init_resource::<EarthworkBakeState>()
+            .init_resource::<EarthworkVolumeState>()
+            .add_message::<EarthworkVolumeReport>()
+            .insert_resource(ActivePetalTerrain {
+                raw_source_fingerprint: Some([1; 32]),
+                assignment_fingerprint: Some([2; 32]),
+                input_scale_valid: true,
+                petal_id: Some("measured-petal".into()),
+                revision: 1,
+                config: Some(TerrainConfig {
+                    enabled: true,
+                    proposals: vec![TerrainProposal {
+                        material: Some("earth".into()),
+                        ..square_proposal("measured-region", TerrainOp::Raise, 2.0)
+                    }],
+                    ..Default::default()
+                }),
+            })
+            .add_systems(Update, bake_earthwork_regions);
+        bake.update();
+        let missing = &bake.world().resource::<EarthworkVolumeState>().reports["measured-region"];
+        assert!(missing.expected_cells > 0);
+        assert_eq!(missing.sampled_cells, 0);
+        assert!(missing.pair.is_none());
+        let missing_source = missing.source.clone();
+        bake.world_mut()
+            .resource_mut::<TerrainHeightField>()
+            .insert((10, 0, 0), flat_tile(Vec3::ZERO, 20.0));
+        bake.update();
+        let ready = &bake.world().resource::<EarthworkVolumeState>().reports["measured-region"];
+        assert!(
+            ready.pair.is_some(),
+            "height arrival remeasures even when there is no mesh to bake"
+        );
+        assert_ne!(
+            ready.source.height_generation,
+            missing_source.height_generation
+        );
+        assert_eq!(ready.expected_cells, ready.sampled_cells);
+        {
+            let mut active = bake.world_mut().resource_mut::<ActivePetalTerrain>();
+            active.config.as_mut().unwrap().proposals[0].delta = Some(0.0);
+            active.revision += 1;
+        }
+        bake.update();
+        let zero = &bake.world().resource::<EarthworkVolumeState>().reports["measured-region"];
+        let pair = zero
+            .pair
+            .expect("complete zero is measured, not unavailable");
+        assert_eq!((pair.cut_m3, pair.fill_m3), (0.0, 0.0));
+        bake.world_mut()
+            .resource_mut::<TerrainHeightField>()
+            .clear();
+        bake.world_mut()
+            .resource_mut::<TerrainHeightField>()
+            .insert((10, 0, 0), flat_tile(Vec3::ZERO, 5.0));
+        bake.update();
+        let partial = &bake.world().resource::<EarthworkVolumeState>().reports["measured-region"];
+        assert!(partial.sampled_cells > 0 && partial.sampled_cells < partial.expected_cells);
+        assert!(partial.pair.is_none());
+        {
+            let mut active = bake.world_mut().resource_mut::<ActivePetalTerrain>();
+            active.petal_id = Some("foreign-petal".into());
+            active.revision += 1;
+        }
+        bake.update();
+        assert_eq!(
+            bake.world()
+                .resource::<EarthworkVolumeState>()
+                .source
+                .as_ref()
+                .unwrap()
+                .petal_id,
+            "foreign-petal"
         );
     }
 
@@ -4310,6 +4510,9 @@ mod tests {
             .insert_resource(LayerStack::new())
             .insert_resource(TerrainHeightField::default())
             .insert_resource(ActivePetalTerrain {
+                raw_source_fingerprint: None,
+                assignment_fingerprint: None,
+                input_scale_valid: false,
                 petal_id: Some("petal".into()),
                 config: Some(TerrainConfig {
                     enabled: true,

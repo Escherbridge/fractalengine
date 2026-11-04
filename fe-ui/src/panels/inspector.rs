@@ -254,6 +254,11 @@ fn inspector_tab_body(
             ui.add_space(2.0);
             inspector_url_meta_section(ui, inspector, node_mgr, ui_mgr, local_role, hierarchy);
             ui.add_space(2.0);
+            if !inspector.node_properties_loading && inspector.node_properties.get("node_kind").and_then(|value| value.as_str()) == Some("earthwork_region") {
+                if let Some(primary) = node_mgr.primary() {
+                    ui.label(ui_mgr.earthwork_volumes.status(&primary.node_id));
+                }
+            }
             inspector_properties_section(ui, inspector, node_mgr, ui_mgr);
             ui.add_space(2.0);
             inspector_schema_section(ui, inspector, node_mgr, local_role, db_tx, nav, ui_mgr);
@@ -4648,6 +4653,7 @@ mod tests {
                 ],
                 groups: vec![],
                 petal_snapshot: "fixture-before".into(),
+                terrain_source_fingerprint: None,
                 world_scale: 1.0,
             };
             use crate::editor_batch::ui::{property_presence, PropertyPresence};

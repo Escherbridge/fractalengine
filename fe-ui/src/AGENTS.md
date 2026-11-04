@@ -1489,3 +1489,12 @@ authorization. The host owns exact per-window queue consumption; existing
 NodeManager/Inspector/tool and checked-write routes execute actual clicks. Initial
 support is Click+None only; Focus/modal/text/scroll support is not claimed. See
 `native_accessibility/AGENTS.md` for confirmation, neutral modifiers and reset.
+## Background earthwork measurements
+
+The independent VolumePersistence Resource is the bounded background owner;
+UiManager.earthwork_volumes is its derived status view only. It reads
+terrain-owned readiness/source witnesses and uses existing checked single-node
+Properties batches for atomic cut/fill saves. NodeManager remains the only
+selection authority; this service does not record user Undo. Inspector status
+distinguishes current unavailable/pending measurements from retained stored values.
+See actions/AGENTS.md section earthwork-volume-ownership for lifecycle and bounds.

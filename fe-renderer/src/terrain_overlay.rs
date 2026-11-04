@@ -100,15 +100,66 @@ pub fn brush_overlay_positions(
         .collect()
 }
 
-/// Per-region cut/fill volume in real m³ — written by fe-terrain's earthwork
-/// bake, consumed by fe-ui persistence (the fe-renderer-as-shared-seam idiom;
-/// see `src/AGENTS.md` §terrain-overlay).
-#[derive(Message, Debug, Clone, PartialEq)]
-pub struct EarthworkVolumeReport {
-    pub petal_id: String,
-    pub region_id: String,
+/// Complete finite real-unit pair from one fully sampled integration lattice.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct EarthworkVolumePair {
     pub cut_m3: f64,
     pub fill_m3: f64,
+}
+
+/// Operational terrain source used by the volume sampler, not a DB authority grant.
+#[derive(Debug, Clone, PartialEq)]
+pub struct EarthworkVolumeSource {
+    pub petal_id: String,
+    pub terrain_revision: u64,
+    pub height_generation: u64,
+    pub config_fingerprint: [u8; 32],
+    pub raw_source_fingerprint: Option<[u8; 32]>,
+    pub assignment_fingerprint: Option<[u8; 32]>,
+    pub world_scale: f64,
+}
+
+/// Per-region sample coverage; unavailable never carries a numeric zero pair.
+#[derive(Message, Debug, Clone, PartialEq)]
+pub struct EarthworkVolumeReport {
+    pub source: EarthworkVolumeSource,
+    pub region_id: String,
+    pub region_fingerprint: [u8; 32],
+    pub expected_cells: u64,
+    pub sampled_cells: u64,
+    pub pair: Option<EarthworkVolumePair>,
+}
+
+/// Latest terrain-owned source and region measurements, replaced as one frame.
+#[derive(Resource, Debug, Default)]
+pub struct EarthworkVolumeState {
+    pub source: Option<EarthworkVolumeSource>,
+    pub reports: std::collections::HashMap<String, EarthworkVolumeReport>,
+}
+
+/// Host binding between a confirmed raw DB terrain document and its parsed assignment.
+#[derive(Resource, Debug, Default)]
+pub struct EarthworkTerrainBinding {
+    pub petal_id: Option<String>,
+    pub raw_fingerprint: Option<[u8; 32]>,
+    pub config_fingerprint: Option<[u8; 32]>,
+    pub input_scale_valid: bool,
+}
+
+impl EarthworkTerrainBinding {
+    /// Refuse unusable scale inputs before any sanitizer can turn them into apparent meters.
+    pub fn valid_scale(scale: f64, bounds: Option<[f64; 2]>) -> bool {
+        scale.is_finite()
+            && scale > 0.0
+            && bounds.is_none_or(|[min, max]| {
+                min.is_finite() && max.is_finite() && min > 0.0 && max >= min
+            })
+    }
+
+    /// Fingerprint the exact parsed assignment encoding shared by host and producer.
+    pub fn fingerprint_config(encoded: &[u8]) -> [u8; 32] {
+        *blake3::hash(encoded).as_bytes()
+    }
 }
 
 // ---------------------------------------------------------------------------

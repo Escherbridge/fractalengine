@@ -13,6 +13,11 @@ pub fn clear_read_models(world: &mut World) {
     for (mut context, mut input) in contexts.iter_mut(world) {
         crate::native_accessibility::retire_input(context.get_mut(), &mut input.0);
     }
+    if let Some(mut volumes) =
+        world.get_resource_mut::<crate::actions::earthwork_volumes::VolumePersistence>()
+    {
+        volumes.retire_for_terminal_reset();
+    }
     if let Some(mut assets) = world.get_resource_mut::<crate::scene_assets::SceneAssets>() {
         assets.retire_for_terminal_reset();
     }
@@ -62,9 +67,19 @@ pub fn clear_read_models(world: &mut World) {
     reset::<crate::settings::PetalRenderOverride>(world);
 }
 
-pub fn clear_scene_asset_outcomes_after_database_join(world: &mut World) {
+pub fn clear_retained_outcomes_after_database_join(world: &mut World) {
+    reset::<crate::actions::earthwork_volumes::VolumePersistence>(world);
     reset::<crate::scene_assets::SceneAssets>(world);
     if let Some(mut ui) = world.get_resource_mut::<crate::actions::UiManager>() {
         ui.scene_asset_view = Default::default();
+    }
+}
+
+/// Drain only the exact retired owner; terminal results never project current UI.
+pub fn observe_terminal_db_result(world: &mut World, result: &fe_runtime::messages::DbResult) {
+    if let Some(mut volumes) =
+        world.get_resource_mut::<crate::actions::earthwork_volumes::VolumePersistence>()
+    {
+        volumes.drain_terminal_result(result);
     }
 }

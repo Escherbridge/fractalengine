@@ -1967,6 +1967,9 @@ mod tests {
         // The persisted origin elevation the runtime grounding superseded.
         config.origin = GeoProjection::new(47.5, -121.5, 0.0);
         h.app.insert_resource(ActivePetalTerrain {
+            raw_source_fingerprint: None,
+            assignment_fingerprint: None,
+            input_scale_valid: false,
             petal_id: Some("p".into()),
             config: Some(config),
             revision: 1,
@@ -2734,6 +2737,9 @@ mod tests {
         assert!(stale.get("world_aabb").is_none());
         scene.petal_id = Some("p".into());
         let foreign = ActivePetalTerrain {
+            raw_source_fingerprint: None,
+            assignment_fingerprint: None,
+            input_scale_valid: false,
             petal_id: Some("foreign".into()),
             ..Default::default()
         };

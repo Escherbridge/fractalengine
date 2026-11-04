@@ -393,6 +393,7 @@ mod bevy_flows {
     fn assign(app: &mut App, config: TerrainConfig) {
         app.world_mut()
             .write_message(TerrainAssignmentMsg(PetalTerrainAssignment {
+                raw_source_fingerprint: None,
                 petal_id: "petal-lazy".into(),
                 config: Some(config),
             }));

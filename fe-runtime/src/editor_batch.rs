@@ -62,6 +62,9 @@ pub struct EditorBatchCapture {
     pub groups: Vec<VisibilityGroupDto>,
     pub petal_snapshot: String,
     pub world_scale: f32,
+    /// Complete captured raw terrain identity; absent sources remain unknown.
+    #[serde(default)]
+    pub terrain_source_fingerprint: Option<[u8; 32]>,
 }
 
 /// Affine delta: pivot, per-axis scale, unit rotation, then translation.
@@ -179,4 +182,26 @@ pub struct EditorBatchResolution {
     pub request_id: String,
     pub receipt: Option<EditorBatchReceipt>,
     pub current: EditorBatchCapture,
+}
+
+/// Canonical complete JSON terrain identity; missing/nonobject/oversized sources stay unknown.
+pub fn terrain_source_fingerprint(value: &Value) -> Option<[u8; 32]> {
+    fn canonical(value: &Value) -> Value {
+        match value {
+            Value::Object(map) => {
+                let sorted: std::collections::BTreeMap<_, _> = map
+                    .iter()
+                    .map(|(key, value)| (key.clone(), canonical(value)))
+                    .collect();
+                serde_json::to_value(sorted).expect("JSON values")
+            }
+            Value::Array(values) => Value::Array(values.iter().map(canonical).collect()),
+            other => other.clone(),
+        }
+    }
+    if !value.is_object() {
+        return None;
+    }
+    let bytes = serde_json::to_vec(&canonical(value)).ok()?;
+    (bytes.len() <= MAX_EDITOR_BATCH_BYTES).then(|| *blake3::hash(&bytes).as_bytes())
 }

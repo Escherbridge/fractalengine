@@ -58,22 +58,32 @@ impl HeightTile {
 #[derive(Resource, Default)]
 pub struct TerrainHeightField {
     tiles: HashMap<(u8, u32, u32), HeightTile>,
+    generation: u64,
 }
 
 impl TerrainHeightField {
     /// Insert (or replace) the height tile for `key`.
     pub fn insert(&mut self, key: (u8, u32, u32), tile: HeightTile) {
         self.tiles.insert(key, tile);
+        self.generation = self.generation.wrapping_add(1);
     }
 
     /// Remove the height tile for `key` (no-op when absent).
     pub fn remove(&mut self, key: &(u8, u32, u32)) {
-        self.tiles.remove(key);
+        if self.tiles.remove(key).is_some() {
+            self.generation = self.generation.wrapping_add(1);
+        }
     }
 
     /// Drop every resident tile (petal switch / assignment change).
     pub fn clear(&mut self) {
         self.tiles.clear();
+        self.generation = self.generation.wrapping_add(1);
+    }
+
+    /// Source generation changes on every inserted, removed or cleared height tile.
+    pub fn generation(&self) -> u64 {
+        self.generation
     }
 
     /// Number of resident tiles.

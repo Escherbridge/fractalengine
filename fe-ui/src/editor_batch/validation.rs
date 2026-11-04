@@ -11,7 +11,7 @@ fn equal<T: serde::Serialize>(left: &T, right: &T) -> bool {
         .is_some_and(|(left, right)| left == right)
 }
 
-pub(super) fn capture(
+pub(crate) fn capture(
     value: &EditorBatchCapture,
     scope: &str,
     petal: &str,
@@ -99,6 +99,7 @@ pub(super) fn same_state(current: &EditorBatchCapture, expected: &EditorBatchCap
     current.scope == expected.scope
         && current.petal_id == expected.petal_id
         && current.world_scale == expected.world_scale
+        && current.terrain_source_fingerprint == expected.terrain_source_fingerprint
         && equal(&current.members, &expected.members)
         && equal(&current.groups, &expected.groups)
 }

@@ -28,6 +28,11 @@ use crate::navigation_manager::NavigationManager;
 #[derive(SystemParam)]
 pub(super) struct DescriptorCaches<'w, 's> {
     scene_assets: Option<ResMut<'w, crate::scene_assets::SceneAssets>>,
+    earthwork_owner: Option<ResMut<'w, crate::actions::earthwork_volumes::VolumePersistence>>,
+    earthwork_volumes: Option<Res<'w, fe_renderer::terrain_overlay::EarthworkVolumeState>>,
+    earthwork_binding: Option<Res<'w, fe_renderer::terrain_overlay::EarthworkTerrainBinding>>,
+    height_field: Option<Res<'w, fe_renderer::terrain_height::TerrainHeightField>>,
+    terminal: Option<Res<'w, fe_runtime::maintenance::TerminalMode>>,
     committed_hierarchy_pending: Local<'s, bool>,
     undo: Option<ResMut<'w, crate::undo::UndoState>>,
     selection_sources: crate::editor_batch::RenderedSources<'w, 's>,
@@ -209,6 +214,103 @@ pub(super) fn apply_db_results(
         if matches!(result, DbResult::SceneAssetNeeded { .. } | DbResult::SceneAssetAdoptionCandidate { .. } | DbResult::SceneAssetAdopted { .. }) {
             if let Some(assets) = caches.scene_assets.as_deref_mut() {
                 assets.route_db(result, &verse_mgr, &nav, &node_mgr, &local_role, caches.time.elapsed_secs_f64());
+            }
+            continue;
+        }
+        if caches
+            .earthwork_owner
+            .as_ref()
+            .is_some_and(|owner| owner.owns_result(result))
+        {
+            let mut projected = false;
+            let projection = match (
+                &caches.earthwork_owner,
+                &caches.earthwork_volumes,
+                &caches.earthwork_binding,
+            ) {
+                (Some(owner), Some(volumes), Some(binding)) => {
+                    let live = crate::actions::earthwork_volumes::Live {
+                        nav: &nav,
+                        map: &caches.earthwork_map,
+                        terrain: &petal_map,
+                        volumes,
+                        binding,
+                        manager: &verse_mgr,
+                        role: &local_role,
+                        raw_source: petal_map.confirmed_terrain_fingerprint(),
+                        running: caches
+                            .terminal
+                            .as_ref()
+                            .is_none_or(|mode| !mode.is_terminal()),
+                        height_generation: caches
+                            .height_field
+                            .as_ref()
+                            .map(|field| field.generation()),
+                    };
+                    owner.projection_receipt(result, &live).and_then(|receipt| {
+                        committed::external_editor_batch(receipt, &verse_mgr).ok()
+                    })
+                }
+                _ => None,
+            };
+            if let Some(projection) = projection {
+                if let Ok(current) = committed::editor_batch(&projection, &verse_mgr) {
+                    for current in current {
+                        verse_mgr
+                            .committed_versions
+                            .insert(current.node.node_id.clone(), current.history_version);
+                        verse_mgr.admit_local_scene(
+                            &current.node.node_id,
+                            current.history_version,
+                            &current.properties,
+                            current.asset_id.as_deref(),
+                        );
+                        properties::handle_node_properties_loaded(
+                            &current.node.node_id,
+                            Some(&projection.petal_id),
+                            &current.properties,
+                            &mut path_state,
+                            &node_mgr,
+                            &mut inspector,
+                            &mut caches.primitive,
+                            &mut caches.path_asset,
+                            &mut caches.stamp_state,
+                            &mut caches.earthwork_map,
+                            &mut caches.visibility,
+                            &mut caches.callout_map,
+                        );
+                    }
+                    projected = true;
+                }
+            }
+            if let Some(owner) = caches.earthwork_owner.as_deref_mut() {
+                if let (Some(volumes), Some(binding)) =
+                    (&caches.earthwork_volumes, &caches.earthwork_binding)
+                {
+                    let live = crate::actions::earthwork_volumes::Live {
+                        nav: &nav,
+                        map: &caches.earthwork_map,
+                        terrain: &petal_map,
+                        volumes,
+                        binding,
+                        manager: &verse_mgr,
+                        role: &local_role,
+                        raw_source: petal_map.confirmed_terrain_fingerprint(),
+                        running: caches
+                            .terminal
+                            .as_ref()
+                            .is_none_or(|mode| !mode.is_terminal()),
+                        height_generation: caches
+                            .height_field
+                            .as_ref()
+                            .map(|field| field.generation()),
+                    };
+                    owner.route(result, &live, caches.time.elapsed_secs_f64(), projected);
+                } else {
+                    owner.retire_for_terminal_reset();
+                    owner.drain_terminal_result(result);
+                }
+                owner.update_view(&mut ui_mgr.earthwork_volumes);
             }
             continue;
         }
@@ -1662,7 +1764,7 @@ mod tests {
         let mut ui = UiManager::default();
         let mut path_state = PathEditorState::default();
         let mut map = crate::actions::terrain_proposal::EarthworkNodeMap::default();
-        map.stash_pending_material("r2", "gravel");
+        map.stash_pending_material("p1", "r2", "gravel");
         nodes::handle_node_created(
             "node-7",
             "p1",
@@ -1678,7 +1780,7 @@ mod tests {
             &mut map,
             &mut crate::actions::dimension_callout::DimensionCalloutMap::default(),
         );
-        assert_eq!(map.node_for("r2"), Some("node-7"));
+        assert_eq!(map.node_for("p1", "r2"), Some("node-7"));
         let mut keys = Vec::new();
         while let Ok(cmd) = rx.try_recv() {
             if let DbCommand::SetNodeProperty {
@@ -1698,12 +1800,11 @@ mod tests {
                 keys.push(key);
             }
         }
+        assert!(!keys.iter().any(|key| key == "cut_volume_m3" || key == "fill_volume_m3"), "unavailable initial volumes have no authoritative numeric keys");
         for expected in [
             "node_kind",
             "material",
             "region_id",
-            "cut_volume_m3",
-            "fill_volume_m3",
         ] {
             assert!(keys.iter().any(|k| k == expected), "missing key {expected}");
         }
@@ -3269,6 +3370,7 @@ mod tests {
         assert!(app.world().get_entity(ordinary).is_err());
         assert!(!app.world().resource::<super::super::PrimitiveDescriptorCache>().is_classified("cold-node"));
         assert!(app.world().resource::<crate::visibility::VisibilityState>().node_groups("cold-node").is_empty());
+        crate::actions::earthwork_volumes::tests::assert_dispatcher_ownership(&mut app, &db_commands);
     }
 
     #[test]

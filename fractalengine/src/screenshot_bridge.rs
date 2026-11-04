@@ -449,6 +449,9 @@ mod tests {
             verse("b", "pb"),
         ]));
         world.insert_resource(ActivePetalTerrain {
+            raw_source_fingerprint: None,
+            assignment_fingerprint: None,
+            input_scale_valid: false,
             petal_id: Some("pb".into()),
             config: Some(fe_terrain::config::TerrainConfig::default()),
             revision: 1,

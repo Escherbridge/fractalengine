@@ -126,7 +126,7 @@ fe-renderer under `render`. The proposal *geometry* + records stay in fe-terrain
   `BRUSH_OVERLAY_RGBA`. fe-ui consumes them via immediate-mode `Gizmos`
   (`sculpt_cursor.rs`), so the once-planned `BrushOverlay` entity marker was
   removed (no entity lifecycle, no dead code).
-- `EarthworkVolumeReport { petal_id, region_id, cut_m3, fill_m3 }` (bevy
+- `EarthworkVolumeReport` with source, lattice coverage and optional complete pair (bevy
   `Message`): the fe-renderer-as-shared-seam idiom — written by fe-terrain's
   earthwork bake, consumed by fe-ui's volume persistence. Both sides
   `add_message` it (idempotent); neither may dep the other.
@@ -278,3 +278,20 @@ full subtree world bounds and an explicit geometry method. Axis-aligned first-pa
 conservative GLB/rotated-object bounds. `ObjectImpactReport` carries positive changed-space volume overlaps and
 unresolved geometry, checked/omitted counts and the scene revision. It does not claim arbitrary closed-mesh
 intersection, surface-only contact or exact general solid volume. Material metadata never comes from PBR textures.
+
+## Earthwork measurement readiness
+
+EarthworkVolumeReport carries an operational source, exact region fingerprint,
+expected/finite sampled cell counts and an optional complete pair. None means
+unavailable, never numeric zero. A full finite zero pair remains valid. The
+retained EarthworkVolumeState is terrain-owned and bounded to256 regions; the UI
+coalesces its current reports rather than treating transient messages as current.
+TerrainHeightField generation changes on insert/remove/clear and is read again
+at UI admission, so a late field mutation invalidates a not-yet-rebaked report.
+
+EarthworkTerrainBinding links one confirmed raw DB document with its parsed
+assignment. The raw fingerprint travels on that same assignment/active revision.
+Its parsed fingerprint stays separate from the reconciled operational config: a
+loaded tileset may supply decoding, scale bounds and origin grounding. The UI
+compares all three identities without decoding fe-terrain types. Missing source
+identity and invalid original scale cannot become a persistable measurement.

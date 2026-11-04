@@ -26,6 +26,12 @@ use bevy::prelude::*;
 #[derive(Debug, Default, Resource)]
 pub struct TilesetDownloads(pub DownloadProgressMap);
 
+/// Confirmed document identity, changed only by the actual terrain-document seams.
+#[derive(Debug, Clone, Default)]
+pub struct ConfirmedTerrainSource {
+    fingerprint: Option<[u8; 32]>,
+}
+
 /// Which tileset(s) the active petal uses as its map, plus its world scale.
 #[derive(Debug, Clone, Resource)]
 pub struct PetalMapState {
@@ -43,6 +49,7 @@ pub struct PetalMapState {
     /// layer's `visible`/`opacity`) and round-trip via `SetPetalTerrain`
     /// without clobbering unrelated fields. `None` when no map is assigned.
     pub terrain_json: Option<serde_json::Value>,
+    pub confirmed_terrain_source: ConfirmedTerrainSource,
     /// An in-flight, GUI-correlated `SetPetalTerrain` this petal is waiting
     /// to hear back on (M-03: petal-map truth). `Some` while the Hexon
     /// Manager should show "Applying…" instead of the optimistic result;
@@ -71,8 +78,29 @@ impl Default for PetalMapState {
             world_scale: 1.0,
             scale_bounds: None,
             terrain_json: None,
+            confirmed_terrain_source: Default::default(),
             pending_set: None,
         }
+    }
+}
+
+impl PetalMapState {
+    /// Replace optimistic/cleared terrain and retire its confirmed identity.
+    pub(crate) fn replace_terrain_document(&mut self, terrain: Option<serde_json::Value>) {
+        self.terrain_json = terrain;
+        self.confirmed_terrain_source.fingerprint = None;
+    }
+
+    /// Bind only an actual active-Petal database echo, hashing once at replacement.
+    pub(crate) fn confirm_terrain_document(&mut self, terrain: Option<serde_json::Value>) {
+        self.confirmed_terrain_source.fingerprint = terrain
+            .as_ref()
+            .and_then(fe_runtime::editor_batch::terrain_source_fingerprint);
+        self.terrain_json = terrain;
+    }
+
+    pub(crate) fn confirmed_terrain_fingerprint(&self) -> Option<[u8; 32]> {
+        self.confirmed_terrain_source.fingerprint
     }
 }
 
@@ -126,7 +154,7 @@ pub(crate) fn load_petal_terrain_on_nav_change(
     // Reset to human scale pending the load; PetalTerrainLoaded restores the stored value.
     petal_map.world_scale = 1.0;
     petal_map.scale_bounds = None;
-    petal_map.terrain_json = None;
+    petal_map.replace_terrain_document(None);
     // Data-loss guard companion (ui_semantics_unification_20260808 #1): drop
     // the outgoing petal's proposal mirror so it can never bleed into the
     // next petal; `handle_petal_terrain_loaded` rehydrates + re-marks it
@@ -250,9 +278,11 @@ mod tests {
             tileset_to_terrain_json(&sealed, 1.0, None)["tileset_publisher_dids"],
             serde_json::json!({ "ts-1": did })
         );
-        assert!(tileset_to_terrain_json(&dto(), 1.0, None)
-            .get("tileset_publisher_dids")
-            .is_none());
+        assert!(
+            tileset_to_terrain_json(&dto(), 1.0, None)
+                .get("tileset_publisher_dids")
+                .is_none()
+        );
     }
 
     #[test]

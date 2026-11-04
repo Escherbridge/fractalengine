@@ -393,7 +393,7 @@ impl Supervisor {
                 return;
             }
             status.database_joined = true;
-            fe_ui::maintenance::clear_scene_asset_outcomes_after_database_join(world);
+            fe_ui::maintenance::clear_retained_outcomes_after_database_join(world);
             world.insert_resource(crate::gpx_bridge::PendingPathEdits::default());
             world.insert_resource(crate::gpx_bridge::PendingGpxImports::default());
         }

@@ -801,12 +801,10 @@ seam Level == Flatten and Smooth is identity (real math lives in `sculpt`).
 - **The height field stays PRE-BAKE by design:** it is the pristine base for
   deltas, volumes, ghost grounding, and camera clamp; writing baked heights
   into it would corrupt the Q-2 revert and the cut/fill base.
-- **Volumes:** per region, `EarthworkRegion::cut_fill(base, grid_step,
-  effective_world_scale())` with `grid_step = longest bound extent /
-  EARTHWORK_LATTICE (128)` (adaptive; O(step) tolerance, Q-4). Published as
-  `fe_renderer::terrain_overlay::EarthworkVolumeReport` once per revision and
-  again as late chunks extend coverage — fe-ui's changed-value gate absorbs
-  the re-fires before any DB write.
+- **Volumes:** each region uses the shared integration lattice with expected and
+  finite sample counts. Reports publish complete finite pairs or unavailable,
+  with exact assignment/height/region source identity, on revision or height
+  generation change. See Complete earthwork measurements below.
 
 ## §delta-viz — relief-following delta lattice (terrain_proposal_delta_viz_20261025 S1, FR-1/FR-2/FR-5)
 
@@ -1488,3 +1486,25 @@ scale participates in the track ribbon/zone build; the stored projected points
 already carry their coordinates. A future geometry-dependent scale, projection,
 terrain or algorithm mode must extend this source contract before checked tools
 can accept it. Color/visibility remain separate render/picking availability gates.
+
+## Complete earthwork measurements
+
+The common cut_fill_volume lattice now returns expected_cells and finite
+sampled_cells with its original planning-grade cut/fill formula. Its complete
+predicate requires nonempty full coverage, valid real-unit scale and finite
+accumulators. Missing/partial/nonfinite coverage remains unavailable; a fully
+sampled zero is valid. Selection reports reuse these same counts rather than
+walking a second readiness lattice. No alternate volume formula is introduced.
+
+The bake producer retains assignment revision and pristine height generation.
+Height insertion/removal/clear triggers remeasurement even if no mesh vertex
+changes or no chunk mesh exists. Chunk bake markers also carry that generation.
+Reports retain the exact raw DB assignment fingerprint, original parsed assignment
+fingerprint, operational reconciled config fingerprint and serialized region
+fingerprint. Invalid original scale, missing source identity, duplicate region
+IDs, more than256 regions or region IDs above512 bytes cannot produce a usable
+background persistence target. Source encodings are identities, not permissions.
+
+The existing region integration and volume-request journeys extend to absent,
+partial, nonfinite, ready and true-zero coverage, no-mesh remeasurement and foreign
+Petal revisions. These assertions are source-authored until the parent sweep.

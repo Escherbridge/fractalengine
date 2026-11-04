@@ -5,7 +5,7 @@
 //! terrain JSON, then round-trip via SetPetalTerrain" idiom. See
 //! `fe-ui/src/AGENTS.md` §terrain-proposal-editor.
 
-use bevy::prelude::{MessageReader, Res, ResMut, Resource};
+use bevy::prelude::Resource;
 use fe_runtime::app::DbCommandSender;
 use fe_runtime::messages::{CallerAuth, DbCommand};
 
@@ -156,7 +156,7 @@ fn persist(
     }) {
         Ok(()) => {
             petal_map.petal_id = Some(petal_id);
-            petal_map.terrain_json = Some(terrain);
+            petal_map.replace_terrain_document(Some(terrain));
         }
         Err(_) => {
             bevy::log::warn!(
@@ -369,9 +369,11 @@ impl SculptToolState {
         } else {
             1.0
         };
-        debug_assert!([self.radius, self.strength, self.target_height, self.delta]
-            .into_iter()
-            .all(f32::is_finite));
+        debug_assert!(
+            [self.radius, self.strength, self.target_height, self.delta]
+                .into_iter()
+                .all(f32::is_finite)
+        );
     }
 
     /// Mint a fresh region id (`r{n}`), monotonic so ids never collide with a
@@ -421,69 +423,62 @@ pub(crate) const EARTHWORK_CORRELATION_PREFIX: &str = "earthwork:";
 pub(crate) const KEY_CUT_VOLUME: &str = "cut_volume_m3";
 pub(crate) const KEY_FILL_VOLUME: &str = "fill_volume_m3";
 
-/// region_id ↔ node_id bookkeeping for earthwork region nodes, plus the
-/// pending-material stash consumed on `NodeCreated` (the Pen tool's
-/// pending-correlation idiom) and the last-persisted volume cache (the DB
-/// write gate for bake re-fires).
+/// Petal-local region identity and pending endpoint metadata; never a save receipt cache.
 #[derive(Resource, Default)]
 pub struct EarthworkNodeMap {
-    nodes: std::collections::HashMap<String, String>,
-    pending_materials: std::collections::HashMap<String, String>,
-    last_sent_volumes: std::collections::HashMap<String, (f64, f64)>,
+    nodes: std::collections::HashMap<
+        String,
+        std::collections::HashMap<String, std::collections::BTreeSet<String>>,
+    >,
+    pending_materials: std::collections::HashMap<(String, String), String>,
 }
 
 impl EarthworkNodeMap {
-    /// Remove current region projections owned by a removed backing node.
+    /// Remove aliases owned by a removed backing node.
     pub(crate) fn forget_node(&mut self, node_id: &str) {
-        let regions: Vec<_> = self.nodes.iter()
-            .filter_map(|(region, node)| (node == node_id).then(|| region.clone()))
-            .collect();
-        for region in regions {
-            self.forget_region(&region);
-        }
+        self.nodes.retain(|_, regions| {
+            regions.retain(|_, nodes| {
+                nodes.remove(node_id);
+                !nodes.is_empty()
+            });
+            !regions.is_empty()
+        });
     }
 
-    /// Stash the material tag until the region's `NodeCreated` echo arrives.
-    pub fn stash_pending_material(&mut self, region_id: &str, material: &str) {
+    /// Stash metadata for the exact Petal/region awaiting its create echo.
+    pub fn stash_pending_material(&mut self, petal: &str, region: &str, material: &str) {
         self.pending_materials
-            .insert(region_id.to_string(), material.to_string());
+            .insert((petal.into(), region.into()), material.into());
     }
 
-    /// Consume the stashed material for `region_id` (once, on `NodeCreated`).
-    pub fn take_pending_material(&mut self, region_id: &str) -> Option<String> {
-        self.pending_materials.remove(region_id)
+    /// Consume only the matching Petal/region stash.
+    pub fn take_pending_material(&mut self, petal: &str, region: &str) -> Option<String> {
+        self.pending_materials
+            .remove(&(petal.into(), region.into()))
     }
 
-    /// Bind `region_id` to its created/hydrated node.
-    pub fn record(&mut self, region_id: &str, node_id: &str) {
+    /// Bind one unambiguous Petal-local region to its backing node.
+    pub fn record(&mut self, petal: &str, region: &str, node_id: &str) {
         self.nodes
-            .insert(region_id.to_string(), node_id.to_string());
+            .entry(petal.into())
+            .or_default()
+            .entry(region.into())
+            .or_default()
+            .insert(node_id.into());
     }
 
-    /// The node backing `region_id`, when known.
-    pub fn node_for(&self, region_id: &str) -> Option<&str> {
-        self.nodes.get(region_id).map(String::as_str)
+    /// Resolve only within the exact owning Petal.
+    pub fn node_for(&self, petal: &str, region: &str) -> Option<&str> {
+        let nodes = self.nodes.get(petal)?.get(region)?;
+        (nodes.len() == 1).then(|| nodes.first().expect("one node").as_str())
     }
 
-    /// Drop all bookkeeping for a deleted region; returns its node id (the
-    /// tombstone target) when one was known.
-    pub fn forget_region(&mut self, region_id: &str) -> Option<String> {
-        self.pending_materials.remove(region_id);
-        self.last_sent_volumes.remove(region_id);
-        self.nodes.remove(region_id)
-    }
-
-    /// Changed-value gate: `true` when `(cut, fill)` differs from the last
-    /// persisted pair (bake re-fires per revision are deterministic for
-    /// unchanged inputs, so exact comparison is the correct no-spam gate).
-    pub fn volume_changed(&self, region_id: &str, cut_m3: f64, fill_m3: f64) -> bool {
-        self.last_sent_volumes.get(region_id) != Some(&(cut_m3, fill_m3))
-    }
-
-    /// Record a successfully-persisted volume pair (also seeded on hydration).
-    pub fn mark_volume_sent(&mut self, region_id: &str, cut_m3: f64, fill_m3: f64) {
-        self.last_sent_volumes
-            .insert(region_id.to_string(), (cut_m3, fill_m3));
+    /// Drop bookkeeping for an exact Petal-local region.
+    pub fn forget_region(&mut self, petal: &str, region: &str) -> Option<String> {
+        self.pending_materials
+            .remove(&(petal.into(), region.into()));
+        let nodes = self.nodes.get_mut(petal)?.remove(region)?;
+        (nodes.len() == 1).then(|| nodes.into_iter().next().expect("one node"))
     }
 }
 
@@ -511,8 +506,7 @@ pub(crate) fn earthwork_display_name(op: &str, region_id: &str) -> String {
     format!("Earthwork {op} {region_id}")
 }
 
-/// Initial property bag for a freshly-created region node (volumes start 0.0;
-/// the bake report updates them async). Pure — the endpoint contract is testable.
+/// Initial identity bag; volume keys remain absent until a complete measurement commits. Pure — the endpoint contract is testable.
 pub(crate) fn earthwork_node_properties(
     region_id: &str,
     material: &str,
@@ -521,8 +515,6 @@ pub(crate) fn earthwork_node_properties(
         ("node_kind", serde_json::json!(EARTHWORK_NODE_KIND)),
         ("material", serde_json::json!(material)),
         ("region_id", serde_json::json!(region_id)),
-        (KEY_CUT_VOLUME, serde_json::json!(0.0)),
-        (KEY_FILL_VOLUME, serde_json::json!(0.0)),
     ]
 }
 
@@ -539,7 +531,7 @@ fn create_region_node(
     material: &str,
 ) {
     let [cx, cz] = footprint_centroid(footprint);
-    map.stash_pending_material(region_id, material);
+    map.stash_pending_material(petal_id, region_id, material);
     if db_sender
         .0
         .send(DbCommand::CreateNode {
@@ -554,81 +546,25 @@ fn create_region_node(
     }
 }
 
-/// Reload seam (`NodePropertiesLoaded`): a bag whose `node_kind` is
-/// `"earthwork_region"` re-binds region_id→node_id and seeds the volume gate
-/// from the persisted values (mirrors `asset::hydrate_promoted_stamp`).
+/// Rebind identity from authoritative property hydration without confirming a measurement save.
 pub(crate) fn hydrate_earthwork_region(
     node_id: &str,
+    petal_id: Option<&str>,
     properties: &serde_json::Value,
     map: &mut EarthworkNodeMap,
 ) {
+    map.forget_node(node_id);
     if properties.get("node_kind").and_then(|v| v.as_str()) != Some(EARTHWORK_NODE_KIND) {
         return;
     }
-    let Some(region_id) = properties.get("region_id").and_then(|v| v.as_str()) else {
+    let (Some(petal), Some(region)) = (
+        petal_id,
+        properties.get("region_id").and_then(|v| v.as_str()),
+    ) else {
         return;
     };
-    map.record(region_id, node_id);
-    if let (Some(cut), Some(fill)) = (
-        properties.get(KEY_CUT_VOLUME).and_then(|v| v.as_f64()),
-        properties.get(KEY_FILL_VOLUME).and_then(|v| v.as_f64()),
-    ) {
-        map.mark_volume_sent(region_id, cut, fill);
-    }
-}
-
-/// Persist bake-reported volumes onto the region's node — ONLY when changed vs
-/// the last persisted pair (bake re-fires per revision; the DB must not be
-/// spammed). Unknown region → debug (the node may not exist yet; the next
-/// revision re-fires). Registered in `plugin.rs`.
-pub(crate) fn persist_earthwork_volumes(
-    mut reports: MessageReader<fe_renderer::terrain_overlay::EarthworkVolumeReport>,
-    mut map: ResMut<EarthworkNodeMap>,
-    db_sender: Res<DbCommandSender>,
-) {
-    for report in reports.read() {
-        persist_earthwork_volume_report(report, &mut map, &db_sender);
-    }
-}
-
-/// One report's changed-value-gated persistence, extracted for composed seam tests.
-fn persist_earthwork_volume_report(
-    report: &fe_renderer::terrain_overlay::EarthworkVolumeReport,
-    map: &mut EarthworkNodeMap,
-    db_sender: &DbCommandSender,
-) {
-    let Some(node_id) = map.node_for(&report.region_id).map(str::to_string) else {
-        bevy::log::debug!(
-            "earthwork volume for unknown region {} — node not yet created/hydrated",
-            report.region_id
-        );
-        return;
-    };
-    if !map.volume_changed(&report.region_id, report.cut_m3, report.fill_m3) {
-        return;
-    }
-    let mut sent = true;
-    for (key, value) in [
-        (KEY_CUT_VOLUME, report.cut_m3),
-        (KEY_FILL_VOLUME, report.fill_m3),
-    ] {
-        if db_sender
-            .0
-            .send(DbCommand::SetNodeProperty {
-                node_id: node_id.clone(),
-                key: key.to_string(),
-                value: serde_json::json!(value),
-                correlation_id: None,
-            })
-            .is_err()
-        {
-            bevy::log::warn!("db_sender channel closed — earthwork volumes not persisted");
-            sent = false;
-            break;
-        }
-    }
-    if sent {
-        map.mark_volume_sent(&report.region_id, report.cut_m3, report.fill_m3);
+    if !petal.is_empty() && !region.is_empty() {
+        map.record(petal, region, node_id);
     }
 }
 
@@ -712,7 +648,7 @@ fn persist_doc(
     }) {
         Ok(()) => {
             petal_map.petal_id = Some(petal_id);
-            petal_map.terrain_json = Some(terrain);
+            petal_map.replace_terrain_document(Some(terrain));
             true
         }
         Err(_) => {
@@ -1253,11 +1189,11 @@ pub(crate) fn handle_delete_region(
         return;
     };
     let terrain = remove_region(petal_map.terrain_json.as_ref(), &region_id);
-    if persist_doc(db_sender, petal_map, terrain, petal_id) {
+    if persist_doc(db_sender, petal_map, terrain, petal_id.clone()) {
         // Keep the endpoint contract honest: tombstone the region's node row
         // (sync-safe, N-4) when the map knows it. Auth is `CallerAuth::Local`
         // — the UI asserts no role (N-5).
-        if let Some(node_id) = earthwork_map.forget_region(&region_id) {
+        if let Some(node_id) = earthwork_map.forget_region(&petal_id, &region_id) {
             if db_sender
                 .0
                 .send(DbCommand::TombstoneNode {
@@ -1370,10 +1306,11 @@ mod tests {
         // asserts the JSON shape directly).
         let out = embed_proposals(None, &[], true, &no_tombstones());
         assert!(out.get("enabled").and_then(|v| v.as_bool()).is_some());
-        assert!(out
-            .get("tile_source_url")
-            .and_then(|v| v.as_str())
-            .is_some());
+        assert!(
+            out.get("tile_source_url")
+                .and_then(|v| v.as_str())
+                .is_some()
+        );
         let origin = out.get("origin").expect("origin present");
         assert!(origin.get("origin_lat").and_then(|v| v.as_f64()).is_some());
         assert!(origin.get("origin_lon").and_then(|v| v.as_f64()).is_some());
@@ -1858,11 +1795,13 @@ mod tests {
 
     #[test]
     fn stroke_corridor_rejects_closed_loop_centerline() {
-        assert!(stroke_corridor_footprint(
-            &[[0.0, 0.0], [4.0, 0.0], [4.0, 4.0], [0.0, 4.0], [0.0, 0.0],],
-            0.25,
-        )
-        .is_none());
+        assert!(
+            stroke_corridor_footprint(
+                &[[0.0, 0.0], [4.0, 0.0], [4.0, 4.0], [0.0, 4.0], [0.0, 0.0],],
+                0.25,
+            )
+            .is_none()
+        );
     }
 
     #[test]
@@ -1996,8 +1935,11 @@ mod tests {
         assert_eq!(bag["node_kind"], json!("earthwork_region"));
         assert_eq!(bag["material"], json!("gravel"));
         assert_eq!(bag["region_id"], json!("r3"));
-        assert_eq!(bag[KEY_CUT_VOLUME], json!(0.0));
-        assert_eq!(bag[KEY_FILL_VOLUME], json!(0.0));
+        assert!(!bag.contains_key(KEY_CUT_VOLUME));
+        assert!(
+            !bag.contains_key(KEY_FILL_VOLUME),
+            "unavailable initial samples are not numeric zero"
+        );
     }
 
     #[test]
@@ -2196,116 +2138,51 @@ mod tests {
     }
 
     #[test]
-    fn brush_commit_bind_and_volume_gate_compose_without_repeat_writes() {
-        let (tx, rx) = crossbeam::channel::unbounded();
-        let sender = DbCommandSender(tx);
-        let mut map = PetalMapState {
-            petal_id: Some("p".into()),
-            terrain_json: Some(json!({ "enabled": true, "proposals": [] })),
-            ..Default::default()
-        };
-        let mut earthwork = EarthworkNodeMap::default();
-        handle_brush_stroke(
-            &sender,
-            &mut map,
-            &mut SculptToolState::default(),
-            &mut earthwork,
-            "p".into(),
-            vec![[2.0, 3.0]],
-            1.0,
-            1.0,
-            "raise".into(),
-            None,
-            Some(2.0),
-            "earth".into(),
-        );
-        assert!(matches!(
-            rx.try_recv().expect("terrain document"),
-            DbCommand::SetPetalTerrain { .. }
-        ));
-        let correlation_id = match rx.try_recv().expect("correlated endpoint") {
-            DbCommand::CreateNode {
-                correlation_id: Some(correlation_id),
-                ..
-            } => correlation_id,
-            other => panic!("unexpected endpoint command: {other:?}"),
-        };
-        let region_id = earthwork_region_id_from_correlation(&correlation_id)
-            .expect("earthwork correlation")
-            .to_string();
-        earthwork.record(&region_id, "node-1");
-
-        let report = fe_renderer::terrain_overlay::EarthworkVolumeReport {
-            petal_id: "p".into(),
-            region_id,
-            cut_m3: 4.0,
-            fill_m3: 9.0,
-        };
-        persist_earthwork_volume_report(&report, &mut earthwork, &sender);
-        let writes: Vec<_> = rx.try_iter().collect();
-        assert_eq!(writes.len(), 2);
-        assert!(writes.iter().all(|command| matches!(
-            command,
-            DbCommand::SetNodeProperty { node_id, .. } if node_id == "node-1"
-        )));
-
-        persist_earthwork_volume_report(&report, &mut earthwork, &sender);
-        assert!(rx.try_recv().is_err(), "unchanged report must be gated");
-    }
-
-    #[test]
     fn volume_changed_gate_blocks_repeats_until_values_move() {
         let mut map = EarthworkNodeMap::default();
-        assert!(
-            map.volume_changed("r1", 10.0, 2.0),
-            "first pair always sends"
+        map.record("petal-a", "r1", "node-a");
+        map.record("petal-b", "r1", "node-b");
+        assert_eq!(map.node_for("petal-a", "r1"), Some("node-a"));
+        assert_eq!(map.node_for("petal-b", "r1"), Some("node-b"));
+        map.record("petal-a", "r1", "collision");
+        assert_eq!(
+            map.node_for("petal-a", "r1"),
+            None,
+            "ambiguous region is never last-writer-wins"
         );
-        map.mark_volume_sent("r1", 10.0, 2.0);
-        assert!(!map.volume_changed("r1", 10.0, 2.0), "repeat is gated");
-        assert!(map.volume_changed("r1", 10.0, 2.5), "moved fill re-sends");
-        assert!(
-            map.volume_changed("r2", 10.0, 2.0),
-            "other region unaffected"
-        );
+        map.forget_node("collision");
+        assert_eq!(map.node_for("petal-a", "r1"), Some("node-a"));
     }
 
     #[test]
     fn node_map_pending_and_forget_lifecycle() {
         let mut map = EarthworkNodeMap::default();
-        map.stash_pending_material("r1", "earth");
-        assert_eq!(map.take_pending_material("r1").as_deref(), Some("earth"));
-        assert!(map.take_pending_material("r1").is_none(), "consumed once");
-        map.record("r1", "node-9");
-        map.mark_volume_sent("r1", 1.0, 2.0);
-        assert_eq!(map.node_for("r1"), Some("node-9"));
-        assert_eq!(map.forget_region("r1").as_deref(), Some("node-9"));
-        assert!(map.node_for("r1").is_none());
-        assert!(
-            map.volume_changed("r1", 1.0, 2.0),
-            "gate cleared with region"
+        map.stash_pending_material("p", "r1", "earth");
+        assert!(map.take_pending_material("foreign", "r1").is_none());
+        assert_eq!(
+            map.take_pending_material("p", "r1").as_deref(),
+            Some("earth")
         );
+        assert!(map.take_pending_material("p", "r1").is_none());
+        map.record("p", "r1", "node-9");
+        assert_eq!(map.node_for("p", "r1"), Some("node-9"));
+        assert_eq!(map.forget_region("p", "r1").as_deref(), Some("node-9"));
+        assert!(map.node_for("p", "r1").is_none());
     }
 
     #[test]
     fn hydrate_earthwork_region_binds_and_seeds_gate() {
         let mut map = EarthworkNodeMap::default();
-        let props = json!({
-            "node_kind": "earthwork_region",
-            "region_id": "r4",
-            "material": "earth",
-            "cut_volume_m3": 12.5,
-            "fill_volume_m3": 0.0,
-        });
-        hydrate_earthwork_region("node-4", &props, &mut map);
-        assert_eq!(map.node_for("r4"), Some("node-4"));
+        let props = json!({"node_kind":"earthwork_region","region_id":"r4","material":"earth","cut_volume_m3":12.5,"fill_volume_m3":0.0});
+        hydrate_earthwork_region("node-4", Some("p"), &props, &mut map);
+        assert_eq!(map.node_for("p", "r4"), Some("node-4"));
+        hydrate_earthwork_region("node-4", Some("p"), &json!({"node_kind":"stamp"}), &mut map);
         assert!(
-            !map.volume_changed("r4", 12.5, 0.0),
-            "persisted volumes seed the gate — an unchanged re-bake stays quiet"
+            map.node_for("p", "r4").is_none(),
+            "new role removes stale alias; hydration never confirms a measurement save"
         );
-        // Non-earthwork / malformed bags are ignored.
-        hydrate_earthwork_region("n1", &json!({ "node_kind": "stamp" }), &mut map);
-        hydrate_earthwork_region("n2", &json!({ "node_kind": "earthwork_region" }), &mut map);
-        assert!(map.node_for("n1").is_none() && map.nodes.len() == 1);
+        hydrate_earthwork_region("unknown", None, &props, &mut map);
+        assert!(map.node_for("p", "r4").is_none());
     }
 
     #[test]
@@ -2439,7 +2316,7 @@ mod tests {
         let (tx, rx) = crossbeam::channel::bounded(8);
         let sender = DbCommandSender(tx);
         let mut earthwork = EarthworkNodeMap::default();
-        earthwork.record("r1", "node-r1");
+        earthwork.record("petal-1", "r1", "node-r1");
         let mut petal_map = PetalMapState {
             petal_id: Some("petal-1".into()),
             terrain_json: Some(json!({
@@ -2484,6 +2361,10 @@ mod tests {
             } if node_id == "node-r1"
         ));
         assert!(rx.try_recv().is_err(), "exactly two commands");
-        assert_eq!(earthwork.node_for("r1"), None, "bookkeeping forgotten");
+        assert_eq!(
+            earthwork.node_for("petal-1", "r1"),
+            None,
+            "bookkeeping forgotten"
+        );
     }
 }

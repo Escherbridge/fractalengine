@@ -675,7 +675,7 @@ pub(crate) fn extend_asset_workflow(
         isolated.begin(&node, &editor_frame).is_err(),
         "Editor access cannot adopt a local copy"
     );
-    crate::maintenance::clear_scene_asset_outcomes_after_database_join(app.world_mut());
+    crate::maintenance::clear_retained_outcomes_after_database_join(app.world_mut());
     assert_eq!(app.world().resource::<SceneAssets>().pending(), 0);
     assert!(
         app.world()

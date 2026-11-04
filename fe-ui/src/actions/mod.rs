@@ -19,6 +19,7 @@ pub(crate) mod portal;
 mod query;
 pub(crate) use query::next_ui_query_id;
 pub(crate) mod terrain_proposal;
+pub(crate) mod earthwork_volumes;
 mod transform;
 pub(crate) mod url_read_model;
 
@@ -617,6 +618,7 @@ pub struct UiManager {
     pub(crate) pending_url_save: Option<portal::PendingUrlSave>,
     pub(crate) url_read_model: url_read_model::UrlReadModel,
     pub(crate) editor_batch: crate::editor_batch::EditorBatchState,
+    pub(crate) earthwork_volumes: earthwork_volumes::VolumeView,
     pub(crate) scene_asset_view: crate::scene_assets::PanelView,
     pub(crate) portal_feedback: portal::PortalFeedback,
     pub(crate) portal_content_rect: Option<bevy_egui::egui::Rect>,
@@ -664,6 +666,7 @@ impl Default for UiManager {
             pending_url_save: None,
             url_read_model: url_read_model::UrlReadModel::default(),
             editor_batch: Default::default(),
+            earthwork_volumes: Default::default(),
             scene_asset_view: Default::default(),
             portal_feedback: portal::PortalFeedback::default(),
             portal_content_rect: None,

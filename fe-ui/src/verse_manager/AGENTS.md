@@ -707,3 +707,21 @@ bounded by known nodes, coalesced by URI and survive same-node cache updates;
 deletion, hierarchy/navigation/access retirement and terminal reset clear them.
 Repeated recovery reads cannot create a reload storm for a permanently invalid
 model. File availability is not a claim that GPU decoding/rendering succeeded.
+
+## Earthwork hydration identity
+
+NodeCreated binds its actual Petal plus region to the echoed node, and writes
+identity/material metadata only. Volume properties start absent. Ordinary property
+hydration uses the known owning Petal and removes old aliases before rebinding;
+it never seeds the background save-confirmation cache from an unrelated read.
+Before mutation, exact owned direct and resolved pair receipts recheck the original
+nonretired demand and node source/epoch against current terrain/height/access.
+They pass the ordinary whole committed preflight, then take
+a property-only projection: unchanged stored TRS never overwrites a live gesture,
+selects a node, cancels a drag or queues user Undo. Invalid owned packets are
+withheld for outcome reconciliation, not generic full-row projection. Navigation
+or access loss withholds this current projection while the owner still drains
+the actual accepted outcome. The independent Resource drains exact owned reads,
+commits, Resolve replies and failures in Update. No generic properties/replica
+refresh follows this background save. Other receipt producers keep their existing
+projection path.

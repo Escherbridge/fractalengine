@@ -2171,6 +2171,59 @@ mod tests {
         {
             use crate::handlers::editor_batch;
             use fe_runtime::editor_batch::*;
+            {
+                let terrain = serde_json::json!({"enabled":true,"world_scale":1.0,"proposals":[{"id":"r-volume","op":"raise","material":"earth","delta":2.0,"footprint":[[0,0],[10,0],[10,10],[0,10]]}]});
+                db.query("CREATE petal CONTENT $row").bind(("row",serde_json::json!({"petal_id":"volume-measure-petal","fractal_id":"tree-other-fractal","name":"Volume measurement","node_id":"volume-measure-petal","created_at":"2026-11-03","terrain":terrain}))).await.unwrap().check().unwrap();
+                let scope = crate::build_scope("tree-10",Some("tree-other-fractal"),Some("volume-measure-petal"));
+                let node = crate::handlers::node_history::create_object_granted(&db,"volume-measure-petal","Earthwork measured",None,[0.0;3],vec![0.0;3],vec![1.0;3],
+                    serde_json::from_value(serde_json::json!({"node_kind":"earthwork_region","region_id":"r-volume","material":"earth"})).unwrap(),"did:qa",&NodeAccessGrant::Local).await.unwrap().0;
+                let ids = vec![node.clone()];
+                let initial = editor_batch::read(&db,&scope,"volume-measure-petal",&ids,"did:qa").await.unwrap();
+                assert_eq!(initial.terrain_source_fingerprint,terrain_source_fingerprint(&terrain));
+                assert!(initial.terrain_source_fingerprint.is_some());
+                assert_eq!(terrain_source_fingerprint(&serde_json::json!({"b":2,"a":{"y":2,"x":1}})),
+                    terrain_source_fingerprint(&serde_json::json!({"a":{"x":1,"y":2},"b":2})),"complete raw JSON has one shared canonical identity");
+                assert!(terrain_source_fingerprint(&serde_json::Value::Null).is_none());
+                let pair_request = |capture:EditorBatchCapture,cut:f64,fill:f64| EditorBatchRequest {
+                    edit:EditorBatchEdit::Targets(vec![EditorTargetEdit {node_id:node.clone(),mutation:EditorTargetMutation::Properties(vec![
+                        EditorPropertyEdit::Set {key:"cut_volume_m3".into(),value:serde_json::json!(cut)},
+                        EditorPropertyEdit::Set {key:"fill_volume_m3".into(),value:serde_json::json!(fill)},
+                    ])}]),capture };
+                let mut unknown_source = initial.clone(); unknown_source.terrain_source_fingerprint = None;
+                editor_batch::prepare(&db,&pair_request(unknown_source,4.0,9.0),"qa-volume-missing-source","did:qa").await.expect_err("missing/default terrain source cannot masquerade as the current capture");
+                let stale = editor_batch::prepare(&db,&pair_request(initial.clone(),4.0,9.0),"qa-volume-stale-source","did:qa").await.unwrap();
+                let mut changed = terrain.clone(); changed["proposals"][0]["delta"] = serde_json::json!(3.0);
+                db.query("UPDATE petal SET terrain=$terrain WHERE petal_id='volume-measure-petal'").bind(("terrain",changed.clone())).await.unwrap().check().unwrap();
+                let operations = op_log_count(&db).await;
+                editor_batch::commit(&db,stale).await.expect_err("terrain changes after capture refuse inside the containing transaction");
+                assert_eq!(op_log_count(&db).await,operations);
+                let captured = editor_batch::read(&db,&scope,"volume-measure-petal",&ids,"did:qa").await.unwrap();
+                assert_ne!(captured.terrain_source_fingerprint,initial.terrain_source_fingerprint,"fresh DB terrain is distinguishable from lagging producer/UI data");
+                assert_eq!(serde_json::to_value(&captured.members).unwrap(),serde_json::to_value(&initial.members).unwrap());
+                let prepared = editor_batch::prepare(&db,&pair_request(captured.clone(),4.0,9.0),"qa-volume-pair-rollback","did:qa").await.unwrap();
+                db.query("DEFINE EVENT fail_volume_pair ON TABLE node_log WHEN $after.payload.atomic_save_id='qa-volume-pair-rollback' AND $after.payload.data.key='fill_volume_m3' THEN { THROW 'induced second volume field failure' }").await.unwrap().check().unwrap();
+                let operations = op_log_count(&db).await;
+                editor_batch::commit(&db,prepared).await.expect_err("second field failure rolls back both properties, all facts and the single manifest");
+                db.query("REMOVE EVENT fail_volume_pair ON TABLE node_log").await.unwrap().check().unwrap();
+                assert_eq!(op_log_count(&db).await,operations);
+                let absent = editor_batch::resolve(&db,&scope,"volume-measure-petal",&ids,"qa-volume-pair-rollback","did:qa").await.unwrap();
+                assert!(absent.receipt.is_none());
+                assert_eq!(serde_json::to_value(&absent.current.members).unwrap(),serde_json::to_value(&captured.members).unwrap());
+                let prepared = editor_batch::prepare(&db,&pair_request(captured.clone(),4.0,9.0),"qa-volume-pair-save","did:qa").await.unwrap();
+                let saved = editor_batch::commit(&db,prepared).await.unwrap();
+                assert_eq!(saved.members[0].state.properties["cut_volume_m3"],serde_json::json!(4.0));
+                assert_eq!(saved.members[0].state.properties["fill_volume_m3"],serde_json::json!(9.0));
+                let resolved = editor_batch::resolve(&db,&scope,"volume-measure-petal",&ids,"qa-volume-pair-save","did:qa").await.unwrap();
+                assert_eq!(serde_json::to_value(resolved.receipt.as_ref().unwrap()).unwrap(),serde_json::to_value(&saved).unwrap(),"lost GUI receipt resolves by exact original request, never coordinate guesses");
+                let zero = editor_batch::prepare(&db,&pair_request(resolved.current.clone(),0.0,0.0),"qa-volume-true-zero","did:qa").await.unwrap();
+                let zero = editor_batch::commit(&db,zero).await.unwrap();
+                assert_eq!(zero.members[0].state.properties["cut_volume_m3"],serde_json::json!(0.0));
+                assert_eq!(zero.members[0].state.properties["fill_volume_m3"],serde_json::json!(0.0));
+                db.query("UPDATE petal SET terrain=$terrain WHERE petal_id='volume-measure-petal'").bind(("terrain",terrain.clone())).await.unwrap().check().unwrap();
+                let later = editor_batch::resolve(&db,&scope,"volume-measure-petal",&ids,"qa-volume-true-zero","did:qa").await.unwrap();
+                assert!(later.receipt.is_some(),"a later terrain change cannot turn an accepted committed save into a rollback");
+                assert_ne!(later.current.terrain_source_fingerprint,captured.terrain_source_fingerprint);
+            }
             let mut ids = Vec::new();
             for name in ["Batch Alpha", "Batch Beta"] {
                 ids.push(
