@@ -1,0 +1,15 @@
+{
+  "kind": "qa39-normal-scoped-terrain-grant-runtime-smoke",
+  "request": "terrain-layer-update-request.json",
+  "ack": "owner-set-terrain-layer-once.jsonl",
+  "separate_get": "owner-terrain-a-after.jsonl",
+  "requested_config_read_back_equal": true,
+  "only_target_change": "layers[0].visible true to false",
+  "control_petal_b_raw_byte_identical": true,
+  "control_sha256": "011bced40c7fad91003d5bab81580646544793e5debeb74eb0a2b208bee7ffff",
+  "limits": [
+    "One legitimate Owner-scoped update and both fixture bindings succeeded; no stale/expired/revoked/moved-scope/rollback/concurrent/permit-bound acceptance credit.",
+    "No exact runtime DB reader mode is exported by this packet.",
+    "Initial wrong Verse ID was refused locally before a request; exact fixture IDs were then used."
+  ]
+}

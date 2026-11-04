@@ -1,0 +1,128 @@
+{
+    "baseline":  "023a5044c27f4255ca4ac48c6a5ccbfa9d0b008c",
+    "kind":  "NAV-2/NAV-3 source-only complete v1 review packet",
+    "applicationSourceChanged":  false,
+    "newRegisteredTests":  0,
+    "files":  [
+                  {
+                      "path":  ".gitignore",
+                      "bytes":  1988,
+                      "sha256":  "cb2dee95f47b8c5cba05a11e4564d2766745696a6cdf17bcde66ce1addee14ed"
+                  },
+                  {
+                      "path":  "tools/qa/_lib.ps1",
+                      "bytes":  24340,
+                      "sha256":  "af5774899b16f0c28f0cf80f318dd83ec01cf92b367d22b3b4e65c9ad46519ac"
+                  },
+                  {
+                      "path":  "tools/qa/_native_identity.cs",
+                      "bytes":  1744,
+                      "sha256":  "0ec67ffdbaf90af4f3bf0156a6d506072e41763af948da47e897f638f81b7dd7"
+                  },
+                  {
+                      "path":  "tools/qa/_native_observer.ps1",
+                      "bytes":  15356,
+                      "sha256":  "d2c9b9b55f52406fc8232371596ab06de95b6efcee35ea86f9d6b33f79270d18"
+                  },
+                  {
+                      "path":  "tools/qa/AGENTS.md",
+                      "bytes":  86727,
+                      "sha256":  "2c68ea81aa54da1f5e6ec8059e40801ee0ec661e4e793d848dc9aaff30ba53e4"
+                  },
+                  {
+                      "path":  "tools/qa/clean.ps1",
+                      "bytes":  2952,
+                      "sha256":  "d84d7e7b3944290fcc708d87828edb46da6f00fb90d876a96a5411fc02010de9"
+                  },
+                  {
+                      "path":  "tools/qa/fe.py",
+                      "bytes":  51805,
+                      "sha256":  "68fe9f6fc76265a2d933ee7b7ac6ac2f2e4518995dd9a0acd443888dad7fce80"
+                  },
+                  {
+                      "path":  "tools/qa/launch.ps1",
+                      "bytes":  19722,
+                      "sha256":  "890a1944100f01ec3b854d997c807abd8b7353cb5b657a199c87d53df201c8f5"
+                  },
+                  {
+                      "path":  "tools/qa/native_observer/__init__.py",
+                      "bytes":  56,
+                      "sha256":  "7ff69f655190990cd5e2b87cf7f053d416f653c7f8e9f0a8ddc3264e0eab47f8"
+                  },
+                  {
+                      "path":  "tools/qa/native_observer/AGENTS.md",
+                      "bytes":  14360,
+                      "sha256":  "7e9aabca3460c8a49fb7acc633940dfe16fc529c04ad3cdb3bebccdb0d56995c"
+                  },
+                  {
+                      "path":  "tools/qa/native_observer/build.ps1",
+                      "bytes":  2405,
+                      "sha256":  "501f1496b017fc927c471574f00f877abafebc7cba5b9b8e63eca2dc0f542692"
+                  },
+                  {
+                      "path":  "tools/qa/native_observer/contract.py",
+                      "bytes":  5335,
+                      "sha256":  "3d017581fd6b7a6385ab4588c82b78e212813cb5bca89198abda1495c69b3077"
+                  },
+                  {
+                      "path":  "tools/qa/native_observer/controller.py",
+                      "bytes":  15506,
+                      "sha256":  "5911abf92ada74cac4b0fa8e62f93fce01b6a3c5a7aeac2f83768424f726db93"
+                  },
+                  {
+                      "path":  "tools/qa/native_observer/ledger.py",
+                      "bytes":  1748,
+                      "sha256":  "8134a423451865d698742739a3a5704de2f7a3207862ba80ec28427d1d4d55c2"
+                  },
+                  {
+                      "path":  "tools/qa/native_observer/scenario.py",
+                      "bytes":  5364,
+                      "sha256":  "ff1feb7826f7b0341b67ed6390e7e130255e8c70c40daf0de30e7af42e7e92b6"
+                  },
+                  {
+                      "path":  "tools/qa/native_observer/windows.py",
+                      "bytes":  12188,
+                      "sha256":  "81ed839f7ad4088e1bdbe4a1ac42926967edb2e4bc39e4774c07710a39ecee61"
+                  },
+                  {
+                      "path":  "tools/qa/native_observer/worker.cpp",
+                      "bytes":  40808,
+                      "sha256":  "cb11508933e81da8a90fb49ba69a91152b7bbd94bc855909d2cbb34b59a39c72"
+                  },
+                  {
+                      "path":  "tools/qa/native_observer/worker.manifest",
+                      "bytes":  775,
+                      "sha256":  "0960e134e32c84c2aff4044416ffe8c57e71972caa8ee54b851075b7112f2e23"
+                  },
+                  {
+                      "path":  "tools/qa/native_observer/worker_protocol.hpp",
+                      "bytes":  14503,
+                      "sha256":  "9b9da68575db4ae6db2a72fd4eb1128a8cc304b743b7134c4a833b285d137393"
+                  },
+                  {
+                      "path":  "tools/qa/pair.ps1",
+                      "bytes":  13021,
+                      "sha256":  "2f0461d88990b513e3ce165b8d56864871de41532c3c5905900050b1ed9eca4e"
+                  },
+                  {
+                      "path":  "tools/qa/restart.ps1",
+                      "bytes":  637,
+                      "sha256":  "455cb444681889e697e748ee48fb62aac5d4f4c64fa05b2943194bcb481371d6"
+                  },
+                  {
+                      "path":  "tools/qa/scenarios/evidence-boundaries.py",
+                      "bytes":  39489,
+                      "sha256":  "9533db731df82479907a66fb2ca09e7dc309623a53f016485c2a42ea5723dba2"
+                  },
+                  {
+                      "path":  "tools/qa/stage.ps1",
+                      "bytes":  6228,
+                      "sha256":  "714edffbbaa694b163a0e52706e8469269a8c0946e2d4be4d955911bd1ca7d37"
+                  },
+                  {
+                      "path":  "tools/qa/stop.ps1",
+                      "bytes":  1834,
+                      "sha256":  "3f6da1e15db82b20bc1fe4c38e97a4bc533c864060d2a9c04790402382487cab"
+                  }
+              ]
+}

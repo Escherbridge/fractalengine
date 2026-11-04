@@ -1,0 +1,78 @@
+{
+  "before_state": "owner-selected-before-state.jsonl",
+  "after_state": "owner-selected-after-state.jsonl",
+  "selection_equal": true,
+  "before_camera": "owner-selected-before-camera.jsonl",
+  "after_camera": "owner-selected-after-camera.jsonl",
+  "required_camera_fields": {
+    "position": {
+      "before": [
+        -8.809159278869629,
+        2.239112377166748,
+        3.166959762573242
+      ],
+      "after": [
+        -8.837647438049316,
+        2.2358551025390625,
+        3.1623528003692627
+      ],
+      "equal": false
+    },
+    "target": {
+      "before": [
+        -11.976119041442871,
+        0.0,
+        0.0
+      ],
+      "after": [
+        -12.0,
+        0.0,
+        0.0
+      ],
+      "equal": false
+    },
+    "orbit": {
+      "before": {
+        "distance": 5.007284164428711,
+        "focus": [
+          -11.976119041442871,
+          0.0,
+          0.0
+        ],
+        "pitch_deg": 26.56232452392578,
+        "yaw_deg": 45.0
+      },
+      "after": {
+        "distance": 5.0,
+        "focus": [
+          -12.0,
+          0.0,
+          0.0
+        ],
+        "pitch_deg": 26.56232452392578,
+        "yaw_deg": 45.0
+      },
+      "equal": false
+    },
+    "up": {
+      "before": [
+        -0.3161976933479309,
+        0.8944483995437622,
+        -0.3161976933479309
+      ],
+      "after": [
+        -0.3161977529525757,
+        0.8944485187530518,
+        -0.3161977231502533
+      ],
+      "equal": false
+    },
+    "fov_deg": {
+      "before": 45.0,
+      "after": 45.0,
+      "equal": true
+    }
+  },
+  "camera_preservation_proven": false,
+  "limitation": "Initial sample was immediately after selection; target/distance progressed toward selection focus. A separate stable-baseline comparison is required; these raw captures remain."
+}

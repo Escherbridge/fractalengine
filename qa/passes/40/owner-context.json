@@ -1,0 +1,63 @@
+{
+  "owner": {
+    "run_dir": "C:\\Users\\atooz\\Programming\\fractalengine-workspace\\fractalengine\\.qa\\run\\20261104-125417-577",
+    "pid": 33556,
+    "process_identity": {
+      "pid": 33556,
+      "start_ticks": "639294188597766744",
+      "exe_path": "C:\\Users\\atooz\\Programming\\fractalengine-workspace\\fractalengine\\.qa\\stage\\5a9eeb93-20261104125235679\\fractalengine.exe"
+    },
+    "descendant_identities": [
+      {
+        "pid": 116060,
+        "start_ticks": "639294188598253211",
+        "exe_path": "C:\\Windows\\system32\\conhost.exe"
+      },
+      {
+        "pid": 112656,
+        "start_ticks": "639294188634370317",
+        "exe_path": "C:\\Program Files (x86)\\Microsoft\\EdgeWebView\\Application\\156.0.4314.58\\msedgewebview2.exe"
+      },
+      {
+        "pid": 107676,
+        "start_ticks": "639294188634879335",
+        "exe_path": "C:\\Program Files (x86)\\Microsoft\\EdgeWebView\\Application\\156.0.4314.58\\msedgewebview2.exe"
+      },
+      {
+        "pid": 116756,
+        "start_ticks": "639294188636821927",
+        "exe_path": "C:\\Program Files (x86)\\Microsoft\\EdgeWebView\\Application\\156.0.4314.58\\msedgewebview2.exe"
+      },
+      {
+        "pid": 10104,
+        "start_ticks": "639294188636841128",
+        "exe_path": "C:\\Program Files (x86)\\Microsoft\\EdgeWebView\\Application\\156.0.4314.58\\msedgewebview2.exe"
+      },
+      {
+        "pid": 111372,
+        "start_ticks": "639294188637261822",
+        "exe_path": "C:\\Program Files (x86)\\Microsoft\\EdgeWebView\\Application\\156.0.4314.58\\msedgewebview2.exe"
+      },
+      {
+        "pid": 114348,
+        "start_ticks": "639294188638125503",
+        "exe_path": "C:\\Program Files (x86)\\Microsoft\\EdgeWebView\\Application\\156.0.4314.58\\msedgewebview2.exe"
+      }
+    ],
+    "stage_manifest": {
+      "exe_sha256": "1CD59958196EAF6537207F9E0A1AEB2CDF91643850154BFADAE31186C103EC86",
+      "legacy_fixture_sha256": "FE0736745629D82945AFF1BB58C1F1D26B6345ED50318A4E59394A4BB298C941",
+      "source_fingerprint": "87E05095FD6C54DB09F6C8663D6FDFD17BA08AF46E0E5EF812EDDF995C7FE372",
+      "kind": "fractalengine-qa-stage-v1",
+      "seal_hexon_sha256": "22EFC1D8E82545D3F06DDBB40721294CB0383A030C8D8DEA9A6165F5B3C42971",
+      "built_at": "2026-11-04T19:52:36.0343677Z",
+      "source_commit": "5a9eeb934ef27e8319f5d9aaab5038d19a6ab151",
+      "source_dirty": true
+    },
+    "stage_matches_source": true,
+    "fixture": "terrain",
+    "started_at": "2026-11-04T12:54:19.9437836-07:00",
+    "bootstrap_verse_id": "01M6M20XF0150MMWSSWJARZF1J"
+  },
+  "scope": "Fresh disposable combined pointer/physical/native-foundation focused verification; retained stores untouched"
+}

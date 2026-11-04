@@ -1,0 +1,37 @@
+{
+  "before_state": "owner-stable-state-before.jsonl",
+  "after_state": "owner-stable-state-after.jsonl",
+  "selection_equal": true,
+  "selection": {
+    "node_id": "01M6KTPXX1YHQDA6A0J5983XS1",
+    "transform": {
+      "position": [
+        -12.0,
+        0.0,
+        0.0
+      ],
+      "rotation": [
+        0.0,
+        -0.0,
+        0.0,
+        1.0
+      ],
+      "scale": [
+        1.0,
+        1.0,
+        1.0
+      ]
+    }
+  },
+  "before_camera": "owner-stable-camera-before.jsonl",
+  "after_camera": "owner-stable-camera-after.jsonl",
+  "camera_path": "camera.pose",
+  "required_present_fields": [
+    "position",
+    "target",
+    "orbit",
+    "up",
+    "fov_deg"
+  ],
+  "all_equal": true
+}

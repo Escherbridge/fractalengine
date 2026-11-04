@@ -1,0 +1,173 @@
+{
+  "kind": "fractalengine-focused-qa39",
+  "source_commit": "c0aa2bce5cf0b87414b9ddfc27e85105604a4bfd",
+  "scope": "Normal scoped terrain grant runtime smoke only; no FULL credit",
+  "run_dir": "C:\\Users\\atooz\\Programming\\fractalengine-workspace\\fractalengine\\.qa\\run\\20261104-113656-546",
+  "exact_owned_stop": true,
+  "recorded_identities_absent": 8,
+  "launch_seconds": 16.0,
+  "screenshots": [
+    {
+      "record": "owner-after-update-shot.jsonl",
+      "file": "screenshots/after-update.png",
+      "dimensions": [
+        1280,
+        720
+      ],
+      "bytes": 579044,
+      "sha256": "5c0b3d7d9984380065086a10a0e10f060dae0a2081426f647636719ca84c99b0",
+      "author_image_inspected": true,
+      "independent_visual_review": "pending"
+    }
+  ],
+  "logs": {
+    "stage": {
+      "local_path": "C:\\Users\\atooz\\Programming\\fractalengine-workspace\\fractalengine\\.omc\\research\\completion-terrain-grant-stage.log",
+      "bytes": 3362,
+      "sha256": "c518e10344d5af9c678dd90dd8a20bcca2040447815d0dab99bd12356f671876",
+      "text_encoding": "utf-8",
+      "lossy_decoding": false,
+      "line_count": 33,
+      "levels": {
+        "INFO": 0,
+        "WARN": 0,
+        "ERROR": 0
+      },
+      "panic_markers": 0,
+      "compiler_warning_diagnostics": 0,
+      "compiler_error_diagnostics": 0,
+      "private_current_error_markers": 0,
+      "credential_pattern_counts": {
+        "bearer_value": 0,
+        "jwt_value": 0,
+        "private_key_block": 0,
+        "credential_assignment": 0
+      },
+      "raw_log_published": true
+    },
+    "launch": {
+      "local_path": "C:\\Users\\atooz\\Programming\\fractalengine-workspace\\fractalengine\\.omc\\research\\qa39-terrain-grant-launch.log",
+      "bytes": 862,
+      "sha256": "0b1af2e565884350605e0042e170246708700a1639f550def75f39cb4c54c327",
+      "text_encoding": "utf-8",
+      "lossy_decoding": false,
+      "line_count": 8,
+      "levels": {
+        "INFO": 0,
+        "WARN": 0,
+        "ERROR": 0
+      },
+      "panic_markers": 0,
+      "compiler_warning_diagnostics": 0,
+      "compiler_error_diagnostics": 0,
+      "private_current_error_markers": 0,
+      "credential_pattern_counts": {
+        "bearer_value": 0,
+        "jwt_value": 0,
+        "private_key_block": 0,
+        "credential_assignment": 0
+      },
+      "raw_log_published": true
+    },
+    "stop": {
+      "local_path": "C:\\Users\\atooz\\Programming\\fractalengine-workspace\\fractalengine\\.omc\\research\\qa39-stop.log",
+      "bytes": 134,
+      "sha256": "b13db34a14dae5d11be350fdadc00c0cfe1a169fa4e48c0e4011eea950f6a1a5",
+      "text_encoding": "utf-8",
+      "lossy_decoding": false,
+      "line_count": 1,
+      "levels": {
+        "INFO": 0,
+        "WARN": 0,
+        "ERROR": 0
+      },
+      "panic_markers": 0,
+      "compiler_warning_diagnostics": 0,
+      "compiler_error_diagnostics": 0,
+      "private_current_error_markers": 0,
+      "credential_pattern_counts": {
+        "bearer_value": 0,
+        "jwt_value": 0,
+        "private_key_block": 0,
+        "credential_assignment": 0
+      },
+      "raw_log_published": true
+    },
+    "stdout": {
+      "local_path": "C:\\Users\\atooz\\Programming\\fractalengine-workspace\\fractalengine\\.qa\\run\\20261104-113656-546\\stdout.log",
+      "bytes": 149520,
+      "sha256": "a5599a185a37668a34196dc4ba5319fd0fbd3e76c144d45b4cf730907a42710e",
+      "text_encoding": "utf-8",
+      "lossy_decoding": false,
+      "line_count": 1089,
+      "levels": {
+        "INFO": 1000,
+        "WARN": 22,
+        "ERROR": 0
+      },
+      "panic_markers": 0,
+      "compiler_warning_diagnostics": 0,
+      "compiler_error_diagnostics": 0,
+      "private_current_error_markers": 0,
+      "credential_pattern_counts": {
+        "bearer_value": 0,
+        "jwt_value": 0,
+        "private_key_block": 0,
+        "credential_assignment": 0
+      },
+      "raw_log_published": false
+    },
+    "stderr": {
+      "local_path": "C:\\Users\\atooz\\Programming\\fractalengine-workspace\\fractalengine\\.qa\\run\\20261104-113656-546\\stderr.log",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "text_encoding": "utf-8",
+      "lossy_decoding": false,
+      "line_count": 0,
+      "levels": {
+        "INFO": 0,
+        "WARN": 0,
+        "ERROR": 0
+      },
+      "panic_markers": 0,
+      "compiler_warning_diagnostics": 0,
+      "compiler_error_diagnostics": 0,
+      "private_current_error_markers": 0,
+      "credential_pattern_counts": {
+        "bearer_value": 0,
+        "jwt_value": 0,
+        "private_key_block": 0,
+        "credential_assignment": 0
+      },
+      "raw_log_published": false
+    }
+  },
+  "proof": "terrain-grant-normal-update-comparison.json",
+  "limitations": [
+    "Fresh fixture bindings and one genuine Owner-scoped layer update succeeded. Separate GET matches the entire requested config; control Petal B raw bytes remain unchanged.",
+    "No stale, expired, revoked, moved-scope, rollback, concurrency, private-channel mode or permit-bound acceptance credit.",
+    "Mistyped initial Verse ID was refused locally; later commands use IDs from the verified descriptor. No replay of a mutation.",
+    "This source does not include later physical-target, shared-pointer or native navigation commits; no acceptance of those changes.",
+    "No FULL, native-provider, peer, retained-store, final sweep, CI or release credit.",
+    "Credential scan is finite pattern coverage, not a general proof of absence of secrets."
+  ],
+  "original_payloads": {
+    "fixture-public-detail.json": "debfd92f22d88c9c2ad4452057879739b1ba5ec0a578f6e221d505f4e83e8019",
+    "owner-after-update-shot.jsonl": "0533bc8f7d59473bb3a4729cce03264c0a535c8b0fde4177dbf16ffa641bd420",
+    "owner-after-update-state.jsonl": "c837a489d47e016eed3a12b1ba6c0c25c056cf07cf02801fbe27677f3e4736bd",
+    "owner-after-update-ui.jsonl": "d3a2e8869d7b9d450194c12f03b78e4234e15ebf1e782eee99c9edbe51021047",
+    "owner-final-logs.jsonl": "641cb8c2639f2b1e87f4909b3d692e0d8ed7ade992793c8a2ca7be977d84a1e0",
+    "owner-initial-state.jsonl": "13dbeba6d1ac83637357470240a823f5ea5b78ebaacbd48831641dc9b91c04fd",
+    "owner-initial-terrain-a.jsonl": "2144bd31ad6ea7d9f137c9199f03def0001d1a032d250c99969266844394ee72",
+    "owner-initial-ui.jsonl": "1d22428eeebb6a74ee6b54d33407564546c289ef995a30c74ea132ca98860f92",
+    "owner-open-petal-a.jsonl": "6f8c18dfd6d38d2212d570b9650d8a7fd64f3de69892b20162bfdadba13fa583",
+    "owner-open-qa-verse.jsonl": "fe54fc3efa8a4c73448da5b03095460dc83dff08c646ca4cb89e68084fe91327",
+    "owner-set-terrain-layer-once.jsonl": "b2c55d54e01a4bae994f1063f78ef0f82422c69326c9fadffda59cf4d55f1856",
+    "owner-terrain-a-after.jsonl": "b2c55d54e01a4bae994f1063f78ef0f82422c69326c9fadffda59cf4d55f1856",
+    "owner-terrain-a-before.jsonl": "733d66bc941fa2f1b0e11d603cefe7521764c61626744214d0702fe6a640659e",
+    "owner-terrain-b-after.jsonl": "011bced40c7fad91003d5bab81580646544793e5debeb74eb0a2b208bee7ffff",
+    "owner-terrain-b-before.jsonl": "011bced40c7fad91003d5bab81580646544793e5debeb74eb0a2b208bee7ffff",
+    "terrain-grant-normal-update-comparison.json": "cd3cf0f848ee77b4a1cb8dd9e4e1acda9bf126ea536426cc7372dd2a8d2ac3d2",
+    "terrain-layer-update-request.json": "9315d846acc5348464b4ac18c80ec5fb7a8f8340018bed8441936866e045a82d"
+  }
+}

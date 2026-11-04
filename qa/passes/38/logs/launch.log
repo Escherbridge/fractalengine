@@ -1,0 +1,8 @@
+[10:46:24.366] Using staged build: C:\Users\atooz\Programming\fractalengine-workspace\fractalengine\.qa\stage\7f0de44a-20261104104107782
+[10:46:28.060] Installed deterministic offline terrain: qa-analytic-terrain
+[10:46:28.807] Launched pid=115032 run=C:\Users\atooz\Programming\fractalengine-workspace\fractalengine\.qa\run\20261104-104626-392
+[10:46:31.839] API healthy after 3775ms
+[10:46:33.516] Bootstrap owner token ready (verse 01M6KTPSQNTZV241MTRR4SYFD5) after 1674ms
+[10:46:38.428] Fixture 'terrain' verified: 3 values sum to 60; terrain petals=01M6KTPXJXZKP4H1XTF07JFZ6W,01M6KTPXPWA4DRXFACEQT9JT9V
+[10:46:39.867] Launch complete in 15.5s total. run=C:\Users\atooz\Programming\fractalengine-workspace\fractalengine\.qa\run\20261104-104626-392 pid=115032
+C:\Users\atooz\Programming\fractalengine-workspace\fractalengine\.qa\run\20261104-104626-392

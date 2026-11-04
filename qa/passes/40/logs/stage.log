@@ -1,0 +1,21 @@
+[12:49:16.736] Building fractalengine and offline QA terrain helpers...
+   Compiling fe-ui v0.1.0 (C:\Users\atooz\Programming\fractalengine-workspace\fractalengine\fe-ui)
+   Compiling fractalengine v0.1.0 (C:\Users\atooz\Programming\fractalengine-workspace\fractalengine\fractalengine)
+    Finished `dev` profile [unoptimized] target(s) in 1m 32s
+   Compiling fe-runtime v0.1.0 (C:\Users\atooz\Programming\fractalengine-workspace\fractalengine\fe-runtime)
+   Compiling fe-format v0.1.0 (C:\Users\atooz\Programming\fractalengine-workspace\fractalengine\fe-format)
+   Compiling fe-hexon v0.1.0 (C:\Users\atooz\Programming\fractalengine-workspace\fractalengine\fe-hexon)
+   Compiling fe-terrain v0.1.0 (C:\Users\atooz\Programming\fractalengine-workspace\fractalengine\fe-terrain)
+    Finished `dev` profile [unoptimized] target(s) in 33.39s
+   Compiling fe-runtime v0.1.0 (C:\Users\atooz\Programming\fractalengine-workspace\fractalengine\fe-runtime)
+   Compiling fe-format v0.1.0 (C:\Users\atooz\Programming\fractalengine-workspace\fractalengine\fe-format)
+    Finished `dev` profile [unoptimized] target(s) in 19.43s
+   Compiling fe-runtime v0.1.0 (C:\Users\atooz\Programming\fractalengine-workspace\fractalengine\fe-runtime)
+   Compiling fe-format v0.1.0 (C:\Users\atooz\Programming\fractalengine-workspace\fractalengine\fe-format)
+   Compiling fe-hexon v0.1.0 (C:\Users\atooz\Programming\fractalengine-workspace\fractalengine\fe-hexon)
+   Compiling fe-query v0.1.0 (C:\Users\atooz\Programming\fractalengine-workspace\fractalengine\fe-query)
+   Compiling fe-database v0.1.0 (C:\Users\atooz\Programming\fractalengine-workspace\fractalengine\fe-database)
+   Compiling fe-terrain v0.1.0 (C:\Users\atooz\Programming\fractalengine-workspace\fractalengine\fe-terrain)
+    Finished `dev` profile [unoptimized] target(s) in 53.17s
+[12:52:39.609] Staged 5a9eeb93 -> C:\Users\atooz\Programming\fractalengine-workspace\fractalengine\.qa\stage\5a9eeb93-20261104125235679 (209.7s total)
+C:\Users\atooz\Programming\fractalengine-workspace\fractalengine\.qa\stage\5a9eeb93-20261104125235679

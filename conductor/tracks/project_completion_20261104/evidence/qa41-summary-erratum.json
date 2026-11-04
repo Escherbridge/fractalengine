@@ -1,0 +1,12 @@
+{
+  "kind": "immutable-qa-packet-summary-erratum",
+  "packet_manifest": "qa/passes/41/packet-manifest.json",
+  "manifest_sha256": "3bf5ba5a56cc2dc0a8825a4930d0d6a20c2198ab24ba35b02b39edd91175e359",
+  "affected_file": "qa/passes/41/packet-summary.json",
+  "affected_field": "limitations[6]",
+  "incorrect_statement": "Unsupported layout command left one originalzero-byteartifact",
+  "correction": "The unsupported layout command raised argparse SystemExit before qa_pair_drive.py wrote its output path. No artifact for that command exists in the frozen packet; no zero-byte file was retained. The stderr was visible in the tool result but was not archived as raw evidence. The supported layout-check subsequently ran in a separate recorded command.",
+  "reason": "Independent packet review found no zero-byte file; root rechecked the driver control flow.",
+  "evidence_unchanged": true,
+  "frozen_packet_preserved": true
+}

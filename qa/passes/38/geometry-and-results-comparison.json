@@ -1,0 +1,235 @@
+{
+  "kind": "qa38-geometry-results-author-derivation",
+  "sizes_scales": [
+    {
+      "state": "owner-initial-state.jsonl",
+      "ui": "owner-initial-ui.jsonl",
+      "window": {
+        "height": 720,
+        "maximized": false,
+        "minimized": false,
+        "ui_scale": 1.0,
+        "width": 1280
+      },
+      "ppp": 1.0,
+      "logical_left": 220.0,
+      "logical_right": 320.0,
+      "dividers": [
+        {
+          "name": "Resize hierarchy panel",
+          "bounds": {
+            "h": 652.0,
+            "w": 20.0,
+            "x": 210.0,
+            "y": 40.0
+          }
+        },
+        {
+          "name": "Resize right panel",
+          "bounds": {
+            "h": 652.0,
+            "w": 20.0,
+            "x": 950.0,
+            "y": 40.0
+          }
+        }
+      ]
+    },
+    {
+      "state": "owner-selected-after-state.jsonl",
+      "ui": "owner-selected-after-ui.jsonl",
+      "window": {
+        "height": 720,
+        "maximized": false,
+        "minimized": false,
+        "ui_scale": 1.0,
+        "width": 1280
+      },
+      "ppp": 1.0,
+      "logical_left": 260.0,
+      "logical_right": 360.0,
+      "dividers": [
+        {
+          "name": "Resize hierarchy panel",
+          "bounds": {
+            "h": 652.0,
+            "w": 20.0,
+            "x": 250.0,
+            "y": 40.0
+          }
+        },
+        {
+          "name": "Resize right panel",
+          "bounds": {
+            "h": 652.0,
+            "w": 20.0,
+            "x": 910.0,
+            "y": 40.0
+          }
+        }
+      ]
+    },
+    {
+      "state": "owner-scale075-state.jsonl",
+      "ui": "owner-scale075-ui.jsonl",
+      "window": {
+        "height": 720,
+        "maximized": false,
+        "minimized": false,
+        "ui_scale": 0.75,
+        "width": 1280
+      },
+      "ppp": 0.75,
+      "logical_left": 260.0,
+      "logical_right": 360.0104166666667,
+      "dividers": [
+        {
+          "name": "Resize hierarchy panel",
+          "bounds": {
+            "h": 667.0078125,
+            "w": 20.000003814697266,
+            "x": 185.00000381469727,
+            "y": 30.0
+          }
+        },
+        {
+          "name": "Resize right panel",
+          "bounds": {
+            "h": 667.0078125,
+            "w": 20.00006103515625,
+            "x": 999.9921569824219,
+            "y": 30.0
+          }
+        }
+      ]
+    },
+    {
+      "state": "owner-size1600-scale125-state.jsonl",
+      "ui": "owner-size1600-scale125-ui.jsonl",
+      "window": {
+        "height": 900,
+        "maximized": false,
+        "minimized": false,
+        "ui_scale": 1.25,
+        "width": 1600
+      },
+      "ppp": 1.25,
+      "logical_left": 260.0,
+      "logical_right": 360.0,
+      "dividers": [
+        {
+          "name": "Resize hierarchy panel",
+          "bounds": {
+            "h": 815.0,
+            "w": 20.0,
+            "x": 315.0,
+            "y": 50.0
+          }
+        },
+        {
+          "name": "Resize right panel",
+          "bounds": {
+            "h": 815.0,
+            "w": 20.0,
+            "x": 1140.0,
+            "y": 50.0
+          }
+        }
+      ]
+    },
+    {
+      "state": "owner-size1024-scale200-state.jsonl",
+      "ui": "owner-size1024-scale200-ui.jsonl",
+      "window": {
+        "height": 720,
+        "maximized": false,
+        "minimized": false,
+        "ui_scale": 2.0,
+        "width": 1024
+      },
+      "ppp": 2.0,
+      "logical_left": 161.59375,
+      "logical_right": 120.0,
+      "dividers": [
+        {
+          "name": "Resize hierarchy panel",
+          "bounds": {
+            "h": 584.0,
+            "w": 20.0,
+            "x": 313.1875,
+            "y": 80.0
+          }
+        },
+        {
+          "name": "Resize right panel",
+          "bounds": {
+            "h": 640.0,
+            "w": 20.0,
+            "x": 774.0,
+            "y": 80.0
+          }
+        }
+      ]
+    },
+    {
+      "state": "owner-restored-state.jsonl",
+      "ui": "owner-restored-ui.jsonl",
+      "window": {
+        "height": 720,
+        "maximized": false,
+        "minimized": false,
+        "ui_scale": 1.0,
+        "width": 1280
+      },
+      "ppp": 1.0,
+      "logical_left": 260.0,
+      "logical_right": 360.0,
+      "dividers": [
+        {
+          "name": "Resize hierarchy panel",
+          "bounds": {
+            "h": 652.0,
+            "w": 20.0,
+            "x": 250.0,
+            "y": 40.0
+          }
+        },
+        {
+          "name": "Resize right panel",
+          "bounds": {
+            "h": 652.0,
+            "w": 20.0,
+            "x": 910.0,
+            "y": 40.0
+          }
+        }
+      ]
+    }
+  ],
+  "preferred_widths_restored": true,
+  "stable_selected_drag_proof": "selected-divider-stable-comparison.json",
+  "initial_camera_mismatch_retained": "selected-divider-first-camera-mismatch.json",
+  "results": {
+    "query_rows": 5,
+    "left_neighbor_edge_sort_worked": true,
+    "right_x948_did_not_sort": "Native scrollbar overlies this edge in actual screenshot; do not claim right-edge sort success.",
+    "right_x930_interior_sort_worked": true,
+    "horizontal_header_x_before": 231,
+    "horizontal_header_x_after": -569,
+    "resized_scene_bottom_before": 587,
+    "resized_scene_bottom_after": 500,
+    "required_camera_fields_present_equal": [
+      "position",
+      "target",
+      "orbit",
+      "up",
+      "fov_deg"
+    ],
+    "close_top_neighbor_worked": true
+  },
+  "limits": [
+    "Default/1.25 measured layout checks pass; .75has101other small targets,2xInspector10clipping cases,Results4columnhandle small targets.",
+    "All layout coverage remains incomplete; no FULL credit.",
+    "QA0071 unintended write is a run failure and remains separately reproduced."
+  ]
+}
