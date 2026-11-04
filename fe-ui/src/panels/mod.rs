@@ -207,6 +207,7 @@ pub fn gardener_console(
         crate::ui_shell::left_sidebar::render_left_sidebar(
             ctx,
             left_state,
+            topbar_state.close_pending,
             sidebar,
             nav,
             dashboard,

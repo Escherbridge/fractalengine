@@ -19,6 +19,7 @@ use fe_runtime::messages::{DbCommand, ScopeLevel};
 pub(crate) fn left_sidebar(
     ctx: &egui::Context,
     sidebar: &mut SidebarState,
+    width: &mut crate::ui_shell::layout_policy::PanelWidthState,
     nav: &mut NavigationManager,
     _dashboard: &DashboardState,
     hierarchy: &mut VerseManager,
@@ -30,10 +31,13 @@ pub(crate) fn left_sidebar(
     settings: &crate::settings::AppSettings,
     local_role: &crate::plugin::LocalUserRole,
 ) {
-    egui::SidePanel::left("sidebar")
-        .resizable(true)
-        .default_width(220.0)
-        .width_range(120.0..=crate::ui_shell::layout_policy::left_width(ctx))
+    use crate::ui_shell::layout_policy::{self, PanelSide};
+    let id = egui::Id::new("fe-hierarchy-panel-divider");
+    let bounds = [120.0, layout_policy::left_width(ctx)];
+    let effective = width.prepare(ctx, id, PanelSide::Left, bounds);
+    let panel = egui::SidePanel::left("sidebar")
+        .resizable(false)
+        .exact_width(effective)
         .frame(
             egui::Frame::NONE
                 .fill(theme::BG_PANEL)
@@ -73,6 +77,11 @@ pub(crate) fn left_sidebar(
                 },
             );
         });
+    if let Some(panel) = panel {
+        width.register(ctx, id, PanelSide::Left, bounds, panel.response.rect);
+    } else {
+        width.suspend();
+    }
 }
 
 fn configure_tree_spacing(ui: &mut egui::Ui) {
@@ -92,53 +101,28 @@ fn sidebar_verse_header(
     ui.horizontal(|ui| {
         ui.add_space(8.0);
         ui.label(egui::RichText::new("Verse:").small().color(theme::TEXT_DIM));
-        if nav.active_verse_id.is_some() {
-            ui.label(
-                egui::RichText::new(&nav.active_verse_name)
-                    .strong()
-                    .color(theme::TEXT_STRONG),
-            );
-        } else {
-            ui.label(
-                egui::RichText::new("No Verse")
-                    .italics()
-                    .color(theme::TEXT_MUTED),
-            );
+        let name = if nav.active_verse_id.is_some() { nav.active_verse_name.as_str() } else { "No Verse" };
+        ui.add_sized(
+            egui::vec2((ui.available_width() - 8.0).max(0.0), ui.spacing().interact_size.y),
+            egui::Label::new(egui::RichText::new(name).strong().color(theme::TEXT_STRONG)).truncate(),
+        ).on_hover_text(name);
+    });
+    ui.horizontal(|ui| {
+        ui.add_space(8.0);
+        if ui.add(egui::Button::new("Join").fill(theme::BG_BUTTON)
+            .min_size(egui::vec2(0.0, 24.0)))
+            .named(ui, "Join verse by invite")
+            .on_hover_text("Join a verse by invite").clicked() {
+            ui_mgr.open_dialog(ActiveDialog::JoinDialog { invite_buf: String::new() });
         }
-        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-            ui.add_space(8.0);
-            if ui
-                .add(
-                    egui::Button::new("+")
-                        .fill(theme::BG_BUTTON_ALT)
-                        .min_size(egui::vec2(24.0, 24.0)),
-                )
-                .named(ui, "Create new verse")
-                .on_hover_text("Create new Verse")
-                .clicked()
-            {
-                ui_mgr.open_dialog(ActiveDialog::CreateEntity {
-                    kind: CreateKind::Verse,
-                    parent_id: String::new(),
-                    name_buf: String::new(),
-                });
-            }
-            // Phase F: Join Verse button
-            if ui
-                .add(
-                    egui::Button::new("Join")
-                        .fill(theme::BG_BUTTON)
-                        .min_size(egui::vec2(0.0, 24.0)),
-                )
-                .named(ui, "Join verse by invite")
-                .on_hover_text("Join a verse by invite")
-                .clicked()
-            {
-                ui_mgr.open_dialog(ActiveDialog::JoinDialog {
-                    invite_buf: String::new(),
-                });
-            }
-        });
+        if ui.add(egui::Button::new("+").fill(theme::BG_BUTTON_ALT)
+            .min_size(egui::vec2(24.0, 24.0)))
+            .named(ui, "Create new verse")
+            .on_hover_text("Create new Verse").clicked() {
+            ui_mgr.open_dialog(ActiveDialog::CreateEntity {
+                kind: CreateKind::Verse, parent_id: String::new(), name_buf: String::new(),
+            });
+        }
     });
     ui.add_space(6.0);
 }

@@ -151,3 +151,19 @@ independent review. See evidence/build-attempts and native-sdk-author-id-review.
 VIS-003 implementation is frozen for two independent source reviews; no preferred
 width fix or header contrast live acceptance is claimed yet. The final integrated
 sweep, CI and release remain pending.
+
+
+Current source HEAD5322a889 includes the reviewed three-token AccessKit fix.
+Combined build96041 is closed exit1; no app or new stage was launched. VIS-003
+source review found a left pending-close cancellation gap; a narrow correction
+is in progress before re-review. All source/main work remains local; no final
+integrated sweep, CI, tag or release has been run.
+
+
+VIS-003 v2 now has independent functional/design and exact integration approval.
+The pending-close MED is corrected before left prepare, with original dialog/
+portal gates retained. All six working files equal approved raw hashes; Git index
+content differs only by existing source CRLF-to-LF policy, and the complete patch
+matches approved63cc9180...a2b6b90f. Shared adapter/panel defaults and native A2
+producer hooks remain. No source-level closure is being treated as live visual
+or gesture acceptance. The next action is a combined production build retry.

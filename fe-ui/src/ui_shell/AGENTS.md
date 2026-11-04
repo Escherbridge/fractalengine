@@ -539,3 +539,61 @@ remain source-authored until the parent integrated sweep.
 ModalManagerState is publicly re-exported at ui_shell for the native accessibility
 host's read-only Resource borrow. The modal implementation module stays crate-private;
 the host observes quarantine eligibility through the existing UI guard.
+
+
+## Panel width intent and owned dividers (VIS-003)
+
+LeftSidebarState and RightSidebarState each own a PanelWidthState from layout_policy.
+Its private preferred width is session-only (defaults220/320 logical points).
+Automatic viewport caps affect effective width and never write the preference.
+The native SidePanels keep their explicit IDs and layout/animation but disable
+SDK resizing and use exact effective width. The right frame has no layout-cost
+stroke; the native separator draws its edge without adding four points to the
+stored outer geometry. No PanelState deletion/reverse lookup/private SDK resize
+ID or general context-layout reset is used.
+
+prepare reads only the previous actual app-owned divider Response under the
+public fe-hierarchy-panel-divider / fe-right-panel-divider IDs. register records
+a new semantic vertical Splitter after panel contents, on the normal Background
+layer. Its actual strip uses the displayed panel edge, vertical extent and
+resize_grab_radius_side, matching existing strict camera/selection exclusions.
+No foreground Area or global-pointer resize authority is added. Foreground
+windows retain egui hit-test priority; popups, modal state, lost focus, Escape,
+close/unavailable sections and quarantines refuse/cancel this owned gesture.
+
+The drag captures actual displayed outer width and pointer origin, so a panel
+preferred at220 but clamped to160 responds immediately to an inward10-point drag.
+Preference stays unchanged during preview. A stationary press, or motion beyond
+a cap that never changes the displayed divider, keeps the prior preference.
+Primary release commits only an actual width change beyond half a physical pixel.
+Cancellation restores the original preference; it never releases another widget's
+capture. Scale, viewport, available anchor/budget, actual Context or pass-continuity
+changes cancel and suppress the still-held pointer until release. Geometry is
+captured before SidePanel allocation and retained across registration, rather than
+comparing pre-panel geometry with the already-consumed available rectangle.
+
+Left show_animated registers a divider only for the public fully expanded Some
+response. Collapsing, animation and reopening preserve preference. Right section
+switches share one preference. The hierarchy retains both-axis scrolling and its
+220-point content floor, so narrow row actions remain scrollable rather than
+removed. Its outside-scroll header reserves a truncating full-name/hover row and
+a separate explicit Join/Create row to avoid squeezing those actions into the name.
+Actual 2x horizontal-scroll-and-invoke and responsive screenshots remain live gates.
+
+The existing left visibility/layout journey is extended via the shared helper,
+without new test declarations. It authors actual public Response drags, default
+and custom preference restoration across narrow/high-scale cycles, stationary and
+cap-only motion, constrained drag baseline, modal/scale cancellation, collapse and
+reopen, actual right outer budget/no-stroke drift, and unchanged camera exclusion
+geometry. These assertions are authored source coverage, not execution evidence.
+
+
+The left renderer receives current TopbarState.close_pending through the narrow
+shell call before prepare, and its production eligibility predicate combines
+that flag with the existing UiManager dialog/portal checks. Closing can become
+pending before the first egui modal is painted, so ctx modal state alone is not
+sufficient. The existing width journey uses this same production predicate with
+an actual TopbarState: newly pending close on release cancels instead of saving;
+removing close-pending while still held cannot revive the canceled drag. Right
+eligibility retains its existing close-pending check. No close action is executed
+by the resize owner, and no other widget's input capture is released.

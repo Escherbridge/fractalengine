@@ -2,6 +2,385 @@
 
 use bevy_egui::egui;
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum PanelSide {
+    Left,
+    Right,
+}
+
+#[derive(Clone, Debug)]
+struct PanelGeometry {
+    context: egui::Context,
+    viewport: egui::Rect,
+    available: egui::Rect,
+    scale: f32,
+    bounds: [f32; 2],
+}
+
+impl PartialEq for PanelGeometry {
+    fn eq(&self, other: &Self) -> bool {
+        self.context == other.context
+            && self.viewport == other.viewport
+            && self.available == other.available
+            && self.scale == other.scale
+            && self.bounds == other.bounds
+    }
+}
+
+#[derive(Clone, Debug)]
+struct PanelLayout {
+    geometry: PanelGeometry,
+    rect: egui::Rect,
+    pass: u64,
+}
+
+#[derive(Clone, Debug)]
+struct PanelResize {
+    geometry: PanelGeometry,
+    origin: egui::Pos2,
+    displayed: f32,
+    preview: f32,
+}
+
+/// Session width preference and its one owned divider gesture; see AGENTS.md.
+#[derive(Clone, Debug)]
+pub(crate) struct PanelWidthState {
+    preferred: f32,
+    drag: Option<PanelResize>,
+    layout: Option<PanelLayout>,
+    prepared: Option<PanelGeometry>,
+    interactive: bool,
+    wait_for_release: bool,
+}
+
+impl Default for PanelWidthState {
+    fn default() -> Self {
+        Self::new(320.0)
+    }
+}
+
+impl PanelWidthState {
+    pub(crate) const fn new(preferred: f32) -> Self {
+        Self {
+            preferred,
+            drag: None,
+            layout: None,
+            prepared: None,
+            interactive: true,
+            wait_for_release: false,
+        }
+    }
+
+    pub(crate) fn set_interactive(&mut self, enabled: bool) {
+        self.interactive = enabled;
+        if !enabled {
+            self.suspend();
+        }
+    }
+
+    pub(crate) fn suspend(&mut self) {
+        self.wait_for_release |= self.drag.is_some();
+        self.drag = None;
+        self.layout = None;
+    }
+
+    fn geometry(ctx: &egui::Context, bounds: [f32; 2]) -> Option<PanelGeometry> {
+        let scale = ctx.pixels_per_point();
+        let viewport = ctx.viewport_rect();
+        let available = ctx.available_rect();
+        (bounds[0].is_finite() && bounds[1].is_finite()
+            && bounds[0] >= 0.0 && bounds[1] >= bounds[0]
+            && viewport.is_finite() && available.is_finite()
+            && scale.is_finite() && scale > 0.0)
+            .then(|| PanelGeometry {
+                context: ctx.clone(),
+                viewport,
+                available,
+                scale,
+                bounds,
+            })
+    }
+
+    fn effective(&self, bounds: [f32; 2]) -> f32 {
+        let width = self.drag.as_ref().map_or(self.preferred, |drag| drag.preview);
+        if width.is_finite() { width.clamp(bounds[0], bounds[1]) } else { bounds[0] }
+    }
+
+    fn interaction_allowed(&self, ctx: &egui::Context) -> bool {
+        self.interactive
+            && ctx.input(|input| input.focused && !input.key_pressed(egui::Key::Escape))
+            && !egui::Popup::is_any_open(ctx)
+            && ctx.memory(|memory| memory.top_modal_layer().is_none())
+    }
+
+    pub(crate) fn prepare(
+        &mut self,
+        ctx: &egui::Context,
+        id: egui::Id,
+        side: PanelSide,
+        bounds: [f32; 2],
+    ) -> f32 {
+        let Some(geometry) = Self::geometry(ctx, bounds) else {
+            self.suspend();
+            self.prepared = None;
+            return 0.0;
+        };
+        self.prepared = Some(geometry.clone());
+        let down = ctx.input(|input| input.pointer.primary_down());
+        if !down { self.wait_for_release = false; }
+        let fresh = self.layout.as_ref().is_some_and(|layout| {
+            layout.geometry == geometry
+                && layout.pass.checked_add(1) == Some(ctx.cumulative_pass_nr())
+        });
+        let allowed = self.interaction_allowed(ctx);
+        if !allowed || !fresh
+            || self.drag.as_ref().is_some_and(|drag| drag.geometry != geometry) {
+            self.suspend();
+            self.wait_for_release |= down;
+            return self.effective(bounds);
+        }
+        if self.wait_for_release { return self.effective(bounds); }
+        if let Some(response) = ctx.read_response(id) {
+            if self.drag.is_none() && response.drag_started_by(egui::PointerButton::Primary) {
+                if let Some(origin) = ctx.input(|input| input.pointer.press_origin())
+                    .filter(|origin| origin.is_finite()) {
+                    let displayed = self.layout.as_ref().map_or(0.0, |layout| layout.rect.width());
+                    self.drag = Some(PanelResize {
+                        geometry: geometry.clone(), origin, displayed, preview: displayed,
+                    });
+                }
+            }
+            if let Some(drag) = self.drag.as_mut() {
+                if let Some(pointer) = response.interact_pointer_pos() {
+                    let direction = if side == PanelSide::Left { 1.0 } else { -1.0 };
+                    let delta = direction * (pointer.x - drag.origin.x);
+                    let requested = drag.displayed + delta;
+                    if requested.is_finite() {
+                        drag.preview = if delta.abs() > 0.5 / geometry.scale {
+                            requested.clamp(bounds[0], bounds[1])
+                        } else { drag.displayed };
+                    }
+                }
+                if response.drag_stopped_by(egui::PointerButton::Primary) {
+                    if (drag.preview - drag.displayed).abs() > 0.5 / geometry.scale {
+                        self.preferred = drag.preview;
+                    }
+                    self.drag = None;
+                } else if !response.dragged_by(egui::PointerButton::Primary) {
+                    self.suspend();
+                    self.wait_for_release |= down;
+                }
+            }
+        } else if self.drag.is_some() {
+            self.suspend();
+            self.wait_for_release |= down;
+        }
+        self.effective(bounds)
+    }
+
+    pub(crate) fn register(
+        &mut self,
+        ctx: &egui::Context,
+        id: egui::Id,
+        side: PanelSide,
+        bounds: [f32; 2],
+        rect: egui::Rect,
+    ) {
+        use crate::accessibility::ResponseExt;
+        let Some(geometry) = self.prepared.take().filter(|prepared| {
+            prepared.context == *ctx && prepared.bounds == bounds
+        }) else {
+            self.suspend();
+            return;
+        };
+        let radius = ctx.style().interaction.resize_grab_radius_side;
+        if !rect.is_finite() || !rect.is_positive() || !radius.is_finite() || radius < 0.0 {
+            self.suspend();
+            return;
+        }
+        let edge = if side == PanelSide::Left { rect.max.x } else { rect.min.x };
+        let strip = egui::Rect::from_x_y_ranges(edge..=edge, rect.y_range())
+            .expand2(egui::vec2(radius, 0.0)).intersect(ctx.viewport_rect());
+        let mut builder = egui::UiBuilder::new()
+            .layer_id(egui::LayerId::background()).max_rect(ctx.viewport_rect());
+        if !self.interaction_allowed(ctx) || self.wait_for_release { builder = builder.disabled(); }
+        let mut ui = egui::Ui::new(ctx.clone(), id.with("surface"), builder);
+        let name = if side == PanelSide::Left { "Resize hierarchy panel" } else { "Resize right panel" };
+        let response = ui.interact(strip, id, egui::Sense::drag()).named(&ui, name);
+        ctx.accesskit_node_builder(id, |node| {
+            node.set_role(egui::accesskit::Role::Splitter);
+            node.set_orientation(egui::accesskit::Orientation::Vertical);
+        });
+        if response.hovered() || response.dragged() {
+            ctx.set_cursor_icon(egui::CursorIcon::ResizeHorizontal);
+        }
+        self.layout = Some(PanelLayout { geometry, rect, pass: ctx.cumulative_pass_nr() });
+    }
+}
+
+#[cfg(test)]
+pub(super) fn extend_panel_width_journey() {
+    struct Panels {
+        ctx: egui::Context,
+        left: PanelWidthState,
+        right: PanelWidthState,
+        physical: f32,
+        scale: f32,
+        time: f64,
+        visible: bool,
+        blocked: bool,
+        focused: bool,
+        topbar: super::topbar::TopbarState,
+        ui: crate::actions::UiManager,
+        rects: [egui::Rect; 2],
+    }
+    impl Panels {
+        fn frame(&mut self, events: Vec<egui::Event>) {
+            let ctx = self.ctx.clone();
+            ctx.set_pixels_per_point(self.scale);
+            self.time += 0.25;
+            let _ = ctx.run(egui::RawInput {
+                screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO,
+                    egui::vec2(self.physical / self.scale, 720.0 / self.scale))),
+                time: Some(self.time), focused: self.focused, events, ..Default::default()
+            }, |ctx| {
+                for side in [PanelSide::Left, PanelSide::Right] {
+                    let (state, bounds, id) = if side == PanelSide::Left {
+                        (&mut self.left, [120.0, left_width(ctx)], egui::Id::new("width-left"))
+                    } else {
+                        let max = right_width(ctx);
+                        (&mut self.right, [max.min(260.0), max], egui::Id::new("width-right"))
+                    };
+                    let available = if side == PanelSide::Left {
+                        super::left_sidebar::resize_interaction_allowed(&self.ui, self.topbar.close_pending)
+                    } else { !self.topbar.close_pending };
+                    state.set_interactive(!self.blocked && available);
+                    let width = state.prepare(ctx, id, side, bounds);
+                    let panel = if side == PanelSide::Left {
+                        egui::SidePanel::left("width-test-left")
+                    } else { egui::SidePanel::right("width-test-right") };
+                    let panel = panel.resizable(false).exact_width(width).frame(egui::Frame::NONE)
+                        .show_animated(ctx, self.visible, |_| {});
+                    if let Some(panel) = panel {
+                        self.rects[if side == PanelSide::Left { 0 } else { 1 }] = panel.response.rect;
+                        assert!(panel.response.rect.width() <= bounds[1] + 1.0 / self.scale);
+                        state.register(ctx, id, side, bounds, panel.response.rect);
+                    } else { state.suspend(); }
+                }
+                egui::CentralPanel::default().frame(egui::Frame::NONE).show(ctx, |_| {});
+            });
+        }
+        fn settle(&mut self) { for _ in 0..3 { self.frame(Vec::new()); } }
+        fn pointer(&mut self, point: egui::Pos2, pressed: bool) {
+            self.frame(vec![egui::Event::PointerMoved(point), egui::Event::PointerButton {
+                pos: point, button: egui::PointerButton::Primary, pressed,
+                modifiers: egui::Modifiers::NONE,
+            }]);
+        }
+        fn edge(&self, side: PanelSide) -> egui::Pos2 {
+            if side == PanelSide::Left { egui::pos2(self.rects[0].max.x, 120.0) }
+            else { egui::pos2(self.rects[1].min.x, 120.0) }
+        }
+        fn drag(&mut self, side: PanelSide, delta: f32) {
+            let start = self.edge(side);
+            self.pointer(start, true);
+            let end = start + egui::vec2(delta, 0.0);
+            self.frame(vec![egui::Event::PointerMoved(end)]);
+            self.pointer(end, false);
+            self.settle();
+        }
+    }
+    let mut panels = Panels {
+        ctx: egui::Context::default(), left: PanelWidthState::new(220.0),
+        right: PanelWidthState::default(), physical: 1280.0, scale: 1.0,
+        time: 0.0, visible: true, blocked: false, focused: true, rects: [egui::Rect::NOTHING; 2],
+        topbar: super::topbar::TopbarState::default(), ui: crate::actions::UiManager::default(),
+    };
+    panels.settle();
+    for _ in 0..4 {
+        assert!((panels.rects[0].width() - 220.0).abs() <= 1.0);
+        assert!((panels.rects[1].width() - 320.0).abs() <= 1.0,
+            "the outer right frame must not acquire a four-point stroke feedback");
+        panels.frame(Vec::new());
+    }
+    panels.physical = 1024.0; panels.scale = 2.0; panels.settle();
+    assert!(panels.rects[0].width() < 220.0 && panels.rects[1].width() < 320.0);
+    panels.physical = 1280.0; panels.scale = 1.0; panels.settle();
+    assert!((panels.rects[0].width() - 220.0).abs() <= 1.0);
+    assert!((panels.rects[1].width() - 320.0).abs() <= 1.0);
+    panels.drag(PanelSide::Left, 30.0); panels.drag(PanelSide::Right, -40.0);
+    let custom = [panels.left.preferred, panels.right.preferred];
+    assert!((custom[0] - 250.0).abs() <= 1.0 && (custom[1] - 360.0).abs() <= 1.0,
+        "actual public divider drags update only their owned preferences");
+    panels.physical = 1024.0; panels.scale = 2.0; panels.settle();
+    panels.drag(PanelSide::Left, 0.0);
+    assert_eq!(panels.left.preferred, custom[0], "stationary press keeps the unclamped preference");
+    panels.drag(PanelSide::Left, 10.0);
+    assert_eq!(panels.left.preferred, custom[0], "movement beyond the cap without a changed divider is not a resize");
+    let displayed = panels.rects[0].width();
+    panels.drag(PanelSide::Left, -10.0);
+    assert!((panels.left.preferred - (displayed - 10.0)).abs() <= 1.0,
+        "constrained dragging starts at actual displayed width, not the old preference");
+    let saved = panels.left.preferred;
+    let origin = panels.edge(PanelSide::Left); panels.pointer(origin, true);
+    panels.frame(vec![egui::Event::PointerMoved(origin + egui::vec2(-8.0, 0.0))]);
+    panels.blocked = true; panels.frame(Vec::new());
+    panels.pointer(origin, false); panels.blocked = false; panels.settle();
+    assert_eq!(panels.left.preferred, saved, "modal loss cancels preview without saving it");
+    let origin = panels.edge(PanelSide::Left); panels.pointer(origin, true);
+    let end = origin + egui::vec2(-8.0, 0.0);
+    panels.frame(vec![egui::Event::PointerMoved(end)]);
+    panels.topbar.close_pending = true;
+    assert!(panels.ctx.memory(|memory| memory.top_modal_layer().is_none()),
+        "the pending-close gate is required before the first modal paint");
+    panels.pointer(end, false);
+    assert_eq!(panels.left.preferred, saved,
+        "new pending close on the held drag release cannot commit its preference");
+    assert!(panels.left.drag.is_none());
+    panels.topbar.close_pending = false; panels.settle();
+    let origin = panels.edge(PanelSide::Left); panels.pointer(origin, true);
+    panels.frame(vec![egui::Event::PointerMoved(origin + egui::vec2(-8.0, 0.0))]);
+    panels.topbar.close_pending = true; panels.frame(Vec::new());
+    assert!(panels.left.wait_for_release && panels.left.drag.is_none());
+    panels.topbar.close_pending = false;
+    panels.frame(vec![egui::Event::PointerMoved(origin + egui::vec2(-16.0, 0.0))]);
+    assert!(panels.left.wait_for_release,
+        "removing pending close cannot revive the canceled held gesture");
+    panels.pointer(origin, false); panels.settle();
+    assert!(!panels.left.wait_for_release);
+    assert_eq!(panels.left.preferred, saved);
+    let origin = panels.edge(PanelSide::Left); panels.pointer(origin, true);
+    panels.frame(vec![egui::Event::PointerMoved(origin + egui::vec2(-8.0, 0.0))]);
+    panels.frame(vec![egui::Event::Key {
+        key: egui::Key::Escape, physical_key: None, pressed: true, repeat: false,
+        modifiers: egui::Modifiers::NONE,
+    }]);
+    panels.pointer(origin, false); panels.settle();
+    assert_eq!(panels.left.preferred, saved, "Escape cancels this owner without a save");
+    let origin = panels.edge(PanelSide::Left); panels.pointer(origin, true);
+    panels.frame(vec![egui::Event::PointerMoved(origin + egui::vec2(-8.0, 0.0))]);
+    panels.focused = false; panels.frame(Vec::new()); panels.pointer(origin, false);
+    panels.focused = true; panels.settle();
+    assert_eq!(panels.left.preferred, saved, "focus loss cannot commit a preview");
+    let origin = panels.edge(PanelSide::Left); panels.pointer(origin, true);
+    panels.frame(vec![egui::Event::PointerMoved(origin + egui::vec2(-8.0, 0.0))]);
+    panels.scale = 1.0; panels.physical = 1280.0; panels.frame(Vec::new());
+    panels.frame(vec![egui::Event::PointerMoved(origin + egui::vec2(50.0, 0.0))]);
+    panels.pointer(origin, false); panels.settle();
+    assert_eq!(panels.left.preferred, saved, "scale/window change cancels and suppresses the held gesture");
+    assert!((panels.rects[1].width() - custom[1]).abs() <= 1.0);
+    panels.visible = false; panels.settle(); panels.visible = true; panels.settle();
+    assert_eq!(panels.left.preferred, saved);
+    assert_eq!(panels.right.preferred, custom[1]);
+    let screen = panels.ctx.viewport_rect();
+    let visual = egui::Rect::from_min_max(
+        egui::pos2(panels.rects[0].max.x, 0.0), egui::pos2(panels.rects[1].min.x, screen.max.y));
+    let radius = panels.ctx.style().interaction.resize_grab_radius_side;
+    let input = super::topbar::viewport_interaction_rect(visual, screen, true, radius, false);
+    assert_eq!(input.min.x, visual.min.x + radius);
+    assert_eq!(input.max.x, visual.max.x - radius);
+}
+
 #[derive(Clone, Default)]
 pub struct LayoutObservations {
     pub enabled: bool,

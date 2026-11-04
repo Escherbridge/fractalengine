@@ -112,6 +112,7 @@ pub struct RightSidebarState {
     pub requested: Option<RightSidebarSection>,
     /// Settings-section residency readout, refreshed by `update_residency_readout`.
     pub residency: ResidencyReadout,
+    pub(crate) width: super::layout_policy::PanelWidthState,
 }
 
 /// What is resident right now (D-74 pointer-set): ledger nodes + stamp groups,
@@ -310,11 +311,15 @@ pub fn render_right_sidebar(
     settings_session: &mut crate::settings::SettingsSession,
     topbar: &mut super::topbar::TopbarState,
 ) {
+    state.width.set_interactive(matches!(ui_mgr.active_dialog,
+        ActiveDialog::None | ActiveDialog::HexonManager { .. }) && !topbar.close_pending);
     if !super::layout_policy::can_show_right(ctx) {
+        state.width.suspend();
         return;
     }
     let portal_open = ui_mgr.portal_is_open();
     if portal_open {
+        state.width.suspend();
         // Portal open swaps the whole right region to the portal toolbar.
         if modal.disabled_panels.contains("portal_toolbar") {
             egui::SidePanel::right("portal_toolbar_quarantine").show(ctx, |ui| {
@@ -339,9 +344,13 @@ pub fn render_right_sidebar(
     if section != Some(RightSidebarSection::Maps) {
         clear_maps_carrier(ui_mgr);
     }
-    let Some(current_section) = section else { return; };
+    let Some(current_section) = section else {
+        state.width.suspend();
+        return;
+    };
     let guard_key = section_guard_key(current_section);
     if modal.disabled_panels.contains(guard_key) {
+        state.width.set_interactive(false);
         render_quarantined_section(ctx, state, current_section, modal);
         return;
     }
@@ -1704,16 +1713,18 @@ pub(crate) fn section_chrome(
     section: RightSidebarSection,
     body: impl FnOnce(&mut egui::Ui),
 ) {
+    use super::layout_policy::PanelSide;
     let max_w = super::layout_policy::right_width(ctx);
-    egui::SidePanel::right("right_section")
-        .resizable(true)
-        .default_width(320.0)
-        .width_range(max_w.min(260.0)..=max_w)
+    let bounds = [max_w.min(260.0), max_w];
+    let id = egui::Id::new("fe-right-panel-divider");
+    let effective = state.width.prepare(ctx, id, PanelSide::Right, bounds);
+    let panel = egui::SidePanel::right("right_section")
+        .resizable(false)
+        .exact_width(effective)
         .frame(
             egui::Frame::NONE
                 .fill(theme::BG_PANEL)
-                .inner_margin(egui::Margin::same(0))
-                .stroke(egui::Stroke::new(2.0_f32, theme::BG_BUTTON)),
+                .inner_margin(egui::Margin::same(0)),
         )
         .show(ctx, |ui| {
             ui.add_space(8.0);
@@ -1746,6 +1757,7 @@ pub(crate) fn section_chrome(
                 },
             );
         });
+    state.width.register(ctx, id, PanelSide::Right, bounds, panel.response.rect);
 }
 
 /// Rail glyph for a section. Pure + total, so a new variant cannot silently

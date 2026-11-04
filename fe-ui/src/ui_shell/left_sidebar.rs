@@ -34,6 +34,7 @@ pub enum LeftSidebarPolicy {
 pub struct LeftSidebarState {
     pub policy: LeftSidebarPolicy,
     pub user_intent: bool,
+    pub(crate) width: super::layout_policy::PanelWidthState,
 }
 
 impl Default for LeftSidebarState {
@@ -42,6 +43,7 @@ impl Default for LeftSidebarState {
         Self {
             policy: LeftSidebarPolicy::default(),
             user_intent: true,
+            width: super::layout_policy::PanelWidthState::new(220.0),
         }
     }
 }
@@ -54,12 +56,20 @@ pub fn left_visibility(policy: LeftSidebarPolicy, user_intent: bool) -> bool {
     }
 }
 
+pub(crate) fn resize_interaction_allowed(ui_mgr: &UiManager, close_pending: bool) -> bool {
+    !close_pending
+        && matches!(ui_mgr.active_dialog,
+            crate::dialogs::ActiveDialog::None | crate::dialogs::ActiveDialog::HexonManager { .. })
+        && !ui_mgr.portal_is_open()
+}
+
 /// Applies the visibility policy, then renders the left sidebar. The manager
 /// owns the open/close decision; there is NO per-frame `!right_open` stomp
 /// anymore (D-A11) — `sidebar.open` tracks the user's sticky intent only.
 pub fn render_left_sidebar(
     ctx: &egui::Context,
-    state: &LeftSidebarState,
+    state: &mut LeftSidebarState,
+    close_pending: bool,
     sidebar_state: &mut SidebarState,
     nav: &mut NavigationManager,
     dashboard: &DashboardState,
@@ -75,9 +85,11 @@ pub fn render_left_sidebar(
 ) {
     sidebar_state.open = left_visibility(state.policy, state.user_intent)
         && super::layout_policy::can_show_left(ctx);
+    state.width.set_interactive(resize_interaction_allowed(ui_mgr, close_pending));
     sidebar::left_sidebar(
         ctx,
         sidebar_state,
+        &mut state.width,
         nav,
         dashboard,
         hierarchy,
@@ -281,6 +293,7 @@ mod tests {
             assert!(std::sync::Arc::ptr_eq(&ctx.style(), &before), "the no-body path restores its exact original style");
         });
         assert!(body_seen && popup_seen);
+        layout_policy::extend_panel_width_journey();
     }
 
     #[test]

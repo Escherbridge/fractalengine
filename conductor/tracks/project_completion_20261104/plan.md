@@ -22,12 +22,12 @@ reviewed slice. Historical evidence stays linked rather than rewritten.
 
 ## P1: correctness and execution blockers
 
-- [~] QA-0069 volume correction: complete finite source-bound measurements and atomic pairs authored; fix all three ownership/projection review blockers and the source-hash hot path, then obtain independent approval.
+- [x] QA-0069 source correction: complete finite source-bound measurement/atomic pair stack and all three ownership/projection blockers plus source-hash cache independently approved and integrated0e6668bd. Live acceptance remains below.
 - [ ] Verify no new cut/fill history on navigation/reload, true zero versus unavailable, late direct and resolved receipts, current access/source changes, newer gestures and terminal outcome retention.
 - [ ] Reproduce and resolve QA-0024 unintended brush edit with independent expected geometry and zero unintended mutations.
 - [x] Correct/review the legacy helper stdin ownership (98572fdb); fresh fixture preparation and authenticated app startup passed, then exact owned stop exited0. Offline inspection/adoption/restart acceptance remains unchecked.
 - [ ] Review/implement require-existing live restart and fixture checkpoints without reseeding, offline store bypass or invented identity/authority.
-- [~] Complete native witness corrections for stale completed Guard, lifecycle suspend/resume, view eligibility and direct-painter inventory; independently review before integration.
+- [x] Native witness four source corrections independently approved and integrated2bce88af; pinned SDK annotation setter correction independently reviewed and committed5322a889. Combined compile/native acceptance remains open.
 - [ ] Verify normal accessibility delivery; implement/review retained-element operator helper, bounded invocation ownership and any separate navigation profile. Establish capture freshness or retain explicit refusal.
 - [~] QA-0063 peer node delivery: source repair integrated; prove fresh paired ordinary-node and real byte/render delivery, then restart/recovery.
 
@@ -47,7 +47,9 @@ reviewed slice. Historical evidence stays linked rather than rewritten.
 
 Use [the screenshot inspection checklist](./visual-checklist.md) for the changed hierarchy workflow and subsequent UI fixes.
 
-- [ ] VIS-001: fix the reproduced hierarchy-card Petal label wrapping one character per line at 1280x720; inspect corrected card/breadcrumb/count/menu layout and neighboring sizes/scales against evidence/hierarchy-card-wrapping-before.png.
+- [~] VIS-001: card count correction9cdd3132 focused-verified in reviewed QA34/35 at actual1024/1280/1600 widths and1.25/2 scales, with Open/Options/Create-Cancel. All-Verses cards, long names, large counts and extreme widths remain catalog gates.
+- [~] VIS-002: header contrast source515b88fc approved; fresh combined-build screenshot verification pending.
+- [~] VIS-003: preferred/effective width and owned-divider v2 source independently approved, including first-frame pending-close cancellation; exact integration reviewed. Combined compilation and actual drag/scale/modal/selection/camera verification pending.
 - [ ] Inspect actual screenshots during every changed workflow; record and fix visible clipping, overlap, wrapping, spacing, contrast, empty/black output and selection glitches before acceptance. Preserve before/after images and state/size/scale; geometry checks alone do not pass visual review.
 
 - [ ] Close/reproduce remaining status, viewport selection, Enter/Escape, empty Inspector, small targets, black capture, restore and input/capture timeout findings.
