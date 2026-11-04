@@ -885,6 +885,36 @@ fn test_rename_entity_omits_node_scene_change() {
         }
         other => panic!("expected correlated stored petal details, got {other:?}"),
     };
+    let native_target = fe_runtime::native_navigation::PetalTarget {
+        verse_id: petal_details.verse_id.clone(),
+        fractal_id: fractal_id.clone(),
+        petal_id: petal_id.clone(),
+        name: "renamed-petal".into(),
+    };
+    let native_request = ulid::Ulid::new().to_string();
+    match request(DbCommand::ReadNativePetalView {
+        request_id: native_request.clone(), target: native_target.clone(),
+    }) {
+        DbResult::NativePetalViewRead { request_id, target, outcome: Ok(view) } => {
+            assert_eq!(request_id, native_request);
+            assert_eq!(target, native_target);
+            assert_eq!(view.target, native_target);
+            assert!(view.is_bounded(), "minimal local read carries an opaque bounded source fence");
+        }
+        other => panic!("expected exact DB-local native navigation read, got {other:?}"),
+    }
+    for changed in [
+        fe_runtime::native_navigation::PetalTarget { fractal_id: "wrong-parent".into(), ..native_target.clone() },
+        fe_runtime::native_navigation::PetalTarget { name: "old-rendered-name".into(), ..native_target.clone() },
+    ] {
+        assert!(matches!(request(DbCommand::ReadNativePetalView {
+            request_id: ulid::Ulid::new().to_string(), target: changed,
+        }), DbResult::NativePetalViewRead { outcome: Err(_), .. }),
+            "current stored parent/name must match the actual rendered target");
+    }
+    assert!(matches!(request(DbCommand::ReadNativePetalView {
+        request_id: "not-a-request".into(), target: native_target.clone(),
+    }), DbResult::NativePetalViewRead { outcome: Err(_), .. }));
     let description = "Rich schema group: \"quoted\", apostrophe's and\nnew lines";
     assert!(matches!(
         request(DbCommand::UpdateFractalDescription {
@@ -953,6 +983,10 @@ fn test_rename_entity_omits_node_scene_change() {
     assert!(matches!(request(DbCommand::DeleteEntity {
         entity_type:EntityType::Petal,entity_id:petal_id.clone(),
     }),DbResult::EntityDeleted {entity_id,..} if entity_id==petal_id));
+    assert!(matches!(request(DbCommand::ReadNativePetalView {
+        request_id: ulid::Ulid::new().to_string(), target: native_target,
+    }), DbResult::NativePetalViewRead { outcome: Err(_), .. }),
+        "a deleted target cannot retain a successful native view proof");
     let mut vars = std::collections::HashMap::new();
     vars.insert(
         "ids".into(),

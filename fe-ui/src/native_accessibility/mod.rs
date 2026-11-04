@@ -4,6 +4,9 @@ mod confirmation;
 #[cfg(test)]
 pub(crate) mod journey;
 mod snapshot;
+pub mod navigation;
+pub mod navigation_ui;
+pub mod provider_identity;
 pub mod surface;
 
 use bevy_egui::egui::{self, accesskit as ak};
@@ -29,6 +32,14 @@ pub struct Guard {
     ready: bool,
     capture_view: bool,
     capture_labels_clear: bool,
+    navigation_proof: Option<u64>,
+}
+impl Guard {
+    pub fn same_base(self, other: Self) -> bool {
+        let mut base = self;
+        base.navigation_proof = other.navigation_proof;
+        base == other
+    }
 }
 
 pub fn product_guard(
@@ -42,7 +53,7 @@ pub fn product_guard(
     modal: &crate::ui_shell::modal::ModalManagerState,
     path: &crate::gis::PathEditorState,
 ) -> Guard {
-    Guard {
+    let mut guard = Guard {
         navigation: nav.intent_revision,
         scene: manager.scene_incarnation(),
         hierarchy: manager.scene_hierarchy_revision(),
@@ -57,6 +68,7 @@ pub fn product_guard(
         capture_view: role.role.is_some_and(|role| role.can_view())
             && !manager.scene_access_blocked(),
         capture_labels_clear: path.editing_track_id.is_none() || path.points.is_empty(),
+        navigation_proof: None,
         ready: matches!(ui.active_dialog, crate::dialogs::ActiveDialog::None)
             && !topbar.close_pending
             && modal.disabled_panels.is_empty()
@@ -65,24 +77,30 @@ pub fn product_guard(
             && path.pending_pen_create.is_none()
             && !egui::Popup::is_any_open(ctx)
             && ctx.memory(|memory| memory.top_modal_layer().is_none()),
-    }
+    };
+    navigation_ui::refresh_source(ctx, guard, nav, manager, nodes);
+    guard.navigation_proof = navigation_ui::epoch(ctx);
+    guard
 }
 
-#[derive(Clone, Copy)]
+#[derive(Clone)]
 struct Widget {
     id: egui::Id,
     layer: egui::LayerId,
     enabled: bool,
     confirmation: Option<confirmation::Owner>,
+    petal: bool,
+    rect: egui::Rect,
 }
 
-#[derive(Clone, Copy)]
+#[derive(Clone)]
 struct Delivery {
     pass: u64,
     guard: Guard,
     target: ak::NodeId,
     action: ak::Action,
     confirmation: Option<confirmation::Owner>,
+    navigation: Option<navigation_ui::Binding>,
 }
 
 struct Pass {
@@ -93,6 +111,8 @@ struct Pass {
     invalid: bool,
     delivery: Option<Delivery>,
     semantic_click: Option<(ak::NodeId, Option<confirmation::Owner>)>,
+    navigation_click: Option<navigation_ui::Binding>,
+    native_input: bool,
 }
 
 impl Default for Pass {
@@ -105,6 +125,8 @@ impl Default for Pass {
             invalid: true,
             delivery: None,
             semantic_click: None,
+            navigation_click: None,
+            native_input: false,
         }
     }
 }
@@ -126,6 +148,7 @@ pub fn activate(ctx: &egui::Context) {
 }
 
 pub fn retire(ctx: &egui::Context) {
+    navigation_ui::retire(ctx);
     surface::retire(ctx);
     strip_requests(ctx);
     ctx.data_mut(|data| data.remove::<Shared>(key()));
@@ -160,7 +183,16 @@ fn neutral(modifiers: egui::Modifiers, events: &[egui::Event]) -> bool {
 }
 
 pub fn stage(ctx: &egui::Context, snapshot: &Snapshot, request: &ak::ActionRequest) -> bool {
+    stage_bound(ctx, snapshot, request, snapshot.navigation(request.target))
+}
+
+pub fn stage_bound(ctx: &egui::Context, snapshot: &Snapshot, request: &ak::ActionRequest,
+    navigation: Option<navigation_ui::Binding>) -> bool {
     if !snapshot.guard.ready || !snapshot.allows(request) {
+        return false;
+    }
+    if !snapshot.matches_navigation(request.target, navigation.as_ref())
+        || navigation.as_ref().is_some_and(|binding| !navigation_ui::is_current(ctx, binding)) {
         return false;
     }
     let Some(shared) = shared(ctx) else {
@@ -179,9 +211,10 @@ pub fn stage(ctx: &egui::Context, snapshot: &Snapshot, request: &ak::ActionReque
     pass.delivery = Some(Delivery {
         pass: ctx.cumulative_pass_nr(),
         guard: snapshot.guard,
-        target: request.target,
+        target: navigation.as_ref().map_or(request.target, |binding| binding.physical()),
         action: request.action,
         confirmation: snapshot.confirmation(request.target),
+        navigation,
     });
     true
 }
@@ -196,10 +229,14 @@ pub fn begin_pass(ctx: &egui::Context, guard: Guard) {
         return;
     };
     let number = ctx.cumulative_pass_nr();
+    pass.native_input = ctx.input(|input| input.events.iter().any(|event| {
+        matches!(event, egui::Event::AccessKitActionRequest(_))
+    }));
     let neutral =
         ctx.input(|input| neutral(input.modifiers, &input.events) && !input.pointer.any_down());
     let delivery = pass.delivery.take().filter(|delivery| {
-        delivery.pass == number && delivery.guard == guard && guard.ready && neutral
+        delivery.pass == number && delivery.guard.same_base(guard) && guard.ready && neutral
+            && delivery.navigation.as_ref().is_none_or(|binding| navigation_ui::is_current(ctx, binding))
     });
     let valid = ctx.input(|input| {
         let mut requests = input.events.iter().filter_map(|event| {
@@ -209,7 +246,7 @@ pub fn begin_pass(ctx: &egui::Context, guard: Guard) {
                 None
             }
         });
-        match (requests.next(), requests.next(), delivery) {
+        match (requests.next(), requests.next(), delivery.as_ref()) {
             (Some(request), None, Some(delivery)) => {
                 request.target == delivery.target
                     && request.action == delivery.action
@@ -226,6 +263,8 @@ pub fn begin_pass(ctx: &egui::Context, guard: Guard) {
     pass.guard = guard.ready.then_some(guard);
     pass.widgets.clear();
     pass.invalid = false;
+    pass.navigation_click = delivery.as_ref().filter(|_| valid)
+        .and_then(|delivery| delivery.navigation.clone());
     pass.semantic_click = delivery
         .filter(|delivery| valid && delivery.action == ak::Action::Click)
         .map(|delivery| (delivery.target, delivery.confirmation));
@@ -242,7 +281,7 @@ fn strip_requests(ctx: &egui::Context) {
 pub fn finish_pass(ctx: &egui::Context, guard: Guard) {
     if let Some(shared) = shared(ctx) {
         if let Ok(mut pass) = shared.try_lock() {
-            if pass.guard != Some(guard) || !guard.ready {
+            if !pass.guard.is_some_and(|previous| previous.same_base(guard)) || !guard.ready {
                 pass.guard = None;
             }
         }
@@ -276,6 +315,8 @@ pub(crate) fn record(ui: &egui::Ui, response: &egui::Response) {
                     .ctx()
                     .memory(|memory| memory.allows_interaction(response.layer_id)),
             confirmation: None,
+            petal: false,
+            rect: response.rect,
         },
     );
 }

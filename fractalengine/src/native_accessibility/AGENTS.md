@@ -97,3 +97,15 @@ must still match the live actual Context/handler; quarantine cannot produce owne
 It neither exposes mutable adapter state nor changes queue admission/restoration. The
 window witness is installed/retired beside this adapter; no helper/capture action is
 added by the seam. See ../native_window_witness/AGENTS.md.
+
+## NAV-1B original typed delivery
+
+Pending retains the exact original navigation Binding from its admitted Snapshot;
+a replacement snapshot cannot supply a renewed proof to an old request. Retention,
+PreUpdate staging and begin_pass check that original binding. Adapter.next calls
+its checked translate operation only for the exact Click/data=None/provider ID,
+after fresh original proof/set validation, and stages the actual physical egui ID.
+Physical response identity and remembered input/focus are unchanged. The callback
+validates again before effects. Expiry or missing metadata refuses without an
+ordinary action fallback. Guard.same_base keeps unrelated A1 behavior independent
+from a background navigation proof key; all original product/confirmation gates stay.

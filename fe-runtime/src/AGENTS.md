@@ -1117,3 +1117,22 @@ representation; null/nonobject/oversized sources return None. Missing/default
 fields stay unknown for background measurement admission. This adds no command,
 authority, geometry interpretation or coverage claim. The complete typed CBOR
 Petal snapshot and backend full-view comparison remain the transaction authority.
+
+
+## Native Petal navigation read foundation
+
+`native_navigation` defines only bounded exact Petal ancestry/name and an opaque
+source fence. ReadNativePetalView has no actor argument and no API/MCP route; the
+DB dispatcher supplies its actual local identity. NativePetalViewRead is a
+dedicated result family, never a LocalRoleResolved or settings/access result.
+Failures share a static typed unavailable outcome. Monotonic request deadlines
+remain private in the host owner and are not serialized as authority. This
+foundation does not expose a navigation helper, profile, mutation or capture.
+
+
+NativePetalViewRead is explicitly excluded by PendingApiRequests::try_deliver
+before legacy uncorrelated fallback. Having no ReplyKind alone is insufficient:
+unmapped replies normally consume that FIFO. Success and unavailable native
+proof results remain available to their native owner through the normal UI result
+stream and never satisfy an API waiter. The existing router journey preserves a
+real legacy FIFO entry through both outcomes, then delivers its genuine reply.

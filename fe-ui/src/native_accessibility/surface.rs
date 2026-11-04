@@ -5,11 +5,21 @@ use bevy_egui::egui;
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 
 static EPOCH: AtomicU64 = AtomicU64::new(1);
+static OBSERVED: AtomicU64 = AtomicU64::new(1);
 static POISONED: AtomicBool = AtomicBool::new(false);
 static NATIVE_DIALOGS: AtomicUsize = AtomicUsize::new(0);
 static PORTAL_UNPROVED: AtomicBool = AtomicBool::new(false);
 
 pub fn transition() {
+    if OBSERVED.fetch_update(Ordering::SeqCst, Ordering::SeqCst, |value| {
+        value.checked_add(1).filter(|next| *next <= isize::MAX as u64)
+    }).is_err() { POISONED.store(true, Ordering::SeqCst); }
+    publication_transition();
+}
+
+pub(crate) fn observed_generation() -> u64 { OBSERVED.load(Ordering::SeqCst) }
+
+pub(crate) fn publication_transition() {
     if EPOCH
         .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |value| {
             value
@@ -77,6 +87,8 @@ struct Pass {
     seen: u16,
     supported: bool,
     finished: bool,
+    navigation: bool,
+    navigation_epoch: Option<u64>,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -84,6 +96,15 @@ pub struct SurfaceSnapshot {
     pub epoch: u64,
     pub pass: u64,
     guard: Guard,
+    navigation_epoch: Option<u64>,
+}
+impl SurfaceSnapshot {
+    pub fn profile(&self) -> &'static str {
+        if self.navigation_epoch.is_some() { "navigation_petal_v1" } else { "scene_empty_v1" }
+    }
+    pub fn classification(&self) -> &'static str {
+        if self.navigation_epoch.is_some() { "navigation" } else { "scene" }
+    }
 }
 
 fn key() -> egui::Id {
@@ -94,16 +115,18 @@ fn native_clear() -> bool {
         && !PORTAL_UNPROVED.load(Ordering::SeqCst)
         && NATIVE_DIALOGS.load(Ordering::SeqCst) == 0
 }
+pub(crate) fn observed_available() -> bool { native_clear() }
 
 pub(crate) fn begin(ctx: &egui::Context, guard: Guard) {
     if shared(ctx).is_none() {
         return;
     }
     let previous = ctx.data(|data| data.get_temp::<Pass>(key()));
-    if previous.as_ref().is_some_and(|pass| pass.guard != guard) {
+    if previous.as_ref().is_some_and(|pass| !pass.guard.same_base(guard)) {
         transition();
     }
     let number = ctx.cumulative_pass_nr();
+    let navigation = super::navigation_ui::eligible(ctx);
     ctx.data_mut(|data| {
         data.insert_temp(
             key(),
@@ -117,6 +140,8 @@ pub(crate) fn begin(ctx: &egui::Context, guard: Guard) {
                     && guard.capture_labels_clear
                     && native_clear(),
                 finished: false,
+                navigation,
+                navigation_epoch: None,
             },
         )
     });
@@ -170,7 +195,7 @@ pub(crate) fn popup(ctx: &egui::Context) {
 }
 
 pub(crate) fn observe(ctx: &egui::Context, response: &egui::Response) {
-    if response.clicked() || response.changed() {
+    if (response.clicked() && !super::navigation_ui::staged_click(ctx, response)) || response.changed() {
         transition();
     }
     if egui::Popup::is_any_open(ctx) || ctx.memory(|memory| memory.top_modal_layer().is_some()) {
@@ -199,6 +224,14 @@ fn areas_supported(ctx: &egui::Context) -> bool {
     })
 }
 
+pub(crate) fn navigation_environment_current(ctx: &egui::Context) -> bool {
+    let pass = ctx.data(|data| data.get_temp::<Pass>(key()));
+    pass.is_some_and(|pass| pass.number == ctx.cumulative_pass_nr() && pass.supported
+        && pass.seen == ALL && pass.epoch == EPOCH.load(Ordering::SeqCst))
+        && native_clear() && areas_supported(ctx) && !ctx.wants_keyboard_input()
+        && ctx.input(|input| super::neutral(input.modifiers, &input.events) && !input.pointer.any_down())
+}
+
 pub(crate) fn finish(ctx: &egui::Context, guard: Guard, supported: bool) {
     if shared(ctx).is_none() {
         return;
@@ -207,6 +240,7 @@ pub(crate) fn finish(ctx: &egui::Context, guard: Guard, supported: bool) {
         .input(|input| super::neutral(input.modifiers, &input.events) && !input.pointer.any_down())
         && !ctx.wants_keyboard_input()
         && areas_supported(ctx);
+    let navigation_epoch = super::navigation_ui::epoch(ctx);
     ctx.data_mut(|data| {
         if let Some(mut pass) = data.get_temp::<Pass>(key()) {
             let valid = eligible(
@@ -215,10 +249,14 @@ pub(crate) fn finish(ctx: &egui::Context, guard: Guard, supported: bool) {
                 supported && neutral && native_clear(),
                 EPOCH.load(Ordering::SeqCst),
             );
-            if pass.supported && !valid {
+            if pass.supported && !valid && pass.epoch == EPOCH.load(Ordering::SeqCst) {
                 transition();
             }
             pass.supported &= valid;
+            if pass.navigation {
+                pass.navigation_epoch = navigation_epoch;
+                pass.supported &= pass.navigation_epoch.is_some();
+            }
             pass.finished = true;
             data.insert_temp(key(), pass);
         }
@@ -228,7 +266,7 @@ pub(crate) fn finish(ctx: &egui::Context, guard: Guard, supported: bool) {
 fn eligible(pass: &Pass, guard: Guard, environment: bool, epoch: u64) -> bool {
     pass.supported
         && environment
-        && pass.guard == guard
+        && pass.guard.same_base(guard)
         && guard.ready
         && guard.capture_view
         && guard.capture_labels_clear
@@ -249,16 +287,30 @@ pub fn snapshot(ctx: &egui::Context, guard: Guard) -> Option<SurfaceSnapshot> {
     let pass = ctx.data(|data| data.get_temp::<Pass>(key()))?;
     (pass.supported
         && pass.finished
-        && pass.guard == guard
+        && pass.guard.same_base(guard)
         && guard.capture_view
         && guard.capture_labels_clear
         && pass.epoch == EPOCH.load(Ordering::SeqCst)
         && pass.number.checked_add(1) == Some(ctx.cumulative_pass_nr()))
-    .then_some(SurfaceSnapshot {
+    .then_some(())?;
+    if pass.navigation && (pass.navigation_epoch.is_none()
+        || super::navigation_ui::epoch(ctx) != pass.navigation_epoch) { return None; }
+    Some(SurfaceSnapshot {
         epoch: pass.epoch,
         pass: ctx.cumulative_pass_nr(),
         guard: pass.guard,
+        navigation_epoch: pass.navigation_epoch,
     })
+}
+
+pub fn suppress_publication(ctx: &egui::Context) {
+    ctx.data_mut(|data| {
+        if let Some(mut pass) = data.get_temp::<Pass>(key()) {
+            if pass.supported { publication_transition(); }
+            pass.supported = false;
+            data.insert_temp(key(), pass);
+        }
+    });
 }
 
 pub(super) fn retire(ctx: &egui::Context) {
@@ -277,6 +329,8 @@ pub(super) fn extend_existing_journey(mut guard: Guard) {
         seen: ALL,
         supported: true,
         finished: false,
+        navigation: false,
+        navigation_epoch: None,
     };
     assert!(
         eligible(&pass, guard, true, 7),

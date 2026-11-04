@@ -813,6 +813,9 @@ impl PendingApiRequests {
     /// ([`Self::deliver_correlated`]). `Error` is the wildcard that reaches
     /// the oldest waiter (family-blind — a known sharp edge, AGENTS.md).
     pub fn try_deliver(&mut self, result: DbResult) -> bool {
+        if matches!(&result, DbResult::NativePetalViewRead { .. }) {
+            return false;
+        }
         self.prune_terrain_credentials();
         if let DbResult::TerrainApiCredentialRead(reply) = result {
             let key = reply.request.id();
@@ -2141,6 +2144,40 @@ mod tests {
             rx.try_recv().is_err(),
             "a resolved-scope reply must not satisfy a Ping"
         );
+        let command = DbCommand::RenameEntity {
+            entity_type: crate::messages::EntityType::Petal,
+            entity_id: "unrelated-entry".into(),
+            new_name: "renamed-entry".into(),
+        };
+        assert!(reply_kind_of_command(&command).is_none());
+        let (legacy_tx, mut legacy_rx) = tokio::sync::oneshot::channel();
+        pending.enqueue_for(&command, legacy_tx);
+        let target = crate::native_navigation::PetalTarget {
+            verse_id: "verse".into(), fractal_id: "fractal".into(),
+            petal_id: "native-target".into(), name: "Declared fixture".into(),
+        };
+        for outcome in [
+            Ok(crate::native_navigation::PetalView { target: target.clone(), source_fence: "a".repeat(64) }),
+            Err(crate::native_navigation::Unavailable::Target),
+        ] {
+            let native = DbResult::NativePetalViewRead {
+                request_id: "01ARZ3NDEKTSV4RRFFQ69G5FAV".into(), target: target.clone(), outcome,
+            };
+            assert!(reply_kind_of_result(&native).is_none());
+            assert!(!pending.try_deliver(native), "local native results never enter legacy API FIFO");
+            assert_eq!(pending.uncorrelated.len(), 1);
+            assert!(matches!(legacy_rx.try_recv(), Err(tokio::sync::oneshot::error::TryRecvError::Empty)),
+                "neither success nor failure may deliver or consume the unrelated waiter");
+        }
+        assert!(pending.try_deliver(DbResult::EntityRenamed {
+            entity_type: crate::messages::EntityType::Petal,
+            entity_id: "unrelated-entry".into(), new_name: "renamed-entry".into(),
+        }));
+        assert!(matches!(legacy_rx.try_recv(), Ok(DbResult::EntityRenamed { entity_id, new_name, .. })
+            if entity_id == "unrelated-entry" && new_name == "renamed-entry"));
+        assert!(matches!(rx.try_recv(), Err(tokio::sync::oneshot::error::TryRecvError::Empty)));
+        assert!(pending.try_deliver(DbResult::Pong));
+        assert!(matches!(rx.try_recv(), Ok(DbResult::Pong)));
     }
 
     /// Every command the API awaits has a reply family, and the family of its

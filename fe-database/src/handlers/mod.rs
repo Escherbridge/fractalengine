@@ -28,6 +28,7 @@ pub mod node_history;
 pub(crate) mod object_creation;
 pub mod node_log;
 pub mod node_measurements;
+pub(crate) mod native_navigation;
 pub mod node_view;
 pub mod petal_render_distance;
 pub mod petal_terrain;

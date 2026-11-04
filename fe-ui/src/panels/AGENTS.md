@@ -912,3 +912,15 @@ a native Click elsewhere before evaluating confirmation. Node/Group callbacks
 reject modifier-bearing native activation but preserve ordinary physical Ctrl/Shift
 selection and existing NodeManager routing to Inspector/tool state. See
 `../native_accessibility/AGENTS.md`; no native action bypasses normal GUI handlers.
+
+## NAV-1B sidebar Petal callback
+
+Only render_petals registers its actual Open response for typed native navigation.
+Physical callbacks still run at the row. A staged native callback waits until the
+guarded left sidebar returns, then the root recomputes the actual full product
+guard and invokes apply_native_petal_click. That helper checks retained typed
+proof, current ancestry/names and strict deadline immediately before the existing
+NodeManager deselection and NavigationManager transition. Sidebar quarantine,
+dialog changes or stripped/unsupported native metadata cannot become a physical
+fallback. Browser cards, menus, visibility controls and node/group selection keep
+their existing handlers and semantics.

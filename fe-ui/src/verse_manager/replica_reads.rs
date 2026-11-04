@@ -130,6 +130,7 @@ impl VerseManager {
         if nav.active_scope().as_deref() != Some(scope) {
             return;
         }
+        self.replica_reads.access_generation.get_or_insert_with(|| ulid::Ulid::new().into());
         self.replica_reads.synchronize(nav);
         self.replica_reads.blocked = !fe_database::RoleLevel::from(role).can_view();
         self.replica_reads.role_refresh = None;

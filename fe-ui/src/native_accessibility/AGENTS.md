@@ -138,3 +138,156 @@ scene/access or other product identity cannot retag an earlier output. Existing
 journeys author real completed Context output followed by navigation and primary
 changes, resolved No access, edited-point labels and blocked-access eligibility.
 Source assertions are not execution evidence or proof of WGC freshness.
+
+
+## Navigation proof-owner foundation (NAV-1A, not yet input wiring)
+
+`navigation.rs` owns at most sixteen exact rendered Petal demands and one accepted
+DB-local Viewer read. Source captures context, observed invalidation generation,
+navigation/scene/hierarchy/access/selection/role and current ancestry independently
+of the owner's proof-set epoch. The later renderer integration must supply the
+actual observed generation; a proof-generation counter cannot be fed back as
+this base source. No profile, target tag, command pump or input delivery is
+enabled by this foundation. Public Rust types are internal application seams,
+not capability-bearing serialized messages or API permission surfaces.
+
+Every demand fixes admitted_at and a checked one-second deadline before channel
+submission/coalescing. Full preserves its identity and deadline, with bounded
+retry spacing; a late result cannot become fresh. A genuinely new read has a new
+request/target epoch, while retained old proofs stay expired. Source/membership
+changes retire positive bindings but retain the exact accepted read until its
+matching reply, keeping one request in flight. These are read-only outcomes.
+Disconnection refuses further submission. Process-static checked epochs survive
+read-model resets and exhaustion permanently disables this owner's positive path.
+
+The SAME proof_is_current predicate checks exact source, active request/target
+membership, successful bounded DB view and strict current monotonic deadline.
+Result admission and single/set binding checks call it. Expiry refuses without
+requiring a cache pump or generation change. Later Snapshot/Delivery/semantic
+Click, annotation/Last and the actual sidebar callback must retain these original
+immutable bindings and call this predicate with fresh Instant at EVERY specified
+use boundary. They are not implemented here. Never clear an expired native tag
+into an ordinary fallback or claim that fresh root age renews target authority.
+
+The existing confirmation journey adds pure owner/clock/channel/source cases,
+including exact-deadline refusal with unchanged epochs. It does not yet exercise
+actual typed Petal callbacks or native delivery. Stored local Owner fixture reads
+in the existing DB journey are not a real Viewer/Editor native acceptance case.
+Operator/ledger/staging, original COM retention, one-attempt invocation and all
+planned native/runtime checks remain separate unfinished work. Capture, all-Verse
+bootstrap and selected-Inspector support remain unavailable in this slice.
+
+## Provider identity translation
+
+`provider_identity.rs` validates a standalone complete original tree independently
+of positive profile/proof eligibility. It requires one connected unique child
+tree, all typed relationship/focus references present, at most 4096 nodes and
+65536 total node references. Cross-reference relationships need not be child
+edges. The limit is conservative; unknown or oversized output is unavailable.
+Only real nonroot Button/Click targets with enabled/visible ancestry can be
+aliased. The caller separately proves the exact original label, geometry, layer,
+ancestry and immutable target/set/source and owns actual-output forwarding.
+
+The process-static append-only ledger retains at most 4096 issued identities,
+keyed by original set epoch, target epoch and physical widget ID. Exact keys reuse
+their alias without adding per-frame history. A new key gets a checked descending
+opaque ID; current original-node collisions refuse before any ledger commit.
+Previously issued IDs can never become another binding or be forgotten on UI/
+context reset. Issued-ID lookup refuses ordinary native fallback on lock failure.
+Cap/counter exhaustion permanently disables remapping. No reset API is exposed.
+
+The transform clones the bounded full update and rewrites tuple keys, tree root,
+focus, all eight NodeId vectors, all seven single-NodeId properties and both
+TextSelection node references with the same bijection, then validates closure
+again. Nonidentity values and character indexes stay unchanged. Physical egui IDs,
+pointer/focus memory and the original input tree are not mutated. The host must
+still recheck the original proof before swapping the actual output and enforce
+unsafe-output quarantine across both provider publishers; this pure transform
+does not authorize forwarding, native delivery or recovery by itself.
+
+`provider_identity_journey.rs` is an unregistered helper for the existing native
+journey. It authors complete reference/focus rewriting, stable original IDs and
+values, exact-key reuse, fresh aliases for target/set renewal, retained tombstones,
+malformed/delta/unknown-focus/relationship/child refusal, hidden/disabled targets,
+collision and exhaustion checks. Its relational fixture exercises typed reference
+rewriting; it is not an accepted Windows TextSelection or UIA navigation fixture.
+No execution or Windows-provider acceptance is claimed by these source assertions.
+
+`navigation_ui_journey.rs` extends the same registered journey through actual egui
+Context/Button output, record/finish/remap/complete, typed staging/begin_pass and
+deferred callback admission. Its default manager accepts the same typed
+LocalRoleResolved path as production; product_guard is never overwritten. Its
+bounded exact-family target-view reply is still a fixture, not real DB Viewer acceptance.
+It checks provider-to-physical delivery, stable physical widget ID, native physical
+ID refusal, old-binding/new-proof separation and retirement before begin/callback.
+The actual host Adapter.next and this journey use the same checked Binding::translate
+operation; full host scheduling and Windows-provider acceptance remain separate.
+
+## NAV-1B rendered bindings and use boundaries
+
+`navigation_ui.rs` connects the NAV-1A owner to actual sidebar Petal responses.
+The plugin-owned NavigationReads resource retains its one accepted DB read across
+context retirement; a private result cursor observes only the typed read family.
+Product guard calculation refreshes the actual source at each owner/host/UI boundary.
+The base observed generation is independent from proof/publication epochs. Guard
+carries the current proof-set validity key, while same_base preserves unrelated A1
+eligibility when only a background proof key changes. Fresh monotonic predicates
+remain mandatory; matching generations never extend the original one-second lease.
+
+Only fully clipped/enabled actual sidebar Open Petal responses collect targets.
+No browser-card, eye, Options or label-derived target is tagged. Completed remapping
+checks the actual pass/widget, layer, exact Button/Click/name/tag and response bounds.
+The renderer tag grammar is `fe.nav.petal.v1;s=<set epoch>;t=<target epoch>` with
+checked process-lifetime decimal epochs and no entity names/IDs. Exact original
+proof and whole-set bindings flow through Snapshot, Pending, Delivery, begin_pass
+and the final callback. Typed requests addressed to original physical Petal IDs
+cannot enter the ordinary fallback, even after a native request was stripped.
+
+Native callbacks defer only until the guarded sidebar returns, so the root can
+refresh actual topbar/modal/path and manager inputs. The sidebar helper then checks
+actual ancestry/names and the retained original proof with fresh now immediately
+before its existing deselection/navigation sequence. Physical callbacks keep their
+existing path and IDs. Only the exact staged native click suppresses its own
+ResponseExt observation; every other click/change still advances observed state.
+
+The explicit navigation_petal_v1 surface requires the complete audited producer
+set, no active Petal/selection, resolved can_view and current DB-local Viewer proof
+for every visible bounded target. Its classification is navigation, never Scene;
+it grants no capture support. Annotation and Last separately require that the real
+forwarded mapping still owns the same unexpired bindings. Missing/unsafe forwarding
+retires typed intake independently of a positive profile. Existing scene_empty_v1,
+ordinary A1 authority and the Owner HTTP floor remain separate.
+
+## NAV-1B-S1 provider failure retirement
+
+Routine suppress only clears per-pass forwarded/callback state. The distinct
+retire_provider operation first advances the existing checked observed source
+generation, then retires ProofOwner eligibility and typed state without releasing
+its accepted in-flight read. The generation fence invalidates retained bindings
+even if the session try_lock cannot be obtained. Poisoned/exhausted/native-unproved
+observed state also refuses current bindings. Fresh source admission therefore
+needs new request/set/target epochs and new provider IDs; no old proof deadline
+or issued-ID tombstone is changed.
+
+provider_handoff owns the actual output-slot take/validate/safe-unmarked fallback
+seam used by the host and existing UI recovery journey. Unsafe/missing original
+output invokes failure retirement; routine successful full output does not. Safe
+unmarked recovery grants no old typed eligibility. The journey now publishes a
+real original alias, quarantines repeated unsafe/missing output, recovers and
+remaps through fresh proof inside the original deadline. Old Snapshot/Pending
+matching, translate, retained Delivery and callback remain refused. A separate
+accepted-read case proves no second submission before the exact stale reply drains.
+These are authored model checks, not executed Windows-provider acceptance.
+
+## NAV-F1 fresh accepted-role bootstrap
+
+The UI journey no longer assigns Guard.access or the local role cache directly.
+It starts with the manager's real default ReplicaReads and applies a matching
+LocalRoleResolved through the same crate-private dispatcher seam that updates
+accept_scene_role, the existing role cache and Pen state. Current-Verse with no
+Fractal/Petal is explicitly exercised through one bounded target read and later
+navigation profile/remap; current-Fractal and Editor cases remain covered. Stale
+scope cannot initialize access, None/unknown roles cannot view, and repeated
+accepted roles retain their existing source epoch. The existing node_index
+invalidation-preservation assertion is unchanged. The target-view reply remains
+an explicit fixture; no live DB Viewer or native-provider result is claimed.

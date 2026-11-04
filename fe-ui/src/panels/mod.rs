@@ -160,6 +160,9 @@ pub fn gardener_console(
     use crate::native_accessibility::surface::{self, Producer};
     surface::begin(ctx, crate::native_accessibility::product_guard(
         ctx, ui_mgr, node_mgr, nav, hierarchy, local_role, topbar_state, modal, path_state));
+    crate::native_accessibility::product_guard(
+        ctx, ui_mgr, node_mgr, nav, hierarchy, local_role, topbar_state, modal, path_state);
+    crate::native_accessibility::navigation_ui::begin(ctx);
     crate::ui_shell::layout_policy::begin_ui_pass(ctx);
     crate::ui_shell::layout_policy::apply_style(ctx);
     // Repair conditional editor state; see `panels/AGENTS.md` §numeric-boundary.
@@ -222,6 +225,9 @@ pub fn gardener_console(
         )
     });
 
+    crate::native_accessibility::product_guard(
+        ctx, ui_mgr, node_mgr, nav, hierarchy, local_role, topbar_state, modal, path_state);
+    sidebar::apply_native_petal_click(ctx, hierarchy, nav, node_mgr);
     if inspector.active_tab() == crate::plugin::InspectorTab::ApiAccess { surface::credential(ctx); }
     surface::enter(ctx, Producer::Inspector, node_mgr.selection_count() == 0
         && inspector.active_tab() == crate::plugin::InspectorTab::Properties
@@ -269,7 +275,9 @@ pub fn gardener_console(
         ui_mgr,
     );
 
-    surface::enter(ctx, Producer::Viewport, nav.active_petal_id.is_some() && !ui_mgr.portal_is_open());
+    surface::enter(ctx, Producer::Viewport,
+        (nav.active_petal_id.is_some() || crate::native_accessibility::navigation_ui::eligible(ctx))
+            && !ui_mgr.portal_is_open());
     fe_renderer::scene_pointer::ScenePointerChrome::begin_pass(ctx, nav.intent_revision());
     let viewport_response =
         egui::CentralPanel::default()
@@ -446,6 +454,9 @@ pub fn gardener_console(
         let _ = guarded(modal, "toast", || render_toast(ctx, ui_mgr));
     }
 
+    crate::native_accessibility::product_guard(
+        ctx, ui_mgr, node_mgr, nav, hierarchy, local_role, topbar_state, modal, path_state);
+    crate::native_accessibility::navigation_ui::finish(ctx, db_tx);
     surface::finish(ctx, crate::native_accessibility::product_guard(
         ctx, ui_mgr, node_mgr, nav, hierarchy, local_role, topbar_state, modal, path_state),
         node_mgr.selection_count() == 0 && inspector.active_tab() == crate::plugin::InspectorTab::Properties

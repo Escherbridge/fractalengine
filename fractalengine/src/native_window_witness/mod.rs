@@ -1,6 +1,7 @@
 //! Actual HWND/context read-only witness; see AGENTS.md.
 
 mod book;
+mod provider_output;
 #[cfg(test)]
 pub(crate) mod journey;
 mod windows;
@@ -51,6 +52,7 @@ struct Witness {
 }
 
 pub(super) fn install(app: &mut App) {
+    provider_output::install(app);
     app.init_resource::<Witness>()
         .init_resource::<Lifecycle>()
         .add_systems(First, (observe_lifecycle, clear_frame).chain())
@@ -160,7 +162,7 @@ fn record(
     tick: u64,
 ) -> Option<String> {
     let status = format!(
-        "FEW1;p={};birth={:016x};w={};c={};b={};s={};pass={};tick={};class=scene;profile=scene_empty_v1;complete=1",
+        "FEW1;p={};birth={:016x};w={};c={};b={};s={};pass={};tick={};class={};profile={};complete=1",
         process.pid,
         process.birth,
         binding.window_epoch,
@@ -168,7 +170,9 @@ fn record(
         binding.epoch,
         surface.epoch,
         surface.pass,
-        tick
+        tick,
+        surface.classification(),
+        surface.profile()
     );
     (status.len() <= 512 && status.is_ascii()).then_some(status)
 }
@@ -182,7 +186,8 @@ fn annotate(
     capture: Option<Res<fe_renderer::camera::CameraCaptureLock>>,
     _main_thread: NonSendMarker,
 ) {
-    if !lifecycle.running || capture.is_some() || terminal.is_some_and(|mode| mode.is_terminal()) {
+    if provider_output::quarantined() || !lifecycle.running || capture.is_some()
+        || terminal.is_some_and(|mode| mode.is_terminal()) {
         reject(&mut witness);
         return;
     }
@@ -194,6 +199,10 @@ fn annotate(
         reject(&mut witness);
         return;
     };
+    if surface.profile() == "navigation_petal_v1" && !ui::navigation_ui::forwarded_is_current(&root.egui) {
+        reject(&mut witness);
+        return;
+    }
     let Ok(wrapper) = wrappers.get(root.window) else {
         reject(&mut witness);
         return;
@@ -291,7 +300,7 @@ fn publish(
         return;
     };
     let current = ownership.current();
-    let valid = lifecycle.running
+    let valid = !provider_output::quarantined() && lifecycle.running
         && capture.is_none()
         && !terminal.is_some_and(|mode| mode.is_terminal())
         && current.as_ref().is_some_and(|root| {
@@ -300,6 +309,8 @@ fn publish(
                 && binding.root.guard == prepared.guard
         })
         && ui::surface::snapshot(&binding.root.egui, prepared.guard) == Some(prepared.surface)
+        && (prepared.surface.profile() != "navigation_petal_v1"
+            || ui::navigation_ui::forwarded_is_current(&binding.root.egui))
         && windows::tick()
             .checked_sub(prepared.tick)
             .is_some_and(|age| age <= 250)

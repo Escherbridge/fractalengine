@@ -922,6 +922,18 @@ pub fn spawn_db_thread_shared(
                             });
                         send_result(&tx, DbResult::NodeUrlRead { node_id, expected_scope, request_id, outcome });
                     }
+                    Ok(DbCommand::ReadNativePetalView { request_id, target }) => {
+                        let request_valid = ulid::Ulid::from_string(&request_id)
+                            .is_ok_and(|id| id.to_string() == request_id);
+                        let outcome = if request_valid {
+                            tokio::time::timeout(
+                                std::time::Duration::from_secs(1),
+                                handlers::native_navigation::read(&db, &target, &local_did),
+                            ).await.ok().and_then(Result::ok)
+                                .ok_or(fe_runtime::native_navigation::Unavailable::Target)
+                        } else { Err(fe_runtime::native_navigation::Unavailable::Target) };
+                        send_result(&tx, DbResult::NativePetalViewRead { request_id, target, outcome });
+                    }
                     Ok(DbCommand::GetEntityDetails { entity_type, entity_id, request_id }) => {
                         let details = handlers::entity::get_entity_details_handler(&db, entity_type, &entity_id, &local_did).await
                             .map_err(|error| {

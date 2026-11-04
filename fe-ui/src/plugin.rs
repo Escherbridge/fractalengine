@@ -843,6 +843,7 @@ impl Plugin for GardenerConsolePlugin {
             crate::ui_shell::right_sidebar::update_residency_readout,
         );
         app.init_resource::<SidebarState>();
+        app.init_resource::<crate::native_accessibility::navigation_ui::NavigationReads>();
         app.init_resource::<ToolState>();
         app.init_resource::<InspectorFormState>();
         app.init_resource::<fe_runtime::app::RuntimeApiEndpoint>();
@@ -1099,6 +1100,8 @@ struct P2pDialogParams<'w> {
 /// 16-param `SystemParam` tuple limit as new cross-cutting UI surfaces land.
 #[derive(bevy::ecs::system::SystemParam)]
 struct MiscUiParams<'w> {
+    native_navigation: ResMut<'w, crate::native_accessibility::navigation_ui::NavigationReads>,
+    native_results: Res<'w, Messages<fe_runtime::messages::DbResult>>,
     asset_status: Res<'w, crate::asset_ops::AssetDownloadStatus>,
     gis_panel: ResMut<'w, crate::gis::GisPanelState>,
     gpx_status: Res<'w, crate::gpx_ops::GpxImportStatus>,
@@ -1181,6 +1184,10 @@ fn gardener_ui_system(
     mut ui_shell: UiShellParams,
 ) {
     let Ok(ectx) = ctx.ctx_mut() else { return };
+    crate::native_accessibility::navigation_ui::attach(ectx, &misc.native_navigation);
+    crate::native_accessibility::product_guard(ectx, &p2p.ui_mgr, &p2p.node_mgr, &nav,
+        &verse_mgr, &local_role, &ui_shell.topbar, &ui_shell.modal, &misc.path_state);
+    crate::native_accessibility::navigation_ui::pump(&mut misc.native_navigation, &misc.native_results);
     if inspector.api_endpoint != ui_shell.api_endpoint.0 {
         inspector.api_endpoint = ui_shell.api_endpoint.0;
     }

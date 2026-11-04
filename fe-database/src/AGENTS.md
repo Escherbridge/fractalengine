@@ -1944,3 +1944,23 @@ handlers/scene_publication/AGENTS.md is the authority for the versioned full-nod
 node_scene_clock local materialization watermark, receive-to-local HLC causality and bounded startup
 repair. Original local journal/op provenance is required; full node state is not NodeDto or historical
 replication. Explicit development reset clears the local watermark; admin projection lists omit it.
+
+
+## Native Petal navigation read foundation
+
+`handlers/native_navigation.rs` reuses prepare_parent_access at the Viewer floor
+and its guarded read transaction. Only the actual DB worker's local DID is used;
+no issuer token, client actor or synthetic role is accepted. Stored Verse/Fractal/
+Petal ancestry and the exact rendered name must agree. The response contains only
+that bounded target and a BLAKE3 fence of its sampled row/scope/effective-role/
+local-actor binding; no grants, token metadata, properties or descriptions leave
+this read. The fence is opaque sampled metadata, not a capability or atomic
+revocation guarantee. The shared transaction fences the sampled authority and
+ancestry at use. Missing, duplicate, moved, renamed and denied targets refuse.
+
+The target SELECT is limited to two rows with a 500ms statement timeout. A one-
+second outer await bounds the dispatcher's wait, not engine cancellation. Native
+proof lifetime starts earlier at original UI-owner admission and cannot be
+extended by DB execution or reply arrival. This slice adds no second DB opener,
+write, public endpoint or automatic navigation. Existing hierarchy-thread
+journey coverage is extended; it remains authored rather than executed here.

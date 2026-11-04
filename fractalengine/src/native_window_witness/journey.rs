@@ -3,6 +3,7 @@
 use super::*;
 
 pub(crate) fn extend_existing_journey() {
+    super::provider_output::extend_existing_journey();
     let mut app = App::new();
     observe_lifetimes(&mut app);
     app.init_resource::<Witness>();

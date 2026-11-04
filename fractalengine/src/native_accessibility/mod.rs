@@ -395,12 +395,13 @@ fn intake(
     }
     ui::activate(ctx);
     adapter.bind(window, entity, ctx, &handler);
+    let guard = product.guard(ctx);
     let snapshot = output
         .platform_output
         .accesskit_update
         .as_ref()
         .and_then(|update| ui::complete(ctx, update))
-        .filter(|snapshot| snapshot.guard() == product.guard(ctx));
+        .filter(|snapshot| snapshot.guard().same_base(guard));
     adapter.admit(snapshot, &handler, std::time::Instant::now());
 }
 

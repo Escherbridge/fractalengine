@@ -682,6 +682,11 @@ pub enum DbCommand {
         request_id: String,
     },
     // --- Entity Settings: General config ---
+    /// Minimal local-identity Viewer proof; never an API waiter or settings load.
+    ReadNativePetalView {
+        request_id: String,
+        target: crate::native_navigation::PetalTarget,
+    },
     /// Read the local caller's current target settings; never an API waiter reply.
     GetEntityDetails {
         entity_type: EntityType,
@@ -1509,6 +1514,11 @@ pub enum DbResult {
     DevelopmentDatabaseReset { request_id: String, cleared: bool, error: Option<String> },
     TerminalDevelopmentReset { request_id: String, cleared: bool, error: Option<String> },
     // --- Entity Settings results ---
+    NativePetalViewRead {
+        request_id: String,
+        target: crate::native_navigation::PetalTarget,
+        outcome: Result<crate::native_navigation::PetalView, crate::native_navigation::Unavailable>,
+    },
     EntityDetailsLoaded {
         entity_type: EntityType,
         entity_id: String,

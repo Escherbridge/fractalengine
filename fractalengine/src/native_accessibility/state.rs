@@ -23,6 +23,7 @@ struct Pending {
     guard: Guard,
     lifetime: u128,
     queued_at: Instant,
+    navigation: Option<ui::navigation_ui::Binding>,
 }
 
 #[derive(Resource, Default)]
@@ -123,7 +124,7 @@ impl Adapter {
             return;
         };
         let changed = self.snapshot.as_ref().is_some_and(|old| {
-            old.guard() != snapshot.guard() || old.lifetime() != snapshot.lifetime()
+            !old.guard().same_base(snapshot.guard()) || old.lifetime() != snapshot.lifetime()
         });
         if self.discard_ingress || changed {
             handler.clear();
@@ -156,19 +157,22 @@ impl Adapter {
         }
         let before = self.pending.len();
         self.pending.retain(|pending| {
-            pending.guard == snapshot.guard()
+            pending.guard.same_base(snapshot.guard())
                 && pending.lifetime == snapshot.lifetime()
                 && now.saturating_duration_since(pending.queued_at) < MAX_AGE
                 && snapshot.allows(&pending.request)
+                && snapshot.matches_navigation(pending.request.target, pending.navigation.as_ref())
         });
         let mut refused = before - self.pending.len();
         while let Some(request) = handler.pop_front() {
             if snapshot.allows(&request) {
+                let navigation = snapshot.navigation(request.target);
                 self.pending.push_back(Pending {
                     request,
                     guard: snapshot.guard(),
                     lifetime: snapshot.lifetime(),
                     queued_at: now,
+                    navigation,
                 });
             } else {
                 refused += 1;
@@ -190,7 +194,7 @@ impl Adapter {
         now: Instant,
     ) -> Option<ak::ActionRequest> {
         let snapshot = self.snapshot.as_ref()?;
-        if snapshot.guard() != guard {
+        if !snapshot.guard().same_base(guard) {
             self.pending.clear();
             return None;
         }
@@ -200,19 +204,24 @@ impl Adapter {
             return None;
         }
         while let Some(pending) = self.pending.pop_front() {
-            if pending.guard != guard
+            if !pending.guard.same_base(guard)
                 || pending.lifetime != snapshot.lifetime()
                 || now.saturating_duration_since(pending.queued_at) >= MAX_AGE
                 || !snapshot.allows(&pending.request)
+                || !snapshot.matches_navigation(pending.request.target, pending.navigation.as_ref())
+                || pending.navigation.as_ref().is_some_and(|binding| !ui::navigation_ui::is_current(ctx, binding))
             {
                 continue;
             }
-            if !ui::stage(ctx, snapshot, &pending.request) {
+            if !ui::stage_bound(ctx, snapshot, &pending.request, pending.navigation.clone()) {
                 self.pending.clear();
                 return None;
             }
             self.delivered_pass = Some(snapshot.pass());
-            return Some(pending.request);
+            return match pending.navigation {
+                Some(binding) => binding.translate(ctx, pending.request),
+                None => Some(pending.request),
+            };
         }
         None
     }

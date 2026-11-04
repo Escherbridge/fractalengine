@@ -13,6 +13,7 @@ pub mod editor_batch;
 pub mod input;
 pub mod ktx2_guard;
 pub mod messages;
+pub mod native_navigation;
 pub mod maintenance;
 pub mod node_history;
 pub mod node_measurements;

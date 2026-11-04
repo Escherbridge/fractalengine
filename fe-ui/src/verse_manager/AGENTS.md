@@ -20,6 +20,16 @@ the DB's actual Viewer check remains authoritative even before UI role feedback.
 These queues belong to VerseManager, so terminal reset replaces their entire
 state along with the scene manager. No mutation is retried.
 
+The matching accepted LocalRoleResolved path initializes an absent access/source
+generation in accept_scene_role, after the exact current-scope check. It preserves
+any epoch already minted by actual access invalidation; role resolution never
+replaces that epoch. Initialization is not a role grant: unknown/None roles remain
+blocked and stale-scope replies change neither epoch nor cached role. The shared
+crate-private apply_local_role_result seam applies the existing manager/cache/Pen
+effects together and is used by the dispatcher and native navigation journey.
+The latter starts from the real default manager and actual product_guard with no
+field override; the existing index journey still checks invalidation preservation.
+
 `scene_admission.rs` gives admitted render sources a manager incarnation and a
 checked monotonic epoch. Actual local receipts additionally bind their positive
 local journal version; replica/current reads do not. Canonical BLAKE3 hashes bind

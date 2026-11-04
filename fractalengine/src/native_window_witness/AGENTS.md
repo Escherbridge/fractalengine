@@ -108,3 +108,51 @@ The UI guide records the separate source-audited direct-painter contract. Fixed
 ruler output is admitted; active edited-point labels are conservatively unavailable.
 Areas visibility is not described as exhaustive paint-layer accounting. These
 changes add no helper/capture mechanism or claim of runtime/native acceptance.
+
+## NAV-1B actual provider handoff and quarantine
+
+provider_output.rs runs after ProcessOutput and before annotation/the named egui
+forwarder. Its independent bounded full-tree validator covers unique connected
+root/children and all relationship/focus closure. Only that safe original full tree
+may replace an alias baseline unmarked when positive remapping fails. Unsafe,
+incremental, missing or ambiguous output is removed from the actual EguiOutput;
+no cached remainder, partial identity mix or empty replacement is forwarded.
+
+The process-static quarantine is independent of Witness/read-model resets and
+positive annotation. Owned primary-context early failures suppress actual output;
+fresh validated complete output is the only recovery. Issued-ID tombstones live
+in the UI process-static identity ledger. A retained provider tree is stale
+presentation, never typed navigation authority. Quarantine clears original typed
+mapping/intake and prevents both annotation and Last publication.
+
+After the named egui forwarder and before AccessibilitySystems::Update, the
+existing ManageAccessibilityUpdates gate stays disabled. Pinned bevy_egui can
+otherwise enable this global gate on any None output; pinned bevy_winit's gated
+ECS publisher updates the primary window. The validated external GUI remains its
+sole primary publisher after safe full recovery as well, so another context's None
+branch cannot re-enable an alternate primary update. Other window handler/input
+ownership is unchanged; another context cannot supply recovery for this root.
+
+The same real Petal Button is remapped before actual forwarding, including every
+typed relationship, root and focus reference. Annotation emits class=navigation,
+profile=navigation_petal_v1 only when the completed original proof/set and actual
+forwarded map remain current. Last checks them again with fresh time. Scene metadata
+keeps class=scene/profile=scene_empty_v1. Neither profile adds WGC capture authority.
+The existing pure journey now exercises actual EguiOutput handoff, unsafe delta/
+reference/focus refusal, the alternate gate and validated full unmarked recovery.
+These are authored assertions; no Windows provider or live navigation is proved.
+
+## NAV-1B-S1 irreversible unsafe-output retirement
+
+The pre-forwarder handoff uses navigation_ui::provider_handoff on the actual output
+slot, coupling unsafe/missing full-tree validation with failure retirement. Unsafe
+or ambiguous owned contexts are retired even when no positive OwnedRoot is available;
+the query uses the actual mutable EguiContext getter. Failed positive remapping and
+held aggregate quarantine also retire current eligibility. Routine prepare-entry
+cleanup still uses suppress, so a healthy multi-pass bounded read can complete.
+
+Safe complete unmarked recovery cannot restore the former set/target epochs or
+provider alias. Only newly admitted DB proof bindings can later remap, while old
+COM aliases remain tombstoned and typed requests/deliveries/callbacks remain stale.
+The owner retains an accepted DB read through retirement until its exact reply;
+repeated held passes do not fabricate a second in-flight request.

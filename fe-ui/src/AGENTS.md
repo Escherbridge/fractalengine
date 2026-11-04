@@ -1504,3 +1504,15 @@ Properties batches for atomic cut/fill saves. NodeManager remains the only
 selection authority; this service does not record user Undo. Inspector status
 distinguishes current unavailable/pending measurements from retained stored values.
 See actions/AGENTS.md section earthwork-volume-ownership for lifecycle and bounds.
+
+## NAV-1B UI read lifecycle
+
+GardenerConsolePlugin owns NavigationReads independently of UiManager and actual
+egui Context lifetimes. The miscellaneous parameter bundle supplies its private
+DbResult cursor without adding a seventeenth system parameter. Current product
+source refresh precedes reply admission; the normal root collects only actual
+visible sidebar targets and submits at most one nonblocking local Viewer read
+after all producer regions are classified. Missing/unsupported regions retire
+positive demands, while context retirement retains any accepted read until its
+exact reply. Source/proof, native delivery and provider output rationale lives in
+native_accessibility/AGENTS.md. No HTTP/MCP/operator or capture route is added.

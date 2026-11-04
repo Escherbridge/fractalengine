@@ -142,6 +142,9 @@ impl Harness {
 }
 
 pub(crate) fn extend_confirmation_journey() {
+    super::navigation::extend_existing_journey();
+    super::provider_identity::authored_journey();
+    super::navigation_ui::extend_existing_journey();
     let mut h = Harness::default();
     h.ctx.enable_accesskit();
     super::activate(&h.ctx);

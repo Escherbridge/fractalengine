@@ -433,6 +433,7 @@ fn render_petals(
 
         let id = ui.make_persistent_id(egui::Id::new(format!("petal_{}_{}", fractal_id, petal_id)));
         let mut name_clicked = false;
+        let mut clicked_response = None;
         let mut eye_clicked = false;
         let header =
             egui::collapsing_header::CollapsingState::load_with_default_open(ui.ctx(), id, true)
@@ -467,6 +468,12 @@ fn render_petals(
                         |_| {},
                     );
                     name_clicked = response.clicked();
+                    crate::native_accessibility::navigation_ui::record(ui, &response,
+                        fe_runtime::native_navigation::PetalTarget {
+                            verse_id: verse_id.into(), fractal_id: fractal_id.into(),
+                            petal_id: petal_id.clone(), name: petal_name.clone(),
+                        });
+                    if name_clicked { clicked_response = Some(response); }
                     eye_clicked = eye;
                 });
         let ancestry = NodeAncestry {
@@ -530,7 +537,13 @@ fn render_petals(
         });
         toggle_response.named(ui, format_args!("Expand or collapse petal {petal_name}"));
 
-        if name_clicked && !is_active {
+        if name_clicked && !is_active && !clicked_response.as_ref().is_some_and(|response| {
+            crate::native_accessibility::navigation_ui::defer_if_native(ui.ctx(), response,
+                fe_runtime::native_navigation::PetalTarget {
+                    verse_id: verse_id.into(), fractal_id: fractal_id.into(),
+                    petal_id: petal_id.clone(), name: petal_name.clone(),
+                }, verse_name, fractal_name)
+        }) {
             node_mgr.deselect();
             node_mgr.pending_sidebar_select = None;
             nav.navigate_to_petal_in_fractal(
@@ -545,6 +558,16 @@ fn render_petals(
             push_scope_eye(ui_mgr, vis_state, ScopeLevel::Petal, &petal_id);
         }
     }
+}
+
+pub(crate) fn apply_native_petal_click(ctx: &egui::Context, hierarchy: &VerseManager,
+    nav: &mut NavigationManager, node_mgr: &mut crate::node_manager::NodeManager) {
+    let Some(callback) = crate::native_accessibility::navigation_ui::take_callback(ctx, hierarchy)
+        else { return; };
+    node_mgr.deselect();
+    node_mgr.pending_sidebar_select = None;
+    nav.navigate_to_petal_in_fractal(&callback.target.verse_id, &callback.verse_name,
+        &callback.target.fractal_id, &callback.fractal_name, &callback.target.petal_id);
 }
 
 /// A petal eye's `(enabled, tooltip)`. RATIFICATION #4: the ACTIVE petal can't

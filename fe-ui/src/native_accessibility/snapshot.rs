@@ -6,7 +6,7 @@ pub struct Snapshot {
     pub(super) lifetime: u128,
     pub(super) pass: u64,
     pub(super) guard: Guard,
-    targets: HashMap<ak::NodeId, (bool, Option<Owner>)>,
+    targets: HashMap<ak::NodeId, (bool, Option<Owner>, Option<super::navigation_ui::Binding>)>,
 }
 
 impl Snapshot {
@@ -24,11 +24,22 @@ impl Snapshot {
             && self
                 .targets
                 .get(&request.target)
-                .is_some_and(|(click, _)| request.action == ak::Action::Click && *click)
+                .is_some_and(|(click, _, _)| request.action == ak::Action::Click && *click)
     }
 
     pub(super) fn confirmation(&self, target: ak::NodeId) -> Option<Owner> {
-        self.targets.get(&target).and_then(|(_, owner)| *owner)
+        self.targets.get(&target).and_then(|(_, owner, _)| *owner)
+    }
+
+    pub fn navigation(&self, target: ak::NodeId) -> Option<super::navigation_ui::Binding> {
+        self.targets.get(&target).and_then(|(_, _, binding)| binding.clone())
+    }
+    pub fn matches_navigation(&self, target: ak::NodeId, expected: Option<&super::navigation_ui::Binding>) -> bool {
+        match (self.targets.get(&target), expected) {
+            (Some((_, _, Some(actual))), Some(expected)) => actual.same(expected),
+            (Some((_, _, None)), None) => true,
+            _ => false,
+        }
     }
 }
 
@@ -63,16 +74,20 @@ pub fn complete(ctx: &egui::Context, update: &ak::TreeUpdate) -> Option<Snapshot
             return None;
         }
         let disabled = inherited || node.is_disabled() || node.is_hidden();
-        if let Some(widget) = pass.widgets.get(&id.0) {
-            if widget.id.value() != id.0
+        let binding = super::navigation_ui::translated(ctx, id);
+        let physical = binding.as_ref().map_or(id, |binding| binding.physical());
+        if let Some(widget) = pass.widgets.get(&physical.0) {
+            if widget.id.value() != physical.0
                 || !ctx.memory(|memory| memory.allows_interaction(widget.layer))
+                || binding.as_ref().is_some_and(|binding| !widget.petal || !binding.matches_node(node, widget.rect))
             {
                 return None;
             }
-            if !disabled && widget.enabled {
+            if !disabled && widget.enabled
+                && (binding.is_some() || (!widget.petal && !super::provider_identity::was_issued(id))) {
                 targets.insert(
                     id,
-                    (node.supports_action(ak::Action::Click), widget.confirmation),
+                    (node.supports_action(ak::Action::Click), widget.confirmation, binding),
                 );
             }
         }

@@ -130,6 +130,23 @@ fn flush_committed_hierarchy(sender: &fe_runtime::app::DbCommandSender, pending:
     }
 }
 
+/// Apply the matching local-role result to both source and display owners.
+pub(crate) fn apply_local_role_result(
+    result: &DbResult,
+    verse_mgr: &mut VerseManager,
+    nav: &NavigationManager,
+    local_role: &mut crate::plugin::LocalUserRole,
+    path_state: &mut crate::gis::PathEditorState,
+) {
+    let DbResult::LocalRoleResolved { scope, role } = result else { return; };
+    verse_mgr.accept_scene_role(scope, role, nav);
+    roles::handle_local_role_resolved(scope, role, nav, local_role);
+    if nav.active_scope().as_deref() == Some(scope.as_str())
+        && (verse_mgr.scene_access_blocked() || !fe_database::RoleLevel::from(role.as_str()).can_edit()) {
+        path_state.clear_pending_pen_create();
+    }
+}
+
 pub(super) fn apply_db_results(
     mut reader: MessageReader<DbResult>,
     mut verse_mgr: ResMut<VerseManager>,
@@ -166,12 +183,8 @@ pub(super) fn apply_db_results(
                 verse_mgr.invalidate_scene_access(&nav);
                 path_state.clear_pending_pen_create();
             }
-            DbResult::LocalRoleResolved { scope, role } => {
-                verse_mgr.accept_scene_role(scope, role, &nav);
-                if nav.active_scope().as_deref() == Some(scope.as_str())
-                    && (verse_mgr.scene_access_blocked() || !fe_database::RoleLevel::from(role.as_str()).can_edit()) {
-                    path_state.clear_pending_pen_create();
-                }
+            DbResult::LocalRoleResolved { .. } => {
+                apply_local_role_result(result, &mut verse_mgr, &nav, &mut local_role, &mut path_state);
             }
             _ => {}
         }
@@ -745,9 +758,7 @@ pub(super) fn apply_db_results(
             DbResult::ScopedInviteGenerated { invite_link } => {
                 roles::handle_scoped_invite_generated(invite_link, &mut ui_mgr,caches.time.elapsed_secs_f64())
             }
-            DbResult::LocalRoleResolved { scope, role } => {
-                roles::handle_local_role_resolved(scope, role, &nav, &mut local_role)
-            }
+            DbResult::LocalRoleResolved { .. } => {}
             DbResult::VerseDefaultAccessSet {
                 verse_id,
                 default_access,
