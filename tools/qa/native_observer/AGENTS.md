@@ -137,8 +137,10 @@ strict sanitized output and independent pinned-ledger reread precede acceptance.
 ## Bootstrap, staging and one process attempt
 
 `stage.ps1 -NativeObserver` builds the ordinary GUI plus the fixed x64 SDK22621
-worker recipe. build.ps1 refuses published stage mutation, selects the declared
-MSVC BuildTools toolchain and embeds asInvoker/noUIAccess/PMv2. stage.json seals
+worker recipe. build.ps1 refuses published stage mutation, discovers an installed
+Visual Studio 2022 edition with the x64 C++ tools through Microsoft's vswhere,
+and embeds asInvoker/noUIAccess/PMv2. SDK22621 and x64 remain fixed; no download or
+caller-supplied toolchain path is accepted. vcvars supplies the compiler environment. stage.json seals
 worker SHA-256, source recipe hash, architecture, SDK and exact wire version.
 No observer command compiles or uses an unstaged arbitrary helper.
 

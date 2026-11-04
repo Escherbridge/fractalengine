@@ -5,7 +5,13 @@ param([Parameter(Mandatory)][string]$OutputDirectory)
 $ErrorActionPreference = 'Stop'
 $output = Resolve-QaChildPath -Path $OutputDirectory -Root $QaStageRoot
 if (Test-Path -LiteralPath (Join-Path $output 'stage.json')) { throw 'Native helper cannot modify a published immutable stage' }
-$vcvars = 'C:\Program Files (x86)\Microsoft Visual Studio\2022\BuildTools\VC\Auxiliary\Build\vcvarsall.bat'
+$vswhere = 'C:\Program Files (x86)\Microsoft Visual Studio\Installer\vswhere.exe'
+if (-not (Test-Path -LiteralPath $vswhere)) { throw 'Visual Studio installer discovery unavailable' }
+$instances = @(& $vswhere -latest -version '[17.0,18.0)' -products '*' `
+    -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath |
+    Where-Object { -not [string]::IsNullOrWhiteSpace($_) })
+if ($LASTEXITCODE -ne 0 -or $instances.Count -ne 1) { throw 'Declared Visual Studio 2022 C++ toolchain unavailable' }
+$vcvars = Join-Path -Path ($instances[0].Trim()) -ChildPath 'VC\Auxiliary\Build\vcvarsall.bat'
 $sdk = 'C:\Program Files (x86)\Windows Kits\10\Include\10.0.22621.0\um\UIAutomationClient.h'
 if (-not (Test-Path -LiteralPath $vcvars) -or -not (Test-Path -LiteralPath $sdk)) { throw 'Declared x64 MSVC/SDK22621 toolchain unavailable' }
 foreach ($path in @($output, $PSScriptRoot, $vcvars)) {
