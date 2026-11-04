@@ -22,3 +22,12 @@ Then publish the finished goal through the existing CI/release process and verif
 Persisted-data model changes arising from the audit remain decisions for the user.
 
 Execution constraints and current progress live in [the campaign plan](../../qa-chain-progress-20261101.md).
+
+
+## User-adopted completion scope (2026-11-04)
+
+Continue under [project_completion_20261104](../project_completion_20261104/spec.md),
+which explicitly carries forward this campaign, rich data/history, group/tool
+conventions, remaining correctness fixes, peer delivery, native QA, full UX and
+verified release requirements. Genuine product forks go to the decision ledger;
+routine implementation choices continue under the user's standing authorization.

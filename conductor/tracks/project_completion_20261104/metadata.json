@@ -1,0 +1,44 @@
+{
+  "id": "project_completion_20261104",
+  "type": "campaign",
+  "title": "FractalEngine correctness, full acceptance and verified release",
+  "status": "in_progress",
+  "priority": "P0",
+  "created_at": "2026-11-04",
+  "updated_at": "2026-11-04",
+  "origin": "User adopted the full remaining-work assessment as the new goal and requested continued work with Conductor persistence",
+  "alignment": "Spatial editor/reporting correctness, coherent interactions, reproducible QA and verified delivery",
+  "depends_on": [
+    "qa_chain_20261101",
+    "rich_data_history_20261101",
+    "polish_lane_20261031"
+  ],
+  "related": [
+    "agent_vision_20261031",
+    "release_ci_20260429"
+  ],
+  "spec": "./spec.md",
+  "plan": "./plan.md",
+  "checkpoint": "./checkpoint.md",
+  "decision_ledger": "../../decisions/qa-chain-20261102.md",
+  "source_baseline": "a1a8691bf4e7f9ceeeec6b7d618ae6a8e12df366",
+  "goal_service": {
+    "existing_status": "usageLimited",
+    "replacement_attempt": "refused_unfinished_goal",
+    "policy": "Expanded user scope persisted here; do not falsely complete the unfinished goal or bypass service limits"
+  },
+  "verification": {
+    "conductor_review": "approved; reviews/conductor-scope-review.md",
+    "production_build": "baseline_passed_zero_warnings",
+    "focused_evidence": "through_pass33_not_full_coverage",
+    "final_catalog": "pending",
+    "two_clean_full_passes": "pending",
+    "five_live_ux_audits_and_synthesis": "pending",
+    "integrated_sweep": "pending",
+    "harness_18_scenarios": "pending",
+    "exact_sha_ci": "pending",
+    "tagged_release_download_hashes": "pending"
+  },
+  "final_publication_authorized": true,
+  "release_gate": "All required implementation/reviews/live QA and integrated checks complete; exact-commit CI green before immutable tag; all Release jobs and seven downloaded archive checksums verified"
+}

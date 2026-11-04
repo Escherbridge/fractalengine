@@ -43,3 +43,13 @@ Pass13's summary retains coverage_ready=false and expected negative-test warning
 The old populated Petal is retained for read-only repair proof without re-ingestion.
 A new full scenario and same-new-stage restart are required after repair; focused
 passes do not replace the campaign's two clean full-coverage passes.
+
+
+## Current coordination (2026-11-04)
+
+The user adopted the full remaining-work assessment as the new completion goal.
+Use [project completion plan](../project_completion_20261104/plan.md) and
+[checkpoint](../project_completion_20261104/checkpoint.md) for the shared queue.
+Focused pass33 is the latest committed evidence; QA-0063 and QA-0069 remain open.
+The volume correction and native witness are unapproved isolated work, not accepted
+features. Preserve all earlier rich-data acceptance requirements and evidence.

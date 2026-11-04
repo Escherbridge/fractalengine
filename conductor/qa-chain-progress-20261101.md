@@ -10,6 +10,19 @@ parallel_code_worktrees: Guarded Join completed-pass correction; selection/group
 
 # QA chain continuation
 
+## Current coordination pointer (2026-11-04)
+
+The user adopted the complete remaining-work assessment as the completion goal.
+Use [project completion](./tracks/project_completion_20261104/spec.md), its
+[plan](./tracks/project_completion_20261104/plan.md) and
+[checkpoint](./tracks/project_completion_20261104/checkpoint.md) for current scope,
+source/build state, unfinished branches and next actions. This file preserves
+chronological campaign evidence; older frontmatter/status paragraphs are historical.
+Final integrated checks, two clean full passes, exact-SHA CI and tagged downloads
+remain pending. The original goal service is usageLimited and refused replacement
+while unfinished; no completed-goal claim is made.
+
+
 The user authorized finishing the full handoff queue. Implementation remains local until the goal is complete.
 Latest steering also authorizes final CI and downloadable tagged-release publication after the goal passes.
 Starting HEAD: `5bc2aa0`. Existing H3 files are preserved and continued.

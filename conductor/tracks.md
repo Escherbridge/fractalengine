@@ -6,6 +6,13 @@ timestamp: 2026-10-31T00:00:00Z
 
 # Project Tracks
 
+## Current completion goal (2026-11-04)
+
+- [~] **[project_completion_20261104](./tracks/project_completion_20261104/)** (P0, in_progress): user-adopted correctness fixes, coherent tree/group/right-panel/tool interactions, rich data/history simulation, peer nodes/assets, permissions/lifecycle, native QA, full UX/catalog acceptance and verified release. [Execution queue](./tracks/project_completion_20261104/plan.md) and [current checkpoint](./tracks/project_completion_20261104/checkpoint.md) are the current coordination entry points.
+- Existing QA, rich-data and polish tracks retain their detailed requirements and evidence. Focused passes through33 and a zero-warning baseline build do not close full-coverage, final sweep, CI or release gates.
+- The dated track counts and early status prose below are historical snapshots, not a fresh current census. The goal service still reports the unfinished original goal as usageLimited; expanded scope is persisted in Conductor.
+
+
 Live board for open work, ordered by the [roadmap](./roadmap.md) go-forward slate
 (2026-07-14 alignment pass), not by historical waves. The classified remaining-work
 queue (what is agent-doable, what needs a ratification, what is user-gated) lives in

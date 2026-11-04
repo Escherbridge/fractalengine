@@ -7,8 +7,20 @@
   "origin": "User priority during QA campaign; explicitly selected both object replay and charted appended measurements",
   "spec": "./spec.md",
   "plan": "./plan.md",
-  "related": ["qa_chain_20261101", "polish_lane_20261031"],
+  "related": [
+    "qa_chain_20261101",
+    "polish_lane_20261031",
+    "project_completion_20261104"
+  ],
   "history_target": "both",
   "release_gate": "Original QA campaign completion, integrated verification, same-SHA CI and verified tagged artifacts",
-  "verification": {"static_reviews": "in_progress", "backend_compile": "pending", "live_both_scenario": "pending", "integrated_sweep": "pending"}
+  "verification": {
+    "static_reviews": "integrated core reviewed; volume/native-witness followups unapproved",
+    "backend_compile": "integrated production build passed; latest baseline a1a8691b",
+    "live_both_scenario": "pass13 all38 functional checks and local restart passed; distributed restart/final combined acceptance pending",
+    "integrated_sweep": "pending",
+    "latest_focused_packet": "pass33; not final full coverage"
+  },
+  "updated_at": "2026-11-04",
+  "completion_track": "../project_completion_20261104/metadata.json"
 }
