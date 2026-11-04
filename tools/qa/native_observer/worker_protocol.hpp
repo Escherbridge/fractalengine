@@ -18,6 +18,7 @@
 #include <cstdint>
 #include <cstring>
 #include <initializer_list>
+#include <limits>
 #include <map>
 #include <memory>
 #include <optional>
@@ -128,7 +129,7 @@ inline std::string sha256(std::string_view data) {
     require(BCryptOpenAlgorithmProvider(&algorithm, BCRYPT_SHA256_ALGORITHM, nullptr, 0) >= 0, "hash_unavailable");
     struct Algorithm { BCRYPT_ALG_HANDLE value; ~Algorithm() { BCryptCloseAlgorithmProvider(value, 0); } } owned{algorithm};
     std::array<UCHAR, 32> hash{};
-    require(data.size() <= MAXULONG && BCryptHash(algorithm, nullptr, 0,
+    require(data.size() <= std::numeric_limits<ULONG>::max() && BCryptHash(algorithm, nullptr, 0,
         reinterpret_cast<PUCHAR>(const_cast<char*>(data.data())), static_cast<ULONG>(data.size()), hash.data(), static_cast<ULONG>(hash.size())) >= 0, "hash_unavailable");
     std::string result;
     for (auto byte : hash) result += hex_number(byte, 2);
