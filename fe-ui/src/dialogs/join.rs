@@ -117,7 +117,7 @@ pub fn render_join_dialog(
         };
         let response = ui.add_enabled(
             !pending,
-            egui::TextEdit::singleline(&mut buffer)
+            crate::ui_shell::layout_policy::text_input(ui, &mut buffer)
                 .id(egui::Id::new("join_credential_input"))
                 .min_size(egui::Vec2::splat(crate::object_data::target_size(ui)))
                 .password(true)
@@ -247,7 +247,7 @@ mod tests {
                 ctx.memory_mut(|memory| memory.request_focus(id));
                 let mut value = ctx.data(|data| data.get_temp::<String>(id).unwrap_or_default());
                 egui::CentralPanel::default().show(ctx, |ui| {
-                    ui.add(egui::TextEdit::singleline(&mut value).id(id));
+                    ui.add(crate::ui_shell::layout_policy::text_input(ui, &mut value).id(id));
                 });
                 ctx.data_mut(|data| data.insert_temp(id, value));
             }

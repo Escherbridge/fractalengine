@@ -278,13 +278,13 @@ fn render_query_section(
         GisQueryMode::PropertyFilter => {
             ui.horizontal(|ui| {
                 ui.add(
-                    egui::TextEdit::singleline(&mut gis_state.filter_key_buf)
+                    crate::ui_shell::layout_policy::text_input(ui, &mut gis_state.filter_key_buf)
                         .hint_text("key")
                         .desired_width(90.0),
                 )
                 .named(ui, "Property filter key");
                 ui.add(
-                    egui::TextEdit::singleline(&mut gis_state.filter_value_buf)
+                    crate::ui_shell::layout_policy::text_input(ui, &mut gis_state.filter_value_buf)
                         .hint_text("value")
                         .desired_width(90.0),
                 )
@@ -313,9 +313,9 @@ fn render_query_section(
                         .small()
                         .color(theme::TEXT_DIM),
                 );
-                ui.add(egui::TextEdit::singleline(&mut gis_state.bbox_min[0]).desired_width(50.0))
+                ui.add(crate::ui_shell::layout_policy::text_input(ui, &mut gis_state.bbox_min[0]).desired_width(50.0))
                     .named(ui, "Bounding box minimum X in meters");
-                ui.add(egui::TextEdit::singleline(&mut gis_state.bbox_min[1]).desired_width(50.0))
+                ui.add(crate::ui_shell::layout_policy::text_input(ui, &mut gis_state.bbox_min[1]).desired_width(50.0))
                     .named(ui, "Bounding box minimum Z in meters");
             });
             ui.horizontal(|ui| {
@@ -324,14 +324,13 @@ fn render_query_section(
                         .small()
                         .color(theme::TEXT_DIM),
                 );
-                ui.add(egui::TextEdit::singleline(&mut gis_state.bbox_max[0]).desired_width(50.0))
+                ui.add(crate::ui_shell::layout_policy::text_input(ui, &mut gis_state.bbox_max[0]).desired_width(50.0))
                     .named(ui, "Bounding box maximum X in meters");
-                ui.add(egui::TextEdit::singleline(&mut gis_state.bbox_max[1]).desired_width(50.0))
+                ui.add(crate::ui_shell::layout_policy::text_input(ui, &mut gis_state.bbox_max[1]).desired_width(50.0))
                     .named(ui, "Bounding box maximum Z in meters");
             });
             ui.horizontal(|ui| {
-                if ui
-                    .small_button("Center on Selection")
+                if crate::ui_shell::layout_policy::small_button(ui, "Center on Selection")
                     .observed(ui)
                     .clicked()
                 {
@@ -346,7 +345,7 @@ fn render_query_section(
                         .unwrap_or([0.0, 0.0]);
                     gis_state.center_bbox_on(center, DEFAULT_BBOX_HALF_EXTENT);
                 }
-                if ui.small_button("Center on Origin").observed(ui).clicked() {
+                if crate::ui_shell::layout_policy::small_button(ui, "Center on Origin").observed(ui).clicked() {
                     gis_state.center_bbox_on([0.0, 0.0], DEFAULT_BBOX_HALF_EXTENT);
                 }
             });

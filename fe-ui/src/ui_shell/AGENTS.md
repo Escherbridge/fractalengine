@@ -670,3 +670,55 @@ content size and offset. Hover probes obtain actual native scrollbar IDs from
 the public Context interaction_snapshot; read_response measures the real strips,
 and a physical pointer drag must change the corresponding table offset. No
 private SDK ID is derived. These checks remain authored, unexecuted source.
+
+## Physical control targets (QA0039)
+
+target_size is the shared24-point control density with a20-physical-pixel
+backstop, rounded UP to public emath::GUI_ROUNDING before native allocation.
+At0.75x the old26.6667-point request rounded down to26.65625/19.9921875px;
+the new26.6875-point minimum gives20.015625px. At1/1.25/2x the normal24-point
+density remains. The finite helper rejects invalid/unrepresentable scale math;
+target_size keeps a finite normal UI fallback for an invalid context without
+claiming a valid physical measurement. Supported context scales remain enabled.
+
+apply_style refreshes ordinary interaction height every pass BEFORE the existing
+one-time typography/padding return, from the stable baseline rather than the
+prior enlarged style. Ordinary native buttons/checkboxes inherit this height.
+Their fonts and painted icons are unchanged. A small button bypasses native
+height inheritance, and native Button does not inherit a universal width floor:
+small_button, action and control_size therefore reserve actual square/explicit
+space. control_size preserves larger requested dimensions. Do not grow hit rects
+over neighbors or change checker measurements to meet this minimum.
+
+Native single-line TextEdit does not inherit interact_size.y. All existing
+single-line builder sites delegate to text_input, preserving IDs, password/
+draft/pending/auth behavior and further builder options. Both input axes have
+the shared minimum. Local tree/grid/axis/rail/footer/copy formulas delegate to
+target_size; object_data and editor_batch continue through their existing seam.
+
+SectionHeader is a narrow native-view adapter used by Inspector sections. Pinned
+CollapsingHeader always lays out with Extend even when its Ui has wrapping style.
+A pre-truncated galley bounds that title to available width; its original full
+job text retains the native collapse ID and accessible title. The adapter returns
+the actual native response and adds full-title hover. It owns no selection or
+collapse state. Compact field-schema inputs stack, property type text truncates,
+and the outer Inspector native scroll minimum/maximum use the actual remaining
+visible body budget rather than the default64-point minimum under a short clip.
+Nested property editors retain their own stable content layout. Existing bottom
+wheel evidence confirms Add Property fits the old clip at maximum offset; this
+change corrects the viewport mismatch without asserting it was unreachable.
+
+Results column resizing reserves a target_size-wide slot within each existing
+column width, subtracting that slot from its sort header allocation. Its line
+still paints at one point. The60-point minimum column leaves usable header space
+at the supported0.75/1/1.25/2 scales. No strip overlays an adjacent Sort/cell target.
+
+The existing journeys add real native rounded targets across all four scales,
+same-context scale restoration, bounded section title/native identity, populated
+column target dimensions/non-overlap, and a real compact Inspector shell with
+populated properties checking X extent and native viewport versus actual clip.
+No new test declaration is added; source-author execution is prohibited. Actual
+screenshots, neighbor clicks, small-scale checker results, typed drafts, panel/
+popup/menu coverage and scrollbar reachability remain root live acceptance.
+The ruler's whole-window anchoring remains a separate terrain/viewport boundary
+task; no ruler producer or camera/selection pointer routing is edited here.

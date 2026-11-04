@@ -352,7 +352,7 @@ impl HistoryState {
         ui.label("Exact committed version");
         ui.small("Rows saved together replay at their completed Save version. Individual audit facts remain listed above.");
         ui.add(
-            egui::TextEdit::singleline(&mut self.version)
+            crate::ui_shell::layout_policy::text_input(ui, &mut self.version)
                 .desired_width(ui.available_width())
                 .char_limit(20),
         )

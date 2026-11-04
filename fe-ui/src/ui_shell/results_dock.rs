@@ -271,6 +271,7 @@ pub fn render(
                 ui.text_style_height(&egui::TextStyle::Button)
                     + ui.spacing().button_padding.y * 2.0,
             );
+            let column_handle_width = super::layout_policy::target_size(ctx);
             let total_width =
                 results.widths.iter().sum::<f32>() + results.widths.len() as f32 * 8.0;
             let _table = egui::ScrollArea::both()
@@ -302,7 +303,7 @@ pub fn render(
                                                 ui.spacing_mut().item_spacing.x = 0.0;
                                                 let response = ui
                                                     .add_sized(
-                                                        [results.widths[col] - 6.0, row_height],
+                                                        [results.widths[col] - column_handle_width, row_height],
                                                         egui::Button::new(label).truncate(),
                                                     )
                                                     .named(
@@ -316,7 +317,7 @@ pub fn render(
                                                     results.sort_by(col);
                                                 }
                                                 let (rect, response) = ui.allocate_exact_size(
-                                                    egui::vec2(6.0, row_height),
+                                                    egui::vec2(column_handle_width, row_height),
                                                     egui::Sense::drag(),
                                                 );
                                                 ui.ctx().accesskit_node_builder(

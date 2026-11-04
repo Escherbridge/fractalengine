@@ -353,7 +353,7 @@ pub(crate) fn status_bar(
     local_role: &crate::plugin::LocalUserRole,
     node_identity: Option<&fe_identity::NodeIdentity>,
 ) {
-    let minimum = 24.0_f32.max(20.0 / ctx.pixels_per_point());
+    let minimum = crate::ui_shell::layout_policy::target_size(ctx);
     let counts = content_counts(hierarchy, nav);
     let hidden_count = vis_state.hidden_count_in_active_petal_cached(hierarchy, nav);
     let hidden = visibility::hidden_chip_label(hidden_count);

@@ -129,7 +129,7 @@ fn render_track_list(
     ui.horizontal_wrapped(|ui| {
         let input_width = ui.available_width().min(180.0).max(minimum.x) - 8.0;
         ui.add(
-            egui::TextEdit::singleline(&mut path_state.new_track_name_buf)
+            crate::ui_shell::layout_policy::text_input(ui, &mut path_state.new_track_name_buf)
                 .hint_text("New path name")
                 .desired_width(input_width)
                 .min_size(minimum),
@@ -330,7 +330,7 @@ fn render_edit_view(
     can_edit: bool,
 ) {
     ui.horizontal(|ui| {
-        if ui.small_button("\u{2190} Back").observed(ui).clicked() {
+        if crate::ui_shell::layout_policy::small_button(ui, "\u{2190} Back").observed(ui).clicked() {
             path_state.stop_editing();
             ui_mgr.push_action(UiAction::PathQueryTracks {
                 petal_id: petal_id.to_string(),
@@ -1192,7 +1192,7 @@ fn render_annotate_form(
             ui.horizontal_wrapped(|ui| {
                 ui.label("Title");
                 ui.add(
-                    egui::TextEdit::singleline(&mut path_state.annotate_title_buf)
+                    crate::ui_shell::layout_policy::text_input(ui, &mut path_state.annotate_title_buf)
                         .desired_width((ui.available_width() - 8.0).clamp(minimum.x, 200.0))
                         .min_size(minimum),
                 )
@@ -1201,7 +1201,7 @@ fn render_annotate_form(
             ui.horizontal_wrapped(|ui| {
                 ui.label("Body ");
                 ui.add(
-                    egui::TextEdit::singleline(&mut path_state.annotate_body_buf)
+                    crate::ui_shell::layout_policy::text_input(ui, &mut path_state.annotate_body_buf)
                         .desired_width((ui.available_width() - 8.0).clamp(minimum.x, 200.0))
                         .min_size(minimum),
                 )
@@ -1210,7 +1210,7 @@ fn render_annotate_form(
             ui.horizontal_wrapped(|ui| {
                 ui.label("Color");
                 ui.add(
-                    egui::TextEdit::singleline(&mut path_state.annotate_color_buf)
+                    crate::ui_shell::layout_policy::text_input(ui, &mut path_state.annotate_color_buf)
                         .hint_text("#00ff00")
                         .desired_width((ui.available_width() - 8.0).clamp(minimum.x, 120.0))
                         .min_size(minimum),

@@ -13,6 +13,23 @@ bounded native Results style scope, finite rejection and pending live evidence.
 Sidebar and right-section content clips also enforce their actual inner rects,
 so ScrollArea's ordinary clip margin cannot extend targets into those gutters.
 
+## Shared physical target conventions (QA0039)
+
+Use layout_policy::target_size for control/row minima and control_size before an
+explicit small allocation. It rounds upward to the pinned public egui lattice;
+raw max(24,20/scale) can measure19.992px at0.75x. Keep small glyph painting tied
+to text size, separate from the actual target allocation. A compact caption does
+not justify a smaller clickable rectangle. Small-button and single-line text
+edit builders use the shared adapters; passive labels retain their text sizes.
+
+Inspector section_header preserves native state/response with a bounded title
+and full hover. Never rely only on wrapping style for native CollapsingHeader:
+its built-in layout explicitly extends text. Compact schema fields stack and
+the outer Inspector scroll viewport follows the real visible remaining height.
+Custom property table overflow remains a genuine horizontal scroll path. Preserve
+all edit buffers, capability checks, target identity and pending mutation gates.
+See ../ui_shell/AGENTS.md §Physical control targets for ownership and evidence.
+
 The Inspector Data tab delegates object history, event-time measurements and enforced schema editing
 to `../object_data`. Its state is an Inspector read model; historical results never apply to current
 scene entities. See `../object_data/AGENTS.md` for scopes, bounds, request routing and retained drafts.

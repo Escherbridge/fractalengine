@@ -16,7 +16,7 @@ pub(super) struct Columns {
 
 impl Columns {
     pub fn new(ui: &egui::Ui, available: f32) -> Self {
-        let minimum = (20.0 / ui.ctx().pixels_per_point()).max(24.0);
+        let minimum = crate::ui_shell::layout_policy::target_size(ui.ctx());
         let height = minimum.max(ui.spacing().interact_size.y);
         let font = egui::TextStyle::Button.resolve(ui.style());
         let text_width = |text: &str| {

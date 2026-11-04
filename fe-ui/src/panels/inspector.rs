@@ -75,6 +75,8 @@ pub(crate) fn right_inspector(
         [false, true],
         egui::ScrollArea::vertical()
             .id_salt("right_section_scroll_Inspector")
+            .min_scrolled_height(crate::ui_shell::layout_policy::visible_scroll_height(ui).min(64.0))
+            .max_height(crate::ui_shell::layout_policy::visible_scroll_height(ui))
             .auto_shrink([false, false]),
         |ui| {
             egui::Frame::NONE
@@ -113,7 +115,7 @@ fn inspector_navigation(
                 .add(
                     egui::Button::new("\u{2715}")
                         .fill(egui::Color32::TRANSPARENT)
-                        .min_size(egui::vec2(24.0, 24.0)),
+                        .min_size(egui::Vec2::splat(crate::ui_shell::layout_policy::target_size(ui.ctx()))),
                 )
                 .named(ui, "Deselect object")
                 .on_hover_text("Deselect")
@@ -197,7 +199,7 @@ fn inspector_tab_body(
     if node_mgr.selection_count() > 1 {
         if inspector.active_tab() == InspectorTab::Properties {
             crate::editor_batch::render(ui, node_mgr, nav, ui_mgr, local_role);
-            egui::CollapsingHeader::new("Primary object only: Portal URL").show(ui, |ui| {
+            crate::ui_shell::layout_policy::section_header(ui, "Primary object only: Portal URL").show(ui, |ui| {
                 inspector_url_meta_section(ui, inspector, node_mgr, ui_mgr, local_role, hierarchy);
             });
             return;
@@ -289,7 +291,7 @@ fn inspector_entity_section(
     node_mgr: &crate::node_manager::NodeManager,
     ui_mgr: &mut UiManager,
 ) {
-    egui::CollapsingHeader::new(
+    crate::ui_shell::layout_policy::section_header(ui,
         egui::RichText::new("Entity")
             .strong()
             .color(theme::TEXT_SECTION),
@@ -472,7 +474,7 @@ pub(crate) fn sync_inspector_units(
 
 /// Minimum native editor target, including the physical-pixel backstop.
 fn inspector_target_size(ui: &egui::Ui) -> egui::Vec2 {
-    egui::Vec2::splat(24.0_f32.max(20.0 / ui.ctx().pixels_per_point()))
+    egui::Vec2::splat(crate::ui_shell::layout_policy::target_size(ui.ctx()))
 }
 
 /// Lay out axis inputs with a stacked label when the inspector is compact.
@@ -543,7 +545,7 @@ fn units_axis_row(
         let src = &mut src_bufs[index];
         let resp = ui
             .add(
-                egui::TextEdit::singleline(src)
+                crate::ui_shell::layout_policy::text_input(ui, src)
                     .desired_width((input_width - 8.0).max(0.0))
                     .min_size(minimum)
                     .margin(egui::Margin::symmetric(4, 2))
@@ -571,7 +573,7 @@ fn raw_axis_row(ui: &mut egui::Ui, label: &str, bufs: &mut [String; 3]) -> bool 
         let minimum = inspector_target_size(ui);
         let resp = ui
             .add(
-                egui::TextEdit::singleline(&mut bufs[index])
+                crate::ui_shell::layout_policy::text_input(ui, &mut bufs[index])
                     .desired_width((input_width - 8.0).max(0.0))
                     .min_size(minimum)
                     .margin(egui::Margin::symmetric(4, 2))
@@ -601,7 +603,7 @@ fn inspector_transform_section(
     if !local_role.can_edit() {
         ui.label("Editor access is required to edit this object's transform.");
     }
-    egui::CollapsingHeader::new(
+    crate::ui_shell::layout_policy::section_header(ui,
         egui::RichText::new("Transform")
             .strong()
             .color(theme::TEXT_SECTION),
@@ -676,7 +678,7 @@ fn inspector_url_meta_section(
         ui.label("Select an object to inspect its Portal URL.");
         return;
     }
-    egui::CollapsingHeader::new(
+    crate::ui_shell::layout_policy::section_header(ui,
         egui::RichText::new("Portal URLs")
             .strong()
             .color(theme::TEXT_SECTION),
@@ -693,7 +695,7 @@ fn inspector_url_meta_section(
         let minimum = inspector_target_size(ui);
         ui.add_enabled(
             local_role.can_edit(),
-            egui::TextEdit::singleline(&mut inspector.external_url)
+            crate::ui_shell::layout_policy::text_input(ui, &mut inspector.external_url)
                 .min_size(minimum)
                 .hint_text("https://\u{2026}")
                 .desired_width(f32::INFINITY),
@@ -1041,7 +1043,7 @@ fn inspector_api_access_section(
             }
 
             // --- Generate Token section ---
-            egui::CollapsingHeader::new(
+            crate::ui_shell::layout_policy::section_header(ui,
                 egui::RichText::new("Generate Token")
                     .strong()
                     .color(theme::TEXT_SECTION),
@@ -1144,7 +1146,7 @@ fn inspector_api_access_section(
                 );
                 let minimum = inspector_target_size(ui);
                 ui.add_enabled(!pending,
-                    egui::TextEdit::singleline(&mut inspector.api_token_client_buf)
+                    crate::ui_shell::layout_policy::text_input(ui, &mut inspector.api_token_client_buf)
                         .min_size(minimum)
                         .desired_width(ui.available_width())
                         .hint_text("did:key:z... (optional)")
@@ -1210,7 +1212,7 @@ fn inspector_api_access_section(
                                 inspector.api_token_request.revealed = !inspector.api_token_request.revealed;
                             }
                             ui.add(
-                                egui::TextEdit::singleline(&mut display)
+                                crate::ui_shell::layout_policy::text_input(ui, &mut display)
                                     .password(!inspector.api_token_request.revealed)
                                     .interactive(false)
                                     .desired_width(ui.available_width())
@@ -1298,7 +1300,7 @@ fn inspector_api_access_section(
             ui.add_space(2.0);
 
             // --- Active Tokens section ---
-            egui::CollapsingHeader::new(
+            crate::ui_shell::layout_policy::section_header(ui,
                 egui::RichText::new("Active Tokens")
                     .strong()
                     .color(theme::TEXT_SECTION),
@@ -2015,7 +2017,7 @@ fn inspector_properties_section(
     node_mgr: &crate::node_manager::NodeManager,
     ui_mgr: &mut UiManager,
 ) {
-    egui::CollapsingHeader::new(
+    crate::ui_shell::layout_policy::section_header(ui,
         egui::RichText::new("Custom Properties")
             .strong()
             .color(theme::TEXT_SECTION),
@@ -2082,7 +2084,7 @@ fn inspector_properties_section(
             let key_label = ui.label("New property key");
             let mut changed = ui
                 .add(
-                    egui::TextEdit::singleline(&mut inspector.prop_add_key_buf)
+                    crate::ui_shell::layout_policy::text_input(ui, &mut inspector.prop_add_key_buf)
                         .id_salt("new-property-key")
                         .desired_width(ui.available_width()),
                 )
@@ -2093,6 +2095,7 @@ fn inspector_properties_section(
             egui::ComboBox::from_id_salt("prop_type_combo")
                 .selected_text(&inspector.prop_add_type_buf)
                 .width(ui.available_width())
+                .truncate()
                 .show_ui(ui, |ui| {
                     for &kind in PROPERTY_TYPES {
                         type_changed |= ui
@@ -2158,7 +2161,7 @@ fn inspector_schema_section(
         return;
     }
 
-    egui::CollapsingHeader::new(
+    crate::ui_shell::layout_policy::section_header(ui,
         egui::RichText::new("Property Schema")
             .strong()
             .color(theme::TEXT_SECTION),
@@ -2283,16 +2286,17 @@ fn inspector_schema_section(
 
         // Key + type only — `DbCommand::CreateFieldDef` cannot persist
         // description/required yet.
-        ui.horizontal(|ui| {
+        ui.vertical(|ui| {
             ui.add(
-                egui::TextEdit::singleline(&mut inspector.field_def_add_key_buf)
+                crate::ui_shell::layout_policy::text_input(ui, &mut inspector.field_def_add_key_buf)
                     .hint_text("key")
-                    .desired_width(60.0),
+                    .desired_width(ui.available_width()),
             )
             .named(ui, "New field definition key");
             egui::ComboBox::from_id_salt("field_def_type_combo")
                 .selected_text(&inspector.field_def_add_type_buf)
-                .width(80.0)
+                .width(ui.available_width())
+                .truncate()
                 .show_ui(ui, |ui| {
                     for &t in PROPERTY_TYPES {
                         ui.selectable_value(
@@ -2378,6 +2382,54 @@ mod tests {
 
     #[test]
     fn inspector_transform_and_typed_property_editing_journey() {
+        for scale in [0.75, 1.0, 1.25, 2.0] {
+            let ctx = egui::Context::default();
+            ctx.set_pixels_per_point(scale);
+            let mut form = InspectorFormState::default();
+            let mut selected = NodeManager::default();
+            selected.select(Entity::from_bits(1), "compact-target");
+            sync_property_editor_scope(&mut form, &selected, 0.0);
+            form.node_properties = serde_json::json!({"count":12,"samples":[1,2,3],"sensor":{"valid":true}});
+            form.node_properties_loading = false;
+            let mut manager = UiManager::default();
+            let mut shell = crate::ui_shell::right_sidebar::RightSidebarState::default();
+            let (sender, _receiver) = crossbeam::channel::unbounded();
+            for _ in 0..3 {
+                layout_policy::begin_frame(&ctx, true);
+                let _ = ctx.run(egui::RawInput {
+                    screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO,
+                        egui::vec2(1024.0 / scale, 720.0 / scale))),
+                    ..Default::default()
+                }, |ctx| {
+                    layout_policy::apply_style(ctx);
+                    egui::TopBottomPanel::top("compact-target-top").exact_height(40.0)
+                        .frame(egui::Frame::NONE).show(ctx, |_| {});
+                    egui::TopBottomPanel::bottom("compact-target-footer")
+                        .exact_height(layout_policy::target_size(ctx) + 4.0)
+                        .frame(egui::Frame::NONE).show(ctx, |_| {});
+                    egui::SidePanel::left("compact-target-tree")
+                        .exact_width(layout_policy::left_width(ctx).min(220.0))
+                        .frame(egui::Frame::NONE).show(ctx, |_| {});
+                    crate::ui_shell::right_sidebar::section_chrome(ctx, &mut shell,
+                        crate::ui_shell::right_sidebar::RightSidebarSection::Inspector, |ui| {
+                            right_inspector(ui, &mut form, &mut selected, &VerseManager::default(),
+                                &mut manager, &LocalUserRole { role: Some(fe_database::RoleLevel::Owner) },
+                                &sender, &NavigationManager::default(), &AssetDownloadStatus::default(),
+                                &crate::gis::PathEditorState::default());
+                        });
+                    egui::CentralPanel::default().show(ctx, |_| {});
+                });
+                let observations = layout_policy::observations(&ctx);
+                let body = observations.scrolls.iter().find(|scroll| scroll.label == "Inspector")
+                    .expect("actual Inspector scroll body rendered");
+                assert!(body.viewport.bottom() <= body.clip.bottom() + 0.01,
+                    "the real visible body budget bounds the native scroll viewport");
+                assert!(body.content_size.x <= body.viewport.width() + 0.01,
+                    "headers/forms cannot inflate the disabled horizontal axis at scale {scale}");
+                assert_eq!(selected.selection_count(), 1);
+                assert_eq!(form.node_properties["count"], 12);
+            }
+        }
         assert!((radians_to_degrees(std::f32::consts::FRAC_PI_2) - 90.0).abs() < EPS);
         assert!((degrees_to_radians(180.0) - std::f32::consts::PI).abs() < EPS);
         let r = 1.234_f32;

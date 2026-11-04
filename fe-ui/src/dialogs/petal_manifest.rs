@@ -149,7 +149,7 @@ pub fn render_petal_manifest(ctx: &egui::Context, ui_mgr: &mut UiManager, nav: &
                             }
 
                             if ui
-                                .add(egui::Button::new("X").fill(theme::BG_DANGER)).named(ui, format_args!("Remove hexon {} from manifest", entry.hexon_id))
+                                .add(egui::Button::new("X").fill(theme::BG_DANGER).min_size(egui::Vec2::splat(crate::ui_shell::layout_policy::target_size(ui.ctx())))).named(ui, format_args!("Remove hexon {} from manifest", entry.hexon_id))
                                 .on_hover_text("Remove from manifest")
                                 .clicked()
                             {

@@ -133,7 +133,7 @@ impl Target<'_> {
 
 fn menu(ui: &mut egui::Ui, target: Target<'_>, can_edit: bool, command: &mut Option<Command>) {
     crate::native_accessibility::surface::popup(ui.ctx());
-    ui.spacing_mut().interact_size.y = 24.0_f32.max(20.0 / ui.ctx().pixels_per_point());
+    ui.spacing_mut().interact_size.y = crate::ui_shell::layout_policy::target_size(ui.ctx());
     ui.add(egui::Label::new(egui::RichText::new(target.name).strong()).truncate())
         .on_hover_text(target.name);
     if ui
@@ -245,10 +245,10 @@ pub(crate) fn row(
                 .fill(selection.fill(on_path))
                 .inner_margin(egui::Margin::symmetric(2, 1))
                 .show(ui, |ui| {
-                    ui.set_min_height(26.0_f32.max(20.0 / ui.ctx().pixels_per_point()));
+                    ui.set_min_height(26.0_f32.max(crate::ui_shell::layout_policy::target_size(ui.ctx())));
                     ui.horizontal(|ui| {
                         ui.spacing_mut().item_spacing.x = 2.0;
-                        let target_size = 24.0_f32.max(20.0 / ui.ctx().pixels_per_point());
+                        let target_size = crate::ui_shell::layout_policy::target_size(ui.ctx());
                         ui.spacing_mut().interact_size = egui::vec2(target_size, target_size);
                         let name_width = (ui.available_width() - target_size * 3.0 - 8.0).max(8.0);
                         let (icon_rect, _) = ui.allocate_exact_size(

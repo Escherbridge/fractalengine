@@ -31,7 +31,7 @@ pub(crate) fn asset_card_section(
     let has_asset = node.map(|n| n.has_asset).unwrap_or(false);
     let asset_label = node.and_then(|n| n.asset_path.as_deref());
 
-    egui::CollapsingHeader::new(
+    crate::ui_shell::layout_policy::section_header(ui,
         egui::RichText::new("Asset")
             .strong()
             .color(theme::TEXT_SECTION),
@@ -71,7 +71,7 @@ pub(crate) fn asset_card_section(
             } else {
                 theme::BG_BUTTON
             })
-            .min_size(egui::vec2(ui.available_width(), 26.0));
+            .min_size(crate::ui_shell::layout_policy::control_size(ui.ctx(), [ui.available_width(), 26.0]));
         let resp = ui.add_enabled(has_asset, btn).observed(ui);
         if resp.clicked() {
             ui_mgr.push_action(UiAction::DownloadNodeAsset {

@@ -461,7 +461,7 @@ pub(crate) fn invite_controls(
     ui.add_enabled_ui(editing, |ui| {
         ui.label("Recipient DID");
         ui.add(
-            egui::TextEdit::singleline(&mut state.invitation.recipient)
+            crate::ui_shell::layout_policy::text_input(ui, &mut state.invitation.recipient)
                 .char_limit(256)
                 .desired_width(f32::INFINITY),
         )
@@ -605,7 +605,7 @@ pub(crate) fn api_controls(
         ui.add(egui::DragValue::new(expiry).range(1..=720).suffix(" hours"))
             .named(ui, "Entity API token expiry hours");
         ui.add(
-            egui::TextEdit::singleline(client)
+            crate::ui_shell::layout_policy::text_input(ui, client)
                 .hint_text("Client DID, or leave blank for a fresh client"),
         )
         .named(ui, "Entity API token client DID");
@@ -640,7 +640,7 @@ pub(crate) fn api_controls(
             .named(ui, "Reveal generated entity API token");
         let mut display = minted.token.clone();
         ui.add(
-            egui::TextEdit::singleline(&mut display)
+            crate::ui_shell::layout_policy::text_input(ui, &mut display)
                 .password(!state.reveal_secret)
                 .interactive(false),
         )

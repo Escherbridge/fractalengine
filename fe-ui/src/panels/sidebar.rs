@@ -87,7 +87,7 @@ pub(crate) fn left_sidebar(
 }
 
 fn configure_tree_spacing(ui: &mut egui::Ui) {
-    let minimum = 24.0_f32.max(20.0 / ui.ctx().pixels_per_point());
+    let minimum = crate::ui_shell::layout_policy::target_size(ui.ctx());
     ui.spacing_mut().indent = minimum;
     ui.spacing_mut().icon_width = minimum;
     ui.spacing_mut().interact_size.y = minimum;
@@ -112,13 +112,13 @@ fn sidebar_verse_header(
     ui.horizontal(|ui| {
         ui.add_space(8.0);
         if ui.add(egui::Button::new("Join").fill(theme::BG_BUTTON)
-            .min_size(egui::vec2(0.0, 24.0)))
+            .min_size(egui::Vec2::splat(crate::ui_shell::layout_policy::target_size(ui.ctx()))))
             .named(ui, "Join verse by invite")
             .on_hover_text("Join a verse by invite").clicked() {
             ui_mgr.open_dialog(ActiveDialog::JoinDialog { invite_buf: String::new() });
         }
         if ui.add(egui::Button::new("+").fill(theme::BG_BUTTON_ALT)
-            .min_size(egui::vec2(24.0, 24.0)))
+            .min_size(egui::Vec2::splat(crate::ui_shell::layout_policy::target_size(ui.ctx()))))
             .named(ui, "Create new verse")
             .on_hover_text("Create new Verse").clicked() {
             ui_mgr.open_dialog(ActiveDialog::CreateEntity {
@@ -146,7 +146,7 @@ fn eye_button(
     )
     .frame(false)
     .min_size(egui::Vec2::splat(
-        24.0_f32.max(20.0 / ui.ctx().pixels_per_point()),
+        crate::ui_shell::layout_policy::target_size(ui.ctx()),
     ));
     ui.add_enabled(enabled, btn)
         .named(ui, name)
@@ -512,7 +512,7 @@ fn render_petals(
                             && nav.active_petal_id.as_deref() == Some(&petal_id),
                         egui::Button::new(egui::RichText::new("Petal requirements").small())
                             .fill(theme::BG_BUTTON)
-                            .min_size(egui::vec2(0.0, 24.0)),
+                            .min_size(egui::Vec2::splat(crate::ui_shell::layout_policy::target_size(ui.ctx()))),
                     )
                     .named(ui, format_args!("Petal requirements for {petal_name}"))
                     .on_hover_text("Edit this petal's map and hexon requirements")
@@ -767,7 +767,7 @@ fn render_nodes(
         );
         let header = collapse.show_header(ui, |ui| {
             let frame = egui::Frame::NONE.fill(selection.fill(false)).inner_margin(egui::Margin::symmetric(4, 1)).show(ui, |ui| {
-                let target = 24.0_f32.max(20.0 / ui.ctx().pixels_per_point());
+                let target = crate::ui_shell::layout_policy::target_size(ui.ctx());
                 let response = ui.add_enabled(!members.is_empty(), egui::Button::new(format!("{name}  {selected}/{}", members.len())).truncate()
                     .frame(false).selected(selected > 0 && selected == members.len()).min_size(egui::vec2(ui.available_width(), target)))
                     .named(ui, format_args!("Select group {name}"))
@@ -1005,7 +1005,7 @@ fn add_button_inline(
                 allowed,
                 egui::Button::new(tooltip)
                     .fill(theme::BG_BUTTON_ALT)
-                    .min_size(egui::vec2(0.0, 24.0)),
+                    .min_size(egui::Vec2::splat(crate::ui_shell::layout_policy::target_size(ui.ctx()))),
             )
             .named(ui, tooltip)
             .on_hover_text(tooltip)

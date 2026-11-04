@@ -781,7 +781,7 @@ fn render_asset_picker(ui: &mut egui::Ui, state: &mut ToolPanelState, verse_mgr:
         ui.horizontal_wrapped(|ui| {
             ui.label(egui::RichText::new("Filter").small().color(theme::TEXT_DIM));
             ui.add(
-                egui::TextEdit::singleline(&mut state.asset_filter)
+                crate::ui_shell::layout_policy::text_input(ui, &mut state.asset_filter)
                     .desired_width((ui.available_width() - 8.0).clamp(minimum.x, 180.0))
                     .min_size(minimum)
                     .hint_text("name or path"),
@@ -832,7 +832,7 @@ fn render_asset_picker(ui: &mut egui::Ui, state: &mut ToolPanelState, verse_mgr:
         let mut asset_buf = state.selected_hexon_ref.clone().unwrap_or_default();
         if ui
             .add(
-                egui::TextEdit::singleline(&mut asset_buf)
+                crate::ui_shell::layout_policy::text_input(ui, &mut asset_buf)
                     .hint_text("blob://<hash>.glb")
                     .desired_width((ui.available_width() - 8.0).max(minimum.x))
                     .min_size(minimum),

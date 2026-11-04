@@ -24,7 +24,7 @@ pub(crate) fn annotation_card_section(
     };
     let node_id = sel.node_id.clone();
 
-    egui::CollapsingHeader::new(
+    crate::ui_shell::layout_policy::section_header(ui,
         egui::RichText::new("Annotation")
             .strong()
             .color(theme::TEXT_SECTION),
@@ -35,7 +35,7 @@ pub(crate) fn annotation_card_section(
 
         let title_label = ui.label(egui::RichText::new("Title").small().color(theme::TEXT_DIM));
         ui.add(
-            egui::TextEdit::singleline(&mut inspector.annotation_title_buf)
+            crate::ui_shell::layout_policy::text_input(ui, &mut inspector.annotation_title_buf)
                 .hint_text("Untitled")
                 .desired_width(f32::INFINITY),
         )
@@ -52,11 +52,11 @@ pub(crate) fn annotation_card_section(
 
         ui.add_space(4.0);
         let color_label = ui.label(egui::RichText::new("Color").small().color(theme::TEXT_DIM));
-        ui.horizontal(|ui| {
+        ui.horizontal_wrapped(|ui| {
             ui.add(
-                egui::TextEdit::singleline(&mut inspector.annotation_color_buf)
+                crate::ui_shell::layout_policy::text_input(ui, &mut inspector.annotation_color_buf)
                     .hint_text("#RRGGBB")
-                    .desired_width(100.0),
+                    .desired_width(ui.available_width().min(100.0)),
             )
             .labelled(ui, &color_label);
             // Interactive swatch: egui's own color picker, bound to the hex
@@ -88,7 +88,7 @@ pub(crate) fn annotation_card_section(
             .add(
                 egui::Button::new("\u{1F4BE} Save Annotation")
                     .fill(theme::BG_SAVE)
-                    .min_size(egui::vec2(ui.available_width(), 26.0)),
+                    .min_size(crate::ui_shell::layout_policy::control_size(ui.ctx(), [ui.available_width(), 26.0])),
             )
             .named(ui, "Save annotation")
             .clicked()

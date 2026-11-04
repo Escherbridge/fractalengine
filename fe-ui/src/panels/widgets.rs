@@ -54,7 +54,7 @@ pub(crate) fn copy_value_box(
         .corner_radius(3.0)
         .show(ui, |ui| {
             ui.set_max_width(ui.available_width());
-            let minimum = 24.0_f32.max(20.0 / ui.ctx().pixels_per_point());
+            let minimum = crate::ui_shell::layout_policy::target_size(ui.ctx());
             egui::containers::Sides::new()
                 .shrink_left()
                 .truncate()
@@ -164,7 +164,7 @@ pub(crate) fn clipped_value_copyable(
     color: egui::Color32,
     toast: &str,
 ) -> egui::Response {
-    let minimum = 24.0_f32.max(20.0 / ui.ctx().pixels_per_point());
+    let minimum = crate::ui_shell::layout_policy::target_size(ui.ctx());
     let resp = ui
         .add_sized(
             [ui.available_width().max(minimum), minimum],

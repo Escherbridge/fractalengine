@@ -49,7 +49,7 @@ pub(crate) fn egress_section(
                 .small()
                 .color(theme::TEXT_DIM),
         );
-        ui.add(egui::TextEdit::singleline(&mut gis_state.egress.base_url_buf).desired_width(200.0))
+        ui.add(crate::ui_shell::layout_policy::text_input(ui, &mut gis_state.egress.base_url_buf).desired_width(200.0))
             .named(ui, "API base URL");
         if ui
             .add_enabled(running_api.is_some(), egui::Button::new("Use running API"))
@@ -119,13 +119,12 @@ fn render_source_selector(
         EgressSource::Node => {
             ui.horizontal(|ui| {
                 ui.add(
-                    egui::TextEdit::singleline(&mut gis_state.egress.node_id_buf)
+                    crate::ui_shell::layout_policy::text_input(ui, &mut gis_state.egress.node_id_buf)
                         .hint_text("node id")
                         .desired_width(160.0),
                 )
                 .named(ui, "Export node ID");
-                if ui
-                    .small_button("Use viewport selection")
+                if crate::ui_shell::layout_policy::small_button(ui, "Use viewport selection")
                     .observed(ui)
                     .clicked()
                 {
@@ -198,7 +197,7 @@ fn render_share_section(
                 .small()
                 .color(theme::TEXT_DIM),
         );
-        ui.add(egui::TextEdit::singleline(&mut gis_state.egress.ttl_buf).desired_width(70.0))
+        ui.add(crate::ui_shell::layout_policy::text_input(ui, &mut gis_state.egress.ttl_buf).desired_width(70.0))
             .named(ui, "Share link lifetime in seconds");
         ui.label(
             egui::RichText::new("default 3600, max 86400")

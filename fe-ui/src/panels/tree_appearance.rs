@@ -242,7 +242,7 @@ pub(crate) fn render(
         .resizable(false)
         .default_width(460.0)
         .show_with_targets(ctx, |ui| {
-            ui.spacing_mut().interact_size.y = 24.0_f32.max(20.0 / ctx.pixels_per_point());
+            ui.spacing_mut().interact_size.y = crate::ui_shell::layout_policy::target_size(ctx);
             ui.label("Display preference on this device");
             ui.horizontal(|ui| {
                 let (rect, _) =
@@ -283,7 +283,7 @@ pub(crate) fn render(
                     let label = ui.label("Hex color (#RRGGBB)");
                     if ui
                         .add(
-                            egui::TextEdit::singleline(&mut draft.hex)
+                            crate::ui_shell::layout_policy::text_input(ui, &mut draft.hex)
                                 .desired_width(color_width)
                                 .char_limit(7),
                         )

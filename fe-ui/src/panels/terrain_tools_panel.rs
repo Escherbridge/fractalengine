@@ -296,8 +296,7 @@ pub(crate) fn render_proposal_list(
                     {
                         proposal_state.selected = Some(id.clone());
                     }
-                    if ui
-                        .small_button("\u{2715}")
+                    if crate::ui_shell::layout_policy::small_button(ui, "\u{2715}")
                         .named(ui, format_args!("Delete {label} proposal {id}"))
                         .on_hover_text("Delete proposal")
                         .clicked()
@@ -456,7 +455,7 @@ pub(crate) fn render_brush_controls(ui: &mut egui::Ui, sculpt: &mut SculptToolSt
                 .small()
                 .color(theme::TEXT_DIM),
         );
-        ui.add(egui::TextEdit::singleline(&mut sculpt.material).desired_width(120.0))
+        ui.add(crate::ui_shell::layout_policy::text_input(ui, &mut sculpt.material).desired_width(120.0))
             .named(ui, "Brush material");
     });
 }

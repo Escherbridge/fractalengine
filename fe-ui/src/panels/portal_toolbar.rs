@@ -67,7 +67,7 @@ pub(crate) fn right_portal_toolbar(ctx: &egui::Context, ui_mgr: &mut UiManager) 
                     if ui
                         .add_enabled(
                             embedded,
-                            egui::Button::new(label).min_size(egui::vec2(28.0, 24.0)),
+                            egui::Button::new(label).min_size(crate::ui_shell::layout_policy::control_size(ui.ctx(), [28.0, 24.0])),
                         )
                         .named(ui, name)
                         .on_disabled_hover_text(
@@ -80,7 +80,7 @@ pub(crate) fn right_portal_toolbar(ctx: &egui::Context, ui_mgr: &mut UiManager) 
                     }
                 }
                 if ui
-                    .add(egui::Button::new("Open externally").min_size(egui::vec2(28.0, 24.0)))
+                    .add(egui::Button::new("Open externally").min_size(crate::ui_shell::layout_policy::control_size(ui.ctx(), [28.0, 24.0])))
                     .named(ui, "Open portal externally")
                     .on_hover_text("Request this URL in your system browser")
                     .clicked()
@@ -88,7 +88,7 @@ pub(crate) fn right_portal_toolbar(ctx: &egui::Context, ui_mgr: &mut UiManager) 
                     ui_mgr.push_action(UiAction::PortalOpenExternal);
                 }
                 if ui
-                    .add(egui::Button::new("Close").min_size(egui::vec2(28.0, 24.0)))
+                    .add(egui::Button::new("Close").min_size(crate::ui_shell::layout_policy::control_size(ui.ctx(), [28.0, 24.0])))
                     .named(ui, "Close portal")
                     .clicked()
                 {

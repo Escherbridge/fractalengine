@@ -90,7 +90,7 @@ pub fn viewport_petal_space(
                 .show(ui, |ui| {
                     ui.horizontal_wrapped(|ui| {
                         if ui
-                            .add_sized([52.0, 26.0], egui::Button::new("Back"))
+                            .add_sized(crate::ui_shell::layout_policy::control_size(ui.ctx(), [52.0, 26.0]), egui::Button::new("Back"))
                             .named(ui, "Back to petal list")
                             .clicked()
                         {
@@ -199,7 +199,7 @@ fn bounded_browser(
             ui.add_space(6.0);
             if show_join
                 && ui
-                    .add_sized([120.0, 26.0], egui::Button::new("Join a verse..."))
+                    .add_sized(crate::ui_shell::layout_policy::control_size(ui.ctx(), [120.0, 26.0]), egui::Button::new("Join a verse..."))
                     .named(ui, "Join a verse from browser")
                     .clicked()
             {
@@ -274,10 +274,11 @@ fn browser_card(
                 frame.show(ui, |ui| {
                     ui.set_width(content_width);
                     ui.horizontal(|ui| {
-                        let name_width =
-                            (content_width - 26.0 - ui.spacing().item_spacing.x).max(1.0);
+                        let options_size = crate::ui_shell::layout_policy::control_size(ui.ctx(), [26.0, 28.0]);
+                        let name_width = (content_width - options_size.x - ui.spacing().item_spacing.x)
+                            .max(crate::ui_shell::layout_policy::target_size(ui.ctx()));
                         if ui
-                            .add_sized([name_width, 28.0], egui::Button::new(card.name).truncate())
+                            .add_sized(crate::ui_shell::layout_policy::control_size(ui.ctx(), [name_width, 28.0]), egui::Button::new(card.name).truncate())
                             .named(ui, format_args!("Open {} {}", card.kind_name(), card.name))
                             .on_hover_text(format!("{}\n{}", card.name, card.id))
                             .clicked()
@@ -285,7 +286,7 @@ fn browser_card(
                             action = Some(BrowserAction::Open(index));
                         }
                         if ui
-                            .add_sized([26.0, 28.0], egui::Button::new("..."))
+                            .add_sized(options_size, egui::Button::new("..."))
                             .named(ui, format_args!("Options for {} {}", card.kind_name(), card.name))
                             .on_hover_text("View stored settings, access and ownership options")
                             .clicked()
@@ -372,7 +373,7 @@ fn breadcrumb_button(ui: &mut egui::Ui, name: &str, id: &str, label: &str) -> bo
     let width = (text_width + 2.0 * ui.spacing().button_padding.x)
         .clamp(32.0, 140.0)
         .min(ui.max_rect().width());
-    ui.add_sized([width, 26.0], egui::Button::new(name).truncate())
+    ui.add_sized(crate::ui_shell::layout_policy::control_size(ui.ctx(), [width, 26.0]), egui::Button::new(name).truncate())
         .named(ui, label)
         .on_hover_text(format!("{name}\n{id}"))
         .clicked()

@@ -85,7 +85,7 @@ fn axes(ui: &mut egui::Ui, label: &str, values: &mut [String; 3], enabled: bool)
                 column
                     .add_sized(
                         [column.available_width().max(target), target],
-                        egui::TextEdit::singleline(value)
+                        crate::ui_shell::layout_policy::text_input(ui, value)
                             .desired_width(0.0)
                             .char_limit(32),
                     )
@@ -340,7 +340,7 @@ fn render_form(
             }
             ui.add_enabled(
                 editable,
-                egui::TextEdit::singleline(&mut state.draft.property_key)
+                crate::ui_shell::layout_policy::text_input(ui, &mut state.draft.property_key)
                     .hint_text("Property key")
                     .char_limit(256),
             )
@@ -462,7 +462,7 @@ pub(crate) fn group_controls(
         && limitation.is_none();
     ui.add_enabled(
         role.can_edit() && !state.is_pending(),
-        egui::TextEdit::singleline(&mut state.draft.group_name)
+        crate::ui_shell::layout_policy::text_input(ui, &mut state.draft.group_name)
             .hint_text("Group from selection")
             .char_limit(80),
     )

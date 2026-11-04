@@ -6,6 +6,8 @@ const BASE_DIVIDER_RADIUS: f32 = 5.0;
 const MIN_DIVIDER_HIT_PX: f32 = 20.0;
 pub(crate) const HIERARCHY_DEFAULT_WIDTH: f32 = 220.0;
 const SCROLL_WIDTH_RESERVE: f32 = 12.0;
+const NORMAL_CONTROL_POINTS: f32 = 24.0;
+const MIN_CONTROL_HIT_PX: f32 = 20.0;
 
 /// Physical target and interior clearance; see AGENTS.md §divider-accessibility.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -322,6 +324,7 @@ impl PanelWidthState {
 
 #[cfg(test)]
 pub(super) fn extend_panel_width_journey() {
+    extend_physical_targets_journey();
     struct Panels {
         ctx: egui::Context,
         left: PanelWidthState,
@@ -630,6 +633,19 @@ pub(super) fn extend_panel_width_journey() {
                     "without an adjacent right divider the native eight-point margin remains");
             }
             let controls = observations(&panels.ctx).controls;
+            let handles = controls.iter().filter(|control| control.draggable
+                && (control.rect.top() - table.top()).abs() < 0.01
+                && control.clip.contains_rect(control.rect)).collect::<Vec<_>>();
+            assert!(!handles.is_empty(), "actual populated Results exposes a complete column handle");
+            for handle in handles {
+                assert!(handle.hit.width() * scale >= 20.0 && handle.hit.height() * scale >= 20.0,
+                    "allocated column target survives native rounding and clip");
+                assert!(controls.iter().filter(|control| control.clickable)
+                    .all(|control| !control.hit.intersects(handle.hit)
+                        || control.hit.intersect(handle.hit).width() <= 0.001
+                        || control.hit.intersect(handle.hit).height() <= 0.001),
+                    "column slots cannot steal neighboring sort/cell targets");
+            }
             assert!(controls.iter().any(|control| control.clickable
                 && (control.rect.left() - table.left()).abs() < 0.01
                 && (control.rect.top() - table.top()).abs() < 0.01),
@@ -645,6 +661,53 @@ pub(super) fn extend_panel_width_journey() {
     }
     panels.results = false;
     panels.settle();
+}
+
+#[cfg(test)]
+fn extend_physical_targets_journey() {
+    let ctx = egui::Context::default();
+    let mut text = String::new();
+    let mut checked = false;
+    for scale in [0.75, 1.0, 1.25, 2.0, 0.75, 1.0] {
+        ctx.set_pixels_per_point(scale);
+        let _ = ctx.run(egui::RawInput {
+            screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(640.0, 600.0))),
+            ..Default::default()
+        }, |ctx| {
+            apply_style(ctx);
+            let minimum = target_size(ctx);
+            assert_eq!(ctx.style().spacing.interact_size.y, minimum);
+            assert!(minimum * scale >= 20.0);
+            egui::CentralPanel::default().show(ctx, |ui| {
+                let mut hits = Vec::new();
+                hits.push(ui.button("Ordinary action").interact_rect);
+                hits.push(small_button(ui, "Compact action").interact_rect);
+                hits.push(action(ui, egui::Button::new("+"), "Add fixture").interact_rect);
+                hits.push(ui.add_sized(control_size(ctx, [26.0, 26.0]), egui::Button::new("X")).interact_rect);
+                hits.push(ui.add(text_input(ui, &mut text).desired_width(100.0)).interact_rect);
+                hits.push(ui.checkbox(&mut checked, "Flag").interact_rect);
+                hits.push(ui.radio(checked, "Mode").interact_rect);
+                let header = ui.allocate_ui(egui::vec2(80.0, minimum), |ui| {
+                    let title = "A long native section title that must remain within its parent";
+                    let expected_id = ui.make_persistent_id(egui::Id::new(title));
+                    let response = section_header(ui, title).show(ui, |_| {});
+                    assert_eq!(response.header_response.id, expected_id,
+                        "truncation preserves native full-title collapse identity");
+                    assert!(response.header_response.rect.width() <= 80.01);
+                    response.header_response
+                });
+                hits.push(header.inner.interact_rect);
+                for hit in hits {
+                    assert!(hit.width() * scale >= 20.0 && hit.height() * scale >= 20.0,
+                        "actual allocated native targets must survive logical grid rounding: {hit:?} at {scale}");
+                }
+            });
+        });
+    }
+    assert_eq!(target_size(&ctx), 24.0, "restoring normal scale restores normal density");
+    for scale in [0.0, -1.0, f32::NAN, f32::INFINITY] {
+        assert!(quantized_target(scale).is_none());
+    }
 }
 
 #[derive(Clone, Default)]
@@ -795,12 +858,60 @@ pub fn dialog_width(ctx: &egui::Context, preferred: f32) -> f32 {
 }
 
 pub(crate) fn target_size(ctx: &egui::Context) -> f32 {
-    24.0_f32.max(20.0 / ctx.pixels_per_point())
+    quantized_target(ctx.pixels_per_point()).unwrap_or(NORMAL_CONTROL_POINTS)
+}
+
+fn quantized_target(scale: f32) -> Option<f32> {
+    if !scale.is_finite() || scale <= 0.0 { return None; }
+    let quantum = egui::emath::GUI_ROUNDING;
+    let target = (NORMAL_CONTROL_POINTS.max(MIN_CONTROL_HIT_PX / scale) / quantum).ceil() * quantum;
+    target.is_finite().then_some(target)
+}
+
+/// Preserve requested control space with the shared physical minimum.
+pub(crate) fn control_size(ctx: &egui::Context, desired: impl Into<egui::Vec2>) -> egui::Vec2 {
+    desired.into().max(egui::Vec2::splat(target_size(ctx)))
+}
+
+pub(crate) fn small_button(ui: &mut egui::Ui, text: impl Into<egui::WidgetText>) -> egui::Response {
+    let minimum = target_size(ui.ctx());
+    ui.add(egui::Button::new(text).small().min_size(egui::Vec2::splat(minimum)))
+}
+
+/// Bound native scroll minima to the actual remaining visible parent budget.
+pub(crate) fn visible_scroll_height(ui: &egui::Ui) -> f32 {
+    let remaining = ui.available_rect_before_wrap().intersect(ui.clip_rect());
+    remaining.height().max(0.0)
+}
+
+/// Prepare a native section title without expanding a constrained parent.
+pub(crate) fn section_header(ui: &egui::Ui, text: impl Into<egui::WidgetText>) -> SectionHeader {
+    let text = text.into();
+    let title = text.text().to_owned();
+    let width = (ui.available_width() - ui.spacing().indent - ui.spacing().button_padding.x).max(0.0);
+    let galley = text.into_galley(ui, Some(egui::TextWrapMode::Truncate), width, egui::TextStyle::Button);
+    SectionHeader { native: egui::CollapsingHeader::new(galley), title }
+}
+
+pub(crate) struct SectionHeader { native: egui::CollapsingHeader, title: String }
+
+impl SectionHeader {
+    pub(crate) fn default_open(mut self, open: bool) -> Self {
+        self.native = self.native.default_open(open);
+        self
+    }
+
+    pub(crate) fn show<R>(self, ui: &mut egui::Ui, body: impl FnOnce(&mut egui::Ui) -> R)
+        -> egui::collapsing_header::CollapsingResponse<R> {
+        let mut response = self.native.show(ui, body);
+        response.header_response = response.header_response.on_hover_text(self.title);
+        response
+    }
 }
 
 /// A single-line form input with the shared native interaction minimum.
 pub(crate) fn text_input<'a>(ui: &egui::Ui, text: &'a mut dyn egui::TextBuffer) -> egui::TextEdit<'a> {
-    egui::TextEdit::singleline(text).min_size(egui::vec2(0.0, target_size(ui.ctx())))
+    egui::TextEdit::singleline(text).min_size(egui::Vec2::splat(target_size(ui.ctx())))
 }
 
 /// Render a native window header with the shared interaction minimum.
@@ -897,13 +1008,16 @@ pub fn apply_style(ctx: &egui::Context) {
         data.insert_temp(divider_policy_key(), (pass, scale, metrics));
         data.remove::<(u64, egui::Rect)>(results_edge_key());
     });
+    let minimum = target_size(ctx);
+    if ctx.style().spacing.interact_size.y != minimum {
+        ctx.style_mut(|style| style.spacing.interact_size.y = minimum);
+    }
     let id = egui::Id::new("layout_policy_style");
     if ctx.data(|d| d.get_temp::<bool>(id).unwrap_or(false)) {
         return;
     }
     ctx.style_mut(|style| {
         style.spacing.button_padding.y = style.spacing.button_padding.y.max(5.0);
-        style.spacing.interact_size.y = style.spacing.interact_size.y.max(24.0);
     });
     ctx.data_mut(|d| d.insert_temp(id, true));
 }

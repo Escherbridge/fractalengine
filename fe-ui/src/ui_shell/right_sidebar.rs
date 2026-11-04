@@ -968,7 +968,7 @@ fn render_development_reset(
     }
     ui.add_enabled_ui(ready, |ui| {
         ui.label("Type RESET to confirm");
-        let response = ui.add(egui::TextEdit::singleline(&mut session.reset_confirmation).min_size(egui::vec2(160.0, 26.0))).named(ui, "Database reset confirmation");
+        let response = ui.add(crate::ui_shell::layout_policy::text_input(ui, &mut session.reset_confirmation).min_size(crate::ui_shell::layout_policy::control_size(ui.ctx(), [160.0, 26.0]))).named(ui, "Database reset confirmation");
         if response.changed() { session.reset_confirmation_revision = session.reset_confirmation_revision.wrapping_add(1); }
         let typed = session.reset_confirmation == "RESET";
         let confirmed = ui.add_enabled_ui(typed, |ui| {
@@ -1132,7 +1132,7 @@ fn render_relay_setting(ui: &mut egui::Ui, app_settings: &mut AppSettings) {
         .data_mut(|data| data.get_temp::<String>(buffer_id))
         .unwrap_or_else(|| app_settings.relay.clone());
     settings_row(ui, "Relay", |ui, label| {
-        ui.add(egui::TextEdit::singleline(&mut buffer).desired_width(160.0))
+        ui.add(crate::ui_shell::layout_policy::text_input(ui, &mut buffer).desired_width(160.0))
             .labelled(ui, label)
             .on_hover_text(
                 "default | disabled | comma-separated relay URLs (FE_SYNC_RELAY overrides)",
@@ -1172,7 +1172,7 @@ fn render_registry_setting(ui: &mut egui::Ui, app_settings: &mut AppSettings) {
         .data_mut(|data| data.get_temp::<String>(buffer_id))
         .unwrap_or_else(|| app_settings.hexon_registry_url.clone().unwrap_or_default());
     settings_row(ui, "Hexon registry", |ui, label| {
-        ui.add(egui::TextEdit::singleline(&mut buffer).desired_width(220.0))
+        ui.add(crate::ui_shell::layout_policy::text_input(ui, &mut buffer).desired_width(220.0))
             .labelled(ui, label)
             .on_hover_text(
                 "Hosted fe-hexon-registry base URL, e.g. https://hexons.example.com \
@@ -1506,7 +1506,7 @@ fn render_groups_controls(
         ui.horizontal_wrapped(|ui| {
             let edit = ui
                 .add(
-                    egui::TextEdit::singleline(&mut new_name)
+                    crate::ui_shell::layout_policy::text_input(ui, &mut new_name)
                         .hint_text("New group name")
                         .char_limit(MAX_GROUP_NAME_CHARS)
                         .desired_width(160.0),
@@ -1587,7 +1587,7 @@ fn render_groups_controls(
                     let edit = ui
                         .add_sized(
                             egui::vec2(name_width, target),
-                            egui::TextEdit::singleline(&mut name).char_limit(MAX_GROUP_NAME_CHARS),
+                            crate::ui_shell::layout_policy::text_input(ui, &mut name).char_limit(MAX_GROUP_NAME_CHARS),
                         )
                         .named(ui, format_args!("Rename visibility group {}", group.name));
                     let escaped = (edit.has_focus() || edit.lost_focus())
@@ -1791,7 +1791,7 @@ fn section_rail(ui: &mut egui::Ui, state: &mut RightSidebarState) {
                 .add(
                     egui::Button::new(glyph)
                         .min_size(egui::Vec2::splat(
-                            24.0_f32.max(20.0 / ui.ctx().pixels_per_point()),
+                            crate::ui_shell::layout_policy::target_size(ui.ctx()),
                         ))
                         .fill(crate::panels::toolbar::mode_button_fill(active)),
                 )
