@@ -70,12 +70,21 @@ windows retain the existing policy and are reconsidered by each complete census.
 service_current requires valid same-process/same-root-thread identity, ownerless
 top-level/no parent, the exact class and visible state, successful zero-origin and
 zero-size window/client rectangles, and no native descendants under the existing
-128-child refusal discipline. winit_service_signature is the production pure
+128-child refusal discipline. winit_service_signature_refusal is the production pure
 geometry/style seam: normalized 32-bit style must be exactly0x90000000 and extended
 style exactly0x080800a0. There is no extra-bit mask, offscreen/size tolerance or
 WS_CLIPSIBLINGS allowance. Same-class malformed services refuse even while hidden.
 The source recipe is winit0.30.13 windows/event_loop.rs:904-961; WinUser.h SDK22621
 defines the named style bits. Strict runtime mismatch remains unavailable.
+
+QA46 splits the same signature conjunction into fixed refusal categories in its
+original order: window_service_style_refused, window_service_exstyle_refused,
+window_service_outer_rect_refused, then window_service_client_rect_refused. The
+pure classifier uses the same already-read DWORD/RECT facts and returns the first
+failed component or no refusal. There are no additional native reads, raw flag/
+coordinate values or output fields. The controller retains the legacy combined
+window_service_signature_refused code for older stages. This diagnosis does not
+relax any exact predicate or identify the failed component in the prior QA46 run.
 
 WindowSet holds original root/service HWNDs and threads. Its const current method
 compares each fully validated census to those originals; initial service absence

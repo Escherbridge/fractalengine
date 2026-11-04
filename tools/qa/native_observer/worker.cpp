@@ -231,12 +231,15 @@ void window_current(HWND window, DWORD pid) {
     no_native_children(window, "native_child_refused");
 }
 
-bool winit_service_signature(DWORD style, DWORD extended, const RECT& outer, const RECT& client) {
+const char* winit_service_signature_refusal(DWORD style, DWORD extended, const RECT& outer, const RECT& client) {
     auto zero = [](const RECT& rect) { return rect.left == 0 && rect.top == 0 && rect.right == 0 && rect.bottom == 0; };
     constexpr DWORD expected_style = static_cast<DWORD>(WS_VISIBLE | WS_POPUP);
     constexpr DWORD expected_extended = WS_EX_NOACTIVATE | WS_EX_TRANSPARENT | WS_EX_LAYERED | WS_EX_TOOLWINDOW;
-    return style == expected_style && extended == expected_extended
-        && zero(outer) && zero(client);
+    if (style != expected_style) return "window_service_style_refused";
+    if (extended != expected_extended) return "window_service_exstyle_refused";
+    if (!zero(outer)) return "window_service_outer_rect_refused";
+    if (!zero(client)) return "window_service_client_rect_refused";
+    return nullptr;
 }
 
 void service_current(HWND window, DWORD pid, DWORD thread) {
@@ -247,8 +250,9 @@ void service_current(HWND window, DWORD pid, DWORD thread) {
         && IsWindowVisible(window), "window_service_identity_refused");
     RECT outer{}, client{};
     require(GetWindowRect(window, &outer) && GetClientRect(window, &client), "window_service_geometry_refused");
-    require(winit_service_signature(static_cast<DWORD>(GetWindowLongPtrW(window, GWL_STYLE)),
-        static_cast<DWORD>(GetWindowLongPtrW(window, GWL_EXSTYLE)), outer, client), "window_service_signature_refused");
+    auto refusal = winit_service_signature_refusal(static_cast<DWORD>(GetWindowLongPtrW(window, GWL_STYLE)),
+        static_cast<DWORD>(GetWindowLongPtrW(window, GWL_EXSTYLE)), outer, client);
+    if (refusal) throw Refusal{refusal};
     no_native_children(window, "window_service_children_refused");
 }
 

@@ -1,0 +1,25 @@
+{
+    "baseline":  "be37b2dc260b06b42307a9cab3a49f08202c108c",
+    "kind":  "QA46 diagnostic-only same strict service signature",
+    "files":  [
+                  {
+                      "path":  "tools/qa/native_observer/worker.cpp",
+                      "bytes":  44677,
+                      "sha256":  "1df716827ceb97df0a0803f66d8691be6f6b9ea6d98f6abc08abbc2e2c0941a6"
+                  },
+                  {
+                      "path":  "tools/qa/native_observer/controller.py",
+                      "bytes":  16226,
+                      "sha256":  "17adfce21cfc4e0a891042c8a5ec2143900d364192f63d4c4f575d738717414c"
+                  },
+                  {
+                      "path":  "tools/qa/native_observer/AGENTS.md",
+                      "bytes":  27355,
+                      "sha256":  "7b389bdece379b0b082f407ec16ba43cbea5c144f80320e9b54402766f65547c"
+                  }
+              ],
+    "newNativeReads":  0,
+    "wireShapeChanged":  false,
+    "runtimeEvidence":  false,
+    "newRegisteredTests":  0
+}
