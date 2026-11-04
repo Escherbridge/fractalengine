@@ -1,0 +1,26 @@
+{
+  "kind": "successful-production-native-stage",
+  "source_commit": "925d7cbaddcdbd9996fc32d10078326cae0aaaa3",
+  "session": 40403,
+  "exit_code": 0,
+  "stage": ".qa/stage/925d7cba-20261104150814356",
+  "duration_seconds": 12.7,
+  "rust_compiler_warning_or_error_diagnostics": 0,
+  "msvc_warning_or_error_diagnostics": 0,
+  "stage_manifest_published": true,
+  "application_and_native_helper_hashes_verified": true,
+  "source_dirty": true,
+  "dirty_scope": "Conductor documents and preexisting session log; build input fingerprint stable",
+  "log_encoding": "UTF-16 with BOM",
+  "files": {
+    "925d7cba-successful-native-stage.log": {
+      "bytes": 1860,
+      "sha256": "a6b065795385ae879ee2cc0bb7e552b97b2bea0082480916fb0ce6cbad583f17"
+    },
+    "925d7cba-stage-manifest.json": {
+      "bytes": 1166,
+      "sha256": "964cfb6e2800478d8eaad9f71fa1b2c071a346c53f4c77b1513cd485c00aeea9"
+    }
+  },
+  "limits": "Build only; no native interaction, final test sweep, CI or release acceptance."
+}

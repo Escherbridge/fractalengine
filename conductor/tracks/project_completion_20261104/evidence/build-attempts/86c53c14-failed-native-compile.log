@@ -1,0 +1,12 @@
+[14:46:51.129] Building fractalengine and offline QA terrain helpers...
+    Finished `dev` profile [unoptimized] target(s) in 1.96s
+    Finished `dev` profile [unoptimized] target(s) in 0.91s
+    Finished `dev` profile [unoptimized] target(s) in 0.89s
+    Finished `dev` profile [unoptimized] target(s) in 1.20s
+Native helper build failed
+At C:\Users\atooz\Programming\fractalengine-workspace\fractalengine\tools\qa\native_observer\build.ps1:32 char:67
++ ... (Test-Path -LiteralPath $exe)) { throw 'Native helper build failed' }
++                                      ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    + CategoryInfo          : OperationStopped: (Native helper build failed:String) [], RuntimeException
+    + FullyQualifiedErrorId : Native helper build failed
+ 

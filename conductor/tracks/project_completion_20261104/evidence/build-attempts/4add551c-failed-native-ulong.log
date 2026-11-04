@@ -1,0 +1,14 @@
+[14:59:59.383] Building fractalengine and offline QA terrain helpers...
+    Finished `dev` profile [unoptimized] target(s) in 1.50s
+    Finished `dev` profile [unoptimized] target(s) in 0.93s
+    Finished `dev` profile [unoptimized] target(s) in 0.88s
+    Finished `dev` profile [unoptimized] target(s) in 1.19s
+worker.cpp
+C:\Users\atooz\Programming\fractalengine-workspace\fractalengine\tools\qa\native_observer\worker_protocol.hpp(131): error C2065: 'MAXULONG': undeclared identifier
+Native helper build failed
+At C:\Users\atooz\Programming\fractalengine-workspace\fractalengine\tools\qa\native_observer\build.ps1:35 char:67
++ ... (Test-Path -LiteralPath $exe)) { throw 'Native helper build failed' }
++                                      ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    + CategoryInfo          : OperationStopped: (Native helper build failed:String) [], RuntimeException
+    + FullyQualifiedErrorId : Native helper build failed
+ 

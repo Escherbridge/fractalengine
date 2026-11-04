@@ -1,0 +1,25 @@
+{
+  "kind": "failed-production-native-stage",
+  "source_commit": "86c53c14",
+  "session": 73746,
+  "exit_code": 1,
+  "partial_stage": ".qa/stage/86c53c14-20261104144656517",
+  "stage_manifest_published": false,
+  "native_compiler_invoked": true,
+  "parent_stage_compiler_stdout_hidden": true,
+  "diagnostic_attempt_output_directory": ".qa/stage/86c53c14-20261104144658698",
+  "diagnostic_attempt_directory_was_incorrect": true,
+  "diagnostic_scope": "Actual SDK header parse failures precede object output creation; no completed binary or stage is established.",
+  "first_error": "UIAutomationCore.h49: interface declaration unavailable with WIN32_LEAN_AND_MEAN and missing explicit OLE include.",
+  "logs": {
+    "86c53c14-failed-native-compile.log": {
+      "bytes": 775,
+      "sha256": "52e0b4cb79746f84a692e0a57baf19c53dd431dfbb758c5f82c273ba5c06ba87"
+    },
+    "86c53c14-sdk-header-diagnostic.log": {
+      "bytes": 24772,
+      "sha256": "e8ab3f3e71e7786d17079dfd6e71eb2138f3324e62f6e0b509c936201555fb68"
+    }
+  },
+  "sdk_diagnostic_environment_logs": "Two exact temporary logs from one diagnostic were removed without reading their contents; the compiler recipe will unset VSCMD_DEBUG only within its subprocess scope."
+}

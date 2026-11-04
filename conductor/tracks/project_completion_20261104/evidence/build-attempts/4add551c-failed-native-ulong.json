@@ -1,0 +1,20 @@
+{
+  "kind": "failed-production-native-stage",
+  "source_commit": "4add551c",
+  "session": 99364,
+  "exit_code": 1,
+  "partial_stage": ".qa/stage/4add551c-20261104150004341",
+  "stage_manifest_published": false,
+  "rust_compile_completed": true,
+  "native_compiler_invoked": true,
+  "native_compiler_errors": [
+    {
+      "file": "tools/qa/native_observer/worker_protocol.hpp",
+      "line": 131,
+      "code": "C2065",
+      "message": "MAXULONG undeclared"
+    }
+  ],
+  "compiler_stdout_now_visible": true,
+  "log_sha256": "72ebbaac76d62cd47129920e3cfe14eb41aabecf2395166b2ffae24d6bf57735"
+}

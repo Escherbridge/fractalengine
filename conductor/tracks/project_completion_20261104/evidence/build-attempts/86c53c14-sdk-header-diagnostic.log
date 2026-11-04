@@ -1,0 +1,160 @@
+worker.cpp
+C:\Program Files (x86)\Windows Kits\10\\include\10.0.22621.0\\um\UIAutomationCore.h(49): error C4430: missing type specifier - int assumed. Note: C++ does not support default-int
+C:\Program Files (x86)\Windows Kits\10\\include\10.0.22621.0\\um\UIAutomationCore.h(49): error C2146: syntax error: missing ';' before identifier 'IRawElementProviderSimple'
+C:\Program Files (x86)\Windows Kits\10\\include\10.0.22621.0\\um\UIAutomationCore.h(49): error C4430: missing type specifier - int assumed. Note: C++ does not support default-int
+C:\Program Files (x86)\Windows Kits\10\\include\10.0.22621.0\\um\UIAutomationCore.h(56): error C2146: syntax error: missing ';' before identifier 'IAccessibleEx'
+C:\Program Files (x86)\Windows Kits\10\\include\10.0.22621.0\\um\UIAutomationCore.h(63): error C2146: syntax error: missing ';' before identifier 'IRawElementProviderSimple2'
+C:\Program Files (x86)\Windows Kits\10\\include\10.0.22621.0\\um\UIAutomationCore.h(70): error C2146: syntax error: missing ';' before identifier 'IRawElementProviderSimple3'
+C:\Program Files (x86)\Windows Kits\10\\include\10.0.22621.0\\um\UIAutomationCore.h(77): error C2146: syntax error: missing ';' before identifier 'IRawElementProviderFragmentRoot'
+C:\Program Files (x86)\Windows Kits\10\\include\10.0.22621.0\\um\UIAutomationCore.h(84): error C2146: syntax error: missing ';' before identifier 'IRawElementProviderFragment'
+C:\Program Files (x86)\Windows Kits\10\\include\10.0.22621.0\\um\UIAutomationCore.h(91): error C2146: syntax error: missing ';' before identifier 'IRawElementProviderAdviseEvents'
+C:\Program Files (x86)\Windows Kits\10\\include\10.0.22621.0\\um\UIAutomationCore.h(98): error C2146: syntax error: missing ';' before identifier 'IRawElementProviderHwndOverride'
+C:\Program Files (x86)\Windows Kits\10\\include\10.0.22621.0\\um\UIAutomationCore.h(105): error C2146: syntax error: missing ';' before identifier 'IProxyProviderWinEventSink'
+C:\Program Files (x86)\Windows Kits\10\\include\10.0.22621.0\\um\UIAutomationCore.h(112): error C2146: syntax error: missing ';' before identifier 'IProxyProviderWinEventHandler'
+C:\Program Files (x86)\Windows Kits\10\\include\10.0.22621.0\\um\UIAutomationCore.h(119): error C2146: syntax error: missing ';' before identifier 'IRawElementProviderWindowlessSite'
+C:\Program Files (x86)\Windows Kits\10\\include\10.0.22621.0\\um\UIAutomationCore.h(126): error C2146: syntax error: missing ';' before identifier 'IAccessibleHostingElementProviders'
+C:\Program Files (x86)\Windows Kits\10\\include\10.0.22621.0\\um\UIAutomationCore.h(133): error C2146: syntax error: missing ';' before identifier 'IRawElementProviderHostingAccessibles'
+C:\Program Files (x86)\Windows Kits\10\\include\10.0.22621.0\\um\UIAutomationCore.h(140): error C2146: syntax error: missing ';' before identifier 'IDockProvider'
+C:\Program Files (x86)\Windows Kits\10\\include\10.0.22621.0\\um\UIAutomationCore.h(147): error C2146: syntax error: missing ';' before identifier 'IExpandCollapseProvider'
+C:\Program Files (x86)\Windows Kits\10\\include\10.0.22621.0\\um\UIAutomationCore.h(154): error C2146: syntax error: missing ';' before identifier 'IGridProvider'
+C:\Program Files (x86)\Windows Kits\10\\include\10.0.22621.0\\um\UIAutomationCore.h(161): error C2146: syntax error: missing ';' before identifier 'IGridItemProvider'
+C:\Program Files (x86)\Windows Kits\10\\include\10.0.22621.0\\um\UIAutomationCore.h(168): error C2146: syntax error: missing ';' before identifier 'IInvokeProvider'
+C:\Program Files (x86)\Windows Kits\10\\include\10.0.22621.0\\um\UIAutomationCore.h(175): error C2146: syntax error: missing ';' before identifier 'IMultipleViewProvider'
+C:\Program Files (x86)\Windows Kits\10\\include\10.0.22621.0\\um\UIAutomationCore.h(182): error C2146: syntax error: missing ';' before identifier 'IRangeValueProvider'
+C:\Program Files (x86)\Windows Kits\10\\include\10.0.22621.0\\um\UIAutomationCore.h(189): error C2146: syntax error: missing ';' before identifier 'IScrollItemProvider'
+C:\Program Files (x86)\Windows Kits\10\\include\10.0.22621.0\\um\UIAutomationCore.h(196): error C2146: syntax error: missing ';' before identifier 'ISelectionProvider'
+C:\Program Files (x86)\Windows Kits\10\\include\10.0.22621.0\\um\UIAutomationCore.h(203): error C2146: syntax error: missing ';' before identifier 'ISelectionProvider2'
+C:\Program Files (x86)\Windows Kits\10\\include\10.0.22621.0\\um\UIAutomationCore.h(210): error C2146: syntax error: missing ';' before identifier 'IScrollProvider'
+C:\Program Files (x86)\Windows Kits\10\\include\10.0.22621.0\\um\UIAutomationCore.h(217): error C2146: syntax error: missing ';' before identifier 'ISelectionItemProvider'
+C:\Program Files (x86)\Windows Kits\10\\include\10.0.22621.0\\um\UIAutomationCore.h(224): error C2146: syntax error: missing ';' before identifier 'ISynchronizedInputProvider'
+C:\Program Files (x86)\Windows Kits\10\\include\10.0.22621.0\\um\UIAutomationCore.h(231): error C2146: syntax error: missing ';' before identifier 'ITableProvider'
+C:\Program Files (x86)\Windows Kits\10\\include\10.0.22621.0\\um\UIAutomationCore.h(238): error C2146: syntax error: missing ';' before identifier 'ITableItemProvider'
+C:\Program Files (x86)\Windows Kits\10\\include\10.0.22621.0\\um\UIAutomationCore.h(245): error C2146: syntax error: missing ';' before identifier 'IToggleProvider'
+C:\Program Files (x86)\Windows Kits\10\\include\10.0.22621.0\\um\UIAutomationCore.h(252): error C2146: syntax error: missing ';' before identifier 'ITransformProvider'
+C:\Program Files (x86)\Windows Kits\10\\include\10.0.22621.0\\um\UIAutomationCore.h(259): error C2146: syntax error: missing ';' before identifier 'IValueProvider'
+C:\Program Files (x86)\Windows Kits\10\\include\10.0.22621.0\\um\UIAutomationCore.h(266): error C2146: syntax error: missing ';' before identifier 'IWindowProvider'
+C:\Program Files (x86)\Windows Kits\10\\include\10.0.22621.0\\um\UIAutomationCore.h(273): error C2146: syntax error: missing ';' before identifier 'ILegacyIAccessibleProvider'
+C:\Program Files (x86)\Windows Kits\10\\include\10.0.22621.0\\um\UIAutomationCore.h(280): error C2146: syntax error: missing ';' before identifier 'IItemContainerProvider'
+C:\Program Files (x86)\Windows Kits\10\\include\10.0.22621.0\\um\UIAutomationCore.h(287): error C2146: syntax error: missing ';' before identifier 'IVirtualizedItemProvider'
+C:\Program Files (x86)\Windows Kits\10\\include\10.0.22621.0\\um\UIAutomationCore.h(294): error C2146: syntax error: missing ';' before identifier 'IObjectModelProvider'
+C:\Program Files (x86)\Windows Kits\10\\include\10.0.22621.0\\um\UIAutomationCore.h(301): error C2146: syntax error: missing ';' before identifier 'IAnnotationProvider'
+C:\Program Files (x86)\Windows Kits\10\\include\10.0.22621.0\\um\UIAutomationCore.h(308): error C2146: syntax error: missing ';' before identifier 'IStylesProvider'
+C:\Program Files (x86)\Windows Kits\10\\include\10.0.22621.0\\um\UIAutomationCore.h(315): error C2146: syntax error: missing ';' before identifier 'ISpreadsheetProvider'
+C:\Program Files (x86)\Windows Kits\10\\include\10.0.22621.0\\um\UIAutomationCore.h(322): error C2146: syntax error: missing ';' before identifier 'ISpreadsheetItemProvider'
+C:\Program Files (x86)\Windows Kits\10\\include\10.0.22621.0\\um\UIAutomationCore.h(329): error C2146: syntax error: missing ';' before identifier 'ITransformProvider2'
+C:\Program Files (x86)\Windows Kits\10\\include\10.0.22621.0\\um\UIAutomationCore.h(336): error C2146: syntax error: missing ';' before identifier 'IDragProvider'
+C:\Program Files (x86)\Windows Kits\10\\include\10.0.22621.0\\um\UIAutomationCore.h(343): error C2146: syntax error: missing ';' before identifier 'IDropTargetProvider'
+C:\Program Files (x86)\Windows Kits\10\\include\10.0.22621.0\\um\UIAutomationCore.h(350): error C2146: syntax error: missing ';' before identifier 'ITextRangeProvider'
+C:\Program Files (x86)\Windows Kits\10\\include\10.0.22621.0\\um\UIAutomationCore.h(357): error C2146: syntax error: missing ';' before identifier 'ITextProvider'
+C:\Program Files (x86)\Windows Kits\10\\include\10.0.22621.0\\um\UIAutomationCore.h(364): error C2146: syntax error: missing ';' before identifier 'ITextProvider2'
+C:\Program Files (x86)\Windows Kits\10\\include\10.0.22621.0\\um\UIAutomationCore.h(371): error C2146: syntax error: missing ';' before identifier 'ITextEditProvider'
+C:\Program Files (x86)\Windows Kits\10\\include\10.0.22621.0\\um\UIAutomationCore.h(378): error C2146: syntax error: missing ';' before identifier 'ITextRangeProvider2'
+C:\Program Files (x86)\Windows Kits\10\\include\10.0.22621.0\\um\UIAutomationCore.h(385): error C2146: syntax error: missing ';' before identifier 'ITextChildProvider'
+C:\Program Files (x86)\Windows Kits\10\\include\10.0.22621.0\\um\UIAutomationCore.h(392): error C2146: syntax error: missing ';' before identifier 'ICustomNavigationProvider'
+C:\Program Files (x86)\Windows Kits\10\\include\10.0.22621.0\\um\UIAutomationCore.h(399): error C2146: syntax error: missing ';' before identifier 'IUIAutomationPatternInstance'
+C:\Program Files (x86)\Windows Kits\10\\include\10.0.22621.0\\um\UIAutomationCore.h(406): error C2146: syntax error: missing ';' before identifier 'IUIAutomationPatternHandler'
+C:\Program Files (x86)\Windows Kits\10\\include\10.0.22621.0\\um\UIAutomationCore.h(413): error C2146: syntax error: missing ';' before identifier 'IUIAutomationRegistrar'
+C:\Program Files (x86)\Windows Kits\10\\include\10.0.22621.0\\um\UIAutomationCore.h(1048): error C2371: 'IAccessibleEx': redefinition; different basic types
+C:\Program Files (x86)\Windows Kits\10\\include\10.0.22621.0\\um\UIAutomationCore.h(56): note: see declaration of 'IAccessibleEx'
+C:\Program Files (x86)\Windows Kits\10\\include\10.0.22621.0\\um\UIAutomationCore.h(1171): error C2371: 'IRawElementProviderSimple2': redefinition; different basic types
+C:\Program Files (x86)\Windows Kits\10\\include\10.0.22621.0\\um\UIAutomationCore.h(63): note: see declaration of 'IRawElementProviderSimple2'
+C:\Program Files (x86)\Windows Kits\10\\include\10.0.22621.0\\um\UIAutomationCore.h(1288): error C2371: 'IRawElementProviderSimple3': redefinition; different basic types
+C:\Program Files (x86)\Windows Kits\10\\include\10.0.22621.0\\um\UIAutomationCore.h(70): note: see declaration of 'IRawElementProviderSimple3'
+C:\Program Files (x86)\Windows Kits\10\\include\10.0.22621.0\\um\UIAutomationCore.h(1419): error C2371: 'IRawElementProviderFragmentRoot': redefinition; different basic types
+C:\Program Files (x86)\Windows Kits\10\\include\10.0.22621.0\\um\UIAutomationCore.h(77): note: see declaration of 'IRawElementProviderFragmentRoot'
+C:\Program Files (x86)\Windows Kits\10\\include\10.0.22621.0\\um\UIAutomationCore.h(1518): error C2371: 'IRawElementProviderFragment': redefinition; different basic types
+C:\Program Files (x86)\Windows Kits\10\\include\10.0.22621.0\\um\UIAutomationCore.h(84): note: see declaration of 'IRawElementProviderFragment'
+C:\Program Files (x86)\Windows Kits\10\\include\10.0.22621.0\\um\UIAutomationCore.h(1657): error C2371: 'IRawElementProviderAdviseEvents': redefinition; different basic types
+C:\Program Files (x86)\Windows Kits\10\\include\10.0.22621.0\\um\UIAutomationCore.h(91): note: see declaration of 'IRawElementProviderAdviseEvents'
+C:\Program Files (x86)\Windows Kits\10\\include\10.0.22621.0\\um\UIAutomationCore.h(1756): error C2371: 'IRawElementProviderHwndOverride': redefinition; different basic types
+C:\Program Files (x86)\Windows Kits\10\\include\10.0.22621.0\\um\UIAutomationCore.h(98): note: see declaration of 'IRawElementProviderHwndOverride'
+C:\Program Files (x86)\Windows Kits\10\\include\10.0.22621.0\\um\UIAutomationCore.h(1842): error C2371: 'IProxyProviderWinEventSink': redefinition; different basic types
+C:\Program Files (x86)\Windows Kits\10\\include\10.0.22621.0\\um\UIAutomationCore.h(105): note: see declaration of 'IProxyProviderWinEventSink'
+C:\Program Files (x86)\Windows Kits\10\\include\10.0.22621.0\\um\UIAutomationCore.h(1958): error C2371: 'IProxyProviderWinEventHandler': redefinition; different basic types
+C:\Program Files (x86)\Windows Kits\10\\include\10.0.22621.0\\um\UIAutomationCore.h(112): note: see declaration of 'IProxyProviderWinEventHandler'
+C:\Program Files (x86)\Windows Kits\10\\include\10.0.22621.0\\um\UIAutomationCore.h(2050): error C2371: 'IRawElementProviderWindowlessSite': redefinition; different basic types
+C:\Program Files (x86)\Windows Kits\10\\include\10.0.22621.0\\um\UIAutomationCore.h(119): note: see declaration of 'IRawElementProviderWindowlessSite'
+C:\Program Files (x86)\Windows Kits\10\\include\10.0.22621.0\\um\UIAutomationCore.h(2147): error C2371: 'IAccessibleHostingElementProviders': redefinition; different basic types
+C:\Program Files (x86)\Windows Kits\10\\include\10.0.22621.0\\um\UIAutomationCore.h(126): note: see declaration of 'IAccessibleHostingElementProviders'
+C:\Program Files (x86)\Windows Kits\10\\include\10.0.22621.0\\um\UIAutomationCore.h(2244): error C2371: 'IRawElementProviderHostingAccessibles': redefinition; different basic types
+C:\Program Files (x86)\Windows Kits\10\\include\10.0.22621.0\\um\UIAutomationCore.h(133): note: see declaration of 'IRawElementProviderHostingAccessibles'
+C:\Program Files (x86)\Windows Kits\10\\include\10.0.22621.0\\um\UIAutomationCore.h(2328): error C2371: 'IDockProvider': redefinition; different basic types
+C:\Program Files (x86)\Windows Kits\10\\include\10.0.22621.0\\um\UIAutomationCore.h(140): note: see declaration of 'IDockProvider'
+C:\Program Files (x86)\Windows Kits\10\\include\10.0.22621.0\\um\UIAutomationCore.h(2423): error C2371: 'IExpandCollapseProvider': redefinition; different basic types
+C:\Program Files (x86)\Windows Kits\10\\include\10.0.22621.0\\um\UIAutomationCore.h(147): note: see declaration of 'IExpandCollapseProvider'
+C:\Program Files (x86)\Windows Kits\10\\include\10.0.22621.0\\um\UIAutomationCore.h(2525): error C2371: 'IGridProvider': redefinition; different basic types
+C:\Program Files (x86)\Windows Kits\10\\include\10.0.22621.0\\um\UIAutomationCore.h(154): note: see declaration of 'IGridProvider'
+C:\Program Files (x86)\Windows Kits\10\\include\10.0.22621.0\\um\UIAutomationCore.h(2635): error C2371: 'IGridItemProvider': redefinition; different basic types
+C:\Program Files (x86)\Windows Kits\10\\include\10.0.22621.0\\um\UIAutomationCore.h(161): note: see declaration of 'IGridItemProvider'
+C:\Program Files (x86)\Windows Kits\10\\include\10.0.22621.0\\um\UIAutomationCore.h(2763): error C2371: 'IInvokeProvider': redefinition; different basic types
+C:\Program Files (x86)\Windows Kits\10\\include\10.0.22621.0\\um\UIAutomationCore.h(168): note: see declaration of 'IInvokeProvider'
+C:\Program Files (x86)\Windows Kits\10\\include\10.0.22621.0\\um\UIAutomationCore.h(2845): error C2371: 'IMultipleViewProvider': redefinition; different basic types
+C:\Program Files (x86)\Windows Kits\10\\include\10.0.22621.0\\um\UIAutomationCore.h(175): note: see declaration of 'IMultipleViewProvider'
+C:\Program Files (x86)\Windows Kits\10\\include\10.0.22621.0\\um\UIAutomationCore.h(2964): error C2371: 'IRangeValueProvider': redefinition; different basic types
+C:\Program Files (x86)\Windows Kits\10\\include\10.0.22621.0\\um\UIAutomationCore.h(182): note: see declaration of 'IRangeValueProvider'
+C:\Program Files (x86)\Windows Kits\10\\include\10.0.22621.0\\um\UIAutomationCore.h(3114): error C2371: 'IScrollItemProvider': redefinition; different basic types
+C:\Program Files (x86)\Windows Kits\10\\include\10.0.22621.0\\um\UIAutomationCore.h(189): note: see declaration of 'IScrollItemProvider'
+C:\Program Files (x86)\Windows Kits\10\\include\10.0.22621.0\\um\UIAutomationCore.h(3196): error C2371: 'ISelectionProvider': redefinition; different basic types
+C:\Program Files (x86)\Windows Kits\10\\include\10.0.22621.0\\um\UIAutomationCore.h(196): note: see declaration of 'ISelectionProvider'
+C:\Program Files (x86)\Windows Kits\10\\include\10.0.22621.0\\um\UIAutomationCore.h(3302): error C2371: 'ISelectionProvider2': redefinition; different basic types
+C:\Program Files (x86)\Windows Kits\10\\include\10.0.22621.0\\um\UIAutomationCore.h(203): note: see declaration of 'ISelectionProvider2'
+C:\Program Files (x86)\Windows Kits\10\\include\10.0.22621.0\\um\UIAutomationCore.h(3444): error C2371: 'IScrollProvider': redefinition; different basic types
+C:\Program Files (x86)\Windows Kits\10\\include\10.0.22621.0\\um\UIAutomationCore.h(210): note: see declaration of 'IScrollProvider'
+C:\Program Files (x86)\Windows Kits\10\\include\10.0.22621.0\\um\UIAutomationCore.h(3609): error C2371: 'ISelectionItemProvider': redefinition; different basic types
+C:\Program Files (x86)\Windows Kits\10\\include\10.0.22621.0\\um\UIAutomationCore.h(217): note: see declaration of 'ISelectionItemProvider'
+C:\Program Files (x86)\Windows Kits\10\\include\10.0.22621.0\\um\UIAutomationCore.h(3731): error C2371: 'ISynchronizedInputProvider': redefinition; different basic types
+C:\Program Files (x86)\Windows Kits\10\\include\10.0.22621.0\\um\UIAutomationCore.h(224): note: see declaration of 'ISynchronizedInputProvider'
+C:\Program Files (x86)\Windows Kits\10\\include\10.0.22621.0\\um\UIAutomationCore.h(3824): error C2371: 'ITableProvider': redefinition; different basic types
+C:\Program Files (x86)\Windows Kits\10\\include\10.0.22621.0\\um\UIAutomationCore.h(231): note: see declaration of 'ITableProvider'
+C:\Program Files (x86)\Windows Kits\10\\include\10.0.22621.0\\um\UIAutomationCore.h(3930): error C2371: 'ITableItemProvider': redefinition; different basic types
+C:\Program Files (x86)\Windows Kits\10\\include\10.0.22621.0\\um\UIAutomationCore.h(238): note: see declaration of 'ITableItemProvider'
+C:\Program Files (x86)\Windows Kits\10\\include\10.0.22621.0\\um\UIAutomationCore.h(4025): error C2371: 'IToggleProvider': redefinition; different basic types
+C:\Program Files (x86)\Windows Kits\10\\include\10.0.22621.0\\um\UIAutomationCore.h(245): note: see declaration of 'IToggleProvider'
+C:\Program Files (x86)\Windows Kits\10\\include\10.0.22621.0\\um\UIAutomationCore.h(4118): error C2371: 'ITransformProvider': redefinition; different basic types
+C:\Program Files (x86)\Windows Kits\10\\include\10.0.22621.0\\um\UIAutomationCore.h(252): note: see declaration of 'ITransformProvider'
+C:\Program Files (x86)\Windows Kits\10\\include\10.0.22621.0\\um\UIAutomationCore.h(4261): error C2371: 'IValueProvider': redefinition; different basic types
+C:\Program Files (x86)\Windows Kits\10\\include\10.0.22621.0\\um\UIAutomationCore.h(259): note: see declaration of 'IValueProvider'
+C:\Program Files (x86)\Windows Kits\10\\include\10.0.22621.0\\um\UIAutomationCore.h(4367): error C2371: 'IWindowProvider': redefinition; different basic types
+C:\Program Files (x86)\Windows Kits\10\\include\10.0.22621.0\\um\UIAutomationCore.h(266): note: see declaration of 'IWindowProvider'
+C:\Program Files (x86)\Windows Kits\10\\include\10.0.22621.0\\um\UIAutomationCore.h(4539): error C2371: 'ILegacyIAccessibleProvider': redefinition; different basic types
+C:\Program Files (x86)\Windows Kits\10\\include\10.0.22621.0\\um\UIAutomationCore.h(273): note: see declaration of 'ILegacyIAccessibleProvider'
+C:\Program Files (x86)\Windows Kits\10\\include\10.0.22621.0\\um\UIAutomationCore.h(4764): error C2371: 'IItemContainerProvider': redefinition; different basic types
+C:\Program Files (x86)\Windows Kits\10\\include\10.0.22621.0\\um\UIAutomationCore.h(280): note: see declaration of 'IItemContainerProvider'
+C:\Program Files (x86)\Windows Kits\10\\include\10.0.22621.0\\um\UIAutomationCore.h(4854): error C2371: 'IVirtualizedItemProvider': redefinition; different basic types
+C:\Program Files (x86)\Windows Kits\10\\include\10.0.22621.0\\um\UIAutomationCore.h(287): note: see declaration of 'IVirtualizedItemProvider'
+C:\Program Files (x86)\Windows Kits\10\\include\10.0.22621.0\\um\UIAutomationCore.h(4936): error C2371: 'IObjectModelProvider': redefinition; different basic types
+C:\Program Files (x86)\Windows Kits\10\\include\10.0.22621.0\\um\UIAutomationCore.h(294): note: see declaration of 'IObjectModelProvider'
+C:\Program Files (x86)\Windows Kits\10\\include\10.0.22621.0\\um\UIAutomationCore.h(5020): error C2371: 'IAnnotationProvider': redefinition; different basic types
+C:\Program Files (x86)\Windows Kits\10\\include\10.0.22621.0\\um\UIAutomationCore.h(301): note: see declaration of 'IAnnotationProvider'
+C:\Program Files (x86)\Windows Kits\10\\include\10.0.22621.0\\um\UIAutomationCore.h(5148): error C2371: 'IStylesProvider': redefinition; different basic types
+C:\Program Files (x86)\Windows Kits\10\\include\10.0.22621.0\\um\UIAutomationCore.h(308): note: see declaration of 'IStylesProvider'
+C:\Program Files (x86)\Windows Kits\10\\include\10.0.22621.0\\um\UIAutomationCore.h(5298): error C2371: 'ISpreadsheetProvider': redefinition; different basic types
+C:\Program Files (x86)\Windows Kits\10\\include\10.0.22621.0\\um\UIAutomationCore.h(315): note: see declaration of 'ISpreadsheetProvider'
+C:\Program Files (x86)\Windows Kits\10\\include\10.0.22621.0\\um\UIAutomationCore.h(5384): error C2371: 'ISpreadsheetItemProvider': redefinition; different basic types
+C:\Program Files (x86)\Windows Kits\10\\include\10.0.22621.0\\um\UIAutomationCore.h(322): note: see declaration of 'ISpreadsheetItemProvider'
+C:\Program Files (x86)\Windows Kits\10\\include\10.0.22621.0\\um\UIAutomationCore.h(5490): error C2371: 'ITransformProvider2': redefinition; different basic types
+C:\Program Files (x86)\Windows Kits\10\\include\10.0.22621.0\\um\UIAutomationCore.h(329): note: see declaration of 'ITransformProvider2'
+C:\Program Files (x86)\Windows Kits\10\\include\10.0.22621.0\\um\UIAutomationCore.h(5680): error C2371: 'IDragProvider': redefinition; different basic types
+C:\Program Files (x86)\Windows Kits\10\\include\10.0.22621.0\\um\UIAutomationCore.h(336): note: see declaration of 'IDragProvider'
+C:\Program Files (x86)\Windows Kits\10\\include\10.0.22621.0\\um\UIAutomationCore.h(5797): error C2371: 'IDropTargetProvider': redefinition; different basic types
+C:\Program Files (x86)\Windows Kits\10\\include\10.0.22621.0\\um\UIAutomationCore.h(343): note: see declaration of 'IDropTargetProvider'
+C:\Program Files (x86)\Windows Kits\10\\include\10.0.22621.0\\um\UIAutomationCore.h(5892): error C2371: 'ITextRangeProvider': redefinition; different basic types
+C:\Program Files (x86)\Windows Kits\10\\include\10.0.22621.0\\um\UIAutomationCore.h(350): note: see declaration of 'ITextRangeProvider'
+C:\Program Files (x86)\Windows Kits\10\\include\10.0.22621.0\\um\UIAutomationCore.h(6195): error C2371: 'ITextProvider': redefinition; different basic types
+C:\Program Files (x86)\Windows Kits\10\\include\10.0.22621.0\\um\UIAutomationCore.h(357): note: see declaration of 'ITextProvider'
+C:\Program Files (x86)\Windows Kits\10\\include\10.0.22621.0\\um\UIAutomationCore.h(6338): error C2371: 'ITextProvider2': redefinition; different basic types
+C:\Program Files (x86)\Windows Kits\10\\include\10.0.22621.0\\um\UIAutomationCore.h(364): note: see declaration of 'ITextProvider2'
+C:\Program Files (x86)\Windows Kits\10\\include\10.0.22621.0\\um\UIAutomationCore.h(6488): error C2371: 'ITextEditProvider': redefinition; different basic types
+C:\Program Files (x86)\Windows Kits\10\\include\10.0.22621.0\\um\UIAutomationCore.h(371): note: see declaration of 'ITextEditProvider'
+C:\Program Files (x86)\Windows Kits\10\\include\10.0.22621.0\\um\UIAutomationCore.h(6634): error C2371: 'ITextRangeProvider2': redefinition; different basic types
+C:\Program Files (x86)\Windows Kits\10\\include\10.0.22621.0\\um\UIAutomationCore.h(378): note: see declaration of 'ITextRangeProvider2'
+C:\Program Files (x86)\Windows Kits\10\\include\10.0.22621.0\\um\UIAutomationCore.h(6877): error C2371: 'ITextChildProvider': redefinition; different basic types
+C:\Program Files (x86)\Windows Kits\10\\include\10.0.22621.0\\um\UIAutomationCore.h(385): note: see declaration of 'ITextChildProvider'
+C:\Program Files (x86)\Windows Kits\10\\include\10.0.22621.0\\um\UIAutomationCore.h(6877): fatal error C1003: error count exceeds 100; stopping compilation
+Native helper build failed
+At C:\Users\atooz\Programming\fractalengine-workspace\fractalengine\tools\qa\native_observer\build.ps1:32 char:67
++ ... (Test-Path -LiteralPath $exe)) { throw 'Native helper build failed' }
++                                      ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    + CategoryInfo          : OperationStopped: (Native helper build failed:String) [], RuntimeException
+    + FullyQualifiedErrorId : Native helper build failed
+ 

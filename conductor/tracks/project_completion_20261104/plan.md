@@ -22,7 +22,7 @@ reviewed slice. Historical evidence stays linked rather than rewritten.
 
 ## P1: correctness and execution blockers
 
-- [ ] Complete native NAV23 review corrections before integration: normal pipe EOF, bounded observation/start admission aligned with cleanup, and usable coordinated paired restart reseal preserving exact process/ledger lineage. Both full v1 reviews request changes; no native execution credit.
+- [~] Native NAV23 source corrections (EOF, aggregate budgets, real paired reseal/issuer checks and confirmed-stage pruning) passed both full v3 reviews and exact integration in8968d918. Toolchain corrections through925d7cba independently reviewed; combined Rust/native stage passed12.7s with zero compiler diagnostics. Actual helper/native/lifecycle acceptance remains pending.
 
 - [ ] QA-0072: preserve guarded Owner QA observation before actual native provider handoff. QA40 three no-input UI reads failed despite state and actual screenshot succeeding; explicit ordering correction d8da3a46 is source-reviewed, compiled d8da3a46; QA41 matching tree/state/screenshot and102physicalID joins recovered, independent focused review approved. Native output suppression and Owner/scope/privacy gates remain required.
 
