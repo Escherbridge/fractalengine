@@ -141,6 +141,15 @@ pub async fn require_current_credential(
     require_unexpired(claims)
 }
 
+/// Complete a terrain capture after its separate durable direct/worker read.
+pub(crate) async fn require_terrain_credential_hints(
+    state: &crate::server::ApiState, claims: &ApiClaims,
+) -> Result<(), StatusCode> {
+    let revoked = state.revoked_jtis.read().await;
+    require_revocation_hints(&revoked, &claims.jti, true)?;
+    require_unexpired(claims)
+}
+
 pub(crate) async fn validate_auth_startup(
     state: &crate::server::ApiState,
 ) -> Result<(), StatusCode> {

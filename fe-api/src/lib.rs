@@ -40,6 +40,7 @@ pub mod server;
 pub mod share;
 pub mod sim;
 pub mod terrain;
+mod terrain_credential;
 pub mod timeseries_query;
 pub mod types;
 pub mod upload;
@@ -210,6 +211,7 @@ async fn run_server(config: ApiConfig, stop: fe_runtime::service_lifecycle::Stop
         blob_store: config.blob_store,
         cors_origins,
         db_reader: config.api_db_reader,
+        terrain_capture: Default::default(),
         query_rate_limiter: tokio::sync::Mutex::new(std::collections::HashMap::new()),
         entity_store: config.entity_store,
         tileset_registry: config.tileset_registry,

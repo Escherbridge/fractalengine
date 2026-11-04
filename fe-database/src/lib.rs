@@ -1598,8 +1598,12 @@ pub fn spawn_db_thread_shared(
                         };
                         handlers::send_result(&tx,result);
                     }
-                    Ok(DbCommand::SetPetalTerrain { petal_id, terrain, auth, correlation_id }) => {
-                        let reply = handlers::petal_terrain::set_petal_terrain_reply(&db, &local_did, petal_id, terrain, auth, repl_tx.as_ref(), &blob_store, correlation_id).await;
+                    Ok(DbCommand::ReadTerrainApiCredential { request }) => {
+                        let reply = api_auth::terrain_credential_reply(&db, request).await;
+                        send_result(&tx, reply);
+                    }
+                    Ok(DbCommand::SetPetalTerrain { petal_id, terrain, grant, correlation_id }) => {
+                        let reply = handlers::petal_terrain::set_petal_terrain_reply(&db, &local_did, petal_id, terrain, grant, repl_tx.as_ref(), &blob_store, correlation_id).await;
                         send_result(&tx, reply);
                     }
                     Ok(DbCommand::GetPetalTerrain { petal_id, correlation_id }) => {

@@ -303,6 +303,12 @@ fn handle_command(cmd: ApiCommand, model: &Arc<Mutex<Model>>, store: Option<&Blo
 
 fn db_command(m: &mut Model, cmd: DbCommand, store: Option<&BlobStoreHandle>) -> DbResult {
     match cmd {
+        DbCommand::ReadTerrainApiCredential { request } => {
+            // This legacy model exercises transport only; real-store terrain journeys own durable guards.
+            let snapshot = request.active().then(||
+                fe_runtime::terrain_grant::TerrainCredentialSnapshot::new("legacy".into(), vec![]).unwrap());
+            DbResult::TerrainApiCredentialRead(fe_runtime::terrain_grant::TerrainCredentialReply { request, snapshot })
+        }
         DbCommand::CommitNodeMutation {
             node_id,
             mutation,
@@ -774,6 +780,7 @@ fn emu(with_store: bool) -> Emu {
         blob_store: with_store.then(|| handle.clone()),
         cors_origins: vec![],
         db_reader: None,
+        terrain_capture: Default::default(),
         query_rate_limiter: tokio::sync::Mutex::new(HashMap::new()),
         entity_store: None,
         tileset_registry: None,

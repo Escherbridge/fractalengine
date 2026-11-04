@@ -151,7 +151,7 @@ fn persist(
     match db_sender.0.send(DbCommand::SetPetalTerrain {
         petal_id: petal_id.clone(),
         terrain: Some(terrain.clone()),
-        auth: fe_runtime::messages::CallerAuth::Local,
+        grant: fe_runtime::terrain_grant::TerrainWriteGrant::Local,
         correlation_id: None,
     }) {
         Ok(()) => {
@@ -643,7 +643,7 @@ fn persist_doc(
     match db_sender.0.send(DbCommand::SetPetalTerrain {
         petal_id: petal_id.clone(),
         terrain: Some(terrain.clone()),
-        auth: fe_runtime::messages::CallerAuth::Local,
+        grant: fe_runtime::terrain_grant::TerrainWriteGrant::Local,
         correlation_id: None,
     }) {
         Ok(()) => {

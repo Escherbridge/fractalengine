@@ -291,6 +291,7 @@ pub struct RevocationBroadcastSender(pub tokio::sync::broadcast::Sender<String>)
 /// never lose its error to a family mismatch.
 #[derive(Resource, Default)]
 pub struct PendingApiRequests {
+    terrain_credentials: HashMap<String, PendingTerrainCredential>,
     by_kind: HashMap<ReplyKind, std::collections::VecDeque<PendingEntry>>,
     /// Requests whose command has no awaited reply family (legacy behaviour:
     /// matched only by other uncorrelated results, plus wildcard errors).
@@ -305,6 +306,12 @@ pub struct PendingApiRequests {
 struct PendingEntry {
     id: u64,
     correlation_id: Option<String>,
+    reply_tx: tokio::sync::oneshot::Sender<DbResult>,
+}
+
+struct PendingTerrainCredential {
+    id: u64,
+    request: crate::terrain_grant::TerrainCredentialRead,
     reply_tx: tokio::sync::oneshot::Sender<DbResult>,
 }
 
@@ -605,6 +612,18 @@ impl PendingApiRequests {
     ) -> u64 {
         let id = self.next_id;
         self.next_id = self.next_id.wrapping_add(1);
+        if let DbCommand::ReadTerrainApiCredential { request } = cmd {
+            self.prune_terrain_credentials();
+            if request.active() && !reply_tx.is_closed()
+                && self.terrain_credentials.len() < crate::terrain_grant::CAPTURE_LIMIT
+                && !self.terrain_credentials.contains_key(request.id())
+            {
+                self.terrain_credentials.insert(request.id().to_owned(), PendingTerrainCredential {
+                    id, request: request.clone(), reply_tx,
+                });
+            } else { request.cancel(); }
+            return id;
+        }
         let entry = PendingEntry {
             id,
             correlation_id: correlation_of_command(cmd).map(str::to_string),
@@ -721,6 +740,12 @@ impl PendingApiRequests {
     /// Remove the entry `enqueue_for` returned `id` for (its command never
     /// reached the DB thread), so it cannot consume a later reply.
     pub fn cancel(&mut self, id: u64) {
+        if let Some(key) = self.terrain_credentials.iter()
+            .find_map(|(key, entry)| (entry.id == id).then(|| key.clone()))
+        {
+            if let Some(entry) = self.terrain_credentials.remove(&key) { entry.request.cancel(); }
+            return;
+        }
         for queue in self
             .by_kind
             .values_mut()
@@ -788,6 +813,15 @@ impl PendingApiRequests {
     /// ([`Self::deliver_correlated`]). `Error` is the wildcard that reaches
     /// the oldest waiter (family-blind — a known sharp edge, AGENTS.md).
     pub fn try_deliver(&mut self, result: DbResult) -> bool {
+        self.prune_terrain_credentials();
+        if let DbResult::TerrainApiCredentialRead(reply) = result {
+            let key = reply.request.id();
+            if !self.terrain_credentials.get(key)
+                .is_some_and(|entry| entry.request.same_request(&reply.request) && reply.request.active())
+            { return false; }
+            let entry = self.terrain_credentials.remove(key).expect("owned read entry");
+            return entry.reply_tx.send(DbResult::TerrainApiCredentialRead(reply)).is_ok();
+        }
         if matches!(result, DbResult::Error(_)) {
             return self.deliver_to_oldest(result);
         }
@@ -812,6 +846,15 @@ impl PendingApiRequests {
         reply_tx: tokio::sync::oneshot::Sender<Vec<VerseHierarchyData>>,
     ) {
         self.pending_hierarchy.push(reply_tx);
+    }
+
+    /// Expiry abandons the waiter; an already queued engine read retains its lease.
+    pub fn prune_terrain_credentials(&mut self) {
+        self.terrain_credentials.retain(|_, entry| {
+            let keep = entry.request.active() && !entry.reply_tx.is_closed();
+            if !keep { entry.request.cancel(); }
+            keep
+        });
     }
 
     pub fn deliver_hierarchy(&mut self, data: Vec<VerseHierarchyData>) {
@@ -854,12 +897,20 @@ pub fn drain_api_commands(
     mut pending: ResMut<PendingApiRequests>,
 ) {
     let _span = tracing::debug_span!("drain_api_commands").entered();
+    pending.prune_terrain_credentials();
     let Some(api_rx) = api_rx else { return };
     let Ok(rx) = api_rx.0.lock() else { return };
     // Drain up to 64 commands per frame to avoid stalling the main loop.
     for _ in 0..64 {
         match rx.try_recv() {
             Ok(ApiCommand::DbRequest { cmd, reply_tx }) => {
+                if let DbCommand::ReadTerrainApiCredential { request } = &cmd {
+                    if !request.active() || reply_tx.is_closed() { request.cancel(); continue; }
+                    let entry_id = pending.enqueue_for(&cmd, reply_tx);
+                    if !pending.terrain_credentials.values().any(|entry| entry.id == entry_id) { continue; }
+                    if db_tx.0.try_send(cmd).is_err() { pending.cancel(entry_id); }
+                    continue;
+                }
                 let entry_id = pending.enqueue_for(&cmd, reply_tx);
                 if let Err(e) = db_tx.0.send(cmd) {
                     // Never answered: under pop-and-drop it would swallow the
@@ -1387,7 +1438,7 @@ mod tests {
         DbCommand::SetPetalTerrain {
             petal_id: "p".to_string(),
             terrain: Some(serde_json::json!({ "enabled": true })),
-            auth: crate::messages::CallerAuth::Local,
+            grant: crate::terrain_grant::TerrainWriteGrant::Local,
             correlation_id: correlation_id.map(str::to_string),
         }
     }
@@ -1420,6 +1471,7 @@ mod tests {
     /// the family never shifts onto the next caller.
     #[test]
     fn terrain_set_replies_route_only_by_correlation_id() {
+        assert_terrain_capture_ownership();
         // (step, reply, delivered?, owner tag seen by [B, C]); A is closed.
         type Step = (&'static str, DbResult, bool, [Option<serde_json::Value>; 2]);
         let mut pending = PendingApiRequests::default();
@@ -1560,6 +1612,58 @@ mod tests {
             petal_id: petal_id.to_string(),
             correlation_id: correlation_id.map(str::to_string),
         }
+    }
+
+    fn assert_terrain_capture_ownership() {
+        use crate::terrain_grant::*;
+        let rt = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
+        rt.block_on(async {
+            let limiter = TerrainCaptureLimiter::default();
+            let deadline = std::time::Instant::now() + CAPTURE_BUDGET;
+            let request = TerrainCredentialRead::new("capture-a".into(), "issuer".into(), "jti".into(),
+                deadline, limiter.acquire(deadline).await.unwrap()).unwrap();
+            let mut pending = PendingApiRequests::default();
+            let (tx, mut rx) = tokio::sync::oneshot::channel();
+            pending.enqueue_for(&DbCommand::ReadTerrainApiCredential { request: request.clone() }, tx);
+            assert!(!pending.try_deliver(DbResult::RequestFailed { correlation_id: request.id().into(), error: "foreign family".into() }));
+            assert!(!pending.try_deliver(query_result("foreign", Some(request.id()))));
+            let wrong = TerrainCredentialRead::new(request.id().into(), "other-issuer".into(), "other-jti".into(),
+                deadline, limiter.acquire(deadline).await.unwrap()).unwrap();
+            assert!(!pending.try_deliver(DbResult::TerrainApiCredentialRead(TerrainCredentialReply { request: wrong, snapshot: None })));
+            assert!(rx.try_recv().is_err());
+            assert!(pending.try_deliver(DbResult::TerrainApiCredentialRead(TerrainCredentialReply { request: request.clone(), snapshot: None })));
+            assert!(matches!(rx.try_recv(), Ok(DbResult::TerrainApiCredentialRead(_))));
+
+            let (tx, rx) = tokio::sync::oneshot::channel();
+            pending.enqueue_for(&DbCommand::ReadTerrainApiCredential { request: request.clone() }, tx);
+            drop(rx);
+            pending.prune_terrain_credentials();
+            assert!(pending.terrain_credentials.is_empty());
+            assert!(!request.active());
+            let mut other_engine_reads = Vec::new();
+            for _ in 1..CAPTURE_LIMIT { other_engine_reads.push(limiter.acquire(deadline).await.unwrap()); }
+            assert!(limiter.acquire(std::time::Instant::now()).await.is_err(), "abandoned engine owner still holds its eighth permit");
+            drop(request);
+            assert!(limiter.acquire(deadline).await.is_ok(), "actual read completion releases ownership");
+
+            let request = TerrainCredentialRead::new("capture-full".into(), "issuer".into(), "jti".into(),
+                deadline, limiter.acquire(deadline).await.unwrap()).unwrap();
+            let (api_tx, api_rx) = crossbeam::channel::bounded(1);
+            let (db_tx, db_rx) = crossbeam::channel::bounded(0);
+            let (reply_tx, mut reply_rx) = tokio::sync::oneshot::channel();
+            api_tx.try_send(ApiCommand::DbRequest { cmd: DbCommand::ReadTerrainApiCredential { request: request.clone() }, reply_tx }).unwrap();
+            let mut app = App::new();
+            app.add_plugins(MinimalPlugins);
+            app.insert_resource(ApiCommandReceiver(Arc::new(Mutex::new(api_rx))));
+            app.insert_resource(DbCommandSender(db_tx));
+            app.init_resource::<PendingApiRequests>();
+            app.add_systems(Update, drain_api_commands);
+            app.update();
+            assert!(!request.active(), "full DB forwarding cancels read admission without blocking");
+            assert!(reply_rx.try_recv().is_err());
+            assert!(db_rx.try_recv().is_err());
+            assert!(app.world().resource::<PendingApiRequests>().terrain_credentials.is_empty());
+        });
     }
 
     fn terrain_fetched(petal_id: &str, correlation_id: &str) -> DbResult {

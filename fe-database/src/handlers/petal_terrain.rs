@@ -1,6 +1,7 @@
 use tracing::instrument;
 
-use fe_runtime::messages::{CallerAuth, DbResult};
+use fe_runtime::messages::DbResult;
+use fe_runtime::terrain_grant::TerrainWriteGrant;
 
 use crate::handlers::visibility_groups::authorize_edit;
 use crate::op_log::commit_operation_atomic;
@@ -21,13 +22,13 @@ use crate::{replicate_row_with_petal, BlobStoreHandle, ReplicationSender};
 pub(crate) async fn set_petal_terrain_handler(
     db: &Db,
     local_did: &str,
-    auth: &CallerAuth,
+    grant: &TerrainWriteGrant,
     petal_id: &str,
     terrain: Option<&serde_json::Value>,
     repl_tx: Option<&ReplicationSender>,
     blob_store: &BlobStoreHandle,
 ) -> anyhow::Result<Option<serde_json::Value>> {
-    let prepared = prepare_terrain_write(db, local_did, auth, petal_id, terrain).await?;
+    let prepared = prepare_terrain_write(db, local_did, grant, petal_id, terrain).await?;
     let scope = prepared.scope.clone();
     let row = prepared.commit(db).await?;
     let stored = row.get("terrain").filter(|value| !value.is_null()).cloned();
@@ -55,22 +56,42 @@ struct PreparedTerrainWrite {
     petal: String,
     terrain: Option<serde_json::Value>,
     authority: super::entity::ParentMutation,
+    credential_fence: Option<(Vec<String>, Vec<(String, serde_json::Value)>)>,
 }
 
 /// Capture the actual local writer's authority and exact target ancestry.
 async fn prepare_terrain_write(
     db: &Db,
     local_did: &str,
-    auth: &CallerAuth,
+    grant: &TerrainWriteGrant,
     petal: &str,
     terrain: Option<&serde_json::Value>,
 ) -> anyhow::Result<PreparedTerrainWrite> {
     let scope = super::crud::resolve_petal_scope_handler(db, petal)
         .await?
         .ok_or_else(|| anyhow::anyhow!("SetPetalTerrain: no petal {petal}"))?;
-    authorize_edit(db, local_did, auth, scope.clone(), "SetPetalTerrain")
+    authorize_edit(db, local_did, &fe_runtime::messages::CallerAuth::Local, scope.clone(), "SetPetalTerrain")
         .await
         .map_err(anyhow::Error::msg)?;
+    let credential_fence = match grant {
+        TerrainWriteGrant::Local => None,
+        TerrainWriteGrant::Api(api) => {
+            use fe_policy::{Policy, TokenScopePolicy, AuthContext, Action, Scope};
+            let admitted = crate::parse_scope(api.admitted_scope())?;
+            anyhow::ensure!(api.petal() == petal && admitted.petal_id.as_deref() == Some(petal)
+                && crate::build_scope(&admitted.verse_id, admitted.fractal_id.as_deref(), admitted.petal_id.as_deref()) == api.admitted_scope()
+                && scope == api.admitted_scope() && api.role().is_at_least(fe_policy::RoleLevel::Editor),
+                "Terrain admitted ancestry or role changed");
+            let token = crate::parse_scope(api.token_scope())?;
+            anyhow::ensure!(crate::build_scope(&token.verse_id, token.fractal_id.as_deref(), token.petal_id.as_deref()) == api.token_scope(), "Terrain token scope invalid");
+            let context = AuthContext::ApiToken { subject: api.issuer().into(),
+                scopes: vec![api.token_scope().into()], role: api.role() };
+            anyhow::ensure!(TokenScopePolicy.evaluate(&context, &Action::Write, &Scope::new(&scope)).is_allow(),
+                "Terrain token scope refused");
+            let snapshot = crate::api_auth::terrain_snapshot(db, api.issuer(), api.jti()).await?;
+            Some(crate::api_auth::terrain_credential_fence(api, &snapshot)?)
+        }
+    };
     let authority = super::entity::prepare_scope_permission(
         db,
         &scope,
@@ -89,6 +110,7 @@ async fn prepare_terrain_write(
         petal: petal.into(),
         terrain: terrain.cloned(),
         authority,
+        credential_fence,
     })
 }
 
@@ -104,6 +126,10 @@ impl PreparedTerrainWrite {
             sig: "00".repeat(64),
         };
         let (mut statements, mut bindings) = self.authority.into_parts();
+        if let Some((guards, values)) = self.credential_fence {
+            statements.extend(guards);
+            bindings.extend(values);
+        }
         bindings.push(("pid".into(), serde_json::json!(self.petal)));
         statements.push(match self.terrain {
             Some(config) => {
@@ -135,7 +161,7 @@ pub async fn set_petal_terrain_reply(
     local_did: &str,
     petal_id: String,
     terrain: Option<serde_json::Value>,
-    auth: CallerAuth,
+    grant: TerrainWriteGrant,
     repl_tx: Option<&ReplicationSender>,
     blob_store: &BlobStoreHandle,
     correlation_id: Option<String>,
@@ -143,7 +169,7 @@ pub async fn set_petal_terrain_reply(
     match set_petal_terrain_handler(
         db,
         local_did,
-        &auth,
+        &grant,
         &petal_id,
         terrain.as_ref(),
         repl_tx,
@@ -328,7 +354,7 @@ mod tests {
         let stored = set_petal_terrain_handler(
             &author_db,
             "owner-did",
-            &CallerAuth::Local,
+            &TerrainWriteGrant::Local,
             "p1",
             Some(&terrain),
             Some(&repl_tx),
@@ -436,7 +462,7 @@ mod tests {
             let err = set_petal_terrain_handler(
                 &db,
                 "owner-did",
-                &CallerAuth::Local,
+                &TerrainWriteGrant::Local,
                 "p1",
                 Some(&bad),
                 Some(&repl_tx),
@@ -454,7 +480,7 @@ mod tests {
         let stored = set_petal_terrain_handler(
             &db,
             "owner-did",
-            &CallerAuth::Local,
+            &TerrainWriteGrant::Local,
             "p1",
             Some(&good),
             Some(&repl_tx),
@@ -481,6 +507,7 @@ mod tests {
     /// so a local edit can never diverge from what every peer accepts.
     #[tokio::test]
     async fn a_viewers_local_set_petal_terrain_is_refused_and_nothing_is_written() {
+        assert_api_terrain_guard_journey().await;
         use fe_runtime::blob_store::mock::MockBlobStore;
 
         let db = db_with_full_hierarchy("p1").await;
@@ -490,11 +517,8 @@ mod tests {
         let before = op_log_count(&db).await;
 
         // No role row: the local node resolves to the verse default, `viewer`.
-        let viewer_token = CallerAuth::Identified {
-            did: "api".to_string(),
-            role: "viewer".to_string(),
-        };
-        for auth in [CallerAuth::Local, viewer_token] {
+        {
+            let auth = TerrainWriteGrant::Local;
             let err = set_petal_terrain_handler(
                 &db,
                 "viewer-did",
@@ -517,7 +541,7 @@ mod tests {
 
         db.query("CREATE role CONTENT {scope:'VERSE#v1-FRACTAL#f1-PETAL#p1',peer_did:'editor-did',role:'editor'}").await.unwrap().check().unwrap();
         let prepared =
-            prepare_terrain_write(&db, "editor-did", &CallerAuth::Local, "p1", Some(&terrain))
+            prepare_terrain_write(&db, "editor-did", &TerrainWriteGrant::Local, "p1", Some(&terrain))
                 .await
                 .unwrap();
         db.query("DELETE role WHERE peer_did='editor-did'")
@@ -543,7 +567,7 @@ mod tests {
             .check()
             .unwrap();
         let prepared =
-            prepare_terrain_write(&db, "viewer-did", &CallerAuth::Local, "p1", Some(&terrain))
+            prepare_terrain_write(&db, "viewer-did", &TerrainWriteGrant::Local, "p1", Some(&terrain))
                 .await
                 .unwrap();
         db.query("UPDATE verse SET default_access='viewer' WHERE verse_id='v1'")
@@ -559,7 +583,7 @@ mod tests {
         assert_eq!(op_log_count(&db).await, before);
 
         let prepared =
-            prepare_terrain_write(&db, "owner-did", &CallerAuth::Local, "p1", Some(&terrain))
+            prepare_terrain_write(&db, "owner-did", &TerrainWriteGrant::Local, "p1", Some(&terrain))
                 .await
                 .unwrap();
         db.query("CREATE fractal CONTENT {fractal_id:'f2',verse_id:'v1',owner_did:'owner-did',name:'F2',created_at:'2026-10-11T00:00:00Z'}; UPDATE petal SET fractal_id='f2' WHERE petal_id='p1'").await.unwrap().check().unwrap();
@@ -582,7 +606,7 @@ mod tests {
         let readback = set_petal_terrain_handler(
             &db,
             "owner-did",
-            &CallerAuth::Local,
+            &TerrainWriteGrant::Local,
             "p1",
             Some(&terrain),
             Some(&repl_tx),
@@ -596,5 +620,77 @@ mod tests {
             repl_rx.try_recv().is_ok(),
             "only the successful committed readback is published"
         );
+    }
+
+    async fn assert_api_terrain_guard_journey() {
+        use fe_runtime::terrain_grant::{TerrainApiGrant, TerrainWriteGrant};
+        for case in ["valid", "revoke", "reset", "insert", "delete", "table-loss", "move-before", "move-after", "expired",
+            "delete-before", "revoke-before", "malformed-generation", "old-generation", "new-generation", "legacy", "legacy-after-reset"] {
+            let db = db_with_full_hierarchy("p1").await;
+            let key = fe_identity::NodeKeypair::generate();
+            let issuer = key.to_did_key();
+            if case == "new-generation" {
+                db.query("UPDATE api_auth_state:current SET generation=$next").bind(("next", ulid::Ulid::new().to_string())).await.unwrap().check().unwrap();
+            }
+            let generation = crate::api_auth::current_generation(&db).await.unwrap();
+            let jti = if matches!(case, "legacy" | "legacy-after-reset") { ulid::Ulid::new().to_string() }
+                else { crate::api_auth::new_jti(&generation).unwrap() };
+            let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_secs();
+            let expiry = if case == "expired" { now.saturating_sub(1) } else { now + 3600 };
+            let scope = "VERSE#v1-FRACTAL#f1-PETAL#p1";
+            let token = fe_identity::api_token::mint_api_token_at(&key, "VERSE#v1", "editor", now.saturating_sub(2), expiry, &jti).unwrap();
+            let claims = fe_identity::api_token::verify_api_token(&token, &key.verifying_key()).unwrap();
+            let insert_token = "CREATE api_token CONTENT {jti:$jti,scope:'VERSE#v1',max_role:'editor',sub:$sub,created_at:'2026-11-04T00:00:00Z',expires_at:'2099-01-01T00:00:00Z',revoked:false}";
+            if matches!(case, "revoke" | "delete" | "delete-before" | "revoke-before") {
+                db.query(insert_token).bind(("jti", jti.clone())).bind(("sub", issuer.clone())).await.unwrap().check().unwrap();
+            }
+            let snapshot = crate::api_auth::terrain_snapshot(&db, &issuer, &jti).await.unwrap();
+            if case == "valid" {
+                let viewer = fe_identity::api_token::mint_api_token(&key, "VERSE#v1", "viewer", 3600, &jti).unwrap();
+                let viewer = fe_identity::api_token::verify_api_token(&viewer, &key.verifying_key()).unwrap();
+                assert!(TerrainApiGrant::verified(&viewer, &key.verifying_key(), "p1".into(), scope.into(), snapshot.clone()).is_err(), "a signed Viewer cannot become an API terrain grant");
+            }
+            let grant = TerrainWriteGrant::Api(TerrainApiGrant::verified(&claims, &key.verifying_key(), "p1".into(), scope.into(), snapshot).unwrap());
+            let before = op_log_count(&db).await;
+            let terrain = serde_json::json!({"tileset_hexon_uris":["terrain-guard"]});
+            if matches!(case, "delete-before" | "revoke-before" | "malformed-generation" | "old-generation" | "legacy-after-reset") {
+                match case {
+                    "delete-before" => { db.query("DELETE api_token WHERE jti=$jti").bind(("jti", jti.clone())).await.unwrap().check().unwrap(); }
+                    "revoke-before" => { db.query("UPDATE api_token SET revoked=true WHERE jti=$jti").bind(("jti", jti.clone())).await.unwrap().check().unwrap(); }
+                    "malformed-generation" => { db.query("UPDATE api_auth_state:current SET generation='invalid'").await.unwrap().check().unwrap(); }
+                    _ => { db.query("UPDATE api_auth_state:current SET generation=$next").bind(("next", ulid::Ulid::new().to_string())).await.unwrap().check().unwrap(); }
+                }
+                assert!(prepare_terrain_write(&db, "owner-did", &grant, "p1", Some(&terrain)).await.is_err(), "{case}");
+                assert_eq!(get_petal_terrain_handler(&db, "p1").await.unwrap(), None);
+                assert_eq!(op_log_count(&db).await, before);
+                continue;
+            }
+            if case == "move-before" {
+                db.query("CREATE fractal CONTENT {fractal_id:'f2',verse_id:'v1',owner_did:'owner-did',name:'F2',created_at:'2026-11-04T00:00:00Z'}; UPDATE petal SET fractal_id='f2' WHERE petal_id='p1'").await.unwrap().check().unwrap();
+                assert!(prepare_terrain_write(&db, "owner-did", &grant, "p1", Some(&terrain)).await.is_err());
+                assert_eq!(op_log_count(&db).await, before);
+                assert_eq!(get_petal_terrain_handler(&db, "p1").await.unwrap(), None);
+                continue;
+            }
+            let prepared = prepare_terrain_write(&db, "owner-did", &grant, "p1", Some(&terrain)).await.unwrap();
+            match case {
+                "revoke" => { db.query("UPDATE api_token SET revoked=true WHERE jti=$jti").bind(("jti", jti.clone())).await.unwrap().check().unwrap(); }
+                "reset" => { db.query("UPDATE api_auth_state:current SET generation=$generation").bind(("generation", ulid::Ulid::new().to_string())).await.unwrap().check().unwrap(); }
+                "insert" => { db.query(insert_token).bind(("jti", jti.clone())).bind(("sub", issuer.clone())).await.unwrap().check().unwrap(); }
+                "delete" => { db.query("DELETE api_token WHERE jti=$jti").bind(("jti", jti.clone())).await.unwrap().check().unwrap(); }
+                "table-loss" => { db.query("REMOVE TABLE api_token").await.unwrap().check().unwrap(); }
+                "move-after" => { db.query("CREATE fractal CONTENT {fractal_id:'f2',verse_id:'v1',owner_did:'owner-did',name:'F2',created_at:'2026-11-04T00:00:00Z'}; UPDATE petal SET fractal_id='f2' WHERE petal_id='p1'").await.unwrap().check().unwrap(); }
+                _ => {}
+            }
+            let result = prepared.commit(&db).await;
+            if matches!(case, "valid" | "new-generation" | "legacy") {
+                assert_eq!(result.unwrap()["terrain"], terrain);
+                assert_eq!(op_log_count(&db).await, before + 1);
+            } else {
+                assert!(result.is_err(), "{case} must refuse the complete operation/row pair");
+                assert_eq!(get_petal_terrain_handler(&db, "p1").await.unwrap(), None, "{case}");
+                assert_eq!(op_log_count(&db).await, before, "{case}: no orphan operation");
+            }
+        }
     }
 }

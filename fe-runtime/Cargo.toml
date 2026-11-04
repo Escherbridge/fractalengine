@@ -21,6 +21,8 @@ bytes = { workspace = true }
 async-trait = "0.1"
 fe-identity = { path = "../fe-identity" }
 fe-sdk = { path = "../fe-sdk" }
+fe-policy = { path = "../fe-policy" }
+ed25519-dalek = { workspace = true }
 
 [dependencies.url]
 version = "2"

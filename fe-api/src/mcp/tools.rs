@@ -620,7 +620,8 @@ pub(super) fn set_petal_terrain(call: ToolCall<'_>) -> ToolFuture<'_> {
         let Some(terrain) = call.args.get("terrain") else {
             return Err("terrain is required (an object, or null to clear)".to_string());
         };
-        let stored = crate::terrain::set_petal_terrain_core(call.state, &petal_id, terrain)
+        let admitted = call.scope.ok_or("not found or not permitted")?;
+        let stored = crate::terrain::set_petal_terrain_core(call.state, call.claims, admitted, &petal_id, terrain)
             .await
             .map_err(|e| e.message())?;
         Ok(json!({ "petal_id": petal_id, "terrain": stored }))

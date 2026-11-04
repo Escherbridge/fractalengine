@@ -10,12 +10,18 @@ use axum::http::{Request, StatusCode};
 use serde_json::json;
 
 use fe_runtime::app::PendingApiRequests;
-use fe_runtime::messages::{ApiCommand, CallerAuth, DbCommand, DbResult};
+use fe_runtime::messages::{ApiCommand, DbCommand, DbResult};
+use fe_runtime::terrain_grant::TerrainWriteGrant;
 use fractalengine_test_harness::api::{body_json_lenient, ApiHarness, SeededHierarchy};
 
 /// How the simulated DB thread behaves around each API set.
 #[derive(Clone, Copy, PartialEq)]
 enum DbMode {
+    ChannelOnly,
+    CaptureUnavailable,
+    CaptureLate,
+    CaptureWrongFamily,
+    CaptureTableMissing,
     /// Apply the write with the production reply builder.
     Normal,
     /// Precede every API set with a GUI set (uncorrelated, a different
@@ -46,10 +52,42 @@ fn serve_db_thread(h: &ApiHarness, mode: DbMode) {
         while let Ok(ApiCommand::DbRequest { cmd, reply_tx }) = rx.recv() {
             pending.enqueue_for(&cmd, reply_tx);
             let reply = match cmd {
+                DbCommand::ReadTerrainApiCredential { request } => {
+                    if mode == DbMode::CaptureWrongFamily {
+                        assert!(!pending.try_deliver(DbResult::QueryResult {
+                            data: vec![], correlation_id: Some(request.id().into()),
+                        }), "an unrelated result cannot complete credential capture");
+                    }
+                    if mode == DbMode::CaptureLate {
+                        // Hold this real read to its own deadline, not a guessed scheduler delay.
+                        rt.block_on(async { tokio::time::sleep_until(request.deadline().into()).await; });
+                    }
+                    if mode == DbMode::CaptureWrongFamily { request.cancel(); }
+                    if mode == DbMode::CaptureTableMissing {
+                        rt.block_on(async { db.query("REMOVE TABLE api_token").await.unwrap().check().unwrap(); });
+                    }
+                    if mode == DbMode::CaptureUnavailable {
+                        DbResult::TerrainApiCredentialRead(fe_runtime::terrain_grant::TerrainCredentialReply { request, snapshot: None })
+                    } else {
+                        rt.block_on(fe_database::api_auth::terrain_credential_reply(&db, request))
+                    }
+                }
+                DbCommand::ResolvePetalScope { petal_id } => DbResult::ScopeResolved {
+                    scope: rt.block_on(async {
+                        let mut result = db.query("SELECT fractal_id FROM petal WHERE petal_id=$id LIMIT 1")
+                            .bind(("id", petal_id.clone())).await.unwrap().check().unwrap();
+                        let rows: Vec<serde_json::Value> = result.take(0).unwrap();
+                        let fractal = rows.first()?.get("fractal_id")?.as_str()?;
+                        let mut result = db.query("SELECT verse_id FROM fractal WHERE fractal_id=$id LIMIT 1")
+                            .bind(("id", fractal.to_owned())).await.unwrap().check().unwrap();
+                        let parents: Vec<serde_json::Value> = result.take(0).unwrap();
+                        Some(fe_database::build_scope(parents.first()?.get("verse_id")?.as_str()?, Some(fractal), Some(&petal_id)))
+                    }),
+                },
                 DbCommand::SetPetalTerrain {
                     petal_id,
                     terrain,
-                    auth,
+                    grant,
                     correlation_id,
                 } => {
                     if mode == DbMode::PetalVanishes {
@@ -69,7 +107,7 @@ fn serve_db_thread(h: &ApiHarness, mode: DbMode) {
                                 &local_did,
                                 petal_id.clone(),
                                 Some(gui_config()),
-                                CallerAuth::Local,
+                                TerrainWriteGrant::Local,
                                 None,
                                 &blob_store,
                                 None,
@@ -86,7 +124,7 @@ fn serve_db_thread(h: &ApiHarness, mode: DbMode) {
                             &local_did,
                             petal_id,
                             terrain,
-                            auth,
+                            grant,
                             None,
                             &blob_store,
                             correlation_id,
@@ -124,7 +162,9 @@ fn gui_config() -> serde_json::Value {
 }
 
 async fn setup(mode: DbMode) -> (ApiHarness, SeededHierarchy, String) {
-    let h = ApiHarness::spawn().await.expect("spawn harness");
+    let h = if matches!(mode, DbMode::ChannelOnly | DbMode::CaptureUnavailable | DbMode::CaptureLate | DbMode::CaptureWrongFamily | DbMode::CaptureTableMissing) {
+        ApiHarness::spawn_elevated_without_db_reader().await.expect("channel-only harness")
+    } else { ApiHarness::spawn().await.expect("spawn harness") };
     let seeded = h.seed_hierarchy().await.expect("seed hierarchy");
     let token = h.mint_token(&seeded.verse_scope(), "editor");
     serve_db_thread(&h, mode);
@@ -160,22 +200,22 @@ async fn stored_terrain(h: &ApiHarness, petal_id: &str, token: &str) -> serde_js
 
 #[tokio::test]
 async fn rest_put_persists_terrain_that_get_reads_back() {
-    let (h, seeded, token) = setup(DbMode::Normal).await;
-    let config = api_config();
-
-    let (status, body) = send(&h, "PUT", &seeded.petal_id, &token, Some(&config)).await;
-    assert_eq!(status, StatusCode::OK, "{body}");
-    assert_eq!(
-        body["data"]["terrain"], config,
-        "PUT returns the stored echo"
-    );
-
-    let stored = stored_terrain(&h, &seeded.petal_id, &token).await;
-    assert_eq!(stored, config);
-    assert!(
-        serde_json::from_value::<fe_terrain::config::TerrainConfig>(stored).is_ok(),
-        "what is stored satisfies the strictest reader (DEC-C22)"
-    );
+    for mode in [DbMode::Normal, DbMode::ChannelOnly] {
+        let (h, seeded, token) = setup(mode).await;
+        let config = api_config();
+        let (status, body) = send(&h, "PUT", &seeded.petal_id, &token, Some(&config)).await;
+        assert_eq!(status, StatusCode::OK, "{body}");
+        assert_eq!(body["data"]["terrain"], config, "PUT returns the stored echo");
+        let stored = if mode == DbMode::ChannelOnly {
+            let mut response = h.db.query("SELECT terrain FROM petal WHERE petal_id=$id")
+                .bind(("id", seeded.petal_id.clone())).await.unwrap().check().unwrap();
+            let rows: Vec<serde_json::Value> = response.take(0).unwrap();
+            rows[0]["terrain"].clone()
+        } else { stored_terrain(&h, &seeded.petal_id, &token).await };
+        assert_eq!(stored, config);
+        assert!(serde_json::from_value::<fe_terrain::config::TerrainConfig>(stored).is_ok(),
+            "stored terrain satisfies the strictest reader (DEC-C22)");
+    }
 }
 
 #[tokio::test]
@@ -236,6 +276,8 @@ async fn mcp_set_petal_terrain_sets_then_clears() {
 /// each leaves the petal's terrain exactly as it was.
 #[tokio::test]
 async fn refused_puts_leave_the_stored_terrain_untouched() {
+    assert_terrain_issuer_binding().await;
+    assert_capture_refusals().await;
     let (h, seeded, editor) = setup(DbMode::Normal).await;
     let viewer = h.mint_token(&seeded.verse_scope(), "viewer");
     let foreign = h.mint_token(&format!("VERSE#{}", ulid::Ulid::new()), "editor");
@@ -311,4 +353,49 @@ async fn rest_put_reports_a_failed_write_as_502_without_db_detail() {
     let (status, body) = send(&h, "PUT", &seeded.petal_id, &token, Some(&api_config())).await;
     assert_eq!(status, StatusCode::BAD_GATEWAY, "{body}");
     assert_eq!(body["error"], "terrain write failed", "{body}");
+}
+
+async fn assert_terrain_issuer_binding() {
+    use ed25519_dalek::pkcs8::EncodePrivateKey;
+    for persisted in [false, true] {
+        let (h, seeded, _) = setup(DbMode::Normal).await;
+        let generation = fe_database::api_auth::current_generation(&h.db).await.unwrap();
+        let jti = fe_database::api_auth::new_jti(&generation).unwrap();
+        let genuine = fe_identity::api_token::mint_api_token(&h.keypair, &seeded.verse_scope(), "editor", 3600, &jti).unwrap();
+        let mut claims = fe_identity::api_token::verify_api_token(&genuine, &h.state.verifying_key).unwrap();
+        claims.sub = fe_identity::NodeKeypair::generate().to_did_key();
+        if persisted {
+            h.db.query("CREATE api_token CONTENT {jti:$jti,sub:$sub,scope:$scope,max_role:'editor',created_at:'2026-11-04T00:00:00Z',expires_at:'2099-01-01T00:00:00Z',revoked:false}")
+                .bind(("jti", jti.clone())).bind(("sub", claims.sub.clone())).bind(("scope", seeded.verse_scope())).await.unwrap().check().unwrap();
+        }
+        let signing = ed25519_dalek::SigningKey::from_bytes(&h.keypair.seed_bytes());
+        let der = signing.to_pkcs8_der().unwrap();
+        let mislabeled = jsonwebtoken::encode(&jsonwebtoken::Header::new(jsonwebtoken::Algorithm::EdDSA),
+            &claims, &jsonwebtoken::EncodingKey::from_ed_der(der.as_bytes())).unwrap();
+        assert!(fe_identity::api_token::verify_api_token(&mislabeled, &h.state.verifying_key).is_ok(), "actual trusted signature with foreign sub");
+        let (status, response) = send(&h, "PUT", &seeded.petal_id, &mislabeled, Some(&api_config())).await;
+        assert_eq!(status, StatusCode::BAD_GATEWAY, "{response}");
+        assert_eq!(response["error"], "terrain write failed");
+        let mut stored = h.db.query("SELECT terrain FROM petal WHERE petal_id=$id").bind(("id", seeded.petal_id.clone())).await.unwrap().check().unwrap();
+        let rows: Vec<serde_json::Value> = stored.take(0).unwrap();
+        assert!(rows[0]["terrain"].is_null(), "issuer mismatch cannot enqueue a write");
+    }
+}
+
+async fn assert_capture_refusals() {
+    for mode in [DbMode::CaptureUnavailable, DbMode::CaptureLate, DbMode::CaptureWrongFamily, DbMode::CaptureTableMissing] {
+        let (h, seeded, token) = setup(mode).await;
+        let read_ops = || async {
+            let mut response = h.db.query("SELECT * OMIT id FROM op_log ORDER BY lamport_clock, hlc_timestamp").await.unwrap().check().unwrap();
+            response.take::<Vec<serde_json::Value>>(0).unwrap()
+        };
+        let before = read_ops().await;
+        let (status, body) = send(&h, "PUT", &seeded.petal_id, &token, Some(&api_config())).await;
+        assert_eq!(status, StatusCode::BAD_GATEWAY, "{body}");
+        assert_eq!(body["error"], "terrain write failed");
+        let mut response = h.db.query("SELECT terrain FROM petal WHERE petal_id=$id").bind(("id", seeded.petal_id.clone())).await.unwrap().check().unwrap();
+        let rows: Vec<serde_json::Value> = response.take(0).unwrap();
+        assert!(rows[0]["terrain"].is_null(), "abandoned/invalid read cannot later enqueue a write");
+        assert_eq!(read_ops().await, before, "no operation row from a rejected capture");
+    }
 }

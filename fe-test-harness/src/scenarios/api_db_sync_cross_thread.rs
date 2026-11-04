@@ -164,6 +164,7 @@ async fn run_async() -> Result<TestResult> {
         blob_store: Some(alice.blob_store.clone()),
         cors_origins: vec![],
         db_reader: None, // forces the DbCommand channel seam FR-5 names
+        terrain_capture: Default::default(),
         query_rate_limiter: tokio::sync::Mutex::new(std::collections::HashMap::new()),
         entity_store: None,
         tileset_registry: None,

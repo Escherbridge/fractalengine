@@ -50,6 +50,7 @@ fn state(db: Option<Db>, store: Arc<EntityStore>) -> Arc<ApiState> {
         blob_store: None,
         cors_origins: vec![],
         db_reader: db.map(|d| Arc::new(fe_api::db_reader::ReadDb::new(d))),
+        terrain_capture: Default::default(),
         query_rate_limiter: tokio::sync::Mutex::new(std::collections::HashMap::new()),
         entity_store: Some(store),
         tileset_registry: None,

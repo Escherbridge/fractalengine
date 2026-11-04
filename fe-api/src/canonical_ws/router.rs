@@ -80,6 +80,7 @@ mod tests {
             blob_store: None,
             cors_origins: vec![],
             db_reader: None,
+            terrain_capture: Default::default(),
             query_rate_limiter: tokio::sync::Mutex::new(std::collections::HashMap::new()),
             entity_store: None,
             tileset_registry: None,

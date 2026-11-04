@@ -113,7 +113,7 @@ pub(crate) fn set_layer(
     match db_sender.0.send(DbCommand::SetPetalTerrain {
         petal_id: petal_id.clone(),
         terrain: Some(updated.clone()),
-        auth: fe_runtime::messages::CallerAuth::Local,
+        grant: fe_runtime::terrain_grant::TerrainWriteGrant::Local,
         correlation_id: None,
     }) {
         Ok(()) => {
@@ -152,7 +152,7 @@ pub(crate) fn set_view_mode(
     match db_sender.0.send(DbCommand::SetPetalTerrain {
         petal_id: petal_id.clone(),
         terrain: Some(updated.clone()),
-        auth: fe_runtime::messages::CallerAuth::Local,
+        grant: fe_runtime::terrain_grant::TerrainWriteGrant::Local,
         correlation_id: None,
     }) {
         Ok(()) => {

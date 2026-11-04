@@ -17,6 +17,7 @@ use fe_runtime::messages::{ApiCommand, DbCommand, DbResult, TransformUpdate};
 
 /// Shared state injected into every axum handler via `State<Arc<ApiState>>`.
 pub struct ApiState {
+    pub terrain_capture: fe_runtime::terrain_grant::TerrainCaptureLimiter,
     pub api_cmd_tx: crossbeam::channel::Sender<ApiCommand>,
     pub transform_broadcast_tx: tokio::sync::broadcast::Sender<TransformUpdate>,
     /// Entity change broadcast for scene graph streaming (CUD deltas).

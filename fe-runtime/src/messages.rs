@@ -1208,10 +1208,8 @@ pub enum DbCommand {
     SetPetalTerrain {
         petal_id: String,
         terrain: Option<serde_json::Value>,
-        /// Editor+ at the petal scope, enforced by the DB thread (role
-        /// propagation RP-4 step 7 — the `SetPetalRenderDistance` shape): the
-        /// GUI sends `Local`, the API the role it already validated.
-        auth: CallerAuth,
+        /// Trusted local or exact API admission, rechecked in the transaction.
+        grant: crate::terrain_grant::TerrainWriteGrant,
         /// API-originated sets carry a fresh id the DB thread echoes on
         /// `PetalTerrainLoaded`/`PetalTerrainSetFailed`; GUI sets send `None`
         /// (fe-runtime src/AGENTS.md §api-reply-correlation).
@@ -1224,6 +1222,10 @@ pub enum DbCommand {
         /// `RequestFailed`; GUI loads send `None` and get `PetalTerrainLoaded`
         /// (fe-runtime src/AGENTS.md §api-reply-correlation).
         correlation_id: Option<String>,
+    },
+    /// Fixed private metadata read for a verified terrain credential.
+    ReadTerrainApiCredential {
+        request: crate::terrain_grant::TerrainCredentialRead,
     },
     // --- Petal render distance (p2p_asset_streaming_20260718 S6) ---
     /// Set or clear a petal's durable residency horizon (`petal.render_distance`,
@@ -1343,6 +1345,8 @@ pub enum DeferralReason {
 
 #[derive(Debug, Clone, Message)]
 pub enum DbResult {
+    /// Fixed credential read completion with its exact private owner.
+    TerrainApiCredentialRead(crate::terrain_grant::TerrainCredentialReply),
     SceneAssetPublicationRead {
         correlation_id: String,
         result: Result<

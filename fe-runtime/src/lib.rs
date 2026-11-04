@@ -33,6 +33,7 @@ pub mod screenshot;
 pub mod shared_node;
 pub mod sim_control;
 pub mod timeseries;
+pub mod terrain_grant;
 pub mod vision;
 pub mod wiring;
 pub use channels::{ApiChannels, CHANNEL_BUFFER, TRANSFORM_BROADCAST_BUFFER};

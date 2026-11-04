@@ -23,6 +23,7 @@ const TIMEOUT: Duration = Duration::from_secs(20);
 /// A DB thread over a store directory the test owns; `Drop` closes AND joins it (C8: one
 /// SurrealKV open per process).
 struct Node {
+    terrain_grant: Option<fe_runtime::terrain_grant::TerrainApiGrant>,
     cmd_tx: Option<crossbeam::channel::Sender<DbCommand>>,
     res_rx: crossbeam::channel::Receiver<DbResult>,
     db: Option<fe_database::repo::Db>,
@@ -32,6 +33,7 @@ struct Node {
 
 impl Node {
     fn open(dir: &std::path::Path, keypair: fe_identity::NodeKeypair) -> Self {
+        let api_key = fe_identity::NodeKeypair::from_bytes(&keypair.seed_bytes()).expect("fixture API key");
         let (cmd_tx, cmd_rx) = crossbeam::channel::bounded::<DbCommand>(64);
         let (res_tx, res_rx) = crossbeam::channel::bounded::<DbResult>(256);
         let blobs = Arc::new(MockBlobStore::new());
@@ -50,7 +52,8 @@ impl Node {
             None,
         )
         .expect("spawn db thread");
-        let node = Self {
+        let mut node = Self {
+            terrain_grant: None,
             cmd_tx: Some(cmd_tx),
             res_rx,
             db: Some(shared_db),
@@ -58,6 +61,14 @@ impl Node {
             blobs,
         };
         node.until(|r| matches!(r, DbResult::Started));
+        let rt = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
+        let generation = rt.block_on(fe_database::api_auth::current_generation(node.db.as_ref().unwrap())).unwrap();
+        let jti = fe_database::api_auth::new_jti(&generation).unwrap();
+        let token = fe_identity::api_token::mint_api_token(&api_key, &build_scope(VERSE, None, None), "manager", 3600, &jti).unwrap();
+        let claims = fe_identity::api_token::verify_api_token(&token, &api_key.verifying_key()).unwrap();
+        let snapshot = rt.block_on(fe_database::api_auth::terrain_snapshot(node.db.as_ref().unwrap(), &claims.sub, &jti)).unwrap();
+        node.terrain_grant = Some(fe_runtime::terrain_grant::TerrainApiGrant::verified(
+            &claims, &api_key.verifying_key(), PETAL.into(), build_scope(VERSE, Some(FRACTAL), Some(PETAL)), snapshot).unwrap());
         node
     }
 
@@ -100,7 +111,7 @@ impl Node {
         self.send(DbCommand::SetPetalTerrain {
             petal_id: PETAL.to_string(),
             terrain: Some(terrain),
-            auth: manager_token(),
+            grant: fe_runtime::terrain_grant::TerrainWriteGrant::Api(self.terrain_grant.as_ref().unwrap().clone()),
             correlation_id: Some(correlation.to_string()),
         });
         self.until(|r| match r {

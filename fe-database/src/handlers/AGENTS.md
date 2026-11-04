@@ -120,6 +120,33 @@ Parsed Access membership also rejects marker characters (`#`) within any parsed 
 
 ## terrain-write-fence
 
+### QA-0070 required grant supersedes the legacy CallerAuth paragraph below
+
+SetPetalTerrain requires Local or the immutable admitted API grant. Preparation
+checks exact original Petal ancestry, signed scope/Editor ceiling and captured
+credential generation/token projection independently of actual local publisher
+Editor authority through entity::prepare_scope_permission. The issuing API node
+never substitutes for the actual publisher.
+
+Credential guards execute in the same operation/row transaction. INFO FOR DB
+checks api_token and api_auth_state table keys before an empty token projection
+can mean a compatible unknown JTI. Exact generation and bounded sub/revoked
+projection equality plus strict time::unix expiry follow; local publisher role,
+default-access and full ancestry guards remain. The last caller slot remains
+UPDATE RETURN AFTER, without early RETURN. Capture and preparation share api_auth
+query/decoder. Original token capture is retained, so deletion/insertion between
+API admission and DB preparation also refuses. Metadata failure never repairs
+schema or invents a legacy generation.
+
+The DB dispatcher serializes ordinary SetPetalTerrain, RevokeApiToken, EntityAccess
+and ApplyReplicatedRow commands. Normal reset uses its separate quiescence/join
+boundary. Public low-level helpers/shared test handles may also write outside
+that dispatcher: copied equality guards alone do not establish their concurrent
+storage isolation. Prepared-change journeys assert stale-snapshot refusal, not
+universal concurrent cancellation. No unconditional token/generation writes are
+added to manufacture conflicts. Final query/catalog-cache behavior and supported
+concurrent ordering still require integrated verification.
+
 SetPetalTerrain retains the public CallerAuth/correlation grammar. Preparation first applies the existing validated caller policy, then captures the DB thread?s actual local DID at the stored Editor floor through entity::prepare_scope_permission. PreparedTerrainWrite has private fields and carries that exact target and authority/ancestry snapshot to use. No UI role is treated as authority and an API caller is not substituted for the publishing host identity.
 
 The authority guards precede UPDATE inside the same commit_operation_atomic transaction as the ordinary terrain operation. The helper removes BEGIN/op-log/COMMIT slots; the final caller result is the UPDATE RETURN AFTER row even after adding guard statements. Terrain is read back from that committed row, and publication remains post-commit and best effort. The existing API and GUI success/failure correlation branches are unchanged. No strict input-vs-readback JSON equality policy or request field was added.

@@ -33,15 +33,12 @@ pub async fn set_terrain_config(
         return Json(ApiResponse::<serde_json::Value>::error("invalid petal_id")).into_response();
     }
 
-    if crate::rest::authorized_petal_scope(&state, &claims, &petal_id)
-        .await
-        .is_none()
-    {
+    let Some(admitted) = crate::rest::authorized_petal_scope(&state, &claims, &petal_id).await else {
         return Json(ApiResponse::<serde_json::Value>::error(
             crate::rest::NOT_FOUND_OR_DENIED,
         ))
         .into_response();
-    }
+    };
     if config.is_null() {
         return TerrainWriteError::InvalidConfig(
             "terrain config must be an object (DELETE clears)".to_string(),
@@ -51,7 +48,7 @@ pub async fn set_terrain_config(
 
     terrain_write_response(
         &petal_id,
-        set_petal_terrain_core(&state, &petal_id, &config).await,
+        set_petal_terrain_core(&state, &claims, &admitted, &petal_id, &config).await,
     )
 }
 
@@ -138,19 +135,16 @@ pub async fn delete_terrain_config(
         return Json(ApiResponse::<serde_json::Value>::error("invalid petal_id")).into_response();
     }
 
-    if crate::rest::authorized_petal_scope(&state, &claims, &petal_id)
-        .await
-        .is_none()
-    {
+    let Some(admitted) = crate::rest::authorized_petal_scope(&state, &claims, &petal_id).await else {
         return Json(ApiResponse::<serde_json::Value>::error(
             crate::rest::NOT_FOUND_OR_DENIED,
         ))
         .into_response();
-    }
+    };
 
     terrain_write_response(
         &petal_id,
-        set_petal_terrain_core(&state, &petal_id, &serde_json::Value::Null).await,
+        set_petal_terrain_core(&state, &claims, &admitted, &petal_id, &serde_json::Value::Null).await,
     )
 }
 
@@ -230,6 +224,8 @@ fn terrain_write_response(
 /// returns the terrain it echoes — fe-api AGENTS.md §terrain-mutation.
 pub(crate) async fn set_petal_terrain_core(
     state: &crate::server::ApiState,
+    claims: &ApiClaims,
+    admitted: &str,
     petal_id: &str,
     terrain: &serde_json::Value,
 ) -> Result<Option<serde_json::Value>, TerrainWriteError> {
@@ -251,23 +247,20 @@ pub(crate) async fn set_petal_terrain_core(
         Some(terrain.clone())
     };
 
+    let grant = crate::terrain_credential::capture(state, claims, petal_id, admitted)
+        .await.map_err(|_| TerrainWriteError::WriteFailed)?;
+
     let (reply_tx, reply_rx) = tokio::sync::oneshot::channel();
     let correlation_id = ulid::Ulid::new().to_string();
     let cmd = DbCommand::SetPetalTerrain {
         petal_id: petal_id.to_string(),
         terrain,
-        // The API layer already authorized Editor+; the DB thread re-checks it,
-        // capped by the node's own converged role (role propagation RP-4, AC-46)
-        // — the same trust boundary as `render_distance.rs`.
-        auth: fe_runtime::messages::CallerAuth::Identified {
-            did: "api".to_string(),
-            role: "editor".to_string(),
-        },
+        grant: fe_runtime::terrain_grant::TerrainWriteGrant::Api(grant),
         correlation_id: Some(correlation_id.clone()),
     };
     if state
         .api_cmd_tx
-        .send(ApiCommand::DbRequest { cmd, reply_tx })
+        .try_send(ApiCommand::DbRequest { cmd, reply_tx })
         .is_err()
     {
         tracing::warn!(petal_id, "terrain write: API command channel closed");
