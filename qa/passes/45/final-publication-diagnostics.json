@@ -1,0 +1,19 @@
+{
+  "diagnostics": [
+    "scene publication transaction statement 12 stage asset_metadata kind Thrown reason asset_metadata_changed errors 12 node_id=\"01M6MCGWHP5VSPSDPBHYX2CP1A\"",
+    "scene publication transaction statement 12 stage asset_metadata kind Thrown reason asset_metadata_changed errors 12 node_id=\"01M6MCGWHP5VSPSDPBHYX2CP1A\"",
+    "scene publication transaction statement 12 stage asset_metadata kind Thrown reason asset_metadata_changed errors 12 node_id=\"01M6MCGWHP5VSPSDPBHYX2CP1A\"",
+    "scene publication transaction statement 12 stage asset_metadata kind Thrown reason asset_metadata_changed errors 12 node_id=\"01M6MCGWHP5VSPSDPBHYX2CP1A\"",
+    "scene publication transaction statement 12 stage asset_metadata kind Thrown reason asset_metadata_changed errors 12 node_id=\"01M6MCGX6H0VZ3MKFAQF6QRDX7\"",
+    "scene publication transaction statement 12 stage asset_metadata kind Thrown reason asset_metadata_changed errors 12 node_id=\"01M6MCGX6H0VZ3MKFAQF6QRDX7\"",
+    "scene publication transaction statement 12 stage asset_metadata kind Thrown reason asset_metadata_changed errors 12 node_id=\"01M6MCGX6H0VZ3MKFAQF6QRDX7\"",
+    "scene publication transaction statement 12 stage asset_metadata kind Thrown reason asset_metadata_changed errors 12 node_id=\"01M6MCGX6H0VZ3MKFAQF6QRDX7\"",
+    "scene publication transaction statement 12 stage asset_metadata kind Thrown reason asset_metadata_changed errors 12 node_id=\"01M6MCGXZ0VVJDZZV59JRSAP1Q\"",
+    "scene publication transaction statement 12 stage asset_metadata kind Thrown reason asset_metadata_changed errors 12 node_id=\"01M6MCGXZ0VVJDZZV59JRSAP1Q\"",
+    "scene publication transaction statement 12 stage asset_metadata kind Thrown reason asset_metadata_changed errors 12 node_id=\"01M6MCGXZ0VVJDZZV59JRSAP1Q\"",
+    "scene publication transaction statement 12 stage asset_metadata kind Thrown reason asset_metadata_changed errors 12 node_id=\"01M6MCGXZ0VVJDZZV59JRSAP1Q\"",
+    "scene publication transaction statement 12 stage asset_metadata kind Thrown reason asset_metadata_changed errors 12 verse_id=\"01M6MCGVK39TYRJPY20TP266K8\""
+  ],
+  "source_log_sha256": "16068228ca679cfbd4650028fb4e4e8e5199cfcc7dc91431404e9c4186a1f254",
+  "limits": "Fixed diagnostic message plus controlled public node IDs where present; no actual differing asset field established."
+}

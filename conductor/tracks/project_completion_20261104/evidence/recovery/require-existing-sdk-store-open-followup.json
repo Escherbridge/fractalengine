@@ -1,0 +1,29 @@
+{
+  "kind": "require-existing-sdk-source-followup",
+  "read_only_source_inspection": true,
+  "facts": [
+    "Cargo.lock pins surrealkv0.21.1.",
+    "SurrealDB3.0.5 endpoint conversion supplies path/config; core SurrealKv Datastore::new builds TreeBuilder and calls build.",
+    "SurrealKV0.21.1 TreeBuilder::build at1918 calls Tree::new. Tree::new at1484 calls create_directory_structure before Core::new. Lines1508 onward unconditionally call create_dir_all for root/SST/WAL/manifest and optional subdirectories.",
+    "Read-only transactions are distinct from read-only/strict-existing store opening. This source trace does not establish a supported strict-existing mode or safe retained restart."
+  ],
+  "limits": "No DB/store/app/helper opened. No exhaustive SDK-option absence claim. Need supported strict-existing design or proven protection before any retained restart.",
+  "source_files": {
+    "surrealdb-3.0.5/src/opt/endpoint/surrealkv.rs": {
+      "sha256": "413a278368db467a7f4427dc0b8a038e979aab5f00153acde3108203bf5570c5",
+      "bytes": 1113
+    },
+    "surrealdb-3.0.5/src/opt/config.rs": {
+      "sha256": "abcade070566af679d1cdac8106a3d2bc62e3005b8ac3d58131192125c23a645",
+      "bytes": 4864
+    },
+    "surrealdb-core-3.0.5/src/kvs/surrealkv/mod.rs": {
+      "sha256": "5f5a0630121c9f6899abc98da1be8dbb36c62b0dc543690406b3320d5761c528",
+      "bytes": 31195
+    },
+    "surrealkv-0.21.1/src/lsm.rs": {
+      "sha256": "4e73ce26c32d944c59df23d5c458aaf37845924cbdff847bc2094621d1fb4570",
+      "bytes": 70100
+    }
+  }
+}

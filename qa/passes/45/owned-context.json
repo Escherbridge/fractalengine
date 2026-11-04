@@ -1,0 +1,71 @@
+{
+  "owner": {
+    "run_dir": "C:\\Users\\atooz\\Programming\\fractalengine-workspace\\fractalengine\\.qa\\run\\20261104-155741-966",
+    "pid": 107916,
+    "process_identity": {
+      "pid": 107916,
+      "start_ticks": "639294298641789455",
+      "exe_path": "C:\\Users\\atooz\\Programming\\fractalengine-workspace\\fractalengine\\.qa\\stage\\be37b2dc-20261104155649490\\fractalengine.exe"
+    },
+    "descendant_identities": [
+      {
+        "pid": 106108,
+        "start_ticks": "639294298642456457",
+        "exe_path": "C:\\Windows\\system32\\conhost.exe"
+      },
+      {
+        "pid": 116152,
+        "start_ticks": "639294298679953514",
+        "exe_path": "C:\\Program Files (x86)\\Microsoft\\EdgeWebView\\Application\\156.0.4314.58\\msedgewebview2.exe"
+      },
+      {
+        "pid": 95372,
+        "start_ticks": "639294298680481378",
+        "exe_path": "C:\\Program Files (x86)\\Microsoft\\EdgeWebView\\Application\\156.0.4314.58\\msedgewebview2.exe"
+      },
+      {
+        "pid": 60320,
+        "start_ticks": "639294298682354435",
+        "exe_path": "C:\\Program Files (x86)\\Microsoft\\EdgeWebView\\Application\\156.0.4314.58\\msedgewebview2.exe"
+      },
+      {
+        "pid": 115832,
+        "start_ticks": "639294298682380930",
+        "exe_path": "C:\\Program Files (x86)\\Microsoft\\EdgeWebView\\Application\\156.0.4314.58\\msedgewebview2.exe"
+      },
+      {
+        "pid": 85480,
+        "start_ticks": "639294298682679758",
+        "exe_path": "C:\\Program Files (x86)\\Microsoft\\EdgeWebView\\Application\\156.0.4314.58\\msedgewebview2.exe"
+      },
+      {
+        "pid": 95132,
+        "start_ticks": "639294298683544593",
+        "exe_path": "C:\\Program Files (x86)\\Microsoft\\EdgeWebView\\Application\\156.0.4314.58\\msedgewebview2.exe"
+      }
+    ],
+    "stage_manifest": {
+      "exe_sha256": "BC1DF83A03BC08C1654408F1EBAC7FDCCB65038766071153D2047DB1FB92CD36",
+      "legacy_fixture_sha256": "504B68E44D0F99E915D6FAAD291F795732C3FFAC20B0C281530AB0BE0B9761E1",
+      "native_observer": {
+        "contract": "fe-native-worker-v1",
+        "helper_file": "native_observer.exe",
+        "helper_sha256": "dc3c5682ecad70cc3f53ccf8150cbb4689ce353aea1070a19a6769ac77f95bf2",
+        "schema": "fe-native-helper-stage-v1",
+        "sdk": "10.0.22621.0",
+        "architecture": "x64",
+        "source_sha256": "74a627da9b7a299c95d8cbfc42a2f092d03701a5075368ae25ca1e6dc17663de"
+      },
+      "source_fingerprint": "A73BAF26B69BD9C5149FD3EB74BA8A84B2678547CD4D5EEF3B33E8733D847E07",
+      "kind": "fractalengine-qa-stage-v1",
+      "seal_hexon_sha256": "22EFC1D8E82545D3F06DDBB40721294CB0383A030C8D8DEA9A6165F5B3C42971",
+      "built_at": "2026-11-04T22:56:49.7853183Z",
+      "source_commit": "be37b2dc260b06b42307a9cab3a49f08202c108c",
+      "source_dirty": true
+    },
+    "stage_matches_source": true,
+    "fixture": "basic",
+    "started_at": "2026-11-04T15:57:44.3580119-07:00",
+    "bootstrap_verse_id": "01M6MCGR5AJYFJJW5X0RZTJ03E"
+  }
+}

@@ -1,0 +1,15 @@
+{
+  "source_commit": "be37b2dc260b06b42307a9cab3a49f08202c108c",
+  "session": 51120,
+  "terminal_exit_code": 0,
+  "stage": ".qa/stage/be37b2dc-20261104155649490",
+  "duration_seconds": 280.1,
+  "rust_and_msvc_compiler_warning_error_diagnostics": 0,
+  "binary_hashes_verified": true,
+  "stage_matches_source_claim": "staging fingerprint checked before/after, future launch must validate",
+  "log": {
+    "bytes": 3828,
+    "sha256": "7b7077f6b769bd8def193dbbb92fbd2e18cb4a05afa596d9e356a901903ad486"
+  },
+  "tests_executed": false
+}

@@ -31,8 +31,8 @@
   },
   "verification": {
     "conductor_review": "approved; reviews/conductor-scope-review.md",
-    "production_build": "925d7cba12.7s and9d1e061d14.1s combined Rust/native stages passed, zero compiler diagnostics. Terminal30657 exit0 observed; final sweep unexecuted.",
-    "focused_evidence": "QA42/43 committeda77cabbe, all84rawpacketblobs exact. QA44 independently reviewed failed-native11payloads, publicationpending. No FULL credit.",
+    "production_build": "be37b2dc combined Rust/native stage passed280.1s, terminal51120exit0;0compiler diagnostics, app/helper hashesverified. bc9 componentdiagnostics and pendingtypedwitness notyetcompiled.",
+    "focused_evidence": "QA42/43 committeda77; QA44 committed723. QA45/46 frozenandfullfocusedreviewsapproved; publicationpending. No FULL credit.",
     "final_catalog": "pending",
     "two_clean_full_passes": "pending",
     "five_live_ux_audits_and_synthesis": "pending",
@@ -48,12 +48,13 @@
     "panel_width": "QA42 independent focused evidence:382pxInspector body at1024x720/2, actualtypedpropertysaved; geometryincomplete, remainingResults/divider/menu/modal matrixpending.",
     "terrain_api_grant": "c0aa2bce normal QA39 scoped update/readback evidence independentlyapproved; negative/queue/concurrency gates remain",
     "brush_chrome": "QA41 independently verifies unchanged terrain/hierarchy for armed Circle Back, hint and one ancestor, plus one legitimate Circle/node. Broader tools, gestures and journal comparisons remain pending.",
-    "owner_qa_tree": "QA40 failed. d8da3a46 source-approved and compiled; QA41 independently verifies recovered Owner tree/state/screenshot and 102 physical control-ID joins. Broader native acceptance remains pending."
+    "owner_qa_tree": "QA40 failed. d8da3a46 source-approved and compiled; QA41 independently verifies recovered Owner tree/state/screenshot and 102 physical control-ID joins. Broader native acceptance remains pending.",
+    "peer_node_delivery": "QA0063open; QA45 localassetmetadatafencefailurelinked, typedserverwitness1bdff9fd independentlyapproved/committed; actualsuccessfulpublication/freshViewer/bytes/render/restartpending."
   },
   "final_publication_authorized": true,
   "release_gate": "All required implementation/reviews/live QA and integrated checks complete; exact-commit CI green before immutable tag; all Release jobs and seven downloaded archive checksums verified",
-  "current_source": "a77cabbe plus pending strict-native/recovery-status source authoring",
-  "current_owned_apps": "none; QA44 eight recorded identities absent2026-11-04T22:33:38.9877095Z",
+  "current_source": "1bdff9fd",
+  "current_owned_apps": "none; QA45/46 eight recorded identities each absent23:05:04.7256067Z/23:05:09.1599635Z",
   "checkpoint_history": "./checkpoint-history.md",
   "native_helper_source": {
     "worktree": ".omc/worktrees/qa-native-navigation-helper",
@@ -97,16 +98,25 @@
         "./reviews/qa-native-winit-service-plan-functional-review.md",
         "./reviews/qa-native-winit-service-plan-security-review.md"
       ],
-      "status": "authoring; source and live acceptance pending"
+      "status": "bf3 strictprofile compiledbe37; actualQA46 exactclass/identity+rectreads passed, combinedsignature refused; bc9 componentdiagnostics approved/committed notyetcompiled",
+      "source_reviews": [
+        "./reviews/qa-native-winit-service-functional-review.md",
+        "./reviews/qa-native-winit-service-security-review.md"
+      ]
     },
     "recovery_diagnostics_status": {
       "trace": "./evidence/recovery/qa42-scene-recovery-source-trace.md",
-      "status": "authoring; actual failed guard unknown; SQL/authority/history unchanged"
+      "status": "be37 compiled/liveQA45 identifiesassetmetadataChanged and emptySnapshotunavailable. Four-filetypedwitness1bdff9fd committed aftercorrectness/designreviews; newcombinedbuild/livepending. TerminalWaiting/retry stillunverified.",
+      "source_reviews": [
+        "./reviews/qa42-recovery-diagnostics-status-review.md",
+        "./reviews/qa42-recovery-status-design-review.md"
+      ]
     },
     "require_existing_startup": {
       "status": "source trace complete; design/implementation/live validation pending; retained stores on hold",
       "trace": "./evidence/recovery/require-existing-startup-source-trace.md",
-      "identity_constraint": "Legacy runtime_did is client JWT sub, not actual node/DB-owner DID; compare persisted bootstrap Verse.created_by to DID from load-only retained node key before mutation/readiness."
+      "identity_constraint": "Legacy runtime_did is client JWT sub, not actual node/DB-owner DID; compare persisted bootstrap Verse.created_by to DID from load-only retained node key before mutation/readiness.",
+      "sdk_followup": "./evidence/recovery/require-existing-sdk-store-open-followup.json"
     }
   }
 }
