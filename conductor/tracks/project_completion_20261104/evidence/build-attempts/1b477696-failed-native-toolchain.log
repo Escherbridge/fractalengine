@@ -1,0 +1,22 @@
+[14:37:35.186] Building fractalengine and offline QA terrain helpers...
+   Compiling fe-renderer v0.1.0 (C:\Users\atooz\Programming\fractalengine-workspace\fractalengine\fe-renderer)
+   Compiling fe-terrain v0.1.0 (C:\Users\atooz\Programming\fractalengine-workspace\fractalengine\fe-terrain)
+   Compiling fe-ui v0.1.0 (C:\Users\atooz\Programming\fractalengine-workspace\fractalengine\fe-ui)
+   Compiling fe-api v0.1.0 (C:\Users\atooz\Programming\fractalengine-workspace\fractalengine\fe-api)
+   Compiling fractalengine v0.1.0 (C:\Users\atooz\Programming\fractalengine-workspace\fractalengine\fractalengine)
+    Finished `dev` profile [unoptimized] target(s) in 3m 06s
+   Compiling fe-terrain v0.1.0 (C:\Users\atooz\Programming\fractalengine-workspace\fractalengine\fe-terrain)
+    Finished `dev` profile [unoptimized] target(s) in 19.49s
+    Finished `dev` profile [unoptimized] target(s) in 1.75s
+   Compiling fe-terrain v0.1.0 (C:\Users\atooz\Programming\fractalengine-workspace\fractalengine\fe-terrain)
+   Compiling fe-database v0.1.0 (C:\Users\atooz\Programming\fractalengine-workspace\fractalengine\fe-database)
+    Finished `dev` profile [unoptimized] target(s) in 9.93s
+'vswhere.exe' is not recognized as an internal or external command,
+operable program or batch file.
+Native helper build failed
+At C:\Users\atooz\Programming\fractalengine-workspace\fractalengine\tools\qa\native_observer\build.ps1:26 char:67
++ ... (Test-Path -LiteralPath $exe)) { throw 'Native helper build failed' }
++                                      ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    + CategoryInfo          : OperationStopped: (Native helper build failed:String) [], RuntimeException
+    + FullyQualifiedErrorId : Native helper build failed
+ 

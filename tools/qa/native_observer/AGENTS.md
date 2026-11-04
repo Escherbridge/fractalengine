@@ -142,6 +142,10 @@ Visual Studio 2022 edition with the x64 C++ tools through Microsoft's vswhere,
 and embeds asInvoker/noUIAccess/PMv2. SDK22621 and x64 remain fixed; no download or
 caller-supplied toolchain path is accepted. vcvars supplies the compiler environment. stage.json seals
 worker SHA-256, source recipe hash, architecture, SDK and exact wire version.
+The compiler subprocess receives the verified installer directory on PATH because
+VsDevCmd invokes vswhere by name. The build script restores its prior process
+PATH in finally and preserves NoDefaultCurrentDirectoryInExePath; no user or
+machine environment setting is changed.
 No observer command compiles or uses an unstaged arbitrary helper.
 
 `launch.ps1 -NativeObserver -DisableSyntheticInput` creates a fresh bootstrap

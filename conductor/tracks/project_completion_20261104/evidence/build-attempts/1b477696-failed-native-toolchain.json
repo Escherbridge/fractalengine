@@ -1,0 +1,12 @@
+{
+  "kind": "failed-production-stage",
+  "source_commit": "1b477696",
+  "session": 71477,
+  "exit_code": 1,
+  "rust_application_compiled": true,
+  "native_compiler_invoked": false,
+  "failure": "VsDevCmd unqualified vswhere.exe unavailable with NoDefaultCurrentDirectoryInExePath=1 and installer directory absent from PATH.",
+  "log_sha256": "acff568dff79b960a877768cf70df9ba454d5e8a781fd3b31451fd4fe8e9e9f1",
+  "partial_stage": ".qa/stage/1b477696-20261104144113079",
+  "stage_manifest_published": false
+}
