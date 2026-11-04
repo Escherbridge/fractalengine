@@ -1,0 +1,33 @@
+{
+  "name": "QA solid box inside",
+  "asset_id": null,
+  "position": [
+    -0.25423765182495117,
+    0.5,
+    0.4407358169555664
+  ],
+  "rotation": [
+    0,
+    0,
+    0
+  ],
+  "scale": [
+    1,
+    1,
+    1
+  ],
+  "properties": {
+    "primitive": {
+      "kind": "cube",
+      "dims": [
+        2,
+        1,
+        2
+      ]
+    },
+    "material": {
+      "name": "QA concrete",
+      "density_kg_m3": 2400
+    }
+  }
+}

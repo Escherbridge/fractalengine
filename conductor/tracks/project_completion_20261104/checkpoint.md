@@ -5,19 +5,19 @@ status: in_progress
 title: Completion baseline and next actions
 ---
 
-# Current state (2026-11-04, after QA36)
+# Current state (2026-11-04, after reviewed QA37)
 
 - Goal service is active; the attached objective was read and matches goal-service.txt.
-- Main source is fa955563. Combined production stage `.qa/stage/fa955563-20261104084453622` succeeded in 327.5s. It emitted one unused-mut warning at layout_policy.rs:207; this is not the final checks sweep or a warning-free build.
+- Current main HEAD is7f0de44a: reviewed QA36 publication9df6a048, divider v4 commit75e5d7fb, and independently reviewed active-Petal opaque-header correction7f0de44a. Production build5441 completed exit0 in206.3s; stage `.qa/stage/7f0de44a-20261104104107782` is ready for fresh visual acceptance. Source remains frozen. The last live-tested source was fa955563. Combined production stage `.qa/stage/fa955563-20261104084453622` succeeded in 327.5s. It emitted one unused-mut warning at layout_policy.rs:207; this is not the final checks sweep or a warning-free build.
 - QA36 disposable terrain run `.qa/run/20261104-084851-621` is stopped. All eight recorded root/descendant process identities were checked absent. Both retained campaign stores remain untouched.
-- QA36 packet has independent focused evidence approval ([review](./reviews/qa36-full-evidence-review.md)): [manifest](../../../qa/passes/36/packet-manifest.json), SHA256 `2c28abd2f725696bffd655dc1727d0a1114077cb6f6ac1b1c9b2f24a96ea6473`, 154 payloads / 14 actual screenshots. No full-pass credit.
+- QA36 packet committed9df6a048 has independent focused evidence approval ([review](./reviews/qa36-full-evidence-review.md)): [manifest](../../../qa/passes/36/packet-manifest.json), SHA256 `2c28abd2f725696bffd655dc1727d0a1114077cb6f6ac1b1c9b2f24a96ea6473`, 154 payloads / 14 actual screenshots. No full-pass credit.
 - Independently reviewed focused results: preferred widths survive scale clamps; actual divider drags preserve required camera.pose fields and selected node transform; rectangle configuration leaves terrain unchanged before arming; partial 5402/16384 coverage withholds cut/fill; complete 16384/16384 genuine zero saves the pair as one atomic batch at versions5/6. Full history bytes remain identical at version6 across navigation commands and final observation. The after-up state still had Petal A active: no actual departure/return is established by QA36.
 - Preserve the invalid first camera comparison alongside its corrected camera.pose-based proof. Preserve the navigation input timeout, wrong-route refusal and initial relative stop-path refusal. The one runtime ERROR is the retained input_timed_out HTTP500 at16:08:40; later applied state was observed without replay.
-- Visual gaps remain: two measured 10px divider targets and low contrast on the active-Petal breadcrumb. Browse-state opaque headers improved, but this does not close all chrome. Divider v3 is frozen in isolation for review; its design reviewer identified Results side-content overlap requiring correction.
-- QA-0070 remains open. Grant-continuity plan v2 SHA256 `64f1b3cb57eb0213d22bf4e2a24f8c64362278c86758efc4ad28f59d52543114` has independent functional/security design approval. Implementation must preserve bounded enqueue/deadline ownership and prove composed transaction/isolation behavior. A fresh isolated worktree is prepared; no source or runtime acceptance is claimed.
-- Native navigation foundation is being authored in isolation; it enables no positive action profile yet. The reviewed helper and trustworthy capture remain pending.
+- Visual gaps remain: two measured 10px divider targets and low contrast on the active-Petal breadcrumb. Browse-state opaque headers improved, but this does not close all chrome. Divider v4 corrected Results side-content overlap and passed design/functional/exact integration review; committed75e5d7fb. Its matching production build passed206.3s; live targets and screenshots remain pending.
+- QA-0070 remains open. Grant-continuity plan v2 SHA256 `64f1b3cb57eb0213d22bf4e2a24f8c64362278c86758efc4ad28f59d52543114` has independent functional/security design approval. Implementation must preserve bounded enqueue/deadline ownership and prove composed transaction/isolation behavior. The implementation is frozen in .omc/worktrees/qa-terrain-grant-continuity with independent security/functional source approval:35files, patchSHA085fe65db89eac3a958595f7db9bae577149051d9fc339248df8d3081146cce6. Integration, compilation and runtime acceptance remain pending.
+- NativeNAV1A corrected foundation is source-approved and committed541aef48 in its isolated branch only. NAV1Bpositivewiring awaits identity-plan failure-handoff correction/re-review; operator/helper and trustworthy capture remain pending.
 - Finding register:61 entries,14 open/reproduction (2S1,7S2,5S3); source-fixed/live-pending and focused states retain their existing limited meanings.
-- Next: finish QA36 publication bookkeeping; execute separate fresh analytic nonzero volume/material/intersection run; correct/review divider v3 and implement/review QA-0070/native interaction. Then continue the complete plan. Final integrated sweep, two full passes, exact-SHA CI and all release gates remain pending.
+- Next: finish QA37 publication bookkeeping; use successful7f0de44a stage for actual divider/header checks; integrate independently source-approved QA0070 after that owned app stops and verify compilation/runtime; correct/review nativeidentity plan and complete nativeinteraction/helper. Then continue the complete plan. Final integrated sweep, two full passes, exact-SHA CI and all release gates remain pending.
 
 # Historical acceptance baseline
 
@@ -209,3 +209,30 @@ QA37 exact owned stop completed; all eight recorded identities checked absent at
 2026-11-04T17:19:41Z. Raw analytic evidence remains unfrozen/unreviewed. Both fresh
 focused apps are stopped. No Rust source change or final check sweep was made
 during these live runs.
+
+
+QA37 packet is frozen and independently focused approved ([review](./reviews/qa37-full-evidence-review.md)): [manifest](../../../qa/passes/37/packet-manifest.json)
+SHA2567f6d00ee0e3b000b45b6d5978710271e054965b63f1fbd84334c2560064d6b0d,
+147payloads/10actualscreenshots; all payload hashes and actual images independently reviewed.
+Analytic derivation records area100, Raise2fill200/Lower1cut100 and inside-box
+4m3. Complete node/history bytes are unchanged at both observed returns for each
+region. UnlikeQA36, five intermediate states explicitly show petal_idNone.
+No broader/full/authority/retained-restart credit. Runtime logs1115INFO34WARN1ERROR
+retain the cut-placementHTTP504 and subsequent one-region readback/no replay.
+NativeNAV1A corrected private-reply routing passed source re-review and is
+committed541aef48 in its isolated branch only. NAV1B typed normal interaction
+wiring is in progress; operator/helper/capture still remain. Current main stage
+fa955563 is stale afterv4 and must not be launched as matching current source.
+
+
+QA37 independent focused review approves200m3fill/100m3cut, atomicv5/6facts,
+allotherTRS/propertiesunchanged, bothcomplete-node/historyreturn comparisons,
+actualpetalNone departures, and4m3sampledsolidbox/materialoverlap withloadedoutside
+control. Fivebaseprobes are explicitly request-time/epochfalse. All147payloadhashes
+and10actualimages reviewed; finiteencoding scan0patterns. NoFULL/authority/peer/
+retained/rollback/CIcredit. Publication bookkeeping remains before commit.
+Current native identity refinement proposal is in independent design review:
+`.omc/research/qa-native-navigation-node-identity-plan.md`,
+SHAe6318fe173eaba342454b1b7f729626b9b9f64b3ec587d4f2c0ca80cb3703e50.
+NAV1Bpositivewiring is not enabled. QA0070isolated35files passed security source
+review; separate functional/type/source review remains in progress.

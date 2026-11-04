@@ -31,8 +31,8 @@
   },
   "verification": {
     "conductor_review": "approved; reviews/conductor-scope-review.md",
-    "production_build": "fa955563 combined stage passed327.5s with1unusedmut warning; final sweep pending",
-    "focused_evidence": "QA34/35 committed3062a9ab; QA36 independentfocusedapproved154payloads14PNGs, publicationpending; navigationclaimcorrected; QA37activeunreviewed",
+    "production_build": "7f0de44a productionstage passed206.3s; finalintegratedsweeppending",
+    "focused_evidence": "QA36committed9df6a048; QA37independentfocusedapproved147payloads10PNGs,publicationpending; noFULLcredit",
     "final_catalog": "pending",
     "two_clean_full_passes": "pending",
     "five_live_ux_audits_and_synthesis": "pending",
@@ -41,15 +41,15 @@
     "exact_sha_ci": "pending",
     "tagged_release_download_hashes": "pending",
     "legacy_helper_fresh_launch": "passed preparation/authenticated startup in30.5s with corrected C#; exact stop exit0; adoption/restart unverified",
-    "visual_acceptance": "VIS001 focused34/35; QA36 browseheaderspositive but activePetalcontrast+10pxdividertargetsremain",
+    "visual_acceptance": "VIS001focused34/35; v4dividerandactivePetalheadercommittedsourceapproved7f0de44a; matchingproductionbuildpassed206.3s; livescreenshots pending",
     "visual_followup_review": "approved subject to exact staged evidence bytes; reviews/visual-followup-review.md",
     "native_witness": "A2 source integrated/combinedcompiled; native helper/navigation foundation isolated; actualUIA/capturepending",
-    "volume_ownership": "Combinedcompiled; QA36 partial-to-complete atomic genuinezero and command/history stability independentlyfocusedreviewed; noobserveddeparture; fullQA69acceptancepending",
-    "panel_width": "v2 compiled focusedQA36restoration/selection/camerapositive; v3AXreviewfoundResults horizontalguttergap",
-    "terrain_api_grant": "QA0070open; v2plan independentlydesignapproved; implementation/runtimepending"
+    "volume_ownership": "QA36partial/genuinezero andQA37independent200fill100cut4solidboxoverlap+observedroundtripbyte-stablehistories focusedapproved; fullQA69late/authority/retained/rollbackgatespending",
+    "panel_width": "v4design/functional/integrationapproved75e5d7fb; matching7fproductionbuildpassed206.3s; livetargetsneighborclicks/screenshots pending",
+    "terrain_api_grant": "QA0070open;35filesisolated sourcefunctional/securityapproved; integration/build/runtimepending"
   },
   "final_publication_authorized": true,
   "release_gate": "All required implementation/reviews/live QA and integrated checks complete; exact-commit CI green before immutable tag; all Release jobs and seven downloaded archive checksums verified",
-  "current_source": "fa9555632380977c41fe89ac984fcb491c47295a",
+  "current_source": "7f0de44a",
   "current_owned_apps": "none; QA36 and QA37 eight recorded identities each checked absent"
 }

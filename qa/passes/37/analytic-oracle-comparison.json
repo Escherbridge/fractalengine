@@ -1,0 +1,163 @@
+{
+  "kind": "qa37-analytic-oracles-author-derivation",
+  "reports": [
+    {
+      "case": "raise",
+      "region_id": "r1",
+      "footprint": [
+        [
+          -5.254237651824951,
+          -4.559264183044434
+        ],
+        [
+          4.745762348175049,
+          -4.559264183044434
+        ],
+        [
+          4.745762348175049,
+          5.440735816955566
+        ],
+        [
+          -5.254237651824951,
+          5.440735816955566
+        ]
+      ],
+      "area_m2": 100.0,
+      "depth_m": 2.0,
+      "independent_volume_m3": 200.0,
+      "expected": {
+        "cut_volume_m3": 0.0,
+        "fill_volume_m3": 200.0
+      },
+      "saved": {
+        "cut_volume_m3": 0.0,
+        "fill_volume_m3": 200.0
+      },
+      "atomic_save": {
+        "batch_id": "earthwork-volume-save-01M6KQYP1S3995JJ6DPW6FPXE6",
+        "committed_version": 6,
+        "first_version": 5
+      },
+      "historical_other_fields_unchanged": true,
+      "comparisons": [
+        {
+          "baseline": "owner-raise-node.jsonl",
+          "observed": "owner-raise-return-node.jsonl",
+          "raw_byte_identical": true,
+          "sha256": "e66ae39435dba03e851436cc4591011ab81adfaa5d8e7c3aa87bff3fa466794c"
+        },
+        {
+          "baseline": "owner-raise-history.jsonl",
+          "observed": "owner-raise-return-history.jsonl",
+          "raw_byte_identical": true,
+          "sha256": "4cf1c4cfb6abcbde6802f3a0003b8464c606eaad0df02fd1630b72143234a8f7"
+        },
+        {
+          "baseline": "owner-raise-node.jsonl",
+          "observed": "owner-raise-second-return-node.jsonl",
+          "raw_byte_identical": true,
+          "sha256": "e66ae39435dba03e851436cc4591011ab81adfaa5d8e7c3aa87bff3fa466794c"
+        },
+        {
+          "baseline": "owner-raise-history.jsonl",
+          "observed": "owner-raise-second-return-history.jsonl",
+          "raw_byte_identical": true,
+          "sha256": "4cf1c4cfb6abcbde6802f3a0003b8464c606eaad0df02fd1630b72143234a8f7"
+        }
+      ]
+    },
+    {
+      "case": "lower",
+      "region_id": "r2",
+      "footprint": [
+        [
+          -5.254237651824951,
+          -4.559264183044434
+        ],
+        [
+          4.745762348175049,
+          -4.559264183044434
+        ],
+        [
+          4.745762348175049,
+          5.440735816955566
+        ],
+        [
+          -5.254237651824951,
+          5.440735816955566
+        ]
+      ],
+      "area_m2": 100.0,
+      "depth_m": 1.0,
+      "independent_volume_m3": 100.0,
+      "expected": {
+        "cut_volume_m3": 100.0,
+        "fill_volume_m3": 0.0
+      },
+      "saved": {
+        "cut_volume_m3": 100.0,
+        "fill_volume_m3": 0.0
+      },
+      "atomic_save": {
+        "batch_id": "earthwork-volume-save-01M6KR4FM2GNRBXH5Y69Y1MMPD",
+        "committed_version": 6,
+        "first_version": 5
+      },
+      "historical_other_fields_unchanged": true,
+      "comparisons": [
+        {
+          "baseline": "owner-lower-node.jsonl",
+          "observed": "owner-lower-return-node.jsonl",
+          "raw_byte_identical": true,
+          "sha256": "7a8ada7a6053872d4804ba2684dca9c95128e6a5fc443c9bb5482aa660d1af66"
+        },
+        {
+          "baseline": "owner-lower-history.jsonl",
+          "observed": "owner-lower-return-history.jsonl",
+          "raw_byte_identical": true,
+          "sha256": "cd890092ab17ff4cc545572657e8e46abe838849e548144327fca8878290cad1"
+        }
+      ]
+    }
+  ],
+  "inside_overlap": {
+    "method": "independent axis-aligned interval intersection",
+    "world_aabb": {
+      "max": [
+        0.7457623481750488,
+        1.0,
+        1.4407358169555664
+      ],
+      "min": [
+        -1.2542376518249512,
+        0.0,
+        -0.5592641830444336
+      ],
+      "source": "SceneAnalysisSnapshot"
+    },
+    "five_flat_base_probes": -0.13673552870750427,
+    "expected_m3": 4.0,
+    "ui_text": "Overlap estimate: 4.000 m\u00b3",
+    "terrain_epoch_verified": false,
+    "limitation": "Five request-time probes are not a full-lattice or owner epoch witness."
+  },
+  "outside_control_native_aabb": {
+    "max": [
+      20.74576187133789,
+      1.0,
+      1.4407358169555664
+    ],
+    "min": [
+      18.74576187133789,
+      0.0,
+      -0.5592641830444336
+    ],
+    "source": "SceneAnalysisSnapshot"
+  },
+  "navigation_departure_files": [
+    "owner-raise-after-back-state.jsonl",
+    "owner-lower-departure-state.jsonl",
+    "owner-cycle2-a-departure.jsonl",
+    "owner-cycle2-b-departure.jsonl"
+  ]
+}
