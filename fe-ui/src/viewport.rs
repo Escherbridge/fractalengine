@@ -84,19 +84,24 @@ pub fn viewport_petal_space(
             egui::vec2((rect.width() - 16.0).max(0.0), 70.0),
         )),
         |ui| {
-            ui.horizontal_wrapped(|ui| {
-                if ui
-                    .add_sized([52.0, 26.0], egui::Button::new("Back"))
-                    .named(ui, "Back to petal list")
-                    .clicked()
-                {
-                    nav.back_from_petal();
-                    navigated = true;
-                }
-                if !navigated {
-                    navigated = breadcrumbs(ui, nav, 3, hierarchy);
-                }
-            });
+            egui::Frame::NONE
+                .fill(theme::BG_PANEL)
+                .inner_margin(egui::Margin::same(6))
+                .show(ui, |ui| {
+                    ui.horizontal_wrapped(|ui| {
+                        if ui
+                            .add_sized([52.0, 26.0], egui::Button::new("Back"))
+                            .named(ui, "Back to petal list")
+                            .clicked()
+                        {
+                            nav.back_from_petal();
+                            navigated = true;
+                        }
+                        if !navigated {
+                            navigated = breadcrumbs(ui, nav, 3, hierarchy);
+                        }
+                    });
+                });
         },
     );
     if navigated {
