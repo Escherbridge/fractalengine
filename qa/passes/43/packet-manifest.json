@@ -1,0 +1,66 @@
+{
+  "kind": "fractalengine-focused-qa-packet-v1",
+  "pass_id": 43,
+  "files": [
+    {
+      "file": "application-log-summary.json",
+      "bytes": 1528,
+      "sha256": "015abcee225a9e74d497bfd89f302bfab3c4f1357d62ce271166ff374fb57705"
+    },
+    {
+      "file": "cleanup-identities.json",
+      "bytes": 4307,
+      "sha256": "a50735e558eabe0fe9cb984f710454a66ed7ccf3bace4b1719b6371068af22c0"
+    },
+    {
+      "file": "credential-scan.json",
+      "bytes": 2530,
+      "sha256": "4ff35181e65e10edaf5449818eef1c870437661569a204b3da5b763b501c62e5"
+    },
+    {
+      "file": "fixture-public-detail.json",
+      "bytes": 2020,
+      "sha256": "e3a30e3bcaa7defddc2dec7d86a38243a9cadefc08978612de5ccbd37f6d8352"
+    },
+    {
+      "file": "logs/launch.log",
+      "bytes": 1668,
+      "sha256": "c0b1035521b170c843af4d2c71dcf8b206021e4fa561ec32c36432a9eb2113f5"
+    },
+    {
+      "file": "logs/stop.log",
+      "bytes": 270,
+      "sha256": "d71ce69205620ad8accde47072b15c2a19c4dae7114a97941ca4e3ad4af49a69"
+    },
+    {
+      "file": "native-observer-worker-receipt.jsonl",
+      "bytes": 1502,
+      "sha256": "a37413906ecf4097a3cca85d141cd5316c887d5c4ff4caa64e3f342b5fa080ed"
+    },
+    {
+      "file": "owned-context.json",
+      "bytes": 3049,
+      "sha256": "b7dd1e764ef606a8f787206c4a2af4184d6e3e5583ded7dd77c4d1cdce9c8c8c"
+    },
+    {
+      "file": "owner-native-observe-first.jsonl",
+      "bytes": 581,
+      "sha256": "4e395ba798f638f8bd56e8231f05d4a8e5faed75c47944c9b6d4aa01b84753cd"
+    },
+    {
+      "file": "owner-separate-owner-state.jsonl",
+      "bytes": 124,
+      "sha256": "960f87469eb9d455217c7aedb7b5cb05e82acc716584660fde42317c37b994bf"
+    },
+    {
+      "file": "packet-summary.json",
+      "bytes": 2943,
+      "sha256": "0274f5b04e1a97d85d4d81c00dd563503f4b59e492e51938dfb0288265d113f3"
+    },
+    {
+      "file": "stage-manifest.json",
+      "bytes": 1166,
+      "sha256": "964cfb6e2800478d8eaad9f71fa1b2c071a346c53f4c77b1513cd485c00aeea9"
+    }
+  ]
+}

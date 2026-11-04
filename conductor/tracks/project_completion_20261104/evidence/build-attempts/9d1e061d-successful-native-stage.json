@@ -1,0 +1,21 @@
+{
+  "kind": "successful-production-native-stage",
+  "source_commit": "9d1e061d53d91db7680819609c8049129c708eee",
+  "session": 30657,
+  "exit_code": 0,
+  "stage": ".qa/stage/9d1e061d-20261104152416011",
+  "duration_seconds": 14.1,
+  "rust_compiler_warning_or_error_diagnostics": 0,
+  "msvc_warning_or_error_diagnostics": 0,
+  "files": {
+    "9d1e061d-successful-native-stage.log": {
+      "bytes": 1860,
+      "sha256": "087160131ff30911e12fab83a27de5a1fae18f8ea735ecadf9a42a2eb935cf4c"
+    },
+    "9d1e061d-stage-manifest.json": {
+      "bytes": 1166,
+      "sha256": "27467f41f1af1aa7d97da9496b76609341acd19e7d0f5ed77b4062f77770fa6b"
+    }
+  },
+  "limits": "Native categorical diagnostics compiled; no positive provider/invoke/capture acceptance. Terminal30657 exit0 observed in root tool response, not independently archived."
+}

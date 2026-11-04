@@ -22,7 +22,7 @@ reviewed slice. Historical evidence stays linked rather than rewritten.
 
 ## P1: correctness and execution blockers
 
-- [~] Native NAV23 source corrections (EOF, aggregate budgets, real paired reseal/issuer checks and confirmed-stage pruning) passed both full v3 reviews and exact integration in8968d918. Toolchain corrections through925d7cba independently reviewed; combined Rust/native stage passed12.7s with zero compiler diagnostics. Actual helper/native/lifecycle acceptance remains pending.
+- [~] Native NAV23 source corrections (EOF, aggregate budgets, real paired reseal/issuer checks and confirmed-stage pruning) passed both full v3 reviews and exact integration in8968d918. Toolchain corrections through925d7cba independently reviewed; combined Rust/native stage passed12.7s with zero compiler diagnostics. Actual helper/native/lifecycle acceptance remains pending. QA43 refused before UIA; reviewed categorical diagnostics9d1e061d compile and QA44 narrows this to unexpected-visible-window refusal.
 
 - [ ] QA-0072: preserve guarded Owner QA observation before actual native provider handoff. QA40 three no-input UI reads failed despite state and actual screenshot succeeding; explicit ordering correction d8da3a46 is source-reviewed, compiled d8da3a46; QA41 matching tree/state/screenshot and102physicalID joins recovered, independent focused review approved. Native output suppression and Owner/scope/privacy gates remain required.
 
@@ -106,3 +106,7 @@ Required archives:
 - `fractalengine-windows-aarch64.zip`
 - `fe-relay-linux-musl-x86_64.tar.gz`
 - `fe-relay-linux-musl-aarch64.tar.gz`
+
+## Latest focused evidence, acceptance still open
+
+QA42 independently reviewed four incomplete geometry states with zero measured violations, nine actual screenshots, a 382px narrow Inspector body, valid normal UI property save, tree horizontal reachability and one Circle Back terrain-configuration/hierarchy response comparison. No FULL, journal, metric or broad tool acceptance. QA43 is independently reviewed failed-native evidence; Owner403 remains refused. Trace QA42 stored-scene recovery and diagnostic observations before accepting transform/report behavior.
