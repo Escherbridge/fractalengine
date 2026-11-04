@@ -43,6 +43,19 @@ refuse. Child enumeration is capped at 128; EnumChildWindows' return value is no
 a completeness result. Valid retained window, watcher, property/root binding and
 the documented sampled limitations remain necessary.
 
+Window discovery emits only fixed categories: window_owned_count_refused for the
+existing eight-owned-window bound, window_class_query_refused for a failed class
+query, and window_unexpected_visible_refused for any visible non-app-class window.
+The first callback refusal stays primary. Without a callback refusal, an incomplete
+EnumWindows call emits window_enumeration_refused; complete enumeration with zero
+or multiple exact-class candidates emits window_root_missing or window_roots_multiple.
+Admission still requires complete enumeration, no callback refusal and exactly one
+candidate followed by all existing window_current checks. The redundant owner/tool
+query in the unexpected-visible branch is removed because both outcomes refused;
+every such visible window still refuses. No additional discovery, raw titles,
+class strings, window counts/handles or names enter output. The controller allowlist
+accepts these six codes and retains window_ambiguous for older staged workers.
+
 ElementFromHandle is called once for that admitted HWND. Initial provider
 activation may wait only on this original outer root for a unique marked root;
 it does not replace FromHandle or repair an admitted root. Only after positive

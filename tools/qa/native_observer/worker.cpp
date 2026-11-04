@@ -228,22 +228,28 @@ void window_current(HWND window, DWORD pid) {
 }
 
 HWND discover_window(DWORD pid) {
-    struct Windows { DWORD pid; std::array<HWND, 8> candidates{}; unsigned count = 0, candidate_count = 0; bool refused = false; } windows{pid};
+    struct Windows {
+        DWORD pid;
+        std::array<HWND, 8> candidates{};
+        unsigned count = 0, candidate_count = 0;
+        const char* refusal = nullptr;
+        void refuse(const char* code) { if (!refusal) refusal = code; }
+    } windows{pid};
     BOOL complete = EnumWindows([](HWND window, LPARAM value) -> BOOL {
         auto data = reinterpret_cast<Windows*>(value);
         DWORD owner = 0; GetWindowThreadProcessId(window, &owner);
         if (owner != data->pid) return TRUE;
-        if (++data->count > 8) { data->refused = true; return FALSE; }
+        if (++data->count > 8) { data->refuse("window_owned_count_refused"); return FALSE; }
         std::array<wchar_t, 256> name{};
-        if (!GetClassNameW(window, name.data(), static_cast<int>(name.size()))) { data->refused = true; return FALSE; }
+        if (!GetClassNameW(window, name.data(), static_cast<int>(name.size()))) { data->refuse("window_class_query_refused"); return FALSE; }
         if (std::wstring_view(name.data()) == L"fractalengine") data->candidates[data->candidate_count++] = window;
-        else if (IsWindowVisible(window)) {
-            if (GetWindow(window, GW_OWNER) || (GetWindowLongPtrW(window, GWL_EXSTYLE) & WS_EX_TOOLWINDOW)) data->refused = true;
-            else data->refused = true;
-        }
+        else if (IsWindowVisible(window)) data->refuse("window_unexpected_visible_refused");
         return TRUE;
     }, reinterpret_cast<LPARAM>(&windows));
-    require(complete && !windows.refused && windows.candidate_count == 1, "window_ambiguous");
+    if (windows.refusal) throw Refusal{windows.refusal};
+    require(complete, "window_enumeration_refused");
+    require(windows.candidate_count != 0, "window_root_missing");
+    require(windows.candidate_count == 1, "window_roots_multiple");
     window_current(windows.candidates[0], pid);
     return windows.candidates[0];
 }
