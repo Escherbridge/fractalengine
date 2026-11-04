@@ -6,10 +6,17 @@ using namespace native_observer;
 
 namespace {
 
+struct ServiceStyleRefusal : Refusal {
+    DWORD style;
+    explicit ServiceStyleRefusal(DWORD value) : Refusal{"window_service_style_refused"}, style(value) {}
+};
+
 struct Receipt {
     const char* code = "worker_refused";
     bool spent = true, invoke_entered = false, method_returned = false;
     bool output_attempted = false;
+    bool parsed_observe = false;
+    std::optional<DWORD> service_style;
     HRESULT method = S_OK;
     std::string root_hash = std::string(64, '0'), target_hash = std::string(64, '0');
     uint64_t watch_first = 0, watch_last = 0;
@@ -250,8 +257,10 @@ void service_current(HWND window, DWORD pid, DWORD thread) {
         && IsWindowVisible(window), "window_service_identity_refused");
     RECT outer{}, client{};
     require(GetWindowRect(window, &outer) && GetClientRect(window, &client), "window_service_geometry_refused");
-    auto refusal = winit_service_signature_refusal(static_cast<DWORD>(GetWindowLongPtrW(window, GWL_STYLE)),
-        static_cast<DWORD>(GetWindowLongPtrW(window, GWL_EXSTYLE)), outer, client);
+    const DWORD style = static_cast<DWORD>(GetWindowLongPtrW(window, GWL_STYLE));
+    const DWORD extended = static_cast<DWORD>(GetWindowLongPtrW(window, GWL_EXSTYLE));
+    auto refusal = winit_service_signature_refusal(style, extended, outer, client);
+    if (refusal && std::string_view(refusal) == "window_service_style_refused") throw ServiceStyleRefusal{style};
     if (refusal) throw Refusal{refusal};
     no_native_children(window, "window_service_children_refused");
 }
@@ -782,6 +791,11 @@ void emit(Receipt& receipt) {
         {"root_sha256", Atom::string(receipt.root_hash)}, {"target_sha256", Atom::string(receipt.target_hash)},
         {"watch_first", Atom::number(receipt.watch_first)}, {"watch_last", Atom::number(receipt.watch_last)},
     };
+    if (receipt.service_style && receipt.parsed_observe && !receipt.spent && !receipt.invoke_entered
+        && !receipt.method_returned && receipt.method == S_OK
+        && std::string_view(receipt.code) == "window_service_style_refused") {
+        result.emplace("service_style_u32", Atom::number(*receipt.service_style));
+    }
     auto bytes = canonical(result) + '\n';
     require(bytes.size() <= 262144, "output_bound");
     DWORD written = 0;
@@ -800,8 +814,12 @@ int wmain(int argc, wchar_t**) {
         require(argc == 1, "wire_invalid");
         auto request = Request::parse(read_pipe());
         receipt.spent = request.invoke;
+        receipt.parsed_observe = !request.invoke;
         deadline->bind(request.deadline);
         operation(request, *deadline, receipt);
+    } catch (const ServiceStyleRefusal& refusal) {
+        receipt.code = refusal.code;
+        if (receipt.parsed_observe) receipt.service_style = refusal.style;
     } catch (const Refusal& refusal) { receipt.code = refusal.code; }
     catch (...) { receipt.code = "worker_refused"; }
     if (!receipt.output_attempted) {

@@ -86,6 +86,35 @@ coordinate values or output fields. The controller retains the legacy combined
 window_service_signature_refused code for older stages. This diagnosis does not
 relax any exact predicate or identify the failed component in the prior QA46 run.
 
+## Optional service style refusal diagnostic
+
+QA48 adds only optional service_style_u32 to the otherwise exact existing result
+shape. It is a JSON integer in0..4294967295, including zero; bool/float/string/null,
+overflow, duplicate and unknown keys refuse. The worker captures the normalized
+DWORD from its existing style read after exact service identity and rectangle-read
+checks. The strict style comparison, extended-style/rectangle/child predicates and
+their order remain. No additional native read, raw window identity, string, error
+text, selector or action is exposed. This is one terminal mismatch sample, not a
+style timeline or proof that subsequent comparisons passed. Zero is not proof of
+successful style acquisition or safe admission.
+
+The local ServiceStyleRefusal subtype remains compatible with generic Refusal,
+including the unchanged post-Invoke catch that preserves submitted_state_changed
+after S_OK. Only its top-level catch for a successfully parsed observe request
+retains the DWORD. Emit and controller validation additionally require the exact
+window_service_style_refused code, raw no-spent/no-Invoke/no-return flags and zero
+HRESULT; controller requires actual observe mode and confirmed helper exit2 before
+its independent ledger-spent override. A prior spent ledger remains spent. Invoke,
+success, other refusal and malformed-request outputs cannot carry the field.
+
+Existing sealed workers without the field remain accepted. Older strict controllers
+reject extended output. Stage/helper source and binary pinning, request/ledger/
+bootstrap schemas, byte bounds and success/exit rules remain. The existing offline
+scenario exercises the production output parser and independent spent ledger;
+it does not execute native sampling or establish application/Invoke behavior.
+Fresh root-owned failed-code/exit/value evidence and SDK interpretation remain
+necessary before any separately reviewed style policy change.
+
 WindowSet holds original root/service HWNDs and threads. Its const current method
 compares each fully validated census to those originals; initial service absence
 is immutable too. It never adopts a new service or root or repairs a signature.

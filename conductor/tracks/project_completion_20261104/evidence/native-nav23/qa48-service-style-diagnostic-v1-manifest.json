@@ -1,0 +1,36 @@
+{
+    "kind":  "qa48-service-style-diagnostic-source-v1",
+    "baseline":  "a16eab87032a41d012e6936776d8dcd9228b7a54",
+    "plan_sha256":  "fe9ca08e23a9c7743a02ff13592fce3575a5bd7d0f4ef685129b264ef7a36565",
+    "files":  [
+                  {
+                      "file":  "tools/qa/native_observer/worker.cpp",
+                      "raw":  ".omc/research/qa48-service-style-diagnostic-source-v1/raw/worker.cpp",
+                      "bytes":  45633,
+                      "sha256":  "8c7f7bffbcc011aa15c7fc2bfb77090b4067d6af32e1222aa4b5c999d31c27bc"
+                  },
+                  {
+                      "file":  "tools/qa/native_observer/controller.py",
+                      "raw":  ".omc/research/qa48-service-style-diagnostic-source-v1/raw/controller.py",
+                      "bytes":  16856,
+                      "sha256":  "5c7b1842df9745805981bb1d9f91befde01f9434a2db3566ae253030cf068f56"
+                  },
+                  {
+                      "file":  "tools/qa/native_observer/scenario.py",
+                      "raw":  ".omc/research/qa48-service-style-diagnostic-source-v1/raw/scenario.py",
+                      "bytes":  10143,
+                      "sha256":  "0b6f2482fdbde1ed2a73f13f34b00156760672f4cbc3719484eaa6e95b591252"
+                  },
+                  {
+                      "file":  "tools/qa/native_observer/AGENTS.md",
+                      "raw":  ".omc/research/qa48-service-style-diagnostic-source-v1/raw/AGENTS.md",
+                      "bytes":  29298,
+                      "sha256":  "bbfab95de071abfd811a7875faa9d9573b073688b621a920e17ae14fe77dcd44"
+                  }
+              ],
+    "patch":  {
+                  "file":  ".omc/research/qa48-service-style-diagnostic-source-v1/source.diff",
+                  "bytes":  11040,
+                  "sha256":  "e8c0ce8f28924f0aaa9c53fe5ee86e49e258ac4e5ba077b412282dd16c3b89c3"
+              }
+}

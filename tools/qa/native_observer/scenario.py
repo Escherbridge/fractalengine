@@ -106,6 +106,42 @@ def exercise():
 
     import fe
     from . import controller
+    style_result = {"schema": "fe-native-worker-result-v1", "code": "window_service_style_refused",
+                    "attempt_spent": False, "invoke_entered": False, "method_returned": False, "hr": "00000000",
+                    "root_sha256": "0" * 64, "target_sha256": "0" * 64, "watch_first": 0, "watch_last": 0}
+    record("legacy-style-refusal-without-value", controller.worker_output(
+        encode(style_result), observe=True, helper_exit_code=2) == style_result)
+    for value in (0, (1 << 32) - 1, 0x94000000):
+        sample = dict(style_result, service_style_u32=value)
+        parsed = controller.worker_output(encode(sample), observe=True, helper_exit_code=2)
+        record("style-u32-" + str(value), parsed == sample)
+    record("observe-diagnostic-does-not-reset-spent-ledger", ledger.spent() and not parsed["attempt_spent"])
+    invalid_style_cases = []
+    for value in (True, False, 1.0, "1", None, -1, 1 << 32):
+        invalid_style_cases.append(("type-range-" + repr(value), dict(style_result, service_style_u32=value), True, 2))
+    sample = dict(style_result, service_style_u32=0)
+    for key, value in (("code", "observed"), ("code", "window_service_exstyle_refused"), ("hr", "80004005"),
+                       ("attempt_spent", True), ("invoke_entered", True), ("method_returned", True), ("extra", 0)):
+        changed = dict(sample)
+        changed[key] = value
+        invalid_style_cases.append(("wrong-" + key + "-" + str(value), changed, True, 2))
+    invalid_style_cases.append(("invoke-mode", sample, False, 2))
+    for exit_code in (0, 3, True):
+        invalid_style_cases.append(("exit-" + str(exit_code), sample, True, exit_code))
+    for name, changed, observe, exit_code in invalid_style_cases:
+        refused = False
+        try:
+            controller.worker_output(encode(changed), observe=observe, helper_exit_code=exit_code)
+        except Refused:
+            refused = True
+        record("style-diagnostic-" + name + "-refused", refused)
+    refused = False
+    try:
+        duplicate = encode(sample)[:-1] + b',"service_style_u32":1}'
+        controller.worker_output(duplicate, observe=True, helper_exit_code=2)
+    except Refused:
+        refused = True
+    record("style-diagnostic-duplicate-key-refused", refused)
     called = []
     def native_entry(args):
         called.append((args.run, args.operation, args.member))

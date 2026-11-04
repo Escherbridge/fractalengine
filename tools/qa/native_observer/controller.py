@@ -162,9 +162,10 @@ class Context:
         require(time.monotonic() < deadline, "operation_deadline")
 
 
-def worker_output(raw):
+def worker_output(raw, *, observe, helper_exit_code):
     value = decode(raw, MAX_OUTPUT)
-    require(set(value) == OUTPUT_KEYS and value["schema"] == "fe-native-worker-result-v1"
+    require(set(value) in (OUTPUT_KEYS, OUTPUT_KEYS | {"service_style_u32"})
+            and value["schema"] == "fe-native-worker-result-v1"
             and value["code"] in WORKER_CODES
             and all(type(value[key]) is bool for key in ("attempt_spent", "invoke_entered", "method_returned"))
             and isinstance(value["hr"], str) and re.fullmatch(r"[0-9a-f]{8}", value["hr"])
@@ -172,6 +173,12 @@ def worker_output(raw):
             and all(type(value[key]) is int and 0 <= value[key] <= (1 << 64) - 1 for key in ("watch_first", "watch_last"))
             and value["watch_first"] <= value["watch_last"], "worker_result_refused")
     require(not value["method_returned"] or value["invoke_entered"], "worker_result_refused")
+    if "service_style_u32" in value:
+        require(type(value["service_style_u32"]) is int and 0 <= value["service_style_u32"] <= (1 << 32) - 1
+                and observe is True and type(helper_exit_code) is int and helper_exit_code == 2
+                and value["code"] == "window_service_style_refused" and value["hr"] == "00000000"
+                and not value["attempt_spent"] and not value["invoke_entered"] and not value["method_returned"],
+                "worker_result_refused")
     return value
 
 
@@ -232,7 +239,7 @@ def execute(args):
         record.append_durable(encode(terminal) + b"\n", record.size(), MAX_LEDGER)
         spent = context.ledger.spent() if context.ledger is not None else None
         require(result.code == "worker_exited", result.code)
-        value = worker_output(result.raw)
+        value = worker_output(result.raw, observe=not invoke, helper_exit_code=result.exit_code)
         files.check_live()
         require(not invoke or spent, "durable_attempt_unconfirmed")
         require(invoke or not value["invoke_entered"] and not value["attempt_spent"], "observe_invocation_refused")
