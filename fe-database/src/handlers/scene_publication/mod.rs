@@ -1,6 +1,7 @@
 //! Committed scene publication and bounded recovery; see AGENTS.md.
 
 mod current;
+mod diagnostics;
 mod inbound;
 mod publisher;
 pub(crate) mod wire;
@@ -17,6 +18,14 @@ pub(crate) use publisher::{publish_after_commit, publish_tombstones_after_commit
 
 use crate::repo::Db;
 use serde_json::Value;
+
+#[cfg(test)]
+pub(crate) fn publication_transaction_error(
+    errors: std::collections::HashMap<usize, surrealdb::Error>,
+    guard_labels: &[&'static str],
+) -> anyhow::Error {
+    diagnostics::Transaction::Publication.failed(errors, guard_labels)
+}
 
 pub(crate) async fn read_clock(db: &Db, id: &str) -> anyhow::Result<Vec<Value>> {
     let mut response = db.query("SELECT node_id, hlc, publisher, row_fingerprint FROM node_scene_clock WHERE node_id=$scene_id LIMIT 2 TIMEOUT 5s")

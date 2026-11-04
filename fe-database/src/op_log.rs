@@ -4854,6 +4854,52 @@ mod tests {
                 diagnostic.contains("statement 2") && diagnostic.contains("unrecognized_database_error")
             );
             assert!(!diagnostic.contains("secret") && diagnostic.len() < 256);
+            let mut diagnostic = source.query("BEGIN TRANSACTION; IF false { THROW 'controlled nonfailing guard' }; IF true { THROW 'committed scene row changed' }; COMMIT TRANSACTION;").await.unwrap();
+            let diagnostic = scene::publication_transaction_error(
+                diagnostic.take_errors(),
+                &["authority_ancestry", "node_projection"],
+            )
+            .to_string();
+            assert!(
+                diagnostic.starts_with("scene publication transaction")
+                    && diagnostic.contains("stage node_projection")
+                    && diagnostic.contains("reason node_changed"),
+                "{diagnostic}"
+            );
+            assert!(!diagnostic.contains("not executed due to a failed transaction"));
+            for (index, message, reason) in [
+                (1, "local scene journal changed", "journal_changed"),
+                (2, "local tombstone proof changed", "tombstone_proof_changed"),
+                (3, "scene asset changed", "asset_metadata_changed"),
+                (9, "secret stored value must never escape", "unrecognized_database_error"),
+            ] {
+                let diagnostic = scene::publication_transaction_error(
+                    std::collections::HashMap::from([
+                        (0, surrealdb::Error::query("secret rollback echo".into(), Some(surrealdb::types::QueryError::NotExecuted))),
+                        (index, surrealdb::Error::thrown(message.into())),
+                    ]),
+                    &["local_proof", "local_proof", "asset_metadata"],
+                )
+                .to_string();
+                assert!(diagnostic.contains(&format!("reason {reason}")), "{diagnostic}");
+                assert!(!diagnostic.contains("secret") && diagnostic.len() < 256);
+                if index == 9 {
+                    assert!(diagnostic.contains("stage unexpected_statement"));
+                }
+            }
+            let diagnostic = scene::publication_transaction_error(
+                std::collections::HashMap::from([(0, surrealdb::Error::query(
+                    "secret rollback echo".into(),
+                    Some(surrealdb::types::QueryError::NotExecuted),
+                ))]),
+                &[],
+            )
+            .to_string();
+            assert!(diagnostic.contains("reason transaction_aborted") && !diagnostic.contains("secret"));
+            assert_eq!(
+                scene::publication_transaction_error(Default::default(), &[]).to_string(),
+                "scene publication transaction error_unavailable"
+            );
             // Schema-less legacy type witnesses stay exact without rebinding decoded JSON.
             let metadata_db = probe_db().await;
             for mutation in [

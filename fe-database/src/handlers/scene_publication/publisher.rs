@@ -26,6 +26,7 @@ pub(crate) struct PreparedSceneRow {
     verse_id: String,
     bytes: Vec<u8>,
     statements: Vec<String>,
+    guard_labels: Vec<&'static str>,
     bindings: Vec<(String, Value)>,
     dependencies: Vec<(String, String, Vec<u8>)>,
     deferred_dependencies: usize,
@@ -58,6 +59,7 @@ pub(crate) async fn prepare(db: &Db, id: &str, actor: &str) -> anyhow::Result<Pr
     )
     .await?;
     let (mut statements, mut bindings) = authority.into_parts();
+    let mut guard_labels = vec!["authority_ancestry"; statements.len()];
     let current = super::super::node_history::normalize_snapshot(row.clone())?;
     let latest = super::super::node_history::latest(db, id).await?;
     let (hlc, proof, proof_binding) = if let Some(fact) = latest.filter(|fact| {
@@ -136,6 +138,13 @@ pub(crate) async fn prepare(db: &Db, id: &str, actor: &str) -> anyhow::Result<Pr
         "IF array::len((SELECT VALUE node_id FROM node WHERE node_id=$scene_id AND petal_id=$scene_petal AND position=<geometry<point>> [$scene_x,$scene_z])) != 1 { THROW 'committed scene ancestry or point changed'; }".into(),
         proof.into(),CLOCK_FENCE.into(),CLOCK_WRITE.into(),
     ]);
+    guard_labels.extend([
+        "node_projection",
+        "point_ancestry",
+        "local_proof",
+        "scene_clock",
+        "clock_write",
+    ]);
     bindings.extend([
         ("scene_id".into(), json!(id)),
         ("scene_petal".into(), json!(petal)),
@@ -149,6 +158,7 @@ pub(crate) async fn prepare(db: &Db, id: &str, actor: &str) -> anyhow::Result<Pr
     ]);
     let (dependencies, deferred_dependencies) =
         dependencies(db, &row, &scope, &mut statements, &mut bindings).await?;
+    guard_labels.resize(statements.len(), "asset_metadata");
     wire::normalize_optional_columns(&mut row);
     row[wire::MARKER] = clock.marker();
     wire::validate_complete(&row)?;
@@ -158,6 +168,7 @@ pub(crate) async fn prepare(db: &Db, id: &str, actor: &str) -> anyhow::Result<Pr
         verse_id: verse,
         bytes: serde_json::to_vec(&row)?,
         statements,
+        guard_labels,
         bindings,
         dependencies,
         deferred_dependencies,
@@ -235,7 +246,15 @@ impl PreparedSceneRow {
         for binding in self.bindings {
             query = query.bind(binding);
         }
-        query.await?.check()?;
+        let mut response = query
+            .await
+            .map_err(|error| super::diagnostics::Transaction::Publication.request_failed(error))?;
+        let errors = response.take_errors();
+        if !errors.is_empty() {
+            return Err(
+                super::diagnostics::Transaction::Publication.failed(errors, &self.guard_labels)
+            );
+        }
         for (table, id, bytes) in self.dependencies {
             enqueue(
                 blobs,

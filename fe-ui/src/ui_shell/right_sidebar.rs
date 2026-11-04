@@ -607,7 +607,7 @@ fn render_options_section(
             ui.separator();
         }
         if route == crate::editor_batch::TransformRoute::Waiting && node_mgr.selection_count() > 0 {
-            ui.label("Loading stored selection state before enabling object transforms.");
+            crate::editor_batch::ui::render_read_status(ui, ui_mgr);
         }
         let capability = ui_mgr
             .editor_batch

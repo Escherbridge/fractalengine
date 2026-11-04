@@ -1940,3 +1940,14 @@ returns before that hook. Freeze retires unsent volume intent through
 clear_read_models but retains accepted unknown saves independently of UiManager.
 Bounded terminal DB drains let that owner recognize exact outcomes without any
 current scene projection or new command; no generic joined-thread proof is used.
+
+## Selected terrain diagnostic without report demand
+
+The selected diagnostic returns scene_snapshot_unavailable for an absent or
+no-Petal SceneAnalysisSnapshot. Its producer collects only for a resolved volume
+footprint, independently of ordinary Node selection or report-panel visibility.
+A real snapshot for another Petal still returns stale scene_petal_mismatch.
+No diagnostic forces collection, reveals another object or weakens ViewScope,
+selected marker/tree, terrain, geometry or epoch checks. The existing grounded
+camera journey authors both empty-snapshot forms alongside the foreign-Petal
+refusal; actual matching report demand remains a live verification gate.

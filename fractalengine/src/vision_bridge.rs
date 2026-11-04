@@ -2763,6 +2763,22 @@ mod tests {
             assert_eq!(refused["status"], "unavailable");
             assert!(refused.get("probes").is_none());
         }
+        let empty_scene = SceneAnalysisSnapshot::default();
+        for empty in [None, Some(&empty_scene)] {
+            let unavailable = diagnostic(
+                Some("selected"),
+                Some("p"),
+                empty,
+                Some(active),
+                Some(source),
+                Some(&heights),
+                124,
+            );
+            assert_eq!(unavailable["status"], "unavailable");
+            assert_eq!(unavailable["reason"], "scene_snapshot_unavailable");
+            assert!(unavailable.get("world_aabb").is_none());
+            assert!(unavailable.get("probes").is_none());
+        }
         scene.petal_id = Some("foreign".into());
         let stale = diagnostic(
             Some("selected"),

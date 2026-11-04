@@ -311,9 +311,7 @@ fn inspector_tab_body(
                     ui.label("A path point or segment is selected. Use its Options controls or clear the path sub-selection to transform the whole object.");
                 }
                 crate::editor_batch::TransformRoute::Waiting => {
-                    ui.label(
-                        "Loading the selected object's stored state before enabling transforms.",
-                    );
+                    crate::editor_batch::ui::render_read_status(ui, ui_mgr);
                 }
             }
             ui.add_space(2.0);
@@ -4987,6 +4985,61 @@ mod tests {
                         "rendering a selection cannot mutate it"
                     );
                 }
+            }
+            {
+                let mut single = NodeManager::default();
+                single.reduce_selection(Some("petal"), vec![SelectionTarget {
+                    entity: Entity::from_bits(1), node_id: "a".into(),
+                }], SelectionMode::Replace).unwrap();
+                let mut waiting = UiManager::default();
+                waiting.editor_batch.maintain(&nav, &single, &hierarchy, &batch_tx);
+                let DbCommand::ReadEditorBatch { correlation_id, .. } = batch_rx.try_recv().unwrap() else {
+                    panic!("single selection owns a pure read")
+                };
+                waiting.editor_batch.route(
+                    &DbResult::RequestFailed { correlation_id, error: "Selection read refused: controlled fence".into() },
+                    &nav, |_| Ok(()), |_| Ok(()), &batch_tx,
+                ).unwrap_err();
+                waiting.editor_batch.maintain(&nav, &single, &hierarchy, &batch_tx);
+                assert!(batch_rx.try_recv().is_err(), "terminal read failure must not retry automatically");
+                let ctx = egui::Context::default();
+                ctx.enable_accesskit();
+                let mut time = 0.0;
+                let mut draw = |events: Vec<egui::Event>, waiting: &mut UiManager| {
+                    time += 0.05;
+                    crate::ui_shell::layout_policy::begin_frame(&ctx, true);
+                    let output = ctx.run(egui::RawInput {
+                        screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(260.0, 600.0))),
+                        time: Some(time), events, ..Default::default()
+                    }, |ctx| {
+                        egui::CentralPanel::default().show(ctx, |ui| {
+                            crate::editor_batch::ui::render_read_status(ui, waiting);
+                        });
+                    });
+                    (output, crate::ui_shell::layout_policy::observations(&ctx))
+                };
+                let (output, controls) = draw(vec![], &mut waiting);
+                let texts = output.shapes.iter().filter_map(|shape| match &shape.shape {
+                    egui::epaint::Shape::Text(text) => Some(text.galley.text()), _ => None,
+                }).collect::<Vec<_>>();
+                assert!(texts.iter().any(|text| text.contains("controlled fence")));
+                assert!(!texts.iter().any(|text| text.contains("Loading")));
+                let id = output.platform_output.accesskit_update.as_ref().unwrap().nodes.iter()
+                    .find_map(|(id, node)| (node.label() == Some("Refresh selected objects")).then_some(id.0)).unwrap();
+                let point = controls.controls.iter().find(|control| control.id == id).unwrap().rect.center();
+                draw(vec![egui::Event::PointerMoved(point)], &mut waiting);
+                for pressed in [true, false] {
+                    draw(vec![egui::Event::PointerButton {
+                        pos: point, button: egui::PointerButton::Primary, pressed,
+                        modifiers: egui::Modifiers::NONE,
+                    }], &mut waiting);
+                }
+                assert!(waiting.editor_batch.error.is_none());
+                assert!(waiting.drain_actions().is_empty(), "refresh does not submit an edit");
+                waiting.editor_batch.maintain(&nav, &single, &hierarchy, &batch_tx);
+                assert!(matches!(batch_rx.try_recv().unwrap(), DbCommand::ReadEditorBatch { .. }));
+                assert!(batch_rx.try_recv().is_err());
+                assert!(waiting.editor_batch.capture(&nav, &single).is_none(), "refresh does not fabricate a capture");
             }
             {
                 let points = json!([[0.0, 0.0, 0.0, 17.25], [2.0, 0.0, 0.0, 18.5]]);

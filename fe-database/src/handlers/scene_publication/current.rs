@@ -126,12 +126,9 @@ pub(crate) async fn read_current_and_need(
     for binding in bindings {
         query = query.bind(binding);
     }
-    let mut response = query.await.map_err(|error| {
-        anyhow::anyhow!(
-            "scene current read transaction request_failed kind {}",
-            error.kind_str()
-        )
-    })?;
+    let mut response = query
+        .await
+        .map_err(|error| super::diagnostics::Transaction::CurrentRead.request_failed(error))?;
     let errors = response.take_errors();
     if !errors.is_empty() {
         return Err(current_read_transaction_error(errors, &guard_labels));
@@ -205,55 +202,7 @@ pub(crate) fn current_read_transaction_error(
     errors: std::collections::HashMap<usize, surrealdb::Error>,
     guard_labels: &[&'static str],
 ) -> anyhow::Error {
-    use surrealdb::types::{ErrorDetails, QueryError};
-    let mut ordered: Vec<_> = errors.into_iter().collect();
-    ordered.sort_by_key(|(index, _)| *index);
-    let selected = ordered
-        .iter()
-        .find(|(_, error)| {
-            !matches!(
-                error.details(),
-                ErrorDetails::Query(Some(QueryError::NotExecuted))
-            )
-        })
-        .or_else(|| ordered.first());
-    let Some((index, error)) = selected else {
-        return anyhow::anyhow!("scene current read transaction error_unavailable");
-    };
-    let stage = if *index == 0 {
-        "begin"
-    } else if let Some(label) = guard_labels.get(*index - 1) {
-        *label
-    } else if *index == guard_labels.len() + 1 {
-        "commit"
-    } else {
-        "unexpected_statement"
-    };
-    let message = error
-        .message()
-        .strip_prefix("An error occurred: ")
-        .unwrap_or(error.message());
-    let reason = if matches!(error.details(), ErrorDetails::Thrown) {
-        match message {
-            "hierarchy authority changed" => "authority_changed",
-            "ambiguous hierarchy identity" => "ancestry_ambiguous",
-            "hierarchy ancestry changed" => "ancestry_changed",
-            "replica current row changed" => "node_changed",
-            "replica current point or ancestry changed" => "point_or_ancestry_changed",
-            "scene version changed" => "scene_clock_changed",
-            "replica current asset metadata changed" => "asset_metadata_changed",
-            _ => "unrecognized_database_error",
-        }
-    } else {
-        match error.details() {
-            ErrorDetails::Query(Some(QueryError::NotExecuted)) => "transaction_aborted",
-            ErrorDetails::Query(Some(QueryError::TimedOut { .. })) => "query_timed_out",
-            ErrorDetails::Query(Some(QueryError::Cancelled)) => "query_cancelled",
-            ErrorDetails::Query(Some(QueryError::TransactionConflict)) => "transaction_conflict",
-            _ => "unrecognized_database_error",
-        }
-    };
-    anyhow::anyhow!("scene current read transaction statement {index} stage {stage} kind {} reason {reason} errors {}", error.kind_str(), ordered.len())
+    super::diagnostics::Transaction::CurrentRead.failed(errors, guard_labels)
 }
 
 const ASSET_METADATA_COLUMNS: &str =

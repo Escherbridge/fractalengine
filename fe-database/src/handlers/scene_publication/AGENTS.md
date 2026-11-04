@@ -238,3 +238,21 @@ two independent reads. The existing operation journey covers unchanged absent fi
 NONE-to-NULL and integer-to-float changes in schema-less legacy fixtures, every captured
 field, creation/deletion and an unrelated descriptive rename. Existing full current/
 legacy/Viewer journeys still apply; source authoring is not runtime evidence.
+
+## Shared outbound/current transaction diagnostics
+
+diagnostics::Transaction owns deterministic indexed-error selection for current
+reads and the final outbound publication transaction. It skips earlier
+NotExecuted rollback echoes when a primary error exists, retaining a deterministic
+echo fallback. Only fixed operation/stage/reason labels, statement index, static
+SDK kind and error count leave the classifier; request errors expose only fixed
+operation and SDK kind. Unknown SQL/error text, bindings, rows and cause chains
+are never interpolated. Publication's parallel labels describe its unchanged
+authority, node, point, local proof, clock/write and asset guard statements.
+The transaction SQL/bindings and post-success enqueue order are unchanged.
+
+QA42's actual failed guard remains unknown until a fresh controlled run supplies
+the new diagnostic. No guard is waived and no publication failure reverses a
+successful local commit. The existing operation journey extends its actual
+rollback and redaction cases to the shared publication classifier; these cases
+are authored, not executed acceptance.

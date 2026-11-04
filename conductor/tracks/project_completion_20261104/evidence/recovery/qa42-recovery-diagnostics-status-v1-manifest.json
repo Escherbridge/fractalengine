@@ -1,0 +1,98 @@
+{
+  "kind": "qa42-recovery-diagnostics-status-source-v1",
+  "baseline": "a77cabbee465a690749eba684d8299e51c716b82",
+  "new_registered_tests": 0,
+  "execution": "source-only; no compiler/parser/tests/apps/API/DB/native execution",
+  "files": [
+    {
+      "path": "fe-database/src/handlers/scene_publication/AGENTS.md",
+      "bytes": 18878,
+      "sha256": "b76556aac8fa240d9f208fbeb9839d667fd2049acc2fe4b41339d72748b262b7",
+      "baseline_sha256": "c2f04c01f701100a44196d62515061e5b2f1f13eeeeff0f253a2cf27d4526d26"
+    },
+    {
+      "path": "fe-database/src/handlers/scene_publication/current.rs",
+      "bytes": 15353,
+      "sha256": "0a6aad038ebfdc229fe0b3c1852a9bbedce553903e6158518e082a1b04c5bfde",
+      "baseline_sha256": "819c13fd45c5a2c3d505ad93ea08b9ea6e38dbf7576863ce7f3fd807462ab745"
+    },
+    {
+      "path": "fe-database/src/handlers/scene_publication/diagnostics.rs",
+      "bytes": 3428,
+      "sha256": "59a32dd0e178abad9360d70985ffcf65f34555b0c88ef46de656a47f04e4fef5",
+      "baseline_sha256": null
+    },
+    {
+      "path": "fe-database/src/handlers/scene_publication/mod.rs",
+      "bytes": 3027,
+      "sha256": "2654706c2f9399279b4d47e08bb6b790d065a45724f66b994901d39656d26706",
+      "baseline_sha256": "3c65314d64e2af7eb01c104eca6bdfd6b26667228c084eea56cc8935620d3258"
+    },
+    {
+      "path": "fe-database/src/handlers/scene_publication/publisher.rs",
+      "bytes": 18108,
+      "sha256": "3153724566633666ab748aa0550fe5e11a1e06c88b39e429a2592080c31d54d5",
+      "baseline_sha256": "366bc0fd0e1a3812791460c9e5d59a95b7e0d76b4aa0b37688256646ccc3286b"
+    },
+    {
+      "path": "fe-database/src/op_log.rs",
+      "bytes": 334430,
+      "sha256": "bbd204e81870828d6a5cd59325fab71443d83b7381d8c2ef1e115a24dd7fa904",
+      "baseline_sha256": "4dd23ef87cff546e0c0e772d1c77e837aba596236a8d51cee8cf3aeecf1fb351"
+    },
+    {
+      "path": "fe-ui/src/editor_batch/AGENTS.md",
+      "bytes": 16882,
+      "sha256": "2450c6cf9057d5ce92d212ffb09d29d008f7a4e6e654df5af432902f42b54f40",
+      "baseline_sha256": "3bf490d520786c5ed414f8c84624263d7e3a3e46689a1eb4747c90785177ffef"
+    },
+    {
+      "path": "fe-ui/src/editor_batch/ui.rs",
+      "bytes": 21883,
+      "sha256": "770dd6e5af27665b1839210a8a143106584b9c112986e1abcc2c718c5c368f66",
+      "baseline_sha256": "8be849ac6ac0bac4b58fbdba1f0dbbec0f8acc4fe5d24191731df0ff8faec583"
+    },
+    {
+      "path": "fe-ui/src/panels/AGENTS.md",
+      "bytes": 70237,
+      "sha256": "25de7d387fe4174d3ef557cad59babf8f32d944de452ccb433e31ebc4f83092f",
+      "baseline_sha256": "9d48882293927bc641ce62e5ba81ba1f25181f25eb5bfcf36de1d0a43d5e2f53"
+    },
+    {
+      "path": "fe-ui/src/panels/inspector.rs",
+      "bytes": 281666,
+      "sha256": "b06c09f227db45fd2aa248ef846654086d8493db920f2456c944262ae5777c12",
+      "baseline_sha256": "03a2c390208a2331b922cda279ea492ae327c8be6a2e375d0cb5e7b73787071d"
+    },
+    {
+      "path": "fe-ui/src/ui_shell/AGENTS.md",
+      "bytes": 50083,
+      "sha256": "7c5f8e4733b9439e07119cf31d3d5cacc1fa415e1da6b90f5efb2ba7fa32dfd3",
+      "baseline_sha256": "c80afdf4dfcb5325b99d7f1ebb717c1ca0a09628a55b405b653a48fb6e643d73"
+    },
+    {
+      "path": "fe-ui/src/ui_shell/right_sidebar.rs",
+      "bytes": 128394,
+      "sha256": "582ead889d53c85a5bcb2283a82e7acf32fecb2990f29024217a8de457eb8570",
+      "baseline_sha256": "c60b7e6c6c588d41ed9b08cf99389596ed33726c52863bdcd35705e8a40e4e50"
+    },
+    {
+      "path": "fractalengine/src/AGENTS.md",
+      "bytes": 133321,
+      "sha256": "218b5ba5edb6c07b408628833bdd1fb4678ad6ac8d1520170aecf657b397457f",
+      "baseline_sha256": "d79e760d3e14f13d450d35522fbc208978019ca2132f886d823674e1e4a51113"
+    },
+    {
+      "path": "fractalengine/src/qa_debug_bridge.rs",
+      "bytes": 37551,
+      "sha256": "4f12967c472ad0d079a09e05e0eff0012444031824bdf4ab96344416b0b956df",
+      "baseline_sha256": "9741fb1ce227c4c2469e70abc74b111977291e89dd980d958e6e01d09ff49a57"
+    },
+    {
+      "path": "fractalengine/src/vision_bridge.rs",
+      "bytes": 114994,
+      "sha256": "b10403b8a822e38260397606d4b77a73f545d3b96fdee4cddcdebe78f149c922",
+      "baseline_sha256": "0035389a6a4c70582af76b7079256f7a8263121d371c8de1726e2d09e73b9f57"
+    }
+  ]
+}

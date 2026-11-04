@@ -185,3 +185,15 @@ incoming handle changes 1.0 -> 1.000000001 and zero -> 1e-8: identical editor ro
 must not admit a mismatched renderer source. Host assertions cover every typed row
 slot and deliberate missing-time/zero-handle equivalence. These are source-authored,
 unexecuted assertions, not native QA evidence.
+
+## Single-selection read recovery
+
+ui::render_read_status and the complete-selection form share one status/refresh
+renderer. Inspector and Options Waiting routes show the existing controller's
+terminal error instead of indefinite loading. Refresh calls the same pure-read
+refresh method; it preserves drafts and cannot clear an accepted pending write.
+Unknown writes retain Check saved selection and their original outcome owner.
+No transform becomes available until the existing complete capture validates.
+The existing Inspector journey authors a terminal owned read, visible error,
+actual Refresh click and exactly one subsequent read with no edit or invented
+capture. Compilation and live failure/retry acceptance remain separate gates.

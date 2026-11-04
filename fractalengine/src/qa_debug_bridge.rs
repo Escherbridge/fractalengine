@@ -376,6 +376,9 @@ pub(super) fn selected_terrain_diagnostic(
     let Some(scene) = scene else {
         return unavailable("unavailable", "scene_snapshot_unavailable");
     };
+    if scene.petal_id.is_none() {
+        return unavailable("unavailable", "scene_snapshot_unavailable");
+    }
     if scene.petal_id.as_deref() != Some(petal_id) {
         return unavailable("stale", "scene_petal_mismatch");
     }

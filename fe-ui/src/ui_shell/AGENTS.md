@@ -748,3 +748,8 @@ The existing width journey now checks the actual side-strip physical spans
 without a threshold epsilon and rejects actual divider endpoint overlap with
 the scene rectangle across the retained scale/restoration profiles. Integrated
 execution and live camera-neighbor clicks remain parent verification.
+
+Options Waiting renders the same checked-selection status/refresh UI as Inspector
+through editor_batch::ui::render_read_status. Existing capture/capability gates
+still disable transforms; terminal errors and pure-read retry are visible without
+introducing a second selection owner or resetting an unknown accepted write.

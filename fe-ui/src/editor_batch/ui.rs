@@ -129,6 +129,54 @@ pub(crate) fn render_transform(
     render_form(ui, nodes, nav, ui_mgr, role, false);
 }
 
+pub(crate) fn render_read_status(ui: &mut egui::Ui, ui_mgr: &mut UiManager) {
+    if let Some(action) = read_status_controls(ui, &mut ui_mgr.editor_batch) {
+        ui_mgr.push_action(action);
+    }
+}
+
+fn read_status_controls(
+    ui: &mut egui::Ui,
+    state: &mut super::EditorBatchState,
+) -> Option<UiAction> {
+    let mut action = None;
+    if let Some(error) = &state.error {
+        ui.colored_label(crate::theme::STATUS_OFFLINE, error);
+    }
+    if state.is_pending() {
+        ui.label(if state.has_submitted_write() {
+            "Saving or reconciling the complete edit."
+        } else {
+            "Reading stored targets; no write has been submitted."
+        });
+        if state.has_submitted_write()
+            && ui.button("Check saved selection").observed(ui).clicked()
+        {
+            action = Some(UiAction::CheckSelectionSave);
+        }
+    } else if state.capture.is_none() && state.error.is_none() {
+        ui.label(if state.read.is_some() {
+            "Reading stored targets; no write has been submitted."
+        } else {
+            "Stored selection is unavailable. Refresh to retry."
+        });
+    }
+    let target = crate::object_data::target_size(ui);
+    if ui
+        .add_enabled(
+            !state.is_pending(),
+            egui::Button::new("Refresh selected objects")
+                .wrap()
+                .min_size(egui::Vec2::splat(target)),
+        )
+        .observed(ui)
+        .clicked()
+    {
+        state.refresh();
+    }
+    action
+}
+
 fn render_form(
     ui: &mut egui::Ui,
     nodes: &NodeManager,
@@ -140,7 +188,6 @@ fn render_form(
     let target = crate::object_data::target_size(ui);
     ui.spacing_mut().interact_size = egui::Vec2::splat(target);
     let mut state = std::mem::take(&mut ui_mgr.editor_batch);
-    let mut action = None;
     ui.heading(format!(
         "{} selected object{}",
         nodes.selection_count(),
@@ -171,30 +218,7 @@ fn render_form(
     } else {
         "This transform applies to the whole selected object and saves as one edit."
     });
-    if let Some(error) = &state.error {
-        ui.colored_label(crate::theme::STATUS_OFFLINE, error);
-    }
-    if state.is_pending() {
-        ui.label(if state.has_submitted_write() {
-            "Saving or reconciling the complete edit."
-        } else {
-            "Reading stored targets; no write has been submitted."
-        });
-        if state.has_submitted_write() && ui.button("Check saved selection").observed(ui).clicked()
-        {
-            action = Some(UiAction::CheckSelectionSave);
-        }
-    }
-    if ui
-        .add_enabled(
-            !state.is_pending(),
-            egui::Button::new("Refresh selected objects"),
-        )
-        .observed(ui)
-        .clicked()
-    {
-        state.refresh();
-    }
+    let mut action = read_status_controls(ui, &mut state);
     let captured = state.capture_shared(nav, nodes);
     let interaction = state.interaction_shared(nav, nodes);
     if let (Some(capture), Some(interaction)) = (captured, interaction) {
@@ -404,8 +428,6 @@ fn render_form(
             });
             ui.label("Missing and JSON null are distinct. Every selected object's schema is checked before the batch can save.");
         }
-    } else if state.error.is_none() {
-        ui.label("Loading the complete selected set…");
     }
     ui_mgr.editor_batch = state;
     if let Some(action) = action {

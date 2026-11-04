@@ -948,3 +948,9 @@ both-axis overflow and horizontal wheel reachability, and actual compact native
 tab/section menu clicks with draft/selection/body-scroll identity preservation.
 No new test declaration was introduced. Source-only authoring is not evidence
 of executed checks, screenshots, native capture or release acceptance.
+
+Single-object Inspector Waiting uses editor_batch::ui::render_read_status, shared
+with Options and the complete-selection form. A terminal read refusal displays
+its existing error and explicit Refresh rather than claiming loading continues.
+Refresh retains drafts and pending-write ownership; it never enables transforms
+from visible ECS state or retries a write.
