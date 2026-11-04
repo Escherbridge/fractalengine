@@ -202,11 +202,26 @@ pub fn render(
     }
     let height = ctx.available_rect().height();
     let max_height = (height * 0.35).min((height - 220.0).max(72.0)).max(72.0);
-    egui::TopBottomPanel::bottom("query_results_dock")
-        .resizable(true)
+    let metrics = super::layout_policy::divider_metrics(ctx);
+    let mut frame = egui::Frame::side_top_panel(&ctx.style());
+    if let Some(metrics) = metrics {
+        let available = ctx.available_rect();
+        let screen = ctx.viewport_rect();
+        frame.inner_margin.top = frame.inner_margin.top.max(metrics.gutter);
+        if available.left() > screen.left() {
+            frame.inner_margin.left = frame.inner_margin.left.max(metrics.gutter);
+        }
+        if available.right() < screen.right() {
+            frame.inner_margin.right = frame.inner_margin.right.max(metrics.gutter);
+        }
+    }
+    let mut render = || egui::TopBottomPanel::bottom("query_results_dock")
+        .resizable(metrics.is_some())
+        .frame(frame)
         .default_height(180.0)
         .height_range(72.0..=max_height)
         .show(ctx, |ui| {
+            ui.set_clip_rect(ui.clip_rect().intersect(ui.max_rect()));
             ui.horizontal_wrapped(|ui| {
                 ui.strong("Results");
                 ui.label(format!(
@@ -258,7 +273,7 @@ pub fn render(
             );
             let total_width =
                 results.widths.iter().sum::<f32>() + results.widths.len() as f32 * 8.0;
-            egui::ScrollArea::both()
+            let _table = egui::ScrollArea::both()
                 .id_salt("query_result_table")
                 .auto_shrink([false, false])
                 .show_rows(
@@ -407,7 +422,24 @@ pub fn render(
                         }
                     },
                 );
+            #[cfg(test)]
+            ctx.data_mut(|data| data.insert_temp(table_geometry_key(),
+                (_table.inner_rect, _table.content_size, _table.state.offset)));
         });
+    let panel = if let Some(metrics) = metrics {
+        metrics.native_results(ctx, render)
+    } else { render() };
+    if metrics.is_some() {
+        super::layout_policy::record_results_divider(ctx, panel.response.rect);
+    }
+}
+
+#[cfg(test)]
+fn table_geometry_key() -> egui::Id { egui::Id::new("results-table-test-geometry") }
+
+#[cfg(test)]
+pub(super) fn table_geometry(ctx: &egui::Context) -> (egui::Rect, egui::Vec2, egui::Vec2) {
+    ctx.data(|data| data.get_temp(table_geometry_key()).expect("populated Results table rendered"))
 }
 
 pub(crate) fn draw_matches(

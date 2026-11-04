@@ -1228,12 +1228,8 @@ fn gardener_ui_system(
     // Pointer routing excludes the resize bands: a press that starts a window
     // resize must not also pick / place in the viewport (§window-chrome).
     viewport_rect.0 = rect;
-    ui_shell.camera_region.rect = crate::ui_shell::topbar::viewport_interaction_rect(
-        rect,
-        ectx.viewport_rect(),
-        ui_shell.topbar.maximized,
-        ectx.style().interaction.resize_grab_radius_side,
-        inspector.query_results.open,
+    ui_shell.camera_region.rect = crate::ui_shell::layout_policy::scene_interaction_rect(
+        ectx, rect, ui_shell.topbar.maximized,
     );
     ui_shell.camera_region.pixels_per_point = ectx.pixels_per_point();
     // Frameless-window edge grips: after every panel so the resize cursor wins

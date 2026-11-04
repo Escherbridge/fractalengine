@@ -35,15 +35,17 @@ pub(crate) fn left_sidebar(
     let id = egui::Id::new("fe-hierarchy-panel-divider");
     let bounds = [120.0, layout_policy::left_width(ctx)];
     let effective = width.prepare(ctx, id, PanelSide::Left, bounds);
+    let metrics = layout_policy::divider_metrics(ctx);
     let panel = egui::SidePanel::left("sidebar")
         .resizable(false)
         .exact_width(effective)
         .frame(
             egui::Frame::NONE
                 .fill(theme::BG_PANEL)
-                .inner_margin(egui::Margin::same(0)),
+                .inner_margin(metrics.map_or(egui::Margin::ZERO, |m| m.side_margin(PanelSide::Left))),
         )
         .show_animated(ctx, sidebar.open, |ui| {
+            ui.set_clip_rect(ui.clip_rect().intersect(ui.max_rect()));
             sidebar_verse_header(ui, nav, db_tx, ui_mgr);
             ui.separator();
 
@@ -56,7 +58,7 @@ pub(crate) fn left_sidebar(
                     .max_height(tree_height)
                     .auto_shrink([false; 2]),
                 |ui| {
-                    ui.set_min_width(220.0);
+                    ui.set_min_width(metrics.map_or(0.0, |m| m.hierarchy_content_width()));
                     configure_tree_spacing(ui);
                     ui.add_space(4.0);
                     render_verse_tree(
@@ -491,7 +493,7 @@ fn render_petals(
                 settings,
                 local_role,
             );
-            ui.horizontal(|ui| {
+            ui.horizontal_wrapped(|ui| {
                 // [+] Add Node inside the petal collapse
                 add_button_inline(
                     ui,

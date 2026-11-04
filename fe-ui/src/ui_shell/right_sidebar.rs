@@ -1718,15 +1718,17 @@ pub(crate) fn section_chrome(
     let bounds = [max_w.min(260.0), max_w];
     let id = egui::Id::new("fe-right-panel-divider");
     let effective = state.width.prepare(ctx, id, PanelSide::Right, bounds);
+    let metrics = super::layout_policy::divider_metrics(ctx);
     let panel = egui::SidePanel::right("right_section")
         .resizable(false)
         .exact_width(effective)
         .frame(
             egui::Frame::NONE
                 .fill(theme::BG_PANEL)
-                .inner_margin(egui::Margin::same(0)),
+                .inner_margin(metrics.map_or(egui::Margin::ZERO, |m| m.side_margin(PanelSide::Right))),
         )
         .show(ctx, |ui| {
+            ui.set_clip_rect(ui.clip_rect().intersect(ui.max_rect()));
             ui.add_space(8.0);
             ui.horizontal(|ui| {
                 ui.add_space(8.0);

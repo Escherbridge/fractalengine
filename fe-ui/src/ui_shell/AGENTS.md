@@ -378,7 +378,7 @@ resize constraints at the supported 640-pixel window / 2x UI scale edge.
 
 
 The visual `ViewportRect` remains the actual CentralPanel rectangle. `CameraPointerRegion` separately
-excludes egui's `resize_grab_radius_side` on the actual left/right panel dividers and Results top divider,
+excludes the shared DividerMetrics radius on the actual left/right panel dividers and Results top divider,
 plus native window grips. Camera input and NodeManager's single pointer arbiter share its physical-to-
 egui conversion and foreground-area gate. Hovered gimbal picking reuses that arbiter. A fresh divider
 press therefore belongs to resizing before egui has an actively held pointer, while interior picking
@@ -556,7 +556,7 @@ prepare reads only the previous actual app-owned divider Response under the
 public fe-hierarchy-panel-divider / fe-right-panel-divider IDs. register records
 a new semantic vertical Splitter after panel contents, on the normal Background
 layer. Its actual strip uses the displayed panel edge, vertical extent and
-resize_grab_radius_side, matching existing strict camera/selection exclusions.
+shared DividerMetrics radius, matching existing strict camera/selection exclusions.
 No foreground Area or global-pointer resize authority is added. Foreground
 windows retain egui hit-test priority; popups, modal state, lost focus, Escape,
 close/unavailable sections and quarantines refuse/cancel this owned gesture.
@@ -575,7 +575,7 @@ comparing pre-panel geometry with the already-consumed available rectangle.
 Left show_animated registers a divider only for the public fully expanded Some
 response. Collapsing, animation and reopening preserve preference. Right section
 switches share one preference. The hierarchy retains both-axis scrolling and its
-220-point content floor, so narrow row actions remain scrollable rather than
+default-outer-width-derived content floor, so narrow row actions remain scrollable rather than
 removed. Its outside-scroll header reserves a truncating full-name/hover row and
 a separate explicit Join/Create row to avoid squeezing those actions into the name.
 Actual 2x horizontal-scroll-and-invoke and responsive screenshots remain live gates.
@@ -597,3 +597,76 @@ an actual TopbarState: newly pending close on release cancels instead of saving;
 removing close-pending while still held cannot revive the canceled drag. Right
 eligibility retains its existing close-pending check. No close action is executed
 by the resize owner, and no other widget's input capture is released.
+
+## Divider accessibility (VIS-003 v3)
+
+DividerMetrics is one finite value object shared by both app-owned side handles,
+the SDK-owned Results top divider, scene input and interactive overlay clearances.
+Its stable product baseline is five logical points; radius is max(5,10/scale),
+giving at least twenty physical pixels across a complete strip. The inner gutter
+is ceil(radius+1/scale), checked for finite positive scale and representable i8
+before conversion. Invalid metrics suspend owned gestures, disable native Results
+resizing and make scene/overlay routing unavailable; no stale radius is retained.
+The captured panel geometry includes these metrics, so changing them cancels a
+preview with the existing held-input suppression rather than saving a preference.
+
+apply_style refreshes the current pass/scale metrics and clears the prior Results
+edge BEFORE its one-time typography/style early return. Other callers may derive
+the same metrics directly when no current-pass cache exists. Results alone uses
+the short native_results RAII style scope: it changes only the public SDK radius,
+then restores it on normal return or unwind. Source-audited Results content has
+table/header widgets and native popups, with no nested resizable panel/window.
+No other SDK owner inherits this policy: portal_toolbar's native SidePanel,
+GIS/other bounded Windows and modal windows retain their original radii/margins.
+This deliberate scope avoids expanding their existing control overlap; their
+permission/modal/portal admission remains unchanged. Camera routing reads the
+explicit metrics, never the SDK radius after restoration. No private resize IDs,
+checker exemption, new native Focus/numeric action or keyboard resize is added.
+
+Zero-stroke inner margins reserve the left panel's right gutter and right panel's
+left gutter without altering default outer budgets220/320. Their scrollbars and
+headers stay inside that content rect. Hierarchy's minimum content width is220
+minus the actual gutter AND the shared scroll helper's existing12-point reserve.
+The Add Node/requirements row wraps rather than intrinsically widening the normal
+panel. Narrow/deep content can still overflow through the existing both-axis scroll.
+Results preserves side_top_panel styling, with its top margin raised from2 to
+at least the checked gutter. Its side margins are max(original8,gutter) only
+where actual pre-Results available geometry borders a side divider. With no
+adjacent owner the original8-point margin remains. It remains the native
+TopBottomPanel resize owner.
+
+Results records its actual outer rect and cumulative pass after rendering. The
+shared policy admits its bottom exclusion only when that same-pass top edge
+matches CentralPanel.bottom, including the current frame after its Close button.
+Overlay content receives a clipped child rect inset on actual side-divider edges
+and that actual Results edge. Browse all/Back/browser cards stay outside the
+inclusive strips with a physical-pixel gap. CentralPanel's parent response and
+visual ViewportRect, camera projection and width budget remain unchanged.
+CameraPointerRegion and NodeManager keep their shared strict endpoint comparisons.
+
+The existing width journey now authors actual-margin/no-outer-drift checks,
+complete physical strip widths, panel/overlay clearances, actual native Results
+header/control protection and SDK-radius restoration, scale-policy refresh and
+strict camera endpoints with physical one-pixel interior neighbors. Prior width,
+pending-close, modal and held-input journeys remain. These assertions have not
+been executed in the source-author lane; actual measured targets, neighbor edge
+clicks, high-scale horizontal scroll/invoke and screenshots remain root acceptance.
+
+V4 closes V3-D1's Results-side overlap. Frame inner margins alone do not clip
+their content UI; pinned ScrollArea admits its normal three-point clip margin
+until the parent clip. Both side-panel bodies and Results therefore intersect
+their inherited clip with the actual inner content rect before widgets render.
+This preserves native overflow/scroll reachability while preventing scrolled
+targets from reclaiming the reserved gutter. Popups retain their own native
+layers and clips. No painted border or outer-size change provides this clearance.
+
+The same existing journey now populates64rows/24columns, requires actual overflow
+on both axes and checks visible control hit-and-clip intersections on both X and
+Y boundaries. Both/left/right/no-side profiles run at0.75/1/1.25/2x, retaining a
+separate same-Context scale-restoration sequence. It asserts first-column header
+and cell presence plus the original8-point margin on edges without a divider.
+A cfg(test)-only accessor retains actual public ScrollAreaOutput viewport,
+content size and offset. Hover probes obtain actual native scrollbar IDs from
+the public Context interaction_snapshot; read_response measures the real strips,
+and a physical pointer drag must change the corresponding table offset. No
+private SDK ID is derived. These checks remain authored, unexecuted source.

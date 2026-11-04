@@ -2,6 +2,104 @@
 
 use bevy_egui::egui;
 
+const BASE_DIVIDER_RADIUS: f32 = 5.0;
+const MIN_DIVIDER_HIT_PX: f32 = 20.0;
+pub(crate) const HIERARCHY_DEFAULT_WIDTH: f32 = 220.0;
+const SCROLL_WIDTH_RESERVE: f32 = 12.0;
+
+/// Physical target and interior clearance; see AGENTS.md §divider-accessibility.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) struct DividerMetrics {
+    pub radius: f32,
+    pub gutter: i8,
+}
+
+impl DividerMetrics {
+    fn from_scale(scale: f32) -> Option<Self> {
+        if !scale.is_finite() || scale <= 0.0 { return None; }
+        let radius = BASE_DIVIDER_RADIUS.max(MIN_DIVIDER_HIT_PX * 0.5 / scale);
+        let gutter = (radius + scale.recip()).ceil();
+        (radius.is_finite() && gutter.is_finite() && gutter >= 0.0 && gutter <= i8::MAX as f32)
+            .then(|| Self { radius, gutter: gutter as i8 })
+    }
+
+    pub(crate) fn side_margin(self, side: PanelSide) -> egui::Margin {
+        match side {
+            PanelSide::Left => egui::Margin { right: self.gutter, ..egui::Margin::ZERO },
+            PanelSide::Right => egui::Margin { left: self.gutter, ..egui::Margin::ZERO },
+        }
+    }
+
+    pub(crate) fn hierarchy_content_width(self) -> f32 {
+        (HIERARCHY_DEFAULT_WIDTH - f32::from(self.gutter) - SCROLL_WIDTH_RESERVE).max(0.0)
+    }
+
+    /// Scope the SDK metric to the native Results owner, including unwinding.
+    pub(crate) fn native_results<R>(self, ctx: &egui::Context, body: impl FnOnce() -> R) -> R {
+        struct RestoreRadius(egui::Context, f32);
+        impl Drop for RestoreRadius {
+            fn drop(&mut self) {
+                if self.0.style().interaction.resize_grab_radius_side != self.1 {
+                    self.0.style_mut(|style| style.interaction.resize_grab_radius_side = self.1);
+                }
+            }
+        }
+        let restore = RestoreRadius(ctx.clone(), ctx.style().interaction.resize_grab_radius_side);
+        if restore.1 != self.radius {
+            ctx.style_mut(|style| style.interaction.resize_grab_radius_side = self.radius);
+        }
+        let result = body();
+        drop(restore);
+        result
+    }
+}
+
+pub(crate) fn divider_metrics(ctx: &egui::Context) -> Option<DividerMetrics> {
+    let scale = ctx.pixels_per_point();
+    ctx.data(|data| data.get_temp::<(u64, f32, Option<DividerMetrics>)>(divider_policy_key()))
+        .filter(|(pass, stored_scale, _)| *pass == ctx.cumulative_pass_nr() && *stored_scale == scale)
+        .map_or_else(|| DividerMetrics::from_scale(scale), |(_, _, metrics)| metrics)
+}
+
+fn divider_policy_key() -> egui::Id { egui::Id::new("fe-divider-metrics") }
+
+fn results_edge_key() -> egui::Id { egui::Id::new("fe-results-divider-edge") }
+
+pub(crate) fn record_results_divider(ctx: &egui::Context, rect: egui::Rect) {
+    if rect.is_finite() && rect.is_positive() {
+        let pass = ctx.cumulative_pass_nr();
+        ctx.data_mut(|data| data.insert_temp(results_edge_key(), (pass, rect)));
+    }
+}
+
+fn has_results_divider(ctx: &egui::Context, visual: egui::Rect) -> bool {
+    ctx.data(|data| data.get_temp::<(u64, egui::Rect)>(results_edge_key()))
+        .is_some_and(|(pass, rect)| pass == ctx.cumulative_pass_nr() && rect.top() == visual.bottom())
+}
+
+/// Inset only interactive overlay contents, never the visual/pick viewport.
+pub(crate) fn overlay_content_rect(ctx: &egui::Context, visual: egui::Rect) -> Option<egui::Rect> {
+    let metrics = divider_metrics(ctx)?;
+    let screen = ctx.viewport_rect();
+    if !visual.is_finite() || !screen.is_finite() { return None; }
+    let mut content = visual;
+    let gutter = f32::from(metrics.gutter);
+    if visual.left() > screen.left() { content.min.x += gutter; }
+    if visual.right() < screen.right() { content.max.x -= gutter; }
+    if has_results_divider(ctx, visual) { content.max.y -= gutter; }
+    content.is_positive().then_some(content)
+}
+
+pub(crate) fn scene_interaction_rect(ctx: &egui::Context, visual: egui::Rect, maximized: bool) -> egui::Rect {
+    if !visual.is_finite() || !visual.is_positive() || !ctx.viewport_rect().is_finite() {
+        return egui::Rect::NOTHING;
+    }
+    divider_metrics(ctx).map_or(egui::Rect::NOTHING, |metrics| {
+        super::topbar::viewport_interaction_rect(visual, ctx.viewport_rect(), maximized,
+            metrics.radius, has_results_divider(ctx, visual))
+    })
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum PanelSide {
     Left,
@@ -15,6 +113,7 @@ struct PanelGeometry {
     available: egui::Rect,
     scale: f32,
     bounds: [f32; 2],
+    dividers: DividerMetrics,
 }
 
 impl PartialEq for PanelGeometry {
@@ -24,6 +123,7 @@ impl PartialEq for PanelGeometry {
             && self.available == other.available
             && self.scale == other.scale
             && self.bounds == other.bounds
+            && self.dividers == other.dividers
     }
 }
 
@@ -85,6 +185,7 @@ impl PanelWidthState {
     }
 
     fn geometry(ctx: &egui::Context, bounds: [f32; 2]) -> Option<PanelGeometry> {
+        let dividers = divider_metrics(ctx)?;
         let scale = ctx.pixels_per_point();
         let viewport = ctx.viewport_rect();
         let available = ctx.available_rect();
@@ -98,6 +199,7 @@ impl PanelWidthState {
                 available,
                 scale,
                 bounds,
+                dividers,
             })
     }
 
@@ -193,7 +295,7 @@ impl PanelWidthState {
             self.suspend();
             return;
         };
-        let radius = ctx.style().interaction.resize_grab_radius_side;
+        let radius = geometry.dividers.radius;
         if !rect.is_finite() || !rect.is_positive() || !radius.is_finite() || radius < 0.0 {
             self.suspend();
             return;
@@ -204,7 +306,7 @@ impl PanelWidthState {
         let mut builder = egui::UiBuilder::new()
             .layer_id(egui::LayerId::background()).max_rect(ctx.viewport_rect());
         if !self.interaction_allowed(ctx) || self.wait_for_release { builder = builder.disabled(); }
-        let mut ui = egui::Ui::new(ctx.clone(), id.with("surface"), builder);
+        let ui = egui::Ui::new(ctx.clone(), id.with("surface"), builder);
         let name = if side == PanelSide::Left { "Resize hierarchy panel" } else { "Resize right panel" };
         let response = ui.interact(strip, id, egui::Sense::drag()).named(&ui, name);
         ctx.accesskit_node_builder(id, |node| {
@@ -228,8 +330,10 @@ pub(super) fn extend_panel_width_journey() {
         scale: f32,
         time: f64,
         visible: bool,
+        side_visible: [bool; 2],
         blocked: bool,
         focused: bool,
+        results: bool,
         topbar: super::topbar::TopbarState,
         ui: crate::actions::UiManager,
         rects: [egui::Rect; 2],
@@ -244,6 +348,9 @@ pub(super) fn extend_panel_width_journey() {
                     egui::vec2(self.physical / self.scale, 720.0 / self.scale))),
                 time: Some(self.time), focused: self.focused, events, ..Default::default()
             }, |ctx| {
+                apply_style(ctx);
+                begin_frame(ctx, true);
+                let metrics = divider_metrics(ctx).unwrap();
                 for side in [PanelSide::Left, PanelSide::Right] {
                     let (state, bounds, id) = if side == PanelSide::Left {
                         (&mut self.left, [120.0, left_width(ctx)], egui::Id::new("width-left"))
@@ -259,18 +366,125 @@ pub(super) fn extend_panel_width_journey() {
                     let panel = if side == PanelSide::Left {
                         egui::SidePanel::left("width-test-left")
                     } else { egui::SidePanel::right("width-test-right") };
-                    let panel = panel.resizable(false).exact_width(width).frame(egui::Frame::NONE)
-                        .show_animated(ctx, self.visible, |_| {});
+                    let mut content = egui::Rect::NOTHING;
+                    let panel = panel.resizable(false).exact_width(width)
+                        .frame(egui::Frame::NONE.inner_margin(metrics.side_margin(side)))
+                        .show_animated(ctx, self.visible && self.side_visible[if side == PanelSide::Left { 0 } else { 1 }],
+                            |ui| { content = ui.max_rect(); });
                     if let Some(panel) = panel {
                         self.rects[if side == PanelSide::Left { 0 } else { 1 }] = panel.response.rect;
                         assert!(panel.response.rect.width() <= bounds[1] + 1.0 / self.scale);
                         state.register(ctx, id, side, bounds, panel.response.rect);
+                        let strip = ctx.read_response(id).unwrap().interact_rect;
+                        assert!(strip.width() * self.scale >= MIN_DIVIDER_HIT_PX - 0.001);
+                        let gap = if side == PanelSide::Left {
+                            strip.left() - content.right()
+                        } else { content.left() - strip.right() };
+                        assert!(gap * self.scale >= 1.0 - 0.001,
+                            "panel contents and scrollbars remain beyond the inclusive divider strip");
                     } else { state.suspend(); }
                 }
-                egui::CentralPanel::default().frame(egui::Frame::NONE).show(ctx, |_| {});
+                let original_radius = ctx.style().interaction.resize_grab_radius_side;
+                if self.results {
+                    let mut results = super::results_dock::ResultsDockState::default();
+                    let rows = (0..64).map(|row| serde_json::Value::Object(
+                        (0..24).map(|column| (format!("column{column:02}"),
+                            serde_json::json!(format!("row {row} column {column}")))).collect()
+                    )).collect::<Vec<_>>();
+                    results.complete(&rows);
+                    results.open = true;
+                    super::results_dock::render(ctx, &mut results,
+                        &crate::navigation_manager::NavigationManager::default(),
+                        &crate::verse_manager::VerseManager::default(),
+                        &mut crate::node_manager::NodeManager::default(),
+                        &mut crate::plugin::CameraFocusTarget::default(), &mut self.ui);
+                }
+                assert_eq!(ctx.style().interaction.resize_grab_radius_side, original_radius,
+                    "native Results restores the SDK radius for portal/floating-window owners");
+                egui::CentralPanel::default().frame(egui::Frame::NONE).show(ctx, |ui| {
+                    let visual = ui.max_rect();
+                    let content = overlay_content_rect(ctx, visual).unwrap();
+                    let scene = scene_interaction_rect(ctx, visual, true);
+                    if visual.left() > ctx.viewport_rect().left() {
+                        assert!(content.left() > scene.left());
+                    } else { assert_eq!(content.left(), visual.left()); }
+                    if visual.right() < ctx.viewport_rect().right() {
+                        assert!(content.right() < scene.right());
+                    } else { assert_eq!(content.right(), visual.right()); }
+                    assert_eq!(has_results_divider(ctx, visual), self.results);
+                    if self.results {
+                        assert!(content.bottom() < scene.bottom());
+                        let (_, result) = ctx.data(|data|
+                            data.get_temp::<(u64, egui::Rect)>(results_edge_key()).unwrap());
+                        let (table, content_size, _) = super::results_dock::table_geometry(ctx);
+                        assert!(content_size.x > table.width() && content_size.y > table.height(),
+                            "populated Results must expose real horizontal and vertical overflow");
+                        for control in observations(ctx).controls {
+                            let hit = control.hit.intersect(control.clip);
+                            if hit.is_positive() && control.rect.top() >= result.top() {
+                                self.result_gaps(hit);
+                            }
+                        }
+                    }
+                    let region = fe_renderer::camera::CameraPointerRegion { rect: scene, pixels_per_point: self.scale };
+                    for (point, inside) in [
+                        (egui::pos2(scene.left(), scene.center().y), false),
+                        (egui::pos2(scene.left() + 1.0 / self.scale, scene.center().y), true),
+                        (egui::pos2(scene.right(), scene.center().y), false),
+                        (egui::pos2(scene.right() - 1.0 / self.scale, scene.center().y), true),
+                        (egui::pos2(scene.center().x, scene.bottom()), false),
+                        (egui::pos2(scene.center().x, scene.bottom() - 1.0 / self.scale), true),
+                    ] {
+                        let physical = bevy::prelude::Vec2::new(point.x, point.y) * self.scale;
+                        assert_eq!(region.accepts_pointer(physical, ctx), inside);
+                    }
+                });
             });
         }
         fn settle(&mut self) { for _ in 0..3 { self.frame(Vec::new()); } }
+        fn result_gaps(&self, hit: egui::Rect) {
+            let (_, result) = self.ctx.data(|data|
+                data.get_temp::<(u64, egui::Rect)>(results_edge_key()).unwrap());
+            let metrics = divider_metrics(&self.ctx).unwrap();
+            let clearance = metrics.radius + self.scale.recip();
+            let tolerance = 0.001 / self.scale;
+            assert!(hit.top() + tolerance >= result.top() + clearance,
+                "actual Results hits remain below the inclusive top divider");
+            if result.left() > self.ctx.viewport_rect().left() {
+                assert!(hit.left() + tolerance >= result.left() + clearance,
+                    "actual Results hits remain beyond the inclusive left divider");
+            }
+            if result.right() < self.ctx.viewport_rect().right() {
+                assert!(hit.right() - tolerance <= result.right() - clearance,
+                    "actual Results hits remain before the inclusive right divider");
+            }
+        }
+        fn scrollbar(&mut self, vertical: bool) {
+            let (table, _, before) = super::results_dock::table_geometry(&self.ctx);
+            let point = if vertical {
+                egui::pos2(table.right() - self.scale.recip(), table.center().y)
+            } else { egui::pos2(table.center().x, table.bottom() - self.scale.recip()) };
+            self.frame(vec![egui::Event::PointerMoved(point)]);
+            self.settle();
+            let hovered = self.ctx.interaction_snapshot(|snapshot|
+                snapshot.hovered.iter().copied().collect::<Vec<_>>());
+            let response = hovered.into_iter().filter_map(|id| self.ctx.read_response(id))
+                .find(|response| {
+                    let rect = response.interact_rect;
+                    response.sense.senses_click() && response.sense.senses_drag()
+                        && if vertical { rect.height() > rect.width() * 2.0 }
+                           else { rect.width() > rect.height() * 2.0 }
+                }).expect("actual hovered native scrollbar response, without SDK ID reconstruction");
+            self.result_gaps(response.interact_rect);
+            self.pointer(point, true);
+            let end = point + if vertical { egui::vec2(0.0, 16.0) } else { egui::vec2(16.0, 0.0) };
+            self.frame(vec![egui::Event::PointerMoved(end)]);
+            self.pointer(end, false);
+            self.settle();
+            let (_, _, after) = super::results_dock::table_geometry(&self.ctx);
+            assert!(if vertical { after.y != before.y } else { after.x != before.x },
+                "the measured native scrollbar must actually scroll its table");
+        }
         fn pointer(&mut self, point: egui::Pos2, pressed: bool) {
             self.frame(vec![egui::Event::PointerMoved(point), egui::Event::PointerButton {
                 pos: point, button: egui::PointerButton::Primary, pressed,
@@ -293,7 +507,8 @@ pub(super) fn extend_panel_width_journey() {
     let mut panels = Panels {
         ctx: egui::Context::default(), left: PanelWidthState::new(220.0),
         right: PanelWidthState::default(), physical: 1280.0, scale: 1.0,
-        time: 0.0, visible: true, blocked: false, focused: true, rects: [egui::Rect::NOTHING; 2],
+        time: 0.0, visible: true, side_visible: [true; 2], blocked: false, focused: true,
+        results: false, rects: [egui::Rect::NOTHING; 2],
         topbar: super::topbar::TopbarState::default(), ui: crate::actions::UiManager::default(),
     };
     panels.settle();
@@ -375,10 +590,61 @@ pub(super) fn extend_panel_width_journey() {
     let screen = panels.ctx.viewport_rect();
     let visual = egui::Rect::from_min_max(
         egui::pos2(panels.rects[0].max.x, 0.0), egui::pos2(panels.rects[1].min.x, screen.max.y));
-    let radius = panels.ctx.style().interaction.resize_grab_radius_side;
+    let radius = divider_metrics(&panels.ctx).unwrap().radius;
     let input = super::topbar::viewport_interaction_rect(visual, screen, true, radius, false);
     assert_eq!(input.min.x, visual.min.x + radius);
     assert_eq!(input.max.x, visual.max.x - radius);
+    for scale in [0.5, 0.75, 1.0, 1.25, 2.0, 4.0] {
+        let metrics = DividerMetrics::from_scale(scale).unwrap();
+        assert!(metrics.radius * 2.0 * scale >= MIN_DIVIDER_HIT_PX);
+        assert!((f32::from(metrics.gutter) - metrics.radius) * scale >= 1.0);
+    }
+    for scale in [0.0, -1.0, f32::NAN, f32::INFINITY, 0.01] {
+        assert!(DividerMetrics::from_scale(scale).is_none());
+    }
+    panels.results = true;
+    for scale in [1.0, 1.25, 2.0, 1.0] {
+        panels.scale = scale;
+        panels.settle();
+        assert_eq!(divider_metrics(&panels.ctx).unwrap().radius, BASE_DIVIDER_RADIUS.max(10.0 / scale),
+            "one context refreshes metrics across scale restoration without a radius ratchet");
+    }
+    for scale in [0.75, 1.0, 1.25, 2.0, 1.0] {
+        for sides in [[true, true], [true, false], [false, true], [false, false]] {
+            panels.ctx = egui::Context::default();
+            panels.scale = scale;
+            panels.side_visible = sides;
+            panels.settle();
+            let metrics = divider_metrics(&panels.ctx).unwrap();
+            assert_eq!(metrics.radius, BASE_DIVIDER_RADIUS.max(10.0 / scale),
+                "the populated profile uses the current physical target policy");
+            let (table, _, _) = super::results_dock::table_geometry(&panels.ctx);
+            let (_, result) = panels.ctx.data(|data|
+                data.get_temp::<(u64, egui::Rect)>(results_edge_key()).unwrap());
+            if !sides[0] {
+                assert!((table.left() - result.left() - 8.0).abs() < 0.01,
+                    "without an adjacent left divider the native eight-point margin remains");
+            }
+            if !sides[1] {
+                assert!((result.right() - table.right() - 8.0).abs() < 0.01,
+                    "without an adjacent right divider the native eight-point margin remains");
+            }
+            let controls = observations(&panels.ctx).controls;
+            assert!(controls.iter().any(|control| control.clickable
+                && (control.rect.left() - table.left()).abs() < 0.01
+                && (control.rect.top() - table.top()).abs() < 0.01),
+                "the actual first-column sort header is rendered");
+            assert!(controls.iter().any(|control| control.clickable
+                && (control.rect.left() - table.left()).abs() < 0.01
+                && control.rect.top() > table.top() + 20.0
+                && control.hit.intersect(control.clip).is_positive()),
+                "an actual first-column data cell is visible");
+            panels.scrollbar(true);
+            panels.scrollbar(false);
+        }
+    }
+    panels.results = false;
+    panels.settle();
 }
 
 #[derive(Clone, Default)]
@@ -447,7 +713,7 @@ pub fn scroll<R>(
     let output = area.show(ui, |ui| {
         content_id = ui.unique_id().value();
         clip = ui.clip_rect();
-        ui.set_max_width((width - 12.0).max(40.0));
+        ui.set_max_width((width - SCROLL_WIDTH_RESERVE).max(40.0));
         ui.style_mut().wrap_mode = Some(egui::TextWrapMode::Wrap);
         ui.spacing_mut().text_edit_width = ui.available_width().min(200.0);
         let inner = body(ui);
@@ -624,6 +890,13 @@ pub fn middle_ellipsis(value: &str, max_chars: usize) -> String {
 }
 
 pub fn apply_style(ctx: &egui::Context) {
+    let scale = ctx.pixels_per_point();
+    let pass = ctx.cumulative_pass_nr();
+    let metrics = DividerMetrics::from_scale(scale);
+    ctx.data_mut(|data| {
+        data.insert_temp(divider_policy_key(), (pass, scale, metrics));
+        data.remove::<(u64, egui::Rect)>(results_edge_key());
+    });
     let id = egui::Id::new("layout_policy_style");
     if ctx.data(|d| d.get_temp::<bool>(id).unwrap_or(false)) {
         return;

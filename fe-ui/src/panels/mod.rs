@@ -277,8 +277,13 @@ pub fn gardener_console(
                 // Guarded INSIDE the `.show` closure so a panic doesn't unwind
                 // through `CentralPanel::show` — the returned rect stays valid.
                 let _ = guarded(modal, "viewport", || {
+                    let Some(content_rect) = crate::ui_shell::layout_policy::overlay_content_rect(
+                        ctx, ui.max_rect()) else { return; };
+                    let mut overlay = ui.new_child(egui::UiBuilder::new()
+                        .id_salt("viewport-overlay-content").max_rect(content_rect));
+                    overlay.set_clip_rect(ui.clip_rect().intersect(content_rect));
                     crate::viewport::viewport_overlay(
-                        ui,
+                        &mut overlay,
                         nav,
                         node_mgr,
                         hierarchy,

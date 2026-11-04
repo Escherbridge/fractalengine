@@ -43,7 +43,7 @@ impl Default for LeftSidebarState {
         Self {
             policy: LeftSidebarPolicy::default(),
             user_intent: true,
-            width: super::layout_policy::PanelWidthState::new(220.0),
+            width: super::layout_policy::PanelWidthState::new(super::layout_policy::HIERARCHY_DEFAULT_WIDTH),
         }
     }
 }

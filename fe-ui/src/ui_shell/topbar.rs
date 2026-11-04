@@ -1271,7 +1271,8 @@ mod tests {
             (egui::vec2(400.0, 500.0), false),
             (egui::vec2(400.0, 200.0), true),
         ] {
-            assert_eq!(region.accepts_pointer(point * 2.0, &context), accepted);
+            let physical = bevy::prelude::Vec2::new(point.x, point.y) * 2.0;
+            assert_eq!(region.accepts_pointer(physical, &context), accepted);
         }
         for point in [
             egui::vec2(input.min.x, 200.0),
@@ -1280,7 +1281,7 @@ mod tests {
             egui::vec2(400.0, input.max.y),
         ] {
             assert!(
-                !region.accepts_pointer(point * 2.0, &context),
+                !region.accepts_pointer(bevy::prelude::Vec2::new(point.x, point.y) * 2.0, &context),
                 "exact grab-band endpoints stay outside scene input"
             );
         }

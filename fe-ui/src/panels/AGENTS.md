@@ -1,5 +1,18 @@
 # fe-ui/src/panels — the egui shell
 
+## Divider content boundaries (VIS-003 v3)
+
+sidebar reserves the shared DividerMetrics right inner gutter within its existing
+220-point preferred outer width. Its tree floor also subtracts the existing
+scroll helper's12-point reserve; the deep Add Node/requirements row wraps. Both
+axis scrolling and all node action targets remain. gardener_console gives only
+viewport overlay controls a clipped child inset from the actual side/Results
+divider edges; the parent CentralPanel response remains the visual viewport.
+See `../ui_shell/AGENTS.md` §Divider accessibility for target/routing ownership,
+bounded native Results style scope, finite rejection and pending live evidence.
+Sidebar and right-section content clips also enforce their actual inner rects,
+so ScrollArea's ordinary clip margin cannot extend targets into those gutters.
+
 The Inspector Data tab delegates object history, event-time measurements and enforced schema editing
 to `../object_data`. Its state is an Inspector read model; historical results never apply to current
 scene entities. See `../object_data/AGENTS.md` for scopes, bounds, request routing and retained drafts.
