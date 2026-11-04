@@ -32,7 +32,7 @@
   "verification": {
     "conductor_review": "approved; reviews/conductor-scope-review.md",
     "production_build": "925d7cba12.7s and9d1e061d14.1s combined Rust/native stages passed, zero compiler diagnostics. Terminal30657 exit0 observed; final sweep unexecuted.",
-    "focused_evidence": "QA36/37 committed. QA38 through QA41 published in9a9450b9 with independent focused reviews, mandatory external QA41 erratum and all331 staged raw blobs verified. No FULL credit.",
+    "focused_evidence": "QA42/43 committeda77cabbe, all84rawpacketblobs exact. QA44 independently reviewed failed-native11payloads, publicationpending. No FULL credit.",
     "final_catalog": "pending",
     "two_clean_full_passes": "pending",
     "five_live_ux_audits_and_synthesis": "pending",
@@ -52,8 +52,8 @@
   },
   "final_publication_authorized": true,
   "release_gate": "All required implementation/reviews/live QA and integrated checks complete; exact-commit CI green before immutable tag; all Release jobs and seven downloaded archive checksums verified",
-  "current_source": "9d1e061d",
-  "current_owned_apps": "QA44 input-off/native run20261104-152521-166 PID120000 live; QA42/43 eight recorded identities absent; retained roots untouched",
+  "current_source": "a77cabbe plus pending strict-native/recovery-status source authoring",
+  "current_owned_apps": "none; QA44 eight recorded identities absent2026-11-04T22:33:38.9877095Z",
   "checkpoint_history": "./checkpoint-history.md",
   "native_helper_source": {
     "worktree": ".omc/worktrees/qa-native-navigation-helper",
@@ -89,5 +89,24 @@
       "./reviews/qa41-residual-layout-boundary-v3-review.md"
     ],
     "remaining": "Matching live tree/divider/Inspector/ruler/vision/frame and unchanged pointer/native boundaries; no visual acceptance from source approval."
+  },
+  "pending_source_slices": {
+    "strict_native_service": {
+      "plan": "./evidence/native-nav23/qa44-visible-window-source-trace.md",
+      "design_reviews": [
+        "./reviews/qa-native-winit-service-plan-functional-review.md",
+        "./reviews/qa-native-winit-service-plan-security-review.md"
+      ],
+      "status": "authoring; source and live acceptance pending"
+    },
+    "recovery_diagnostics_status": {
+      "trace": "./evidence/recovery/qa42-scene-recovery-source-trace.md",
+      "status": "authoring; actual failed guard unknown; SQL/authority/history unchanged"
+    },
+    "require_existing_startup": {
+      "status": "source trace complete; design/implementation/live validation pending; retained stores on hold",
+      "trace": "./evidence/recovery/require-existing-startup-source-trace.md",
+      "identity_constraint": "Legacy runtime_did is client JWT sub, not actual node/DB-owner DID; compare persisted bootstrap Verse.created_by to DID from load-only retained node key before mutation/readiness."
+    }
   }
 }

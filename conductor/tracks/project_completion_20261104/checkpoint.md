@@ -3,7 +3,7 @@ type: ProgressCheckpoint
 date: 2026-11-04
 status: in_progress
 title: Current completion state and next actions
-last_verified_utc: 2026-11-04T22:30:59.267561+00:00
+last_verified_utc: 2026-11-04T22:42:33.634884+00:00
 ---
 
 # Current completion state
@@ -15,7 +15,7 @@ states, not current build or acceptance claims.
 
 - **Main source:** `9d1e061d` (reviewed fixed categorical native discovery reasons). Reviewed 47-source native/layout composition is committed in `8968d918`. Reviewed toolchain follow-ups are `1b477696`, `86c53c14`, `4add551c`, and precise BCrypt ULONG bound `925d7cba`. Live acceptance remains distinct.
 - **Build:** Combined Rust application/helpers and native observer staged successfully from `925d7cba` in 12.7 seconds at `.qa/stage/925d7cba-20261104150814356`; session 40403 terminal exit 0, zero Rust/MSVC compiler warning or error diagnostics, and application/helper hashes verified. Earlier attempts 71477, 73746 and 99364 failed at toolchain lookup, SDK COM prerequisites and unavailable MAXULONG respectively. Raw logs/receipts remain in `evidence/build-attempts/`; no failed attempt published a stage manifest. Final integrated sweep has not run.
-- **Owned apps:** QA42 and QA43 are stopped; their eight recorded app/descendant identities were checked absent at 22:17:48Z and 22:23:04Z. Fresh QA44 is live at `.qa/run/20261104-152521-166`, PID 120000; native/input-off options enabled. Retained campaign roots untouched.
+- **Owned apps:** QA42 and QA43 are stopped; their eight recorded app/descendant identities were checked absent at 22:17:48Z and 22:23:04Z. QA44 is also stopped; its eight recorded identities were checked absent at `2026-11-04T22:33:38.9877095Z`. No owned apps are live. Retained campaign roots untouched.
 - **Committed evidence:** QA34/35 in `3062a9ab`, QA36 in `9df6a048`, QA37 in `35485826`, and reviewed QA38 through QA41 in `9a9450b9`. All 331 packet blobs were staged byte-for-byte and the session log excluded. Focused packets do not count as FULL passes.
 - **QA38:** independently reviewed as a faithful failed run; [review](./reviews/qa38-full-evidence-review.md), [manifest](../../../qa/passes/38/packet-manifest.json). Manifest SHA256 `133024b57f5a2eaf59e3ed27f88a70b1e5ecc8fe9e3f6980dd7e25f4b8f4378a`; 152 payloads and 16 actual screenshots. Publication bookkeeping is approved and committed. Its verdict stays `FAILED_NEW_S1_QA0071`.
 - **QA39:** independently approved as focused normal-update evidence; [review](./reviews/qa39-full-evidence-review.md); publication bookkeeping approved and committed; [manifest](../../../qa/passes/39/packet-manifest.json), SHA256 `ec654fd786690db3bc28b41f23681db4356ee2fe9021a2de3d24e0fc315e1ec7`; 26 payloads and one screenshot. Fresh fixture bindings and one normal scoped terrain update succeeded, with complete requested readback and byte-identical control Petal B. This does not prove expiry, revocation, moved-scope, rollback, queue bounds, concurrency or a particular runtime reader mode.
@@ -51,3 +51,13 @@ acceptance. Read `qa/findings.jsonl` for exact statuses and evidence.
 
 Only root runs Cargo, apps and process lifecycle operations. Authors use isolated
 worktrees. No final test sweep, push, CI, tag or release has been performed.
+
+## Reviewed next source slices
+
+QA42/43 publication is committed in `a77cabbe`; all 84 packet Git blobs were independently checked against worktree bytes before commit. QA44 [manifest](../../../qa/passes/44/packet-manifest.json) SHA256 `8349132dd62fed94b8a6793a4e2a29ba78913fef091e579d39a72c4bc09231f7` has 11 payloads and no screenshot. Its [independent review](./reviews/qa44-full-evidence-review.md) approves accurate failed-native evidence only: visible non-app-class window refusal before UIA, no Invoke, bootstrap-only invocation ledger and terminal worker exit2. Launch bootstrap/fixture Owner HTTP occurred; no separate post-launch Owner state/capture request occurred.
+
+The [strict winit service plan](./evidence/native-nav23/qa44-visible-window-source-trace.md) passed [functional](./reviews/qa-native-winit-service-plan-functional-review.md) and [security](./reviews/qa-native-winit-service-plan-security-review.md) design review. Authoring is limited to an exact zero-area, same-thread, ownerless noninteractive service signature, retaining original root/service identities and repeating the bounded full census at every use boundary. It grants no generic visible-window exemption. Actual QA44 class/profile match remains unobserved; source and live acceptance are pending.
+
+The separate [recovery/status trace](./evidence/recovery/qa42-scene-recovery-source-trace.md) found outbound transaction error masking and single-selection Waiting UI that hides terminal read errors. A narrow diagnostic/status source slice is being authored: preserve SQL/fences/ownership, reuse bounded diagnostic classification and shared explicit read-refresh UI, and report an empty scene snapshot as unavailable while retaining real other-Petal mismatch refusal. The actual failed publication guard remains unknown. Retained-store require-existing startup is being traced separately; retained stores remain on hold.
+
+The [require-existing startup trace](./evidence/recovery/require-existing-startup-source-trace.md) confirms that current ResumeRun still reaches create-capable DB/schema/reconciliation and unconditional Seed. Legacy runtime_did is a fresh client JWT sub, not original node/DB-owner proof. A load-only key/secret path and sole-worker exact retained bootstrap Verse owner validation must precede mutations, handle publication, sync/API/token readiness. Supported strict-existing SDK behavior remains to be established; no retained restart is authorized by this trace.

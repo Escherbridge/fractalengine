@@ -1,0 +1,61 @@
+{
+  "kind": "fractalengine-focused-qa-packet-v1",
+  "pass_id": 44,
+  "files": [
+    {
+      "file": "application-log-summary.json",
+      "bytes": 1528,
+      "sha256": "15a6c25a5b1f8ab8da461cb1c83f39cdc7c998f577827ad01903e9b09cc6a195"
+    },
+    {
+      "file": "cleanup-identities.json",
+      "bytes": 4308,
+      "sha256": "009112c5c6fbb9109d9565509a8d26b1bd39542bb5b4be19f3939b1256e1b1e0"
+    },
+    {
+      "file": "credential-scan.json",
+      "bytes": 2306,
+      "sha256": "4125468d7098adf59f8a47aef383c3a707b0827ead9e9609711103fa49d16f87"
+    },
+    {
+      "file": "fixture-public-detail.json",
+      "bytes": 2020,
+      "sha256": "75c0beb3a9b203f2d36e3486f081fee3e74a5d5ad1178d867959abd6d2223315"
+    },
+    {
+      "file": "logs/launch.log",
+      "bytes": 1672,
+      "sha256": "768e77de290e7b7e1f41ed622e068b3734de7a3163e44abbc9e95e52b5b4fcc5"
+    },
+    {
+      "file": "logs/stop.log",
+      "bytes": 270,
+      "sha256": "2a00c4457036dbbec7ca2c9bb8820e4bc6405204a88a8e28be3ec06aec12c94c"
+    },
+    {
+      "file": "native-observer-worker-receipt.jsonl",
+      "bytes": 1503,
+      "sha256": "762374e3525715cd6d65da32b1ccb3dfd330d71bf87c8d9d0b69b029e46f1be4"
+    },
+    {
+      "file": "owned-context.json",
+      "bytes": 3051,
+      "sha256": "72461fff6651dcc3cc969246f1a53bc56b0fef7e9ec28e31c0491bc16c4adf3b"
+    },
+    {
+      "file": "owner-native-observe-diagnostic.jsonl",
+      "bytes": 598,
+      "sha256": "2322b35c1e472d27a500ec63ac1ad399a3975675be7b460c4bc02d85832b62e6"
+    },
+    {
+      "file": "packet-summary.json",
+      "bytes": 2835,
+      "sha256": "ef43340c9677825f71d3c5b48cef5fb1bb67933390227e663a0b2a3966040e1d"
+    },
+    {
+      "file": "stage-manifest.json",
+      "bytes": 1166,
+      "sha256": "27467f41f1af1aa7d97da9496b76609341acd19e7d0f5ed77b4062f77770fa6b"
+    }
+  ]
+}
