@@ -1,0 +1,11 @@
+{
+  "source_commit": "10194fc5",
+  "build_session": 56692,
+  "exit_code": 1,
+  "stage_created": false,
+  "app_launched": false,
+  "error": "E0502 in fe-ui/src/editor_batch/ui.rs:82-94; nested axis editor used outer ui instead of column",
+  "log_sha256": "c3a52a1dce4389c975527818f8ba20339b41eb94c56659aab1c890b6650af6ba",
+  "correction": "text_input(column, value); independently source-approved",
+  "review": "../../reviews/qa-batch-axis-ui-borrow-source-review.md"
+}

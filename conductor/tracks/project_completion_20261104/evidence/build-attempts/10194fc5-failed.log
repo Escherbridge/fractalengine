@@ -1,0 +1,42 @@
+[12:37:11.174] Building fractalengine and offline QA terrain helpers...
+   Compiling fe-runtime v0.1.0 (C:\Users\atooz\Programming\fractalengine-workspace\fractalengine\fe-runtime)
+   Compiling fe-format v0.1.0 (C:\Users\atooz\Programming\fractalengine-workspace\fractalengine\fe-format)
+   Compiling fe-query v0.1.0 (C:\Users\atooz\Programming\fractalengine-workspace\fractalengine\fe-query)
+   Compiling fe-network v0.1.0 (C:\Users\atooz\Programming\fractalengine-workspace\fractalengine\fe-network)
+   Compiling fe-hexon v0.1.0 (C:\Users\atooz\Programming\fractalengine-workspace\fractalengine\fe-hexon)
+   Compiling fe-database v0.1.0 (C:\Users\atooz\Programming\fractalengine-workspace\fractalengine\fe-database)
+   Compiling fe-plugin v0.1.0 (C:\Users\atooz\Programming\fractalengine-workspace\fractalengine\fe-plugin)
+   Compiling fe-renderer v0.1.0 (C:\Users\atooz\Programming\fractalengine-workspace\fractalengine\fe-renderer)
+   Compiling fe-terrain v0.1.0 (C:\Users\atooz\Programming\fractalengine-workspace\fractalengine\fe-terrain)
+   Compiling fe-webview v0.1.0 (C:\Users\atooz\Programming\fractalengine-workspace\fractalengine\fe-webview)
+   Compiling fe-sync v0.1.0 (C:\Users\atooz\Programming\fractalengine-workspace\fractalengine\fe-sync)
+   Compiling fe-ui v0.1.0 (C:\Users\atooz\Programming\fractalengine-workspace\fractalengine\fe-ui)
+error[E0502]: cannot borrow `*ui` as mutable because it is also borrowed as immutable
+  --> fe-ui\src\editor_batch\ui.rs:82:9
+   |
+82 |           ui.columns(3, |columns| {
+   |           ^  -------    --------- immutable borrow occurs here
+   |           |  |
+   |  _________|  immutable borrow later used by call
+   | |
+83 | |             for (index, (axis, value)) in ["X", "Y", "Z"].into_iter().zip(values).enumerate() {
+84 | |                 let column = &mut columns[index];
+85 | |                 column
+...  |
+88 | |                         crate::ui_shell::layout_policy::text_input(ui, value)
+   | |                                                                    -- first borrow occurs due to use of `*ui` in closure
+...  |
+94 | |         })
+   | |__________^ mutable borrow occurs here
+
+   Compiling fe-api v0.1.0 (C:\Users\atooz\Programming\fractalengine-workspace\fractalengine\fe-api)
+For more information about this error, try `rustc --explain E0502`.
+error: could not compile `fe-ui` (lib) due to 1 previous error
+warning: build failed, waiting for other jobs to finish...
+GUI build failed: 101
+At C:\Users\atooz\Programming\fractalengine-workspace\fractalengine\tools\qa\stage.ps1:45 char:32
++ ...  if ($LASTEXITCODE -ne 0) { throw "GUI build failed: $LASTEXITCODE" }
++                                 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    + CategoryInfo          : OperationStopped: (GUI build failed: 101:String) [], RuntimeException
+    + FullyQualifiedErrorId : GUI build failed: 101
+ 

@@ -85,7 +85,7 @@ fn axes(ui: &mut egui::Ui, label: &str, values: &mut [String; 3], enabled: bool)
                 column
                     .add_sized(
                         [column.available_width().max(target), target],
-                        crate::ui_shell::layout_policy::text_input(ui, value)
+                        crate::ui_shell::layout_policy::text_input(column, value)
                             .desired_width(0.0)
                             .char_limit(32),
                     )
