@@ -304,6 +304,7 @@ pub fn install(app: &mut App, receiver: VisionRequestReceiver) {
             PostUpdate,
             (apply_vision_pose, advance_vision_job)
                 .chain()
+                .before(bevy::camera::CameraUpdateSystems)
                 .before(TransformSystems::Propagate),
         );
 }
@@ -2082,8 +2083,35 @@ mod tests {
     /// whole settle, then restores the snapshot exactly.
     #[test]
     fn window_mode_locks_applies_the_pose_and_restores_the_snapshot() {
+        use bevy::asset::AssetEvent;
+        use bevy::camera::CameraProjection;
+        use bevy::render::{camera::CameraPlugin, texture::ManualTextureViews};
+        use bevy::window::{WindowCreated, WindowResized, WindowScaleFactorChanged};
         let mut h = harness((1280, 720));
+        h.app.init_resource::<ManualTextureViews>()
+            .add_message::<AssetEvent<Image>>()
+            .add_message::<WindowCreated>()
+            .add_message::<WindowResized>()
+            .add_message::<WindowScaleFactorChanged>()
+            .add_plugins((bevy::transform::TransformPlugin, CameraPlugin));
+        crate::terrain_bridge::install_ruler_hud(&mut h.app);
+        h.app.world_mut().entity_mut(h.main).insert(Camera::default());
+        {
+            let mut projection = h.app.world_mut().get_mut::<Projection>(h.main).unwrap();
+            let Projection::Perspective(projection) = &mut *projection else { panic!("perspective camera required"); };
+            projection.fov = 60.0_f32.to_radians();
+        }
+        let observed = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let sink = observed.clone();
+        h.app.add_systems(PostUpdate, (move |cameras: Query<(&Camera, &Projection, &GlobalTransform), With<OrbitCameraController>>| {
+            let (camera, projection, pose) = cameras.single().unwrap();
+            let Projection::Perspective(projection) = projection else { panic!("perspective camera required"); };
+            sink.lock().unwrap().push((projection.fov, camera.clip_from_view(),
+                projection.get_clip_from_view(), pose.translation()));
+        }).in_set(bevy_egui::EguiPostUpdateSet::EndPass));
+        h.app.update();
         let before = h.main_state();
+        assert_eq!(before.2, 60.0_f32.to_radians());
         let mut reply = h.capture(orbit_capture(CaptureMode::Window, 4, None));
         h.app.update();
         assert!(h.locked(), "the pose is held under the lock");
@@ -2095,6 +2123,11 @@ mod tests {
         );
         let (posed, _, _) = h.main_state();
         assert!((posed.translation - expected.translation).length() < 1e-4);
+        let first_applied = observed.lock().unwrap().last().copied().unwrap();
+        assert_eq!(first_applied.0, (DEFAULT_FOV_DEG as f32).to_radians());
+        assert_eq!(first_applied.1, first_applied.2,
+            "first applied EndPass uses the projection actually cached for rendering");
+        assert!((first_applied.3 - expected.translation).length() < 1e-4);
         assert!(h.screenshots().is_empty(), "still settling");
 
         let shot = h.update_until_screenshot();
@@ -2116,6 +2149,14 @@ mod tests {
         h.app.update();
         assert!(!h.locked(), "lock released");
         assert_eq!(h.main_state(), before, "snapshot restored bit-identically");
+        let frames = observed.lock().unwrap();
+        let applied = frames.iter().position(|frame| frame.0 == first_applied.0).unwrap();
+        let first_restored = frames[applied + 1..].iter().find(|frame| frame.0 == before.2).unwrap();
+        assert_eq!(first_restored.1, first_restored.2,
+            "first actual job-restore EndPass uses the restored cached render projection");
+        assert!((first_restored.3 - before.0.translation).length() < 1e-4);
+        assert!(frames.iter().all(|frame| frame.1 == frame.2),
+            "no intermediate EndPass can observe a raw FOV ahead of its cached render matrix");
     }
 
     #[test]

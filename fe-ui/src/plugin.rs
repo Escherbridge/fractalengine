@@ -434,6 +434,37 @@ impl Default for ViewportRect {
     }
 }
 
+/// Same-pass visual geometry for separately scheduled HUD producers; see src/AGENTS.md.
+#[derive(Resource, Default)]
+pub struct ViewportGeometry {
+    stamp: Option<(bevy_egui::egui::Context, u64, f32, bevy_egui::egui::Rect)>,
+    chrome: Option<fe_renderer::scene_pointer::SceneChromeRects>,
+}
+
+impl ViewportGeometry {
+    pub fn current(&self, ctx: &bevy_egui::egui::Context) -> Option<bevy_egui::egui::Rect> {
+        self.stamp.as_ref().filter(|(context, pass, scale, rect)| {
+            context == ctx && *pass == ctx.cumulative_pass_nr() && *scale == ctx.pixels_per_point()
+                && scale.is_finite() && *scale > 0.0 && rect.is_finite() && rect.is_positive()
+        }).map(|(_, _, _, rect)| *rect)
+    }
+
+    pub fn overlay_current(&self, ctx: &bevy_egui::egui::Context) -> Option<bevy_egui::egui::Rect> {
+        crate::ui_shell::layout_policy::overlay_content_rect(ctx, self.current(ctx)?)
+    }
+
+    pub fn chrome_current(&self, ctx: &bevy_egui::egui::Context) -> Option<&[bevy_egui::egui::Rect]> {
+        self.current(ctx)?;
+        self.chrome.as_ref().map(|chrome| chrome.rects())
+    }
+}
+
+/// Finalized panel geometry within the primary egui pass.
+#[derive(SystemSet, Debug, Clone, PartialEq, Eq, Hash)]
+pub enum GardenerUiSet {
+    GeometryReady,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -857,6 +888,7 @@ impl Plugin for GardenerConsolePlugin {
         app.init_resource::<CameraFocusTarget>();
         app.init_resource::<ViewportCursorWorld>();
         app.init_resource::<ViewportRect>();
+        app.init_resource::<ViewportGeometry>();
         app.init_resource::<fe_renderer::camera::CameraPointerRegion>();
         app.insert_resource(fe_renderer::camera::EditorScenePointerRequired);
         app.add_systems(Update, crate::ui_shell::results_dock::draw_matches);
@@ -991,7 +1023,7 @@ impl Plugin for GardenerConsolePlugin {
                     .after(crate::panels::volume_report_panel::sync_volume_report_request),
             ).run_if(fe_runtime::maintenance::editor_running),
         );
-        app.add_systems(EguiPrimaryContextPass, gardener_ui_system);
+        app.add_systems(EguiPrimaryContextPass, gardener_ui_system.in_set(GardenerUiSet::GeometryReady));
         // The title bar's window request (move/resize/min/max/close) applies
         // the same frame it was raised — ui_shell/AGENTS.md §window-chrome.
         app.add_systems(
@@ -1153,6 +1185,7 @@ struct MiscUiParams<'w> {
 /// without re-touching this system's signature.
 #[derive(bevy::ecs::system::SystemParam)]
 struct UiShellParams<'w> {
+    viewport_geometry: ResMut<'w, ViewportGeometry>,
     settings_session: ResMut<'w, crate::settings::SettingsSession>,
     api_endpoint: Res<'w, fe_runtime::app::RuntimeApiEndpoint>,
     topbar: ResMut<'w, crate::ui_shell::topbar::TopbarState>,
@@ -1183,6 +1216,8 @@ fn gardener_ui_system(
     mut misc: MiscUiParams,
     mut ui_shell: UiShellParams,
 ) {
+    ui_shell.viewport_geometry.stamp = None;
+    ui_shell.viewport_geometry.chrome = None;
     let Ok(ectx) = ctx.ctx_mut() else { return };
     crate::native_accessibility::navigation_ui::attach(ectx, &misc.native_navigation);
     crate::native_accessibility::product_guard(ectx, &p2p.ui_mgr, &p2p.node_mgr, &nav,
@@ -1236,12 +1271,14 @@ fn gardener_ui_system(
     // Pointer routing excludes the resize bands: a press that starts a window
     // resize must not also pick / place in the viewport (§window-chrome).
     viewport_rect.0 = rect;
+    ui_shell.viewport_geometry.stamp = Some((ectx.clone(), ectx.cumulative_pass_nr(), ectx.pixels_per_point(), rect));
     ui_shell.camera_region.rect = crate::ui_shell::layout_policy::scene_interaction_rect(
         ectx, rect, ui_shell.topbar.maximized,
     );
     ui_shell.camera_region.pixels_per_point = ectx.pixels_per_point();
     fe_renderer::scene_pointer::ScenePointerChrome::finish_pass(
         ectx, ui_shell.camera_region.rect, nav.intent_revision());
+    ui_shell.viewport_geometry.chrome = fe_renderer::scene_pointer::ScenePointerChrome::completed_exclusions_current_ui(ectx);
     // Frameless-window edge grips: after every panel so the resize cursor wins
     // (ui_shell/AGENTS.md §window-chrome).
     crate::ui_shell::topbar::render_window_resize_grips(ectx, &mut ui_shell.topbar);

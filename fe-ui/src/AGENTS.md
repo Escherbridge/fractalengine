@@ -1516,3 +1516,25 @@ after all producer regions are classified. Missing/unsupported regions retire
 positive demands, while context retirement retains any accepted read until its
 exact reply. Source/proof, native delivery and provider output rationale lives in
 native_accessibility/AGENTS.md. No HTTP/MCP/operator or capture route is added.
+
+## Same-pass HUD geometry (QA41)
+
+ViewportRect keeps its existing visual/picking consumers. The separate public
+ViewportGeometry stamp carries actual egui Context, cumulative pass, scale and
+final CentralPanel rectangle. gardener_ui_system clears it before context access
+and publishes only after the complete shell returns its actual geometry. Its
+current accessor rejects a stale context/pass/scale or invalid rectangle;
+overlay_current applies the same divider-safe inset as interactive overlays.
+
+After the actual ScenePointerChrome::finish_pass, the same resource captures its
+bounded completed_exclusions_current_ui result. chrome_current requires the same
+outer stamp and returns actual clipped header/browser/hint responses; an absent
+or unfinished chrome publication omits the terrain HUD. No previous Area rectangle
+or guessed hint height is used. Pointer admission keeps its prior-frame contract.
+
+GardenerUiSet::GeometryReady names the completed shell system boundary. The
+host's terrain bridge runs afterward in the same EguiPrimaryContextPass, then
+the real terrain ruler draws before egui output completion. fe-ui acquires no
+terrain dependency. This cosmetic geometry seam confers no native authority,
+scene selection, capture grant or camera crop. See terrain/host directory docs
+and native_accessibility/AGENTS.md for the separately audited painter contract.

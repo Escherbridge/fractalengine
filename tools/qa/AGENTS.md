@@ -1189,3 +1189,42 @@ baseline, adopted and resume cannot succeed. Existing directory scans are not a
 confinement proof for SDK internal opens/housekeeping. Later positive readback must
 use the live app's existing DB owner through a separately reviewed typed surface.
 Do not claim durable adoption/restart/transfer from preparation or this refusal.
+
+## Ordinary native observer NAV-2/NAV-3
+
+`native_observer/` owns the fixed UIA-only staged worker, strict owned-run controller,
+canonical process-attempt ledger and existing offline journey extension. The `fe.py
+--run <explicit run> native` branch executes BEFORE ordinary run/token/log/HTTP
+probing; recipient Viewer/Editor observation cannot implicitly select an Owner token.
+No capture, generic action, focus/activation, direct UiAction or Owner-floor change.
+
+Staging explicitly opts in with -NativeObserver; launch additionally requires
+-DisableSyntheticInput and creates the actual process-bound ledger before handoff.
+The existing launcher setup remains its separate authorized Owner bootstrap. Pair
+records identify both members explicitly; restart preserves pair linkage and old
+outcomes. A missing bootstrap permits observe only, never opportunistic slot creation.
+Pre-worker reservation and pre-Invoke intent are flushed/read back through retained
+file handles, and every possible invocation outcome stays spent for that FE birth.
+
+Stop/restart/pair handling may reap only an exact recorded owned helper after its
+controller is gone. Unknown lifetime stays retained; clean keeps its run/stage.
+See native_observer/AGENTS.md for wire grammar, inheritance/deadline limits and
+source-only acceptance boundaries. Offline evidence-boundary fixtures add zero
+application/native checkpoint credit. Parent review/build/live verification remains.
+
+NAV23 v2 aligns all native history producers and cleanup with native_observer/limits.json
+before allocation/reservation/stop. Retained spent/unknown records are never pruned.
+Linked restart now validates/retains the unchanged counterpart, archives exact old
+pair lineage, creates only a fresh process-bound bootstrap, and atomically reseals
+the exact new membership revision. Both ordinary/null-bootstrap and native pairs
+keep their actual mode; paired stage/port/input/native mode remain fixed. Partial
+publication stays diagnosable/unavailable, without adoption/replay or link removal.
+See native_observer/AGENTS.md for the explicit single-member/counterpart-live contract.
+
+Confirmed native helper history is validated from canonical ordered receipts and
+this run's exact current/archived provenance, allowing ordinary cleanup of an old
+stage after a supported unpaired upgrade. Unknown/unconfirmed/reapable records
+continue to require actual stage/manifest/hash/process ownership; missing binaries
+never prove exit. No records are discarded and confirmed history does not retain
+dead runs/stages forever. The existing lifecycle journey uses real scratch stages
+for this regression rather than substituting a constant stage reader.

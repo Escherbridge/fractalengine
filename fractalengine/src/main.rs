@@ -912,6 +912,8 @@ fn main() {
                 .chain(),
         ),
     );
+    // Same-pass shell geometry precedes the actual terrain HUD producer.
+    terrain_bridge::install_ruler_hud(&mut app);
     // Global Offline tile mode overrides the petal's mode on the freshly built
     // composite before any chunk fetch. See src/AGENTS.md §tile-mode.
     app.add_systems(

@@ -924,3 +924,27 @@ NodeManager deselection and NavigationManager transition. Sidebar quarantine,
 dialog changes or stripped/unsupported native metadata cannot become a physical
 fallback. Browser cards, menus, visibility controls and node/group selection keep
 their existing handlers and semantics.
+
+## Residual layout boundaries (QA41)
+
+tree_entry reserves an explicit child for all four slots and exactly three
+two-point gaps after the current indentation. Frame margins stay outside that
+calculation. The name Button has its own square physical minimum; larger
+available width goes to its text. The existing both-axis Hierarchy scroll owns
+overflow, so trailing eye/Options controls do not consume a neighbor or divider
+gutter. Stable entry IDs, native Button/menu responses, full accessible names,
+selection accents, role/scope checks and text-sized icon painting are retained.
+
+Inspector's compact tab menu and ordinary tabs share activate_inspector_tab.
+It retains the existing draft/token lifecycle and API activation query. Compact
+navigation uses a short selection/deselect row and native named menu targets;
+its own bounded vertical scroll is a fallback when the fixed header cannot fit.
+The body keeps right_section_scroll_Inspector. Pending batch controls now belong
+to that body, rather than taking unbounded fixed-header space. Selection and
+permissions remain owned by their existing managers.
+
+Existing registered journeys now author actual deep production sidebar targets,
+both-axis overflow and horizontal wheel reachability, and actual compact native
+tab/section menu clicks with draft/selection/body-scroll identity preservation.
+No new test declaration was introduced. Source-only authoring is not evidence
+of executed checks, screenshots, native capture or release acceptance.

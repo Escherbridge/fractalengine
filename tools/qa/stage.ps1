@@ -8,7 +8,7 @@
 # SKIPS the build and reuses the newest already-staged build instead of
 # racing it for the lock.
 [CmdletBinding()]
-param([ValidateRange(1,16)][int]$Jobs = 2)
+param([ValidateRange(1,16)][int]$Jobs = 2, [switch]$NativeObserver)
 
 . "$PSScriptRoot\_lib.ps1"
 $ErrorActionPreference = 'Stop'
@@ -27,7 +27,8 @@ if ($busy) {
     }
     Write-QaLog "cargo/rustc is running (pid $($busy[0].Id)) — another lane owns the build. Reusing the newest staged build instead of racing it:"
     Write-QaLog "  $existing"
-    $null = Get-QaStageManifest -StageDir $existing
+    $existingManifest = Get-QaStageManifest -StageDir $existing
+    if ($NativeObserver -and -not $existingManifest.native_observer) { throw 'Busy build cannot supply the requested native helper stage' }
     Write-Output $existing
     exit 0
 }
@@ -98,6 +99,11 @@ $manifest = @{
     exe_sha256 = (Get-FileHash -LiteralPath (Join-Path $stageDir 'fractalengine.exe') -Algorithm SHA256).Hash
     seal_hexon_sha256 = (Get-FileHash -LiteralPath (Join-Path $stageDir 'seal_hexon.exe') -Algorithm SHA256).Hash
     legacy_fixture_sha256 = (Get-FileHash -LiteralPath (Join-Path $stageDir 'legacy_adoption_fixture.exe') -Algorithm SHA256).Hash
+}
+if ($NativeObserver) {
+    $nativeOutput = @(& "$PSScriptRoot\native_observer\build.ps1" -OutputDirectory $stageDir)
+    $manifest.native_observer = $nativeOutput[-1]
+    if ($manifest.native_observer.schema -cne 'fe-native-helper-stage-v1') { throw 'Native helper build manifest unavailable' }
 }
 if ((Get-QaSourceFingerprint) -ne $sourceFingerprint) { throw 'Build inputs changed while staging; rerun stage.ps1' }
 $manifest | ConvertTo-Json | Set-Content -LiteralPath (Join-Path $stageDir 'stage.json') -Encoding UTF8

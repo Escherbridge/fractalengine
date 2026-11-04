@@ -1191,7 +1191,7 @@ mod tests {
 
         use bevy_egui::egui;
         for width in [220.0, 320.0, 480.0] {
-            for scale in [0.75, 1.0, 2.0] {
+            for scale in [0.75, 1.0, 1.25, 2.0] {
                 for selection in [
                     super::RowSelection::None,
                     super::RowSelection::Primary,
@@ -1348,6 +1348,12 @@ mod tests {
                     assert!(observed.controls.iter().any(
                         |control| control.id == response.id.value() && control.hit.width() >= 24.0
                     ));
+                    for control in observed.controls.iter().filter(|control| control.id != response.id.value()
+                        && control.clickable && (control.rect.center().y - response.rect.center().y).abs() < 0.01
+                        && control.rect.left() >= response.rect.left()) {
+                        assert!(!control.hit.intersect(response.interact_rect).is_positive(),
+                            "name allocation cannot consume the actual eye or Options target");
+                    }
                     for control in &observed.controls {
                         if control.clickable || control.draggable {
                             assert!(
@@ -1389,10 +1395,12 @@ mod tests {
                             nodes: vec![
                                 crate::verse_manager::NodeEntry {
                                     id: "n1".into(),
+                                    name: "Counted node one".into(),
                                     ..Default::default()
                                 },
                                 crate::verse_manager::NodeEntry {
                                     id: "n2".into(),
+                                    name: "Counted node two".into(),
                                     ..Default::default()
                                 },
                             ],
@@ -1409,6 +1417,66 @@ mod tests {
                 ..Default::default()
             },
         ]);
+        for scale in [0.75, 1.0, 1.25, 2.0] {
+            let ctx = egui::Context::default();
+            ctx.set_pixels_per_point(scale);
+            ctx.enable_accesskit();
+            let mut tree = crate::verse_manager::VerseManager::from_verses(hierarchy.verses.clone());
+            let mut nav = crate::navigation_manager::NavigationManager {
+                active_verse_id: Some("v".into()), active_verse_name: "Counted verse".into(),
+                active_fractal_id: Some("f".into()), active_fractal_name: "Counted fractal".into(),
+                active_petal_id: Some("p".into()), ..Default::default()
+            };
+            let mut sidebar = crate::plugin::SidebarState { open: true, ..Default::default() };
+            let mut width = crate::ui_shell::layout_policy::PanelWidthState::new(120.0);
+            let mut focus = crate::plugin::CameraFocusTarget::default();
+            let mut nodes = crate::node_manager::NodeManager::default();
+            let mut manager = crate::actions::UiManager::default();
+            let mut visibility = crate::visibility::VisibilityState::default();
+            let (tx, _rx) = crossbeam::channel::unbounded();
+            let mut time = 0.0;
+            let mut draw = |events: Vec<egui::Event>| {
+                time += 0.05;
+                crate::ui_shell::layout_policy::begin_frame(&ctx, true);
+                let output = ctx.run(egui::RawInput {
+                    screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO,
+                        egui::vec2(1024.0 / scale, 720.0 / scale))),
+                    time: Some(time), events, ..Default::default()
+                }, |ctx| {
+                    crate::ui_shell::layout_policy::apply_style(ctx);
+                    super::left_sidebar(ctx, &mut sidebar, &mut width, &mut nav,
+                        &crate::atlas::DashboardState::default(), &mut tree, &mut focus, &tx,
+                        &mut nodes, &mut manager, &mut visibility, &settings,
+                        &crate::plugin::LocalUserRole { role: Some(fe_database::RoleLevel::Owner) });
+                    egui::CentralPanel::default().show(ctx, |_| {});
+                });
+                (output, crate::ui_shell::layout_policy::observations(&ctx))
+            };
+            let mut frame = draw(vec![]);
+            for _ in 0..4 { frame = draw(vec![]); }
+            let scroll = frame.1.scrolls.iter().find(|scroll| scroll.label == "Hierarchy").unwrap();
+            assert!(scroll.content_size.x > scroll.viewport.width(), "the deep real tree must overflow horizontally");
+            for label in ["Open verse Counted verse", "Open fractal Counted fractal", "Open petal Counted petal", "Select node Counted node one"] {
+                let id = frame.0.platform_output.accesskit_update.as_ref().unwrap().nodes.iter()
+                    .find_map(|(id, node)| (node.label() == Some(label)).then_some(id.0)).unwrap();
+                let control = frame.1.controls.iter().find(|control| control.id == id).unwrap();
+                assert!(control.hit.width() * scale >= 20.0 && control.hit.height() * scale >= 20.0,
+                    "every depth reserves its actual name Button before clipping: {label}");
+            }
+            let center = scroll.viewport.center();
+            frame = draw(vec![egui::Event::PointerMoved(center), egui::Event::MouseWheel {
+                unit: egui::MouseWheelUnit::Point, delta: egui::vec2(-10000.0, 0.0), modifiers: egui::Modifiers::NONE,
+            }]);
+            for _ in 0..6 { frame = draw(vec![]); }
+            let scrolled = frame.1.scrolls.iter().find(|scroll| scroll.label == "Hierarchy").unwrap();
+            assert!(scrolled.offset.x > 0.0, "native horizontal wheel reaches trailing tree actions");
+            let id = frame.0.platform_output.accesskit_update.as_ref().unwrap().nodes.iter()
+                .find_map(|(id, node)| (node.label() == Some("Options menu for node Counted node one")).then_some(id.0)).unwrap();
+            let options = frame.1.controls.iter().find(|control| control.id == id).unwrap();
+            let visible = options.hit.intersect(options.clip);
+            assert!(visible.width() * scale >= 20.0 && visible.height() * scale >= 20.0,
+                "the deepest Options target is reachable without consuming the divider gutter");
+        }
         for width in [1024.0, 1280.0, 1920.0] {
             for (verse, fractal, petal, expected) in [
                 (None, None, None, "Library: 2 petals \u{00b7} 2 objects"),

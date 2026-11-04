@@ -245,12 +245,14 @@ pub(crate) fn row(
                 .fill(selection.fill(on_path))
                 .inner_margin(egui::Margin::symmetric(2, 1))
                 .show(ui, |ui| {
-                    ui.set_min_height(26.0_f32.max(crate::ui_shell::layout_policy::target_size(ui.ctx())));
-                    ui.horizontal(|ui| {
-                        ui.spacing_mut().item_spacing.x = 2.0;
-                        let target_size = crate::ui_shell::layout_policy::target_size(ui.ctx());
+                    let target_size = crate::ui_shell::layout_policy::target_size(ui.ctx());
+                    let gap = 2.0;
+                    let row_width = ui.available_width().max(4.0 * target_size + 3.0 * gap);
+                    let row_layout = egui::Layout::left_to_right(egui::Align::Center);
+                    ui.allocate_ui_with_layout(egui::vec2(row_width, target_size), row_layout, |ui| {
+                        ui.spacing_mut().item_spacing.x = gap;
                         ui.spacing_mut().interact_size = egui::vec2(target_size, target_size);
-                        let name_width = (ui.available_width() - target_size * 3.0 - 8.0).max(8.0);
+                        let name_width = row_width - target_size * 3.0 - 3.0 * gap;
                         let (icon_rect, _) = ui.allocate_exact_size(
                             egui::vec2(target_size, target_size),
                             egui::Sense::hover(),
@@ -282,6 +284,7 @@ pub(crate) fn row(
                             .add_sized(
                                 [name_width, target_size],
                                 egui::Button::new(text)
+                                    .min_size(egui::Vec2::splat(target_size))
                                     .selected(selected)
                                     .frame(false)
                                     .sense(egui::Sense::click())

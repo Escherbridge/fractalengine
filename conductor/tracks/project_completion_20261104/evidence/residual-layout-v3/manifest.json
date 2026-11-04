@@ -1,0 +1,102 @@
+{
+    "base":  "d8da3a46e9861e9191845ea283e37fb7e5ea3472",
+    "scope":  "QA41 residual layout v3 source-only",
+    "prior_manifest_sha256":  "bb48736e290824bb0a58aada7b378a87d95893c9c5dc40513545a2b874f99725",
+    "files":  [
+                  {
+                      "path":  "fe-renderer/src/scene-pointer-design.md",
+                      "bytes":  4217,
+                      "sha256":  "d8fb8905216d2f879e8280938ae85d216fe67637fc2c444911aeaabb71ccd069"
+                  },
+                  {
+                      "path":  "fe-renderer/src/scene_pointer.rs",
+                      "bytes":  16161,
+                      "sha256":  "3cb97569ffe28c112f7d5a7540d8ef4cc8ea3180e2497821a61906e7fa28affd"
+                  },
+                  {
+                      "path":  "fe-terrain/src/AGENTS.md",
+                      "bytes":  105583,
+                      "sha256":  "8e10e56f8ac52869ef90a9e942469ac50ee722261a20f09a0fa5336d8ef9d3a2"
+                  },
+                  {
+                      "path":  "fe-terrain/src/ruler.rs",
+                      "bytes":  21753,
+                      "sha256":  "225190cb34901f8d1d4c5441d423d2747492b670c4feb8cdf09fd31bd9892802"
+                  },
+                  {
+                      "path":  "fe-terrain/src/ruler_plugin.rs",
+                      "bytes":  14398,
+                      "sha256":  "08c463fe0e7562a7373b472643a91f714fbb9137d315789ccd27f6d1ffa9cb7e"
+                  },
+                  {
+                      "path":  "fe-ui/src/AGENTS.md",
+                      "bytes":  106151,
+                      "sha256":  "2b2f9ba8d094043e80ea02a302f66b881e7616c4818fa82d0c703dcd71dbdeca"
+                  },
+                  {
+                      "path":  "fe-ui/src/native_accessibility/AGENTS.md",
+                      "bytes":  21828,
+                      "sha256":  "407188c5f48bb9e3fca3e9844a6403834799585c802b9de4e6fd4e7485341da3"
+                  },
+                  {
+                      "path":  "fe-ui/src/panels/AGENTS.md",
+                      "bytes":  69866,
+                      "sha256":  "e13f105e22cddc401481cebe42987316628cfd7cd67621c890ed26262b322e71"
+                  },
+                  {
+                      "path":  "fe-ui/src/panels/inspector.rs",
+                      "bytes":  278028,
+                      "sha256":  "84afb22a54b6e0cf3979dba96f56fd6b1014f567891de6016702b17a2ceb47ca"
+                  },
+                  {
+                      "path":  "fe-ui/src/panels/sidebar.rs",
+                      "bytes":  83170,
+                      "sha256":  "5500b60f711c3151e5797dfd9806abed35cb9fefc63cf7f636e735ced4667d41"
+                  },
+                  {
+                      "path":  "fe-ui/src/panels/tree_entry.rs",
+                      "bytes":  14135,
+                      "sha256":  "bba088d228c770f076ac72283658ec896f799bb6c1fd72ba57ea84d7344aaabd"
+                  },
+                  {
+                      "path":  "fe-ui/src/plugin.rs",
+                      "bytes":  66659,
+                      "sha256":  "754e6e68d0f10ac2fb87cafb5e550364fbcb4ddc0026ed485d5d0f8a6729f4c3"
+                  },
+                  {
+                      "path":  "fe-ui/src/ui_shell/AGENTS.md",
+                      "bytes":  49756,
+                      "sha256":  "e3de4db8d983622cd308bb1dc2c6a72d73911eaa9a1ee9e77285888838ff246c"
+                  },
+                  {
+                      "path":  "fe-ui/src/ui_shell/layout_policy.rs",
+                      "bytes":  53181,
+                      "sha256":  "2034adc0ed2263f57e09b5a60ffb2489af240d94aefd614390cb675607500180"
+                  },
+                  {
+                      "path":  "fe-ui/src/ui_shell/right_sidebar.rs",
+                      "bytes":  128416,
+                      "sha256":  "d1dbc34b8ab1be2880a429a3e4d891492b6482ec41450cc0f1fd3471c2544b3a"
+                  },
+                  {
+                      "path":  "fractalengine/src/AGENTS.md",
+                      "bytes":  132635,
+                      "sha256":  "dedc7449030451b3cc3e98a55408549fc8ba621b6707ab62bd68c11fd75ca4fa"
+                  },
+                  {
+                      "path":  "fractalengine/src/main.rs",
+                      "bytes":  47580,
+                      "sha256":  "f5ac83b1145b19edea21e0800dfad71c239f2f2d9c25524f7ccce27918a7fdcf"
+                  },
+                  {
+                      "path":  "fractalengine/src/terrain_bridge.rs",
+                      "bytes":  208471,
+                      "sha256":  "51546ea553b504f745898ef9586aaaee1d6660fbf514f5912a561889661ade09"
+                  },
+                  {
+                      "path":  "fractalengine/src/vision_bridge.rs",
+                      "bytes":  114345,
+                      "sha256":  "116046529f192a68e22c2eec81bcb07ae04ea6dddf2a9fcedf148fb6f601c61a"
+                  }
+              ]
+}

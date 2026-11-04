@@ -6,7 +6,8 @@ param(
     [string]$Stage,
     [ValidateRange(1024,65535)][int]$OwnerPort = 8882,
     [ValidateRange(1024,65535)][int]$ViewerPort = 8883,
-    [switch]$AllowStaleStage
+    [switch]$AllowStaleStage,
+    [switch]$NativeObserver
 )
 . "$PSScriptRoot\_lib.ps1"
 $ErrorActionPreference = 'Stop'
@@ -14,29 +15,7 @@ $ErrorActionPreference = 'Stop'
 function Get-PairMember {
     param([string]$Directory)
     $context = Get-QaResumeContext -Run $Directory
-    return @{ run_dir = $context.directory; api_base = $context.current.api_base;
-        process_identity = $context.current.process_identity;
-        descendant_identities = @($context.current.descendant_identities);
-        stage = $context.current.stage; stage_manifest = $context.current.stage_manifest }
-}
-
-function Get-PairPublicDid {
-    param([string]$Directory)
-    $context = Get-QaResumeContext -Run $Directory
-    $credential = Wait-QaOwnerToken -TokensPath $context.current.tokens_path -VerseId $context.current.bootstrap_verse_id -TimeoutSec 3
-    if (-not $credential -or $credential.Token -isnot [string]) { throw 'Owned bootstrap identity credential unavailable; preserve token ACLs' }
-    try {
-        $parts = $credential.Token.Split('.')
-        if ($parts.Length -ne 3 -or $parts[1].Length -gt 8192) { throw 'Invalid owned identity credential format' }
-        $encoded = $parts[1].Replace('-', '+').Replace('_', '/')
-        $encoded = $encoded.PadRight($encoded.Length + ((4 - $encoded.Length % 4) % 4), '=')
-        $claims = [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String($encoded)) | ConvertFrom-Json
-        if ($claims.sub -isnot [string] -or $claims.sub -cnotmatch '^did:key:z6Mk[1-9A-HJ-NP-Za-km-z]{40,60}$' -or
-            $claims.token_type -cne 'api' -or $claims.max_role -cne 'owner' -or
-            $claims.scope -cne "VERSE#$($context.current.bootstrap_verse_id)") { throw 'Owned credential does not describe the bootstrapped issuer' }
-        return $claims.sub
-    } catch { throw 'Could not extract public issuer identity from the protected owned credential' }
-    finally { $credential = $null; $claims = $null; $parts = $null; $encoded = $null }
+    return Get-QaPairMemberRecord $context.current
 }
 
 if ($Action -eq 'Start') {
@@ -47,6 +26,7 @@ if ($Action -eq 'Start') {
     $complete = $false
     try {
         $options = @{ Fixture = 'basic'; ApiPort = $OwnerPort; AllowStaleStage = $AllowStaleStage }
+        if ($NativeObserver) { $options.NativeObserver = $true; $options.DisableSyntheticInput = $true }
         if ($Stage) { $options.Stage = $Stage }
         $ownerOutput = @(& "$PSScriptRoot\launch.ps1" @options)
         if (-not $ownerOutput.Count) { throw 'Owner launcher did not return an owned run path' }
@@ -69,6 +49,7 @@ if ($Action -eq 'Start') {
         try {
             foreach ($member in @($owner, $viewer)) {
                 $actual = Get-PairMember -Directory $member.run_dir
+                Assert-QaPairMemberCurrent $member ([pscustomobject]$actual)
                 if ($actual.api_base -ne $member.api_base -or $actual.stage -ne $member.stage -or
                     $actual.stage_manifest.source_fingerprint -cne $member.stage_manifest.source_fingerprint -or
                     $actual.stage_manifest.exe_sha256 -cne $member.stage_manifest.exe_sha256 -or
@@ -97,10 +78,10 @@ if ($Action -eq 'Start') {
             if ($ownerKey.Hash -ceq $viewerKey.Hash) { throw 'Pair does not have distinct run-local identities' }
             $ownerKey = $null
             $viewerKey = $null
-            $owner.public_did = Get-PairPublicDid -Directory $owner.run_dir
-            $viewer.public_did = Get-PairPublicDid -Directory $viewer.run_dir
+            $owner.public_did = Get-QaPairPublicDid -Directory $owner.run_dir
+            $viewer.public_did = Get-QaPairPublicDid -Directory $viewer.run_dir
             if ($owner.public_did -ceq $viewer.public_did) { throw 'Actual bootstrapped public issuer identities are identical' }
-            $pair = @{ schema = 'fe-qa-pair-v1'; owner = $owner; viewer = $viewer;
+            $pair = @{ schema = 'fe-qa-pair-v1'; revision = 1; owner = $owner; viewer = $viewer;
                 distinct_run_local_identities = $true; created_at = [DateTime]::UtcNow.ToString('o');
                 collaboration = 'Not joined: generate invite, select Viewer role and join through the two real GUIs';
                 network = 'Existing launcher disables relay; direct peer connection must be verified independently';
@@ -110,6 +91,14 @@ if ($Action -eq 'Start') {
             $pair | ConvertTo-Json -Depth 12 | Set-Content -LiteralPath $pendingPath -Encoding utf8
             if ($pinned | Where-Object { $_.HasExited }) { throw 'An exact pair root exited before final publication' }
             Move-Item -LiteralPath $pendingPath -Destination $pairPath -Force
+            foreach ($entry in @(@('owner',$owner), @('viewer',$viewer))) {
+                $memberPath = Join-Path $entry[1].run_dir 'current.json'
+                $memberCurrent = Get-Content -LiteralPath $memberPath -Raw | ConvertFrom-Json
+                $memberCurrent | Add-Member -Force -NotePropertyName native_pair -NotePropertyValue @{pair_path=$pairPath;member=$entry[0]}
+                $memberPending = Join-Path $entry[1].run_dir 'native-pair.pending.json'
+                $memberCurrent | ConvertTo-Json -Depth 16 | Set-Content -LiteralPath $memberPending -Encoding utf8
+                Move-Item -LiteralPath $memberPending -Destination $memberPath -Force
+            }
             $complete = $true
             $pair | ConvertTo-Json -Depth 12
         } finally {
@@ -138,6 +127,16 @@ if ($Action -eq 'Start') {
 }
 
 if (-not $OwnerRun) { throw 'Info/Stop require the explicit owner run; .qa/current is never used for a pair' }
+if ($Action -eq 'Stop') {
+    $nativeOwner = Get-QaResumeContext -Run $OwnerRun
+    $nativePairPath = Resolve-QaChildPath -Path (Join-Path $nativeOwner.directory 'pair.json') -Root $QaRunRoot
+    $nativePair = Get-Content -LiteralPath $nativePairPath -Raw | ConvertFrom-Json
+    if ($nativePair.schema -cne 'fe-qa-pair-v1' -or $nativePair.owner.run_dir -cne $nativeOwner.directory) { throw 'native_pair_record_refused' }
+    foreach ($nativeMember in @($nativePair.owner,$nativePair.viewer)) {
+        $nativeDirectory = Resolve-QaChildPath -Path $nativeMember.run_dir -Root $QaRunRoot
+        Stop-QaNativeObserverWorkers -Run $nativeDirectory
+    }
+}
 $lease = Enter-QaLifecycleLease
 try {
     $ownerContext = Get-QaResumeContext -Run $OwnerRun

@@ -1729,17 +1729,21 @@ pub(crate) fn section_chrome(
         )
         .show(ctx, |ui| {
             ui.set_clip_rect(ui.clip_rect().intersect(ui.max_rect()));
-            ui.add_space(8.0);
-            ui.horizontal(|ui| {
+            if super::layout_policy::compact_navigation(ui) {
+                section_selector(ui, state, section);
+            } else {
                 ui.add_space(8.0);
-                ui.label(
-                    egui::RichText::new(section_label(section))
-                        .strong()
-                        .color(theme::TEXT_HEADING),
-                );
-            });
-            ui.add_space(2.0);
-            section_rail(ui, state);
+                ui.horizontal(|ui| {
+                    ui.add_space(8.0);
+                    ui.label(
+                        egui::RichText::new(section_label(section))
+                            .strong()
+                            .color(theme::TEXT_HEADING),
+                    );
+                });
+                ui.add_space(2.0);
+                section_rail(ui, state);
+            }
             ui.separator();
             if section == RightSidebarSection::Inspector {
                 body(ui);
@@ -1806,6 +1810,28 @@ fn section_rail(ui: &mut egui::Ui, state: &mut RightSidebarState) {
             }
         }
     });
+}
+
+fn section_selector(ui: &mut egui::Ui, state: &mut RightSidebarState, current: RightSidebarSection) {
+    let target = super::layout_policy::target_size(ui.ctx());
+    let (response, _) = egui::containers::menu::MenuButton::from_button(
+        egui::Button::new(format!("Section: {}", section_label(current)))
+            .min_size(egui::vec2(ui.available_width().max(target), target))
+            .truncate(),
+    ).ui(ui, |ui| {
+        crate::native_accessibility::surface::popup(ui.ctx());
+        for section in ALL_SECTIONS {
+            if super::layout_policy::action(ui,
+                egui::Button::new(section_label(section)).selected(section == current),
+                &format!("Toggle {} section", section_label(section)),
+            ).clicked() {
+                state.toggle(section);
+                ui.close();
+            }
+        }
+    });
+    response.named(ui, format_args!("Choose sidebar section: {}", section_label(current)))
+        .on_hover_text(section_label(current));
 }
 
 #[cfg(test)]

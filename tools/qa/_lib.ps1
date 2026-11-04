@@ -441,7 +441,7 @@ function Get-QaStageManifest {
 }
 
 function Get-QaSourceFingerprint {
-    $paths = @(& git -C $QaRepoRoot ls-files --cached --others --exclude-standard -- '*.rs' '*.toml' 'Cargo.lock' '*.wgsl' 'fractalengine/assets')
+    $paths = @(& git -C $QaRepoRoot ls-files --cached --others --exclude-standard -- '*.rs' '*.toml' 'Cargo.lock' '*.wgsl' 'fractalengine/assets' 'tools/qa/native_observer/*.cpp' 'tools/qa/native_observer/*.hpp' 'tools/qa/native_observer/*.manifest' 'tools/qa/native_observer/build.ps1')
     if ($LASTEXITCODE -ne 0) { throw 'Could not enumerate QA build inputs' }
     $lines = foreach ($relative in ($paths | Sort-Object -Unique)) {
         $path = Join-Path $QaRepoRoot $relative
@@ -452,3 +452,6 @@ function Get-QaSourceFingerprint {
     try { return [BitConverter]::ToString($sha.ComputeHash([Text.Encoding]::UTF8.GetBytes(($lines -join "`n")))).Replace('-', '') }
     finally { $sha.Dispose() }
 }
+
+. "$PSScriptRoot\_native_observer.ps1"
+. "$PSScriptRoot\_native_pair.ps1"

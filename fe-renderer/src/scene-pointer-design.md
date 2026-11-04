@@ -48,3 +48,14 @@ hold/release/cancel behavior when its ray becomes unavailable at UI boundaries.
 No click-through is authorized merely because the egui active-widget state is old.
 Root's final source review, integrated checks and real input/camera acceptance
 remain required; authored journeys are not executed evidence.
+
+## Same-pass cosmetic exclusions (QA41 L1)
+
+completed_exclusions_current_ui copies only the existing four-slot completed
+response rectangles, after actual finish_pass and only in its exact cumulative
+egui pass. It independently checks the existing window/screen/scale/navigation
+validity and refuses a pending build. Context getters run after the temp-data
+closure releases its lock. The pass stamp is used only by this cosmetic accessor;
+it does not enter any existing pointer validity predicate or derived comparison.
+Normal Update input still uses the last completed visible geometry exactly as
+before. No native authority, new exclusion producer or input exception is added.

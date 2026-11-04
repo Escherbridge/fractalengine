@@ -23,6 +23,10 @@ foreach ($directory in @(Get-ChildItem -LiteralPath $QaRunRoot -Directory -Error
     if (-not (Test-Path -LiteralPath $record)) { continue }
     try {
         $current = Get-Content -LiteralPath $record -Raw | ConvertFrom-Json
+        foreach ($retained in @(Get-QaNativeRetainedStages -Run $directory.FullName)) {
+            $liveRuns[$directory.FullName] = $true
+            $liveStages[$retained] = $true
+        }
         if (-not $current.process_identity) {
             $liveRuns[$directory.FullName] = $true
             if ($current.stage) { $liveStages[[IO.Path]::GetFullPath($current.stage)] = $true }

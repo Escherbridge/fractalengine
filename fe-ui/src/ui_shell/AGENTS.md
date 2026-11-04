@@ -722,3 +722,29 @@ screenshots, neighbor clicks, small-scale checker results, typed drafts, panel/
 popup/menu coverage and scrollbar reachability remain root live acceptance.
 The ruler's whole-window anchoring remains a separate terrain/viewport boundary
 task; no ruler producer or camera/selection pointer routing is edited here.
+
+## Residual layout correction (QA41)
+
+DividerMetrics rounds the required radius upward to GUI_ROUNDING and reserves
+one extra physical pixel on each side of the twenty-pixel target. Actual side
+strip endpoints round outward on the physical grid; final finite clipped spans
+must still meet twenty pixels. Two further physical pixels conservatively bound
+endpoint conversion/rounding in the shared camera clearance. The interior gutter
+adds another physical pixel beyond that clearance. Native Results uses the same
+radius under the existing restoring scope, while overlay and scene routing use
+the corresponding gutter/clearance. Invalid geometry suspends the owner, retaining
+its existing held-input/release rules. Visual panel widths are unchanged.
+
+compact_navigation evaluates the local visible height and width against a
+three-row/96-point body target and ordinary navigation cost. Compact section
+and tab selectors are native named Button menus with real selected options;
+popups retain the native surface marker and ordinary keyboard operation. Section
+choices call the existing toggle method. Wide rails keep their prior behavior.
+Inspector limits its compact navigation scroll to the genuine remaining budget,
+leaving body room when the window permits it, rather than inflating the native
+body scroll minimum through the footer.
+
+The existing width journey now checks the actual side-strip physical spans
+without a threshold epsilon and rejects actual divider endpoint overlap with
+the scene rectangle across the retained scale/restoration profiles. Integrated
+execution and live camera-neighbor clicks remain parent verification.

@@ -561,6 +561,8 @@ for label, authority, expected in [
     results.append({"case":"typed-invitation-authority-"+label,"expected_accepted":expected,"accepted":accepted,
                     "passed":accepted==expected,
                     "boundary":"production public metadata shape/issuer constraint only; no signature, native or application QA claim"})
+from native_observer.scenario import exercise as native_contract_cases
+results.extend(native_contract_cases())
 summary = {"scope": "offline synthetic validator fixtures; zero application checkpoint coverage",
            "passed": all(result["passed"] for result in results), "cases": results}
 (output / "results.json").write_text(json.dumps(summary, indent=2), encoding="utf-8")

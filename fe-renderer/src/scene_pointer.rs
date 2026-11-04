@@ -30,6 +30,7 @@ impl ScenePointerStamp {
 
 #[derive(Clone, Copy)]
 struct ChromeSnapshot {
+    pass: u64,
     stamp: ScenePointerStamp,
     viewport: egui::ViewportId,
     screen: egui::Rect,
@@ -38,6 +39,17 @@ struct ChromeSnapshot {
     rects: [egui::Rect; CHROME_CAPACITY],
     count: usize,
     valid: bool,
+}
+
+/// Actual bounded viewport chrome for same-pass cosmetic placement.
+#[derive(Clone, Copy)]
+pub struct SceneChromeRects {
+    rects: [egui::Rect; CHROME_CAPACITY],
+    count: usize,
+}
+
+impl SceneChromeRects {
+    pub fn rects(&self) -> &[egui::Rect] { &self.rects[..self.count] }
 }
 
 impl ChromeSnapshot {
@@ -95,10 +107,11 @@ impl ScenePointerChrome {
         let viewport = ctx.viewport_id();
         let screen = ctx.viewport_rect();
         let pixels_per_point = ctx.pixels_per_point();
+        let pass = ctx.cumulative_pass_nr();
         ctx.data_mut(|data| {
             let state = data.get_temp_mut_or_default::<Self>(key());
             state.building = state.expected.map(|stamp| ChromeSnapshot {
-                stamp, viewport, screen, scene: egui::Rect::NOTHING,
+                pass, stamp, viewport, screen, scene: egui::Rect::NOTHING,
                 pixels_per_point, rects: [egui::Rect::NOTHING; CHROME_CAPACITY],
                 count: 0, valid: stamp.navigation_revision == navigation_revision,
             });
@@ -145,6 +158,15 @@ impl ScenePointerChrome {
         !snapshot.contains(point)
     }
 
+    /// Cosmetic consumers require this completed pass, unlike physical input admission.
+    pub fn completed_exclusions_current_ui(ctx: &egui::Context) -> Option<SceneChromeRects> {
+        let state = ctx.data(|data| data.get_temp::<Self>(key()))?;
+        let snapshot = state.completed?;
+        (state.building.is_none() && snapshot.pass == ctx.cumulative_pass_nr()
+            && snapshot.current(ctx, state.expected))
+            .then_some(SceneChromeRects { rects: snapshot.rects, count: snapshot.count })
+    }
+
     pub fn matches_window(ctx: &egui::Context, window: Entity, size: UVec2, native_scale: f32) -> bool {
         let matches = ctx.data(|data| data.get_temp::<Self>(key())).and_then(|state| state.expected)
             .is_some_and(|expected| expected.window == window && expected.physical_size == size
@@ -182,6 +204,8 @@ pub(crate) fn assert_completed_chrome_journey() {
             let _output = ctx.run(egui::RawInput { screen_rect: Some(screen), ..Default::default() }, |ctx| {
                 ScenePointerChrome::observe(ctx, stamp);
                 ScenePointerChrome::begin_pass(ctx, 7);
+                assert!(ScenePointerChrome::completed_exclusions_current_ui(ctx).is_none(),
+                    "cosmetic consumers cannot reuse completed geometry during a pending pass");
                 let panel = egui::CentralPanel::default().show(ctx, |ui| {
                     header = ui.horizontal(|ui| { let _ = ui.button("Back"); let _ = ui.button("Verse"); }).response.rect;
                     ScenePointerChrome::exclude(ctx, header.intersect(ui.clip_rect()));
@@ -191,6 +215,8 @@ pub(crate) fn assert_completed_chrome_journey() {
                     .fixed_pos(egui::pos2(400.0, 700.0)).show(ctx, |ui| { ui.label("Tool hint"); }).response.rect;
                 ScenePointerChrome::exclude(ctx, hint.intersect(screen));
                 ScenePointerChrome::finish_pass(ctx, scene, 7);
+                let cosmetic = ScenePointerChrome::completed_exclusions_current_ui(ctx).unwrap();
+                assert_eq!(cosmetic.rects(), &[header, hint.intersect(screen)]);
             });
         }
         let region = CameraPointerRegion { rect: scene, pixels_per_point: scale };

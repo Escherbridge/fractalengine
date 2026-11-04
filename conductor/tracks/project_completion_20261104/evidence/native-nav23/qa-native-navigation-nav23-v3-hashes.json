@@ -1,0 +1,155 @@
+{
+    "baseline":  "023a5044c27f4255ca4ac48c6a5ccbfa9d0b008c",
+    "kind":  "NAV23 v3 complete source-only historical confirmed-stage lifecycle repair",
+    "previousManifestSha256":  "05f266c26c3f816a2ee670650e5a7da63a28b4d00ad328643b7ca39192ab60b1",
+    "applicationSourceChanged":  false,
+    "newRegisteredTests":  0,
+    "changedFromV2":  [
+                          "tools/qa/_native_observer.ps1",
+                          "tools/qa/AGENTS.md",
+                          "tools/qa/native_observer/AGENTS.md",
+                          "tools/qa/native_observer/lifecycle_scenario.ps1"
+                      ],
+    "files":  [
+                  {
+                      "path":  ".gitignore",
+                      "bytes":  1988,
+                      "sha256":  "cb2dee95f47b8c5cba05a11e4564d2766745696a6cdf17bcde66ce1addee14ed"
+                  },
+                  {
+                      "path":  "tools/qa/_lib.ps1",
+                      "bytes":  24376,
+                      "sha256":  "43c13bebdacea24a86705d9e583197f7c86ab4f16186a817f47a127c55e0c588"
+                  },
+                  {
+                      "path":  "tools/qa/_native_identity.cs",
+                      "bytes":  1744,
+                      "sha256":  "0ec67ffdbaf90af4f3bf0156a6d506072e41763af948da47e897f638f81b7dd7"
+                  },
+                  {
+                      "path":  "tools/qa/_native_observer.ps1",
+                      "bytes":  21164,
+                      "sha256":  "878bf3ba80ab03faf218db33e31eb70909fb18fc4576658b4f15c2b6dfdae9a0"
+                  },
+                  {
+                      "path":  "tools/qa/_native_pair.ps1",
+                      "bytes":  13422,
+                      "sha256":  "9e1a0c0a22e2ac11516b6b805095f07f907d83a26b975d262ea9a22301df9ac2"
+                  },
+                  {
+                      "path":  "tools/qa/AGENTS.md",
+                      "bytes":  87980,
+                      "sha256":  "3b2efe0a03eec9fb8f0dbb4b053885617ddc60198922a842a3089acd1d6821fc"
+                  },
+                  {
+                      "path":  "tools/qa/clean.ps1",
+                      "bytes":  2952,
+                      "sha256":  "d84d7e7b3944290fcc708d87828edb46da6f00fb90d876a96a5411fc02010de9"
+                  },
+                  {
+                      "path":  "tools/qa/fe.py",
+                      "bytes":  51805,
+                      "sha256":  "68fe9f6fc76265a2d933ee7b7ac6ac2f2e4518995dd9a0acd443888dad7fce80"
+                  },
+                  {
+                      "path":  "tools/qa/launch.ps1",
+                      "bytes":  20477,
+                      "sha256":  "f2027f0c06db4190fda72084e8c0686455f9c330f857a3a66528b0168dc4c6b5"
+                  },
+                  {
+                      "path":  "tools/qa/native_observer/__init__.py",
+                      "bytes":  56,
+                      "sha256":  "7ff69f655190990cd5e2b87cf7f053d416f653c7f8e9f0a8ddc3264e0eab47f8"
+                  },
+                  {
+                      "path":  "tools/qa/native_observer/AGENTS.md",
+                      "bytes":  21259,
+                      "sha256":  "22ff52e6010ab62b541aace83bb894ae478e813af3e6e784c1bc8539eafde85b"
+                  },
+                  {
+                      "path":  "tools/qa/native_observer/build.ps1",
+                      "bytes":  2405,
+                      "sha256":  "501f1496b017fc927c471574f00f877abafebc7cba5b9b8e63eca2dc0f542692"
+                  },
+                  {
+                      "path":  "tools/qa/native_observer/contract.py",
+                      "bytes":  5335,
+                      "sha256":  "3d017581fd6b7a6385ab4588c82b78e212813cb5bca89198abda1495c69b3077"
+                  },
+                  {
+                      "path":  "tools/qa/native_observer/controller.py",
+                      "bytes":  15767,
+                      "sha256":  "b9b0a1a85274870362fc4792f8b80718e3236196ed6271f349725d216e6ccd4d"
+                  },
+                  {
+                      "path":  "tools/qa/native_observer/history.py",
+                      "bytes":  3277,
+                      "sha256":  "b09acba1141503e4b5167dde20f6aed5fa704a32b90bd77c51b858b55e38bf09"
+                  },
+                  {
+                      "path":  "tools/qa/native_observer/ledger.py",
+                      "bytes":  1748,
+                      "sha256":  "8134a423451865d698742739a3a5704de2f7a3207862ba80ec28427d1d4d55c2"
+                  },
+                  {
+                      "path":  "tools/qa/native_observer/lifecycle_scenario.ps1",
+                      "bytes":  19301,
+                      "sha256":  "ae322a252a363a1a71e3c899f064f6a8d7c6a9e9212ebca901a1c057141340ab"
+                  },
+                  {
+                      "path":  "tools/qa/native_observer/limits.json",
+                      "bytes":  113,
+                      "sha256":  "c85634387fecdddafb2a3a172a703e99133486a9f700d6ea5b5170c6a6662a49"
+                  },
+                  {
+                      "path":  "tools/qa/native_observer/scenario.py",
+                      "bytes":  7870,
+                      "sha256":  "03e64ebe66a9dac4162f0c1559ba853533e9fa9c3d7a7a77b74d8d917994d73b"
+                  },
+                  {
+                      "path":  "tools/qa/native_observer/windows.py",
+                      "bytes":  12188,
+                      "sha256":  "81ed839f7ad4088e1bdbe4a1ac42926967edb2e4bc39e4774c07710a39ecee61"
+                  },
+                  {
+                      "path":  "tools/qa/native_observer/worker.cpp",
+                      "bytes":  40808,
+                      "sha256":  "cb11508933e81da8a90fb49ba69a91152b7bbd94bc855909d2cbb34b59a39c72"
+                  },
+                  {
+                      "path":  "tools/qa/native_observer/worker.manifest",
+                      "bytes":  775,
+                      "sha256":  "0960e134e32c84c2aff4044416ffe8c57e71972caa8ee54b851075b7112f2e23"
+                  },
+                  {
+                      "path":  "tools/qa/native_observer/worker_protocol.hpp",
+                      "bytes":  14579,
+                      "sha256":  "c0682b813f99110a9989a1b0701f2d7993e76c96d4369241ced885722dd6487c"
+                  },
+                  {
+                      "path":  "tools/qa/pair.ps1",
+                      "bytes":  11444,
+                      "sha256":  "f34f406244d290929587e278d50d29e3c3d80ebd51ef46214425c916ed6a632c"
+                  },
+                  {
+                      "path":  "tools/qa/restart.ps1",
+                      "bytes":  637,
+                      "sha256":  "455cb444681889e697e748ee48fb62aac5d4f4c64fa05b2943194bcb481371d6"
+                  },
+                  {
+                      "path":  "tools/qa/scenarios/evidence-boundaries.py",
+                      "bytes":  39489,
+                      "sha256":  "9533db731df82479907a66fb2ca09e7dc309623a53f016485c2a42ea5723dba2"
+                  },
+                  {
+                      "path":  "tools/qa/stage.ps1",
+                      "bytes":  6228,
+                      "sha256":  "714edffbbaa694b163a0e52706e8469269a8c0946e2d4be4d955911bd1ca7d37"
+                  },
+                  {
+                      "path":  "tools/qa/stop.ps1",
+                      "bytes":  1834,
+                      "sha256":  "3f6da1e15db82b20bc1fe4c38e97a4bc533c864060d2a9c04790402382487cab"
+                  }
+              ]
+}

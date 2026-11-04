@@ -3,6 +3,12 @@
 param([string]$Run)
 . "$PSScriptRoot\_lib.ps1"
 $ErrorActionPreference = 'Stop'
+$nativeRun = if ($Run) { $Run } elseif (Test-Path -LiteralPath (Join-Path $QaRepoRoot '.qa\current')) { (Get-Content -LiteralPath (Join-Path $QaRepoRoot '.qa\current') -Raw).Trim() } else { $null }
+if ($nativeRun) {
+    $nativeCandidate = if ([IO.Path]::IsPathRooted($nativeRun)) { $nativeRun } else { Join-Path $QaRunRoot $nativeRun }
+    $nativeDirectory = Resolve-QaChildPath -Path $nativeCandidate -Root $QaRunRoot
+    Stop-QaNativeObserverWorkers -Run $nativeDirectory
+}
 $lifecycleLease = Enter-QaLifecycleLease
 try {
 

@@ -585,6 +585,50 @@ and `GRID_FADE_END_M` (200 km) of camera height, where a planar metric grid
 stops being useful. The toggles arrive from fe-ui's `AppSettings` via the main
 binary's `terrain_bridge::sync_ruler_settings`.
 
+## §ruler-hud-input
+
+The host publishes `RulerHudInput` only after the actual shell has completed its
+same-pass geometry. `RulerHudSet::Bridge` precedes `Draw`; the bridge consumes the
+UI's current context/pass/pixels-per-point stamp and shared divider-safe overlay
+rectangle. The terrain resource checks that same identity and pass again at use.
+An absent, stale, invalid or out-of-viewport rectangle omits this cosmetic HUD;
+neither producer falls back to whole-window geometry. Both the numeric bar and
+fixed unscaled chip clip to that scene, inset their complete text mesh/layout and
+stroke/chip bounds, and omit output when those bounds cannot fit.
+
+Placement and projection calibration are distinct. The bar reads the unique
+orbit Camera which owns the actual primary EguiContext. Only an active perspective
+Camera supplies a metric bar. Its `physical_viewport_size` supplies the projection
+height in physical pixels, including a real custom Camera viewport if one exists.
+The preferred 120-point visual length is multiplied by current egui
+pixels-per-point before nice-number selection; the physical result is divided by
+that same value before painting. A narrow scene bounds the selected length but
+does not change meters per physical pixel. Side-panel changes do not crop the
+camera. Effective terrain world scale and the existing down-looking perspective
+approximation remain unchanged; oblique ground-distance accuracy is not claimed.
+
+This remains the separately audited fixed/numeric Foreground `ruler_scale_bar`
+direct painter. It is not a new mandatory native surface producer, capture grant
+or Areas registration. The existing end-to-end ruler journey includes actual
+production calibration and paint functions under the render feature, across UI
+scales, stale context/pass, panel-width changes and insufficient room.
+
+QA41 L1 adds the actual same-pass bounded chrome exclusions to that placement
+input. Both complete footprints start at the lower-left inset and move above
+intersecting actual chrome with a four-point gap, or omit when no complete
+supported placement fits. The search is bounded by the four owned exclusions;
+it never changes camera calibration or paints beneath a hint. The host's existing
+ruler journey now renders the real viewport header/long Select hint and actual
+numeric/fixed painter in the same pass at ordinary/narrow scales with Results.
+
+Standalone TerrainPlugin integrators must publish their own same-pass owned scene
+anchor and actual occupied chrome in RulerHudSet::Bridge. Without that publisher,
+both HUD variants intentionally remain absent even when show_scale_bar is true;
+there is no whole-window fallback. They must also order their actual outer egui
+pass after current camera computation and transform propagation, as the GUI host
+does through install_ruler_hud. These are cosmetic integration contracts, not
+capture authority or numerical ground-distance guarantees.
+
 ## §tile-budget — per-tile mesh + overlay feature caps (oom_guardrails_20260717)
 
 Chunk COUNT is bounded (max_chunks=256, ring clamp, MAX_SPAWNS_PER_FRAME) but

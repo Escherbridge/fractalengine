@@ -60,15 +60,24 @@ pub(crate) fn right_inspector(
         nav,
         local_role,
     );
-    egui::Frame::NONE
-        .inner_margin(egui::Margin::same(8))
-        .show(ui, |ui| {
-            if node_mgr.selection_count() <= 1 || inspector.active_tab() != InspectorTab::Properties
-            {
-                crate::editor_batch::ui::pending_controls(ui, ui_mgr);
-            }
-            inspector_navigation(ui, inspector, node_mgr, db_tx, nav)
-        });
+    let compact = layout_policy::compact_navigation(ui);
+    let mut navigation = |ui: &mut egui::Ui| {
+        egui::Frame::NONE
+            .inner_margin(egui::Margin::same(if compact { 4 } else { 8 }))
+            .show(ui, |ui| inspector_navigation(ui, inspector, node_mgr, db_tx, nav, compact));
+    };
+    if compact {
+        let available = layout_policy::visible_scroll_height(ui);
+        let body = layout_policy::navigation_body_budget(ui).min(available * 0.5);
+        egui::ScrollArea::vertical()
+            .id_salt("inspector_compact_navigation")
+            .min_scrolled_height(0.0)
+            .max_height((available - body).max(0.0))
+            .auto_shrink([false, true])
+            .show(ui, &mut navigation);
+    } else {
+        navigation(ui);
+    }
     crate::ui_shell::layout_policy::scroll(
         ui,
         "Inspector",
@@ -82,6 +91,9 @@ pub(crate) fn right_inspector(
             egui::Frame::NONE
                 .inner_margin(egui::Margin::same(8))
                 .show(ui, |ui| {
+                    if node_mgr.selection_count() <= 1 || inspector.active_tab() != InspectorTab::Properties {
+                        crate::editor_batch::ui::pending_controls(ui, ui_mgr);
+                    }
                     inspector_tab_body(
                         ui,
                         inspector,
@@ -105,7 +117,12 @@ fn inspector_navigation(
     node_mgr: &mut NodeManager,
     db_tx: &crossbeam::channel::Sender<DbCommand>,
     nav: &NavigationManager,
+    compact: bool,
 ) {
+    if compact {
+        inspector_compact_navigation(ui, inspector, node_mgr, db_tx, nav);
+        return;
+    }
     if node_mgr.selection_count() > 1 {
         ui.strong(format!("{} selected objects", node_mgr.selection_count()));
     }
@@ -136,12 +153,7 @@ fn inspector_navigation(
     // Tab bar
     ui.add_space(2.0);
     ui.horizontal_wrapped(|ui| {
-        for (tab, label) in [
-            (InspectorTab::Properties, "Properties"),
-            (InspectorTab::ApiAccess, "API Access"),
-            (InspectorTab::Query, "Query"),
-            (InspectorTab::Data, "Data"),
-        ] {
+        for (tab, label) in INSPECTOR_TABS {
             let active = inspector.active_tab() == tab;
             let btn = egui::Button::new(egui::RichText::new(label).small().color(if active {
                 theme::TEXT_BRIGHT
@@ -159,29 +171,80 @@ fn inspector_navigation(
                 .named(ui, format_args!("Inspector tab: {label}"))
                 .clicked()
             {
-                inspector.set_active_tab(tab);
-
-                // Auto-populate scope + fetch tokens when entering API tab
-                if tab == InspectorTab::ApiAccess {
-                    inspector.api_tokens_page = 0;
-                    if inspector.api_token_scope_buf.is_empty() {
-                        inspector.api_token_scope_buf = build_nav_scope(nav);
-                    }
-                    let scope = inspector.api_token_scope_buf.clone();
-                    if !scope.is_empty() {
-                        db_tx
-                            .send(DbCommand::ListApiTokensByScope {
-                                scope_prefix: scope,
-                                offset: 0,
-                                limit: API_TOKEN_PAGE_SIZE,
-                            })
-                            .ok();
-                    }
-                }
+                activate_inspector_tab(inspector, tab, db_tx, nav);
             }
         }
     });
     ui.separator();
+}
+
+const INSPECTOR_TABS: [(InspectorTab, &str); 4] = [
+    (InspectorTab::Properties, "Properties"),
+    (InspectorTab::ApiAccess, "API Access"),
+    (InspectorTab::Query, "Query"),
+    (InspectorTab::Data, "Data"),
+];
+
+fn activate_inspector_tab(
+    inspector: &mut InspectorFormState,
+    tab: InspectorTab,
+    db_tx: &crossbeam::channel::Sender<DbCommand>,
+    nav: &NavigationManager,
+) {
+    inspector.set_active_tab(tab);
+    if tab == InspectorTab::ApiAccess {
+        inspector.api_tokens_page = 0;
+        if inspector.api_token_scope_buf.is_empty() {
+            inspector.api_token_scope_buf = build_nav_scope(nav);
+        }
+        let scope = inspector.api_token_scope_buf.clone();
+        if !scope.is_empty() {
+            if let Err(error) = db_tx.send(DbCommand::ListApiTokensByScope {
+                scope_prefix: scope, offset: 0, limit: API_TOKEN_PAGE_SIZE,
+            }) {
+                bevy::log::warn!("Failed to list Inspector API tokens: {error}");
+            }
+        }
+    }
+}
+
+fn inspector_compact_navigation(
+    ui: &mut egui::Ui,
+    inspector: &mut InspectorFormState,
+    node_mgr: &mut NodeManager,
+    db_tx: &crossbeam::channel::Sender<DbCommand>,
+    nav: &NavigationManager,
+) {
+    let target = layout_policy::target_size(ui.ctx());
+    ui.horizontal(|ui| {
+        let selected = node_mgr.selected_entity().is_some();
+        let width = (ui.available_width() - if selected { target + ui.spacing().item_spacing.x } else { 0.0 }).max(0.0);
+        let label = match node_mgr.selection_count() {
+            0 => "No selection".to_owned(),
+            1 => "Selected object".to_owned(),
+            count => format!("{count} selected objects"),
+        };
+        ui.add_sized([width, target], egui::Label::new(label).truncate());
+        if selected && layout_policy::action(ui, egui::Button::new("\u{2715}"), "Deselect object")
+            .on_hover_text("Deselect").clicked() {
+            node_mgr.deselect();
+        }
+    });
+    let current = INSPECTOR_TABS.into_iter().find(|(tab, _)| *tab == inspector.active_tab()).unwrap().1;
+    let (response, _) = egui::containers::menu::MenuButton::from_button(
+        egui::Button::new(format!("Tab: {current}"))
+            .min_size(egui::vec2(ui.available_width().max(target), target)).truncate(),
+    ).ui(ui, |ui| {
+        crate::native_accessibility::surface::popup(ui.ctx());
+        for (tab, label) in INSPECTOR_TABS {
+            if layout_policy::action(ui, egui::Button::new(label).selected(tab == inspector.active_tab()),
+                &format!("Inspector tab: {label}")).clicked() {
+                activate_inspector_tab(inspector, tab, db_tx, nav);
+                ui.close();
+            }
+        }
+    });
+    response.named(ui, format_args!("Choose Inspector tab: {current}")).on_hover_text(current);
 }
 
 fn inspector_tab_body(
@@ -2385,6 +2448,7 @@ mod tests {
         for scale in [0.75, 1.0, 1.25, 2.0] {
             let ctx = egui::Context::default();
             ctx.set_pixels_per_point(scale);
+            ctx.enable_accesskit();
             let mut form = InspectorFormState::default();
             let mut selected = NodeManager::default();
             selected.select(Entity::from_bits(1), "compact-target");
@@ -2396,7 +2460,7 @@ mod tests {
             let (sender, _receiver) = crossbeam::channel::unbounded();
             for _ in 0..3 {
                 layout_policy::begin_frame(&ctx, true);
-                let _ = ctx.run(egui::RawInput {
+                let output = ctx.run(egui::RawInput {
                     screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO,
                         egui::vec2(1024.0 / scale, 720.0 / scale))),
                     ..Default::default()
@@ -2428,6 +2492,94 @@ mod tests {
                     "headers/forms cannot inflate the disabled horizontal axis at scale {scale}");
                 assert_eq!(selected.selection_count(), 1);
                 assert_eq!(form.node_properties["count"], 12);
+                if scale == 2.0 {
+                    assert!(body.viewport.height() >= 3.0 * layout_policy::target_size(&ctx),
+                        "compact navigation preserves several real body rows");
+                    for label in ["Choose sidebar section: Inspector", "Choose Inspector tab: Properties", "Deselect object"] {
+                        let id = output.platform_output.accesskit_update.as_ref().unwrap().nodes.iter()
+                            .find_map(|(id, node)| (node.label() == Some(label)).then_some(id.0)).unwrap();
+                        let control = observations.controls.iter().find(|control| control.id == id).unwrap();
+                        let visible = control.hit.intersect(control.clip);
+                        assert!(visible.width() * scale >= 20.0 && visible.height() * scale >= 20.0);
+                    }
+                }
+            }
+            if scale == 2.0 {
+                let mut time = 1.0;
+                let draw = |events: Vec<egui::Event>, form: &mut InspectorFormState,
+                            selected: &mut NodeManager, shell: &mut crate::ui_shell::right_sidebar::RightSidebarState,
+                            manager: &mut UiManager, time: &mut f64| {
+                    *time += 0.05;
+                    layout_policy::begin_frame(&ctx, true);
+                    let output = ctx.run(egui::RawInput {
+                        screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(512.0, 360.0))),
+                        time: Some(*time), events, ..Default::default()
+                    }, |ctx| {
+                        layout_policy::apply_style(ctx);
+                        egui::TopBottomPanel::top("compact-target-top").exact_height(40.0)
+                            .frame(egui::Frame::NONE).show(ctx, |_| {});
+                        egui::TopBottomPanel::bottom("compact-target-footer").exact_height(28.0)
+                            .frame(egui::Frame::NONE).show(ctx, |_| {});
+                        egui::SidePanel::left("compact-target-tree").exact_width(layout_policy::left_width(ctx).min(220.0))
+                            .frame(egui::Frame::NONE).show(ctx, |_| {});
+                        crate::ui_shell::right_sidebar::section_chrome(ctx, shell,
+                            crate::ui_shell::right_sidebar::RightSidebarSection::Inspector, |ui| {
+                                right_inspector(ui, form, selected, &VerseManager::default(), manager,
+                                    &LocalUserRole { role: Some(fe_database::RoleLevel::Owner) }, &sender,
+                                    &NavigationManager::default(), &AssetDownloadStatus::default(),
+                                    &crate::gis::PathEditorState::default());
+                            });
+                        egui::CentralPanel::default().show(ctx, |_| {});
+                    });
+                    (output, layout_policy::observations(&ctx))
+                };
+                let locate = |frame: &(egui::FullOutput, layout_policy::LayoutObservations), label: &str| {
+                    let id = frame.0.platform_output.accesskit_update.as_ref().unwrap().nodes.iter()
+                        .find_map(|(id, node)| (node.label() == Some(label)).then_some(id.0))
+                        .unwrap_or_else(|| panic!("actual native control missing: {label}"));
+                    frame.1.controls.iter().find(|control| control.id == id).unwrap().rect.center()
+                };
+                let click = |point: egui::Pos2, form: &mut InspectorFormState, selected: &mut NodeManager,
+                             shell: &mut crate::ui_shell::right_sidebar::RightSidebarState,
+                             manager: &mut UiManager, time: &mut f64| {
+                    draw(vec![egui::Event::PointerMoved(point)], form, selected, shell, manager, time);
+                    draw(vec![egui::Event::PointerButton { pos: point, button: egui::PointerButton::Primary,
+                        pressed: true, modifiers: egui::Modifiers::NONE }], form, selected, shell, manager, time);
+                    draw(vec![egui::Event::PointerButton { pos: point, button: egui::PointerButton::Primary,
+                        pressed: false, modifiers: egui::Modifiers::NONE }], form, selected, shell, manager, time)
+                };
+                form.prop_add_key_buf = "retained compact property".into();
+                form.query_sql_buf = "SELECT * FROM node LIMIT 7".into();
+                form.api_token_scope_buf = "verse:v/fractal:f/petal:p".into();
+                for (tab, label) in INSPECTOR_TABS.into_iter().cycle().take(5) {
+                    let current = INSPECTOR_TABS.into_iter().find(|(tab, _)| *tab == form.active_tab()).unwrap().1;
+                    let frame = draw(vec![], &mut form, &mut selected, &mut shell, &mut manager, &mut time);
+                    let scroll_id = frame.1.scrolls.iter().find(|scroll| scroll.label == "Inspector").unwrap().content_id;
+                    let at = locate(&frame, &format!("Choose Inspector tab: {current}"));
+                    let menu = click(at, &mut form, &mut selected, &mut shell, &mut manager, &mut time);
+                    let option = locate(&menu, &format!("Inspector tab: {label}"));
+                    click(option, &mut form, &mut selected, &mut shell, &mut manager, &mut time);
+                    assert_eq!(form.active_tab(), tab, "compact native menu runs real tab activation");
+                    let after = draw(vec![], &mut form, &mut selected, &mut shell, &mut manager, &mut time);
+                    assert_eq!(after.1.scrolls.iter().find(|scroll| scroll.label == "Inspector").unwrap().content_id, scroll_id);
+                    assert_eq!(form.prop_add_key_buf, "retained compact property");
+                    assert_eq!(form.query_sql_buf, "SELECT * FROM node LIMIT 7");
+                    assert_eq!(selected.primary().unwrap().node_id, "compact-target");
+                    if tab == InspectorTab::ApiAccess {
+                        assert_eq!(form.api_tokens_page, 0);
+                        form.generated_api_token = Some("private compact fixture".into());
+                    } else {
+                        assert!(form.generated_api_token.is_none());
+                    }
+                }
+                for section in crate::ui_shell::right_sidebar::ALL_SECTIONS {
+                    let frame = draw(vec![], &mut form, &mut selected, &mut shell, &mut manager, &mut time);
+                    let at = locate(&frame, "Choose sidebar section: Inspector");
+                    let menu = click(at, &mut form, &mut selected, &mut shell, &mut manager, &mut time);
+                    let option = locate(&menu, &format!("Toggle {} section", crate::ui_shell::right_sidebar::section_label(section)));
+                    click(option, &mut form, &mut selected, &mut shell, &mut manager, &mut time);
+                    assert_eq!(shell.requested, Some(section));
+                }
             }
         }
         assert!((radians_to_degrees(std::f32::consts::FRAC_PI_2) - 90.0).abs() < EPS);

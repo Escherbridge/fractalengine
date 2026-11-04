@@ -11,7 +11,7 @@ use fe_terrain::petal_binding::{
     ActiveTileSource, PetalTerrainAssignment, SharedTilesetRegistry, TerrainAssignmentMsg,
     terrain_config_from_petal_json,
 };
-use fe_terrain::ruler_plugin::RulerSettings;
+use fe_terrain::ruler_plugin::{RulerHudInput, RulerSettings};
 use fe_terrain::splat::{TerrainViewModeMsg, view_mode_from_terrain_json};
 use fe_terrain::terrain_plugin::{MAX_PROPOSAL_OVERLAYS, ProposalOverlayBudget};
 use fe_terrain::tiles::{HexonTileSource, StreamedTileSource, TileBundleDemand, TilesetRegistry};
@@ -61,6 +61,29 @@ pub fn sync_ruler_settings(settings: Res<AppSettings>, mut ruler: ResMut<RulerSe
     }
     if ruler.show_grid != settings.show_world_grid {
         ruler.show_grid = settings.show_world_grid;
+    }
+}
+
+/// Publish the actual same-pass scene anchor; see AGENTS.md §ruler-hud-input.
+pub fn install_ruler_hud(app: &mut App) {
+    app.configure_sets(PostUpdate, bevy_egui::EguiPostUpdateSet::EndPass
+        .after(bevy::camera::CameraUpdateSystems)
+        .after(bevy::transform::TransformSystems::Propagate));
+    app.add_systems(bevy_egui::EguiPrimaryContextPass, sync_ruler_hud
+        .after(fe_ui::plugin::GardenerUiSet::GeometryReady)
+        .in_set(fe_terrain::ruler_plugin::RulerHudSet::Bridge));
+}
+
+/// Bridge completed shell and actual chrome geometry without a cached fallback.
+pub fn sync_ruler_hud(
+    mut contexts: bevy_egui::EguiContexts,
+    geometry: Res<fe_ui::plugin::ViewportGeometry>,
+    mut hud: ResMut<RulerHudInput>,
+) {
+    hud.clear();
+    let Ok(ctx) = contexts.ctx_mut() else { return; };
+    if let (Some(scene), Some(chrome)) = (geometry.overlay_current(ctx), geometry.chrome_current(ctx)) {
+        hud.publish(ctx, scene, chrome);
     }
 }
 
@@ -2002,6 +2025,111 @@ mod tests {
         let ruler = app.world().resource::<RulerSettings>();
         assert!(ruler.show_grid, "grid follows show_world_grid");
         assert!(!ruler.show_scale_bar, "scale bar follows show_scale_bar");
+
+        {
+            use bevy::asset::{AssetEvent, Assets};
+            use bevy::camera::RenderTarget;
+            use bevy::image::Image;
+            use bevy::render::{camera::CameraPlugin, texture::ManualTextureViews};
+            use bevy::window::{PrimaryWindow, WindowCreated, WindowRef, WindowResized, WindowScaleFactorChanged};
+            let mut camera_app = App::new();
+            camera_app.init_resource::<Assets<Image>>()
+                .init_resource::<ManualTextureViews>()
+                .add_message::<AssetEvent<Image>>()
+                .add_message::<WindowCreated>()
+                .add_message::<WindowResized>()
+                .add_message::<WindowScaleFactorChanged>()
+                .add_plugins((bevy::transform::TransformPlugin, CameraPlugin));
+            install_ruler_hud(&mut camera_app);
+            let mut window = Window::default();
+            window.resolution.set_physical_resolution(1280, 720);
+            let window = camera_app.world_mut().spawn((window, PrimaryWindow)).id();
+            let camera = camera_app.world_mut().spawn((Camera::default(),
+                RenderTarget::Window(WindowRef::Entity(window)), Projection::default(),
+                Transform::from_xyz(0.0, 8.0, 0.0))).id();
+            let observed = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+            let sink = observed.clone();
+            camera_app.add_systems(PostUpdate, (move |cameras: Query<(&Camera, &GlobalTransform)>| {
+                let (camera, pose) = cameras.single().unwrap();
+                sink.lock().unwrap().push((camera.physical_viewport_size().unwrap(), pose.translation().y));
+            }).in_set(bevy_egui::EguiPostUpdateSet::EndPass));
+            camera_app.update();
+            assert_eq!(observed.lock().unwrap().last().copied(), Some((UVec2::new(1280, 720), 8.0)));
+            camera_app.world_mut().get_mut::<Window>(window).unwrap().resolution.set_physical_resolution(1024, 600);
+            camera_app.world_mut().write_message(WindowResized { window, width: 1024.0, height: 600.0 });
+            camera_app.world_mut().get_mut::<Transform>(camera).unwrap().translation.y = 12.0;
+            camera_app.update();
+            assert_eq!(observed.lock().unwrap().last().copied(), Some((UVec2::new(1024, 600), 12.0)),
+                "the first changed EndPass sees actual camera computation and propagated pose");
+            camera_app.world_mut().get_mut::<Camera>(camera).unwrap().viewport = Some(bevy::camera::Viewport {
+                physical_size: UVec2::new(800, 450), ..Default::default()
+            });
+            camera_app.world_mut().get_mut::<Transform>(camera).unwrap().translation.y = 5.0;
+            camera_app.update();
+            assert_eq!(observed.lock().unwrap().last().copied(), Some((UVec2::new(800, 450), 5.0)));
+        }
+
+        {
+            use bevy_egui::egui;
+            use fe_renderer::scene_pointer::{ScenePointerChrome, ScenePointerStamp};
+            use fe_terrain::ruler::{meters_per_pixel, scale_bar_spec};
+            let ctx = egui::Context::default();
+            let mut hud = RulerHudInput::default();
+            let mut nav = NavigationManager::default();
+            nav.navigate_to_petal_in_fractal("v", "Verse", "f", "Fractal", "p");
+            let mut manager = UiManager::default();
+            for scale in [0.75, 1.0, 1.25, 2.0, 1.0] {
+                ctx.set_pixels_per_point(scale);
+                for physical_width in [1280.0, 1024.0] {
+                    for results_height in [0.0, 120.0] {
+                        for scaled in [false, true] {
+                            for _ in 0..2 {
+                                let _ = ctx.run(egui::RawInput {
+                                    screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO,
+                                        egui::vec2(physical_width / scale, 720.0 / scale))),
+                                    ..Default::default()
+                                }, |ctx| {
+                                    ScenePointerChrome::observe(ctx, ScenePointerStamp::new(Entity::from_bits(1),
+                                        UVec2::new(physical_width as u32, 720), 1.0, nav.intent_revision()));
+                                    ScenePointerChrome::begin_pass(ctx, nav.intent_revision());
+                                    egui::SidePanel::left("ruler-real-tree").exact_width((ctx.viewport_rect().width() * 0.25).min(220.0))
+                                        .show(ctx, |_| {});
+                                    egui::SidePanel::right("ruler-real-inspector").exact_width((ctx.viewport_rect().width() * 0.25).min(320.0))
+                                        .show(ctx, |_| {});
+                                    if results_height > 0.0 {
+                                        egui::TopBottomPanel::bottom("ruler-real-results").exact_height(results_height)
+                                            .show(ctx, |_| {});
+                                    }
+                                    let scene = egui::CentralPanel::default().frame(egui::Frame::NONE).show(ctx, |ui| {
+                                        let rect = ui.max_rect();
+                                        fe_ui::viewport::viewport_petal_space(ui, &mut nav,
+                                            &fe_ui::node_manager::NodeManager::default(),
+                                            &fe_ui::verse_manager::VerseManager::default(), rect, rect.center(),
+                                            &fe_ui::plugin::ViewportCursorWorld::default(), &mut manager,
+                                            &fe_ui::plugin::LocalUserRole::default(), true);
+                                    }).response.rect;
+                                    ScenePointerChrome::finish_pass(ctx, scene, nav.intent_revision());
+                                    let chrome = ScenePointerChrome::completed_exclusions_current_ui(ctx).unwrap();
+                                    assert!(chrome.rects().len() >= 2, "real navigation header and long Select hint are present");
+                                    hud.publish(ctx, scene, chrome.rects());
+                                    let metric = scaled.then(|| scale_bar_spec(meters_per_pixel(8.0,
+                                        std::f64::consts::FRAC_PI_4, 720.0), 120.0 * f64::from(scale)).unwrap());
+                                    let footprint = hud.paint(ctx, metric);
+                                    if let Some(footprint) = footprint {
+                                        assert!(scene.contains_rect(footprint));
+                                        assert!(chrome.rects().iter().all(|rect| !rect.intersect(footprint).is_positive()),
+                                            "actual complete ruler/chip paint cannot overlap actual same-pass chrome");
+                                    }
+                                    if physical_width == 1280.0 && scale == 1.0 && results_height == 0.0 {
+                                        assert!(footprint.is_some(), "ordinary scenes retain a ruler above the real hint");
+                                    }
+                                });
+                            }
+                        }
+                    }
+                }
+            }
+        }
     }
 
     #[test]

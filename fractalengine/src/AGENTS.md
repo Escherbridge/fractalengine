@@ -170,6 +170,58 @@ fe-terrain dependency, so only this binary can join them. Each field is
 written only when it differs, so `RulerSettings` change detection stays quiet.
 Ordering does not matter: a toggle lands at most one frame late.
 
+## §ruler-hud-input
+
+`sync_ruler_hud` is an `EguiPrimaryContextPass` bridge, explicitly after
+`GardenerUiSet::GeometryReady` and in terrain's `RulerHudSet::Bridge`, before the
+actual ruler `Draw` set. It clears the old terrain input before attempting context
+access, then publishes only `ViewportGeometry::overlay_current`: the finalized
+same-pass CentralPanel rectangle with the shared divider clearance. The UI stamp
+and terrain input both check actual egui context, cumulative pass and
+pixels-per-point. The ruler draw runs before that actual egui pass returns its
+output, so Owner output observation and the native provider handoff retain their
+existing order. This bridge does not change the eight mandatory surface producers
+or the separately audited ruler treatment. Missing geometry simply omits the HUD.
+
+QA41 v2 also requires ViewportGeometry::chrome_current, captured only after the
+actual four-slot ScenePointerChrome collector finishes this egui pass. Placement
+therefore reserves actual clipped navigation/browser/hint responses, moves the
+complete ruler/chip above intersections or omits it. No prior Area bounds or
+guessed hint height is used. Ordinary Update pointer admission is unchanged.
+
+main and the existing ruler journey call install_ruler_hud. It orders the actual
+outer PostUpdate EguiPostUpdateSet::EndPass after both CameraUpdateSystems and
+TransformSystems::Propagate, then retains GeometryReady -> Bridge -> Draw within
+that nested primary pass. The source-inspected DAG has camera update -> asset
+events/frusta and UI layout -> transform propagation; vision pose precedes
+propagation. No inspected edge returns from egui output to those producers.
+EndPass -> ProcessOutput -> Owner observation -> provider handoff/annotation and
+the later WindowChromeApply remain intact. This is a source DAG check, not a
+materialized runtime schedule or execution claim.
+
+The existing settings/ruler journey uses that real installer with the SDK's
+CameraPlugin and TransformPlugin, checking first-frame resized/custom viewport
+and propagated-height values inside EndPass. Its same-pass egui leg renders the
+actual viewport header/long Select hint plus the production fixed/numeric painter
+at normal/narrow scales with Results. These source assertions remain unexecuted;
+real host resize/orbit/focus, UI scaling and live Circle checks remain required.
+
+QA41 L3 closes the intervening raw-FOV writer dependency: the actual existing
+vision `(apply_vision_pose, advance_vision_job).chain()` now precedes
+CameraUpdateSystems as well as TransformSystems::Propagate. Both pose_job's
+apply and finish_job/CameraSnapshot's restore therefore happen before the SDK
+caches clip_from_view. The production ruler's raw FOV and render extraction's
+cached matrix describe the same frame. Chain order, locks, cancellation, restore
+ownership and the EndPass/Owner/provider sequence are otherwise unchanged.
+
+The existing window-mode vision journey uses its real vision installer and
+completion path, the SDK CameraPlugin/TransformPlugin and the real ruler
+installer. It starts at 60 degrees, applies the actual orbit pose at 45 degrees, and
+checks raw projection versus cached render matrix and propagated height in the
+first applied EndPass and the first restored EndPass at 60 degrees. No test-only FOV
+writer replaces either production path. These remain unexecuted source checks;
+runtime DAG materialization and real pose/restore screenshots remain root work.
+
 ## §residency-stats (p2p_asset_streaming S8)
 
 `terrain_bridge::mirror_tile_residency_stats` runs in Update. It writes the
@@ -1139,10 +1191,10 @@ refusal (`no_projection`, `tile_outside_tileset`, `geo_out_of_projection_range`,
 decided there, before anything moves, and a second capture while a job exists
 is `capture_in_progress` (fe-api also refuses it earlier via its 1-permit
 slot). Then `(apply_vision_pose, advance_vision_job).chain()` runs in
-PostUpdate **before `TransformSystems::Propagate`**: the pose is written after
+PostUpdate **before `CameraUpdateSystems` and `TransformSystems::Propagate`**: the pose is written after
 `orbit_camera_system` (private to fe-renderer, in Update) could have touched
-the camera this frame, and before propagation, so the posed frame renders the
-same frame.
+the camera this frame, and before projection caching and propagation, so the
+posed frame renders with the current matrix in the same frame.
 
 **State machine** (`VisionJob(Option<ActiveJob>)`, single flight):
 

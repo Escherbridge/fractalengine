@@ -14,15 +14,30 @@ const MIN_CONTROL_HIT_PX: f32 = 20.0;
 pub(crate) struct DividerMetrics {
     pub radius: f32,
     pub gutter: i8,
+    clearance: f32,
 }
 
 impl DividerMetrics {
     fn from_scale(scale: f32) -> Option<Self> {
         if !scale.is_finite() || scale <= 0.0 { return None; }
-        let radius = BASE_DIVIDER_RADIUS.max(MIN_DIVIDER_HIT_PX * 0.5 / scale);
-        let gutter = (radius + scale.recip()).ceil();
-        (radius.is_finite() && gutter.is_finite() && gutter >= 0.0 && gutter <= i8::MAX as f32)
-            .then(|| Self { radius, gutter: gutter as i8 })
+        let quantum = egui::emath::GUI_ROUNDING;
+        let radius = (BASE_DIVIDER_RADIUS.max((MIN_DIVIDER_HIT_PX * 0.5 + 1.0) / scale) / quantum).ceil() * quantum;
+        let clearance = radius + 2.0 / scale;
+        let gutter = (clearance + scale.recip()).ceil();
+        (radius.is_finite() && clearance.is_finite() && gutter.is_finite()
+            && (clearance - radius) * scale >= 1.0 && (gutter - clearance) * scale >= 1.0
+            && gutter >= 0.0 && gutter <= i8::MAX as f32)
+            .then(|| Self { radius, gutter: gutter as i8, clearance })
+    }
+
+    fn horizontal_hit(self, edge: f32, scale: f32) -> Option<std::ops::RangeInclusive<f32>> {
+        let scale64 = f64::from(scale);
+        let low = ((f64::from(edge) - f64::from(self.radius)) * scale64).floor() / scale64;
+        let high = ((f64::from(edge) + f64::from(self.radius)) * scale64).ceil() / scale64;
+        let (low, high) = (low as f32, high as f32);
+        (low.is_finite() && high.is_finite() && (high - low) * scale >= MIN_DIVIDER_HIT_PX
+            && low >= edge - self.clearance && high <= edge + self.clearance)
+            .then_some(low..=high)
     }
 
     pub(crate) fn side_margin(self, side: PanelSide) -> egui::Margin {
@@ -98,7 +113,7 @@ pub(crate) fn scene_interaction_rect(ctx: &egui::Context, visual: egui::Rect, ma
     }
     divider_metrics(ctx).map_or(egui::Rect::NOTHING, |metrics| {
         super::topbar::viewport_interaction_rect(visual, ctx.viewport_rect(), maximized,
-            metrics.radius, has_results_divider(ctx, visual))
+            metrics.clearance, has_results_divider(ctx, visual))
     })
 }
 
@@ -303,8 +318,15 @@ impl PanelWidthState {
             return;
         }
         let edge = if side == PanelSide::Left { rect.max.x } else { rect.min.x };
-        let strip = egui::Rect::from_x_y_ranges(edge..=edge, rect.y_range())
-            .expand2(egui::vec2(radius, 0.0)).intersect(ctx.viewport_rect());
+        let Some(horizontal) = geometry.dividers.horizontal_hit(edge, geometry.scale) else {
+            self.suspend();
+            return;
+        };
+        let strip = egui::Rect::from_x_y_ranges(horizontal, rect.y_range()).intersect(ctx.viewport_rect());
+        if !strip.is_positive() || strip.width() * geometry.scale < MIN_DIVIDER_HIT_PX {
+            self.suspend();
+            return;
+        }
         let mut builder = egui::UiBuilder::new()
             .layer_id(egui::LayerId::background()).max_rect(ctx.viewport_rect());
         if !self.interaction_allowed(ctx) || self.wait_for_release { builder = builder.disabled(); }
@@ -379,7 +401,7 @@ pub(super) fn extend_panel_width_journey() {
                         assert!(panel.response.rect.width() <= bounds[1] + 1.0 / self.scale);
                         state.register(ctx, id, side, bounds, panel.response.rect);
                         let strip = ctx.read_response(id).unwrap().interact_rect;
-                        assert!(strip.width() * self.scale >= MIN_DIVIDER_HIT_PX - 0.001);
+                        assert!(strip.width() * self.scale >= MIN_DIVIDER_HIT_PX);
                         let gap = if side == PanelSide::Left {
                             strip.left() - content.right()
                         } else { content.left() - strip.right() };
@@ -430,6 +452,14 @@ pub(super) fn extend_panel_width_journey() {
                         }
                     }
                     let region = fe_renderer::camera::CameraPointerRegion { rect: scene, pixels_per_point: self.scale };
+                    for (index, id) in [egui::Id::new("width-left"), egui::Id::new("width-right")].into_iter().enumerate() {
+                        if let Some(response) = ctx.read_response(id).filter(|_| self.visible && self.side_visible[index]) {
+                            let hit = response.interact_rect;
+                            for point in [hit.left_center(), hit.center(), hit.right_center()] {
+                                assert!(!scene.contains(point), "actual divider endpoints cannot enter camera geometry");
+                            }
+                        }
+                    }
                     {
                         use fe_renderer::scene_pointer::{ScenePointerChrome, ScenePointerStamp};
                         let screen = ctx.viewport_rect();
@@ -620,7 +650,7 @@ pub(super) fn extend_panel_width_journey() {
     for scale in [1.0, 1.25, 2.0, 1.0] {
         panels.scale = scale;
         panels.settle();
-        assert_eq!(divider_metrics(&panels.ctx).unwrap().radius, BASE_DIVIDER_RADIUS.max(10.0 / scale),
+        assert_eq!(divider_metrics(&panels.ctx), DividerMetrics::from_scale(scale),
             "one context refreshes metrics across scale restoration without a radius ratchet");
     }
     for scale in [0.75, 1.0, 1.25, 2.0, 1.0] {
@@ -630,7 +660,7 @@ pub(super) fn extend_panel_width_journey() {
             panels.side_visible = sides;
             panels.settle();
             let metrics = divider_metrics(&panels.ctx).unwrap();
-            assert_eq!(metrics.radius, BASE_DIVIDER_RADIUS.max(10.0 / scale),
+            assert_eq!(Some(metrics), DividerMetrics::from_scale(scale),
                 "the populated profile uses the current physical target policy");
             let (table, _, _) = super::results_dock::table_geometry(&panels.ctx);
             let (_, result) = panels.ctx.data(|data|
@@ -893,6 +923,18 @@ pub(crate) fn small_button(ui: &mut egui::Ui, text: impl Into<egui::WidgetText>)
 pub(crate) fn visible_scroll_height(ui: &egui::Ui) -> f32 {
     let remaining = ui.available_rect_before_wrap().intersect(ui.clip_rect());
     remaining.height().max(0.0)
+}
+
+/// Keep navigation compact when ordinary chrome would consume the body budget.
+pub(crate) fn compact_navigation(ui: &egui::Ui) -> bool {
+    let target = target_size(ui.ctx());
+    let rail_width = 7.0 * target + 6.0 * ui.spacing().item_spacing.x + 16.0;
+    ui.available_width() < rail_width
+        || visible_scroll_height(ui) < navigation_body_budget(ui) + 5.0 * target + 48.0
+}
+
+pub(crate) fn navigation_body_budget(ui: &egui::Ui) -> f32 {
+    (3.0 * target_size(ui.ctx())).max(96.0)
 }
 
 /// Prepare a native section title without expanding a constrained parent.

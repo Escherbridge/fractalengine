@@ -449,6 +449,76 @@ mod tests {
         assert_eq!(spec.meters, 100_000.0); // nice(120 km) = 100 km
         assert!((spec.pixels - 100.0).abs() < 1e-9);
         assert_eq!(format_distance_m(spec.meters), "100 km");
+
+        #[cfg(feature = "render")]
+        {
+            use bevy::camera::Viewport;
+            use bevy::prelude::{Camera, UVec2};
+            use bevy_egui::egui;
+            use crate::ruler_plugin::{
+                scale_bar_for_camera, RulerHudInput,
+            };
+
+            let camera = Camera {
+                viewport: Some(Viewport { physical_size: UVec2::new(1280, 720), ..Default::default() }),
+                ..Default::default()
+            };
+            let ctx = egui::Context::default();
+            let other_context = egui::Context::default();
+            let mut hud = RulerHudInput::default();
+            for ppp in [0.75, 1.0, 1.25, 2.0, 1.0] {
+                ctx.set_pixels_per_point(ppp);
+                for scaled in [true, false] {
+                    let output = ctx.run(egui::RawInput {
+                        screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO,
+                            egui::vec2(1280.0 / ppp, 720.0 / ppp))),
+                        ..Default::default()
+                    }, |ctx| {
+                        assert!(hud.current(ctx).is_none(), "a previous pass is never a HUD anchor");
+                        let scene = egui::Rect::from_min_max(
+                            egui::pos2(240.0 / ppp, 80.0 / ppp), egui::pos2(1000.0 / ppp, 650.0 / ppp));
+                        hud.publish(ctx, scene, &[]);
+                        assert_eq!(hud.current(ctx), Some(scene));
+                        assert!(hud.current(&other_context).is_none());
+                        let scene = hud.current(ctx).unwrap();
+                        let footprint = if scaled {
+                            let spec = scale_bar_for_camera(&camera, real_h,
+                                std::f64::consts::FRAC_PI_2, ctx.pixels_per_point(), scene).unwrap();
+                            let narrower = egui::Rect::from_min_max(scene.min + egui::vec2(20.0, 0.0), scene.max);
+                            assert_eq!(Some(spec), scale_bar_for_camera(&camera, real_h,
+                                std::f64::consts::FRAC_PI_2, ctx.pixels_per_point(), narrower),
+                                "sidebar geometry does not change camera projection calibration");
+                            let physical_mpp = meters_per_pixel(real_h, std::f64::consts::FRAC_PI_2, 720.0);
+                            assert!((spec.meters / spec.pixels - physical_mpp).abs() < 1e-9);
+                            hud.paint(ctx, Some(spec)).unwrap()
+                        } else {
+                            hud.paint(ctx, None).unwrap()
+                        };
+                        assert!(scene.contains_rect(footprint));
+                    });
+                    assert!(!output.shapes.is_empty(), "the actual ruler producer must paint");
+                    for shape in output.shapes {
+                        let painted = shape.shape.visual_bounding_rect();
+                        if painted.is_positive() {
+                            assert!(shape.clip_rect.contains_rect(painted), "complete paint bounds stay in the scene clip");
+                        }
+                    }
+                }
+            }
+            let empty = ctx.run(egui::RawInput {
+                screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1280.0, 720.0))),
+                ..Default::default()
+            }, |ctx| {
+                let cramped = egui::Rect::from_min_size(egui::pos2(250.0, 100.0), egui::vec2(24.0, 18.0));
+                hud.publish(ctx, cramped, &[]);
+                assert!(scale_bar_for_camera(&camera, real_h, 1.0, ctx.pixels_per_point(), cramped).is_none());
+                assert!(hud.paint(ctx, Some(spec)).is_none());
+                assert!(hud.paint(ctx, None).is_none());
+                hud.publish(ctx, egui::Rect::NOTHING, &[]);
+                assert!(hud.current(ctx).is_none());
+            });
+            assert!(empty.shapes.is_empty(), "insufficient room omits both actual HUD producers");
+        }
     }
 
     #[test]

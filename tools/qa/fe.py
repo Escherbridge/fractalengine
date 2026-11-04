@@ -930,6 +930,13 @@ def build_parser():
     parser.add_argument("--run", help="explicit QA run directory, current.json, or run timestamp")
     sub = parser.add_subparsers(dest="command", required=True)
 
+    native = sub.add_parser("native", help="ordinary owned UIA observation or one durable Petal invocation; no HTTP")
+    native.add_argument("operation", choices=("observe", "invoke-petal"))
+    native.add_argument("--name", help="exact declared nonsecret Open petal name for the one invocation")
+    native.add_argument("--controlled-fixture", action="store_true", help="declare a coordinated nonsecret fixture")
+    native.add_argument("--pair-run", help="explicit owner run containing pair.json")
+    native.add_argument("--member", choices=("owner", "viewer"), help="exact paired member")
+
     sub.add_parser("info", help="run dir, pid, fixture ids, token roles").set_defaults(func=command_info)
     sub.add_parser("camera", help="GET /api/v1/debug/camera").set_defaults(func=command_camera)
     portal = sub.add_parser("portal-fixture", help="fixed owned native fixture page operations and CapturePreview PNG")
@@ -1059,6 +1066,11 @@ def build_parser():
 
 def main(argv=None):
     args = build_parser().parse_args(argv)
+    if args.command == "native":
+        from native_observer.controller import entry
+        value, status = entry(args)
+        emit(value)
+        return status
     try:
         run = load_run(args.run)
         observe_logs = args.command in {"move","click","drag","key","type","scroll","dialog-answer","window","portal-fixture"}

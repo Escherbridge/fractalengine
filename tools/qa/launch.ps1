@@ -14,6 +14,7 @@ param(
     [switch]$DisableSyntheticInput,
     [switch]$A11yTiming,
     [switch]$A11yContinuous,
+    [switch]$NativeObserver,
     [switch]$AllowStaleStage
 )
 
@@ -23,10 +24,15 @@ param(
 $QaApiBase = "http://127.0.0.1:$ApiPort"
 $ErrorActionPreference = 'Stop'
 
+if ($ResumeRun) {
+    $nativeResume = Get-QaResumeContext -Run $ResumeRun
+    Stop-QaNativeObserverWorkers -Run $nativeResume.directory
+}
 $lifecycleLease = Enter-QaLifecycleLease
 $resume = $null
 $runLock = $null
 $attemptPath = $null
+$pairRestart = $null
 try {
 if ($ResumeRun) {
     $resume = Get-QaResumeContext -Run $ResumeRun
@@ -43,6 +49,7 @@ if ($ResumeRun) {
             Set-Variable -Name $option[0] -Value ([switch]$value)
         }
     }
+    if (-not $PSBoundParameters.ContainsKey('NativeObserver')) { $NativeObserver = [switch][bool]$resume.current.qa_options.native_observer }
     if ($PSBoundParameters.ContainsKey('A11yTiming') -and -not $A11yTiming -and -not $PSBoundParameters.ContainsKey('A11yContinuous')) {
         $A11yContinuous = [switch]$false
     }
@@ -56,6 +63,7 @@ if ($ResumeRun) {
 }
 if ($A11yTiming -and -not $DisableSyntheticInput) { throw 'A11yTiming requires DisableSyntheticInput' }
 if ($A11yContinuous -and -not $A11yTiming) { throw 'A11yContinuous requires A11yTiming' }
+if ($NativeObserver -and -not $DisableSyntheticInput) { throw 'NativeObserver requires DisableSyntheticInput' }
 $QaApiBase = "http://127.0.0.1:$ApiPort"
 $swTotal = [System.Diagnostics.Stopwatch]::StartNew()
 
@@ -82,17 +90,21 @@ $stageManifest = Get-QaStageManifest -StageDir $stageDir
 $stageMatchesSource = $stageManifest.source_fingerprint -eq (Get-QaSourceFingerprint)
 if (-not $stageMatchesSource -and -not $AllowStaleStage) { throw 'Stage build inputs differ from current source; rebuild or explicitly use -AllowStaleStage and report limited provenance' }
 if (-not $stageMatchesSource) { Write-Warning 'Using a stale QA stage; results do not verify current source' }
+if ($NativeObserver -and (-not $stageManifest.native_observer -or -not $stageMatchesSource)) { throw 'NativeObserver requires a source-current native helper stage' }
 if ($resume) {
+    Assert-QaNativeAllocation -Run $run -Starts 1 -Jsonl ([int][bool]$NativeObserver) -Incarnations ([int][bool]$NativeObserver)
+    $pairRestart = Open-QaPairRestart -Resume $resume -Stage $stageDir -Port $ApiPort -NativeObserver ([bool]$NativeObserver) -SyntheticInput (-not [bool]$DisableSyntheticInput)
     $attemptId = (Get-Date).ToString('yyyyMMdd-HHmmss-fff') + '-' + [Guid]::NewGuid().ToString('N')
     $attemptDir = Resolve-QaChildPath -Path (Join-Path $run "starts\$attemptId") -Root $QaRunRoot
     New-Item -ItemType Directory -Path $attemptDir -Force | Out-Null
     $attemptPath = Join-Path $attemptDir 'start.json'
     $prior = $resume.current
     $previousStart = @{}
-    foreach ($key in @('pid','api_base','stage','started_at','process_identity','descendant_identities','descendants_captured_at','stage_manifest','stage_matches_source','stale_stage_allowed','qa_options','restart')) {
+    foreach ($key in @('run_dir','pid','api_base','stage','started_at','process_identity','descendant_identities','descendants_captured_at','stage_manifest','stage_matches_source','stale_stage_allowed','qa_options','restart','native_observer','native_pair')) {
         $previousStart[$key] = $prior.$key
     }
     $previousStart | ConvertTo-Json -Depth 16 | Set-Content -LiteralPath (Join-Path $attemptDir 'previous-start.json') -Encoding utf8
+    Save-QaPairRestartArchive -Transition $pairRestart -AttemptDirectory $attemptDir
     @{ status = 'stopping_previous'; run_dir = $run; stage = $stageDir; stage_manifest = $stageManifest; stage_matches_source = $stageMatchesSource; stale_stage_allowed = [bool]$AllowStaleStage } |
         ConvertTo-Json -Depth 8 | Set-Content -LiteralPath $attemptPath -Encoding utf8
     $owned = Get-QaOwnedProcess -Identity $prior.process_identity
@@ -195,6 +207,7 @@ $null = $proc.Handle
 $identity = Get-QaProcessIdentity -ProcessId $proc.Id
 if (-not $identity) { throw 'QA process exited before its identity could be recorded' }
 $startedAt = (Get-Date).ToString("o")
+$nativeBootstrap = if ($NativeObserver) { New-QaNativeObserverBootstrap -Run $run -Identity $identity -Stage $stageDir -StageManifest $stageManifest } else { $null }
 if ($attemptPath) {
     @{ status = 'starting'; run_dir = $run; process_identity = $identity; started_at = $startedAt; stage = $stageDir; stage_manifest = $stageManifest; stage_matches_source = $stageMatchesSource; stale_stage_allowed = [bool]$AllowStaleStage } |
         ConvertTo-Json -Depth 8 | Set-Content -LiteralPath $attemptPath -Encoding utf8
@@ -257,7 +270,7 @@ $current = @{
     fixture = $Fixture
     stdout_path = $stdoutPath
     stderr_path = $stderrPath
-    qa_options = @{ synthetic_input = -not [bool]$DisableSyntheticInput; a11y_timing = [bool]$A11yTiming; a11y_continuous = [bool]$A11yContinuous }
+    qa_options = @{ synthetic_input = -not [bool]$DisableSyntheticInput; a11y_timing = [bool]$A11yTiming; a11y_continuous = [bool]$A11yContinuous; native_observer = [bool]$NativeObserver }
     started_at = $startedAt
     process_identity = $identity
     descendant_identities = $recordedDescendants
@@ -271,6 +284,8 @@ $current = @{
     fixture_detail = $fixtureInfo
     timings_ms = @{ health = $healthMs; bootstrap_token = $tokenMs; fixture_seed = $fixtureMs }
 }
+if ($nativeBootstrap) { $current.native_observer = $nativeBootstrap }
+if ($resume -and $resume.current.native_pair) { $current.native_pair = $resume.current.native_pair }
 if ($resume) {
     $current.restart = @{ previous_start = (Join-Path $attemptDir 'previous-start.json'); attempt = $attemptPath; preserved_root = $run; reseeded = $false; port_changed = ($ApiPort -ne $resume.port); stale_stage_allowed = [bool]$AllowStaleStage }
     @{ status = 'ready'; run_dir = $run; process_identity = $identity; started_at = $startedAt; stage = $stageDir; stage_manifest = $stageManifest; stage_matches_source = $stageMatchesSource; authenticated_readiness = $readiness; restart = $current.restart } |
@@ -278,6 +293,8 @@ if ($resume) {
 }
 $current | ConvertTo-Json -Depth 8 | Set-Content -LiteralPath (Join-Path $run 'current.pending.json') -Encoding utf8
 Move-Item -LiteralPath (Join-Path $run 'current.pending.json') -Destination (Join-Path $run 'current.json') -Force
+$pairIssuer = if ($pairRestart) { Get-QaPairIssuerSubject -Token $bootstrap.Token -VerseId $bootstrap.VerseId } else { $null }
+Complete-QaPairRestart -Transition $pairRestart -Current ([pscustomobject]$current) -PublicDid $pairIssuer
 $run | Set-Content (Join-Path $QaRepoRoot ".qa\current") -Encoding ascii -NoNewline
 $handedOff = $true
 
@@ -330,6 +347,9 @@ Write-Output $run
 }
 
 } finally {
-    try { if ($runLock) { $runLock.Dispose() } }
+    try {
+        if ($pairRestart -and $pairRestart.process) { $pairRestart.process.Dispose() }
+        if ($runLock) { $runLock.Dispose() }
+    }
     finally { $lifecycleLease.Dispose() }
 }

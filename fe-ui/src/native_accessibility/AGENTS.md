@@ -95,8 +95,8 @@ The enabled production direct-painter inventory was inspected separately:
 
 | Source | Layer/content | Positive-profile treatment |
 | --- | --- | --- |
-| fe-terrain/src/ruler_plugin.rs::draw_scale_bar | Foreground ruler_scale_bar; numeric distance from validated scale math, fixed units and primitive strokes | Audited nonsecret ruler output is allowed independently of Areas registration. |
-| fe-terrain/src/ruler_plugin.rs::draw_unscaled_chip | Same layer; fixed world-units text | Audited fixed text is allowed. |
+| fe-terrain/src/ruler_plugin.rs::draw_scale_bar -> paint_scale_bar | Foreground ruler_scale_bar; numeric distance from validated scale math, fixed units and primitive strokes | Audited nonsecret ruler output is allowed independently of Areas registration. Same-pass scene anchor, complete fit and clip are required. |
+| fe-terrain/src/ruler_plugin.rs::draw_unscaled_chip | Same layer; fixed world-units text | Audited fixed text is allowed within the same bounded current scene anchor. |
 | fe-ui/src/viewport_labels.rs::draw_viewport_point_labels | Background viewport_point_labels; fixed type glyph plus point ordinal, painted after gardener | Conservatively excluded whenever an edited track has any point rows, including states where projection would later skip them. |
 
 There are no other production layer_painter/debug_painter calls in the inspected
@@ -291,3 +291,25 @@ scope cannot initialize access, None/unknown roles cannot view, and repeated
 accepted roles retain their existing source epoch. The existing node_index
 invalidation-preservation assertion is unchanged. The target-view reply remains
 an explicit fixture; no live DB Viewer or native-provider result is claimed.
+
+## Bounded ruler producer (QA41)
+
+The separately source-audited Foreground ruler_scale_bar remains fixed/numeric
+nonsecret direct painting, independent of Areas enumeration. The host now
+publishes only a current actual scene anchor after GardenerUiSet::GeometryReady;
+RulerHudSet orders its bridge before the real ruler draw in the same egui pass.
+Both the numeric bar and fixed unscaled chip require complete bounded fit and
+scene clipping. Calibration uses actual primary-egui orbit Camera physical
+viewport dimensions plus current pixels-per-point, not the scene anchor height.
+
+No ninth mandatory surface producer, post-finish registration, dynamic capture
+classification, Owner/native output reordering or positive grant is introduced.
+The eight actual surface producers and their finish stay as reviewed. Edited
+path labels retain their independent conservative refusal. This inventory update
+does not claim capture evidence or safety for arbitrary direct painters.
+
+QA41 v2 also carries actual same-pass completed viewport chrome into ruler
+placement. Complete fixed/numeric footprints move above occupied responses or
+omit; the native producer inventory and authority are unchanged. The host orders
+outer EndPass after CameraUpdateSystems and TransformSystems::Propagate, retaining
+EndPass -> ProcessOutput -> Owner observation -> provider handoff/annotation.

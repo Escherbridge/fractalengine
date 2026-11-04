@@ -7,6 +7,7 @@ param(
     [switch]$DisableSyntheticInput,
     [switch]$A11yTiming,
     [switch]$A11yContinuous,
+    [switch]$NativeObserver,
     [switch]$AllowStaleStage
 )
 $launchOptions = @{}
