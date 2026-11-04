@@ -5032,6 +5032,61 @@ mod tests {
                     "asset deletion must invalidate its captured snapshot"
                 );
             }
+            let publication_db = probe_db().await;
+            for mutation in [
+                "asset_id=$replacement",
+                "name='changed metadata name'",
+                "content_type='model/gltf+json'",
+                "size_bytes=4.0",
+                "content_hash=$replacement_hash",
+                "created_at='changed metadata time'",
+                "owner_did='did:changed'",
+                "petal_id='changed-petal'",
+                "publication_provenance=NULL",
+                "publication_provenance={kind:'changed'}",
+                "delete",
+                "duplicate",
+            ] {
+                let fixture = ulid::Ulid::new().to_string();
+                let replacement = ulid::Ulid::new().to_string();
+                let (_, absent, _) = scene::capture_publication_asset_metadata(&publication_db, &fixture)
+                    .await.unwrap();
+                assert!(absent.is_empty());
+                publication_db.query("CREATE asset SET asset_id=$fixture,name='publication fixture',content_hash=$hash,content_type='model/gltf-binary',size_bytes=4,created_at='2026-11-04',owner_did='did:upload',petal_id='publication-p',publication_provenance=NONE")
+                    .bind(("fixture", fixture.clone())).bind(("hash", "00".repeat(32)))
+                    .await.unwrap().check().unwrap();
+                assert!(publication_db.query(format!("BEGIN TRANSACTION; {}; COMMIT TRANSACTION;", scene::publication_asset_metadata_fence()))
+                    .bind(("scene_asset", fixture.clone())).bind(("scene_asset_fingerprints", absent))
+                    .await.unwrap().check().is_err(), "creation invalidates absent publication metadata");
+                let (rows, fingerprints, models) = scene::capture_publication_asset_metadata(&publication_db, &fixture)
+                    .await.unwrap();
+                assert_eq!(rows.len(), 1);
+                assert_eq!(fingerprints.len(), 1);
+                assert!(models.is_empty());
+                assert!(rows[0]["publication_provenance"].is_null());
+                assert!(publication_db.query(format!("BEGIN TRANSACTION; IF (SELECT {} FROM asset WHERE asset_id=$scene_asset) != $decoded {{ THROW 'controlled JSON roundtrip mismatch'; }}; COMMIT TRANSACTION;", scene::PUBLICATION_ASSET_COLUMNS))
+                    .bind(("scene_asset", fixture.clone())).bind(("decoded", rows))
+                    .await.unwrap().check().is_err(), "the old JSON equality fails even without mutation");
+                publication_db.query(format!("BEGIN TRANSACTION; {}; COMMIT TRANSACTION;", scene::publication_asset_metadata_fence()))
+                    .bind(("scene_asset", fixture.clone())).bind(("scene_asset_fingerprints", fingerprints.clone()))
+                    .await.unwrap().check().unwrap();
+                let change = match mutation {
+                    "delete" => "DELETE asset WHERE asset_id=$fixture".to_owned(),
+                    "duplicate" => "CREATE asset SET asset_id=$fixture,name='duplicate publication fixture'".to_owned(),
+                    _ => format!("UPDATE asset SET {mutation} WHERE asset_id=$fixture"),
+                };
+                publication_db.query(change).bind(("fixture", fixture.clone()))
+                    .bind(("replacement", replacement)).bind(("replacement_hash", "11".repeat(32)))
+                    .await.unwrap().check().unwrap();
+                let mut refused = publication_db.query(format!("BEGIN TRANSACTION; CREATE publication_guard_probe SET probe=$probe; {}; COMMIT TRANSACTION;", scene::publication_asset_metadata_fence()))
+                    .bind(("probe", fixture.clone())).bind(("scene_asset", fixture.clone()))
+                    .bind(("scene_asset_fingerprints", fingerprints)).await.unwrap();
+                assert!(!refused.take_errors().is_empty(), "changed publication metadata must refuse: {mutation}");
+                let mut unchanged = publication_db.query("SELECT VALUE probe FROM publication_guard_probe WHERE probe=$probe")
+                    .bind(("probe", fixture)).await.unwrap().check().unwrap();
+                let probes: Vec<String> = unchanged.take(0).unwrap();
+                assert!(probes.is_empty(), "metadata refusal rolls back the whole transaction");
+            }
             let scope = "VERSE#scene-v-FRACTAL#scene-f-PETAL#scene-p";
             let properties = json!({"nested":{"null":null,"measurements":[{"t":1,"value":10.5},null,{"t":2,"value":12}]},"remove_me":{"preserve_before_delete":true}});
             let (id, _) = node_history::create_object(

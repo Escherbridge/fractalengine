@@ -10,6 +10,8 @@ use serde_json::{json, Value};
 
 const RECOVERY_LIMIT: usize = 1024;
 const RECOVERY_BYTES: usize = 8 * 1024 * 1024;
+pub(crate) const PUBLICATION_ASSET_COLUMNS: &str =
+    "asset_id, name, content_type, size_bytes, content_hash, created_at, owner_did, petal_id, publication_provenance";
 
 #[derive(Default, Debug)]
 pub(crate) struct RecoveryReport {
@@ -175,6 +177,34 @@ pub(crate) async fn prepare(db: &Db, id: &str, actor: &str) -> anyhow::Result<Pr
     })
 }
 
+/// Capture publication metadata and its exact typed projection before interpretation.
+pub(crate) async fn capture_publication_asset_metadata(
+    db: &Db,
+    id: &str,
+) -> anyhow::Result<(Vec<Value>, Vec<String>, Vec<Value>)> {
+    let projection = format!("SELECT {PUBLICATION_ASSET_COLUMNS} FROM asset WHERE asset_id=$scene_asset LIMIT 2 TIMEOUT 5s");
+    let mut response = db.query(format!("SELECT VALUE {{ metadata: $this, fingerprint: encoding::base64::encode(encoding::cbor::encode($this)) }} FROM ({projection}) TIMEOUT 5s; SELECT asset_id FROM model WHERE asset_id=$scene_asset LIMIT 1 TIMEOUT 5s"))
+        .bind(("scene_asset", id.to_owned())).await?.check()?;
+    let captured: Vec<Value> = response.take(0)?;
+    let models: Vec<Value> = response.take(1)?;
+    let mut rows = Vec::with_capacity(captured.len());
+    let mut fingerprints = Vec::with_capacity(captured.len());
+    for captured in captured {
+        let metadata = captured.get("metadata").filter(|value| value.is_object())
+            .ok_or_else(|| anyhow::anyhow!("scene publication asset projection unavailable"))?;
+        let fingerprint = captured["fingerprint"].as_str().filter(|value| !value.is_empty())
+            .ok_or_else(|| anyhow::anyhow!("scene publication asset witness unavailable"))?;
+        rows.push(metadata.clone());
+        fingerprints.push(fingerprint.to_owned());
+    }
+    Ok((rows, fingerprints, models))
+}
+
+/// Fence all nine publication fields and exact row count without JSON rebinding.
+pub(crate) fn publication_asset_metadata_fence() -> String {
+    format!("IF (SELECT VALUE encoding::base64::encode(encoding::cbor::encode($this)) FROM (SELECT {PUBLICATION_ASSET_COLUMNS} FROM asset WHERE asset_id=$scene_asset)) != $scene_asset_fingerprints {{ THROW 'scene asset changed'; }}")
+}
+
 async fn dependencies(
     db: &Db,
     row: &Value,
@@ -185,10 +215,7 @@ async fn dependencies(
     let mut dependencies = Vec::new();
     let mut deferred = 0;
     if let Some(id) = row["asset_id"].as_str() {
-        let mut response=db.query("SELECT asset_id, name, content_type, size_bytes, content_hash, created_at, owner_did, petal_id, publication_provenance FROM asset WHERE asset_id=$scene_asset LIMIT 2 TIMEOUT 5s; SELECT asset_id FROM model WHERE asset_id=$scene_asset LIMIT 1 TIMEOUT 5s")
-            .bind(("scene_asset",id.to_owned())).await?.check()?;
-        let assets: Vec<Value> = response.take(0)?;
-        let models: Vec<Value> = response.take(1)?;
+        let (assets, fingerprints, models) = capture_publication_asset_metadata(db, id).await?;
         if assets.len() == 1
             && assets[0]["petal_id"] == row["petal_id"]
             && super::super::scene_asset_transfer::publication_proof(db,&assets[0],scope,guards,bindings).await?
@@ -209,10 +236,10 @@ async fn dependencies(
                 "scene asset metadata exceeds 32 KiB"
             );
             dependencies.push(("asset".into(), id.into(), bytes));
-            guards.push("IF (SELECT asset_id, name, content_type, size_bytes, content_hash, created_at, owner_did, petal_id, publication_provenance FROM asset WHERE asset_id=$scene_asset) != $scene_asset_before { THROW 'scene asset changed'; }".into());
+            guards.push(publication_asset_metadata_fence());
             bindings.extend([
                 ("scene_asset".into(), json!(id)),
-                ("scene_asset_before".into(), json!(assets)),
+                ("scene_asset_fingerprints".into(), json!(fingerprints)),
             ]);
         } else {
             deferred += 1;

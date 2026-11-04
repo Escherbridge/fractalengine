@@ -256,3 +256,23 @@ the new diagnostic. No guard is waived and no publication failure reverses a
 successful local commit. The existing operation journey extends its actual
 rollback and redaction cases to the shared publication classifier; these cases
 are authored, not executed acceptance.
+
+## Exact outbound asset projection witness
+
+QA45's fixed diagnostics identify the outbound asset metadata equality guard;
+they do not identify the exact differing runtime field. Its decoded JSON capture
+cannot preserve native NONE versus NULL or other database types. Publication now
+captures its exact nine-field metadata and server CBOR/base64 witness together
+from the same projected SELECT, then compares the ordered opaque witness list
+inside the existing final transaction. PUBLICATION_ASSET_COLUMNS is shared by
+capture and fence, including name, created_at and publication_provenance; the
+current reader's distinct six-field projection must not substitute for it.
+
+Decoded metadata still supplies interpretation, local upload/adoption proof and
+the separately stripped dependency bytes. Authority/ancestry, node/point/journal/
+clock/asset checks, duplicate/count behavior, model/schema deferral and successful
+enqueue order remain intact. An actual change still refuses and rolls back; no
+field is coerced, dropped or mutated to make equality pass. The existing operation
+journey authors unchanged absent-field, NONE/NULL/type and each projected-field
+change, creation/deletion/duplicate and rollback cases. Source authorship is not
+successful publication, peer delivery or an executed regression check.

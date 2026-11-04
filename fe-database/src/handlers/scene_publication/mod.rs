@@ -14,6 +14,10 @@ pub(crate) use inbound::apply_complete;
 pub(crate) use inbound::capture_ordering_fact;
 #[cfg(test)]
 pub(crate) use publisher::prepare;
+#[cfg(test)]
+pub(crate) use publisher::{
+    capture_publication_asset_metadata, publication_asset_metadata_fence, PUBLICATION_ASSET_COLUMNS,
+};
 pub(crate) use publisher::{publish_after_commit, publish_tombstones_after_commit, recover};
 
 use crate::repo::Db;

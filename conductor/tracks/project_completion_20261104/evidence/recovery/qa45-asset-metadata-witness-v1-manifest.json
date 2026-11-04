@@ -1,0 +1,32 @@
+{
+  "kind": "qa45-publication-asset-typed-witness-v1",
+  "baseline": "be37b2dc260b06b42307a9cab3a49f08202c108c",
+  "new_registered_tests": 0,
+  "runtime_differing_field_identified": false,
+  "files": [
+    {
+      "path": "fe-database/src/handlers/scene_publication/AGENTS.md",
+      "bytes": 20211,
+      "sha256": "f1cd86b12ea1875ce998aee7e5bb1b93ad593057a79236aab2f1ec7cd398b1ce",
+      "baseline_sha256": "0fb79c42caccdd017220115f53da8cfd1f2ad0966730f1c1bb6c9ffc512badc0"
+    },
+    {
+      "path": "fe-database/src/handlers/scene_publication/mod.rs",
+      "bytes": 3176,
+      "sha256": "f0a462e146a5bb2337bd939fa5da4145fd5bc90506d515707e777d93f864f37f",
+      "baseline_sha256": "9c5b47a90d10bacef8dbbe764079cfe55fe79ed94026b3d23c552b0b539fcc9e"
+    },
+    {
+      "path": "fe-database/src/handlers/scene_publication/publisher.rs",
+      "bytes": 19561,
+      "sha256": "465314106bf819b98dc9f53bada0c03b05b30aba037088a4ee21e92f9d1bc4e7",
+      "baseline_sha256": "1c7039783dd70c00a5086d1bc83110a277eb73e3c0245e54ae3b09c3536343e2"
+    },
+    {
+      "path": "fe-database/src/op_log.rs",
+      "bytes": 338768,
+      "sha256": "154aa7f30e39401d7dc850916aca5af0a7aaac5b326d420ab32832d032aeede1",
+      "baseline_sha256": "76e367d99919a0e2149b1d7407a27d3d78a6d267b457057b351dac40a48b5467"
+    }
+  ]
+}
