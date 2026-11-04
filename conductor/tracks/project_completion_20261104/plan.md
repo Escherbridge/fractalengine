@@ -22,6 +22,8 @@ reviewed slice. Historical evidence stays linked rather than rewritten.
 
 ## P1: correctness and execution blockers
 
+- [ ] QA-0070: preserve verified terrain API scope/credential grant and exact admitted ancestry through REST/MCP/runtime to transactional use-time validation; retain local publisher authority and test queued reparent/expiry/revoke/reset refusals.
+
 - [x] QA-0069 source correction: complete finite source-bound measurement/atomic pair stack and all three ownership/projection blockers plus source-hash cache independently approved and integrated0e6668bd. Live acceptance remains below.
 - [ ] Verify no new cut/fill history on navigation/reload, true zero versus unavailable, late direct and resolved receipts, current access/source changes, newer gestures and terminal outcome retention.
 - [ ] Reproduce and resolve QA-0024 unintended brush edit with independent expected geometry and zero unintended mutations.
@@ -48,8 +50,8 @@ reviewed slice. Historical evidence stays linked rather than rewritten.
 Use [the screenshot inspection checklist](./visual-checklist.md) for the changed hierarchy workflow and subsequent UI fixes.
 
 - [~] VIS-001: card count correction9cdd3132 focused-verified in reviewed QA34/35 at actual1024/1280/1600 widths and1.25/2 scales, with Open/Options/Create-Cancel. All-Verses cards, long names, large counts and extreme widths remain catalog gates.
-- [~] VIS-002: header contrast source515b88fc approved; fresh combined-build screenshot verification pending.
-- [~] VIS-003: preferred/effective width and owned-divider v2 source independently approved, including first-frame pending-close cancellation; exact integration reviewed. Combined compilation and actual drag/scale/modal/selection/camera verification pending.
+- [~] VIS-002: header contrast source515b88fc compiled; QA36 browse-state screenshots independently focused reviewed. Active-Petal breadcrumb contrast remains a correction gate.
+- [~] VIS-003: preferred/effective width and owned-divider v2 source independently approved, including first-frame pending-close cancellation; exact integration reviewed. Combined compilation and QA36 actual drag/scale/selection/camera focused proof independently reviewed. Two10px divider targets fail layout checks; isolated v3 source needs Results side-gutter correction and both source/live review. Modal/cancellation and broader scale matrix remain pending.
 - [ ] Inspect actual screenshots during every changed workflow; record and fix visible clipping, overlap, wrapping, spacing, contrast, empty/black output and selection glitches before acceptance. Preserve before/after images and state/size/scale; geometry checks alone do not pass visual review.
 
 - [ ] Close/reproduce remaining status, viewport selection, Enter/Escape, empty Inspector, small targets, black capture, restore and input/capture timeout findings.

@@ -5,7 +5,21 @@ status: in_progress
 title: Completion baseline and next actions
 ---
 
-# Current acceptance baseline
+# Current state (2026-11-04, after QA36)
+
+- Goal service is active; the attached objective was read and matches goal-service.txt.
+- Main source is fa955563. Combined production stage `.qa/stage/fa955563-20261104084453622` succeeded in 327.5s. It emitted one unused-mut warning at layout_policy.rs:207; this is not the final checks sweep or a warning-free build.
+- QA36 disposable terrain run `.qa/run/20261104-084851-621` is stopped. All eight recorded root/descendant process identities were checked absent. Both retained campaign stores remain untouched.
+- QA36 packet has independent focused evidence approval ([review](./reviews/qa36-full-evidence-review.md)): [manifest](../../../qa/passes/36/packet-manifest.json), SHA256 `2c28abd2f725696bffd655dc1727d0a1114077cb6f6ac1b1c9b2f24a96ea6473`, 154 payloads / 14 actual screenshots. No full-pass credit.
+- Independently reviewed focused results: preferred widths survive scale clamps; actual divider drags preserve required camera.pose fields and selected node transform; rectangle configuration leaves terrain unchanged before arming; partial 5402/16384 coverage withholds cut/fill; complete 16384/16384 genuine zero saves the pair as one atomic batch at versions5/6. Full history bytes remain identical at version6 across navigation commands and final observation. The after-up state still had Petal A active: no actual departure/return is established by QA36.
+- Preserve the invalid first camera comparison alongside its corrected camera.pose-based proof. Preserve the navigation input timeout, wrong-route refusal and initial relative stop-path refusal. The one runtime ERROR is the retained input_timed_out HTTP500 at16:08:40; later applied state was observed without replay.
+- Visual gaps remain: two measured 10px divider targets and low contrast on the active-Petal breadcrumb. Browse-state opaque headers improved, but this does not close all chrome. Divider v3 is frozen in isolation for review; its design reviewer identified Results side-content overlap requiring correction.
+- QA-0070 remains open. Grant-continuity plan v2 SHA256 `64f1b3cb57eb0213d22bf4e2a24f8c64362278c86758efc4ad28f59d52543114` has independent functional/security design approval. Implementation must preserve bounded enqueue/deadline ownership and prove composed transaction/isolation behavior. A fresh isolated worktree is prepared; no source or runtime acceptance is claimed.
+- Native navigation foundation is being authored in isolation; it enables no positive action profile yet. The reviewed helper and trustworthy capture remain pending.
+- Finding register:61 entries,14 open/reproduction (2S1,7S2,5S3); source-fixed/live-pending and focused states retain their existing limited meanings.
+- Next: finish QA36 publication bookkeeping; execute separate fresh analytic nonzero volume/material/intersection run; correct/review divider v3 and implement/review QA-0070/native interaction. Then continue the complete plan. Final integrated sweep, two full passes, exact-SHA CI and all release gates remain pending.
+
+# Historical acceptance baseline
 
 This is the durable current checkpoint for the user-adopted completion goal.
 The older [campaign progress ledger](../../qa-chain-progress-20261101.md) retains
@@ -167,3 +181,31 @@ content differs only by existing source CRLF-to-LF policy, and the complete patc
 matches approved63cc9180...a2b6b90f. Shared adapter/panel defaults and native A2
 producer hooks remain. No source-level closure is being treated as live visual
 or gesture acceptance. The next action is a combined production build retry.
+
+
+QA-0070 (S2, source-confirmed MED TERR-S1) records discarded API terrain token
+scope/credential continuity before DB use. The supported concurrent same-Verse
+Petal move ordering is source evidence, not an executed bypass. Stable-scope
+fresh-fixture numeric checks remain approved, but queued authority/provenance
+acceptance needs a verified-grant/admitted-ancestry transaction fence. Existing
+60 finding records were preserved byte-for-byte; the register now has61 entries
+and14 open/reproduction items (2S1,7S2,5S3). This is an implementation fix, not a
+deferred product decision. Retained-store restart remains held pending the
+require-existing startup contract.
+
+
+QA36 independent full review approves all154 payload hashes/14 inspected images and
+focused volume/width outcomes, with navigation claim corrected: command invocation
+and history stability only, no observed departure. QA37 is now live in fresh
+disposable run `.qa/run/20261104-095346-026`, PID120552, same fa955563 stage;
+18.8s launch. Author observations: actualBack clears petal_id; separateRaise2 and
+Lower1 cases report/store200fill and100cut respectively with complete16384 samples.
+Inside2x1x2 solidbox reports4.000m3/material; outside control hasnativebounds and
+nooverlap. These QA37 results remain active/unfrozen/unreviewed and carry no final
+acceptance credit. Existing inputtimeout andlocatorrefusals are preserved.
+
+
+QA37 exact owned stop completed; all eight recorded identities checked absent at
+2026-11-04T17:19:41Z. Raw analytic evidence remains unfrozen/unreviewed. Both fresh
+focused apps are stopped. No Rust source change or final check sweep was made
+during these live runs.

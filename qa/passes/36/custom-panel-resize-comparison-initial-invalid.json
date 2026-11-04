@@ -1,0 +1,46 @@
+{
+  "states": [
+    {
+      "state": "after-left-drag-state",
+      "left_logical": 280.0,
+      "right_logical": 320.0,
+      "selection": null
+    },
+    {
+      "state": "after-right-drag-state",
+      "left_logical": 280.0,
+      "right_logical": 380.0,
+      "selection": null
+    },
+    {
+      "state": "custom-clamped-state",
+      "left_logical": 161.59375,
+      "right_logical": 120.0,
+      "selection": null
+    },
+    {
+      "state": "custom-restored-state",
+      "left_logical": 280.0,
+      "right_logical": 380.0,
+      "selection": null
+    }
+  ],
+  "camera_field_equal": {
+    "after-drags": {
+      "position": true,
+      "target": true,
+      "orbit": true
+    },
+    "after-restoration": {
+      "position": true,
+      "target": true,
+      "orbit": true
+    }
+  },
+  "camera_keys": [
+    "active",
+    "locked",
+    "pose",
+    "window"
+  ]
+}

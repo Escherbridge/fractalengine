@@ -1,0 +1,54 @@
+[
+  {
+    "state": "initial-state",
+    "window": {
+      "height": 720,
+      "maximized": false,
+      "minimized": false,
+      "ui_scale": 1.0,
+      "width": 1280
+    },
+    "ppp": 1.0,
+    "left_logical": 220.0,
+    "right_logical": 320.0
+  },
+  {
+    "state": "scale125-state",
+    "window": {
+      "height": 720,
+      "maximized": false,
+      "minimized": false,
+      "ui_scale": 1.25,
+      "width": 1280
+    },
+    "ppp": 1.25,
+    "left_logical": 220.0,
+    "right_logical": 320.0
+  },
+  {
+    "state": "scale200-state",
+    "window": {
+      "height": 720,
+      "maximized": false,
+      "minimized": false,
+      "ui_scale": 2.0,
+      "width": 1024
+    },
+    "ppp": 2.0,
+    "left_logical": 161.59375,
+    "right_logical": 120.0
+  },
+  {
+    "state": "restored-state",
+    "window": {
+      "height": 720,
+      "maximized": false,
+      "minimized": false,
+      "ui_scale": 1.0,
+      "width": 1280
+    },
+    "ppp": 1.0,
+    "left_logical": 220.0,
+    "right_logical": 320.0
+  }
+]
