@@ -1,0 +1,86 @@
+{
+    "base":  "d8da3a46e9861e9191845ea283e37fb7e5ea3472",
+    "scope":  "QA41 residual layout source-only",
+    "files":  [
+                  {
+                      "path":  "fe-terrain/src/AGENTS.md",
+                      "bytes":  104475,
+                      "sha256":  "66cadbc5404b27c92da1217b620e31f18f3db71af833faf44d161cce639ddeac"
+                  },
+                  {
+                      "path":  "fe-terrain/src/ruler.rs",
+                      "bytes":  21813,
+                      "sha256":  "d8393657019eed30100d5479a8bd3062e8494ee73c6e91ee42e66358b42de7e1"
+                  },
+                  {
+                      "path":  "fe-terrain/src/ruler_plugin.rs",
+                      "bytes":  12790,
+                      "sha256":  "e0e0fb58f1d4f98c1dd666535961a2a42660b7d0362b298811046cae406d0f1c"
+                  },
+                  {
+                      "path":  "fe-ui/src/AGENTS.md",
+                      "bytes":  105737,
+                      "sha256":  "b28e53d27a478341f72a14a386b51cf49e018fdd9617d94d0570070639473d99"
+                  },
+                  {
+                      "path":  "fe-ui/src/native_accessibility/AGENTS.md",
+                      "bytes":  21426,
+                      "sha256":  "461265fe20f2dfb751653bed9480e9d3a689bca9de4adf03d5340d90981bb451"
+                  },
+                  {
+                      "path":  "fe-ui/src/panels/AGENTS.md",
+                      "bytes":  69866,
+                      "sha256":  "e13f105e22cddc401481cebe42987316628cfd7cd67621c890ed26262b322e71"
+                  },
+                  {
+                      "path":  "fe-ui/src/panels/inspector.rs",
+                      "bytes":  278028,
+                      "sha256":  "84afb22a54b6e0cf3979dba96f56fd6b1014f567891de6016702b17a2ceb47ca"
+                  },
+                  {
+                      "path":  "fe-ui/src/panels/sidebar.rs",
+                      "bytes":  83170,
+                      "sha256":  "5500b60f711c3151e5797dfd9806abed35cb9fefc63cf7f636e735ced4667d41"
+                  },
+                  {
+                      "path":  "fe-ui/src/panels/tree_entry.rs",
+                      "bytes":  14135,
+                      "sha256":  "bba088d228c770f076ac72283658ec896f799bb6c1fd72ba57ea84d7344aaabd"
+                  },
+                  {
+                      "path":  "fe-ui/src/plugin.rs",
+                      "bytes":  66216,
+                      "sha256":  "cfb61fb450a46e66b013e3dd08f606a2c63f0c83aab16b02664b279b6ed901f9"
+                  },
+                  {
+                      "path":  "fe-ui/src/ui_shell/AGENTS.md",
+                      "bytes":  49756,
+                      "sha256":  "e3de4db8d983622cd308bb1dc2c6a72d73911eaa9a1ee9e77285888838ff246c"
+                  },
+                  {
+                      "path":  "fe-ui/src/ui_shell/layout_policy.rs",
+                      "bytes":  53181,
+                      "sha256":  "2034adc0ed2263f57e09b5a60ffb2489af240d94aefd614390cb675607500180"
+                  },
+                  {
+                      "path":  "fe-ui/src/ui_shell/right_sidebar.rs",
+                      "bytes":  128416,
+                      "sha256":  "d1dbc34b8ab1be2880a429a3e4d891492b6482ec41450cc0f1fd3471c2544b3a"
+                  },
+                  {
+                      "path":  "fractalengine/src/AGENTS.md",
+                      "bytes":  129872,
+                      "sha256":  "ec09cb2b388a7dd5349af7d88d9b191b337b4f60df5a908bd6fd265392025a98"
+                  },
+                  {
+                      "path":  "fractalengine/src/main.rs",
+                      "bytes":  47778,
+                      "sha256":  "59fde1012f05ed557fa4797bb5fa279410666440e87a9e18e4d38b45dc15c91e"
+                  },
+                  {
+                      "path":  "fractalengine/src/terrain_bridge.rs",
+                      "bytes":  200477,
+                      "sha256":  "7a33c1216821143e1b0be05ff7658e35fc3d1f0267dc77ee1639c2a41cd63fc7"
+                  }
+              ]
+}

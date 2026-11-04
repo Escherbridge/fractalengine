@@ -32,7 +32,7 @@
   "verification": {
     "conductor_review": "approved; reviews/conductor-scope-review.md",
     "production_build": "d8da3a46 passed86.5s0warnings; prior5a9eeb93 passed209.7s0warnings; no currentbuild",
-    "focused_evidence": "QA36/37 committed. QA38/39/40/41 independent focused reviews approved, with mandatory external QA41 summary erratum. Publication bookkeeping pending; no FULL credit.",
+    "focused_evidence": "QA36/37 committed. QA38 through QA41 published in9a9450b9 with independent focused reviews, mandatory external QA41 erratum and all331 staged raw blobs verified. No FULL credit.",
     "final_catalog": "pending",
     "two_clean_full_passes": "pending",
     "five_live_ux_audits_and_synthesis": "pending",
@@ -43,7 +43,7 @@
     "legacy_helper_fresh_launch": "passed preparation/authenticated startup in30.5s with corrected C#; exact stop exit0; adoption/restart unverified",
     "visual_acceptance": "QA38 readable opaque headers and restored side widths reviewed. QA41 retains 13 failures at 0.75 scale, cramped narrow Inspector and ruler overlap. Residual corrections and remaining matrix are pending.",
     "visual_followup_review": "approved subject to exact staged evidence bytes; reviews/visual-followup-review.md",
-    "native_witness": "Hostthroughd8da3a46 compiled; NAV23 24-fileoperator/helper frozenpendingbothfullreviews/integration/execution; captureunproved",
+    "native_witness": "Host through d8da3a46 compiled. Both NAV23 v1 full reviews request changes; author is batching corrections. Revised review, integration, compilation and real native execution remain pending; capture is unproved.",
     "volume_ownership": "QA36partial/genuinezero andQA37independent200fill100cut4solidboxoverlap+observedroundtripbyte-stablehistories focusedapproved; fullQA69late/authority/retained/rollbackgatespending",
     "panel_width": "QA41 actual controls measured: 13 residual targets at 0.75 scale and a 52-pixel narrow Inspector body. Residual design approved; isolated implementation underway. Results and remaining matrix pending.",
     "terrain_api_grant": "c0aa2bce normal QA39 scoped update/readback evidence independentlyapproved; negative/queue/concurrency gates remain",
@@ -59,9 +59,32 @@
     "worktree": ".omc/worktrees/qa-native-navigation-helper",
     "baseline": "023a5044c27f4255ca4ac48c6a5ccbfa9d0b008c",
     "files": 24,
-    "status": "source_frozen_both_full_reviews_pending",
+    "status": "v2_author_batch_in_progress_after_both_v1_changes_requested_reviews",
     "report": "./evidence/native-nav23/qa-native-navigation-nav23-v1-source-report.md",
     "hash_manifest": "./evidence/native-nav23/qa-native-navigation-nav23-v1-hashes.json",
-    "patch_sha256": "85a3f1e82fd3e466f2bf7cec6c0393aba77b60a9dbd5a70a4770d1f1c809aea8"
+    "patch_sha256": "85a3f1e82fd3e466f2bf7cec6c0393aba77b60a9dbd5a70a4770d1f1c809aea8",
+    "security_review": "./reviews/qa-native-nav23-security-v1-review.md",
+    "review_blockers": [
+      "Normal anonymous-pipe EOF rejected.",
+      "Observation/start producers can exceed retained cleanup budgets.",
+      "Paired restart publishes a new process incarnation without a supported membership reseal."
+    ],
+    "functional_review": "./reviews/qa-native-nav23-functional-v1-review.md"
+  },
+  "residual_layout_source": {
+    "worktree": ".omc/worktrees/qa-residual-layout",
+    "baseline": "d8da3a46e9861e9191845ea283e37fb7e5ea3472",
+    "files": 16,
+    "manifest_sha256": "eb0c27033fa7684385a889bc221714583d0a5745ecc389171bb9653d0cfa4d34",
+    "patch_sha256": "3430a70004ae24c9597a6c8482de2f4ba0395c73d8f367c30c98b4a88e3bd526",
+    "status": "both_v1_full_reviews_request_changes_author_batch_in_progress",
+    "review_candidates": [
+      "Ruler placement lacks actual viewport hint exclusion.",
+      "Outer egui pass needs current camera/transform ordering before numeric calibration."
+    ],
+    "reviews": [
+      "./reviews/qa41-residual-layout-functional-v1-review.md",
+      "./reviews/qa41-residual-layout-boundary-v1-review.md"
+    ]
   }
 }
