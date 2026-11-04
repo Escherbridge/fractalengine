@@ -23,9 +23,11 @@
   "decision_ledger": "../../decisions/qa-chain-20261102.md",
   "source_baseline": "a1a8691bf4e7f9ceeeec6b7d618ae6a8e12df366",
   "goal_service": {
-    "existing_status": "usageLimited",
-    "replacement_attempt": "refused_unfinished_goal",
-    "policy": "Expanded user scope persisted here; do not falsely complete the unfinished goal or bypass service limits"
+    "existing_status": "active",
+    "objective_file": "C:/Users/atooz/.codex/attachments/8c9d1ce6-b97c-497a-acdf-a5cabda1d653/goal-objective.md",
+    "objective_read": true,
+    "matches": "goal-service.txt",
+    "user_replaced_at": "2026-11-04"
   },
   "verification": {
     "conductor_review": "approved; reviews/conductor-scope-review.md",
@@ -37,7 +39,10 @@
     "integrated_sweep": "pending",
     "harness_18_scenarios": "pending",
     "exact_sha_ci": "pending",
-    "tagged_release_download_hashes": "pending"
+    "tagged_release_download_hashes": "pending",
+    "legacy_helper_fresh_launch": "passed preparation/authenticated startup in30.5s with corrected C#; exact stop exit0; adoption/restart unverified",
+    "visual_acceptance": "VIS-001 hierarchy-card wrapping reproduced in inspected1280x720 screenshot; open",
+    "visual_followup_review": "approved subject to exact staged evidence bytes; reviews/visual-followup-review.md"
   },
   "final_publication_authorized": true,
   "release_gate": "All required implementation/reviews/live QA and integrated checks complete; exact-commit CI green before immutable tag; all Release jobs and seven downloaded archive checksums verified"

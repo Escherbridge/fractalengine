@@ -17,7 +17,7 @@ reviewed slice. Historical evidence stays linked rather than rewritten.
 - [x] Persist the user-adopted completion scope and release gates in this track.
 - [x] Record current source/build, finding counts and unfinished isolated work.
 - [x] Independently review this Conductor reconciliation; approval in reviews/conductor-scope-review.md.
-- [ ] Commit the reviewed Conductor reconciliation.
+- [x] Commit the reviewed Conductor reconciliation: 55cead54.
 - [ ] Reconcile the final feature catalog and changed production routes, preserving stable IDs and explicit exclusions; baseline is 145 families / 1,529 checkpoints / 1,515 mandatory cases, not a final denominator.
 
 ## P1: correctness and execution blockers
@@ -25,7 +25,7 @@ reviewed slice. Historical evidence stays linked rather than rewritten.
 - [~] QA-0069 volume correction: complete finite source-bound measurements and atomic pairs authored; fix all three ownership/projection review blockers and the source-hash hot path, then obtain independent approval.
 - [ ] Verify no new cut/fill history on navigation/reload, true zero versus unavailable, late direct and resolved receipts, current access/source changes, newer gestures and terminal outcome retention.
 - [ ] Reproduce and resolve QA-0024 unintended brush edit with independent expected geometry and zero unintended mutations.
-- [~] Diagnose/fix the legacy fixture helper I/O failure; preserve the failed partial root and use a fresh root for a reviewed retry.
+- [x] Correct/review the legacy helper stdin ownership (98572fdb); fresh fixture preparation and authenticated app startup passed, then exact owned stop exited0. Offline inspection/adoption/restart acceptance remains unchecked.
 - [ ] Review/implement require-existing live restart and fixture checkpoints without reseeding, offline store bypass or invented identity/authority.
 - [~] Complete native witness corrections for stale completed Guard, lifecycle suspend/resume, view eligibility and direct-painter inventory; independently review before integration.
 - [ ] Verify normal accessibility delivery; implement/review retained-element operator helper, bounded invocation ownership and any separate navigation profile. Establish capture freshness or retain explicit refusal.
@@ -44,6 +44,9 @@ reviewed slice. Historical evidence stays linked rather than rewritten.
 - [ ] Verify the six source-fixed/live-pending findings in the checkpoint and close the cleanup review item using actual evidence.
 
 ## P3: full UX and feature coverage
+
+- [ ] VIS-001: fix the reproduced hierarchy-card Petal label wrapping one character per line at 1280x720; inspect corrected card/breadcrumb/count/menu layout and neighboring sizes/scales against evidence/hierarchy-card-wrapping-before.png.
+- [ ] Inspect actual screenshots during every changed workflow; record and fix visible clipping, overlap, wrapping, spacing, contrast, empty/black output and selection glitches before acceptance. Preserve before/after images and state/size/scale; geometry checks alone do not pass visual review.
 
 - [ ] Close/reproduce remaining status, viewport selection, Enter/Escape, empty Inspector, small targets, black capture, restore and input/capture timeout findings.
 - [ ] Audit every reachable panel/dialog at three sizes and relevant scales, keyboard/focus/scrolling, normal and destructive actions, and native OS/accessibility behavior.

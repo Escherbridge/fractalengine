@@ -71,3 +71,19 @@ records the acceptance queue, and [checkpoint.md](./checkpoint.md) records the
 latest evidence and next actions. The original [QA plan](../qa_chain_20261101/plan.md),
 [rich-data plan](../rich_data_history_20261101/plan.md), [polish plan](../polish_lane_20261031/plan.md)
 and [findings](../../../qa/findings.jsonl) retain their detailed scope.
+
+
+## Screenshot-driven visual acceptance (user steering 2026-11-04)
+
+Inspect actual screenshots during every changed UI workflow and fix visible
+layout defects as work proceeds. The supplied example's one-character-per-line
+Petal label is reproduced at 1280x720 in the retained baseline. Broken wrapping,
+clipped or overlapping labels/controls, cramped cards/navigation, unreadable
+text, inaccessible actions, unexpected blank/black output and illegible selection
+states are defects, even when action/API assertions pass. Record the affected
+state/size/scale and before/after screenshots, examine the images, and verify
+neighboring responsive states. Automated geometry/locator checks supplement image
+inspection; screenshot existence alone is not visual acceptance. Apply shared
+C:/Users/atooz/.gemini/UI-UX-guidance.md. Carry unresolved visual findings into
+Conductor and the QA catalog; do not give a clean-pass verdict while required
+visual cases still fail.

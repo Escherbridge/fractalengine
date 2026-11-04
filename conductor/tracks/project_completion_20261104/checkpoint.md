@@ -13,7 +13,7 @@ chronological history; its early status paragraphs are not current-state claims.
 
 - Integrated source: `a1a8691bf4e7f9ceeeec6b7d618ae6a8e12df366` before this documentation slice.
 - Matching stage: `.qa/stage/a1a8691b-20261103063616971`, successful production build in 444.9s with zero warnings; log `.omc/research/qa35-audit-stage.log`. Stage source_dirty=true is recorded; this is not a clean-checkout claim or test-suite result.
-- Last recorded owned apps are stopped; this documentation update did not launch or inspect OS processes. Retained Owner and recipient stores are preserved.
+- At the initial baseline, last recorded owned apps were stopped. Continued execution and the later exact owned stop are recorded below. Retained campaign Owner and recipient stores are preserved.
 - Latest committed focused packet: [pass33](../../../qa/passes/33/), commit `ee6773db`. Focused passes do not count as full coverage/convergence.
 - Final integrated format/lint/test sweep, final-SHA CI and tagged release are pending.
 - Goal service: existing original goal is unfinished and reports `usageLimited`. A requested replacement was refused because an unfinished goal exists. This track records the expanded user instruction without falsely completing or bypassing that goal.
@@ -63,7 +63,7 @@ fallback duplication). QA-0021 retains cleanup review closure.
 
 ## Immediate order and coordination
 
-1. Commit this independently approved Conductor reconciliation; [review](./reviews/conductor-scope-review.md).
+1. Completion scope committed55cead54 after independent approval; [review](./reviews/conductor-scope-review.md).
 2. Repair/review the fixture helper I/O path while preserving the failed root.
 3. Finish volume ownership corrections and independent reviews; retain accepted unknown saves until the actual DB lifetime ends.
 4. Correct/review native witness and implement the minimum reviewed normal recipient interaction needed for paired tests.
@@ -75,3 +75,23 @@ independent. The preexisting `conductor/.conductor_session_log` is not part of t
 slice. Keep runtime session notes consistent, but this Conductor checkpoint is
 the durable current scope. No product answer is required for the next routine
 fixes; record any genuine future fork in the decision ledger.
+
+
+## Continued execution and visual steering (2026-11-04)
+
+- Completion scope committed55cead54. Reviewed stdin ownership correction committed98572fdb; exact source review is retained in reviews/legacy-helper-io-source-review.md.
+- A fresh legacy preparation and authenticated app startup succeeded in30.5s using the matching Rust stage and current corrected C# launcher, with no stale-stage override. New disposable root .qa/run/20261104-070405-130, OwnerPID83716. Preparation only: no adoption submitted and no unsupported offline reader used.
+- Native state and a 1280x720 screenshot were captured and the image was actually inspected. It reproduces the user's vertical one-character Petal label in the hierarchy card. VIS-001 remains open; no visual-fix claim is made. See evidence/hierarchy-card-wrapping-before.png and helper-fresh-state.json.
+- Exact recorded root/descendant stop completed exit0; log evidence/helper-fresh-stop.log. No new OS census or universal descendant-absence claim is supplied.
+- Preserve the original failed .qa/run/20261103-064506-766. Successful preparation does not establish legacy adoption, live audit, restart or peer rendering.
+- User will replace/start the goal service manually; ready-to-paste objective is goal-service.txt. Existing service status is not changed by this documentation.
+
+Next execution begins with VIS-001 and the remaining P1 correctness/automation
+blockers, followed by the complete queue. Screenshot inspection and fixing visible
+glitches are explicit acceptance requirements throughout.
+
+
+The user has now replaced/started the goal. The new attached objective was read
+and matches goal-service.txt; the service reports active. The earlier usage-limit
+and replacement-refusal entries describe the preserved baseline, not current
+service status. Continue the expanded objective from this checkpoint.

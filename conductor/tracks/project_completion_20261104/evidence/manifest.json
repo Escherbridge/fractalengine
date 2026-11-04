@@ -1,0 +1,25 @@
+{
+  "scope": "focused helper preparation and visual reproduction only; not full QA acceptance",
+  "files": [
+    {
+      "file": "helper-fresh-launch.log",
+      "bytes": 739,
+      "sha256": "4481a96c6162652e637958227214d629ad397b155ba793de9f419602b7771768"
+    },
+    {
+      "file": "helper-fresh-state.json",
+      "bytes": 1058,
+      "sha256": "dc685e1b445ce2958420f9f517d90645a12735aeef19a721187284f6bbe69aa9"
+    },
+    {
+      "file": "helper-fresh-stop.log",
+      "bytes": 134,
+      "sha256": "985a44f38de77e7d7e3d62beb8d86869fa0347c96558eb133cf4367dfe5d7558"
+    },
+    {
+      "file": "hierarchy-card-wrapping-before.png",
+      "bytes": 268385,
+      "sha256": "73bf53e5f3f335072e5d6a410bcc42c7aadc742f6cf877d90d7708515966b2f7"
+    }
+  ]
+}

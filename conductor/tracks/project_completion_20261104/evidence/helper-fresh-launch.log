@@ -1,0 +1,7 @@
+[07:03:50.005] Using staged build: C:\Users\atooz\Programming\fractalengine-workspace\fractalengine\.qa\stage\a1a8691b-20261103063616971
+[07:04:07.221] Launched pid=83716 run=C:\Users\atooz\Programming\fractalengine-workspace\fractalengine\.qa\run\20261104-070405-130
+[07:04:16.224] API healthy after 9831ms
+[07:04:18.006] Bootstrap owner token ready (verse 01M6KDZT8DH5KX25NZQCJ4X72F) after 1779ms
+[07:04:18.402] Legacy GLB input prepared; setup only. No adoption has been submitted.
+[07:04:20.409] Launch complete in 30.5s total. run=C:\Users\atooz\Programming\fractalengine-workspace\fractalengine\.qa\run\20261104-070405-130 pid=83716
+C:\Users\atooz\Programming\fractalengine-workspace\fractalengine\.qa\run\20261104-070405-130
