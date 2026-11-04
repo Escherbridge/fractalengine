@@ -1177,6 +1177,12 @@ retains SafeHandle references until host exit and reports helper_lifetime_unknow
 no unconfirmed operation releases exclusivity. Only sealed helper JSON/static
 codes are published; raw stderr/native exceptions remain private.
 
+The stdin writer owns its redirected pipe. Raw UTF-8 request bytes are written
+and flushed through its BaseStream, then the writer itself is closed to deliver
+EOF. Closing the BaseStream first leaves the owning writer open and makes later
+normal cleanup flush an already closed pipe. Cleanup may close the writer again;
+its normal disposed state makes that repeat safe.
+
 The stopped-store reader now refuses fixture_store_confinement_unavailable before
 ANY SDK open. generate/seal still prepare the fresh canonical GLB, but discovery,
 baseline, adopted and resume cannot succeed. Existing directory scans are not a

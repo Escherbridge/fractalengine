@@ -66,11 +66,12 @@ public sealed class QaLegacyHelperOperation
         }
     }
 
-    private static async Task Write(Stream stream, byte[] input)
+    private static async Task Write(StreamWriter writer, byte[] input)
     {
+        var stream = writer.BaseStream;
         await stream.WriteAsync(input, 0, input.Length).ConfigureAwait(false);
         await stream.FlushAsync().ConfigureAwait(false);
-        stream.Close();
+        writer.Close();
     }
 
     private async Task<QaLegacyHelperResult> Execute(byte[] input)
@@ -81,7 +82,7 @@ public sealed class QaLegacyHelperOperation
             throw new InvalidOperationException("helper_deadline");
         var output = Collect(process.StandardOutput.BaseStream, 4194304);
         var errors = Collect(process.StandardError.BaseStream, 0);
-        var writing = Write(process.StandardInput.BaseStream, input);
+        var writing = Write(process.StandardInput, input);
         var exited = Task.Run(() => process.WaitForExit());
         Task[] pending = { output, errors, writing, exited };
         foreach (var task in pending) Observe(task);
