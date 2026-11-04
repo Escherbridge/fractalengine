@@ -857,6 +857,7 @@ impl Plugin for GardenerConsolePlugin {
         app.init_resource::<ViewportCursorWorld>();
         app.init_resource::<ViewportRect>();
         app.init_resource::<fe_renderer::camera::CameraPointerRegion>();
+        app.insert_resource(fe_renderer::camera::EditorScenePointerRequired);
         app.add_systems(Update, crate::ui_shell::results_dock::draw_matches);
         app.init_resource::<UiManager>();
         app.init_resource::<crate::scene_assets::SceneAssets>();
@@ -1069,7 +1070,7 @@ impl Plugin for GardenerConsolePlugin {
             (
                 apply_camera_focus,
                 strip_gltf_embedded_cameras,
-                update_viewport_cursor_world,
+                update_viewport_cursor_world.after(fe_renderer::scene_pointer::ScenePointerContextSet),
                 // Real-unit inspector display buffers (inspector_units_width_20260716 FR-2).
                 crate::panels::inspector::sync_inspector_units,
                 // T3 sculpt brush ring — after the cursor system so the ring
@@ -1232,6 +1233,8 @@ fn gardener_ui_system(
         ectx, rect, ui_shell.topbar.maximized,
     );
     ui_shell.camera_region.pixels_per_point = ectx.pixels_per_point();
+    fe_renderer::scene_pointer::ScenePointerChrome::finish_pass(
+        ectx, ui_shell.camera_region.rect, nav.intent_revision());
     // Frameless-window edge grips: after every panel so the resize cursor wins
     // (ui_shell/AGENTS.md §window-chrome).
     crate::ui_shell::topbar::render_window_resize_grips(ectx, &mut ui_shell.topbar);
@@ -1371,16 +1374,13 @@ fn apply_camera_focus(
 
 /// Projects the cursor position onto the Y=0 world plane each frame.
 fn update_viewport_cursor_world(
-    windows: Query<&Window>,
+    windows: Query<(Entity, &Window)>,
     cameras: Query<(&Camera, &GlobalTransform), With<fe_renderer::camera::OrbitCameraController>>,
     mut cursor_world: ResMut<ViewportCursorWorld>,
     mut egui_ctx: EguiContexts,
+    region: Res<fe_renderer::camera::CameraPointerRegion>,
 ) {
-    // Only suppress the world cursor when egui is actively consuming pointer
-    // input (e.g. dragging a slider, clicking a button).  The old check used
-    // `is_pointer_over_area()` which returns true for the transparent
-    // CentralPanel (the 3-D viewport), so the world position was *never*
-    // computed and every placed model landed at 0,0,0.
+    // World-cursor previews share current-point scene/chrome admission.
     let Ok(ectx) = egui_ctx.ctx_mut() else {
         cursor_world.pos = None;
         return;
@@ -1389,10 +1389,14 @@ fn update_viewport_cursor_world(
         cursor_world.pos = None;
         return;
     }
-    let Ok(window) = windows.single() else {
+    let Ok((entity, window)) = windows.single() else {
         cursor_world.pos = None;
         return;
     };
+    if !region.accepts_editor_window_pointer(entity, window, ectx) {
+        cursor_world.pos = None;
+        return;
+    }
     let Some(cursor) = window.cursor_position() else {
         cursor_world.pos = None;
         return;

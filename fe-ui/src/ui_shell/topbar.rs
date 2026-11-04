@@ -1261,6 +1261,18 @@ mod tests {
         let visual = egui::Rect::from_min_max(egui::pos2(220.0, 40.0), egui::pos2(700.0, 500.0));
         let input = viewport_interaction_rect(visual, screen, false, 5.0, true);
         let context = egui::Context::default();
+        context.set_pixels_per_point(2.0);
+        for _ in 0..2 {
+            let _output = context.run(egui::RawInput { screen_rect: Some(screen), ..Default::default() }, |ctx| {
+                use fe_renderer::scene_pointer::{ScenePointerChrome, ScenePointerStamp};
+                ScenePointerChrome::observe(ctx, ScenePointerStamp::new(bevy::prelude::Entity::from_bits(1),
+                    bevy::prelude::UVec2::new(1600, 1200), 1.0, 0));
+                ScenePointerChrome::begin_pass(ctx, 0);
+                let header = egui::TopBottomPanel::top("resize-routing-chrome").show(ctx, |ui| { ui.label("Window header"); });
+                ScenePointerChrome::exclude(ctx, header.response.rect);
+                ScenePointerChrome::finish_pass(ctx, input, 0);
+            });
+        }
         let region = fe_renderer::camera::CameraPointerRegion {
             rect: input,
             pixels_per_point: 2.0,
@@ -1272,7 +1284,7 @@ mod tests {
             (egui::vec2(400.0, 200.0), true),
         ] {
             let physical = bevy::prelude::Vec2::new(point.x, point.y) * 2.0;
-            assert_eq!(region.accepts_pointer(physical, &context), accepted);
+            assert_eq!(region.accepts_editor_pointer(physical, &context), accepted);
         }
         for point in [
             egui::vec2(input.min.x, 200.0),
@@ -1281,7 +1293,7 @@ mod tests {
             egui::vec2(400.0, input.max.y),
         ] {
             assert!(
-                !region.accepts_pointer(bevy::prelude::Vec2::new(point.x, point.y) * 2.0, &context),
+                !region.accepts_editor_pointer(bevy::prelude::Vec2::new(point.x, point.y) * 2.0, &context),
                 "exact grab-band endpoints stay outside scene input"
             );
         }

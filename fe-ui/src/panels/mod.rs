@@ -270,6 +270,7 @@ pub fn gardener_console(
     );
 
     surface::enter(ctx, Producer::Viewport, nav.active_petal_id.is_some() && !ui_mgr.portal_is_open());
+    fe_renderer::scene_pointer::ScenePointerChrome::begin_pass(ctx, nav.intent_revision());
     let viewport_response =
         egui::CentralPanel::default()
             .frame(egui::Frame::NONE)

@@ -661,10 +661,11 @@ mod tests {
                 .is_empty(),
             "arming is not persistence"
         );
-        app.insert_resource(ClickArbiter::pressed_along(Ray3d::new(
+        let (chrome_ctx, chrome_region) = assert_chrome_navigation_does_not_place(&mut app);
+        app.insert_resource(ClickArbiter::pressed_with_region(Ray3d::new(
             Vec3::new(20.0, 10.0, -10.0),
             Dir3::NEG_Y,
-        )));
+        ), Vec2::new(512.0, 384.0), &chrome_region, &chrome_ctx));
         app.update();
         let UiAction::CommitTerrainAuthoring(commit) = app
             .world_mut()
@@ -757,5 +758,89 @@ mod tests {
                 .is_empty(),
             "Viewer press cannot queue a sculpt operation"
         );
+    }
+
+    fn assert_chrome_navigation_does_not_place(app: &mut App)
+        -> (bevy_egui::egui::Context, fe_renderer::camera::CameraPointerRegion)
+    {
+        use bevy_egui::egui;
+        use fe_renderer::scene_pointer::{ScenePointerChrome, ScenePointerStamp};
+        let ctx = egui::Context::default();
+        ctx.enable_accesskit();
+        let mut time = 0.0;
+        let screen = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1024.0, 768.0));
+        let baseline = serde_json::to_vec(&app.world().resource::<PetalMapState>().terrain_json).unwrap();
+        let nodes = crate::node_manager::NodeManager::default();
+        let hierarchy = crate::verse_manager::VerseManager::default();
+        let (sender, receiver) = crossbeam::channel::unbounded();
+        let mut render = |app: &mut App, events: Vec<egui::Event>| {
+            let mut nav = app.world_mut().remove_resource::<NavigationManager>().unwrap();
+            let mut manager = app.world_mut().remove_resource::<UiManager>().unwrap();
+            time += 1.0 / 60.0;
+            let mut scene = egui::Rect::NOTHING;
+            let output = ctx.run(egui::RawInput { screen_rect: Some(screen), time: Some(time), events, ..Default::default() }, |ctx| {
+                ScenePointerChrome::observe(ctx, ScenePointerStamp::new(Entity::from_bits(1),
+                    UVec2::new(1024, 768), 1.0, nav.intent_revision()));
+                ScenePointerChrome::begin_pass(ctx, nav.intent_revision());
+                crate::ui_shell::layout_policy::begin_frame(ctx, true);
+                crate::ui_shell::layout_policy::begin_ui_pass(ctx);
+                scene = egui::CentralPanel::default().show(ctx, |ui| {
+                    crate::viewport::viewport_overlay(ui, &mut nav, &nodes, &hierarchy, &sender,
+                        &crate::atlas::DashboardState::default(), &crate::plugin::ViewportCursorWorld::default(),
+                        &mut manager, &crate::plugin::LocalUserRole { role: Some(fe_database::RoleLevel::Editor) }, true);
+                }).response.rect;
+                ScenePointerChrome::finish_pass(ctx, scene, nav.intent_revision());
+            });
+            app.insert_resource(nav);
+            app.insert_resource(manager);
+            (fe_renderer::camera::CameraPointerRegion { rect: scene, pixels_per_point: ctx.pixels_per_point() }, output)
+        };
+
+        for name in ["Back to petal list", "Browse current verse fractals", "Browse all verses"] {
+            render(app, vec![]);
+            let (region, output) = render(app, vec![]);
+            let controls = crate::ui_shell::layout_policy::observations(&ctx);
+            let target_id = output.platform_output.accesskit_update.as_ref().expect("completed accessibility output")
+                .nodes.iter().find_map(|(id, node)| (node.label() == Some(name)).then_some(id.0))
+                .expect("actual named navigation target");
+            let control = controls.controls.iter().find(|control| control.id == target_id)
+                .expect("named target's observed response geometry");
+            assert!(control.allowed && control.clickable);
+            let hit = control.hit.intersect(control.clip);
+            assert!(hit.is_positive(), "actual named target must have a visible hit surface");
+            let point = Vec2::new(hit.center().x, hit.center().y) * ctx.pixels_per_point();
+            assert!(!region.accepts_editor_pointer(point, &ctx), "painted Background chrome blocks a fresh current-point press");
+            app.insert_resource(ClickArbiter::pressed_with_region(Ray3d::new(Vec3::new(-25.0, 10.0, -4.0), Dir3::NEG_Y), point, &region, &ctx));
+            app.update();
+            assert!(app.world().resource::<ToolState>().terrain.shape_armed());
+            assert!(app.world_mut().resource_mut::<UiManager>().drain_actions().is_empty(), "chrome press cannot queue terrain");
+            for pressed in [true, false] {
+                render(app, vec![egui::Event::PointerMoved(hit.center()), egui::Event::PointerButton {
+                    pos: hit.center(), button: egui::PointerButton::Primary, pressed, modifiers: egui::Modifiers::NONE,
+                }]);
+            }
+            assert!(app.world().resource::<NavigationManager>().active_petal_id.is_none(), "one real UI click still navigates");
+            app.insert_resource(ClickArbiter::default());
+            app.update();
+            assert!(!app.world().resource::<ToolState>().terrain.is_active(), "navigation still cancels the armed intent");
+            assert_eq!(serde_json::to_vec(&app.world().resource::<PetalMapState>().terrain_json).unwrap(), baseline);
+            assert!(app.world_mut().resource_mut::<UiManager>().drain_actions().is_empty());
+            assert!(receiver.try_recv().is_err(), "navigation queues no persistence command");
+            {
+                let mut nav = app.world_mut().resource_mut::<NavigationManager>();
+                nav.navigate_to_verse("v", "Verse");
+                nav.navigate_to_fractal("f", "Fractal");
+                nav.navigate_to_petal("p");
+            }
+            app.world_mut().resource_scope(|world, mut tool: Mut<ToolState>| {
+                assert!(tool.terrain.arm_shape(world.resource::<NavigationManager>(), world.resource::<PetalMapState>(),
+                    world.resource::<crate::plugin::LocalUserRole>(), world.resource::<SculptToolState>(), Tool::Brush));
+            });
+        }
+        render(app, vec![]);
+        let (region, _) = render(app, vec![]);
+        assert!(region.accepts_editor_pointer(Vec2::new(512.0, 384.0), &ctx), "uncovered scene remains eligible");
+        drop(render);
+        (ctx, region)
     }
 }

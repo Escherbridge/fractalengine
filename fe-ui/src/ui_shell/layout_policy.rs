@@ -430,6 +430,17 @@ pub(super) fn extend_panel_width_journey() {
                         }
                     }
                     let region = fe_renderer::camera::CameraPointerRegion { rect: scene, pixels_per_point: self.scale };
+                    {
+                        use fe_renderer::scene_pointer::{ScenePointerChrome, ScenePointerStamp};
+                        let screen = ctx.viewport_rect();
+                        ScenePointerChrome::observe(ctx, ScenePointerStamp::new(bevy::prelude::Entity::from_bits(1),
+                            bevy::prelude::UVec2::new((screen.width() * self.scale).round() as u32,
+                                (screen.height() * self.scale).round() as u32), 1.0, 0));
+                        ScenePointerChrome::begin_pass(ctx, 0);
+                        let header = ui.horizontal(|ui| { ui.label("Scene header"); }).response;
+                        ScenePointerChrome::exclude(ctx, header.rect.intersect(ui.clip_rect()));
+                        ScenePointerChrome::finish_pass(ctx, scene, 0);
+                    }
                     for (point, inside) in [
                         (egui::pos2(scene.left(), scene.center().y), false),
                         (egui::pos2(scene.left() + 1.0 / self.scale, scene.center().y), true),
@@ -439,7 +450,7 @@ pub(super) fn extend_panel_width_journey() {
                         (egui::pos2(scene.center().x, scene.bottom() - 1.0 / self.scale), true),
                     ] {
                         let physical = bevy::prelude::Vec2::new(point.x, point.y) * self.scale;
-                        assert_eq!(region.accepts_pointer(physical, ctx), inside);
+                        assert_eq!(region.accepts_editor_pointer(physical, ctx), inside);
                     }
                 });
             });

@@ -348,7 +348,7 @@ pub fn frame_world_box(min: Vec3, max: Vec3, view_dir: Vec3, fov: f32) -> LookAt
 // Plugin + systems
 // ---------------------------------------------------------------------------
 
-/// UI-owned egui-point region for current-pointer camera routing.
+/// Geometry-only egui-point region for current-pointer camera routing.
 #[derive(Resource)]
 pub struct CameraPointerRegion {
     pub rect: bevy_egui::egui::Rect,
@@ -365,6 +365,19 @@ impl Default for CameraPointerRegion {
 }
 
 impl CameraPointerRegion {
+    pub fn accepts_editor_window_pointer(&self, entity: Entity, window: &Window, ctx: &bevy_egui::egui::Context) -> bool {
+        crate::scene_pointer::ScenePointerChrome::matches_window(ctx, entity,
+            UVec2::new(window.physical_width(), window.physical_height()), window.scale_factor())
+            && window.physical_cursor_position().is_some_and(|point| self.accepts_editor_pointer(point, ctx))
+    }
+
+    /// Require completed editor chrome before the ordinary geometry/layer gate.
+    pub fn accepts_editor_pointer(&self, physical: Vec2, ctx: &bevy_egui::egui::Context) -> bool {
+        let point = bevy_egui::egui::pos2(physical.x / self.pixels_per_point, physical.y / self.pixels_per_point);
+        crate::scene_pointer::ScenePointerChrome::accepts(ctx, self.rect, self.pixels_per_point, point)
+            && self.accepts_pointer(physical, ctx)
+    }
+
     pub fn accepts_pointer(&self, physical: Vec2, ctx: &bevy_egui::egui::Context) -> bool {
         let point = bevy_egui::egui::pos2(
             physical.x / self.pixels_per_point,
@@ -379,6 +392,10 @@ impl CameraPointerRegion {
                 .is_none_or(|layer| layer.order == bevy_egui::egui::Order::Background)
     }
 }
+
+/// Editor camera opt-in; see scene-pointer-design.md for missing-witness behavior.
+#[derive(Resource)]
+pub struct EditorScenePointerRequired;
 
 /// Marker inserted while an agent-requested posed capture holds the main
 /// camera; see AGENTS.md §camera-capture. Its mere presence (not a bool
@@ -418,7 +435,7 @@ impl Plugin for CameraControllerPlugin {
         app.add_systems(
             Update,
             (
-                orbit_camera_system.run_if(camera_unlocked),
+                orbit_camera_system.run_if(camera_unlocked).after(crate::scene_pointer::ScenePointerContextSet),
                 apply_camera_scale,
             ),
         );
@@ -515,7 +532,8 @@ fn orbit_camera_system(
     height_field: Option<Res<TerrainHeightField>>,
     scale_settings: Option<Res<CameraScaleSettings>>,
     region: Option<Res<CameraPointerRegion>>,
-    windows: Query<&Window, With<bevy::window::PrimaryWindow>>,
+    editor_pointer: Option<Res<EditorScenePointerRequired>>,
+    windows: Query<(Entity, &Window), With<bevy::window::PrimaryWindow>>,
 ) {
     // Check egui input state.
     let (egui_wants_pointer, egui_wants_keyboard) = if let Ok(ctx) = egui_ctx.ctx_mut() {
@@ -523,19 +541,24 @@ fn orbit_camera_system(
         // (3-D viewport) claims pointer ownership even when transparent, so
         // wants_pointer_input() is always true and blocks orbit/zoom/pan.
         // is_using_pointer() is only true when a UI widget is actively held.
-        let pointer_outside = region.as_ref().is_some_and(|region| {
-            windows
-                .single()
-                .ok()
-                .and_then(Window::physical_cursor_position)
-                .is_none_or(|position| !region.accepts_pointer(position, ctx))
-        });
+        let pointer_outside = match region.as_ref() {
+            Some(region) => match windows.single() {
+                Ok((entity, window)) => if editor_pointer.is_some() {
+                    !region.accepts_editor_window_pointer(entity, window, ctx)
+                } else { window.physical_cursor_position().is_none_or(|point| !region.accepts_pointer(point, ctx)) },
+                Err(_) => {
+                    if editor_pointer.is_some() { crate::scene_pointer::ScenePointerChrome::invalidate(ctx); }
+                    true
+                }
+            },
+            None => editor_pointer.is_some(),
+        };
         (
             pointer_outside || ctx.is_using_pointer(),
             ctx.wants_keyboard_input(),
         )
     } else {
-        (false, false)
+        (editor_pointer.is_some(), false)
     };
 
     // If egui owns the pointer, consume mouse events and skip mouse controls.
@@ -1222,6 +1245,7 @@ mod tests {
     /// `orbit_camera_system` with. See AGENTS.md §camera-capture.
     #[test]
     fn capture_lock_stops_a_run_if_gated_system_from_running() {
+        crate::scene_pointer::assert_completed_chrome_journey();
         #[derive(Resource, Default)]
         struct Ran(bool);
 

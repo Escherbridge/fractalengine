@@ -78,7 +78,7 @@ pub fn viewport_petal_space(
     show_viewport_hints: bool,
 ) {
     let mut navigated = false;
-    ui.scope_builder(
+    let header = ui.scope_builder(
         egui::UiBuilder::new().max_rect(egui::Rect::from_min_size(
             rect.min + egui::vec2(8.0, 4.0),
             egui::vec2((rect.width() - 16.0).max(0.0), 70.0),
@@ -104,6 +104,8 @@ pub fn viewport_petal_space(
                 });
         },
     );
+    fe_renderer::scene_pointer::ScenePointerChrome::exclude(ui.ctx(),
+        header.response.rect.intersect(ui.clip_rect()));
     if navigated {
         return;
     }
@@ -134,7 +136,10 @@ pub fn viewport_petal_space(
     // the object-aware menu. No tool-specific gate — Brush is not a mode.
     if !gesture_active && ui.input(|i| i.pointer.secondary_clicked()) {
         if let Some(pos) = ui.input(|i| i.pointer.interact_pos()) {
-            if rect.contains(pos) {
+            if rect.contains(pos)
+                && ui.ctx().layer_id_at(pos).is_none_or(|layer| layer.order == egui::Order::Background)
+                && !fe_renderer::scene_pointer::ScenePointerChrome::blocks_current_ui(ui.ctx(), pos)
+            {
                 ui_mgr.open_dialog(ActiveDialog::ContextMenu {
                     screen_pos: [pos.x, pos.y],
                     world_pos: cursor_world.pos.unwrap_or([0.0, 0.0, 0.0]),
@@ -177,7 +182,7 @@ fn bounded_browser(
     show_join: bool,
 ) -> Option<BrowserAction> {
     let mut action = None;
-    ui.scope_builder(
+    let body = ui.scope_builder(
         egui::UiBuilder::new()
             .max_rect(rect)
             .layout(egui::Layout::top_down(egui::Align::Min)),
@@ -250,6 +255,8 @@ fn bounded_browser(
             });
         },
     );
+    fe_renderer::scene_pointer::ScenePointerChrome::exclude(ui.ctx(),
+        body.response.rect.intersect(rect).intersect(ui.clip_rect()));
     action
 }
 
@@ -350,6 +357,8 @@ fn browser_body(
                 .inner
         },
     );
+    fe_renderer::scene_pointer::ScenePointerChrome::exclude(ui.ctx(),
+        header.response.rect.intersect(rect).intersect(ui.clip_rect()));
     if header.inner {
         return None;
     }
@@ -434,7 +443,7 @@ fn breadcrumbs(
 }
 
 fn viewport_hint(ctx: &egui::Context, rect: egui::Rect, text: &str) {
-    egui::Area::new(egui::Id::new("viewport_tool_hint"))
+    let hint = egui::Area::new(egui::Id::new("viewport_tool_hint"))
         .order(egui::Order::Middle)
         .interactable(false)
         .pivot(egui::Align2::CENTER_BOTTOM)
@@ -452,6 +461,7 @@ fn viewport_hint(ctx: &egui::Context, rect: egui::Rect, text: &str) {
                     );
                 });
         });
+    fe_renderer::scene_pointer::ScenePointerChrome::exclude(ctx, hint.response.rect.intersect(rect));
 }
 
 /// Browse verses with target-authorized Options available on every card.

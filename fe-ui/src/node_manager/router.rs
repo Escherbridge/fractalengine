@@ -4,7 +4,6 @@ use bevy::prelude::*;
 use bevy_egui::EguiContexts;
 
 use super::dispatch::HitTarget;
-use crate::plugin::ViewportRect;
 
 /// A viewport left-click consumer, ordered highest-priority first.
 ///
@@ -145,6 +144,15 @@ impl ClickArbiter {
             owner: None,
         }
     }
+
+    #[cfg(test)]
+    pub(super) fn pressed_with_region(ray: Ray3d, physical: Vec2,
+        region: &fe_renderer::camera::CameraPointerRegion, ctx: &bevy_egui::egui::Context) -> Self {
+        let mut frame = Self::pressed_along(ray);
+        frame.available = !ctx.is_using_pointer() && region.accepts_editor_pointer(physical, ctx);
+        if !frame.available { frame.cursor = None; frame.ray = None; }
+        frame
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -200,13 +208,13 @@ pub(super) fn sweep_stranded_drag<T>(phase: PointerPhase, active: &mut Option<T>
 }
 
 /// First system in the selection chain: recomputes [`ClickArbiter`] for the
-/// frame. Centralizes egui pointer-capture + `ViewportRect` gating so consumer
+/// frame. Centralizes current-window/chrome and egui gating so consumer
 /// systems no longer hold `EguiContexts` or re-derive the cursor/ray.
 pub(super) fn resolve_pointer_frame(
     mouse_button: Res<ButtonInput<MouseButton>>,
-    windows: Query<&Window>,
+    windows: Query<(Entity, &Window)>,
     cameras: Query<(&Camera, &GlobalTransform), With<fe_renderer::camera::OrbitCameraController>>,
-    viewport_rect: Res<ViewportRect>,
+    nav: Res<crate::navigation_manager::NavigationManager>,
     region: Option<Res<fe_renderer::camera::CameraPointerRegion>>,
     mut egui_ctx: EguiContexts,
     mut arbiter: ResMut<ClickArbiter>,
@@ -221,20 +229,20 @@ pub(super) fn resolve_pointer_frame(
     );
 
     let window = windows.single().ok();
-    let cursor = window.and_then(Window::cursor_position);
-    let physical = window.and_then(Window::physical_cursor_position);
+    let cursor = window.and_then(|(_, window)| window.cursor_position());
     let (egui_using, in_viewport) = egui_ctx
         .ctx_mut()
         .map(|ctx| {
-            let inside = if let Some(region) = &region {
-                physical.is_some_and(|point| region.accepts_pointer(point, ctx))
+            if let Some((entity, window)) = window {
+                fe_renderer::scene_pointer::ScenePointerChrome::observe(ctx,
+                    fe_renderer::scene_pointer::ScenePointerStamp::new(entity,
+                        UVec2::new(window.physical_width(), window.physical_height()),
+                        window.scale_factor(), nav.intent_revision()));
             } else {
-                cursor.is_some_and(|point| {
-                    viewport_rect
-                        .0
-                        .contains(bevy_egui::egui::pos2(point.x, point.y))
-                })
-            };
+                fe_renderer::scene_pointer::ScenePointerChrome::invalidate(ctx);
+            }
+            let inside = region.as_ref().is_some_and(|region|
+                window.is_some_and(|(entity, window)| region.accepts_editor_window_pointer(entity, window, ctx)));
             (ctx.is_using_pointer(), inside)
         })
         .unwrap_or((false, false));

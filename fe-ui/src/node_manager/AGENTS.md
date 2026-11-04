@@ -658,6 +658,22 @@ two systems below.
 
 ## §input-router — per-frame left-click arbitration (`router.rs`)
 
+### Painted chrome admission (QA38)
+
+The current physical point must clear CameraPointerRegion and a completed
+renderer ScenePointerChrome publication before any claim/ray is available.
+The router observes actual window/scale and the existing navigation intent
+revision in ScenePointerContextSet; camera input follows that narrow set.
+Absent, invalid, incomplete-previous-pass or mismatched geometry cannot become
+an empty permissive fallback. See ../scene-pointer-design.md and the renderer's
+scene-pointer-design.md for publication and bounded failure rules.
+
+Consumer priority, selected groups and existing gesture state ownership do not
+change. Chrome behaves like the existing outside-viewport/UI boundary for
+captured hold/release; the gate does not manufacture a gesture or cancel/replay
+one. The existing armed-shape journey adds real rendered navigation clicks and
+an uncovered-scene positive control, without new test declarations.
+
 `router.rs` centralizes "who gets this frame's left-click" so consumers claim
 ownership instead of racing ad-hoc booleans (replaces the old
 `path_edit_capturing` flag). `ClickArbiter` is a `Resource`;

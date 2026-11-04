@@ -430,7 +430,7 @@ impl Plugin for NodeManagerPlugin {
                 )
                     .chain(),
                 sidebar_sync::sync_sidebar_to_manager,
-                router::resolve_pointer_frame, // arbitrate left-click ownership for this frame (first)
+                router::resolve_pointer_frame.in_set(fe_renderer::scene_pointer::ScenePointerContextSet),
                 // This registration order is NORMATIVE for `ClickPriority` (D14-A):
                 // Brush claims 2nd, ahead of every other consumer, while active;
                 // Measure claims right after it (nested only to stay within Bevy's
