@@ -71,11 +71,20 @@ service_current requires valid same-process/same-root-thread identity, ownerless
 top-level/no parent, the exact class and visible state, successful zero-origin and
 zero-size window/client rectangles, and no native descendants under the existing
 128-child refusal discipline. winit_service_signature_refusal is the production pure
-geometry/style seam: normalized 32-bit style must be exactly0x90000000 and extended
-style exactly0x080800a0. There is no extra-bit mask, offscreen/size tolerance or
-WS_CLIPSIBLINGS allowance. Same-class malformed services refuse even while hidden.
+geometry/style seam: normalized 32-bit style must be exactly0x94000000
+(WS_VISIBLE|WS_POPUP|WS_CLIPSIBLINGS) and extended style exactly0x080800a0.
+There is no extra-bit mask, alternate value or offscreen/size tolerance.
+Same-class malformed services refuse even while hidden.
 The source recipe is winit0.30.13 windows/event_loop.rs:904-961; WinUser.h SDK22621
 defines the named style bits. Strict runtime mismatch remains unavailable.
+
+QA50 observed2483027968 (0x94000000), exactly the original requested0x90000000
+plus SDK22621's WS_CLIPSIBLINGS painting/clipping bit. This is an independently
+reviewed observed-profile correction: the precise cause of the extra getter bit
+is unproved, not a universal OS normalization rule. The full value is required;
+old0x90000000 and every missing/additional bit refuse. All other predicates,
+sampled trust limits, retained identities, proofs and Invoke floors remain.
+QA50's style-refused sample proves no later component or positive UIA admission.
 
 QA46 splits the same signature conjunction into fixed refusal categories in its
 original order: window_service_style_refused, window_service_exstyle_refused,

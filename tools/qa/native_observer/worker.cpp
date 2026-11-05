@@ -240,7 +240,7 @@ void window_current(HWND window, DWORD pid) {
 
 const char* winit_service_signature_refusal(DWORD style, DWORD extended, const RECT& outer, const RECT& client) {
     auto zero = [](const RECT& rect) { return rect.left == 0 && rect.top == 0 && rect.right == 0 && rect.bottom == 0; };
-    constexpr DWORD expected_style = static_cast<DWORD>(WS_VISIBLE | WS_POPUP);
+    constexpr DWORD expected_style = static_cast<DWORD>(WS_VISIBLE | WS_POPUP | WS_CLIPSIBLINGS);
     constexpr DWORD expected_extended = WS_EX_NOACTIVATE | WS_EX_TRANSPARENT | WS_EX_LAYERED | WS_EX_TOOLWINDOW;
     if (style != expected_style) return "window_service_style_refused";
     if (extended != expected_extended) return "window_service_exstyle_refused";

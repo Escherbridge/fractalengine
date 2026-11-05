@@ -1,0 +1,24 @@
+{
+    "kind":  "qa50-exact-service-style-source-v1",
+    "baseline":  "71cd5f8e9f05bd39dbb1a61c17a95ca054dda5fe",
+    "plan_sha256":  "59d5ba166d3e7acc677bcc9f0ec420f106daed2840686420fa627c06a989fc91",
+    "files":  [
+                  {
+                      "file":  "tools/qa/native_observer/worker.cpp",
+                      "raw":  ".omc/research/qa50-exact-service-style-source-v1/raw/worker.cpp",
+                      "bytes":  45651,
+                      "sha256":  "719558c5a52d57ad16ce065ee11cad920c7de0b3bd251283655fedf384f1ba21"
+                  },
+                  {
+                      "file":  "tools/qa/native_observer/AGENTS.md",
+                      "raw":  ".omc/research/qa50-exact-service-style-source-v1/raw/AGENTS.md",
+                      "bytes":  29880,
+                      "sha256":  "b7e509200941fe10363e37ca4c103df8bf837af0bca7acaab329e20ec948c59d"
+                  }
+              ],
+    "patch":  {
+                  "file":  ".omc/research/qa50-exact-service-style-source-v1/source.diff",
+                  "bytes":  3005,
+                  "sha256":  "d6569a17f091ac1bcc3f0154946b437b2a047e823803b74503c0b5fefbfb0c4f"
+              }
+}
