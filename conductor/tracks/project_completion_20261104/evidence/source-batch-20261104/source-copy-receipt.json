@@ -1,0 +1,46 @@
+{
+  "copies": [
+    {
+      "source": ".omc/research/qa58-native-root-transport-integration-review.md",
+      "file": "native-integration-review.txt",
+      "bytes": 4329,
+      "sha256": "c0126569a79b382c7f78f7328804732cff4e7983cb0879e86dc75aac2de2860a"
+    },
+    {
+      "source": ".omc/research/qa58-native-root-transport-commit-receipt.json",
+      "file": "native-commit-receipt.json",
+      "bytes": 246,
+      "sha256": "2bc2447eeff567daa4e0dfa0e79b2330fed09da920bf792d5dc3ae51d45299f0"
+    },
+    {
+      "source": ".omc/research/qa59-painted-icons-integration-review.md",
+      "file": "icons-integration-review.txt",
+      "bytes": 3913,
+      "sha256": "9f5538341b90da26a82aa6c52f1009910efccb85a429c7c59245999aca8f35ef"
+    },
+    {
+      "source": ".omc/research/qa59-painted-icons-commit-receipt.json",
+      "file": "icons-commit-receipt.json",
+      "bytes": 246,
+      "sha256": "bb12cc2ff9b14f28113ba8b8d49a15dde8557fff12d8c059bcc7bc6d87efb209"
+    },
+    {
+      "source": ".omc/research/qa59-divider-eligibility-source-trace.md",
+      "file": "divider-eligibility-source-trace.txt",
+      "bytes": 11880,
+      "sha256": "3e3450ca72b993a5ff54fa5257b90921a294f515af08c478cf5b94c7e35cdf97"
+    },
+    {
+      "source": ".omc/research/completion-root-icons-stage-receipt.json",
+      "file": "build-stage-receipt.json",
+      "bytes": 561,
+      "sha256": "a162474c65df483ce3ec05efec6e128c553c2fa82edec1b905b356fe8158526d"
+    },
+    {
+      "source": ".omc/research/completion-root-icons-stage.log",
+      "file": "build-stage.log",
+      "bytes": 2288,
+      "sha256": "c3a6daac3756021cc8878a29b0aa8ce8d320da9766510108a4ee7c426b227866"
+    }
+  ]
+}

@@ -31,7 +31,7 @@
   },
   "verification": {
     "conductor_review": "approved; reviews/conductor-scope-review.md",
-    "production_build": "be081matchingstagepassed226.9s terminal39123exit0 zeroactualRustMSVCdiagnostics/hashverified; sourcefingerprintmatches; finalintegratedsweeppending",
+    "production_build": "949matchingstagepassed256.8s terminal19551exit0 zeroactualRustMSVCdiagnostics; app/nativehelper/legacyfixture/sealerhashesverified; authoredjourneys/finalintegratedsweeppending.",
     "focused_evidence": "QA47-56committed; QA57frozen275payload17PNG fullreviewapproved oldergridfailed;QA58frozen15payload0PNG fullreviewapprovedtwofailednativeobservations;QA59frozen232payload17PNG boundedvisual/fullpacketreviewsapproved. NoneFULL.",
     "final_catalog": "pending",
     "two_clean_full_passes": "pending",
@@ -43,7 +43,7 @@
     "legacy_helper_fresh_launch": "passed preparation/authenticated startup in30.5s with corrected C#; exact stop exit0; adoption/restart unverified",
     "visual_acceptance": "QA42 independently reviewed70payloads/9screens: zero measured violations in four incomplete states;382px narrowInspector, valid2xsave, treehscroll and shown ruler separation. Broad visual/tool/report gates remain.",
     "visual_followup_review": "approved subject to exact staged evidence bytes; reviews/visual-followup-review.md",
-    "native_witness": "QA58stage1CurrentAutomationId/80040201exit2;followjson_size_refused/spentnull workerexit1causeunknown. Sourcecoldrootcontinuity/transportclassificationdesignapproved,isolatedcandidateauthoring. No positiveUIA/Invoke/capture.",
+    "native_witness": "Native root/transport9fileexactcandidate source/integrationreviewed committedfed8dab6; matching949buildpassed256.8s exit0; freshnativeacceptancepending. HistoricalQA58stage1/80040201/followjson_size_refused/exit1 remainfailedcauseunknown. No positiveUIA/Invoke/capture.",
     "volume_ownership": "QA36partial/genuinezero andQA37independent200fill100cut4solidboxoverlap+observedroundtripbyte-stablehistories focusedapproved; fullQA69late/authority/retained/rollbackgatespending",
     "panel_width": "QA42 independent focused evidence:382pxInspector body at1024x720/2, actualtypedpropertysaved; geometryincomplete, remainingResults/divider/menu/modal matrixpending.",
     "terrain_api_grant": "c0aa2bce normal QA39 scoped update/readback evidence independentlyapproved; negative/queue/concurrency gates remain",
@@ -52,12 +52,12 @@
     "peer_node_delivery": "QA0063open; typed witness1bd source reviewed, QA47/49/52 localrecovery5enqueued0deferred/0publicationfailures. FreshViewer/bytes/render/pick/restartpending.",
     "camera_commands": "QA0073 CtrlLeft/ShiftLeft focusedcorrected52: positions0/2.5/0/2.5 versions4..7, seven completecameraresponses byteequal. Othermodifier/plainnav/easing/capture andfinaljourneys pending.",
     "rich_data_both": "QA55and57each38PASS521assertions localAPI withactualUI/history evidence;57older6cagridfailed and59matchingbe081 focusedgridaccepted. FinalBoth/peer/restart/playbacktimer/groups/concurrency matrixremain.",
-    "property_grid": "QA59matchingbe081 sixcanonicalsize/scalecasesfitwholeactions actual260/67/79/167bodies; draft/cancel/savev2/deletev3/fullstate/rawhistoryprefixexact; Copyfeedbackonly. Fullpacketreviewapproved;QA0074focusedclosed. Requested520actual260/requested52actual67; splitterdisabledunknown; missingglyphresidual."
+    "property_grid": "QA59matchingbe081 sixcanonicalsize/scalecasesfitwholeactions actual260/67/79/167bodies; draft/cancel/savev2/deletev3/fullstate/rawhistoryprefixexact; Copyfeedbackonly. Fullpacketreviewapproved;QA0074focusedclosed. Requested520actual260/requested52actual67; splitterdisabledunknown; missingglyphresidual. Paintedicons9payloadsource/integrationreviewed committed9498869e;QA0075stillopen; matching949buildpassed/livepending. Dividerguardunknown;sourceonlytraceandminimalreadonlydiagnosticcandidate separate."
   },
   "final_publication_authorized": true,
   "release_gate": "All required implementation/reviews/live QA and integrated checks complete; exact-commit CI green before immutable tag; all Release jobs and seven downloaded archive checksums verified",
-  "current_source": "be081abed05be3c623b93bef33d4dd31d43d9b46",
-  "current_owned_apps": "none; QA58eightrecordedidentitiesabsent02:54:07.4825465Z/QA59eightabsent03:10:20.1725651Z UTC2026-11-05",
+  "current_source": "9498869e2e1577e939a10f0a1e0f9e07de3b7053",
+  "current_owned_apps": "QA60ownedPID126140 birth639294472679179828 run20261104-204745-332 stage9498869e verifiedlive; build19551terminal0. QA58/59recordedcleanupretained.",
   "checkpoint_history": "./checkpoint-history.md",
   "native_helper_source": {
     "worktree": ".omc/worktrees/qa-native-navigation-helper",
@@ -72,7 +72,7 @@
     "functional_review": "./reviews/qa-native-nav23-functional-v3-review.md",
     "integration_commit": "8968d918",
     "toolchain_followup_commit": "1b477696",
-    "remaining": "Rootcontinuity/transportcandidateexactreview/build/freshpositiveUIA stillpending;capturefreshness/recipientnavigation/pairedrestart/lifecycle/durability remain.",
+    "remaining": "Matching949buildpassed;freshnativeacceptance ofreviewedfed8rootcontinuity/transport;capturefreshness/recipientnavigation/pairedrestart/lifecycle/durability remain.",
     "toolchain_followup_commits": [
       "1b477696",
       "86c53c14",
@@ -121,12 +121,23 @@
       "identity_constraint": "Legacy runtime_did is client JWT sub, not actual node/DB-owner DID; compare persisted bootstrap Verse.created_by to DID from load-only retained node key before mutation/readiness.",
       "sdk_followup": "./evidence/recovery/require-existing-sdk-store-open-followup.json",
       "sdk_maintenance_report": "./evidence/qa57-59/require-existing-supported-maintenance-contract.txt"
+    },
+    "native_root_continuity": {
+      "status": "source_reviewed_committed_compiled_live_pending",
+      "commit": "fed8dab6019b500e5f049a6800ef1f7262054f2c",
+      "evidence": "./evidence/native-nav23/qa58-root-transport/index.md"
+    },
+    "painted_icons": {
+      "status": "source_reviewed_committed_compiled_live_pending",
+      "commit": "9498869e2e1577e939a10f0a1e0f9e07de3b7053",
+      "finding": "QA-0075 remainsopen",
+      "evidence": "./evidence/ui/qa59-painted-icons/index.md"
     }
   },
   "next_native_diagnostic": {
     "plan": "./evidence/native-nav23/qa53-service-geometry-source-plan.md",
     "review": "./reviews/qa53-service-geometry-plan-review.md",
-    "status": "QA58boundedproviderdiagnosticobservedstage1/80040201; coldrootcontinuity/parentdeadlineclassificationdesign independentlyapproved, isolatedcandidateauthoring; no blindthirdoperation or capturefreshnesscredit.",
+    "status": "fed8rootcontinuity/parentdeadlineclassificationexactsource independentlyapproved/integrated/committed; matching949buildpassed256.8s exit0;freshownedobservepending, no capturefreshnesscredit.",
     "source_reviews": [
       "./reviews/qa53-service-geometry-source-review.md",
       "./reviews/qa53-service-geometry-design-review.md"
@@ -140,5 +151,6 @@
     "cleanup_review_pending": 1,
     "focused_verified": 41,
     "closed": 1
-  }
+  },
+  "source_batch_evidence": "./evidence/source-batch-20261104/index.md"
 }

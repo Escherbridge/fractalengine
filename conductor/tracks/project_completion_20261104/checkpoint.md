@@ -3,7 +3,7 @@ type: ProgressCheckpoint
 date: 2026-11-04
 status: in_progress
 title: Current completion state and next actions
-last_verified_utc: 2026-11-05T03:16:12.803388+00:00
+last_verified_utc: 2026-11-05T03:50:57.801216+00:00
 ---
 
 # Current completion state
@@ -12,10 +12,10 @@ The full goal remains active in [goal-service.txt](./goal-service.txt),
 [spec.md](./spec.md) and [plan.md](./plan.md). Prior checkpoints are preserved
 verbatim in [checkpoint-history.md](./checkpoint-history.md). No gate is waived.
 
-- Main source: `be081abed05be3c623b93bef33d4dd31d43d9b46`. Native bounded failure diagnostics `ade430b3` and combined readable property-grid refinement `be081abe` are independently source reviewed and committed.
-- Matching production stage: `.qa/stage/be081abe-20261104194142170`, session39123 terminal exit0,226.9s, zero actual Rust/MSVC compiler warning/error diagnostics; app/helper hashes verified. Build-input fingerprint matches source. The stage's dirty flag includes unrelated session/evidence state; it is not a clean-worktree claim.
-- Owned apps/builds: none. QA58's eight recorded identities absent2026-11-05T02:54:07.4825465Z; QA59's eight absent2026-11-05T03:10:20.1725651Z. These checks concern recorded identities at those times, not every possible unrecorded orphan.
-- QA57 and QA58 frozen packets have independent full-packet approvals. QA59 is frozen with both bounded visual and full independent evidence approvals. Publication is being reconciled in this slice.
+- Main source: `9498869e2e1577e939a10f0a1e0f9e07de3b7053`. Stable native root/transport correctionfed8dab6 and painted icons9498869e each passed separate source and exact integration reviews. Both17-path commits verified all9 LF source blobs and8 raw support blobs. Matching combined build19551 passed; fresh live acceptance remains pending.
+- Matching production stage: `.qa/stage/9498869e-20261104204501360`, source9498869e, session19551 terminal exit0,256.8s, zero actual Rust/MSVC warning/error diagnostics. App/native-helper/legacy-fixture/sealer hashes verified; raw UTF16-BOM log and receipt preserved. Earlierbe081 acceptance remains limited to its original source.
+- Owned app: fresh QA60 PID126140, birth639294472679179828, run `.qa/run/20261104-204745-332`, stage9498869e; actual process and matching source verified after launch. No build is running. QA58's eight recorded identities absent02:54:07.4825465Z; QA59's eight absent03:10:20.1725651Z on2026-11-05. Cleanup checks concern recorded identities at those times, not every possible unrecorded orphan.
+- QA57 and QA58 frozen packets have independent full-packet approvals. QA59 is frozen with both bounded visual and full independent evidence approvals. Publication and Conductor reconciliation committed87d67399:546paths,540raw artifact blobs exact in both index and commit.
 - No final integrated sweep, formatter, push, CI, tag or release has occurred.
 
 ## Focused evidence since the previous checkpoint
@@ -63,8 +63,8 @@ captures, so that aspect remains unproved there.
 ## Current blockers and source work
 
 - QA0074: independently reviewed source and matching full-packet GUI evidence support focused closure at actual67/79/167/260 widths. Broad hit-target/layout/selection acceptance remains separate.
-- QA0075 S2 missing glyphs: actual repeated placeholders require a coherent shared painted-icon correction and matching screenshot acceptance. An isolated source candidate is being authored; canonical source is unchanged.
-- Native: QA58 identifies the failed method and HRESULT, not the exact historical element or cause. Source tracing proves a possible cold-activation root discontinuity between Bevy's fixed Window root and egui's unrelated root, plus controller deadline-kill classification loss. The bounded local normalization/transport design is independently approved; isolated candidate authoring and exact source review/build/live acceptance remain. Do not skip stale elements or relax discovery/admission. Capture remains unavailable without proved freshness.
+- QA0075 S2 missing glyphs: actual repeated placeholders require a coherent shared painted-icon correction and matching screenshot acceptance. The exact nine-payload correction is independently source/integration reviewed and committed9498869e; matching compilation passed. Actual live recognition, state contrast and toolbar breakpoint acceptance remain pending.
+- Native: QA58 identifies the failed method and HRESULT, not the exact historical element or cause. Source tracing proves a possible cold-activation root discontinuity between Bevy's fixed Window root and egui's unrelated root, plus controller deadline-kill classification loss. The exact local normalization/transport correction is independently source/integration reviewed and committedfed8dab6; matching compilation passed. Fresh live acceptance remains pending. Do not skip stale elements or relax discovery/admission. Capture remains unavailable without proved freshness.
 - Peer/QA0063: fresh real Viewer/Editor ordinary nodes, schemas, actual asset bytes/render/pick, role lifecycle and restart remain required. Local enqueue and mirror-factor1 data results do not prove peer convergence.
 - Retained stores remain HOLD. The require-existing design is independently reviewed; the SDK spike is partial and not integrable. The supported-maintenance feasibility report identifies ordinary SDK pre-admission write/recovery/handoff gaps, not proof that every alternative is impossible. Complete a safe admission seam and disposable acceptance before any retained restart. No offline opener, fake owner DID, reseed or provenance invention.
 - Every remaining terrain, group/selection, full rich-data/concurrency/restart, permissions/lifecycle, feature catalog, UX audit and release gate in plan.md remains required.
@@ -76,8 +76,8 @@ byte-identical. Focused closure is distinct from final catalog acceptance.
 
 ## Next actions
 
-1. Publish the exact reviewed QA57-59 packets and QA0074 focused closure plus independently reviewed current Conductor state; preserve unrelated session log changes.
-2. Finish and independently review isolated native root-continuity/transport and painted-icon candidates; integrate exact approved bytes, then build once and gather matching focused native/GUI evidence.
+1. Run matching focused icon/toolbar QA60 and fresh native acceptance from the successful9498869e stage. Preserve actual QA58/59 limitations and unrelated session log changes.
+2. Review the isolated read-only divider eligibility diagnostic before any integration. The trace identifies current guard inputs, not the actual QA59 failed guard. Widget focus is not window focus; never bypass resize gates or invent focus state.
 3. Complete/review safe existing-store startup and disposable acceptance before touching retained Owner/recipient stores.
 4. Complete all remaining original feature/selection/groups/data/terrain/role/catalog/polish work, five actual live UX audits plus synthesis, and two100% required FULL passes with zero newS1/S2.
 5. After all implementation/review fixes, run the single integrated sweep and exact18-scenario harness with required real store/Podman fixtures, then exact-SHA green CI before immutable QA tag, whole Release includingDocker, and actual download/hash inspection of all seven archives.

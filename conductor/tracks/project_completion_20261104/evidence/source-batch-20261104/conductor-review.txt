@@ -1,0 +1,63 @@
+# Source-batch Conductor bookkeeping review
+
+Verdict: **approved for the exact final16-path reconciliation**, subject to root's explicit staged-path and blob verification. The final snapshot distinguishes source/integration approval, successful compilation and pending live acceptance. QA0075 remains open. All original completion and release gates remain required.
+
+Only this report was written. No source, packet, Conductor publication file, session log or Git state was changed; no Git command, implementation parser, tests, build, app/native/API/DB/network or OS/process query was run. File reads, strict text/JSON decoding and hashes were used. Root/local Conductor and shared UI guidance were applied. QA60 was not interacted with.
+
+## Final scope and corrected presentation
+
+Approved paths are `conductor/tracks/project_completion_20261104/{checkpoint.md,checkpoint-history.md,metadata.json,plan.md}`, `qa/findings.jsonl`, and exactly eleven files in `conductor/tracks/project_completion_20261104/evidence/source-batch-20261104/`: `build-stage-receipt.json`, `build-stage.log`, `checkpoint-archive-receipt.json`, `checkpoint-before-source-batch.txt`, `divider-eligibility-source-trace.txt`, `icons-commit-receipt.json`, `icons-integration-review.txt`, `index.md`, `native-commit-receipt.json`, `native-integration-review.txt`, `source-copy-receipt.json`. An optional exact copy of this final review would be a seventeenth path and needs explicit staging. No source or unfrozen QA60 file is part of this approval. Exclude `conductor/.conductor_session_log` and unrelated candidate/work files.
+
+Two initially found issues are resolved in the final snapshot: accidental blank lines no longer separate the checkpoint table's header/delimiter/rows or frontmatter lines, and the duplicate old QA0074 task no longer asks to repeat completed source repair/review/compilation. It now retains eligible-divider, actual52/520-or-supported-boundary, remaining-state and broader catalog verification while preserving focused closure. The actual87-line checkpoint has contiguous Markdown table syntax. Current Markdown carries required OKF type frontmatter and strict-decodes without replacement characters. No frozen archive or evidence was normalized to repair the current document.
+
+The checkpoint/metadata/index now explicitly record fresh owned QA60 PID126140, birth `639294472679179828`, run `.qa/run/20261104-204745-332`, source-matching949 stage, with live acceptance pending. Those identity/source fields match the retained run current.json. Root reports actual process verification; I checked the file record only and made no fresh process query. Launch/live status is not a native/icon acceptance result and no unfrozen QA60 evidence is published here.
+
+## Copies, archive and finding preservation
+
+All seven entries in source-copy-receipt match their actual original bytes, lengths and SHA256 values. The eleven-file support set is exact, including integration reviews, root commit receipts, divider trace and raw build evidence. The integration review bodies remain source-only; historical build_live_pending fields in commit receipts correctly describe their earlier receipt time, while the current index records the later combined build without claiming live success. Existing `evidence/** -text` protection remains; `.gitattributes` itself is unchanged at SHA256 `41641fae1fe00d6ccb0dc4b99e0d15f4e7dffaf4c5b1884768d74c0bbc83b975`.
+
+The raw old checkpoint remains exactly8,068 bytes/SHA256 `0f4ffd34f959a1e21f51dee061a996524c742d71d60b519acf379d69f90858d1`, matching the prior reviewed/published snapshot. The first50,285 history bytes remain SHA256 `5246b8974b955dd62ff309c118df9b8421e14b08427f84d8b79427f5708c175f`. The full append is exactly two LF separator bytes plus that old raw checkpoint. All these checks still pass after the current-document repair; no retroactive history/body rewrite occurred.
+
+Only QA0075's note changes in the finding register. I independently replaced that note in memory with its exact preceding text and reproduced the prior72,209-byte full-file SHA256 `6ae000766cc8abb624a310e7987515c871edfef16350fb30bf45fcf758db255a`. Thus every other byte, including the first65 records and all other QA0075 fields, is preserved. QA0075 stays S2/open and now records reviewed/committed/compiled painted-icon source with live recognition/contrast/breakpoint verification pending. Its original root-cause sentence remains historical; the current status/note makes no closed/fixed-live claim. Counts remain66 total:17 open/reproduction (3S1/9S2/5S3), six source-fixed/live-pending, one cleanup-review-pending,41 focused verified and one closed.
+
+## Source commits and actual stage evidence
+
+The exact copied root receipts record native `fed8dab6019b500e5f049a6800ef1f7262054f2c` and icons `9498869e2e1577e939a10f0a1e0f9e07de3b7053`, each17 paths with nine approved LF source blobs and eight exact raw support blobs, session log excluded and tests unexecuted. Those claims agree with the copied independent integration reviews. This file-only pass does not repeat Git-index/commit inspection; it verifies the recorded originals and consistent bookkeeping. No new semantic source approval is inferred from a commit receipt.
+
+The combined stage receipt records session19551 terminal exit0,256.8s, source9498869e and `.qa/stage/9498869e-20261104204501360`. Raw build log is2,288 bytes, SHA256 `c3a6daac3756021cc8878a29b0aa8ce8d320da9766510108a4ee7c426b227866`; it strict-decodes as UTF-16 BOM, retains the ordinary Cargo Compiling PowerShell NativeCommandError wrapper, completed Rust outputs, native worker compilation and final staged path. There are zero actual Rust/MSVC warning/error diagnostics. Its original line-ending representation is preserved, not reformatted. Terminal exit0 is the retained root receipt/tool provenance, not a build run in this review.
+
+I streamed/rehashed all four actual staged binaries against stage.json:
+
+| Binary | SHA256 |
+| --- | --- |
+|fractalengine.exe|`9f76930aa267861ada419c09a39ac7252d365b2bc5814032ea6a59bcb87ba89b`|
+|native_observer.exe|`8f2171d389342974d9d386363301fafdac6fc75d754560f93182379df865093a`|
+|legacy_adoption_fixture.exe|`15066ca239f89ee82a3a7673b71d5114aafdeda07b95223f9e4729d433c70b15`|
+|seal_hexon.exe|`22efc1d8e82545d3f06ddbb40721294cb0383a030c8d8dea9a6165f5b3c42971`|
+
+All match. The stage records fingerprint `176258D2FCF7A09F86299356C99F20B8590EC2B1A7ED2422FB3C7B04DAA9DF5F` and source_dirty true. The checkpoint does not turn that into a clean-checkout or executed-tests claim. Earlier be081/QA59 evidence remains tied to its original source and cannot validate the new icon/root changes.
+
+## Correctly bounded current claims
+
+Native root normalization/transport is reviewed, integrated, committed and compiled; fresh provider/root/witness/Invoke acceptance remains pending. QA58's historical element/phase, follow-up raw output size and cause remain unknown. No stale-element skip, authority change, retry or capture-freshness inference is introduced by the bookkeeping.
+
+Painted icons are source/integration reviewed and compiled; actual symbol meaning, selected/disabled contrast and toolbar-breakpoint PNG acceptance remain. QA0075 stays open. The copied divider trace proves the saved divider was disabled, not which guard failed: widget focus is not Window/raw-input focus, layer allowed is not enabled eligibility, and commands_applied is transport rather than resize acceptance. The proposed bounded diagnostic is still a separate candidate; no bypass or second resize writer is claimed.
+
+QA0074 focused closure remains limited to actual67/79/167/260 bodies and verified QA59 operations. Requested520 stayed260/requested52 stayed67; host clipboard contents remain unverified because synthetic output was suppressed; incomplete coverage and missing-symbol observations remain. No old packet or failed attempt is erased. QA58/59 cleanup statements remain recorded identity/timestamp facts, not an exhaustive orphan census.
+
+The full active objective remains: selected-set/group/tool/Inspector consistency; complex typed data, append/transform/replay/charts/concurrency; terrain/material/intersection and late-result correctness; actual-role/peer byte/render/pick/restart; protected retained-store admission before any retained opening; complete native/feature/layout catalog and five live UX audits+synthesis; two required100% FULL passes; one final integrated sweep/exact18 scenarios with required real fixtures; exact-commit green CI, immutable tag, whole Release/Docker and downloaded checksums/inspection of seven archives. Retained stores stay HOLD. Source approval and successful compilation do not waive any of these gates.
+
+## Locked final hashes
+
+| Path | Bytes | SHA256 |
+| --- | ---: | --- |
+|checkpoint.md|8567|`6ec85bfb4fa39fc4e9ecab2e6c5bda40f88a6b391a396b618f6a831b2670899f`|
+|checkpoint-history.md|58355|`a2e5df6b84a43cbc3e0a815feec45980e4857ec8a6a26ddc51324883362f3e4f`|
+|metadata.json|10515|`f8c8e8d8f03427dc144a7081871f21f612d8f2701e2f996dd9c2710c8af5f474`|
+|plan.md|14963|`83a3fdf117f6d33d7aa32a6e9bc080ca3f6f26d9597711ab616564a20e313f8c`|
+|qa/findings.jsonl|72373|`3f33675d4d9abdfb91f0d4c40888c284b5c2fe18e0e25a89b0d0ae155e7251d8`|
+|source-batch index.md|1743|`a50ff2214b9ee33b7b778c9b84af8b42cdf2f0563a8176b17b0baca197dbfc80`|
+|source-copy-receipt.json|1714|`98febc4a22a04e7df321d103f7537be70418e8b301bac60aa99618b7f10ea559`|
+|checkpoint-archive-receipt.json|433|`76ba8ca6ca9a24be319fdd43ed1458f67cba416fed58ee4438d569cc0c8e76de`|
+
+Root should stage only the explicit reviewed reconciliation paths and verify normal context EOL versus exact raw evidence blobs before commit. No project-complete, CI/release or fresh QA60 acceptance verdict is granted.

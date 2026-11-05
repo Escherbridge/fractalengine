@@ -1,0 +1,29 @@
+# QA58 root/transport exact integration review
+
+Verdict: **approved for root's explicit17-path source/support commit**, followed by compilation and fresh verification. Every canonical file is byte-identical to the independently approved frozen candidate. This is exact integration/bookkeeping verification, not a new implementation, build/test pass or native acceptance.
+
+Only this report was written. No canonical source, candidate, packet, approved Conductor snapshot or Git state was changed; no build/test/parser/runtime/native/app/API/DB/network operation was run. Session log and isolated icon candidate remain excluded.
+
+## Source identity
+
+The frozen candidate manifest remains SHA256 `a842949e6e034a8fbc175c25fbc6908583cdf7b7ad350a9c5ab195c4490f0862`; approved patch remains `6d3a05cb0e43b19d21a860bfd376f2d82b427c6749f96a7d46f8ca9c380b40b1`. All nine raw file lengths/hashes and the canonical full bytes were checked. No line-ending-only allowance was needed for these working-file comparisons: canonical equals approved raw exactly. The integration receipt's raw and LF-normalized hashes were independently recalculated and agree.
+
+Approved source paths are exactly:
+
+- `fe-ui/src/native_accessibility/{provider_identity.rs,provider_identity_journey.rs,AGENTS.md}`.
+- `fractalengine/src/native_window_witness/{provider_output.rs,AGENTS.md}`.
+- `tools/qa/native_observer/{windows.py,controller.py,scenario.py,AGENTS.md}`.
+
+No merge/conflict markers occur in these files. Because the complete canonical blobs equal the approved candidate, the source review's root ownership, closure/reference/focus, alias-collision, failure quarantine, both publication paths, transport IO priority, unknown lifetime and durable receipt/spent-ledger conclusions carry forward without new semantics. Owner QA's explicit before-ProviderHandoff constraint remains present in its unchanged owner file. Actual C++ worker SHA256 remains `f2ee668d464f349fb7fdff996578ca3a9cab4fc62ad8dfec4391abf86f4b6b42`, unchanged from the approved provider-diagnostic baseline. Discovery and retained-element admission are not modified.
+
+Integration receipt `.omc/research/qa58-native-root-transport-v1-integration-receipt.json`:2,816 bytes, SHA256 `112fe6fdee4d3cddb968c115275f51e9f79ca2fe07348ebd4917ac14323e3b05`. Its pre-write check is a recorded root claim; this review independently verifies the resulting exact canonical bytes and receipt hash mappings, rather than pretending to observe an earlier write sequence.
+
+## Support scope and truthful status
+
+Exactly eight files exist in `conductor/tracks/project_completion_20261104/evidence/native-nav23/qa58-root-transport/`: `candidate-manifest.json`, `source.patch`, `source-report.txt`, `correctness-review.txt`, `security-review.txt`, `integration-receipt.json`, `source-copy-receipt.json`, `index.md`. The six copied artifacts match their actual original bytes, sizes and SHA256 values. There are no unlisted support files. The index has required OKF type frontmatter and its local links resolve.
+
+The support receipt is1,468 bytes/SHA256 `2d74ff682a5367765dadae89f4fd319775784bd6f1b19b06d6b1e56c2d9b3ebf`; index is1,732 bytes/SHA256 `491bbd4163bce3fa3279e0ceae1e63bc03fce0ecd6866201cbd9a98db1909078`. The index accurately says exact source approval, extended-but-unexecuted journeys, compilation and fresh native acceptance pending. It retains QA58's unknown historical element/follow-up cause, no replay, no relaxed discovery/admission and no UIA/Invoke/capture/peer/FULL/release credit. Raw support copies preserve their source bodies; normal Git LF source normalization is explicitly distinguished from raw artifact identity.
+
+The previously published checkpoint/metadata represent the preceding compiled be081 stage and are not part of this17-path source commit. This integration is not acceptance of the unbuilt new source. Root must retain that distinction until a matching stage and subsequent evidence update exist.
+
+Commit only these nine source paths and eight support paths. This report may be retained separately; it is not an implicit eighteenth staged path. Root still owns final index/path and raw-or-normalized blob verification, commit, compilation and fresh runtime evidence. No other candidate, session log or unrelated publication file is approved by this integration review.

@@ -1,0 +1,9 @@
+{
+  "old_checkpoint_bytes": 8068,
+  "old_checkpoint_sha256": "0f4ffd34f959a1e21f51dee061a996524c742d71d60b519acf379d69f90858d1",
+  "prior_history_bytes": 50285,
+  "prior_history_sha256": "5246b8974b955dd62ff309c118df9b8421e14b08427f84d8b79427f5708c175f",
+  "prior_history_raw_prefix_unchanged": true,
+  "exact_raw_checkpoint_artifact": "checkpoint-before-source-batch.txt",
+  "normal_context_git_eol_rules_retained": true
+}

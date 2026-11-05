@@ -22,6 +22,8 @@ reviewed slice. Historical evidence stays linked rather than rewritten.
 
 ## P1: correctness and execution blockers
 
+- [~] Stable native provider root and truthful parent worker-stop classification: exact nine-file correction independently source/integration reviewed, committedfed8dab6. Matching949build19551 passed256.8s exit0 with zero compiler diagnostics; fresh native acceptance remains pending.
+
 - [~] Native NAV23 source corrections (EOF, aggregate budgets, real paired reseal/issuer checks and confirmed-stage pruning) passed both full v3 reviews and exact integration in8968d918. Toolchain corrections through925d7cba independently reviewed; combined Rust/native stage passed12.7s with zero compiler diagnostics. Actual helper/native/lifecycle acceptance remains pending. QA43 refused before UIA; reviewed categorical diagnostics9d1e061d compile and QA44 narrows this to unexpected-visible-window refusal.
 
 - [ ] QA-0072: preserve guarded Owner QA observation before actual native provider handoff. QA40 three no-input UI reads failed despite state and actual screenshot succeeding; explicit ordering correction d8da3a46 is source-reviewed, compiled d8da3a46; QA41 matching tree/state/screenshot and102physicalID joins recovered, independent focused review approved. Native output suppression and Owner/scope/privacy gates remain required.
@@ -54,6 +56,8 @@ reviewed slice. Historical evidence stays linked rather than rewritten.
 - [ ] Verify the six source-fixed/live-pending findings in the checkpoint and close the cleanup review item using actual evidence.
 
 ## P3: full UX and feature coverage
+
+- [~] QA0075 missing-symbol controls: shared native-button vector adapter independently source/integration reviewed and committed9498869e. Matching949build19551 passed256.8s exit0; actual icon meaning/contrast/toolbar breakpoint screenshots remain required.
 
 Use [the screenshot inspection checklist](./visual-checklist.md) for the changed hierarchy workflow and subsequent UI fixes.
 
@@ -125,5 +129,5 @@ QA42 independently reviewed four incomplete geometry states with zero measured v
 
 - [~] QA53 measured outer(0,0,16,16)/clientzero; exact geometry profile6e5d9c92 source reviewed/committed, fresh build/nativepositive pending.
 - [~] QA55 all38 data steps/521 recorded assertions plus actual productv3 preview and calibrated21,23,25 chart independently reviewed. Drivercoverage_ready=false/log_review_required=true retained; peer/finalbuild/restart/playbacktimer and all original Both gates remain. QA54 failed preflight is preserved.
-- [ ] QA0074S2 responsive property actions: fix GRID-B1 at actual minimum body, review/commit/rebuild, verify all row/confirmation controls and drafts with inspected screenshots.
+- [ ] QA0074 broader layout follow-up: retain focused closure at actual67/79/167/260 widths; establish eligible divider interaction and verify actually reached52/520 or documented supported boundaries, remaining row/confirmation states and wider catalog coverage. The source fix/review/build and focused draft/Save/Delete acceptance are complete.
 - [~] Require-existing startup design reviewed; SDK spike explicitly partial/notintegrable, missing protected admission/promotion and app wiring remain. Retained stores HOLD.

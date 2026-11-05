@@ -1,0 +1,26 @@
+# QA59 painted icons — independent exact integration review
+
+Verdict: **APPROVED for the explicit 17-path source/support commit**: nine canonical source paths plus the eight files in the reviewed Conductor support directory. Zero source, hash, support-set or native-preservation mismatches were found. Compilation, authored journeys and matching live visuals remain pending; QA-0075 remains open.
+
+Only this report was written. No canonical source, isolated candidate, frozen packet, Conductor support file, finding record or Git state was modified. No implementation parser, formatter, compiler, build, tests, app, native, API, DB or network operation was run. Verification used file bytes, bounded metadata and SHA256 processing.
+
+## Exact source identity
+
+Candidate `.omc/research/qa59-painted-icons-v1/manifest.json` remains SHA256 `b548871584e531377c6a3cb01c102cbbcee4e410db628a96c5da8cb11dcde486`; patch remains `300da087b7c886d309272a6e684ec236adcc854df1953172a82a73d83590c117`. Rechecked all eight before and nine raw lengths/hashes. All nine canonical files are full-byte equal to their approved raw counterparts; no line-ending allowance was needed for working-file comparisons. Recalculated every receipt raw and CRLF-to-LF-normalized hash with zero mismatches.
+
+Exact source paths:
+
+- `fe-ui/src/panels/{AGENTS.md,inspector.rs,sidebar.rs,toolbar.rs}`.
+- `fe-ui/src/ui_shell/{AGENTS.md,icons.rs,mod.rs,right_sidebar.rs,topbar.rs}`.
+
+Integration receipt `.omc/research/qa59-painted-icons-v1-integration-receipt.json`: 2,660 bytes, SHA256 `ea1e582d0cf10af27bec1e5f116979abc116d674afd2cc4690c1a16e56a2fca4`. Its all-before/pre-write assertion is root's historical record; this review independently establishes the resulting exact bytes and hash mappings, not observation of that earlier sequence. Source approval and boundary conclusions therefore carry forward without a merge delta.
+
+## Exact support and status
+
+`conductor/tracks/project_completion_20261104/evidence/ui/qa59-painted-icons/` contains exactly eight entries, all files: `candidate-manifest.json`, `source.patch`, `source-report.txt`, `correctness-review.txt`, `design-review.txt`, `integration-receipt.json`, `source-copy-receipt.json`, `index.md`. The six receipt-listed copies equal their original source bytes, sizes and hashes; their mapping set is exact and has no duplicate/unlisted entry. The copy receipt is SHA256 `0dc6b3cac91f2f8c0eb5e794e8a95bcea632bdf732e9557d2b3c6d1f918e4905`.
+
+The index has required OKF `type: EvidenceIndex` frontmatter, resolves its six local artifact links, records `source_reviewed_live_pending`, and explicitly requires matching build/screenshots before QA0075 closure. It grants no executed journey, native capture, peer, FULL, CI or release credit. Index SHA256: `850dcef06529e07275757f928494fd473b28be4b73aea4f056017ccc7f3a41ef`. The authoritative finding record is actually named **QA-0075** and still has `status: open`; no closure was inferred. Its older isolated/canonical-unchanged note and the compiled-base checkpoint remain pre-integration snapshots; root's stated post-commit metadata update must describe the new icon SHA and pending build/live status.
+
+## Native boundary preservation
+
+The native commit receipt names `fed8dab6019b500e5f049a6800ef1f7262054f2c`. All nine canonical native root/transport files remain byte-identical to its independently approved frozen candidate, and their raw/LF hashes still match the native integration receipt. No icon canonical path overlaps that nine-file set. The actual C++ worker remains SHA256 `f2ee668d464f349fb7fdff996578ca3a9cab4fc62ad8dfec4391abf86f4b6b42`. Thus this icon copy has not changed those native root/proof, handoff/quarantine, controller/receipt or discovery/Invoke sources. Git commit/index objects were not inspected in this no-Git lane; root retains the final exact staged-path/blob check and commit receipt responsibility.

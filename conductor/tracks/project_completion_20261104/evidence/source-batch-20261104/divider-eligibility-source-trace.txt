@@ -1,0 +1,77 @@
+# QA59 right-divider eligibility source trace
+
+Source-only, bounded trace; no implementation, parser, tests, build, app, input, OS, API, DB or Git mutation. Shared UI guidance applied. Only this report is authored. Other authors' changes remain untouched.
+
+## Finding and evidence limit
+
+QA59 proves the actual right divider was disabled and the injected drag did not resize it. It does **not** establish which eligibility predicate failed, or a resizing arithmetic defect. Lost window focus remains a plausible explanation, not a measured cause. Existing Owner QA window controls contain no explicit focus request and cannot establish focus as a contractual postcondition.
+
+The frozen run is source `be081abed05be3c623b93bef33d4dd31d43d9b46`. Original packet receipts:
+
+| Receipt | SHA-256 |
+| --- | --- |
+| `qa/passes/59/owner-edit-wide-before-ui.jsonl` | `13572fd357bd767b996bbb42caca825abf5d69a2bc91164449560b88ca937ce5` |
+| `qa/passes/59/owner-edit-wide-drag.jsonl` | `dc0279ed32c4d73e301e0c41fe346ff56a1f6254101279cf58c02c6ca6ff2202` |
+| `qa/passes/59/owner-edit-wide-after-ui.jsonl` | `e4ae38c5671078d1e04b899e5728d7cfb6e7a058dcacc4bbdc4afd70c32b38ae` |
+
+At frames14679/14719 the same semantic splitter `15786385286988408449` has `enabled:false`, physical rect/hit `(1269,40,22,832)`, `interactive:true`, and `focused:false`. Window dimensions are1600×900. The drag requests `(1280,456)`→`(1020,456)`; its start lies inside the actual strip. `commands_applied:1`, five wait frames, and no new captured logs prove injection completion, not a successful UI gesture. As the independent visual review records, the Property body remains260. Available budget can accommodate outer580/body520; no cap explains that unchanged width. No actual520 acceptance follows.
+
+The layout receipt also records `allowed:true` for this control. That flag comes solely from `memory.allows_interaction(response.layer_id)` (`layout_policy.rs:1129–1140`); it is not `Response::enabled()` or divider eligibility. `focused:false` comes from `id == update.focus` (`qa_debug_bridge.rs:340–342`), meaning AccessKit keyboard focus on this particular widget. It does not prove loss of window/egui input focus. The single unnamed window node does not exhaustively prove absence of every popup/internal guard.
+
+## Actual owner and lifecycle
+
+`PanelWidthState` is the one session preference/gesture owner. Its private fields are preferred width, optional drag/layout/prepared geometry, `interactive`, and `wait_for_release` (`layout_policy.rs:162–200`). Do not add a second resize writer or a direct preferred-width QA setter.
+
+| Source boundary | Actual requirement and consequence |
+| --- | --- |
+| `right_sidebar.rs:315–316` | `interactive` is true only for `ActiveDialog::None` or `HexonManager`, and when `topbar.close_pending` is false. |
+| `right_sidebar.rs:317–350` | Insufficient layout room, Portal ownership, or no active section suspends the width owner. These paths normally omit this divider rather than emit this disabled node. |
+| `right_sidebar.rs:352–355` | A quarantined section explicitly disables interaction and renders its quarantine UI. |
+| `layout_policy.rs:228–233` | `interaction_allowed` requires `interactive`, `input.focused`, no Escape press in this pass, no open egui popup, and no top modal layer. |
+| `layout_policy.rs:245–265` | `prepare` requires identical context, scale, viewport, available anchor/budget and divider geometry, plus a layout registration from exactly the previous cumulative pass. Invalid eligibility/continuity cancels the preview; if primary is held it latches `wait_for_release`. A released primary clears that latch. |
+| `layout_policy.rs:266–303` | Only the prior actual divider Response starts/updates/stops this drag. Commit occurs on its primary release after a change exceeding half a physical pixel. Capture loss cancels and may latch release. No global-pointer resize authority exists. |
+| `layout_policy.rs:306–346` | Invalid prepared/physical-strip geometry suspends and emits no divider. A valid strip is registered on the normal Background layer; the new surface is disabled exactly when `!interaction_allowed(ctx) || wait_for_release`. |
+| `right_sidebar.rs:1717–1728,1767` | Bounds are `[min(max_w,260),max_w]`; the owner prepares before panel allocation and registers after contents, using the actual panel rect. |
+
+Thus an extant disabled splitter narrows the recorded state to the combined interaction predicate or release latch at registration; geometry failure alone would not have emitted it. The before/after snapshots cannot recover intermediate press-pass reasons. A transient stale-layout cancellation with primary held can also explain a refusal even if later focus is good. The current source provides no reason record or press-pass trace to distinguish these cases. These are alternatives to measure, not multiple asserted bugs.
+
+## Real focus and current Owner QA capabilities
+
+Locked primary source `bevy_egui-0.39.1/src/input.rs:1172–1184` sets each raw input's focused flag from its mapped Bevy `Window.focused`, unless the SDK's separate non-window focused-context resource is present. No production use of that alternate focused-context resource was found in `fractalengine/src` or `fe-ui/src`. Actual winit `WindowEvent::Focused` writes the Bevy window flag and emits `WindowFocused` (`bevy_winit-0.18.1/src/state.rs:362–365`).
+
+The synthetic drag planner emits cursor settle, primary press, cursor move and primary release (`input_bridge.rs:455–457,494–500`); replay writes only the corresponding cursor/button messages (`:598–619`). It emits no `WindowFocused` event and does not request OS activation. Clicking a synthetic neutral point therefore cannot legitimately establish real window focus. Capturing or querying the tree also cannot establish it.
+
+Owner QA's closed `WindowAction` enum has Size, UiScale, Maximize, Restore, Minimize and Close (`fe-runtime/src/qa_debug.rs:107–115`). The host translates these to the existing topbar executor or scale update (`qa_debug_bridge.rs:706–734`). `topbar.rs:425–440` unminimizes/restores/resizes where requested but never calls a focus API. OS-specific incidental activation during restore is not a guaranteed focus contract; size/restore acceptance receipts do not attest focus. Repeating those actions as a focus workaround would obscure the missing evidence.
+
+The locked Bevy adapter has an actual `winit_window.focus_window()` call (`bevy_winit-0.18.1/src/system.rs:481–483`), demonstrating a real focus-request seam. A future sanctioned app-owned QA Focus action could use the existing primary-window chrome executor and actual winit window to request focus, with the same existing QA opt-in/loopback/root admission (`qa_debug_bridge.rs:651–659`). It must not set `egui::RawInput.focused`, synthesize `WindowFocused`, or assign `Window.focused = true` to claim success before an OS event. A request may be denied; only a subsequent real event/reflected input establishes eligibility. This is a bounded future option if fresh reasons establish focus as the missing predicate, not an implementation or acceptance in this report. It adds no external OS automation.
+
+## Smallest truthful diagnostic proposal
+
+Extend the existing opt-in same-pass layout observations, with a fixed bounded divider record emitted by the **same owner and predicate evaluation** that registers/decides the divider. Include divider ID/side, pass, effective bounds/displayed width, actual enabled result, primary-down and release-latch flags; include a small closed list of failed guards: owner-interactive, input-focus, Escape, popup, modal, release-wait. These are booleans/enums, not arbitrary debug text. Expose relevant caller gate facts (dialog-allowed, close-pending, section-quarantined) without copying dialog contents. Evaluate once and reuse the result for the UI and observation rather than duplicating a drifting eligibility implementation.
+
+For a missing divider, a bounded nonregistered status such as unavailable-section, Portal-owned, insufficient-budget or invalid-geometry is sufficient. For a press canceled before registration, retain only that pass's fixed cancellation cause (layout-not-consecutive, geometry-changed, lost-capture or interaction-blocked) in the observation; do not retain unbounded event history. Distinguish `enabled:false` from layer `allowed:false` and from missing registration. Continue frame/pass stamping and existing opt-in/privacy limits (`layout_policy.rs:755–802`; `qa_debug_bridge.rs:215–226`).
+
+Add actual Bevy window focus and the specific context's raw input focus to the read-only QA state/tree window metadata (`qa_debug_bridge.rs:666–680`), with explicitly distinct field names. Neither is widget focus. Snapshot at the owner pass rather than infer it from a later API handler's current memory. No active-window title, arbitrary OS handle, secret, clipboard, arbitrary modal text, input contents, new authority or new setter is required. This diagnostic slice should explain a refusal while preserving every guard.
+
+## Next actual acceptance
+
+1. Independently review and build any authorized diagnostic slice; use a fresh correctly sealed stage. Preserve QA59 unchanged. Observe settled same-pass reason/status and actual focus before input, with primary released and consecutive stable geometry; require enabled true. If blocked, record and resolve the actual legitimate guard, without retries that hide it. If focus alone blocks and existing user-owned activation is unavailable, separately review the bounded app-owned real focus request above and await a measured real event.
+2. At1600×900/1x with the same left220 and sufficient budget, capture actual enabled splitter rect and body260, issue one fresh drag using that actual strip, then record preview/release and actual body520/outer580 (or a measured bounded result). Validate the protected viewport and guard diagnostics throughout. Check reverse resize and preference preservation after ordinary caps/section switches. No prescribed520 result if the new real budget differs.
+3. Recheck actual67/79 narrow wrapped-key, confirmation targets, and a dirty draft across a successful wide/narrow transition without a save or unintended preference commit. If focus changes mid-drag, verify cancellation/restored preference and release-before-rearm rather than bypassing it.
+
+This report does not claim a fixed divider, positive resizing acceptance, measured focus root cause, native pick/Invoke/capture success, or FULL QA credit.
+
+## Source pins
+
+Current relevant gate/host source compared read-only against QA59 source: `layout_policy.rs`, `input_bridge.rs`, `qa_debug_bridge.rs`, and `qa_debug.rs` have no diff; the topbar diff only replaces icon button rendering/tests outside its window executor. Current right-sidebar icon changes likewise do not alter the cited eligibility/section width flow. Exact read bytes:
+
+| Path | SHA-256 |
+| --- | --- |
+| `fe-ui/src/ui_shell/layout_policy.rs` | `2034adc0ed2263f57e09b5a60ffb2489af240d94aefd614390cb675607500180` |
+| `fe-ui/src/ui_shell/right_sidebar.rs` | `b3a0012f66a3d917abe3c1cf46b5288473622bdecfd28b43727068aca985442b` |
+| `fe-ui/src/ui_shell/topbar.rs` | `15cff200fec78d6a9dbc89d6e4b49dc559ef0d788b37921059ac798e8c9e1d59` |
+| `fractalengine/src/qa_debug_bridge.rs` | `4f12967c472ad0d079a09e05e0eff0012444031824bdf4ab96344416b0b956df` |
+| `fractalengine/src/input_bridge.rs` | `85336005a4ce0825426f71ac7204c4e85e8752a40e52c889afd608bad99038b2` |
+| `fe-runtime/src/qa_debug.rs` | `42c1ef68b7c9e1afb0fdc28ae41aeb65549de659e59f9d21f14b9eef5f7f1e72` |
+
+Primary SDK paths use registry root `C:/Users/atooz/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/`. The shared UI guide favors this single-owner bounded observation over a bypass or a second resize implementation.
