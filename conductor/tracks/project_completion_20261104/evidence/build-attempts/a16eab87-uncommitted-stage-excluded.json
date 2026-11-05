@@ -1,0 +1,14 @@
+{
+  "kind": "excluded-uncommitted-source-stage",
+  "session": 8461,
+  "terminal_exit_code": 0,
+  "stage": ".qa/stage/a16eab87-20261104164325115",
+  "source_commit": "a16eab87",
+  "native_source_uncommitted": true,
+  "cause": "Root bookkeeping expected path but frozen manifest uses file; Python precommit failed and PowerShell continued to stage.",
+  "acceptance_credit": false,
+  "application_launched": false,
+  "log_sha256": "beffc49fc50121bb39a786fc7b7feeb38ff0f99ebf34753e5ae47c45d3202413",
+  "manifest_sha256": "b335cb0cbcfe8c227b80c3ab53b2fab3489f1b9a0f9e2fbf957fa32e71b6ce58",
+  "correction": "Validate proper schema, commit exact approved source, create separate matching stage. Stop on native command failure."
+}

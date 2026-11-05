@@ -1,0 +1,50 @@
+{
+  "stdout_path": {
+    "local_path": "C:\\Users\\atooz\\Programming\\fractalengine-workspace\\fractalengine\\.qa\\run\\20261104-162743-289\\stdout.log",
+    "bytes": 56990,
+    "sha256": "01c3be3e3eec5b6c3b4508d7647600ee1e8ba59bf16862cdc5905f3c0853862d",
+    "text_encoding": "utf-8",
+    "lossy_decoding": false,
+    "line_count": 454,
+    "levels": {
+      "INFO": 379,
+      "WARN": 8,
+      "ERROR": 0
+    },
+    "panic_markers": 0,
+    "compiler_warning_diagnostics": 0,
+    "compiler_error_diagnostics": 0,
+    "private_current_error_markers": 0,
+    "credential_pattern_counts": {
+      "bearer_value": 0,
+      "jwt_value": 0,
+      "private_key_block": 0,
+      "credential_assignment": 0
+    },
+    "raw_log_published": false
+  },
+  "stderr_path": {
+    "local_path": "C:\\Users\\atooz\\Programming\\fractalengine-workspace\\fractalengine\\.qa\\run\\20261104-162743-289\\stderr.log",
+    "bytes": 0,
+    "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "text_encoding": "utf-8",
+    "lossy_decoding": false,
+    "line_count": 0,
+    "levels": {
+      "INFO": 0,
+      "WARN": 0,
+      "ERROR": 0
+    },
+    "panic_markers": 0,
+    "compiler_warning_diagnostics": 0,
+    "compiler_error_diagnostics": 0,
+    "private_current_error_markers": 0,
+    "credential_pattern_counts": {
+      "bearer_value": 0,
+      "jwt_value": 0,
+      "private_key_block": 0,
+      "credential_assignment": 0
+    },
+    "raw_log_published": false
+  }
+}

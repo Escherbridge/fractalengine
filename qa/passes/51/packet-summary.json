@@ -1,0 +1,63 @@
+{
+  "pass_id": 51,
+  "verdict": "NATIVE_SERVICE_OUTER_RECT_REFUSAL",
+  "source_commit": "2dac90333307c6307eee9382250c080a7f8124fe",
+  "original_artifacts": [
+    {
+      "file": "owner-native-observe-exact-style.jsonl",
+      "bytes": 598,
+      "sha256": "50113619ae694b6f1790a265dc3705e03c0419e25a3124a59b22eb8e036851d0"
+    },
+    {
+      "file": "fixture-public-detail.json",
+      "bytes": 2020,
+      "sha256": "e78d15ad58b23ceee3693276b11669acc88f19b7a35ae56f4ec010ba443f3c9d"
+    }
+  ],
+  "launch_options": {
+    "native_observer": true,
+    "synthetic_input": false,
+    "a11y_continuous": false,
+    "a11y_timing": false
+  },
+  "native_result": {
+    "attempt_spent": false,
+    "capture_available": false,
+    "code": "window_service_outer_rect_refused",
+    "helper_exit_code": 2,
+    "hr": "00000000",
+    "invoke_entered": false,
+    "method_returned": false,
+    "outcome": "observation",
+    "root_sha256": "0000000000000000000000000000000000000000000000000000000000000000",
+    "schema": "fe-native-worker-result-v1",
+    "target_sha256": "0000000000000000000000000000000000000000000000000000000000000000",
+    "watch_first": 0,
+    "watch_last": 0,
+    "worker_record": "native-observer\\134383110004386886-084bdac517c34e6684f873daa277da2d\\workers\\800baaf015e643a8ac47482faf797c8d.jsonl"
+  },
+  "ledger_summary": {
+    "file_sha256": "08933bd7919b3052cdd0964872a121fd7a4abbd455b2876d7dccf946f1d79579",
+    "record_count": 1,
+    "invocation_reservation_or_intent_present": false
+  },
+  "worker_phases": [
+    "reserved",
+    "worker_started",
+    "exit_confirmed"
+  ],
+  "cleanup": true,
+  "facts": [
+    "Actual staged native worker executed; retained worker receipt records reserved, worker_started, exit_confirmed and exit_code2 with lifecycle code worker_exited.",
+    "One observe returned window_service_outer_rect_refused, attempt_spent false, invoke_entered false and capture_available false.",
+    "No separate Owner HTTP state or screenshot request was attempted in this pass; no capture artifact exists.",
+    "Application stopped; all eight recorded identities absent."
+  ],
+  "limits": [
+    "No positive native UIA root/provider/navigation observation; the exact compiled branch establishes recognized winit service identity and successful window/client rectangle reads, exact style and extended-style checks pass by compiled control flow, then zero outer rectangle comparison fails. Actual rectangle coordinates and client/child/UIA predicates remain unproved. No admitted service or positive UIA result.",
+    "No invocation attempted; no role, peer, restart, historical-stage-pruning, capture or FULL acceptance.",
+    "Private invocation ledger retained locally; only hash and record-count summary published.",
+    "Four finite credential patterns do not establish universal secret absence; application logs retained locally with strict-decoded summaries.",
+    "No final integrated sweep, CI or release."
+  ]
+}

@@ -1,0 +1,12 @@
+{
+  "kind": "focused-packet-interpretation-clarification",
+  "packet": "qa/passes/47/packet-manifest.json",
+  "packet_sha256": "82a0d0125e0a3a64b5ae27b08bd8710c46b13baebc20b216aa8a5df64d35c9c4",
+  "raw_field_artifact": "qa/passes/47/owner-transform-draft-ui.jsonl",
+  "field_name": "Position (m) X",
+  "actual_raw_value": "0.002.5000",
+  "painted_visible_substring": "002.500",
+  "interpretation": "The type command inserted2.500 into0.000 at the cursor. This is invalid numeric input, not a valid2.5 replacement. The intended transform did not persist; this does not establish a valid-transform application regression.",
+  "preserved_facts": "One Apply, three byte-identical node/history observations, no claimed save, no Apply replay; frozen packet unchanged.",
+  "next_validation": "Fresh controlled fixture: explicitly select-all after focusing, then insert replacement without refocusing, verify actual complete raw field before one Apply."
+}

@@ -110,3 +110,10 @@ Required archives:
 ## Latest focused evidence, acceptance still open
 
 QA42 independently reviewed four incomplete geometry states with zero measured violations, nine actual screenshots, a 382px narrow Inspector body, valid normal UI property save, tree horizontal reachability and one Circle Back terrain-configuration/hierarchy response comparison. No FULL, journal, metric or broad tool acceptance. QA43 is independently reviewed failed-native evidence; Owner403 remains refused. Trace QA42 stored-scene recovery and diagnostic observations before accepting transform/report behavior.
+
+## QA47-52 checkpoint
+
+- [~] QA0063 typed nine-field asset witness1bdff9fd compiled; independently reviewed QA47/49/52 local recovery5enqueued0deferred and no publication failures. Actual fresh peer nodes/bytes/render/restart remain pending.
+- [~] QA0073 camera command ownership2dac9033 source/correctness/design approved; QA52 independently verifies focused CtrlLeft/ShiftLeft numeric Apply/Undo/Redo with seven camera responses byte-identical. Other modifier/plain navigation/capture/easing/terrain cases and final integrated journey remain pending.
+- [~] Native exact service styleca29b15d and bounded style diagnostic71cd5f8e compiled. QA51 passes exactstyle/exstyle then refuses outer geometry. Bounded signature facts plan is design-reviewed; implementation/measurement/positive UIA/Invoke/capture/role/lifecycle acceptance pending.
+- [ ] Preserve QA47 invalid insertion clarification; a failed malformed draft is not a valid-transform application regression. Complete explicit invalid-input validation acceptance separately.

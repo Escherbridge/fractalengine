@@ -1,0 +1,11 @@
+{
+  "source_commit": "71cd5f8e9f05bd39dbb1a61c17a95ca054dda5fe",
+  "session": 38869,
+  "terminal_exit_code": 0,
+  "stage": ".qa/stage/71cd5f8e-20261104164443718",
+  "duration_seconds": 15.4,
+  "rust_msvc_compiler_warning_error_diagnostics": 0,
+  "application_and_helper_hashes_verified": true,
+  "log_sha256": "6ec12e091ee14e16003280fc7c2e64af1e0b7bc1b118cd5501869c83ce52e7c9",
+  "limits": "Committedsourcebuild only; separate uncommitteda16 stage8461 excluded."
+}

@@ -1,0 +1,171 @@
+{
+  "pass_id": 47,
+  "verdict": "LOCAL_SCENE_RECOVERY_VERIFIED_WITH_FAILED_NUMERIC_TRANSFORM_ATTEMPT",
+  "source_commit": "a16eab87032a41d012e6936776d8dcd9228b7a54",
+  "stage_matches_source_at_launch": true,
+  "original_artifacts": [
+    {
+      "file": "after-navigation-publication-log-probe.json",
+      "bytes": 323,
+      "sha256": "57260fe809992146bfaaafbdc9cb1d0256eae5c2a973705381c4b5da971e0b6b"
+    },
+    {
+      "file": "fixture-public-detail.json",
+      "bytes": 2020,
+      "sha256": "50ea60ef0b6f1c954925503613b89b08b5f7d32ff533f3867cb02b2ed6bfe0fd"
+    },
+    {
+      "file": "initial-publication-log-probe.json",
+      "bytes": 135,
+      "sha256": "641fb70af325bd7c206f68f8e47693d0a744fd6610a18d0631f9454a557fc501"
+    },
+    {
+      "file": "owner-after-transform-history.jsonl",
+      "bytes": 4165,
+      "sha256": "9c561b6e585142d9624a9efab699e8ed641b20b6fcfabc54a0914486ada4da9a"
+    },
+    {
+      "file": "owner-after-transform-node.jsonl",
+      "bytes": 775,
+      "sha256": "b093767cae08a78d35b239bb8428031ab82f2f9431e4f5c5026f7df429bef981"
+    },
+    {
+      "file": "owner-after-transform-shot.jsonl",
+      "bytes": 724,
+      "sha256": "f0d37cdfc3032a68b83c7a085e9dc59cc39b644ba4e241c718bd4ea4844670bb"
+    },
+    {
+      "file": "owner-after-transform-state.jsonl",
+      "bytes": 1265,
+      "sha256": "6f0ec659ecb9340ab8084b55611a69e6217bb5dc042d7a05b70bbc45a7f687f3"
+    },
+    {
+      "file": "owner-after-transform-ui.jsonl",
+      "bytes": 177696,
+      "sha256": "24d454dc404fa7b01e8392fb91c6c4e212481d83fdb740258d0523d37516f486"
+    },
+    {
+      "file": "owner-apply-transform-once.jsonl",
+      "bytes": 641,
+      "sha256": "87e4a7ccf400f340b525ff6c1389a86829863dbab7bd5ebac2e70d73d15194fc"
+    },
+    {
+      "file": "owner-before-transform-history.jsonl",
+      "bytes": 4165,
+      "sha256": "9c561b6e585142d9624a9efab699e8ed641b20b6fcfabc54a0914486ada4da9a"
+    },
+    {
+      "file": "owner-before-transform-node.jsonl",
+      "bytes": 775,
+      "sha256": "b093767cae08a78d35b239bb8428031ab82f2f9431e4f5c5026f7df429bef981"
+    },
+    {
+      "file": "owner-edit-position-x.jsonl",
+      "bytes": 1016,
+      "sha256": "24261c1e61ca434a0bf21cb5e36db9e5670bbcc2b1f8639e9f3bb54ec72f5e32"
+    },
+    {
+      "file": "owner-final-state.jsonl",
+      "bytes": 1265,
+      "sha256": "d9cf27e4ecd4d871e790b2940cff5d6e21a938cd8329e2408a5f91bece221785"
+    },
+    {
+      "file": "owner-initial-state.jsonl",
+      "bytes": 1058,
+      "sha256": "12a15a99b140d2b84e628a75dbe34d3dcd06d23ce42123e5f6a2ed3191dda26b"
+    },
+    {
+      "file": "owner-late-transform-history.jsonl",
+      "bytes": 4165,
+      "sha256": "9c561b6e585142d9624a9efab699e8ed641b20b6fcfabc54a0914486ada4da9a"
+    },
+    {
+      "file": "owner-late-transform-node.jsonl",
+      "bytes": 775,
+      "sha256": "b093767cae08a78d35b239bb8428031ab82f2f9431e4f5c5026f7df429bef981"
+    },
+    {
+      "file": "owner-open-petal-a.jsonl",
+      "bytes": 792,
+      "sha256": "708c10796e56fd720c0db860ab5f65b0ea1f69e5c5ddcfc8707094a4372feab6"
+    },
+    {
+      "file": "owner-scroll-apply-visible.jsonl",
+      "bytes": 452,
+      "sha256": "aa8c9e5ffabb7850fb3eccc9f96dd1a744801b410d7cbb681c5ce223b16e462a"
+    },
+    {
+      "file": "owner-select-cube1.jsonl",
+      "bytes": 629,
+      "sha256": "44ea6f3695399fee106e7f7a386f60c0b7162232e15575768443b4c696c56889"
+    },
+    {
+      "file": "owner-selected-shot.jsonl",
+      "bytes": 731,
+      "sha256": "ab8131b1f8dcc4730856f430bb632e75f43fbf913763a648b01d390b4bd0aa94"
+    },
+    {
+      "file": "owner-selected-state.jsonl",
+      "bytes": 1263,
+      "sha256": "2b7cf6ed4e4c613ddf77c0147e007057c39292aa66db7cb8e15ce747a71a3b4a"
+    },
+    {
+      "file": "owner-selected-ui.jsonl",
+      "bytes": 176610,
+      "sha256": "c9cb6afaa457432a126b5e3b3ce49d775cd7f956cdc9b364e5808f1aa93212ca"
+    },
+    {
+      "file": "owner-transform-draft-shot.jsonl",
+      "bytes": 724,
+      "sha256": "7081e8abe0cdace899dffbc1dd21a0643fb6b8a06490c8356581a921cefacaba"
+    },
+    {
+      "file": "owner-transform-draft-ui.jsonl",
+      "bytes": 177731,
+      "sha256": "595084cd0db5230232254238c59017282eb5c01a68d3a07375523898d39a8ef3"
+    },
+    {
+      "file": "transform-observed-no-change.json",
+      "bytes": 1152,
+      "sha256": "f7873b02e86398e6c7ca10b523d0f73e0cd1d7e050d89ca5eeae1f17f848195b"
+    }
+  ],
+  "screenshots": [
+    {
+      "artifact": "owner-after-transform-shot.jsonl",
+      "file": "screenshots/163017-946-qa47-transform-saved.png",
+      "bytes": 361796,
+      "sha256": "9dab7607f03150bd0edbc5a56b018a90f91330c4fd4ac453e5b2b970ed9d18d3"
+    },
+    {
+      "artifact": "owner-selected-shot.jsonl",
+      "file": "screenshots/162714-296-qa47-typed-witness-recovery.png",
+      "bytes": 364093,
+      "sha256": "7877a26daacddd57a3c6472115b7df2c6423c5cfd6c8c686fdf2564e84441eb2"
+    },
+    {
+      "artifact": "owner-transform-draft-shot.jsonl",
+      "file": "screenshots/162913-170-qa47-transform-draft.png",
+      "bytes": 362032,
+      "sha256": "b880d5e30c119730438720d2adc89a662a2aaabc2fb1f25a2dcca1e53b88e121"
+    }
+  ],
+  "facts": [
+    "Root inspected all three actual screenshots: selected native scene, focused numeric draft, and post-Apply state.",
+    "Twelve previously observed seed publication failures are absent; actual stored scene recovery trace reports examined5/enqueued5 and no deferred dependencies. This certifies local enqueue only.",
+    "Normal PetalA/Cube1 navigation/selection succeeded; three source fixture cube objects and a marker are visible in the selected screenshot.",
+    "Typed2.500 into Position(m)X; draft screenshot shows focused002.500. After one ordinary Inspector scroll, Apply was visible and clicked exactly once.",
+    "Post-Apply Inspector returned0.000. Before/after/later scoped row responses and complete history responses are byte-identical, current_version4. No transform save/replay/Undo was proved.",
+    "No notice or relevant DB transform failure was exposed in recorded state/log observations; exact cause and submission state remain unproved. No Apply replay occurred.",
+    "Eight exact recorded app/descendant identities absent at cleanup receipt timestamp; retained stores untouched."
+  ],
+  "limits": [
+    "Focused pass only; not a FULL pass and no finding closure/peer bytes/render/convergence/restart credit.",
+    "No independent asset field type proof or concurrent-metadata rollback in this live pass. Existing authored journey cases remain unexecuted.",
+    "Numeric attempt failed at intended outcome; source trace must distinguish draft/parser/sync/action ownership from harness focus/commit semantics. No saved transformation or historical update is claimed.",
+    "Screenshot and state reads are separate observations; settled excludes DB/sync/terrain completion.",
+    "No native UIA/capture acceptance from these Owner-only screenshots; separate QA48 refused.",
+    "Four finite credential patterns do not prove universal absence; local raw application logs have strict-decoded summaries.",
+    "No integrated final test sweep, exact-SHA CI, tag or release."
+  ]
+}

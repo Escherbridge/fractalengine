@@ -1,0 +1,9 @@
+{
+  "publication_deferred_count": 0,
+  "primary_asset_failure_count": 0,
+  "recovery_lines": [
+    "2026-11-05T00:14:08.349309Z  INFO fe_database: stored scene recovery enqueued; peer delivery is not certified verse_id=\"01M6MGT3K29BXG6YQ7W9QY0B2E\" examined=5 enqueued=5"
+  ],
+  "source_log_sha256": "8929281201389d61a9c5ea6d564619c2f4ecc0c6b0519acf3660fa5744ab845c",
+  "limits": "Local enqueue and absence of observed publication warnings only; no peer acknowledgement."
+}

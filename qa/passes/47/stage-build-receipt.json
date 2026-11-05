@@ -1,0 +1,14 @@
+{
+  "source_commit": "a16eab87032a41d012e6936776d8dcd9228b7a54",
+  "session": 7513,
+  "terminal_exit_code": 0,
+  "stage": ".qa/stage/a16eab87-20261104162459135",
+  "duration_seconds": 110.5,
+  "rust_msvc_compiler_warning_error_diagnostics": 0,
+  "app_helper_hashes_verified": true,
+  "log": {
+    "bytes": 3828,
+    "sha256": "f1e1a80fd9d1628ef8b61952d4cc6f5b02f7a7de572126277e8792cefc5bed4a"
+  },
+  "limits": "Production build only; integrated tests/native/provider/publication/peer/release acceptance separate."
+}
