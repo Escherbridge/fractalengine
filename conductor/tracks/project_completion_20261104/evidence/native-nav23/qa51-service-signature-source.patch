@@ -1,0 +1,312 @@
+diff --git a/tools/qa/native_observer/AGENTS.md b/tools/qa/native_observer/AGENTS.md
+index d9d10a25..ded6a2c2 100644
+--- a/tools/qa/native_observer/AGENTS.md
++++ b/tools/qa/native_observer/AGENTS.md
+@@ -95,9 +95,9 @@ coordinate values or output fields. The controller retains the legacy combined
+ window_service_signature_refused code for older stages. This diagnosis does not
+ relax any exact predicate or identify the failed component in the prior QA46 run.
+ 
+-## Optional service style refusal diagnostic
++## Optional service signature refusal diagnostic
+ 
+-QA48 adds only optional service_style_u32 to the otherwise exact existing result
++QA48's older workers add only optional service_style_u32 to the exact base result
+ shape. It is a JSON integer in0..4294967295, including zero; bool/float/string/null,
+ overflow, duplicate and unknown keys refuse. The worker captures the normalized
+ DWORD from its existing style read after exact service identity and rectangle-read
+@@ -107,15 +107,39 @@ text, selector or action is exposed. This is one terminal mismatch sample, not a
+ style timeline or proof that subsequent comparisons passed. Zero is not proof of
+ successful style acquisition or safe admission.
+ 
+-The local ServiceStyleRefusal subtype remains compatible with generic Refusal,
+-including the unchanged post-Invoke catch that preserves submitted_state_changed
+-after S_OK. Only its top-level catch for a successfully parsed observe request
+-retains the DWORD. Emit and controller validation additionally require the exact
++Legacy scalar validation requires the exact
+ window_service_style_refused code, raw no-spent/no-Invoke/no-return flags and zero
+ HRESULT; controller requires actual observe mode and confirmed helper exit2 before
+ its independent ledger-spent override. A prior spent ledger remains spent. Invoke,
+ success, other refusal and malformed-request outputs cannot carry the field.
+ 
++QA51's worker emits only optional service_signature: an exact eleven-member object
++with schema fe-native-service-signature-v1, style_u32/exstyle_u32 in0..4294967295,
++and outer/client left/top/right/bottom_i32 in-2147483648..2147483647. Its sequential
++facts are copied from the same existing two style/two rectangle reads, after exact
++known service identity and successful rectangle reads. No native query is added.
++This is not an atomic snapshot or proof that later signature/child checks passed.
++
++ServiceSignatureRefusal derives from Refusal, preserving generic catches and
++post-Invoke S_OK -> submitted_state_changed. Only the parsed-observe top-level
++catch retains facts. Emit repeats raw mode/flags/HRESULT gates and the unchanged
++pure classifier's first failure. Its fixed output-only serializer uses signed
++decimal coordinates, appends one closed object to the serialized base and retains
++the existing total output bound. No generic raw-JSON Atom, request parser or
++canonical ledger change is made; output result member order has no acceptance role.
++
++Controller requires exact nested schema/keys/types/ranges, recursively unique keys,
++actual observe/confirmed exit2 and raw false flags/zero HRESULT before ledger
++override. It recomputes the first failure at exact style0x94000000/exstyle0x080800a0
++then outer/client zero comparisons. Contradictory or all-passing samples refuse.
++This validates a diagnostic, never grants positive service/Invoke admission.
++New schema version pins those comparison values; future policy changes need an
++explicit diagnostic-version decision. Generic identity/read/child/watcher errors,
++success, malformed requests and invoke mode cannot carry a signature sample.
++
++Exactly base, base+legacy scalar or base+new object is accepted; both extensions
++together refuse. Legacy scalar first-failure semantics remain unchanged. New
++workers emit only the new object; old controllers safely reject it.
+ Existing sealed workers without the field remain accepted. Older strict controllers
+ reject extended output. Stage/helper source and binary pinning, request/ledger/
+ bootstrap schemas, byte bounds and success/exit rules remain. The existing offline
+diff --git a/tools/qa/native_observer/controller.py b/tools/qa/native_observer/controller.py
+index ab23d8f0..f3b21f47 100644
+--- a/tools/qa/native_observer/controller.py
++++ b/tools/qa/native_observer/controller.py
+@@ -18,6 +18,10 @@ NATIVE_KEYS = {"schema", "run_id", "ledger_id", "ledger_path", "ledger_file_id",
+ HELPER_KEYS = {"schema", "helper_file", "helper_sha256", "source_sha256", "sdk", "architecture", "contract"}
+ OUTPUT_KEYS = {"schema", "code", "attempt_spent", "invoke_entered", "method_returned", "hr",
+                "root_sha256", "target_sha256", "watch_first", "watch_last"}
++SIGNATURE_STYLES = ("style_u32", "exstyle_u32")
++SIGNATURE_OUTER = ("outer_left_i32", "outer_top_i32", "outer_right_i32", "outer_bottom_i32")
++SIGNATURE_CLIENT = ("client_left_i32", "client_top_i32", "client_right_i32", "client_bottom_i32")
++SIGNATURE_KEYS = {"schema", *SIGNATURE_STYLES, *SIGNATURE_OUTER, *SIGNATURE_CLIENT}
+ WORKER_CODES = frozenset("""observed submitted_outcome_unknown invoke_failed_outcome_unknown submitted_state_changed
+ com_unavailable deadline_refused desktop_refused dpi_refused hash_unavailable input_competing integrity_refused
+ internal_refused ledger_binding_refused ledger_bound ledger_changed ledger_identity_refused ledger_intent_unconfirmed
+@@ -162,9 +166,26 @@ class Context:
+         require(time.monotonic() < deadline, "operation_deadline")
+ 
+ 
++def service_signature_refusal(sample):
++    require(type(sample) is dict and set(sample) == SIGNATURE_KEYS
++            and sample["schema"] == "fe-native-service-signature-v1"
++            and all(type(sample[key]) is int and 0 <= sample[key] <= (1 << 32) - 1 for key in SIGNATURE_STYLES)
++            and all(type(sample[key]) is int and -(1 << 31) <= sample[key] <= (1 << 31) - 1
++                    for key in SIGNATURE_OUTER + SIGNATURE_CLIENT), "worker_result_refused")
++    if sample["style_u32"] != 0x94000000:
++        return "window_service_style_refused"
++    if sample["exstyle_u32"] != 0x080800A0:
++        return "window_service_exstyle_refused"
++    if any(sample[key] != 0 for key in SIGNATURE_OUTER):
++        return "window_service_outer_rect_refused"
++    if any(sample[key] != 0 for key in SIGNATURE_CLIENT):
++        return "window_service_client_rect_refused"
++    return None
++
++
+ def worker_output(raw, *, observe, helper_exit_code):
+     value = decode(raw, MAX_OUTPUT)
+-    require(set(value) in (OUTPUT_KEYS, OUTPUT_KEYS | {"service_style_u32"})
++    require(set(value) in (OUTPUT_KEYS, OUTPUT_KEYS | {"service_style_u32"}, OUTPUT_KEYS | {"service_signature"})
+             and value["schema"] == "fe-native-worker-result-v1"
+             and value["code"] in WORKER_CODES
+             and all(type(value[key]) is bool for key in ("attempt_spent", "invoke_entered", "method_returned"))
+@@ -179,6 +200,11 @@ def worker_output(raw, *, observe, helper_exit_code):
+                 and value["code"] == "window_service_style_refused" and value["hr"] == "00000000"
+                 and not value["attempt_spent"] and not value["invoke_entered"] and not value["method_returned"],
+                 "worker_result_refused")
++    if "service_signature" in value:
++        require(observe is True and type(helper_exit_code) is int and helper_exit_code == 2
++                and value["hr"] == "00000000" and not value["attempt_spent"]
++                and not value["invoke_entered"] and not value["method_returned"]
++                and service_signature_refusal(value["service_signature"]) == value["code"], "worker_result_refused")
+     return value
+ 
+ 
+diff --git a/tools/qa/native_observer/scenario.py b/tools/qa/native_observer/scenario.py
+index 2aec5612..89679edf 100644
+--- a/tools/qa/native_observer/scenario.py
++++ b/tools/qa/native_observer/scenario.py
+@@ -142,6 +142,89 @@ def exercise():
+     except Refused:
+         refused = True
+     record("style-diagnostic-duplicate-key-refused", refused)
++
++    signature = {key: 0 for key in controller.SIGNATURE_OUTER + controller.SIGNATURE_CLIENT}
++    signature.update(schema="fe-native-service-signature-v1", style_u32=0x94000000, exstyle_u32=0x080800A0)
++    signature_cases = [
++        ("style", "style_u32", 0, "window_service_style_refused"),
++        ("exstyle", "exstyle_u32", 0, "window_service_exstyle_refused"),
++        ("outer", "outer_left_i32", 1, "window_service_outer_rect_refused"),
++        ("client", "client_left_i32", -1, "window_service_client_rect_refused"),
++    ]
++    for key in controller.SIGNATURE_STYLES:
++        for value in (0, (1 << 32) - 1):
++            code = "window_service_style_refused" if key == "style_u32" else "window_service_exstyle_refused"
++            signature_cases.append((key + "-" + str(value), key, value, code))
++    for key in controller.SIGNATURE_OUTER + controller.SIGNATURE_CLIENT:
++        for value in (-(1 << 31), (1 << 31) - 1):
++            code = ("window_service_outer_rect_refused" if key in controller.SIGNATURE_OUTER
++                    else "window_service_client_rect_refused")
++            signature_cases.append((key + "-" + str(value), key, value, code))
++    for name, key, value, code in signature_cases:
++        changed = dict(signature)
++        changed[key] = value
++        sample = dict(style_result, code=code, service_signature=changed)
++        parsed = controller.worker_output(encode(sample), observe=True, helper_exit_code=2)
++        record("signature-" + name, parsed == sample and ledger.spent() and not parsed["attempt_spent"])
++    mixed = dict(style_result, service_signature=dict(signature, style_u32=0, exstyle_u32=0,
++                                                      outer_left_i32=1, client_left_i32=1))
++    record("signature-first-failure-priority", controller.worker_output(
++        encode(mixed), observe=True, helper_exit_code=2) == mixed)
++
++    sample = dict(style_result, code="window_service_outer_rect_refused",
++                  service_signature=dict(signature, outer_left_i32=1))
++    invalid_signatures = []
++    for key in sorted(controller.SIGNATURE_KEYS):
++        changed = copy.deepcopy(sample)
++        del changed["service_signature"][key]
++        invalid_signatures.append(("missing-" + key, changed, True, 2))
++    for key in controller.SIGNATURE_STYLES + controller.SIGNATURE_OUTER + controller.SIGNATURE_CLIENT:
++        lower, upper = (0, (1 << 32) - 1) if key in controller.SIGNATURE_STYLES else (-(1 << 31), (1 << 31) - 1)
++        for value in (True, False, 1.0, "1", None, [], {}, lower - 1, upper + 1):
++            changed = copy.deepcopy(sample)
++            changed["service_signature"][key] = value
++            invalid_signatures.append((key + "-" + repr(value), changed, True, 2))
++    for value in (None, [], "signature", 1):
++        invalid_signatures.append(("object-" + repr(value), dict(sample, service_signature=value), True, 2))
++    for key, value in (("schema", "fe-native-service-signature-v2"), ("extra", 0), ("style_u32", 0), ("outer_left_i32", 0)):
++        changed = copy.deepcopy(sample)
++        changed["service_signature"][key] = value
++        invalid_signatures.append(("mismatch-" + key, changed, True, 2))
++    changed = copy.deepcopy(sample)
++    changed["service_signature"]["exstyle_u32"] = 0
++    invalid_signatures.append(("earlier-exstyle-failure", changed, True, 2))
++    changed = copy.deepcopy(sample)
++    changed["service_signature"]["client_left_i32"] = 1
++    changed["code"] = "window_service_client_rect_refused"
++    invalid_signatures.append(("earlier-outer-failure", changed, True, 2))
++    for key, value in (("code", "observed"), ("code", "window_service_client_rect_refused"),
++                       ("code", "window_service_children_refused"), ("hr", "80004005"),
++                       ("attempt_spent", True), ("invoke_entered", True), ("method_returned", True),
++                       ("service_style_u32", 0x94000000), ("extra", 0)):
++        changed = copy.deepcopy(sample)
++        changed[key] = value
++        invalid_signatures.append(("raw-" + key + "-" + str(value), changed, True, 2))
++    invalid_signatures.append(("invoke-mode", sample, False, 2))
++    for exit_code in (0, 3, True):
++        invalid_signatures.append(("exit-" + str(exit_code), sample, True, exit_code))
++    for name, changed, observe, exit_code in invalid_signatures:
++        refused = False
++        try:
++            controller.worker_output(encode(changed), observe=observe, helper_exit_code=exit_code)
++        except Refused:
++            refused = True
++        record("signature-" + name + "-refused", refused)
++    duplicate_signature_outputs = (
++        encode(sample).replace(b'"service_signature":{', b'"service_signature":{"outer_left_i32":0,', 1),
++        encode(sample)[:-1] + b',"service_signature":{}}',
++    )
++    for index, duplicate in enumerate(duplicate_signature_outputs):
++        refused = False
++        try:
++            controller.worker_output(duplicate, observe=True, helper_exit_code=2)
++        except Refused:
++            refused = True
++        record("signature-duplicate-" + str(index) + "-refused", refused)
+     called = []
+     def native_entry(args):
+         called.append((args.run, args.operation, args.member))
+diff --git a/tools/qa/native_observer/worker.cpp b/tools/qa/native_observer/worker.cpp
+index 393951bb..3ac1e198 100644
+--- a/tools/qa/native_observer/worker.cpp
++++ b/tools/qa/native_observer/worker.cpp
+@@ -6,9 +6,14 @@ using namespace native_observer;
+ 
+ namespace {
+ 
+-struct ServiceStyleRefusal : Refusal {
+-    DWORD style;
+-    explicit ServiceStyleRefusal(DWORD value) : Refusal{"window_service_style_refused"}, style(value) {}
++struct ServiceSignatureFacts {
++    DWORD style, extended;
++    RECT outer, client;
++};
++
++struct ServiceSignatureRefusal : Refusal {
++    ServiceSignatureFacts facts;
++    ServiceSignatureRefusal(const char* code, const ServiceSignatureFacts& value) : Refusal{code}, facts(value) {}
+ };
+ 
+ struct Receipt {
+@@ -16,7 +21,7 @@ struct Receipt {
+     bool spent = true, invoke_entered = false, method_returned = false;
+     bool output_attempted = false;
+     bool parsed_observe = false;
+-    std::optional<DWORD> service_style;
++    std::optional<ServiceSignatureFacts> service_signature;
+     HRESULT method = S_OK;
+     std::string root_hash = std::string(64, '0'), target_hash = std::string(64, '0');
+     uint64_t watch_first = 0, watch_last = 0;
+@@ -249,6 +254,26 @@ const char* winit_service_signature_refusal(DWORD style, DWORD extended, const R
+     return nullptr;
+ }
+ 
++Atom signed_coordinate(LONG value) {
++    static_assert(sizeof(LONG) == sizeof(int32_t));
++    return {Atom::Number, std::to_string(static_cast<int32_t>(value))};
++}
++
++std::string service_signature_json(const ServiceSignatureFacts& facts) {
++    return canonical({
++        {"schema", Atom::string("fe-native-service-signature-v1")},
++        {"style_u32", Atom::number(facts.style)}, {"exstyle_u32", Atom::number(facts.extended)},
++        {"outer_left_i32", signed_coordinate(facts.outer.left)},
++        {"outer_top_i32", signed_coordinate(facts.outer.top)},
++        {"outer_right_i32", signed_coordinate(facts.outer.right)},
++        {"outer_bottom_i32", signed_coordinate(facts.outer.bottom)},
++        {"client_left_i32", signed_coordinate(facts.client.left)},
++        {"client_top_i32", signed_coordinate(facts.client.top)},
++        {"client_right_i32", signed_coordinate(facts.client.right)},
++        {"client_bottom_i32", signed_coordinate(facts.client.bottom)},
++    });
++}
++
+ void service_current(HWND window, DWORD pid, DWORD thread) {
+     DWORD actual = 0;
+     require(IsWindow(window) && thread && GetWindowThreadProcessId(window, &actual) == thread && actual == pid
+@@ -260,8 +285,7 @@ void service_current(HWND window, DWORD pid, DWORD thread) {
+     const DWORD style = static_cast<DWORD>(GetWindowLongPtrW(window, GWL_STYLE));
+     const DWORD extended = static_cast<DWORD>(GetWindowLongPtrW(window, GWL_EXSTYLE));
+     auto refusal = winit_service_signature_refusal(style, extended, outer, client);
+-    if (refusal && std::string_view(refusal) == "window_service_style_refused") throw ServiceStyleRefusal{style};
+-    if (refusal) throw Refusal{refusal};
++    if (refusal) throw ServiceSignatureRefusal{refusal, {style, extended, outer, client}};
+     no_native_children(window, "window_service_children_refused");
+ }
+ 
+@@ -791,12 +815,17 @@ void emit(Receipt& receipt) {
+         {"root_sha256", Atom::string(receipt.root_hash)}, {"target_sha256", Atom::string(receipt.target_hash)},
+         {"watch_first", Atom::number(receipt.watch_first)}, {"watch_last", Atom::number(receipt.watch_last)},
+     };
+-    if (receipt.service_style && receipt.parsed_observe && !receipt.spent && !receipt.invoke_entered
+-        && !receipt.method_returned && receipt.method == S_OK
+-        && std::string_view(receipt.code) == "window_service_style_refused") {
+-        result.emplace("service_style_u32", Atom::number(*receipt.service_style));
++    auto bytes = canonical(result);
++    if (receipt.service_signature && receipt.parsed_observe && !receipt.spent && !receipt.invoke_entered
++        && !receipt.method_returned && receipt.method == S_OK) {
++        const auto& facts = *receipt.service_signature;
++        const auto refusal = winit_service_signature_refusal(facts.style, facts.extended, facts.outer, facts.client);
++        if (refusal && std::string_view(receipt.code) == refusal) {
++            bytes.pop_back();
++            bytes += ",\"service_signature\":" + service_signature_json(facts) + '}';
++        }
+     }
+-    auto bytes = canonical(result) + '\n';
++    bytes += '\n';
+     require(bytes.size() <= 262144, "output_bound");
+     DWORD written = 0;
+     require(WriteFile(GetStdHandle(STD_OUTPUT_HANDLE), bytes.data(), static_cast<DWORD>(bytes.size()), &written, nullptr)
+@@ -817,9 +846,9 @@ int wmain(int argc, wchar_t**) {
+         receipt.parsed_observe = !request.invoke;
+         deadline->bind(request.deadline);
+         operation(request, *deadline, receipt);
+-    } catch (const ServiceStyleRefusal& refusal) {
++    } catch (const ServiceSignatureRefusal& refusal) {
+         receipt.code = refusal.code;
+-        if (receipt.parsed_observe) receipt.service_style = refusal.style;
++        if (receipt.parsed_observe) receipt.service_signature = refusal.facts;
+     } catch (const Refusal& refusal) { receipt.code = refusal.code; }
+     catch (...) { receipt.code = "worker_refused"; }
+     if (!receipt.output_attempted) {

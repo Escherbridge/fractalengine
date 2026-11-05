@@ -18,6 +18,10 @@ NATIVE_KEYS = {"schema", "run_id", "ledger_id", "ledger_path", "ledger_file_id",
 HELPER_KEYS = {"schema", "helper_file", "helper_sha256", "source_sha256", "sdk", "architecture", "contract"}
 OUTPUT_KEYS = {"schema", "code", "attempt_spent", "invoke_entered", "method_returned", "hr",
                "root_sha256", "target_sha256", "watch_first", "watch_last"}
+SIGNATURE_STYLES = ("style_u32", "exstyle_u32")
+SIGNATURE_OUTER = ("outer_left_i32", "outer_top_i32", "outer_right_i32", "outer_bottom_i32")
+SIGNATURE_CLIENT = ("client_left_i32", "client_top_i32", "client_right_i32", "client_bottom_i32")
+SIGNATURE_KEYS = {"schema", *SIGNATURE_STYLES, *SIGNATURE_OUTER, *SIGNATURE_CLIENT}
 WORKER_CODES = frozenset("""observed submitted_outcome_unknown invoke_failed_outcome_unknown submitted_state_changed
 com_unavailable deadline_refused desktop_refused dpi_refused hash_unavailable input_competing integrity_refused
 internal_refused ledger_binding_refused ledger_bound ledger_changed ledger_identity_refused ledger_intent_unconfirmed
@@ -162,9 +166,26 @@ class Context:
         require(time.monotonic() < deadline, "operation_deadline")
 
 
+def service_signature_refusal(sample):
+    require(type(sample) is dict and set(sample) == SIGNATURE_KEYS
+            and sample["schema"] == "fe-native-service-signature-v1"
+            and all(type(sample[key]) is int and 0 <= sample[key] <= (1 << 32) - 1 for key in SIGNATURE_STYLES)
+            and all(type(sample[key]) is int and -(1 << 31) <= sample[key] <= (1 << 31) - 1
+                    for key in SIGNATURE_OUTER + SIGNATURE_CLIENT), "worker_result_refused")
+    if sample["style_u32"] != 0x94000000:
+        return "window_service_style_refused"
+    if sample["exstyle_u32"] != 0x080800A0:
+        return "window_service_exstyle_refused"
+    if any(sample[key] != 0 for key in SIGNATURE_OUTER):
+        return "window_service_outer_rect_refused"
+    if any(sample[key] != 0 for key in SIGNATURE_CLIENT):
+        return "window_service_client_rect_refused"
+    return None
+
+
 def worker_output(raw, *, observe, helper_exit_code):
     value = decode(raw, MAX_OUTPUT)
-    require(set(value) in (OUTPUT_KEYS, OUTPUT_KEYS | {"service_style_u32"})
+    require(set(value) in (OUTPUT_KEYS, OUTPUT_KEYS | {"service_style_u32"}, OUTPUT_KEYS | {"service_signature"})
             and value["schema"] == "fe-native-worker-result-v1"
             and value["code"] in WORKER_CODES
             and all(type(value[key]) is bool for key in ("attempt_spent", "invoke_entered", "method_returned"))
@@ -179,6 +200,11 @@ def worker_output(raw, *, observe, helper_exit_code):
                 and value["code"] == "window_service_style_refused" and value["hr"] == "00000000"
                 and not value["attempt_spent"] and not value["invoke_entered"] and not value["method_returned"],
                 "worker_result_refused")
+    if "service_signature" in value:
+        require(observe is True and type(helper_exit_code) is int and helper_exit_code == 2
+                and value["hr"] == "00000000" and not value["attempt_spent"]
+                and not value["invoke_entered"] and not value["method_returned"]
+                and service_signature_refusal(value["service_signature"]) == value["code"], "worker_result_refused")
     return value
 
 

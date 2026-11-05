@@ -95,9 +95,9 @@ coordinate values or output fields. The controller retains the legacy combined
 window_service_signature_refused code for older stages. This diagnosis does not
 relax any exact predicate or identify the failed component in the prior QA46 run.
 
-## Optional service style refusal diagnostic
+## Optional service signature refusal diagnostic
 
-QA48 adds only optional service_style_u32 to the otherwise exact existing result
+QA48's older workers add only optional service_style_u32 to the exact base result
 shape. It is a JSON integer in0..4294967295, including zero; bool/float/string/null,
 overflow, duplicate and unknown keys refuse. The worker captures the normalized
 DWORD from its existing style read after exact service identity and rectangle-read
@@ -107,15 +107,39 @@ text, selector or action is exposed. This is one terminal mismatch sample, not a
 style timeline or proof that subsequent comparisons passed. Zero is not proof of
 successful style acquisition or safe admission.
 
-The local ServiceStyleRefusal subtype remains compatible with generic Refusal,
-including the unchanged post-Invoke catch that preserves submitted_state_changed
-after S_OK. Only its top-level catch for a successfully parsed observe request
-retains the DWORD. Emit and controller validation additionally require the exact
+Legacy scalar validation requires the exact
 window_service_style_refused code, raw no-spent/no-Invoke/no-return flags and zero
 HRESULT; controller requires actual observe mode and confirmed helper exit2 before
 its independent ledger-spent override. A prior spent ledger remains spent. Invoke,
 success, other refusal and malformed-request outputs cannot carry the field.
 
+QA51's worker emits only optional service_signature: an exact eleven-member object
+with schema fe-native-service-signature-v1, style_u32/exstyle_u32 in0..4294967295,
+and outer/client left/top/right/bottom_i32 in-2147483648..2147483647. Its sequential
+facts are copied from the same existing two style/two rectangle reads, after exact
+known service identity and successful rectangle reads. No native query is added.
+This is not an atomic snapshot or proof that later signature/child checks passed.
+
+ServiceSignatureRefusal derives from Refusal, preserving generic catches and
+post-Invoke S_OK -> submitted_state_changed. Only the parsed-observe top-level
+catch retains facts. Emit repeats raw mode/flags/HRESULT gates and the unchanged
+pure classifier's first failure. Its fixed output-only serializer uses signed
+decimal coordinates, appends one closed object to the serialized base and retains
+the existing total output bound. No generic raw-JSON Atom, request parser or
+canonical ledger change is made; output result member order has no acceptance role.
+
+Controller requires exact nested schema/keys/types/ranges, recursively unique keys,
+actual observe/confirmed exit2 and raw false flags/zero HRESULT before ledger
+override. It recomputes the first failure at exact style0x94000000/exstyle0x080800a0
+then outer/client zero comparisons. Contradictory or all-passing samples refuse.
+This validates a diagnostic, never grants positive service/Invoke admission.
+New schema version pins those comparison values; future policy changes need an
+explicit diagnostic-version decision. Generic identity/read/child/watcher errors,
+success, malformed requests and invoke mode cannot carry a signature sample.
+
+Exactly base, base+legacy scalar or base+new object is accepted; both extensions
+together refuse. Legacy scalar first-failure semantics remain unchanged. New
+workers emit only the new object; old controllers safely reject it.
 Existing sealed workers without the field remain accepted. Older strict controllers
 reject extended output. Stage/helper source and binary pinning, request/ledger/
 bootstrap schemas, byte bounds and success/exit rules remain. The existing offline

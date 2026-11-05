@@ -6,9 +6,14 @@ using namespace native_observer;
 
 namespace {
 
-struct ServiceStyleRefusal : Refusal {
-    DWORD style;
-    explicit ServiceStyleRefusal(DWORD value) : Refusal{"window_service_style_refused"}, style(value) {}
+struct ServiceSignatureFacts {
+    DWORD style, extended;
+    RECT outer, client;
+};
+
+struct ServiceSignatureRefusal : Refusal {
+    ServiceSignatureFacts facts;
+    ServiceSignatureRefusal(const char* code, const ServiceSignatureFacts& value) : Refusal{code}, facts(value) {}
 };
 
 struct Receipt {
@@ -16,7 +21,7 @@ struct Receipt {
     bool spent = true, invoke_entered = false, method_returned = false;
     bool output_attempted = false;
     bool parsed_observe = false;
-    std::optional<DWORD> service_style;
+    std::optional<ServiceSignatureFacts> service_signature;
     HRESULT method = S_OK;
     std::string root_hash = std::string(64, '0'), target_hash = std::string(64, '0');
     uint64_t watch_first = 0, watch_last = 0;
@@ -249,6 +254,26 @@ const char* winit_service_signature_refusal(DWORD style, DWORD extended, const R
     return nullptr;
 }
 
+Atom signed_coordinate(LONG value) {
+    static_assert(sizeof(LONG) == sizeof(int32_t));
+    return {Atom::Number, std::to_string(static_cast<int32_t>(value))};
+}
+
+std::string service_signature_json(const ServiceSignatureFacts& facts) {
+    return canonical({
+        {"schema", Atom::string("fe-native-service-signature-v1")},
+        {"style_u32", Atom::number(facts.style)}, {"exstyle_u32", Atom::number(facts.extended)},
+        {"outer_left_i32", signed_coordinate(facts.outer.left)},
+        {"outer_top_i32", signed_coordinate(facts.outer.top)},
+        {"outer_right_i32", signed_coordinate(facts.outer.right)},
+        {"outer_bottom_i32", signed_coordinate(facts.outer.bottom)},
+        {"client_left_i32", signed_coordinate(facts.client.left)},
+        {"client_top_i32", signed_coordinate(facts.client.top)},
+        {"client_right_i32", signed_coordinate(facts.client.right)},
+        {"client_bottom_i32", signed_coordinate(facts.client.bottom)},
+    });
+}
+
 void service_current(HWND window, DWORD pid, DWORD thread) {
     DWORD actual = 0;
     require(IsWindow(window) && thread && GetWindowThreadProcessId(window, &actual) == thread && actual == pid
@@ -260,8 +285,7 @@ void service_current(HWND window, DWORD pid, DWORD thread) {
     const DWORD style = static_cast<DWORD>(GetWindowLongPtrW(window, GWL_STYLE));
     const DWORD extended = static_cast<DWORD>(GetWindowLongPtrW(window, GWL_EXSTYLE));
     auto refusal = winit_service_signature_refusal(style, extended, outer, client);
-    if (refusal && std::string_view(refusal) == "window_service_style_refused") throw ServiceStyleRefusal{style};
-    if (refusal) throw Refusal{refusal};
+    if (refusal) throw ServiceSignatureRefusal{refusal, {style, extended, outer, client}};
     no_native_children(window, "window_service_children_refused");
 }
 
@@ -791,12 +815,17 @@ void emit(Receipt& receipt) {
         {"root_sha256", Atom::string(receipt.root_hash)}, {"target_sha256", Atom::string(receipt.target_hash)},
         {"watch_first", Atom::number(receipt.watch_first)}, {"watch_last", Atom::number(receipt.watch_last)},
     };
-    if (receipt.service_style && receipt.parsed_observe && !receipt.spent && !receipt.invoke_entered
-        && !receipt.method_returned && receipt.method == S_OK
-        && std::string_view(receipt.code) == "window_service_style_refused") {
-        result.emplace("service_style_u32", Atom::number(*receipt.service_style));
+    auto bytes = canonical(result);
+    if (receipt.service_signature && receipt.parsed_observe && !receipt.spent && !receipt.invoke_entered
+        && !receipt.method_returned && receipt.method == S_OK) {
+        const auto& facts = *receipt.service_signature;
+        const auto refusal = winit_service_signature_refusal(facts.style, facts.extended, facts.outer, facts.client);
+        if (refusal && std::string_view(receipt.code) == refusal) {
+            bytes.pop_back();
+            bytes += ",\"service_signature\":" + service_signature_json(facts) + '}';
+        }
     }
-    auto bytes = canonical(result) + '\n';
+    bytes += '\n';
     require(bytes.size() <= 262144, "output_bound");
     DWORD written = 0;
     require(WriteFile(GetStdHandle(STD_OUTPUT_HANDLE), bytes.data(), static_cast<DWORD>(bytes.size()), &written, nullptr)
@@ -817,9 +846,9 @@ int wmain(int argc, wchar_t**) {
         receipt.parsed_observe = !request.invoke;
         deadline->bind(request.deadline);
         operation(request, *deadline, receipt);
-    } catch (const ServiceStyleRefusal& refusal) {
+    } catch (const ServiceSignatureRefusal& refusal) {
         receipt.code = refusal.code;
-        if (receipt.parsed_observe) receipt.service_style = refusal.style;
+        if (receipt.parsed_observe) receipt.service_signature = refusal.facts;
     } catch (const Refusal& refusal) { receipt.code = refusal.code; }
     catch (...) { receipt.code = "worker_refused"; }
     if (!receipt.output_attempted) {

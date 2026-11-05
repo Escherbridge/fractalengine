@@ -1,0 +1,38 @@
+{
+    "kind":  "qa51-service-signature-source-v1",
+    "baseline":  "2dac90333307c6307eee9382250c080a7f8124fe",
+    "approved_plan_sha256":  "1e47fadbb9a66bcea3c862aba532167bd163669bacdf8dbe1455adff230a0dc7",
+    "canonical_plan_sha256":  "945792697cff529b0f94ace618a2eebbc5b2fde2f37faeebdaeb039c2234cc89",
+    "review_sha256":  "7e110f8df4a1191179316ee79af79d4f8fda7fd201131e8eb3945a97da5e9b0f",
+    "files":  [
+                  {
+                      "file":  "tools/qa/native_observer/worker.cpp",
+                      "raw":  ".omc/research/qa51-service-signature-v1/raw/worker.cpp",
+                      "bytes":  46928,
+                      "sha256":  "17bfd627994e541bcae0f13d0f08dec4761698d539d838b13f9576452b1f539f"
+                  },
+                  {
+                      "file":  "tools/qa/native_observer/controller.py",
+                      "raw":  ".omc/research/qa51-service-signature-v1/raw/controller.py",
+                      "bytes":  18508,
+                      "sha256":  "462504abcaafee308ca13802c9fdb454bf0b18586f55d1b0110faaf8fa9ee9c8"
+                  },
+                  {
+                      "file":  "tools/qa/native_observer/scenario.py",
+                      "raw":  ".omc/research/qa51-service-signature-v1/raw/scenario.py",
+                      "bytes":  15236,
+                      "sha256":  "4fa400166cf8b305844916e991fecd5bd608f1122171d7afc6de6b07e9de4bac"
+                  },
+                  {
+                      "file":  "tools/qa/native_observer/AGENTS.md",
+                      "raw":  ".omc/research/qa51-service-signature-v1/raw/AGENTS.md",
+                      "bytes":  31536,
+                      "sha256":  "638784bf17b3e48ef03ccf035483ac3557c36488fd942db17ac36435888cf3e0"
+                  }
+              ],
+    "patch":  {
+                  "file":  ".omc/research/qa51-service-signature-v1/source.patch",
+                  "bytes":  18602,
+                  "sha256":  "3747ae433d80de155643751fa177b03ef50c40f9ffda3bee10d746057f042bf8"
+              }
+}
