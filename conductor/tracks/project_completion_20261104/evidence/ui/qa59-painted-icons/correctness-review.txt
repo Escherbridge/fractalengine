@@ -1,0 +1,73 @@
+# QA59 painted core icons — independent exact source review
+
+**APPROVED for the exact frozen nine-payload candidate.** No source correctness or pinned-API blocker was found. The adapter retains native Button allocation/response/semantics and replaces presentation only. This does not approve unobserved toolbar fit, icon recognition/contrast, glyph-free screenshots or broader visual acceptance. Authored checks remain unexecuted.
+
+Packet `.omc/research/qa59-painted-icons-v1/**`: manifest **5,475 bytes**, SHA256 **`b548871584e531377c6a3cb01c102cbbcee4e410db628a96c5da8cb11dcde486`**; full patch **34,427 bytes**, SHA256 **`300da087b7c886d309272a6e684ec236adcc854df1953172a82a73d83590c117`**. Independently checked all eight before hashes and nine raw hashes, patch/report and both prior visual/frozen-QA59 anchors: zero mismatches. Current eight canonical files equal before copies and the new canonical icons.rs remains absent. Provenance is exact before bytes, not a clean-SHA assertion.
+
+Applied `C:/Users/atooz/.gemini/UI-UX-guidance.md` and both affected directory guides: small readable control symbols, explicit accessible names, consistent behavior, no new state owner or dependency. This review independently assessed the final source and locked APIs rather than treating the author report as approval.
+
+## Pinned API compatibility and one native response
+
+The new `ui_shell/icons.rs` uses an actual public egui0.33.3 path:
+
+- `Atom::custom(id,size)` is public (`src/atomics/atom.rs:57–63`) and stores fixed size plus Custom ID. `Atoms::new` accepts IntoAtoms and `push_right` accepts Into<Atom> (`atoms.rs:15–24`). The blanket Atom/AtomKind/IntoAtoms conversions support owned WidgetText and the composed Atoms. A Button<'static> can own these values; no borrowed text lifetime or invented custom-widget API is needed.
+- Public `Button::new` accepts IntoAtoms and initializes native click sense/font fallback (`widgets/button.rs:44–61`). Public `atom_ui` (`:253–350`) performs the native minimum/frame/layout/interaction/WidgetInfo path; ordinary Widget::ui simply returns its response. IconButton calls that path once and returns **the same response**, without creating a second interact region, child UI or explicit widget ID.
+- `AtomLayoutResponse::rect` is a public optional lookup (`atom_layout.rs:451–480`). Custom rectangles are local entries in that returned layout (`:436–441`); reusing a constant icon-slot ID across different buttons cannot merge their native widget identities. The candidate handles absent custom rects without unwrapping, matching the SDK's invisible-widget contract.
+- Native text remains a Text atom. For truncating property previews, AtomLayout marks the text atom as shrink and gives it remaining width after fixed atoms (`atom_layout.rs:173–270`); the icon slot does not consume or rewrite the stored value. Ordinary native text layout/WidgetInfo remains responsible for captions.
+
+No implementation parser/compiler was invoked. These are source-proven method/type contracts, not a successful typecheck claim.
+
+## IDs, names, roles, disabled and selected behavior
+
+Callers retain explicit `.named`/hover names and existing enable predicates. Native Button assigns its own response and Button role; custom atoms add no action/ID owner. A textless native button may initially have an empty native caption, then the unchanged caller's ResponseExt names it. This remains the established explicit-name path rather than requiring an icon character to stand in for an accessible name.
+
+The adapter default minimum uses the same layout_policy::target_size. Call sites that previously used layout_policy::action now call ui.add(...).named with that identical adapter minimum; the old helper itself only applied that minimum and named the response (`layout_policy.rs:1150–1153`). The explicit min_size/fill/frame/truncate builder methods delegate directly to the same Button.
+
+Native disabled behavior remains in `ui.add_enabled`/add_enabled_ui. Pinned `ui.rs:1848–1858` disables the original UI/painter while drawing and restores it afterward. The adapter paints while that disabled painter is active; Painter::with_clip_rect clones the painter, retaining opacity (`painter.rs:71–74`). It does not paint an enabled overlay over a disabled control or implement a second click handler. Default icon tint uses native interaction text color; explicit tree tint remains explicit and receives painter opacity.
+
+Existing active tool/rail fills remain in their callers. No new semantic selected flag or selection mutation is introduced. Thus the candidate preserves the existing selected convention rather than claiming the native role now exposes a new selected state. Caption focus/hover frames remain native, while icon line color follows the same current interaction visuals. Root must still inspect focused/hovered/disabled appearance after rebuilding.
+
+## Geometry, clipping and intrinsic width
+
+The reserved icon extent follows the resolved native Button font size, capped14 logical points; paint uses that returned custom rectangle. Line art uses1.25-point strokes with an inset, or the existing TreeIcon Circle/Ring/Square painter. Reviewed all21 variant branches: fixed geometry depends only on the enum/rectangle/color, with no user data, external font, texture, path, IO or callback. Filled disclosure triangles use bounded convex polygons; visibility states select existing filled/ring/mixed semantics.
+
+The icon painter intersects caller clip with the native response rect. Existing TreeIcon primitives also fit the reserved14-point rectangle: its ring radius subtracts the stroke allowance. The adapter never expands the control's hit region to match paint. The target minimum remains independent of the smaller visual symbol, so thin icons do not reduce physical interaction targets. Painter clipping also prevents this fixed symbol from escaping its native control during scroll/partial visibility; it does not imply a partly clipped control has passed whole-target acceptance.
+
+Toolstrip allocation still comes from native Button atom layout: fixed custom width plus native icon_spacing/text/frame margins, with the existing responsive topbar/menu policy. It is **not guaranteed pixel-identical** to a Unicode glyph plus space. The fixed1160-point compact threshold is unchanged. Accordingly actual1280/1x and both sides of the current responsive threshold, with Deselect present and all right-hand controls visible, are required rebuilt checks. No current frozen screenshot can prove the revised strip fits. This practical risk is explicitly retained in the author report and is an execution requirement, not a speculative source defect or permission to waive clipping.
+
+No direct-painter payload contains user text; optional captions remain ordinary native text. Paint is confined to the already-owned control/caller surfaces. No extra floating area, capture producer registration, privacy classification or positive capture capability is introduced. Capture acceptance itself is outside this source verdict.
+
+## Complete call-site delta and unchanged actions
+
+- ToolDef changes only the presentation field from glyph string to typed Icon. All seven tool variants, names, shortcut strings/KeyCodes and requires_edit decisions stay intact. Topbar production tool activation still checks the same role, activates the same tool and reveals the same Options section. The existing activation journey now locates the unchanged native textual name, since the symbol is no longer embedded in that text.
+- Topbar Data/Options/Settings/Maps and labelled Deselect replace only button presentation. Their fills, named responses, toggles and callbacks remain. Compact Tools/Panels menus and caption/window controls retain their original owner and paths.
+- Right-sidebar rail uses one exhaustive section→Icon mapping and the same active fill, target minimum, accessible names/tooltips and `state.toggle` callback. The seven section choices remain distinct enum variants; no section/action is removed.
+- Inspector normal/compact Close and token dismissal retain their original conditions/actions. Object/array disclosure chooses Expand/Collapse from the same existing `expanded` bool, names the same control and toggles the same persistent detail scope. Value preview, loading/editing/pending gates, typed draft/parser, Copy/Delete/confirmation/commit paths remain unchanged.
+- Sidebar eye_button accepts Icon and preserves enabled state, explicit names, tint, frame=false, tooltip and clicked result. Verse/fractal rollups and petal/node/group booleans map the same actual visibility results to Visible/Hidden/Mixed. Active-Petal and registry/pending guards are unchanged. Legacy glyph functions remain available for other callers.
+- Module registration is crate-private; no dependency or public API is added. Directory documentation explains the shared adapter and execution limits. The existing tree appearance palette and hierarchy/caption painters are not rewritten.
+
+No source evidence supports calling this a focus/resize fix or passing live52/520-point bodies. The frozen QA59 state and prior grid acceptance/failures remain historical and unmodified.
+
+## Authored checks: useful, not acceptance
+
+The existing distinct-rail test retains seven-choice uniqueness using Icon and calls a shared test-only journey. The journey uses actual Button/AccessKit/output shapes across0.75/1/2x and enabled/disabled UIs, requiring explicit Button role/name, minimum20physical-pixel dimensions, vector shapes bounded by response, no Text shapes for the icon-only sample, and capped extent. Pointer settle/press/release traverses the native response and asserts stable response ID plus enabled-only click behavior. All referenced public shape/rectangle/semantic APIs exist in pinned SDK source.
+
+The existing topbar role/activation journey still covers Viewer edit refusal, Measure access and Owner Move activation through production buttons. Tests are not replaced by a standalone mock of click logic, and no new test declaration is registered. The isolated shared sample uses frame=false/icon-only buttons: it does not itself establish combined text+icon toolbar width, all rail visual states, property disclosure fits, glyph recognizability or production screenshots. No assertion has run, and native API availability is not compilation evidence.
+
+Before visual acceptance root must rebuild these exact bytes, inspect toolbar threshold/default fit, all seven rail symbols, Close, expanded/collapsed and visibility states, thin text-sized weight and disabled/hover/focus behavior, while preserving existing full-key/draft/confirmation/callback evidence. Source bounds and symbol absence in a string cannot certify the rendered result.
+
+## Approved exact raw payloads
+
+| Canonical path | Bytes | SHA256 |
+| --- | ---: | --- |
+| fe-ui/src/panels/AGENTS.md |76265 |18166d431fa2f51ce75aee8c252aedeaddde56e6a7c0f1966121bcab4966a57f |
+| fe-ui/src/panels/inspector.rs |290787 |c4af2323d1083e4f7bdcb03d462d4232bd07f145d086e7c519212931209ffeb9 |
+| fe-ui/src/panels/sidebar.rs |83087 |c71d0850b58ac759a04ab077b5185398282763a045293f83fd715368a8062031 |
+| fe-ui/src/panels/toolbar.rs |9787 |1d2d02e718df97c1a25dccd459280806f57e860bb87c421bdbd47925d6450923 |
+| fe-ui/src/ui_shell/AGENTS.md |52065 |bd68f9855db5b51c2a66185118edfe8b39a90699e3ed70d1622c80e9a41726fd |
+| fe-ui/src/ui_shell/icons.rs (new) |12604 |0397980bba1690ed77fefaf8483fb2de35922fabe52d1e453c41ddde5af4fd55 |
+| fe-ui/src/ui_shell/mod.rs |691 |039977fdea8b4fc61c97f247b75203d2b3b40b24c13e86a72b727b76d59bc5da |
+| fe-ui/src/ui_shell/right_sidebar.rs |128407 |b3a0012f66a3d917abe3c1cf46b5288473622bdecfd28b43727068aca985442b |
+| fe-ui/src/ui_shell/topbar.rs |53239 |15cff200fec78d6a9dbc89d6e4b49dc559ef0d788b37921059ac798e8c9e1d59 |
+
+Only this review report was written. Read-only source/pinned-SDK/evidence/hash inspection was used; no canonical/candidate edits, implementation parser/tests/formatter/compiler/build, app/OS/native/API/DB/network or Git mutation occurred. Approval is limited to these exact frozen bytes.

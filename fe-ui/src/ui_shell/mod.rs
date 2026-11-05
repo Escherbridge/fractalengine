@@ -13,5 +13,6 @@ pub(crate) mod setting_draft;
 pub mod topbar;
 
 pub mod layout_policy;
+pub(crate) mod icons;
 
 pub mod results_dock;

@@ -1021,3 +1021,17 @@ with Options and the complete-selection form. A terminal read refusal displays
 its existing error and explicit Refresh rather than claiming loading continues.
 Refresh retains drafts and pending-write ownership; it never enables transforms
 from visible ECS state or retries a write.
+
+
+## Painted core action icons (QA59)
+
+Inspector Close and stored-property disclosure use ui_shell::icons::IconButton;
+sidebar visibility maps its existing boolean/rollup result to typed Icon variants.
+This removes font coverage assumptions from icon-only actions while retaining
+native Button responses, explicit names, enabled reasons, tooltip and state/action
+ownership. The legacy visibility glyph functions remain available to their other
+callers; no domain or visibility resolution policy changes. The native body
+scroll, expanded-value identity, draft retention, delete confirmation, guards and
+mutation callbacks remain unchanged. Inspector token dismissal reuses the same
+Close presentation without changing token handling. See ../ui_shell/AGENTS.md
+section Painted core control icons for adapter geometry and verification limits.

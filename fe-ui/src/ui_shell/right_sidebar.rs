@@ -14,6 +14,7 @@
 
 use bevy::prelude::Resource;
 use bevy_egui::egui;
+use super::icons::Icon;
 
 use crate::accessibility::ResponseExt;
 use fe_database::handlers::node_view::MAX_VIEW_GROUPS;
@@ -1766,17 +1767,17 @@ pub(crate) fn section_chrome(
     state.width.register(ctx, id, PanelSide::Right, bounds, panel.response.rect);
 }
 
-/// Rail glyph for a section. Pure + total, so a new variant cannot silently
+/// Rail icon for a section. Pure + total, so a new variant cannot silently
 /// vanish from the rail.
-fn section_glyph(section: RightSidebarSection) -> &'static str {
+fn section_icon(section: RightSidebarSection) -> Icon {
     match section {
-        RightSidebarSection::Inspector => "\u{24D8}",
-        RightSidebarSection::Options => "\u{1F527}",
-        RightSidebarSection::TerrainTools => "\u{26F0}",
-        RightSidebarSection::ProposalReport => "\u{1F4C4}",
-        RightSidebarSection::Settings => "\u{2699}",
-        RightSidebarSection::Maps => "\u{1F4E6}",
-        RightSidebarSection::Groups => "\u{25C9}",
+        RightSidebarSection::Inspector => Icon::Info,
+        RightSidebarSection::Options => Icon::Options,
+        RightSidebarSection::TerrainTools => Icon::Terrain,
+        RightSidebarSection::ProposalReport => Icon::Report,
+        RightSidebarSection::Settings => Icon::Settings,
+        RightSidebarSection::Maps => Icon::Maps,
+        RightSidebarSection::Groups => Icon::Groups,
     }
 }
 
@@ -1789,11 +1790,11 @@ fn section_rail(ui: &mut egui::Ui, state: &mut RightSidebarState) {
     ui.horizontal_wrapped(|ui| {
         ui.add_space(8.0);
         for section in ALL_SECTIONS {
-            let glyph = section_glyph(section);
+            let icon = section_icon(section);
             let active = state.is_active(section);
             if ui
                 .add(
-                    egui::Button::new(glyph)
+                    icon.button(ui)
                         .min_size(egui::Vec2::splat(
                             crate::ui_shell::layout_policy::target_size(ui.ctx()),
                         ))
@@ -3106,10 +3107,10 @@ mod tests {
     fn every_section_has_a_distinct_rail_glyph() {
         // D10/finding #3: the rail is the only resting-state entry point to
         // TerrainTools/ProposalReport, so no section may share or drop a glyph.
-        let mut glyphs: Vec<&str> = ALL.iter().map(|s| section_glyph(*s)).collect();
-        assert!(glyphs.iter().all(|g| !g.is_empty()));
-        glyphs.sort_unstable();
-        glyphs.dedup();
-        assert_eq!(glyphs.len(), ALL.len(), "duplicate rail glyph");
+        let mut icons: Vec<Icon> = ALL.iter().map(|s| section_icon(*s)).collect();
+        icons.sort_unstable();
+        icons.dedup();
+        assert_eq!(icons.len(), ALL.len(), "duplicate rail icon");
+        super::super::icons::assert_icon_button_journey();
     }
 }

@@ -1,0 +1,805 @@
+--- a/fe-ui/src/panels/AGENTS.md
++++ b/fe-ui/src/panels/AGENTS.md
+@@ -1021,3 +1021,17 @@
+ its existing error and explicit Refresh rather than claiming loading continues.
+ Refresh retains drafts and pending-write ownership; it never enables transforms
+ from visible ECS state or retries a write.
++
++
++## Painted core action icons (QA59)
++
++Inspector Close and stored-property disclosure use ui_shell::icons::IconButton;
++sidebar visibility maps its existing boolean/rollup result to typed Icon variants.
++This removes font coverage assumptions from icon-only actions while retaining
++native Button responses, explicit names, enabled reasons, tooltip and state/action
++ownership. The legacy visibility glyph functions remain available to their other
++callers; no domain or visibility resolution policy changes. The native body
++scroll, expanded-value identity, draft retention, delete confirmation, guards and
++mutation callbacks remain unchanged. Inspector token dismissal reuses the same
++Close presentation without changing token handling. See ../ui_shell/AGENTS.md
++section Painted core control icons for adapter geometry and verification limits.
+--- a/fe-ui/src/panels/inspector.rs
++++ b/fe-ui/src/panels/inspector.rs
+@@ -24,6 +24,7 @@
+ use crate::terrain_map::PetalMapState;
+ use crate::theme;
+ use crate::ui_shell::layout_policy;
++use crate::ui_shell::icons::Icon;
+ use crate::verse_manager::db_results::tokens::mint_command;
+ use crate::verse_manager::VerseManager;
+ use fe_runtime::messages::DbCommand;
+@@ -130,7 +131,7 @@
+         crate::ui_shell::layout_policy::trailing_row(ui, |ui| {
+             if ui
+                 .add(
+-                    egui::Button::new("\u{2715}")
++                    Icon::Close.button(ui)
+                         .fill(egui::Color32::TRANSPARENT)
+                         .min_size(egui::Vec2::splat(crate::ui_shell::layout_policy::target_size(ui.ctx()))),
+                 )
+@@ -225,7 +226,7 @@
+             count => format!("{count} selected objects"),
+         };
+         ui.add_sized([width, target], egui::Label::new(label).truncate());
+-        if selected && layout_policy::action(ui, egui::Button::new("\u{2715}"), "Deselect object")
++        if selected && ui.add(Icon::Close.button(ui)).named(ui, "Deselect object")
+             .on_hover_text("Deselect").clicked() {
+             node_mgr.deselect();
+         }
+@@ -1259,7 +1260,7 @@
+                                         .color(theme::TEXT_SECTION),
+                                 );
+                                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+-                                    if layout_policy::action(ui, egui::Button::new("\u{2715}").fill(egui::Color32::TRANSPARENT), "Dismiss generated API token").clicked() {
++                                    if ui.add(Icon::Close.button(ui).fill(egui::Color32::TRANSPARENT)).named(ui, "Dismiss generated API token").clicked() {
+                                         dismiss_token = true;
+                                     }
+                                 });
+@@ -1958,11 +1959,11 @@
+         columns.content_cell(ui, 2, |ui| {
+             let preview = super::property_grid::preview(value);
+             if value.is_object() || value.is_array() {
+-                let marker = if expanded { "▾" } else { "▸" };
++                let marker = if expanded { Icon::Collapse } else { Icon::Expand };
+                 if ui
+                     .add_enabled(
+                         !editing,
+-                        egui::Button::new(format!("{marker} {preview}"))
++                        marker.text_button(ui, preview)
+                             .truncate()
+                             .min_size(egui::vec2(ui.available_width(), columns.height)),
+                     )
+--- a/fe-ui/src/panels/sidebar.rs
++++ b/fe-ui/src/panels/sidebar.rs
+@@ -5,6 +5,7 @@
+ use crate::accessibility::ResponseExt;
+ 
+ use super::tree_appearance::EntryKind;
++use crate::ui_shell::icons::Icon;
+ use super::tree_entry::{self, RowSelection, Target};
+ use crate::actions::{UiAction, UiManager};
+ use crate::atlas::DashboardState;
+@@ -134,16 +135,12 @@
+ /// active petal's eye is disabled + tooltipped, never clickable).
+ fn eye_button(
+     ui: &mut egui::Ui,
+-    glyph: &str,
++    icon: Icon,
+     enabled: bool,
+     tooltip: &str,
+     name: impl std::fmt::Display,
+ ) -> bool {
+-    let btn = egui::Button::new(
+-        egui::RichText::new(glyph)
+-            .small()
+-            .color(theme::TREE_NODE_ICON),
+-    )
++    let btn = icon.button(ui).color(theme::TREE_NODE_ICON)
+     .frame(false)
+     .min_size(egui::Vec2::splat(
+         crate::ui_shell::layout_policy::target_size(ui.ctx()),
+@@ -180,7 +177,7 @@
+                 .map(|f| visibility::fractal_effective_visible(&f.id, &verse_id, vis_state)),
+             own_visible,
+         );
+-        let glyph = visibility::glyph_for_rollup(rollup_state);
++        let icon = Icon::visibility_rollup(rollup_state);
+         let eye_tooltip = if own_visible {
+             "Hide verse"
+         } else {
+@@ -218,7 +215,7 @@
+                         |ui| {
+                             eye_button(
+                                 ui,
+-                                glyph,
++                                icon,
+                                 true,
+                                 eye_tooltip,
+                                 format_args!("{eye_tooltip}: verse {verse_name}"),
+@@ -305,7 +302,7 @@
+             }),
+             own_visible,
+         );
+-        let glyph = visibility::glyph_for_rollup(rollup_state);
++        let icon = Icon::visibility_rollup(rollup_state);
+         let eye_tooltip = if own_visible {
+             "Hide fractal"
+         } else {
+@@ -344,7 +341,7 @@
+                         |ui| {
+                             eye_button(
+                                 ui,
+-                                glyph,
++                                icon,
+                                 true,
+                                 eye_tooltip,
+                                 format_args!("{eye_tooltip}: fractal {fractal_name}"),
+@@ -424,7 +421,7 @@
+ 
+         let own_visible =
+             visibility::petal_effective_visible(&petal_id, fractal_id, verse_id, vis_state);
+-        let glyph = visibility::glyph_for_bool(own_visible);
++        let icon = Icon::visibility(own_visible);
+         let (eye_enabled, eye_tooltip) = petal_eye(
+             is_active,
+             own_visible,
+@@ -459,7 +456,7 @@
+                         |ui| {
+                             eye_button(
+                                 ui,
+-                                glyph,
++                                icon,
+                                 eye_enabled,
+                                 eye_tooltip,
+                                 format_args!("{eye_tooltip}: petal {petal_name}"),
+@@ -874,7 +871,7 @@
+ 
+         let reason = visibility::node_hidden_reason(&node_id, ancestry, vis_state);
+         let effectively_visible = reason == visibility::HiddenReason::NotHidden;
+-        let glyph = visibility::glyph_for_bool(effectively_visible);
++        let icon = Icon::visibility(effectively_visible);
+         let eye_tooltip = visibility::node_eye_tooltip(&reason);
+ 
+         let (label_resp, eye_clicked) = tree_entry::row(
+@@ -898,7 +895,7 @@
+             |ui| {
+                 eye_button(
+                     ui,
+-                    glyph,
++                    icon,
+                     true,
+                     &eye_tooltip,
+                     format_args!("{eye_tooltip}: node {node_name}"),
+@@ -1095,7 +1092,7 @@
+                     };
+                     if eye_button(
+                         ui,
+-                        visibility::glyph_for_bool(group.visible),
++                        Icon::visibility(group.visible),
+                         vis_state.registry_ready(petal_id) && !ui_mgr.editor_batch.is_pending(),
+                         tooltip,
+                         format_args!("{tooltip}: {}", group.name),
+@@ -1249,7 +1246,7 @@
+                                         |ui| {
+                                             super::eye_button(
+                                                 ui,
+-                                                crate::visibility::glyph_for_bool(true),
++                                                crate::ui_shell::icons::Icon::visibility(true),
+                                                 true,
+                                                 "Hide node",
+                                                 "Hide test node",
+@@ -1925,7 +1922,7 @@
+                             |ui| {
+                                 super::eye_button(
+                                     ui,
+-                                    crate::visibility::glyph_for_bool(true),
++                                    crate::ui_shell::icons::Icon::visibility(true),
+                                     true,
+                                     "Hide node",
+                                     "Hide copy target",
+--- a/fe-ui/src/panels/toolbar.rs
++++ b/fe-ui/src/panels/toolbar.rs
+@@ -8,6 +8,7 @@
+ 
+ use crate::panels::tool_inspector::panel_descriptor;
+ use crate::theme;
++use crate::ui_shell::icons::Icon;
+ 
+ /// Active viewport transform tool.
+ #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+@@ -33,12 +34,12 @@
+     }
+ }
+ 
+-/// One viewport tool: button glyph, user-facing name, shortcut, key binding.
++/// One viewport tool: painted icon, user-facing name, shortcut, key binding.
+ /// The hover tooltip text is sourced from `tool_inspector::panel_descriptor`
+ /// (joined in `tool_tooltip_text`) so button and description can't drift.
+ pub(crate) struct ToolDef {
+     pub(crate) tool: Tool,
+-    pub(crate) glyph: &'static str,
++    pub(crate) icon: Icon,
+     pub(crate) name: &'static str,
+     pub(crate) key: &'static str,
+     pub(crate) key_code: KeyCode,
+@@ -49,50 +50,49 @@
+ pub(crate) const TOOL_DEFS: [ToolDef; 7] = [
+     ToolDef {
+         tool: Tool::Select,
+-        glyph: "\u{2B1A}",
++        icon: Icon::Select,
+         name: "Select",
+         key: "S",
+         key_code: KeyCode::KeyS,
+     },
+     ToolDef {
+         tool: Tool::Move,
+-        glyph: "\u{271B}",
++        icon: Icon::Move,
+         name: "Move",
+         key: "G",
+         key_code: KeyCode::KeyG,
+     },
+     ToolDef {
+         tool: Tool::Rotate,
+-        glyph: "\u{21BB}",
++        icon: Icon::Rotate,
+         name: "Rotate",
+         key: "R",
+         key_code: KeyCode::KeyR,
+     },
+     ToolDef {
+         tool: Tool::Scale,
+-        glyph: "\u{2921}",
++        icon: Icon::Scale,
+         name: "Scale",
+         key: "X",
+         key_code: KeyCode::KeyX,
+     },
+     ToolDef {
+         tool: Tool::Pen,
+-        glyph: "\u{270E}",
++        icon: Icon::Pen,
+         name: "Pen",
+         key: "P",
+         key_code: KeyCode::KeyP,
+     },
+     ToolDef {
+         tool: Tool::Brush,
+-        glyph: "\u{25CF}",
++        icon: Icon::Brush,
+         name: "Brush",
+         key: "B",
+         key_code: KeyCode::KeyB,
+     },
+     ToolDef {
+         tool: Tool::Measure,
+-        // BMP arrow, not the U+1F4CF ruler color emoji: egui recolors it like its siblings.
+-        glyph: "\u{2194}",
++        icon: Icon::Measure,
+         name: "Measure",
+         key: "M",
+         key_code: KeyCode::KeyM,
+--- a/fe-ui/src/ui_shell/AGENTS.md
++++ b/fe-ui/src/ui_shell/AGENTS.md
+@@ -662,7 +662,7 @@
+ 
+ The same existing journey now populates64rows/24columns, requires actual overflow
+ on both axes and checks visible control hit-and-clip intersections on both X and
+-Y boundaries. Both/left/right/no-side profiles run at0.75/1/1.25/2x, retaining a
++Y boundaries. Both/left/right/no-side profiles run at 0.75/1/1.25/2x, retaining a
+ separate same-Context scale-restoration sequence. It asserts first-column header
+ and cell presence plus the original8-point margin on edges without a divider.
+ A cfg(test)-only accessor retains actual public ScrollAreaOutput viewport,
+@@ -753,3 +753,33 @@
+ through editor_batch::ui::render_read_status. Existing capture/capability gates
+ still disable transforms; terminal errors and pure-read retry are visible without
+ introducing a second selection owner or resetting an unknown accepted write.
++
++
++## Painted core control icons (QA59)
++
++icons.rs is the font-independent presentation adapter for core toolbar tools,
++section navigation, Close, stored-value disclosure and tree visibility states.
++Icon is a closed semantic enum; domain actions and state remain with the existing
++callers. It reuses TreeIcon circle/ring/square paint and the caption-button vector
++idiom. User data, arbitrary text, and the tree appearance palette are unchanged.
++
++IconButton builds one native egui Button using a fixed-size Atom::custom and,
++optionally, native text. Button::atom_ui returns the actual icon rectangle after
++native alignment/wrapping/truncation. Painting consumes that rectangle, capped at
++14 logical points and the resolved button font size, with thin 1.25-point strokes.
++Its clip intersects the native control and caller clip. Disabled opacity comes
++from the caller's existing painter; ordinary hover/focus text color comes from
++native interaction visuals. The caller retains fill/active-mode conventions,
++explicit accessible names, tooltips, permission gates and the click handler.
++There is no new response, child UI, texture/font dependency or input owner.
++The custom atom id is local to each Button's returned layout, not a widget id.
++
++The same native target minimum remains independent of icon paint size. Existing
++section rail mode fills stay with their original owner; no new selection writer
++or semantic selected flag is introduced. ToolDef carries Icon instead of a Unicode
++glyph; topbar tests locate unchanged textual tool names. The existing distinct-rail
++journey now also authors the adapter's vector bounds/clip, text-free icon paint,
++native accessible Button names/roles, stable IDs and disabled-click checks at
++0.75/1/2x. These checks are authored but unexecuted in this isolated candidate.
++Actual screenshots must still establish icon recognition, contrast and toolbar
++fit, including responsive breakpoint cases, before visual acceptance.
+--- /dev/null
++++ b/fe-ui/src/ui_shell/icons.rs
+@@ -0,0 +1,305 @@
++//! Font-independent semantic button icons; see ui_shell/AGENTS.md.
++
++use bevy_egui::egui;
++use crate::settings::TreeIcon;
++
++#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
++pub(crate) enum Icon {
++    Select,
++    Move,
++    Rotate,
++    Scale,
++    Pen,
++    Brush,
++    Measure,
++    Close,
++    Info,
++    Options,
++    Terrain,
++    Report,
++    Settings,
++    Maps,
++    Groups,
++    Data,
++    Expand,
++    Collapse,
++    Visible,
++    Hidden,
++    Mixed,
++}
++
++impl Icon {
++    pub(crate) fn visibility(visible: bool) -> Self {
++        if visible {
++            Self::Visible
++        } else {
++            Self::Hidden
++        }
++    }
++
++    pub(crate) fn visibility_rollup(state: crate::visibility::RollupState) -> Self {
++        use crate::visibility::RollupState;
++        match state {
++            RollupState::AllVisible => Self::Visible,
++            RollupState::AllHidden => Self::Hidden,
++            RollupState::Mixed => Self::Mixed,
++        }
++    }
++
++    pub(crate) fn button(self, ui: &egui::Ui) -> IconButton {
++        IconButton::new(ui, self, None)
++    }
++
++    pub(crate) fn text_button(
++        self,
++        ui: &egui::Ui,
++        text: impl Into<egui::WidgetText>,
++    ) -> IconButton {
++        IconButton::new(ui, self, Some(text.into()))
++    }
++
++    fn paint(self, painter: &egui::Painter, rect: egui::Rect, color: egui::Color32) {
++        let side = rect.width().min(rect.height()).min(14.0);
++        let rect = egui::Rect::from_center_size(rect.center(), egui::Vec2::splat(side));
++        let inner = rect.shrink(1.25);
++        let point = |x: f32, y: f32| egui::pos2(inner.left() + inner.width() * x, inner.top() + inner.height() * y);
++        let stroke = egui::Stroke::new(1.25, color);
++        let line = |points: &[[f32; 2]]| {
++            for pair in points.windows(2) {
++                painter.line_segment([point(pair[0][0], pair[0][1]), point(pair[1][0], pair[1][1])], stroke);
++            }
++        };
++        let circle = |x: f32, y: f32, radius: f32| {
++            painter.circle_stroke(point(x, y), radius * inner.width(), stroke);
++        };
++        match self {
++            Self::Select => TreeIcon::Square.paint(painter, rect, color),
++            Self::Visible | Self::Brush => TreeIcon::Circle.paint(painter, rect, color),
++            Self::Hidden => TreeIcon::Ring.paint(painter, rect, color),
++            Self::Close => {
++                line(&[[0.1, 0.1], [0.9, 0.9]]);
++                line(&[[0.9, 0.1], [0.1, 0.9]]);
++            }
++            Self::Move => {
++                line(&[[0.5, 0.0], [0.5, 1.0]]);
++                line(&[[0.0, 0.5], [1.0, 0.5]]);
++                for (tip, a, b) in [([0.5, 0.0], [0.3, 0.2], [0.7, 0.2]),
++                    ([0.5, 1.0], [0.3, 0.8], [0.7, 0.8]),
++                    ([0.0, 0.5], [0.2, 0.3], [0.2, 0.7]),
++                    ([1.0, 0.5], [0.8, 0.3], [0.8, 0.7])] {
++                    line(&[a, tip, b]);
++                }
++            }
++            Self::Rotate => {
++                for i in 0..12 {
++                    let a = i as f32 * std::f32::consts::TAU / 16.0;
++                    let b = (i + 1) as f32 * std::f32::consts::TAU / 16.0;
++                    line(&[[0.5 + 0.4 * a.cos(), 0.5 + 0.4 * a.sin()],
++                        [0.5 + 0.4 * b.cos(), 0.5 + 0.4 * b.sin()]]);
++                }
++                line(&[[0.3, 0.05], [0.5, 0.1], [0.4, 0.3]]);
++            }
++            Self::Scale => {
++                line(&[[0.05, 0.95], [0.95, 0.05]]);
++                line(&[[0.05, 0.55], [0.05, 0.95], [0.45, 0.95]]);
++                line(&[[0.55, 0.05], [0.95, 0.05], [0.95, 0.45]]);
++            }
++            Self::Pen => line(&[[0.1, 0.9], [0.2, 0.6], [0.75, 0.05], [0.95, 0.25], [0.4, 0.8], [0.1, 0.9]]),
++            Self::Measure => {
++                line(&[[0.0, 0.5], [1.0, 0.5]]);
++                line(&[[0.2, 0.3], [0.0, 0.5], [0.2, 0.7]]);
++                line(&[[0.8, 0.3], [1.0, 0.5], [0.8, 0.7]]);
++            }
++            Self::Info => {
++                TreeIcon::Ring.paint(painter, rect, color);
++                line(&[[0.5, 0.45], [0.5, 0.75]]);
++                painter.circle_filled(point(0.5, 0.25), 0.7, color);
++            }
++            Self::Options => {
++                line(&[[0.7, 0.0], [0.55, 0.2], [0.65, 0.4], [0.85, 0.45], [1.0, 0.3]]);
++                line(&[[0.95, 0.5], [0.2, 1.0], [0.0, 0.8], [0.5, 0.25]]);
++            }
++            Self::Terrain => {
++                line(&[[0.0, 0.9], [0.4, 0.1], [0.65, 0.6], [0.8, 0.35], [1.0, 0.9], [0.0, 0.9]]);
++                line(&[[0.25, 0.4], [0.4, 0.5], [0.5, 0.3]]);
++            }
++            Self::Report => {
++                line(&[[0.15, 0.0], [0.65, 0.0], [0.9, 0.25], [0.9, 1.0], [0.15, 1.0], [0.15, 0.0]]);
++                line(&[[0.65, 0.0], [0.65, 0.25], [0.9, 0.25]]);
++                line(&[[0.3, 0.5], [0.75, 0.5]]);
++                line(&[[0.3, 0.75], [0.75, 0.75]]);
++            }
++            Self::Settings => {
++                circle(0.5, 0.5, 0.3);
++                circle(0.5, 0.5, 0.1);
++                for i in 0..8 {
++                    let angle = i as f32 * std::f32::consts::TAU / 8.0;
++                    line(&[[0.5 + 0.3 * angle.cos(), 0.5 + 0.3 * angle.sin()],
++                        [0.5 + 0.48 * angle.cos(), 0.5 + 0.48 * angle.sin()]]);
++                }
++            }
++            Self::Maps => {
++                line(&[[0.5, 0.0], [1.0, 0.25], [1.0, 0.75], [0.5, 1.0], [0.0, 0.75], [0.0, 0.25], [0.5, 0.0]]);
++                line(&[[0.0, 0.25], [0.5, 0.5], [1.0, 0.25]]);
++                line(&[[0.5, 0.5], [0.5, 1.0]]);
++            }
++            Self::Groups => {
++                circle(0.5, 0.25, 0.2);
++                circle(0.2, 0.75, 0.2);
++                circle(0.8, 0.75, 0.2);
++            }
++            Self::Data => {
++                line(&[[0.0, 0.15], [0.33, 0.0], [0.67, 0.15], [1.0, 0.0], [1.0, 0.85], [0.67, 1.0], [0.33, 0.85], [0.0, 1.0], [0.0, 0.15]]);
++                line(&[[0.33, 0.0], [0.33, 0.85]]);
++                line(&[[0.67, 0.15], [0.67, 1.0]]);
++            }
++            Self::Expand | Self::Collapse => {
++                let points = if self == Self::Expand {
++                    vec![point(0.3, 0.1), point(0.8, 0.5), point(0.3, 0.9)]
++                } else { vec![point(0.1, 0.3), point(0.9, 0.3), point(0.5, 0.8)] };
++                painter.add(egui::Shape::convex_polygon(points, color, egui::Stroke::NONE));
++            }
++            Self::Mixed => {
++                TreeIcon::Ring.paint(painter, rect, color);
++                let mut points = vec![point(0.5, 0.5)];
++                for i in 0..=8 {
++                    let angle = std::f32::consts::FRAC_PI_2 + i as f32 * std::f32::consts::PI / 8.0;
++                    points.push(point(0.5 + 0.4 * angle.cos(), 0.5 + 0.4 * angle.sin()));
++                }
++                painter.add(egui::Shape::convex_polygon(points, color, egui::Stroke::NONE));
++            }
++        }
++    }
++}
++
++/// Adapter over the native Button custom-atom seam; see ui_shell/AGENTS.md.
++pub(crate) struct IconButton {
++    button: egui::Button<'static>,
++    icon: Icon,
++    color: Option<egui::Color32>,
++}
++
++fn icon_slot() -> egui::Id {
++    egui::Id::new("fe-semantic-icon")
++}
++
++impl IconButton {
++    fn new(ui: &egui::Ui, icon: Icon, text: Option<egui::WidgetText>) -> Self {
++        let font = egui::FontSelection::Default
++            .resolve_with_fallback(ui.style(), egui::TextStyle::Button.into());
++        let size = font.size.clamp(2.0, 14.0);
++        let mut atoms = egui::Atoms::new(egui::Atom::custom(icon_slot(), egui::Vec2::splat(size)));
++        if let Some(text) = text {
++            atoms.push_right(text);
++        }
++        Self {
++            button: egui::Button::new(atoms)
++                .min_size(egui::Vec2::splat(super::layout_policy::target_size(ui.ctx()))),
++            icon,
++            color: None,
++        }
++    }
++}
++
++impl IconButton {
++    pub(crate) fn fill(mut self, color: egui::Color32) -> Self {
++        self.button = self.button.fill(color);
++        self
++    }
++
++    pub(crate) fn frame(mut self, frame: bool) -> Self {
++        self.button = self.button.frame(frame);
++        self
++    }
++
++    pub(crate) fn min_size(mut self, size: egui::Vec2) -> Self {
++        self.button = self.button.min_size(size);
++        self
++    }
++
++    pub(crate) fn truncate(mut self) -> Self {
++        self.button = self.button.truncate();
++        self
++    }
++
++    pub(crate) fn color(mut self, color: egui::Color32) -> Self {
++        self.color = Some(color);
++        self
++    }
++}
++
++impl egui::Widget for IconButton {
++    fn ui(self, ui: &mut egui::Ui) -> egui::Response {
++        let painted = self.button.atom_ui(ui);
++        if let Some(rect) = painted.rect(icon_slot()) {
++            let color = self.color
++                .unwrap_or_else(|| ui.style().interact(&painted.response).text_color());
++            let painter = ui.painter().with_clip_rect(ui.clip_rect().intersect(painted.response.rect));
++            self.icon.paint(&painter, rect, color);
++        }
++        painted.response
++    }
++}
++
++#[cfg(test)]
++pub(super) fn assert_icon_button_journey() {
++    use crate::accessibility::ResponseExt;
++    let icons = [Icon::Select, Icon::Move, Icon::Rotate, Icon::Scale, Icon::Pen,
++        Icon::Brush, Icon::Measure, Icon::Close, Icon::Info, Icon::Options,
++        Icon::Terrain, Icon::Report, Icon::Settings, Icon::Maps, Icon::Groups,
++        Icon::Data, Icon::Expand, Icon::Collapse, Icon::Visible, Icon::Hidden, Icon::Mixed];
++    for scale in [0.75, 1.0, 2.0] {
++        for enabled in [false, true] {
++            let ctx = egui::Context::default();
++            ctx.set_pixels_per_point(scale);
++            ctx.enable_accesskit();
++            let draw = |events| {
++                let mut responses = Vec::new();
++                let output = ctx.run(egui::RawInput {
++                    screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1100.0, 120.0))),
++                    events,
++                    ..Default::default()
++                }, |ctx| {
++                    super::layout_policy::apply_style(ctx);
++                    egui::CentralPanel::default().show(ctx, |ui| {
++                        ui.horizontal(|ui| {
++                            for (index, icon) in icons.iter().copied().enumerate() {
++                                responses.push(ui.add_enabled(enabled, icon.button(ui).frame(false))
++                                    .named(ui, format!("Icon {index}")));
++                            }
++                        });
++                    });
++                });
++                (output, responses)
++            };
++            let (output, responses) = draw(Vec::new());
++            let update = output.platform_output.accesskit_update.as_ref().expect("native button semantics");
++            for (index, response) in responses.iter().enumerate() {
++                assert_eq!(response.enabled(), enabled);
++                assert!(response.rect.width() * scale >= 20.0 && response.rect.height() * scale >= 20.0);
++                let semantic = update.nodes.iter().find(|(id, _)| id.0 == response.id.value())
++                    .map(|(_, node)| node).expect("named native button");
++                assert_eq!(semantic.label(), Some(format!("Icon {index}").as_str()));
++                assert_eq!(semantic.role(), egui::accesskit::Role::Button);
++                let painted: Vec<_> = output.shapes.iter().filter(|shape| shape.clip_rect == response.rect).collect();
++                assert!(!painted.is_empty(), "every semantic icon emits vector shapes");
++                let mut bounds = egui::Rect::NOTHING;
++                for shape in painted {
++                    assert!(!matches!(&shape.shape, egui::Shape::Text(_)), "icons do not depend on font coverage");
++                    bounds |= shape.shape.visual_bounding_rect();
++                }
++                assert!(response.rect.contains_rect(bounds), "painted vectors fit the native control");
++                assert!(bounds.width() <= 14.01 && bounds.height() <= 14.01, "icon paint stays text-sized");
++            }
++            let at = responses[0].rect.center();
++            let pointer = |pressed| egui::Event::PointerButton {
++                pos: at, button: egui::PointerButton::Primary, pressed, modifiers: egui::Modifiers::NONE,
++            };
++            let _ = draw(vec![egui::Event::PointerMoved(at)]);
++            let _ = draw(vec![pointer(true)]);
++            let (_, released) = draw(vec![pointer(false)]);
++            assert_eq!(released[0].id, responses[0].id, "custom atoms add no competing response identity");
++            assert_eq!(released[0].clicked(), enabled, "native disabled/click gating is retained");
++        }
++    }
++}
+--- a/fe-ui/src/ui_shell/mod.rs
++++ b/fe-ui/src/ui_shell/mod.rs
+@@ -13,5 +13,6 @@
+ pub mod topbar;
+ 
+ pub mod layout_policy;
++pub(crate) mod icons;
+ 
+ pub mod results_dock;
+--- a/fe-ui/src/ui_shell/right_sidebar.rs
++++ b/fe-ui/src/ui_shell/right_sidebar.rs
+@@ -14,6 +14,7 @@
+ 
+ use bevy::prelude::Resource;
+ use bevy_egui::egui;
++use super::icons::Icon;
+ 
+ use crate::accessibility::ResponseExt;
+ use fe_database::handlers::node_view::MAX_VIEW_GROUPS;
+@@ -1766,17 +1767,17 @@
+     state.width.register(ctx, id, PanelSide::Right, bounds, panel.response.rect);
+ }
+ 
+-/// Rail glyph for a section. Pure + total, so a new variant cannot silently
++/// Rail icon for a section. Pure + total, so a new variant cannot silently
+ /// vanish from the rail.
+-fn section_glyph(section: RightSidebarSection) -> &'static str {
++fn section_icon(section: RightSidebarSection) -> Icon {
+     match section {
+-        RightSidebarSection::Inspector => "\u{24D8}",
+-        RightSidebarSection::Options => "\u{1F527}",
+-        RightSidebarSection::TerrainTools => "\u{26F0}",
+-        RightSidebarSection::ProposalReport => "\u{1F4C4}",
+-        RightSidebarSection::Settings => "\u{2699}",
+-        RightSidebarSection::Maps => "\u{1F4E6}",
+-        RightSidebarSection::Groups => "\u{25C9}",
++        RightSidebarSection::Inspector => Icon::Info,
++        RightSidebarSection::Options => Icon::Options,
++        RightSidebarSection::TerrainTools => Icon::Terrain,
++        RightSidebarSection::ProposalReport => Icon::Report,
++        RightSidebarSection::Settings => Icon::Settings,
++        RightSidebarSection::Maps => Icon::Maps,
++        RightSidebarSection::Groups => Icon::Groups,
+     }
+ }
+ 
+@@ -1789,11 +1790,11 @@
+     ui.horizontal_wrapped(|ui| {
+         ui.add_space(8.0);
+         for section in ALL_SECTIONS {
+-            let glyph = section_glyph(section);
++            let icon = section_icon(section);
+             let active = state.is_active(section);
+             if ui
+                 .add(
+-                    egui::Button::new(glyph)
++                    icon.button(ui)
+                         .min_size(egui::Vec2::splat(
+                             crate::ui_shell::layout_policy::target_size(ui.ctx()),
+                         ))
+@@ -3106,10 +3107,10 @@
+     fn every_section_has_a_distinct_rail_glyph() {
+         // D10/finding #3: the rail is the only resting-state entry point to
+         // TerrainTools/ProposalReport, so no section may share or drop a glyph.
+-        let mut glyphs: Vec<&str> = ALL.iter().map(|s| section_glyph(*s)).collect();
+-        assert!(glyphs.iter().all(|g| !g.is_empty()));
+-        glyphs.sort_unstable();
+-        glyphs.dedup();
+-        assert_eq!(glyphs.len(), ALL.len(), "duplicate rail glyph");
+-    }
+-}
++        let mut icons: Vec<Icon> = ALL.iter().map(|s| section_icon(*s)).collect();
++        icons.sort_unstable();
++        icons.dedup();
++        assert_eq!(icons.len(), ALL.len(), "duplicate rail icon");
++        super::super::icons::assert_icon_button_journey();
++    }
++}
+--- a/fe-ui/src/ui_shell/topbar.rs
++++ b/fe-ui/src/ui_shell/topbar.rs
+@@ -14,6 +14,7 @@
+ };
+ use bevy::window::{PrimaryWindow, Window, WindowCloseRequested};
+ use bevy_egui::egui;
++use super::icons::Icon;
+ 
+ use crate::accessibility::ResponseExt;
+ 
+@@ -521,10 +522,9 @@
+         let active = tool.active_tool == def.tool;
+         // tool_inspector_ux_20260719 (FR-1): active MODE reads via
+         // luminance, not a saturated-blue hue (ui_ux.md §1).
+-        let caption = format!("{} {}", def.glyph, def.name);
+-        let btn = egui::Button::new(caption).fill(mode_button_fill(active));
++        let btn = def.icon.text_button(ui, def.name).fill(mode_button_fill(active));
+         let allowed = !def.tool.requires_edit() || role.can_edit();
+-        if ui.add_enabled_ui(allowed, |ui| super::layout_policy::action(ui, btn, def.name)).inner
++        if ui.add_enabled_ui(allowed, |ui| ui.add(btn).named(ui, def.name)).inner
+             .on_hover_text(tool_tooltip_text(def))
+             .on_disabled_hover_text("Editor access is required to edit objects or terrain in the current scope. Select and Measure remain available.")
+             .clicked()
+@@ -542,7 +542,7 @@
+     right: &mut RightSidebarState,
+ ) {
+     if ui
+-        .add(egui::Button::new("\u{1F5FA} Data").fill(if gis_panel.open {
++        .add(Icon::Data.text_button(ui, "Data").fill(if gis_panel.open {
+             theme::BG_BUTTON_ACTIVE
+         } else {
+             theme::BG_BUTTON
+@@ -559,7 +559,7 @@
+     // one label for "the active tool's settings", whatever the
+     // active tool is.
+     if ui
+-        .add(egui::Button::new("\u{1F527} Options").fill(
++        .add(Icon::Options.text_button(ui, "Options").fill(
+             if right.is_active(RightSidebarSection::Options) {
+                 theme::BG_BUTTON_ACTIVE
+             } else {
+@@ -577,7 +577,7 @@
+     // section now, not a floating modal — toggle it like the
+     // other tool surfaces.
+     if ui
+-        .add(egui::Button::new("\u{2699} Settings").fill(
++        .add(Icon::Settings.text_button(ui, "Settings").fill(
+             if right.is_active(RightSidebarSection::Settings) {
+                 theme::BG_BUTTON_ACTIVE
+             } else {
+@@ -594,7 +594,7 @@
+     // FR-2 (D-A10): Maps (map manager) is a right-sidebar section
+     // too; the section self-seeds its data + refresh on open.
+     if ui
+-        .add(egui::Button::new("\u{1F4E6} Maps").fill(
++        .add(Icon::Maps.text_button(ui, "Maps").fill(
+             if right.is_active(RightSidebarSection::Maps) {
+                 theme::BG_BUTTON_ACTIVE
+             } else {
+@@ -769,7 +769,7 @@
+                 if !compact
+                     && node_mgr.selected_entity().is_some()
+                     && ui
+-                        .add(egui::Button::new("\u{2715} Deselect").fill(theme::BG_DANGER))
++                        .add(Icon::Close.text_button(ui, "Deselect").fill(theme::BG_DANGER))
+                         .named(ui, "Deselect object")
+                         .clicked()
+                 {
+@@ -854,7 +854,7 @@
+         bar.frame(Vec::new());
+         for def in &TOOL_DEFS {
+             if def.tool.requires_edit() {
+-                let at = bar.text_center(&format!("{} {}", def.glyph, def.name));
++                let at = bar.text_center(def.name);
+                 bar.click(at);
+                 assert_eq!(
+                     bar.tool.active_tool,
+@@ -868,12 +868,12 @@
+             .iter()
+             .find(|def| def.tool == Tool::Measure)
+             .unwrap();
+-        bar.click(bar.text_center(&format!("{} {}", measure.glyph, measure.name)));
++        bar.click(bar.text_center(measure.name));
+         assert_eq!(bar.tool.active_tool, Tool::Measure);
+         bar.role.role = Some(fe_database::RoleLevel::Owner);
+         bar.frame(Vec::new());
+         let move_def = TOOL_DEFS.iter().find(|def| def.tool == Tool::Move).unwrap();
+-        bar.click(bar.text_center(&format!("{} {}", move_def.glyph, move_def.name)));
++        bar.click(bar.text_center(move_def.name));
+         assert_eq!(bar.tool.active_tool, Tool::Move);
+         assert!(bar.right.is_active(RightSidebarSection::Options));
+ 

@@ -662,7 +662,7 @@ layers and clips. No painted border or outer-size change provides this clearance
 
 The same existing journey now populates64rows/24columns, requires actual overflow
 on both axes and checks visible control hit-and-clip intersections on both X and
-Y boundaries. Both/left/right/no-side profiles run at0.75/1/1.25/2x, retaining a
+Y boundaries. Both/left/right/no-side profiles run at 0.75/1/1.25/2x, retaining a
 separate same-Context scale-restoration sequence. It asserts first-column header
 and cell presence plus the original8-point margin on edges without a divider.
 A cfg(test)-only accessor retains actual public ScrollAreaOutput viewport,
@@ -753,3 +753,33 @@ Options Waiting renders the same checked-selection status/refresh UI as Inspecto
 through editor_batch::ui::render_read_status. Existing capture/capability gates
 still disable transforms; terminal errors and pure-read retry are visible without
 introducing a second selection owner or resetting an unknown accepted write.
+
+
+## Painted core control icons (QA59)
+
+icons.rs is the font-independent presentation adapter for core toolbar tools,
+section navigation, Close, stored-value disclosure and tree visibility states.
+Icon is a closed semantic enum; domain actions and state remain with the existing
+callers. It reuses TreeIcon circle/ring/square paint and the caption-button vector
+idiom. User data, arbitrary text, and the tree appearance palette are unchanged.
+
+IconButton builds one native egui Button using a fixed-size Atom::custom and,
+optionally, native text. Button::atom_ui returns the actual icon rectangle after
+native alignment/wrapping/truncation. Painting consumes that rectangle, capped at
+14 logical points and the resolved button font size, with thin 1.25-point strokes.
+Its clip intersects the native control and caller clip. Disabled opacity comes
+from the caller's existing painter; ordinary hover/focus text color comes from
+native interaction visuals. The caller retains fill/active-mode conventions,
+explicit accessible names, tooltips, permission gates and the click handler.
+There is no new response, child UI, texture/font dependency or input owner.
+The custom atom id is local to each Button's returned layout, not a widget id.
+
+The same native target minimum remains independent of icon paint size. Existing
+section rail mode fills stay with their original owner; no new selection writer
+or semantic selected flag is introduced. ToolDef carries Icon instead of a Unicode
+glyph; topbar tests locate unchanged textual tool names. The existing distinct-rail
+journey now also authors the adapter's vector bounds/clip, text-free icon paint,
+native accessible Button names/roles, stable IDs and disabled-click checks at
+0.75/1/2x. These checks are authored but unexecuted in this isolated candidate.
+Actual screenshots must still establish icon recognition, contrast and toolbar
+fit, including responsive breakpoint cases, before visual acceptance.

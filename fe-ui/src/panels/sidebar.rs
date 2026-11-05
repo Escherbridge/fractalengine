@@ -5,6 +5,7 @@ use bevy_egui::egui;
 use crate::accessibility::ResponseExt;
 
 use super::tree_appearance::EntryKind;
+use crate::ui_shell::icons::Icon;
 use super::tree_entry::{self, RowSelection, Target};
 use crate::actions::{UiAction, UiManager};
 use crate::atlas::DashboardState;
@@ -134,16 +135,12 @@ fn sidebar_verse_header(
 /// active petal's eye is disabled + tooltipped, never clickable).
 fn eye_button(
     ui: &mut egui::Ui,
-    glyph: &str,
+    icon: Icon,
     enabled: bool,
     tooltip: &str,
     name: impl std::fmt::Display,
 ) -> bool {
-    let btn = egui::Button::new(
-        egui::RichText::new(glyph)
-            .small()
-            .color(theme::TREE_NODE_ICON),
-    )
+    let btn = icon.button(ui).color(theme::TREE_NODE_ICON)
     .frame(false)
     .min_size(egui::Vec2::splat(
         crate::ui_shell::layout_policy::target_size(ui.ctx()),
@@ -180,7 +177,7 @@ fn render_verse_tree(
                 .map(|f| visibility::fractal_effective_visible(&f.id, &verse_id, vis_state)),
             own_visible,
         );
-        let glyph = visibility::glyph_for_rollup(rollup_state);
+        let icon = Icon::visibility_rollup(rollup_state);
         let eye_tooltip = if own_visible {
             "Hide verse"
         } else {
@@ -218,7 +215,7 @@ fn render_verse_tree(
                         |ui| {
                             eye_button(
                                 ui,
-                                glyph,
+                                icon,
                                 true,
                                 eye_tooltip,
                                 format_args!("{eye_tooltip}: verse {verse_name}"),
@@ -305,7 +302,7 @@ fn render_fractals(
             }),
             own_visible,
         );
-        let glyph = visibility::glyph_for_rollup(rollup_state);
+        let icon = Icon::visibility_rollup(rollup_state);
         let eye_tooltip = if own_visible {
             "Hide fractal"
         } else {
@@ -344,7 +341,7 @@ fn render_fractals(
                         |ui| {
                             eye_button(
                                 ui,
-                                glyph,
+                                icon,
                                 true,
                                 eye_tooltip,
                                 format_args!("{eye_tooltip}: fractal {fractal_name}"),
@@ -424,7 +421,7 @@ fn render_petals(
 
         let own_visible =
             visibility::petal_effective_visible(&petal_id, fractal_id, verse_id, vis_state);
-        let glyph = visibility::glyph_for_bool(own_visible);
+        let icon = Icon::visibility(own_visible);
         let (eye_enabled, eye_tooltip) = petal_eye(
             is_active,
             own_visible,
@@ -459,7 +456,7 @@ fn render_petals(
                         |ui| {
                             eye_button(
                                 ui,
-                                glyph,
+                                icon,
                                 eye_enabled,
                                 eye_tooltip,
                                 format_args!("{eye_tooltip}: petal {petal_name}"),
@@ -874,7 +871,7 @@ fn render_node_rows(
 
         let reason = visibility::node_hidden_reason(&node_id, ancestry, vis_state);
         let effectively_visible = reason == visibility::HiddenReason::NotHidden;
-        let glyph = visibility::glyph_for_bool(effectively_visible);
+        let icon = Icon::visibility(effectively_visible);
         let eye_tooltip = visibility::node_eye_tooltip(&reason);
 
         let (label_resp, eye_clicked) = tree_entry::row(
@@ -898,7 +895,7 @@ fn render_node_rows(
             |ui| {
                 eye_button(
                     ui,
-                    glyph,
+                    icon,
                     true,
                     &eye_tooltip,
                     format_args!("{eye_tooltip}: node {node_name}"),
@@ -1095,7 +1092,7 @@ fn sidebar_section_groups(
                     };
                     if eye_button(
                         ui,
-                        visibility::glyph_for_bool(group.visible),
+                        Icon::visibility(group.visible),
                         vis_state.registry_ready(petal_id) && !ui_mgr.editor_batch.is_pending(),
                         tooltip,
                         format_args!("{tooltip}: {}", group.name),
@@ -1249,7 +1246,7 @@ mod tests {
                                         |ui| {
                                             super::eye_button(
                                                 ui,
-                                                crate::visibility::glyph_for_bool(true),
+                                                crate::ui_shell::icons::Icon::visibility(true),
                                                 true,
                                                 "Hide node",
                                                 "Hide test node",
@@ -1925,7 +1922,7 @@ mod tests {
                             |ui| {
                                 super::eye_button(
                                     ui,
-                                    crate::visibility::glyph_for_bool(true),
+                                    crate::ui_shell::icons::Icon::visibility(true),
                                     true,
                                     "Hide node",
                                     "Hide copy target",

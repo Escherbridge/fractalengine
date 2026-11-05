@@ -24,6 +24,7 @@ use crate::plugin::{InspectorFormState, InspectorTab, LocalUserRole, API_TOKEN_P
 use crate::terrain_map::PetalMapState;
 use crate::theme;
 use crate::ui_shell::layout_policy;
+use crate::ui_shell::icons::Icon;
 use crate::verse_manager::db_results::tokens::mint_command;
 use crate::verse_manager::VerseManager;
 use fe_runtime::messages::DbCommand;
@@ -130,7 +131,7 @@ fn inspector_navigation(
         crate::ui_shell::layout_policy::trailing_row(ui, |ui| {
             if ui
                 .add(
-                    egui::Button::new("\u{2715}")
+                    Icon::Close.button(ui)
                         .fill(egui::Color32::TRANSPARENT)
                         .min_size(egui::Vec2::splat(crate::ui_shell::layout_policy::target_size(ui.ctx()))),
                 )
@@ -225,7 +226,7 @@ fn inspector_compact_navigation(
             count => format!("{count} selected objects"),
         };
         ui.add_sized([width, target], egui::Label::new(label).truncate());
-        if selected && layout_policy::action(ui, egui::Button::new("\u{2715}"), "Deselect object")
+        if selected && ui.add(Icon::Close.button(ui)).named(ui, "Deselect object")
             .on_hover_text("Deselect").clicked() {
             node_mgr.deselect();
         }
@@ -1259,7 +1260,7 @@ fn inspector_api_access_section(
                                         .color(theme::TEXT_SECTION),
                                 );
                                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                                    if layout_policy::action(ui, egui::Button::new("\u{2715}").fill(egui::Color32::TRANSPARENT), "Dismiss generated API token").clicked() {
+                                    if ui.add(Icon::Close.button(ui).fill(egui::Color32::TRANSPARENT)).named(ui, "Dismiss generated API token").clicked() {
                                         dismiss_token = true;
                                     }
                                 });
@@ -1958,11 +1959,11 @@ fn render_property_row(
         columns.content_cell(ui, 2, |ui| {
             let preview = super::property_grid::preview(value);
             if value.is_object() || value.is_array() {
-                let marker = if expanded { "▾" } else { "▸" };
+                let marker = if expanded { Icon::Collapse } else { Icon::Expand };
                 if ui
                     .add_enabled(
                         !editing,
-                        egui::Button::new(format!("{marker} {preview}"))
+                        marker.text_button(ui, preview)
                             .truncate()
                             .min_size(egui::vec2(ui.available_width(), columns.height)),
                     )

@@ -14,6 +14,7 @@ use bevy::prelude::{
 };
 use bevy::window::{PrimaryWindow, Window, WindowCloseRequested};
 use bevy_egui::egui;
+use super::icons::Icon;
 
 use crate::accessibility::ResponseExt;
 
@@ -521,10 +522,9 @@ fn tool_buttons(
         let active = tool.active_tool == def.tool;
         // tool_inspector_ux_20260719 (FR-1): active MODE reads via
         // luminance, not a saturated-blue hue (ui_ux.md §1).
-        let caption = format!("{} {}", def.glyph, def.name);
-        let btn = egui::Button::new(caption).fill(mode_button_fill(active));
+        let btn = def.icon.text_button(ui, def.name).fill(mode_button_fill(active));
         let allowed = !def.tool.requires_edit() || role.can_edit();
-        if ui.add_enabled_ui(allowed, |ui| super::layout_policy::action(ui, btn, def.name)).inner
+        if ui.add_enabled_ui(allowed, |ui| ui.add(btn).named(ui, def.name)).inner
             .on_hover_text(tool_tooltip_text(def))
             .on_disabled_hover_text("Editor access is required to edit objects or terrain in the current scope. Select and Measure remain available.")
             .clicked()
@@ -542,7 +542,7 @@ fn section_buttons(
     right: &mut RightSidebarState,
 ) {
     if ui
-        .add(egui::Button::new("\u{1F5FA} Data").fill(if gis_panel.open {
+        .add(Icon::Data.text_button(ui, "Data").fill(if gis_panel.open {
             theme::BG_BUTTON_ACTIVE
         } else {
             theme::BG_BUTTON
@@ -559,7 +559,7 @@ fn section_buttons(
     // one label for "the active tool's settings", whatever the
     // active tool is.
     if ui
-        .add(egui::Button::new("\u{1F527} Options").fill(
+        .add(Icon::Options.text_button(ui, "Options").fill(
             if right.is_active(RightSidebarSection::Options) {
                 theme::BG_BUTTON_ACTIVE
             } else {
@@ -577,7 +577,7 @@ fn section_buttons(
     // section now, not a floating modal — toggle it like the
     // other tool surfaces.
     if ui
-        .add(egui::Button::new("\u{2699} Settings").fill(
+        .add(Icon::Settings.text_button(ui, "Settings").fill(
             if right.is_active(RightSidebarSection::Settings) {
                 theme::BG_BUTTON_ACTIVE
             } else {
@@ -594,7 +594,7 @@ fn section_buttons(
     // FR-2 (D-A10): Maps (map manager) is a right-sidebar section
     // too; the section self-seeds its data + refresh on open.
     if ui
-        .add(egui::Button::new("\u{1F4E6} Maps").fill(
+        .add(Icon::Maps.text_button(ui, "Maps").fill(
             if right.is_active(RightSidebarSection::Maps) {
                 theme::BG_BUTTON_ACTIVE
             } else {
@@ -769,7 +769,7 @@ pub fn render_topbar(
                 if !compact
                     && node_mgr.selected_entity().is_some()
                     && ui
-                        .add(egui::Button::new("\u{2715} Deselect").fill(theme::BG_DANGER))
+                        .add(Icon::Close.text_button(ui, "Deselect").fill(theme::BG_DANGER))
                         .named(ui, "Deselect object")
                         .clicked()
                 {
@@ -854,7 +854,7 @@ mod tests {
         bar.frame(Vec::new());
         for def in &TOOL_DEFS {
             if def.tool.requires_edit() {
-                let at = bar.text_center(&format!("{} {}", def.glyph, def.name));
+                let at = bar.text_center(def.name);
                 bar.click(at);
                 assert_eq!(
                     bar.tool.active_tool,
@@ -868,12 +868,12 @@ mod tests {
             .iter()
             .find(|def| def.tool == Tool::Measure)
             .unwrap();
-        bar.click(bar.text_center(&format!("{} {}", measure.glyph, measure.name)));
+        bar.click(bar.text_center(measure.name));
         assert_eq!(bar.tool.active_tool, Tool::Measure);
         bar.role.role = Some(fe_database::RoleLevel::Owner);
         bar.frame(Vec::new());
         let move_def = TOOL_DEFS.iter().find(|def| def.tool == Tool::Move).unwrap();
-        bar.click(bar.text_center(&format!("{} {}", move_def.glyph, move_def.name)));
+        bar.click(bar.text_center(move_def.name));
         assert_eq!(bar.tool.active_tool, Tool::Move);
         assert!(bar.right.is_active(RightSidebarSection::Options));
 

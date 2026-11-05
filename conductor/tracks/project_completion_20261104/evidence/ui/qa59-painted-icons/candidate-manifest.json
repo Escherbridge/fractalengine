@@ -1,0 +1,158 @@
+{
+  "kind": "qa59-painted-core-icons-isolated-v1",
+  "created_utc": "2026-11-05T03:28:00.742287+00:00",
+  "status": "authored_unreviewed_unexecuted",
+  "baseline": "Eight canonical source files copied and byte-compared without Git; one new canonical module absent. Exact before hashes define source provenance.",
+  "ownership": "Only .omc/research/qa59-painted-icons-v1/**; canonical and frozen QA59 packet untouched.",
+  "files": [
+    {
+      "canonical": "fe-ui/src/panels/AGENTS.md",
+      "before": {
+        "path": "before/fe-ui/src/panels/AGENTS.md",
+        "bytes": 75411,
+        "sha256": "7f6871c493295542d9c006b7992fe31589f40350d3292fd9e6826a07b70dbd09"
+      },
+      "raw": {
+        "path": "raw/fe-ui/src/panels/AGENTS.md",
+        "bytes": 76265,
+        "sha256": "18166d431fa2f51ce75aee8c252aedeaddde56e6a7c0f1966121bcab4966a57f"
+      }
+    },
+    {
+      "canonical": "fe-ui/src/panels/inspector.rs",
+      "before": {
+        "path": "before/fe-ui/src/panels/inspector.rs",
+        "bytes": 290792,
+        "sha256": "c00b41b5ae688d11675920f70ce1ea7da0694b7af5865c6703ef753e5f8a2bbd"
+      },
+      "raw": {
+        "path": "raw/fe-ui/src/panels/inspector.rs",
+        "bytes": 290787,
+        "sha256": "c4af2323d1083e4f7bdcb03d462d4232bd07f145d086e7c519212931209ffeb9"
+      }
+    },
+    {
+      "canonical": "fe-ui/src/panels/sidebar.rs",
+      "before": {
+        "path": "before/fe-ui/src/panels/sidebar.rs",
+        "bytes": 83170,
+        "sha256": "5500b60f711c3151e5797dfd9806abed35cb9fefc63cf7f636e735ced4667d41"
+      },
+      "raw": {
+        "path": "raw/fe-ui/src/panels/sidebar.rs",
+        "bytes": 83087,
+        "sha256": "c71d0850b58ac759a04ab077b5185398282763a045293f83fd715368a8062031"
+      }
+    },
+    {
+      "canonical": "fe-ui/src/panels/toolbar.rs",
+      "before": {
+        "path": "before/fe-ui/src/panels/toolbar.rs",
+        "bytes": 9854,
+        "sha256": "4e7bc30c2a2f71aa8a6efdeeb1ba568c2af484ded033793600b940f539c5a977"
+      },
+      "raw": {
+        "path": "raw/fe-ui/src/panels/toolbar.rs",
+        "bytes": 9787,
+        "sha256": "1d2d02e718df97c1a25dccd459280806f57e860bb87c421bdbd47925d6450923"
+      }
+    },
+    {
+      "canonical": "fe-ui/src/ui_shell/AGENTS.md",
+      "before": {
+        "path": "before/fe-ui/src/ui_shell/AGENTS.md",
+        "bytes": 50083,
+        "sha256": "7c5f8e4733b9439e07119cf31d3d5cacc1fa415e1da6b90f5efb2ba7fa32dfd3"
+      },
+      "raw": {
+        "path": "raw/fe-ui/src/ui_shell/AGENTS.md",
+        "bytes": 52065,
+        "sha256": "bd68f9855db5b51c2a66185118edfe8b39a90699e3ed70d1622c80e9a41726fd"
+      }
+    },
+    {
+      "canonical": "fe-ui/src/ui_shell/icons.rs",
+      "before": null,
+      "raw": {
+        "path": "raw/fe-ui/src/ui_shell/icons.rs",
+        "bytes": 12604,
+        "sha256": "0397980bba1690ed77fefaf8483fb2de35922fabe52d1e453c41ddde5af4fd55"
+      }
+    },
+    {
+      "canonical": "fe-ui/src/ui_shell/mod.rs",
+      "before": {
+        "path": "before/fe-ui/src/ui_shell/mod.rs",
+        "bytes": 668,
+        "sha256": "55c12d4577b2b91f7f034120da0de9fa199bdea11d5ec71785a4998d04156d97"
+      },
+      "raw": {
+        "path": "raw/fe-ui/src/ui_shell/mod.rs",
+        "bytes": 691,
+        "sha256": "039977fdea8b4fc61c97f247b75203d2b3b40b24c13e86a72b727b76d59bc5da"
+      }
+    },
+    {
+      "canonical": "fe-ui/src/ui_shell/right_sidebar.rs",
+      "before": {
+        "path": "before/fe-ui/src/ui_shell/right_sidebar.rs",
+        "bytes": 128394,
+        "sha256": "582ead889d53c85a5bcb2283a82e7acf32fecb2990f29024217a8de457eb8570"
+      },
+      "raw": {
+        "path": "raw/fe-ui/src/ui_shell/right_sidebar.rs",
+        "bytes": 128407,
+        "sha256": "b3a0012f66a3d917abe3c1cf46b5288473622bdecfd28b43727068aca985442b"
+      }
+    },
+    {
+      "canonical": "fe-ui/src/ui_shell/topbar.rs",
+      "before": {
+        "path": "before/fe-ui/src/ui_shell/topbar.rs",
+        "bytes": 53378,
+        "sha256": "d3acc23891a51e1156793414e101c5494de182072829108cdb8174ac67bedbe8"
+      },
+      "raw": {
+        "path": "raw/fe-ui/src/ui_shell/topbar.rs",
+        "bytes": 53239,
+        "sha256": "15cff200fec78d6a9dbc89d6e4b49dc559ef0d788b37921059ac798e8c9e1d59"
+      }
+    }
+  ],
+  "patch": {
+    "path": "source.patch",
+    "bytes": 34427,
+    "sha256": "300da087b7c886d309272a6e684ec236adcc854df1953172a82a73d83590c117"
+  },
+  "report": {
+    "path": "source-report.md",
+    "bytes": 8115,
+    "sha256": "b6fd9d41f1110bf99880409efb6d1b0e154477b58c46e1f5ab842303f9ebc588"
+  },
+  "anchors": [
+    {
+      "path": ".omc/research/qa59-grid-visual-review.md",
+      "bytes": 10310,
+      "sha256": "67fd861b4f612c0e0c0d0168cbe8b29ef2f975ca1233b4646efebfb3f8e7e641"
+    },
+    {
+      "path": "qa/passes/59/packet-manifest.json",
+      "bytes": 40339,
+      "sha256": "927e390688ae28436ae130585d5cd07f319098dd90fa7acd75815fb84ca1b9e6"
+    }
+  ],
+  "verification": {
+    "canonical_before_bytes_match": true,
+    "new_canonical_module_absent": true,
+    "independent_review": false,
+    "tests_executed": false,
+    "parser_formatter_compiler_build_executed": false,
+    "runtime_or_visual_acceptance": false,
+    "new_registered_test_declarations": 0
+  },
+  "limits": [
+    "Native atom intrinsic widths require actual toolbar/property visual verification after independent source review.",
+    "No focus/resize/clipboard/native observer or domain-state policy changes.",
+    "Source provenance is not approval or execution evidence."
+  ]
+}

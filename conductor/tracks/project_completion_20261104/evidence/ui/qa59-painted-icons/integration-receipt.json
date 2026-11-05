@@ -1,0 +1,61 @@
+{
+  "candidate": "qa59-painted-icons-v1",
+  "manifest_sha256": "b548871584e531377c6a3cb01c102cbbcee4e410db628a96c5da8cb11dcde486",
+  "all_before_and_raw_checked_before_first_write": true,
+  "files": [
+    {
+      "file": "fe-ui/src/panels/AGENTS.md",
+      "bytes": 76265,
+      "raw_sha256": "18166d431fa2f51ce75aee8c252aedeaddde56e6a7c0f1966121bcab4966a57f",
+      "lf_normalized_sha256": "23d6bfd0e21728efdf858e0645dfe90bdd3c1de6f4824c26a225899c93c26705"
+    },
+    {
+      "file": "fe-ui/src/panels/inspector.rs",
+      "bytes": 290787,
+      "raw_sha256": "c4af2323d1083e4f7bdcb03d462d4232bd07f145d086e7c519212931209ffeb9",
+      "lf_normalized_sha256": "c5a6c81c2ad5d0dd8fae402194f9e475c135330be82bc9e883fe8640218efbee"
+    },
+    {
+      "file": "fe-ui/src/panels/sidebar.rs",
+      "bytes": 83087,
+      "raw_sha256": "c71d0850b58ac759a04ab077b5185398282763a045293f83fd715368a8062031",
+      "lf_normalized_sha256": "46f162e7768716bb8f4225b4ac7c2f6f019b5c7e5e5b8783323c2e3745c120c8"
+    },
+    {
+      "file": "fe-ui/src/panels/toolbar.rs",
+      "bytes": 9787,
+      "raw_sha256": "1d2d02e718df97c1a25dccd459280806f57e860bb87c421bdbd47925d6450923",
+      "lf_normalized_sha256": "07fc8a6abf5b7ad7a8da017131125514c77ef0dd1f9a7a9176efc32fa4c74289"
+    },
+    {
+      "file": "fe-ui/src/ui_shell/AGENTS.md",
+      "bytes": 52065,
+      "raw_sha256": "bd68f9855db5b51c2a66185118edfe8b39a90699e3ed70d1622c80e9a41726fd",
+      "lf_normalized_sha256": "7f19a0026c0966296f92687baf15a130d55fa0c762af1c082e59bd613970d090"
+    },
+    {
+      "file": "fe-ui/src/ui_shell/icons.rs",
+      "bytes": 12604,
+      "raw_sha256": "0397980bba1690ed77fefaf8483fb2de35922fabe52d1e453c41ddde5af4fd55",
+      "lf_normalized_sha256": "0397980bba1690ed77fefaf8483fb2de35922fabe52d1e453c41ddde5af4fd55"
+    },
+    {
+      "file": "fe-ui/src/ui_shell/mod.rs",
+      "bytes": 691,
+      "raw_sha256": "039977fdea8b4fc61c97f247b75203d2b3b40b24c13e86a72b727b76d59bc5da",
+      "lf_normalized_sha256": "c10079e706d229171a2a40dcb47ff51205038ec8f2ba60afc8afb9fb333d9906"
+    },
+    {
+      "file": "fe-ui/src/ui_shell/right_sidebar.rs",
+      "bytes": 128407,
+      "raw_sha256": "b3a0012f66a3d917abe3c1cf46b5288473622bdecfd28b43727068aca985442b",
+      "lf_normalized_sha256": "5f6e53ad4cd5f33734e7c57971dd3817d2ab212765750fec7d5de2245e9b5b4c"
+    },
+    {
+      "file": "fe-ui/src/ui_shell/topbar.rs",
+      "bytes": 53239,
+      "raw_sha256": "15cff200fec78d6a9dbc89d6e4b49dc559ef0d788b37921059ac798e8c9e1d59",
+      "lf_normalized_sha256": "b8643a7e24e4c4649dbb29c832914a199f980df7376124439be00a47d5b53ef0"
+    }
+  ]
+}

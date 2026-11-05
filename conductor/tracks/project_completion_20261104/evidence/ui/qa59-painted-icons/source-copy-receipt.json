@@ -1,0 +1,40 @@
+{
+  "copies": [
+    {
+      "source": ".omc/research/qa59-painted-icons-v1/manifest.json",
+      "file": "candidate-manifest.json",
+      "bytes": 5475,
+      "sha256": "b548871584e531377c6a3cb01c102cbbcee4e410db628a96c5da8cb11dcde486"
+    },
+    {
+      "source": ".omc/research/qa59-painted-icons-v1/source.patch",
+      "file": "source.patch",
+      "bytes": 34427,
+      "sha256": "300da087b7c886d309272a6e684ec236adcc854df1953172a82a73d83590c117"
+    },
+    {
+      "source": ".omc/research/qa59-painted-icons-v1/source-report.md",
+      "file": "source-report.txt",
+      "bytes": 8115,
+      "sha256": "b6fd9d41f1110bf99880409efb6d1b0e154477b58c46e1f5ab842303f9ebc588"
+    },
+    {
+      "source": ".omc/research/qa59-painted-icons-source-review.md",
+      "file": "correctness-review.txt",
+      "bytes": 12126,
+      "sha256": "e392ecaf1bce63548c5879a90f6fd7f1d3ced291eee9a557dd065d60c49810dc"
+    },
+    {
+      "source": ".omc/research/qa59-painted-icons-design-review.md",
+      "file": "design-review.txt",
+      "bytes": 4967,
+      "sha256": "5acabb6bf3fcd1ccf4a497c47abf728875bd8166588c236309dcffd159d1b4ef"
+    },
+    {
+      "source": ".omc/research/qa59-painted-icons-v1-integration-receipt.json",
+      "file": "integration-receipt.json",
+      "bytes": 2660,
+      "sha256": "ea1e582d0cf10af27bec1e5f116979abc116d674afd2cc4690c1a16e56a2fca4"
+    }
+  ]
+}

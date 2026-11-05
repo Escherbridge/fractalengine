@@ -8,6 +8,7 @@ use bevy_egui::egui;
 
 use crate::panels::tool_inspector::panel_descriptor;
 use crate::theme;
+use crate::ui_shell::icons::Icon;
 
 /// Active viewport transform tool.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -33,12 +34,12 @@ impl Tool {
     }
 }
 
-/// One viewport tool: button glyph, user-facing name, shortcut, key binding.
+/// One viewport tool: painted icon, user-facing name, shortcut, key binding.
 /// The hover tooltip text is sourced from `tool_inspector::panel_descriptor`
 /// (joined in `tool_tooltip_text`) so button and description can't drift.
 pub(crate) struct ToolDef {
     pub(crate) tool: Tool,
-    pub(crate) glyph: &'static str,
+    pub(crate) icon: Icon,
     pub(crate) name: &'static str,
     pub(crate) key: &'static str,
     pub(crate) key_code: KeyCode,
@@ -49,50 +50,49 @@ pub(crate) struct ToolDef {
 pub(crate) const TOOL_DEFS: [ToolDef; 7] = [
     ToolDef {
         tool: Tool::Select,
-        glyph: "\u{2B1A}",
+        icon: Icon::Select,
         name: "Select",
         key: "S",
         key_code: KeyCode::KeyS,
     },
     ToolDef {
         tool: Tool::Move,
-        glyph: "\u{271B}",
+        icon: Icon::Move,
         name: "Move",
         key: "G",
         key_code: KeyCode::KeyG,
     },
     ToolDef {
         tool: Tool::Rotate,
-        glyph: "\u{21BB}",
+        icon: Icon::Rotate,
         name: "Rotate",
         key: "R",
         key_code: KeyCode::KeyR,
     },
     ToolDef {
         tool: Tool::Scale,
-        glyph: "\u{2921}",
+        icon: Icon::Scale,
         name: "Scale",
         key: "X",
         key_code: KeyCode::KeyX,
     },
     ToolDef {
         tool: Tool::Pen,
-        glyph: "\u{270E}",
+        icon: Icon::Pen,
         name: "Pen",
         key: "P",
         key_code: KeyCode::KeyP,
     },
     ToolDef {
         tool: Tool::Brush,
-        glyph: "\u{25CF}",
+        icon: Icon::Brush,
         name: "Brush",
         key: "B",
         key_code: KeyCode::KeyB,
     },
     ToolDef {
         tool: Tool::Measure,
-        // BMP arrow, not the U+1F4CF ruler color emoji: egui recolors it like its siblings.
-        glyph: "\u{2194}",
+        icon: Icon::Measure,
         name: "Measure",
         key: "M",
         key_code: KeyCode::KeyM,

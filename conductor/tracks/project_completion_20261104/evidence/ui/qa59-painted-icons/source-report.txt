@@ -1,0 +1,51 @@
+# QA59 painted core icons — isolated author candidate v1
+
+Status: authored, not approved or executed. Independent source/design review is required before integration. The canonical source tree and frozen QA59 packet were not edited. The only writes are within `.omc/research/qa59-painted-icons-v1/`. No app/API/DB/native/network operation, Git command, parser, formatter, compiler, build or test was run.
+
+## Problem and resulting source behavior
+
+Actual QA59 screenshots show square placeholders for distinct core actions across the toolbar, Inspector and tree visibility gutter. The source used Unicode character strings without a guaranteed icon-font coverage contract. This candidate replaces those presentation strings with a closed semantic `Icon` enum and one small native-Button adapter. User data and text remain normal text, including Greek property keys. There is no added font, texture, dependency or fallback-font registry.
+
+`ui_shell/icons.rs` reserves one fixed-size `Atom::custom` in an ordinary `egui::Button`, optionally followed by native text. `Button::atom_ui` supplies the actual custom rectangle after native layout. The adapter paints vector geometry there and returns the same native Response. It creates no child UI or second response, assigns no widget ID, handles no input, and owns no application state. The custom atom key is local to each returned atom layout and is not a global widget identity. Existing `.named`, tooltip, fill, permission and click ownership stay in their original callers.
+
+The icon extent follows the resolved button font size with a 14-point cap. Line art uses 1.25-point strokes. The native target minimum is independent of this small paint extent. Circle/ring/square primitives reuse the existing tree palette renderer; other semantic symbols use simple lines/circles and filled disclosure triangles, following the existing caption/gimbal drawing idiom. Painting intersects the native Response rect and caller clip. The active/disabled/focus visual convention remains native: ordinary icon tint comes from the current native interaction visuals, an explicit tree tint remains explicit, and the caller's painter supplies disabled opacity. Existing selected-mode fills are retained with the toolbar/rail; no new selected flag or selection writer is introduced.
+
+## Scope and inventory
+
+- `panels/toolbar.rs`: `ToolDef.icon: Icon` replaces its glyph string; the seven tool names, shortcuts, tools and permission decisions are unchanged.
+- `ui_shell/topbar.rs`: native painted tool buttons; the same Close presentation for labelled Deselect; Data/Options/Settings/Maps use the shared adapter too, keeping this visible toolbar boundary coherent. Original names, tooltip text, role gates and action handlers remain. The existing tool-activation journey finds native text by the same tool names, without the former symbol prefix.
+- `ui_shell/right_sidebar.rs`: exhaustive section-to-Icon mapping replaces seven rail strings, including working old glyphs so the rail has one rendering convention. State toggle, active fills, names and tooltips remain unchanged. Its existing distinct-rail test now checks semantic Icon uniqueness and invokes the shared authored journey.
+- `panels/inspector.rs`: both normal and compact Deselect paths share Close; the generated-token dismiss control reuses that presentation without changing token handling. Stored object/array disclosure chooses Expand/Collapse from the same existing `expanded` state. The previous native text-preview button remains native text plus the custom icon atom. No property draft, detail scope, value, pending gate, mutation callback or confirmation code changes.
+- `panels/sidebar.rs`: the eye-button wrapper accepts a typed Icon rather than a string. Existing visibility booleans and rollup results choose Visible/Hidden/Mixed. Its callers, native enabled state, explicit accessible names, tooltip and click decisions remain. Existing tests calling this wrapper receive the same typed inputs.
+- `ui_shell/mod.rs`: private crate module registration. Both local directory guides document presentation ownership and evidence limits.
+
+The already painted tree appearance palette, hierarchy icons and caption-window controls stay unchanged. Existing visibility glyph APIs remain for other callers. Path-data glyphs and unrelated UI surfaces are outside the observed defect boundary; this is not a blanket Unicode rewrite. Native observer candidate files are untouched. Panel resizing/focus guards are untouched; this does not claim to resolve QA59's disabled splitter or achieve live 52/520-point bodies.
+
+## Pinned public SDK source checks
+
+Inspected local pinned `egui-0.33.3` sources under `C:/Users/atooz/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/`:
+
+- `egui-0.33.3/src/widgets/button.rs`: public `Button::new` accepts `IntoAtoms`; public `atom_ui` returns `AtomLayoutResponse` and retains native allocation, interaction visuals, frame and WidgetInfo. The ordinary Widget implementation simply returns that Response.
+- `egui-0.33.3/src/atomics/{atom.rs,atom_layout.rs,atoms.rs}`: public fixed-size `Atom::custom`, `Atoms` conversion/push, and `AtomLayoutResponse::rect`; a nonvisible widget can have no custom rect, which the adapter handles without unwrapping. Custom IDs are local to the returned layout.
+- `egui-0.33.3/src/ui.rs`: disabled UI painter opacity is retained through the existing native `add_enabled` child path.
+- `epaint-0.33.3/src/shapes/shape.rs`: public `visual_bounding_rect` used by the authored geometry assertions.
+
+These were source reads, not a parser/compiler spike. The source must still pass independent review and the parent's eventual integrated checks.
+
+## Authored verification, unexecuted
+
+No new registered test declaration was added. The existing `every_section_has_a_distinct_rail_glyph` entry point now also invokes `icons::assert_icon_button_journey`:
+
+- Render all 21 semantic variants through the real IconButton at 0.75/1/2x and in enabled/disabled UIs.
+- Require native Button roles and caller-provided accessible labels.
+- Inspect actual clipped output shapes: nonempty vector paint, no Text shape in icon slots, painted bounds within the native response, and at most 14-point extent.
+- Require at least 20 physical pixels in each native target dimension.
+- Inject normal pointer settle/press/release frames into the native response; require stable native ID and enabled-only click behavior.
+
+The existing topbar role/activation journey still authors Viewer refusal, Measure availability and Owner Move activation through the production tool buttons. Only its text locator drops the removed icon-character prefix. Existing property/visibility interaction suites are not replaced or mirrored.
+
+All assertions are authored coverage only. No test, formatter, parser or compilation was executed, and no screenshot after this change exists. Native atom layout may use a different intrinsic width than an unsupported glyph. Before accepting visuals, inspect actual toolbar fit around its current responsive threshold and at 1280/1x, the seven distinct rail icons, Close, disclosure states, visibility on/off/mixed, disabled/hover/focus states, and text-sized icon weight at 1x/2x. Preserve the full-key/draft/action behavior already established in QA59. Do not infer actual glyph recognition or full layout coverage from source or native rectangles alone.
+
+## Packet contract
+
+`before/` contains the eight existing canonical files as read at authoring start. `raw/` contains their candidate replacements plus the new icons module. `source.patch` is a normalized unified source diff for human review; exact byte hashes in `manifest.json` and raw snapshots are authoritative for integration. `manifest.json` records each canonical mapping, before/raw sizes and hashes, patch/report hashes, and the prior visual report and frozen QA59 manifest anchors. Canonical source is compared byte-for-byte with its before snapshots during packet assembly; the new canonical icons module must still be absent. No self-approval is granted by these provenance checks.
