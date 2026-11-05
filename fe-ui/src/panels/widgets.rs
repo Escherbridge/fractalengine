@@ -218,7 +218,24 @@ pub(crate) fn role_denial_reason(
     }
 }
 
-/// Two-step confirmation with native outside-disarm; see panels/AGENTS.md.
+/// Measure the reserved confirmation pair; see panels/AGENTS.md.
+pub(crate) fn confirmation_pair_width(ui: &egui::Ui, label: &str, gap: f32) -> f32 {
+    let target = crate::ui_shell::layout_policy::target_size(ui.ctx())
+        .max(ui.spacing().interact_size.y);
+    let font = egui::TextStyle::Small.resolve(ui.style());
+    let width = |text: &str| {
+        let text = ui.fonts_mut(|fonts| {
+            fonts
+                .layout_no_wrap(text.to_owned(), font.clone(), theme::TEXT_BRIGHT)
+                .size()
+                .x
+        });
+        (text + ui.spacing().button_padding.x * 2.0).max(target).ceil()
+    };
+    width(label) + gap + width("Cancel")
+}
+
+/// Two-step confirmation with responsive targets; see panels/AGENTS.md.
 pub(crate) fn confirm_button(
     ui: &mut egui::Ui,
     id_salt: impl std::hash::Hash,
@@ -232,23 +249,35 @@ pub(crate) fn confirm_button(
     use crate::native_accessibility::{Confirmation, confirmation_state, record_confirmation};
     let armed = confirmation_state(ui.ctx(), id);
     let is_armed = armed.is_some_and(|state| now - state.at < ARM_SECONDS);
+    let width = ui.available_width();
+    let stacked = width < confirmation_pair_width(ui, confirm_label, ui.spacing().item_spacing.x);
+    let target = crate::ui_shell::layout_policy::target_size(ui.ctx())
+        .max(ui.spacing().interact_size.y);
+    let button = |text: &str, fill: egui::Color32| {
+        let button = egui::Button::new(egui::RichText::new(text).small()).fill(fill);
+        if stacked {
+            button.wrap().min_size(egui::vec2(width, target))
+        } else {
+            button
+        }
+    };
 
     if is_armed {
         let mut state = armed.expect("current confirmation arm");
-        let (confirm, cancel) = ui.horizontal(|ui| {
+        let controls = |ui: &mut egui::Ui| {
             let confirm = ui
-                .add(
-                    egui::Button::new(egui::RichText::new(confirm_label).small())
-                        .fill(theme::BG_DANGER),
-                )
+                .add(button(confirm_label, theme::BG_DANGER))
                 .named(ui, format_args!("Confirm {name}"));
             let cancel = ui
-                .add(
-                    egui::Button::new(egui::RichText::new("Cancel").small()).fill(theme::BG_BUTTON),
-                )
+                .add(button("Cancel", theme::BG_BUTTON))
                 .named(ui, format_args!("Cancel {name}"));
             (confirm, cancel)
-        }).inner;
+        };
+        let (confirm, cancel) = if stacked {
+            ui.vertical(controls).inner
+        } else {
+            ui.horizontal(controls).inner
+        };
         let Some(established) = state.reconcile(ui.ctx(), confirm.id, cancel.id) else {
             return false;
         };
@@ -267,7 +296,7 @@ pub(crate) fn confirm_button(
         confirmed
     } else {
         let arm = ui
-            .add(egui::Button::new(egui::RichText::new(label).small()).fill(theme::BG_DANGER))
+            .add(button(label, theme::BG_DANGER))
             .named(ui, &name);
         // Unarmed targets do not carry a previous arm generation.
         if arm.clicked() {

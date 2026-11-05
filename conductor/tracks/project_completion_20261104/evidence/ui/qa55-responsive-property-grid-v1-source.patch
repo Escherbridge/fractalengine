@@ -1,0 +1,422 @@
+diff --git a/fe-ui/src/panels/AGENTS.md b/fe-ui/src/panels/AGENTS.md
+index a6bfa99d..f2c32f59 100644
+--- a/fe-ui/src/panels/AGENTS.md
++++ b/fe-ui/src/panels/AGENTS.md
+@@ -26,8 +26,9 @@ Inspector section_header preserves native state/response with a bounded title
+ and full hover. Never rely only on wrapping style for native CollapsingHeader:
+ its built-in layout explicitly extends text. Compact schema fields stack and
+ the outer Inspector scroll viewport follows the real visible remaining height.
+-Custom property table overflow remains a genuine horizontal scroll path. Preserve
+-all edit buffers, capability checks, target identity and pending mutation gates.
++Custom property rows adapt to the available body width so their actions require
++no horizontal scrolling. Preserve edit buffers, capability checks, target identity
++and pending mutation gates.
+ See ../ui_shell/AGENTS.md §Physical control targets for ownership and evidence.
+ 
+ The Inspector Data tab delegates object history, event-time measurements and enforced schema editing
+@@ -518,10 +519,13 @@ The property grid supersedes the earlier vertical property cards (and the
+ historical copy-box presentation in §inspector-units). `property_grid` owns
+ only column geometry, compact previews and exact clipboard formatting;
+ the parser and draft model remain shared with Add/Save. Key, Type, Value and
+-Actions columns fill the available body width. Column minima reserve readable
+-values and the armed Confirm/Cancel pair; below that width a horizontal scroll
+-keeps the Inspector's viewport boundary intact. Row actions remain text buttons
+-and use at least 24 points or 20 physical pixels, whichever is larger.
++Actions columns fill the available body width when their measured minima fit.
++Below that width the same rows use Property (key plus type) and Value columns,
++followed by a full-width wrapped action row. The breakpoint includes readable
++values and the armed Confirm/Cancel pair; the table does not force its wide floor
++into a narrow Inspector. Row actions remain text buttons and use at least24 points
++or20 physical pixels, whichever is larger. The native horizontal container remains
++for identity/observations, with fitted content and no horizontal-scroll hint.
+ 
+ Column and action slots allocate their exact rectangles before rendering child
+ controls. Child content cannot enlarge the table's measured width. Edit and
+@@ -529,16 +533,21 @@ Copy retain their own slots; the destructive-action slot always reserves the
+ full Confirm/Cancel pair and uses a vertical parent for the canonical helper's
+ internal horizontal row. Its width includes the actual square-button minimum,
+ with whole-point rounding. Arming and canceling therefore do not change the
+-column origins or require a new horizontal scroll position. Child clipping
++column origins within either layout or require a horizontal scroll position. Child clipping
+ uses those same slot rectangles, preserving actual leaf-response observations.
++Compact key/type cells reserve two control heights; values keep their existing
++preview/expand behavior. One row-action closure serves both layouts with identical
++Edit/Copy/Delete callbacks and loading/editing/pending guards. Full keys remain
++in label hover and contextual accessible action names.
+ 
+ Expanded editors and read-only JSON details use the table viewport's horizontal
+ range captured before its horizontal ScrollArea. The shared `Columns::expanded`
+ scope places the existing content at that visible x range and the current row y;
+ native scope allocation contributes its actual vertical height. The already
+ allocated full-width table still owns horizontal content size. This keeps the
+-Editing header, value input, status and Save/Cancel in view at either scroll
+-edge without forcing the scroll offset or introducing a second editor/draft.
++Editing header, value input, status and Save/Cancel in view without forcing the
++scroll offset or introducing a second editor/draft. Resizing across the column
++breakpoint preserves node/key-scoped draft buffers and the detail-state key.
+ 
+ Scalar previews are single-line ellipses with bounded hover text. Newlines and
+ tabs are escaped for display, empty strings are explicit, and objects/arrays
+@@ -564,17 +573,17 @@ command's `correlation_id: None`, draft/readback confirmation, stale-value
+ refusal, timeout, deletion and node-scope reset. The same journey now also
+ authors three-width table/target observations, exact clipboard output and
+ real egui Delete arm/cancel/confirm plus Edit/cancel interactions. No new test
+-function is added. At 260/320/640 points it positions the native scroll container
+-at the right edge, then compares content width, horizontal offset and Edit/Copy
++function is added. At260/320/640 points it leaves the native scroll container
++at zero offset, then compares fitted width, horizontal offset and Edit/Copy
+ positions before/after arming and cancellation. It checks the complete action
+ rectangles against their actual hit rectangles, child clips and table clip,
+ including the full Confirm/Cancel pair; a control count alone is insufficient.
+-At those same widths it opens Edit from the right edge, checks the full header,
++At those same widths it opens Edit without horizontal scrolling, checks the full header,
+ input, status and footer against actual hit/clip geometry, verifies real editor
+ height with unchanged table width/offset, and cancels a dirty draft without a
+-write. Header/status observations are their actual native label responses.
+-Only this declared native container ID is used for scroll setup; widget facts
+-come from the actual same-pass responses. Its persistence readback is an explicit model simulation;
++write. It also crosses the responsive breakpoint with a dirty draft and requires
++the exact buffer to survive. Header/status observations are their actual native
++label responses; widget facts come from actual same-pass responses. Its persistence readback is an explicit model simulation;
+ these authored assertions have not been executed in the source-only lane and
+ do not prove DB persistence or backend schema enforcement. Integrated
+ compilation, execution and live UI readability/a11y verification remain required.
+diff --git a/fe-ui/src/panels/inspector.rs b/fe-ui/src/panels/inspector.rs
+index 4d336810..45e85579 100644
+--- a/fe-ui/src/panels/inspector.rs
++++ b/fe-ui/src/panels/inspector.rs
+@@ -1817,9 +1817,6 @@ fn render_property_table(
+         return actions;
+     };
+     let columns = Columns::new(ui, ui.available_width());
+-    if columns.width() > ui.available_width() {
+-        ui.label(egui::RichText::new("Scroll horizontally for row actions").small());
+-    }
+     crate::ui_shell::layout_policy::scroll(
+         ui,
+         "Custom property table",
+@@ -1830,8 +1827,12 @@ fn render_property_table(
+         |ui| {
+             ui.set_width(columns.width());
+             columns.row(ui, |ui| {
+-                for (column, heading) in ["Key", "Type", "Value", "Actions"].into_iter().enumerate()
+-                {
++                let headings: &[(usize, &str)] = if columns.compact() {
++                    &[(0, "Property"), (2, "Value")]
++                } else {
++                    &[(0, "Key"), (1, "Type"), (2, "Value"), (3, "Actions")]
++                };
++                for &(column, heading) in headings {
+                     columns.cell(ui, column, |ui| {
+                         ui.add(egui::Label::new(egui::RichText::new(heading).strong()).truncate());
+                     });
+@@ -1882,25 +1883,71 @@ fn render_property_row(
+     let mut expanded = ui
+         .ctx()
+         .data(|data| data.get_temp::<bool>(detail_id).unwrap_or(false));
++    let kind = |ui: &mut egui::Ui| {
++        ui.add(
++            egui::Label::new(
++                egui::RichText::new(PropertyValueKind::of(value).label())
++                    .small()
++                    .color(theme::TEXT_DIM),
++            )
++            .truncate(),
++        );
++    };
++    let mut row_actions = |ui: &mut egui::Ui| {
++        columns.action(ui, 0, |ui| {
++            if ui
++                .add_enabled(
++                    !loading && !editing,
++                    egui::Button::new("Edit").min_size(egui::Vec2::splat(columns.height)),
++                )
++                .named(ui, format_args!("Edit property {key}"))
++                .clicked()
++            {
++                editor
++                    .drafts
++                    .insert(key.to_owned(), PropertyDraft::new(value));
++            }
++        });
++        columns.action(ui, 1, |ui| {
++            if ui
++                .add(egui::Button::new("Copy").min_size(egui::Vec2::splat(columns.height)))
++                .named(ui, format_args!("Copy property {key}"))
++                .clicked()
++            {
++                ui.ctx()
++                    .copy_text(super::property_grid::clipboard_value(value));
++                ui_mgr.show_toast(format!("Copied {key}"), now);
++            }
++        });
++        columns.action(ui, 2, |ui| {
++            ui.add_enabled_ui(!loading && !pending, |ui| {
++                if super::widgets::confirm_button(
++                    ui,
++                    ("delete-property", node_id, key),
++                    "Delete",
++                    "Confirm",
++                    format_args!("Delete property {key}"),
++                ) {
++                    actions.delete = Some(key.to_owned());
++                }
++            });
++        });
++    };
+     columns.row(ui, |ui| {
+-        columns.cell(ui, 0, |ui| {
++        columns.content_cell(ui, 0, |ui| {
+             ui.add(
+                 egui::Label::new(egui::RichText::new(key).strong().color(theme::TEXT_SECTION))
+                     .truncate(),
+             )
+             .on_hover_text(key);
++            if columns.compact() {
++                kind(ui);
++            }
+         });
+-        columns.cell(ui, 1, |ui| {
+-            ui.add(
+-                egui::Label::new(
+-                    egui::RichText::new(PropertyValueKind::of(value).label())
+-                        .small()
+-                        .color(theme::TEXT_DIM),
+-                )
+-                .truncate(),
+-            );
+-        });
+-        columns.cell(ui, 2, |ui| {
++        if !columns.compact() {
++            columns.cell(ui, 1, kind);
++        }
++        columns.content_cell(ui, 2, |ui| {
+             let preview = super::property_grid::preview(value);
+             if value.is_object() || value.is_array() {
+                 let marker = if expanded { "▾" } else { "▸" };
+@@ -1937,47 +1984,13 @@ fn render_property_row(
+                 });
+             }
+         });
+-        columns.cell(ui, 3, |ui| {
+-            columns.action(ui, 0, |ui| {
+-                if ui
+-                    .add_enabled(
+-                        !loading && !editing,
+-                        egui::Button::new("Edit").min_size(egui::Vec2::splat(columns.height)),
+-                    )
+-                    .named(ui, format_args!("Edit property {key}"))
+-                    .clicked()
+-                {
+-                    editor
+-                        .drafts
+-                        .insert(key.to_owned(), PropertyDraft::new(value));
+-                }
+-            });
+-            columns.action(ui, 1, |ui| {
+-                if ui
+-                    .add(egui::Button::new("Copy").min_size(egui::Vec2::splat(columns.height)))
+-                    .named(ui, format_args!("Copy property {key}"))
+-                    .clicked()
+-                {
+-                    ui.ctx()
+-                        .copy_text(super::property_grid::clipboard_value(value));
+-                    ui_mgr.show_toast(format!("Copied {key}"), now);
+-                }
+-            });
+-            columns.action(ui, 2, |ui| {
+-                ui.add_enabled_ui(!loading && !pending, |ui| {
+-                    if super::widgets::confirm_button(
+-                        ui,
+-                        ("delete-property", node_id, key),
+-                        "Delete",
+-                        "Confirm",
+-                        format_args!("Delete property {key}"),
+-                    ) {
+-                        actions.delete = Some(key.to_owned());
+-                    }
+-                });
+-            });
+-        });
++        if !columns.compact() {
++            columns.cell(ui, 3, &mut row_actions);
++        }
+     });
++    if columns.compact() {
++        columns.actions_row(ui, &mut row_actions);
++    }
+     if let Some(draft) = editor.drafts.get_mut(key) {
+         columns.expanded(ui, |ui| {
+             render_property_draft(ui, key, value, draft, loading, columns.height, actions);
+@@ -2890,7 +2903,6 @@ mod tests {
+         let stored = inspector.node_properties.clone();
+         let ctx = egui::Context::default();
+         let mut time = 57.0;
+-        let right_edge = std::cell::Cell::new(false);
+         let frame = |width: f32,
+                      events: Vec<egui::Event>,
+                      time: &mut f64,
+@@ -2913,14 +2925,10 @@ mod tests {
+                     crate::ui_shell::layout_policy::begin_ui_pass(ctx);
+                     egui::CentralPanel::default().show(ctx, |ui| {
+                         let columns = Columns::new(ui, ui.available_width());
+-                        if right_edge.replace(false) {
+-                            let id = ui.make_persistent_id(("property-table", "node-1"));
+-                            let mut state =
+-                                egui::scroll_area::State::load(ctx, id).unwrap_or_default();
+-                            state.offset.x = (columns.width() - ui.available_width()).max(0.0);
+-                            state.store(ctx, id);
+-                        }
+-                        assert!(columns.widths[2] >= 119.9);
++                        assert!(columns.width() <= ui.available_width() + 0.5);
++                        let value_minimum = if columns.compact() { columns.height } else { 119.9 };
++                        assert!(columns.widths[2] >= value_minimum);
++                        assert_eq!(columns.compact(), width <= 320.0);
+                         assert!(columns.height * ctx.pixels_per_point() >= 20.0);
+                         actions = render_property_table(ui, inspector, "node-1", ui_mgr, *time);
+                     });
+@@ -2961,7 +2969,6 @@ mod tests {
+             result
+         };
+         for width in [260.0, 320.0, 640.0] {
+-            right_edge.set(true);
+             frame(width, vec![], &mut time, &mut inspector, &mut ui_mgr);
+             let (_, before, _) = frame(width, vec![], &mut time, &mut inspector, &mut ui_mgr);
+             let table_before = before
+@@ -2969,6 +2976,10 @@ mod tests {
+                 .iter()
+                 .find(|scroll| scroll.label == "Custom property table")
+                 .unwrap();
++            assert!(
++                table_before.offset.x.abs() < 0.5,
++                "row actions require no horizontal scroll"
++            );
+             assert_eq!(before.controls.len(), 3);
+             for control in &before.controls {
+                 let visible = control
+@@ -2978,7 +2989,7 @@ mod tests {
+                     .intersect(table_before.clip);
+                 assert!(
+                     (visible.width() - control.rect.width()).abs() < 0.5,
+-                    "the whole normal action must be visible at the right scroll edge"
++                    "the whole normal action must fit without horizontal scroll"
+                 );
+                 assert!((visible.height() - control.rect.height()).abs() < 0.5);
+                 assert!(visible.width() >= 20.0 && visible.height() >= 20.0);
+@@ -3060,7 +3071,19 @@ mod tests {
+                 .drafts
+                 .get_mut("note")
+                 .unwrap()
+-                .raw = "unsaved replacement at the right scroll edge".into();
++                .raw = "unsaved replacement across responsive widths".into();
++            frame(
++                if width <= 320.0 { 640.0 } else { 260.0 },
++                vec![],
++                &mut time,
++                &mut inspector,
++                &mut ui_mgr,
++            );
++            assert_eq!(
++                inspector.property_editor.drafts["note"].raw,
++                "unsaved replacement across responsive widths",
++                "switching column layouts must retain the typed draft"
++            );
+             let (_, editing, _) = frame(width, vec![], &mut time, &mut inspector, &mut ui_mgr);
+             let table_editing = editing
+                 .scrolls
+diff --git a/fe-ui/src/panels/property_grid.rs b/fe-ui/src/panels/property_grid.rs
+index 8e030e04..f14c95ae 100644
+--- a/fe-ui/src/panels/property_grid.rs
++++ b/fe-ui/src/panels/property_grid.rs
+@@ -10,6 +10,8 @@ const COLUMN_GAP: f32 = 8.0;
+ pub(super) struct Columns {
+     pub widths: [f32; 4],
+     pub height: f32,
++    compact: bool,
++    width: f32,
+     action_widths: [f32; 3],
+     viewport: egui::Rangef,
+ }
+@@ -40,17 +42,26 @@ impl Columns {
+         ];
+         let actions = action_widths.iter().sum::<f32>() + COLUMN_GAP * 2.0;
+         let kind = text_width("number").max(52.0) + 8.0;
+-        let width = available.max(96.0 + kind + 120.0 + actions + COLUMN_GAP * 3.0);
+-        let key_max = (width - kind - actions - COLUMN_GAP * 3.0 - 120.0).clamp(96.0, 180.0);
+-        let key = (width * 0.20).clamp(96.0, key_max);
+-        Self {
+-            widths: [
++        let width = available.max(1.0);
++        let compact = width < 96.0 + kind + 120.0 + actions + COLUMN_GAP * 3.0;
++        let widths = if compact {
++            let key = width * 0.38;
++            [key, 0.0, (width - key - COLUMN_GAP).max(0.0), 0.0]
++        } else {
++            let key_max = (width - kind - actions - COLUMN_GAP * 3.0 - 120.0).clamp(96.0, 180.0);
++            let key = (width * 0.20).clamp(96.0, key_max);
++            [
+                 key,
+                 kind,
+                 width - key - kind - actions - COLUMN_GAP * 3.0,
+                 actions,
+-            ],
++            ]
++        };
++        Self {
++            widths,
+             height,
++            compact,
++            width,
+             action_widths,
+             viewport: ui
+                 .available_rect_before_wrap()
+@@ -60,7 +71,11 @@ impl Columns {
+     }
+ 
+     pub fn width(&self) -> f32 {
+-        self.widths.iter().sum::<f32>() + COLUMN_GAP * 3.0
++        self.width
++    }
++
++    pub fn compact(&self) -> bool {
++        self.compact
+     }
+ 
+     pub fn row(&self, ui: &mut egui::Ui, body: impl FnOnce(&mut egui::Ui)) {
+@@ -86,6 +101,36 @@ impl Columns {
+         )
+     }
+ 
++    pub fn content_cell<R>(
++        &self,
++        ui: &mut egui::Ui,
++        column: usize,
++        body: impl FnOnce(&mut egui::Ui) -> R,
++    ) -> R {
++        fixed_cell(
++            ui,
++            ("property-column", column),
++            egui::vec2(
++                self.widths[column],
++                self.height * if self.compact { 2.0 } else { 1.0 },
++            ),
++            if self.compact && column == 0 {
++                egui::Layout::top_down(egui::Align::Min)
++            } else {
++                egui::Layout::left_to_right(egui::Align::Center)
++            },
++            body,
++        )
++    }
++
++    pub fn actions_row(&self, ui: &mut egui::Ui, body: impl FnOnce(&mut egui::Ui)) {
++        ui.horizontal_wrapped(|ui| {
++            ui.spacing_mut().item_spacing.x = COLUMN_GAP;
++            ui.spacing_mut().interact_size.y = self.height;
++            body(ui);
++        });
++    }
++
+     pub fn action<R>(
+         &self,
+         ui: &mut egui::Ui,

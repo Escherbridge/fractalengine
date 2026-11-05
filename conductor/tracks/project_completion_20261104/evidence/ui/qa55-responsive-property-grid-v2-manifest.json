@@ -1,0 +1,68 @@
+{
+  "kind": "qa55-responsive-property-grid-source-v2",
+  "baseline": "22039d5add074d4df0e18f5847286606d95407ac",
+  "v1_manifest_sha256": "ce29050a87e7bb93c031e9ba4759c411d90e946bd7872e4c1eac9c23bd9cc866",
+  "blocker_review_sha256": "1d1a60297a3d62353c8db468075e3c2540f517a81de3b7163ff935e6b4a68ada",
+  "files": [
+    {
+      "file": "fe-ui/src/panels/inspector.rs",
+      "raw": ".omc/research/qa55-responsive-property-grid-v2/raw/inspector.rs",
+      "bytes": 283206,
+      "sha256": "db1385664c69c858b18f88b604d21d956b2b4768523d21015e63f8fe297ba022",
+      "before": ".omc/research/qa55-responsive-property-grid-v2/before/inspector.rs",
+      "before_bytes": 282198,
+      "before_sha256": "2e0127e60f3f8b137c0df2c7b9ef3be59dfbe60de4e29d0442df1d85a32728be",
+      "baseline_git_blob": ".omc/research/qa55-responsive-property-grid-v2/baseline/inspector.rs",
+      "baseline_git_blob_bytes": 275172,
+      "baseline_git_blob_sha256": "677c263472a59e5fd9c0fd1bcabaefa7a7fb77abcfb8c2557b7daa7f3ed3385b"
+    },
+    {
+      "file": "fe-ui/src/panels/property_grid.rs",
+      "raw": ".omc/research/qa55-responsive-property-grid-v2/raw/property_grid.rs",
+      "bytes": 7279,
+      "sha256": "5300bf230ca711daf67c90dcc1455587365e7b69f3e203c70a7221c846806f01",
+      "before": ".omc/research/qa55-responsive-property-grid-v2/before/property_grid.rs",
+      "before_bytes": 6781,
+      "before_sha256": "6bb19366a3cef4cca93ef81280cd1e20ba9db6952873d4d4d52cef8fe8af7907",
+      "baseline_git_blob": ".omc/research/qa55-responsive-property-grid-v2/baseline/property_grid.rs",
+      "baseline_git_blob_bytes": 5354,
+      "baseline_git_blob_sha256": "d0da436e586626dfa969de8a3458f40ce21646a8544a3b4bd55c211164ecfe23"
+    },
+    {
+      "file": "fe-ui/src/panels/widgets.rs",
+      "raw": ".omc/research/qa55-responsive-property-grid-v2/raw/widgets.rs",
+      "bytes": 25074,
+      "sha256": "b47d226a429138b138f0e5ed6086734bccfd29e35e3547019b217144ea0b8d68",
+      "before": ".omc/research/qa55-responsive-property-grid-v2/before/widgets.rs",
+      "before_bytes": 23942,
+      "before_sha256": "d253a4fb044967dd5e64437e199c0b8379d64f984b238eafad1ba8c4575d490b",
+      "baseline_git_blob": ".omc/research/qa55-responsive-property-grid-v2/baseline/widgets.rs",
+      "baseline_git_blob_bytes": 23337,
+      "baseline_git_blob_sha256": "2326b58a8c1a6881377ad4987c68d01c93bc8675642e6fd29c4738819953f4bc"
+    },
+    {
+      "file": "fe-ui/src/panels/AGENTS.md",
+      "raw": ".omc/research/qa55-responsive-property-grid-v2/raw/AGENTS.md",
+      "bytes": 71734,
+      "sha256": "fb6ca2d661702d337d8e12ab3305b734925d62ceb7e304bd4e89882a822af53c",
+      "before": ".omc/research/qa55-responsive-property-grid-v2/before/AGENTS.md",
+      "before_bytes": 70958,
+      "before_sha256": "6c2f3514d564b180f0c2f85fec447d1110a0a29517917855cd6d78442cd97594",
+      "baseline_git_blob": ".omc/research/qa55-responsive-property-grid-v2/baseline/AGENTS.md",
+      "baseline_git_blob_bytes": 69281,
+      "baseline_git_blob_sha256": "55208b7cbb6374c1e1300466d72faca08738e96e7ea5aa665b0d5e3515f8dabe"
+    }
+  ],
+  "numstat": "43\t24\tfe-ui/src/panels/AGENTS.md\n117\t70\tfe-ui/src/panels/inspector.rs\n65\t8\tfe-ui/src/panels/property_grid.rs\n40\t11\tfe-ui/src/panels/widgets.rs\n",
+  "patch": {
+    "file": ".omc/research/qa55-responsive-property-grid-v2/source.patch",
+    "bytes": 27161,
+    "sha256": "7dcaa80303e5982560f52e52e7aa63b7da28b6ac45f9a6fb456eaf1af9977e36"
+  },
+  "delta": {
+    "file": ".omc/research/qa55-responsive-property-grid-v2/v1-to-v2.patch",
+    "bytes": 11793,
+    "sha256": "e9e56f9b29517bf409d7a6502fde9e4fd110a3159f19f8e5e24f59efc2b85bc7"
+  },
+  "limits": "Source-only. No implementation parser/tests/formatter/build/apps/native/API/DB/network execution or Git mutation. Baseline snapshots are Git blob bytes; before snapshots preserve actual pre-v2 source bytes."
+}

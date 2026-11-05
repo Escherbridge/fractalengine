@@ -1,0 +1,40 @@
+{
+  "kind": "qa55-responsive-property-grid-source-v1",
+  "baseline": "22039d5add074d4df0e18f5847286606d95407ac",
+  "files": [
+    {
+      "file": "fe-ui/src/panels/inspector.rs",
+      "raw": ".omc/research/qa55-responsive-property-grid-v1/raw/inspector.rs",
+      "bytes": 282198,
+      "sha256": "2e0127e60f3f8b137c0df2c7b9ef3be59dfbe60de4e29d0442df1d85a32728be",
+      "baseline_git_blob": ".omc/research/qa55-responsive-property-grid-v1/baseline/inspector.rs",
+      "baseline_git_blob_bytes": 275172,
+      "baseline_git_blob_sha256": "677c263472a59e5fd9c0fd1bcabaefa7a7fb77abcfb8c2557b7daa7f3ed3385b"
+    },
+    {
+      "file": "fe-ui/src/panels/property_grid.rs",
+      "raw": ".omc/research/qa55-responsive-property-grid-v1/raw/property_grid.rs",
+      "bytes": 6781,
+      "sha256": "6bb19366a3cef4cca93ef81280cd1e20ba9db6952873d4d4d52cef8fe8af7907",
+      "baseline_git_blob": ".omc/research/qa55-responsive-property-grid-v1/baseline/property_grid.rs",
+      "baseline_git_blob_bytes": 5354,
+      "baseline_git_blob_sha256": "d0da436e586626dfa969de8a3458f40ce21646a8544a3b4bd55c211164ecfe23"
+    },
+    {
+      "file": "fe-ui/src/panels/AGENTS.md",
+      "raw": ".omc/research/qa55-responsive-property-grid-v1/raw/AGENTS.md",
+      "bytes": 70958,
+      "sha256": "6c2f3514d564b180f0c2f85fec447d1110a0a29517917855cd6d78442cd97594",
+      "baseline_git_blob": ".omc/research/qa55-responsive-property-grid-v1/baseline/AGENTS.md",
+      "baseline_git_blob_bytes": 69281,
+      "baseline_git_blob_sha256": "55208b7cbb6374c1e1300466d72faca08738e96e7ea5aa665b0d5e3515f8dabe"
+    }
+  ],
+  "patch": {
+    "file": ".omc/research/qa55-responsive-property-grid-v1/source.patch",
+    "bytes": 19675,
+    "sha256": "d2dbc85d2f6273da06e8654a8edabb9a3ddc2ade46f7233e807da6d31cdc0473"
+  },
+  "numstat": "24\t15\tfe-ui/src/panels/AGENTS.md\n92\t69\tfe-ui/src/panels/inspector.rs\n52\t7\tfe-ui/src/panels/property_grid.rs\n",
+  "limits": "Source-only; no parser/compiler/tests/formatter/build/app/native/API/DB/network execution or Git mutation. Baseline snapshots use Git blob representation; no former working EOL claim."
+}

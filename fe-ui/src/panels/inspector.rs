@@ -1817,9 +1817,6 @@ fn render_property_table(
         return actions;
     };
     let columns = Columns::new(ui, ui.available_width());
-    if columns.width() > ui.available_width() {
-        ui.label(egui::RichText::new("Scroll horizontally for row actions").small());
-    }
     crate::ui_shell::layout_policy::scroll(
         ui,
         "Custom property table",
@@ -1830,8 +1827,12 @@ fn render_property_table(
         |ui| {
             ui.set_width(columns.width());
             columns.row(ui, |ui| {
-                for (column, heading) in ["Key", "Type", "Value", "Actions"].into_iter().enumerate()
-                {
+                let headings: &[(usize, &str)] = if columns.compact() {
+                    &[(0, "Property"), (2, "Value")]
+                } else {
+                    &[(0, "Key"), (1, "Type"), (2, "Value"), (3, "Actions")]
+                };
+                for &(column, heading) in headings {
                     columns.cell(ui, column, |ui| {
                         ui.add(egui::Label::new(egui::RichText::new(heading).strong()).truncate());
                     });
@@ -1882,25 +1883,71 @@ fn render_property_row(
     let mut expanded = ui
         .ctx()
         .data(|data| data.get_temp::<bool>(detail_id).unwrap_or(false));
+    let kind = |ui: &mut egui::Ui| {
+        ui.add(
+            egui::Label::new(
+                egui::RichText::new(PropertyValueKind::of(value).label())
+                    .small()
+                    .color(theme::TEXT_DIM),
+            )
+            .truncate(),
+        );
+    };
+    let mut row_actions = |ui: &mut egui::Ui| {
+        columns.action(ui, 0, |ui| {
+            if ui
+                .add_enabled(
+                    !loading && !editing,
+                    egui::Button::new("Edit").wrap().min_size(egui::Vec2::splat(columns.height)),
+                )
+                .named(ui, format_args!("Edit property {key}"))
+                .clicked()
+            {
+                editor
+                    .drafts
+                    .insert(key.to_owned(), PropertyDraft::new(value));
+            }
+        });
+        columns.action(ui, 1, |ui| {
+            if ui
+                .add(egui::Button::new("Copy").wrap().min_size(egui::Vec2::splat(columns.height)))
+                .named(ui, format_args!("Copy property {key}"))
+                .clicked()
+            {
+                ui.ctx()
+                    .copy_text(super::property_grid::clipboard_value(value));
+                ui_mgr.show_toast(format!("Copied {key}"), now);
+            }
+        });
+        columns.action(ui, 2, |ui| {
+            ui.add_enabled_ui(!loading && !pending, |ui| {
+                if super::widgets::confirm_button(
+                    ui,
+                    ("delete-property", node_id, key),
+                    "Delete",
+                    "Confirm",
+                    format_args!("Delete property {key}"),
+                ) {
+                    actions.delete = Some(key.to_owned());
+                }
+            });
+        });
+    };
     columns.row(ui, |ui| {
-        columns.cell(ui, 0, |ui| {
+        columns.content_cell(ui, 0, |ui| {
             ui.add(
                 egui::Label::new(egui::RichText::new(key).strong().color(theme::TEXT_SECTION))
                     .truncate(),
             )
             .on_hover_text(key);
+            if columns.compact() {
+                kind(ui);
+            }
         });
-        columns.cell(ui, 1, |ui| {
-            ui.add(
-                egui::Label::new(
-                    egui::RichText::new(PropertyValueKind::of(value).label())
-                        .small()
-                        .color(theme::TEXT_DIM),
-                )
-                .truncate(),
-            );
-        });
-        columns.cell(ui, 2, |ui| {
+        if !columns.compact() {
+            columns.cell(ui, 1, kind);
+        }
+        columns.content_cell(ui, 2, |ui| {
             let preview = super::property_grid::preview(value);
             if value.is_object() || value.is_array() {
                 let marker = if expanded { "▾" } else { "▸" };
@@ -1937,47 +1984,13 @@ fn render_property_row(
                 });
             }
         });
-        columns.cell(ui, 3, |ui| {
-            columns.action(ui, 0, |ui| {
-                if ui
-                    .add_enabled(
-                        !loading && !editing,
-                        egui::Button::new("Edit").min_size(egui::Vec2::splat(columns.height)),
-                    )
-                    .named(ui, format_args!("Edit property {key}"))
-                    .clicked()
-                {
-                    editor
-                        .drafts
-                        .insert(key.to_owned(), PropertyDraft::new(value));
-                }
-            });
-            columns.action(ui, 1, |ui| {
-                if ui
-                    .add(egui::Button::new("Copy").min_size(egui::Vec2::splat(columns.height)))
-                    .named(ui, format_args!("Copy property {key}"))
-                    .clicked()
-                {
-                    ui.ctx()
-                        .copy_text(super::property_grid::clipboard_value(value));
-                    ui_mgr.show_toast(format!("Copied {key}"), now);
-                }
-            });
-            columns.action(ui, 2, |ui| {
-                ui.add_enabled_ui(!loading && !pending, |ui| {
-                    if super::widgets::confirm_button(
-                        ui,
-                        ("delete-property", node_id, key),
-                        "Delete",
-                        "Confirm",
-                        format_args!("Delete property {key}"),
-                    ) {
-                        actions.delete = Some(key.to_owned());
-                    }
-                });
-            });
-        });
+        if !columns.compact() {
+            columns.cell(ui, 3, &mut row_actions);
+        }
     });
+    if columns.compact() {
+        columns.actions_row(ui, &mut row_actions);
+    }
     if let Some(draft) = editor.drafts.get_mut(key) {
         columns.expanded(ui, |ui| {
             render_property_draft(ui, key, value, draft, loading, columns.height, actions);
@@ -2890,7 +2903,8 @@ mod tests {
         let stored = inspector.node_properties.clone();
         let ctx = egui::Context::default();
         let mut time = 57.0;
-        let right_edge = std::cell::Cell::new(false);
+        let body_width = std::cell::Cell::new(0.0);
+        let pair_width = std::cell::Cell::new(0.0);
         let frame = |width: f32,
                      events: Vec<egui::Event>,
                      time: &mut f64,
@@ -2912,15 +2926,17 @@ mod tests {
                 |ctx| {
                     crate::ui_shell::layout_policy::begin_ui_pass(ctx);
                     egui::CentralPanel::default().show(ctx, |ui| {
+                        body_width.set(ui.available_width());
+                        pair_width.set(super::super::widgets::confirmation_pair_width(
+                            ui,
+                            "Confirm",
+                            ui.spacing().item_spacing.x,
+                        ));
                         let columns = Columns::new(ui, ui.available_width());
-                        if right_edge.replace(false) {
-                            let id = ui.make_persistent_id(("property-table", "node-1"));
-                            let mut state =
-                                egui::scroll_area::State::load(ctx, id).unwrap_or_default();
-                            state.offset.x = (columns.width() - ui.available_width()).max(0.0);
-                            state.store(ctx, id);
-                        }
-                        assert!(columns.widths[2] >= 119.9);
+                        assert!(columns.width() <= ui.available_width() + 0.5);
+                        let value_minimum = if columns.compact() { columns.height } else { 119.9 };
+                        assert!(columns.widths[2] >= value_minimum);
+                        assert_eq!(columns.compact(), width <= 320.0);
                         assert!(columns.height * ctx.pixels_per_point() >= 20.0);
                         actions = render_property_table(ui, inspector, "node-1", ui_mgr, *time);
                     });
@@ -2960,15 +2976,34 @@ mod tests {
             }
             result
         };
-        for width in [260.0, 320.0, 640.0] {
-            right_edge.set(true);
+        frame(260.0, vec![], &mut time, &mut inspector, &mut ui_mgr);
+        let frame_padding = 260.0 - body_width.get();
+        let pair = pair_width.get();
+        for width in [
+            52.0 + frame_padding,
+            pair - 1.0 + frame_padding,
+            pair + 1.0 + frame_padding,
+            260.0,
+            320.0,
+            640.0,
+        ] {
             frame(width, vec![], &mut time, &mut inspector, &mut ui_mgr);
+            if (width - frame_padding - 52.0).abs() < 0.1 {
+                assert!(
+                    (body_width.get() - 52.0).abs() < 0.1,
+                    "exercise the actual 52-point table body"
+                );
+            }
             let (_, before, _) = frame(width, vec![], &mut time, &mut inspector, &mut ui_mgr);
             let table_before = before
                 .scrolls
                 .iter()
                 .find(|scroll| scroll.label == "Custom property table")
                 .unwrap();
+            assert!(
+                table_before.offset.x.abs() < 0.5,
+                "row actions require no horizontal scroll"
+            );
             assert_eq!(before.controls.len(), 3);
             for control in &before.controls {
                 let visible = control
@@ -2978,7 +3013,7 @@ mod tests {
                     .intersect(table_before.clip);
                 assert!(
                     (visible.width() - control.rect.width()).abs() < 0.5,
-                    "the whole normal action must be visible at the right scroll edge"
+                    "the whole normal action must fit without horizontal scroll"
                 );
                 assert!((visible.height() - control.rect.height()).abs() < 0.5);
                 assert!(visible.width() >= 20.0 && visible.height() >= 20.0);
@@ -3060,7 +3095,19 @@ mod tests {
                 .drafts
                 .get_mut("note")
                 .unwrap()
-                .raw = "unsaved replacement at the right scroll edge".into();
+                .raw = "unsaved replacement across responsive widths".into();
+            frame(
+                if width <= 320.0 { 640.0 } else { 260.0 },
+                vec![],
+                &mut time,
+                &mut inspector,
+                &mut ui_mgr,
+            );
+            assert_eq!(
+                inspector.property_editor.drafts["note"].raw,
+                "unsaved replacement across responsive widths",
+                "switching column layouts must retain the typed draft"
+            );
             let (_, editing, _) = frame(width, vec![], &mut time, &mut inspector, &mut ui_mgr);
             let table_editing = editing
                 .scrolls

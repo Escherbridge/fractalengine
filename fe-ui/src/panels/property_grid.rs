@@ -10,6 +10,8 @@ const COLUMN_GAP: f32 = 8.0;
 pub(super) struct Columns {
     pub widths: [f32; 4],
     pub height: f32,
+    compact: bool,
+    width: f32,
     action_widths: [f32; 3],
     viewport: egui::Rangef,
 }
@@ -36,21 +38,30 @@ impl Columns {
             button_width("Edit"),
             button_width("Copy"),
             button_width("Delete")
-                .max(button_width("Confirm") + COLUMN_GAP + button_width("Cancel")),
+                .max(super::widgets::confirmation_pair_width(ui, "Confirm", COLUMN_GAP)),
         ];
         let actions = action_widths.iter().sum::<f32>() + COLUMN_GAP * 2.0;
         let kind = text_width("number").max(52.0) + 8.0;
-        let width = available.max(96.0 + kind + 120.0 + actions + COLUMN_GAP * 3.0);
-        let key_max = (width - kind - actions - COLUMN_GAP * 3.0 - 120.0).clamp(96.0, 180.0);
-        let key = (width * 0.20).clamp(96.0, key_max);
-        Self {
-            widths: [
+        let width = available.max(1.0);
+        let compact = width < 96.0 + kind + 120.0 + actions + COLUMN_GAP * 3.0;
+        let widths = if compact {
+            let key = (width * 0.38).min((width - COLUMN_GAP - height).max(0.0));
+            [key, 0.0, (width - key - COLUMN_GAP).max(0.0), 0.0]
+        } else {
+            let key_max = (width - kind - actions - COLUMN_GAP * 3.0 - 120.0).clamp(96.0, 180.0);
+            let key = (width * 0.20).clamp(96.0, key_max);
+            [
                 key,
                 kind,
                 width - key - kind - actions - COLUMN_GAP * 3.0,
                 actions,
-            ],
+            ]
+        };
+        Self {
+            widths,
             height,
+            compact,
+            width,
             action_widths,
             viewport: ui
                 .available_rect_before_wrap()
@@ -60,7 +71,11 @@ impl Columns {
     }
 
     pub fn width(&self) -> f32 {
-        self.widths.iter().sum::<f32>() + COLUMN_GAP * 3.0
+        self.width
+    }
+
+    pub fn compact(&self) -> bool {
+        self.compact
     }
 
     pub fn row(&self, ui: &mut egui::Ui, body: impl FnOnce(&mut egui::Ui)) {
@@ -86,12 +101,54 @@ impl Columns {
         )
     }
 
+    pub fn content_cell<R>(
+        &self,
+        ui: &mut egui::Ui,
+        column: usize,
+        body: impl FnOnce(&mut egui::Ui) -> R,
+    ) -> R {
+        fixed_cell(
+            ui,
+            ("property-column", column),
+            egui::vec2(
+                self.widths[column],
+                self.height * if self.compact { 2.0 } else { 1.0 },
+            ),
+            if self.compact && column == 0 {
+                egui::Layout::top_down(egui::Align::Min)
+            } else {
+                egui::Layout::left_to_right(egui::Align::Center)
+            },
+            body,
+        )
+    }
+
+    pub fn actions_row(&self, ui: &mut egui::Ui, body: impl FnOnce(&mut egui::Ui)) {
+        ui.horizontal_wrapped(|ui| {
+            ui.spacing_mut().item_spacing.x = COLUMN_GAP;
+            ui.spacing_mut().interact_size.y = self.height;
+            body(ui);
+        });
+    }
+
     pub fn action<R>(
         &self,
         ui: &mut egui::Ui,
         slot: usize,
         body: impl FnOnce(&mut egui::Ui) -> R,
     ) -> R {
+        if self.compact && self.action_widths[slot] > self.width {
+            return ui
+                .allocate_ui_with_layout(
+                    egui::vec2(self.width, self.height),
+                    egui::Layout::top_down(egui::Align::Min),
+                    |ui| {
+                        ui.set_width(self.width);
+                        body(ui)
+                    },
+                )
+                .inner;
+        }
         fixed_cell(
             ui,
             ("property-action", slot),

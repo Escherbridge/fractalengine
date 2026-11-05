@@ -26,8 +26,9 @@ Inspector section_header preserves native state/response with a bounded title
 and full hover. Never rely only on wrapping style for native CollapsingHeader:
 its built-in layout explicitly extends text. Compact schema fields stack and
 the outer Inspector scroll viewport follows the real visible remaining height.
-Custom property table overflow remains a genuine horizontal scroll path. Preserve
-all edit buffers, capability checks, target identity and pending mutation gates.
+Custom property rows adapt to the available body width so their actions require
+no horizontal scrolling. Preserve edit buffers, capability checks, target identity
+and pending mutation gates.
 See ../ui_shell/AGENTS.md §Physical control targets for ownership and evidence.
 
 The Inspector Data tab delegates object history, event-time measurements and enforced schema editing
@@ -288,6 +289,14 @@ is set.
   this instead of hand-rolling the pending-flag dance (see
   `fe-ui/src/dialogs/AGENTS.md` §destructive-confirm, which this widget is
   now the canonical implementation of).
+  `confirmation_pair_width` measures the actual small labels, padding, targets
+  and caller gap. At fitting widths the existing horizontal presentation stays;
+  below that width the same helper stacks width-bounded wrapped-label buttons
+  and gives the unarmed Delete the same bound. Full words retain their natural
+  size where they fit. Ownership/reconciliation/outside-disarm logic is shared
+  unchanged; a resize that changes leaf IDs can safely disarm, not preserve an
+  armed invocation across identities. Fixed-height callers must allow the narrow
+  group to grow vertically, as the property grid does.
 - **Cross-module reach.** `widgets` is `pub(crate) mod widgets;` in
   `panels/mod.rs` (W1 gate) so `dialogs/` can reuse `role_gated`,
   `confirm_button`, `role_denial_reason`, `clipped_value`, `world_to_meters`
@@ -518,27 +527,36 @@ The property grid supersedes the earlier vertical property cards (and the
 historical copy-box presentation in §inspector-units). `property_grid` owns
 only column geometry, compact previews and exact clipboard formatting;
 the parser and draft model remain shared with Add/Save. Key, Type, Value and
-Actions columns fill the available body width. Column minima reserve readable
-values and the armed Confirm/Cancel pair; below that width a horizontal scroll
-keeps the Inspector's viewport boundary intact. Row actions remain text buttons
-and use at least 24 points or 20 physical pixels, whichever is larger.
+Actions columns fill the available body width when their measured minima fit.
+Below that width the same rows use Property (key plus type) and Value columns,
+followed by a full-width wrapped action row. The breakpoint includes readable
+values and the armed Confirm/Cancel pair; the table does not force its wide floor
+into a narrow Inspector. Row actions remain text buttons and use at least24 points
+or20 physical pixels, whichever is larger. The native horizontal container remains
+for identity/observations, with fitted content and no horizontal-scroll hint.
 
-Column and action slots allocate their exact rectangles before rendering child
-controls. Child content cannot enlarge the table's measured width. Edit and
-Copy retain their own slots; the destructive-action slot always reserves the
-full Confirm/Cancel pair and uses a vertical parent for the canonical helper's
-internal horizontal row. Its width includes the actual square-button minimum,
-with whole-point rounding. Arming and canceling therefore do not change the
-column origins or require a new horizontal scroll position. Child clipping
-uses those same slot rectangles, preserving actual leaf-response observations.
+Fitting column/action slots allocate exact rectangles and clip to those bounds.
+The destructive slot reserves the shared measured pair at ordinary widths. When
+a compact slot exceeds the body, it instead allocates a body-width child whose
+height follows the actual controls. The canonical confirmation helper can then
+stack Confirm/Cancel without clipping either target or enlarging horizontal
+content, including the supported52-point body. Edit/Copy wrap their labels too;
+compact key sizing preserves a value-control minimum where the body permits it.
+Arming/canceling within one layout keeps Edit/Copy origins and horizontal offset
+stable. No Inspector width floor or viewport allocation is raised.
+Compact key/type cells reserve two control heights; values keep their existing
+preview/expand behavior. One row-action closure serves both layouts with identical
+Edit/Copy/Delete callbacks and loading/editing/pending guards. Full keys remain
+in label hover and contextual accessible action names.
 
 Expanded editors and read-only JSON details use the table viewport's horizontal
 range captured before its horizontal ScrollArea. The shared `Columns::expanded`
 scope places the existing content at that visible x range and the current row y;
 native scope allocation contributes its actual vertical height. The already
 allocated full-width table still owns horizontal content size. This keeps the
-Editing header, value input, status and Save/Cancel in view at either scroll
-edge without forcing the scroll offset or introducing a second editor/draft.
+Editing header, value input, status and Save/Cancel in view without forcing the
+scroll offset or introducing a second editor/draft. Resizing across the column
+breakpoint preserves node/key-scoped draft buffers and the detail-state key.
 
 Scalar previews are single-line ellipses with bounded hover text. Newlines and
 tabs are escaped for display, empty strings are explicit, and objects/arrays
@@ -562,19 +580,20 @@ The existing Inspector transform test is extended as
 assertions plus typed Add, invalid-input/no-write behavior, the actual GUI
 command's `correlation_id: None`, draft/readback confirmation, stale-value
 refusal, timeout, deletion and node-scope reset. The same journey now also
-authors three-width table/target observations, exact clipboard output and
+authors responsive table/target observations, exact clipboard output and
 real egui Delete arm/cancel/confirm plus Edit/cancel interactions. No new test
-function is added. At 260/320/640 points it positions the native scroll container
-at the right edge, then compares content width, horizontal offset and Edit/Copy
+function is added. At an actual52-point body, one point below/above the measured
+confirmation pair, and ordinary260/320/640 frames it leaves the native scroll container
+at zero offset, then compares fitted width, horizontal offset and Edit/Copy
 positions before/after arming and cancellation. It checks the complete action
 rectangles against their actual hit rectangles, child clips and table clip,
 including the full Confirm/Cancel pair; a control count alone is insufficient.
-At those same widths it opens Edit from the right edge, checks the full header,
+At those same widths it opens Edit without horizontal scrolling, checks the full header,
 input, status and footer against actual hit/clip geometry, verifies real editor
 height with unchanged table width/offset, and cancels a dirty draft without a
-write. Header/status observations are their actual native label responses.
-Only this declared native container ID is used for scroll setup; widget facts
-come from the actual same-pass responses. Its persistence readback is an explicit model simulation;
+write. It also crosses the responsive breakpoint with a dirty draft and requires
+the exact buffer to survive. Header/status observations are their actual native
+label responses; widget facts come from actual same-pass responses. Its persistence readback is an explicit model simulation;
 these authored assertions have not been executed in the source-only lane and
 do not prove DB persistence or backend schema enforcement. Integrated
 compilation, execution and live UI readability/a11y verification remain required.
