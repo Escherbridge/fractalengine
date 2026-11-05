@@ -41,6 +41,8 @@ reviewed slice. Historical evidence stays linked rather than rewritten.
 
 ## P2: complete interaction and data acceptance
 
+- [~] QA0074 responsive property grid: exact reviewed be081source compiled; QA59six canonical size/scale whole-action checks and real Save/Delete/cancel/history facts recorded, frozen full-packet review approved and finding focused-closed. No52/520live claim; missing glyphs and disabled divider remain separate follow-up work.
+
 - [ ] Finish selected-set/group edge cases: overlapping, hidden, deleted, empty, ambiguous, 256/257 bounds, mixed values, primary changes and navigation.
 - [ ] Exercise the same targets across tree, Inspector/Options, Move/Rotate/Scale, numeric forms, group membership and Undo/Redo; include supported paths/stamps/derived adapters and whole-edit refusals.
 - [ ] Execute same-object conflict versus unrelated-object streaming, exact inverse links, rollback, lost receipts and no automatic replay/rebase.

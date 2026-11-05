@@ -1,0 +1,452 @@
+{
+  "pass_id": "57",
+  "run_id": "20261104-184017-448",
+  "stage_commit": "6ca9f49bf65bb344ff5bdb0fa9794208c54c4a9a",
+  "stage_fingerprint": "275249AB3FBB3F48D1A12F57937D698A4FFDA2A472A72759170F3C9C12716AA4",
+  "scenario_sha256": "d14893061bb5c929bd2256dfd706b3cd88586f402fa7bb3a04845096abffa8ef",
+  "verse_id": "01M6MNTFD09S7PG2BDT00GPN6Z",
+  "petal_id": "01M6MP1AFEEA55HPN4SVSQ2WGY",
+  "driver_sha256": "55266bae3220b160b57a2759c8b7c25d40ae4350017d81c44a95cc2a73f46824",
+  "process_identity": {
+    "pid": 100212,
+    "start_ticks": "639294396177040381",
+    "exe_path": "C:\\Users\\atooz\\Programming\\fractalengine-workspace\\fractalengine\\.qa\\stage\\6ca9f49b-20261104183324669\\fractalengine.exe"
+  },
+  "api_base": "http://127.0.0.1:8765",
+  "step_id": "query-raw",
+  "intent": {
+    "id": "query-raw",
+    "op": "query_metrics",
+    "metric": "temperature_raw",
+    "start_ms": 1793404800000,
+    "end_ms": 1793404830000,
+    "oracle": "raw-full",
+    "kind": "rows",
+    "mode": "local",
+    "mcp_parity": false
+  },
+  "outcome": "PASS",
+  "result": {
+    "kind": "rows",
+    "metric": "temperature_raw",
+    "mode": "local",
+    "rows": [
+      {
+        "metric": "temperature_raw",
+        "node_id": "01M6MP3C5P08MKAG0KWMB8RYTK",
+        "payload_id": null,
+        "reading_id": "01M6MP3E6WHKV7HAVHA5BWV5GH",
+        "recorded_at_ms": 1793404800000,
+        "units": "C",
+        "value": 10.0
+      },
+      {
+        "metric": "temperature_raw",
+        "node_id": "01M6MP3CFVEMCCYQVN6MCXZE3Z",
+        "payload_id": null,
+        "reading_id": "01M6MP3E6WWNZBM7MW1WW3VKD1",
+        "recorded_at_ms": 1793404800000,
+        "units": "C",
+        "value": 20.0
+      },
+      {
+        "metric": "temperature_raw",
+        "node_id": "01M6MP3CFVEMCCYQVN6MCXZE3Z",
+        "payload_id": null,
+        "reading_id": "01M6MP3HKPC024NPPQF4H890X8",
+        "recorded_at_ms": 1793404810000,
+        "units": "C",
+        "value": 22.0
+      },
+      {
+        "metric": "temperature_raw",
+        "node_id": "01M6MP3C5P08MKAG0KWMB8RYTK",
+        "payload_id": null,
+        "reading_id": "01M6MP3HKPKAT894DE8SQFDVE3",
+        "recorded_at_ms": 1793404810000,
+        "units": "C",
+        "value": 11.0
+      },
+      {
+        "metric": "temperature_raw",
+        "node_id": "01M6MP3CFVEMCCYQVN6MCXZE3Z",
+        "payload_id": null,
+        "reading_id": "01M6MP3GPDD2F6S8MXHWHXVAPN",
+        "recorded_at_ms": 1793404820000,
+        "units": "C",
+        "value": 24.0
+      },
+      {
+        "metric": "temperature_raw",
+        "node_id": "01M6MP3C5P08MKAG0KWMB8RYTK",
+        "payload_id": null,
+        "reading_id": "01M6MP3GPDGBQ794R0FJBSXGP2",
+        "recorded_at_ms": 1793404820000,
+        "units": "C",
+        "value": 12.0
+      }
+    ],
+    "distributed": null
+  },
+  "assertions": [
+    {
+      "name": "Alpha queried metric",
+      "actual": "temperature_raw",
+      "expected": "temperature_raw",
+      "passed": true
+    },
+    {
+      "name": "Beta queried metric",
+      "actual": "temperature_raw",
+      "expected": "temperature_raw",
+      "passed": true
+    },
+    {
+      "name": "Beta queried metric",
+      "actual": "temperature_raw",
+      "expected": "temperature_raw",
+      "passed": true
+    },
+    {
+      "name": "Alpha queried metric",
+      "actual": "temperature_raw",
+      "expected": "temperature_raw",
+      "passed": true
+    },
+    {
+      "name": "Beta queried metric",
+      "actual": "temperature_raw",
+      "expected": "temperature_raw",
+      "passed": true
+    },
+    {
+      "name": "Alpha queried metric",
+      "actual": "temperature_raw",
+      "expected": "temperature_raw",
+      "passed": true
+    },
+    {
+      "name": "Alpha chronological sensor times",
+      "actual": [
+        1793404800000,
+        1793404810000,
+        1793404820000
+      ],
+      "expected": [
+        1793404800000,
+        1793404810000,
+        1793404820000
+      ],
+      "passed": true
+    },
+    {
+      "name": "Alpha independently expected values",
+      "actual": [
+        10.0,
+        11.0,
+        12.0
+      ],
+      "expected": [
+        10,
+        11,
+        12
+      ],
+      "passed": true
+    },
+    {
+      "name": "Alpha per-anchor statistics",
+      "actual": {
+        "count": 3,
+        "min": 10.0,
+        "max": 12.0,
+        "mean": 11.0,
+        "sum": 33.0
+      },
+      "expected": {
+        "count": 3,
+        "min": 10,
+        "max": 12,
+        "mean": 11,
+        "sum": 33
+      },
+      "passed": true
+    },
+    {
+      "name": "Beta chronological sensor times",
+      "actual": [
+        1793404800000,
+        1793404810000,
+        1793404820000
+      ],
+      "expected": [
+        1793404800000,
+        1793404810000,
+        1793404820000
+      ],
+      "passed": true
+    },
+    {
+      "name": "Beta independently expected values",
+      "actual": [
+        20.0,
+        22.0,
+        24.0
+      ],
+      "expected": [
+        20,
+        22,
+        24
+      ],
+      "passed": true
+    },
+    {
+      "name": "Beta per-anchor statistics",
+      "actual": {
+        "count": 3,
+        "min": 20.0,
+        "max": 24.0,
+        "mean": 22.0,
+        "sum": 66.0
+      },
+      "expected": {
+        "count": 3,
+        "min": 20,
+        "max": 24,
+        "mean": 22,
+        "sum": 66
+      },
+      "passed": true
+    }
+  ],
+  "requests": [
+    {
+      "method": "GET",
+      "path": "/api/v1/debug/logs?level=warn",
+      "request": null,
+      "status": 200,
+      "response_bytes": 2772,
+      "response_sha256": "289d4562a1dee2f285472cd2e0caff285869e8e306a28ba0c54d1cc93b47333c",
+      "response": {
+        "data": {
+          "active_verse_id": "01M6MNTFD09S7PG2BDT00GPN6Z",
+          "entries": [
+            {
+              "level": "warn",
+              "message": "[message withheld: event scope unavailable or outside active verse]",
+              "seq": 389,
+              "target": "fe_database::handlers::scene_publication::publisher"
+            },
+            {
+              "level": "warn",
+              "message": "[message withheld: event scope unavailable or outside active verse]",
+              "seq": 390,
+              "target": "fe_database::handlers::scene_publication::publisher"
+            },
+            {
+              "level": "warn",
+              "message": "[message withheld: event scope unavailable or outside active verse]",
+              "seq": 391,
+              "target": "fe_database::handlers::scene_publication::publisher"
+            },
+            {
+              "level": "warn",
+              "message": "[message withheld: event scope unavailable or outside active verse]",
+              "seq": 392,
+              "target": "fe_database::handlers::scene_publication::publisher"
+            },
+            {
+              "level": "warn",
+              "message": "[message withheld: event scope unavailable or outside active verse]",
+              "seq": 393,
+              "target": "fe_database::handlers::scene_publication::publisher"
+            },
+            {
+              "level": "warn",
+              "message": "[message withheld: event scope unavailable or outside active verse]",
+              "seq": 397,
+              "target": "fe_database::handlers::scene_publication::publisher"
+            },
+            {
+              "level": "warn",
+              "message": "[message withheld: event scope unavailable or outside active verse]",
+              "seq": 398,
+              "target": "fe_database::handlers::scene_publication::publisher"
+            },
+            {
+              "level": "warn",
+              "message": "[message withheld: event scope unavailable or outside active verse]",
+              "seq": 400,
+              "target": "fe_database::handlers::scene_publication::publisher"
+            },
+            {
+              "level": "warn",
+              "message": "[message withheld: event scope unavailable or outside active verse]",
+              "seq": 401,
+              "target": "fe_database::handlers::scene_publication::publisher"
+            },
+            {
+              "level": "warn",
+              "message": "[message withheld: event scope unavailable or outside active verse]",
+              "seq": 402,
+              "target": "fe_database::handlers::scene_publication::publisher"
+            },
+            {
+              "level": "warn",
+              "message": "[message withheld: event scope unavailable or outside active verse]",
+              "seq": 408,
+              "target": "fe_database::handlers::scene_publication::publisher"
+            },
+            {
+              "level": "warn",
+              "message": "[message withheld: event scope unavailable or outside active verse]",
+              "seq": 409,
+              "target": "fe_database::handlers::scene_publication::publisher"
+            },
+            {
+              "level": "warn",
+              "message": "[message withheld: event scope unavailable or outside active verse]",
+              "seq": 411,
+              "target": "fe_database::handlers::scene_publication::publisher"
+            },
+            {
+              "level": "warn",
+              "message": "[message withheld: event scope unavailable or outside active verse]",
+              "seq": 412,
+              "target": "fe_database::handlers::scene_publication::publisher"
+            },
+            {
+              "level": "warn",
+              "message": "[message withheld: event scope unavailable or outside active verse]",
+              "seq": 413,
+              "target": "fe_api::node_history"
+            },
+            {
+              "level": "warn",
+              "message": "[message withheld: event scope unavailable or outside active verse]",
+              "seq": 414,
+              "target": "fe_api::property_schema"
+            }
+          ],
+          "generation": 2,
+          "latest_seq": 415
+        },
+        "ok": true
+      }
+    },
+    {
+      "method": "POST",
+      "path": "/api/v1/query",
+      "request": {
+        "sql": "SELECT reading_id, node_id, metric, value, units, recorded_at_ms, payload_id FROM iot_reading WHERE petal_id = $p AND metric = $metric AND recorded_at_ms >= $start AND recorded_at_ms < $end AND node_id IN $nodes ORDER BY recorded_at_ms, reading_id",
+        "vars": {
+          "p": "01M6MP1AFEEA55HPN4SVSQ2WGY",
+          "metric": "temperature_raw",
+          "start": 1793404800000,
+          "end": 1793404830000,
+          "nodes": [
+            "01M6MP3C5P08MKAG0KWMB8RYTK",
+            "01M6MP3CFVEMCCYQVN6MCXZE3Z"
+          ]
+        }
+      },
+      "status": 200,
+      "response_bytes": 1190,
+      "response_sha256": "18700a6b3badf1162f717417d077b02c4deb0a7a0641f816397dfcf5b98c3967",
+      "response": {
+        "ok": true,
+        "data": {
+          "data": [
+            {
+              "metric": "temperature_raw",
+              "node_id": "01M6MP3C5P08MKAG0KWMB8RYTK",
+              "payload_id": null,
+              "reading_id": "01M6MP3E6WHKV7HAVHA5BWV5GH",
+              "recorded_at_ms": 1793404800000,
+              "units": "C",
+              "value": 10.0
+            },
+            {
+              "metric": "temperature_raw",
+              "node_id": "01M6MP3CFVEMCCYQVN6MCXZE3Z",
+              "payload_id": null,
+              "reading_id": "01M6MP3E6WWNZBM7MW1WW3VKD1",
+              "recorded_at_ms": 1793404800000,
+              "units": "C",
+              "value": 20.0
+            },
+            {
+              "metric": "temperature_raw",
+              "node_id": "01M6MP3CFVEMCCYQVN6MCXZE3Z",
+              "payload_id": null,
+              "reading_id": "01M6MP3HKPC024NPPQF4H890X8",
+              "recorded_at_ms": 1793404810000,
+              "units": "C",
+              "value": 22.0
+            },
+            {
+              "metric": "temperature_raw",
+              "node_id": "01M6MP3C5P08MKAG0KWMB8RYTK",
+              "payload_id": null,
+              "reading_id": "01M6MP3HKPKAT894DE8SQFDVE3",
+              "recorded_at_ms": 1793404810000,
+              "units": "C",
+              "value": 11.0
+            },
+            {
+              "metric": "temperature_raw",
+              "node_id": "01M6MP3CFVEMCCYQVN6MCXZE3Z",
+              "payload_id": null,
+              "reading_id": "01M6MP3GPDD2F6S8MXHWHXVAPN",
+              "recorded_at_ms": 1793404820000,
+              "units": "C",
+              "value": 24.0
+            },
+            {
+              "metric": "temperature_raw",
+              "node_id": "01M6MP3C5P08MKAG0KWMB8RYTK",
+              "payload_id": null,
+              "reading_id": "01M6MP3GPDGBQ794R0FJBSXGP2",
+              "recorded_at_ms": 1793404820000,
+              "units": "C",
+              "value": 12.0
+            }
+          ],
+          "crs": "PETAL-LOCAL:meters;origin=per-petal"
+        },
+        "error": null
+      }
+    },
+    {
+      "method": "GET",
+      "path": "/api/v1/debug/logs?level=warn&since=415",
+      "request": null,
+      "status": 200,
+      "response_bytes": 112,
+      "response_sha256": "bee260ac6a60f0443ee6eeba323d0df0df179278b033091d78c7b023d03fd0ad",
+      "response": {
+        "data": {
+          "active_verse_id": "01M6MNTFD09S7PG2BDT00GPN6Z",
+          "entries": [],
+          "generation": 2,
+          "latest_seq": 415
+        },
+        "ok": true
+      }
+    }
+  ],
+  "log_watermark": {
+    "generation": 2,
+    "seq": 415,
+    "latest_seq": 415
+  },
+  "log_end_watermark": {
+    "generation": 2,
+    "seq": 415,
+    "latest_seq": 415
+  },
+  "new_logs": [],
+  "log_generation_changed": false,
+  "log_retention_gap": false,
+  "log_retention_capacity": 2000,
+  "log_review_required": false
+}

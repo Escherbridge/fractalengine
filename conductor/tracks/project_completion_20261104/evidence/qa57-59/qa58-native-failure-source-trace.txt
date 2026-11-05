@@ -1,0 +1,113 @@
+# QA58 native failure — source trace and bounded correction design
+
+Source/file inspection only. Canonical source, GUI59 and frozen QA58 packet are
+untouched. QA58 manifest is20612f50d048ad4e02b5cfd83b7714cc8b83c2fa8f56dc0abeb536c2a15bb3d4.
+The first worker reported stage1/CurrentAutomationId HRESULT80040201 and exit2;
+the separate follow-up controller reported json_size_refused/spentnull, with its
+worker ownership receipt recording worker_exited/exit1. Neither is a successful
+root/witness/tree observation. Exact historical element/phase, follow-up raw byte
+size and exit cause remain unknown; this report does not amend frozen evidence.
+
+## First failure: actual cold-activation root discontinuity
+
+Locked dependencies are Bevy_winit0.18.1, bevy_egui0.39.1,
+AccessKit_windows/winit0.29.2, egui0.33.3 (Cargo.lock). Installed primary sources:
+
+1. Bevy_winit `src/accessibility.rs:81–100,137–153` installs its **direct**
+   activation handler. It returns Some initial TreeUpdate rooted at
+   NodeId(Window Entity.to_bits), and sets AccessibilityRequested. This differs
+   from AccessKit_winit's convenience proxy handler returning None (`lib.rs:87–94`).
+2. AccessKit_windows `src/adapter.rs:473–480` takes the Some branch and returns a
+   PlatformNode with that fixed node ID. Its special moving unspecified-root
+   provider is used only for the None/placeholder branch (:482–499).
+3. Egui's root is Id::new("accesskit_root") (`egui/src/lib.rs:712–714`), not derived
+   from the Bevy Window entity; context.rs:2506–2520 puts that ID into the output
+   tree. Bevy_egui `lib.rs:1876–1900` forwards the completed egui update through the
+   same actual adapter after activation. AccessKit_windows applies it to the
+   active tree (`adapter.rs:397–403`). No equality between these unrelated root
+   IDs is guaranteed.
+4. AccessKit_windows PlatformNode stores Weak<Context> and optional fixed NodeId
+   (`node.rs:511–528`). Missing node in a live context returns element_not_available
+   (:550–557); lost context does too (`util.rs:288–294`). GetPropertyValue resolves
+   through that node (:689–691), and AutomationId maps to author_id (:972).
+   GetRuntimeId can still return the fixed stored ID without resolving the node
+   (`node.rs:756–772`), so successful runtime-ID calls do not rule this out.
+
+Worker.cpp:790–809 retains ElementFromHandle and its runtime ID, then walks that
+same element. Stage1 is assigned in automation_id (:467); it is reused for walk
+nodes and witness/target checks. The initial Bevy-to-egui root replacement is thus
+a real source-level race consistent with the first error. The diagnostic does
+not prove that QA58's particular failed element was the old root, rather than
+another removed node/context. Missing author_id itself would yield an empty
+property, not this SDK availability failure.
+
+Current producer seam is local: native_window_witness/provider_output::prepare
+already runs before annotate and bevy_egui's actual publisher. Owner QA serves
+the physical egui output earlier. Positive annotation, complete snapshot and HWND
+publication remain separately guarded; no need to alter discovery or dependencies.
+
+## Follow-up: deadline-stop provenance is lost before JSON parsing
+
+`native_observer/windows.py:230–238` waits only until the absolute deadline minus
+0.2s, or collector failure, then calls process.kill if still live. After confirmed
+wait/join it labels a bounded, drained result worker_exited even when this parent
+requested the kill. Installed CPython3.12 `Lib/subprocess.py:1667–1684` implements
+Windows kill=terminate using TerminateProcess(handle,1). Worker.cpp itself normally
+returns0/2, output-failure3, and its independent watchdog terminates with124.
+Therefore exit1 is compatible with a parent deadline stop; it is not proof of an
+independent C++ crash or a provider HRESULT.
+
+Controller.py:286–292 durably writes the lifetime receipt before requiring
+worker_exited and calling worker_output. Contract.py:60–62 then uses the same
+json_size_refused for empty/nonbytes/oversized input. The output collector caps
+bytes and marks overflow as failure before worker_output. Under exactly this
+operator code, worker_exited plus that decode error narrows toward empty collected
+output; the frozen packet contains no byte-count/stop-reason witness, so it must
+retain unknown raw size/cause rather than retroactively asserting an empty pipe.
+Unmarked-root waiting, a blocked provider call or cleanup could consume budget;
+the record does not identify which. A second blind observe would not resolve this.
+
+## Small isolated candidate design
+
+**Producer root continuity:** normalize the one actual completed egui Window root
+to the bound Window Entity's existing Bevy root ID **before** provider forwarding.
+No additional/wrapper node, cached tree, new ID allocation or SDK fork. Reuse the
+existing full-tree validation/reference rewrite seam, mapping only that one root,
+tree.root, focus and every supported relationship. Reject wrong root role, missing
+full tree, duplicate/collision with another node or issued private target ID;
+suppress the actual output and retire positive binding on failure. Preserve
+quarantine/full-recovery requirements. Non-root widgets/private aliases retain
+their identities and handler translation; no old proof or target can inherit
+validity. Annotate the resulting actual root under unchanged guards. Context or
+window replacement still changes witness lifetime/epochs; constant Window root
+does not authorize actions across those changes. The existing worker retains its
+original element and all strict errors; no rediscovery, stale-node skip, retry,
+focus action or admission-floor relaxation.
+
+**Transport classification:** remember when this controller actually requests a
+deadline stop. After the existing confirmed wait/drain, use the fixed lifetime
+code worker_deadline_stop_requested rather than worker_exited (collector/IO
+refusal remains primary). This states a request, not a proven cause of death;
+natural-exit races keep that distinction. Controller refuses this code before
+decoding. Also reject unexpected helper exit codes before JSON decode, preserving
+their exact value in the existing durable receipt. Expected worker exits remain
+0/2; unknown lifetimes/IO retain their existing owners. No raw stdout/stderr,
+invented byte count or changed receipt schema is needed. Existing lifecycle reader
+accepts fixed terminal-code syntax (`_native_observer.ps1:256–260`). Invocation
+reservation/intent, spent ledger and unknown outcome ownership are unchanged;
+refusal never clears/replays an attempt.
+
+Candidate scope under `.omc/research/qa58-native-root-transport-v1/**` only:
+fe-ui/src/native_accessibility/{provider_identity.rs,provider_identity_journey.rs,
+AGENTS.md}; fractalengine/src/native_window_witness/{provider_output.rs,AGENTS.md};
+tools/qa/native_observer/{windows.py,controller.py,scenario.py,AGENTS.md}.
+Extend existing meaningful journeys, no new registrations: same root survives
+initial/full updates, complete relation/focus translation, collision/unsafe refusal
+and full recovery, unchanged button aliases; unexpected exit refuses before decoder
+while spent ledger stays spent. Inspect actual parent-stop branch, not only parser
+examples. Both independent reviews precede root integration/build/live execution.
+
+Only this report is written so far. No source implementation parser, tests,
+formatter, build, app/OS/native/API/DB/network or Git action. Shared UI guidance
+applies to ordinary accessibility continuity; no visual control or user flow is
+added. Candidate source and authored assertions are not live acceptance.

@@ -1,0 +1,2 @@
+{"commands": [{"kind": "pointer_move", "x": 978.0, "y": 532.5}, {"dx": 0.0, "dy": -2.80625, "kind": "scroll"}], "outcome": {"commands_applied": 2, "ok": true, "wait_frames_used": 5}, "token_verse": "01M6MNTFD09S7PG2BDT00GPN6Z"}
+{"generation_changed": false, "log_after": {"generation": 2, "seq": 1662}, "log_watermark": {"generation": 2, "seq": 1660}, "new_logs": [], "retention": {"possible_gap": false, "seq_delta": 2, "source_derived_capacity": 2000}}

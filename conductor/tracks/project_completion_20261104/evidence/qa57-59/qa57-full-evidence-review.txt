@@ -1,0 +1,116 @@
+# QA57 full frozen evidence review
+
+**APPROVED as bounded local data/GUI evidence with failed responsive geometry and key readability preserved. QA-0074 remains open.** No frozen-packet error requiring an erratum was found. This is not responsive-fix acceptance, a FULL pass, a native-provider pass, clipboard-content verification, real-peer replication or restart/durability acceptance. Later source corrections do not change this run's result.
+
+Reviewed `qa/passes/57/packet-manifest.json`: **49,773 bytes**, SHA256 **`3e0d6b34045d1f07c9ae4bb0c0a29f6a8295767d1a1f3ed8a82d96f1f78bc28e`**, with **275 payloads and17 PNGs**. Independently recalculated every payload byte length/hash and the exact complete file set: no missing, extra or mismatched files. Checked all272 original-artifact descriptors; all27 explicit local-source copies, including all17 PNGs, match original bytes. The remaining descriptors identify the original direct packet recordings/derived comparisons; they are not represented as additional independent captures. Verified all45 driver artifact-index links. No packet bytes were changed.
+
+Applied `C:/Users/atooz/.gemini/UI-UX-guidance.md`. All17 actual PNGs were opened and inspected through view_image; screenshot existence or matching geometry alone was not treated as visual success.
+
+## Exact source, build and run provenance
+
+This packet belongs to source identity **`6ca9f49bf65bb344ff5bdb0fa9794208c54c4a9a`**, stage `.qa/stage/6ca9f49b-20261104183324669`, fingerprint **`275249AB3FBB3F48D1A12F57937D698A4FFDA2A472A72759170F3C9C12716AA4`**. Stage source_dirty=true and stage_matches_source=true were recorded at launch: this is exact captured stage provenance, not a clean-SHA-only/current-tree assertion. The raw copied manifest equals actual stage.json, and the actual staged application, seal_hexon, legacy fixture and native observer binaries all match their manifest hashes.
+
+The build receipt records session43482 terminal exit0 and216.3s. Original `.omc/research/completion-responsive-grid-native-stage.log` is2,296 bytes, SHA256 `2446425ddce25fc73b936c3cc076b29352405d3d9809917033b33c91f9fa02b3`; it contains completed Cargo builds, worker.cpp and final staging with no compiler diagnostic lines. Exit0 is the root-recorded terminal receipt, not an independently queried former process. Neither that build nor the packet validates subsequent native diagnostic or combined grid source commits.
+
+Owned run is `.qa/run/20261104-184017-448`, app **PID100212**, birth ticks **639294396177040381**. Packet records native_observer=false, synthetic_input=true and a11y continuous/timing=false. Synthetic input and the product's guarded UI/state/API capture surfaces supplied these GUI observations; no successful native UIA provider observation/Invoke is implied by compiling the helper or navigating through that product UI bridge. Fixture setup, intended owned navigation and distributed readiness are retained.
+
+## Rich-data scenario: accepted local scope
+
+Independently read the38 numbered driver receipts and their521 recorded assertions: **38 PASS, zero failed assertions**. Sixteen receipts retain log_review_required; zero log-generation changes or retention gaps occur in these scenario receipts. Summary retains data_assertions_succeeded=true, **coverage_ready=false**, **log_review_required=true**, read_only_restart_verification=false and no driver failure. Root-recorded driver exit2 agrees with the driver's incomplete-coverage exit contract; it does not turn these data assertions into failures or confer FULL acceptance. Coverage candidates remain **24 PASS/10 UNKNOWN across34 records**.
+
+Recomputed the current unchanged four-file driver fingerprint `55266bae3220b160b57a2759c8b7c25d40ae4350017d81c44a95cc2a73f46824` and canonical scenario digest `d14893061bb5c929bd2256dfd706b3cd88586f402fa7bb3a04845096abffa8ef`. All38 receipts agree on run/process/stage/driver/scenario/scope provenance. Context's final Alpha/Beta/Gamma state hashes recompute exactly and their versions remain9/3/2.
+
+The preserved scenario covers nested schema/property creation and revision, typed invalid-input refusal, appended measurements, object transforms, historical state/history pagination and explicit driver derivation. Independently recomputed travel from captured committed XYZ sequences: **Alpha10m, Beta8m, Gamma4m**. All six derivation calculations satisfy gain×raw+bias. Alpha's historical calibration2×raw+1 produces21/23/25 despite its later current gain3; Beta produces9/10/11. The captured half-open query includes t0/t1 and excludes t2; latest selects t2 despite late t1 arrival. These are API oracles, not a new GUI chart or playback-timer exercise.
+
+Distributed metadata remains **mirror, factor1, one answered local host**, with recorded complete shards/no missing or unverified answerers. This proves only that local response scope. No real Viewer/Editor peer, transfer, convergence, replicated durability or restart is credited. Parsed request/response bodies are in the hashed receipts; a response_sha is not a separately archived second raw HTTP stream. The driver's original “API only” limit remains true of the driver, while separate GUI probe evidence below supplements it.
+
+## All six responsive matrix states fail whole-target checks
+
+Rejoined the actual semantic leaf IDs to raw layout controls in each corresponding grid-after-ui receipt. Every state retains the exact failed height boundary, with horizontal offset0:
+
+| Window, scale | Actual body logical width | Edit/Copy rect height vs hit/child clip, physical px | Whole-target verdict |
+| --- | ---: | --- | --- |
+|1024×900,1 |260 |25 vs24/24 |FAIL |
+|1280×900,1 |260 |25 vs24/24 |FAIL |
+|1600×900,1 |260 |25 vs24/24 |FAIL |
+|1024×900,2 |67 |50 vs48/48 |FAIL |
+|1280×900,2 |79 |50 vs48/48 |FAIL |
+|1600×900,2 |167 |50 vs48/48 |FAIL |
+
+The original execution script (`execution/qa57_matrix-v1.py`) deliberately records violations as failed facts rather than turning the screenshots into passes. Before-fix collection omits layout-check; there is no claim that the full product geometry checker or unrelated panel matrix ran. The raw per-control UI/hit/clip comparisons support this narrow failure even where the1–2physical-pixel defect is subtle in the images.
+
+At67/79, actual painted keys are ellipses, with types/values also shortened. Complete semantic names such as Edit property grid_number do not make the property identifiable in the screenshot. At167, keys remain abbreviated (grid_n…, grid_p…), rather than this being a claim that all2x text is readable. The visible controls fit horizontally, but full rect/hit and readable identities are separate failures. Later height/stacked-key source approval or integration provides **no live-fix credit** to these images.
+
+## Confirmation, dirty drafts and deliberate probe mutations
+
+The attempted52-point1x minimum request actually clamps to **200 logical points**. `minimum-confirmation-comparison.json` and original normal/armed screenshots establish that actual body, not52. The normal Edit/Copy controls still fail height. The actual **Confirm/Cancel pair** at200 fits complete rect/hit/child/table bounds, side by side, and one Cancel leaves probe version1.
+
+The separate actual2x **67-point** confirmation case stacks Confirm/Cancel across the full134physical-pixel content width. Raw rects equal hits, lie within parent/table clips and match the inspected image; one Cancel again leaves version1. This proves the bounded observed stack, not live52, full row correctness or all destructive layouts.
+
+The probe is `01M6MP8FR3AGSH39XZ97F9P03K`. Full semantic input values in exact-buffer, wide, narrow2x and return UI receipts retain exact raw **`-150.250`**. The wide screenshot shows that raw value; the narrow screenshot wraps its characters across lines while preserving the same buffer. The post-cancel properties equal the complete created properties and history staysversion1/stored number1.25. Screenshots of a dirty editor do not imply a committed value.
+
+The later separate Save sequence uses focus, Ctrl+A and insertion of valid complete raw text, then **one actual Save activation**. Raw saved-statev2 equals the full initial state with **only grid_number changed to−150.25**. History adds exactly property_set atversion2; the screenshot shows Matches stored value. The original extra trailing zero remains in the draft display and is not a JSON numeric precision loss.
+
+One actual Delete arm and **one Confirm Delete grid_remove activation** then produceversion3. Raw state equals initial state plus the same number edit and **only grid_remove removed**. Complete state comparison preserves transform/name/ancestry/other properties. The nested sequence stays exact integer **9007199254740993** at creation, after Save and after Delete. API raw evidence supplies that precision; the nested integer is not all visibly displayed in the screenshots.
+
+Extracted the original JSON entry byte spans without reserialization: the first two entries in the complete version3 history equal the complete version2 history entries byte-for-byte. Entry hashes reconcile to the comparison:
+
+1. baseline `4c58643701d304bae08abf1100a423ec96234fb6b3e5aa19ac5bbfb810da2290`;
+2. property_set `8a966d80f6cb99b44fecb8f512a6b6194bfd96a60dae8a3095f563f5d6bcd041`;
+3. property_deleted `a42b97f283fdf289ec3865228d2932af1c2a4594aea765e1e5de94da77ec8336`.
+
+This is a real observed property save/delete history sequence, not a full completed-save/concurrency/rollback/authority matrix or a database-wide mutation census.
+
+## Copy and fleet preservation
+
+One Copy grid_text activation is recorded and the actual final screenshot/UI contains **Copied grid_text**. The synthetic input clipboard guard intentionally suppresses clipboard writes; its warning is present. Source6ca's input bridge retains that guard and clipboard-chord refusal. There was no host clipboard read, paste or OS content verification. Exact stored whitespace survives in API data, but the toast does not prove those bytes reached the host clipboard.
+
+Probe properties and complete history after Copy are byte-identical to the preceding version3 recordings. Independently compared all six fleet before/after raw files:
+
+| Object | Current-row bytes | Complete-history bytes | Result |
+| --- | ---: | ---: | --- |
+|Alpha,version9 |1098 |12465 |Both raw-byte identical |
+|Beta,version3 |959 |4336 |Both raw-byte identical |
+|Gamma,version2 |958 |3228 |Both raw-byte identical |
+
+These support preservation of the captured fleet objects through the probe sequence. They do not certify every database row, durable peer replay, scene mesh residency or pick identity.
+
+## Actual image inspection record
+
+All files below are under `qa/passes/57/screenshots/`, byte-identical to original run-local files. Every image has a corresponding recorded shot receipt with matching byte length/dimensions, include_ui=true and source orbit.
+
+| PNG | Inspected content and practical limit |
+| --- | --- |
+|185026-982-qa57-probe-initial |1280×720: selected probe, position40/0/0 and thin planar object visible; no native pick/mesh identity claim. |
+|185639-833-qa57-grid-before-height-fix |1280×720: readable compact property labels/actions horizontally; raw height clipping remains. |
+|190132-032-qa57-matrix-1024-scale1 |1024×900: property rows/actions visible in compact Inspector;25/24 failure remains. |
+|190137-185-qa57-matrix-1280-scale1 |1280×900: same readable compact identities, same failed height boundary. |
+|190141-975-qa57-matrix-1600-scale1 |1600×900: Inspector body still260; window width alone does not create a wide grid. |
+|190146-383-qa57-matrix-1024-scale2 |1024×900:67-point body, keys ellipses, stacked actions;50/48 failure. |
+|190150-601-qa57-matrix-1280-scale2 |1280×900:79-point body, keys ellipses, Edit/Copy adjacent then Delete;50/48 failure. |
+|190155-150-qa57-matrix-1600-scale2 |1600×900:167-point body, keys abbreviated, same failed height. |
+|190933-044-qa57-minimum-grid |1600×900/1: actual200 body, normal grid; not a live52 sample. |
+|190935-250-qa57-minimum-armed |Actual200: full side-by-side Confirm/Cancel in grid_remove row. |
+|191301-528-qa57-narrow2x-grid |1024×900/2: actual67 body, scrolled lower rows; property identities still ellipses. |
+|191303-526-qa57-narrow2x-armed |Actual67: full-width stacked Confirm/Cancel, readable action text; unrelated key/readability failures persist. |
+|191706-702-qa57-dirty-wide |1600×900/1: wide four-column grid, full raw−150.250 in dirty numeric editor. |
+|191709-794-qa57-dirty-narrow2x |1024×900/2: editor identity wraps, raw value wraps over lines, Save/Cancel visible; not a commit. |
+|192049-719-qa57-saved-number |1280×900/1: numeric draft−150.250 and Matches stored value; upper editor header partly above scroll clip, not a full-form-polish pass. |
+|192319-104-qa57-deleted-property |1280×900/1: remaining rows and retained numeric draft after removal; API/history establish exact deletion. |
+|192600-507-qa57-copy-intent |1280×900/1: Copied grid_text toast; no clipboard-content proof. |
+
+Blank fallback glyphs/tree elision and constrained2x chrome remain visible; the packet does not claim global polish. A visible plane does not establish the identity/residency of every fleet GLB, and image occlusion is not evidence that a model was absent.
+
+## Logs, finite scans and cleanup
+
+Privately checked full original stdout bytes/hash against application-log-summary: **268,942 bytes**, SHA256 `1762053ca816c378a7bf69dc57ea615ffe714c7960440a75f65f507667f410dd`, strict UTF8 with1,856 lines. Independently recounted **1,760 INFO/29 WARN/0 ERROR**; stderr is empty. The warnings divide into **nine startup/environment,14 rich-data publication deferrals, three probe publication deferrals, two expected invalid-input and one expected clipboard-suppression warning**. The17 publication warnings split by actual probe node ID versus fleet nodes and retain dependency deferral rather than certifying remote publication. These are reviewed warnings, not “clean logs” or peer delivery proof. Private raw logs remain unpublished; no credential dump was performed.
+
+Recomputed the named finite four-pattern scan from the existing packet helper's regex definitions against all **257 recorded text inputs**:252 UTF8, two UTF8-BOM, three UTF16-BOM; exact encoding/counts agree and all four counts arezero. Original private stdout/stderr scans also match. PNGs are not text-scanned. This is finite pattern/strict-decoding evidence, not universal credential-absence proof.
+
+Cleanup receipt records **2026-11-05T02:27:44.9155842Z**. Its eight complete identities equal the context's app plus seven descendants, and every pid_present/recorded_identity_present flag isfalse. The copied stop/context/cleanup anchors match originals. This supports absence of those recorded lifetimes at that timestamp, not a fresh OS query or exhaustive unknown-orphan census; retained stores were not reopened.
+
+## Acceptance boundary
+
+The packet accurately preserves successful local data assertions, bounded GUI draft/save/delete/confirmation behavior and explicit responsive failures. It supplies no later grid/native source acceptance, live52 minimum, clipboard bytes, real peer/recipient rendering, native picking/UIA provider/Invoke, restart, durability, playback timer, final integrated sweep, FULL catalog denominator/pass, green exact-SHA CI, tag or release credit. Any future correction needs its own stage and fresh evidence; do not rewrite this frozen packet.
+
+Only this review report was written. Read-only files/source/Git inspection, evidence JSON/byte/hash calculations and actual image viewing were used. No implementation parser/tests/formatter/compiler/build, app/helper/OS/process/native/API/DB/network or Git mutation occurred.

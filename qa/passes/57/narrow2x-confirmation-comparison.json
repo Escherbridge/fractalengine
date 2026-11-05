@@ -1,0 +1,168 @@
+{
+  "normal": {
+    "whole_targets_fit": false,
+    "problems": [
+      {
+        "name": "Edit property grid_remove",
+        "assertion": "('Edit property grid_remove', {'allowed': True, 'clickable': True, 'clip': {'h': 48.0, 'w': 62.0, 'x': 850.0, 'y': 288.0}, 'draggable': False, 'hit': {'h': 48.0, 'w': 61.0625, 'x': 850.0, 'y': 288.0}, 'id': '13089621283259534113', 'layer': 'LayerId { Background 5A3E }', 'rect': {'h': 50.0, 'w': 61.0625, 'x': 850.0, 'y': 288.0}})"
+      },
+      {
+        "name": "Copy property grid_remove",
+        "assertion": "('Copy property grid_remove', {'allowed': True, 'clickable': True, 'clip': {'h': 48.0, 'w': 76.0, 'x': 850.0, 'y': 342.0}, 'draggable': False, 'hit': {'h': 48.0, 'w': 74.3125, 'x': 850.0, 'y': 342.0}, 'id': '7678815352339220132', 'layer': 'LayerId { Background 5A3E }', 'rect': {'h': 50.0, 'w': 74.3125, 'x': 850.0, 'y': 342.0}})"
+      }
+    ],
+    "targets": [
+      {
+        "name": "Delete property grid_remove",
+        "node_id": "10004599291768417933",
+        "rect": {
+          "h": 48.0,
+          "w": 134.0,
+          "x": 850.0,
+          "y": 396.0
+        },
+        "hit": {
+          "h": 48.0,
+          "w": 134.0,
+          "x": 850.0,
+          "y": 396.0
+        },
+        "child_clip": {
+          "h": 568.0,
+          "w": 146.0,
+          "x": 844.0,
+          "y": 276.0
+        }
+      }
+    ],
+    "pixels_per_point": 2.0,
+    "table": {
+      "axes": [
+        true,
+        false
+      ],
+      "clip": {
+        "h": 568.0,
+        "w": 146.0,
+        "x": 844.0,
+        "y": 276.0
+      },
+      "content_id": "7965099993090182272",
+      "content_rect": {
+        "h": 1476.0,
+        "w": 134.0,
+        "x": 850.0,
+        "y": -450.0
+      },
+      "content_size": [
+        134.0,
+        1476.0
+      ],
+      "label": "Custom property table",
+      "layer": "LayerId { Background 5A3E }",
+      "offset": [
+        0.0,
+        0.0
+      ],
+      "parent_id": "12231413348511173160",
+      "viewport": {
+        "h": 0.0,
+        "w": 134.0,
+        "x": 850.0,
+        "y": -450.0
+      }
+    },
+    "body_logical_width": 67.0
+  },
+  "armed": {
+    "whole_targets_fit": true,
+    "problems": [],
+    "targets": [
+      {
+        "name": "Confirm Delete property grid_remove",
+        "node_id": "7644286336287649294",
+        "rect": {
+          "h": 48.0,
+          "w": 134.0,
+          "x": 850.0,
+          "y": 396.0
+        },
+        "hit": {
+          "h": 48.0,
+          "w": 134.0,
+          "x": 850.0,
+          "y": 396.0
+        },
+        "child_clip": {
+          "h": 568.0,
+          "w": 146.0,
+          "x": 844.0,
+          "y": 276.0
+        }
+      },
+      {
+        "name": "Cancel Delete property grid_remove",
+        "node_id": "10522115975429726982",
+        "rect": {
+          "h": 48.0,
+          "w": 134.0,
+          "x": 850.0,
+          "y": 450.0
+        },
+        "hit": {
+          "h": 48.0,
+          "w": 134.0,
+          "x": 850.0,
+          "y": 450.0
+        },
+        "child_clip": {
+          "h": 568.0,
+          "w": 146.0,
+          "x": 844.0,
+          "y": 276.0
+        }
+      }
+    ],
+    "pixels_per_point": 2.0,
+    "table": {
+      "axes": [
+        true,
+        false
+      ],
+      "clip": {
+        "h": 568.0,
+        "w": 146.0,
+        "x": 844.0,
+        "y": 276.0
+      },
+      "content_id": "7965099993090182272",
+      "content_rect": {
+        "h": 1530.0,
+        "w": 134.0,
+        "x": 850.0,
+        "y": -450.0
+      },
+      "content_size": [
+        134.0,
+        1530.0
+      ],
+      "label": "Custom property table",
+      "layer": "LayerId { Background 5A3E }",
+      "offset": [
+        0.0,
+        0.0
+      ],
+      "parent_id": "12231413348511173160",
+      "viewport": {
+        "h": 0.0,
+        "w": 134.0,
+        "x": 850.0,
+        "y": -450.0
+      }
+    },
+    "body_logical_width": 67.0
+  },
+  "after_cancel_version": 1,
+  "screenshot": "C:\\Users\\atooz\\Programming\\fractalengine-workspace\\fractalengine\\.qa\\run\\20261104-184017-448\\shots\\191303-526-qa57-narrow2x-armed.png",
+  "limits": "One observed2x narrow case; key readability and intrinsic height still fail elsewhere."
+}

@@ -1,0 +1,64 @@
+{
+  "exact_copies": [
+    {
+      "source": ".omc/research/qa57-full-evidence-review.md",
+      "file": "conductor/tracks/project_completion_20261104/evidence/qa57-59/qa57-full-evidence-review.txt",
+      "bytes": 15849,
+      "sha256": "3ec844caf0635871fbad60b15b1ad8120f60d92da9bf5ca3b9784a2eb8fcb3ef"
+    },
+    {
+      "source": ".omc/research/qa58-full-evidence-review.md",
+      "file": "conductor/tracks/project_completion_20261104/evidence/qa57-59/qa58-full-evidence-review.txt",
+      "bytes": 8555,
+      "sha256": "851703d13ba98dffb4f7a2a906995a4501f02f802f41d9565426d284584cc349"
+    },
+    {
+      "source": ".omc/research/qa59-grid-visual-review.md",
+      "file": "conductor/tracks/project_completion_20261104/evidence/qa57-59/qa59-grid-visual-review.txt",
+      "bytes": 10310,
+      "sha256": "67fd861b4f612c0e0c0d0168cbe8b29ef2f975ca1233b4646efebfb3f8e7e641"
+    },
+    {
+      "source": ".omc/research/qa58-native-failure-source-trace.md",
+      "file": "conductor/tracks/project_completion_20261104/evidence/qa57-59/qa58-native-failure-source-trace.txt",
+      "bytes": 7673,
+      "sha256": "c699c47a9b9bf05120b8746bcaf2ad3cf11d01f70c726ff05798d5ae8a69140b"
+    },
+    {
+      "source": ".omc/research/qa58-native-root-transport-design-review.md",
+      "file": "conductor/tracks/project_completion_20261104/evidence/qa57-59/qa58-native-root-transport-design-review.txt",
+      "bytes": 12894,
+      "sha256": "fbfe2a4f3d8a83c944d555f86984e9f31681bb39b28114c79f334c1df9c9ed33"
+    },
+    {
+      "source": ".omc/research/require-existing-supported-maintenance-contract.md",
+      "file": "conductor/tracks/project_completion_20261104/evidence/qa57-59/require-existing-supported-maintenance-contract.txt",
+      "bytes": 14537,
+      "sha256": "37e3f44bad90971fea68c68dfd2dbade5b2d419cac716f0b2c443d1ac86b3a63"
+    },
+    {
+      "source": ".omc/research/completion-readable-grid-provider-stage-receipt.json",
+      "file": "conductor/tracks/project_completion_20261104/evidence/qa57-59/build-stage-receipt.json",
+      "bytes": 507,
+      "sha256": "247d22463c23aeb5809914524621921f450a3b8e33b4e7ac9da9912e97111240"
+    },
+    {
+      "source": ".omc/research/qa58-packet-freeze-receipt.json",
+      "file": "conductor/tracks/project_completion_20261104/evidence/qa57-59/qa58-packet-freeze-receipt.json",
+      "bytes": 3856,
+      "sha256": "8ad55035ac1e153b349d4da05c7749602dcdabda842f458a783985ad2a7ac014"
+    },
+    {
+      "source": ".omc/research/qa59-packet-freeze-receipt.json",
+      "file": "conductor/tracks/project_completion_20261104/evidence/qa57-59/qa59-packet-freeze-receipt.json",
+      "bytes": 385,
+      "sha256": "84d88131339f1c423eaa94efb5aeab3451d0055255b148f73aa3cadfdd3e79de"
+    },
+    {
+      "source": ".omc/research/qa59-full-evidence-review.md",
+      "file": "conductor/tracks/project_completion_20261104/evidence/qa57-59/qa59-full-evidence-review.txt",
+      "bytes": 12253,
+      "sha256": "3d3906689f9bb4676442f881ecbdebae414b5b4c04b91935c0d4a1fbebed6f05"
+    }
+  ]
+}

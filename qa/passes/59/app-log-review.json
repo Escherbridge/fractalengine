@@ -1,0 +1,60 @@
+{
+  "raw_logs_private": true,
+  "logs": {
+    "stdout.log": {
+      "local_path": "C:\\Users\\atooz\\Programming\\fractalengine-workspace\\fractalengine\\.qa\\run\\20261104-200103-206\\stdout.log",
+      "bytes": 98870,
+      "sha256": "db6fd18accc28b8f5fd399e4c81c7ac9402e9eef9504160dcc542e2a32fa65bc",
+      "text_encoding": "utf-8",
+      "lossy_decoding": false,
+      "line_count": 698,
+      "levels": {
+        "INFO": 621,
+        "WARN": 10,
+        "ERROR": 0
+      },
+      "panic_markers": 0,
+      "compiler_warning_diagnostics": 0,
+      "compiler_error_diagnostics": 0,
+      "private_current_error_markers": 0,
+      "credential_pattern_counts": {
+        "bearer_value": 0,
+        "jwt_value": 0,
+        "private_key_block": 0,
+        "credential_assignment": 0
+      },
+      "raw_log_published": false
+    },
+    "stderr.log": {
+      "local_path": "C:\\Users\\atooz\\Programming\\fractalengine-workspace\\fractalengine\\.qa\\run\\20261104-200103-206\\stderr.log",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "text_encoding": "utf-8",
+      "lossy_decoding": false,
+      "line_count": 0,
+      "levels": {
+        "INFO": 0,
+        "WARN": 0,
+        "ERROR": 0
+      },
+      "panic_markers": 0,
+      "compiler_warning_diagnostics": 0,
+      "compiler_error_diagnostics": 0,
+      "private_current_error_markers": 0,
+      "credential_pattern_counts": {
+        "bearer_value": 0,
+        "jwt_value": 0,
+        "private_key_block": 0,
+        "credential_assignment": 0
+      },
+      "raw_log_published": false
+    }
+  },
+  "warning_classes": {
+    "startup": 9,
+    "synthetic_clipboard_suppression": 1
+  },
+  "actual_warn_total": 10,
+  "error_total": 0,
+  "limits": "Finite marker/credential checks are not universal absence proof. Clipboard suppression prevents actual host clipboard acceptance."
+}

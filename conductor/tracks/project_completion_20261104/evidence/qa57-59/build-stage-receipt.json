@@ -1,0 +1,11 @@
+{
+  "source_commit": "be081abed05be3c623b93bef33d4dd31d43d9b46",
+  "session": 39123,
+  "terminal_exit_code": 0,
+  "stage": ".qa/stage/be081abe-20261104194142170",
+  "duration_seconds": 226.9,
+  "rust_msvc_compiler_warning_error_diagnostics": 0,
+  "application_and_helper_hashes_verified": true,
+  "log_sha256": "ca05c6f5723ccda4d0f19e870984ff00237c61b75dea4ec6f3d752f6bc2db2e9",
+  "limits": "Production build only; matching visual/native focused acceptance and final integrated sweep pending."
+}

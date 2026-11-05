@@ -1,0 +1,168 @@
+{
+  "normal": {
+    "whole_targets_fit": false,
+    "problems": [
+      {
+        "name": "Edit property grid_remove",
+        "assertion": "('Edit property grid_remove', {'allowed': True, 'clickable': True, 'clip': {'h': 24.0, 'w': 32.0, 'x': 1380.0, 'y': 426.0}, 'draggable': False, 'hit': {'h': 24.0, 'w': 31.03125, 'x': 1380.0, 'y': 426.0}, 'id': '3020055281655883519', 'layer': 'LayerId { Background 5A3E }', 'rect': {'h': 25.0, 'w': 31.03125, 'x': 1380.0, 'y': 426.0}})"
+      },
+      {
+        "name": "Copy property grid_remove",
+        "assertion": "('Copy property grid_remove', {'allowed': True, 'clickable': True, 'clip': {'h': 24.0, 'w': 38.0, 'x': 1420.0, 'y': 426.0}, 'draggable': False, 'hit': {'h': 24.0, 'w': 37.15625, 'x': 1420.0, 'y': 426.0}, 'id': '13875564739414299560', 'layer': 'LayerId { Background 5A3E }', 'rect': {'h': 25.0, 'w': 37.15625, 'x': 1420.0, 'y': 426.0}})"
+      }
+    ],
+    "targets": [
+      {
+        "name": "Delete property grid_remove",
+        "node_id": "15569810650360223207",
+        "rect": {
+          "h": 24.0,
+          "w": 34.9375,
+          "x": 1466.0,
+          "y": 426.0
+        },
+        "hit": {
+          "h": 24.0,
+          "w": 34.9375,
+          "x": 1466.0,
+          "y": 426.0
+        },
+        "child_clip": {
+          "h": 24.0,
+          "w": 83.0,
+          "x": 1466.0,
+          "y": 426.0
+        }
+      }
+    ],
+    "pixels_per_point": 1.0,
+    "table": {
+      "axes": [
+        true,
+        false
+      ],
+      "clip": {
+        "h": 679.0,
+        "w": 206.0,
+        "x": 1377.0,
+        "y": 193.0
+      },
+      "content_id": "14590893963155772141",
+      "content_rect": {
+        "h": 468.0,
+        "w": 200.0,
+        "x": 1380.0,
+        "y": 165.0
+      },
+      "content_size": [
+        200.0,
+        468.0
+      ],
+      "label": "Custom property table",
+      "layer": "LayerId { Background 5A3E }",
+      "offset": [
+        0.0,
+        0.0
+      ],
+      "parent_id": "13814949513801798013",
+      "viewport": {
+        "h": 0.0,
+        "w": 200.0,
+        "x": 1380.0,
+        "y": 165.0
+      }
+    },
+    "body_logical_width": 200.0
+  },
+  "armed": {
+    "whole_targets_fit": true,
+    "problems": [],
+    "targets": [
+      {
+        "name": "Confirm Delete property grid_remove",
+        "node_id": "12596738609168442232",
+        "rect": {
+          "h": 24.0,
+          "w": 39.78125,
+          "x": 1466.0,
+          "y": 426.0
+        },
+        "hit": {
+          "h": 24.0,
+          "w": 39.78125,
+          "x": 1466.0,
+          "y": 426.0
+        },
+        "child_clip": {
+          "h": 24.0,
+          "w": 83.0,
+          "x": 1466.0,
+          "y": 426.0
+        }
+      },
+      {
+        "name": "Cancel Delete property grid_remove",
+        "node_id": "16895976416215183972",
+        "rect": {
+          "h": 24.0,
+          "w": 34.28125,
+          "x": 1513.78125,
+          "y": 426.0
+        },
+        "hit": {
+          "h": 24.0,
+          "w": 34.28125,
+          "x": 1513.78125,
+          "y": 426.0
+        },
+        "child_clip": {
+          "h": 24.0,
+          "w": 83.0,
+          "x": 1466.0,
+          "y": 426.0
+        }
+      }
+    ],
+    "pixels_per_point": 1.0,
+    "table": {
+      "axes": [
+        true,
+        false
+      ],
+      "clip": {
+        "h": 679.0,
+        "w": 206.0,
+        "x": 1377.0,
+        "y": 193.0
+      },
+      "content_id": "14590893963155772141",
+      "content_rect": {
+        "h": 468.0,
+        "w": 200.0,
+        "x": 1380.0,
+        "y": 165.0
+      },
+      "content_size": [
+        200.0,
+        468.0
+      ],
+      "label": "Custom property table",
+      "layer": "LayerId { Background 5A3E }",
+      "offset": [
+        0.0,
+        0.0
+      ],
+      "parent_id": "13814949513801798013",
+      "viewport": {
+        "h": 0.0,
+        "w": 200.0,
+        "x": 1380.0,
+        "y": 165.0
+      }
+    },
+    "body_logical_width": 200.0
+  },
+  "after_cancel_version": 1,
+  "screenshot": "C:\\Users\\atooz\\Programming\\fractalengine-workspace\\fractalengine\\.qa\\run\\20261104-184017-448\\shots\\190935-250-qa57-minimum-armed.png",
+  "limits": "Current staged6ca before intrinsic-height correction; failed whole-target checks remain failures."
+}

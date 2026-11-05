@@ -1,0 +1,54 @@
+# QA59 bounded grid visual review
+
+Verdict: accept the captured responsive property-row improvement, with residual visual work required before broader UI acceptance. This is an independent read-only review of nine actual PNGs, the six-case numeric target report, and narrowly relevant current source. It does not approve the whole QA59 packet, unobserved controls, or the unachieved live 52/520-point cases. No apps, API/DB operations, build, parser/test execution, Git mutation, or canonical edits were performed. Only this report was written. Shared UI guidance at `C:/Users/atooz/.gemini/UI-UX-guidance.md` was applied.
+
+## Captured evidence and acceptance boundary
+
+`qa/passes/59/responsive-matrix-rebuilt.json` SHA256 `fbc03babc07356bcd57a35840903923c37dea417ab57fc5125ba37c3fc52e937`, stage commit `be081abed05be3c623b93bef33d4dd31d43d9b46`, records actual bodies 260/260/260/67/79/167 logical points. All six numeric-row Edit/Copy/Delete whole-target checks pass. I opened every referenced original file through `view_image`, rather than judging names or semantic rectangles alone:
+
+| Capture | Actual body | PNG SHA256 |
+| --- | ---: | --- |
+| 200408-829-qa59-matrix-1024-scale1.png | 260 | a2b001af447c70c11ef355c1eba18b0bd1db2dd7391cb445f7a956616f4adbb0 |
+| 200414-286-qa59-matrix-1280-scale1.png | 260 | f24a4b6dcccc3a8def05ccd3b52a26ed239e46648f9458094ff6f9d084651b65 |
+| 200419-921-qa59-matrix-1600-scale1.png | 260 | a517b6730c3f0bd9461164071da4f6dd1a7356c42c692ffea8364ba0de713adc |
+| 200425-151-qa59-matrix-1024-scale2.png | 67 | ef56c126b05973b986e73b9d02fe517012459145be501e061e763003193ca069 |
+| 200430-695-qa59-matrix-1280-scale2.png | 79 | 703a7c7f11c120d2545d631b6bb3dcf2e5afdc2e903a9ee849c47f9e0678129e |
+| 200436-766-qa59-matrix-1600-scale2.png | 167 | 5195b7655aef2a649b23471bb4257f66829fb9319b66f6a5ab924e003d00e415 |
+
+Original PNG directory: `.qa/run/20261104-200103-206/shots/`. The additional original `200844-806-qa59-keys-number.png`, `200846-895-qa59-keys-long.png`, and `200849-039-qa59-keys-unicode.png`, referenced by `owner-keys-{number,long,unicode}-shot.jsonl`, were also opened. These three actual 67-point/2x captures show the whole `grid_number`, the long unbroken property key, and `sensor_α_β_γ` wrapped legibly. Greek characters paint correctly. The matrix's first 67-point capture is scrolled so the numeric key begins above the body clip; the dedicated number capture resolves that observation and shows the complete key. Do not call the earlier scroll boundary an intrinsic key clipping regression.
+
+At 1x the property/type and value columns remain orderly and all visible numeric actions fit. At 67 points the key/type/value occupy full-width natural rows and Edit, Copy, Delete stack; at 79 points Edit and Copy fit alongside each other, with Delete below. At 167 points the paired content columns return and actions wrap below. This visibly resolves the previous all-ellipsis narrow keys. Long keys require vertical space, which the existing scroll accommodates. A partly visible neighboring row at the scroll edge is expected, not proof of a clipped whole-row control.
+
+The shortened `long_property…`, bounded object summaries such as `{1…`, and tree labels such as `Genesis…` are intentional elision at the corresponding compact widths: `inspector.rs:1943-1968` explicitly chooses wrapped keys only in stacked mode and truncates the bounded summary otherwise. Full narrow keys in the dedicated captures are distinct from this policy. The screenshot does not establish hover disclosure or expansion behavior.
+
+Tree selection is distinguishable in all three 1x captures: the selected probe node has a bright outline/blue fill and a narrow leading emphasis, separate from the dim ancestor-path fills. Its circle icon is text-sized and slender. The 2x captures show the top of a long tree; the selected probe lies below the visible region. They therefore cannot establish selected-row clarity at 2x, multiselection, group partial-selection appearance, or keyboard focus distinction. Do not treat the visible ancestor-path fills as evidence that those nodes are selected.
+
+## Residual findings
+
+### [Adapter / small typed presentation strategy] — severity: high
+
+**Location:** `fe-ui/src/panels/toolbar.rs:50-96`; `fe-ui/src/ui_shell/topbar.rs:524-525`; `fe-ui/src/ui_shell/right_sidebar.rs:1769-1814`; `fe-ui/src/panels/inspector.rs:228,1961-1966`; `fe-ui/src/panels/sidebar.rs:135-154`; `fe-ui/src/visibility/resolve.rs:309-329`.
+
+**Current:** Multiple unrelated controls paint the same hollow square placeholder where their intended symbols differ. The 1x toolbar has boxes preceding Move/Scale/Pen/Brush; the Inspector rail has boxes among otherwise recognizable wrench/gear/map symbols. At 2x the Deselect control is a box, as are the object-summary disclosure marker and many tree visibility controls. This is a real rendered affordance defect, not text elision. A square used intentionally for Select cannot alone prove missing coverage; the clearly non-square source characters for Move U+271B, Pen U+270E, Deselect U+2715, disclosure U+25B8/U+25BE, and visibility U+25CF/U+25CB establish the mismatch across surfaces. The primary hierarchy icons already use painted shapes and render properly.
+
+**Suggestion:** Use a small shared semantic icon adapter with egui Painter primitives for these core controls, following the existing `TreeIcon::paint` in `panels/tree_appearance.rs:25-68` and painted caption buttons in `ui_shell/topbar.rs:277-335`. Keep accessible names, existing Response identity/action handlers, hit sizes, colors and disabled/selected state with their current owners. A focused catalog of presentation variants suffices; it does not need a new action system or global state. Alternatively install and explicitly select a known font with measured coverage for every required symbol. Merely choosing another BMP character is not sufficient evidence: the current documentation already calls visibility glyphs BMP-safe, but these captures contradict that assumption. A scoped Rust-source search found no application `set_fonts`, `FontDefinitions`, `font_data` or `FontData` customization. That narrows the source trace to text-glyph use without an app coverage contract; it does not prove a GPU renderer defect or identify the exact fallback font at runtime.
+
+**Example:** Keep `named(ui, "Deselect object")` and its click handler unchanged, but have a shared `Icon::Close.paint(painter, icon_rect, stroke)` draw two thin line segments inside the existing Button response. Likewise draw disclosure triangles and visibility circle states from semantic variants instead of relying on their Unicode strings. The adapter draws only; the current caller retains interaction and accessibility ownership.
+
+**Impact:** Icon-only actions regain distinct visible meaning across font fallback and scale settings. A single presentation implementation stays editable and avoids repeating font assumptions across panels. Verify actual PNGs for the icon-only rail, Deselect, disclosure, visibility on/off/mixed, and tool buttons at 1x/2x after the change. Preserve user property text and Greek content as text.
+
+### [State machine observability / outcome-based verification] — severity: medium
+
+**Location:** `fe-ui/src/ui_shell/layout_policy.rs:228-291,329-342,852-871`; `fe-ui/src/ui_shell/right_sidebar.rs:314-315,1716-1725`; `fractalengine/src/input_bridge.rs:455-457,494-500,598-619`; `qa/passes/59/owner-edit-wide-{before-ui,drag,after-ui}.jsonl`.
+
+**Current:** The requested live wide body was not achieved. Before frame14679 and after frame14719 both show `Resize right panel` disabled, bounds x1269/y40/w22/h832, and property-table width260. The requested start x1280/y456 is inside that strip. `commands_applied:1` confirms injection, not accepted widget interaction. The API plans pointer settle, press, move, release frames and emits cursor/button events; those paths do not manufacture a window-focus transition. The divider deliberately gates on focused input, no popup/modal, allowed app/dialog state and release readiness. The stored snapshots do not expose which predicate disabled it. Lost focus is plausible, not proven.
+
+**Suggestion:** Retain the current guarded resize authority. For the next authorized live run, first establish that the splitter is enabled and record its actual bounds, drag it, then require the observed table body to cross the intended layout breakpoint. If diagnostics are added, expose a small read-only reason for disabled eligibility from the existing owner rather than another resize writer or bypass of the focus/modal guards. Do not raise viewport floors or hard-code width to make the QA request pass.
+
+**Example:** Record `{ splitter_enabled, disabled_reason, actual_body_width }` before/after the attempt, then accept a wide case only when `actual_body_width >= requested_breakpoint`; `commands_applied` alone remains transport evidence.
+
+**Impact:** Separates a refused/ineligible gesture from a layout failure and makes responsive evidence reproducible. At1600/1x with the captured220-point left panel, the policy protects720 points of viewport and permits up to660 points of right outer width. The extra260-point drag could produce outer580/body520 if admitted. Thus the viewport cap does not explain this unchanged260 body. This review establishes the disabled splitter, not the exact underlying guard or a resizing algorithm bug. The actual52-point case is likewise unobserved: its requested drag yielded67. No live 52/520 acceptance is warranted.
+
+## Recommendation
+
+Carry forward the captured 67/79/167/260 grid geometry and full narrow key readability as bounded visual success. Fix the missing-symbol controls in a focused presentation change, complete the wider live-body and selected-at-2x views under eligible interactions, and retain `layout_coverage_complete:false` as an explicit limit. Six clean numeric rectangles cannot establish all controls or missing painted glyph coverage. Root owns functional save/delete/history verification, clipboard limits, cleanup, final integration and execution evidence; those claims were not independently re-executed here. This report grants no mesh/picking, peer, retained restart, native UIA, capture-freshness, CI or release acceptance.

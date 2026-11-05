@@ -1,0 +1,81 @@
+{
+  "kind": "fractalengine-focused-qa-packet-v1",
+  "pass_id": 58,
+  "files": [
+    {
+      "file": "application-log-summary.json",
+      "bytes": 1477,
+      "sha256": "8dc4a25d538dbab4c0417e2c36ccc40c0087bc7c9227221b00f9f74822457fe0"
+    },
+    {
+      "file": "cleanup-identities.json",
+      "bytes": 4309,
+      "sha256": "e4b527d759ed17f07c1f017ad9ab5ee14ca15f1e3a68d88150163efe3c5c8a12"
+    },
+    {
+      "file": "credential-scan.json",
+      "bytes": 4424,
+      "sha256": "5348d601a4ab9b8446e1e974dc8ad5f91b712991d3773496ad5dc681ff187227"
+    },
+    {
+      "file": "fixture-public-detail.json",
+      "bytes": 2020,
+      "sha256": "47a6be854a121ba56e3afe12dbdfd4502ed05a2545d13b96c8d438bfa3090da8"
+    },
+    {
+      "file": "logs/launch.log",
+      "bytes": 1668,
+      "sha256": "d67cf1f8811786527aae5150a76f8cf6eec7d7e223e40d578826162d075e022c"
+    },
+    {
+      "file": "logs/stage.log",
+      "bytes": 2296,
+      "sha256": "ca05c6f5723ccda4d0f19e870984ff00237c61b75dea4ec6f3d752f6bc2db2e9"
+    },
+    {
+      "file": "logs/stop.log",
+      "bytes": 270,
+      "sha256": "7ea535de7ce023e20e54642bcd50d237686d9f5b3f47f1e06524d651778a7db6"
+    },
+    {
+      "file": "native-observer-followup-worker-receipt.jsonl",
+      "bytes": 1502,
+      "sha256": "50d3efd9f9ea0ed7b9665dbba761b175522609af121f423d8cd149da1150db6b"
+    },
+    {
+      "file": "native-observer-worker-receipt.jsonl",
+      "bytes": 1501,
+      "sha256": "f141701a9c1ace52616c711fedaed91429e018ae868b91512f277e73ad42d7f2"
+    },
+    {
+      "file": "owned-context.json",
+      "bytes": 3051,
+      "sha256": "c1d6297f79e763e83b6b9ee8a543ca79d4737fc34824ca279a0ea5d8f61d65f7"
+    },
+    {
+      "file": "owner-native-observe-provider-facts-after-activation.jsonl",
+      "bytes": 163,
+      "sha256": "13be7706cf856a96757f4de8ab574beb8fcd7aa367bee05120efcbac7be22f9e"
+    },
+    {
+      "file": "owner-native-observe-provider-facts.jsonl",
+      "bytes": 683,
+      "sha256": "ae50d473b3543509bc195d470027cd1fad83e615aee234109302e5ae3e6140d4"
+    },
+    {
+      "file": "packet-summary.json",
+      "bytes": 9401,
+      "sha256": "88cb613f5be424b39b1b9d5334e27568a6adac794a5d11b51caa707b79d34563"
+    },
+    {
+      "file": "stage-build-receipt.json",
+      "bytes": 507,
+      "sha256": "247d22463c23aeb5809914524621921f450a3b8e33b4e7ac9da9912e97111240"
+    },
+    {
+      "file": "stage-manifest.json",
+      "bytes": 1166,
+      "sha256": "70a737e735e881b366e428c9476305692d04105d21c9de681bba31e9c7c204e1"
+    }
+  ]
+}

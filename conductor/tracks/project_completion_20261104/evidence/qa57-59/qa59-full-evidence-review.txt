@@ -1,0 +1,76 @@
+# QA59 independent full frozen evidence review
+
+Verdict: **approved as focused responsive-grid GUI/data evidence; QA0074's original offscreen-row-action defect supports focused closure at the captured actual widths**. This does not close broad visual acceptance, certify actual52/520-point live bodies, verify host clipboard contents, or waive any project gate. Missing-symbol presentation and the disabled-splitter eligibility investigation remain separate residual work. Only this review was written; no frozen bytes, source, app, API, DB or Git state were changed. I did not run the archived drivers, tests, parsers, builds or further runtime operations. Shared UI guidance was applied.
+
+## Frozen integrity and execution provenance
+
+`qa/passes/59/packet-manifest.json` is40,339 bytes, SHA256 `927e390688ae28436ae130585d5cd07f319098dd90fa7acd75815fb84ca1b9e6`. I checked the exact set and every size/hash:232 payloads totaling15,939,517 bytes, plus the manifest, including17 PNGs and no unlisted files. All196 original anchors match their frozen files; all33 external copies are byte-identical to their retained originals. Those copies include all17 images, nine execution/provenance scripts and seven stage/lifecycle artifacts. The file-only freeze receipt agrees. All17 screenshot responses point to those actual original PNGs and their recorded byte counts match the originals and frozen copies.
+
+Run `.qa/run/20261104-200103-206` owns app PID110716/start ticks `639294444635253285`, executable `.qa/stage/be081abe-20261104194142170/fractalengine.exe`. Public context matches the retained current.json identity, stage manifest and fixture. Recorded source is `be081abed05be3c623b93bef33d4dd31d43d9b46`, fingerprint `0369D575E291537BE53C79525357BCFE8C5E60C21D9822A69ED0A0ACE0E4146E`, stage_matches_source true and source_dirty true. Do not turn that dirty flag into a clean-checkout claim. The shared stage receipt records session39123 terminal0/226.9s and zero actual Rust/MSVC diagnostics; the copied build log preserves the PowerShell wrapper around Cargo's ordinary Compiling stderr and the completed staged path. This is build provenance, not test execution by QA59 or this reviewer.
+
+I read the archived flow, matrix, functional, mutation, readability and freeze scripts and reviewed the recorded driver seam. Commands go through the reviewed owned `qa_pair_drive.py` into the normal `fe.main` surface. The script refuses to overwrite existing named evidence and checks command exit/API success. The matrix measures actual widths rather than crediting a requested resize; assertion failures are retained as problems, not converted into target passes. Its two snapshotted source hashes match the recorded matrix/flow identities. The property/history/state oracles were independently recalculated from actual response files below; their booleans were not taken as sufficient evidence by themselves. No archived script was imported or executed.
+
+The initial ambiguous Petal A locator is retained in `owner-open-petal.jsonl` as `ambiguous_locator`, refused/status0 with two candidates. Subsequent explicit tree navigation precedes creation. It is not an accepted input or failed mutation. The probe create response records committed history version1.
+
+## Actual geometry, not requested widths
+
+I independently joined every numeric action name to its actual physical node ID and layout control in each saved UI tree; compared node bounds, action rect and hit; required whole containment within child, table, Inspector and window clips; checked positive/minimum physical size and zero table horizontal offset. All18 numeric Edit/Copy/Delete targets pass at the six actual cases:
+
+| Window | Scale | Actual property body, logical points | Result |
+| --- | ---: | ---: | --- |
+|1024 x720|1|260|All three numeric actions wholly visible|
+|1280 x720|1|260|All three numeric actions wholly visible|
+|1600 x900|1|260|All three numeric actions wholly visible|
+|1024 x720|2|67|All three numeric actions wholly visible|
+|1280 x720|2|79|All three numeric actions wholly visible|
+|1600 x900|2|167|All three numeric actions wholly visible|
+
+The normal row at1280/1x is visibly usable without horizontal travel, directly addressing QA55's default-layout failure. The67-point body stacks the actions;79 points puts Edit/Copy together with Delete below;167 points returns paired content columns with wrapped actions. I also independently checked both confirmation leaves from actual saved UI: the67-point/2x pair has whole134x48 physical targets stacked at x850/y373 and427; the260-point/1x pair fits horizontally. Neither pair needs horizontal scrolling.
+
+All six layout-check responses contain zero measured violations **and coverage_complete false**, with unknown observations retained. This is a clean measured subset, not complete layout coverage. The native horizontal table viewport reports height0 while its real rendered rows and clips exist; this known geometry field is not evidence that the table was invisible. Whole target conclusions above use actual leaf rect/hit/child/table/Inspector intersections, not that zero height.
+
+Requested520 at1x remained an actual260 body. Requested52 at2x remained67. The before/after wide UI trees actually show `Resize right panel` disabled, with unchanged260 body. A commands_applied counter is transport evidence, not proof that the guarded divider accepted the gesture. The precise disabled predicate/cause is not recorded, so this is not a proved resize algorithm or focus defect. There is **no live52 or520 acceptance**, nor a successful wide four-column breakpoint transition. The narrower67-point body does exercise stacked confirmation, but cannot substitute for a52-point measurement.
+
+## Persisted effects, cancellation and history
+
+Probe `01M6MTJZSA18WHER52WH3192XA` is the same committed node throughout. Baseline matches the create response. I independently compared the actual API payloads:
+
+- Both editing Cancel and armed Delete Cancel leave the complete properties and history responses unchanged at version1.
+- Raw draft `-150.250` appears unchanged in both wide and narrow editor UI snapshots. The screenshots corroborate the narrow wrapped editor and visible Save/Cancel controls. Its visual line wrapping is not a changed numeric value.
+- Exactly one recorded GUI Save changes only `grid_number` from1.25 to-150.25 and advances history to version2/property_set.
+- Exactly one recorded GUI confirmation removes only `grid_remove` and advances history to version3/property_deleted.
+- The final version3 full state equals the baseline full state with only those two intended property changes. Node identity, transform, metadata and other state are unchanged.
+- Previous raw JSON history-entry substrings are byte-identical in the longer responses: baseline entry persists into version2, and both earlier entries persist into version3. This is stronger than comparing only reported version counters.
+
+The nested integer9007199254740993 and string `  exact\ntext  ` retain their exact stored values. History is per-object commit-version order, not an event-time timeseries or peer/restart durability test. The scripts use real GUI pointer input for Save and Confirm; receipt commands_applied alone is not the acceptance oracle—the subsequent authoritative property/history/state reads establish the effects.
+
+Copy on grid_text is recorded once; its named button is whole/visible, a `Copied grid_text` toast appears in the actual saved UI/PNG, and complete properties/history remain unchanged after it. **Host clipboard contents are unproved**: the private app log expressly records `synthetic clipboard writes suppressed commands_dropped=1`. The packet honestly says clipboard_contents_verified false. This supports access to the Copy action and UI feedback, not a successful host clipboard write or exact copied clipboard bytes.
+
+## All17 actual PNGs inspected
+
+I opened every frozen PNG with the image viewer, not just their hashes or semantic bounds:
+
+- `200342-523-qa59-initial.png`: selected probe/normal editor baseline.
+- `200408-829`, `200414-286`, `200419-921`: all three1x matrix images show readable numeric row/action controls at actual260-point bodies, along with neighboring property rows.
+- `200425-151`, `200430-695`, `200436-766`: all three2x matrix images show the67/79/167 responsive arrangements; vertical scrolling is necessary at the narrowest body.
+- `200556-983-qa59-draft-wide.png` and `200601-511-qa59-draft-narrow.png`: the same unsaved numeric draft remains present across resizing, with visible cancellation/save presentation.
+- `200607-217-qa59-narrow-confirm-cancel.png`: stacked Confirm/Cancel whole and visible at actual67 points.
+- `200738-806-qa59-saved.png`, `200742-122-qa59-delete-confirm.png`, `200744-995-qa59-deleted.png`: saved/armed/deleted UI states, supported by authoritative data receipts rather than inferred solely from paint.
+- `200748-228-qa59-copy-feedback.png`: actual Copy toast and button feedback.
+- `200844-806-qa59-keys-number.png`, `200846-895-qa59-keys-long.png`, `200849-039-qa59-keys-unicode.png`: complete wrapped numeric key, long unbroken key and Greek key are painted legibly at67 points. The earlier matrix image's key starts above the scroll clip; the dedicated capture resolves that scroll-position limit.
+
+The independent nine-PNG visual review `.omc/research/qa59-grid-visual-review.md` is consistent with my full17-PNG inspection. Hollow square placeholders persist in multiple toolbar/Inspector/tree controls; they are a real separate presentation residual, not proof of property-data corruption. Intentional compact summary/key elision is distinguishable from those glyphs, and correct Greek property text does not prove icon-font coverage. Selected-row emphasis is clear in the1x views; the selected probe is below the visible tree region in2x captures, so selection clarity at2x and multiselection are unproved. Those residuals and the disabled splitter must not be waived by this packet.
+
+## Logs, finite scans and cleanup
+
+Private stdout bytes/hash match exactly:98,870 bytes, `db6fd18accc28b8f5fd399e4c81c7ac9402e9eef9504160dcc542e2a32fa65bc`,698 lines,621 INFO/ten WARN/zero ERROR and no matched panic markers. Stderr is empty. Nine warnings are startup/environment/QA-gate/bootstrap notices; the tenth is the clipboard-suppression warning. A bootstrap Verse lacking a namespace explicitly withholds its publication; no peer credit follows. The logs are not warning-free.
+
+I reproduced the stored four finite credential patterns with strict BOM-aware decoding, matching all213 recorded pre-final text-file encodings/counts and both exact private-log scans. Extending the same finite scan to all216 frozen non-PNG text files also returns zero matches:210 UTF-8, three UTF-8 BOM and three UTF-16 BOM. No lossy decode or universal secret-absence claim is made. Full private logs remain locally retained rather than published raw.
+
+The cleanup receipt is byte-identical to its original and matches the exact ordered app-plus-seven-descendant identities in context. All eight checks record both PID and recorded incarnation absent at `2026-11-05T03:10:20.1725651Z`. I made no new process query. This supports recorded cleanup for this owned run, not unrelated processes.
+
+## Focused closure and retained work
+
+QA0074's original defect was default Inspector Edit/Copy/Delete controls lying outside the visible window. Actual default1280/1x row geometry, the six-case measured subset, real Edit/Save/Delete/Cancel outcomes, narrow stacked confirmation and readable keys support **focused closure of that defect**. Scope the closure to actual67/79/167/260-point bodies and verified operations. It does not certify every property type/action/state or require pretending the unachieved52/520 cases passed. Preserve clipboard-content verification, the two requested widths, complete layout coverage, disabled-divider cause, missing glyphs and2x selected-row appearance as explicit remaining work.
+
+No mesh/asset/picking, independent peer, retained-store restart, native UIA/Invoke, capture-freshness, broader authority/role acceptance, final integrated tests/lint/format sweep, CI, tagged release or FULL acceptance is granted.

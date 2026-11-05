@@ -1,0 +1,452 @@
+{
+  "pass_id": "57",
+  "run_id": "20261104-184017-448",
+  "stage_commit": "6ca9f49bf65bb344ff5bdb0fa9794208c54c4a9a",
+  "stage_fingerprint": "275249AB3FBB3F48D1A12F57937D698A4FFDA2A472A72759170F3C9C12716AA4",
+  "scenario_sha256": "d14893061bb5c929bd2256dfd706b3cd88586f402fa7bb3a04845096abffa8ef",
+  "verse_id": "01M6MNTFD09S7PG2BDT00GPN6Z",
+  "petal_id": "01M6MP1AFEEA55HPN4SVSQ2WGY",
+  "driver_sha256": "55266bae3220b160b57a2759c8b7c25d40ae4350017d81c44a95cc2a73f46824",
+  "process_identity": {
+    "pid": 100212,
+    "start_ticks": "639294396177040381",
+    "exe_path": "C:\\Users\\atooz\\Programming\\fractalengine-workspace\\fractalengine\\.qa\\stage\\6ca9f49b-20261104183324669\\fractalengine.exe"
+  },
+  "api_base": "http://127.0.0.1:8765",
+  "step_id": "query-calibrated",
+  "intent": {
+    "id": "query-calibrated",
+    "op": "query_metrics",
+    "metric": "temperature_calibrated",
+    "start_ms": 1793404800000,
+    "end_ms": 1793404830000,
+    "oracle": "calibrated-full",
+    "kind": "rows",
+    "mode": "local",
+    "mcp_parity": false
+  },
+  "outcome": "PASS",
+  "result": {
+    "kind": "rows",
+    "metric": "temperature_calibrated",
+    "mode": "local",
+    "rows": [
+      {
+        "metric": "temperature_calibrated",
+        "node_id": "01M6MP3CFVEMCCYQVN6MCXZE3Z",
+        "payload_id": "01M6MP3EWH2MFDKVACXKSYDB95",
+        "reading_id": "01M6MP3EZNQ3ZV2AHDAF9NZQ5P",
+        "recorded_at_ms": 1793404800000,
+        "units": "C",
+        "value": 9.0
+      },
+      {
+        "metric": "temperature_calibrated",
+        "node_id": "01M6MP3C5P08MKAG0KWMB8RYTK",
+        "payload_id": "01M6MP3EM0FCG1KNDHJ8XSDEA5",
+        "reading_id": "01M6MP3EZNXRPGH5491EA58D90",
+        "recorded_at_ms": 1793404800000,
+        "units": "C",
+        "value": 21.0
+      },
+      {
+        "metric": "temperature_calibrated",
+        "node_id": "01M6MP3CFVEMCCYQVN6MCXZE3Z",
+        "payload_id": "01M6MP3HYXKY1BE1YJEY28VN86",
+        "reading_id": "01M6MP3JBC690RT41E7T9V96SS",
+        "recorded_at_ms": 1793404810000,
+        "units": "C",
+        "value": 10.0
+      },
+      {
+        "metric": "temperature_calibrated",
+        "node_id": "01M6MP3C5P08MKAG0KWMB8RYTK",
+        "payload_id": "01M6MP3J7VZ0DXHSC3EB0QER4W",
+        "reading_id": "01M6MP3JBCVA5WMSF5Q1EC3SDP",
+        "recorded_at_ms": 1793404810000,
+        "units": "C",
+        "value": 23.0
+      },
+      {
+        "metric": "temperature_calibrated",
+        "node_id": "01M6MP3CFVEMCCYQVN6MCXZE3Z",
+        "payload_id": "01M6MP3H1PXN2WAGK470C58ZXN",
+        "reading_id": "01M6MP3HE4M4QP9CJNWGYEZDC7",
+        "recorded_at_ms": 1793404820000,
+        "units": "C",
+        "value": 11.0
+      },
+      {
+        "metric": "temperature_calibrated",
+        "node_id": "01M6MP3C5P08MKAG0KWMB8RYTK",
+        "payload_id": "01M6MP3HAXX4TTBJHT5A23H3NS",
+        "reading_id": "01M6MP3HE4R2BYJ5RBEXV20RVX",
+        "recorded_at_ms": 1793404820000,
+        "units": "C",
+        "value": 25.0
+      }
+    ],
+    "distributed": null
+  },
+  "assertions": [
+    {
+      "name": "Beta queried metric",
+      "actual": "temperature_calibrated",
+      "expected": "temperature_calibrated",
+      "passed": true
+    },
+    {
+      "name": "Alpha queried metric",
+      "actual": "temperature_calibrated",
+      "expected": "temperature_calibrated",
+      "passed": true
+    },
+    {
+      "name": "Beta queried metric",
+      "actual": "temperature_calibrated",
+      "expected": "temperature_calibrated",
+      "passed": true
+    },
+    {
+      "name": "Alpha queried metric",
+      "actual": "temperature_calibrated",
+      "expected": "temperature_calibrated",
+      "passed": true
+    },
+    {
+      "name": "Beta queried metric",
+      "actual": "temperature_calibrated",
+      "expected": "temperature_calibrated",
+      "passed": true
+    },
+    {
+      "name": "Alpha queried metric",
+      "actual": "temperature_calibrated",
+      "expected": "temperature_calibrated",
+      "passed": true
+    },
+    {
+      "name": "Alpha chronological sensor times",
+      "actual": [
+        1793404800000,
+        1793404810000,
+        1793404820000
+      ],
+      "expected": [
+        1793404800000,
+        1793404810000,
+        1793404820000
+      ],
+      "passed": true
+    },
+    {
+      "name": "Alpha independently expected values",
+      "actual": [
+        21.0,
+        23.0,
+        25.0
+      ],
+      "expected": [
+        21,
+        23,
+        25
+      ],
+      "passed": true
+    },
+    {
+      "name": "Alpha per-anchor statistics",
+      "actual": {
+        "count": 3,
+        "min": 21.0,
+        "max": 25.0,
+        "mean": 23.0,
+        "sum": 69.0
+      },
+      "expected": {
+        "count": 3,
+        "min": 21,
+        "max": 25,
+        "mean": 23,
+        "sum": 69
+      },
+      "passed": true
+    },
+    {
+      "name": "Beta chronological sensor times",
+      "actual": [
+        1793404800000,
+        1793404810000,
+        1793404820000
+      ],
+      "expected": [
+        1793404800000,
+        1793404810000,
+        1793404820000
+      ],
+      "passed": true
+    },
+    {
+      "name": "Beta independently expected values",
+      "actual": [
+        9.0,
+        10.0,
+        11.0
+      ],
+      "expected": [
+        9,
+        10,
+        11
+      ],
+      "passed": true
+    },
+    {
+      "name": "Beta per-anchor statistics",
+      "actual": {
+        "count": 3,
+        "min": 9.0,
+        "max": 11.0,
+        "mean": 10.0,
+        "sum": 30.0
+      },
+      "expected": {
+        "count": 3,
+        "min": 9,
+        "max": 11,
+        "mean": 10,
+        "sum": 30
+      },
+      "passed": true
+    }
+  ],
+  "requests": [
+    {
+      "method": "GET",
+      "path": "/api/v1/debug/logs?level=warn",
+      "request": null,
+      "status": 200,
+      "response_bytes": 2772,
+      "response_sha256": "289d4562a1dee2f285472cd2e0caff285869e8e306a28ba0c54d1cc93b47333c",
+      "response": {
+        "data": {
+          "active_verse_id": "01M6MNTFD09S7PG2BDT00GPN6Z",
+          "entries": [
+            {
+              "level": "warn",
+              "message": "[message withheld: event scope unavailable or outside active verse]",
+              "seq": 389,
+              "target": "fe_database::handlers::scene_publication::publisher"
+            },
+            {
+              "level": "warn",
+              "message": "[message withheld: event scope unavailable or outside active verse]",
+              "seq": 390,
+              "target": "fe_database::handlers::scene_publication::publisher"
+            },
+            {
+              "level": "warn",
+              "message": "[message withheld: event scope unavailable or outside active verse]",
+              "seq": 391,
+              "target": "fe_database::handlers::scene_publication::publisher"
+            },
+            {
+              "level": "warn",
+              "message": "[message withheld: event scope unavailable or outside active verse]",
+              "seq": 392,
+              "target": "fe_database::handlers::scene_publication::publisher"
+            },
+            {
+              "level": "warn",
+              "message": "[message withheld: event scope unavailable or outside active verse]",
+              "seq": 393,
+              "target": "fe_database::handlers::scene_publication::publisher"
+            },
+            {
+              "level": "warn",
+              "message": "[message withheld: event scope unavailable or outside active verse]",
+              "seq": 397,
+              "target": "fe_database::handlers::scene_publication::publisher"
+            },
+            {
+              "level": "warn",
+              "message": "[message withheld: event scope unavailable or outside active verse]",
+              "seq": 398,
+              "target": "fe_database::handlers::scene_publication::publisher"
+            },
+            {
+              "level": "warn",
+              "message": "[message withheld: event scope unavailable or outside active verse]",
+              "seq": 400,
+              "target": "fe_database::handlers::scene_publication::publisher"
+            },
+            {
+              "level": "warn",
+              "message": "[message withheld: event scope unavailable or outside active verse]",
+              "seq": 401,
+              "target": "fe_database::handlers::scene_publication::publisher"
+            },
+            {
+              "level": "warn",
+              "message": "[message withheld: event scope unavailable or outside active verse]",
+              "seq": 402,
+              "target": "fe_database::handlers::scene_publication::publisher"
+            },
+            {
+              "level": "warn",
+              "message": "[message withheld: event scope unavailable or outside active verse]",
+              "seq": 408,
+              "target": "fe_database::handlers::scene_publication::publisher"
+            },
+            {
+              "level": "warn",
+              "message": "[message withheld: event scope unavailable or outside active verse]",
+              "seq": 409,
+              "target": "fe_database::handlers::scene_publication::publisher"
+            },
+            {
+              "level": "warn",
+              "message": "[message withheld: event scope unavailable or outside active verse]",
+              "seq": 411,
+              "target": "fe_database::handlers::scene_publication::publisher"
+            },
+            {
+              "level": "warn",
+              "message": "[message withheld: event scope unavailable or outside active verse]",
+              "seq": 412,
+              "target": "fe_database::handlers::scene_publication::publisher"
+            },
+            {
+              "level": "warn",
+              "message": "[message withheld: event scope unavailable or outside active verse]",
+              "seq": 413,
+              "target": "fe_api::node_history"
+            },
+            {
+              "level": "warn",
+              "message": "[message withheld: event scope unavailable or outside active verse]",
+              "seq": 414,
+              "target": "fe_api::property_schema"
+            }
+          ],
+          "generation": 2,
+          "latest_seq": 415
+        },
+        "ok": true
+      }
+    },
+    {
+      "method": "POST",
+      "path": "/api/v1/query",
+      "request": {
+        "sql": "SELECT reading_id, node_id, metric, value, units, recorded_at_ms, payload_id FROM iot_reading WHERE petal_id = $p AND metric = $metric AND recorded_at_ms >= $start AND recorded_at_ms < $end AND node_id IN $nodes ORDER BY recorded_at_ms, reading_id",
+        "vars": {
+          "p": "01M6MP1AFEEA55HPN4SVSQ2WGY",
+          "metric": "temperature_calibrated",
+          "start": 1793404800000,
+          "end": 1793404830000,
+          "nodes": [
+            "01M6MP3C5P08MKAG0KWMB8RYTK",
+            "01M6MP3CFVEMCCYQVN6MCXZE3Z"
+          ]
+        }
+      },
+      "status": 200,
+      "response_bytes": 1375,
+      "response_sha256": "67a36c3c1e4d8138a45df578afaa0be8db0c4329d6c2094448a24c369f3c6df4",
+      "response": {
+        "ok": true,
+        "data": {
+          "data": [
+            {
+              "metric": "temperature_calibrated",
+              "node_id": "01M6MP3CFVEMCCYQVN6MCXZE3Z",
+              "payload_id": "01M6MP3EWH2MFDKVACXKSYDB95",
+              "reading_id": "01M6MP3EZNQ3ZV2AHDAF9NZQ5P",
+              "recorded_at_ms": 1793404800000,
+              "units": "C",
+              "value": 9.0
+            },
+            {
+              "metric": "temperature_calibrated",
+              "node_id": "01M6MP3C5P08MKAG0KWMB8RYTK",
+              "payload_id": "01M6MP3EM0FCG1KNDHJ8XSDEA5",
+              "reading_id": "01M6MP3EZNXRPGH5491EA58D90",
+              "recorded_at_ms": 1793404800000,
+              "units": "C",
+              "value": 21.0
+            },
+            {
+              "metric": "temperature_calibrated",
+              "node_id": "01M6MP3CFVEMCCYQVN6MCXZE3Z",
+              "payload_id": "01M6MP3HYXKY1BE1YJEY28VN86",
+              "reading_id": "01M6MP3JBC690RT41E7T9V96SS",
+              "recorded_at_ms": 1793404810000,
+              "units": "C",
+              "value": 10.0
+            },
+            {
+              "metric": "temperature_calibrated",
+              "node_id": "01M6MP3C5P08MKAG0KWMB8RYTK",
+              "payload_id": "01M6MP3J7VZ0DXHSC3EB0QER4W",
+              "reading_id": "01M6MP3JBCVA5WMSF5Q1EC3SDP",
+              "recorded_at_ms": 1793404810000,
+              "units": "C",
+              "value": 23.0
+            },
+            {
+              "metric": "temperature_calibrated",
+              "node_id": "01M6MP3CFVEMCCYQVN6MCXZE3Z",
+              "payload_id": "01M6MP3H1PXN2WAGK470C58ZXN",
+              "reading_id": "01M6MP3HE4M4QP9CJNWGYEZDC7",
+              "recorded_at_ms": 1793404820000,
+              "units": "C",
+              "value": 11.0
+            },
+            {
+              "metric": "temperature_calibrated",
+              "node_id": "01M6MP3C5P08MKAG0KWMB8RYTK",
+              "payload_id": "01M6MP3HAXX4TTBJHT5A23H3NS",
+              "reading_id": "01M6MP3HE4R2BYJ5RBEXV20RVX",
+              "recorded_at_ms": 1793404820000,
+              "units": "C",
+              "value": 25.0
+            }
+          ],
+          "crs": "PETAL-LOCAL:meters;origin=per-petal"
+        },
+        "error": null
+      }
+    },
+    {
+      "method": "GET",
+      "path": "/api/v1/debug/logs?level=warn&since=415",
+      "request": null,
+      "status": 200,
+      "response_bytes": 112,
+      "response_sha256": "bee260ac6a60f0443ee6eeba323d0df0df179278b033091d78c7b023d03fd0ad",
+      "response": {
+        "data": {
+          "active_verse_id": "01M6MNTFD09S7PG2BDT00GPN6Z",
+          "entries": [],
+          "generation": 2,
+          "latest_seq": 415
+        },
+        "ok": true
+      }
+    }
+  ],
+  "log_watermark": {
+    "generation": 2,
+    "seq": 415,
+    "latest_seq": 415
+  },
+  "log_end_watermark": {
+    "generation": 2,
+    "seq": 415,
+    "latest_seq": 415
+  },
+  "new_logs": [],
+  "log_generation_changed": false,
+  "log_retention_gap": false,
+  "log_retention_capacity": 2000,
+  "log_review_required": false
+}

@@ -1,0 +1,99 @@
+{
+  "kind": "qa58-file-only-packet-freeze-receipt",
+  "pass_id": 58,
+  "run_id": "20261104-194646-097",
+  "packet_manifest": {
+    "bytes": 2505,
+    "sha256": "20612f50d048ad4e02b5cfd83b7714cc8b83c2fa8f56dc0abeb536c2a15bb3d4"
+  },
+  "payload_count": 15,
+  "png_payload_count": 0,
+  "original_artifact_anchors": [
+    {
+      "file": "fixture-public-detail.json",
+      "bytes": 2020,
+      "sha256": "47a6be854a121ba56e3afe12dbdfd4502ed05a2545d13b96c8d438bfa3090da8"
+    },
+    {
+      "file": "owner-native-observe-provider-facts-after-activation.jsonl",
+      "bytes": 163,
+      "sha256": "13be7706cf856a96757f4de8ab574beb8fcd7aa367bee05120efcbac7be22f9e"
+    },
+    {
+      "file": "owner-native-observe-provider-facts.jsonl",
+      "bytes": 683,
+      "sha256": "ae50d473b3543509bc195d470027cd1fad83e615aee234109302e5ae3e6140d4"
+    }
+  ],
+  "exact_source_anchors": [
+    {
+      "original_file": ".omc/research/qa58-owned-context.json",
+      "packet_file": "owned-context.json",
+      "bytes": 3051,
+      "sha256": "c1d6297f79e763e83b6b9ee8a543ca79d4737fc34824ca279a0ea5d8f61d65f7"
+    },
+    {
+      "original_file": ".omc/research/qa58-cleanup-identities.json",
+      "packet_file": "cleanup-identities.json",
+      "bytes": 4309,
+      "sha256": "e4b527d759ed17f07c1f017ad9ab5ee14ca15f1e3a68d88150163efe3c5c8a12"
+    },
+    {
+      "original_file": ".omc/research/qa58-launch.log",
+      "packet_file": "logs/launch.log",
+      "bytes": 1668,
+      "sha256": "d67cf1f8811786527aae5150a76f8cf6eec7d7e223e40d578826162d075e022c"
+    },
+    {
+      "original_file": ".omc/research/qa58-stop.log",
+      "packet_file": "logs/stop.log",
+      "bytes": 270,
+      "sha256": "7ea535de7ce023e20e54642bcd50d237686d9f5b3f47f1e06524d651778a7db6"
+    },
+    {
+      "original_file": ".qa/stage/be081abe-20261104194142170/stage.json",
+      "packet_file": "stage-manifest.json",
+      "bytes": 1166,
+      "sha256": "70a737e735e881b366e428c9476305692d04105d21c9de681bba31e9c7c204e1"
+    },
+    {
+      "original_file": ".omc/research/completion-readable-grid-provider-stage-receipt.json",
+      "packet_file": "stage-build-receipt.json",
+      "bytes": 507,
+      "sha256": "247d22463c23aeb5809914524621921f450a3b8e33b4e7ac9da9912e97111240"
+    },
+    {
+      "original_file": ".omc/research/completion-readable-grid-provider-stage.log",
+      "packet_file": "logs/stage.log",
+      "bytes": 2296,
+      "sha256": "ca05c6f5723ccda4d0f19e870984ff00237c61b75dea4ec6f3d752f6bc2db2e9"
+    },
+    {
+      "original_file": ".qa/run/20261104-194646-097/native-observer/134383204087460464-de70eab410f6435cb2c2360df738d929/workers/eae31991f0f44efcbe16dc7053903dcb.jsonl",
+      "packet_file": "native-observer-worker-receipt.jsonl",
+      "bytes": 1501,
+      "sha256": "f141701a9c1ace52616c711fedaed91429e018ae868b91512f277e73ad42d7f2"
+    },
+    {
+      "original_file": ".qa/run/20261104-194646-097/native-observer/134383204087460464-de70eab410f6435cb2c2360df738d929/workers/0943ce1a23244afaaf15118b9b3f47ec.jsonl",
+      "packet_file": "native-observer-followup-worker-receipt.jsonl",
+      "bytes": 1502,
+      "sha256": "50d3efd9f9ea0ed7b9665dbba761b175522609af121f423d8cd149da1150db6b"
+    }
+  ],
+  "existing_original_mismatches": 0,
+  "copied_source_mismatches": 0,
+  "covered_packet_text_count": 14,
+  "private_log_count": 2,
+  "finite_pattern_count": 4,
+  "all_finite_pattern_counts_zero": true,
+  "universal_absence_claim": false,
+  "worker_confirmed_exit_codes": {
+    "first": 2,
+    "followup": 1
+  },
+  "ledger_record_count": 1,
+  "cleanup_recorded_identity_count": 8,
+  "cleanup_checked_at": "2026-11-05T02:54:07.4825465Z",
+  "scope": "File/JSON/hash processing and existing qa_packet_lib only. No source/implementation parser/tests/build/runtime/OS/native/API/DB/network/Git actions. Packet requires independent evidence review; no self-approval."
+}

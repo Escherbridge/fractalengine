@@ -1,0 +1,188 @@
+{
+  "pass_id": 58,
+  "verdict": "FAILED_NATIVE_PROVIDER_DIAGNOSTIC_AND_UNAVAILABLE_FOLLOWUP",
+  "run_id": "20261104-194646-097",
+  "source_commit": "be081abed05be3c623b93bef33d4dd31d43d9b46",
+  "source_dirty": true,
+  "stage_matches_source": true,
+  "original_artifacts": [
+    {
+      "file": "fixture-public-detail.json",
+      "bytes": 2020,
+      "sha256": "47a6be854a121ba56e3afe12dbdfd4502ed05a2545d13b96c8d438bfa3090da8"
+    },
+    {
+      "file": "owner-native-observe-provider-facts-after-activation.jsonl",
+      "bytes": 163,
+      "sha256": "13be7706cf856a96757f4de8ab574beb8fcd7aa367bee05120efcbac7be22f9e"
+    },
+    {
+      "file": "owner-native-observe-provider-facts.jsonl",
+      "bytes": 683,
+      "sha256": "ae50d473b3543509bc195d470027cd1fad83e615aee234109302e5ae3e6140d4"
+    }
+  ],
+  "original_source_anchors": [
+    {
+      "original_file": ".omc/research/qa58-owned-context.json",
+      "packet_file": "owned-context.json",
+      "bytes": 3051,
+      "sha256": "c1d6297f79e763e83b6b9ee8a543ca79d4737fc34824ca279a0ea5d8f61d65f7"
+    },
+    {
+      "original_file": ".omc/research/qa58-cleanup-identities.json",
+      "packet_file": "cleanup-identities.json",
+      "bytes": 4309,
+      "sha256": "e4b527d759ed17f07c1f017ad9ab5ee14ca15f1e3a68d88150163efe3c5c8a12"
+    },
+    {
+      "original_file": ".omc/research/qa58-launch.log",
+      "packet_file": "logs/launch.log",
+      "bytes": 1668,
+      "sha256": "d67cf1f8811786527aae5150a76f8cf6eec7d7e223e40d578826162d075e022c"
+    },
+    {
+      "original_file": ".omc/research/qa58-stop.log",
+      "packet_file": "logs/stop.log",
+      "bytes": 270,
+      "sha256": "7ea535de7ce023e20e54642bcd50d237686d9f5b3f47f1e06524d651778a7db6"
+    },
+    {
+      "original_file": ".qa/stage/be081abe-20261104194142170/stage.json",
+      "packet_file": "stage-manifest.json",
+      "bytes": 1166,
+      "sha256": "70a737e735e881b366e428c9476305692d04105d21c9de681bba31e9c7c204e1"
+    },
+    {
+      "original_file": ".omc/research/completion-readable-grid-provider-stage-receipt.json",
+      "packet_file": "stage-build-receipt.json",
+      "bytes": 507,
+      "sha256": "247d22463c23aeb5809914524621921f450a3b8e33b4e7ac9da9912e97111240"
+    },
+    {
+      "original_file": ".omc/research/completion-readable-grid-provider-stage.log",
+      "packet_file": "logs/stage.log",
+      "bytes": 2296,
+      "sha256": "ca05c6f5723ccda4d0f19e870984ff00237c61b75dea4ec6f3d752f6bc2db2e9"
+    },
+    {
+      "original_file": ".qa/run/20261104-194646-097/native-observer/134383204087460464-de70eab410f6435cb2c2360df738d929/workers/eae31991f0f44efcbe16dc7053903dcb.jsonl",
+      "packet_file": "native-observer-worker-receipt.jsonl",
+      "bytes": 1501,
+      "sha256": "f141701a9c1ace52616c711fedaed91429e018ae868b91512f277e73ad42d7f2"
+    },
+    {
+      "original_file": ".qa/run/20261104-194646-097/native-observer/134383204087460464-de70eab410f6435cb2c2360df738d929/workers/0943ce1a23244afaaf15118b9b3f47ec.jsonl",
+      "packet_file": "native-observer-followup-worker-receipt.jsonl",
+      "bytes": 1502,
+      "sha256": "50d3efd9f9ea0ed7b9665dbba761b175522609af121f423d8cd149da1150db6b"
+    }
+  ],
+  "first_native_result": {
+    "attempt_spent": false,
+    "capture_available": false,
+    "code": "provider_unavailable",
+    "helper_exit_code": 2,
+    "hr": "00000000",
+    "invoke_entered": false,
+    "method_returned": false,
+    "outcome": "observation",
+    "provider_failure": {
+      "hr": "80040201",
+      "schema": "fe-native-provider-failure-v1",
+      "stage_id": 1
+    },
+    "root_sha256": "0000000000000000000000000000000000000000000000000000000000000000",
+    "schema": "fe-native-worker-result-v1",
+    "target_sha256": "0000000000000000000000000000000000000000000000000000000000000000",
+    "watch_first": 0,
+    "watch_last": 0,
+    "worker_record": "native-observer\\134383204087460464-de70eab410f6435cb2c2360df738d929\\workers\\eae31991f0f44efcbe16dc7053903dcb.jsonl"
+  },
+  "followup_controller_result": {
+    "attempt_spent": null,
+    "capture_available": false,
+    "code": "json_size_refused",
+    "outcome": "unavailable_or_unknown",
+    "schema": "fe-native-controller-result-v1"
+  },
+  "workers": [
+    {
+      "attempt": "first",
+      "original_file": ".qa/run/20261104-194646-097/native-observer/134383204087460464-de70eab410f6435cb2c2360df738d929/workers/eae31991f0f44efcbe16dc7053903dcb.jsonl",
+      "bytes": 1501,
+      "sha256": "f141701a9c1ace52616c711fedaed91429e018ae868b91512f277e73ad42d7f2",
+      "operation": "eae31991f0f44efcbe16dc7053903dcb",
+      "phases": [
+        "reserved",
+        "worker_started",
+        "exit_confirmed"
+      ],
+      "worker_identity": {
+        "exe_path": "C:\\Users\\atooz\\Programming\\fractalengine-workspace\\fractalengine\\.qa\\stage\\be081abe-20261104194142170\\native_observer.exe",
+        "pid": 126412,
+        "start_ticks": "639294436971689233"
+      },
+      "mode": "observe",
+      "exit_code": 2,
+      "terminal_code": "worker_exited"
+    },
+    {
+      "attempt": "followup",
+      "original_file": ".qa/run/20261104-194646-097/native-observer/134383204087460464-de70eab410f6435cb2c2360df738d929/workers/0943ce1a23244afaaf15118b9b3f47ec.jsonl",
+      "bytes": 1502,
+      "sha256": "50d3efd9f9ea0ed7b9665dbba761b175522609af121f423d8cd149da1150db6b",
+      "operation": "0943ce1a23244afaaf15118b9b3f47ec",
+      "phases": [
+        "reserved",
+        "worker_started",
+        "exit_confirmed"
+      ],
+      "worker_identity": {
+        "exe_path": "C:\\Users\\atooz\\Programming\\fractalengine-workspace\\fractalengine\\.qa\\stage\\be081abe-20261104194142170\\native_observer.exe",
+        "pid": 109368,
+        "start_ticks": "639294437837647346"
+      },
+      "mode": "observe",
+      "exit_code": 1,
+      "terminal_code": "worker_exited"
+    }
+  ],
+  "sdk_hresult_interpretation": {
+    "value": "80040201",
+    "constant": "UIA_E_ELEMENTNOTAVAILABLE",
+    "source": "C:\\Program Files (x86)\\Windows Kits\\10\\Include\\10.0.22621.0\\um\\UIAutomationCoreApi.h",
+    "line": 31,
+    "bytes": 79162,
+    "sha256": "5aef9a750219f162a9f6c45bd1e10cabafed69ecae634e79d814902428ef22a8",
+    "limits": "Symbolic SDK interpretation only; no element identity, cause or recovery is established."
+  },
+  "invocation_ledger_summary": {
+    "file_sha256": "5befe88b48ca0d5cda6d694f9c1ccaa42409bd47a48985ed5c651acf0f6807fa",
+    "record_count": 1,
+    "bootstrap_record_count": 1,
+    "invocation_reservation_or_intent_present": false,
+    "raw_ledger_published": false
+  },
+  "cleanup": {
+    "checked_at": "2026-11-05T02:54:07.4825465Z",
+    "recorded_identity_count": 8,
+    "all_recorded_identities_absent": true
+  },
+  "facts": [
+    "First observe returned provider_unavailable with fixed method stage1 (CurrentAutomationId) and nested failed HRESULT80040201. Base hr00000000 remains the non-Invoke method field; raw attempt_spent/invoke_entered/method_returned were false and helper exit2 is confirmed.",
+    "One separate fresh follow-up returned controller json_size_refused, outcome unavailable_or_unknown and attempt_spent null. Its separate observe worker receipt confirms worker_exited/exit1; its raw output byte size and exact exit/refusal cause are unknown.",
+    "Both workers have separate reserved/worker_started/exit_confirmed ownership receipts. Their reserved phases are worker-lifetime ownership records, not invocation reservations. The private invocation ledger contains bootstrap only.",
+    "Reaching the first provider diagnostic establishes the strict initial window census and first boundary were traversed in the compiled path. Optional service presence is not separately observed or proved.",
+    "Parent-recorded pass scope contains no screenshot or separate Owner HTTP request after launch. Fixture/bootstrap HTTP activity during launch is not excluded by that statement. No image is in this packet.",
+    "Root-owned stage receipt records production build exit0 in226.9s, zero reported Rust/MSVC warning/error diagnostics and verified application/helper hashes. This is build provenance, not a test result.",
+    "Owned root stopped; all eight recorded application/descendant identities are absent at the recorded cleanup timestamp. Both helper lifetimes are separately terminal in their receipts."
+  ],
+  "limits": [
+    "Neither result establishes successful native root/witness/UIA observation or provider-tree acceptance; no transient-resolution or successful recovery claim. Stage1 is a fixed method category reused across call sites, not an element or validation-phase identity.",
+    "The first initial-window boundary does not prove later rechecks or separately identify the optional service. No positive Invoke, navigation, capture, permission-role, peer, restart or FULL acceptance.",
+    "Follow-up attempt_spent remains null in its controller result; it is not silently rewritten false. Bootstrap-only ledger and observe-mode ownership receipts are separate evidence.",
+    "Application stdout/stderr remain private. Only strict-decoded summaries/hashes and four finite credential-pattern counts are published. Eight WARN lines are not a zero-warning claim; zero matched ERROR/panic/current-error markers are bounded pattern observations.",
+    "No final integrated test/lint/parser sweep, CI or tagged-release acceptance. SDK symbolic HRESULT naming does not establish provider implementation cause."
+  ]
+}

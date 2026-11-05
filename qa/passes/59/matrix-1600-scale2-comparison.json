@@ -1,0 +1,120 @@
+{
+  "whole_targets_fit": true,
+  "problems": [],
+  "targets": [
+    {
+      "name": "Edit property grid_number",
+      "node_id": "8941644316774697608",
+      "rect": {
+        "h": 50.0,
+        "w": 61.0625,
+        "x": 1226.0,
+        "y": 396.0
+      },
+      "hit": {
+        "h": 50.0,
+        "w": 61.0625,
+        "x": 1226.0,
+        "y": 396.0
+      },
+      "child_clip": {
+        "h": 50.0,
+        "w": 62.0,
+        "x": 1226.0,
+        "y": 396.0
+      }
+    },
+    {
+      "name": "Copy property grid_number",
+      "node_id": "15595479775064253421",
+      "rect": {
+        "h": 50.0,
+        "w": 74.3125,
+        "x": 1304.0,
+        "y": 396.0
+      },
+      "hit": {
+        "h": 50.0,
+        "w": 74.3125,
+        "x": 1304.0,
+        "y": 396.0
+      },
+      "child_clip": {
+        "h": 50.0,
+        "w": 76.0,
+        "x": 1304.0,
+        "y": 396.0
+      }
+    },
+    {
+      "name": "Delete property grid_number",
+      "node_id": "4343222986337187889",
+      "rect": {
+        "h": 48.0,
+        "w": 69.875,
+        "x": 1226.0,
+        "y": 452.0
+      },
+      "hit": {
+        "h": 48.0,
+        "w": 69.875,
+        "x": 1226.0,
+        "y": 452.0
+      },
+      "child_clip": {
+        "h": 50.0,
+        "w": 168.0,
+        "x": 1226.0,
+        "y": 452.0
+      }
+    }
+  ],
+  "pixels_per_point": 2.0,
+  "table": {
+    "axes": [
+      true,
+      false
+    ],
+    "clip": {
+      "h": 568.0,
+      "w": 346.0,
+      "x": 1220.0,
+      "y": 276.0
+    },
+    "content_id": "7965099993090182272",
+    "content_rect": {
+      "h": 1720.0,
+      "w": 334.0,
+      "x": 1226.0,
+      "y": 216.0
+    },
+    "content_size": [
+      334.0,
+      1720.0
+    ],
+    "label": "Custom property table",
+    "layer": "LayerId { Background 5A3E }",
+    "offset": [
+      0.0,
+      0.0
+    ],
+    "parent_id": "12231413348511173160",
+    "viewport": {
+      "h": 0.0,
+      "w": 334.0,
+      "x": 1226.0,
+      "y": 216.0
+    }
+  },
+  "body_logical_width": 167.0,
+  "case": "matrix-1600-scale2",
+  "window": {
+    "height": 900,
+    "maximized": false,
+    "minimized": false,
+    "ui_scale": 2.0,
+    "width": 1600
+  },
+  "screenshot": "C:\\Users\\atooz\\Programming\\fractalengine-workspace\\fractalengine\\.qa\\run\\20261104-200103-206\\shots\\200436-766-qa59-matrix-1600-scale2.png",
+  "ui_artifact": "owner-matrix-1600-scale2-grid-after-ui.jsonl"
+}

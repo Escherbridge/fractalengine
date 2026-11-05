@@ -1,0 +1,7 @@
+{
+  "full_state_equals_baseline_with_only_two_intended_property_changes": true,
+  "prior_raw_entry_substrings_byte_identical": true,
+  "exact_large_integer": 9007199254740993,
+  "whitespace_string_exact": true,
+  "historical_version": 3
+}

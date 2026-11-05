@@ -1,0 +1,137 @@
+{
+  "pass_id": "57",
+  "run_id": "20261104-184017-448",
+  "stage_commit": "6ca9f49bf65bb344ff5bdb0fa9794208c54c4a9a",
+  "stage_fingerprint": "275249AB3FBB3F48D1A12F57937D698A4FFDA2A472A72759170F3C9C12716AA4",
+  "scenario_sha256": "d14893061bb5c929bd2256dfd706b3cd88586f402fa7bb3a04845096abffa8ef",
+  "verse_id": "01M6MNTFD09S7PG2BDT00GPN6Z",
+  "petal_id": "01M6MP1AFEEA55HPN4SVSQ2WGY",
+  "driver_sha256": "55266bae3220b160b57a2759c8b7c25d40ae4350017d81c44a95cc2a73f46824",
+  "process_identity": {
+    "pid": 100212,
+    "start_ticks": "639294396177040381",
+    "exe_path": "C:\\Users\\atooz\\Programming\\fractalengine-workspace\\fractalengine\\.qa\\stage\\6ca9f49b-20261104183324669\\fractalengine.exe"
+  },
+  "api_base": "http://127.0.0.1:8765",
+  "step_id": "upload-scene",
+  "intent": {
+    "id": "upload-scene",
+    "op": "upload_asset",
+    "asset": "cube",
+    "path": "fractalengine/assets/samples/info_panel.glb"
+  },
+  "outcome": "PASS",
+  "result": {
+    "asset_id": "01M6MP3BGQNT61N7HWPZ3QK4A5",
+    "content_hash": "fc0c7d7c98743c1053b9d83967eb05e759d40ad5d45911ef7a1052f0526d2a1d",
+    "size_bytes": 1664,
+    "source_sha256": "ed52f7192b8311d700ac0ce80644e3852cd01537e4d62241b9acba023da3d54e"
+  },
+  "assertions": [
+    {
+      "name": "uploaded asset byte count",
+      "actual": 1664,
+      "expected": 1664,
+      "passed": true
+    },
+    {
+      "name": "uploaded asset byte hash",
+      "actual": "ed52f7192b8311d700ac0ce80644e3852cd01537e4d62241b9acba023da3d54e",
+      "expected": "ed52f7192b8311d700ac0ce80644e3852cd01537e4d62241b9acba023da3d54e",
+      "passed": true
+    }
+  ],
+  "requests": [
+    {
+      "method": "GET",
+      "path": "/api/v1/debug/logs?level=warn",
+      "request": null,
+      "status": 200,
+      "response_bytes": 112,
+      "response_sha256": "fc1e9b1ec21b8b4547d628d6a90f76473457708d16e86c9145e5788534cbf8d6",
+      "response": {
+        "data": {
+          "active_verse_id": "01M6MNTFD09S7PG2BDT00GPN6Z",
+          "entries": [],
+          "generation": 2,
+          "latest_seq": 386
+        },
+        "ok": true
+      }
+    },
+    {
+      "method": "POST",
+      "path": "/mcp",
+      "request": {
+        "jsonrpc": "2.0",
+        "id": 2,
+        "method": "tools/call",
+        "params": {
+          "name": "upload_asset",
+          "arguments": {
+            "petal_id": "01M6MP1AFEEA55HPN4SVSQ2WGY",
+            "name": "info_panel.glb",
+            "data_base64": {
+              "omitted_encoded_bytes": 109,
+              "sha256": "b682a3d3689b19de22d99dcdb5cbc008baf23b067ecae418f8baeceaf1459520"
+            }
+          }
+        }
+      },
+      "status": 200,
+      "response_bytes": 224,
+      "response_sha256": "20f2089016cbbf1468d6b62a85f8a1b082a0d2b1568f36f7dab1f33c6aa3a3af",
+      "response": {
+        "jsonrpc": "2.0",
+        "id": 2,
+        "result": {
+          "content": [
+            {
+              "text": "{\"asset_id\":\"01M6MP3BGQNT61N7HWPZ3QK4A5\",\"content_hash\":\"fc0c7d7c98743c1053b9d83967eb05e759d40ad5d45911ef7a1052f0526d2a1d\",\"size_bytes\":1664}",
+              "type": "text"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "method": "GET",
+      "path": "/api/v1/assets/by-id/01M6MP3BGQNT61N7HWPZ3QK4A5",
+      "status": 200,
+      "response_bytes": 1664,
+      "response_sha256": "ed52f7192b8311d700ac0ce80644e3852cd01537e4d62241b9acba023da3d54e"
+    },
+    {
+      "method": "GET",
+      "path": "/api/v1/debug/logs?level=warn&since=386",
+      "request": null,
+      "status": 200,
+      "response_bytes": 112,
+      "response_sha256": "5b0b91be7d50957e7bd86c6856ba8a697840e434ecd4d0dc57997762d6fc864a",
+      "response": {
+        "data": {
+          "active_verse_id": "01M6MNTFD09S7PG2BDT00GPN6Z",
+          "entries": [],
+          "generation": 2,
+          "latest_seq": 387
+        },
+        "ok": true
+      }
+    }
+  ],
+  "log_watermark": {
+    "generation": 2,
+    "seq": 386,
+    "latest_seq": 386
+  },
+  "log_end_watermark": {
+    "generation": 2,
+    "seq": 387,
+    "latest_seq": 387
+  },
+  "new_logs": [],
+  "log_generation_changed": false,
+  "log_retention_gap": false,
+  "log_retention_capacity": 2000,
+  "log_review_required": false
+}

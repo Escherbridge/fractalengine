@@ -1,0 +1,68 @@
+# QA57–59 Conductor and publication reconciliation review
+
+Verdict: **approved for bounded publication of the exact reviewed scope**, conditional on root's final explicit staging and raw Git-blob verification. QA0074 focused verification is supported; QA0075 remains open. No objective, retained-store, visual/native or release gate is waived. This is bookkeeping/evidence-claim review, not new functional/source approval or a complete-project verdict.
+
+Only this report was written. Read-only files, hashes and Git inspection were used; no source/packet/index/Git mutation, tests, builds, apps, OS/native/process inspection, API, DB or network operation was performed. The pre-existing `conductor/.conductor_session_log` is excluded. Conductor context guidance, the unchanged completion specification and shared UI guidance were applied.
+
+## Approved publication scope
+
+The reconciliation has **20 paths**:
+
+- `.gitattributes` and `qa/findings.jsonl`.
+- `conductor/tracks/project_completion_20261104/{checkpoint.md,checkpoint-history.md,metadata.json,plan.md}`.
+- Exactly the14 files currently in `conductor/tracks/project_completion_20261104/evidence/qa57-59/`: `build-stage-receipt.json`, `checkpoint-archive-receipt.json`, `checkpoint-before-qa59.txt`, `index.md`, `qa57-full-evidence-review.txt`, `qa58-full-evidence-review.txt`, `qa58-native-failure-source-trace.txt`, `qa58-native-root-transport-design-review.txt`, `qa58-packet-freeze-receipt.json`, `qa59-full-evidence-review.txt`, `qa59-grid-visual-review.txt`, `qa59-packet-freeze-receipt.json`, `require-existing-supported-maintenance-contract.txt`, `source-copy-receipt.json`.
+
+The already independently reviewed raw packets add **525 paths**: QA57's275 payloads+manifest, QA58's15+manifest and QA59's232+manifest. Thus a combined packet/reconciliation publication has **545 paths**, plus at most one optional exact copy of this final review (546). This does not approve any other untracked file, isolated source candidate, source-author report, session log, or unrelated change. Root should stage the explicit path enumeration, not broad directory discovery after review.
+
+All525 raw packet files were rechecked against exact sets/sizes/hashes. Their manifests remain:
+
+| Pass | Manifest SHA256 | Payloads / PNGs |
+| --- | --- | --- |
+|57|`3e0d6b34045d1f07c9ae4bb0c0a29f6a8295767d1a1f3ed8a82d96f1f78bc28e`|275 /17|
+|58|`20612f50d048ad4e02b5cfd83b7714cc8b83c2fa8f56dc0abeb536c2a15bb3d4`|15 /0|
+|59|`927e390688ae28436ae130585d5cd07f319098dd90fa7acd75815fb84ca1b9e6`|232 /17|
+
+The `.gitattributes` delta adds only the three57/58/59 `-text` rules, preserving all earlier rules. Existing `evidence/** -text` also protects the raw review/checkpoint copies. Read-only `git check-attr` confirms text unset for all539 packet+new evidence paths. This is worktree attribute inspection, not proof that future staged blobs are exact; root must verify the525 packet index blobs byte-for-byte before committing.
+
+## Copy and archive integrity
+
+All ten entries in `source-copy-receipt.json` are exact to their original bytes, recorded sizes and SHA256 values, including the now-final QA59 full review. The `.txt` copies preserve original bodies without adding frontmatter or reflowing text; the new index Markdown has required OKF type frontmatter. Its local Markdown links resolve. Source-copy receipt SHA256 is `138a08a1505c5a89b40f17490762f4a73015c2c5b5dfd8242cdd4c81c6e5f929`. The QA59 full-review copy is12,253 bytes, SHA256 `3d3906689f9bb4676442f881ecbdebae414b5b4c04b91935c0d4a1fbebed6f05`.
+
+`checkpoint-before-qa59.txt` is exactly the previous HEAD checkpoint:7,294 bytes, SHA256 `3ed688769449e9f277601395052d92e085c3243633ecbb0dab992933eb57e2dc`. It occurs byte-identically after the two-byte separator in the appended history portion. The old working history prefix remains exactly42,989 bytes/SHA256 `36a0c0655c5f13d4ad8b8abc55d0533754c2614f7c07d116e95a47cc9e5863be`. HEAD's earlier history blob is42,906 bytes and differs only by ordinary CRLF/LF representation; normalized bodies match. This is an explicitly qualified EOL comparison, not a false raw-HEAD-prefix identity claim. The raw checkpoint evidence remains exact independently of context Markdown normalization. Archive receipt SHA256 is `d3e27ae70b69367c928f07e57cb62ee45cca03850377413a04ad8e466bae38db`.
+
+## Findings and claim reconciliation
+
+The first64 finding records are byte-identical to HEAD,69,532 bytes/SHA256 `fa6b1fc974687fd29df63869f8e2a817d3377d1c1b7b208bb5c45898946a84b8`, matching the prefix receipt. Among prior records only QA0074 changes; QA0075 is appended. There are66 records:17 open/reproduction (3S1/9S2/5S3), six source-fixed/live-pending, one cleanup-review-pending,41 focused verified and one closed. Metadata/checkpoint counts agree. `fixed_verified_focused` is correctly kept distinct from broad catalog or final project acceptance.
+
+QA0074's closure states the actual67/79/167/260-point bodies, complete measured numeric targets, separate full narrow key screenshots and real cancel/Save/Delete/history evidence. It retains the unachieved52/520 cases, clipboard-content limit, missing glyphs and disabled-divider/broader visual work. This matches the full QA59 review. QA0075 is a separate S2 open finding for actual icon placeholders, supported by the actual PNGs and independent visual review. It does not conflate intentional ellipsis or the unknown divider guard with missing glyphs and does not claim an unreviewed candidate has fixed anything.
+
+The checkpoint, metadata, plan and index now correctly distinguish:
+
+- QA57's older6ca38/521 data/GUI success from its failed grid geometry and coverage_ready=false/log_review_required=true. That packet does not accept the newer grid.
+- QA58's stage1 CurrentAutomationId/80040201 failure from its separate controller json_size_refused/null-spent/worker-exit1 follow-up. The actual element/phase, follow-up raw size and cause remain unknown; no transient recovery, provider/root/witness/Invoke/capture acceptance is claimed.
+- QA59's six whole numeric-row action subsets from incomplete layout coverage and zero measured violations. Requested520 stayed260 and requested52 stayed67. The splitter is recorded disabled; its exact eligibility predicate/cause remains unproved.
+- Exact preserved typed properties/state/history from Copy toast only: synthetic clipboard suppression leaves host contents unverified.
+- Source-traced possible native root-continuity/transport mechanisms and approved design direction from an implementation or historical causal proof. Isolated native/icon candidates are still authoring/review/build/live work; none is credited as integrated or accepted.
+- The retained startup feasibility report from a safe opener. It documents concrete SDK task/recovery/handoff gaps, keeps the strict design and partial spike nonintegrable, and does not claim exhaustive impossibility. Actual node key/bootstrap owner identity, no fake client-DID ownership, no Seed/reconcile/offline opener and disposable acceptance before retained opening remain.
+
+The committed be081 production stage/session39123/226.9s/fingerprint and recorded stopped QA58/59 identities are described consistently. No fresh OS census was performed here; the absence claims remain tied to recorded identities/timestamps. The documents explicitly retain no final sweep/formatter/push/CI/tag/release. No unsupported blanket warning-free statement appears.
+
+The final metadata-only consistency correction was separately read before locking this review: strict_native_service now records the exact profile as compiled in be081 and QA58's failed CurrentAutomationId, rather than stale unbuilt6e status; next_native_diagnostic now points to the current approved architecture design and candidate authoring, without positive UIA/capture credit. rich_data_both now records QA55 and57's38/521 results alongside QA59's focused grid result and preserves final Both/peer/restart/playback/groups/concurrency acceptance as pending. These corrections introduce no future candidate approval.
+
+## Full objective preserved and final snapshot
+
+After removing the single newly added focused QA0074 queue entry, the complete plan body is identical to HEAD after normal EOL normalization. Thus selected sets/groups/tool/Inspector consistency, typed simulation/append/replay/charts and concurrency, terrain/material/intersection correctness, real-role/peer bytes/render/pick/restart, retained admission, native accessibility/capture, original feature catalog, five live UX audits+synthesis, two100% required FULL passes, single final integrated sweep/exact18 scenarios, exact-commit green CI, immutable tag, whole Release/Docker and seven downloaded/archive-hash checks remain required. No existing checkbox was silently marked complete.
+
+Final reviewed hashes:
+
+| Path | Bytes | SHA256 |
+| --- | ---: | --- |
+|.gitattributes|882|`41641fae1fe00d6ccb0dc4b99e0d15f4e7dffaf4c5b1884768d74c0bbc83b975`|
+|qa/findings.jsonl|72209|`6ae000766cc8abb624a310e7987515c871edfef16350fb30bf45fcf758db255a`|
+|checkpoint.md|8068|`0f4ffd34f959a1e21f51dee061a996524c742d71d60b519acf379d69f90858d1`|
+|metadata.json|9785|`62f2706265dcaf66dd981d33706179e6e8e730338f57af2a7248d97b51499e4b`|
+|plan.md|14379|`65769eade3f9e4083056402cd904a6a762c95fe58048f0528090b44cc7fff080`|
+|checkpoint-history.md|50285|`5246b8974b955dd62ff309c118df9b8421e14b08427f84d8b79427f5708c175f`|
+|evidence/qa57-59/index.md|2202|`90a2ca6ab694e762fa4cd06eeed36227d84a555ec0fc7317544825e2cace153d`|
+
+All four current prose/metadata context files strict-decode as UTF-8 without replacement characters or literal question-mark substitutions. This review approves the exact bookkeeping snapshot and previously reviewed packet bytes, subject to explicit staging verification; it is not completion of the active project goal.
