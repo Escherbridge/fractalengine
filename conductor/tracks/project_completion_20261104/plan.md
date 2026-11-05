@@ -117,3 +117,11 @@ QA42 independently reviewed four incomplete geometry states with zero measured v
 - [~] QA0073 camera command ownership2dac9033 source/correctness/design approved; QA52 independently verifies focused CtrlLeft/ShiftLeft numeric Apply/Undo/Redo with seven camera responses byte-identical. Other modifier/plain navigation/capture/easing/terrain cases and final integrated journey remain pending.
 - [~] Native exact service styleca29b15d and bounded style diagnostic71cd5f8e compiled. QA51 passes exactstyle/exstyle then refuses outer geometry. Bounded signature facts plan is design-reviewed; implementation/measurement/positive UIA/Invoke/capture/role/lifecycle acceptance pending.
 - [ ] Preserve QA47 invalid insertion clarification; a failed malformed draft is not a valid-transform application regression. Complete explicit invalid-input validation acceptance separately.
+
+
+## QA53-55 continuation
+
+- [~] QA53 measured outer(0,0,16,16)/clientzero; exact geometry profile6e5d9c92 source reviewed/committed, fresh build/nativepositive pending.
+- [~] QA55 all38 data steps/521 recorded assertions plus actual productv3 preview and calibrated21,23,25 chart independently reviewed. Drivercoverage_ready=false/log_review_required=true retained; peer/finalbuild/restart/playbacktimer and all original Both gates remain. QA54 failed preflight is preserved.
+- [ ] QA0074S2 responsive property actions: fix GRID-B1 at actual minimum body, review/commit/rebuild, verify all row/confirmation controls and drafts with inspected screenshots.
+- [~] Require-existing startup design reviewed; SDK spike explicitly partial/notintegrable, missing protected admission/promotion and app wiring remain. Retained stores HOLD.

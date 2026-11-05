@@ -1,0 +1,107 @@
+{
+  "kind": "require-existing-sdk-admission-spike-v1",
+  "status": "partial_not_integrable_not_safe_opener",
+  "versions": {
+    "surrealdb": "3.0.5",
+    "surrealdb-core": "3.0.5",
+    "surrealkv": "0.21.1"
+  },
+  "registry_root": "C:\\Users\\atooz\\.cargo\\registry\\src\\index.crates.io-1949cf8c6b5b557f",
+  "files": [
+    {
+      "path": "surrealdb-core-3.0.5/src/kvs/ds/AGENTS.md",
+      "source_bytes": 2759,
+      "source_sha256": "caf786ceb97c948ad6ec4464eaa87d90b5f0131fde9cb1c332f5211310c5df6e",
+      "baseline_bytes": null,
+      "baseline_sha256": null
+    },
+    {
+      "path": "surrealdb-core-3.0.5/src/kvs/ds/existing.rs",
+      "source_bytes": 5466,
+      "source_sha256": "8645365376901927bfcc828bb2ba3aeb98df351124451946b3b282545f1b837b",
+      "baseline_bytes": null,
+      "baseline_sha256": null
+    },
+    {
+      "path": "surrealdb-core-3.0.5/src/kvs/ds.rs",
+      "source_bytes": 90498,
+      "source_sha256": "7f50728c3caaf218f5d72dcccc6ecddb3edee20ddba44c753ba4f0735e88e468",
+      "baseline_bytes": 90429,
+      "baseline_sha256": "3a3dc6adf313a170ebbda729f72b66d5199c1cc36588b64d4d68b6bcd967887f"
+    },
+    {
+      "path": "surrealdb-core-3.0.5/src/kvs/mod.rs",
+      "source_bytes": 2105,
+      "source_sha256": "58686565a7d83981999fd7fcd2c48b058568ba90b01cfad31ea83f62e4f189f2",
+      "baseline_bytes": 2070,
+      "baseline_sha256": "ebeb4c99ddc768b34d60fc2adcd375014752ee682d8afd272895cfa495dd8fb1"
+    },
+    {
+      "path": "surrealkv-0.21.1/src/levels/mod.rs",
+      "source_bytes": 20321,
+      "source_sha256": "a79f20ad4670a961a6743591f84484a3c2c69c78c9301a237b3375ac006decea",
+      "baseline_bytes": 20124,
+      "baseline_sha256": "c81e6fa2209534ab822fbd7df991bccc4362ea858b3356605561ec814358aa6c"
+    },
+    {
+      "path": "surrealkv-0.21.1/src/lockfile.rs",
+      "source_bytes": 11299,
+      "source_sha256": "ba7b5da15d3d7e32c64519f9da0b65079240f0ddeca1d0712d496dcd854971d2",
+      "baseline_bytes": 10362,
+      "baseline_sha256": "c3a8352ad261ba47ed8f715acfec8f1f8dba09f182166fe61f890dbcaab28e43"
+    }
+  ],
+  "patch": {
+    "file": "source.patch",
+    "bytes": 11806,
+    "sha256": "289c95ec0d815e6ba669270fcd93f2f2697f56fed6b8034433fc1a39ac0e6c79"
+  },
+  "supporting_inspected_sources": [
+    {
+      "path": "surrealdb-3.0.5/src/engine/local/native.rs",
+      "bytes": 7532,
+      "sha256": "cb38a2abe1646b3d3ef7073efd04ca30bd1ea8ed87fb988e9525fc03f87ce373"
+    },
+    {
+      "path": "surrealdb-3.0.5/src/opt/config.rs",
+      "bytes": 4864,
+      "sha256": "abcade070566af679d1cdac8106a3d2bc62e3005b8ac3d58131192125c23a645"
+    },
+    {
+      "path": "surrealdb-core-3.0.5/src/kvs/surrealkv/mod.rs",
+      "bytes": 31195,
+      "sha256": "5f5a0630121c9f6899abc98da1be8dbb36c62b0dc543690406b3320d5761c528"
+    },
+    {
+      "path": "surrealdb-core-3.0.5/src/kvs/config.rs",
+      "bytes": 26027,
+      "sha256": "00d512330d599e0c14923c0688a497d9ce125a5a06fc01500bd5c4dbb3bdf351"
+    },
+    {
+      "path": "surrealdb-core-3.0.5/src/kvs/tx.rs",
+      "bytes": 87324,
+      "sha256": "372513c7bb0d1d42adaa578dab30f29af4617984d0a2eb2654d9fe25a8da2c1d"
+    },
+    {
+      "path": "surrealdb-core-3.0.5/src/dbs/executor.rs",
+      "bytes": 45127,
+      "sha256": "2bff556749cd4f84bfa8ef335d15e61cb4908a4f5d9854830acc772d1b04964e"
+    },
+    {
+      "path": "surrealdb-core-3.0.5/src/catalog/providers.rs",
+      "bytes": 22448,
+      "sha256": "461bb2fd9d219949f527a433c42c4afe7ae5d45e3d43a57fafc4375210f8f316"
+    },
+    {
+      "path": "surrealdb-core-3.0.5/src/expr/kind.rs",
+      "bytes": 25320,
+      "sha256": "2762c74d898774deebdc988e7f4309f48512011cff2ef34145f5ef5aba18b456"
+    },
+    {
+      "path": "surrealkv-0.21.1/src/lsm.rs",
+      "bytes": 70100,
+      "sha256": "4e73ce26c32d944c59df23d5c458aaf37845924cbdff847bc2094621d1fb4570"
+    }
+  ],
+  "limits": "Copied source components only; no connector wiring or protected strict-existing opener. No parser/build/test/store/app execution. Retained roots remain HOLD."
+}

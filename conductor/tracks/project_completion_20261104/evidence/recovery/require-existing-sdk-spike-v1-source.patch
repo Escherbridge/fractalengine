@@ -1,0 +1,275 @@
+--- /dev/null
++++ b/surrealdb-core-3.0.5/src/kvs/ds/AGENTS.md
+@@ -0,0 +1,39 @@
++# Existing admission spike
++
++This is an isolated, uncompiled source spike, not an installed SDK or safe opener.
++`admit_existing` consumes an already opened Datastore and returns that same owner
++after a single read-only transaction. Its inputs are fixed identifiers, a bound
++record identity, expected public owner and explicitly required field definitions.
++No arbitrary admission SQL or caller callback is accepted. The fixed SELECT has
++limit2; namespace/database/table/field metadata lookups use existing catalog reads.
++Capabilities are temporarily none, so computed schema cannot authorize network or
++scripting. Required fields reject computed definitions. Owner/identity columns must
++have explicit String kind requirements. Missing version/catalog/owner or a mismatch
++refuses. All transaction reads, including the fixed owner SELECT, share one snapshot.
++The admission transaction is cancelled, never committed; normal capabilities are
++restored only for the consumed object's success return or teardown.
++
++This method does not open or pin paths and cannot prove that its caller used a
++strict-existing physical opener. No connector is wired to it in this spike. Its
++public placement is a reviewable API proposal, not a capability proof: final wiring
++must require the actual guarded existing-open result and call admission before
++check_version/bootstrap, connection-ready and router maintenance tasks. Ordinary
++Datastore::new is not a valid retained recipe. No close/reopen is allowed at promotion.
++
++Kind/flexible/readonly/computed checks are an explicit required-field compatibility
++contract, not proof of every schema/index/event/permission invariant. Required field
++coverage must be independently reconciled with application consumers. The admission
++five-second timeout covers the metadata/owner read body; transaction creation and
++terminal cancellation/drop still need the host's bounded startup/lifetime handling.
++SDK format validation is logical; it does not promise no physical lock/WAL writes.
++
++The separate lock and manifest helpers are not connected to CoreInner/TreeBuilder.
++They need retained Windows ancestor/catalog/lock handle identity binding, existing
++directory/optional-store policy and recovery corruption discipline before integration.
++Existing-only lock acquisition may write its PID only after it obtains exclusivity;
++normal acquisition retains its previous behavior. Existing-manifest loading bypasses
++the create branch but still uses a path: this alone is not a race/confinement proof.
++
++No application/schema/identity/launcher wiring or retained-store release is present.
++Parent review, implementation completion, compilation and disposable acceptance are
++required. See the spike report and acceptance matrix outside the copied SDK tree.
+--- /dev/null
++++ b/surrealdb-core-3.0.5/src/kvs/ds/existing.rs
+@@ -0,0 +1,138 @@
++use std::sync::Arc;
++use std::time::Duration;
++
++use anyhow::{Result, bail, ensure};
++use surrealdb_types::{Kind, Value, Variables};
++
++use super::Datastore;
++use crate::catalog::providers::{DatabaseProvider, NamespaceProvider, TableProvider};
++use crate::dbs::{Capabilities, Session};
++use crate::kvs::{LockType, Transaction, TransactionType};
++use crate::val::TableName;
++
++/// One required existing field; see AGENTS.md for the spike boundary.
++#[derive(Clone, Debug)]
++pub struct ExistingField {
++	/// Existing table identifier.
++	pub table: String,
++	/// Existing field identifier.
++	pub field: String,
++	/// Expected database field kind.
++	pub kind: Kind,
++	/// Expected flexible-field setting.
++	pub flexible: bool,
++	/// Expected readonly-field setting.
++	pub readonly: bool,
++}
++
++/// Fixed owner and required-schema admission; this does not open a store.
++#[derive(Clone, Debug)]
++pub struct ExistingAdmission {
++	/// Existing namespace.
++	pub namespace: String,
++	/// Existing database.
++	pub database: String,
++	/// Table containing the retained owner row.
++	pub owner_table: String,
++	/// String identity field on that row.
++	pub identity_field: String,
++	/// Exact retained public identity.
++	pub identity: String,
++	/// Stored string owner field.
++	pub owner_field: String,
++	/// Actual DID derived from the already loaded key.
++	pub owner: String,
++	/// Required existing field definitions.
++	pub fields: Vec<ExistingField>,
++}
++
++fn identifier(value: &str) -> bool {
++	let mut bytes = value.bytes();
++	!value.is_empty()
++		&& value.len() <= 64
++		&& bytes.next().is_some_and(|b| b.is_ascii_alphabetic() || b == b'_')
++		&& bytes.all(|b| b.is_ascii_alphanumeric() || b == b'_')
++}
++
++impl ExistingAdmission {
++	fn validate(&self) -> Result<()> {
++		ensure!(
++			[&self.namespace, &self.database, &self.owner_table, &self.identity_field, &self.owner_field]
++				.into_iter().all(|name| identifier(name))
++				&& !self.identity.is_empty() && self.identity.len() <= 512
++				&& !self.owner.is_empty() && self.owner.len() <= 512
++				&& !self.fields.is_empty() && self.fields.len() <= 256
++				&& self.fields.iter().all(|field| identifier(&field.table) && identifier(&field.field)),
++			"existing_admission_spec_refused"
++		);
++		for name in [&self.identity_field, &self.owner_field] {
++			ensure!(self.fields.iter().any(|field| field.table == self.owner_table
++				&& &field.field == name && field.kind == Kind::String
++				&& !field.flexible), "existing_owner_schema_spec_refused");
++		}
++		Ok(())
++	}
++}
++
++impl Datastore {
++	/// Validate a guarded existing datastore before bootstrap; see AGENTS.md.
++	pub async fn admit_existing(mut self, expected: &ExistingAdmission) -> Result<Self> {
++		expected.validate()?;
++		let capabilities = self.capabilities.clone();
++		self.capabilities = Arc::new(Capabilities::none());
++		let tx = self.transaction(TransactionType::Read, LockType::Optimistic).await?
++			.enclose();
++		let result = tokio::time::timeout(Duration::from_secs(5),
++			self.check_existing_admission(expected, tx.clone())).await;
++		let cancelled = tx.cancel().await;
++		self.capabilities = capabilities;
++		match result {
++			Ok(Ok(())) => {}
++			Ok(Err(_)) => bail!("existing_admission_refused"),
++			Err(_) => bail!("existing_admission_timeout"),
++		}
++		cancelled.map_err(|_| anyhow::anyhow!("existing_admission_cancel_refused"))?;
++		Ok(self)
++	}
++
++	async fn check_existing_admission(
++		&self,
++		expected: &ExistingAdmission,
++		tx: Arc<Transaction>,
++	) -> Result<()> {
++		let version = tx.get(&crate::key::version::new(), None).await?
++			.ok_or_else(|| anyhow::anyhow!("existing_version_missing"))?;
++		ensure!(version.is_latest(), "existing_version_incompatible");
++		let namespace = tx.get_ns_by_name(&expected.namespace).await?
++			.ok_or_else(|| anyhow::anyhow!("existing_namespace_missing"))?;
++		let database = tx.get_db_by_name(&expected.namespace, &expected.database).await?
++			.ok_or_else(|| anyhow::anyhow!("existing_database_missing"))?;
++		for field in &expected.fields {
++			let table = TableName::from(field.table.as_str());
++			tx.get_tb_by_name(&expected.namespace, &expected.database, &table).await?
++				.ok_or_else(|| anyhow::anyhow!("existing_table_missing"))?;
++			let stored = tx.get_tb_field(namespace.namespace_id, database.database_id,
++				&table, &field.field).await?
++				.ok_or_else(|| anyhow::anyhow!("existing_field_missing"))?;
++			let kind: crate::expr::Kind = field.kind.clone().into();
++			ensure!(stored.field_kind.as_ref() == Some(&kind)
++				&& stored.flexible == field.flexible && stored.readonly == field.readonly
++				&& stored.computed.is_none(), "existing_field_incompatible");
++		}
++		let sql = format!(
++			"SELECT VALUE {} FROM {} WHERE {} = $retained_identity LIMIT 2 TIMEOUT 5s",
++			expected.owner_field, expected.owner_table, expected.identity_field
++		);
++		let mut variables = Variables::new();
++		variables.insert("retained_identity", expected.identity.clone());
++		let session = Session::owner().with_ns(&expected.namespace).with_db(&expected.database);
++		let mut results = self.execute_with_transaction(&sql, &session, Some(variables), tx).await?;
++		ensure!(results.len() == 1, "existing_owner_result_refused");
++		let result = results.pop().ok_or_else(|| anyhow::anyhow!("existing_owner_result_refused"))?;
++		let Value::Array(rows) = result.output()? else { bail!("existing_owner_result_refused") };
++		ensure!(rows.len() == 1, "existing_owner_cardinality_refused");
++		ensure!(matches!(rows.first(), Some(Value::String(owner)) if owner == &expected.owner),
++			"existing_owner_mismatch");
++		Ok(())
++	}
++}
+--- a/surrealdb-core-3.0.5/src/kvs/ds.rs
++++ b/surrealdb-core-3.0.5/src/kvs/ds.rs
+@@ -90,6 +90,9 @@
+ use crate::{CommunityComposer, syn};
+ 
+ const TARGET: &str = "surrealdb::core::kvs::ds";
++
++mod existing;
++pub use existing::{ExistingAdmission, ExistingField};
+ 
+ /// If there are an infinite number of heartbeats, then we want to go
+ /// batch-by-batch spread over several checks
+--- a/surrealdb-core-3.0.5/src/kvs/mod.rs
++++ b/surrealdb-core-3.0.5/src/kvs/mod.rs
+@@ -51,7 +51,8 @@
+ pub(crate) use ds::TransactionFactory;
+ pub use ds::requirements::{TransactionBuilderFactoryRequirements, TransactionBuilderRequirements};
+ pub use ds::{
+-	Datastore, DatastoreFlavor, Metric, Metrics, TransactionBuilder, TransactionBuilderFactory,
++	Datastore, DatastoreFlavor, ExistingAdmission, ExistingField, Metric, Metrics, TransactionBuilder,
++	TransactionBuilderFactory,
+ };
+ pub use err::{Error, Result};
+ pub use into::IntoBytes;
+--- a/surrealkv-0.21.1/src/levels/mod.rs
++++ b/surrealkv-0.21.1/src/levels/mod.rs
+@@ -143,6 +143,11 @@
+ }
+ 
+ impl LevelManifest {
++	/// Load the existing catalog without the create-if-missing branch.
++	pub(crate) fn open_existing(opts: Arc<Options>) -> Result<Self> {
++		Self::load_from_file(opts.manifest_file_path(0), opts)
++	}
++
+ 	pub(crate) fn new(opts: Arc<Options>) -> Result<Self> {
+ 		assert!(opts.level_count > 0, "level_count should be >= 1");
+ 
+--- a/surrealkv-0.21.1/src/lockfile.rs
++++ b/surrealkv-0.21.1/src/lockfile.rs
+@@ -66,12 +66,22 @@
+ 	/// Acquires the lock, returning an error if the database is already in use
+ 	#[cfg(not(target_arch = "wasm32"))]
+ 	pub fn acquire(&mut self) -> Result<()> {
+-		// Try to open the lock file with create flag
++		self.acquire_with_creation(true)
++	}
++
++	/// Acquire an existing lock without truncating before ownership.
++	#[cfg(not(target_arch = "wasm32"))]
++	pub fn acquire_existing(&mut self) -> Result<()> {
++		self.acquire_with_creation(false)
++	}
++
++	#[cfg(not(target_arch = "wasm32"))]
++	fn acquire_with_creation(&mut self, create: bool) -> Result<()> {
+ 		let file = OpenOptions::new()
+ 			.read(true)
+ 			.write(true)
+-			.create(true)
+-			.truncate(true)
++			.create(create)
++			.truncate(create)
+ 			.open(&self.path)
+ 			.map_err(|e| Error::Io(Arc::new(e)))?;
+ 
+@@ -141,6 +151,9 @@
+ 	fn test_lock_acquisition_and_release() {
+ 		let temp_dir = TempDir::new().unwrap();
+ 		let mut lock = LockFile::new(temp_dir.path());
++		let lock_path = temp_dir.path().join(LockFile::LOCK_FILE_NAME);
++		assert!(lock.acquire_existing().is_err());
++		assert!(!lock_path.exists(), "existing-only refusal must not create LOCK");
+ 
+ 		// Initial acquisition should succeed
+ 		assert!(lock.acquire().is_ok());
+@@ -150,6 +163,15 @@
+ 
+ 		// Release should succeed
+ 		assert!(lock.release().is_ok());
++		assert!(lock.acquire_existing().is_ok());
++		let before = fs::read(&lock_path).unwrap();
++		let mut contender = LockFile::new(temp_dir.path());
++		assert!(contender.acquire_existing().is_err());
++		assert_eq!(fs::read(&lock_path).unwrap(), before,
++			"failed existing-only contention must not truncate the current owner's bytes");
++		assert!(lock.release().is_ok());
++		assert!(contender.acquire_existing().is_ok());
++		assert!(contender.release().is_ok());
+ 	}
+ 
+ 	#[test]

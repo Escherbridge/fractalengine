@@ -31,8 +31,8 @@
   },
   "verification": {
     "conductor_review": "approved; reviews/conductor-scope-review.md",
-    "production_build": "Latest matching2dac9033 passed172.9s, terminal26788exit0, zero Rust/MSVC compiler diagnostics, app/helper hashes verified. Earliera16/71cd committed stages passed; one uncommitteda16stage explicitly excluded.",
-    "focused_evidence": "QA47-52 frozen and independently reviewed,170payloads+6manifests/13screens, publicationpending. QA47mandatoryinvalidinputclarification. No FULL credit.",
+    "production_build": "22039d5a passed68.3s terminal74576exit0 zeroactualcompilerdiagnostics/hashesverified; stale after6e5profile/UIchanges; no finalintegratedsweep",
+    "focused_evidence": "QA47-53 committed; QA54/55 frozen/full-reviewed32+92payload/7PNGs, publicationprepared. QA55all38steps/521assertions, actualv3preview/chart21,23,25; coveragereadyfalse/logreviewtrue retained, noFULL.",
     "final_catalog": "pending",
     "two_clean_full_passes": "pending",
     "five_live_ux_audits_and_synthesis": "pending",
@@ -43,19 +43,21 @@
     "legacy_helper_fresh_launch": "passed preparation/authenticated startup in30.5s with corrected C#; exact stop exit0; adoption/restart unverified",
     "visual_acceptance": "QA42 independently reviewed70payloads/9screens: zero measured violations in four incomplete states;382px narrowInspector, valid2xsave, treehscroll and shown ruler separation. Broad visual/tool/report gates remain.",
     "visual_followup_review": "approved subject to exact staged evidence bytes; reviews/visual-followup-review.md",
-    "native_witness": "QA51 style+exstyle exactpass, outerzeroRect refusal; no positiveUIA/Invoke/capture. Bounded signaturefacts diagnostic plan designapproved/notimplemented, allOwner/proof/ledger floorsremain.",
+    "native_witness": "QA53 sequentialouter0,0,16,16 clientzero strictrefusal;6e5exactprofile+v2sourceapprovedcommitted notyetbuilt/live. No positiveUIA/Invoke/capture.",
     "volume_ownership": "QA36partial/genuinezero andQA37independent200fill100cut4solidboxoverlap+observedroundtripbyte-stablehistories focusedapproved; fullQA69late/authority/retained/rollbackgatespending",
     "panel_width": "QA42 independent focused evidence:382pxInspector body at1024x720/2, actualtypedpropertysaved; geometryincomplete, remainingResults/divider/menu/modal matrixpending.",
     "terrain_api_grant": "c0aa2bce normal QA39 scoped update/readback evidence independentlyapproved; negative/queue/concurrency gates remain",
     "brush_chrome": "QA41 independently verifies unchanged terrain/hierarchy for armed Circle Back, hint and one ancestor, plus one legitimate Circle/node. Broader tools, gestures and journal comparisons remain pending.",
     "owner_qa_tree": "QA40 failed. d8da3a46 source-approved and compiled; QA41 independently verifies recovered Owner tree/state/screenshot and 102 physical control-ID joins. Broader native acceptance remains pending.",
     "peer_node_delivery": "QA0063open; typed witness1bd source reviewed, QA47/49/52 localrecovery5enqueued0deferred/0publicationfailures. FreshViewer/bytes/render/pick/restartpending.",
-    "camera_commands": "QA0073 CtrlLeft/ShiftLeft focusedcorrected52: positions0/2.5/0/2.5 versions4..7, seven completecameraresponses byteequal. Othermodifier/plainnav/easing/capture andfinaljourneys pending."
+    "camera_commands": "QA0073 CtrlLeft/ShiftLeft focusedcorrected52: positions0/2.5/0/2.5 versions4..7, seven completecameraresponses byteequal. Othermodifier/plainnav/easing/capture andfinaljourneys pending.",
+    "rich_data_both": "QA55 staged22039d5a38PASS521assertions localAPI+actualv3UI/21,23,25chart; warnings/dependencies and finalbuild/peer/restart/playbacktimer/group matrixremain",
+    "property_grid": "QA0074S2 reproduced55; responsivev1sourceblockedGRID-B1 atactualminimumBody52, v2authoring; no rebuiltvisualacceptance"
   },
   "final_publication_authorized": true,
   "release_gate": "All required implementation/reviews/live QA and integrated checks complete; exact-commit CI green before immutable tag; all Release jobs and seven downloaded archive checksums verified",
-  "current_source": "2dac9033",
-  "current_owned_apps": "none; QA47-52 stopped, latest eight identities each absent2026-11-05T00:20:58.1728898Z/00:21:03.5349869Z",
+  "current_source": "6e5d9c92",
+  "current_owned_apps": "none; QA53 and sharedQA54/55 stopped, recorded eight identities each absent",
   "checkpoint_history": "./checkpoint-history.md",
   "native_helper_source": {
     "worktree": ".omc/worktrees/qa-native-navigation-helper",
@@ -70,7 +72,7 @@
     "functional_review": "./reviews/qa-native-nav23-functional-v3-review.md",
     "integration_commit": "8968d918",
     "toolchain_followup_commit": "1b477696",
-    "remaining": "Actual positive UIA discovery/provider/invoke; resolve unexpected-visible-window classification with independent review; paired restart/pruning/lifecycle/durability acceptance.",
+    "remaining": "Fresh build and positive strictservice/UIA/provider/Invoke on exact16outer/v2 profile; capture freshness, actual recipient-role navigation, paired lifecycle/restart/pruning/durability remain pending.",
     "toolchain_followup_commits": [
       "1b477696",
       "86c53c14",
@@ -99,7 +101,7 @@
         "./reviews/qa-native-winit-service-plan-functional-review.md",
         "./reviews/qa-native-winit-service-plan-security-review.md"
       ],
-      "status": "strictprofile/diagnostics compiled2dac; QA51 exactstyle/exstylepass thenouterrefusal; boundedfacts nextplanreviewed, implementationandpositiveacceptancepending",
+      "status": "22039d5a facts compiled/observedQA53 outer16/clientzero;6e5d9c92 exactprofile andv2diagnostic source reviewed/committed, build/livepositivepending",
       "source_reviews": [
         "./reviews/qa-native-winit-service-functional-review.md",
         "./reviews/qa-native-winit-service-security-review.md"
@@ -114,20 +116,24 @@
       ]
     },
     "require_existing_startup": {
-      "status": "source trace complete; design/implementation/live validation pending; retained stores on hold",
+      "status": "boundeddesignindependentlyapproved; concreteSDKspikepartial/notintegrable; identityboundopening/promotion andappwiring pending, retainedHOLD",
       "trace": "./evidence/recovery/require-existing-startup-source-trace.md",
       "identity_constraint": "Legacy runtime_did is client JWT sub, not actual node/DB-owner DID; compare persisted bootstrap Verse.created_by to DID from load-only retained node key before mutation/readiness.",
       "sdk_followup": "./evidence/recovery/require-existing-sdk-store-open-followup.json"
     }
   },
   "next_native_diagnostic": {
-    "plan": "./evidence/native-nav23/qa51-service-rectangle-diagnostic-plan.md",
-    "review": "./reviews/qa51-service-rectangle-diagnostic-plan-review.md",
-    "status": "design_approved_not_implemented"
+    "plan": "./evidence/native-nav23/qa53-service-geometry-source-plan.md",
+    "review": "./reviews/qa53-service-geometry-plan-review.md",
+    "status": "220factscompiled/measured53;6e5exactgeometryprofilecommitted_reviewed_build_live_pending",
+    "source_reviews": [
+      "./reviews/qa53-service-geometry-source-review.md",
+      "./reviews/qa53-service-geometry-design-review.md"
+    ]
   },
   "finding_register": {
-    "records": 64,
-    "open_reproduction": 16,
+    "records": 65,
+    "open_reproduction": 17,
     "source_fixed_live_pending": 6,
     "cleanup_review_pending": 1,
     "focused_verified": 40,

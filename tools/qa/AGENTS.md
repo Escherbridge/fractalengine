@@ -636,7 +636,12 @@ python tools/qa/rich_data.py --scenario tools/qa/scenarios/rich-fleet.json --val
 
 After the owned run is staged from the reviewed source, create a fresh owned verse/fractal/petal and supply its
 actual IDs. The launcher must have copied the renderable `fractalengine/assets/samples/info_panel.glb` into that
-run. Execution is explicit:
+run. Before distributed cases, open the requested owned Verse/Petal and confirm its
+read-only distributed query reports a ready catalog. Hierarchy creation alone does
+not prove catalog readiness: QA54 refused before object writes, while QA55 proceeded
+after actual navigation and a complete empty query. Preserve the refused attempt;
+use a new evidence pass rather than replaying an existing scenario directory.
+Execution is explicit:
 
 ```powershell
 python tools/qa/rich_data.py --scenario tools/qa/scenarios/rich-fleet.json --run <absolute-owned-run> --pass-id <current-pass> --verse-id <actual-verse-ULID> --petal-id <actual-petal-ULID>

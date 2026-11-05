@@ -1,0 +1,25 @@
+{
+  "historical_preview_version": 3,
+  "historical_properties_match_independent_checkpoint": true,
+  "exact_integer_sequence": 9007199254740993,
+  "chart_series": "temperature_calibrated (C)",
+  "ui_event_time_rows": [
+    [
+      "2026-10-31T00:00:00+00:00",
+      "21"
+    ],
+    [
+      "2026-10-31T00:00:10+00:00",
+      "23"
+    ],
+    [
+      "2026-10-31T00:00:20+00:00",
+      "25"
+    ]
+  ],
+  "current_row_history_unchanged_receipt": "ui-replay-preserves-current-comparison.json",
+  "limits": [
+    "One object UI replay/chart; no playback timer, group, peer or restart acceptance.",
+    "Screenshots inspected separately; semantic equality alone is not visual acceptance."
+  ]
+}

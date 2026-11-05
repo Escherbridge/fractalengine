@@ -1,0 +1,42 @@
+[
+  {
+    "path": "qa\\passes\\54\\rich-data\\20261104-174918-156\\rich-fleet-v1\\00-preflight.json",
+    "sha256": "20dc0877dce9a5c4e76494aec97564380175b45f9681d3d297f7fde975433bcf",
+    "kind": "persistence"
+  },
+  {
+    "path": "qa\\passes\\54\\rich-data\\20261104-174918-156\\rich-fleet-v1\\context.json",
+    "sha256": "bde8f3db0468ce20727749a040d3ed449e4393602d1f847b07c169b8ea609603",
+    "kind": "persistence"
+  },
+  {
+    "path": "qa\\passes\\54\\rich-data\\20261104-174918-156\\rich-fleet-v1\\measurements.json",
+    "sha256": "a5338d955b09046ec0b16f3a9625b7955c763aae07dc722e474e6078745f932f",
+    "kind": "tool"
+  },
+  {
+    "path": "qa\\passes\\54\\rich-data\\20261104-174918-156\\rich-fleet-v1\\measurements.csv",
+    "sha256": "b532e2acfcc70553f1f68e6f687488960e2c4269d44af8daa9d71d09a2b67a93",
+    "kind": "tool"
+  },
+  {
+    "path": "qa\\passes\\54\\rich-data\\20261104-174918-156\\rich-fleet-v1\\trajectory.csv",
+    "sha256": "e62c6e28fd9df02cb9147cd5e4894ac0f63f845aa9ee4d93988aace71ad2362c",
+    "kind": "tool"
+  },
+  {
+    "path": "qa\\passes\\54\\rich-data\\20261104-174918-156\\rich-fleet-v1\\report.html",
+    "sha256": "57e0c3f5e3679bbf3be9be75331b538235ad5698674738fb5751e2a2cf0de6a8",
+    "kind": "tool"
+  },
+  {
+    "path": "qa\\passes\\54\\rich-data\\20261104-174918-156\\rich-fleet-v1\\summary.json",
+    "sha256": "da7aec14e81ee4b6af43d290b740399954c92fa6eff7e4604c8f8eb3b3bba2bd",
+    "kind": "api"
+  },
+  {
+    "path": "qa\\passes\\54\\rich-data\\20261104-174918-156\\rich-fleet-v1\\coverage-candidates.jsonl",
+    "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "kind": "tool"
+  }
+]

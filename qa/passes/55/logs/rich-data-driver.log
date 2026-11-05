@@ -1,0 +1,474 @@
+{"step_id": "preflight", "outcome": "PASS", "artifact": "qa\\passes\\55\\rich-data\\20261104-174918-156\\rich-fleet-v1\\00-preflight.json", "log_review_required": false}
+{"step_id": "upload-scene", "outcome": "PASS", "artifact": "qa\\passes\\55\\rich-data\\20261104-174918-156\\rich-fleet-v1\\01-upload-scene.json", "log_review_required": false}
+{"step_id": "schema-calibration-v1", "outcome": "PASS", "artifact": "qa\\passes\\55\\rich-data\\20261104-174918-156\\rich-fleet-v1\\02-schema-calibration-v1.json", "log_review_required": false}
+{"step_id": "schema-metadata-v1", "outcome": "PASS", "artifact": "qa\\passes\\55\\rich-data\\20261104-174918-156\\rich-fleet-v1\\03-schema-metadata-v1.json", "log_review_required": false}
+{"step_id": "create-alpha", "outcome": "PASS", "artifact": "qa\\passes\\55\\rich-data\\20261104-174918-156\\rich-fleet-v1\\04-create-alpha.json", "log_review_required": true}
+{"step_id": "create-beta", "outcome": "PASS", "artifact": "qa\\passes\\55\\rich-data\\20261104-174918-156\\rich-fleet-v1\\05-create-beta.json", "log_review_required": true}
+{"step_id": "calibrate-alpha-v2", "outcome": "PASS", "artifact": "qa\\passes\\55\\rich-data\\20261104-174918-156\\rich-fleet-v1\\06-calibrate-alpha-v2.json", "log_review_required": true}
+{"step_id": "move-alpha-v3", "outcome": "PASS", "artifact": "qa\\passes\\55\\rich-data\\20261104-174918-156\\rich-fleet-v1\\07-move-alpha-v3.json", "log_review_required": true}
+{"step_id": "move-beta-v2", "outcome": "PASS", "artifact": "qa\\passes\\55\\rich-data\\20261104-174918-156\\rich-fleet-v1\\08-move-beta-v2.json", "log_review_required": true}
+{"step_id": "checkpoint-before-gamma", "outcome": "PASS", "artifact": "qa\\passes\\55\\rich-data\\20261104-174918-156\\rich-fleet-v1\\09-checkpoint-before-gamma.json", "log_review_required": false}
+{"step_id": "raw-t0", "outcome": "PASS", "artifact": "qa\\passes\\55\\rich-data\\20261104-174918-156\\rich-fleet-v1\\10-raw-t0.json", "log_review_required": false}
+{"step_id": "derive-t0", "outcome": "PASS", "artifact": "qa\\passes\\55\\rich-data\\20261104-174918-156\\rich-fleet-v1\\11-derive-t0.json", "log_review_required": false}
+{"step_id": "recalibrate-alpha-v4", "outcome": "PASS", "artifact": "qa\\passes\\55\\rich-data\\20261104-174918-156\\rich-fleet-v1\\12-recalibrate-alpha-v4.json", "log_review_required": true}
+{"step_id": "create-gamma", "outcome": "PASS", "artifact": "qa\\passes\\55\\rich-data\\20261104-174918-156\\rich-fleet-v1\\13-create-gamma.json", "log_review_required": true}
+{"step_id": "move-alpha-v5", "outcome": "PASS", "artifact": "qa\\passes\\55\\rich-data\\20261104-174918-156\\rich-fleet-v1\\14-move-alpha-v5.json", "log_review_required": true}
+{"step_id": "move-beta-v3", "outcome": "PASS", "artifact": "qa\\passes\\55\\rich-data\\20261104-174918-156\\rich-fleet-v1\\15-move-beta-v3.json", "log_review_required": true}
+{"step_id": "move-gamma-v2", "outcome": "PASS", "artifact": "qa\\passes\\55\\rich-data\\20261104-174918-156\\rich-fleet-v1\\16-move-gamma-v2.json", "log_review_required": true}
+{"step_id": "raw-t2", "outcome": "PASS", "artifact": "qa\\passes\\55\\rich-data\\20261104-174918-156\\rich-fleet-v1\\17-raw-t2.json", "log_review_required": false}
+{"step_id": "derive-t2", "outcome": "PASS", "artifact": "qa\\passes\\55\\rich-data\\20261104-174918-156\\rich-fleet-v1\\18-derive-t2.json", "log_review_required": false}
+{"step_id": "raw-t1-late", "outcome": "PASS", "artifact": "qa\\passes\\55\\rich-data\\20261104-174918-156\\rich-fleet-v1\\19-raw-t1-late.json", "log_review_required": false}
+{"step_id": "derive-t1-late", "outcome": "PASS", "artifact": "qa\\passes\\55\\rich-data\\20261104-174918-156\\rich-fleet-v1\\20-derive-t1-late.json", "log_review_required": false}
+{"step_id": "rotate-scale-alpha-v6", "outcome": "PASS", "artifact": "qa\\passes\\55\\rich-data\\20261104-174918-156\\rich-fleet-v1\\21-rotate-scale-alpha-v6.json", "log_review_required": true}
+{"step_id": "schema-metadata-v2", "outcome": "PASS", "artifact": "qa\\passes\\55\\rich-data\\20261104-174918-156\\rich-fleet-v1\\22-schema-metadata-v2.json", "log_review_required": false}
+{"step_id": "metadata-alpha-v7", "outcome": "PASS", "artifact": "qa\\passes\\55\\rich-data\\20261104-174918-156\\rich-fleet-v1\\23-metadata-alpha-v7.json", "log_review_required": true}
+{"step_id": "schema-tag-alpha-v8", "outcome": "PASS", "artifact": "qa\\passes\\55\\rich-data\\20261104-174918-156\\rich-fleet-v1\\24-schema-tag-alpha-v8.json", "log_review_required": true}
+{"step_id": "delete-alpha-note-v9", "outcome": "PASS", "artifact": "qa\\passes\\55\\rich-data\\20261104-174918-156\\rich-fleet-v1\\25-delete-alpha-note-v9.json", "log_review_required": true}
+{"step_id": "reject-invalid-calibration", "outcome": "PASS", "artifact": "qa\\passes\\55\\rich-data\\20261104-174918-156\\rich-fleet-v1\\26-reject-invalid-calibration.json", "log_review_required": true}
+{"step_id": "reject-incompatible-schema", "outcome": "PASS", "artifact": "qa\\passes\\55\\rich-data\\20261104-174918-156\\rich-fleet-v1\\27-reject-incompatible-schema.json", "log_review_required": true}
+{"step_id": "checkpoint-final", "outcome": "PASS", "artifact": "qa\\passes\\55\\rich-data\\20261104-174918-156\\rich-fleet-v1\\28-checkpoint-final.json", "log_review_required": false}
+{"step_id": "movement-oracle", "outcome": "PASS", "artifact": "qa\\passes\\55\\rich-data\\20261104-174918-156\\rich-fleet-v1\\29-movement-oracle.json", "log_review_required": false}
+{"step_id": "alpha-paginated-history", "outcome": "PASS", "artifact": "qa\\passes\\55\\rich-data\\20261104-174918-156\\rich-fleet-v1\\30-alpha-paginated-history.json", "log_review_required": false}
+{"step_id": "alpha-earlier-state", "outcome": "PASS", "artifact": "qa\\passes\\55\\rich-data\\20261104-174918-156\\rich-fleet-v1\\31-alpha-earlier-state.json", "log_review_required": false}
+{"step_id": "query-raw", "outcome": "PASS", "artifact": "qa\\passes\\55\\rich-data\\20261104-174918-156\\rich-fleet-v1\\32-query-raw.json", "log_review_required": false}
+{"step_id": "query-calibrated", "outcome": "PASS", "artifact": "qa\\passes\\55\\rich-data\\20261104-174918-156\\rich-fleet-v1\\33-query-calibrated.json", "log_review_required": false}
+{"step_id": "aggregate-calibrated", "outcome": "PASS", "artifact": "qa\\passes\\55\\rich-data\\20261104-174918-156\\rich-fleet-v1\\34-aggregate-calibrated.json", "log_review_required": false}
+{"step_id": "distributed-calibrated", "outcome": "PASS", "artifact": "qa\\passes\\55\\rich-data\\20261104-174918-156\\rich-fleet-v1\\35-distributed-calibrated.json", "log_review_required": false}
+{"step_id": "half-open-window", "outcome": "PASS", "artifact": "qa\\passes\\55\\rich-data\\20261104-174918-156\\rich-fleet-v1\\36-half-open-window.json", "log_review_required": false}
+{"step_id": "latest-event-time", "outcome": "PASS", "artifact": "qa\\passes\\55\\rich-data\\20261104-174918-156\\rich-fleet-v1\\37-latest-event-time.json", "log_review_required": false}
+{
+  "pass_id": "55",
+  "run_id": "20261104-174918-156",
+  "stage_commit": "22039d5add074d4df0e18f5847286606d95407ac",
+  "stage_fingerprint": "CCD017690F94B09F690A5962E7C7FDB92953F69E70AF9632744D99731C13A0BC",
+  "scenario_sha256": "d14893061bb5c929bd2256dfd706b3cd88586f402fa7bb3a04845096abffa8ef",
+  "verse_id": "01M6MJX47WMGN7KXADFJAA7200",
+  "petal_id": "01M6MJYY9NPZW2DNWJBTP24TFB",
+  "driver_sha256": "55266bae3220b160b57a2759c8b7c25d40ae4350017d81c44a95cc2a73f46824",
+  "process_identity": {
+    "pid": 122836,
+    "start_ticks": "639294365584083852",
+    "exe_path": "C:\\Users\\atooz\\Programming\\fractalengine-workspace\\fractalengine\\.qa\\stage\\22039d5a-20261104174412728\\fractalengine.exe"
+  },
+  "api_base": "http://127.0.0.1:8765",
+  "scenario": "rich-fleet-v1",
+  "data_assertions_succeeded": true,
+  "coverage_ready": false,
+  "log_review_required": true,
+  "read_only_restart_verification": false,
+  "failure": null,
+  "context": {
+    "path": "qa\\passes\\55\\rich-data\\20261104-174918-156\\rich-fleet-v1\\context.json",
+    "sha256": "0b1a75af018bec01ac2952c1cd0916a1ba1b4878f7b4c59fe9c3806874947a1e",
+    "kind": "persistence"
+  },
+  "exports": [
+    {
+      "path": "qa\\passes\\55\\rich-data\\20261104-174918-156\\rich-fleet-v1\\measurements.json",
+      "sha256": "a37b122c68cf0f3d7ceb8423351b2ebc32e5e4e26247f5873d99228d408d6949",
+      "kind": "tool"
+    },
+    {
+      "path": "qa\\passes\\55\\rich-data\\20261104-174918-156\\rich-fleet-v1\\measurements.csv",
+      "sha256": "86be58cff79fe30c06d92bff4aa861e48b33f1768e9638b841d6fcd7bcf54571",
+      "kind": "tool"
+    },
+    {
+      "path": "qa\\passes\\55\\rich-data\\20261104-174918-156\\rich-fleet-v1\\trajectory.csv",
+      "sha256": "fc7bab3e8712175fcd170dcabd96e290b4775769740d85b06a901337abcd8fe4",
+      "kind": "tool"
+    },
+    {
+      "path": "qa\\passes\\55\\rich-data\\20261104-174918-156\\rich-fleet-v1\\report.html",
+      "sha256": "0f131a5129fa01487d5b863c130fa1326f71cf10330cbc30d197eba239bfe9d0",
+      "kind": "tool"
+    }
+  ],
+  "receipts": [
+    {
+      "step_id": "preflight",
+      "outcome": "PASS",
+      "artifact": {
+        "path": "qa\\passes\\55\\rich-data\\20261104-174918-156\\rich-fleet-v1\\00-preflight.json",
+        "sha256": "8baba1aac28e44c8b49e3d1c97e9aad0f6a2ca54a4d2d62a3be2ea5cbf356982",
+        "kind": "persistence"
+      },
+      "log_review_required": false
+    },
+    {
+      "step_id": "upload-scene",
+      "outcome": "PASS",
+      "artifact": {
+        "path": "qa\\passes\\55\\rich-data\\20261104-174918-156\\rich-fleet-v1\\01-upload-scene.json",
+        "sha256": "fd64f806574196ae7b0a2d8d14683247fbfc52f18fcbfea7c426065eea3da59c",
+        "kind": "persistence"
+      },
+      "log_review_required": false
+    },
+    {
+      "step_id": "schema-calibration-v1",
+      "outcome": "PASS",
+      "artifact": {
+        "path": "qa\\passes\\55\\rich-data\\20261104-174918-156\\rich-fleet-v1\\02-schema-calibration-v1.json",
+        "sha256": "cee63841fb05e0a4361b5cd5ec2c7b3889a7d0cbd8c6b99bb94283c4138630cb",
+        "kind": "persistence"
+      },
+      "log_review_required": false
+    },
+    {
+      "step_id": "schema-metadata-v1",
+      "outcome": "PASS",
+      "artifact": {
+        "path": "qa\\passes\\55\\rich-data\\20261104-174918-156\\rich-fleet-v1\\03-schema-metadata-v1.json",
+        "sha256": "4c25b6172b525519aae7e7405b7d0982decc4e5aaf538743682d8838429d218f",
+        "kind": "persistence"
+      },
+      "log_review_required": false
+    },
+    {
+      "step_id": "create-alpha",
+      "outcome": "PASS",
+      "artifact": {
+        "path": "qa\\passes\\55\\rich-data\\20261104-174918-156\\rich-fleet-v1\\04-create-alpha.json",
+        "sha256": "d3c87b161367ed9651792b97403367571459047f5f3ebc202ecf424857eb14d0",
+        "kind": "persistence"
+      },
+      "log_review_required": true
+    },
+    {
+      "step_id": "create-beta",
+      "outcome": "PASS",
+      "artifact": {
+        "path": "qa\\passes\\55\\rich-data\\20261104-174918-156\\rich-fleet-v1\\05-create-beta.json",
+        "sha256": "50531d0271fc0896170122af7b7e03db5cef266ceb0ff6caf49e483abcef89d0",
+        "kind": "persistence"
+      },
+      "log_review_required": true
+    },
+    {
+      "step_id": "calibrate-alpha-v2",
+      "outcome": "PASS",
+      "artifact": {
+        "path": "qa\\passes\\55\\rich-data\\20261104-174918-156\\rich-fleet-v1\\06-calibrate-alpha-v2.json",
+        "sha256": "8b6a6deebb96e89964be96ad4e20d2e8fb09eec85c8f9694e627f41ca39581bf",
+        "kind": "persistence"
+      },
+      "log_review_required": true
+    },
+    {
+      "step_id": "move-alpha-v3",
+      "outcome": "PASS",
+      "artifact": {
+        "path": "qa\\passes\\55\\rich-data\\20261104-174918-156\\rich-fleet-v1\\07-move-alpha-v3.json",
+        "sha256": "0c577529c0b77fd246adddb99387bf6a7d5e740b7a0f899270dfe30f865b4a98",
+        "kind": "persistence"
+      },
+      "log_review_required": true
+    },
+    {
+      "step_id": "move-beta-v2",
+      "outcome": "PASS",
+      "artifact": {
+        "path": "qa\\passes\\55\\rich-data\\20261104-174918-156\\rich-fleet-v1\\08-move-beta-v2.json",
+        "sha256": "4db8957aa6d12790ad3bce73b03fd810c20c38a8c353cce84afae087e45813c8",
+        "kind": "persistence"
+      },
+      "log_review_required": true
+    },
+    {
+      "step_id": "checkpoint-before-gamma",
+      "outcome": "PASS",
+      "artifact": {
+        "path": "qa\\passes\\55\\rich-data\\20261104-174918-156\\rich-fleet-v1\\09-checkpoint-before-gamma.json",
+        "sha256": "46cb676f9c9e04107209f2cea942e578fbd14720143fb523d083b6e277d2aa5c",
+        "kind": "persistence"
+      },
+      "log_review_required": false
+    },
+    {
+      "step_id": "raw-t0",
+      "outcome": "PASS",
+      "artifact": {
+        "path": "qa\\passes\\55\\rich-data\\20261104-174918-156\\rich-fleet-v1\\10-raw-t0.json",
+        "sha256": "b6d76c90b61ace019b4b11b0dcba299996b34eebe9c05f8dfed35302b7d92400",
+        "kind": "persistence"
+      },
+      "log_review_required": false
+    },
+    {
+      "step_id": "derive-t0",
+      "outcome": "PASS",
+      "artifact": {
+        "path": "qa\\passes\\55\\rich-data\\20261104-174918-156\\rich-fleet-v1\\11-derive-t0.json",
+        "sha256": "a2d59f87e4ecf75ecaf74f9c49ce57d9b1a02d515e86aa921af540ad5a2a6d9a",
+        "kind": "persistence"
+      },
+      "log_review_required": false
+    },
+    {
+      "step_id": "recalibrate-alpha-v4",
+      "outcome": "PASS",
+      "artifact": {
+        "path": "qa\\passes\\55\\rich-data\\20261104-174918-156\\rich-fleet-v1\\12-recalibrate-alpha-v4.json",
+        "sha256": "c67ae590145e63386be330e3a2976271cd8f2e4f77a3475ed68596e57e04f142",
+        "kind": "persistence"
+      },
+      "log_review_required": true
+    },
+    {
+      "step_id": "create-gamma",
+      "outcome": "PASS",
+      "artifact": {
+        "path": "qa\\passes\\55\\rich-data\\20261104-174918-156\\rich-fleet-v1\\13-create-gamma.json",
+        "sha256": "1871b217382d4f4ca8b718ba30b10929717feed903c8448de8c7f216e5c5289e",
+        "kind": "persistence"
+      },
+      "log_review_required": true
+    },
+    {
+      "step_id": "move-alpha-v5",
+      "outcome": "PASS",
+      "artifact": {
+        "path": "qa\\passes\\55\\rich-data\\20261104-174918-156\\rich-fleet-v1\\14-move-alpha-v5.json",
+        "sha256": "8f46ac580cf49c09ded128e8c01ceaa0dacff299a9b20cb5f0100f5b926eb472",
+        "kind": "persistence"
+      },
+      "log_review_required": true
+    },
+    {
+      "step_id": "move-beta-v3",
+      "outcome": "PASS",
+      "artifact": {
+        "path": "qa\\passes\\55\\rich-data\\20261104-174918-156\\rich-fleet-v1\\15-move-beta-v3.json",
+        "sha256": "7fd39b772870791d274bde08ce6317bb524af77d6eaa68797c54a3527a819ae2",
+        "kind": "persistence"
+      },
+      "log_review_required": true
+    },
+    {
+      "step_id": "move-gamma-v2",
+      "outcome": "PASS",
+      "artifact": {
+        "path": "qa\\passes\\55\\rich-data\\20261104-174918-156\\rich-fleet-v1\\16-move-gamma-v2.json",
+        "sha256": "b4e84a67bffbb0b661e1e5096c7e2d98b0732ae427d50092a8647f078abde456",
+        "kind": "persistence"
+      },
+      "log_review_required": true
+    },
+    {
+      "step_id": "raw-t2",
+      "outcome": "PASS",
+      "artifact": {
+        "path": "qa\\passes\\55\\rich-data\\20261104-174918-156\\rich-fleet-v1\\17-raw-t2.json",
+        "sha256": "c24fdddbabc4c13623ee3853a87cce8273130d0a464753408c7e5e647a03df10",
+        "kind": "persistence"
+      },
+      "log_review_required": false
+    },
+    {
+      "step_id": "derive-t2",
+      "outcome": "PASS",
+      "artifact": {
+        "path": "qa\\passes\\55\\rich-data\\20261104-174918-156\\rich-fleet-v1\\18-derive-t2.json",
+        "sha256": "840bd73459d451d772a7a7e45e00c2217bfeed76804937ef0724f15c6ec226e2",
+        "kind": "persistence"
+      },
+      "log_review_required": false
+    },
+    {
+      "step_id": "raw-t1-late",
+      "outcome": "PASS",
+      "artifact": {
+        "path": "qa\\passes\\55\\rich-data\\20261104-174918-156\\rich-fleet-v1\\19-raw-t1-late.json",
+        "sha256": "692df243d0c06cad4232eb11cac358d7c83be55ce17f36a3cda435c7ccea9b77",
+        "kind": "persistence"
+      },
+      "log_review_required": false
+    },
+    {
+      "step_id": "derive-t1-late",
+      "outcome": "PASS",
+      "artifact": {
+        "path": "qa\\passes\\55\\rich-data\\20261104-174918-156\\rich-fleet-v1\\20-derive-t1-late.json",
+        "sha256": "e3541f2950732e52c410b8f16b84178152ed0e6c38e2a7adc27d03107e42c96b",
+        "kind": "persistence"
+      },
+      "log_review_required": false
+    },
+    {
+      "step_id": "rotate-scale-alpha-v6",
+      "outcome": "PASS",
+      "artifact": {
+        "path": "qa\\passes\\55\\rich-data\\20261104-174918-156\\rich-fleet-v1\\21-rotate-scale-alpha-v6.json",
+        "sha256": "d48b3fd94d5c0f27b1758722da7d8a772f3930a4adee2c74e298f779b2ae5556",
+        "kind": "persistence"
+      },
+      "log_review_required": true
+    },
+    {
+      "step_id": "schema-metadata-v2",
+      "outcome": "PASS",
+      "artifact": {
+        "path": "qa\\passes\\55\\rich-data\\20261104-174918-156\\rich-fleet-v1\\22-schema-metadata-v2.json",
+        "sha256": "37fbfc0b1c81928f92a7b7245d2455fedda89ed323363ccd2b009db4011ebffa",
+        "kind": "persistence"
+      },
+      "log_review_required": false
+    },
+    {
+      "step_id": "metadata-alpha-v7",
+      "outcome": "PASS",
+      "artifact": {
+        "path": "qa\\passes\\55\\rich-data\\20261104-174918-156\\rich-fleet-v1\\23-metadata-alpha-v7.json",
+        "sha256": "354ed7d6f81723b793cde94b7be18c01232bf0ec1964eb23af38f43109b0a071",
+        "kind": "persistence"
+      },
+      "log_review_required": true
+    },
+    {
+      "step_id": "schema-tag-alpha-v8",
+      "outcome": "PASS",
+      "artifact": {
+        "path": "qa\\passes\\55\\rich-data\\20261104-174918-156\\rich-fleet-v1\\24-schema-tag-alpha-v8.json",
+        "sha256": "3878443359309dee356aca53cc68527c808a700be074322992bd1df70dc76840",
+        "kind": "persistence"
+      },
+      "log_review_required": true
+    },
+    {
+      "step_id": "delete-alpha-note-v9",
+      "outcome": "PASS",
+      "artifact": {
+        "path": "qa\\passes\\55\\rich-data\\20261104-174918-156\\rich-fleet-v1\\25-delete-alpha-note-v9.json",
+        "sha256": "e7fda805d71816ca47fe7ca17dcdbe419e848421ba367c721c71a0fb28804a64",
+        "kind": "persistence"
+      },
+      "log_review_required": true
+    },
+    {
+      "step_id": "reject-invalid-calibration",
+      "outcome": "PASS",
+      "artifact": {
+        "path": "qa\\passes\\55\\rich-data\\20261104-174918-156\\rich-fleet-v1\\26-reject-invalid-calibration.json",
+        "sha256": "fa334bd22b5fa0ede6cd643224e77347b0a439baf38e0015a13f880561b984d9",
+        "kind": "persistence"
+      },
+      "log_review_required": true
+    },
+    {
+      "step_id": "reject-incompatible-schema",
+      "outcome": "PASS",
+      "artifact": {
+        "path": "qa\\passes\\55\\rich-data\\20261104-174918-156\\rich-fleet-v1\\27-reject-incompatible-schema.json",
+        "sha256": "7a28e31f05bc0059671de98bca6df0d5adeb968773a046b03fa458e95f573a83",
+        "kind": "persistence"
+      },
+      "log_review_required": true
+    },
+    {
+      "step_id": "checkpoint-final",
+      "outcome": "PASS",
+      "artifact": {
+        "path": "qa\\passes\\55\\rich-data\\20261104-174918-156\\rich-fleet-v1\\28-checkpoint-final.json",
+        "sha256": "8110a912bde413c564a8a87ebaf26a3ddffe8ad873e40037e26b56e6190e1769",
+        "kind": "persistence"
+      },
+      "log_review_required": false
+    },
+    {
+      "step_id": "movement-oracle",
+      "outcome": "PASS",
+      "artifact": {
+        "path": "qa\\passes\\55\\rich-data\\20261104-174918-156\\rich-fleet-v1\\29-movement-oracle.json",
+        "sha256": "e1e8064d9feb3ffb0341ea8bf19e8a0a92553e725db898e09eeed45bfc21005b",
+        "kind": "persistence"
+      },
+      "log_review_required": false
+    },
+    {
+      "step_id": "alpha-paginated-history",
+      "outcome": "PASS",
+      "artifact": {
+        "path": "qa\\passes\\55\\rich-data\\20261104-174918-156\\rich-fleet-v1\\30-alpha-paginated-history.json",
+        "sha256": "a90d27ef1d6d86d870115667dc00d52c199b829018e2b448ad262e0f6d93ccff",
+        "kind": "persistence"
+      },
+      "log_review_required": false
+    },
+    {
+      "step_id": "alpha-earlier-state",
+      "outcome": "PASS",
+      "artifact": {
+        "path": "qa\\passes\\55\\rich-data\\20261104-174918-156\\rich-fleet-v1\\31-alpha-earlier-state.json",
+        "sha256": "d19ad605300664162a68d90a2500bae795e9c49f55d17855d2ad6e6e310db5d4",
+        "kind": "persistence"
+      },
+      "log_review_required": false
+    },
+    {
+      "step_id": "query-raw",
+      "outcome": "PASS",
+      "artifact": {
+        "path": "qa\\passes\\55\\rich-data\\20261104-174918-156\\rich-fleet-v1\\32-query-raw.json",
+        "sha256": "69566b54bcac2b7b81437d8ec2e5ab5ec65ca12c50e6a62263820e74ac90532c",
+        "kind": "persistence"
+      },
+      "log_review_required": false
+    },
+    {
+      "step_id": "query-calibrated",
+      "outcome": "PASS",
+      "artifact": {
+        "path": "qa\\passes\\55\\rich-data\\20261104-174918-156\\rich-fleet-v1\\33-query-calibrated.json",
+        "sha256": "0a2d6f6120d979d5e46b8722f29772b2b353dbc11a8fc890848ba7cd7124a708",
+        "kind": "persistence"
+      },
+      "log_review_required": false
+    },
+    {
+      "step_id": "aggregate-calibrated",
+      "outcome": "PASS",
+      "artifact": {
+        "path": "qa\\passes\\55\\rich-data\\20261104-174918-156\\rich-fleet-v1\\34-aggregate-calibrated.json",
+        "sha256": "04765ebf0db549f2b99c0c0fe45b8c35da1da8f370d4ce0f522e796d099fa048",
+        "kind": "persistence"
+      },
+      "log_review_required": false
+    },
+    {
+      "step_id": "distributed-calibrated",
+      "outcome": "PASS",
+      "artifact": {
+        "path": "qa\\passes\\55\\rich-data\\20261104-174918-156\\rich-fleet-v1\\35-distributed-calibrated.json",
+        "sha256": "fa4fe050d633caedeef06a5a66966a78e82e6aec7aee2ecf480174422186b958",
+        "kind": "persistence"
+      },
+      "log_review_required": false
+    },
+    {
+      "step_id": "half-open-window",
+      "outcome": "PASS",
+      "artifact": {
+        "path": "qa\\passes\\55\\rich-data\\20261104-174918-156\\rich-fleet-v1\\36-half-open-window.json",
+        "sha256": "397967d5c77df6c442bd0cbad2470bc88c65dc93cca654e1f85e94a31fe3aa10",
+        "kind": "persistence"
+      },
+      "log_review_required": false
+    },
+    {
+      "step_id": "latest-event-time",
+      "outcome": "PASS",
+      "artifact": {
+        "path": "qa\\passes\\55\\rich-data\\20261104-174918-156\\rich-fleet-v1\\37-latest-event-time.json",
+        "sha256": "899f478a6dec8d686c687e2a1c71d3e66511070ad0a051d44452512d68dbf587",
+        "kind": "persistence"
+      },
+      "log_review_required": false
+    }
+  ],
+  "limits": [
+    "API/driver evidence only; no GUI screenshot or product chart was exercised",
+    "measurement event time differs from object commit-version order",
+    "single-host complete queries do not establish replicated durability"
+  ]
+}

@@ -1,0 +1,37 @@
+{
+  "format": "fe-rich-data-context-v1",
+  "provenance": {
+    "pass_id": "54",
+    "run_id": "20261104-174918-156",
+    "stage_commit": "22039d5add074d4df0e18f5847286606d95407ac",
+    "stage_fingerprint": "CCD017690F94B09F690A5962E7C7FDB92953F69E70AF9632744D99731C13A0BC",
+    "scenario_sha256": "d14893061bb5c929bd2256dfd706b3cd88586f402fa7bb3a04845096abffa8ef",
+    "verse_id": "01M6MJX47WMGN7KXADFJAA7200",
+    "petal_id": "01M6MJYY9NPZW2DNWJBTP24TFB",
+    "driver_sha256": "55266bae3220b160b57a2759c8b7c25d40ae4350017d81c44a95cc2a73f46824",
+    "process_identity": {
+      "pid": 122836,
+      "start_ticks": "639294365584083852",
+      "exe_path": "C:\\Users\\atooz\\Programming\\fractalengine-workspace\\fractalengine\\.qa\\stage\\22039d5a-20261104174412728\\fractalengine.exe"
+    },
+    "api_base": "http://127.0.0.1:8765"
+  },
+  "scope": "VERSE#01M6MJX47WMGN7KXADFJAA7200-FRACTAL#01M6MJX4QQS5KVDZPFTPNBFGPA-PETAL#01M6MJYY9NPZW2DNWJBTP24TFB",
+  "data_assertions_succeeded": false,
+  "log_review_required": true,
+  "started_at": "2026-11-05T00:51:09.982465+00:00",
+  "objects": {},
+  "versions": {},
+  "states": {},
+  "state_sha256": {},
+  "schemas": {},
+  "assets": {},
+  "asset_sha256": {},
+  "trajectories": {},
+  "checkpoints": {},
+  "queries": {},
+  "history": {},
+  "derivations": [],
+  "derivation_format": null,
+  "completed_step_ids": []
+}

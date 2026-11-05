@@ -1,0 +1,1790 @@
+{
+  "pass_id": "55",
+  "run_id": "20261104-174918-156",
+  "stage_commit": "22039d5add074d4df0e18f5847286606d95407ac",
+  "stage_fingerprint": "CCD017690F94B09F690A5962E7C7FDB92953F69E70AF9632744D99731C13A0BC",
+  "scenario_sha256": "d14893061bb5c929bd2256dfd706b3cd88586f402fa7bb3a04845096abffa8ef",
+  "verse_id": "01M6MJX47WMGN7KXADFJAA7200",
+  "petal_id": "01M6MJYY9NPZW2DNWJBTP24TFB",
+  "driver_sha256": "55266bae3220b160b57a2759c8b7c25d40ae4350017d81c44a95cc2a73f46824",
+  "process_identity": {
+    "pid": 122836,
+    "start_ticks": "639294365584083852",
+    "exe_path": "C:\\Users\\atooz\\Programming\\fractalengine-workspace\\fractalengine\\.qa\\stage\\22039d5a-20261104174412728\\fractalengine.exe"
+  },
+  "api_base": "http://127.0.0.1:8765",
+  "step_id": "reject-incompatible-schema",
+  "intent": {
+    "id": "reject-incompatible-schema",
+    "op": "reject_schema",
+    "schema": "metadata-v3-incompatible",
+    "reason_contains": "schema revision refused"
+  },
+  "outcome": "PASS",
+  "result": {
+    "refused": true,
+    "schema_state_history_unchanged": true,
+    "message": "schema revision refused; check permissions, stored values/defaults and consecutive version"
+  },
+  "assertions": [
+    {
+      "name": "rejected schema unchanged",
+      "actual": {
+        "enforced_schema": {
+          "schema": {
+            "additionalProperties": false,
+            "properties": {
+              "maintenance": {
+                "additionalProperties": false,
+                "properties": {
+                  "due": {
+                    "maxLength": 10,
+                    "minLength": 10,
+                    "type": "string"
+                  },
+                  "enabled": {
+                    "type": "boolean"
+                  },
+                  "last_service": {
+                    "maxLength": 10,
+                    "minLength": 10,
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "due",
+                  "enabled"
+                ],
+                "type": "object"
+              },
+              "tags": {
+                "items": {
+                  "maxLength": 32,
+                  "type": "string"
+                },
+                "maxItems": 8,
+                "type": "array"
+              }
+            },
+            "required": [
+              "tags",
+              "maintenance"
+            ],
+            "type": "object"
+          },
+          "version": 2
+        },
+        "field_def_id": "01M6MK71ZJF000G7PQJRV2APV4",
+        "key": "metadata",
+        "schema_revisions": [
+          {
+            "schema": {
+              "additionalProperties": false,
+              "properties": {
+                "maintenance": {
+                  "additionalProperties": false,
+                  "properties": {
+                    "due": {
+                      "maxLength": 10,
+                      "minLength": 10,
+                      "type": "string"
+                    },
+                    "enabled": {
+                      "type": "boolean"
+                    }
+                  },
+                  "required": [
+                    "due",
+                    "enabled"
+                  ],
+                  "type": "object"
+                },
+                "tags": {
+                  "items": {
+                    "maxLength": 32,
+                    "type": "string"
+                  },
+                  "maxItems": 8,
+                  "type": "array"
+                }
+              },
+              "required": [
+                "tags",
+                "maintenance"
+              ],
+              "type": "object"
+            },
+            "version": 1
+          },
+          {
+            "schema": {
+              "additionalProperties": false,
+              "properties": {
+                "maintenance": {
+                  "additionalProperties": false,
+                  "properties": {
+                    "due": {
+                      "maxLength": 10,
+                      "minLength": 10,
+                      "type": "string"
+                    },
+                    "enabled": {
+                      "type": "boolean"
+                    },
+                    "last_service": {
+                      "maxLength": 10,
+                      "minLength": 10,
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "due",
+                    "enabled"
+                  ],
+                  "type": "object"
+                },
+                "tags": {
+                  "items": {
+                    "maxLength": 32,
+                    "type": "string"
+                  },
+                  "maxItems": 8,
+                  "type": "array"
+                }
+              },
+              "required": [
+                "tags",
+                "maintenance"
+              ],
+              "type": "object"
+            },
+            "version": 2
+          }
+        ],
+        "scope": "VERSE#01M6MJX47WMGN7KXADFJAA7200-FRACTAL#01M6MJX4QQS5KVDZPFTPNBFGPA-PETAL#01M6MJYY9NPZW2DNWJBTP24TFB"
+      },
+      "expected": {
+        "enforced_schema": {
+          "schema": {
+            "additionalProperties": false,
+            "properties": {
+              "maintenance": {
+                "additionalProperties": false,
+                "properties": {
+                  "due": {
+                    "maxLength": 10,
+                    "minLength": 10,
+                    "type": "string"
+                  },
+                  "enabled": {
+                    "type": "boolean"
+                  },
+                  "last_service": {
+                    "maxLength": 10,
+                    "minLength": 10,
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "due",
+                  "enabled"
+                ],
+                "type": "object"
+              },
+              "tags": {
+                "items": {
+                  "maxLength": 32,
+                  "type": "string"
+                },
+                "maxItems": 8,
+                "type": "array"
+              }
+            },
+            "required": [
+              "tags",
+              "maintenance"
+            ],
+            "type": "object"
+          },
+          "version": 2
+        },
+        "field_def_id": "01M6MK71ZJF000G7PQJRV2APV4",
+        "key": "metadata",
+        "schema_revisions": [
+          {
+            "schema": {
+              "additionalProperties": false,
+              "properties": {
+                "maintenance": {
+                  "additionalProperties": false,
+                  "properties": {
+                    "due": {
+                      "maxLength": 10,
+                      "minLength": 10,
+                      "type": "string"
+                    },
+                    "enabled": {
+                      "type": "boolean"
+                    }
+                  },
+                  "required": [
+                    "due",
+                    "enabled"
+                  ],
+                  "type": "object"
+                },
+                "tags": {
+                  "items": {
+                    "maxLength": 32,
+                    "type": "string"
+                  },
+                  "maxItems": 8,
+                  "type": "array"
+                }
+              },
+              "required": [
+                "tags",
+                "maintenance"
+              ],
+              "type": "object"
+            },
+            "version": 1
+          },
+          {
+            "schema": {
+              "additionalProperties": false,
+              "properties": {
+                "maintenance": {
+                  "additionalProperties": false,
+                  "properties": {
+                    "due": {
+                      "maxLength": 10,
+                      "minLength": 10,
+                      "type": "string"
+                    },
+                    "enabled": {
+                      "type": "boolean"
+                    },
+                    "last_service": {
+                      "maxLength": 10,
+                      "minLength": 10,
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "due",
+                    "enabled"
+                  ],
+                  "type": "object"
+                },
+                "tags": {
+                  "items": {
+                    "maxLength": 32,
+                    "type": "string"
+                  },
+                  "maxItems": 8,
+                  "type": "array"
+                }
+              },
+              "required": [
+                "tags",
+                "maintenance"
+              ],
+              "type": "object"
+            },
+            "version": 2
+          }
+        ],
+        "scope": "VERSE#01M6MJX47WMGN7KXADFJAA7200-FRACTAL#01M6MJX4QQS5KVDZPFTPNBFGPA-PETAL#01M6MJYY9NPZW2DNWJBTP24TFB"
+      },
+      "passed": true
+    },
+    {
+      "name": "Alpha committed version",
+      "actual": 9,
+      "expected": 9,
+      "passed": true
+    },
+    {
+      "name": "Alpha properties identity",
+      "actual": "01M6MK727YYEQG0H6A9Z7ZAJW5",
+      "expected": "01M6MK727YYEQG0H6A9Z7ZAJW5",
+      "passed": true
+    },
+    {
+      "name": "Alpha persisted properties",
+      "actual": {
+        "calibration": {
+          "axes": [
+            "x",
+            "z"
+          ],
+          "bias": 1,
+          "gain": 3,
+          "sensor": {
+            "range": [
+              -40,
+              85
+            ],
+            "serial": "ALPHA-01"
+          }
+        },
+        "metadata": {
+          "maintenance": {
+            "due": "2026-12-01",
+            "enabled": true,
+            "last_service": "2026-10-31"
+          },
+          "tags": [
+            "fleet",
+            "qa"
+          ]
+        },
+        "qa_fixture": "rich-fleet-v1",
+        "schema_version": 2,
+        "telemetry": {
+          "samples": [
+            null,
+            true,
+            {
+              "axes": [
+                "x",
+                "z"
+              ],
+              "offset": 0.125
+            }
+          ],
+          "sequence": 9007199254740993
+        }
+      },
+      "expected": {
+        "calibration": {
+          "axes": [
+            "x",
+            "z"
+          ],
+          "bias": 1,
+          "gain": 3,
+          "sensor": {
+            "range": [
+              -40,
+              85
+            ],
+            "serial": "ALPHA-01"
+          }
+        },
+        "metadata": {
+          "maintenance": {
+            "due": "2026-12-01",
+            "enabled": true,
+            "last_service": "2026-10-31"
+          },
+          "tags": [
+            "fleet",
+            "qa"
+          ]
+        },
+        "qa_fixture": "rich-fleet-v1",
+        "schema_version": 2,
+        "telemetry": {
+          "samples": [
+            null,
+            true,
+            {
+              "axes": [
+                "x",
+                "z"
+              ],
+              "offset": 0.125
+            }
+          ],
+          "sequence": 9007199254740993
+        }
+      },
+      "passed": true
+    },
+    {
+      "name": "Alpha journal version",
+      "actual": 9,
+      "expected": 9,
+      "passed": true
+    },
+    {
+      "name": "Alpha persisted position",
+      "actual": [
+        6.0,
+        0.0,
+        8.0
+      ],
+      "expected": [
+        6.0,
+        0.0,
+        8.0
+      ],
+      "passed": true
+    },
+    {
+      "name": "Alpha persisted rotation",
+      "actual": [
+        0.0,
+        1.5707964,
+        0.0
+      ],
+      "expected": [
+        0.0,
+        1.5707963705062866,
+        0.0
+      ],
+      "passed": true
+    },
+    {
+      "name": "Alpha persisted scale",
+      "actual": [
+        2.0,
+        1.0,
+        0.5
+      ],
+      "expected": [
+        2.0,
+        1.0,
+        0.5
+      ],
+      "passed": true
+    },
+    {
+      "name": "Beta committed version",
+      "actual": 3,
+      "expected": 3,
+      "passed": true
+    },
+    {
+      "name": "Beta properties identity",
+      "actual": "01M6MK72JW279CV0TEYMD92XSC",
+      "expected": "01M6MK72JW279CV0TEYMD92XSC",
+      "passed": true
+    },
+    {
+      "name": "Beta persisted properties",
+      "actual": {
+        "calibration": {
+          "axes": [
+            "x",
+            "z"
+          ],
+          "bias": -1,
+          "gain": 0.5,
+          "sensor": {
+            "range": [
+              -40,
+              85
+            ],
+            "serial": "BETA-01"
+          }
+        },
+        "metadata": {
+          "maintenance": {
+            "due": "2026-12-01",
+            "enabled": true
+          },
+          "tags": [
+            "fleet",
+            "qa"
+          ]
+        },
+        "qa_fixture": "rich-fleet-v1",
+        "schema_version": 1
+      },
+      "expected": {
+        "calibration": {
+          "axes": [
+            "x",
+            "z"
+          ],
+          "bias": -1,
+          "gain": 0.5,
+          "sensor": {
+            "range": [
+              -40,
+              85
+            ],
+            "serial": "BETA-01"
+          }
+        },
+        "metadata": {
+          "maintenance": {
+            "due": "2026-12-01",
+            "enabled": true
+          },
+          "tags": [
+            "fleet",
+            "qa"
+          ]
+        },
+        "qa_fixture": "rich-fleet-v1",
+        "schema_version": 1
+      },
+      "passed": true
+    },
+    {
+      "name": "Beta journal version",
+      "actual": 3,
+      "expected": 3,
+      "passed": true
+    },
+    {
+      "name": "Beta persisted position",
+      "actual": [
+        10.0,
+        2.0,
+        6.0
+      ],
+      "expected": [
+        10.0,
+        2.0,
+        6.0
+      ],
+      "passed": true
+    },
+    {
+      "name": "Beta persisted rotation",
+      "actual": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "expected": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "passed": true
+    },
+    {
+      "name": "Beta persisted scale",
+      "actual": [
+        1.0,
+        1.0,
+        1.0
+      ],
+      "expected": [
+        1.0,
+        1.0,
+        1.0
+      ],
+      "passed": true
+    },
+    {
+      "name": "Gamma committed version",
+      "actual": 2,
+      "expected": 2,
+      "passed": true
+    },
+    {
+      "name": "Gamma properties identity",
+      "actual": "01M6MK75HFE99TYDV9TS2D78F7",
+      "expected": "01M6MK75HFE99TYDV9TS2D78F7",
+      "passed": true
+    },
+    {
+      "name": "Gamma persisted properties",
+      "actual": {
+        "calibration": {
+          "axes": [
+            "x",
+            "z"
+          ],
+          "bias": 0,
+          "gain": 1,
+          "sensor": {
+            "range": [
+              -40,
+              85
+            ],
+            "serial": "GAMMA-01"
+          }
+        },
+        "metadata": {
+          "maintenance": {
+            "due": "2026-12-01",
+            "enabled": true
+          },
+          "tags": [
+            "fleet",
+            "qa"
+          ]
+        },
+        "qa_fixture": "rich-fleet-v1",
+        "schema_version": 1
+      },
+      "expected": {
+        "calibration": {
+          "axes": [
+            "x",
+            "z"
+          ],
+          "bias": 0,
+          "gain": 1,
+          "sensor": {
+            "range": [
+              -40,
+              85
+            ],
+            "serial": "GAMMA-01"
+          }
+        },
+        "metadata": {
+          "maintenance": {
+            "due": "2026-12-01",
+            "enabled": true
+          },
+          "tags": [
+            "fleet",
+            "qa"
+          ]
+        },
+        "qa_fixture": "rich-fleet-v1",
+        "schema_version": 1
+      },
+      "passed": true
+    },
+    {
+      "name": "Gamma journal version",
+      "actual": 2,
+      "expected": 2,
+      "passed": true
+    },
+    {
+      "name": "Gamma persisted position",
+      "actual": [
+        20.0,
+        0.0,
+        4.0
+      ],
+      "expected": [
+        20.0,
+        0.0,
+        4.0
+      ],
+      "passed": true
+    },
+    {
+      "name": "Gamma persisted rotation",
+      "actual": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "expected": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "passed": true
+    },
+    {
+      "name": "Gamma persisted scale",
+      "actual": [
+        1.0,
+        1.0,
+        1.0
+      ],
+      "expected": [
+        1.0,
+        1.0,
+        1.0
+      ],
+      "passed": true
+    }
+  ],
+  "requests": [
+    {
+      "method": "GET",
+      "path": "/api/v1/debug/logs?level=warn",
+      "request": null,
+      "status": 200,
+      "response_bytes": 2630,
+      "response_sha256": "a27586e58af319d049ea9d4237ef90822bc84ca6c48a48007a76a0943f664061",
+      "response": {
+        "data": {
+          "active_verse_id": "01M6MJX47WMGN7KXADFJAA7200",
+          "entries": [
+            {
+              "level": "warn",
+              "message": "[message withheld: event scope unavailable or outside active verse]",
+              "seq": 409,
+              "target": "fe_database::handlers::scene_publication::publisher"
+            },
+            {
+              "level": "warn",
+              "message": "[message withheld: event scope unavailable or outside active verse]",
+              "seq": 410,
+              "target": "fe_database::handlers::scene_publication::publisher"
+            },
+            {
+              "level": "warn",
+              "message": "[message withheld: event scope unavailable or outside active verse]",
+              "seq": 411,
+              "target": "fe_database::handlers::scene_publication::publisher"
+            },
+            {
+              "level": "warn",
+              "message": "[message withheld: event scope unavailable or outside active verse]",
+              "seq": 412,
+              "target": "fe_database::handlers::scene_publication::publisher"
+            },
+            {
+              "level": "warn",
+              "message": "[message withheld: event scope unavailable or outside active verse]",
+              "seq": 413,
+              "target": "fe_database::handlers::scene_publication::publisher"
+            },
+            {
+              "level": "warn",
+              "message": "[message withheld: event scope unavailable or outside active verse]",
+              "seq": 417,
+              "target": "fe_database::handlers::scene_publication::publisher"
+            },
+            {
+              "level": "warn",
+              "message": "[message withheld: event scope unavailable or outside active verse]",
+              "seq": 418,
+              "target": "fe_database::handlers::scene_publication::publisher"
+            },
+            {
+              "level": "warn",
+              "message": "[message withheld: event scope unavailable or outside active verse]",
+              "seq": 419,
+              "target": "fe_database::handlers::scene_publication::publisher"
+            },
+            {
+              "level": "warn",
+              "message": "[message withheld: event scope unavailable or outside active verse]",
+              "seq": 421,
+              "target": "fe_database::handlers::scene_publication::publisher"
+            },
+            {
+              "level": "warn",
+              "message": "[message withheld: event scope unavailable or outside active verse]",
+              "seq": 422,
+              "target": "fe_database::handlers::scene_publication::publisher"
+            },
+            {
+              "level": "warn",
+              "message": "[message withheld: event scope unavailable or outside active verse]",
+              "seq": 428,
+              "target": "fe_database::handlers::scene_publication::publisher"
+            },
+            {
+              "level": "warn",
+              "message": "[message withheld: event scope unavailable or outside active verse]",
+              "seq": 429,
+              "target": "fe_database::handlers::scene_publication::publisher"
+            },
+            {
+              "level": "warn",
+              "message": "[message withheld: event scope unavailable or outside active verse]",
+              "seq": 430,
+              "target": "fe_database::handlers::scene_publication::publisher"
+            },
+            {
+              "level": "warn",
+              "message": "[message withheld: event scope unavailable or outside active verse]",
+              "seq": 432,
+              "target": "fe_database::handlers::scene_publication::publisher"
+            },
+            {
+              "level": "warn",
+              "message": "[message withheld: event scope unavailable or outside active verse]",
+              "seq": 433,
+              "target": "fe_api::node_history"
+            }
+          ],
+          "generation": 2,
+          "latest_seq": 433
+        },
+        "ok": true
+      }
+    },
+    {
+      "method": "GET",
+      "path": "/api/v1/field-defs/by-id/01M6MK71ZJF000G7PQJRV2APV4/schema",
+      "request": null,
+      "status": 200,
+      "response_bytes": 1525,
+      "response_sha256": "c6545131221027774d32969305de769224aef4f3edf08a784847f4736a6301a9",
+      "response": {
+        "ok": true,
+        "data": {
+          "enforced_schema": {
+            "schema": {
+              "additionalProperties": false,
+              "properties": {
+                "maintenance": {
+                  "additionalProperties": false,
+                  "properties": {
+                    "due": {
+                      "maxLength": 10,
+                      "minLength": 10,
+                      "type": "string"
+                    },
+                    "enabled": {
+                      "type": "boolean"
+                    },
+                    "last_service": {
+                      "maxLength": 10,
+                      "minLength": 10,
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "due",
+                    "enabled"
+                  ],
+                  "type": "object"
+                },
+                "tags": {
+                  "items": {
+                    "maxLength": 32,
+                    "type": "string"
+                  },
+                  "maxItems": 8,
+                  "type": "array"
+                }
+              },
+              "required": [
+                "tags",
+                "maintenance"
+              ],
+              "type": "object"
+            },
+            "version": 2
+          },
+          "field_def_id": "01M6MK71ZJF000G7PQJRV2APV4",
+          "key": "metadata",
+          "schema_revisions": [
+            {
+              "schema": {
+                "additionalProperties": false,
+                "properties": {
+                  "maintenance": {
+                    "additionalProperties": false,
+                    "properties": {
+                      "due": {
+                        "maxLength": 10,
+                        "minLength": 10,
+                        "type": "string"
+                      },
+                      "enabled": {
+                        "type": "boolean"
+                      }
+                    },
+                    "required": [
+                      "due",
+                      "enabled"
+                    ],
+                    "type": "object"
+                  },
+                  "tags": {
+                    "items": {
+                      "maxLength": 32,
+                      "type": "string"
+                    },
+                    "maxItems": 8,
+                    "type": "array"
+                  }
+                },
+                "required": [
+                  "tags",
+                  "maintenance"
+                ],
+                "type": "object"
+              },
+              "version": 1
+            },
+            {
+              "schema": {
+                "additionalProperties": false,
+                "properties": {
+                  "maintenance": {
+                    "additionalProperties": false,
+                    "properties": {
+                      "due": {
+                        "maxLength": 10,
+                        "minLength": 10,
+                        "type": "string"
+                      },
+                      "enabled": {
+                        "type": "boolean"
+                      },
+                      "last_service": {
+                        "maxLength": 10,
+                        "minLength": 10,
+                        "type": "string"
+                      }
+                    },
+                    "required": [
+                      "due",
+                      "enabled"
+                    ],
+                    "type": "object"
+                  },
+                  "tags": {
+                    "items": {
+                      "maxLength": 32,
+                      "type": "string"
+                    },
+                    "maxItems": 8,
+                    "type": "array"
+                  }
+                },
+                "required": [
+                  "tags",
+                  "maintenance"
+                ],
+                "type": "object"
+              },
+              "version": 2
+            }
+          ],
+          "scope": "VERSE#01M6MJX47WMGN7KXADFJAA7200-FRACTAL#01M6MJX4QQS5KVDZPFTPNBFGPA-PETAL#01M6MJYY9NPZW2DNWJBTP24TFB"
+        },
+        "error": null
+      }
+    },
+    {
+      "method": "PUT",
+      "path": "/api/v1/field-defs/by-id/01M6MK71ZJF000G7PQJRV2APV4/schema",
+      "request": {
+        "version": 3,
+        "schema": {
+          "type": "object",
+          "required": [
+            "tags",
+            "maintenance"
+          ],
+          "additionalProperties": false,
+          "properties": {
+            "tags": {
+              "type": "array",
+              "maxItems": 8,
+              "items": {
+                "type": "string",
+                "maxLength": 32
+              }
+            },
+            "maintenance": {
+              "type": "object",
+              "required": [
+                "due",
+                "enabled",
+                "last_service"
+              ],
+              "additionalProperties": false,
+              "properties": {
+                "due": {
+                  "type": "string",
+                  "minLength": 10,
+                  "maxLength": 10
+                },
+                "enabled": {
+                  "type": "boolean"
+                },
+                "last_service": {
+                  "type": "string",
+                  "minLength": 10,
+                  "maxLength": 10
+                }
+              }
+            }
+          }
+        }
+      },
+      "status": 200,
+      "response_bytes": 125,
+      "response_sha256": "1819a79fe07a34cd6b8535d96f6e752ffc0907047c4436584541be70f69328c8",
+      "response": {
+        "ok": false,
+        "data": null,
+        "error": "schema revision refused; check permissions, stored values/defaults and consecutive version"
+      }
+    },
+    {
+      "method": "GET",
+      "path": "/api/v1/field-defs/by-id/01M6MK71ZJF000G7PQJRV2APV4/schema",
+      "request": null,
+      "status": 200,
+      "response_bytes": 1525,
+      "response_sha256": "c6545131221027774d32969305de769224aef4f3edf08a784847f4736a6301a9",
+      "response": {
+        "ok": true,
+        "data": {
+          "enforced_schema": {
+            "schema": {
+              "additionalProperties": false,
+              "properties": {
+                "maintenance": {
+                  "additionalProperties": false,
+                  "properties": {
+                    "due": {
+                      "maxLength": 10,
+                      "minLength": 10,
+                      "type": "string"
+                    },
+                    "enabled": {
+                      "type": "boolean"
+                    },
+                    "last_service": {
+                      "maxLength": 10,
+                      "minLength": 10,
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "due",
+                    "enabled"
+                  ],
+                  "type": "object"
+                },
+                "tags": {
+                  "items": {
+                    "maxLength": 32,
+                    "type": "string"
+                  },
+                  "maxItems": 8,
+                  "type": "array"
+                }
+              },
+              "required": [
+                "tags",
+                "maintenance"
+              ],
+              "type": "object"
+            },
+            "version": 2
+          },
+          "field_def_id": "01M6MK71ZJF000G7PQJRV2APV4",
+          "key": "metadata",
+          "schema_revisions": [
+            {
+              "schema": {
+                "additionalProperties": false,
+                "properties": {
+                  "maintenance": {
+                    "additionalProperties": false,
+                    "properties": {
+                      "due": {
+                        "maxLength": 10,
+                        "minLength": 10,
+                        "type": "string"
+                      },
+                      "enabled": {
+                        "type": "boolean"
+                      }
+                    },
+                    "required": [
+                      "due",
+                      "enabled"
+                    ],
+                    "type": "object"
+                  },
+                  "tags": {
+                    "items": {
+                      "maxLength": 32,
+                      "type": "string"
+                    },
+                    "maxItems": 8,
+                    "type": "array"
+                  }
+                },
+                "required": [
+                  "tags",
+                  "maintenance"
+                ],
+                "type": "object"
+              },
+              "version": 1
+            },
+            {
+              "schema": {
+                "additionalProperties": false,
+                "properties": {
+                  "maintenance": {
+                    "additionalProperties": false,
+                    "properties": {
+                      "due": {
+                        "maxLength": 10,
+                        "minLength": 10,
+                        "type": "string"
+                      },
+                      "enabled": {
+                        "type": "boolean"
+                      },
+                      "last_service": {
+                        "maxLength": 10,
+                        "minLength": 10,
+                        "type": "string"
+                      }
+                    },
+                    "required": [
+                      "due",
+                      "enabled"
+                    ],
+                    "type": "object"
+                  },
+                  "tags": {
+                    "items": {
+                      "maxLength": 32,
+                      "type": "string"
+                    },
+                    "maxItems": 8,
+                    "type": "array"
+                  }
+                },
+                "required": [
+                  "tags",
+                  "maintenance"
+                ],
+                "type": "object"
+              },
+              "version": 2
+            }
+          ],
+          "scope": "VERSE#01M6MJX47WMGN7KXADFJAA7200-FRACTAL#01M6MJX4QQS5KVDZPFTPNBFGPA-PETAL#01M6MJYY9NPZW2DNWJBTP24TFB"
+        },
+        "error": null
+      }
+    },
+    {
+      "method": "GET",
+      "path": "/api/v1/nodes/01M6MK727YYEQG0H6A9Z7ZAJW5/properties",
+      "request": null,
+      "status": 200,
+      "response_bytes": 445,
+      "response_sha256": "d4e17b73d6d5eb392cb227dc4991b5e138848bb3be2ad6c14fa0146498ff3a0d",
+      "response": {
+        "ok": true,
+        "data": {
+          "node_id": "01M6MK727YYEQG0H6A9Z7ZAJW5",
+          "properties": {
+            "calibration": {
+              "axes": [
+                "x",
+                "z"
+              ],
+              "bias": 1,
+              "gain": 3,
+              "sensor": {
+                "range": [
+                  -40,
+                  85
+                ],
+                "serial": "ALPHA-01"
+              }
+            },
+            "metadata": {
+              "maintenance": {
+                "due": "2026-12-01",
+                "enabled": true,
+                "last_service": "2026-10-31"
+              },
+              "tags": [
+                "fleet",
+                "qa"
+              ]
+            },
+            "qa_fixture": "rich-fleet-v1",
+            "schema_version": 2,
+            "telemetry": {
+              "samples": [
+                null,
+                true,
+                {
+                  "axes": [
+                    "x",
+                    "z"
+                  ],
+                  "offset": 0.125
+                }
+              ],
+              "sequence": 9007199254740993
+            }
+          }
+        },
+        "error": null
+      }
+    },
+    {
+      "method": "GET",
+      "path": "/api/v1/nodes/01M6MK727YYEQG0H6A9Z7ZAJW5/transform",
+      "request": null,
+      "status": 200,
+      "response_bytes": 111,
+      "response_sha256": "e1a70b5609f7be0685fd56a2372a7ac904ba16c69d45e7c7bd5ba0624e92aaa9",
+      "response": {
+        "ok": true,
+        "data": {
+          "position": [
+            6.0,
+            0.0,
+            8.0
+          ],
+          "rotation": [
+            0.0,
+            1.5707964,
+            0.0
+          ],
+          "scale": [
+            2.0,
+            1.0,
+            0.5
+          ]
+        },
+        "error": null
+      }
+    },
+    {
+      "method": "GET",
+      "path": "/api/v1/nodes/01M6MK727YYEQG0H6A9Z7ZAJW5/history?after_version=8&limit=1",
+      "request": null,
+      "status": 200,
+      "response_bytes": 1630,
+      "response_sha256": "853752991d151cf4e7c18852731c290a5be018f60f9f991447a38afef9b9dcd0",
+      "response": {
+        "ok": true,
+        "data": {
+          "coverage_start_version": 1,
+          "coverage_started_at": "2026-11-05T00:54:49.342943900+00:00",
+          "current_state_verified": true,
+          "current_version": 9,
+          "entries": [
+            {
+              "created_at": "2026-11-05T00:54:57.300993700+00:00",
+              "hlc_timestamp": 117561104616652800,
+              "log_id": "01M6MK7A0M30ZT7BA946V5NKG0",
+              "node_id": "01M6MK727YYEQG0H6A9Z7ZAJW5",
+              "op": "property_deleted",
+              "payload": {
+                "after_state": {
+                  "asset_id": "01M6MK71KJ4H5SJRXZ46YT1NG7",
+                  "created_at": "2026-11-05T00:54:49.342722100+00:00",
+                  "display_name": "Fleet Alpha",
+                  "edit_seq": 3,
+                  "elevation": 0.0,
+                  "interactive": true,
+                  "node_id": "01M6MK727YYEQG0H6A9Z7ZAJW5",
+                  "petal_id": "01M6MJYY9NPZW2DNWJBTP24TFB",
+                  "position": [
+                    6.0,
+                    0.0,
+                    8.0
+                  ],
+                  "properties": {
+                    "calibration": {
+                      "axes": [
+                        "x",
+                        "z"
+                      ],
+                      "bias": 1,
+                      "gain": 3,
+                      "sensor": {
+                        "range": [
+                          -40,
+                          85
+                        ],
+                        "serial": "ALPHA-01"
+                      }
+                    },
+                    "metadata": {
+                      "maintenance": {
+                        "due": "2026-12-01",
+                        "enabled": true,
+                        "last_service": "2026-10-31"
+                      },
+                      "tags": [
+                        "fleet",
+                        "qa"
+                      ]
+                    },
+                    "qa_fixture": "rich-fleet-v1",
+                    "schema_version": 2,
+                    "telemetry": {
+                      "samples": [
+                        null,
+                        true,
+                        {
+                          "axes": [
+                            "x",
+                            "z"
+                          ],
+                          "offset": 0.125
+                        }
+                      ],
+                      "sequence": 9007199254740993
+                    }
+                  },
+                  "rotation": [
+                    0.0,
+                    1.5707963705062866,
+                    0.0
+                  ],
+                  "scale": [
+                    2.0,
+                    1.0,
+                    0.5
+                  ]
+                },
+                "data": {
+                  "key": "disposable_note"
+                },
+                "journal_version": 1,
+                "schema_versions": {},
+                "scope": "VERSE#01M6MJX47WMGN7KXADFJAA7200-FRACTAL#01M6MJX4QQS5KVDZPFTPNBFGPA-PETAL#01M6MJYY9NPZW2DNWJBTP24TFB"
+              },
+              "row_version": 9,
+              "source_did": "did:key:z6Mkngc7XZDz2bDarqQNb7F6EjccGW9zLbfLYyKyajELXWnN"
+            }
+          ],
+          "event_time_ordering": false,
+          "journal_version": 1,
+          "next_after_version": null,
+          "node_id": "01M6MK727YYEQG0H6A9Z7ZAJW5",
+          "order": "per_object_commit_version",
+          "supported_operations": [
+            "baseline",
+            "property_set",
+            "property_deleted",
+            "full_transform",
+            "node_renamed"
+          ]
+        },
+        "error": null
+      }
+    },
+    {
+      "method": "GET",
+      "path": "/api/v1/nodes/01M6MK72JW279CV0TEYMD92XSC/properties",
+      "request": null,
+      "status": 200,
+      "response_bytes": 321,
+      "response_sha256": "3233c5673eb9cd7cdca903c4a2e518455110ed7e1c7b6d277674dbb50eb48b92",
+      "response": {
+        "ok": true,
+        "data": {
+          "node_id": "01M6MK72JW279CV0TEYMD92XSC",
+          "properties": {
+            "calibration": {
+              "axes": [
+                "x",
+                "z"
+              ],
+              "bias": -1,
+              "gain": 0.5,
+              "sensor": {
+                "range": [
+                  -40,
+                  85
+                ],
+                "serial": "BETA-01"
+              }
+            },
+            "metadata": {
+              "maintenance": {
+                "due": "2026-12-01",
+                "enabled": true
+              },
+              "tags": [
+                "fleet",
+                "qa"
+              ]
+            },
+            "qa_fixture": "rich-fleet-v1",
+            "schema_version": 1
+          }
+        },
+        "error": null
+      }
+    },
+    {
+      "method": "GET",
+      "path": "/api/v1/nodes/01M6MK72JW279CV0TEYMD92XSC/transform",
+      "request": null,
+      "status": 200,
+      "response_bytes": 106,
+      "response_sha256": "68c6f1f897fa22e1633ca5f71bcc9453f50d2e807bb5c7056647f32fabb0c815",
+      "response": {
+        "ok": true,
+        "data": {
+          "position": [
+            10.0,
+            2.0,
+            6.0
+          ],
+          "rotation": [
+            0.0,
+            0.0,
+            0.0
+          ],
+          "scale": [
+            1.0,
+            1.0,
+            1.0
+          ]
+        },
+        "error": null
+      }
+    },
+    {
+      "method": "GET",
+      "path": "/api/v1/nodes/01M6MK72JW279CV0TEYMD92XSC/history?after_version=2&limit=1",
+      "request": null,
+      "status": 200,
+      "response_bytes": 1535,
+      "response_sha256": "9d35b1476c6c0bce2338cbdb9738250df6799a8144425cd77069a003831df721",
+      "response": {
+        "ok": true,
+        "data": {
+          "coverage_start_version": 1,
+          "coverage_started_at": "2026-11-05T00:54:49.692375+00:00",
+          "current_state_verified": true,
+          "current_version": 3,
+          "entries": [
+            {
+              "created_at": "2026-11-05T00:54:53.344629500+00:00",
+              "hlc_timestamp": 117561104357392384,
+              "log_id": "01M6MK765018NEFW15JQPAC97M",
+              "node_id": "01M6MK72JW279CV0TEYMD92XSC",
+              "op": "full_transform",
+              "payload": {
+                "after_state": {
+                  "asset_id": "01M6MK71KJ4H5SJRXZ46YT1NG7",
+                  "created_at": "2026-11-05T00:54:49.692189600+00:00",
+                  "display_name": "Fleet Beta",
+                  "edit_seq": 2,
+                  "elevation": 2.0,
+                  "interactive": true,
+                  "node_id": "01M6MK72JW279CV0TEYMD92XSC",
+                  "petal_id": "01M6MJYY9NPZW2DNWJBTP24TFB",
+                  "position": [
+                    10.0,
+                    2.0,
+                    6.0
+                  ],
+                  "properties": {
+                    "calibration": {
+                      "axes": [
+                        "x",
+                        "z"
+                      ],
+                      "bias": -1,
+                      "gain": 0.5,
+                      "sensor": {
+                        "range": [
+                          -40,
+                          85
+                        ],
+                        "serial": "BETA-01"
+                      }
+                    },
+                    "metadata": {
+                      "maintenance": {
+                        "due": "2026-12-01",
+                        "enabled": true
+                      },
+                      "tags": [
+                        "fleet",
+                        "qa"
+                      ]
+                    },
+                    "qa_fixture": "rich-fleet-v1",
+                    "schema_version": 1
+                  },
+                  "rotation": [
+                    0.0,
+                    0.0,
+                    0.0
+                  ],
+                  "scale": [
+                    1.0,
+                    1.0,
+                    1.0
+                  ]
+                },
+                "data": {
+                  "position": [
+                    10.0,
+                    2.0,
+                    6.0
+                  ],
+                  "rotation": [
+                    0.0,
+                    0.0,
+                    0.0
+                  ],
+                  "scale": [
+                    1.0,
+                    1.0,
+                    1.0
+                  ]
+                },
+                "journal_version": 1,
+                "schema_versions": {},
+                "scope": "VERSE#01M6MJX47WMGN7KXADFJAA7200-FRACTAL#01M6MJX4QQS5KVDZPFTPNBFGPA-PETAL#01M6MJYY9NPZW2DNWJBTP24TFB"
+              },
+              "row_version": 3,
+              "source_did": "did:key:z6Mkngc7XZDz2bDarqQNb7F6EjccGW9zLbfLYyKyajELXWnN"
+            }
+          ],
+          "event_time_ordering": false,
+          "journal_version": 1,
+          "next_after_version": null,
+          "node_id": "01M6MK72JW279CV0TEYMD92XSC",
+          "order": "per_object_commit_version",
+          "supported_operations": [
+            "baseline",
+            "property_set",
+            "property_deleted",
+            "full_transform",
+            "node_renamed"
+          ]
+        },
+        "error": null
+      }
+    },
+    {
+      "method": "GET",
+      "path": "/api/v1/nodes/01M6MK75HFE99TYDV9TS2D78F7/properties",
+      "request": null,
+      "status": 200,
+      "response_bytes": 319,
+      "response_sha256": "b5f7712d8763e1ce3f311d1b4a287d7c1ee4f19b3e19bce1d4371184137d4496",
+      "response": {
+        "ok": true,
+        "data": {
+          "node_id": "01M6MK75HFE99TYDV9TS2D78F7",
+          "properties": {
+            "calibration": {
+              "axes": [
+                "x",
+                "z"
+              ],
+              "bias": 0,
+              "gain": 1,
+              "sensor": {
+                "range": [
+                  -40,
+                  85
+                ],
+                "serial": "GAMMA-01"
+              }
+            },
+            "metadata": {
+              "maintenance": {
+                "due": "2026-12-01",
+                "enabled": true
+              },
+              "tags": [
+                "fleet",
+                "qa"
+              ]
+            },
+            "qa_fixture": "rich-fleet-v1",
+            "schema_version": 1
+          }
+        },
+        "error": null
+      }
+    },
+    {
+      "method": "GET",
+      "path": "/api/v1/nodes/01M6MK75HFE99TYDV9TS2D78F7/transform",
+      "request": null,
+      "status": 200,
+      "response_bytes": 106,
+      "response_sha256": "36e6951befa93c18682dbef569fdf9044dbc9b1a2d2e874aa62214ad959af47b",
+      "response": {
+        "ok": true,
+        "data": {
+          "position": [
+            20.0,
+            0.0,
+            4.0
+          ],
+          "rotation": [
+            0.0,
+            0.0,
+            0.0
+          ],
+          "scale": [
+            1.0,
+            1.0,
+            1.0
+          ]
+        },
+        "error": null
+      }
+    },
+    {
+      "method": "GET",
+      "path": "/api/v1/nodes/01M6MK75HFE99TYDV9TS2D78F7/history?after_version=1&limit=1",
+      "request": null,
+      "status": 200,
+      "response_bytes": 1534,
+      "response_sha256": "68f1f39ae8d3161355c6c448186c21e6bd43300712c52ed0bfdc432a7451c3f4",
+      "response": {
+        "ok": true,
+        "data": {
+          "coverage_start_version": 1,
+          "coverage_started_at": "2026-11-05T00:54:52.719725800+00:00",
+          "current_state_verified": true,
+          "current_version": 2,
+          "entries": [
+            {
+              "created_at": "2026-11-05T00:54:53.622666+00:00",
+              "hlc_timestamp": 117561104375611392,
+              "log_id": "01M6MK76DPS2D7WPMBHPQBF1KM",
+              "node_id": "01M6MK75HFE99TYDV9TS2D78F7",
+              "op": "full_transform",
+              "payload": {
+                "after_state": {
+                  "asset_id": "01M6MK71KJ4H5SJRXZ46YT1NG7",
+                  "created_at": "2026-11-05T00:54:52.719270500+00:00",
+                  "display_name": "Fleet Gamma",
+                  "edit_seq": 1,
+                  "elevation": 0.0,
+                  "interactive": true,
+                  "node_id": "01M6MK75HFE99TYDV9TS2D78F7",
+                  "petal_id": "01M6MJYY9NPZW2DNWJBTP24TFB",
+                  "position": [
+                    20.0,
+                    0.0,
+                    4.0
+                  ],
+                  "properties": {
+                    "calibration": {
+                      "axes": [
+                        "x",
+                        "z"
+                      ],
+                      "bias": 0,
+                      "gain": 1,
+                      "sensor": {
+                        "range": [
+                          -40,
+                          85
+                        ],
+                        "serial": "GAMMA-01"
+                      }
+                    },
+                    "metadata": {
+                      "maintenance": {
+                        "due": "2026-12-01",
+                        "enabled": true
+                      },
+                      "tags": [
+                        "fleet",
+                        "qa"
+                      ]
+                    },
+                    "qa_fixture": "rich-fleet-v1",
+                    "schema_version": 1
+                  },
+                  "rotation": [
+                    0.0,
+                    0.0,
+                    0.0
+                  ],
+                  "scale": [
+                    1.0,
+                    1.0,
+                    1.0
+                  ]
+                },
+                "data": {
+                  "position": [
+                    20.0,
+                    0.0,
+                    4.0
+                  ],
+                  "rotation": [
+                    0.0,
+                    0.0,
+                    0.0
+                  ],
+                  "scale": [
+                    1.0,
+                    1.0,
+                    1.0
+                  ]
+                },
+                "journal_version": 1,
+                "schema_versions": {},
+                "scope": "VERSE#01M6MJX47WMGN7KXADFJAA7200-FRACTAL#01M6MJX4QQS5KVDZPFTPNBFGPA-PETAL#01M6MJYY9NPZW2DNWJBTP24TFB"
+              },
+              "row_version": 2,
+              "source_did": "did:key:z6Mkngc7XZDz2bDarqQNb7F6EjccGW9zLbfLYyKyajELXWnN"
+            }
+          ],
+          "event_time_ordering": false,
+          "journal_version": 1,
+          "next_after_version": null,
+          "node_id": "01M6MK75HFE99TYDV9TS2D78F7",
+          "order": "per_object_commit_version",
+          "supported_operations": [
+            "baseline",
+            "property_set",
+            "property_deleted",
+            "full_transform",
+            "node_renamed"
+          ]
+        },
+        "error": null
+      }
+    },
+    {
+      "method": "GET",
+      "path": "/api/v1/debug/logs?level=warn&since=433",
+      "request": null,
+      "status": 200,
+      "response_bytes": 253,
+      "response_sha256": "35fe22855fdfd01dfa310c251f0983fa4d4ff177da90f39b65621a5273c73df7",
+      "response": {
+        "data": {
+          "active_verse_id": "01M6MJX47WMGN7KXADFJAA7200",
+          "entries": [
+            {
+              "level": "warn",
+              "message": "[message withheld: event scope unavailable or outside active verse]",
+              "seq": 434,
+              "target": "fe_api::property_schema"
+            }
+          ],
+          "generation": 2,
+          "latest_seq": 434
+        },
+        "ok": true
+      }
+    }
+  ],
+  "log_watermark": {
+    "generation": 2,
+    "seq": 433,
+    "latest_seq": 433
+  },
+  "log_end_watermark": {
+    "generation": 2,
+    "seq": 434,
+    "latest_seq": 434
+  },
+  "new_logs": [
+    {
+      "level": "warn",
+      "message": "[message withheld: event scope unavailable or outside active verse]",
+      "seq": 434,
+      "target": "fe_api::property_schema"
+    }
+  ],
+  "log_generation_changed": false,
+  "log_retention_gap": false,
+  "log_retention_capacity": 2000,
+  "log_review_required": true
+}
