@@ -1,0 +1,39 @@
+{
+  "kind": "qa60-topbar-breakpoint-isolated-v1",
+  "status": "authored_unreviewed_unexecuted",
+  "baseline": "Post-qa59-divider-eligibility-v1 canonical bytes.",
+  "ownership": "Only .omc/research/qa60-topbar-breakpoint-v1/**; canonical topbar.rs untouched until review approval.",
+  "files": [
+    {
+      "canonical": "fe-ui/src/ui_shell/topbar.rs",
+      "before": {
+        "path": "before/fe-ui/src/ui_shell/topbar.rs",
+        "bytes": 53239,
+        "sha256": "15cff200fec78d6a9dbc89d6e4b49dc559ef0d788b37921059ac798e8c9e1d59"
+      },
+      "raw": {
+        "path": "raw/fe-ui/src/ui_shell/topbar.rs",
+        "bytes": 53491,
+        "sha256": "3e7aac69a0e2c4c99b1b5bb80263b957aa62237d66f34016a5226ad7994a5382"
+      }
+    },
+    {
+      "canonical": "fe-ui/src/ui_shell/AGENTS.md",
+      "before": {
+        "path": "before/fe-ui/src/ui_shell/AGENTS.md",
+        "bytes": 53423,
+        "sha256": "6e1c618f26111b4ab36a1df74cda094700fae7fd617cb4b0cf64c8d0a77523e1"
+      },
+      "raw": {
+        "path": "raw/fe-ui/src/ui_shell/AGENTS.md",
+        "bytes": 53424,
+        "sha256": "475b241167f7b67513a9184fca4d6fd2b6c6b6a08eaf47f7ec7990d0094b16ed"
+      }
+    }
+  ],
+  "patch": {
+    "path": "source.patch",
+    "bytes": 2025,
+    "sha256": "3607b945a7d29bcbf22c679c3b2ecd7ba5572e9bf651505f1b335cfb7e59faaf"
+  }
+}

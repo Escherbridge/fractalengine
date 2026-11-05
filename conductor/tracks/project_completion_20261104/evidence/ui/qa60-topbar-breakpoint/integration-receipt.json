@@ -1,0 +1,19 @@
+{
+  "candidate": "qa60-topbar-breakpoint-isolated-v1",
+  "manifest_sha256": "90c14521a61f062a7fac5e8d00a012b81d22dbf64cdc9a363264ce17b5803448",
+  "all_before_and_raw_checked_before_first_write": true,
+  "files": [
+    {
+      "file": "fe-ui/src/ui_shell/topbar.rs",
+      "bytes": 53491,
+      "raw_sha256": "3e7aac69a0e2c4c99b1b5bb80263b957aa62237d66f34016a5226ad7994a5382",
+      "lf_normalized_sha256": "504e8517ed6e7bba0b94fe0ee1f9d11de62b79dbe7ef8171656ea490d4985e6e"
+    },
+    {
+      "file": "fe-ui/src/ui_shell/AGENTS.md",
+      "bytes": 53424,
+      "raw_sha256": "475b241167f7b67513a9184fca4d6fd2b6c6b6a08eaf47f7ec7990d0094b16ed",
+      "lf_normalized_sha256": "6a1ef09e83080fd8ca824fba92d9946a45b568fa15f89ff11661171c52ec55eb"
+    }
+  ]
+}

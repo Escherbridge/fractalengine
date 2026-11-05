@@ -33,6 +33,7 @@ pub const RESIZE_BAND: f32 = 5.0;
 /// Caption-button size (minimize / maximize / close), platform-sized.
 const CAPTION_BUTTON_SIZE: egui::Vec2 = egui::vec2(46.0, 28.0);
 const BRAND_ICON_SIZE: f32 = 22.0;
+const COMPACT_TOPBAR_WIDTH: f32 = 1248.0;
 
 /// A window action the title bar asks for; `apply_window_chrome` performs it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -739,7 +740,7 @@ pub fn render_topbar(
                 }
                 ui.separator();
 
-                let compact = ctx.viewport_rect().width() < 1160.0;
+                let compact = ctx.viewport_rect().width() < COMPACT_TOPBAR_WIDTH;
                 if compact {
                     ui.menu_button("Tools", |ui| {
                         tool_buttons(ui, tool, right, role);
@@ -923,8 +924,13 @@ mod tests {
         }]);
         assert!(!egui::Popup::is_id_open(&bar.ctx, help));
 
+        bar.topbar.brand_icon = Some(BrandIcon {
+            width: 1,
+            height: 1,
+            rgba: vec![255, 255, 255, 255],
+        });
         bar.node_mgr.select(Entity::PLACEHOLDER, "selected-node");
-        for width in [1024.0, 1280.0, 1920.0] {
+        for width in [1024.0, 1159.0, 1160.0, 1161.0, 1247.0, 1248.0, 1280.0, 1920.0] {
             bar.screen = egui::vec2(width, 720.0);
             bar.frame(Vec::new());
             bar.frame(Vec::new());

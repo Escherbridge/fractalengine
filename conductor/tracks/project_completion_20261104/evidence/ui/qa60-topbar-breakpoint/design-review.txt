@@ -1,0 +1,37 @@
+# Independent Design & Boundary Review: `qa60-topbar-breakpoint-v1`
+
+- **Review Date**: 2026-11-05
+- **Candidate Directory**: [`.omc/research/qa60-topbar-breakpoint-v1/`](file:///C:/Users/atooz/Programming/fractalengine-workspace/fractalengine/.omc/research/qa60-topbar-breakpoint-v1/)
+- **Manifest SHA-256**: `90c14521a61f062a7fac5e8d00a012b81d22dbf64cdc9a363264ce17b5803448`
+- **Standards Applied**:
+  - [`C:/Users/atooz/.gemini/UI-UX-guidance.md`](file:///C:/Users/atooz/.gemini/UI-UX-guidance.md)
+  - [`fe-ui/src/ui_shell/AGENTS.md`](file:///C:/Users/atooz/Programming/fractalengine-workspace/fractalengine/fe-ui/src/ui_shell/AGENTS.md)
+- **Verdict**: **APPROVED**
+
+---
+
+## 1. UI/UX Guidance & Layout Stability Evaluation
+
+Evaluated against [`C:/Users/atooz/.gemini/UI-UX-guidance.md`](file:///C:/Users/atooz/.gemini/UI-UX-guidance.md) and [`fe-ui/src/ui_shell/AGENTS.md`](file:///C:/Users/atooz/Programming/fractalengine-workspace/fractalengine/fe-ui/src/ui_shell/AGENTS.md):
+
+1. **Single Static Width Threshold vs. Selection-Dependent Mode Thrashing**:
+   - *Design Choice*: [`raw/fe-ui/src/ui_shell/topbar.rs`](file:///C:/Users/atooz/Programming/fractalengine-workspace/fractalengine/.omc/research/qa60-topbar-breakpoint-v1/raw/fe-ui/src/ui_shell/topbar.rs#L17) keeps `COMPACT_TOPBAR_WIDTH` as a single static constant (`1248.0`) evaluated purely against `ui.max_rect().width() < COMPACT_TOPBAR_WIDTH` (line 422), rather than dynamically toggling compact mode based on `node_mgr.selected_entity().is_some()`.
+   - *Why This Is Correct*: In a 3D authoring viewport, clicking to select or deselect a scene node is the highest-frequency pointer interaction. If the topbar breakpoint depended on selection state, a user working in a window between `1160px` and `1247px` wide would see the entire topbar flip between expanded inline buttons (`New`, `Open`, `Save`, `Export`, `Undo`, `Redo`, `Add`, `Frame`, `Maps`, `Settings`, `Hierarchy`, `Properties`, `Console`, `Help`) and compact dropdown menus (`Tools`, `Panels`) on every select/deselect click. Raising the single static breakpoint to `1248.0` guarantees visual stability across selection changes while reserving enough horizontal budget (`1232.8125` pt occupied + `15.1875` pt minimum clearance at `1248.0`) for the `Deselect` button to appear inline without ever colliding with `Maps` or `Settings`.
+2. **Action Parity & Reachability in Compact Mode (`< 1248.0`)**:
+   - At widths `< 1248.0` (including `1024`, `1159`, `1160`, `1161`, and `1247`), `draw_compact_tools_menu` ([`topbar.rs:677-755`](file:///C:/Users/atooz/Programming/fractalengine-workspace/fractalengine/.omc/research/qa60-topbar-breakpoint-v1/raw/fe-ui/src/ui_shell/topbar.rs#L677-L755)) exposes `Deselect` inside the `Tools` menu whenever `node_mgr.selected_entity().is_some()` (lines 747–751), and `draw_compact_panels_menu` (lines 757–830) exposes `Maps`, `Settings`, `Hierarchy`, `Properties`, `Console`, and `Help`. No user capability is lost between `1160.0` and `1247.0`.
+3. **Preserved Control Identity, Accessibility, and Title-Bar Drag Semantics**:
+   - No AccessKit/automation labels (`"Deselect object"`, `"Toggle Maps section"`, `"Toggle Settings section"`, `"Tools"`, `"Panels"`), role checks (`Role::Observer` disabled states), painted vector icons (`TopbarIcon`), or hit-target minimums (`>= 24x24` pt) were altered.
+   - `TitleBarLayout` (`bar_rect`, `left_widgets_end_x`, `right_widgets_start_x`) continues to measure actual rendered widget extents so `handle_title_bar_window_interactions` only initiates window drag or double-click maximize in the unoccupied title-bar gap between `left_widgets_end_x` and `right_widgets_start_x`. At `>= 1248.0` with a selected node, that gap is at least `15.1875` logical points (`743.5` to `758.6875`) instead of negative (`-72.8125` at `1160.0`).
+
+---
+
+## 2. Architectural & Documentation Hygiene (`AGENTS.md`)
+
+- **Minimal Blast Radius**: The candidate modifies only 2 files (`fe-ui/src/ui_shell/topbar.rs` and `fe-ui/src/ui_shell/AGENTS.md`) with a 2-hunk diff in `topbar.rs` and a 1-line constant update in `AGENTS.md`.
+- **Directory-Level Documentation Sync**: [`raw/fe-ui/src/ui_shell/AGENTS.md`](file:///C:/Users/atooz/Programming/fractalengine-workspace/fractalengine/.omc/research/qa60-topbar-breakpoint-v1/raw/fe-ui/src/ui_shell/AGENTS.md#L112) updates the `topbar.rs` module specification from `below 1160 points` to `below 1248 points`, keeping `AGENTS.md` authoritative and avoiding verbose inline comments in `topbar.rs`.
+
+---
+
+## 3. Verdict
+
+**APPROVED** — `.omc/research/qa60-topbar-breakpoint-v1` satisfies all UI/UX responsiveness, hit-target, layout-stability, accessibility, and `AGENTS.md` documentation requirements with minimal blast radius.

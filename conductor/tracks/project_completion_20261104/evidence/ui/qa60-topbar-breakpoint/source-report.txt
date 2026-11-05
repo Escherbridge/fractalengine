@@ -1,0 +1,13 @@
+# QA60 topbar compact breakpoint candidate (`qa60-topbar-breakpoint-v1`)
+
+- Manifest SHA-256: `90c14521a61f062a7fac5e8d00a012b81d22dbf64cdc9a363264ce17b5803448`
+- Patch SHA-256: `3607b945a7d29bcbf22c679c3b2ecd7ba5572e9bf651505f1b335cfb7e59faaf`
+
+## Summary
+
+In QA60 (`qa/passes/60`), at `1160x720@1x` and `1161x720@1x` with an active selection (`QA60 icon probe`), the topbar switched from compact (`Tools`/`Panels` dropdown menus) to expanded inline buttons at `1160.0` (`let compact = ctx.viewport_rect().width() < 1160.0;` in `fe-ui/src/ui_shell/topbar.rs:742`). With `BrandIcon` (`22.0` points) and `Deselect object` (`x=668.46875, w=75.03125, right=743.5`), the left cluster ends at `743.5` logical points while the right cluster (`Maps` .. `Close`) occupies `489.3125` logical points (`743.5 + 489.3125 = 1232.8125`), causing `Deselect object` to overlap `Toggle Maps section` (`55.5625px`) and `Toggle Settings section` (`9.25px` / `8.25px`; gap `-72.8125px` / `-71.8125px`).
+
+This 2-file candidate:
+1. Extracts `const COMPACT_TOPBAR_WIDTH: f32 = 1248.0;` in `fe-ui/src/ui_shell/topbar.rs` and uses `let compact = ctx.viewport_rect().width() < COMPACT_TOPBAR_WIDTH;` at line 743, keeping `1160`/`1161`/`1247` in compact mode (`left_right = 278.5625`, `right_left = width - 255.8125`) and leaving `>= 15.1875` logical points of clear free title-bar drag space at `>= 1248.0` regardless of whether a node is selected (preventing selection-induced toolbar mode thrash).
+2. Populates `bar.topbar.brand_icon` in `tool_button_press_routes_through_the_single_activation_writer` (`topbar.rs:927-935`) to match production brand-icon geometry and extends the non-overlap/target-size assertion loop to `[1024.0, 1159.0, 1160.0, 1161.0, 1247.0, 1248.0, 1280.0, 1920.0]`.
+3. Updates `fe-ui/src/ui_shell/AGENTS.md` line 472 (`below 1248 points`).

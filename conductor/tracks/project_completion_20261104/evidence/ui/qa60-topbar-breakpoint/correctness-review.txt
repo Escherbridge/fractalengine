@@ -1,0 +1,78 @@
+# Independent Source Correctness Review: `qa60-topbar-breakpoint-v1`
+
+- **Review Date**: 2026-11-05
+- **Candidate Directory**: [`.omc/research/qa60-topbar-breakpoint-v1/`](file:///C:/Users/atooz/Programming/fractalengine-workspace/fractalengine/.omc/research/qa60-topbar-breakpoint-v1/)
+- **Manifest SHA-256**: `90c14521a61f062a7fac5e8d00a012b81d22dbf64cdc9a363264ce17b5803448` (`1,325` bytes)
+- **Target Issue**: `QA-0075` residual follow-up — topbar `Deselect` (`[668.46875, 4.0, 743.5, 34.0]`) overlapping `Maps` (`[670.6875, 4.0, 725.90625, 34.0]`) and `Settings` (`[731.90625, 4.0, 804.6875, 34.0]`) at `1160x720@1x` and `1161x720@1x`.
+- **Verdict**: **APPROVED**
+
+---
+
+## 1. Candidate Packet & Baseline Snapshot Verification
+
+All files in [`.omc/research/qa60-topbar-breakpoint-v1/`](file:///C:/Users/atooz/Programming/fractalengine-workspace/fractalengine/.omc/research/qa60-topbar-breakpoint-v1/) were independently hashed and verified against [`manifest.json`](file:///C:/Users/atooz/Programming/fractalengine-workspace/fractalengine/.omc/research/qa60-topbar-breakpoint-v1/manifest.json) and the current post-`qa59-divider-eligibility-v1` canonical workspace files:
+
+| Artifact | Bytes | SHA-256 Digest | Verification Result |
+|---|---:|---|---|
+| [`manifest.json`](file:///C:/Users/atooz/Programming/fractalengine-workspace/fractalengine/.omc/research/qa60-topbar-breakpoint-v1/manifest.json) | `1,325` | `90c14521a61f062a7fac5e8d00a012b81d22dbf64cdc9a363264ce17b5803448` | **PASS** |
+| [`source.patch`](file:///C:/Users/atooz/Programming/fractalengine-workspace/fractalengine/.omc/research/qa60-topbar-breakpoint-v1/source.patch) | `2,025` | `3607b945a7d29bcbf22c679c3b2ecd7ba5572e9bf651505f1b335cfb7e59faaf` | **PASS** (Matches `manifest.json`) |
+| [`report.md`](file:///C:/Users/atooz/Programming/fractalengine-workspace/fractalengine/.omc/research/qa60-topbar-breakpoint-v1/report.md) | `1,840` | `8f235487d453ce9b5861443d5fa733244e300ab629b17d7d0a43cd4b1be64e05` | **PASS** |
+| `before/fe-ui/src/ui_shell/topbar.rs` | `53,239` | `15cff200fec78d6a9dbc89d6e4b49dc559ef0d788b37921059ac798e8c9e1d59` | **PASS** (100% byte-identical to current canonical [`fe-ui/src/ui_shell/topbar.rs`](file:///C:/Users/atooz/Programming/fractalengine-workspace/fractalengine/fe-ui/src/ui_shell/topbar.rs)) |
+| `raw/fe-ui/src/ui_shell/topbar.rs` | `53,491` (LF: `52,477`) | `3e7aac69a0e2c4c99b1b5bb80263b957aa62237d66f34016a5226ad7994a5382` (LF: `504e8517ed6e7bba0b94fe0ee1f9d11de62b79dbe7ef8171656ea490d4985e6e`) | **PASS** (Matches `manifest.json` `raw` & `lf_normalized`) |
+| `before/fe-ui/src/ui_shell/AGENTS.md` | `53,423` | `6e1c618f26111b4ab36a1df74cda094700fae7fd617cb4b0cf64c8d0a77523e1` | **PASS** (100% byte-identical to current canonical [`fe-ui/src/ui_shell/AGENTS.md`](file:///C:/Users/atooz/Programming/fractalengine-workspace/fractalengine/fe-ui/src/ui_shell/AGENTS.md)) |
+| `raw/fe-ui/src/ui_shell/AGENTS.md` | `53,424` (LF: `52,618`) | `475b241167f7b67513a9184fca4d6fd2b6c6b6a08eaf47f7ec7990d0094b16ed` (LF: `6a1ef09e83080fd8ca824fba92d9946a45b568fa15f89ff11661171c52ec55eb`) | **PASS** (Matches `manifest.json` `raw` & `lf_normalized`) |
+
+---
+
+## 2. Mathematical Verification of `COMPACT_TOPBAR_WIDTH = 1248.0`
+
+From the frozen QA60 measurement oracle ([`qa/passes/60/topbar-layer-oracle.json`](file:///C:/Users/atooz/Programming/fractalengine-workspace/fractalengine/qa/passes/60/topbar-layer-oracle.json)):
+
+1. **Expanded Left Cluster Width (with `BrandIcon` and Selected Entity `Deselect` Visible)**:
+   - At `1160x720@1x`, `1161x720@1x`, `1280x720@1x`, `1280x720@2x`, `1600x900@1x`, and `1600x900@2x`, the `Deselect object` button has exact logical bounds:
+     - `x = 668.46875`, `y = 4.0`, `w = 75.03125`, `h = 30.0`
+     - Right edge (`left_right`): `668.46875 + 75.03125 = 743.5` logical points.
+2. **Right-Anchored Cluster Width (`Maps`, `Settings`, `Hierarchy`, `Properties`, `Console`, `Help`, `Minimize`, `Maximize`, `Close`)**:
+   - At `1160.0` width: `Maps` left edge (`right_left`) is at `x = 670.6875` -> right cluster width is `1160.0 - 670.6875 = 489.3125` logical points.
+   - At `1161.0` width: `Maps` left edge (`right_left`) is at `x = 671.6875` -> right cluster width is `1161.0 - 671.6875 = 489.3125` logical points.
+   - At `1280.0` width: `Maps` left edge (`right_left`) is at `x = 790.6875` -> right cluster width is `1280.0 - 790.6875 = 489.3125` logical points.
+   - At `1600.0` width: `Maps` left edge (`right_left`) is at `x = 1110.6875` -> right cluster width is `1600.0 - 1110.6875 = 489.3125` logical points.
+3. **Minimum Non-Overlapping Expanded Width**:
+   - Combined occupied width of left and right widget clusters when a scene object is selected:
+     $$\text{Occupied Width} = 743.5 + 489.3125 = 1232.8125\text{ logical points}$$
+   - Under the old threshold (`COMPACT_TOPBAR_WIDTH = 1160.0`), widths in `[1160.0, 1232.8125)` switched to expanded mode prematurely, causing `Deselect` (`x_end = 743.5`) to collide with `Maps` (`x_start = 670.6875` at `1160.0`, overlap `72.8125` pt) and `Settings` (`x_start = 731.90625` at `1160.0`, overlap `11.59375` pt).
+   - Raising `const COMPACT_TOPBAR_WIDTH: f32 = 1248.0;` in [`raw/fe-ui/src/ui_shell/topbar.rs`](file:///C:/Users/atooz/Programming/fractalengine-workspace/fractalengine/.omc/research/qa60-topbar-breakpoint-v1/raw/fe-ui/src/ui_shell/topbar.rs#L17):
+     - Keeps all widths `< 1248.0` (including `1024`, `1159`, `1160`, `1161`, and `1247`) in compact mode (`compact_toolbar = ui.max_rect().width() < COMPACT_TOPBAR_WIDTH` at line 422), where left tools collapse into the `Tools` dropdown (`Deselect` remains accessible inside `Tools` at lines 747–751) and right toggles collapse into `Panels`.
+     - At the exact `1248.0` transition point, `right_left = 1248.0 - 489.3125 = 758.6875`, leaving an unambiguous clearance gap of:
+       $$758.6875 - 743.5 = 15.1875\text{ logical points}$$
+       between `Deselect` and `Maps` (`gap >= 15.1875` pt for all widths `>= 1248.0`).
+
+---
+
+## 3. Unit Test Harness Fidelity Verification
+
+In [`raw/fe-ui/src/ui_shell/topbar.rs`](file:///C:/Users/atooz/Programming/fractalengine-workspace/fractalengine/.omc/research/qa60-topbar-breakpoint-v1/raw/fe-ui/src/ui_shell/topbar.rs#L914-L936), `title_bar_buttons_stay_separated_and_clickable_across_widths` was strengthened in two critical ways:
+
+1. **Brand Icon Width Reproduction (`BRAND_ICON_SIZE = 22.0`)**:
+   - Previously, `TitleBarHarness::default()` left `bar.topbar.brand_icon = None`, underestimating the left cluster width in headless tests compared to the running application (where the embedded window icon is loaded into `TopBarState.brand_icon`).
+   - Lines 927–931 now populate:
+     ```rust
+     bar.topbar.brand_icon = Some(BrandIcon {
+         width: 1,
+         height: 1,
+         rgba: vec![255, 255, 255, 255],
+     });
+     ```
+     This forces `draw_brand_badge` (lines 483–509) to execute its `Some(icon)` branch and allocate the exact `Vec2::splat(BRAND_ICON_SIZE)` (`22.0 x 22.0`) space plus item spacing that production uses.
+2. **Boundary Width Coverage (`1159`, `1160`, `1161`, `1247`, `1248`)**:
+   - With a selected entity (`bar.node_mgr.select(Entity::PLACEHOLDER, "selected-node")`), the test sweeps `[1024.0, 1159.0, 1160.0, 1161.0, 1247.0, 1248.0, 1280.0, 1920.0]` and asserts for every interactive button (`Role::Button`) in `TitleBarHarness`:
+     - `clip.contains_rect(rect)` (no clipping),
+     - `hit.width() >= 24.0 && hit.height() >= 24.0` (minimum clickable target size),
+     - pairwise `overlap.width() <= 0.1 || overlap.height() <= 0.1` across all action rects.
+   - If `COMPACT_TOPBAR_WIDTH` were reverted to `1160.0` (or set to `<= 1232.0`), this test would deterministically fail at `1160.0` and `1161.0` due to the `Deselect` / `Maps` overlap.
+
+---
+
+## 4. Verdict
+
+**APPROVED** — The source change in `.omc/research/qa60-topbar-breakpoint-v1` is mathematically exact against the QA60 oracle geometry, cleanly rooted on the current canonical files, and backed by a non-tautological layout test that reproduces the exact production `BrandIcon` + `Deselect` geometry across the old and new breakpoint boundaries.

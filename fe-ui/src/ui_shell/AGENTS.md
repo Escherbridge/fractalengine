@@ -469,7 +469,7 @@ same egui memory popup. Tool names/keys come from TOOL_DEFS; the remaining copy
 states the actual camera, selection, visibility and Undo shortcuts. The popup
 blocks the existing scene keyboard decoder and hierarchy shortcut, preserves
 text-input ownership and closes through Escape, outside click or its Close
-button. Narrow windows use named Tools/Panels menus below1160 points, keeping
+button. Narrow windows use named Tools/Panels menus below 1248 points, keeping
 full tool names in the menu. Section buttons retain their existing toggles.
 
 Inspector's chrome body slot is unscrolled: right_inspector pins selection/tab
