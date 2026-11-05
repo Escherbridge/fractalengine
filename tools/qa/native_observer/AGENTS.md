@@ -68,8 +68,8 @@ Other visible windows, including Portal and dialogs, still refuse. Other hidden
 windows retain the existing policy and are reconsidered by each complete census.
 
 service_current requires valid same-process/same-root-thread identity, ownerless
-top-level/no parent, the exact class and visible state, successful zero-origin and
-zero-size window/client rectangles, and no native descendants under the existing
+top-level/no parent, the exact class and visible state, successful exact outer
+(0,0,16,16) and all-zero client rectangles, and no native descendants under the existing
 128-child refusal discipline. winit_service_signature_refusal is the production pure
 geometry/style seam: normalized 32-bit style must be exactly0x94000000
 (WS_VISIBLE|WS_POPUP|WS_CLIPSIBLINGS) and extended style exactly0x080800a0.
@@ -85,6 +85,14 @@ is unproved, not a universal OS normalization rule. The full value is required;
 old0x90000000 and every missing/additional bit refuse. All other predicates,
 sampled trust limits, retained identities, proofs and Invoke floors remain.
 QA50's style-refused sample proves no later component or positive UIA admission.
+
+QA53's exact outer(0,0,16,16)/client(0,0,0,0) measurement replaces the original
+outer-zero assumption with one restricted observed-host profile. Zero outer,
+15/17/asymmetric extents and shifted origins refuse, without a DPI range or size
+tolerance. Winit creates an overlapped zero-size service then changes its style;
+cached nonclient geometry is plausible, but the exact16 cause remains unproved.
+Zero client area is not a claim that the service cannot receive input/messages.
+Every other identity/style/children/retained-set/proof/Invoke floor remains.
 
 QA46 splits the same signature conjunction into fixed refusal categories in its
 original order: window_service_style_refused, window_service_exstyle_refused,
@@ -113,8 +121,8 @@ HRESULT; controller requires actual observe mode and confirmed helper exit2 befo
 its independent ledger-spent override. A prior spent ledger remains spent. Invoke,
 success, other refusal and malformed-request outputs cannot carry the field.
 
-QA51's worker emits only optional service_signature: an exact eleven-member object
-with schema fe-native-service-signature-v1, style_u32/exstyle_u32 in0..4294967295,
+QA51 introduced optional service_signature: an exact eleven-member object
+with style_u32/exstyle_u32 in0..4294967295,
 and outer/client left/top/right/bottom_i32 in-2147483648..2147483647. Its sequential
 facts are copied from the same existing two style/two rectangle reads, after exact
 known service identity and successful rectangle reads. No native query is added.
@@ -130,8 +138,12 @@ canonical ledger change is made; output result member order has no acceptance ro
 
 Controller requires exact nested schema/keys/types/ranges, recursively unique keys,
 actual observe/confirmed exit2 and raw false flags/zero HRESULT before ledger
-override. It recomputes the first failure at exact style0x94000000/exstyle0x080800a0
-then outer/client zero comparisons. Contradictory or all-passing samples refuse.
+override. It recomputes the first failure at exact style0x94000000/exstyle0x080800a0,
+then versioned exact outer and all-zero client comparisons. The only schema literals
+are fe-native-service-signature-v1 (legacy outer all-zero) and
+fe-native-service-signature-v2 (current exact outer0,0,16,16). The worker emits only
+v2; old v1 samples retain their original semantics. No unknown-schema fallback.
+Contradictory or all-passing samples refuse.
 This validates a diagnostic, never grants positive service/Invoke admission.
 New schema version pins those comparison values; future policy changes need an
 explicit diagnostic-version decision. Generic identity/read/child/watcher errors,

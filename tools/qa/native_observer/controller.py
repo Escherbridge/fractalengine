@@ -168,7 +168,7 @@ class Context:
 
 def service_signature_refusal(sample):
     require(type(sample) is dict and set(sample) == SIGNATURE_KEYS
-            and sample["schema"] == "fe-native-service-signature-v1"
+            and sample["schema"] in ("fe-native-service-signature-v1", "fe-native-service-signature-v2")
             and all(type(sample[key]) is int and 0 <= sample[key] <= (1 << 32) - 1 for key in SIGNATURE_STYLES)
             and all(type(sample[key]) is int and -(1 << 31) <= sample[key] <= (1 << 31) - 1
                     for key in SIGNATURE_OUTER + SIGNATURE_CLIENT), "worker_result_refused")
@@ -176,7 +176,8 @@ def service_signature_refusal(sample):
         return "window_service_style_refused"
     if sample["exstyle_u32"] != 0x080800A0:
         return "window_service_exstyle_refused"
-    if any(sample[key] != 0 for key in SIGNATURE_OUTER):
+    expected_outer = (0, 0, 0, 0) if sample["schema"] == "fe-native-service-signature-v1" else (0, 0, 16, 16)
+    if tuple(sample[key] for key in SIGNATURE_OUTER) != expected_outer:
         return "window_service_outer_rect_refused"
     if any(sample[key] != 0 for key in SIGNATURE_CLIENT):
         return "window_service_client_rect_refused"

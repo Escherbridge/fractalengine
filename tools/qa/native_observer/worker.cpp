@@ -249,7 +249,7 @@ const char* winit_service_signature_refusal(DWORD style, DWORD extended, const R
     constexpr DWORD expected_extended = WS_EX_NOACTIVATE | WS_EX_TRANSPARENT | WS_EX_LAYERED | WS_EX_TOOLWINDOW;
     if (style != expected_style) return "window_service_style_refused";
     if (extended != expected_extended) return "window_service_exstyle_refused";
-    if (!zero(outer)) return "window_service_outer_rect_refused";
+    if (outer.left != 0 || outer.top != 0 || outer.right != 16 || outer.bottom != 16) return "window_service_outer_rect_refused";
     if (!zero(client)) return "window_service_client_rect_refused";
     return nullptr;
 }
@@ -261,7 +261,7 @@ Atom signed_coordinate(LONG value) {
 
 std::string service_signature_json(const ServiceSignatureFacts& facts) {
     return canonical({
-        {"schema", Atom::string("fe-native-service-signature-v1")},
+        {"schema", Atom::string("fe-native-service-signature-v2")},
         {"style_u32", Atom::number(facts.style)}, {"exstyle_u32", Atom::number(facts.extended)},
         {"outer_left_i32", signed_coordinate(facts.outer.left)},
         {"outer_top_i32", signed_coordinate(facts.outer.top)},

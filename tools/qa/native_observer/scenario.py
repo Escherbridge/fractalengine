@@ -160,12 +160,30 @@ def exercise():
             code = ("window_service_outer_rect_refused" if key in controller.SIGNATURE_OUTER
                     else "window_service_client_rect_refused")
             signature_cases.append((key + "-" + str(value), key, value, code))
-    for name, key, value, code in signature_cases:
-        changed = dict(signature)
+    signature_v2 = dict(signature, schema="fe-native-service-signature-v2", outer_right_i32=16, outer_bottom_i32=16)
+    for version, baseline in (("v1", signature), ("v2", signature_v2)):
+        for name, key, value, code in signature_cases:
+            changed = dict(baseline)
+            changed[key] = value
+            sample = dict(style_result, code=code, service_signature=changed)
+            parsed = controller.worker_output(encode(sample), observe=True, helper_exit_code=2)
+            record("signature-" + version + "-" + name, parsed == sample and ledger.spent() and not parsed["attempt_spent"])
+    for right, bottom in ((0, 0), (16, 16)):
+        for version, baseline in (("v1", signature), ("v2", signature_v2)):
+            changed = dict(baseline, outer_right_i32=right, outer_bottom_i32=bottom, client_left_i32=1)
+            expected_outer = (0, 0) if version == "v1" else (16, 16)
+            code = ("window_service_client_rect_refused" if (right, bottom) == expected_outer
+                    else "window_service_outer_rect_refused")
+            sample = dict(style_result, code=code, service_signature=changed)
+            record("signature-" + version + "-same-facts-" + str(right), controller.worker_output(
+                encode(sample), observe=True, helper_exit_code=2) == sample)
+    for key, value in (("outer_left_i32", -1), ("outer_left_i32", 1), ("outer_top_i32", -1), ("outer_top_i32", 1),
+                       ("outer_right_i32", 15), ("outer_right_i32", 17), ("outer_bottom_i32", 15), ("outer_bottom_i32", 17)):
+        changed = dict(signature_v2)
         changed[key] = value
-        sample = dict(style_result, code=code, service_signature=changed)
-        parsed = controller.worker_output(encode(sample), observe=True, helper_exit_code=2)
-        record("signature-" + name, parsed == sample and ledger.spent() and not parsed["attempt_spent"])
+        sample = dict(style_result, code="window_service_outer_rect_refused", service_signature=changed)
+        record("signature-v2-exact-outer-" + key + "-" + str(value), controller.worker_output(
+            encode(sample), observe=True, helper_exit_code=2) == sample)
     mixed = dict(style_result, service_signature=dict(signature, style_u32=0, exstyle_u32=0,
                                                       outer_left_i32=1, client_left_i32=1))
     record("signature-first-failure-priority", controller.worker_output(
@@ -186,7 +204,7 @@ def exercise():
             invalid_signatures.append((key + "-" + repr(value), changed, True, 2))
     for value in (None, [], "signature", 1):
         invalid_signatures.append(("object-" + repr(value), dict(sample, service_signature=value), True, 2))
-    for key, value in (("schema", "fe-native-service-signature-v2"), ("extra", 0), ("style_u32", 0), ("outer_left_i32", 0)):
+    for key, value in (("schema", "fe-native-service-signature-v3"), ("extra", 0), ("style_u32", 0), ("outer_left_i32", 0)):
         changed = copy.deepcopy(sample)
         changed["service_signature"][key] = value
         invalid_signatures.append(("mismatch-" + key, changed, True, 2))
@@ -207,6 +225,27 @@ def exercise():
     invalid_signatures.append(("invoke-mode", sample, False, 2))
     for exit_code in (0, 3, True):
         invalid_signatures.append(("exit-" + str(exit_code), sample, True, exit_code))
+    v2_sample = dict(style_result, code="window_service_outer_rect_refused",
+                     service_signature=dict(signature_v2, outer_right_i32=15))
+    invalid_signatures.append(("v2-all-passing", dict(v2_sample, service_signature=signature_v2), True, 2))
+    for key, value in (("schema", "fe-native-service-signature-v3"), ("schema", None), ("extra", 0)):
+        changed = copy.deepcopy(v2_sample)
+        changed["service_signature"][key] = value
+        invalid_signatures.append(("v2-" + key + "-" + str(value), changed, True, 2))
+    for key in controller.SIGNATURE_STYLES + controller.SIGNATURE_OUTER + controller.SIGNATURE_CLIENT:
+        lower, upper = (0, (1 << 32) - 1) if key in controller.SIGNATURE_STYLES else (-(1 << 31), (1 << 31) - 1)
+        for value in (True, False, 1.0, "1", None, [], {}, lower - 1, upper + 1):
+            changed = copy.deepcopy(v2_sample)
+            changed["service_signature"][key] = value
+            invalid_signatures.append(("v2-" + key + "-" + repr(value), changed, True, 2))
+    for key, value in (("code", "observed"), ("code", "window_service_client_rect_refused"), ("hr", "80004005"),
+                       ("attempt_spent", True), ("invoke_entered", True), ("method_returned", True), ("service_style_u32", 0)):
+        changed = copy.deepcopy(v2_sample)
+        changed[key] = value
+        invalid_signatures.append(("v2-raw-" + key + "-" + str(value), changed, True, 2))
+    invalid_signatures.append(("v2-invoke-mode", v2_sample, False, 2))
+    for exit_code in (0, 3, True):
+        invalid_signatures.append(("v2-exit-" + str(exit_code), v2_sample, True, exit_code))
     for name, changed, observe, exit_code in invalid_signatures:
         refused = False
         try:

@@ -1,0 +1,170 @@
+--- a/tools/qa/native_observer/worker.cpp
++++ b/tools/qa/native_observer/worker.cpp
+@@ -249,7 +249,7 @@
+     constexpr DWORD expected_extended = WS_EX_NOACTIVATE | WS_EX_TRANSPARENT | WS_EX_LAYERED | WS_EX_TOOLWINDOW;
+     if (style != expected_style) return "window_service_style_refused";
+     if (extended != expected_extended) return "window_service_exstyle_refused";
+-    if (!zero(outer)) return "window_service_outer_rect_refused";
++    if (outer.left != 0 || outer.top != 0 || outer.right != 16 || outer.bottom != 16) return "window_service_outer_rect_refused";
+     if (!zero(client)) return "window_service_client_rect_refused";
+     return nullptr;
+ }
+@@ -261,7 +261,7 @@
+ 
+ std::string service_signature_json(const ServiceSignatureFacts& facts) {
+     return canonical({
+-        {"schema", Atom::string("fe-native-service-signature-v1")},
++        {"schema", Atom::string("fe-native-service-signature-v2")},
+         {"style_u32", Atom::number(facts.style)}, {"exstyle_u32", Atom::number(facts.extended)},
+         {"outer_left_i32", signed_coordinate(facts.outer.left)},
+         {"outer_top_i32", signed_coordinate(facts.outer.top)},
+--- a/tools/qa/native_observer/controller.py
++++ b/tools/qa/native_observer/controller.py
+@@ -168,7 +168,7 @@
+ 
+ def service_signature_refusal(sample):
+     require(type(sample) is dict and set(sample) == SIGNATURE_KEYS
+-            and sample["schema"] == "fe-native-service-signature-v1"
++            and sample["schema"] in ("fe-native-service-signature-v1", "fe-native-service-signature-v2")
+             and all(type(sample[key]) is int and 0 <= sample[key] <= (1 << 32) - 1 for key in SIGNATURE_STYLES)
+             and all(type(sample[key]) is int and -(1 << 31) <= sample[key] <= (1 << 31) - 1
+                     for key in SIGNATURE_OUTER + SIGNATURE_CLIENT), "worker_result_refused")
+@@ -176,7 +176,8 @@
+         return "window_service_style_refused"
+     if sample["exstyle_u32"] != 0x080800A0:
+         return "window_service_exstyle_refused"
+-    if any(sample[key] != 0 for key in SIGNATURE_OUTER):
++    expected_outer = (0, 0, 0, 0) if sample["schema"] == "fe-native-service-signature-v1" else (0, 0, 16, 16)
++    if tuple(sample[key] for key in SIGNATURE_OUTER) != expected_outer:
+         return "window_service_outer_rect_refused"
+     if any(sample[key] != 0 for key in SIGNATURE_CLIENT):
+         return "window_service_client_rect_refused"
+--- a/tools/qa/native_observer/scenario.py
++++ b/tools/qa/native_observer/scenario.py
+@@ -160,12 +160,30 @@
+             code = ("window_service_outer_rect_refused" if key in controller.SIGNATURE_OUTER
+                     else "window_service_client_rect_refused")
+             signature_cases.append((key + "-" + str(value), key, value, code))
+-    for name, key, value, code in signature_cases:
+-        changed = dict(signature)
++    signature_v2 = dict(signature, schema="fe-native-service-signature-v2", outer_right_i32=16, outer_bottom_i32=16)
++    for version, baseline in (("v1", signature), ("v2", signature_v2)):
++        for name, key, value, code in signature_cases:
++            changed = dict(baseline)
++            changed[key] = value
++            sample = dict(style_result, code=code, service_signature=changed)
++            parsed = controller.worker_output(encode(sample), observe=True, helper_exit_code=2)
++            record("signature-" + version + "-" + name, parsed == sample and ledger.spent() and not parsed["attempt_spent"])
++    for right, bottom in ((0, 0), (16, 16)):
++        for version, baseline in (("v1", signature), ("v2", signature_v2)):
++            changed = dict(baseline, outer_right_i32=right, outer_bottom_i32=bottom, client_left_i32=1)
++            expected_outer = (0, 0) if version == "v1" else (16, 16)
++            code = ("window_service_client_rect_refused" if (right, bottom) == expected_outer
++                    else "window_service_outer_rect_refused")
++            sample = dict(style_result, code=code, service_signature=changed)
++            record("signature-" + version + "-same-facts-" + str(right), controller.worker_output(
++                encode(sample), observe=True, helper_exit_code=2) == sample)
++    for key, value in (("outer_left_i32", -1), ("outer_left_i32", 1), ("outer_top_i32", -1), ("outer_top_i32", 1),
++                       ("outer_right_i32", 15), ("outer_right_i32", 17), ("outer_bottom_i32", 15), ("outer_bottom_i32", 17)):
++        changed = dict(signature_v2)
+         changed[key] = value
+-        sample = dict(style_result, code=code, service_signature=changed)
+-        parsed = controller.worker_output(encode(sample), observe=True, helper_exit_code=2)
+-        record("signature-" + name, parsed == sample and ledger.spent() and not parsed["attempt_spent"])
++        sample = dict(style_result, code="window_service_outer_rect_refused", service_signature=changed)
++        record("signature-v2-exact-outer-" + key + "-" + str(value), controller.worker_output(
++            encode(sample), observe=True, helper_exit_code=2) == sample)
+     mixed = dict(style_result, service_signature=dict(signature, style_u32=0, exstyle_u32=0,
+                                                       outer_left_i32=1, client_left_i32=1))
+     record("signature-first-failure-priority", controller.worker_output(
+@@ -186,7 +204,7 @@
+             invalid_signatures.append((key + "-" + repr(value), changed, True, 2))
+     for value in (None, [], "signature", 1):
+         invalid_signatures.append(("object-" + repr(value), dict(sample, service_signature=value), True, 2))
+-    for key, value in (("schema", "fe-native-service-signature-v2"), ("extra", 0), ("style_u32", 0), ("outer_left_i32", 0)):
++    for key, value in (("schema", "fe-native-service-signature-v3"), ("extra", 0), ("style_u32", 0), ("outer_left_i32", 0)):
+         changed = copy.deepcopy(sample)
+         changed["service_signature"][key] = value
+         invalid_signatures.append(("mismatch-" + key, changed, True, 2))
+@@ -207,6 +225,27 @@
+     invalid_signatures.append(("invoke-mode", sample, False, 2))
+     for exit_code in (0, 3, True):
+         invalid_signatures.append(("exit-" + str(exit_code), sample, True, exit_code))
++    v2_sample = dict(style_result, code="window_service_outer_rect_refused",
++                     service_signature=dict(signature_v2, outer_right_i32=15))
++    invalid_signatures.append(("v2-all-passing", dict(v2_sample, service_signature=signature_v2), True, 2))
++    for key, value in (("schema", "fe-native-service-signature-v3"), ("schema", None), ("extra", 0)):
++        changed = copy.deepcopy(v2_sample)
++        changed["service_signature"][key] = value
++        invalid_signatures.append(("v2-" + key + "-" + str(value), changed, True, 2))
++    for key in controller.SIGNATURE_STYLES + controller.SIGNATURE_OUTER + controller.SIGNATURE_CLIENT:
++        lower, upper = (0, (1 << 32) - 1) if key in controller.SIGNATURE_STYLES else (-(1 << 31), (1 << 31) - 1)
++        for value in (True, False, 1.0, "1", None, [], {}, lower - 1, upper + 1):
++            changed = copy.deepcopy(v2_sample)
++            changed["service_signature"][key] = value
++            invalid_signatures.append(("v2-" + key + "-" + repr(value), changed, True, 2))
++    for key, value in (("code", "observed"), ("code", "window_service_client_rect_refused"), ("hr", "80004005"),
++                       ("attempt_spent", True), ("invoke_entered", True), ("method_returned", True), ("service_style_u32", 0)):
++        changed = copy.deepcopy(v2_sample)
++        changed[key] = value
++        invalid_signatures.append(("v2-raw-" + key + "-" + str(value), changed, True, 2))
++    invalid_signatures.append(("v2-invoke-mode", v2_sample, False, 2))
++    for exit_code in (0, 3, True):
++        invalid_signatures.append(("v2-exit-" + str(exit_code), v2_sample, True, exit_code))
+     for name, changed, observe, exit_code in invalid_signatures:
+         refused = False
+         try:
+--- a/tools/qa/native_observer/AGENTS.md
++++ b/tools/qa/native_observer/AGENTS.md
+@@ -68,8 +68,8 @@
+ windows retain the existing policy and are reconsidered by each complete census.
+ 
+ service_current requires valid same-process/same-root-thread identity, ownerless
+-top-level/no parent, the exact class and visible state, successful zero-origin and
+-zero-size window/client rectangles, and no native descendants under the existing
++top-level/no parent, the exact class and visible state, successful exact outer
++(0,0,16,16) and all-zero client rectangles, and no native descendants under the existing
+ 128-child refusal discipline. winit_service_signature_refusal is the production pure
+ geometry/style seam: normalized 32-bit style must be exactly0x94000000
+ (WS_VISIBLE|WS_POPUP|WS_CLIPSIBLINGS) and extended style exactly0x080800a0.
+@@ -85,6 +85,14 @@
+ old0x90000000 and every missing/additional bit refuse. All other predicates,
+ sampled trust limits, retained identities, proofs and Invoke floors remain.
+ QA50's style-refused sample proves no later component or positive UIA admission.
++
++QA53's exact outer(0,0,16,16)/client(0,0,0,0) measurement replaces the original
++outer-zero assumption with one restricted observed-host profile. Zero outer,
++15/17/asymmetric extents and shifted origins refuse, without a DPI range or size
++tolerance. Winit creates an overlapped zero-size service then changes its style;
++cached nonclient geometry is plausible, but the exact16 cause remains unproved.
++Zero client area is not a claim that the service cannot receive input/messages.
++Every other identity/style/children/retained-set/proof/Invoke floor remains.
+ 
+ QA46 splits the same signature conjunction into fixed refusal categories in its
+ original order: window_service_style_refused, window_service_exstyle_refused,
+@@ -113,8 +121,8 @@
+ its independent ledger-spent override. A prior spent ledger remains spent. Invoke,
+ success, other refusal and malformed-request outputs cannot carry the field.
+ 
+-QA51's worker emits only optional service_signature: an exact eleven-member object
+-with schema fe-native-service-signature-v1, style_u32/exstyle_u32 in0..4294967295,
++QA51 introduced optional service_signature: an exact eleven-member object
++with style_u32/exstyle_u32 in0..4294967295,
+ and outer/client left/top/right/bottom_i32 in-2147483648..2147483647. Its sequential
+ facts are copied from the same existing two style/two rectangle reads, after exact
+ known service identity and successful rectangle reads. No native query is added.
+@@ -130,8 +138,12 @@
+ 
+ Controller requires exact nested schema/keys/types/ranges, recursively unique keys,
+ actual observe/confirmed exit2 and raw false flags/zero HRESULT before ledger
+-override. It recomputes the first failure at exact style0x94000000/exstyle0x080800a0
+-then outer/client zero comparisons. Contradictory or all-passing samples refuse.
++override. It recomputes the first failure at exact style0x94000000/exstyle0x080800a0,
++then versioned exact outer and all-zero client comparisons. The only schema literals
++are fe-native-service-signature-v1 (legacy outer all-zero) and
++fe-native-service-signature-v2 (current exact outer0,0,16,16). The worker emits only
++v2; old v1 samples retain their original semantics. No unknown-schema fallback.
++Contradictory or all-passing samples refuse.
+ This validates a diagnostic, never grants positive service/Invoke admission.
+ New schema version pins those comparison values; future policy changes need an
+ explicit diagnostic-version decision. Generic identity/read/child/watcher errors,

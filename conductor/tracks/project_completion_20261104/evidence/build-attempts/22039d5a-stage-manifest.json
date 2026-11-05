@@ -1,0 +1,19 @@
+﻿{
+    "exe_sha256":  "279227808FC5BA58B8638ECCD2EFD0CA25FACE7EF36DA791DC6E77950104356B",
+    "legacy_fixture_sha256":  "15066CA239F89EE82A3A7673B71D5114AAFDEDA07B95223F9E4729D433C70B15",
+    "native_observer":  {
+                            "contract":  "fe-native-worker-v1",
+                            "helper_file":  "native_observer.exe",
+                            "helper_sha256":  "7bf7fcee863e77efcd275653a2de3b0c870a9c62f64277506f0ed89ad0cada20",
+                            "schema":  "fe-native-helper-stage-v1",
+                            "sdk":  "10.0.22621.0",
+                            "architecture":  "x64",
+                            "source_sha256":  "86883b4ffe4a9f2f3e5bd3ccc2266f2446570d3998ce2a4798a07bad535d44f7"
+                        },
+    "source_fingerprint":  "CCD017690F94B09F690A5962E7C7FDB92953F69E70AF9632744D99731C13A0BC",
+    "kind":  "fractalengine-qa-stage-v1",
+    "seal_hexon_sha256":  "22EFC1D8E82545D3F06DDBB40721294CB0383A030C8D8DEA9A6165F5B3C42971",
+    "built_at":  "2026-11-05T00:44:13.0793598Z",
+    "source_commit":  "22039d5add074d4df0e18f5847286606d95407ac",
+    "source_dirty":  true
+}

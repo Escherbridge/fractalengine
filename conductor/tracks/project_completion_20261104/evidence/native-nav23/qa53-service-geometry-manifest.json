@@ -1,0 +1,71 @@
+{
+  "kind": "qa53-service-geometry-source-v1",
+  "baseline": "22039d5add074d4df0e18f5847286606d95407ac",
+  "approved_plan_sha256": "db3f899d277f93b164f76da745b1c2eb9482ffca63ae7ecce9d6c2d65b303b86",
+  "review_sha256": "010b8e32b72fe99b340fd447f23119f9824d4e8af660efc803a51a6a89965e32",
+  "files": [
+    {
+      "file": "tools/qa/native_observer/worker.cpp",
+      "raw": ".omc/research/qa53-service-geometry-v1/raw/worker.cpp",
+      "bytes": 46992,
+      "sha256": "1a55697ecce51498dcf30161d335f9f331d753d4a780ee380699861b7c9ef1e1",
+      "before": ".omc/research/qa53-service-geometry-v1/before/worker.cpp",
+      "before_bytes": 46928,
+      "before_sha256": "17bfd627994e541bcae0f13d0f08dec4761698d539d838b13f9576452b1f539f"
+    },
+    {
+      "file": "tools/qa/native_observer/controller.py",
+      "raw": ".omc/research/qa53-service-geometry-v1/raw/controller.py",
+      "bytes": 18669,
+      "sha256": "7d4376866935f95497865e4ff3185f58bace4fa19b4a2f4027289cd0c51b9726",
+      "before": ".omc/research/qa53-service-geometry-v1/before/controller.py",
+      "before_bytes": 18508,
+      "before_sha256": "462504abcaafee308ca13802c9fdb454bf0b18586f55d1b0110faaf8fa9ee9c8"
+    },
+    {
+      "file": "tools/qa/native_observer/scenario.py",
+      "raw": ".omc/research/qa53-service-geometry-v1/raw/scenario.py",
+      "bytes": 18385,
+      "sha256": "2d49ff87c1692beb2caf3e709668dc865d0a5d4b32f4f440d8e51fddd91464db",
+      "before": ".omc/research/qa53-service-geometry-v1/before/scenario.py",
+      "before_bytes": 15236,
+      "before_sha256": "4fa400166cf8b305844916e991fecd5bd608f1122171d7afc6de6b07e9de4bac"
+    },
+    {
+      "file": "tools/qa/native_observer/AGENTS.md",
+      "raw": ".omc/research/qa53-service-geometry-v1/raw/AGENTS.md",
+      "bytes": 32327,
+      "sha256": "ea45a9255e78655ef683b330b753d8f6720ce307e71fd6f4c3ce9255913756b2",
+      "before": ".omc/research/qa53-service-geometry-v1/before/AGENTS.md",
+      "before_bytes": 31536,
+      "before_sha256": "638784bf17b3e48ef03ccf035483ac3557c36488fd942db17ac36435888cf3e0"
+    }
+  ],
+  "changes": [
+    {
+      "file": "worker.cpp",
+      "insertions": 2,
+      "deletions": 2
+    },
+    {
+      "file": "controller.py",
+      "insertions": 3,
+      "deletions": 2
+    },
+    {
+      "file": "scenario.py",
+      "insertions": 45,
+      "deletions": 6
+    },
+    {
+      "file": "AGENTS.md",
+      "insertions": 18,
+      "deletions": 6
+    }
+  ],
+  "patch": {
+    "file": ".omc/research/qa53-service-geometry-v1/source.patch",
+    "bytes": 11543,
+    "sha256": "6ae2c708c72c0fb0d5879c10251f297f83db4fe68dae503dfc68036a719588e8"
+  }
+}

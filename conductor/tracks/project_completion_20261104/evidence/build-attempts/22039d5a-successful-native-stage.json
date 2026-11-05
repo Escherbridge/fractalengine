@@ -1,0 +1,11 @@
+{
+  "source_commit": "22039d5add074d4df0e18f5847286606d95407ac",
+  "session": 74576,
+  "terminal_exit_code": 0,
+  "stage": ".qa/stage/22039d5a-20261104174412728",
+  "duration_seconds": 68.3,
+  "rust_msvc_compiler_warning_error_diagnostics": 0,
+  "application_and_helper_hashes_verified": true,
+  "log_sha256": "71c4d63d15044feb35bb5fa898e4792c6813be15351594ee12fbc082eeb3f04b",
+  "limits": "Production build only; fresh diagnostic evidence and final integrated verification remain pending."
+}
