@@ -1,0 +1,76 @@
+{
+  "kind": "fractalengine-source-candidate-v1",
+  "source_baseline_commit": "6ca9f49bf65bb344ff5bdb0fa9794208c54c4a9a",
+  "scope": "isolated property control height candidate only; canonical production sources unchanged",
+  "files": [
+    {
+      "canonical": "fe-ui/src/panels/property_grid.rs",
+      "before": {
+        "path": "before/fe-ui/src/panels/property_grid.rs",
+        "bytes": 7279,
+        "sha256": "5300bf230ca711daf67c90dcc1455587365e7b69f3e203c70a7221c846806f01"
+      },
+      "raw": {
+        "path": "raw/fe-ui/src/panels/property_grid.rs",
+        "bytes": 7766,
+        "sha256": "1123aaa5e58b5fb5e055d4ed0068d6a4c532959465e55e751c7ad2e8dded6c74"
+      },
+      "production_matches_before": true,
+      "added_lines": 10,
+      "removed_lines": 3
+    },
+    {
+      "canonical": "fe-ui/src/panels/inspector.rs",
+      "before": {
+        "path": "before/fe-ui/src/panels/inspector.rs",
+        "bytes": 283206,
+        "sha256": "db1385664c69c858b18f88b604d21d956b2b4768523d21015e63f8fe297ba022"
+      },
+      "raw": {
+        "path": "raw/fe-ui/src/panels/inspector.rs",
+        "bytes": 285484,
+        "sha256": "4afa4fcd1f1fe3ae77fda983c3b884daa0aa92addfd127b0b1fb439612ffccb1"
+      },
+      "production_matches_before": true,
+      "added_lines": 36,
+      "removed_lines": 0
+    },
+    {
+      "canonical": "fe-ui/src/panels/AGENTS.md",
+      "before": {
+        "path": "before/fe-ui/src/panels/AGENTS.md",
+        "bytes": 71734,
+        "sha256": "fb6ca2d661702d337d8e12ab3305b734925d62ceb7e304bd4e89882a822af53c"
+      },
+      "raw": {
+        "path": "raw/fe-ui/src/panels/AGENTS.md",
+        "bytes": 72746,
+        "sha256": "b5fc5a8cd4de84da43c3f3a7ea4c42503237de8ca40a0d161bf7ebe6ffefaa96"
+      },
+      "production_matches_before": true,
+      "added_lines": 13,
+      "removed_lines": 0
+    }
+  ],
+  "patch": {
+    "path": "source.patch",
+    "bytes": 6914,
+    "sha256": "fb0aa81bb3d0ad3930314a63cf6d5d6959969bec9f3b630d013a5f3ec5a8328c"
+  },
+  "observed_boundary": {
+    "path": "qa/passes/57/owner-probe-default-grid-after-ui.jsonl",
+    "bytes": 205277,
+    "sha256": "6f0bcffec85b968a8d49f391d0fe568bfb708195be3656c880ecf337b580d14e"
+  },
+  "frozen_native_anchors": [
+    {
+      "path": ".omc/research/qa56-provider-diagnostic-v1/manifest.json",
+      "sha256": "a9e802958b033c53e5b9a8248a715699559ba08d552e9be5cf3f4d807b4b5b38"
+    },
+    {
+      "path": ".omc/research/qa56-provider-diagnostic-v1/source.patch",
+      "sha256": "7fddaf18865e0f05f8269335afa596ac10f5e4a2abddb864bdb40b86201fe344"
+    }
+  ],
+  "execution": "Source/file/text/hash operations only; no implementation parser, tests, formatter, compiler, native/apps/API/DB/network/Git mutation."
+}

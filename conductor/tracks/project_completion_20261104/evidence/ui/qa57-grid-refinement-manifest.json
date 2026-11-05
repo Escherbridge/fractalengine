@@ -1,0 +1,120 @@
+{
+  "kind": "fractalengine-combined-source-candidate-v1",
+  "source_baseline_commit": "6ca9f49bf65bb344ff5bdb0fa9794208c54c4a9a",
+  "scope": "isolated narrow stacked property layout inheriting frozen height-v2; canonical production unchanged",
+  "files": [
+    {
+      "canonical": "fe-ui/src/panels/property_grid.rs",
+      "production_matches_before": true,
+      "parent_matches_frozen_height_v2": true,
+      "before": {
+        "path": "before/fe-ui/src/panels/property_grid.rs",
+        "bytes": 7279,
+        "sha256": "5300bf230ca711daf67c90dcc1455587365e7b69f3e203c70a7221c846806f01"
+      },
+      "parent": {
+        "path": "parent/fe-ui/src/panels/property_grid.rs",
+        "bytes": 8043,
+        "sha256": "05a6d570675ea0ee3f8ab0de3a5c175bb803bc1dc114d6c81204edc2b2b29667"
+      },
+      "raw": {
+        "path": "raw/fe-ui/src/panels/property_grid.rs",
+        "bytes": 8996,
+        "sha256": "3d7a6656cd484a4b1fa83491625a8165b9f09e76b8abadfc27c36937f725e6d4"
+      },
+      "full_added": 48,
+      "full_removed": 11,
+      "parent_delta_added": 33,
+      "parent_delta_removed": 7
+    },
+    {
+      "canonical": "fe-ui/src/panels/inspector.rs",
+      "production_matches_before": true,
+      "parent_matches_frozen_height_v2": true,
+      "before": {
+        "path": "before/fe-ui/src/panels/inspector.rs",
+        "bytes": 283206,
+        "sha256": "db1385664c69c858b18f88b604d21d956b2b4768523d21015e63f8fe297ba022"
+      },
+      "parent": {
+        "path": "parent/fe-ui/src/panels/inspector.rs",
+        "bytes": 285662,
+        "sha256": "b86166aa2c4a8d22d814b5d0e50d11e22734e222541271452db26b3878f613f8"
+      },
+      "raw": {
+        "path": "raw/fe-ui/src/panels/inspector.rs",
+        "bytes": 290792,
+        "sha256": "c00b41b5ae688d11675920f70ce1ea7da0694b7af5865c6703ef753e5f8a2bbd"
+      },
+      "full_added": 117,
+      "full_removed": 6,
+      "parent_delta_added": 79,
+      "parent_delta_removed": 6
+    },
+    {
+      "canonical": "fe-ui/src/panels/AGENTS.md",
+      "production_matches_before": true,
+      "parent_matches_frozen_height_v2": true,
+      "before": {
+        "path": "before/fe-ui/src/panels/AGENTS.md",
+        "bytes": 71734,
+        "sha256": "fb6ca2d661702d337d8e12ab3305b734925d62ceb7e304bd4e89882a822af53c"
+      },
+      "parent": {
+        "path": "parent/fe-ui/src/panels/AGENTS.md",
+        "bytes": 73300,
+        "sha256": "4ebb8a5d1c1f0642c16cf5716d44db4d32c73770d2bfdfb1ca6428a64f5c9967"
+      },
+      "raw": {
+        "path": "raw/fe-ui/src/panels/AGENTS.md",
+        "bytes": 75411,
+        "sha256": "7f6871c493295542d9c006b7992fe31589f40350d3292fd9e6826a07b70dbd09"
+      },
+      "full_added": 52,
+      "full_removed": 4,
+      "parent_delta_added": 32,
+      "parent_delta_removed": 4
+    }
+  ],
+  "patches": [
+    {
+      "path": "source.patch",
+      "bytes": 21996,
+      "sha256": "7d781060dfa9ab43556b44ed0e4fa3c48bed7ec9655796f2a0c8a9f14a20606f"
+    },
+    {
+      "path": "parent-to-refinement.patch",
+      "bytes": 15692,
+      "sha256": "e20b861a6761774c3c0580dca9319caf68e0a9ec984d1952f7d8f41dafccf35e"
+    }
+  ],
+  "anchors": [
+    {
+      "path": ".omc/research/qa57-narrow-property-key-review.md",
+      "bytes": 7331,
+      "sha256": "171c6af402c9df40a559640d1b236254af517cc3089e98ea04936b80821e4cfd"
+    },
+    {
+      "path": ".omc/research/qa57-property-control-height-v1/manifest.json",
+      "bytes": 2714,
+      "sha256": "10231b482ca389819fa09e6b261fe1718a5b79ce367c2dd5ebc97409108e7118"
+    },
+    {
+      "path": ".omc/research/qa57-property-control-height-v2/manifest.json",
+      "bytes": 4017,
+      "sha256": "9b2755dccf8889582469ff681e0aff1451924fef9dec1fb572eb438ee6b3a5bf"
+    },
+    {
+      "path": ".omc/research/qa57-property-control-height-v2/source.patch",
+      "bytes": 8026,
+      "sha256": "309835233eac7bb8edb357d309618f6d17b47059d022fd510395bb6ac769915d"
+    },
+    {
+      "path": ".omc/research/qa57-property-control-height-v2/source-report.md",
+      "bytes": 3642,
+      "sha256": "31bf3885481e26827e5d10bd043e4c53976c8e7c39661852a07bccc2da445955"
+    }
+  ],
+  "inherited_height_measurement_byte_exact": true,
+  "execution": "Source/file/text/hash inspection only; no implementation parser/tests/formatter/compiler/apps/native/API/DB/network/Git mutation."
+}

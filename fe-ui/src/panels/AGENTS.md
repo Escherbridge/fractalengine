@@ -528,26 +528,56 @@ historical copy-box presentation in §inspector-units). `property_grid` owns
 only column geometry, compact previews and exact clipboard formatting;
 the parser and draft model remain shared with Add/Save. Key, Type, Value and
 Actions columns fill the available body width when their measured minima fit.
-Below that width the same rows use Property (key plus type) and Value columns,
-followed by a full-width wrapped action row. The breakpoint includes readable
+Below that width ordinary compact rows use Property (key plus type) and Value
+columns, followed by a full-width wrapped action row. The breakpoint includes readable
 values and the armed Confirm/Cancel pair; the table does not force its wide floor
 into a narrow Inspector. Row actions remain text buttons and use at least24 points
 or20 physical pixels, whichever is larger. The native horizontal container remains
 for identity/observations, with fitted content and no horizontal-scroll hint.
 
 Fitting column/action slots allocate exact rectangles and clip to those bounds.
+Their row height measures Button/Small/Body font rows plus the active button-frame
+vertical Margin sum, then takes the existing target/interact minimum. Padding is
+converted through egui Margin exactly as Button's Frame does: each1.5-point side
+rounds to2, for a4-point vertical sum rather than raw3. Button's plain text font
+uses FontSelection::Default with Button fallback; explicit Small text honors
+override_font_id before Small. This follows WidgetText's actual font precedence;
+the app currently sets text-style maps, not global font/style overrides. No new
+theme surface or global confirmation-helper policy is introduced. Egui's actual
+button can exceed that minimum: QA57 measured a25-point Edit leaf in a24-point
+slot. No fixed25-point patch is used. The child interaction minimum stays separate
+from this padded allocation height, so the shared confirmation-pair width is
+measured against the same minimum that renders its Small labels. Ordinary fixed
+cells and full-width compact children share the measured row height; no viewport
+or Inspector width floor changes.
 The destructive slot reserves the shared measured pair at ordinary widths. When
 a compact slot exceeds the body, it instead allocates a body-width child whose
 height follows the actual controls. The canonical confirmation helper can then
 stack Confirm/Cancel without clipping either target or enlarging horizontal
 content, including the supported52-point body. Edit/Copy wrap their labels too;
-compact key sizing preserves a value-control minimum where the body permits it.
+compact key sizing reserves at least the existing96-point key region while
+preserving a value-control minimum where the body permits it.
 Arming/canceling within one layout keeps Edit/Copy origins and horizontal offset
 stable. No Inspector width floor or viewport allocation is raised.
-Compact key/type cells reserve two control heights; values keep their existing
+Ordinary compact key/type cells reserve two control heights; values keep their existing
 preview/expand behavior. One row-action closure serves both layouts with identical
 Edit/Copy/Delete callbacks and loading/editing/pending guards. Full keys remain
 in label hover and contextual accessible action names.
+
+QA57's measured67/79-point bodies reduced the old38% key cells to25/30 points,
+painting every key as an ellipsis despite correct semantic action names. Columns
+therefore owns one narrower stacked-content branch when the body cannot hold the
+existing96-point key reserve, measured value-control minimum and gap. Key and
+type wrap across the complete body in one natural-height cell; the value follows
+on its own full-width row, then the same wrapped actions. Native Label wrapping
+prefers word/punctuation boundaries and can split overlong tokens into the
+available line width. There is no fixed two-line clip or forced single-character
+wrap. The Property heading follows the same natural-height path. Normal260-point
+bodies retain their38% key proportion; wide four-column geometry is unchanged.
+Vertical scrolling owns extra height; no Inspector or viewport floor is raised.
+Existing node/key and column scopes, expansion state, draft map, callbacks and
+canonical confirmation ownership remain. Changed actual leaf IDs may safely
+disarm across layout transitions; armed continuity is not promised.
 
 Expanded editors and read-only JSON details use the table viewport's horizontal
 range captured before its horizontal ScrollArea. The shared `Columns::expanded`
@@ -588,6 +618,24 @@ at zero offset, then compares fitted width, horizontal offset and Edit/Copy
 positions before/after arming and cancellation. It checks the complete action
 rectangles against their actual hit rectangles, child clips and table clip,
 including the full Confirm/Cancel pair; a control count alone is insufficient.
+The same existing journey also enlarges the Button font with4.0-point and
+fractional1.5-point vertical padding, so intrinsic Edit/Copy height exceeds the
+old24-point slot and exercises per-side rounding. At52 points, both sides
+of the measured pair and compact/wide widths, it checks complete normal and armed
+rect/hit/child/table intersections and actual arm/cancel without writes, then
+restores the original style. This regression profile is authored, not executed.
+An additional block in that same journey uses the original grid_number/payload/
+remove/text identities plus a long unbroken key and Unicode key at52/67/79 and
+both sides of the measured stacked transition. It inspects actual painted native
+text shapes: no elision, complete glyph characters and every row within its
+paint/table clip. Long narrow keys must occupy multiple rows with more than one
+character fitting a line. Short fixture identities also stay complete above the
+transition; ordinary long-key truncation/hover remains the existing policy there.
+The numeric draft retains exact-150.250 through stacked/compact/wide transitions;
+cancel leaves stored data and the action queue unchanged. Semantic labels alone
+do not prove readable painting. Root must inspect rebuilt screenshots at the
+original1024/1280x900/2 settings; actual live52 was not reached in GUI57 and is
+only an authored boundary here.
 At those same widths it opens Edit without horizontal scrolling, checks the full header,
 input, status and footer against actual hit/clip geometry, verifies real editor
 height with unchanged table width/offset, and cancels a dirty draft without a

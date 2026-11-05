@@ -6,21 +6,33 @@ use serde_json::Value;
 use crate::theme;
 
 const COLUMN_GAP: f32 = 8.0;
+const KEY_MINIMUM: f32 = 96.0;
 
 pub(super) struct Columns {
     pub widths: [f32; 4],
     pub height: f32,
     compact: bool,
+    stacked: bool,
     width: f32,
     action_widths: [f32; 3],
+    interaction_height: f32,
     viewport: egui::Rangef,
 }
 
 impl Columns {
     pub fn new(ui: &egui::Ui, available: f32) -> Self {
         let minimum = crate::ui_shell::layout_policy::target_size(ui.ctx());
-        let height = minimum.max(ui.spacing().interact_size.y);
-        let font = egui::TextStyle::Button.resolve(ui.style());
+        let interaction_height = minimum.max(ui.spacing().interact_size.y);
+        let font = egui::FontSelection::Default
+            .resolve_with_fallback(ui.style(), egui::TextStyle::Button.into());
+        let small_font = ui.style().override_font_id.clone()
+            .unwrap_or_else(|| egui::TextStyle::Small.resolve(ui.style()));
+        let body_font = egui::FontSelection::Default.resolve(ui.style());
+        let text_height = ui.fonts_mut(|fonts| {
+            fonts.row_height(&font).max(fonts.row_height(&small_font)).max(fonts.row_height(&body_font))
+        });
+        let padding = if ui.visuals().button_frame { ui.spacing().button_padding } else { egui::Vec2::ZERO };
+        let height = (text_height + egui::Margin::from(padding).sum().y).max(interaction_height).ceil();
         let text_width = |text: &str| {
             ui.fonts_mut(|fonts| {
                 fonts
@@ -43,13 +55,16 @@ impl Columns {
         let actions = action_widths.iter().sum::<f32>() + COLUMN_GAP * 2.0;
         let kind = text_width("number").max(52.0) + 8.0;
         let width = available.max(1.0);
-        let compact = width < 96.0 + kind + 120.0 + actions + COLUMN_GAP * 3.0;
-        let widths = if compact {
-            let key = (width * 0.38).min((width - COLUMN_GAP - height).max(0.0));
+        let compact = width < KEY_MINIMUM + kind + 120.0 + actions + COLUMN_GAP * 3.0;
+        let stacked = compact && width < KEY_MINIMUM + height + COLUMN_GAP;
+        let widths = if stacked {
+            [width, 0.0, width, 0.0]
+        } else if compact {
+            let key = (width * 0.38).max(KEY_MINIMUM).min(width - COLUMN_GAP - height);
             [key, 0.0, (width - key - COLUMN_GAP).max(0.0), 0.0]
         } else {
-            let key_max = (width - kind - actions - COLUMN_GAP * 3.0 - 120.0).clamp(96.0, 180.0);
-            let key = (width * 0.20).clamp(96.0, key_max);
+            let key_max = (width - kind - actions - COLUMN_GAP * 3.0 - 120.0).clamp(KEY_MINIMUM, 180.0);
+            let key = (width * 0.20).clamp(KEY_MINIMUM, key_max);
             [
                 key,
                 kind,
@@ -61,8 +76,10 @@ impl Columns {
             widths,
             height,
             compact,
+            stacked,
             width,
             action_widths,
+            interaction_height,
             viewport: ui
                 .available_rect_before_wrap()
                 .x_range()
@@ -78,12 +95,21 @@ impl Columns {
         self.compact
     }
 
+    pub fn stacked(&self) -> bool {
+        self.stacked
+    }
+
     pub fn row(&self, ui: &mut egui::Ui, body: impl FnOnce(&mut egui::Ui)) {
-        ui.horizontal(|ui| {
+        let content = |ui: &mut egui::Ui| {
             ui.spacing_mut().item_spacing.x = COLUMN_GAP;
-            ui.spacing_mut().interact_size.y = self.height;
+            ui.spacing_mut().interact_size.y = self.interaction_height;
             body(ui);
-        });
+        };
+        if self.stacked {
+            ui.vertical(content);
+        } else {
+            ui.horizontal(content);
+        }
     }
 
     pub fn cell<R>(
@@ -107,6 +133,17 @@ impl Columns {
         column: usize,
         body: impl FnOnce(&mut egui::Ui) -> R,
     ) -> R {
+        if self.stacked {
+            let rect = egui::Rect::from_min_size(ui.next_widget_position(), egui::vec2(self.width, self.height));
+            return ui.scope_builder(
+                egui::UiBuilder::new().id_salt(("property-column", column)).max_rect(rect)
+                    .layout(egui::Layout::top_down(egui::Align::Min)),
+                |ui| {
+                    ui.set_width(self.width);
+                    body(ui)
+                },
+            ).inner;
+        }
         fixed_cell(
             ui,
             ("property-column", column),
@@ -126,7 +163,7 @@ impl Columns {
     pub fn actions_row(&self, ui: &mut egui::Ui, body: impl FnOnce(&mut egui::Ui)) {
         ui.horizontal_wrapped(|ui| {
             ui.spacing_mut().item_spacing.x = COLUMN_GAP;
-            ui.spacing_mut().interact_size.y = self.height;
+            ui.spacing_mut().interact_size.y = self.interaction_height;
             body(ui);
         });
     }

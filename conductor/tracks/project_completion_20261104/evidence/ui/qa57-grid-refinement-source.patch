@@ -1,0 +1,383 @@
+--- a/fe-ui/src/panels/property_grid.rs
++++ b/fe-ui/src/panels/property_grid.rs
+@@ -6,21 +6,33 @@
+ use crate::theme;
+ 
+ const COLUMN_GAP: f32 = 8.0;
++const KEY_MINIMUM: f32 = 96.0;
+ 
+ pub(super) struct Columns {
+     pub widths: [f32; 4],
+     pub height: f32,
+     compact: bool,
++    stacked: bool,
+     width: f32,
+     action_widths: [f32; 3],
++    interaction_height: f32,
+     viewport: egui::Rangef,
+ }
+ 
+ impl Columns {
+     pub fn new(ui: &egui::Ui, available: f32) -> Self {
+         let minimum = crate::ui_shell::layout_policy::target_size(ui.ctx());
+-        let height = minimum.max(ui.spacing().interact_size.y);
+-        let font = egui::TextStyle::Button.resolve(ui.style());
++        let interaction_height = minimum.max(ui.spacing().interact_size.y);
++        let font = egui::FontSelection::Default
++            .resolve_with_fallback(ui.style(), egui::TextStyle::Button.into());
++        let small_font = ui.style().override_font_id.clone()
++            .unwrap_or_else(|| egui::TextStyle::Small.resolve(ui.style()));
++        let body_font = egui::FontSelection::Default.resolve(ui.style());
++        let text_height = ui.fonts_mut(|fonts| {
++            fonts.row_height(&font).max(fonts.row_height(&small_font)).max(fonts.row_height(&body_font))
++        });
++        let padding = if ui.visuals().button_frame { ui.spacing().button_padding } else { egui::Vec2::ZERO };
++        let height = (text_height + egui::Margin::from(padding).sum().y).max(interaction_height).ceil();
+         let text_width = |text: &str| {
+             ui.fonts_mut(|fonts| {
+                 fonts
+@@ -43,13 +55,16 @@
+         let actions = action_widths.iter().sum::<f32>() + COLUMN_GAP * 2.0;
+         let kind = text_width("number").max(52.0) + 8.0;
+         let width = available.max(1.0);
+-        let compact = width < 96.0 + kind + 120.0 + actions + COLUMN_GAP * 3.0;
+-        let widths = if compact {
+-            let key = (width * 0.38).min((width - COLUMN_GAP - height).max(0.0));
++        let compact = width < KEY_MINIMUM + kind + 120.0 + actions + COLUMN_GAP * 3.0;
++        let stacked = compact && width < KEY_MINIMUM + height + COLUMN_GAP;
++        let widths = if stacked {
++            [width, 0.0, width, 0.0]
++        } else if compact {
++            let key = (width * 0.38).max(KEY_MINIMUM).min(width - COLUMN_GAP - height);
+             [key, 0.0, (width - key - COLUMN_GAP).max(0.0), 0.0]
+         } else {
+-            let key_max = (width - kind - actions - COLUMN_GAP * 3.0 - 120.0).clamp(96.0, 180.0);
+-            let key = (width * 0.20).clamp(96.0, key_max);
++            let key_max = (width - kind - actions - COLUMN_GAP * 3.0 - 120.0).clamp(KEY_MINIMUM, 180.0);
++            let key = (width * 0.20).clamp(KEY_MINIMUM, key_max);
+             [
+                 key,
+                 kind,
+@@ -61,8 +76,10 @@
+             widths,
+             height,
+             compact,
++            stacked,
+             width,
+             action_widths,
++            interaction_height,
+             viewport: ui
+                 .available_rect_before_wrap()
+                 .x_range()
+@@ -78,12 +95,21 @@
+         self.compact
+     }
+ 
++    pub fn stacked(&self) -> bool {
++        self.stacked
++    }
++
+     pub fn row(&self, ui: &mut egui::Ui, body: impl FnOnce(&mut egui::Ui)) {
+-        ui.horizontal(|ui| {
++        let content = |ui: &mut egui::Ui| {
+             ui.spacing_mut().item_spacing.x = COLUMN_GAP;
+-            ui.spacing_mut().interact_size.y = self.height;
++            ui.spacing_mut().interact_size.y = self.interaction_height;
+             body(ui);
+-        });
++        };
++        if self.stacked {
++            ui.vertical(content);
++        } else {
++            ui.horizontal(content);
++        }
+     }
+ 
+     pub fn cell<R>(
+@@ -107,6 +133,17 @@
+         column: usize,
+         body: impl FnOnce(&mut egui::Ui) -> R,
+     ) -> R {
++        if self.stacked {
++            let rect = egui::Rect::from_min_size(ui.next_widget_position(), egui::vec2(self.width, self.height));
++            return ui.scope_builder(
++                egui::UiBuilder::new().id_salt(("property-column", column)).max_rect(rect)
++                    .layout(egui::Layout::top_down(egui::Align::Min)),
++                |ui| {
++                    ui.set_width(self.width);
++                    body(ui)
++                },
++            ).inner;
++        }
+         fixed_cell(
+             ui,
+             ("property-column", column),
+@@ -126,7 +163,7 @@
+     pub fn actions_row(&self, ui: &mut egui::Ui, body: impl FnOnce(&mut egui::Ui)) {
+         ui.horizontal_wrapped(|ui| {
+             ui.spacing_mut().item_spacing.x = COLUMN_GAP;
+-            ui.spacing_mut().interact_size.y = self.height;
++            ui.spacing_mut().interact_size.y = self.interaction_height;
+             body(ui);
+         });
+     }
+--- a/fe-ui/src/panels/inspector.rs
++++ b/fe-ui/src/panels/inspector.rs
+@@ -1827,15 +1827,23 @@
+         |ui| {
+             ui.set_width(columns.width());
+             columns.row(ui, |ui| {
+-                let headings: &[(usize, &str)] = if columns.compact() {
++                let headings: &[(usize, &str)] = if columns.stacked() {
++                    &[(0, "Property")]
++                } else if columns.compact() {
+                     &[(0, "Property"), (2, "Value")]
+                 } else {
+                     &[(0, "Key"), (1, "Type"), (2, "Value"), (3, "Actions")]
+                 };
+                 for &(column, heading) in headings {
+-                    columns.cell(ui, column, |ui| {
+-                        ui.add(egui::Label::new(egui::RichText::new(heading).strong()).truncate());
+-                    });
++                    let title = |ui: &mut egui::Ui| {
++                        ui.add(egui::Label::new(egui::RichText::new(heading).strong())
++                            .wrap_mode(if columns.stacked() { egui::TextWrapMode::Wrap } else { egui::TextWrapMode::Truncate }));
++                    };
++                    if columns.stacked() {
++                        columns.content_cell(ui, column, title);
++                    } else {
++                        columns.cell(ui, column, title);
++                    }
+                 }
+             });
+             ui.separator();
+@@ -1890,7 +1898,7 @@
+                     .small()
+                     .color(theme::TEXT_DIM),
+             )
+-            .truncate(),
++            .wrap_mode(if columns.stacked() { egui::TextWrapMode::Wrap } else { egui::TextWrapMode::Truncate }),
+         );
+     };
+     let mut row_actions = |ui: &mut egui::Ui| {
+@@ -1937,7 +1945,7 @@
+         columns.content_cell(ui, 0, |ui| {
+             ui.add(
+                 egui::Label::new(egui::RichText::new(key).strong().color(theme::TEXT_SECTION))
+-                    .truncate(),
++                    .wrap_mode(if columns.stacked() { egui::TextWrapMode::Wrap } else { egui::TextWrapMode::Truncate }),
+             )
+             .on_hover_text(key);
+             if columns.compact() {
+@@ -2905,6 +2913,8 @@
+         let mut time = 57.0;
+         let body_width = std::cell::Cell::new(0.0);
+         let pair_width = std::cell::Cell::new(0.0);
++        let stacked_boundary = std::cell::Cell::new(0.0);
++        let stacked_mode = std::cell::Cell::new(false);
+         let frame = |width: f32,
+                      events: Vec<egui::Event>,
+                      time: &mut f64,
+@@ -2933,6 +2943,8 @@
+                             ui.spacing().item_spacing.x,
+                         ));
+                         let columns = Columns::new(ui, ui.available_width());
++                        stacked_boundary.set(96.0 + columns.height + 8.0);
++                        stacked_mode.set(columns.stacked());
+                         assert!(columns.width() <= ui.available_width() + 0.5);
+                         let value_minimum = if columns.compact() { columns.height } else { 119.9 };
+                         assert!(columns.widths[2] >= value_minimum);
+@@ -3161,6 +3173,105 @@
+             assert!((table_closed.content_size.x - table_before.content_size.x).abs() < 0.5);
+             assert!((table_closed.offset.x - table_before.offset.x).abs() < 0.5);
+         }
++        let original_style = (*ctx.style()).clone();
++        let complete_targets = |observed: &crate::ui_shell::layout_policy::LayoutObservations| {
++            let table = observed.scrolls.iter().find(|scroll| scroll.label == "Custom property table").unwrap();
++            assert!(table.offset.x.abs() < 0.5);
++            for control in &observed.controls {
++                let visible = control.rect.intersect(control.hit).intersect(control.clip).intersect(table.clip);
++                assert!((visible.width() - control.rect.width()).abs() < 0.5);
++                assert!(
++                    (visible.height() - control.rect.height()).abs() < 0.5,
++                    "padded button text must fit its complete row/action clip"
++                );
++            }
++        };
++        for (font_size, padding_y) in [(20.0, 4.0), (24.0, 1.5)] {
++            ctx.style_mut(|style| {
++                style.text_styles.get_mut(&egui::TextStyle::Button).unwrap().size = font_size;
++                style.spacing.button_padding.y = padding_y;
++            });
++            frame(260.0, vec![], &mut time, &mut inspector, &mut ui_mgr);
++            let pair = pair_width.get();
++            for width in [52.0 + frame_padding, pair - 1.0 + frame_padding, pair + 1.0 + frame_padding, 260.0, 640.0] {
++                frame(width, vec![], &mut time, &mut inspector, &mut ui_mgr);
++                let (_, before, _) = frame(width, vec![], &mut time, &mut inspector, &mut ui_mgr);
++                assert_eq!(before.controls.len(), 3);
++                assert!(before.controls[0].rect.height() > 24.0, "exercise intrinsic button height above the old fixed slot");
++                complete_targets(&before);
++                let (actions, _, _) = click(width, before.controls[2].rect.center(), &mut time, &mut inspector, &mut ui_mgr);
++                assert!(actions.delete.is_none());
++                let (_, armed, _) = frame(width, vec![], &mut time, &mut inspector, &mut ui_mgr);
++                assert_eq!(armed.controls.len(), 4);
++                complete_targets(&armed);
++                let (actions, _, _) = click(width, armed.controls[3].rect.center(), &mut time, &mut inspector, &mut ui_mgr);
++                assert!(actions.delete.is_none());
++                assert_eq!(inspector.node_properties, stored);
++                assert!(ui_mgr.drain_actions().is_empty());
++            }
++        }
++        ctx.set_style(original_style);
++        frame(260.0, vec![], &mut time, &mut inspector, &mut ui_mgr);
++        let transition = stacked_boundary.get();
++        for (key, value) in [
++            ("grid_number", json!(1.25)),
++            ("grid_payload", json!({"samples": [null, true, {"value": 12.5}]})),
++            ("grid_remove", json!(true)),
++            ("grid_text", json!("stored text")),
++            ("unbrokenpropertyidentifierwithseveralmeaningfulsegments", json!(null)),
++            ("温度測定値_長い識別子_µg_m³", json!(1.25)),
++        ] {
++            inspector.node_properties = serde_json::Value::Object(serde_json::Map::from_iter([(key.to_owned(), value.clone())]));
++            for body in [52.0, 67.0, 79.0, transition - 1.0, transition + 1.0] {
++                let width = body + frame_padding;
++                frame(width, vec![], &mut time, &mut inspector, &mut ui_mgr);
++                let (_, measured, output) = frame(width, vec![], &mut time, &mut inspector, &mut ui_mgr);
++                assert!((body_width.get() - body).abs() < 0.1);
++                assert_eq!(stacked_mode.get(), body < transition);
++                complete_targets(&measured);
++                let table = measured.scrolls.iter().find(|scroll| scroll.label == "Custom property table").unwrap();
++                if stacked_mode.get() || key.starts_with("grid_") {
++                    for expected in [key, PropertyValueKind::of(&value).label()] {
++                        let painted = output.shapes.iter().find_map(|shape| match &shape.shape {
++                            egui::epaint::Shape::Text(text) if text.galley.text() == expected => Some((shape.clip_rect, text)),
++                            _ => None,
++                        }).expect("the actual native label must paint, not merely retain an accessible name");
++                        assert!(!painted.1.galley.elided);
++                        let glyph_text: String = painted.1.galley.rows.iter()
++                            .flat_map(|row| row.row.glyphs.iter().map(|glyph| glyph.chr)).collect();
++                        assert_eq!(glyph_text, expected, "all key/type characters must reach painted rows");
++                        let clip = painted.0.intersect(table.clip);
++                        for row in &painted.1.galley.rows {
++                            let rect = row.rect_without_leading_space().translate(painted.1.pos.to_vec2());
++                            let visible = rect.intersect(clip);
++                            assert!((visible.width() - rect.width()).abs() < 0.5);
++                            assert!((visible.height() - rect.height()).abs() < 0.5);
++                        }
++                        if expected == key && key.len() > 30 && stacked_mode.get() {
++                            assert!(painted.1.galley.rows.len() > 1);
++                            assert!(painted.1.galley.rows.iter().any(|row| row.row.glyphs.len() > 1),
++                                "use the full line width rather than one character per line");
++                        }
++                    }
++                }
++                if key == "grid_number" {
++                    click(width, measured.controls[0].rect.center(), &mut time, &mut inspector, &mut ui_mgr);
++                    inspector.property_editor.drafts.get_mut(key).unwrap().raw = "-150.250".into();
++                    for across in [260.0, 640.0, width] {
++                        frame(across, vec![], &mut time, &mut inspector, &mut ui_mgr);
++                        assert_eq!(inspector.property_editor.drafts[key].raw, "-150.250");
++                    }
++                    let (_, editing, _) = frame(width, vec![], &mut time, &mut inspector, &mut ui_mgr);
++                    complete_targets(&editing);
++                    let (actions, _, _) = click(width, editing.controls[7].rect.center(), &mut time, &mut inspector, &mut ui_mgr);
++                    assert_eq!(actions.cancel.as_deref(), Some(key));
++                    inspector.property_editor.drafts.remove(key);
++                    assert_eq!(inspector.node_properties[key], value);
++                    assert!(ui_mgr.drain_actions().is_empty());
++                }
++            }
++        }
++        inspector.node_properties = stored.clone();
+         let (_, observed, _) = frame(1000.0, vec![], &mut time, &mut inspector, &mut ui_mgr);
+         let copy_at = observed.controls[1].rect.center();
+         let delete_at = observed.controls[2].rect.center();
+--- a/fe-ui/src/panels/AGENTS.md
++++ b/fe-ui/src/panels/AGENTS.md
+@@ -528,26 +528,56 @@
+ only column geometry, compact previews and exact clipboard formatting;
+ the parser and draft model remain shared with Add/Save. Key, Type, Value and
+ Actions columns fill the available body width when their measured minima fit.
+-Below that width the same rows use Property (key plus type) and Value columns,
+-followed by a full-width wrapped action row. The breakpoint includes readable
++Below that width ordinary compact rows use Property (key plus type) and Value
++columns, followed by a full-width wrapped action row. The breakpoint includes readable
+ values and the armed Confirm/Cancel pair; the table does not force its wide floor
+ into a narrow Inspector. Row actions remain text buttons and use at least24 points
+ or20 physical pixels, whichever is larger. The native horizontal container remains
+ for identity/observations, with fitted content and no horizontal-scroll hint.
+ 
+ Fitting column/action slots allocate exact rectangles and clip to those bounds.
++Their row height measures Button/Small/Body font rows plus the active button-frame
++vertical Margin sum, then takes the existing target/interact minimum. Padding is
++converted through egui Margin exactly as Button's Frame does: each1.5-point side
++rounds to2, for a4-point vertical sum rather than raw3. Button's plain text font
++uses FontSelection::Default with Button fallback; explicit Small text honors
++override_font_id before Small. This follows WidgetText's actual font precedence;
++the app currently sets text-style maps, not global font/style overrides. No new
++theme surface or global confirmation-helper policy is introduced. Egui's actual
++button can exceed that minimum: QA57 measured a25-point Edit leaf in a24-point
++slot. No fixed25-point patch is used. The child interaction minimum stays separate
++from this padded allocation height, so the shared confirmation-pair width is
++measured against the same minimum that renders its Small labels. Ordinary fixed
++cells and full-width compact children share the measured row height; no viewport
++or Inspector width floor changes.
+ The destructive slot reserves the shared measured pair at ordinary widths. When
+ a compact slot exceeds the body, it instead allocates a body-width child whose
+ height follows the actual controls. The canonical confirmation helper can then
+ stack Confirm/Cancel without clipping either target or enlarging horizontal
+ content, including the supported52-point body. Edit/Copy wrap their labels too;
+-compact key sizing preserves a value-control minimum where the body permits it.
++compact key sizing reserves at least the existing96-point key region while
++preserving a value-control minimum where the body permits it.
+ Arming/canceling within one layout keeps Edit/Copy origins and horizontal offset
+ stable. No Inspector width floor or viewport allocation is raised.
+-Compact key/type cells reserve two control heights; values keep their existing
++Ordinary compact key/type cells reserve two control heights; values keep their existing
+ preview/expand behavior. One row-action closure serves both layouts with identical
+ Edit/Copy/Delete callbacks and loading/editing/pending guards. Full keys remain
+ in label hover and contextual accessible action names.
++
++QA57's measured67/79-point bodies reduced the old38% key cells to25/30 points,
++painting every key as an ellipsis despite correct semantic action names. Columns
++therefore owns one narrower stacked-content branch when the body cannot hold the
++existing96-point key reserve, measured value-control minimum and gap. Key and
++type wrap across the complete body in one natural-height cell; the value follows
++on its own full-width row, then the same wrapped actions. Native Label wrapping
++prefers word/punctuation boundaries and can split overlong tokens into the
++available line width. There is no fixed two-line clip or forced single-character
++wrap. The Property heading follows the same natural-height path. Normal260-point
++bodies retain their38% key proportion; wide four-column geometry is unchanged.
++Vertical scrolling owns extra height; no Inspector or viewport floor is raised.
++Existing node/key and column scopes, expansion state, draft map, callbacks and
++canonical confirmation ownership remain. Changed actual leaf IDs may safely
++disarm across layout transitions; armed continuity is not promised.
+ 
+ Expanded editors and read-only JSON details use the table viewport's horizontal
+ range captured before its horizontal ScrollArea. The shared `Columns::expanded`
+@@ -588,6 +618,24 @@
+ positions before/after arming and cancellation. It checks the complete action
+ rectangles against their actual hit rectangles, child clips and table clip,
+ including the full Confirm/Cancel pair; a control count alone is insufficient.
++The same existing journey also enlarges the Button font with4.0-point and
++fractional1.5-point vertical padding, so intrinsic Edit/Copy height exceeds the
++old24-point slot and exercises per-side rounding. At52 points, both sides
++of the measured pair and compact/wide widths, it checks complete normal and armed
++rect/hit/child/table intersections and actual arm/cancel without writes, then
++restores the original style. This regression profile is authored, not executed.
++An additional block in that same journey uses the original grid_number/payload/
++remove/text identities plus a long unbroken key and Unicode key at52/67/79 and
++both sides of the measured stacked transition. It inspects actual painted native
++text shapes: no elision, complete glyph characters and every row within its
++paint/table clip. Long narrow keys must occupy multiple rows with more than one
++character fitting a line. Short fixture identities also stay complete above the
++transition; ordinary long-key truncation/hover remains the existing policy there.
++The numeric draft retains exact-150.250 through stacked/compact/wide transitions;
++cancel leaves stored data and the action queue unchanged. Semantic labels alone
++do not prove readable painting. Root must inspect rebuilt screenshots at the
++original1024/1280x900/2 settings; actual live52 was not reached in GUI57 and is
++only an authored boundary here.
+ At those same widths it opens Edit without horizontal scrolling, checks the full header,
+ input, status and footer against actual hit/clip geometry, verifies real editor
+ height with unchanged table width/offset, and cancels a dirty draft without a

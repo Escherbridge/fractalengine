@@ -1,0 +1,45 @@
+{
+  "kind": "reviewed-candidate-integration-v1",
+  "base_commit": "6ca9f49bf65bb344ff5bdb0fa9794208c54c4a9a",
+  "files": [
+    {
+      "file": "tools/qa/native_observer/worker.cpp",
+      "raw_path": ".omc\\research\\qa56-provider-diagnostic-v2\\raw\\tools\\qa\\native_observer\\worker.cpp",
+      "sha256": "f2ee668d464f349fb7fdff996578ca3a9cab4fc62ad8dfec4391abf86f4b6b42"
+    },
+    {
+      "file": "tools/qa/native_observer/controller.py",
+      "raw_path": ".omc\\research\\qa56-provider-diagnostic-v2\\raw\\tools\\qa\\native_observer\\controller.py",
+      "sha256": "9b3eb778c98bf1f4f9f3464f248ad0162dd4b72d1113fcf9dcb2a8089ead2c87"
+    },
+    {
+      "file": "tools/qa/native_observer/scenario.py",
+      "raw_path": ".omc\\research\\qa56-provider-diagnostic-v2\\raw\\tools\\qa\\native_observer\\scenario.py",
+      "sha256": "43f8d3a90d3355e1001a0d24b6b10eb454d97ded8cc94dffd9447b7d385a39c5"
+    },
+    {
+      "file": "tools/qa/native_observer/AGENTS.md",
+      "raw_path": ".omc\\research\\qa56-provider-diagnostic-v2\\raw\\tools\\qa\\native_observer\\AGENTS.md",
+      "sha256": "f330612d8754930329c5dbd7bb781b4b4d25075d82ac22dda0d612f64e68d490"
+    },
+    {
+      "file": "fe-ui/src/panels/property_grid.rs",
+      "raw_path": ".omc\\research\\qa57-grid-refinement-v1\\raw\\fe-ui\\src\\panels\\property_grid.rs",
+      "sha256": "3d7a6656cd484a4b1fa83491625a8165b9f09e76b8abadfc27c36937f725e6d4"
+    },
+    {
+      "file": "fe-ui/src/panels/inspector.rs",
+      "raw_path": ".omc\\research\\qa57-grid-refinement-v1\\raw\\fe-ui\\src\\panels\\inspector.rs",
+      "sha256": "c00b41b5ae688d11675920f70ce1ea7da0694b7af5865c6703ef753e5f8a2bbd"
+    },
+    {
+      "file": "fe-ui/src/panels/AGENTS.md",
+      "raw_path": ".omc\\research\\qa57-grid-refinement-v1\\raw\\fe-ui\\src\\panels\\AGENTS.md",
+      "sha256": "7f6871c493295542d9c006b7992fe31589f40350d3292fd9e6826a07b70dbd09"
+    }
+  ],
+  "native_candidate": "qa56-provider-diagnostic-v2",
+  "grid_candidate": "qa57-grid-refinement-v1",
+  "exact_reviewed_bytes_integrated": true,
+  "limits": "No build/test/live acceptance; all apps stopped before integration."
+}

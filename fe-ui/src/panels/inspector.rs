@@ -1827,15 +1827,23 @@ fn render_property_table(
         |ui| {
             ui.set_width(columns.width());
             columns.row(ui, |ui| {
-                let headings: &[(usize, &str)] = if columns.compact() {
+                let headings: &[(usize, &str)] = if columns.stacked() {
+                    &[(0, "Property")]
+                } else if columns.compact() {
                     &[(0, "Property"), (2, "Value")]
                 } else {
                     &[(0, "Key"), (1, "Type"), (2, "Value"), (3, "Actions")]
                 };
                 for &(column, heading) in headings {
-                    columns.cell(ui, column, |ui| {
-                        ui.add(egui::Label::new(egui::RichText::new(heading).strong()).truncate());
-                    });
+                    let title = |ui: &mut egui::Ui| {
+                        ui.add(egui::Label::new(egui::RichText::new(heading).strong())
+                            .wrap_mode(if columns.stacked() { egui::TextWrapMode::Wrap } else { egui::TextWrapMode::Truncate }));
+                    };
+                    if columns.stacked() {
+                        columns.content_cell(ui, column, title);
+                    } else {
+                        columns.cell(ui, column, title);
+                    }
                 }
             });
             ui.separator();
@@ -1890,7 +1898,7 @@ fn render_property_row(
                     .small()
                     .color(theme::TEXT_DIM),
             )
-            .truncate(),
+            .wrap_mode(if columns.stacked() { egui::TextWrapMode::Wrap } else { egui::TextWrapMode::Truncate }),
         );
     };
     let mut row_actions = |ui: &mut egui::Ui| {
@@ -1937,7 +1945,7 @@ fn render_property_row(
         columns.content_cell(ui, 0, |ui| {
             ui.add(
                 egui::Label::new(egui::RichText::new(key).strong().color(theme::TEXT_SECTION))
-                    .truncate(),
+                    .wrap_mode(if columns.stacked() { egui::TextWrapMode::Wrap } else { egui::TextWrapMode::Truncate }),
             )
             .on_hover_text(key);
             if columns.compact() {
@@ -2905,6 +2913,8 @@ mod tests {
         let mut time = 57.0;
         let body_width = std::cell::Cell::new(0.0);
         let pair_width = std::cell::Cell::new(0.0);
+        let stacked_boundary = std::cell::Cell::new(0.0);
+        let stacked_mode = std::cell::Cell::new(false);
         let frame = |width: f32,
                      events: Vec<egui::Event>,
                      time: &mut f64,
@@ -2933,6 +2943,8 @@ mod tests {
                             ui.spacing().item_spacing.x,
                         ));
                         let columns = Columns::new(ui, ui.available_width());
+                        stacked_boundary.set(96.0 + columns.height + 8.0);
+                        stacked_mode.set(columns.stacked());
                         assert!(columns.width() <= ui.available_width() + 0.5);
                         let value_minimum = if columns.compact() { columns.height } else { 119.9 };
                         assert!(columns.widths[2] >= value_minimum);
@@ -3161,6 +3173,105 @@ mod tests {
             assert!((table_closed.content_size.x - table_before.content_size.x).abs() < 0.5);
             assert!((table_closed.offset.x - table_before.offset.x).abs() < 0.5);
         }
+        let original_style = (*ctx.style()).clone();
+        let complete_targets = |observed: &crate::ui_shell::layout_policy::LayoutObservations| {
+            let table = observed.scrolls.iter().find(|scroll| scroll.label == "Custom property table").unwrap();
+            assert!(table.offset.x.abs() < 0.5);
+            for control in &observed.controls {
+                let visible = control.rect.intersect(control.hit).intersect(control.clip).intersect(table.clip);
+                assert!((visible.width() - control.rect.width()).abs() < 0.5);
+                assert!(
+                    (visible.height() - control.rect.height()).abs() < 0.5,
+                    "padded button text must fit its complete row/action clip"
+                );
+            }
+        };
+        for (font_size, padding_y) in [(20.0, 4.0), (24.0, 1.5)] {
+            ctx.style_mut(|style| {
+                style.text_styles.get_mut(&egui::TextStyle::Button).unwrap().size = font_size;
+                style.spacing.button_padding.y = padding_y;
+            });
+            frame(260.0, vec![], &mut time, &mut inspector, &mut ui_mgr);
+            let pair = pair_width.get();
+            for width in [52.0 + frame_padding, pair - 1.0 + frame_padding, pair + 1.0 + frame_padding, 260.0, 640.0] {
+                frame(width, vec![], &mut time, &mut inspector, &mut ui_mgr);
+                let (_, before, _) = frame(width, vec![], &mut time, &mut inspector, &mut ui_mgr);
+                assert_eq!(before.controls.len(), 3);
+                assert!(before.controls[0].rect.height() > 24.0, "exercise intrinsic button height above the old fixed slot");
+                complete_targets(&before);
+                let (actions, _, _) = click(width, before.controls[2].rect.center(), &mut time, &mut inspector, &mut ui_mgr);
+                assert!(actions.delete.is_none());
+                let (_, armed, _) = frame(width, vec![], &mut time, &mut inspector, &mut ui_mgr);
+                assert_eq!(armed.controls.len(), 4);
+                complete_targets(&armed);
+                let (actions, _, _) = click(width, armed.controls[3].rect.center(), &mut time, &mut inspector, &mut ui_mgr);
+                assert!(actions.delete.is_none());
+                assert_eq!(inspector.node_properties, stored);
+                assert!(ui_mgr.drain_actions().is_empty());
+            }
+        }
+        ctx.set_style(original_style);
+        frame(260.0, vec![], &mut time, &mut inspector, &mut ui_mgr);
+        let transition = stacked_boundary.get();
+        for (key, value) in [
+            ("grid_number", json!(1.25)),
+            ("grid_payload", json!({"samples": [null, true, {"value": 12.5}]})),
+            ("grid_remove", json!(true)),
+            ("grid_text", json!("stored text")),
+            ("unbrokenpropertyidentifierwithseveralmeaningfulsegments", json!(null)),
+            ("温度測定値_長い識別子_µg_m³", json!(1.25)),
+        ] {
+            inspector.node_properties = serde_json::Value::Object(serde_json::Map::from_iter([(key.to_owned(), value.clone())]));
+            for body in [52.0, 67.0, 79.0, transition - 1.0, transition + 1.0] {
+                let width = body + frame_padding;
+                frame(width, vec![], &mut time, &mut inspector, &mut ui_mgr);
+                let (_, measured, output) = frame(width, vec![], &mut time, &mut inspector, &mut ui_mgr);
+                assert!((body_width.get() - body).abs() < 0.1);
+                assert_eq!(stacked_mode.get(), body < transition);
+                complete_targets(&measured);
+                let table = measured.scrolls.iter().find(|scroll| scroll.label == "Custom property table").unwrap();
+                if stacked_mode.get() || key.starts_with("grid_") {
+                    for expected in [key, PropertyValueKind::of(&value).label()] {
+                        let painted = output.shapes.iter().find_map(|shape| match &shape.shape {
+                            egui::epaint::Shape::Text(text) if text.galley.text() == expected => Some((shape.clip_rect, text)),
+                            _ => None,
+                        }).expect("the actual native label must paint, not merely retain an accessible name");
+                        assert!(!painted.1.galley.elided);
+                        let glyph_text: String = painted.1.galley.rows.iter()
+                            .flat_map(|row| row.row.glyphs.iter().map(|glyph| glyph.chr)).collect();
+                        assert_eq!(glyph_text, expected, "all key/type characters must reach painted rows");
+                        let clip = painted.0.intersect(table.clip);
+                        for row in &painted.1.galley.rows {
+                            let rect = row.rect_without_leading_space().translate(painted.1.pos.to_vec2());
+                            let visible = rect.intersect(clip);
+                            assert!((visible.width() - rect.width()).abs() < 0.5);
+                            assert!((visible.height() - rect.height()).abs() < 0.5);
+                        }
+                        if expected == key && key.len() > 30 && stacked_mode.get() {
+                            assert!(painted.1.galley.rows.len() > 1);
+                            assert!(painted.1.galley.rows.iter().any(|row| row.row.glyphs.len() > 1),
+                                "use the full line width rather than one character per line");
+                        }
+                    }
+                }
+                if key == "grid_number" {
+                    click(width, measured.controls[0].rect.center(), &mut time, &mut inspector, &mut ui_mgr);
+                    inspector.property_editor.drafts.get_mut(key).unwrap().raw = "-150.250".into();
+                    for across in [260.0, 640.0, width] {
+                        frame(across, vec![], &mut time, &mut inspector, &mut ui_mgr);
+                        assert_eq!(inspector.property_editor.drafts[key].raw, "-150.250");
+                    }
+                    let (_, editing, _) = frame(width, vec![], &mut time, &mut inspector, &mut ui_mgr);
+                    complete_targets(&editing);
+                    let (actions, _, _) = click(width, editing.controls[7].rect.center(), &mut time, &mut inspector, &mut ui_mgr);
+                    assert_eq!(actions.cancel.as_deref(), Some(key));
+                    inspector.property_editor.drafts.remove(key);
+                    assert_eq!(inspector.node_properties[key], value);
+                    assert!(ui_mgr.drain_actions().is_empty());
+                }
+            }
+        }
+        inspector.node_properties = stored.clone();
         let (_, observed, _) = frame(1000.0, vec![], &mut time, &mut inspector, &mut ui_mgr);
         let copy_at = observed.controls[1].rect.center();
         let delete_at = observed.controls[2].rect.center();

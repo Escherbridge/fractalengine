@@ -1,0 +1,114 @@
+--- a/fe-ui/src/panels/property_grid.rs
++++ b/fe-ui/src/panels/property_grid.rs
+@@ -21,12 +21,16 @@
+     pub fn new(ui: &egui::Ui, available: f32) -> Self {
+         let minimum = crate::ui_shell::layout_policy::target_size(ui.ctx());
+         let interaction_height = minimum.max(ui.spacing().interact_size.y);
+-        let text_height = ui.text_style_height(&egui::TextStyle::Button)
+-            .max(ui.text_style_height(&egui::TextStyle::Small))
+-            .max(ui.text_style_height(&egui::TextStyle::Body));
+-        let padding = if ui.visuals().button_frame { ui.spacing().button_padding.y * 2.0 } else { 0.0 };
+-        let height = (text_height + padding).max(interaction_height).ceil();
+-        let font = egui::TextStyle::Button.resolve(ui.style());
++        let font = egui::FontSelection::Default
++            .resolve_with_fallback(ui.style(), egui::TextStyle::Button.into());
++        let small_font = ui.style().override_font_id.clone()
++            .unwrap_or_else(|| egui::TextStyle::Small.resolve(ui.style()));
++        let body_font = egui::FontSelection::Default.resolve(ui.style());
++        let text_height = ui.fonts_mut(|fonts| {
++            fonts.row_height(&font).max(fonts.row_height(&small_font)).max(fonts.row_height(&body_font))
++        });
++        let padding = if ui.visuals().button_frame { ui.spacing().button_padding } else { egui::Vec2::ZERO };
++        let height = (text_height + egui::Margin::from(padding).sum().y).max(interaction_height).ceil();
+         let text_width = |text: &str| {
+             ui.fonts_mut(|fonts| {
+                 fonts
+--- a/fe-ui/src/panels/inspector.rs
++++ b/fe-ui/src/panels/inspector.rs
+@@ -3162,10 +3162,6 @@
+             assert!((table_closed.offset.x - table_before.offset.x).abs() < 0.5);
+         }
+         let original_style = (*ctx.style()).clone();
+-        ctx.style_mut(|style| {
+-            style.text_styles.get_mut(&egui::TextStyle::Button).unwrap().size = 20.0;
+-            style.spacing.button_padding.y = 4.0;
+-        });
+         let complete_targets = |observed: &crate::ui_shell::layout_policy::LayoutObservations| {
+             let table = observed.scrolls.iter().find(|scroll| scroll.label == "Custom property table").unwrap();
+             assert!(table.offset.x.abs() < 0.5);
+@@ -3178,23 +3174,29 @@
+                 );
+             }
+         };
+-        frame(260.0, vec![], &mut time, &mut inspector, &mut ui_mgr);
+-        let pair = pair_width.get();
+-        for width in [52.0 + frame_padding, pair - 1.0 + frame_padding, pair + 1.0 + frame_padding, 260.0, 640.0] {
+-            frame(width, vec![], &mut time, &mut inspector, &mut ui_mgr);
+-            let (_, before, _) = frame(width, vec![], &mut time, &mut inspector, &mut ui_mgr);
+-            assert_eq!(before.controls.len(), 3);
+-            assert!(before.controls[0].rect.height() > 24.0, "exercise intrinsic button height above the old fixed slot");
+-            complete_targets(&before);
+-            let (actions, _, _) = click(width, before.controls[2].rect.center(), &mut time, &mut inspector, &mut ui_mgr);
+-            assert!(actions.delete.is_none());
+-            let (_, armed, _) = frame(width, vec![], &mut time, &mut inspector, &mut ui_mgr);
+-            assert_eq!(armed.controls.len(), 4);
+-            complete_targets(&armed);
+-            let (actions, _, _) = click(width, armed.controls[3].rect.center(), &mut time, &mut inspector, &mut ui_mgr);
+-            assert!(actions.delete.is_none());
+-            assert_eq!(inspector.node_properties, stored);
+-            assert!(ui_mgr.drain_actions().is_empty());
++        for (font_size, padding_y) in [(20.0, 4.0), (24.0, 1.5)] {
++            ctx.style_mut(|style| {
++                style.text_styles.get_mut(&egui::TextStyle::Button).unwrap().size = font_size;
++                style.spacing.button_padding.y = padding_y;
++            });
++            frame(260.0, vec![], &mut time, &mut inspector, &mut ui_mgr);
++            let pair = pair_width.get();
++            for width in [52.0 + frame_padding, pair - 1.0 + frame_padding, pair + 1.0 + frame_padding, 260.0, 640.0] {
++                frame(width, vec![], &mut time, &mut inspector, &mut ui_mgr);
++                let (_, before, _) = frame(width, vec![], &mut time, &mut inspector, &mut ui_mgr);
++                assert_eq!(before.controls.len(), 3);
++                assert!(before.controls[0].rect.height() > 24.0, "exercise intrinsic button height above the old fixed slot");
++                complete_targets(&before);
++                let (actions, _, _) = click(width, before.controls[2].rect.center(), &mut time, &mut inspector, &mut ui_mgr);
++                assert!(actions.delete.is_none());
++                let (_, armed, _) = frame(width, vec![], &mut time, &mut inspector, &mut ui_mgr);
++                assert_eq!(armed.controls.len(), 4);
++                complete_targets(&armed);
++                let (actions, _, _) = click(width, armed.controls[3].rect.center(), &mut time, &mut inspector, &mut ui_mgr);
++                assert!(actions.delete.is_none());
++                assert_eq!(inspector.node_properties, stored);
++                assert!(ui_mgr.drain_actions().is_empty());
++            }
+         }
+         ctx.set_style(original_style);
+         let (_, observed, _) = frame(1000.0, vec![], &mut time, &mut inspector, &mut ui_mgr);
+--- a/fe-ui/src/panels/AGENTS.md
++++ b/fe-ui/src/panels/AGENTS.md
+@@ -537,7 +537,13 @@
+ 
+ Fitting column/action slots allocate exact rectangles and clip to those bounds.
+ Their row height measures Button/Small/Body font rows plus the active button-frame
+-vertical padding, then takes the existing target/interact minimum. Egui's actual
++vertical Margin sum, then takes the existing target/interact minimum. Padding is
++converted through egui Margin exactly as Button's Frame does: each1.5-point side
++rounds to2, for a4-point vertical sum rather than raw3. Button's plain text font
++uses FontSelection::Default with Button fallback; explicit Small text honors
++override_font_id before Small. This follows WidgetText's actual font precedence;
++the app currently sets text-style maps, not global font/style overrides. No new
++theme surface or global confirmation-helper policy is introduced. Egui's actual
+ button can exceed that minimum: QA57 measured a25-point Edit leaf in a24-point
+ slot. No fixed25-point patch is used. The child interaction minimum stays separate
+ from this padded allocation height, so the shared confirmation-pair width is
+@@ -596,8 +602,9 @@
+ positions before/after arming and cancellation. It checks the complete action
+ rectangles against their actual hit rectangles, child clips and table clip,
+ including the full Confirm/Cancel pair; a control count alone is insufficient.
+-The same existing journey also enlarges the Button font and vertical padding so
+-intrinsic Edit/Copy height exceeds the old24-point slot. At52 points, both sides
++The same existing journey also enlarges the Button font with4.0-point and
++fractional1.5-point vertical padding, so intrinsic Edit/Copy height exceeds the
++old24-point slot and exercises per-side rounding. At52 points, both sides
+ of the measured pair and compact/wide widths, it checks complete normal and armed
+ rect/hit/child/table intersections and actual arm/cancel without writes, then
+ restores the original style. This regression profile is authored, not executed.
