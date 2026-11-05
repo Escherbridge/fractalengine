@@ -22,6 +22,9 @@ SIGNATURE_STYLES = ("style_u32", "exstyle_u32")
 SIGNATURE_OUTER = ("outer_left_i32", "outer_top_i32", "outer_right_i32", "outer_bottom_i32")
 SIGNATURE_CLIENT = ("client_left_i32", "client_top_i32", "client_right_i32", "client_bottom_i32")
 SIGNATURE_KEYS = {"schema", *SIGNATURE_STYLES, *SIGNATURE_OUTER, *SIGNATURE_CLIENT}
+PROVIDER_KEYS = {"schema", "stage_id", "hr"}
+PROVIDER_OBSERVE_STAGES = frozenset((1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 16, 17, 18, 19))
+PROVIDER_PROPERTIES = {20: frozenset((30019, 30077)), 21: frozenset((30159,))}
 WORKER_CODES = frozenset("""observed submitted_outcome_unknown invoke_failed_outcome_unknown submitted_state_changed
 com_unavailable deadline_refused desktop_refused dpi_refused hash_unavailable input_competing integrity_refused
 internal_refused ledger_binding_refused ledger_bound ledger_changed ledger_identity_refused ledger_intent_unconfirmed
@@ -184,9 +187,23 @@ def service_signature_refusal(sample):
     return None
 
 
+def validate_provider_failure(sample):
+    require(type(sample) is dict and sample.get("schema") == "fe-native-provider-failure-v1"
+            and type(sample.get("stage_id")) is int and isinstance(sample.get("hr"), str)
+            and re.fullmatch(r"[89a-f][0-9a-f]{7}", sample["hr"]), "worker_result_refused")
+    properties = PROVIDER_PROPERTIES.get(sample["stage_id"])
+    if properties is not None:
+        require(set(sample) == PROVIDER_KEYS | {"property_id"} and type(sample["property_id"]) is int
+                and sample["property_id"] in properties, "worker_result_refused")
+    else:
+        require(set(sample) == PROVIDER_KEYS and sample["stage_id"] in PROVIDER_OBSERVE_STAGES,
+                "worker_result_refused")
+
+
 def worker_output(raw, *, observe, helper_exit_code):
     value = decode(raw, MAX_OUTPUT)
-    require(set(value) in (OUTPUT_KEYS, OUTPUT_KEYS | {"service_style_u32"}, OUTPUT_KEYS | {"service_signature"})
+    require(set(value) in (OUTPUT_KEYS, OUTPUT_KEYS | {"service_style_u32"}, OUTPUT_KEYS | {"service_signature"},
+                           OUTPUT_KEYS | {"provider_failure"})
             and value["schema"] == "fe-native-worker-result-v1"
             and value["code"] in WORKER_CODES
             and all(type(value[key]) is bool for key in ("attempt_spent", "invoke_entered", "method_returned"))
@@ -206,6 +223,12 @@ def worker_output(raw, *, observe, helper_exit_code):
                 and value["hr"] == "00000000" and not value["attempt_spent"]
                 and not value["invoke_entered"] and not value["method_returned"]
                 and service_signature_refusal(value["service_signature"]) == value["code"], "worker_result_refused")
+    if "provider_failure" in value:
+        require(observe is True and type(helper_exit_code) is int and helper_exit_code == 2
+                and value["code"] == "provider_unavailable" and value["hr"] == "00000000"
+                and not value["attempt_spent"] and not value["invoke_entered"] and not value["method_returned"],
+                "worker_result_refused")
+        validate_provider_failure(value["provider_failure"])
     return value
 
 

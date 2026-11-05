@@ -1,0 +1,11 @@
+{
+  "source_commit": "6ca9f49bf65bb344ff5bdb0fa9794208c54c4a9a",
+  "session": 43482,
+  "terminal_exit_code": 0,
+  "stage": ".qa/stage/6ca9f49b-20261104183324669",
+  "duration_seconds": 216.3,
+  "rust_msvc_compiler_warning_error_diagnostics": 0,
+  "application_and_helper_hashes_verified": true,
+  "log_sha256": "2446425ddce25fc73b936c3cc076b29352405d3d9809917033b33c91f9fa02b3",
+  "limits": "Production build only. Focused rebuilt visual/action/native acceptance and final integrated sweep pending."
+}

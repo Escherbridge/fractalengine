@@ -1,0 +1,122 @@
+{
+  "kind": "fractalengine-source-candidate-v2",
+  "scope": "isolated v2 scenario coverage correction only; production candidate bytes unchanged",
+  "source_baseline_commit": "6ca9f49bf65bb344ff5bdb0fa9794208c54c4a9a",
+  "anchors": [
+    {
+      "path": ".omc/research/qa56-provider-property-diagnostic-plan.md",
+      "bytes": 8642,
+      "sha256": "ec6352d0a161092b5ee41e7abc2f850bde519593d0cce1607cb5daacc24f74bd"
+    },
+    {
+      "path": ".omc/research/qa56-provider-diagnostic-plan-review.md",
+      "bytes": 6832,
+      "sha256": "063a4d85701d8f46484548a4ab3aa8f341b16ae7b448d5887ee7a4413a9b5f3f"
+    }
+  ],
+  "files": [
+    {
+      "canonical": "tools/qa/native_observer/worker.cpp",
+      "before": {
+        "path": "before/tools/qa/native_observer/worker.cpp",
+        "bytes": 46992,
+        "sha256": "1a55697ecce51498dcf30161d335f9f331d753d4a780ee380699861b7c9ef1e1"
+      },
+      "raw": {
+        "path": "raw/tools/qa/native_observer/worker.cpp",
+        "bytes": 51181,
+        "sha256": "f2ee668d464f349fb7fdff996578ca3a9cab4fc62ad8dfec4391abf86f4b6b42"
+      },
+      "production_matches_before": true,
+      "added_lines": 94,
+      "removed_lines": 25,
+      "raw_matches_v1": true
+    },
+    {
+      "canonical": "tools/qa/native_observer/controller.py",
+      "before": {
+        "path": "before/tools/qa/native_observer/controller.py",
+        "bytes": 18669,
+        "sha256": "7d4376866935f95497865e4ff3185f58bace4fa19b4a2f4027289cd0c51b9726"
+      },
+      "raw": {
+        "path": "raw/tools/qa/native_observer/controller.py",
+        "bytes": 20121,
+        "sha256": "9b3eb778c98bf1f4f9f3464f248ad0162dd4b72d1113fcf9dcb2a8089ead2c87"
+      },
+      "production_matches_before": true,
+      "added_lines": 24,
+      "removed_lines": 1,
+      "raw_matches_v1": true
+    },
+    {
+      "canonical": "tools/qa/native_observer/scenario.py",
+      "before": {
+        "path": "before/tools/qa/native_observer/scenario.py",
+        "bytes": 18385,
+        "sha256": "2d49ff87c1692beb2caf3e709668dc865d0a5d4b32f4f440d8e51fddd91464db"
+      },
+      "raw": {
+        "path": "raw/tools/qa/native_observer/scenario.py",
+        "bytes": 23600,
+        "sha256": "43f8d3a90d3355e1001a0d24b6b10eb454d97ded8cc94dffd9447b7d385a39c5"
+      },
+      "production_matches_before": true,
+      "added_lines": 79,
+      "removed_lines": 0,
+      "raw_matches_v1": false
+    },
+    {
+      "canonical": "tools/qa/native_observer/AGENTS.md",
+      "before": {
+        "path": "before/tools/qa/native_observer/AGENTS.md",
+        "bytes": 32327,
+        "sha256": "ea45a9255e78655ef683b330b753d8f6720ce307e71fd6f4c3ce9255913756b2"
+      },
+      "raw": {
+        "path": "raw/tools/qa/native_observer/AGENTS.md",
+        "bytes": 35755,
+        "sha256": "f330612d8754930329c5dbd7bb781b4b4d25075d82ac22dda0d612f64e68d490"
+      },
+      "production_matches_before": true,
+      "added_lines": 54,
+      "removed_lines": 3,
+      "raw_matches_v1": true
+    }
+  ],
+  "patch": {
+    "path": "source.patch",
+    "bytes": 29936,
+    "sha256": "b5c9cece78eb7f0886705678ef6f8b0096a7e407c6fcbb0354769b36447486cd"
+  },
+  "execution": "No implementation parser/compiler/formatter/tests/native/app/API/DB/network/Git actions; source authoring and file/text/hash operations only.",
+  "predecessor": {
+    "directory": ".omc/research/qa56-provider-diagnostic-v1",
+    "anchors": [
+      {
+        "path": "manifest.json",
+        "copied_as": "v1-manifest.json",
+        "bytes": 3127,
+        "sha256": "a9e802958b033c53e5b9a8248a715699559ba08d552e9be5cf3f4d807b4b5b38"
+      },
+      {
+        "path": "source-report.md",
+        "copied_as": "v1-source-report.md",
+        "bytes": 4289,
+        "sha256": "2d0833d88e64c029eb9ad0d76d8cad28afba72b98d7660122457af622f49c2a5"
+      },
+      {
+        "path": "source.patch",
+        "copied_as": "v1-source.patch",
+        "bytes": 29646,
+        "sha256": "7fddaf18865e0f05f8269335afa596ac10f5e4a2abddb864bdb40b86201fe344"
+      }
+    ]
+  },
+  "delta": {
+    "path": "v1-to-v2.patch",
+    "bytes": 757,
+    "sha256": "93cb00b5f0cc9ac69d6dd4fa90d2b1e3891a6719f1cf6d5c2d7249a140d9d18c"
+  },
+  "correction": "Six ordinary three-key provider_failure cases independently remove property_id as a rejection cause; stage13/14/15/22/True/False, failed HRESULT80004005, valid base/raw/observe/exit fields; existing worker_output refusal loop unchanged. Authored, not executed."
+}

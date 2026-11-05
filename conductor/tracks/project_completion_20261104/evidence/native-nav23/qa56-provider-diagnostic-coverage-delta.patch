@@ -1,0 +1,13 @@
+--- v1/tools/qa/native_observer/scenario.py
++++ v2/tools/qa/native_observer/scenario.py
+@@ -282,6 +282,10 @@
+     provider_sample = dict(provider_result, provider_failure={
+         "schema": "fe-native-provider-failure-v1", "stage_id": 20, "property_id": 30019, "hr": "80004005"})
+     invalid_providers = []
++    for stage in (13, 14, 15, 22, True, False):
++        changed = dict(provider_result, provider_failure={
++            "schema": "fe-native-provider-failure-v1", "stage_id": stage, "hr": "80004005"})
++        invalid_providers.append(("ordinary-stage-" + repr(stage), changed, True, 2))
+     for key in ("schema", "stage_id", "property_id", "hr"):
+         changed = copy.deepcopy(provider_sample)
+         del changed["provider_failure"][key]

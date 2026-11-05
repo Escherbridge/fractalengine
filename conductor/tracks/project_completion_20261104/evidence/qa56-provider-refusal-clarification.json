@@ -1,0 +1,8 @@
+{
+  "kind": "qa56-external-evidence-clarification-v1",
+  "packet_manifest_sha256": "7ad0ab744a5f4d0abf193fce617a136798f004cc091e82acfe9a9535f2c50d19",
+  "applies_to": "qa/passes/56/packet-summary.json facts and limits",
+  "correction": "provider_unavailable is also the default code of worker_protocol.hpp::checked(HRESULT), used by additional COM/UIA calls. The result does not establish that either explicit boolean-property or FullDescription read failed. Exact failed call, property and HRESULT are unknown.",
+  "retained_fact": "Compiled operation ordering establishes initial strict window/service census and first retained-set boundary passed before the subsequent COM/UIA phase. No complete root/provider/witness or later-boundary acceptance is proved.",
+  "limits": "No Invoke or capture; no policy change, positive UIA or finding closure. The frozen packet remains unchanged."
+}

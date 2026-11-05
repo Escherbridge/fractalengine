@@ -16,12 +16,66 @@ struct ServiceSignatureRefusal : Refusal {
     ServiceSignatureRefusal(const char* code, const ServiceSignatureFacts& value) : Refusal{code}, facts(value) {}
 };
 
+enum class ProviderStage : uint32_t {
+    AutomationId = 1, RuntimeId = 2, ArrayLower = 3, ArrayUpper = 4, ArrayType = 5, ArrayElement = 6,
+    CompareElements = 7, ProcessId = 8, ControlType = 9, NativeWindow = 10, Enabled = 11, Offscreen = 12,
+    Name = 13, Rectangle = 14, Pattern = 15, FirstChild = 16, NextSibling = 17, RawWalker = 18,
+    ElementFromHandle = 19, BooleanProperty = 20, FullDescription = 21,
+};
+
+struct ProviderFailureFacts {
+    ProviderStage stage;
+    HRESULT status;
+    std::optional<PROPERTYID> property;
+};
+
+struct ProviderFailure : Refusal {
+    ProviderFailureFacts facts;
+    explicit ProviderFailure(ProviderFailureFacts value) : Refusal{"provider_unavailable"}, facts(value) {}
+};
+
+void checked_provider(HRESULT status, ProviderStage stage) {
+    if (FAILED(status)) throw ProviderFailure{{stage, status, std::nullopt}};
+}
+
+bool observe_provider_failure(const ProviderFailureFacts& facts) {
+    if (!FAILED(facts.status)) return false;
+    switch (facts.stage) {
+    case ProviderStage::AutomationId: case ProviderStage::RuntimeId:
+    case ProviderStage::ArrayLower: case ProviderStage::ArrayUpper:
+    case ProviderStage::ArrayType: case ProviderStage::ArrayElement:
+    case ProviderStage::CompareElements: case ProviderStage::ProcessId:
+    case ProviderStage::ControlType: case ProviderStage::NativeWindow:
+    case ProviderStage::Enabled: case ProviderStage::Offscreen:
+    case ProviderStage::FirstChild: case ProviderStage::NextSibling:
+    case ProviderStage::RawWalker: case ProviderStage::ElementFromHandle:
+        return !facts.property;
+    case ProviderStage::BooleanProperty:
+        return facts.property == UIA_IsPasswordPropertyId || facts.property == UIA_WindowIsModalPropertyId;
+    case ProviderStage::FullDescription:
+        return facts.property == UIA_FullDescriptionPropertyId;
+    default:
+        return false;
+    }
+}
+
+std::string provider_failure_json(const ProviderFailureFacts& facts) {
+    Object result{
+        {"schema", Atom::string("fe-native-provider-failure-v1")},
+        {"stage_id", Atom::number(static_cast<uint32_t>(facts.stage))},
+        {"hr", Atom::string(hex_number(static_cast<uint32_t>(facts.status), 8))},
+    };
+    if (facts.property) result.emplace("property_id", Atom::number(static_cast<uint32_t>(*facts.property)));
+    return canonical(result);
+}
+
 struct Receipt {
     const char* code = "worker_refused";
     bool spent = true, invoke_entered = false, method_returned = false;
     bool output_attempted = false;
     bool parsed_observe = false;
     std::optional<ServiceSignatureFacts> service_signature;
+    std::optional<ProviderFailureFacts> provider_failure;
     HRESULT method = S_OK;
     std::string root_hash = std::string(64, '0'), target_hash = std::string(64, '0');
     uint64_t watch_first = 0, watch_last = 0;
@@ -410,13 +464,13 @@ void neutral_input(HWND window) {
 }
 
 std::wstring automation_id(IUIAutomationElement* element) {
-    Bstr value; checked(element->get_CurrentAutomationId(&value.value)); return value.bounded(128);
+    Bstr value; checked_provider(element->get_CurrentAutomationId(&value.value), ProviderStage::AutomationId); return value.bounded(128);
 }
 
 bool boolean_property(IUIAutomationElement* element, PROPERTYID property_id) {
     VARIANT value; VariantInit(&value);
     HRESULT status = element->GetCurrentPropertyValue(property_id, &value);
-    if (FAILED(status)) { VariantClear(&value); throw Refusal{"provider_unavailable"}; }
+    if (FAILED(status)) { VariantClear(&value); throw ProviderFailure{{ProviderStage::BooleanProperty, status, property_id}}; }
     bool result = false;
     if (value.vt == VT_BOOL) result = value.boolVal != VARIANT_FALSE;
     else { VariantClear(&value); throw Refusal{"property_invalid"}; }
@@ -425,18 +479,19 @@ bool boolean_property(IUIAutomationElement* element, PROPERTYID property_id) {
 
 std::vector<int> runtime_id(IUIAutomationElement* element) {
     SAFEARRAY* array = nullptr;
-    checked(element->GetRuntimeId(&array));
+    checked_provider(element->GetRuntimeId(&array), ProviderStage::RuntimeId);
     struct Array { SAFEARRAY* value; ~Array() { if (value) SafeArrayDestroy(value); } } owned{array};
     require(array && SafeArrayGetDim(array) == 1, "runtime_identity_refused");
     LONG lower = 0, upper = -1;
-    checked(SafeArrayGetLBound(array, 1, &lower)); checked(SafeArrayGetUBound(array, 1, &upper));
-    VARTYPE type = VT_EMPTY; checked(SafeArrayGetVartype(array, &type));
+    checked_provider(SafeArrayGetLBound(array, 1, &lower), ProviderStage::ArrayLower);
+    checked_provider(SafeArrayGetUBound(array, 1, &upper), ProviderStage::ArrayUpper);
+    VARTYPE type = VT_EMPTY; checked_provider(SafeArrayGetVartype(array, &type), ProviderStage::ArrayType);
     int64_t count = static_cast<int64_t>(upper) - static_cast<int64_t>(lower) + 1;
     require(type == VT_I4 && count > 0 && count <= 64, "runtime_identity_refused");
     std::vector<int> result;
     for (int64_t offset = 0; offset < count; ++offset) {
         LONG index = static_cast<LONG>(static_cast<int64_t>(lower) + offset);
-        int value = 0; checked(SafeArrayGetElement(array, &index, &value)); result.push_back(value);
+        int value = 0; checked_provider(SafeArrayGetElement(array, &index, &value), ProviderStage::ArrayElement); result.push_back(value);
     }
     return result;
 }
@@ -448,7 +503,7 @@ std::string runtime_text(const std::vector<int>& values) {
 }
 
 bool same_element(IUIAutomation* automation, IUIAutomationElement* left, IUIAutomationElement* right) {
-    BOOL same = FALSE; checked(automation->CompareElements(left, right, &same)); return same != FALSE;
+    BOOL same = FALSE; checked_provider(automation->CompareElements(left, right, &same), ProviderStage::CompareElements); return same != FALSE;
 }
 
 bool positive(const RECT& rectangle) { return rectangle.left < rectangle.right && rectangle.top < rectangle.bottom; }
@@ -520,11 +575,13 @@ Tree walk(IUIAutomation* automation, IUIAutomationTreeWalker* walker,
         require(!boolean_property(current.element.get(), UIA_IsPasswordPropertyId)
             && !boolean_property(current.element.get(), UIA_WindowIsModalPropertyId), "surface_refused");
         int process = 0; CONTROLTYPEID type = 0; UIA_HWND native = nullptr;
-        checked(current.element->get_CurrentProcessId(&process)); checked(current.element->get_CurrentControlType(&type));
-        checked(current.element->get_CurrentNativeWindowHandle(&native));
+        checked_provider(current.element->get_CurrentProcessId(&process), ProviderStage::ProcessId);
+        checked_provider(current.element->get_CurrentControlType(&type), ProviderStage::ControlType);
+        checked_provider(current.element->get_CurrentNativeWindowHandle(&native), ProviderStage::NativeWindow);
         require(process == static_cast<int>(request.pid) && (!native || reinterpret_cast<HWND>(native) == window), "provider_identity_refused");
         BOOL enabled = FALSE, offscreen = TRUE;
-        checked(current.element->get_CurrentIsEnabled(&enabled)); checked(current.element->get_CurrentIsOffscreen(&offscreen));
+        checked_provider(current.element->get_CurrentIsEnabled(&enabled), ProviderStage::Enabled);
+        checked_provider(current.element->get_CurrentIsOffscreen(&offscreen), ProviderStage::Offscreen);
         bool available = current.enabled && enabled, visible = current.visible && !offscreen;
         std::string path = current.ancestors + '/' + runtime_text(runtime) + ':' + std::to_string(type) + ':' + utf8(marker);
         require(path.size() <= 32768, "tree_incomplete");
@@ -540,11 +597,11 @@ Tree walk(IUIAutomation* automation, IUIAutomationTreeWalker* walker,
             require(++result.candidates <= 128 && type == UIA_ButtonControlTypeId, "target_bound");
             Tag epochs = Tag::parse(marker);
             if (request.invoke) {
-                Bstr name; checked(current.element->get_CurrentName(&name.value));
+                Bstr name; checked_provider(current.element->get_CurrentName(&name.value), ProviderStage::Name);
                 auto actual_name = name.bounded(256);
                 if (actual_name == request.expected_name) {
                     require(++result.matching == 1, "target_ambiguous");
-                    RECT bounds{}; checked(current.element->get_CurrentBoundingRectangle(&bounds));
+                    RECT bounds{}; checked_provider(current.element->get_CurrentBoundingRectangle(&bounds), ProviderStage::Rectangle);
                     require(available && visible && inside(bounds, client)
                         && boolean_property(current.element.get(), UIA_IsInvokePatternAvailablePropertyId), "target_unavailable");
                     if (retained) {
@@ -556,7 +613,7 @@ Tree walk(IUIAutomation* automation, IUIAutomationTreeWalker* walker,
                         Target target;
                         target.element = current.element; target.runtime = runtime; target.name = actual_name;
                         target.tag = marker; target.rectangle = bounds; target.ancestry = current.ancestors; target.epochs = epochs;
-                        checked(current.element->GetCurrentPatternAs(UIA_InvokePatternId, __uuidof(IUIAutomationInvokePattern), reinterpret_cast<void**>(target.pattern.put())));
+                        checked_provider(current.element->GetCurrentPatternAs(UIA_InvokePatternId, __uuidof(IUIAutomationInvokePattern), reinterpret_cast<void**>(target.pattern.put())), ProviderStage::Pattern);
                         require(static_cast<bool>(target.pattern), "target_unavailable");
                         target.signature = sha256(path + '|' + rectangle_text(bounds) + '|' + utf8(actual_name));
                         result.target = std::move(target);
@@ -565,13 +622,13 @@ Tree walk(IUIAutomation* automation, IUIAutomationTreeWalker* walker,
             }
         } else require(!marker.starts_with(L"fe.nav."), "target_tag_refused");
         Com<IUIAutomationElement> child;
-        checked(walker->GetFirstChildElement(current.element.get(), child.put()));
+        checked_provider(walker->GetFirstChildElement(current.element.get(), child.put()), ProviderStage::FirstChild);
         std::vector<Com<IUIAutomationElement>> children;
         while (child) {
             require(children.size() + stack.size() + result.visited < 1024, "tree_incomplete");
             children.push_back(child);
             Com<IUIAutomationElement> next;
-            checked(walker->GetNextSiblingElement(child.get(), next.put()));
+            checked_provider(walker->GetNextSiblingElement(child.get(), next.put()), ProviderStage::NextSibling);
             child = std::move(next);
         }
         for (auto item = children.rbegin(); item != children.rend(); ++item)
@@ -580,7 +637,7 @@ Tree walk(IUIAutomation* automation, IUIAutomationTreeWalker* walker,
     if (result.target || (retained && result.original_seen)) {
         const Target& target = result.target ? *result.target : *retained;
         require(result.marked && target.ancestry.starts_with(result.marked_path + '/'), "target_ancestry_refused");
-        RECT root_bounds{}; checked(result.marked->get_CurrentBoundingRectangle(&root_bounds));
+        RECT root_bounds{}; checked_provider(result.marked->get_CurrentBoundingRectangle(&root_bounds), ProviderStage::Rectangle);
         require(inside(target.rectangle, root_bounds), "target_unavailable");
     }
     return result;
@@ -590,9 +647,11 @@ Witness root_witness(IUIAutomationElement* original, HWND window, const Request&
     require(automation_id(original) == L"fe.native.window.v1", "root_identity_changed");
     CONTROLTYPEID type = 0; int process = 0; UIA_HWND native = nullptr;
     BOOL enabled = FALSE, offscreen = TRUE;
-    checked(original->get_CurrentControlType(&type)); checked(original->get_CurrentProcessId(&process));
-    checked(original->get_CurrentNativeWindowHandle(&native)); checked(original->get_CurrentIsEnabled(&enabled));
-    checked(original->get_CurrentIsOffscreen(&offscreen));
+    checked_provider(original->get_CurrentControlType(&type), ProviderStage::ControlType);
+    checked_provider(original->get_CurrentProcessId(&process), ProviderStage::ProcessId);
+    checked_provider(original->get_CurrentNativeWindowHandle(&native), ProviderStage::NativeWindow);
+    checked_provider(original->get_CurrentIsEnabled(&enabled), ProviderStage::Enabled);
+    checked_provider(original->get_CurrentIsOffscreen(&offscreen), ProviderStage::Offscreen);
     require(type == UIA_WindowControlTypeId && process == static_cast<int>(request.pid)
         && (!native || reinterpret_cast<HWND>(native) == window) && enabled && !offscreen
         && !boolean_property(original, UIA_IsPasswordPropertyId)
@@ -600,7 +659,7 @@ Witness root_witness(IUIAutomationElement* original, HWND window, const Request&
     uint64_t before = property(window);
     VARIANT value; VariantInit(&value);
     HRESULT status = original->GetCurrentPropertyValue(UIA_FullDescriptionPropertyId, &value);
-    if (FAILED(status)) { VariantClear(&value); throw Refusal{"provider_unavailable"}; }
+    if (FAILED(status)) { VariantClear(&value); throw ProviderFailure{{ProviderStage::FullDescription, status, UIA_FullDescriptionPropertyId}}; }
     if (value.vt != VT_BSTR || !value.bstrVal || SysStringLen(value.bstrVal) == 0) {
         VariantClear(&value); throw Refusal{"property_unavailable"};
     }
@@ -614,10 +673,12 @@ Witness root_witness(IUIAutomationElement* original, HWND window, const Request&
 
 void original_target(const Target& target, const Request& request) {
     require(runtime_id(target.element.get()) == target.runtime && automation_id(target.element.get()) == target.tag, "target_identity_changed");
-    Bstr name; checked(target.element->get_CurrentName(&name.value));
+    Bstr name; checked_provider(target.element->get_CurrentName(&name.value), ProviderStage::Name);
     CONTROLTYPEID type = 0; BOOL enabled = FALSE, offscreen = TRUE; RECT rectangle{};
-    checked(target.element->get_CurrentControlType(&type)); checked(target.element->get_CurrentIsEnabled(&enabled));
-    checked(target.element->get_CurrentIsOffscreen(&offscreen)); checked(target.element->get_CurrentBoundingRectangle(&rectangle));
+    checked_provider(target.element->get_CurrentControlType(&type), ProviderStage::ControlType);
+    checked_provider(target.element->get_CurrentIsEnabled(&enabled), ProviderStage::Enabled);
+    checked_provider(target.element->get_CurrentIsOffscreen(&offscreen), ProviderStage::Offscreen);
+    checked_provider(target.element->get_CurrentBoundingRectangle(&rectangle), ProviderStage::Rectangle);
     require(type == UIA_ButtonControlTypeId && name.bounded(256) == request.expected_name && enabled && !offscreen
         && std::memcmp(&rectangle, &target.rectangle, sizeof(rectangle)) == 0
         && boolean_property(target.element.get(), UIA_IsInvokePatternAvailablePropertyId), "target_identity_changed");
@@ -725,9 +786,9 @@ void operation(const Request& request, Deadline& deadline, Receipt& receipt) {
     checked(CoCreateInstance(__uuidof(CUIAutomation), nullptr, CLSCTX_INPROC_SERVER,
         __uuidof(IUIAutomation), reinterpret_cast<void**>(automation.put())), "com_unavailable");
     Com<IUIAutomationTreeWalker> walker;
-    checked(automation->get_RawViewWalker(walker.put()));
+    checked_provider(automation->get_RawViewWalker(walker.put()), ProviderStage::RawWalker);
     Com<IUIAutomationElement> outer;
-    checked(automation->ElementFromHandle(window, outer.put()));
+    checked_provider(automation->ElementFromHandle(window, outer.put()), ProviderStage::ElementFromHandle);
     auto outer_runtime = runtime_id(outer.get());
     Request read_only = request;
     read_only.invoke = false;
@@ -824,6 +885,11 @@ void emit(Receipt& receipt) {
             bytes.pop_back();
             bytes += ",\"service_signature\":" + service_signature_json(facts) + '}';
         }
+    } else if (receipt.provider_failure && receipt.parsed_observe && !receipt.spent && !receipt.invoke_entered
+        && !receipt.method_returned && receipt.method == S_OK
+        && std::string_view(receipt.code) == "provider_unavailable" && observe_provider_failure(*receipt.provider_failure)) {
+        bytes.pop_back();
+        bytes += ",\"provider_failure\":" + provider_failure_json(*receipt.provider_failure) + '}';
     }
     bytes += '\n';
     require(bytes.size() <= 262144, "output_bound");
@@ -849,6 +915,9 @@ int wmain(int argc, wchar_t**) {
     } catch (const ServiceSignatureRefusal& refusal) {
         receipt.code = refusal.code;
         if (receipt.parsed_observe) receipt.service_signature = refusal.facts;
+    } catch (const ProviderFailure& refusal) {
+        receipt.code = refusal.code;
+        if (receipt.parsed_observe) receipt.provider_failure = refusal.facts;
     } catch (const Refusal& refusal) { receipt.code = refusal.code; }
     catch (...) { receipt.code = "worker_refused"; }
     if (!receipt.output_attempted) {

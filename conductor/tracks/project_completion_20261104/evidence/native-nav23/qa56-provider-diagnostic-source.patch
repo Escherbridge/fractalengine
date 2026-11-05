@@ -1,0 +1,466 @@
+--- a/tools/qa/native_observer/worker.cpp
++++ b/tools/qa/native_observer/worker.cpp
+@@ -15,6 +15,59 @@
+     ServiceSignatureFacts facts;
+     ServiceSignatureRefusal(const char* code, const ServiceSignatureFacts& value) : Refusal{code}, facts(value) {}
+ };
++
++enum class ProviderStage : uint32_t {
++    AutomationId = 1, RuntimeId = 2, ArrayLower = 3, ArrayUpper = 4, ArrayType = 5, ArrayElement = 6,
++    CompareElements = 7, ProcessId = 8, ControlType = 9, NativeWindow = 10, Enabled = 11, Offscreen = 12,
++    Name = 13, Rectangle = 14, Pattern = 15, FirstChild = 16, NextSibling = 17, RawWalker = 18,
++    ElementFromHandle = 19, BooleanProperty = 20, FullDescription = 21,
++};
++
++struct ProviderFailureFacts {
++    ProviderStage stage;
++    HRESULT status;
++    std::optional<PROPERTYID> property;
++};
++
++struct ProviderFailure : Refusal {
++    ProviderFailureFacts facts;
++    explicit ProviderFailure(ProviderFailureFacts value) : Refusal{"provider_unavailable"}, facts(value) {}
++};
++
++void checked_provider(HRESULT status, ProviderStage stage) {
++    if (FAILED(status)) throw ProviderFailure{{stage, status, std::nullopt}};
++}
++
++bool observe_provider_failure(const ProviderFailureFacts& facts) {
++    if (!FAILED(facts.status)) return false;
++    switch (facts.stage) {
++    case ProviderStage::AutomationId: case ProviderStage::RuntimeId:
++    case ProviderStage::ArrayLower: case ProviderStage::ArrayUpper:
++    case ProviderStage::ArrayType: case ProviderStage::ArrayElement:
++    case ProviderStage::CompareElements: case ProviderStage::ProcessId:
++    case ProviderStage::ControlType: case ProviderStage::NativeWindow:
++    case ProviderStage::Enabled: case ProviderStage::Offscreen:
++    case ProviderStage::FirstChild: case ProviderStage::NextSibling:
++    case ProviderStage::RawWalker: case ProviderStage::ElementFromHandle:
++        return !facts.property;
++    case ProviderStage::BooleanProperty:
++        return facts.property == UIA_IsPasswordPropertyId || facts.property == UIA_WindowIsModalPropertyId;
++    case ProviderStage::FullDescription:
++        return facts.property == UIA_FullDescriptionPropertyId;
++    default:
++        return false;
++    }
++}
++
++std::string provider_failure_json(const ProviderFailureFacts& facts) {
++    Object result{
++        {"schema", Atom::string("fe-native-provider-failure-v1")},
++        {"stage_id", Atom::number(static_cast<uint32_t>(facts.stage))},
++        {"hr", Atom::string(hex_number(static_cast<uint32_t>(facts.status), 8))},
++    };
++    if (facts.property) result.emplace("property_id", Atom::number(static_cast<uint32_t>(*facts.property)));
++    return canonical(result);
++}
+ 
+ struct Receipt {
+     const char* code = "worker_refused";
+@@ -22,6 +75,7 @@
+     bool output_attempted = false;
+     bool parsed_observe = false;
+     std::optional<ServiceSignatureFacts> service_signature;
++    std::optional<ProviderFailureFacts> provider_failure;
+     HRESULT method = S_OK;
+     std::string root_hash = std::string(64, '0'), target_hash = std::string(64, '0');
+     uint64_t watch_first = 0, watch_last = 0;
+@@ -410,13 +464,13 @@
+ }
+ 
+ std::wstring automation_id(IUIAutomationElement* element) {
+-    Bstr value; checked(element->get_CurrentAutomationId(&value.value)); return value.bounded(128);
++    Bstr value; checked_provider(element->get_CurrentAutomationId(&value.value), ProviderStage::AutomationId); return value.bounded(128);
+ }
+ 
+ bool boolean_property(IUIAutomationElement* element, PROPERTYID property_id) {
+     VARIANT value; VariantInit(&value);
+     HRESULT status = element->GetCurrentPropertyValue(property_id, &value);
+-    if (FAILED(status)) { VariantClear(&value); throw Refusal{"provider_unavailable"}; }
++    if (FAILED(status)) { VariantClear(&value); throw ProviderFailure{{ProviderStage::BooleanProperty, status, property_id}}; }
+     bool result = false;
+     if (value.vt == VT_BOOL) result = value.boolVal != VARIANT_FALSE;
+     else { VariantClear(&value); throw Refusal{"property_invalid"}; }
+@@ -425,18 +479,19 @@
+ 
+ std::vector<int> runtime_id(IUIAutomationElement* element) {
+     SAFEARRAY* array = nullptr;
+-    checked(element->GetRuntimeId(&array));
++    checked_provider(element->GetRuntimeId(&array), ProviderStage::RuntimeId);
+     struct Array { SAFEARRAY* value; ~Array() { if (value) SafeArrayDestroy(value); } } owned{array};
+     require(array && SafeArrayGetDim(array) == 1, "runtime_identity_refused");
+     LONG lower = 0, upper = -1;
+-    checked(SafeArrayGetLBound(array, 1, &lower)); checked(SafeArrayGetUBound(array, 1, &upper));
+-    VARTYPE type = VT_EMPTY; checked(SafeArrayGetVartype(array, &type));
++    checked_provider(SafeArrayGetLBound(array, 1, &lower), ProviderStage::ArrayLower);
++    checked_provider(SafeArrayGetUBound(array, 1, &upper), ProviderStage::ArrayUpper);
++    VARTYPE type = VT_EMPTY; checked_provider(SafeArrayGetVartype(array, &type), ProviderStage::ArrayType);
+     int64_t count = static_cast<int64_t>(upper) - static_cast<int64_t>(lower) + 1;
+     require(type == VT_I4 && count > 0 && count <= 64, "runtime_identity_refused");
+     std::vector<int> result;
+     for (int64_t offset = 0; offset < count; ++offset) {
+         LONG index = static_cast<LONG>(static_cast<int64_t>(lower) + offset);
+-        int value = 0; checked(SafeArrayGetElement(array, &index, &value)); result.push_back(value);
++        int value = 0; checked_provider(SafeArrayGetElement(array, &index, &value), ProviderStage::ArrayElement); result.push_back(value);
+     }
+     return result;
+ }
+@@ -448,7 +503,7 @@
+ }
+ 
+ bool same_element(IUIAutomation* automation, IUIAutomationElement* left, IUIAutomationElement* right) {
+-    BOOL same = FALSE; checked(automation->CompareElements(left, right, &same)); return same != FALSE;
++    BOOL same = FALSE; checked_provider(automation->CompareElements(left, right, &same), ProviderStage::CompareElements); return same != FALSE;
+ }
+ 
+ bool positive(const RECT& rectangle) { return rectangle.left < rectangle.right && rectangle.top < rectangle.bottom; }
+@@ -520,11 +575,13 @@
+         require(!boolean_property(current.element.get(), UIA_IsPasswordPropertyId)
+             && !boolean_property(current.element.get(), UIA_WindowIsModalPropertyId), "surface_refused");
+         int process = 0; CONTROLTYPEID type = 0; UIA_HWND native = nullptr;
+-        checked(current.element->get_CurrentProcessId(&process)); checked(current.element->get_CurrentControlType(&type));
+-        checked(current.element->get_CurrentNativeWindowHandle(&native));
++        checked_provider(current.element->get_CurrentProcessId(&process), ProviderStage::ProcessId);
++        checked_provider(current.element->get_CurrentControlType(&type), ProviderStage::ControlType);
++        checked_provider(current.element->get_CurrentNativeWindowHandle(&native), ProviderStage::NativeWindow);
+         require(process == static_cast<int>(request.pid) && (!native || reinterpret_cast<HWND>(native) == window), "provider_identity_refused");
+         BOOL enabled = FALSE, offscreen = TRUE;
+-        checked(current.element->get_CurrentIsEnabled(&enabled)); checked(current.element->get_CurrentIsOffscreen(&offscreen));
++        checked_provider(current.element->get_CurrentIsEnabled(&enabled), ProviderStage::Enabled);
++        checked_provider(current.element->get_CurrentIsOffscreen(&offscreen), ProviderStage::Offscreen);
+         bool available = current.enabled && enabled, visible = current.visible && !offscreen;
+         std::string path = current.ancestors + '/' + runtime_text(runtime) + ':' + std::to_string(type) + ':' + utf8(marker);
+         require(path.size() <= 32768, "tree_incomplete");
+@@ -540,11 +597,11 @@
+             require(++result.candidates <= 128 && type == UIA_ButtonControlTypeId, "target_bound");
+             Tag epochs = Tag::parse(marker);
+             if (request.invoke) {
+-                Bstr name; checked(current.element->get_CurrentName(&name.value));
++                Bstr name; checked_provider(current.element->get_CurrentName(&name.value), ProviderStage::Name);
+                 auto actual_name = name.bounded(256);
+                 if (actual_name == request.expected_name) {
+                     require(++result.matching == 1, "target_ambiguous");
+-                    RECT bounds{}; checked(current.element->get_CurrentBoundingRectangle(&bounds));
++                    RECT bounds{}; checked_provider(current.element->get_CurrentBoundingRectangle(&bounds), ProviderStage::Rectangle);
+                     require(available && visible && inside(bounds, client)
+                         && boolean_property(current.element.get(), UIA_IsInvokePatternAvailablePropertyId), "target_unavailable");
+                     if (retained) {
+@@ -556,7 +613,7 @@
+                         Target target;
+                         target.element = current.element; target.runtime = runtime; target.name = actual_name;
+                         target.tag = marker; target.rectangle = bounds; target.ancestry = current.ancestors; target.epochs = epochs;
+-                        checked(current.element->GetCurrentPatternAs(UIA_InvokePatternId, __uuidof(IUIAutomationInvokePattern), reinterpret_cast<void**>(target.pattern.put())));
++                        checked_provider(current.element->GetCurrentPatternAs(UIA_InvokePatternId, __uuidof(IUIAutomationInvokePattern), reinterpret_cast<void**>(target.pattern.put())), ProviderStage::Pattern);
+                         require(static_cast<bool>(target.pattern), "target_unavailable");
+                         target.signature = sha256(path + '|' + rectangle_text(bounds) + '|' + utf8(actual_name));
+                         result.target = std::move(target);
+@@ -565,13 +622,13 @@
+             }
+         } else require(!marker.starts_with(L"fe.nav."), "target_tag_refused");
+         Com<IUIAutomationElement> child;
+-        checked(walker->GetFirstChildElement(current.element.get(), child.put()));
++        checked_provider(walker->GetFirstChildElement(current.element.get(), child.put()), ProviderStage::FirstChild);
+         std::vector<Com<IUIAutomationElement>> children;
+         while (child) {
+             require(children.size() + stack.size() + result.visited < 1024, "tree_incomplete");
+             children.push_back(child);
+             Com<IUIAutomationElement> next;
+-            checked(walker->GetNextSiblingElement(child.get(), next.put()));
++            checked_provider(walker->GetNextSiblingElement(child.get(), next.put()), ProviderStage::NextSibling);
+             child = std::move(next);
+         }
+         for (auto item = children.rbegin(); item != children.rend(); ++item)
+@@ -580,7 +637,7 @@
+     if (result.target || (retained && result.original_seen)) {
+         const Target& target = result.target ? *result.target : *retained;
+         require(result.marked && target.ancestry.starts_with(result.marked_path + '/'), "target_ancestry_refused");
+-        RECT root_bounds{}; checked(result.marked->get_CurrentBoundingRectangle(&root_bounds));
++        RECT root_bounds{}; checked_provider(result.marked->get_CurrentBoundingRectangle(&root_bounds), ProviderStage::Rectangle);
+         require(inside(target.rectangle, root_bounds), "target_unavailable");
+     }
+     return result;
+@@ -590,9 +647,11 @@
+     require(automation_id(original) == L"fe.native.window.v1", "root_identity_changed");
+     CONTROLTYPEID type = 0; int process = 0; UIA_HWND native = nullptr;
+     BOOL enabled = FALSE, offscreen = TRUE;
+-    checked(original->get_CurrentControlType(&type)); checked(original->get_CurrentProcessId(&process));
+-    checked(original->get_CurrentNativeWindowHandle(&native)); checked(original->get_CurrentIsEnabled(&enabled));
+-    checked(original->get_CurrentIsOffscreen(&offscreen));
++    checked_provider(original->get_CurrentControlType(&type), ProviderStage::ControlType);
++    checked_provider(original->get_CurrentProcessId(&process), ProviderStage::ProcessId);
++    checked_provider(original->get_CurrentNativeWindowHandle(&native), ProviderStage::NativeWindow);
++    checked_provider(original->get_CurrentIsEnabled(&enabled), ProviderStage::Enabled);
++    checked_provider(original->get_CurrentIsOffscreen(&offscreen), ProviderStage::Offscreen);
+     require(type == UIA_WindowControlTypeId && process == static_cast<int>(request.pid)
+         && (!native || reinterpret_cast<HWND>(native) == window) && enabled && !offscreen
+         && !boolean_property(original, UIA_IsPasswordPropertyId)
+@@ -600,7 +659,7 @@
+     uint64_t before = property(window);
+     VARIANT value; VariantInit(&value);
+     HRESULT status = original->GetCurrentPropertyValue(UIA_FullDescriptionPropertyId, &value);
+-    if (FAILED(status)) { VariantClear(&value); throw Refusal{"provider_unavailable"}; }
++    if (FAILED(status)) { VariantClear(&value); throw ProviderFailure{{ProviderStage::FullDescription, status, UIA_FullDescriptionPropertyId}}; }
+     if (value.vt != VT_BSTR || !value.bstrVal || SysStringLen(value.bstrVal) == 0) {
+         VariantClear(&value); throw Refusal{"property_unavailable"};
+     }
+@@ -614,10 +673,12 @@
+ 
+ void original_target(const Target& target, const Request& request) {
+     require(runtime_id(target.element.get()) == target.runtime && automation_id(target.element.get()) == target.tag, "target_identity_changed");
+-    Bstr name; checked(target.element->get_CurrentName(&name.value));
++    Bstr name; checked_provider(target.element->get_CurrentName(&name.value), ProviderStage::Name);
+     CONTROLTYPEID type = 0; BOOL enabled = FALSE, offscreen = TRUE; RECT rectangle{};
+-    checked(target.element->get_CurrentControlType(&type)); checked(target.element->get_CurrentIsEnabled(&enabled));
+-    checked(target.element->get_CurrentIsOffscreen(&offscreen)); checked(target.element->get_CurrentBoundingRectangle(&rectangle));
++    checked_provider(target.element->get_CurrentControlType(&type), ProviderStage::ControlType);
++    checked_provider(target.element->get_CurrentIsEnabled(&enabled), ProviderStage::Enabled);
++    checked_provider(target.element->get_CurrentIsOffscreen(&offscreen), ProviderStage::Offscreen);
++    checked_provider(target.element->get_CurrentBoundingRectangle(&rectangle), ProviderStage::Rectangle);
+     require(type == UIA_ButtonControlTypeId && name.bounded(256) == request.expected_name && enabled && !offscreen
+         && std::memcmp(&rectangle, &target.rectangle, sizeof(rectangle)) == 0
+         && boolean_property(target.element.get(), UIA_IsInvokePatternAvailablePropertyId), "target_identity_changed");
+@@ -725,9 +786,9 @@
+     checked(CoCreateInstance(__uuidof(CUIAutomation), nullptr, CLSCTX_INPROC_SERVER,
+         __uuidof(IUIAutomation), reinterpret_cast<void**>(automation.put())), "com_unavailable");
+     Com<IUIAutomationTreeWalker> walker;
+-    checked(automation->get_RawViewWalker(walker.put()));
++    checked_provider(automation->get_RawViewWalker(walker.put()), ProviderStage::RawWalker);
+     Com<IUIAutomationElement> outer;
+-    checked(automation->ElementFromHandle(window, outer.put()));
++    checked_provider(automation->ElementFromHandle(window, outer.put()), ProviderStage::ElementFromHandle);
+     auto outer_runtime = runtime_id(outer.get());
+     Request read_only = request;
+     read_only.invoke = false;
+@@ -824,6 +885,11 @@
+             bytes.pop_back();
+             bytes += ",\"service_signature\":" + service_signature_json(facts) + '}';
+         }
++    } else if (receipt.provider_failure && receipt.parsed_observe && !receipt.spent && !receipt.invoke_entered
++        && !receipt.method_returned && receipt.method == S_OK
++        && std::string_view(receipt.code) == "provider_unavailable" && observe_provider_failure(*receipt.provider_failure)) {
++        bytes.pop_back();
++        bytes += ",\"provider_failure\":" + provider_failure_json(*receipt.provider_failure) + '}';
+     }
+     bytes += '\n';
+     require(bytes.size() <= 262144, "output_bound");
+@@ -849,6 +915,9 @@
+     } catch (const ServiceSignatureRefusal& refusal) {
+         receipt.code = refusal.code;
+         if (receipt.parsed_observe) receipt.service_signature = refusal.facts;
++    } catch (const ProviderFailure& refusal) {
++        receipt.code = refusal.code;
++        if (receipt.parsed_observe) receipt.provider_failure = refusal.facts;
+     } catch (const Refusal& refusal) { receipt.code = refusal.code; }
+     catch (...) { receipt.code = "worker_refused"; }
+     if (!receipt.output_attempted) {
+--- a/tools/qa/native_observer/controller.py
++++ b/tools/qa/native_observer/controller.py
+@@ -22,6 +22,9 @@
+ SIGNATURE_OUTER = ("outer_left_i32", "outer_top_i32", "outer_right_i32", "outer_bottom_i32")
+ SIGNATURE_CLIENT = ("client_left_i32", "client_top_i32", "client_right_i32", "client_bottom_i32")
+ SIGNATURE_KEYS = {"schema", *SIGNATURE_STYLES, *SIGNATURE_OUTER, *SIGNATURE_CLIENT}
++PROVIDER_KEYS = {"schema", "stage_id", "hr"}
++PROVIDER_OBSERVE_STAGES = frozenset((1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 16, 17, 18, 19))
++PROVIDER_PROPERTIES = {20: frozenset((30019, 30077)), 21: frozenset((30159,))}
+ WORKER_CODES = frozenset("""observed submitted_outcome_unknown invoke_failed_outcome_unknown submitted_state_changed
+ com_unavailable deadline_refused desktop_refused dpi_refused hash_unavailable input_competing integrity_refused
+ internal_refused ledger_binding_refused ledger_bound ledger_changed ledger_identity_refused ledger_intent_unconfirmed
+@@ -184,9 +187,23 @@
+     return None
+ 
+ 
++def validate_provider_failure(sample):
++    require(type(sample) is dict and sample.get("schema") == "fe-native-provider-failure-v1"
++            and type(sample.get("stage_id")) is int and isinstance(sample.get("hr"), str)
++            and re.fullmatch(r"[89a-f][0-9a-f]{7}", sample["hr"]), "worker_result_refused")
++    properties = PROVIDER_PROPERTIES.get(sample["stage_id"])
++    if properties is not None:
++        require(set(sample) == PROVIDER_KEYS | {"property_id"} and type(sample["property_id"]) is int
++                and sample["property_id"] in properties, "worker_result_refused")
++    else:
++        require(set(sample) == PROVIDER_KEYS and sample["stage_id"] in PROVIDER_OBSERVE_STAGES,
++                "worker_result_refused")
++
++
+ def worker_output(raw, *, observe, helper_exit_code):
+     value = decode(raw, MAX_OUTPUT)
+-    require(set(value) in (OUTPUT_KEYS, OUTPUT_KEYS | {"service_style_u32"}, OUTPUT_KEYS | {"service_signature"})
++    require(set(value) in (OUTPUT_KEYS, OUTPUT_KEYS | {"service_style_u32"}, OUTPUT_KEYS | {"service_signature"},
++                           OUTPUT_KEYS | {"provider_failure"})
+             and value["schema"] == "fe-native-worker-result-v1"
+             and value["code"] in WORKER_CODES
+             and all(type(value[key]) is bool for key in ("attempt_spent", "invoke_entered", "method_returned"))
+@@ -206,6 +223,12 @@
+                 and value["hr"] == "00000000" and not value["attempt_spent"]
+                 and not value["invoke_entered"] and not value["method_returned"]
+                 and service_signature_refusal(value["service_signature"]) == value["code"], "worker_result_refused")
++    if "provider_failure" in value:
++        require(observe is True and type(helper_exit_code) is int and helper_exit_code == 2
++                and value["code"] == "provider_unavailable" and value["hr"] == "00000000"
++                and not value["attempt_spent"] and not value["invoke_entered"] and not value["method_returned"],
++                "worker_result_refused")
++        validate_provider_failure(value["provider_failure"])
+     return value
+ 
+ 
+--- a/tools/qa/native_observer/scenario.py
++++ b/tools/qa/native_observer/scenario.py
+@@ -264,6 +264,85 @@
+         except Refused:
+             refused = True
+         record("signature-duplicate-" + str(index) + "-refused", refused)
++    provider_result = dict(style_result, code="provider_unavailable")
++    record("legacy-provider-refusal-without-diagnostic", controller.worker_output(
++        encode(provider_result), observe=True, helper_exit_code=2) == provider_result)
++    provider_stages = [(stage, None) for stage in (1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 16, 17, 18, 19)]
++    provider_stages.extend(((20, 30019), (20, 30077), (21, 30159)))
++    for stage, property_id in provider_stages:
++        for hr in ("80000000", "80004005", "ffffffff"):
++            diagnostic = {"schema": "fe-native-provider-failure-v1", "stage_id": stage, "hr": hr}
++            if property_id is not None:
++                diagnostic["property_id"] = property_id
++            sample = dict(provider_result, provider_failure=diagnostic)
++            parsed = controller.worker_output(encode(sample), observe=True, helper_exit_code=2)
++            record("provider-stage-" + str(stage) + "-" + str(property_id) + "-" + hr,
++                   parsed == sample and ledger.spent() and not parsed["attempt_spent"])
++
++    provider_sample = dict(provider_result, provider_failure={
++        "schema": "fe-native-provider-failure-v1", "stage_id": 20, "property_id": 30019, "hr": "80004005"})
++    invalid_providers = []
++    for stage in (13, 14, 15, 22, True, False):
++        changed = dict(provider_result, provider_failure={
++            "schema": "fe-native-provider-failure-v1", "stage_id": stage, "hr": "80004005"})
++        invalid_providers.append(("ordinary-stage-" + repr(stage), changed, True, 2))
++    for key in ("schema", "stage_id", "property_id", "hr"):
++        changed = copy.deepcopy(provider_sample)
++        del changed["provider_failure"][key]
++        invalid_providers.append(("missing-" + key, changed, True, 2))
++    for value in (0, -1, 13, 14, 15, 22, 1 << 32, True, False, 20.0, "20", None, [], {}):
++        changed = copy.deepcopy(provider_sample)
++        changed["provider_failure"]["stage_id"] = value
++        invalid_providers.append(("stage-" + repr(value), changed, True, 2))
++    for value in (30031, 30159, 0, -1, 1 << 32, True, False, 30019.0, "30019", None, [], {}):
++        changed = copy.deepcopy(provider_sample)
++        changed["provider_failure"]["property_id"] = value
++        invalid_providers.append(("property-" + repr(value), changed, True, 2))
++    for value in ("00000000", "00000001", "7fffffff", "8000000A", "0x80004005", "8000400", "800040050",
++                  "g0000000", 0x80004005, True, None, [], {}):
++        changed = copy.deepcopy(provider_sample)
++        changed["provider_failure"]["hr"] = value
++        invalid_providers.append(("hr-" + repr(value), changed, True, 2))
++    for key, value in (("schema", "fe-native-provider-failure-v2"), ("schema", None), ("extra", 0)):
++        changed = copy.deepcopy(provider_sample)
++        changed["provider_failure"][key] = value
++        invalid_providers.append(("nested-" + key + "-" + repr(value), changed, True, 2))
++    for stage, property_id in ((1, 30019), (1, None), (21, 30019), (21, 30077), (20, 30159)):
++        changed = copy.deepcopy(provider_sample)
++        changed["provider_failure"].update(stage_id=stage, property_id=property_id)
++        invalid_providers.append(("conditional-property-" + str(stage) + "-" + str(property_id), changed, True, 2))
++    for value in (None, [], "failure", 1, True):
++        invalid_providers.append(("object-" + repr(value), dict(provider_result, provider_failure=value), True, 2))
++    for key, value in (("code", "observed"), ("code", "com_unavailable"), ("hr", "80004005"),
++                       ("attempt_spent", True), ("invoke_entered", True), ("method_returned", True),
++                       ("service_style_u32", 0), ("service_signature", signature_v2), ("extra", 0)):
++        changed = copy.deepcopy(provider_sample)
++        changed[key] = value
++        invalid_providers.append(("raw-" + key + "-" + str(value), changed, True, 2))
++    for mode in (False, None, 1):
++        invalid_providers.append(("mode-" + repr(mode), provider_sample, mode, 2))
++    for exit_code in (-1, 0, 1, 3, True, 2.0, "2", None):
++        invalid_providers.append(("exit-" + repr(exit_code), provider_sample, True, exit_code))
++    for name, changed, observe, exit_code in invalid_providers:
++        refused = False
++        try:
++            controller.worker_output(encode(changed), observe=observe, helper_exit_code=exit_code)
++        except Refused:
++            refused = True
++        record("provider-" + name + "-refused", refused)
++    duplicate_providers = (
++        encode(provider_sample)[:-1] + b',"provider_failure":{}}',
++        encode(provider_sample).replace(b'"provider_failure":{', b'"provider_failure":{"hr":"80004005",', 1),
++        encode(provider_sample).replace(b'"stage_id":20', b'"stage_id":20,"stage_id":20', 1),
++        encode(provider_sample).replace(b'"property_id":30019', b'"property_id":30019,"property_id":30019', 1),
++    )
++    for index, duplicate in enumerate(duplicate_providers):
++        refused = False
++        try:
++            controller.worker_output(duplicate, observe=True, helper_exit_code=2)
++        except Refused:
++            refused = True
++        record("provider-duplicate-" + str(index) + "-refused", refused)
+     called = []
+     def native_entry(args):
+         called.append((args.run, args.operation, args.member))
+--- a/tools/qa/native_observer/AGENTS.md
++++ b/tools/qa/native_observer/AGENTS.md
+@@ -149,9 +149,10 @@
+ explicit diagnostic-version decision. Generic identity/read/child/watcher errors,
+ success, malformed requests and invoke mode cannot carry a signature sample.
+ 
+-Exactly base, base+legacy scalar or base+new object is accepted; both extensions
+-together refuse. Legacy scalar first-failure semantics remain unchanged. New
+-workers emit only the new object; old controllers safely reject it.
++Exactly base, base+legacy scalar, base+service signature or base+provider failure
++is accepted; mixed extensions refuse. Legacy scalar first-failure semantics remain
++unchanged. Service failures emit only the signature object; old controllers safely
++reject unfamiliar extensions.
+ Existing sealed workers without the field remain accepted. Older strict controllers
+ reject extended output. Stage/helper source and binary pinning, request/ledger/
+ bootstrap schemas, byte bounds and success/exit rules remain. The existing offline
+@@ -465,3 +466,53 @@
+ acceptance remain required. Native window/watcher/COM defaults, timing, file flush
+ durability, inheritance and unknown-worker cleanup are source-authored, unexecuted
+ claims. Selected Inspector/node/group, all-Verse and WGC/capture remain unavailable.
++
++## Optional provider failure diagnostic
++
++QA56 returned provider_unavailable without the actual failed call or HRESULT.
++That code also labels the protocol helper's default checked failures, not just
++the two explicit property reads. The frozen QA56 cause stays unknown; a later
++diagnostic describes only its own execution and grants no positive UIA credit.
++
++ProviderStage gives each existing default HRESULT method one fixed numeric ID:
++AutomationId1, RuntimeId2, SafeArray lower/upper/type/element3/4/5/6,
++CompareElements7, ProcessId8, ControlType9, NativeWindow10, Enabled11,
++Offscreen12, Name13, Rectangle14, Pattern15, FirstChild16, NextSibling17,
++RawWalker18, ElementFromHandle19, BooleanProperty20, FullDescription21.
++Repeated method calls share an ID; no element, traversal occurrence or validation
++phase is identified. The worker-local checked_provider evaluates each original
++call once and retains its original FAILED predicate and provider_unavailable code.
++The two explicit com_unavailable calls and protocol helper remain unchanged.
++Property failures retain the original HRESULT across the existing VariantClear.
++No new COM/native read, retry, fallback, action or admission predicate is added.
++
++ProviderFailure derives from Refusal, preserving generic admission-loop rethrows
++and post-Invoke S_OK to submitted_state_changed handling. Only a parsed-observe
++top-level catch retains its scalar facts. The emitter also requires raw no-spent,
++no-Invoke/no-return flags, base method S_OK and exact provider_unavailable code.
++The base hr remains the Invoke result; nested hr is the failed provider operation.
++
++Optional provider_failure has exact schema fe-native-provider-failure-v1 and
++stage_id/hr keys; property_id is mandatory only at20/21 and forbidden otherwise.
++Stage/property IDs are exact JSON integers, not bool/float/string. Accepted
++observe stages are the fixed set1..12,16..21;13..15 are Invoke-only and refuse.
++Stage20 permits only SDK properties30019/30077;21 permits30159. Invoke-only30031
++refuses. Nested hr is exactly eight lowercase hexadecimal characters with its
++32-bit failure bit set. No value, VARIANT type, name, handle, runtime ID, path,
++selector, count, message translation or arbitrary provider text is emitted.
++Extending stages or properties requires explicit review, not range tolerance.
++
++Controller validates original raw bytes before its independent ledger override:
++actual observe, confirmed helper exit2 with exact int type, three false raw flags,
++base hr00000000, exact code and closed nested stage/property/failed-HRESULT shape.
++Existing recursive duplicate rejection and exclusive optional extensions remain.
++Older base-only outputs still work; older strict controllers reject the extension.
++Canonical scalar output, bounds, one-write rule, durable ledger ownership and
++unknown/spent outcomes are unchanged. No request/bootstrap/ledger parser widens.
++
++The existing offline exercise authors every allowed stage/property combination,
++failed-HRESULT endpoints and malformed shape/type/code/mode/exit/duplicate/mixed
++extension refusals, while preserving independently spent ledger assertions.
++Those cases do not execute native sampling or the C++ catch hierarchy. Independent
++source review, root-owned build and fresh live observe remain required; no source
++authorship or parser example establishes successful provider/root/witness/Invoke.

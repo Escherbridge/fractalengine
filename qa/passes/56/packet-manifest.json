@@ -1,0 +1,71 @@
+{
+  "kind": "fractalengine-focused-qa-packet-v1",
+  "pass_id": 56,
+  "files": [
+    {
+      "file": "application-log-summary.json",
+      "bytes": 1527,
+      "sha256": "4d5bb7b08a33063487f2ed040e9ad6e72132aecd1241e3f5b7a084472d3da16a"
+    },
+    {
+      "file": "cleanup-identities.json",
+      "bytes": 4310,
+      "sha256": "a3a26dac494f1d11812cc0d1a77e5c25b61d4b84d093e3332079867897a9daf7"
+    },
+    {
+      "file": "credential-scan.json",
+      "bytes": 2747,
+      "sha256": "6a97f4d31bacfdba486c9b5205cfad7800b0dbe63584b8137e1683b2281e159c"
+    },
+    {
+      "file": "fixture-public-detail.json",
+      "bytes": 2020,
+      "sha256": "73bf8aba91e779de0cec19fa0d68d79d66c8ef0dee598bb1bde82cb7beae9ba5"
+    },
+    {
+      "file": "logs/launch.log",
+      "bytes": 1668,
+      "sha256": "b9c10fd49a0ddb3e3d020e1218880bfa3f6f537dc5d182cf96851002094d0ab3"
+    },
+    {
+      "file": "logs/stage.log",
+      "bytes": 2296,
+      "sha256": "2446425ddce25fc73b936c3cc076b29352405d3d9809917033b33c91f9fa02b3"
+    },
+    {
+      "file": "logs/stop.log",
+      "bytes": 270,
+      "sha256": "7828b62cd0dea2ed49a9437e3a595b676340794c4a562a4fb6ebc17e9ec80a58"
+    },
+    {
+      "file": "native-observer-worker-receipt.jsonl",
+      "bytes": 1502,
+      "sha256": "9698bf07bd46815972cb08f35bdbaf03ec9b80b7cfb16d2f2b8305b87896bc10"
+    },
+    {
+      "file": "owned-context.json",
+      "bytes": 3052,
+      "sha256": "c69706e66aeeb9e6a9b9711da9579fcc1844ae100a5fe6fe322bc063af9e1a3d"
+    },
+    {
+      "file": "owner-native-observe-exact-geometry.jsonl",
+      "bytes": 585,
+      "sha256": "64fb34bac299441e8031d4d4d0dbdf6efabac2bfef926d912a60ae7959a36d2b"
+    },
+    {
+      "file": "packet-summary.json",
+      "bytes": 4678,
+      "sha256": "9429264feca6180ccb833f18bfaa5f7e50faa6d1b01a320e8fd1ea60c971632e"
+    },
+    {
+      "file": "stage-build-receipt.json",
+      "bytes": 513,
+      "sha256": "ae94950dd5ccbf1a2b14b22061ed99d1ae54d07624c72062d60bcd6a29d7d9e7"
+    },
+    {
+      "file": "stage-manifest.json",
+      "bytes": 1166,
+      "sha256": "b3e83f5de91d313d565ab942eb77935ecbc2d924d714526c23da6384d8b6322b"
+    }
+  ]
+}

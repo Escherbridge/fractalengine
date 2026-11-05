@@ -264,6 +264,85 @@ def exercise():
         except Refused:
             refused = True
         record("signature-duplicate-" + str(index) + "-refused", refused)
+    provider_result = dict(style_result, code="provider_unavailable")
+    record("legacy-provider-refusal-without-diagnostic", controller.worker_output(
+        encode(provider_result), observe=True, helper_exit_code=2) == provider_result)
+    provider_stages = [(stage, None) for stage in (1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 16, 17, 18, 19)]
+    provider_stages.extend(((20, 30019), (20, 30077), (21, 30159)))
+    for stage, property_id in provider_stages:
+        for hr in ("80000000", "80004005", "ffffffff"):
+            diagnostic = {"schema": "fe-native-provider-failure-v1", "stage_id": stage, "hr": hr}
+            if property_id is not None:
+                diagnostic["property_id"] = property_id
+            sample = dict(provider_result, provider_failure=diagnostic)
+            parsed = controller.worker_output(encode(sample), observe=True, helper_exit_code=2)
+            record("provider-stage-" + str(stage) + "-" + str(property_id) + "-" + hr,
+                   parsed == sample and ledger.spent() and not parsed["attempt_spent"])
+
+    provider_sample = dict(provider_result, provider_failure={
+        "schema": "fe-native-provider-failure-v1", "stage_id": 20, "property_id": 30019, "hr": "80004005"})
+    invalid_providers = []
+    for stage in (13, 14, 15, 22, True, False):
+        changed = dict(provider_result, provider_failure={
+            "schema": "fe-native-provider-failure-v1", "stage_id": stage, "hr": "80004005"})
+        invalid_providers.append(("ordinary-stage-" + repr(stage), changed, True, 2))
+    for key in ("schema", "stage_id", "property_id", "hr"):
+        changed = copy.deepcopy(provider_sample)
+        del changed["provider_failure"][key]
+        invalid_providers.append(("missing-" + key, changed, True, 2))
+    for value in (0, -1, 13, 14, 15, 22, 1 << 32, True, False, 20.0, "20", None, [], {}):
+        changed = copy.deepcopy(provider_sample)
+        changed["provider_failure"]["stage_id"] = value
+        invalid_providers.append(("stage-" + repr(value), changed, True, 2))
+    for value in (30031, 30159, 0, -1, 1 << 32, True, False, 30019.0, "30019", None, [], {}):
+        changed = copy.deepcopy(provider_sample)
+        changed["provider_failure"]["property_id"] = value
+        invalid_providers.append(("property-" + repr(value), changed, True, 2))
+    for value in ("00000000", "00000001", "7fffffff", "8000000A", "0x80004005", "8000400", "800040050",
+                  "g0000000", 0x80004005, True, None, [], {}):
+        changed = copy.deepcopy(provider_sample)
+        changed["provider_failure"]["hr"] = value
+        invalid_providers.append(("hr-" + repr(value), changed, True, 2))
+    for key, value in (("schema", "fe-native-provider-failure-v2"), ("schema", None), ("extra", 0)):
+        changed = copy.deepcopy(provider_sample)
+        changed["provider_failure"][key] = value
+        invalid_providers.append(("nested-" + key + "-" + repr(value), changed, True, 2))
+    for stage, property_id in ((1, 30019), (1, None), (21, 30019), (21, 30077), (20, 30159)):
+        changed = copy.deepcopy(provider_sample)
+        changed["provider_failure"].update(stage_id=stage, property_id=property_id)
+        invalid_providers.append(("conditional-property-" + str(stage) + "-" + str(property_id), changed, True, 2))
+    for value in (None, [], "failure", 1, True):
+        invalid_providers.append(("object-" + repr(value), dict(provider_result, provider_failure=value), True, 2))
+    for key, value in (("code", "observed"), ("code", "com_unavailable"), ("hr", "80004005"),
+                       ("attempt_spent", True), ("invoke_entered", True), ("method_returned", True),
+                       ("service_style_u32", 0), ("service_signature", signature_v2), ("extra", 0)):
+        changed = copy.deepcopy(provider_sample)
+        changed[key] = value
+        invalid_providers.append(("raw-" + key + "-" + str(value), changed, True, 2))
+    for mode in (False, None, 1):
+        invalid_providers.append(("mode-" + repr(mode), provider_sample, mode, 2))
+    for exit_code in (-1, 0, 1, 3, True, 2.0, "2", None):
+        invalid_providers.append(("exit-" + repr(exit_code), provider_sample, True, exit_code))
+    for name, changed, observe, exit_code in invalid_providers:
+        refused = False
+        try:
+            controller.worker_output(encode(changed), observe=observe, helper_exit_code=exit_code)
+        except Refused:
+            refused = True
+        record("provider-" + name + "-refused", refused)
+    duplicate_providers = (
+        encode(provider_sample)[:-1] + b',"provider_failure":{}}',
+        encode(provider_sample).replace(b'"provider_failure":{', b'"provider_failure":{"hr":"80004005",', 1),
+        encode(provider_sample).replace(b'"stage_id":20', b'"stage_id":20,"stage_id":20', 1),
+        encode(provider_sample).replace(b'"property_id":30019', b'"property_id":30019,"property_id":30019', 1),
+    )
+    for index, duplicate in enumerate(duplicate_providers):
+        refused = False
+        try:
+            controller.worker_output(duplicate, observe=True, helper_exit_code=2)
+        except Refused:
+            refused = True
+        record("provider-duplicate-" + str(index) + "-refused", refused)
     called = []
     def native_entry(args):
         called.append((args.run, args.operation, args.member))

@@ -1,0 +1,79 @@
+﻿{
+    "kind":  "qa56-recorded-process-cleanup",
+    "checked_at":  "2026-11-05T01:39:52.4475399Z",
+    "all_recorded_identities_absent":  true,
+    "checks":  [
+                   {
+                       "identity":  {
+                                        "pid":  75184,
+                                        "start_ticks":  "639294393376409567",
+                                        "exe_path":  "C:\\Users\\atooz\\Programming\\fractalengine-workspace\\fractalengine\\.qa\\stage\\6ca9f49b-20261104183324669\\fractalengine.exe"
+                                    },
+                       "pid_present":  false,
+                       "recorded_identity_present":  false
+                   },
+                   {
+                       "identity":  {
+                                        "pid":  109392,
+                                        "start_ticks":  "639294393377337963",
+                                        "exe_path":  "C:\\Windows\\system32\\conhost.exe"
+                                    },
+                       "pid_present":  false,
+                       "recorded_identity_present":  false
+                   },
+                   {
+                       "identity":  {
+                                        "pid":  124476,
+                                        "start_ticks":  "639294393424243676",
+                                        "exe_path":  "C:\\Program Files (x86)\\Microsoft\\EdgeWebView\\Application\\156.0.4314.58\\msedgewebview2.exe"
+                                    },
+                       "pid_present":  false,
+                       "recorded_identity_present":  false
+                   },
+                   {
+                       "identity":  {
+                                        "pid":  107952,
+                                        "start_ticks":  "639294393424727075",
+                                        "exe_path":  "C:\\Program Files (x86)\\Microsoft\\EdgeWebView\\Application\\156.0.4314.58\\msedgewebview2.exe"
+                                    },
+                       "pid_present":  false,
+                       "recorded_identity_present":  false
+                   },
+                   {
+                       "identity":  {
+                                        "pid":  124764,
+                                        "start_ticks":  "639294393427901573",
+                                        "exe_path":  "C:\\Program Files (x86)\\Microsoft\\EdgeWebView\\Application\\156.0.4314.58\\msedgewebview2.exe"
+                                    },
+                       "pid_present":  false,
+                       "recorded_identity_present":  false
+                   },
+                   {
+                       "identity":  {
+                                        "pid":  88508,
+                                        "start_ticks":  "639294393427902019",
+                                        "exe_path":  "C:\\Program Files (x86)\\Microsoft\\EdgeWebView\\Application\\156.0.4314.58\\msedgewebview2.exe"
+                                    },
+                       "pid_present":  false,
+                       "recorded_identity_present":  false
+                   },
+                   {
+                       "identity":  {
+                                        "pid":  115072,
+                                        "start_ticks":  "639294393428001180",
+                                        "exe_path":  "C:\\Program Files (x86)\\Microsoft\\EdgeWebView\\Application\\156.0.4314.58\\msedgewebview2.exe"
+                                    },
+                       "pid_present":  false,
+                       "recorded_identity_present":  false
+                   },
+                   {
+                       "identity":  {
+                                        "pid":  99024,
+                                        "start_ticks":  "639294393428097024",
+                                        "exe_path":  "C:\\Program Files (x86)\\Microsoft\\EdgeWebView\\Application\\156.0.4314.58\\msedgewebview2.exe"
+                                    },
+                       "pid_present":  false,
+                       "recorded_identity_present":  false
+                   }
+               ]
+}

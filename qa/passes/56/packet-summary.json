@@ -1,0 +1,109 @@
+{
+  "pass_id": 56,
+  "verdict": "NATIVE_PROVIDER_PROPERTY_REFUSAL",
+  "source_commit": "6ca9f49bf65bb344ff5bdb0fa9794208c54c4a9a",
+  "original_artifacts": [
+    {
+      "file": "fixture-public-detail.json",
+      "bytes": 2020,
+      "sha256": "73bf8aba91e779de0cec19fa0d68d79d66c8ef0dee598bb1bde82cb7beae9ba5"
+    },
+    {
+      "file": "owner-native-observe-exact-geometry.jsonl",
+      "bytes": 585,
+      "sha256": "64fb34bac299441e8031d4d4d0dbdf6efabac2bfef926d912a60ae7959a36d2b"
+    },
+    {
+      "file": "owned-context.json",
+      "local_source": ".omc\\research\\qa56-owned-context.json",
+      "bytes": 3052,
+      "sha256": "c69706e66aeeb9e6a9b9711da9579fcc1844ae100a5fe6fe322bc063af9e1a3d"
+    },
+    {
+      "file": "cleanup-identities.json",
+      "local_source": ".omc\\research\\qa56-cleanup-identities.json",
+      "bytes": 4310,
+      "sha256": "a3a26dac494f1d11812cc0d1a77e5c25b61d4b84d093e3332079867897a9daf7"
+    },
+    {
+      "file": "stage-manifest.json",
+      "local_source": "C:\\Users\\atooz\\Programming\\fractalengine-workspace\\fractalengine\\.qa\\stage\\6ca9f49b-20261104183324669\\stage.json",
+      "bytes": 1166,
+      "sha256": "b3e83f5de91d313d565ab942eb77935ecbc2d924d714526c23da6384d8b6322b"
+    },
+    {
+      "file": "stage-build-receipt.json",
+      "local_source": ".omc\\research\\completion-responsive-grid-native-stage-receipt.json",
+      "bytes": 513,
+      "sha256": "ae94950dd5ccbf1a2b14b22061ed99d1ae54d07624c72062d60bcd6a29d7d9e7"
+    },
+    {
+      "file": "native-observer-worker-receipt.jsonl",
+      "local_source": "C:\\Users\\atooz\\Programming\\fractalengine-workspace\\fractalengine\\.qa\\run\\20261104-183535-329\\native-observer\\134383161376409567-9be7a7df8aa44f489e954aa7d385351a\\workers\\73850522bf434f1795deb10d57efc510.jsonl",
+      "bytes": 1502,
+      "sha256": "9698bf07bd46815972cb08f35bdbaf03ec9b80b7cfb16d2f2b8305b87896bc10"
+    },
+    {
+      "file": "logs/stage.log",
+      "local_source": ".omc\\research\\completion-responsive-grid-native-stage.log",
+      "bytes": 2296,
+      "sha256": "2446425ddce25fc73b936c3cc076b29352405d3d9809917033b33c91f9fa02b3"
+    },
+    {
+      "file": "logs/launch.log",
+      "local_source": ".omc\\research\\qa56-launch.log",
+      "bytes": 1668,
+      "sha256": "b9c10fd49a0ddb3e3d020e1218880bfa3f6f537dc5d182cf96851002094d0ab3"
+    },
+    {
+      "file": "logs/stop.log",
+      "local_source": ".omc\\research\\qa56-stop.log",
+      "bytes": 270,
+      "sha256": "7828b62cd0dea2ed49a9437e3a595b676340794c4a562a4fb6ebc17e9ec80a58"
+    }
+  ],
+  "launch_options": {
+    "native_observer": true,
+    "synthetic_input": false,
+    "a11y_continuous": false,
+    "a11y_timing": false
+  },
+  "native_result": {
+    "attempt_spent": false,
+    "capture_available": false,
+    "code": "provider_unavailable",
+    "helper_exit_code": 2,
+    "hr": "00000000",
+    "invoke_entered": false,
+    "method_returned": false,
+    "outcome": "observation",
+    "root_sha256": "0000000000000000000000000000000000000000000000000000000000000000",
+    "schema": "fe-native-worker-result-v1",
+    "target_sha256": "0000000000000000000000000000000000000000000000000000000000000000",
+    "watch_first": 0,
+    "watch_last": 0,
+    "worker_record": "native-observer\\134383161376409567-9be7a7df8aa44f489e954aa7d385351a\\workers\\73850522bf434f1795deb10d57efc510.jsonl"
+  },
+  "ledger_summary": {
+    "file_sha256": "89f69209951d37afc9941f294c1eb467d62dd5de8ff4fc11d51e7170af58eb54",
+    "record_count": 1,
+    "invocation_reservation_or_intent_present": false
+  },
+  "worker_phases": [
+    "reserved",
+    "worker_started",
+    "exit_confirmed"
+  ],
+  "cleanup": true,
+  "facts": [
+    "Actual matching helper executed one observe and returned provider_unavailable/exit2.",
+    "Compiled ordering establishes initial strict window census/service signature/children and first retained-set boundary passed before UIA root property reading.",
+    "No Invoke, capture, postlaunch Owner HTTP state or screenshot request; eight recorded app identities absent at cleanup timestamp."
+  ],
+  "limits": [
+    "provider_unavailable has two current sources: boolean property reads or root FullDescription read. Exact failing property and HRESULT are not recorded; do not infer cause or positive root/provider/witness acceptance.",
+    "No later boundary/Invoke/navigation/capture/role/peer/restart/FULL acceptance.",
+    "Private ledger retained locally; finite four-pattern scans are not universal absence proof.",
+    "Production build passed; no final integrated sweep/CI/tag/release."
+  ]
+}

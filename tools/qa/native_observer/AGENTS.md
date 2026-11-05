@@ -149,9 +149,10 @@ New schema version pins those comparison values; future policy changes need an
 explicit diagnostic-version decision. Generic identity/read/child/watcher errors,
 success, malformed requests and invoke mode cannot carry a signature sample.
 
-Exactly base, base+legacy scalar or base+new object is accepted; both extensions
-together refuse. Legacy scalar first-failure semantics remain unchanged. New
-workers emit only the new object; old controllers safely reject it.
+Exactly base, base+legacy scalar, base+service signature or base+provider failure
+is accepted; mixed extensions refuse. Legacy scalar first-failure semantics remain
+unchanged. Service failures emit only the signature object; old controllers safely
+reject unfamiliar extensions.
 Existing sealed workers without the field remain accepted. Older strict controllers
 reject extended output. Stage/helper source and binary pinning, request/ledger/
 bootstrap schemas, byte bounds and success/exit rules remain. The existing offline
@@ -465,3 +466,53 @@ the integrated existing journey and real controlled Viewer/Editor UIA/lifecycle
 acceptance remain required. Native window/watcher/COM defaults, timing, file flush
 durability, inheritance and unknown-worker cleanup are source-authored, unexecuted
 claims. Selected Inspector/node/group, all-Verse and WGC/capture remain unavailable.
+
+## Optional provider failure diagnostic
+
+QA56 returned provider_unavailable without the actual failed call or HRESULT.
+That code also labels the protocol helper's default checked failures, not just
+the two explicit property reads. The frozen QA56 cause stays unknown; a later
+diagnostic describes only its own execution and grants no positive UIA credit.
+
+ProviderStage gives each existing default HRESULT method one fixed numeric ID:
+AutomationId1, RuntimeId2, SafeArray lower/upper/type/element3/4/5/6,
+CompareElements7, ProcessId8, ControlType9, NativeWindow10, Enabled11,
+Offscreen12, Name13, Rectangle14, Pattern15, FirstChild16, NextSibling17,
+RawWalker18, ElementFromHandle19, BooleanProperty20, FullDescription21.
+Repeated method calls share an ID; no element, traversal occurrence or validation
+phase is identified. The worker-local checked_provider evaluates each original
+call once and retains its original FAILED predicate and provider_unavailable code.
+The two explicit com_unavailable calls and protocol helper remain unchanged.
+Property failures retain the original HRESULT across the existing VariantClear.
+No new COM/native read, retry, fallback, action or admission predicate is added.
+
+ProviderFailure derives from Refusal, preserving generic admission-loop rethrows
+and post-Invoke S_OK to submitted_state_changed handling. Only a parsed-observe
+top-level catch retains its scalar facts. The emitter also requires raw no-spent,
+no-Invoke/no-return flags, base method S_OK and exact provider_unavailable code.
+The base hr remains the Invoke result; nested hr is the failed provider operation.
+
+Optional provider_failure has exact schema fe-native-provider-failure-v1 and
+stage_id/hr keys; property_id is mandatory only at20/21 and forbidden otherwise.
+Stage/property IDs are exact JSON integers, not bool/float/string. Accepted
+observe stages are the fixed set1..12,16..21;13..15 are Invoke-only and refuse.
+Stage20 permits only SDK properties30019/30077;21 permits30159. Invoke-only30031
+refuses. Nested hr is exactly eight lowercase hexadecimal characters with its
+32-bit failure bit set. No value, VARIANT type, name, handle, runtime ID, path,
+selector, count, message translation or arbitrary provider text is emitted.
+Extending stages or properties requires explicit review, not range tolerance.
+
+Controller validates original raw bytes before its independent ledger override:
+actual observe, confirmed helper exit2 with exact int type, three false raw flags,
+base hr00000000, exact code and closed nested stage/property/failed-HRESULT shape.
+Existing recursive duplicate rejection and exclusive optional extensions remain.
+Older base-only outputs still work; older strict controllers reject the extension.
+Canonical scalar output, bounds, one-write rule, durable ledger ownership and
+unknown/spent outcomes are unchanged. No request/bootstrap/ledger parser widens.
+
+The existing offline exercise authors every allowed stage/property combination,
+failed-HRESULT endpoints and malformed shape/type/code/mode/exit/duplicate/mixed
+extension refusals, while preserving independently spent ledger assertions.
+Those cases do not execute native sampling or the C++ catch hierarchy. Independent
+source review, root-owned build and fresh live observe remain required; no source
+authorship or parser example establishes successful provider/root/witness/Invoke.
