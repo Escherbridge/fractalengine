@@ -1,0 +1,26 @@
+{
+  "kind": "qa49-camera-command-ownership-source-v1",
+  "baseline_commit": "71cd5f8e9f05bd39dbb1a61c17a95ca054dda5fe",
+  "files": [
+    {
+      "path": "fe-renderer/src/AGENTS.md",
+      "bytes": 20846,
+      "sha256": "ec938c058d0fc09c8ca13a6692f29750406bc4338d26106824fedfddb473ca7f",
+      "baseline_git_blob_bytes": 18932,
+      "baseline_git_blob_sha256": "c39646e2d01273192b97b3c2fe4bda4104e358c1f65846f132c9c8572375daa2"
+    },
+    {
+      "path": "fe-renderer/src/camera.rs",
+      "bytes": 55858,
+      "sha256": "136006c24d5faa6fa773872f44dad90c91fa31c7ae518acd1de5944b0b595ff2",
+      "baseline_git_blob_bytes": 50963,
+      "baseline_git_blob_sha256": "da715e3e6dcb5cfe5b47e317ed099081c6a246bf8c23cb862d4e55f49713f74b"
+    }
+  ],
+  "patch": {
+    "file": "source.patch",
+    "bytes": 10897,
+    "sha256": "57f003210bff97956490b3fe4f52ba62da41c82295bf9e4eb405322acbfe0d9e"
+  },
+  "limits": "Source author freeze only. No compiler, parser, formatter, tests, application, OS/native, API/DB/network execution or Git mutation. Independent approval required."
+}

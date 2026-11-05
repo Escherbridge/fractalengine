@@ -515,6 +515,57 @@ fn spawn_orbit_camera(mut commands: Commands) {
     ));
 }
 
+/// Resolve unclaimed fly direction/speed; see AGENTS.md §camera-keyboard-ownership.
+fn keyboard_fly_intent(
+    keyboard: &ButtonInput<KeyCode>,
+    keyboard_owned: bool,
+    yaw: f32,
+) -> Option<(Vec3, f32)> {
+    if keyboard_owned
+        || keyboard.any_pressed([
+            KeyCode::ControlLeft,
+            KeyCode::ControlRight,
+            KeyCode::SuperLeft,
+            KeyCode::SuperRight,
+        ])
+    {
+        return None;
+    }
+
+    let forward_xz = Vec3::new(-yaw.sin(), 0.0, -yaw.cos()).normalize();
+    let right_xz = Vec3::new(-forward_xz.z, 0.0, forward_xz.x);
+    let mut movement = Vec3::ZERO;
+    if keyboard.pressed(KeyCode::KeyW) {
+        movement += forward_xz;
+    }
+    if keyboard.pressed(KeyCode::KeyS) && !keyboard.just_pressed(KeyCode::KeyS) {
+        movement -= forward_xz;
+    }
+    if keyboard.pressed(KeyCode::KeyD) {
+        movement += right_xz;
+    }
+    if keyboard.pressed(KeyCode::KeyA) {
+        movement -= right_xz;
+    }
+    if keyboard.pressed(KeyCode::KeyE) || keyboard.pressed(KeyCode::Space) {
+        movement += Vec3::Y;
+    }
+    if keyboard.pressed(KeyCode::KeyQ) {
+        movement -= Vec3::Y;
+    }
+
+    if movement.length_squared() > 0.0 {
+        let sprint = if keyboard.pressed(KeyCode::ShiftLeft) {
+            2.5
+        } else {
+            1.0
+        };
+        Some((movement.normalize(), sprint))
+    } else {
+        None
+    }
+}
+
 /// Update system: reads mouse/keyboard input and applies orbit / pan / zoom / WASD,
 /// then eases toward targets and clamps camera + focus above terrain.
 ///
@@ -631,51 +682,12 @@ fn orbit_camera_system(
         }
     }
 
-    // WASD + QE movement (only when egui doesn't want keyboard).
-    if !egui_wants_keyboard {
-        let dt = time.delta_secs();
-        let speed = controller.move_speed * dt;
-
-        // Forward/back direction projected onto XZ plane.
-        let forward_xz = Vec3::new(-controller.yaw.sin(), 0.0, -controller.yaw.cos()).normalize();
-        let right_xz = Vec3::new(-forward_xz.z, 0.0, forward_xz.x);
-
-        let mut movement = Vec3::ZERO;
-
-        if keyboard.pressed(KeyCode::KeyW) {
-            movement += forward_xz;
-        }
-        // Skip S on the exact frame it is first pressed so the tool-shortcut
-        // system (which fires on just_pressed) can claim it without the camera
-        // simultaneously moving backward.
-        if keyboard.pressed(KeyCode::KeyS) && !keyboard.just_pressed(KeyCode::KeyS) {
-            movement -= forward_xz;
-        }
-        if keyboard.pressed(KeyCode::KeyD) {
-            movement += right_xz;
-        }
-        if keyboard.pressed(KeyCode::KeyA) {
-            movement -= right_xz;
-        }
-        if keyboard.pressed(KeyCode::KeyE) || keyboard.pressed(KeyCode::Space) {
-            movement += Vec3::Y;
-        }
-        if keyboard.pressed(KeyCode::KeyQ) || keyboard.pressed(KeyCode::ControlLeft) {
-            movement -= Vec3::Y;
-        }
-
-        // Shift to move faster.
-        let sprint = if keyboard.pressed(KeyCode::ShiftLeft) {
-            2.5
-        } else {
-            1.0
-        };
-
-        if movement.length_squared() > 0.0 {
-            // Manual fly cancels a pending fly-to.
-            controller.target_focus = None;
-            controller.focus += movement.normalize() * speed * sprint;
-        }
+    if let Some((direction, sprint)) =
+        keyboard_fly_intent(&keyboard, egui_wants_keyboard, controller.yaw)
+    {
+        let speed = controller.move_speed * time.delta_secs();
+        controller.target_focus = None;
+        controller.focus += direction * speed * sprint;
     }
 
     // Ease distance/focus toward their targets (dt-independent; raw at rate 0).
@@ -1237,15 +1249,109 @@ mod tests {
         }
     }
 
-    /// `orbit_camera_system` cannot run in a headless `App` without the
-    /// `bevy_egui` render-feature resources it requires as a `SystemParam`
-    /// (`EguiUserTextures`); per plan.md V3, this instead proves the generic
-    /// `run_if(camera_unlocked)` wiring pattern directly against a bare
-    /// `Schedule`, the same mechanism `CameraControllerPlugin` registers
-    /// `orbit_camera_system` with. See AGENTS.md §camera-capture.
+    fn assert_keyboard_command_ownership() {
+        for command in [
+            KeyCode::ControlLeft,
+            KeyCode::ControlRight,
+            KeyCode::SuperLeft,
+            KeyCode::SuperRight,
+        ] {
+            for redo in [false, true] {
+                let mut keyboard = ButtonInput::<KeyCode>::default();
+                keyboard.press(command);
+                assert_eq!(
+                    keyboard_fly_intent(&keyboard, false, 0.0),
+                    None,
+                    "the modifier prefix must be reserved before Z exists: {command:?}"
+                );
+                if redo {
+                    keyboard.clear();
+                    keyboard.press(KeyCode::ShiftLeft);
+                    assert_eq!(keyboard_fly_intent(&keyboard, false, 0.0), None);
+                }
+                keyboard.clear();
+                keyboard.press(KeyCode::KeyZ);
+                assert_eq!(keyboard_fly_intent(&keyboard, false, 0.0), None);
+                assert!(
+                    keyboard.pressed(command),
+                    "intent must not consume editor input"
+                );
+                keyboard.clear();
+                keyboard.release(KeyCode::KeyZ);
+                assert_eq!(keyboard_fly_intent(&keyboard, false, 0.0), None);
+                keyboard.clear();
+                keyboard.release(command);
+                keyboard.release(KeyCode::ShiftLeft);
+                assert_eq!(keyboard_fly_intent(&keyboard, false, 0.0), None);
+            }
+
+            let mut held = ButtonInput::<KeyCode>::default();
+            held.press(KeyCode::KeyQ);
+            assert_eq!(
+                keyboard_fly_intent(&held, false, 0.0),
+                Some((Vec3::NEG_Y, 1.0))
+            );
+            held.clear();
+            held.press(command);
+            assert_eq!(
+                keyboard_fly_intent(&held, false, 0.0),
+                None,
+                "command ownership also blocks an already-held navigation key"
+            );
+            held.clear();
+            held.release(command);
+            assert_eq!(
+                keyboard_fly_intent(&held, false, 0.0),
+                Some((Vec3::NEG_Y, 1.0))
+            );
+        }
+
+        for (key, direction) in [
+            (KeyCode::KeyW, Vec3::NEG_Z),
+            (KeyCode::KeyA, Vec3::NEG_X),
+            (KeyCode::KeyD, Vec3::X),
+            (KeyCode::KeyQ, Vec3::NEG_Y),
+            (KeyCode::KeyE, Vec3::Y),
+            (KeyCode::Space, Vec3::Y),
+        ] {
+            let mut keyboard = ButtonInput::<KeyCode>::default();
+            keyboard.press(key);
+            assert_eq!(
+                keyboard_fly_intent(&keyboard, false, 0.0),
+                Some((direction, 1.0))
+            );
+            assert_eq!(keyboard_fly_intent(&keyboard, true, 0.0), None);
+            keyboard.press(KeyCode::ShiftLeft);
+            assert_eq!(
+                keyboard_fly_intent(&keyboard, false, 0.0),
+                Some((direction, 2.5))
+            );
+            assert_eq!(keyboard_fly_intent(&keyboard, true, 0.0), None);
+        }
+
+        let mut keyboard = ButtonInput::<KeyCode>::default();
+        keyboard.press(KeyCode::KeyS);
+        assert_eq!(keyboard_fly_intent(&keyboard, false, 0.0), None);
+        keyboard.clear();
+        assert_eq!(
+            keyboard_fly_intent(&keyboard, false, 0.0),
+            Some((Vec3::Z, 1.0))
+        );
+        keyboard.reset_all();
+        keyboard.press(KeyCode::KeyW);
+        keyboard.press(KeyCode::KeyD);
+        let Some((direction, sprint)) = keyboard_fly_intent(&keyboard, false, 0.0) else {
+            panic!("unclaimed diagonal movement must remain available")
+        };
+        assert!((direction - Vec3::new(1.0, 0.0, -1.0).normalize()).length() < EPSILON);
+        assert_eq!(sprint, 1.0);
+    }
+
+    /// Exercise input ownership and the capture run_if; see AGENTS.md §camera-capture.
     #[test]
     fn capture_lock_stops_a_run_if_gated_system_from_running() {
         crate::scene_pointer::assert_completed_chrome_journey();
+        assert_keyboard_command_ownership();
         #[derive(Resource, Default)]
         struct Ran(bool);
 

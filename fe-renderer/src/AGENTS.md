@@ -59,6 +59,31 @@ a smooth fly-to instead of the old two-step teleport. Orbit (yaw/pitch) stays
 un-eased deliberately: mouse-drag orbit is already continuous and adding lag
 there feels like input latency, not smoothing.
 
+## §camera-keyboard-ownership
+
+`keyboard_fly_intent` is the pure keyboard boundary used by the orbit system.
+Either side of Ctrl or Super reserves keyboard movement for editor/UI commands,
+including modifier-only prefix frames before a command letter is pressed. Ctrl
+is no longer a camera-descent alias: Q descends; E/Space ascend. Plain WASD, the
+S first-press tool reservation, normalized diagonal movement and Left Shift's 2.5x
+speed remain. Alt behavior is unchanged in this narrow correction.
+
+The helper also respects the existing egui keyboard ownership boolean. It returns
+only an optional normalized direction/speed multiplier; the camera system owns
+delta time, focus mutation and fly-to cancellation. A blocked keyboard intent does
+not return from that system:
+mouse orbit/pan/zoom, easing and terrain clamps keep their own existing gates.
+CameraCaptureLock still gates the whole camera system through its existing run_if.
+No editor shortcut, input injection lifetime, manager or history behavior changes.
+
+The existing capture-lock journey additionally exercises production keyboard intent
+through Ctrl/Super prefix, Z press/release, Shift-Redo and modifier-release frames,
+command suppression during an already held movement key, plain axes/diagonals,
+Shift speed, S first-press and text-owned input. This is authored source coverage;
+independent review, the final integrated sweep and actual pose-stable Undo/Redo
+runtime acceptance remain separate. QA49's successful object replay had camera
+drift; no repaired runtime result is inferred from the helper or test authorship.
+
 ## §terrain-height
 
 `terrain_height.rs` defines `TerrainHeightField` — resident terrain heights
