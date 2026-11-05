@@ -1,0 +1,49 @@
+# Independent Exact Integration Review: `qa59-divider-eligibility-v1`
+
+- **Review Date**: 2026-11-05
+- **Candidate ID**: `qa59-divider-eligibility-v1`
+- **Target Evidence Directory**: [conductor/tracks/project_completion_20261104/evidence/ui/qa59-divider-eligibility/](file:///C:/Users/atooz/Programming/fractalengine-workspace/fractalengine/conductor/tracks/project_completion_20261104/evidence/ui/qa59-divider-eligibility/)
+- **Verdict**: **APPROVED**
+
+---
+
+## 1. Evidence Copy Integrity Verification
+
+Every file copied into [`conductor/tracks/project_completion_20261104/evidence/ui/qa59-divider-eligibility/`](file:///C:/Users/atooz/Programming/fractalengine-workspace/fractalengine/conductor/tracks/project_completion_20261104/evidence/ui/qa59-divider-eligibility/) was independently hashed and compared against its `.omc/research/` origin and [`integration-receipt.json`](file:///C:/Users/atooz/Programming/fractalengine-workspace/fractalengine/conductor/tracks/project_completion_20261104/evidence/ui/qa59-divider-eligibility/integration-receipt.json):
+
+| Evidence File | Source `.omc/research/` File | Bytes | SHA-256 Digest | Byte-Identical Match |
+|---|---|---|---|---|
+| [`candidate-manifest.json`](file:///C:/Users/atooz/Programming/fractalengine-workspace/fractalengine/conductor/tracks/project_completion_20261104/evidence/ui/qa59-divider-eligibility/candidate-manifest.json) | [`.omc/research/qa59-divider-eligibility-v1/manifest.json`](file:///C:/Users/atooz/Programming/fractalengine-workspace/fractalengine/.omc/research/qa59-divider-eligibility-v1/manifest.json) | `2,742` | `5d596db66f3288b38aca4e6f3ca2c932c50d6a0a8326fd4b5e75ddc339756029` | **PASS** |
+| [`source.patch`](file:///C:/Users/atooz/Programming/fractalengine-workspace/fractalengine/conductor/tracks/project_completion_20261104/evidence/ui/qa59-divider-eligibility/source.patch) | [`.omc/research/qa59-divider-eligibility-v1/source.patch`](file:///C:/Users/atooz/Programming/fractalengine-workspace/fractalengine/.omc/research/qa59-divider-eligibility-v1/source.patch) | `19,091` | `ee2eb2cc427ad5c45fd13c665c1eb95d12789d565bc407039ebe7c66d5886cda` | **PASS** |
+| [`correctness-review.txt`](file:///C:/Users/atooz/Programming/fractalengine-workspace/fractalengine/conductor/tracks/project_completion_20261104/evidence/ui/qa59-divider-eligibility/correctness-review.txt) | [`.omc/research/qa59-divider-eligibility-source-review.md`](file:///C:/Users/atooz/Programming/fractalengine-workspace/fractalengine/.omc/research/qa59-divider-eligibility-source-review.md) | `5,585` | `3a3b670de115b83aed1621eb732433b683a549bf01b081c638b41f1751a1f5fb` | **PASS** |
+| [`design-review.txt`](file:///C:/Users/atooz/Programming/fractalengine-workspace/fractalengine/conductor/tracks/project_completion_20261104/evidence/ui/qa59-divider-eligibility/design-review.txt) | [`.omc/research/qa59-divider-eligibility-design-review.md`](file:///C:/Users/atooz/Programming/fractalengine-workspace/fractalengine/.omc/research/qa59-divider-eligibility-design-review.md) | `8,870` | `8d82e16e60ef459d2508abd68a4835a822aa99e8ca527a7b88ef8f53a62ddca9` | **PASS** |
+
+[`index.md`](file:///C:/Users/atooz/Programming/fractalengine-workspace/fractalengine/conductor/tracks/project_completion_20261104/evidence/ui/qa59-divider-eligibility/index.md) (`type: evidence-index`, `track_id: project_completion_20261104`) and [`integration-receipt.json`](file:///C:/Users/atooz/Programming/fractalengine-workspace/fractalengine/conductor/tracks/project_completion_20261104/evidence/ui/qa59-divider-eligibility/integration-receipt.json) accurately cross-reference the candidate manifest, patch, independent correctness/design reviews, and all 5 canonical file digests.
+
+---
+
+## 2. Canonical File Integration & Dual-Digest Verification
+
+All 5 integrated canonical source and documentation files in the workspace were independently hashed in both raw (CRLF on-disk) and LF-normalized forms (`\r\n` -> `\n`) and verified against [`candidate-manifest.json`](file:///C:/Users/atooz/Programming/fractalengine-workspace/fractalengine/conductor/tracks/project_completion_20261104/evidence/ui/qa59-divider-eligibility/candidate-manifest.json) (`5d596db66f3288b38aca4e6f3ca2c932c50d6a0a8326fd4b5e75ddc339756029`), the candidate `.omc/research/qa59-divider-eligibility-v1/raw/` snapshots, and [`integration-receipt.json`](file:///C:/Users/atooz/Programming/fractalengine-workspace/fractalengine/conductor/tracks/project_completion_20261104/evidence/ui/qa59-divider-eligibility/integration-receipt.json):
+
+| Canonical File | Raw Bytes | LF Bytes | `raw_sha256` (Matches `candidate-manifest.json` `raw.sha256`) | `lf_normalized_sha256` | Status |
+|---|---:|---:|---|---|---|
+| [`fe-ui/src/ui_shell/layout_policy.rs`](file:///C:/Users/atooz/Programming/fractalengine-workspace/fractalengine/fe-ui/src/ui_shell/layout_policy.rs) | `59,842` | `58,507` | `5c6b38e9c31ca562c33fc46110907847a18a3a77bf7d562b0f9077e828942d84` | `45e21486b3c9380a215eeafaed4f6f1308b976fd4b294d20edea43d3ea95f21f` | **PASS** |
+| [`fe-ui/src/ui_shell/right_sidebar.rs`](file:///C:/Users/atooz/Programming/fractalengine-workspace/fractalengine/fe-ui/src/ui_shell/right_sidebar.rs) | `128,528` | `125,409` | `c3066bb657c41cbc865d516da4c489fe74e426e31f2f8ac013f49999841918c7` | `f91c272c8fd547e5c4acd619688a99aef2e3a0ea6ea3fd2a1d2cc6a8d113d667` | **PASS** |
+| [`fractalengine/src/qa_debug_bridge.rs`](file:///C:/Users/atooz/Programming/fractalengine-workspace/fractalengine/fractalengine/src/qa_debug_bridge.rs) | `38,273` | `37,402` | `2268abb0e43daf0104bd34e432aa0fc81eb7fa06c977900c9388a605e90228ca` | `aaf6366a1d0f28c74501ced56eef1b67a973a7c203ef8732e60f2e6ea879fb01` | **PASS** |
+| [`fe-ui/src/ui_shell/AGENTS.md`](file:///C:/Users/atooz/Programming/fractalengine-workspace/fractalengine/fe-ui/src/ui_shell/AGENTS.md) | `53,423` | `52,617` | `6e1c618f26111b4ab36a1df74cda094700fae7fd617cb4b0cf64c8d0a77523e1` | `e3edb97eefe43a515f3496fef2b11a28af5aa2b4a1be00d803a3f3c6f4bf0056` | **PASS** |
+| [`fractalengine/src/AGENTS.md`](file:///C:/Users/atooz/Programming/fractalengine-workspace/fractalengine/fractalengine/src/AGENTS.md) | `134,042` | `132,077` | `33a512e59c22d1385d000a0337c4b84949cb44da78a631b27ad782d53b60de24` | `a959c67f029e94302bd444b842161e543bc829e2247eb00f2ef7696b693a0538` | **PASS** |
+
+---
+
+## 3. Code & Documentation Integration Spot-Check
+
+- **Shared Eligibility Predicate**: [`right_sidebar_split_resize_eligible`](file:///C:/Users/atooz/Programming/fractalengine-workspace/fractalengine/fe-ui/src/ui_shell/layout_policy.rs#L118-L129) and [`RIGHT_SIDEBAR_SPLIT_MIN_PRIMARY_HEIGHT`](file:///C:/Users/atooz/Programming/fractalengine-workspace/fractalengine/fe-ui/src/ui_shell/layout_policy.rs#L45-L47) (`180.0` logical points) are cleanly integrated into `layout_policy.rs`.
+- **Single-Source Gating in Inspector & QA Bridge**: Both [`right_sidebar.rs`](file:///C:/Users/atooz/Programming/fractalengine-workspace/fractalengine/fe-ui/src/ui_shell/right_sidebar.rs) (`show_hierarchy_and_properties_split`) and [`qa_debug_bridge.rs`](file:///C:/Users/atooz/Programming/fractalengine-workspace/fractalengine/fractalengine/src/qa_debug_bridge.rs) (`show_hierarchy && show_properties && right_sidebar_split_resize_eligible(window_size)`) delegate to the exact same predicate, ensuring the `qa.ui.hierarchy_properties_divider` control is registered only when the split resize handle is genuinely interactive.
+- **Directory-Level Documentation**: [`fe-ui/src/ui_shell/AGENTS.md`](file:///C:/Users/atooz/Programming/fractalengine-workspace/fractalengine/fe-ui/src/ui_shell/AGENTS.md) and [`fractalengine/src/AGENTS.md`](file:///C:/Users/atooz/Programming/fractalengine-workspace/fractalengine/fractalengine/src/AGENTS.md) accurately document the shared eligibility contract without bloating inline source comments.
+
+---
+
+## 4. Verdict
+
+**APPROVED** — The `qa59-divider-eligibility-v1` candidate is integrated into the canonical workspace with 100% byte-for-byte fidelity across all 5 canonical files (`raw_sha256` and `lf_normalized_sha256`) and all 4 copied evidence artifacts under `conductor/tracks/project_completion_20261104/evidence/ui/qa59-divider-eligibility/`.

@@ -783,3 +783,24 @@ native accessible Button names/roles, stable IDs and disabled-click checks at
 0.75/1/2x. These checks are authored but unexecuted in this isolated candidate.
 Actual screenshots must still establish icon recognition, contrast and toolbar
 fit, including responsive breakpoint cases, before visual acceptance.
+
+## Divider eligibility observations (QA59)
+
+The existing width owner captures a fixed eligibility value at each existing
+prepare/register boundary. Prepare still checks interaction before consuming the
+prior Response; register still rechecks after section contents, since a popup or
+modal may open during those contents. Its one decision disables the native
+surface and supplies the read-only observation. Caller gates retain app, dialog,
+close-pending and quarantine facts without exporting dialog contents. The old
+boolean setter remains a generic app gate for hierarchy and existing callers.
+
+Opt-in LayoutObservations retain at most two registered divider records per pass.
+The record includes the exact egui input focus, Escape/popup/modal flags, primary
+state and release latch; it never changes focus, pointer capture or preference.
+The closed first blocker explains priority while all flags expose simultaneous
+blocks. response_enabled is the actual Response flag, distinct from layer
+allowed and keyboard widget focus. An absent record does not diagnose an absent
+panel or invalid geometry. No historical cancel log or extra resize writer exists.
+The existing width journey checks actual disabled Responses, dialog/quarantine,
+close-pending, Escape, focus loss, held-release rearm, same-pass identity and the
+two-record bound.

@@ -1,0 +1,29 @@
+# QA59 divider eligibility — independent source correctness review
+
+Verdict: **APPROVED for the exact frozen five-file candidate.** No correctness, authority-boundary or pinned-API blocker found. This reviews another author's source; it does not establish QA59's failed guard, successful resizing, compilation, executed journeys or live acceptance.
+
+Manifest `.omc/research/qa59-divider-eligibility-v1/manifest.json`: SHA256 `5d596db66f3288b38aca4e6f3ca2c932c50d6a0a8326fd4b5e75ddc339756029`. Patch: `ee2eb2cc427ad5c45fd13c665c1eb95d12789d565bc407039ebe7c66d5886cda`. Independently checked all ten before/raw snapshot lengths/hashes, both anchors and all five canonical-before full-byte comparisons: zero mismatches or conflict markers. Exact before bytes establish the reported post-icons 949 baseline; no Git object was inspected. Applied shared UI guidance and applicable root/directory/Conductor guidance.
+
+## Existing decisions and sole motion owner
+
+`raw/fe-ui/src/ui_shell/layout_policy.rs:159–435` factors existing facts into Copy value types without adding another gesture owner. The original right caller conjunction is equivalent to `dialog_allowed && !close_pending`; its named gates use the same dialog variants and always-allowed defaults for previously absent caller gates (`right_sidebar.rs:315–321`). Quarantine preserves those facts and calls the same suspension path as the former `set_interactive(false)` (`:357`). Generic `set_interactive` preserves its boolean behavior for existing hierarchy callers; its `app_enabled` is that generic combined owner gate, not a newly measured explanation of each left caller condition.
+
+Prepare still clears release-wait only when primary is released, checks interaction before reading the prior actual Response, and separately retains geometry/freshness/held-release cancellation. Register re-evaluates current interaction **after** panel contents. It uses one captured `DividerEligibility` to disable the native UiBuilder and stores that same value; serialization only applies its pure fixed blocker function to the stored facts. No stale prepare decision replaces the later recheck. The priority chain preserves the existing boolean condition; release-wait is a current latch, not a claimed historical cancellation cause.
+
+Original suspension/effective geometry regions, bounds, pass continuity, actual Response drag handling, half-physical-pixel threshold, commit writer, scene-pointer exclusion and cursor behavior are retained. There is no focus request, focus-state assignment, synthetic event, capture override or direct width setter. Quarantine Retry still affects the original modal owner; it cannot silently enable this pass's already-disallowed divider.
+
+## Bounded actual snapshot and privacy
+
+`register` records only after valid geometry and the actual `.named` Response. Disabled collection stores nothing; enabled collection appends at most two records. Existing `begin_ui_pass` fully resets observations and stamps the current cumulative pass before traversal (`panels/mod.rs:166`); the new Vec is included in Default/reset. Existing production paths register at most one hierarchy and one mutually exclusive right-section divider, with distinct unchanged IDs. Thus normal traversal introduces no duplicate IDs. The two-entry cap is explicit; it is not a promise to recover records from hypothetical duplicate/excess registration.
+
+ID/pass join the existing same-pass control observation, whose actual rect/hit/clip/layer remains recorded by unchanged `ResponseExt::named` hooks. Geometry is not reconstructed from a reason flag. If a control observation reaches its existing cap, or registration/geometry/section is absent, missing geometry remains unknown. The diagnostic does not exempt a clipped or duplicate target from whole-target checks.
+
+`qa_debug_bridge.rs:215–240` adds a version and bounded fixed-shape array to the existing snapshot. Reasons are closed static strings; only existing ID/side/pass and booleans are exposed. `response_enabled`, layer `allowed`, input focus and AccessKit widget focus remain distinct. Pinned `bevy_egui-0.39.1/src/input.rs:1172–1184` confirms mapped window input focus feeds egui; the field is not independent OS focus evidence. No title, dialog content, key text, credential, handle, clipboard or native proof is added.
+
+Existing QA opt-in, caller-scope/navigation checks, routes and `serve` ordering before ProviderHandoff are unchanged. No native source or authority policy is touched. Pinned egui0.33.3 `context.rs:1270–1288` supports current/previous Response lookup; `util/id_type_map.rs:419–425` supports the public temporary mutation helper. Observation accesses occur outside Response/Context queries, avoiding nested data-lock reads.
+
+## Verification limits
+
+The existing real-egui width journey adds dialog/quarantine, close, Escape, focus loss and restored-focus/held-release checks, exact Response enabled/ID/pass comparisons and the cap. It retains the original width preservation/drag cases; no new test registration was added. These checks are authored and unexecuted. Popup/modal completeness, debug-response transport, actual first failed guard and a successful wide/narrow resize remain fresh-build/live gates. In particular `release_wait` does not distinguish stale geometry, focus loss or capture loss retrospectively.
+
+Only this review report was written. Canonical source, isolated packet and live QA60 were untouched; no parser, formatter, tests, compiler/build, app/input/native/OS, API, DB, network or Git action was performed.

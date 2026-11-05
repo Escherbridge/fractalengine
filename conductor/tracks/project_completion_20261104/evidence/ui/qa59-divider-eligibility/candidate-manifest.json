@@ -1,0 +1,78 @@
+{
+  "kind": "qa59-divider-eligibility-isolated-v1",
+  "status": "authored_unreviewed_unexecuted",
+  "baseline": "Parent reports canonical949 committed; exact before hashes define provenance. No Git invoked.",
+  "ownership": "Only .omc/research/qa59-divider-eligibility-v1/**; canonical and QA59 packet untouched.",
+  "files": [
+    {
+      "canonical": "fe-ui/src/ui_shell/layout_policy.rs",
+      "before": {
+        "path": "before/fe-ui/src/ui_shell/layout_policy.rs",
+        "bytes": 53181,
+        "sha256": "2034adc0ed2263f57e09b5a60ffb2489af240d94aefd614390cb675607500180"
+      },
+      "raw": {
+        "path": "raw/fe-ui/src/ui_shell/layout_policy.rs",
+        "bytes": 59842,
+        "sha256": "5c6b38e9c31ca562c33fc46110907847a18a3a77bf7d562b0f9077e828942d84"
+      }
+    },
+    {
+      "canonical": "fe-ui/src/ui_shell/right_sidebar.rs",
+      "before": {
+        "path": "before/fe-ui/src/ui_shell/right_sidebar.rs",
+        "bytes": 128407,
+        "sha256": "b3a0012f66a3d917abe3c1cf46b5288473622bdecfd28b43727068aca985442b"
+      },
+      "raw": {
+        "path": "raw/fe-ui/src/ui_shell/right_sidebar.rs",
+        "bytes": 128528,
+        "sha256": "c3066bb657c41cbc865d516da4c489fe74e426e31f2f8ac013f49999841918c7"
+      }
+    },
+    {
+      "canonical": "fractalengine/src/qa_debug_bridge.rs",
+      "before": {
+        "path": "before/fractalengine/src/qa_debug_bridge.rs",
+        "bytes": 37551,
+        "sha256": "4f12967c472ad0d079a09e05e0eff0012444031824bdf4ab96344416b0b956df"
+      },
+      "raw": {
+        "path": "raw/fractalengine/src/qa_debug_bridge.rs",
+        "bytes": 38273,
+        "sha256": "2268abb0e43daf0104bd34e432aa0fc81eb7fa06c977900c9388a605e90228ca"
+      }
+    },
+    {
+      "canonical": "fe-ui/src/ui_shell/AGENTS.md",
+      "before": {
+        "path": "before/fe-ui/src/ui_shell/AGENTS.md",
+        "bytes": 52065,
+        "sha256": "bd68f9855db5b51c2a66185118edfe8b39a90699e3ed70d1622c80e9a41726fd"
+      },
+      "raw": {
+        "path": "raw/fe-ui/src/ui_shell/AGENTS.md",
+        "bytes": 53423,
+        "sha256": "6e1c618f26111b4ab36a1df74cda094700fae7fd617cb4b0cf64c8d0a77523e1"
+      }
+    },
+    {
+      "canonical": "fractalengine/src/AGENTS.md",
+      "before": {
+        "path": "before/fractalengine/src/AGENTS.md",
+        "bytes": 133321,
+        "sha256": "218b5ba5edb6c07b408628833bdd1fb4678ad6ac8d1520170aecf657b397457f"
+      },
+      "raw": {
+        "path": "raw/fractalengine/src/AGENTS.md",
+        "bytes": 134042,
+        "sha256": "33a512e59c22d1385d000a0337c4b84949cb44da78a631b27ad782d53b60de24"
+      }
+    }
+  ],
+  "patch": {
+    "path": "source.patch",
+    "bytes": 19091,
+    "sha256": "ee2eb2cc427ad5c45fd13c665c1eb95d12789d565bc407039ebe7c66d5886cda"
+  }
+}

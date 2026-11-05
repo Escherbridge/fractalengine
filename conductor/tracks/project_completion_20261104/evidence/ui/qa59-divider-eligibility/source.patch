@@ -1,0 +1,382 @@
+--- a/fe-ui/src/ui_shell/layout_policy.rs
++++ b/fe-ui/src/ui_shell/layout_policy.rs
+@@ -159,6 +159,66 @@
+     preview: f32,
+ }
+ 
++/// Caller-owned gates for the existing divider; see AGENTS.md.
++#[derive(Clone, Copy, Debug)]
++pub struct DividerGates {
++    pub app_enabled: bool,
++    pub dialog_allowed: bool,
++    pub close_pending: bool,
++    pub quarantined: bool,
++}
++
++impl DividerGates {
++    pub(crate) const ALLOWED: Self = Self {
++        app_enabled: true, dialog_allowed: true, close_pending: false, quarantined: false,
++    };
++
++    fn blocker(self) -> Option<&'static str> {
++        if !self.app_enabled { Some("app_disabled") }
++        else if !self.dialog_allowed { Some("dialog_blocked") }
++        else if self.close_pending { Some("close_pending") }
++        else if self.quarantined { Some("section_quarantined") }
++        else { None }
++    }
++}
++
++/// Exact decision inputs at a divider boundary; see AGENTS.md.
++#[derive(Clone, Copy, Debug)]
++pub struct DividerEligibility {
++    pub gates: DividerGates,
++    pub input_focused: bool,
++    pub escape_pressed: bool,
++    pub popup_open: bool,
++    pub modal_open: bool,
++    pub primary_down: bool,
++    pub wait_for_release: bool,
++}
++
++impl DividerEligibility {
++    fn interaction_blocker(self) -> Option<&'static str> {
++        self.gates.blocker().or_else(|| {
++            if !self.input_focused { Some("input_unfocused") }
++            else if self.escape_pressed { Some("escape_pressed") }
++            else if self.popup_open { Some("popup_open") }
++            else if self.modal_open { Some("modal_open") }
++            else { None }
++        })
++    }
++
++    pub fn blocker(self) -> Option<&'static str> {
++        self.interaction_blocker().or_else(|| self.wait_for_release.then_some("release_wait"))
++    }
++}
++
++#[derive(Clone, Copy, Debug)]
++pub struct DividerObservation {
++    pub id: u64,
++    pub side: &'static str,
++    pub pass: u64,
++    pub eligibility: DividerEligibility,
++    pub response_enabled: bool,
++}
++
+ /// Session width preference and its one owned divider gesture; see AGENTS.md.
+ #[derive(Clone, Debug)]
+ pub(crate) struct PanelWidthState {
+@@ -166,7 +226,7 @@
+     drag: Option<PanelResize>,
+     layout: Option<PanelLayout>,
+     prepared: Option<PanelGeometry>,
+-    interactive: bool,
++    gates: DividerGates,
+     wait_for_release: bool,
+ }
+ 
+@@ -183,16 +243,24 @@
+             drag: None,
+             layout: None,
+             prepared: None,
+-            interactive: true,
++            gates: DividerGates::ALLOWED,
+             wait_for_release: false,
+         }
+     }
+ 
+     pub(crate) fn set_interactive(&mut self, enabled: bool) {
+-        self.interactive = enabled;
+-        if !enabled {
++        self.set_gates(DividerGates { app_enabled: enabled, ..DividerGates::ALLOWED });
++    }
++
++    pub(crate) fn set_gates(&mut self, gates: DividerGates) {
++        self.gates = gates;
++        if gates.blocker().is_some() {
+             self.suspend();
+         }
++    }
++
++    pub(crate) fn quarantine(&mut self) {
++        self.set_gates(DividerGates { quarantined: true, ..self.gates });
+     }
+ 
+     pub(crate) fn suspend(&mut self) {
+@@ -225,11 +293,16 @@
+         if width.is_finite() { width.clamp(bounds[0], bounds[1]) } else { bounds[0] }
+     }
+ 
+-    fn interaction_allowed(&self, ctx: &egui::Context) -> bool {
+-        self.interactive
+-            && ctx.input(|input| input.focused && !input.key_pressed(egui::Key::Escape))
+-            && !egui::Popup::is_any_open(ctx)
+-            && ctx.memory(|memory| memory.top_modal_layer().is_none())
++    fn eligibility(&self, ctx: &egui::Context) -> DividerEligibility {
++        let (input_focused, escape_pressed, primary_down) = ctx.input(|input| (
++            input.focused, input.key_pressed(egui::Key::Escape), input.pointer.primary_down(),
++        ));
++        DividerEligibility {
++            gates: self.gates, input_focused, escape_pressed, primary_down,
++            popup_open: egui::Popup::is_any_open(ctx),
++            modal_open: ctx.memory(|memory| memory.top_modal_layer().is_some()),
++            wait_for_release: self.wait_for_release,
++        }
+     }
+ 
+     pub(crate) fn prepare(
+@@ -251,7 +324,7 @@
+             layout.geometry == geometry
+                 && layout.pass.checked_add(1) == Some(ctx.cumulative_pass_nr())
+         });
+-        let allowed = self.interaction_allowed(ctx);
++        let allowed = self.eligibility(ctx).interaction_blocker().is_none();
+         if !allowed || !fresh
+             || self.drag.as_ref().is_some_and(|drag| drag.geometry != geometry) {
+             self.suspend();
+@@ -329,7 +402,8 @@
+         }
+         let mut builder = egui::UiBuilder::new()
+             .layer_id(egui::LayerId::background()).max_rect(ctx.viewport_rect());
+-        if !self.interaction_allowed(ctx) || self.wait_for_release { builder = builder.disabled(); }
++        let eligibility = self.eligibility(ctx);
++        if eligibility.blocker().is_some() { builder = builder.disabled(); }
+         let ui = egui::Ui::new(ctx.clone(), id.with("surface"), builder);
+         let name = if side == PanelSide::Left { "Resize hierarchy panel" } else { "Resize right panel" };
+         let response = ui.interact(strip, id, egui::Sense::drag()).named(&ui, name);
+@@ -340,7 +414,21 @@
+         if response.hovered() || response.dragged() {
+             ctx.set_cursor_icon(egui::CursorIcon::ResizeHorizontal);
+         }
+-        self.layout = Some(PanelLayout { geometry, rect, pass: ctx.cumulative_pass_nr() });
++        let pass = ctx.cumulative_pass_nr();
++        let observe = ctx.data(|data| data.get_temp::<LayoutObservations>(key())
++            .is_some_and(|observations| observations.enabled));
++        if observe {
++            ctx.data_mut(|data| {
++                let observations = data.get_temp_mut_or_default::<LayoutObservations>(key());
++                if observations.dividers.len() < 2 {
++                    observations.dividers.push(DividerObservation {
++                        id: id.value(), side: if side == PanelSide::Left { "left" } else { "right" },
++                        pass, eligibility, response_enabled: response.enabled(),
++                    });
++                }
++            });
++        }
++        self.layout = Some(PanelLayout { geometry, rect, pass });
+     }
+ }
+ 
+@@ -357,6 +445,7 @@
+         visible: bool,
+         side_visible: [bool; 2],
+         blocked: bool,
++        quarantined: bool,
+         focused: bool,
+         results: bool,
+         topbar: super::topbar::TopbarState,
+@@ -386,7 +475,16 @@
+                     let available = if side == PanelSide::Left {
+                         super::left_sidebar::resize_interaction_allowed(&self.ui, self.topbar.close_pending)
+                     } else { !self.topbar.close_pending };
+-                    state.set_interactive(!self.blocked && available);
++                    if side == PanelSide::Right {
++                        state.set_gates(DividerGates {
++                            app_enabled: !self.blocked,
++                            dialog_allowed: matches!(self.ui.active_dialog,
++                                crate::dialogs::ActiveDialog::None | crate::dialogs::ActiveDialog::HexonManager { .. }),
++                            close_pending: self.topbar.close_pending,
++                            quarantined: false,
++                        });
++                        if self.quarantined { state.quarantine(); }
++                    } else { state.set_interactive(!self.blocked && available); }
+                     let width = state.prepare(ctx, id, side, bounds);
+                     let panel = if side == PanelSide::Left {
+                         egui::SidePanel::left("width-test-left")
+@@ -400,6 +498,12 @@
+                         self.rects[if side == PanelSide::Left { 0 } else { 1 }] = panel.response.rect;
+                         assert!(panel.response.rect.width() <= bounds[1] + 1.0 / self.scale);
+                         state.register(ctx, id, side, bounds, panel.response.rect);
++                        let observations = observations(ctx);
++                        assert!(observations.dividers.len() <= 2);
++                        let observed = observations.dividers.iter().find(|divider| divider.id == id.value()).unwrap();
++                        assert_eq!(observed.pass, ctx.cumulative_pass_nr());
++                        assert_eq!(observed.response_enabled, ctx.read_response(id).unwrap().enabled());
++                        assert_eq!(observed.response_enabled, observed.eligibility.blocker().is_none());
+                         let strip = ctx.read_response(id).unwrap().interact_rect;
+                         assert!(strip.width() * self.scale >= MIN_DIVIDER_HIT_PX);
+                         let gap = if side == PanelSide::Left {
+@@ -485,6 +589,10 @@
+                 });
+             });
+         }
++        fn divider(&self, side: PanelSide) -> DividerObservation {
++            let id = egui::Id::new(if side == PanelSide::Left { "width-left" } else { "width-right" });
++            observations(&self.ctx).dividers.into_iter().find(|divider| divider.id == id.value()).unwrap()
++        }
+         fn settle(&mut self) { for _ in 0..3 { self.frame(Vec::new()); } }
+         fn result_gaps(&self, hit: egui::Rect) {
+             let (_, result) = self.ctx.data(|data|
+@@ -551,11 +659,25 @@
+     let mut panels = Panels {
+         ctx: egui::Context::default(), left: PanelWidthState::new(220.0),
+         right: PanelWidthState::default(), physical: 1280.0, scale: 1.0,
+-        time: 0.0, visible: true, side_visible: [true; 2], blocked: false, focused: true,
++        time: 0.0, visible: true, side_visible: [true; 2], blocked: false, quarantined: false, focused: true,
+         results: false, rects: [egui::Rect::NOTHING; 2],
+         topbar: super::topbar::TopbarState::default(), ui: crate::actions::UiManager::default(),
+     };
+     panels.settle();
++    panels.ui.active_dialog = crate::dialogs::ActiveDialog::PeerDebug;
++    panels.frame(Vec::new());
++    let decision = panels.divider(PanelSide::Right);
++    assert!(!decision.eligibility.gates.dialog_allowed && !decision.response_enabled);
++    assert_eq!(decision.eligibility.blocker(), Some("dialog_blocked"));
++    panels.ui.active_dialog = crate::dialogs::ActiveDialog::None;
++    panels.settle();
++    panels.quarantined = true; panels.frame(Vec::new());
++    let decision = panels.divider(PanelSide::Right);
++    assert!(decision.eligibility.gates.dialog_allowed && decision.eligibility.gates.quarantined);
++    assert_eq!(decision.eligibility.blocker(), Some("section_quarantined"));
++    assert!(!decision.response_enabled);
++    panels.quarantined = false; panels.settle();
++    assert_eq!(panels.right.preferred, 320.0, "diagnostics cannot write width preference");
+     for _ in 0..4 {
+         assert!((panels.rects[0].width() - 220.0).abs() <= 1.0);
+         assert!((panels.rects[1].width() - 320.0).abs() <= 1.0,
+@@ -593,6 +715,10 @@
+     assert!(panels.ctx.memory(|memory| memory.top_modal_layer().is_none()),
+         "the pending-close gate is required before the first modal paint");
+     panels.pointer(end, false);
++    let decision = panels.divider(PanelSide::Right);
++    assert!(decision.eligibility.gates.close_pending);
++    assert_eq!(decision.eligibility.blocker(), Some("close_pending"));
++    assert!(!decision.response_enabled);
+     assert_eq!(panels.left.preferred, saved,
+         "new pending close on the held drag release cannot commit its preference");
+     assert!(panels.left.drag.is_none());
+@@ -614,12 +740,24 @@
+         key: egui::Key::Escape, physical_key: None, pressed: true, repeat: false,
+         modifiers: egui::Modifiers::NONE,
+     }]);
++    let decision = panels.divider(PanelSide::Left);
++    assert!(decision.eligibility.escape_pressed && !decision.response_enabled);
++    assert_eq!(decision.eligibility.blocker(), Some("escape_pressed"));
+     panels.pointer(origin, false); panels.settle();
+     assert_eq!(panels.left.preferred, saved, "Escape cancels this owner without a save");
+     let origin = panels.edge(PanelSide::Left); panels.pointer(origin, true);
+     panels.frame(vec![egui::Event::PointerMoved(origin + egui::vec2(-8.0, 0.0))]);
+-    panels.focused = false; panels.frame(Vec::new()); panels.pointer(origin, false);
+-    panels.focused = true; panels.settle();
++    panels.focused = false; panels.frame(Vec::new());
++    let decision = panels.divider(PanelSide::Left);
++    assert!(!decision.eligibility.input_focused && !decision.response_enabled);
++    assert_eq!(decision.eligibility.blocker(), Some("input_unfocused"));
++    panels.focused = true; panels.frame(Vec::new());
++    let decision = panels.divider(PanelSide::Left);
++    assert!(decision.eligibility.input_focused && decision.eligibility.wait_for_release);
++    assert_eq!(decision.eligibility.blocker(), Some("release_wait"));
++    assert!(!decision.response_enabled, "restored focus cannot revive a held canceled gesture");
++    panels.pointer(origin, false); panels.settle();
++    assert!(panels.divider(PanelSide::Left).response_enabled);
+     assert_eq!(panels.left.preferred, saved, "focus loss cannot commit a preview");
+     let origin = panels.edge(PanelSide::Left); panels.pointer(origin, true);
+     panels.frame(vec![egui::Event::PointerMoved(origin + egui::vec2(-8.0, 0.0))]);
+@@ -758,6 +896,7 @@
+     pub scrolls: Vec<ScrollObservation>,
+     pub controls: Vec<ControlObservation>,
+     pub texts: Vec<TextObservation>,
++    pub dividers: Vec<DividerObservation>,
+ }
+ 
+ #[derive(Clone)]
+--- a/fe-ui/src/ui_shell/right_sidebar.rs
++++ b/fe-ui/src/ui_shell/right_sidebar.rs
+@@ -312,8 +312,11 @@
+     settings_session: &mut crate::settings::SettingsSession,
+     topbar: &mut super::topbar::TopbarState,
+ ) {
+-    state.width.set_interactive(matches!(ui_mgr.active_dialog,
+-        ActiveDialog::None | ActiveDialog::HexonManager { .. }) && !topbar.close_pending);
++    state.width.set_gates(super::layout_policy::DividerGates {
++        dialog_allowed: matches!(ui_mgr.active_dialog, ActiveDialog::None | ActiveDialog::HexonManager { .. }),
++        close_pending: topbar.close_pending,
++        ..super::layout_policy::DividerGates::ALLOWED
++    });
+     if !super::layout_policy::can_show_right(ctx) {
+         state.width.suspend();
+         return;
+@@ -351,7 +354,7 @@
+     };
+     let guard_key = section_guard_key(current_section);
+     if modal.disabled_panels.contains(guard_key) {
+-        state.width.set_interactive(false);
++        state.width.quarantine();
+         render_quarantined_section(ctx, state, current_section, modal);
+         return;
+     }
+--- a/fractalengine/src/qa_debug_bridge.rs
++++ b/fractalengine/src/qa_debug_bridge.rs
+@@ -223,6 +223,16 @@
+         "id":c.id.to_string(),"rect":physical(c.rect),"hit":physical(c.hit),"clip":physical(c.clip),
+         "layer":format!("{:?}",c.layer),"allowed":c.allowed,"clickable":c.clickable,"draggable":c.draggable
+     })).collect::<Vec<_>>(),"texts":o.texts.iter().map(|t|json!({"id":t.id.to_string(),"truncated":t.truncated,"hover":t.hover})).collect::<Vec<_>>(),
++    "divider_eligibility_version":1,"dividers":o.dividers.iter().map(|d| {
++        let e = d.eligibility;
++        json!({"id":d.id.to_string(),"side":d.side,"pass":d.pass,
++            "eligible":e.blocker().is_none(),"blocked_by":e.blocker(),"response_enabled":d.response_enabled,
++            "app_enabled":e.gates.app_enabled,"dialog_allowed":e.gates.dialog_allowed,
++            "close_pending":e.gates.close_pending,"quarantined":e.gates.quarantined,
++            "egui_input_focused":e.input_focused,"escape_pressed":e.escape_pressed,
++            "popup_open":e.popup_open,"modal_open":e.modal_open,
++            "primary_down":e.primary_down,"wait_for_release":e.wait_for_release})
++    }).collect::<Vec<_>>(),
+     "coverage":"same-pass shared helper observations; unvisited widget hits, text and floating-area occlusion remain unknown"})
+ }
+ 
+--- a/fe-ui/src/ui_shell/AGENTS.md
++++ b/fe-ui/src/ui_shell/AGENTS.md
+@@ -783,3 +783,24 @@
+ 0.75/1/2x. These checks are authored but unexecuted in this isolated candidate.
+ Actual screenshots must still establish icon recognition, contrast and toolbar
+ fit, including responsive breakpoint cases, before visual acceptance.
++
++## Divider eligibility observations (QA59)
++
++The existing width owner captures a fixed eligibility value at each existing
++prepare/register boundary. Prepare still checks interaction before consuming the
++prior Response; register still rechecks after section contents, since a popup or
++modal may open during those contents. Its one decision disables the native
++surface and supplies the read-only observation. Caller gates retain app, dialog,
++close-pending and quarantine facts without exporting dialog contents. The old
++boolean setter remains a generic app gate for hierarchy and existing callers.
++
++Opt-in LayoutObservations retain at most two registered divider records per pass.
++The record includes the exact egui input focus, Escape/popup/modal flags, primary
++state and release latch; it never changes focus, pointer capture or preference.
++The closed first blocker explains priority while all flags expose simultaneous
++blocks. response_enabled is the actual Response flag, distinct from layer
++allowed and keyboard widget focus. An absent record does not diagnose an absent
++panel or invalid geometry. No historical cancel log or extra resize writer exists.
++The existing width journey checks actual disabled Responses, dialog/quarantine,
++close-pending, Escape, focus loss, held-release rearm, same-pass identity and the
++two-record bound.
+--- a/fractalengine/src/AGENTS.md
++++ b/fractalengine/src/AGENTS.md
+@@ -1951,3 +1951,15 @@
+ selected marker/tree, terrain, geometry or epoch checks. The existing grounded
+ camera journey authors both empty-snapshot forms alongside the foreign-Petal
+ refusal; actual matching report demand remains a live verification gate.
++
++## QA divider eligibility (QA59)
++
++The existing scoped Owner QA UI layout response adds divider_eligibility_version1
++and the opt-in shared layout collector's bounded dividers array. IDs, side/pass,
++fixed boolean gates, closed blocker and actual Response enabled state come from
++the width owner at registration, not a later reconstruction of UI state. The
++egui_input_focused field is window-context input focus, not AccessKit widget focus
++or an independent OS focus assertion. Missing records remain unknown. This adds
++no HTTP route, input authority, focus request, OS query, dialog payload, clipboard
++data, native proof/capture admission or mutation. Existing layout fields and
++scope/admission are unchanged.

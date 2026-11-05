@@ -312,8 +312,11 @@ pub fn render_right_sidebar(
     settings_session: &mut crate::settings::SettingsSession,
     topbar: &mut super::topbar::TopbarState,
 ) {
-    state.width.set_interactive(matches!(ui_mgr.active_dialog,
-        ActiveDialog::None | ActiveDialog::HexonManager { .. }) && !topbar.close_pending);
+    state.width.set_gates(super::layout_policy::DividerGates {
+        dialog_allowed: matches!(ui_mgr.active_dialog, ActiveDialog::None | ActiveDialog::HexonManager { .. }),
+        close_pending: topbar.close_pending,
+        ..super::layout_policy::DividerGates::ALLOWED
+    });
     if !super::layout_policy::can_show_right(ctx) {
         state.width.suspend();
         return;
@@ -351,7 +354,7 @@ pub fn render_right_sidebar(
     };
     let guard_key = section_guard_key(current_section);
     if modal.disabled_panels.contains(guard_key) {
-        state.width.set_interactive(false);
+        state.width.quarantine();
         render_quarantined_section(ctx, state, current_section, modal);
         return;
     }

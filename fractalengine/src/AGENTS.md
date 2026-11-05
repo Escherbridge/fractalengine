@@ -1951,3 +1951,15 @@ No diagnostic forces collection, reveals another object or weakens ViewScope,
 selected marker/tree, terrain, geometry or epoch checks. The existing grounded
 camera journey authors both empty-snapshot forms alongside the foreign-Petal
 refusal; actual matching report demand remains a live verification gate.
+
+## QA divider eligibility (QA59)
+
+The existing scoped Owner QA UI layout response adds divider_eligibility_version1
+and the opt-in shared layout collector's bounded dividers array. IDs, side/pass,
+fixed boolean gates, closed blocker and actual Response enabled state come from
+the width owner at registration, not a later reconstruction of UI state. The
+egui_input_focused field is window-context input focus, not AccessKit widget focus
+or an independent OS focus assertion. Missing records remain unknown. This adds
+no HTTP route, input authority, focus request, OS query, dialog payload, clipboard
+data, native proof/capture admission or mutation. Existing layout fields and
+scope/admission are unchanged.

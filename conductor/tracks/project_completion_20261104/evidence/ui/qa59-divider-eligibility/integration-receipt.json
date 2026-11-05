@@ -1,0 +1,37 @@
+{
+  "candidate": "qa59-divider-eligibility-isolated-v1",
+  "manifest_sha256": "5d596db66f3288b38aca4e6f3ca2c932c50d6a0a8326fd4b5e75ddc339756029",
+  "all_before_and_raw_checked_before_first_write": true,
+  "files": [
+    {
+      "file": "fe-ui/src/ui_shell/layout_policy.rs",
+      "bytes": 59842,
+      "raw_sha256": "5c6b38e9c31ca562c33fc46110907847a18a3a77bf7d562b0f9077e828942d84",
+      "lf_normalized_sha256": "45e21486b3c9380a215eeafaed4f6f1308b976fd4b294d20edea43d3ea95f21f"
+    },
+    {
+      "file": "fe-ui/src/ui_shell/right_sidebar.rs",
+      "bytes": 128528,
+      "raw_sha256": "c3066bb657c41cbc865d516da4c489fe74e426e31f2f8ac013f49999841918c7",
+      "lf_normalized_sha256": "f91c272c8fd547e5c4acd619688a99aef2e3a0ea6ea3fd2a1d2cc6a8d113d667"
+    },
+    {
+      "file": "fractalengine/src/qa_debug_bridge.rs",
+      "bytes": 38273,
+      "raw_sha256": "2268abb0e43daf0104bd34e432aa0fc81eb7fa06c977900c9388a605e90228ca",
+      "lf_normalized_sha256": "aaf6366a1d0f28c74501ced56eef1b67a973a7c203ef8732e60f2e6ea879fb01"
+    },
+    {
+      "file": "fe-ui/src/ui_shell/AGENTS.md",
+      "bytes": 53423,
+      "raw_sha256": "6e1c618f26111b4ab36a1df74cda094700fae7fd617cb4b0cf64c8d0a77523e1",
+      "lf_normalized_sha256": "e3edb97eefe43a515f3496fef2b11a28af5aa2b4a1be00d803a3f3c6f4bf0056"
+    },
+    {
+      "file": "fractalengine/src/AGENTS.md",
+      "bytes": 134042,
+      "raw_sha256": "33a512e59c22d1385d000a0337c4b84949cb44da78a631b27ad782d53b60de24",
+      "lf_normalized_sha256": "a959c67f029e94302bd444b842161e543bc829e2247eb00f2ef7696b693a0538"
+    }
+  ]
+}

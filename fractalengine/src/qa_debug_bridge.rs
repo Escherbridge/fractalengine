@@ -223,6 +223,16 @@ fn layout_snapshot(ctx: &bevy_egui::egui::Context, ppp: f32) -> Value {
         "id":c.id.to_string(),"rect":physical(c.rect),"hit":physical(c.hit),"clip":physical(c.clip),
         "layer":format!("{:?}",c.layer),"allowed":c.allowed,"clickable":c.clickable,"draggable":c.draggable
     })).collect::<Vec<_>>(),"texts":o.texts.iter().map(|t|json!({"id":t.id.to_string(),"truncated":t.truncated,"hover":t.hover})).collect::<Vec<_>>(),
+    "divider_eligibility_version":1,"dividers":o.dividers.iter().map(|d| {
+        let e = d.eligibility;
+        json!({"id":d.id.to_string(),"side":d.side,"pass":d.pass,
+            "eligible":e.blocker().is_none(),"blocked_by":e.blocker(),"response_enabled":d.response_enabled,
+            "app_enabled":e.gates.app_enabled,"dialog_allowed":e.gates.dialog_allowed,
+            "close_pending":e.gates.close_pending,"quarantined":e.gates.quarantined,
+            "egui_input_focused":e.input_focused,"escape_pressed":e.escape_pressed,
+            "popup_open":e.popup_open,"modal_open":e.modal_open,
+            "primary_down":e.primary_down,"wait_for_release":e.wait_for_release})
+    }).collect::<Vec<_>>(),
     "coverage":"same-pass shared helper observations; unvisited widget hits, text and floating-area occlusion remain unknown"})
 }
 
