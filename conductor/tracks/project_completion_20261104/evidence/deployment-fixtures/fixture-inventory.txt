@@ -1,0 +1,101 @@
+# P2P, relay, query and fixture inventory
+
+Read-only repository inventory, 2026-11-04 local date. No apps, services, containers, tests, builds, deployment, Git, API/DB/store opens or canonical writes were performed. Root owns the separate local runtime inspection and current QA60 app. This report does not establish deployed services or passing acceptance.
+
+## Practical conclusion
+
+Podman is a supported first test path in the existing relay-container harness. Kubernetes deployment is feasible work for the **headless services**, but no canonical Kubernetes/Helm manifest was found in the repository inventory. The desktop Windows GUI, native picking, WebView and accessibility acceptance remain separate Windows-host checks.
+
+Three distinct things must not be conflated:
+
+| Component | Actual repository contract |
+| --- | --- |
+| `fe-relay` application peer | `docker/Dockerfile.relay:6,12–24` builds `fractalengine-relay` and runs the API/replicating peer on8765. It is explicitly **not** an iroh transport relay (`fractalengine-relay/README.md:67–73`). It has DB, blob, namespace and identity state. |
+| `iroh-relay` transport relay | External, digest-pinned `n0computer/iroh-relay:v1.3.0` used in `fe-sync/tests/relay_assisted_test.rs:29–30`. The harness serves its dev HTTP relay on3340, not the application's8765. `FE_SYNC_RELAY` configures application peers to use this transport. |
+| libp2p networking | Separate `fe-network` thread (`fe-network/src/lib.rs:13–44`) and dependency (`Cargo.toml:68`). The actual current Verse/docs/blob replication uses the iroh stack (`Cargo.toml:69–79`). No libp2p relay-server deployment manifest was found; a libp2p relay is not a substitute for the iroh-relay contract. |
+
+## Existing deployment artifacts
+
+`docker/compose.dev.yml:1–35` builds/runs **fe-relay + Hexon registry**, with ports8765/8790 and a relay DB volume. It does not run iroh-relay and does not establish two independent application peers or a distributed query fleet. `docker/Dockerfile.hexon-registry:6–16` builds the registry. The Dockerfiles use Rust/alpine multi-stage builds; their present buildability was not tested here.
+
+Exact documented commands:
+
+```sh
+# docker/README.md:16; application peer image, not transport relay
+docker build -f docker/Dockerfile.relay -t fractalengine-relay .
+
+# docker/README.md:98–99
+podman build -f docker/Dockerfile.hexon-registry -t fe-hexon-registry .
+podman run -p 8790:8790 -v ./sample-hexons/dist:/data/hexons fe-hexon-registry
+
+# docker/README.md:119; repository-root invocation
+podman-compose -f docker/compose.dev.yml up
+```
+
+The README's separate `docker compose up -d` example at:60–64 first asks the operator to create another filename; the actual supplied file is `compose.dev.yml`. Prefer the explicit supplied path above. The checked-in release workflow publishes the application image to `ghcr.io/${repository_owner}/fractalengine-relay` (`.github/workflows/release.yml:201–235,293`); that source configuration does not prove a particular tag/image exists or CI completed.
+
+The recursive filename inventory, including hidden canonical files while excluding `.git`, `.omc`, `.qa` and build output, found only GitHub workflow/issue YAML and `docker/compose.dev.yml`. No Kubernetes Deployment/Service/PVC, Helm chart, Kind, k3d or Minikube configuration appeared. No Kubernetes install, cluster or deploy claim follows.
+
+Persistent peer deployment needs separate DB/P2P/blob directories **per identity**, stable injected node identity and namespace secrets, proper API auth/roles, actual bootstrap addresses and readiness. Relevant contract: `fractalengine-relay/README.md:20–45,49–65`; blob co-location is implemented at `fractalengine-relay/src/main.rs:26–71`. The shipped compose persists `/data`, but its default P2P path is documented `data/p2p`; explicitly configure durable P2P location for a persistence exercise rather than assuming all state lies under the mounted volume. REST-created namespace secrets in EnvBackend are process-local overrides unless separately injected on restart (:45). Do not use a volume alone as identity/namespace durability proof.
+
+## Tests already available and what they establish
+
+| Lane | Source and honest scope |
+| --- | --- |
+| Four relay-container tests | `fe-sync/tests/relay_assisted_test.rs:361,446,519,567`: relay-assisted tileset transfer; an IP-less dialer whose paths are all relay; untrusted relay refusal; configured-token success and bad-token refusal. The first transfer knows a relay-only address initially but production endpoints may later hole-punch (:413–427); the distinct `clear_ip_transports` dialer and `paths().all(is_relay)` assertion (:478–511) prove the narrower relay-only case. These are not a three-peer application query or GUI test. |
+| Eighteen headless scenario registrations | `fe-test-harness/src/main.rs:64–116`: blob/migration/invite, real replica/tombstone/timeseries/shard fabric, distributed query, token/cross-thread, tileset/device-payload and role propagation. The binary **unconditionally sets `FE_SYNC_RELAY=disabled`** (:52–59). Real network scenarios are direct loopback peers on one machine. |
+| Real three-peer distributed query | `fe-test-harness/src/scenarios/distributed_query.rs:1–45`: actual DB partial execution, Editor grants, declared-host readback before query, exact aggregate/raw-dedupe/latest union, all-online coverage, R=1 exclusive-host loss reported missing, R=2 surviving mirror. This is valuable distributed transport/query coverage, but not a relay-routed or cross-machine deployment. |
+| API/MCP query boundaries | `fe-api/tests/distributed_query_test.rs` uses a fake sync seam; do not credit real transport. Actual routes in `fe-api/src/rest.rs:1193–1227,1398,1498` and MCP `fe-api/src/mcp/tools.rs:274–316` share `timeseries_query.rs:71`. Structured distributed specs, role/scope checks and covered/missing/answered metadata are documented at `fe-api/AGENTS.md:1386–1435`. Test the real surface plus real fleet together for composed acceptance. |
+| Tileset transfer/restart scenario | `fe-test-harness/src/scenarios/two_peer_tileset_stream.rs`, documented accurately in `src/AGENTS.md:136`: real gossip discovery + iroh-blobs, local install byte equality and same-P2P-dir resume with provider offline. Fresh keypair on harness respawn and memory DB mean this is not whole-app same-owner DB/history restart proof. |
+| Legacy asset scenarios | `two_peer_blob_exchange.rs:74–81` directly copies bytes into Bob's blob store. `two_peer_device_payload_sync.rs:491–525` also copies bytes before its hit event. Their row/format/payload and command assertions do not prove missing blob network retrieval. Current `fe-sync/src/sync_thread.rs:1609–1614` delegates FetchBlob to `SceneAssetJobs::fetch`; the old Phase-D-stub prose is stale. Assess current scene-assets jobs and actual fresh-peer misses rather than declaring all current transfer stubbed. |
+
+The harness peer uses an in-memory SurrealDB (`fe-test-harness/src/peer.rs:195–197`) with peer-specific temp subdirectories (`:59–92`). Those facts limit durability credit even when scenario comments call their readbacks durable. Scenario execution here is **not** inferred from source presence.
+
+Relay test admission is explicit: `FE_CONTAINER_RUNTIME=docker|podman`, otherwise first usable runtime (:40–58); every missing runtime/config/endpoint/relay reachability path must skip-or-fail (`fe-sync/tests/AGENTS.md:3–8`). **Set `FE_REQUIRE_RELAY_CONTAINER=1`** so unavailable infrastructure cannot produce an accepted green skip (:33–37). Each container has an exact unique name, loopback ephemeral port and owned cleanup (:83–110,124–159,196–211). Current test image pin:
+
+```text
+n0computer/iroh-relay:v1.3.0@sha256:7a51e3826531dba5eee73d8b48a8f27284684d98c4d0da271d99127cc43b9d57
+```
+
+The CI command and four exact passing-name receipts are at `.github/workflows/build-artifacts.yml:448–462`. Workspace-qualified Podman invocation, using the existing supported override rather than a new harness:
+
+```powershell
+$env:FE_CONTAINER_RUNTIME = 'podman'
+$env:FE_REQUIRE_RELAY_CONTAINER = '1'
+cargo test --release -p fe-ui -p fe-terrain -p fractalengine -p fe-sync --test relay_assisted_test -- --color never
+```
+
+This is the CI cargo command with the documented runtime override changed to Podman; it was not executed. Require all four named tests to actually run/pass, preserve full logs and verify exact-container cleanup. No zero-match or optional skip credit.
+
+For the headless scenario binary, the package name is `fractalengine-test-harness` (`fe-test-harness/Cargo.toml:2`). The workspace-qualified equivalent of its README's package-local `cargo run` is `cargo run --release -p fractalengine-test-harness`. Its existing optional `FE_HARNESS_SCENARIO` case-insensitive substring filter is at `main.rs:121–129`; `Distributed Query` selects the real query scenario. Clear the filter for all18. The filter matching zero scenarios can exit0 (:148–149); verify expected scenario names/count, not only process exit.
+
+## Fixtures still present on disk
+
+These are repository/fixture **file existence** observations, not a running-server or live-store observation:
+
+- `fe-test-harness/src/fixtures/test_cube.glb`: present48 bytes. `fixtures/mod.rs:10–23` also generates minimal valid GLB bytes. It has no substantive mesh/material payload, so it is insufficient by itself for rendered-material/intersection acceptance.
+- `fractalengine/assets/samples/info_panel.glb`: present1,664 bytes; current BASIC/terrain builder uploads it through actual asset API (`tools/qa/_fixture.ps1:81–94`), creates two Petals/three value nodes and sets/readbacks typed properties (:65–100).
+- `tools/qa/scenarios/rich-fleet.json`: present28,120 bytes. It retains Alpha/Beta/Gamma, nested calibration/metadata, exact integer9007199254740993 (:46), schema install/evolution, transforms, measurements, derived metrics, history and local/distributed query intents (:156 onward; query modes:1139–1200). `rich_data_scenario.py:257–258` explicitly permits local/distributed mode. A single-local-peer distributed request is not multi-peer fan-out acceptance.
+- `sample-hexons` source directories are present. `sample-hexons/dist` contains alpine-demo-terrain.hexon67,582 bytes, lakeside-scene.hexon2,354 bytes and morning-run-gpx.hexon2,282 bytes. Source build command remains `cargo run -p fe-hexon --example build_sample_hexons` (`docker/README.md:102–106`). Presence/size alone does not validate signatures, contents or the active registry index.
+- Generated `fe-sync/tests/fixtures/p2p_store_v035` and its `expected.json` **exist**. No store was opened. The generator source/locked dependency files remain in sibling `p2p_store_v035_gen`. Tests intentionally copy generated fixture into disposable temp storage before migration (`p2p_store_migration.rs:217–235`), and missing expected metadata may skip unless `FE_REQUIRE_STORE_FIXTURE=1` (:175–180). CI generation: package cwd `fe-sync/tests/fixtures/p2p_store_v035_gen`, `cargo run --locked -- ../p2p_store_v035` (`build-artifacts.yml:420–424`), followed by required migration test/name check (:431–440). Existing physical presence is not migration success or retained app-store reopening permission.
+- Run-owned controlled WEB/registry fixture tooling remains (`tools/qa/fixtures.ps1`, `controlled_fixtures.py`, docs `tools/qa/AGENTS.md:861–949`). It creates sealed per-run service state and must be explicitly started/stopped for the selected run. Historical QA fixture receipts and the current root-owned run are not evidence that this service is presently live.
+
+Existing rich-data invocation from `tools/qa/AGENTS.md:647`:
+
+```sh
+python tools/qa/rich_data.py --scenario tools/qa/scenarios/rich-fleet.json --run <absolute-owned-run> --pass-id <current-pass> --verse-id <actual-verse-ULID> --petal-id <actual-petal-ULID>
+```
+
+Its offline HTML/CSV report is expressly an artifact, not the product chart UI (`tools/qa/AGENTS.md:669–678`). GUI Properties/Query/History/chart acceptance still requires actual UI operations and screenshots.
+
+## Bounded Podman-first then Kubernetes plan
+
+1. Preserve live QA60 and retained-store HOLD. Finish the existing source work/reviews, then root schedules the integrated test sweep. Use Podman for the four required relay tests, and run the existing18 headless scenarios/direct three-peer query as a separately labeled baseline. Collect actual assertions, full logs and owned cleanup; do not equate these two independent successes with a composed relay-query result.
+2. Build a disposable Podman lab containing one pinned iroh transport relay and at least three separate application peers. Each peer gets its own new DB/P2P/blob volumes, stable lab identity/namespace secrets and API credentials. Configure custom relay/bootstrap addresses and genuine roles, establish declared shard-host data truth, then query via REST, MCP and analytics against independent ground truth. Include missing host, timeout, R=2 mirror survival, duplicate suppression, scope denial and actual schema/history/asset readback. Do not reuse the GUI QA launch configuration to claim relay coverage: `tools/qa/launch.ps1:183` hard-disables relays.
+3. Relay-only **application** acceptance requires a deliberate, separately reviewed network-enforcement seam. Peer-address relay URLs alone permit later hole punching. Isolate peers so they cannot dial each other directly, permit only the intended relay path plus required test-control traffic, and prove that policy is enforced using direct-path negative probes plus actual connection path/relay logs. A Kubernetes NetworkPolicy YAML without an enforcing network plugin is insufficient. The existing IP-less unit dialer proves its own case but does not silently change the production application's transport configuration.
+4. Only after that lab is useful, author a Kubernetes overlay from the same image/config/fixture contracts: separate iroh-relay service; independent per-peer state/identity; application API/readiness services; optional registry; explicit lifecycle/cleanup; the chosen enforceable relay-only topology. Root separately found no kubectl/kind/k3d/minikube/helm on PATH and no kubeconfig; installation/cluster creation and sizing are followup work, not existing deployment. Keep Podman/Kind provider choice explicit, especially Windows rootless/rootful compatibility. No cluster is needed merely to execute the existing Podman relay tests.
+5. Keep Windows GUI native selection/picking, accessibility, viewport rendering/materials/intersections and product Query/History interactions in their existing desktop evidence lane. Containers can host counterpart peers/relay/query APIs; they cannot substitute headless success for those Windows visual/native checkpoints. A true combined end-to-end result needs both actual desktop participation and the measured peer/relay/query outcomes.
+
+## Documentation caveats, not newly inferred production defects
+
+`fe-test-harness/README.md:9–17,83–89` lists seven scenarios and broadly describes byte copying. Current main registers18, including real replica/query/tileset transports; use current source/scenario-specific limits. Device-payload comments and `src/AGENTS.md:137` still describe a globally stubbed FetchBlob, contradicted by the current SceneAssetJobs delegation; that scenario nevertheless still performs its own manual byte copy. `fractalengine-relay/README.md:75–92` describes a separate-reader lock/analytics failure, but current `main.rs:384–405` constructs ReadDb from the DB thread's shared handle and preserves it even on cache hydration failure. Thus that README is not grounds to declare current Windows analytics categorically unavailable. No new production defect, infrastructure success or waived acceptance gate is asserted from these documentation mismatches.

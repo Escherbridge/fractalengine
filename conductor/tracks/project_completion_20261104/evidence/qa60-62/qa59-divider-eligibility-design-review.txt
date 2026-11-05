@@ -1,0 +1,52 @@
+# QA59 divider eligibility — independent design and boundary review
+
+Verdict: **APPROVED for the exact frozen source candidate below.** No blocking design, readability, ownership or read-only-boundary finding remains. This reviews another author's divider candidate; it does not reapprove unrelated inherited icon/native changes or grant runtime, visual, focus, resize, QA-packet or release acceptance.
+
+Only this report was written. No canonical source or candidate payload was edited. No apps, API/DB/native/network operations, parser, formatter, compiler, build, test or Git command was run. Root owns the active GUI and integration. Applied the root/local directory instructions and `C:/Users/atooz/.gemini/UI-UX-guidance.md`.
+
+## Exact scope and provenance
+
+Candidate: `.omc/research/qa59-divider-eligibility-v1/`.
+
+- `manifest.json`: 2,742 bytes, SHA256 `5d596db66f3288b38aca4e6f3ca2c932c50d6a0a8326fd4b5e75ddc339756029`.
+- `source.patch`: 19,091 bytes, SHA256 `ee2eb2cc427ad5c45fd13c665c1eb95d12789d565bc407039ebe7c66d5886cda`.
+
+I independently verified these two hashes, all ten before/raw payload sizes and hashes, and that all five current canonical paths still byte-match their before snapshots. This qualifies the exact observed baseline without inferring a full Git identity or execution outcome. The authoring helper was not executed.
+
+| Canonical mapping | Approved raw bytes | Approved raw SHA256 |
+| --- | ---: | --- |
+| `fe-ui/src/ui_shell/layout_policy.rs` | 59,842 | `5c6b38e9c31ca562c33fc46110907847a18a3a77bf7d562b0f9077e828942d84` |
+| `fe-ui/src/ui_shell/right_sidebar.rs` | 128,528 | `c3066bb657c41cbc865d516da4c489fe74e426e31f2f8ac013f49999841918c7` |
+| `fractalengine/src/qa_debug_bridge.rs` | 38,273 | `2268abb0e43daf0104bd34e432aa0fc81eb7fa06c977900c9388a605e90228ca` |
+| `fe-ui/src/ui_shell/AGENTS.md` | 53,423 | `6e1c618f26111b4ab36a1df74cda094700fae7fd617cb4b0cf64c8d0a77523e1` |
+| `fractalengine/src/AGENTS.md` | 134,042 | `33a512e59c22d1385d000a0337c4b84949cb44da78a631b27ad782d53b60de24` |
+
+Read the whole five-file delta and final modified production regions, surrounding prepare/register flow, collector reset, authored width journey, host snapshot/admission path, and the existing hierarchy caller. Findings below describe positive application of the requested patterns; no speculative redesign is recommended.
+
+## Design and ownership assessment
+
+**Value object and one policy predicate — sound.** `layout_policy.rs:162-211` introduces small fixed-field `DividerGates` and `DividerEligibility` values. The finite static blocker chain is easy to read, has no arbitrary context text or callback machinery, and reports all boolean inputs alongside the first blocker. The full public blocker delegates to the same interaction blocker plus the existing release latch. The renderer and serializer do not reconstruct the gate independently. No strategy trait, builder hierarchy or separate policy service would improve this small boundary.
+
+**Existing state machine stays authoritative — sound.** `PanelWidthState` still exclusively owns the preferred width, preview/capture, prepared/layout geometry and release latch. `set_interactive` is a narrow adapter for the existing hierarchy/general boolean gate. The right caller supplies its original dialog/close facts explicitly; `quarantine` preserves them while setting its own fact. These operations suspend under the same effective false condition as the old boolean setter. The next right render resets named caller facts before reevaluating quarantine, matching the original per-render reset behavior.
+
+The right predicate remains `(None or HexonManager dialog) AND not close_pending AND not quarantined`, followed by the unchanged focus/Escape/popup/modal requirements. The hierarchy's existing `resize_interaction_allowed` boolean is still applied and is truthfully represented as its generic app gate; this candidate does not claim to decompose that caller's internal reasons. It does not silently relax a disallowed dialog, quarantine, pending close or lost focus.
+
+**Separate decision times are necessary — sound.** `prepare` evaluates the interaction component before consuming the previous Response, while retaining its separate geometry/pass-freshness and release-latch handling. `register` reevaluates after panel contents, which can open a popup/modal. That timing is unchanged. At registration one captured `eligibility` value controls the disabled UiBuilder and supplies the observation. The actual native `response.enabled()` is recorded separately. Reusing an earlier prepare decision here would have been stale; the candidate correctly avoids it.
+
+The original geometry validation, pass continuity, existing IDs, layer, strip, registration order, pointer thresholds, finite checks, drag lifecycle, preferred-width commit and suspension paths remain. No new width setter, input writer, focus event/request, pointer capture release or parallel state owner appears in the diff.
+
+**Observer with bounded lifetime — sound.** `register` appends facts only after a real valid divider surface and native Response exist, only when existing LayoutObservations are enabled, and only while fewer than two records exist. It neither invents a record for a missing/invalid/hidden surface nor guesses why registration did not occur. A record carries the actual divider ID, fixed side, cumulative pass and captured flags. The existing `begin_ui_pass` resets the entire collector, including this new vector. The normal `gardener_console` calls that reset before rendering either side; the host reads it after egui output. Thus these are pass-local observations of registered controls, not a retained cancellation log. The cap can omit further registrations; absence remains unknown rather than being interpreted as an eligible or absent panel.
+
+**Read-only serialization facade — sound.** `qa_debug_bridge.rs:215-241` adds version1 and a bounded array to the existing layout serializer. It uses the saved value's same blocker function and exports only fixed booleans, ID/side/pass and the actual enabled flag. It adds no route, request parser, dynamic dialog payload, handle, credential, clipboard field, native proof or mutation. Existing layout fields remain intact. Existing default-off typed Owner/rate admission in `fe-api::qa_debug`/`operator_gate`, host current ViewScope check, same-frame navigation check and primary-context check remain on this route; none are changed by this candidate.
+
+The directory documentation correctly distinguishes `egui_input_focused` from AccessKit widget focus and from independent OS focus proof. The native Response enabled flag is likewise distinct from recorded layer permission, visibility/occlusion and successful input acceptance. This is enough to explain the observed disabled divider without exporting a second interaction authority.
+
+## Authored verification and practical limits
+
+The existing width journey now checks actual captured decisions against the registered Response ID/pass/enabled flag and the two-record bound. Its added dialog/quarantine, pending close before modal paint, Escape, focus-loss, held-release rearm and unchanged preference assertions exercise the production decision/state methods. The original drag/cap/scale/collapse geometry coverage remains. The harness supplies caller facts rather than introducing a parallel resizing implementation. No new standalone registered test or runner is added. These are meaningful **authored, unexecuted** assertions.
+
+The candidate's `eligible` means that the recorded registration-time surface policy has no listed blocker. It is not complete drag admission or success: geometry/pass freshness, an earlier canceled gesture, actual hit ownership/occlusion, a later popup, the actual target, and a committed width still require their corresponding evidence. A missing record does not diagnose those paths. The separate `response_enabled` and flags preserve this distinction rather than silently converting an unsuccessful command into an accepted interaction.
+
+This source review does not identify QA59's historical failed guard. In particular, existing AccessKit `focused:false` is not evidence that `egui_input_focused` was false. The next sealed run must observe the actual divider record; if blocked, retain that reason and resolve the legitimate guard. Successful wide-body acceptance still requires an enabled actual splitter, sufficient budget, an observed drag/release and measured resulting body width with unchanged draft/viewport behavior. No focus manufacture or gate bypass is authorized by this diagnostic.
+
+Approve these exact five proposed raw files for this design/boundary scope. Runtime schema/transport checks, integrated test/build execution, live focus/resize outcomes and any broader completion claim remain parent-owned and unverified here.

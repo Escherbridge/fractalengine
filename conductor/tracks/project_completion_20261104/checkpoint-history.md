@@ -558,3 +558,92 @@ byte-identical. Focused closure is distinct from final catalog acceptance.
 Only root owns Cargo/apps/process lifecycle/Git mutations. Preserve
 `conductor/.conductor_session_log`. No source/focused approval substitutes for
 remaining acceptance, and no release gate has been achieved.
+
+
+---
+type: ProgressCheckpoint
+date: 2026-11-04
+status: in_progress
+title: Current completion state and next actions
+last_verified_utc: 2026-11-05T03:50:57.801216+00:00
+---
+
+# Current completion state
+
+The full goal remains active in [goal-service.txt](./goal-service.txt),
+[spec.md](./spec.md) and [plan.md](./plan.md). Prior checkpoints are preserved
+verbatim in [checkpoint-history.md](./checkpoint-history.md). No gate is waived.
+
+- Main source: `9498869e2e1577e939a10f0a1e0f9e07de3b7053`. Stable native root/transport correctionfed8dab6 and painted icons9498869e each passed separate source and exact integration reviews. Both17-path commits verified all9 LF source blobs and8 raw support blobs. Matching combined build19551 passed; fresh live acceptance remains pending.
+- Matching production stage: `.qa/stage/9498869e-20261104204501360`, source9498869e, session19551 terminal exit0,256.8s, zero actual Rust/MSVC warning/error diagnostics. App/native-helper/legacy-fixture/sealer hashes verified; raw UTF16-BOM log and receipt preserved. Earlierbe081 acceptance remains limited to its original source.
+- Owned app: fresh QA60 PID126140, birth639294472679179828, run `.qa/run/20261104-204745-332`, stage9498869e; actual process and matching source verified after launch. No build is running. QA58's eight recorded identities absent02:54:07.4825465Z; QA59's eight absent03:10:20.1725651Z on2026-11-05. Cleanup checks concern recorded identities at those times, not every possible unrecorded orphan.
+- QA57 and QA58 frozen packets have independent full-packet approvals. QA59 is frozen with both bounded visual and full independent evidence approvals. Publication and Conductor reconciliation committed87d67399:546paths,540raw artifact blobs exact in both index and commit.
+- No final integrated sweep, formatter, push, CI, tag or release has occurred.
+
+## Focused evidence since the previous checkpoint
+
+| Pass | Bounded outcome | Manifest SHA-256 |
+| --- | --- | --- |
+| 57 | Older6ca build:38 data steps/521 assertions pass, real probe Save/Delete versions2/3, unchanged fleet data/history; all six layout cases FAILED Edit/Copy clipping and narrow keys | 3e0d6b34045d1f07c9ae4bb0c0a29f6a8295767d1a1f3ed8a82d96f1f78bc28e |
+| 58 | Matchingbe081 native: stage1/CurrentAutomationId HRESULT80040201 exit2; separate follow-up json_size_refused/spentnull, workerexit1; no native success | 20612f50d048ad4e02b5cfd83b7714cc8b83c2fa8f56dc0abeb536c2a15bb3d4 |
+| 59 | Matchingbe081 GUI: six canonical size/scale numeric-row target checks pass; exact draft/cancel/Save/Delete/storage-history checks; independent full evidence review approved | 927e390688ae28436ae130585d5cd07f319098dd90fa7acd75815fb84ca1b9e6 |
+
+QA57 has275 payloads/17 actual PNGs, QA58 has15 payloads/no PNGs, QA59 has232
+payloads/17 actual PNGs. Root inspected all17 QA59 screenshots; the separate
+visual reviewer inspected six matrix and three key-readability screenshots.
+Raw app logs stay private, with strict-decoded summaries and finite credential
+pattern checks retained. These are focused passes, never FULL coverage.
+
+QA57 retains `coverage_ready=false` and `log_review_required=true` despite its
+38PASS/521assertions. Its521 assertions do not validate the newer grid geometry.
+Its mandatory failure evidence and prior QA56 clarification are not rewritten.
+
+QA59 covers1024x720,1280x720,1600x900 at1x/2x. Numeric-row Edit/Copy/Delete bounds,
+hit rectangles and child/table/Inspector clipping agree completely, with zero
+horizontal table offset at actual bodies260/260/260/67/79/167 logical points.
+Each actual layout-check has zero measured violations but incomplete coverage.
+Narrow numeric, long-unbroken and Greek-letter keys paint completely in separate
+actual67-point screenshots. This does not establish universal font coverage.
+
+The raw numeric draft `-150.250` survived a resize from260 to67 logical points.
+Canceling the edit and a separately armed deletion left properties/history at
+version1 unchanged. One GUI Save produced version2 and only changed grid_number;
+one GUI confirmed deletion produced version3 and only removed grid_remove.
+Complete historical state equals the original state with exactly those changes;
+prior raw journal-entry substrings remain byte-identical. Integer9007199254740993,
+nested data, full transform and the string with actual newline/leading/trailing
+spaces are preserved. Copy produced the actual toast and no data/history change;
+synthetic clipboard output is suppressed, so host clipboard contents are unproved.
+
+A requested520-point body remained260 because the splitter was disabled; a
+requested52-point minimum remained67. No live520/52 acceptance is claimed. The
+exact splitter-disabling guard remains unproved. Visual review also identifies
+repeated square missing-glyph placeholders in toolbar, Inspector and tree controls.
+Selected tree styling is clear in1x captures; the selected row is offscreen in2x
+captures, so that aspect remains unproved there.
+
+## Current blockers and source work
+
+- QA0074: independently reviewed source and matching full-packet GUI evidence support focused closure at actual67/79/167/260 widths. Broad hit-target/layout/selection acceptance remains separate.
+- QA0075 S2 missing glyphs: actual repeated placeholders require a coherent shared painted-icon correction and matching screenshot acceptance. The exact nine-payload correction is independently source/integration reviewed and committed9498869e; matching compilation passed. Actual live recognition, state contrast and toolbar breakpoint acceptance remain pending.
+- Native: QA58 identifies the failed method and HRESULT, not the exact historical element or cause. Source tracing proves a possible cold-activation root discontinuity between Bevy's fixed Window root and egui's unrelated root, plus controller deadline-kill classification loss. The exact local normalization/transport correction is independently source/integration reviewed and committedfed8dab6; matching compilation passed. Fresh live acceptance remains pending. Do not skip stale elements or relax discovery/admission. Capture remains unavailable without proved freshness.
+- Peer/QA0063: fresh real Viewer/Editor ordinary nodes, schemas, actual asset bytes/render/pick, role lifecycle and restart remain required. Local enqueue and mirror-factor1 data results do not prove peer convergence.
+- Retained stores remain HOLD. The require-existing design is independently reviewed; the SDK spike is partial and not integrable. The supported-maintenance feasibility report identifies ordinary SDK pre-admission write/recovery/handoff gaps, not proof that every alternative is impossible. Complete a safe admission seam and disposable acceptance before any retained restart. No offline opener, fake owner DID, reseed or provenance invention.
+- Every remaining terrain, group/selection, full rich-data/concurrency/restart, permissions/lifecycle, feature catalog, UX audit and release gate in plan.md remains required.
+
+The finding register now has66 records:17 open/reproduction (3S1/9S2/5S3),
+six source-fixed/live-pending, one cleanup-review-pending,41 focused verified and
+one closed. QA0074 is focused-closed and QA0075 is appended; the original64 raw records remain
+byte-identical. Focused closure is distinct from final catalog acceptance.
+
+## Next actions
+
+1. Run matching focused icon/toolbar QA60 and fresh native acceptance from the successful9498869e stage. Preserve actual QA58/59 limitations and unrelated session log changes.
+2. Review the isolated read-only divider eligibility diagnostic before any integration. The trace identifies current guard inputs, not the actual QA59 failed guard. Widget focus is not window focus; never bypass resize gates or invent focus state.
+3. Complete/review safe existing-store startup and disposable acceptance before touching retained Owner/recipient stores.
+4. Complete all remaining original feature/selection/groups/data/terrain/role/catalog/polish work, five actual live UX audits plus synthesis, and two100% required FULL passes with zero newS1/S2.
+5. After all implementation/review fixes, run the single integrated sweep and exact18-scenario harness with required real store/Podman fixtures, then exact-SHA green CI before immutable QA tag, whole Release includingDocker, and actual download/hash inspection of all seven archives.
+
+Only root owns Cargo/apps/process lifecycle/Git mutations. Preserve
+`conductor/.conductor_session_log`. No source/focused approval substitutes for
+remaining acceptance, and no release gate has been achieved.

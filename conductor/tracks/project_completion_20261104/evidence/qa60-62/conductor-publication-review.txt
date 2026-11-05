@@ -1,0 +1,120 @@
+# Independent Conductor Publication & Evidence Integrity Review (QA60–62 & P2P Lab Reconciliation Slice)
+
+- **Repository Root**: `C:\Users\atooz\Programming\fractalengine-workspace\fractalengine`
+- **Track Path**: `conductor/tracks/project_completion_20261104`
+- **Source Commit Baseline**: `9498869e2e1577e939a10f0a1e0f9e07de3b7053` (`HEAD: 7902ee6203b483d8ae0ecf244e00e351de7a381f`)
+- **Review Timestamp**: `2026-11-05T06:37:00Z`
+- **Verdict**: **APPROVED — All 6 publication, cryptographic, archival, finding-register, and scope-reconciliation requirements pass with zero discrepancies.**
+
+---
+
+## 1. `.gitattributes` Binary / `-text` Preservation Rules
+
+Inspected [`.gitattributes`](file:///C:/Users/atooz/Programming/fractalengine-workspace/fractalengine/.gitattributes#L1-L57):
+- Line 6 preserves all Conductor track evidence copies without EOL normalization:
+  ```gitattributes
+  /conductor/tracks/project_completion_20261104/evidence/** -text
+  ```
+- Lines 51–57 preserve the new frozen QA packets byte-identically:
+  ```gitattributes
+  /qa/passes/59/** -text
+
+  /qa/passes/60/** -text
+
+  /qa/passes/61/** -text
+
+  /qa/passes/62/** -text
+  ```
+- **Result**: **PASS** — Frozen packets `qa/passes/60..62` and `conductor/tracks/project_completion_20261104/evidence/**` are protected by `-text` rules against Git CRLF/LF mutation.
+
+---
+
+## 2. `conductor/tracks/project_completion_20261104/evidence/qa60-62/` Verification
+
+### 2.1 `index.md`
+- Inspected [`evidence/qa60-62/index.md`](file:///C:/Users/atooz/Programming/fractalengine-workspace/fractalengine/conductor/tracks/project_completion_20261104/evidence/qa60-62/index.md#L1-L25).
+- Carries valid OKF YAML frontmatter (`type: EvidenceIndex`, `date: 2026-11-04`, `status: in_progress`), links the raw frozen manifests (`qa/passes/60..62/packet-manifest.json`), links all 10 copied `.txt`/`.json` review and freeze-receipt artifacts, links `checkpoint-before-qa62.txt` and `checkpoint-archive-receipt.json`, and explicitly states:
+  > *"No FULL coverage, final integrated sweep, native UIA positive acceptance, real-peer asset/render/pick, retained restart, CI or tagged release acceptance is granted."*
+
+### 2.2 `source-copy-receipt.json` (10 Exact Copies)
+- Independently recomputed byte sizes and SHA-256 digests for all `10` entries in [`source-copy-receipt.json`](file:///C:/Users/atooz/Programming/fractalengine-workspace/fractalengine/conductor/tracks/project_completion_20261104/evidence/qa60-62/source-copy-receipt.json#L1-L64):
+
+| # | `.omc/research/` Source | `evidence/qa60-62/` Destination | Bytes | SHA-256 | Match |
+|---|---|---|---:|---|---|
+| 1 | `qa60-visual-review.md` | `qa60-visual-review.txt` | `14,115` | `32044ca183d5e1bf64627f42f81c3436ce35b701c9e1dd72f8a9be58c371ca3c` | Exact (`100%`) |
+| 2 | `qa60-full-evidence-review.md` | `qa60-full-evidence-review.txt` | `9,167` | `09c68682b5f57f595d9776f9aac786f8220109663c14e26a5c2cf7227a03b2f6` | Exact (`100%`) |
+| 3 | `qa61-full-evidence-review.md` | `qa61-full-evidence-review.txt` | `6,574` | `1fb1a173603f2c6a9d0649d27f0c056e2965cce2323c039931fc86ec2c993cca` | Exact (`100%`) |
+| 4 | `qa62-full-evidence-review.md` | `qa62-full-evidence-review.txt` | `10,488` | `77814aa85f082d9b37cd2822d1a7276d96c21bb01042964095b4c92cf45ca908` | Exact (`100%`) |
+| 5 | `qa60-packet-freeze-receipt.json` | `qa60-packet-freeze-receipt.json` | `385` | `9359d86ecc3fe375feb11e210411c2e515ffcf13b9644de2cd62ac6853fd63fc` | Exact (`100%`) |
+| 6 | `qa61-packet-freeze-receipt.json` | `qa61-packet-freeze-receipt.json` | `304` | `ed78f9fb495d3c8a52e4ccfa1185c48966e82c8cdfb2cb312899c0f46a75a2e4` | Exact (`100%`) |
+| 7 | `qa62-packet-freeze-receipt.json` | `qa62-packet-freeze-receipt.json` | `304` | `7f14a4c567f2f6f3c90badaa644933d7941312bbe3cbb9b1abb8d0e7bc14676f` | Exact (`100%`) |
+| 8 | `qa59-divider-eligibility-source-review.md` | `qa59-divider-eligibility-source-review.txt` | `5,585` | `3a3b670de115b83aed1621eb732433b683a549bf01b081c638b41f1751a1f5fb` | Exact (`100%`) |
+| 9 | `qa59-divider-eligibility-design-review.md` | `qa59-divider-eligibility-design-review.txt` | `8,870` | `8d82e16e60ef459d2508abd68a4835a822aa99e8ca527a7b88ef8f53a62ddca9` | Exact (`100%`) |
+| 10 | `p2p-relay-query-lab-review.md` | `p2p-relay-query-lab-review.txt` | `8,542` | `212ec70154af89ceb2d03bbf3e29146eb280fdc1f8bacad01d52b95ad92e6805` | Exact (`100%`) |
+
+- **Result**: **PASS** (`10/10` exact matches, `0` mismatches).
+
+### 2.3 `checkpoint-before-qa62.txt` & `checkpoint-archive-receipt.json`
+- Inspected [`checkpoint-archive-receipt.json`](file:///C:/Users/atooz/Programming/fractalengine-workspace/fractalengine/conductor/tracks/project_completion_20261104/evidence/qa60-62/checkpoint-archive-receipt.json#L1-L10) and verified raw byte slices of `checkpoint-history.md` (`66,924` bytes, SHA-256 `b18780578153210045ddf7b8d742b08232b310560c28fe0ca26d2ad7e3d64ab6`):
+  - **Prior History Prefix** (bytes `0..58354`, length `58,355` bytes): SHA-256 `a2e5df6b84a43cbc3e0a815feec45980e4857ec8a6a26ddc51324883362f3e4f` — matches `previous_history_sha256` (`previous_history_prefix_unchanged: true`).
+  - **Archived Checkpoint Suffix** (bytes `58357..66923`, length `8,567` bytes, after a 2-byte newline separator): SHA-256 `6ec85bfb4fa39fc4e9ecab2e6c5bda40f88a6b391a396b618f6a831b2670899f` — matches `evidence/qa60-62/checkpoint-before-qa62.txt` (`8,567` bytes, SHA-256 `6ec85bfb4fa39fc4e9ecab2e6c5bda40f88a6b391a396b618f6a831b2670899f`) byte-for-byte (`archived_exact_old_checkpoint: true`).
+- **Result**: **PASS**.
+
+---
+
+## 3. `p2p-relay-query-lab.md` and `evidence/deployment-fixtures/` Verification
+
+Independently recomputed byte sizes and SHA-256 digests and compared against the approved table in [`evidence/qa60-62/p2p-relay-query-lab-review.txt`](file:///C:/Users/atooz/Programming/fractalengine-workspace/fractalengine/conductor/tracks/project_completion_20261104/evidence/qa60-62/p2p-relay-query-lab-review.txt#L7-L12):
+
+| Path under `conductor/tracks/project_completion_20261104/` | Actual Bytes | Actual SHA-256 | Approved Review Match |
+|---|---:|---|---|
+| `p2p-relay-query-lab.md` | `8,251` | `fcc3f8a40d7ffa8ccdd01e5aa5197af58f674f84e40a8a5df498eae1ad9992f0` | Exact (`100%`) |
+| `evidence/deployment-fixtures/fixture-inventory.txt` | `15,958` | `56455bb73036e76b50a17d41ef8e1b7fca8340d854288ffcdf463e19ebffd71b` | Exact (`100%`) |
+| `evidence/deployment-fixtures/runtime-state.json` | `1,408` | `65e0a4ceb68d716f473abb33e4466d39836f162033233c6d5d487daf846bba99` | Exact (`100%`) |
+| `evidence/deployment-fixtures/copy-receipt.json` | `1,394` | `ed6c7c46dede9c207883796eb418edd68d9b02ec7278998a6cafef936eb07b00` | Exact (`100%`) |
+
+- **Result**: **PASS**.
+
+---
+
+## 4. `qa/findings.jsonl` Verification
+
+- Executed `git diff -U0 -- qa/findings.jsonl` and inspected [`qa/findings.jsonl`](file:///C:/Users/atooz/Programming/fractalengine-workspace/fractalengine/qa/findings.jsonl#L60-L66):
+  - **Lines 1–65 (`QA-0001` .. `QA-0074`)**: Zero diff hunks; 100% byte-identical to `HEAD`.
+  - **Line 66 (`QA-0075`)**: Only line modified (`@@ -66 +66 @@`):
+    - Updates `"last_seen": "60"` and appends `"qa/passes/60/packet-manifest.json"`, `"qa/passes/60/topbar-layer-oracle.json"`, `"conductor/tracks/project_completion_20261104/evidence/qa60-62/qa60-visual-review.txt"`, and `"conductor/tracks/project_completion_20261104/evidence/qa60-62/qa60-full-evidence-review.txt"` to `evidence`.
+    - Keeps `"status": "open"`.
+    - Accurately records in `note` that all 10 QA60 screenshots confirm zero missing-glyph squares (`□`) at `1x`/`2x`, clear selected tree row at `1x`/`2x`, and `whole_targets_fit=true` across all 9 matrix cases, while keeping `QA-0075` open for the residual `1160x720@1x` and `1161x720@1x` overlap where `Deselect object` (`right=743.5`) overlaps `Toggle Maps/Settings` (`gap -72.8125px/-71.8125px`) because `topbar.rs:742` switches from compact to expanded at `1160.0` instead of `>=1248.0`.
+- **Result**: **PASS**.
+
+---
+
+## 5. `checkpoint.md`, `metadata.json`, and `plan.md` Reconciliation Verification
+
+Inspected [`checkpoint.md`](file:///C:/Users/atooz/Programming/fractalengine-workspace/fractalengine/conductor/tracks/project_completion_20261104/checkpoint.md#L1-L85), [`metadata.json`](file:///C:/Users/atooz/Programming/fractalengine-workspace/fractalengine/conductor/tracks/project_completion_20261104/metadata.json#L1-L174), and [`plan.md`](file:///C:/Users/atooz/Programming/fractalengine-workspace/fractalengine/conductor/tracks/project_completion_20261104/plan.md#L1-L133):
+- **Manifest Hashes & Payload Counts**:
+  - QA60: `153` payloads (`10` PNGs), manifest SHA-256 `42b536d3b67c6d9f49760e08befe190b298a6df0e4f09d80bcf7cc90eb2dad17`
+  - QA61: `17` payloads (`0` PNGs), manifest SHA-256 `8e94af03358ccb239a0b73c42a5a775e85e970ab25155f25ee10873dda9b0758`
+  - QA62: `20` payloads (`0` PNGs), manifest SHA-256 `ea440f80f6d9a5f347b185130d2264dbc1adf9b7af78e520ac6a1cece5a76c32`
+- **Cleanup Identities & Timestamps**:
+  - QA60 (`PID 126140`, run `20261104-204745-332`): 8 identities absent at `2026-11-05T06:19:38.1331795Z`
+  - QA61 (`PID 103968`, run `20261104-232148-169`): 8 identities absent at `2026-11-05T06:24:41.6229843Z`
+  - QA62 (`PID 127884`, run `20261104-232515-148`): 8 identities absent at `2026-11-05T06:25:33.2439957Z`
+- **Bounded Claims & Open Gates**:
+  - Truthfully states that QA60–62 are focused passes (never `FULL` coverage).
+  - Keeps `QA-0075` open for the `1160`/`1161` `Deselect` topbar breakpoint overlap (`1160.0` -> `1248.0`).
+  - Records QA62's `desktop_refused` (`exit 2`, `attempt_spent=false`) under the `exebox` thread desktop without claiming positive `Default`-desktop UIA/root/Invoke/capture acceptance.
+  - Preserves all open terrain (`QA-0070`, `QA-0069`, `QA-0071`/`QA-0024`), peer (`QA-0063`), retained-store `HOLD`, `DividerEligibility` integration (`qa59-divider-eligibility-v1`), 18-scenario harness, 5 UX audits, two `FULL` passes, exact-SHA CI, and 7-archive release gates.
+- **Result**: **PASS**.
+
+---
+
+## 6. Frozen Packets `qa/passes/60`, `qa/passes/61`, and `qa/passes/62` Integrity & ReadOnly Check
+
+| Pass | Manifest Path | Manifest Bytes | Manifest SHA-256 | Listed Payload Files | Total Disk Files | Non-ReadOnly Files |
+|---|---|---:|---|---:|---:|---:|
+| 60 | `qa/passes/60/packet-manifest.json` | `27,246` | `42b536d3b67c6d9f49760e08befe190b298a6df0e4f09d80bcf7cc90eb2dad17` | `153` | `154` | `0` |
+| 61 | `qa/passes/61/packet-manifest.json` | `2,832` | `8e94af03358ccb239a0b73c42a5a775e85e970ab25155f25ee10873dda9b0758` | `17` | `18` | `0` |
+| 62 | `qa/passes/62/packet-manifest.json` | `3,373` | `ea440f80f6d9a5f347b185130d2264dbc1adf9b7af78e520ac6a1cece5a76c32` | `20` | `21` | `0` |
+
+- **Result**: **PASS** — All three frozen packets remain completely intact and `ReadOnly`.

@@ -1,0 +1,81 @@
+# QA60 Independent Full-Packet Evidence Review
+
+- **Packet Path**: `C:\Users\atooz\Programming\fractalengine-workspace\fractalengine\qa\passes\60`
+- **Source Commit**: `9498869e2e1577e939a10f0a1e0f9e07de3b7053` (`source_dirty: true`)
+- **Stage**: `.qa/stage/9498869e-20261104204501360`
+- **Review Timestamp**: `2026-11-05T06:24:00Z`
+- **Verdict**: **APPROVED (Focused GUI/Visual Evidence Packet Only — With Open `1160`/`1161` Topbar Breakpoint Overlap Defect Recorded; No Native/Peer/FULL/Release Credit)**
+
+---
+
+## 1. Cryptographic Manifest & File-Tree Integrity Verification
+
+All checks were independently recomputed against the frozen directory `C:\Users\atooz\Programming\fractalengine-workspace\fractalengine\qa\passes\60`:
+
+1. **`packet-manifest.json` Identity**:
+   - **Byte Size**: `27,246` bytes (matches `.omc/research/qa60-packet-freeze-receipt.json`)
+   - **SHA-256**: `42b536d3b67c6d9f49760e08befe190b298a6df0e4f09d80bcf7cc90eb2dad17`
+2. **Listed Payload Files (`153` files)**:
+   - `packet-manifest.json` enumerates exactly `153` payload files (total `154` files on disk in `qa/passes/60` including `packet-manifest.json` itself).
+   - Every single file (`153/153`) exists on disk and matches its declared `bytes` and `sha256` digest with **`0` mismatches** and **`0` unlisted files**.
+   - All `154` files on disk have the Windows `ReadOnly` attribute set (`NonReadOnlyFilesCount = 0`).
+3. **Original Anchors (`129` files in `packet-summary.json`)**:
+   - All `129/129` `original_anchors` in `packet-summary.json` match the frozen files in `qa/passes/60` on both byte size and SHA-256 digest (`0` mismatches), proving pre-freeze artifacts (`execution/qa60_flow.py`, `execution/qa60_matrix.py`, `execution/qa60_topbar_oracle.py`, `fixture-public-detail.json`, `icons-responsive-matrix.json`, 9 `matrix-*-comparison.json` files, 114 `owner-*.jsonl` command logs, and `topbar-layer-oracle.json`) were not rewritten during freeze.
+4. **External Source Copies (`21` files in `packet-summary.json`)**:
+   - All `21/21` `external_copies` in `packet-summary.json` (10 PNG screenshots from `.qa/run/20261104-204745-332/shots/`, 4 scripts from `.omc/research/`, 4 owned-context/cleanup/launch/stop provenance files from `.omc/research/`, 2 build-stage files from `conductor/tracks/project_completion_20261104/evidence/source-batch-20261104/`, and `stage.json` from `.qa/stage/9498869e-20261104204501360/`) match both their external source paths and their in-packet copies byte-for-byte and SHA-256-for-SHA-256 (`0` mismatches).
+
+---
+
+## 2. Verification of Required Evidence Artifacts
+
+### 2.1 `credential-scan.json`
+- **File**: `qa/passes/60/credential-scan.json` (`35,993` bytes, SHA-256 `dfa4f078e411c140793253eae664c1dd7339ffab9c8f3afde38d57248f93919f`)
+- **Findings**:
+  - Scans all `141` strict-decoded non-PNG files present prior to writing `credential-scan.json`, `packet-summary.json`, and `packet-manifest.json`, plus both private runtime logs (`stdout.log` and `stderr.log`), across 4 regex patterns (`bearer_value`, `jwt_value`, `private_key_block`, `credential_assignment`).
+  - All `141` packet files and both private logs have **`0` matches** across all 4 patterns.
+  - Explicitly states honest scope limits: *"Exactly four patterns over listed strict-decoded files/private logs only. This scan predates its own output, packet summary and manifest. No universal absence claim."*
+
+### 2.2 `app-log-review.json`
+- **File**: `qa/passes/60/app-log-review.json` (`1,848` bytes, SHA-256 `8df31a5d32d6deaf2846255a4cf332da8b1b09b2c87260351382816683ccb9b1`)
+- **Findings**:
+  - Independently verified against the local run directory `C:\Users\atooz\Programming\fractalengine-workspace\fractalengine\.qa\run\20261104-204745-332`:
+    - `stdout.log`: `689,304` bytes, SHA-256 `a3b845c82f1d7dd9c8cfad65122db869de0957c6b1cc3c1520878b7db1564a61`, `4,877` lines (`INFO: 4801`, `WARN: 9`, `ERROR: 0`), `panic_markers: 0`, `compiler_warning_diagnostics: 0`, `compiler_error_diagnostics: 0`, `private_current_error_markers: 0`, `raw_log_published: false`.
+    - `stderr.log`: `0` bytes, SHA-256 `e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855`, `0` lines.
+  - `warning_classes`: `{"startup": 9}`, `actual_warn_total: 9`, `error_total: 0`.
+
+### 2.3 `icons-responsive-matrix.json` & `topbar-layer-oracle.json`
+- **Files**:
+  - `qa/passes/60/icons-responsive-matrix.json` (`161,668` bytes, SHA-256 `83a4171167e870f12543d6f23c035b30f3d893c45796889f6dd73b6d23249a3e`)
+  - `qa/passes/60/topbar-layer-oracle.json` (`65,031` bytes, SHA-256 `f389bbd7ceafb42898b93f4b2c019d1fa07f701c63d9f9ebbed3734b128a3338`)
+- **Findings**:
+  - Covers 9 responsive cases: the 6 canonical size/scale combinations (`1024x720`, `1280x720`, `1600x900` at `1x` and `2x`) plus 3 `1x` breakpoint probe cases (`1159x720@1x`, `1160x720@1x`, `1161x720@1x`).
+  - Across **all 9 cases**:
+    - `whole_targets_fit: true` (`Edit property grid_number`, `Copy property grid_number`, `Delete property grid_number` all fit wholly inside their child clips, `Custom property table`, and `Inspector` scroll clips, with `rect.w >= 19.4` and `rect.h >= 19.4` and `offset[0] == 0.0`).
+    - `selected_tree.whole_visible: true` (`Select node QA60 icon probe` is wholly contained inside the `Hierarchy` scroll clip).
+    - `layout_check.violations: []` (`0` measured violations in the built-in layout check, with `coverage_complete: false` honestly recorded).
+  - **Oracle Separation of False Positives vs. Real Topbar Overlap**:
+    - In `qa60_matrix.py`, the naive filter `bounds.y < 40 * ppp` flagged scrolled `Hierarchy` buttons (`Open verse Genesis Verse`, `Hide verse: verse Genesis Verse`, `Options menu for verse Genesis Verse`, whose scroll clip starts at `y = 113.0` at `1x` / `226.0` at `2x`) and scrolled `Inspector` buttons (`Save Portal URL`, whose scroll clip starts at `y = 191.0` at `1x` / `382.0` at `2x`) because their virtual scrolled `y` coordinates lay above their scroll clips.
+    - Without mutating the raw matrix artifacts, `topbar-layer-oracle.json` filters by `clip.y <= 1.0` and `intersect_rect(node.bounds, clip) != None` to isolate actual unclipped topbar controls:
+      - **Canonical 6 cases (`1024`, `1280`, `1600` at `1x` and `2x`)**: `canonical_six_actual_topbar_fit: true` (`0` actual topbar overlaps; at `1280x720@1x` `deselect_to_maps_gap_px = 47.1875`; at `1600x900@1x` `deselect_to_maps_gap_px = 367.1875`).
+      - **`1159x720@1x`**: `breakpoint_1159_actual_topbar_fit: true` (`7` compact topbar buttons, `0` overlaps).
+      - **`1160x720@1x`**: `breakpoint_1160_actual_topbar_fit: false` (`17` expanded topbar buttons; `Deselect object` at `x=668.46875, w=75.03125` overlaps `Toggle Maps section` at `x=670.6875, w=55.5625` by `55.5625px` and `Toggle Settings section` at `x=734.25, w=71.5625` by `9.25px`; `deselect_to_maps_gap_px = -72.8125`).
+      - **`1161x720@1x`**: `breakpoint_1161_actual_topbar_fit: false` (`17` expanded topbar buttons; `Deselect object` at `x=668.46875, w=75.03125` overlaps `Toggle Maps section` at `x=671.6875, w=55.5625` by `55.5625px` and `Toggle Settings section` at `x=735.25, w=71.5625` by `8.25px`; `deselect_to_maps_gap_px = -71.8125`).
+
+### 2.4 `provenance/qa60-cleanup-identities.json`
+- **File**: `qa/passes/60/provenance/qa60-cleanup-identities.json` (`4,310` bytes, SHA-256 `a272aeeb9f57bb8816fa93e90f4e15143efbf88e05e816527166a429f148ea0c`)
+- **Findings**:
+  - Verifies cleanup of all `8` owned process identities recorded in `provenance/qa60-owned-context.json`:
+    - Owner app PID `126140` (`start_ticks: 639294472679179828`, `.qa\stage\9498869e-20261104204501360\fractalengine.exe`)
+    - Descendant `conhost.exe` PID `94936`
+    - 6 descendant `msedgewebview2.exe` PIDs (`12268`, `119136`, `121032`, `115196`, `95536`, `106220`)
+  - All `8` processes had `pid_present: false` and `recorded_identity_present: false` at `2026-11-05T06:19:38.1331795Z`, and an independent live process check during this review confirmed `ActiveRecordedProcessesNow = 0`.
+
+---
+
+## 3. Explicit Verdict, Scope, and Limits
+
+- **Verdict**: **APPROVED** as a frozen, tamper-evident, focused GUI/visual evidence packet (`qa/passes/60`).
+- **Exact Scope & Limits**:
+  1. **Focused GUI/Visual Evidence Only**: Verifies QA-0075 painted vector icons across all 10 PNG screenshots (`0` missing-glyph squares), selected Hierarchy row visibility (`Select node QA60 icon probe`) at `1x` and `2x`, and `Edit`/`Copy`/`Delete` numeric property row action button fit across all 9 matrix cases.
+  2. **Open Responsive Defect Preserved**: At `1160x720@1x` and `1161x720@1x` with an active object selection, the expanded topbar activates at the `1160.0` breakpoint while `Deselect object` (`right edge = 743.5`) visually and geometrically overlaps `Toggle Maps section` (`x = 670.6875` / `671.6875`) and `Toggle Settings section` (`x = 734.25` / `735.25`). This responsive topbar breakpoint overlap remains **OPEN**.
+  3. **No Broader Acceptance Credit**: Grants **no** native UIA acceptance credit, **no** peer replication credit, **no** retained-restart persistence credit, **no** `FULL` pass credit, and **no** release/tag/CI readiness credit.

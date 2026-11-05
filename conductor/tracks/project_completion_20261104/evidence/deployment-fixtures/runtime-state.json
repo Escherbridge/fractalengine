@@ -1,0 +1,43 @@
+{
+  "kind": "p2p-relay-query-local-runtime-inspection",
+  "observed_at_utc": "2026-11-05T04:02:13.384274+00:00",
+  "read_only": true,
+  "podman": {
+    "client_version": "5.7.1",
+    "server_version": "5.7.1",
+    "socket_reachable": true,
+    "machine": "podman-machine-default",
+    "provider": "wsl",
+    "machine_reported_running": true,
+    "machine_reported_cpus": 6,
+    "machine_reported_memory_bytes": 2147483648,
+    "default_connection": "podman-machine-default",
+    "rootful_connection_available": "podman-machine-default-root",
+    "fractalengine_lab_identifiable_in_default_connection_container_listing": false
+  },
+  "kubernetes": {
+    "commands_not_found_on_path": [
+      "kubectl",
+      "kind",
+      "k3d",
+      "minikube",
+      "helm"
+    ],
+    "user_kube_directory_entries": [
+      "cache"
+    ],
+    "user_kubeconfig_present": false,
+    "cluster_absence_proved": false
+  },
+  "actions_not_taken": [
+    "no container or VM start/stop/reconfigure",
+    "no cluster creation or deployment",
+    "no tests/builds run for this investigation",
+    "no retained store opened"
+  ],
+  "limits": [
+    "Machine resources are reported configuration, not a measured Kubernetes capacity guarantee.",
+    "The rootful connection inventory and any remote clusters were not inspected.",
+    "Source fixture presence is not passing acceptance."
+  ]
+}

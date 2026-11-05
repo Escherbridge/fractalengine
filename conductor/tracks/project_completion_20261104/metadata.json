@@ -32,7 +32,7 @@
   "verification": {
     "conductor_review": "approved; reviews/conductor-scope-review.md",
     "production_build": "949matchingstagepassed256.8s terminal19551exit0 zeroactualRustMSVCdiagnostics; app/nativehelper/legacyfixture/sealerhashesverified; authoredjourneys/finalintegratedsweeppending.",
-    "focused_evidence": "QA47-56committed; QA57frozen275payload17PNG fullreviewapproved oldergridfailed;QA58frozen15payload0PNG fullreviewapprovedtwofailednativeobservations;QA59frozen232payload17PNG boundedvisual/fullpacketreviewsapproved. NoneFULL.",
+    "focused_evidence": "QA47-59committed; QA60frozen153payload10PNG visual+fullreviewsapproved paintedicons0missingglyphs1x2x 1160/1161Deselectbreakpointoverlap; QA61frozen17payload0PNG fullreviewapproved separatecommandJobObjectrefusal; QA62frozen20payload0PNG fullreviewapproved singlesessionworkertransport desktop_refused. NoneFULL.",
     "final_catalog": "pending",
     "two_clean_full_passes": "pending",
     "five_live_ux_audits_and_synthesis": "pending",
@@ -43,7 +43,7 @@
     "legacy_helper_fresh_launch": "passed preparation/authenticated startup in30.5s with corrected C#; exact stop exit0; adoption/restart unverified",
     "visual_acceptance": "QA42 independently reviewed70payloads/9screens: zero measured violations in four incomplete states;382px narrowInspector, valid2xsave, treehscroll and shown ruler separation. Broad visual/tool/report gates remain.",
     "visual_followup_review": "approved subject to exact staged evidence bytes; reviews/visual-followup-review.md",
-    "native_witness": "Native root/transport9fileexactcandidate source/integrationreviewed committedfed8dab6; matching949buildpassed256.8s exit0; freshnativeacceptancepending. HistoricalQA58stage1/80040201/followjson_size_refused/exit1 remainfailedcauseunknown. No positiveUIA/Invoke/capture.",
+    "native_witness": "Native root/transport9fileexactcandidate committedfed8dab6; QA61preflightboundaryrefusal whenlaunchcommandexited; QA62singlesessionlivePID127884 spawnedworkers128468/128856 passedbootstrap/Processchecks and cleanlyreturned fe-native-worker-result-v1 desktop_refused (exit2, attempt_spent=false) under exebox thread desktop without json_size_refused. Positive Default-desktop UIA/Invoke/capture still pending.",
     "volume_ownership": "QA36partial/genuinezero andQA37independent200fill100cut4solidboxoverlap+observedroundtripbyte-stablehistories focusedapproved; fullQA69late/authority/retained/rollbackgatespending",
     "panel_width": "QA42 independent focused evidence:382pxInspector body at1024x720/2, actualtypedpropertysaved; geometryincomplete, remainingResults/divider/menu/modal matrixpending.",
     "terrain_api_grant": "c0aa2bce normal QA39 scoped update/readback evidence independentlyapproved; negative/queue/concurrency gates remain",
@@ -52,12 +52,12 @@
     "peer_node_delivery": "QA0063open; typed witness1bd source reviewed, QA47/49/52 localrecovery5enqueued0deferred/0publicationfailures. FreshViewer/bytes/render/pick/restartpending.",
     "camera_commands": "QA0073 CtrlLeft/ShiftLeft focusedcorrected52: positions0/2.5/0/2.5 versions4..7, seven completecameraresponses byteequal. Othermodifier/plainnav/easing/capture andfinaljourneys pending.",
     "rich_data_both": "QA55and57each38PASS521assertions localAPI withactualUI/history evidence;57older6cagridfailed and59matchingbe081 focusedgridaccepted. FinalBoth/peer/restart/playbacktimer/groups/concurrency matrixremain.",
-    "property_grid": "QA59matchingbe081 sixcanonicalsize/scalecasesfitwholeactions actual260/67/79/167bodies; draft/cancel/savev2/deletev3/fullstate/rawhistoryprefixexact; Copyfeedbackonly. Fullpacketreviewapproved;QA0074focusedclosed. Requested520actual260/requested52actual67; splitterdisabledunknown; missingglyphresidual. Paintedicons9payloadsource/integrationreviewed committed9498869e;QA0075stillopen; matching949buildpassed/livepending. Dividerguardunknown;sourceonlytraceandminimalreadonlydiagnosticcandidate separate."
+    "property_grid": "QA59matchingbe081 focusedgridaccepted; QA0074focusedclosed. QA60matching9498869e 10PNGs visual+fullreviewsapproved: zero missing-glyph squares at1x/2x, clear selected tree row at1x/2x, whole_targets_fit=true all9cases; 1160/1161 Deselect overlaps Maps/Settings (-72.8125px/-71.8125px) so QA0075 remainsopen for 1248.0 topbar threshold fix. 5-file read-only DividerEligibility diagnostic (qa59-divider-eligibility-v1) independently source+design approved."
   },
   "final_publication_authorized": true,
   "release_gate": "All required implementation/reviews/live QA and integrated checks complete; exact-commit CI green before immutable tag; all Release jobs and seven downloaded archive checksums verified",
   "current_source": "9498869e2e1577e939a10f0a1e0f9e07de3b7053",
-  "current_owned_apps": "QA60ownedPID126140 birth639294472679179828 run20261104-204745-332 stage9498869e verifiedlive; build19551terminal0. QA58/59recordedcleanupretained.",
+  "current_owned_apps": "none; QA60(PID126140), QA61(PID103968) and QA62(PID127884) stopped exit0 and all 8 recorded identities per run verified absent.",
   "checkpoint_history": "./checkpoint-history.md",
   "native_helper_source": {
     "worktree": ".omc/worktrees/qa-native-navigation-helper",
@@ -123,15 +123,33 @@
       "sdk_maintenance_report": "./evidence/qa57-59/require-existing-supported-maintenance-contract.txt"
     },
     "native_root_continuity": {
-      "status": "source_reviewed_committed_compiled_live_pending",
+      "status": "source_reviewed_committed_compiled_qa62_worker_transport_verified_desktop_refused_under_exebox_default_uia_pending",
       "commit": "fed8dab6019b500e5f049a6800ef1f7262054f2c",
-      "evidence": "./evidence/native-nav23/qa58-root-transport/index.md"
+      "evidence": "./evidence/native-nav23/qa58-root-transport/index.md",
+      "focused_evidence": "./evidence/qa60-62/index.md"
     },
     "painted_icons": {
-      "status": "source_reviewed_committed_compiled_live_pending",
+      "status": "source_reviewed_committed_compiled_qa60_icons_verified_1160_topbar_breakpoint_pending",
       "commit": "9498869e2e1577e939a10f0a1e0f9e07de3b7053",
-      "finding": "QA-0075 remainsopen",
-      "evidence": "./evidence/ui/qa59-painted-icons/index.md"
+      "finding": "QA-0075 icons verified 0 missing glyphs in QA60; remains open for 1160/1161 Deselect topbar breakpoint overlap",
+      "evidence": "./evidence/ui/qa59-painted-icons/index.md",
+      "focused_evidence": "./evidence/qa60-62/index.md"
+    },
+    "divider_eligibility_diagnostic": {
+      "candidate": ".omc/research/qa59-divider-eligibility-v1",
+      "manifest_sha256": "5d596db66f3288b38aca4e6f3ca2c932c50d6a0a8326fd4b5e75ddc339756029",
+      "patch_sha256": "ee2eb2cc427ad5c45fd13c665c1eb95d12789d565bc407039ebe7c66d5886cda",
+      "status": "source_and_design_reviewed_ready_for_integration",
+      "reviews": [
+        "./evidence/qa60-62/qa59-divider-eligibility-source-review.txt",
+        "./evidence/qa60-62/qa59-divider-eligibility-design-review.txt"
+      ]
+    },
+    "p2p_relay_query_lab_plan": {
+      "plan": "./p2p-relay-query-lab.md",
+      "evidence": "./evidence/deployment-fixtures/copy-receipt.json",
+      "review": "./evidence/qa60-62/p2p-relay-query-lab-review.txt",
+      "status": "proposed_plan_independently_reviewed"
     }
   },
   "next_native_diagnostic": {

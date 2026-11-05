@@ -3,7 +3,7 @@ type: ProgressCheckpoint
 date: 2026-11-04
 status: in_progress
 title: Current completion state and next actions
-last_verified_utc: 2026-11-05T03:50:57.801216+00:00
+last_verified_utc: 2026-11-05T06:35:24.442186+00:00
 ---
 
 # Current completion state
@@ -12,73 +12,71 @@ The full goal remains active in [goal-service.txt](./goal-service.txt),
 [spec.md](./spec.md) and [plan.md](./plan.md). Prior checkpoints are preserved
 verbatim in [checkpoint-history.md](./checkpoint-history.md). No gate is waived.
 
-- Main source: `9498869e2e1577e939a10f0a1e0f9e07de3b7053`. Stable native root/transport correctionfed8dab6 and painted icons9498869e each passed separate source and exact integration reviews. Both17-path commits verified all9 LF source blobs and8 raw support blobs. Matching combined build19551 passed; fresh live acceptance remains pending.
-- Matching production stage: `.qa/stage/9498869e-20261104204501360`, source9498869e, session19551 terminal exit0,256.8s, zero actual Rust/MSVC warning/error diagnostics. App/native-helper/legacy-fixture/sealer hashes verified; raw UTF16-BOM log and receipt preserved. Earlierbe081 acceptance remains limited to its original source.
-- Owned app: fresh QA60 PID126140, birth639294472679179828, run `.qa/run/20261104-204745-332`, stage9498869e; actual process and matching source verified after launch. No build is running. QA58's eight recorded identities absent02:54:07.4825465Z; QA59's eight absent03:10:20.1725651Z on2026-11-05. Cleanup checks concern recorded identities at those times, not every possible unrecorded orphan.
-- QA57 and QA58 frozen packets have independent full-packet approvals. QA59 is frozen with both bounded visual and full independent evidence approvals. Publication and Conductor reconciliation committed87d67399:546paths,540raw artifact blobs exact in both index and commit.
+- Main source: `9498869e2e1577e939a10f0a1e0f9e07de3b7053` (HEAD `7902ee6203b483d8ae0ecf244e00e351de7a381f` with source-batch documentation). Stable native root/transport correction `fed8dab6` and painted icons `9498869e` each passed separate source and exact integration reviews.
+- Matching production stage: `.qa/stage/9498869e-20261104204501360`, source `9498869e`, session19551 terminal exit0,256.8s, zero actual Rust/MSVC warning/error diagnostics. App/native-helper/legacy-fixture/sealer hashes verified.
+- Owned apps/builds: none running. QA60 (`PID 126140`, run `20261104-204745-332`), QA61 (`PID 103968`, run `20261104-232148-169`) and QA62 (`PID 127884`, run `20261104-232515-148`) all stopped cleanly; all eight recorded identities per run verified absent (`06:19:38.1331795Z`, `06:24:41.6229843Z` and `06:25:33.2439957Z` on `2026-11-05`).
+- QA60, QA61 and QA62 frozen packets have independent full-packet approvals (plus independent visual review for QA60's 10 PNGs). The 5-file read-only `DividerEligibility` diagnostic candidate (`qa59-divider-eligibility-v1`, manifest SHA-256 `5d596db66f3288b38aca4e6f3ca2c932c50d6a0a8326fd4b5e75ddc339756029`) has independent source correctness and design/boundary approvals. Proposed peer/relay/query lab plan (`p2p-relay-query-lab.md` and `evidence/deployment-fixtures/`) has independent Conductor review approval.
 - No final integrated sweep, formatter, push, CI, tag or release has occurred.
 
 ## Focused evidence since the previous checkpoint
 
 | Pass | Bounded outcome | Manifest SHA-256 |
 | --- | --- | --- |
-| 57 | Older6ca build:38 data steps/521 assertions pass, real probe Save/Delete versions2/3, unchanged fleet data/history; all six layout cases FAILED Edit/Copy clipping and narrow keys | 3e0d6b34045d1f07c9ae4bb0c0a29f6a8295767d1a1f3ed8a82d96f1f78bc28e |
-| 58 | Matchingbe081 native: stage1/CurrentAutomationId HRESULT80040201 exit2; separate follow-up json_size_refused/spentnull, workerexit1; no native success | 20612f50d048ad4e02b5cfd83b7714cc8b83c2fa8f56dc0abeb536c2a15bb3d4 |
-| 59 | Matchingbe081 GUI: six canonical size/scale numeric-row target checks pass; exact draft/cancel/Save/Delete/storage-history checks; independent full evidence review approved | 927e390688ae28436ae130585d5cd07f319098dd90fa7acd75815fb84ca1b9e6 |
+| 60 | Matching9498869e GUI: 10 PNGs (1024/1280/1600 at 1x/2x + 1159/1160/1161 at 1x + baseline), zero missing-glyph squares (`□`), clear selected tree row at 1x/2x, `whole_targets_fit=true` all 9 cases; `1160`/`1161` `Deselect` overlaps `Maps`/`Settings` (`-72.8125px`/`-71.8125px`) | 42b536d3b67c6d9f49760e08befe190b298a6df0e4f09d80bcf7cc90eb2dad17 |
+| 61 | Matching9498869e native preflight refusal: separate launch command exited and closed Windows Job Object before `native observe`; controller returned `native_owned_boundary_unavailable`, `attempt_spent=null`, 0 workers | 8e94af03358ccb239a0b73c42a5a775e85e970ab25155f25ee10873dda9b0758 |
+| 62 | Matching9498869e native worker execution: single-session launch + 2 `native observe` calls on live `PID 127884` spawned workers `128468`/`128856`; both passed controller admission, bootstrap ledger and `Process` image/session/token checks, then exited (`exit 2`, `worker_exited`, `attempt_spent=false`) with `desktop_refused` under `exebox` thread desktop | ea440f80f6d9a5f347b185130d2264dbc1adf9b7af78e520ac6a1cece5a76c32 |
 
-QA57 has275 payloads/17 actual PNGs, QA58 has15 payloads/no PNGs, QA59 has232
-payloads/17 actual PNGs. Root inspected all17 QA59 screenshots; the separate
-visual reviewer inspected six matrix and three key-readability screenshots.
-Raw app logs stay private, with strict-decoded summaries and finite credential
-pattern checks retained. These are focused passes, never FULL coverage.
+QA60 has153 payloads/10 actual PNGs, QA61 has17 payloads/no PNGs, QA62 has20
+payloads/no PNGs. Both root and the independent visual reviewer inspected all10
+QA60 screenshots. Raw app logs stay private, with strict-decoded summaries and
+finite credential pattern checks retained. These are focused passes, never FULL
+coverage.
 
-QA57 retains `coverage_ready=false` and `log_review_required=true` despite its
-38PASS/521assertions. Its521 assertions do not validate the newer grid geometry.
-Its mandatory failure evidence and prior QA56 clarification are not rewritten.
+In QA60, every icon-only and icon+label surface rendered by `paint_icon` in
+`9498869e` (topbar brand/workspace/tool/section/window buttons, Inspector rail
+tabs, `Deselect object`, hierarchy visibility eyes, disclosure chevrons and
+custom-property `Edit`/`Copy`/`Delete` row actions) is crisp, legible and free of
+missing-glyph squares (`□`) at both `1x` and `2x`. The selected hierarchy row
+(`QA60 icon probe`) is wholly inside the `Hierarchy` clip and clearly highlighted
+at both `1x` and `2x`. At `1160x720@1x` and `1161x720@1x`, `topbar.rs:742`
+(`ctx.viewport_rect().width() < 1160.0`) switches from compact to expanded mode
+while the selected-node `Deselect object` button extends the left cluster to
+`743.5` logical points (`743.5 + 489.3125 = 1232.8125 > 1160.0`), overlapping
+`Toggle Maps section` (`55.5625px`) and `Toggle Settings section` (`9.25px` /
+`8.25px`). Raising the compact threshold to `1248.0` resolves this overlap across
+all viewport widths. `qa/passes/60/topbar-layer-oracle.json` also separates
+unclipped topbar controls (`clip.y <= 1.0`) from scrolled-above-clip `Hierarchy`
+(`clip.y = 113`) and `Inspector` (`clip.y = 191`) controls that `qa60_matrix.py`
+bundled under `y < 40 * ppp`.
 
-QA59 covers1024x720,1280x720,1600x900 at1x/2x. Numeric-row Edit/Copy/Delete bounds,
-hit rectangles and child/table/Inspector clipping agree completely, with zero
-horizontal table offset at actual bodies260/260/260/67/79/167 logical points.
-Each actual layout-check has zero measured violations but incomplete coverage.
-Narrow numeric, long-unbroken and Greek-letter keys paint completely in separate
-actual67-point screenshots. This does not establish universal font coverage.
-
-The raw numeric draft `-150.250` survived a resize from260 to67 logical points.
-Canceling the edit and a separately armed deletion left properties/history at
-version1 unchanged. One GUI Save produced version2 and only changed grid_number;
-one GUI confirmed deletion produced version3 and only removed grid_remove.
-Complete historical state equals the original state with exactly those changes;
-prior raw journal-entry substrings remain byte-identical. Integer9007199254740993,
-nested data, full transform and the string with actual newline/leading/trailing
-spaces are preserved. Copy produced the actual toast and no data/history change;
-synthetic clipboard output is suppressed, so host clipboard contents are unproved.
-
-A requested520-point body remained260 because the splitter was disabled; a
-requested52-point minimum remained67. No live520/52 acceptance is claimed. The
-exact splitter-disabling guard remains unproved. Visual review also identifies
-repeated square missing-glyph placeholders in toolbar, Inspector and tree controls.
-Selected tree styling is clear in1x captures; the selected row is offscreen in2x
-captures, so that aspect remains unproved there.
+In QA62, running `launch.ps1`, both `native observe` invocations and `stop.ps1`
+inside one command lifetime kept `PID 127884` live and proved that `fed8dab6`'s
+worker transport returns bounded structured JSON (`fe-native-worker-result-v1`,
+`helper_exit_code: 2`, `terminal_code: "worker_exited"`, `attempt_spent: false`)
+on both initial and follow-up calls without `json_size_refused` or `exit 1`. Both
+workers refused at `worker.cpp:170-171` (`desktop_refused`) because the host
+sandbox attaches command threads to desktop `exebox-*` instead of `Default`. Per
+boundary rules, `desktop_refused` is preserved intact and never bypassed.
 
 ## Current blockers and source work
 
-- QA0074: independently reviewed source and matching full-packet GUI evidence support focused closure at actual67/79/167/260 widths. Broad hit-target/layout/selection acceptance remains separate.
-- QA0075 S2 missing glyphs: actual repeated placeholders require a coherent shared painted-icon correction and matching screenshot acceptance. The exact nine-payload correction is independently source/integration reviewed and committed9498869e; matching compilation passed. Actual live recognition, state contrast and toolbar breakpoint acceptance remain pending.
-- Native: QA58 identifies the failed method and HRESULT, not the exact historical element or cause. Source tracing proves a possible cold-activation root discontinuity between Bevy's fixed Window root and egui's unrelated root, plus controller deadline-kill classification loss. The exact local normalization/transport correction is independently source/integration reviewed and committedfed8dab6; matching compilation passed. Fresh live acceptance remains pending. Do not skip stale elements or relax discovery/admission. Capture remains unavailable without proved freshness.
-- Peer/QA0063: fresh real Viewer/Editor ordinary nodes, schemas, actual asset bytes/render/pick, role lifecycle and restart remain required. Local enqueue and mirror-factor1 data results do not prove peer convergence.
-- Retained stores remain HOLD. The require-existing design is independently reviewed; the SDK spike is partial and not integrable. The supported-maintenance feasibility report identifies ordinary SDK pre-admission write/recovery/handoff gaps, not proof that every alternative is impossible. Complete a safe admission seam and disposable acceptance before any retained restart. No offline opener, fake owner DID, reseed or provenance invention.
-- Every remaining terrain, group/selection, full rich-data/concurrency/restart, permissions/lifecycle, feature catalog, UX audit and release gate in plan.md remains required.
+- QA0074: focused-closed at actual67/79/167/260 widths. The 5-file read-only `DividerEligibility` diagnostic candidate (`qa59-divider-eligibility-v1`) is independently source- and design-reviewed and ready for exact integration to identify the QA59 splitter-disabling guard on live `520`/`52` drag attempts.
+- QA0075 S2 missing glyphs & topbar breakpoint: QA60 proves zero missing-glyph squares (`□`) across all 10 `1x`/`2x` screenshots. `QA-0075` remains open for the `1160`/`1161` `Deselect` topbar breakpoint overlap (`1160.0` -> `1248.0` in `fe-ui/src/ui_shell/topbar.rs`).
+- Native: `fed8dab6` worker transport is verified live through `Process` admission to clean structured `desktop_refused` under `exebox` in QA62; positive UIA root/provider/Invoke/capture on the `Default` desktop remains open.
+- Peer/QA0063: proposed disposable Podman lab plan (`p2p-relay-query-lab.md`) is independently reviewed; fresh real Viewer/Editor ordinary nodes, schemas, actual asset bytes/render/pick, role lifecycle and restart remain required.
+- Retained stores remain HOLD. Complete a safe `require-existing` admission seam and disposable acceptance before any retained restart.
+- Every remaining terrain (`QA-0070`, `QA-0069`, `QA-0071`/`QA-0024`), group/selection, full rich-data/concurrency/restart, permissions/lifecycle, feature catalog, UX audit and release gate in `plan.md` remains required.
 
-The finding register now has66 records:17 open/reproduction (3S1/9S2/5S3),
+The finding register has66 records:17 open/reproduction (3S1/9S2/5S3),
 six source-fixed/live-pending, one cleanup-review-pending,41 focused verified and
-one closed. QA0074 is focused-closed and QA0075 is appended; the original64 raw records remain
-byte-identical. Focused closure is distinct from final catalog acceptance.
+one closed. Only `QA-0075` (line 66) is updated with QA60 evidence; lines 1–65 remain
+byte-identical.
 
 ## Next actions
 
-1. Run matching focused icon/toolbar QA60 and fresh native acceptance from the successful9498869e stage. Preserve actual QA58/59 limitations and unrelated session log changes.
-2. Review the isolated read-only divider eligibility diagnostic before any integration. The trace identifies current guard inputs, not the actual QA59 failed guard. Widget focus is not window focus; never bypass resize gates or invent focus state.
-3. Complete/review safe existing-store startup and disposable acceptance before touching retained Owner/recipient stores.
+1. Integrate the exact reviewed 5-file `qa59-divider-eligibility-v1` candidate and author/review the `1248.0` compact topbar threshold fix in `fe-ui/src/ui_shell/topbar.rs`.
+2. Build one matching stage and run live QA63 (single-command lifecycle) to verify zero topbar overlaps at `1159`/`1160`/`1161`/`1247`/`1248`/`1280` (`1x`) and `1024`/`1280`/`1600` (`1x`/`2x`) with active selection (closing `QA-0075` at focused scope) and inspect `layout-check` `dividers` during `520`/`52` drag attempts.
+3. Resolve the observed divider eligibility guard, complete `QA-0070` terrain API grant continuity and safe `require-existing` startup on disposable fixtures.
 4. Complete all remaining original feature/selection/groups/data/terrain/role/catalog/polish work, five actual live UX audits plus synthesis, and two100% required FULL passes with zero newS1/S2.
 5. After all implementation/review fixes, run the single integrated sweep and exact18-scenario harness with required real store/Podman fixtures, then exact-SHA green CI before immutable QA tag, whole Release includingDocker, and actual download/hash inspection of all seven archives.
 

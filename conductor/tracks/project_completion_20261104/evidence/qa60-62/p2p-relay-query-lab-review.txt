@@ -1,0 +1,49 @@
+# Proposed peer/relay/query lab: independent Conductor review
+
+Verdict: **APPROVED for the exact four-file proposed-plan publication below.** No blocking integrity or scope defect found. This is approval of a persisted, reviewable proposal and its copied historical evidence; it is not approval or evidence of installation, deployment, fixture execution, infrastructure capacity, relay-only application traffic or passing acceptance.
+
+## Exact reviewed scope
+
+| Path under `conductor/tracks/project_completion_20261104/` | Bytes | SHA-256 |
+| --- | ---: | --- |
+| `p2p-relay-query-lab.md` | 8251 | `fcc3f8a40d7ffa8ccdd01e5aa5197af58f674f84e40a8a5df498eae1ad9992f0` |
+| `evidence/deployment-fixtures/fixture-inventory.txt` | 15958 | `56455bb73036e76b50a17d41ef8e1b7fca8340d854288ffcdf463e19ebffd71b` |
+| `evidence/deployment-fixtures/runtime-state.json` | 1408 | `65e0a4ceb68d716f473abb33e4466d39836f162033233c6d5d487daf846bba99` |
+| `evidence/deployment-fixtures/copy-receipt.json` | 1394 | `ed6c7c46dede9c207883796eb418edd68d9b02ec7278998a6cafef936eb07b00` |
+
+Independently recomputed every hash and size. Both copied evidence payloads equal their declared `.omc/research/` originals byte for byte; both receipt hashes/sizes and its plan hash match. The deployment-fixtures directory contains exactly those three support files. The Markdown has OKF `type: Plan`, `status: proposed`; UTF-8 decoding has no replacement characters or literal mojibake. PowerShell's displayed dash encoding was not an actual file defect. `copied_unreviewed` remains a truthful immutable copy-time receipt, not a later execution claim.
+
+## Source and fixture checks
+
+The component distinction is correct. `docker/Dockerfile.relay:6,12-24` builds the `fractalengine-relay` package and installs `fe-relay`; `fractalengine-relay/README.md:71` explicitly says it is an application peer rather than the iroh relay server. `docker/compose.dev.yml` supplies that application peer and registry on 8765/8790, one `/data` DB volume, and no transport relay or multi-peer query fleet. Reusing it unchanged would collide with the separately owned QA60 port and would not prove the proposed topology.
+
+The source inventory's important persistence limits are supported: the documented P2P default is `data/p2p`, node identity defaults can be ephemeral, and REST-created namespace secret overrides are process-local (`fractalengine-relay/README.md:20-45`). Independent per-peer DB/P2P/blob state and intentionally persisted real identity/namespace credentials are necessary for same-owner restart evidence. The proposal does not authorize copying campaign stores, manufacturing membership, reopening retained roots or substituting broad Owner credentials for real roles. It also correctly avoids inferring the old README's separate-reader limitation as current analytics failure: current `fractalengine-relay/src/main.rs:384-405` retains a `ReadDb` over the shared DB handle.
+
+The three acceptance lanes are accurately separated:
+
+- `fe-test-harness/src/main.rs:64-116` registers 18 scenarios; it unconditionally disables relays at line 59. Its substring filter at 123-129 can select nothing while exit 149 remains zero. The plan requires clearing that filter and checking expected executions.
+- `fe-sync/tests/relay_assisted_test.rs:30` matches the exact digest-pinned iroh-relay image in the proposal. The four actual tests are at 361, 446, 519 and 567. The supported Podman override and mandatory-infrastructure switch are real; the proposed cargo command matches `.github/workflows/build-artifacts.yml:448-462` except for the documented runtime selection. The IP-less dialer/path assertions at 481/497 establish their own narrower relay-only case. Other production endpoints can hole-punch, so those four tests alone do not prove a relay-routed application query fleet.
+- The real three-peer distributed query scenario exists, including host-truth readback, union/deduplication/latest, missing-host and R=2 survival (`fe-test-harness/src/scenarios/distributed_query.rs:1-45`). The API/MCP surface tests explicitly use a canned sync seam (`fe-api/tests/distributed_query_test.rs:1-11`). Neither alone proves the new composed real-fleet API/relay exercise. The headless peer uses the Mem DB (`peer.rs:195`), limiting restart/durability credit.
+
+Independently confirmed the listed on-disk fixture sizes: 48-byte test GLB, 1664-byte info-panel GLB, 28120-byte rich-fleet JSON, Hexon packages 67582/2354/2282 bytes, and presence of generated migration `expected.json` (972 bytes). No fixture package/store was opened or validated. The inventory correctly distinguishes tiny GLB presence from material/rendering acceptance, manually copied legacy blob bytes from a real fresh-peer network miss, and an offline report from product chart UI.
+
+A fresh bounded canonical filename inventory, excluding `.git`, `.omc`, `.qa` and target outputs, found the supplied Compose file and GitHub YAML but no Kubernetes/Helm/Kind/k3d/Minikube deployment configuration. This supports the stated repository gap; it does not establish absence of clusters or configuration elsewhere.
+
+## Runtime and primary-document limits
+
+The exact copied root-authored runtime observation reports Podman client/server 5.7.1 reachable, WSL machine configured for 6 CPUs/2147483648 bytes, rootless default plus available rootful connection. It records no identifiable app-lab container in the default listing, missing listed CLIs on PATH and no user kubeconfig. It expressly leaves rootful inventory and remote cluster absence unproved. I verified the recorded evidence/copies, not current OS or Podman liveness. The plan treats 2 GiB as reported configuration rather than demonstrated concurrent-lab capacity and preserves global configuration/unrelated-container ownership.
+
+The captured official primary pages support the provider and enforcement caveats:
+
+- `.omc/research/podman-kind-primary-pages-20261104.md`: 19388 bytes, SHA-256 `4ea3bd6b5790e20543b3d63aeeaccb9d951b71e22bb6711e81c44c0868ed5b9a`. Podman Desktop's Windows procedure directs rootful mode; Kind's separate rootless requirements include cgroup v2 and delegation. Neither proves this machine already satisfies an untested provider configuration.
+- `.omc/research/kubernetes-network-policy-primary-extract-20261104.md`: 16697 bytes, SHA-256 `903624df6b264db1b9490fb4023f7281375f0cf195ec85d924f0ccf7b0431df0`. The captured Kubernetes documentation requires an implementing network plugin; a policy resource alone has no effect. The plan correctly demands actual direct-path negative probes and relay/path receipts rather than treating YAML or relay URLs as enforcement proof.
+
+The proposed host ports, resource sizing, network enforcement seam, images' present buildability and cluster installation remain unverified follow-up work. The proposal neither silently changes the default Podman connection nor claims authorization to reclaim ports. QA60's live app and retained-store HOLD are explicitly protected. No current liveness, API read or retained-store open was performed in this review.
+
+## Scope and next engineering boundary
+
+The new document preserves all existing completion requirements. Kubernetes stays an optional overlay, not a new mandatory release gate; the four current relay tests do not require it. Windows native selection/accessibility, actual rendering/picking/material/intersection results and product Query/History/chart interaction remain their existing desktop evidence lane. Headless/container success cannot replace them. Existing final integrated testing, peer authority/assets, full catalog, CI and tagged-download gates remain unchanged.
+
+The proposed next deliverable is concrete and appropriately bounded: isolated Podman configuration plus credential/state lifecycle and scenario driver, explicit owned ports, measured relay-only enforcement and cleanup. Those authored implementation details need their own review before use. Publishing this plan provides no implementation, deployment, goal replacement, test or acceptance credit.
+
+Only these four paths are included in this approval; an exact copy of this review would be a separately explicit fifth documentation path if desired. No checkpoint, plan.md, metadata, decision ledger, frozen QA packet, production source or session log was changed. No Git operation, compiler/parser/formatter/test, app/helper/native operation, OS runtime inspection, API/DB/store access or network fetch was performed. This report is the only file written by this review lane.

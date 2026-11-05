@@ -1,0 +1,13 @@
+{
+  "kind": "qa60-packet-freeze",
+  "manifest": {
+    "bytes": 27246,
+    "sha256": "42b536d3b67c6d9f49760e08befe190b298a6df0e4f09d80bcf7cc90eb2dad17"
+  },
+  "payload_count": 153,
+  "png_count": 10,
+  "original_anchor_count": 129,
+  "source_copy_count": 21,
+  "source_or_original_mismatches": 0,
+  "note": "Frozen file-only packet; independent evidence review pending."
+}

@@ -1,0 +1,552 @@
+{
+  "whole_targets_fit": true,
+  "problems": [],
+  "targets": [
+    {
+      "name": "Edit property grid_number",
+      "node_id": "5882605930839097972",
+      "rect": {
+        "h": 25.0,
+        "w": 31.03125,
+        "x": 744.0,
+        "y": 252.0
+      },
+      "hit": {
+        "h": 25.0,
+        "w": 31.03125,
+        "x": 744.0,
+        "y": 252.0
+      },
+      "child_clip": {
+        "h": 25.0,
+        "w": 32.0,
+        "x": 744.0,
+        "y": 252.0
+      }
+    },
+    {
+      "name": "Copy property grid_number",
+      "node_id": "13011877673693468249",
+      "rect": {
+        "h": 25.0,
+        "w": 37.15625,
+        "x": 784.0,
+        "y": 252.0
+      },
+      "hit": {
+        "h": 25.0,
+        "w": 37.15625,
+        "x": 784.0,
+        "y": 252.0
+      },
+      "child_clip": {
+        "h": 25.0,
+        "w": 38.0,
+        "x": 784.0,
+        "y": 252.0
+      }
+    },
+    {
+      "name": "Delete property grid_number",
+      "node_id": "2220599076469268629",
+      "rect": {
+        "h": 24.0,
+        "w": 34.9375,
+        "x": 830.0,
+        "y": 252.0
+      },
+      "hit": {
+        "h": 24.0,
+        "w": 34.9375,
+        "x": 830.0,
+        "y": 252.0
+      },
+      "child_clip": {
+        "h": 25.0,
+        "w": 83.0,
+        "x": 830.0,
+        "y": 252.0
+      }
+    }
+  ],
+  "pixels_per_point": 1.0,
+  "table": {
+    "axes": [
+      true,
+      false
+    ],
+    "clip": {
+      "h": 501.0,
+      "w": 266.0,
+      "x": 741.0,
+      "y": 191.0
+    },
+    "content_id": "14590893963155772141",
+    "content_rect": {
+      "h": 664.0,
+      "w": 260.0,
+      "x": 744.0,
+      "y": 162.0
+    },
+    "content_size": [
+      260.0,
+      664.0
+    ],
+    "label": "Custom property table",
+    "layer": "LayerId { Background 5A3E }",
+    "offset": [
+      0.0,
+      0.0
+    ],
+    "parent_id": "13814949513801798013",
+    "viewport": {
+      "h": 0.0,
+      "w": 260.0,
+      "x": 744.0,
+      "y": 162.0
+    }
+  },
+  "body_logical_width": 260.0,
+  "topbar": {
+    "nodes": [
+      {
+        "bounds": {
+          "h": 25.0,
+          "w": 24.0,
+          "x": 138.125,
+          "y": 7.5
+        },
+        "enabled": true,
+        "focused": false,
+        "hidden": false,
+        "id": "17677495944032807743",
+        "interactive": true,
+        "name": "Toggle hierarchy sidebar",
+        "parent": "15396214326342759486",
+        "role": "button",
+        "selected": null,
+        "toggled": null,
+        "value": null
+      },
+      {
+        "bounds": {
+          "h": 25.0,
+          "w": 38.5625,
+          "x": 184.125,
+          "y": 7.5
+        },
+        "enabled": true,
+        "focused": false,
+        "hidden": false,
+        "id": "3306616148935760981",
+        "interactive": true,
+        "name": "Tools",
+        "parent": "15396214326342759486",
+        "role": "button",
+        "selected": null,
+        "toggled": null,
+        "value": null
+      },
+      {
+        "bounds": {
+          "h": 28.0,
+          "w": 46.0,
+          "x": 970.0,
+          "y": 6.0
+        },
+        "enabled": true,
+        "focused": false,
+        "hidden": false,
+        "id": "1339036568781491865",
+        "interactive": true,
+        "name": "Close FractalEngine",
+        "parent": "6050153659478643885",
+        "role": "button",
+        "selected": null,
+        "toggled": null,
+        "value": null
+      },
+      {
+        "bounds": {
+          "h": 28.0,
+          "w": 46.0,
+          "x": 916.0,
+          "y": 6.0
+        },
+        "enabled": true,
+        "focused": false,
+        "hidden": false,
+        "id": "15777149751036794273",
+        "interactive": true,
+        "name": "Maximize",
+        "parent": "6050153659478643885",
+        "role": "button",
+        "selected": null,
+        "toggled": null,
+        "value": null
+      },
+      {
+        "bounds": {
+          "h": 28.0,
+          "w": 46.0,
+          "x": 862.0,
+          "y": 6.0
+        },
+        "enabled": true,
+        "focused": false,
+        "hidden": false,
+        "id": "13833093140313315118",
+        "interactive": true,
+        "name": "Minimize",
+        "parent": "6050153659478643885",
+        "role": "button",
+        "selected": null,
+        "toggled": null,
+        "value": null
+      },
+      {
+        "bounds": {
+          "h": 25.0,
+          "w": 24.0,
+          "x": 816.0,
+          "y": 7.5
+        },
+        "enabled": true,
+        "focused": false,
+        "hidden": false,
+        "id": "1554664465216140619",
+        "interactive": true,
+        "name": "Open keyboard and pointer help",
+        "parent": "6050153659478643885",
+        "role": "button",
+        "selected": null,
+        "toggled": null,
+        "value": null
+      },
+      {
+        "bounds": {
+          "h": 25.0,
+          "w": 45.5625,
+          "x": 762.4375,
+          "y": 7.5
+        },
+        "enabled": true,
+        "focused": false,
+        "hidden": false,
+        "id": "7871519139973005704",
+        "interactive": true,
+        "name": "Panels",
+        "parent": "6050153659478643885",
+        "role": "button",
+        "selected": null,
+        "toggled": null,
+        "value": null
+      },
+      {
+        "bounds": {
+          "h": 24.0,
+          "w": 88.0,
+          "x": 52.0,
+          "y": 16.0
+        },
+        "enabled": true,
+        "focused": false,
+        "hidden": false,
+        "id": "9285406380068330414",
+        "interactive": true,
+        "name": "Open verse Genesis Verse",
+        "parent": "5057019275192129273",
+        "role": "button",
+        "selected": false,
+        "toggled": null,
+        "value": null
+      },
+      {
+        "bounds": {
+          "h": 24.0,
+          "w": 24.0,
+          "x": 142.0,
+          "y": 16.0
+        },
+        "enabled": true,
+        "focused": false,
+        "hidden": false,
+        "id": "4656803067223185354",
+        "interactive": true,
+        "name": "Hide verse: verse Genesis Verse",
+        "parent": "1865773495751377971",
+        "role": "button",
+        "selected": null,
+        "toggled": null,
+        "value": null
+      },
+      {
+        "bounds": {
+          "h": 25.0,
+          "w": 24.0,
+          "x": 168.0,
+          "y": 16.0
+        },
+        "enabled": true,
+        "focused": false,
+        "hidden": false,
+        "id": "13086947707453575628",
+        "interactive": true,
+        "name": "Options menu for verse Genesis Verse",
+        "parent": "3468741965272156326",
+        "role": "button",
+        "selected": null,
+        "toggled": null,
+        "value": null
+      },
+      {
+        "bounds": {
+          "h": 28.0,
+          "w": 260.0,
+          "x": 744.0,
+          "y": 31.0
+        },
+        "enabled": false,
+        "focused": false,
+        "hidden": false,
+        "id": "10172217093706376840",
+        "interactive": true,
+        "name": "Save Portal URL",
+        "parent": "15960407701072009377",
+        "role": "button",
+        "selected": null,
+        "toggled": null,
+        "value": null
+      }
+    ],
+    "overlaps": [
+      {
+        "a": "Toggle hierarchy sidebar",
+        "b": "Open verse Genesis Verse",
+        "overlap_width": 1.875,
+        "overlap_height": 16.5,
+        "a_bounds": {
+          "h": 25.0,
+          "w": 24.0,
+          "x": 138.125,
+          "y": 7.5
+        },
+        "b_bounds": {
+          "h": 24.0,
+          "w": 88.0,
+          "x": 52.0,
+          "y": 16.0
+        }
+      },
+      {
+        "a": "Toggle hierarchy sidebar",
+        "b": "Hide verse: verse Genesis Verse",
+        "overlap_width": 20.125,
+        "overlap_height": 16.5,
+        "a_bounds": {
+          "h": 25.0,
+          "w": 24.0,
+          "x": 138.125,
+          "y": 7.5
+        },
+        "b_bounds": {
+          "h": 24.0,
+          "w": 24.0,
+          "x": 142.0,
+          "y": 16.0
+        }
+      },
+      {
+        "a": "Tools",
+        "b": "Options menu for verse Genesis Verse",
+        "overlap_width": 7.875,
+        "overlap_height": 16.5,
+        "a_bounds": {
+          "h": 25.0,
+          "w": 38.5625,
+          "x": 184.125,
+          "y": 7.5
+        },
+        "b_bounds": {
+          "h": 25.0,
+          "w": 24.0,
+          "x": 168.0,
+          "y": 16.0
+        }
+      },
+      {
+        "a": "Close FractalEngine",
+        "b": "Save Portal URL",
+        "overlap_width": 34.0,
+        "overlap_height": 3.0,
+        "a_bounds": {
+          "h": 28.0,
+          "w": 46.0,
+          "x": 970.0,
+          "y": 6.0
+        },
+        "b_bounds": {
+          "h": 28.0,
+          "w": 260.0,
+          "x": 744.0,
+          "y": 31.0
+        }
+      },
+      {
+        "a": "Maximize",
+        "b": "Save Portal URL",
+        "overlap_width": 46.0,
+        "overlap_height": 3.0,
+        "a_bounds": {
+          "h": 28.0,
+          "w": 46.0,
+          "x": 916.0,
+          "y": 6.0
+        },
+        "b_bounds": {
+          "h": 28.0,
+          "w": 260.0,
+          "x": 744.0,
+          "y": 31.0
+        }
+      },
+      {
+        "a": "Minimize",
+        "b": "Save Portal URL",
+        "overlap_width": 46.0,
+        "overlap_height": 3.0,
+        "a_bounds": {
+          "h": 28.0,
+          "w": 46.0,
+          "x": 862.0,
+          "y": 6.0
+        },
+        "b_bounds": {
+          "h": 28.0,
+          "w": 260.0,
+          "x": 744.0,
+          "y": 31.0
+        }
+      },
+      {
+        "a": "Open keyboard and pointer help",
+        "b": "Save Portal URL",
+        "overlap_width": 24.0,
+        "overlap_height": 1.5,
+        "a_bounds": {
+          "h": 25.0,
+          "w": 24.0,
+          "x": 816.0,
+          "y": 7.5
+        },
+        "b_bounds": {
+          "h": 28.0,
+          "w": 260.0,
+          "x": 744.0,
+          "y": 31.0
+        }
+      },
+      {
+        "a": "Panels",
+        "b": "Save Portal URL",
+        "overlap_width": 45.5625,
+        "overlap_height": 1.5,
+        "a_bounds": {
+          "h": 25.0,
+          "w": 45.5625,
+          "x": 762.4375,
+          "y": 7.5
+        },
+        "b_bounds": {
+          "h": 28.0,
+          "w": 260.0,
+          "x": 744.0,
+          "y": 31.0
+        }
+      }
+    ],
+    "outside": [
+      {
+        "bounds": {
+          "h": 25.0,
+          "w": 24.0,
+          "x": 168.0,
+          "y": 16.0
+        },
+        "enabled": true,
+        "focused": false,
+        "hidden": false,
+        "id": "13086947707453575628",
+        "interactive": true,
+        "name": "Options menu for verse Genesis Verse",
+        "parent": "3468741965272156326",
+        "role": "button",
+        "selected": null,
+        "toggled": null,
+        "value": null
+      },
+      {
+        "bounds": {
+          "h": 28.0,
+          "w": 260.0,
+          "x": 744.0,
+          "y": 31.0
+        },
+        "enabled": false,
+        "focused": false,
+        "hidden": false,
+        "id": "10172217093706376840",
+        "interactive": true,
+        "name": "Save Portal URL",
+        "parent": "15960407701072009377",
+        "role": "button",
+        "selected": null,
+        "toggled": null,
+        "value": null
+      }
+    ],
+    "pass": false,
+    "limits": "Semantic button rectangles only; painted icon shape/occlusion requires actual screenshot review."
+  },
+  "selected_tree": {
+    "node": {
+      "bounds": {
+        "h": 24.0,
+        "w": 40.0,
+        "x": 100.0,
+        "y": 518.0
+      },
+      "enabled": true,
+      "focused": false,
+      "hidden": false,
+      "id": "4313003464509667643",
+      "interactive": true,
+      "name": "Select node QA60 icon probe",
+      "parent": "10190450491498235593",
+      "role": "button",
+      "selected": true,
+      "toggled": null,
+      "value": null
+    },
+    "clip": {
+      "h": 579.0,
+      "w": 206.0,
+      "x": 0.0,
+      "y": 113.0
+    },
+    "whole_visible": true
+  },
+  "case": "matrix-1024-scale1",
+  "window": {
+    "height": 720,
+    "maximized": false,
+    "minimized": false,
+    "ui_scale": 1.0,
+    "width": 1024
+  },
+  "screenshot": "C:\\Users\\atooz\\Programming\\fractalengine-workspace\\fractalengine\\.qa\\run\\20261104-204745-332\\shots\\210855-178-qa60-matrix-1024-scale1.png",
+  "layout_check": {
+    "coverage_complete": false,
+    "violations": []
+  }
+}

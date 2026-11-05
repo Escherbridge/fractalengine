@@ -1,0 +1,74 @@
+# QA61 Independent Full-Packet Evidence Review
+
+- **Packet Path**: `C:\Users\atooz\Programming\fractalengine-workspace\fractalengine\qa\passes\61`
+- **Run ID**: `20261104-232148-169`
+- **Source Commit**: `9498869e2e1577e939a10f0a1e0f9e07de3b7053` (`source_dirty: true`, `stage_matches_source: true`)
+- **Stage**: `.qa/stage/9498869e-20261104204501360`
+- **Review Timestamp**: `2026-11-05T06:29:30Z`
+- **Verdict**: **APPROVED AS IMMUTABLE NEGATIVE/REFUSAL EVIDENCE PACKET (`REFUSED_OWNED_PROCESS_TERMINATED_WHEN_SEPARATE_LAUNCH_COMMAND_EXITED` — Zero Native/UIA/Peer/FULL/Release Acceptance Credit)**
+
+---
+
+## 1. Cryptographic Manifest & File-Tree Integrity Verification
+
+All checks were independently recomputed against `C:\Users\atooz\Programming\fractalengine-workspace\fractalengine\qa\passes\61`:
+
+1. **`packet-manifest.json` Identity**:
+   - **Byte Size**: `2,832` bytes (matches `.omc/research/qa61-packet-freeze-receipt.json`)
+   - **SHA-256**: `8e94af03358ccb239a0b73c42a5a775e85e970ab25155f25ee10873dda9b0758`
+2. **Listed Payload Files (`17` files)**:
+   - `packet-manifest.json` enumerates `17` payload files (`18` total files on disk in `qa/passes/61` including `packet-manifest.json`).
+   - All `17/17` listed files exist on disk and match their manifest `bytes` and `sha256` digests (`0` mismatches, `0` unlisted files).
+   - All `18` files on disk have the Windows `ReadOnly` attribute set (`NonReadOnlyCount = 0`).
+3. **`original_artifacts` Verification (`2` files in `packet-summary.json`)**:
+   - Both pre-freeze artifacts (`fixture-public-detail.json` at `2,020` bytes / `4c47f6b607a74c2ec48490fc81375fdb85af7c95d9e4bfd8d3060ecade8c3abb`, and `owner-native-observe-provider-facts.jsonl` at `179` bytes / `b1619a7edfa94f043078d401c12a7d65945aff441707ba23a16b1cfc29605eb1`) match their in-packet copies with **`0` mismatches**.
+4. **`original_source_anchors` Verification (`12` files in `packet-summary.json`)**:
+   - All `12/12` `original_source_anchors` (`owned-context.json`, `cleanup-identities.json`, `logs/launch.log`, `logs/stop.log`, `stage-manifest.json`, `stage-build-receipt.json`, `logs/stage.log`, and the 5 execution scripts in `execution/`) match both their declared external source files and their frozen packet files byte-for-byte and SHA-256-for-SHA-256 (`0` mismatches).
+
+---
+
+## 2. Verification of Required Evidence Artifacts
+
+### 2.1 `credential-scan.json`
+- **File**: `qa/passes/61/credential-scan.json` (`4,376` bytes, SHA-256 `b6dc7b6600c09fbba0441879b1fdad02f99b0b9f75a045f03b55407615481746`)
+- **Findings**:
+  - Scans all `15` strict-decoded files (`utf-8`, `utf-8-bom`, `utf-16-bom`) present prior to writing `credential-scan.json`, `packet-summary.json`, and `packet-manifest.json`, plus both private runtime logs (`stdout.log`, `stderr.log`), across the 4 regex patterns (`bearer_value`, `jwt_value`, `private_key_block`, `credential_assignment`).
+  - All `15` packet files and both private logs have **`0` matches** across all 4 patterns.
+
+### 2.2 `application-log-summary.json`
+- **File**: `qa/passes/61/application-log-summary.json` (`1,772` bytes, SHA-256 `cdd947a066c96cae0bbf3b2abe59140cb91dc16ed825711497210f31cda257a9`)
+- **Findings**:
+  - Independently verified against `.qa/run/20261104-232148-169`:
+    - `stdout.log`: `42,730` bytes, SHA-256 `f2b4c12a237d6372db7b0e0d3c5ed1c01be4cf8431de81185f8e345f4cd6d658`, `291` lines (`INFO: 216`, `WARN: 8`, `ERROR: 0`), `panic_markers: 0`, `compiler_warning_diagnostics: 0`, `compiler_error_diagnostics: 0`, `private_current_error_markers: 0`, `raw_log_published: false`.
+    - `stderr.log`: `0` bytes, SHA-256 `e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855`, `0` lines.
+
+### 2.3 Controller Refusal & Private Invocation Ledger (`owner-native-observe-provider-facts.jsonl` & `attempt.jsonl`)
+- **Recorded Controller Output**:
+  ```json
+  {"attempt_spent": null, "capture_available": false, "code": "native_owned_boundary_unavailable", "outcome": "unavailable_or_unknown", "schema": "fe-native-controller-result-v1"}
+  ```
+- **Mechanism Verified**:
+  - `launch.ps1` was executed in a separate backgrounded shell command that spawned owned app PID `103968` (`start_ticks: 639294565099000383`). When that shell command exited, the host command runner closed its job object and terminated PID `103968` before the subsequent command ran `qa61_native_run.py`.
+  - When `qa61_native_run.py` invoked `native observe --controlled-fixture`, controller `Context.__init__` checked `live_process(identity)` on PID `103968`, failed with `ValueError('exact owned app process is unavailable')`, and returned `code: "native_owned_boundary_unavailable"`, `outcome: "unavailable_or_unknown"`, `attempt_spent: null`, `capture_available: false`, spawning **zero** worker processes (`workers: []`).
+- **Private `attempt.jsonl` Verification**:
+  - Path: `.qa/run/20261104-232148-169/native-observer/134383333099000383-2896e3d4b5284c2b85d00aad91fd98c9/attempt.jsonl`
+  - Byte Size: `358` bytes; SHA-256: `747543bc7fd53f527d31ffa479ef6b88568b6acd24b703636694a6b5cfe06cb1` (matches `invocation_ledger_summary.file_sha256`).
+  - Contains exactly `1` line (`kind: "bootstrap"`, `schema: "fe-native-attempt-v1"`), with `invocation_reservation_or_intent_present: false` and `raw_ledger_published: false`.
+
+### 2.4 `cleanup-identities.json`
+- **File**: `qa/passes/61/cleanup-identities.json` (`4,309` bytes, SHA-256 `6d2009dd33a1fa7488dbf539ffadd110795a8d3161796392c37e09b4525f2c55`)
+- **Findings**:
+  - Verifies all `8` recorded identities from `owned-context.json`:
+    - Owner app PID `103968` (`start_ticks: 639294565099000383`, `.qa\stage\9498869e-20261104204501360\fractalengine.exe`)
+    - Descendant `conhost.exe` PID `95624`
+    - 6 descendant `msedgewebview2.exe` PIDs (`126040`, `54316`, `40456`, `127400`, `87580`, `128928`)
+  - All `8` identities had `pid_present: false` and `recorded_identity_present: false` at `2026-11-05T06:24:41.6229843Z`, and an independent live check during this review confirmed `ActiveProcsNow = 0`.
+
+---
+
+## 3. Explicit Verdict, Scope, and Limits
+
+- **Verdict**: **APPROVED** as a frozen, tamper-evident negative/refusal evidence packet (`qa/passes/61`).
+- **Exact Scope & Limits**:
+  - Preserves the failed separate-command launch lifetime (`native_owned_boundary_unavailable`, `attempt_spent: null`, `0` workers spawned) that motivated running launch, native observe, and stop within a single shell command lifetime in `qa/passes/62`.
+  - Grants **zero** native UIA, root-continuity, Invoke, capture, peer, `FULL`, or release acceptance credit.

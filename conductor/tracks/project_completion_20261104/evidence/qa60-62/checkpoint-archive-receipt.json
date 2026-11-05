@@ -1,0 +1,10 @@
+{
+  "old_checkpoint_bytes": 8567,
+  "old_checkpoint_sha256": "6ec85bfb4fa39fc4e9ecab2e6c5bda40f88a6b391a396b618f6a831b2670899f",
+  "previous_history_bytes": 58355,
+  "previous_history_sha256": "a2e5df6b84a43cbc3e0a815feec45980e4857ec8a6a26ddc51324883362f3e4f",
+  "archived_exact_old_checkpoint": true,
+  "previous_history_prefix_unchanged": true,
+  "raw_publication_artifact": "conductor/tracks/project_completion_20261104/evidence/qa60-62/checkpoint-before-qa62.txt",
+  "context_markdown_git_eol_normalization": "Context markdown follows normal Git text rules; the evidence .txt preserves exact original bytes."
+}

@@ -1,0 +1,12 @@
+{
+  "kind": "qa61-packet-freeze",
+  "manifest": {
+    "bytes": 2832,
+    "sha256": "8e94af03358ccb239a0b73c42a5a775e85e970ab25155f25ee10873dda9b0758"
+  },
+  "payload_count": 17,
+  "png_count": 0,
+  "original_anchor_count": 2,
+  "source_copy_count": 12,
+  "source_or_original_mismatches": 0
+}

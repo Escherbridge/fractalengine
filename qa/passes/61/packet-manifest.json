@@ -1,0 +1,90 @@
+{
+  "kind": "qa61-packet-manifest",
+  "files": [
+    {
+      "file": "application-log-summary.json",
+      "bytes": 1772,
+      "sha256": "cdd947a066c96cae0bbf3b2abe59140cb91dc16ed825711497210f31cda257a9"
+    },
+    {
+      "file": "cleanup-identities.json",
+      "bytes": 4309,
+      "sha256": "6d2009dd33a1fa7488dbf539ffadd110795a8d3161796392c37e09b4525f2c55"
+    },
+    {
+      "file": "credential-scan.json",
+      "bytes": 4376,
+      "sha256": "b6dc7b6600c09fbba0441879b1fdad02f99b0b9f75a045f03b55407615481746"
+    },
+    {
+      "file": "execution/check_qa61_cleanup.ps1",
+      "bytes": 1142,
+      "sha256": "9e5feaac5423f23d7603889e1c802eae00757d17a132457645852841e8b7c3c5"
+    },
+    {
+      "file": "execution/qa61_freeze.py",
+      "bytes": 5844,
+      "sha256": "79449b4bb336476aedd97ba41d23de974e7dcb36ec956b18dbd0d6d133a65def"
+    },
+    {
+      "file": "execution/qa61_native_run.py",
+      "bytes": 1630,
+      "sha256": "aaa7207f5dc776d9d8f18fa8bf4daed84e34d1b5b1a19a0d5925105e46fe5e7b"
+    },
+    {
+      "file": "execution/qa_packet_lib.py",
+      "bytes": 2484,
+      "sha256": "055349a1bedc4bfaabcaaa03234f15096f6511440517d075347c8621783caf9f"
+    },
+    {
+      "file": "execution/qa_pair_drive.py",
+      "bytes": 1769,
+      "sha256": "6f00d9dc09216681559e7f29c114670921f394f4b70dcc8d9052ae75fa2e746c"
+    },
+    {
+      "file": "fixture-public-detail.json",
+      "bytes": 2020,
+      "sha256": "4c47f6b607a74c2ec48490fc81375fdb85af7c95d9e4bfd8d3060ecade8c3abb"
+    },
+    {
+      "file": "logs/launch.log",
+      "bytes": 1672,
+      "sha256": "1bd543dd74fdd70f85ed951fc0994dcac2e2a7e2ec63f6b420e5322248e3179d"
+    },
+    {
+      "file": "logs/stage.log",
+      "bytes": 2288,
+      "sha256": "c3a6daac3756021cc8878a29b0aa8ce8d320da9766510108a4ee7c426b227866"
+    },
+    {
+      "file": "logs/stop.log",
+      "bytes": 652,
+      "sha256": "23b7e46e878b1b2411c31765480bc470235a82212d8d5a0d3aac2a18e61f2808"
+    },
+    {
+      "file": "owned-context.json",
+      "bytes": 3052,
+      "sha256": "20e0498813f86058038d59f46d0bd52d9033eabee750edad39c77f308ebbb520"
+    },
+    {
+      "file": "owner-native-observe-provider-facts.jsonl",
+      "bytes": 179,
+      "sha256": "b1619a7edfa94f043078d401c12a7d65945aff441707ba23a16b1cfc29605eb1"
+    },
+    {
+      "file": "packet-summary.json",
+      "bytes": 5208,
+      "sha256": "9b1dbd28940de22f8f899bcc8faaaa4dc1679c1243e855b0a3b62edcc3106d05"
+    },
+    {
+      "file": "stage-build-receipt.json",
+      "bytes": 561,
+      "sha256": "a162474c65df483ce3ec05efec6e128c553c2fa82edec1b905b356fe8158526d"
+    },
+    {
+      "file": "stage-manifest.json",
+      "bytes": 1166,
+      "sha256": "1e8a08881931c22db76a93939b010d7caea9552c1dfad1844ff97caaa74276a7"
+    }
+  ]
+}

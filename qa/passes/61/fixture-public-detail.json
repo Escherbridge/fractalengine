@@ -1,0 +1,66 @@
+{
+  "fractal_id": "01M6N5Y4FBHG1CWJEHCYN5JSKM",
+  "terrain_petal_ids": [
+    "01M6N5Y4N4T4MK0S8S9P1VZ7FE"
+  ],
+  "terrain_tileset_id": "qa-analytic-terrain",
+  "query_sum_sql": "SELECT count() AS fixture_count, math::sum(properties.qa_value) AS fixture_sum FROM node WHERE petal_id = '01M6N5Y4J1SPM7R9EXKATAEYPH' AND properties.qa_fixture = 'terrain' AND properties.qa_role = 'value' AND tombstone = NONE GROUP ALL",
+  "node_ids": [
+    "01M6N5Y4W4QM6MFDNAD5EXXC7Z",
+    "01M6N5Y5HY5C248A8V0F2SXWR2",
+    "01M6N5Y68F9JWWAVVEQ48Q75XA"
+  ],
+  "query_rows_sql": "SELECT node_id, petal_id, display_name, position.coordinates[0] AS x, elevation AS y, position.coordinates[1] AS z, properties.qa_value AS qa_value FROM node WHERE petal_id = '01M6N5Y4J1SPM7R9EXKATAEYPH' AND properties.qa_fixture = 'terrain' AND properties.qa_role = 'value' AND tombstone = NONE ORDER BY qa_value ASC",
+  "marker_node_ids": [
+    "01M6N5Y6WT2635J0TBT4XRYD0W",
+    "01M6N5Y7KD7C1V7Z8ATD93T0BP"
+  ],
+  "terrain_petal_id": "01M6N5Y4N4T4MK0S8S9P1VZ7FE",
+  "terrain_descriptor": "terrain-fixture/descriptor.json",
+  "terrain_bound": true,
+  "query_sum": 60,
+  "petal_b_id": "01M6N5Y4N4T4MK0S8S9P1VZ7FE",
+  "terrain_oracle": {
+    "area_m2": 100,
+    "base_elevation_m": 0,
+    "expected_sample_count": 16384,
+    "footprint_xz_m": [
+      [
+        -5,
+        -5
+      ],
+      [
+        5,
+        -5
+      ],
+      [
+        5,
+        5
+      ],
+      [
+        -5,
+        5
+      ]
+    ],
+    "lattice_axis": 128,
+    "lower": {
+      "cut_m3": 100,
+      "fill_m3": 0,
+      "net_m3": -100,
+      "positive_delta_m": 1
+    },
+    "raise": {
+      "cut_m3": 0,
+      "fill_m3": 200,
+      "net_m3": 200,
+      "positive_delta_m": 2
+    },
+    "raw_absolute_tolerance": 0.001,
+    "world_scale": 1
+  },
+  "name": "basic",
+  "petal_a_id": "01M6N5Y4J1SPM7R9EXKATAEYPH",
+  "verse_id": "01M6N5Y3ZJPZJW12KFSPRJFFGM",
+  "query_count": 3,
+  "asset_id": "01M6N5Y4SCS19BNZ2Q54GJFY3S"
+}

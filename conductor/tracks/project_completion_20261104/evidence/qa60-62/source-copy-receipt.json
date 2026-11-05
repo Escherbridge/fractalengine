@@ -1,0 +1,70 @@
+{
+  "exact_copies": [
+    {
+      "source": ".omc/research/qa60-visual-review.md",
+      "file": "conductor/tracks/project_completion_20261104/evidence/qa60-62/qa60-visual-review.txt",
+      "bytes": 14115,
+      "sha256": "32044ca183d5e1bf64627f42f81c3436ce35b701c9e1dd72f8a9be58c371ca3c"
+    },
+    {
+      "source": ".omc/research/qa60-full-evidence-review.md",
+      "file": "conductor/tracks/project_completion_20261104/evidence/qa60-62/qa60-full-evidence-review.txt",
+      "bytes": 9167,
+      "sha256": "09c68682b5f57f595d9776f9aac786f8220109663c14e26a5c2cf7227a03b2f6"
+    },
+    {
+      "source": ".omc/research/qa61-full-evidence-review.md",
+      "file": "conductor/tracks/project_completion_20261104/evidence/qa60-62/qa61-full-evidence-review.txt",
+      "bytes": 6574,
+      "sha256": "1fb1a173603f2c6a9d0649d27f0c056e2965cce2323c039931fc86ec2c993cca"
+    },
+    {
+      "source": ".omc/research/qa62-full-evidence-review.md",
+      "file": "conductor/tracks/project_completion_20261104/evidence/qa60-62/qa62-full-evidence-review.txt",
+      "bytes": 10488,
+      "sha256": "77814aa85f082d9b37cd2822d1a7276d96c21bb01042964095b4c92cf45ca908"
+    },
+    {
+      "source": ".omc/research/qa60-packet-freeze-receipt.json",
+      "file": "conductor/tracks/project_completion_20261104/evidence/qa60-62/qa60-packet-freeze-receipt.json",
+      "bytes": 385,
+      "sha256": "9359d86ecc3fe375feb11e210411c2e515ffcf13b9644de2cd62ac6853fd63fc"
+    },
+    {
+      "source": ".omc/research/qa61-packet-freeze-receipt.json",
+      "file": "conductor/tracks/project_completion_20261104/evidence/qa60-62/qa61-packet-freeze-receipt.json",
+      "bytes": 304,
+      "sha256": "ed78f9fb495d3c8a52e4ccfa1185c48966e82c8cdfb2cb312899c0f46a75a2e4"
+    },
+    {
+      "source": ".omc/research/qa62-packet-freeze-receipt.json",
+      "file": "conductor/tracks/project_completion_20261104/evidence/qa60-62/qa62-packet-freeze-receipt.json",
+      "bytes": 304,
+      "sha256": "7f14a4c567f2f6f3c90badaa644933d7941312bbe3cbb9b1abb8d0e7bc14676f"
+    },
+    {
+      "source": ".omc/research/qa59-divider-eligibility-source-review.md",
+      "file": "conductor/tracks/project_completion_20261104/evidence/qa60-62/qa59-divider-eligibility-source-review.txt",
+      "bytes": 5585,
+      "sha256": "3a3b670de115b83aed1621eb732433b683a549bf01b081c638b41f1751a1f5fb"
+    },
+    {
+      "source": ".omc/research/qa59-divider-eligibility-design-review.md",
+      "file": "conductor/tracks/project_completion_20261104/evidence/qa60-62/qa59-divider-eligibility-design-review.txt",
+      "bytes": 8870,
+      "sha256": "8d82e16e60ef459d2508abd68a4835a822aa99e8ca527a7b88ef8f53a62ddca9"
+    },
+    {
+      "source": ".omc/research/p2p-relay-query-lab-review.md",
+      "file": "conductor/tracks/project_completion_20261104/evidence/qa60-62/p2p-relay-query-lab-review.txt",
+      "bytes": 8542,
+      "sha256": "212ec70154af89ceb2d03bbf3e29146eb280fdc1f8bacad01d52b95ad92e6805"
+    },
+    {
+      "source": ".omc/research/qa60-62-conductor-publication-review.md",
+      "file": "conductor/tracks/project_completion_20261104/evidence/qa60-62/conductor-publication-review.txt",
+      "bytes": 10792,
+      "sha256": "d5142f40e45a9699ea565b86aae2f5e2e2c02448b06a9697c72073d75f36c591"
+    }
+  ]
+}

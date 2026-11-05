@@ -22,7 +22,7 @@ reviewed slice. Historical evidence stays linked rather than rewritten.
 
 ## P1: correctness and execution blockers
 
-- [~] Stable native provider root and truthful parent worker-stop classification: exact nine-file correction independently source/integration reviewed, committedfed8dab6. Matching949build19551 passed256.8s exit0 with zero compiler diagnostics; fresh native acceptance remains pending.
+- [~] Stable native provider root and truthful parent worker-stop classification: exact nine-file correction independently source/integration reviewed, committedfed8dab6. Matching949build19551 passed256.8s exit0; QA61 verified truthful preflight refusal when a separate launch command closed its Job Object, and QA62 verified single-session worker transport through bootstrap/Process checks to clean structured `desktop_refused` (`exit 2`, `attempt_spent=false`) under the `exebox` thread desktop without `json_size_refused`. Positive `Default`-desktop UIA acceptance remains pending.
 
 - [~] Native NAV23 source corrections (EOF, aggregate budgets, real paired reseal/issuer checks and confirmed-stage pruning) passed both full v3 reviews and exact integration in8968d918. Toolchain corrections through925d7cba independently reviewed; combined Rust/native stage passed12.7s with zero compiler diagnostics. Actual helper/native/lifecycle acceptance remains pending. QA43 refused before UIA; reviewed categorical diagnostics9d1e061d compile and QA44 narrows this to unexpected-visible-window refusal.
 
@@ -57,7 +57,7 @@ reviewed slice. Historical evidence stays linked rather than rewritten.
 
 ## P3: full UX and feature coverage
 
-- [~] QA0075 missing-symbol controls: shared native-button vector adapter independently source/integration reviewed and committed9498869e. Matching949build19551 passed256.8s exit0; actual icon meaning/contrast/toolbar breakpoint screenshots remain required.
+- [~] QA0075 missing-symbol controls: shared native-button vector adapter independently source/integration reviewed and committed9498869e. QA60 (10 PNGs across `1024`/`1280`/`1600` at `1x`/`2x` + `1159`/`1160`/`1161` at `1x`) independently visual- and full-packet-reviewed: zero missing-glyph squares (`□`), clear selected tree row at `1x`/`2x`, and `whole_targets_fit=true` across all 9 matrix cases. Residual `1160`/`1161` `Deselect` topbar breakpoint overlap (`1160.0` -> `1248.0`) remains open.
 
 Use [the screenshot inspection checklist](./visual-checklist.md) for the changed hierarchy workflow and subsequent UI fixes.
 

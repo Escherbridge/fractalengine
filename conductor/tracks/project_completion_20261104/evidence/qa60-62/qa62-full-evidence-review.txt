@@ -1,0 +1,106 @@
+# QA62 Independent Full-Packet Evidence Review
+
+- **Packet Path**: `C:\Users\atooz\Programming\fractalengine-workspace\fractalengine\qa\passes\62`
+- **Run ID**: `20261104-232515-148`
+- **Source Commit**: `9498869e2e1577e939a10f0a1e0f9e07de3b7053` (`source_dirty: true`, `stage_matches_source: true`)
+- **Stage**: `.qa/stage/9498869e-20261104204501360`
+- **Review Timestamp**: `2026-11-05T06:29:30Z`
+- **Verdict**: **APPROVED AS IMMUTABLE SANDBOX DESKTOP-REFUSAL EVIDENCE PACKET (`REFUSED_NON_DEFAULT_THREAD_DESKTOP_IN_EXEBOX_SANDBOX` — Zero Positive UIA/Root/Capture/Peer/FULL/Release Acceptance Credit)**
+
+---
+
+## 1. Cryptographic Manifest & File-Tree Integrity Verification
+
+All checks were independently recomputed against `C:\Users\atooz\Programming\fractalengine-workspace\fractalengine\qa\passes\62`:
+
+1. **`packet-manifest.json` Identity**:
+   - **Byte Size**: `3,373` bytes (matches `.omc/research/qa62-packet-freeze-receipt.json`)
+   - **SHA-256**: `ea440f80f6d9a5f347b185130d2264dbc1adf9b7af78e520ac6a1cece5a76c32`
+2. **Listed Payload Files (`20` files)**:
+   - `packet-manifest.json` enumerates `20` payload files (`21` total files on disk in `qa/passes/62` including `packet-manifest.json`).
+   - All `20/20` listed files exist on disk and match their manifest `bytes` and `sha256` digests (`0` mismatches, `0` unlisted files).
+   - All `21` files on disk have the Windows `ReadOnly` attribute set (`NonReadOnlyCount = 0`).
+3. **`original_artifacts` Verification (`3` files in `packet-summary.json`)**:
+   - All `3/3` pre-freeze artifacts match their in-packet copies with **`0` mismatches**:
+     - `fixture-public-detail.json`: `2,020` bytes, SHA-256 `6cd4bda7833def1394c5258a5d6c34b29afe51d2147911b29d03b5d350021fa6`
+     - `owner-native-observe-followup.jsonl`: `580` bytes, SHA-256 `06663e90b32d4e727f20583429ec4efebac5429c058bcd8b353771b21eeb2d9c`
+     - `owner-native-observe-provider-facts.jsonl`: `580` bytes, SHA-256 `69f48bfa522626e988af9a2dfb5a2a848e12d5627f9b0155dd3a2d6e130111b9`
+4. **`original_source_anchors` Verification (`14` files in `packet-summary.json`)**:
+   - All `14/14` `original_source_anchors` (`owned-context.json`, `cleanup-identities.json`, `logs/launch.log`, `logs/stop.log`, `stage-manifest.json`, `stage-build-receipt.json`, `logs/stage.log`, `native-observer-worker-receipt.jsonl`, `native-observer-followup-worker-receipt.jsonl`, and the 5 execution scripts in `execution/`) match both their declared external source files and their frozen packet files byte-for-byte and SHA-256-for-SHA-256 (`0` mismatches).
+
+---
+
+## 2. Verification of Required Evidence Artifacts
+
+### 2.1 `credential-scan.json`
+- **File**: `qa/passes/62/credential-scan.json` (`5,134` bytes, SHA-256 `f7fa7d2b488d28b84549b4002a7378666174d5b7df61e7aa79daa0c04ce057ed`)
+- **Findings**:
+  - Scans all `18` strict-decoded files (`utf-8`, `utf-8-bom`, `utf-16-bom`) present prior to writing `credential-scan.json`, `packet-summary.json`, and `packet-manifest.json`, plus both private runtime logs (`stdout.log`, `stderr.log`), across the 4 regex patterns (`bearer_value`, `jwt_value`, `private_key_block`, `credential_assignment`).
+  - All `18` packet files and both private logs have **`0` matches** across all 4 patterns.
+
+### 2.2 `application-log-summary.json`
+- **File**: `qa/passes/62/application-log-summary.json` (`1,772` bytes, SHA-256 `e99870ae75c3d8daca5e5d26d161cdf639ddc76b23ed232576cd5a0a92b26161`)
+- **Findings**:
+  - Independently verified against `.qa/run/20261104-232515-148`:
+    - `stdout.log`: `43,248` bytes, SHA-256 `140b4f92cfad823743a65534528456d730ffded2b62f26ce28b9f9d41c8ea200`, `294` lines (`INFO: 219`, `WARN: 8`, `ERROR: 0`), `panic_markers: 0`, `compiler_warning_diagnostics: 0`, `compiler_error_diagnostics: 0`, `private_current_error_markers: 0`, `raw_log_published: false`.
+    - `stderr.log`: `0` bytes, SHA-256 `e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855`, `0` lines.
+
+### 2.3 Worker Receipts, Private `attempt.jsonl` State, Structured Worker Outputs, and `worker.cpp:171` Desktop Refusal
+
+1. **Same-Command Lifetime & Worker Receipts**:
+   - `execution/qa62_native_all_in_one.ps1` ran `launch.ps1`, `qa62_native_drive.py` (two native `observe --controlled-fixture` invocations), and `stop.ps1` within a single shell command so owned app PID `127884` (`start_ticks: 639294567153780530`) stayed live across both worker runs.
+   - **First Worker Receipt (`native-observer-worker-receipt.jsonl`)**:
+     - `1,502` bytes, SHA-256 `c88cdba6908d08e60d4aa9528f80b44eac7dcad30be8e571edf59c39ee5a5f64`
+     - Operation `20beb52d8f9c4d47a41d08f54b14c548`, `mode: "observe"`, `run_id: "a27cc1e7e3964f179b67fcb4b1338f50"`, `ledger_id: "8a25546186484cd3b70400a26f309fba"`, `helper_sha256: "8f2171d389342974d9d386363301fafdac6fc75d754560f93182379df865093a"`.
+     - Phases recorded: `["reserved", "worker_started", "exit_confirmed"]` for worker PID `128468` (`start_ticks: 639294567279235395`), terminating with `code: "worker_exited"`, `exit_code: 2`.
+   - **Follow-up Worker Receipt (`native-observer-followup-worker-receipt.jsonl`)**:
+     - `1,503` bytes, SHA-256 `93a6ce7ef59786613a2dfa044819f652cdd81e7064b9bdc81589471a7c79a8a6`
+     - Operation `17935339f8aa492cb1134a571013709c`, `mode: "observe"`, `run_id: "a27cc1e7e3964f179b67fcb4b1338f50"`, `ledger_id: "8a25546186484cd3b70400a26f309fba"`.
+     - Phases recorded: `["reserved", "worker_started", "exit_confirmed"]` for worker PID `128856` (`start_ticks: 639294567285592914`), terminating with `code: "worker_exited"`, `exit_code: 2`.
+
+2. **Private `attempt.jsonl` Bootstrap-Only State**:
+   - Path: `.qa/run/20261104-232515-148/native-observer/134383335153780530-a27cc1e7e3964f179b67fcb4b1338f50/attempt.jsonl`
+   - Byte Size: `358` bytes; SHA-256: `8ff9e847a6e8acface93eb4fcc6956b67c34e9bfa3e8b0e769cd30d5d63eddcf` (matches `invocation_ledger_summary.file_sha256`).
+   - Contains exactly `1` record (`kind: "bootstrap"`, `schema: "fe-native-attempt-v1"`), with `invocation_reservation_or_intent_present: false` and `raw_ledger_published: false` because both invocations ran in read-only `observe` mode and refused before spending an Invoke attempt.
+
+3. **Structured Worker Outputs (`owner-native-observe-provider-facts.jsonl` & `owner-native-observe-followup.jsonl`)**:
+   - Both files contain valid bounded JSON (`schema: "fe-native-worker-result-v1"`) with:
+     - `code: "desktop_refused"`
+     - `helper_exit_code: 2`
+     - `attempt_spent: false`
+     - `capture_available: false`
+     - `invoke_entered: false`
+     - `method_returned: false`
+     - `outcome: "observation"`
+     - `hr: "00000000"`
+     - `root_sha256: "0000000000000000000000000000000000000000000000000000000000000000"`
+     - `target_sha256: "0000000000000000000000000000000000000000000000000000000000000000"`
+   - Unlike QA58's follow-up (which failed with `json_size_refused` / exit code `1`), both first and follow-up workers in QA62 exited cleanly with `helper_exit_code: 2` (`terminal_code: "worker_exited"`).
+
+4. **Why [`tools/qa/native_observer/worker.cpp:170-171`](file:///C:/Users/atooz/Programming/fractalengine-workspace/fractalengine/tools/qa/native_observer/worker.cpp#L170-L171) Refuses the Non-`Default` `exebox-*` Thread Desktop**:
+   - In [`Process::Process(const Request& request)`](file:///C:/Users/atooz/Programming/fractalengine-workspace/fractalengine/tools/qa/native_observer/worker.cpp#L160-L176), after verifying PID/birth time (`check()`), full executable image path (`QueryFullProcessImageNameW`), non-zero matching session ID (`ProcessIdToSessionId`), and matching user SID / medium integrity / non-elevated / non-UIAccess tokens (`token_identity`), lines 170–171 enforce:
+     ```cpp
+     require(object_name(GetProcessWindowStation()) == L"WinSta0"
+         && object_name(GetThreadDesktop(GetCurrentThreadId())) == L"Default", "desktop_refused");
+     ```
+   - Under the `exebox` sandboxed command runner, `GetProcessWindowStation()` is `WinSta0` and `OpenInputDesktop()` is `Default`, but `GetThreadDesktop(GetCurrentThreadId())` is an isolated `exebox-*` desktop rather than `Default`.
+   - Consequently, `Process` construction throws `"desktop_refused"` (caught in `wmain` and emitted as `code: "desktop_refused"` with exit code `2`) **before** `Watcher` initialization, `EnumWindows` top-level window discovery, or `CUIAutomation` root/provider observation can execute.
+
+### 2.4 `cleanup-identities.json`
+- **File**: `qa/passes/62/cleanup-identities.json` (`4,309` bytes, SHA-256 `d0f3209e909a8736e4d6a0ec8e8731bac4d03270dead81123a36766073f1f7e8`)
+- **Findings**:
+  - Verifies all `8` recorded identities from `owned-context.json`:
+    - Owner app PID `127884` (`start_ticks: 639294567153780530`, `.qa\stage\9498869e-20261104204501360\fractalengine.exe`)
+    - Descendant `conhost.exe` PID `53112`
+    - 6 descendant `msedgewebview2.exe` PIDs (`31360`, `128036`, `128380`, `116204`, `51820`, `31740`)
+  - All `8` identities had `pid_present: false` and `recorded_identity_present: false` at `2026-11-05T06:25:33.2439957Z`, and an independent live check during this review confirmed `ActiveProcsNow = 0` (and both transient worker PIDs `128468` and `128856` exited during the run).
+
+---
+
+## 3. Explicit Verdict, Scope, and Limits
+
+- **Verdict**: **APPROVED** as a frozen, tamper-evident sandbox desktop-refusal evidence packet (`qa/passes/62`).
+- **Exact Scope & Limits**:
+  1. **Controller & Worker Plumbing Verified Up to Desktop Guard**: Confirms that running launch, two native observe calls, and stop inside a single command keeps the owned app alive, and that both first and follow-up workers pass controller admission, bootstrap ledger verification, handle inheritance, and process/session/token checks before cleanly returning `code: "desktop_refused"`, `helper_exit_code: 2`, `attempt_spent: false`, `terminal_code: "worker_exited"`.
+  2. **Security Boundary Intact**: The `GetThreadDesktop(GetCurrentThreadId()) == L"Default"` check at `tools/qa/native_observer/worker.cpp:171` is an intentional desktop-isolation guard and was properly respected without bypass.
+  3. **No Positive UIA/Root/Capture Acceptance Claimed**: Because `worker.cpp:171` refuses the `exebox-*` thread desktop before `EnumWindows` and `UIAutomation`, QA62 does **not** reach or verify the `fed8dab6` UIA root-continuity path on the `Default` interactive desktop, and claims **zero** positive UIA root, witness, Invoke, capture, peer, `FULL`, or release acceptance credit.

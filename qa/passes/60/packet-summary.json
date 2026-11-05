@@ -1,0 +1,838 @@
+{
+  "kind": "qa60-focused-painted-icons-and-topbar-matrix",
+  "source_commit": "9498869e2e1577e939a10f0a1e0f9e07de3b7053",
+  "stage": ".qa/stage/9498869e-20261104204501360",
+  "original_anchors": [
+    {
+      "file": "execution/qa60_flow.py",
+      "bytes": 5377,
+      "sha256": "6e306c8df1475b4d4c350582d6204e6832bf1bacf8051a51603c6b91ef227546"
+    },
+    {
+      "file": "execution/qa60_matrix.py",
+      "bytes": 3303,
+      "sha256": "98e654331d4bca67ce6195220e6256d9d1a0ba6dfd73f40d0b2d26312fcb626e"
+    },
+    {
+      "file": "execution/qa60_topbar_oracle.py",
+      "bytes": 6042,
+      "sha256": "d89049da5c666a75b3019dabbd42e3a92939fe81125f53beebe574775c9437ef"
+    },
+    {
+      "file": "fixture-public-detail.json",
+      "bytes": 2018,
+      "sha256": "6a52ded692d23fa4d70c4bdf801e486db429527bfcd1f09b083df6c3a9449124"
+    },
+    {
+      "file": "icons-responsive-matrix.json",
+      "bytes": 161668,
+      "sha256": "83a4171167e870f12543d6f23c035b30f3d893c45796889f6dd73b6d23249a3e"
+    },
+    {
+      "file": "matrix-1024-scale1-comparison.json",
+      "bytes": 12728,
+      "sha256": "835f61e616520cdcbf9187027997432ca7d84744f65219609ee1cce440eb6c83"
+    },
+    {
+      "file": "matrix-1024-scale2-comparison.json",
+      "bytes": 13183,
+      "sha256": "9890752a58b0d317b6fc729081f4f6f78b5658e78125d0d4ad49a06cac7c5e41"
+    },
+    {
+      "file": "matrix-1159-scale1-comparison.json",
+      "bytes": 12732,
+      "sha256": "241ada67cd8675c7e455aefe7e3e2d9adbea8550878e8ff2d06dffd1043e6e92"
+    },
+    {
+      "file": "matrix-1160-scale1-comparison.json",
+      "bytes": 19661,
+      "sha256": "3ee689d023d4bc6d8393c73e9da17500796f1b440dd6eb05649e17b5cf8d0aee"
+    },
+    {
+      "file": "matrix-1161-scale1-comparison.json",
+      "bytes": 18700,
+      "sha256": "8a345c638414801b468851d8472f9cb9cf37828f5865c0c2704b70a423df703e"
+    },
+    {
+      "file": "matrix-1280-scale1-comparison.json",
+      "bytes": 18859,
+      "sha256": "c1d887de19395d99766beb7c180dc331df48399d9c737429bc21458faeff6319"
+    },
+    {
+      "file": "matrix-1280-scale2-comparison.json",
+      "bytes": 13209,
+      "sha256": "22b60b03e79ab89fd95b22ba5dad9685e8e32be032815e7744b208b4631dda03"
+    },
+    {
+      "file": "matrix-1600-scale1-comparison.json",
+      "bytes": 14712,
+      "sha256": "36a202ea5afda649959f6a074187ea9ccd8adef912eb0b388aba3b261da53d11"
+    },
+    {
+      "file": "matrix-1600-scale2-comparison.json",
+      "bytes": 14051,
+      "sha256": "83162de12074ceea26fd8253f78ded27f5f606b71116e3ee5c30f8319739e137"
+    },
+    {
+      "file": "owner-create-grid-probe.jsonl",
+      "bytes": 735,
+      "sha256": "27f70717fbfc302e8de7b6eb6fbfc9c2d888d36506a4d609643b73a67ac4fbdb"
+    },
+    {
+      "file": "owner-initial-size.jsonl",
+      "bytes": 481,
+      "sha256": "490efb52eb5e152273127e2d8209135933033bd0f24b36db2b3f059e664515d5"
+    },
+    {
+      "file": "owner-initial-state.jsonl",
+      "bytes": 1060,
+      "sha256": "11e2d7b98118c6034dc8f8a93f6d39bc3f72388aa8af8c818d84d9927a34f5a9"
+    },
+    {
+      "file": "owner-matrix-1024-scale1-layout.jsonl",
+      "bytes": 24093,
+      "sha256": "8a51f3161fdd95fc5b1517def19ca633ea65f0ef1fce9995947c8ddbd9afdb6c"
+    },
+    {
+      "file": "owner-matrix-1024-scale1-number-after-ui.jsonl",
+      "bytes": 191693,
+      "sha256": "1234633ad09040740d3c601824aabae1e00b69471f01e2b256f372fd898b8c72"
+    },
+    {
+      "file": "owner-matrix-1024-scale1-number-before-ui.jsonl",
+      "bytes": 192530,
+      "sha256": "c327115f0f187b53d5a747a659422a2bbd8048566d223ab9612dce185c679e3d"
+    },
+    {
+      "file": "owner-matrix-1024-scale1-number-scroll.jsonl",
+      "bytes": 454,
+      "sha256": "7377278237e02477f1ae7c43cb2adc40e9f248f0669c3b8ff4c83129de5e1cf6"
+    },
+    {
+      "file": "owner-matrix-1024-scale1-scale.jsonl",
+      "bytes": 433,
+      "sha256": "67bc20c92e43cf1648abcf48cadaa7b3fab622ca92a929324c78d0a7a77fde82"
+    },
+    {
+      "file": "owner-matrix-1024-scale1-shot.jsonl",
+      "bytes": 755,
+      "sha256": "ef79ae8ea72d52db35990a2ab017246d89f57c3e6f624d110895f75c2738d05f"
+    },
+    {
+      "file": "owner-matrix-1024-scale1-size.jsonl",
+      "bytes": 481,
+      "sha256": "910f0a35f749510aee413d831e6568f4631165421a44387b33da40f2046eae3d"
+    },
+    {
+      "file": "owner-matrix-1024-scale1-state.jsonl",
+      "bytes": 1266,
+      "sha256": "68f0f8c59a9e92b008ab1b8ae511a2911f2f2848f8f6c4e113e132bb5932815e"
+    },
+    {
+      "file": "owner-matrix-1024-scale1-tree-after-ui.jsonl",
+      "bytes": 192530,
+      "sha256": "90ce86c17218c14fc03294b71c0952f6cd6f9303db5fe93fd224cbf19a9d1205"
+    },
+    {
+      "file": "owner-matrix-1024-scale1-tree-before-ui.jsonl",
+      "bytes": 192542,
+      "sha256": "cd54b5c6fd6508cc734b01af1fc5e8640817f520e7e44d368ef05823939824c9"
+    },
+    {
+      "file": "owner-matrix-1024-scale1-tree-scroll.jsonl",
+      "bytes": 463,
+      "sha256": "d2bf03418be580712d9dc4c3f1bc1bea98b63ebbdd5fd28a5685660a90d54347"
+    },
+    {
+      "file": "owner-matrix-1024-scale2-layout.jsonl",
+      "bytes": 30467,
+      "sha256": "43e3872e4bb1e7fcc4746b33e34908c6c1808d00c7abe403ba047f7092483f5c"
+    },
+    {
+      "file": "owner-matrix-1024-scale2-number-after-ui.jsonl",
+      "bytes": 187036,
+      "sha256": "b3228861dfb46f5e598d130dabc8f934f4b94f9742f0f3d0e71e4fd6eeabb61a"
+    },
+    {
+      "file": "owner-matrix-1024-scale2-number-before-ui.jsonl",
+      "bytes": 189238,
+      "sha256": "713d20ee15b5afa59a200281eea049b07eb6e21beba4c14690b4e30dafa05aa1"
+    },
+    {
+      "file": "owner-matrix-1024-scale2-number-scroll.jsonl",
+      "bytes": 453,
+      "sha256": "353965f5c71ae7167e76015afa450aec2daa87edbd8023611ee0f3444d9b1895"
+    },
+    {
+      "file": "owner-matrix-1024-scale2-scale.jsonl",
+      "bytes": 433,
+      "sha256": "5664adaece49b97c7e333db0efdb3180fd45ff280240ddd5902f5e94255b4d1a"
+    },
+    {
+      "file": "owner-matrix-1024-scale2-shot.jsonl",
+      "bytes": 755,
+      "sha256": "5d00aae2552712dc3d0a5c8a6e4ffb6e200515d161f76bb6b134f3bb492acdfa"
+    },
+    {
+      "file": "owner-matrix-1024-scale2-size.jsonl",
+      "bytes": 481,
+      "sha256": "f422947ebbd1aabbbf81d711410905515848ae6cc4b76ee96560a52c6be41619"
+    },
+    {
+      "file": "owner-matrix-1024-scale2-state.jsonl",
+      "bytes": 1272,
+      "sha256": "44d016f755fc458615481fe796bb890f90c3391dce914b56090de6b08020d3de"
+    },
+    {
+      "file": "owner-matrix-1024-scale2-tree-after-ui.jsonl",
+      "bytes": 189238,
+      "sha256": "be3374826c1f025d5917b75c7639abdbc401c1cdd8467670c7af1dcd2268754f"
+    },
+    {
+      "file": "owner-matrix-1024-scale2-tree-before-ui.jsonl",
+      "bytes": 189279,
+      "sha256": "0d2f2e24db9a10dd4435e90a3419007f42b3a74e1b0cca3e9a26933fd0aba2a4"
+    },
+    {
+      "file": "owner-matrix-1024-scale2-tree-scroll.jsonl",
+      "bytes": 452,
+      "sha256": "a83a0cb330a21642d59a3cd9cbb9d3dc84ce4d084c261d8625a519ae634e2975"
+    },
+    {
+      "file": "owner-matrix-1159-scale1-layout.jsonl",
+      "bytes": 24109,
+      "sha256": "bcc3ea2fb5a47d0b4f142d8450f4d3d56992c2421f75695c69c0bd7d428996f8"
+    },
+    {
+      "file": "owner-matrix-1159-scale1-number-after-ui.jsonl",
+      "bytes": 191746,
+      "sha256": "8489b1ab93908fbce66df2354fc58e3f6427da05785dcfb0b2caaf0da8cd83b7"
+    },
+    {
+      "file": "owner-matrix-1159-scale1-number-before-ui.jsonl",
+      "bytes": 191728,
+      "sha256": "bcbc6f762a3c6acd0f85eda4af9bb60217629e266bffb98c5e59aecdd4114f59"
+    },
+    {
+      "file": "owner-matrix-1159-scale1-number-scroll.jsonl",
+      "bytes": 452,
+      "sha256": "7c1260ba60faa07bfd5507191f1317dbb5fd90b7e958192e4765c58466a969c7"
+    },
+    {
+      "file": "owner-matrix-1159-scale1-scale.jsonl",
+      "bytes": 433,
+      "sha256": "3227784c9f6d5bc6af71778d40da12c72e80e77bf37ee9ddec470c3a5da42fd8"
+    },
+    {
+      "file": "owner-matrix-1159-scale1-shot.jsonl",
+      "bytes": 755,
+      "sha256": "ad8ce8735439116c0136f7052bdec690fb0c9c52c5efd3d419ec58d2bcf366b4"
+    },
+    {
+      "file": "owner-matrix-1159-scale1-size.jsonl",
+      "bytes": 481,
+      "sha256": "47f2d3c591a70e466237ea3f4e18c36835d3443fe5332019c73e0ba4fa476c8c"
+    },
+    {
+      "file": "owner-matrix-1159-scale1-state.jsonl",
+      "bytes": 1266,
+      "sha256": "0a3217a6470e6428b65590f566d9d014a9dab29060089ea71590e3aab5542512"
+    },
+    {
+      "file": "owner-matrix-1159-scale1-tree-after-ui.jsonl",
+      "bytes": 191728,
+      "sha256": "61e854a5023d97fc030508e52529afa11b49a35093bceca493f52f14268a2e6c"
+    },
+    {
+      "file": "owner-matrix-1159-scale1-tree-before-ui.jsonl",
+      "bytes": 191758,
+      "sha256": "fdb5572bb1abde2570ffbef9c9f7d52628bfdd4d5bc4b96bfc5c833cb840b362"
+    },
+    {
+      "file": "owner-matrix-1159-scale1-tree-scroll.jsonl",
+      "bytes": 463,
+      "sha256": "e685e7ec8f729f939fdb57320a569e180a4e200c7d7eea579c881e8944f70a4e"
+    },
+    {
+      "file": "owner-matrix-1160-scale1-layout.jsonl",
+      "bytes": 24109,
+      "sha256": "2cf2d2bdb41aecbe4918bbb0211f83a239120e16dc25462324f247ee65446883"
+    },
+    {
+      "file": "owner-matrix-1160-scale1-number-after-ui.jsonl",
+      "bytes": 199397,
+      "sha256": "edb4abd305839ffe2ecefd2578667b2cbccd057ed95fa0216f45bdd8fddc7de9"
+    },
+    {
+      "file": "owner-matrix-1160-scale1-number-before-ui.jsonl",
+      "bytes": 199397,
+      "sha256": "b15f06769693ed31feafc176b61b35f2cbbcbf1a0d22a557993542ad000be1e0"
+    },
+    {
+      "file": "owner-matrix-1160-scale1-number-scroll.jsonl",
+      "bytes": 450,
+      "sha256": "79ffad1def739bd28b89e2a7f0b30e25fface754a403732f4006d1da72098cba"
+    },
+    {
+      "file": "owner-matrix-1160-scale1-scale.jsonl",
+      "bytes": 433,
+      "sha256": "7ea8ae6f3534d1921db84c2e04cccde1b894ab18460f266924760b2222325fd2"
+    },
+    {
+      "file": "owner-matrix-1160-scale1-shot.jsonl",
+      "bytes": 755,
+      "sha256": "12553369601afd2516202891f916cab85b00c5582505a8bb61044e6f03d09b51"
+    },
+    {
+      "file": "owner-matrix-1160-scale1-size.jsonl",
+      "bytes": 481,
+      "sha256": "5f10bd18f72af39e2d0a56112f9abda7eaaf8ee2a0e29baf68664f61372ee780"
+    },
+    {
+      "file": "owner-matrix-1160-scale1-state.jsonl",
+      "bytes": 1266,
+      "sha256": "467c49592d0d941874b36a799b837a4495398769d66335b2a2ab0da8ffc0fd45"
+    },
+    {
+      "file": "owner-matrix-1160-scale1-tree-after-ui.jsonl",
+      "bytes": 199397,
+      "sha256": "b1b627c8c86162e6980941986436538af659f59fb42088449e91a54b80244bf3"
+    },
+    {
+      "file": "owner-matrix-1160-scale1-tree-before-ui.jsonl",
+      "bytes": 199396,
+      "sha256": "8d9a3ce7e15aabb5735de977f9406ab57cbca044d229e33d791bbb8e025f280a"
+    },
+    {
+      "file": "owner-matrix-1160-scale1-tree-scroll.jsonl",
+      "bytes": 466,
+      "sha256": "c65a47cdeeb8bc276e23f84a8c5f7817a0a78b68d70593cda5bf344cfd869e6e"
+    },
+    {
+      "file": "owner-matrix-1161-scale1-layout.jsonl",
+      "bytes": 24109,
+      "sha256": "a46b9cf0cefc08c399d4fd99486814b9e204428426e5ad8ba7b477d4fc6a7f0f"
+    },
+    {
+      "file": "owner-matrix-1161-scale1-number-after-ui.jsonl",
+      "bytes": 199396,
+      "sha256": "2610481cf77e35be21971296a9bc683b416bcaf396ffe33cd03a21aafa9db7d9"
+    },
+    {
+      "file": "owner-matrix-1161-scale1-number-before-ui.jsonl",
+      "bytes": 199396,
+      "sha256": "d86047e5b139e96f4c0fdcdfdd97ebb9c4eb7eff6eecd2f21e5ca4774152398c"
+    },
+    {
+      "file": "owner-matrix-1161-scale1-number-scroll.jsonl",
+      "bytes": 450,
+      "sha256": "028ab4a9ccb5ede4aee1aeaffd6b9e33ab561e19d1e323f94ff3228135cb8ec0"
+    },
+    {
+      "file": "owner-matrix-1161-scale1-scale.jsonl",
+      "bytes": 433,
+      "sha256": "f6fe074d59d38eb6b62211940567c05c447acaaa9c283537c417ed2c49b828cd"
+    },
+    {
+      "file": "owner-matrix-1161-scale1-shot.jsonl",
+      "bytes": 755,
+      "sha256": "d8e7ffbc33f780637ce6a009bba570d09c5c453d4f62a2716c69c4d836bf66da"
+    },
+    {
+      "file": "owner-matrix-1161-scale1-size.jsonl",
+      "bytes": 481,
+      "sha256": "3ead61b6ba9d8ae292c02fec148655d5deb0e186cae0548da79be60733180793"
+    },
+    {
+      "file": "owner-matrix-1161-scale1-state.jsonl",
+      "bytes": 1266,
+      "sha256": "1720e07d047d1518231f554264d3fa5929a98dea31dbb161921db00d3c8ce85c"
+    },
+    {
+      "file": "owner-matrix-1161-scale1-tree-after-ui.jsonl",
+      "bytes": 199396,
+      "sha256": "472f65cc7305bc72b1bd4076ae4494f73848de22442125bb59d3f3ad5e73340e"
+    },
+    {
+      "file": "owner-matrix-1161-scale1-tree-before-ui.jsonl",
+      "bytes": 199397,
+      "sha256": "707b454b7b152905c5d8ea0e876c1183c6a5dd554cd99182b5a3051014825455"
+    },
+    {
+      "file": "owner-matrix-1161-scale1-tree-scroll.jsonl",
+      "bytes": 466,
+      "sha256": "4f5392ca29bedfbdcd614827d5107b09fc9f112b4f6899c377e39b5342c326f6"
+    },
+    {
+      "file": "owner-matrix-1280-scale1-layout.jsonl",
+      "bytes": 24179,
+      "sha256": "feb09ba4556f8681f315209e58e76a2bd95384d965a12664e37b6e147e65bf9c"
+    },
+    {
+      "file": "owner-matrix-1280-scale1-number-after-ui.jsonl",
+      "bytes": 199642,
+      "sha256": "65be5df8372bb947da96beb39d2fdd797e5417b67276a1904fc610a13f7ef64b"
+    },
+    {
+      "file": "owner-matrix-1280-scale1-number-before-ui.jsonl",
+      "bytes": 199642,
+      "sha256": "844c97c82de1877b2c385ec20d3270b90302663229ab8b4eb3fbceece4514c2f"
+    },
+    {
+      "file": "owner-matrix-1280-scale1-number-scroll.jsonl",
+      "bytes": 450,
+      "sha256": "7e702320b29dde0befe502b26fa68c8649c42f4c71ef28fbaf27daef8eca7a98"
+    },
+    {
+      "file": "owner-matrix-1280-scale1-scale.jsonl",
+      "bytes": 433,
+      "sha256": "0fbc90f28454ccd37c7cbf23a72be747c2adaa96ab40ae9c4c4b7c6183152440"
+    },
+    {
+      "file": "owner-matrix-1280-scale1-shot.jsonl",
+      "bytes": 755,
+      "sha256": "68be2dac0826846cff9cab618787b9db8bde0e45346c06a5a46d5f67f443b291"
+    },
+    {
+      "file": "owner-matrix-1280-scale1-size.jsonl",
+      "bytes": 481,
+      "sha256": "38d842a23c2b6f25aead41f00c34a0e4eb000856c0057c47c3d2621755168f91"
+    },
+    {
+      "file": "owner-matrix-1280-scale1-state.jsonl",
+      "bytes": 1266,
+      "sha256": "b592b7feee9abd13dbcbe6f5182f765e2ec1c64a8fb20f64840f134d862b8b58"
+    },
+    {
+      "file": "owner-matrix-1280-scale1-tree-after-ui.jsonl",
+      "bytes": 199642,
+      "sha256": "c99b2619deec99603ed735a52c93dc5973a4a70822a9742c8925d6704ee237dd"
+    },
+    {
+      "file": "owner-matrix-1280-scale1-tree-before-ui.jsonl",
+      "bytes": 199641,
+      "sha256": "3ff3673498afaecf19a3c3008cedc5c471601dda8d38724ca9bc8ffa4993aeae"
+    },
+    {
+      "file": "owner-matrix-1280-scale1-tree-scroll.jsonl",
+      "bytes": 466,
+      "sha256": "73922c8ba10ab7c2d585aed23eccb09e036441a28cc1d8a1b1a1c5878f01ef8d"
+    },
+    {
+      "file": "owner-matrix-1280-scale2-layout.jsonl",
+      "bytes": 28171,
+      "sha256": "c1404d3a66fdde66b4494093b5fb5ebab52e12c59f605c5a8f117815cd13c668"
+    },
+    {
+      "file": "owner-matrix-1280-scale2-number-after-ui.jsonl",
+      "bytes": 185891,
+      "sha256": "1d7d951cbe332c65cc81a6810fe461433badf03f124f30379b394116b32cfca5"
+    },
+    {
+      "file": "owner-matrix-1280-scale2-number-before-ui.jsonl",
+      "bytes": 185568,
+      "sha256": "222ef00e3e784123d3ee1f592aaa621df3304f65e3fb11be4175646f7b6c46e1"
+    },
+    {
+      "file": "owner-matrix-1280-scale2-number-scroll.jsonl",
+      "bytes": 454,
+      "sha256": "e96120d860b98bba22dc4c23ae1e5997a141060228e880dd4bd909dbee758805"
+    },
+    {
+      "file": "owner-matrix-1280-scale2-scale.jsonl",
+      "bytes": 433,
+      "sha256": "dbdf39bd27f7b553cd3fa7cb35cb535f7ba4cecd52210fdd45ddd909c4bc6ef9"
+    },
+    {
+      "file": "owner-matrix-1280-scale2-shot.jsonl",
+      "bytes": 755,
+      "sha256": "40544cf0eef731b5d0f7041a3007c91afec52c4738fcfb602a4654346115fd98"
+    },
+    {
+      "file": "owner-matrix-1280-scale2-size.jsonl",
+      "bytes": 481,
+      "sha256": "e52906b12cb5b021b55fecc67dcdbc3fcf7b8658335166cf33b439fcd43fa537"
+    },
+    {
+      "file": "owner-matrix-1280-scale2-state.jsonl",
+      "bytes": 1266,
+      "sha256": "16a0208ef2b2d96c354d6fa75e70a86ea87ea72fb5a6fc734f888e654a0851e3"
+    },
+    {
+      "file": "owner-matrix-1280-scale2-tree-after-ui.jsonl",
+      "bytes": 185568,
+      "sha256": "6f528839cda72dba351b2704238182527935a40cb0760fd9c024441834c8c7d4"
+    },
+    {
+      "file": "owner-matrix-1280-scale2-tree-before-ui.jsonl",
+      "bytes": 185568,
+      "sha256": "7f515f4cfbb74ab6a3c89c3a9908b129f800a52b29165ccfe2cf81ed4c1c3511"
+    },
+    {
+      "file": "owner-matrix-1280-scale2-tree-scroll.jsonl",
+      "bytes": 466,
+      "sha256": "060dd5990270ce0f97224e64939a57e08de791d3eea78ace3e2185e71d569655"
+    },
+    {
+      "file": "owner-matrix-1600-scale1-layout.jsonl",
+      "bytes": 21482,
+      "sha256": "53fb9e27a9c2a42a5047e0291662512d95fefad15fc666fc81bd034c85f1967e"
+    },
+    {
+      "file": "owner-matrix-1600-scale1-number-after-ui.jsonl",
+      "bytes": 201237,
+      "sha256": "b472d7168cae33d6fd03ea30106861049dab98ce96bf4251bc705e79b70adc55"
+    },
+    {
+      "file": "owner-matrix-1600-scale1-number-before-ui.jsonl",
+      "bytes": 201237,
+      "sha256": "f918a14b002461541266a1bfe7661bd63d7520f5e45ef9ddd8fe38125c630e3d"
+    },
+    {
+      "file": "owner-matrix-1600-scale1-number-scroll.jsonl",
+      "bytes": 451,
+      "sha256": "fffda5f2684adade7861ec37a48a0305089438d3a5150639c855a1ca29a61023"
+    },
+    {
+      "file": "owner-matrix-1600-scale1-scale.jsonl",
+      "bytes": 433,
+      "sha256": "3b5bbd1ab0547aca7c6392450ee0da2627420672a4b140847ad4e207c374d446"
+    },
+    {
+      "file": "owner-matrix-1600-scale1-shot.jsonl",
+      "bytes": 755,
+      "sha256": "6f46435da6878bda68c1b32352474b07a3524f598eb6f362f4b0640911b97ec3"
+    },
+    {
+      "file": "owner-matrix-1600-scale1-size.jsonl",
+      "bytes": 481,
+      "sha256": "618b615d96504346c97884272277241eefc23bbc5dac76a4ae960c61dfaa9e1b"
+    },
+    {
+      "file": "owner-matrix-1600-scale1-state.jsonl",
+      "bytes": 1267,
+      "sha256": "987c66dfad660eaa8067210e257a43d0be84e42d6b97b5a9214743b4f9f76906"
+    },
+    {
+      "file": "owner-matrix-1600-scale1-tree-after-ui.jsonl",
+      "bytes": 201237,
+      "sha256": "9b2bf89e6932433528ea4043c82485e19c2b0b606f48cebe022977a3c5e90e0d"
+    },
+    {
+      "file": "owner-matrix-1600-scale1-tree-before-ui.jsonl",
+      "bytes": 201232,
+      "sha256": "0c4e78d97d919219eae1630b8740782191e077f312e464e3119105a98e4316e6"
+    },
+    {
+      "file": "owner-matrix-1600-scale1-tree-scroll.jsonl",
+      "bytes": 463,
+      "sha256": "26a2797019d7d1b7bc0d892b8dd684d5897ac9af12002bac81eccade530831e4"
+    },
+    {
+      "file": "owner-matrix-1600-scale2-layout.jsonl",
+      "bytes": 26766,
+      "sha256": "edf5638238d49ce682a87e480da8d947589cbc9e8d9cc07c8a09bb2c696f0129"
+    },
+    {
+      "file": "owner-matrix-1600-scale2-number-after-ui.jsonl",
+      "bytes": 183790,
+      "sha256": "ffb79e78437a1043715a0569ca2a36378e76690414b4b71fc432436854c10370"
+    },
+    {
+      "file": "owner-matrix-1600-scale2-number-before-ui.jsonl",
+      "bytes": 183890,
+      "sha256": "0030fd40c278a3b5a80a8ef01e91f9e957cfca8d634e525d73ec6e6cc168c788"
+    },
+    {
+      "file": "owner-matrix-1600-scale2-number-scroll.jsonl",
+      "bytes": 451,
+      "sha256": "d390e37d28b8f16d2c53618ee866ee9ce87e38531e07e6eea337b18dfb810758"
+    },
+    {
+      "file": "owner-matrix-1600-scale2-scale.jsonl",
+      "bytes": 433,
+      "sha256": "872354370e33903b36290c1c6185a12c28e742b6a190b4314a63c555ccdd7718"
+    },
+    {
+      "file": "owner-matrix-1600-scale2-shot.jsonl",
+      "bytes": 755,
+      "sha256": "64188862b4c97d1fca91bd6c2237bea0f6df8d501f03c50af0a4e29f146f606c"
+    },
+    {
+      "file": "owner-matrix-1600-scale2-size.jsonl",
+      "bytes": 481,
+      "sha256": "de8f2a99f803aa86e5ad33f068bedd7f99a57be407f80b9e9cbd37d228c349ea"
+    },
+    {
+      "file": "owner-matrix-1600-scale2-state.jsonl",
+      "bytes": 1266,
+      "sha256": "5267907101e478733b5bed00230d7c2fb1a70221be26609729abe45d96ae9e19"
+    },
+    {
+      "file": "owner-matrix-1600-scale2-tree-after-ui.jsonl",
+      "bytes": 183890,
+      "sha256": "a7521389245822ec72ff6d3d65c85c5ff3ffb2aa375d6de2e52c912220fe5dc8"
+    },
+    {
+      "file": "owner-matrix-1600-scale2-tree-before-ui.jsonl",
+      "bytes": 183891,
+      "sha256": "37e7247b9dbe2cf79f4c31bfbe25d688afa3026d06e4039ec893d82377cbf7f8"
+    },
+    {
+      "file": "owner-matrix-1600-scale2-tree-scroll.jsonl",
+      "bytes": 462,
+      "sha256": "a47fb112cd61a321a9f22fe175a7738272bcd62e2466cecda32ad96ad0756ec3"
+    },
+    {
+      "file": "owner-open-fractal.jsonl",
+      "bytes": 633,
+      "sha256": "79a00eeb7d53cc426a9161c80e123d5890464e1276c9fdd140748859de64a0d4"
+    },
+    {
+      "file": "owner-open-petal.jsonl",
+      "bytes": 628,
+      "sha256": "4a664f9350641b9ffd1e60d02edf3182c48967a7f26749c4ded54ba4f196b5bd"
+    },
+    {
+      "file": "owner-open-verse.jsonl",
+      "bytes": 695,
+      "sha256": "99603a8af912d2f119666e6e5527764d021528a0ff12236e0dd50aa95acfbc27"
+    },
+    {
+      "file": "owner-restore.jsonl",
+      "bytes": 454,
+      "sha256": "6f47f56abee01e5c48f333bdf483a2cc01e3548761a1ca2d65a4d95e8cf6ba75"
+    },
+    {
+      "file": "owner-restored-ui.jsonl",
+      "bytes": 114719,
+      "sha256": "908592040f12e050ca71b9f685683c40e520216e9fb4e7324d9f0e54cdaaeb48"
+    },
+    {
+      "file": "owner-resume-state.jsonl",
+      "bytes": 1266,
+      "sha256": "8d40bd520cb1d6a07822a34ec3f2530c960b5cfc9d5295c21e0ad63c727892d7"
+    },
+    {
+      "file": "owner-resume-ui.jsonl",
+      "bytes": 200493,
+      "sha256": "a1fa50e6f963d7e9357a9fabbe8e83c60ebd45c74f21cef2ddde59636ad16a36"
+    },
+    {
+      "file": "owner-select-probe.jsonl",
+      "bytes": 637,
+      "sha256": "f566167bc12e9aa2d23bebd35aff8ace9f41604528f09b285572e43cf08ae810"
+    },
+    {
+      "file": "owner-selected-shot.jsonl",
+      "bytes": 751,
+      "sha256": "459fb00347f07779bbc212d06fbbc52bb927e5018d626c9c89fa14e2636470c3"
+    },
+    {
+      "file": "owner-selected-state.jsonl",
+      "bytes": 1266,
+      "sha256": "fd992ff847362184ae3fafea0fe30c4f62bb054602ed3134fcf7cf63a708d8f7"
+    },
+    {
+      "file": "owner-selected-ui.jsonl",
+      "bytes": 200493,
+      "sha256": "238d21843cc6fb5622e61d6d14da1a781464e6d619614b1181096654a2598a04"
+    },
+    {
+      "file": "probe-baseline.json",
+      "bytes": 1117,
+      "sha256": "432000ebd64e5da8367fe3a2d05fbc491c10251e5ae4be03fdb08c7ce21f4b0e"
+    },
+    {
+      "file": "topbar-layer-oracle.json",
+      "bytes": 65031,
+      "sha256": "f389bbd7ceafb42898b93f4b2c019d1fa07f701c63d9f9ebbed3734b128a3338"
+    }
+  ],
+  "external_copies": [
+    {
+      "source": "C:\\Users\\atooz\\Programming\\fractalengine-workspace\\fractalengine\\.qa\\run\\20261104-204745-332\\shots\\210855-178-qa60-matrix-1024-scale1.png",
+      "file": "screenshots/210855-178-qa60-matrix-1024-scale1.png",
+      "bytes": 183719,
+      "sha256": "b3312fcfed2143ccee8f9b7c8c870d7818f650dc7a765dfa5dd94d28f0a955b4"
+    },
+    {
+      "source": "C:\\Users\\atooz\\Programming\\fractalengine-workspace\\fractalengine\\.qa\\run\\20261104-204745-332\\shots\\210910-838-qa60-matrix-1024-scale2.png",
+      "file": "screenshots/210910-838-qa60-matrix-1024-scale2.png",
+      "bytes": 138621,
+      "sha256": "253a91655089e249f86317d0581243ca54c3ccb80a21e8029190a7115bbd776a"
+    },
+    {
+      "source": "C:\\Users\\atooz\\Programming\\fractalengine-workspace\\fractalengine\\.qa\\run\\20261104-204745-332\\shots\\210925-536-qa60-matrix-1159-scale1.png",
+      "file": "screenshots/210925-536-qa60-matrix-1159-scale1.png",
+      "bytes": 210385,
+      "sha256": "e0f95bbd7ce4833adba53abb446ac86e3d3ccec421265107ec51e0453bacbfdd"
+    },
+    {
+      "source": "C:\\Users\\atooz\\Programming\\fractalengine-workspace\\fractalengine\\.qa\\run\\20261104-204745-332\\shots\\210930-908-qa60-matrix-1160-scale1.png",
+      "file": "screenshots/210930-908-qa60-matrix-1160-scale1.png",
+      "bytes": 221059,
+      "sha256": "ca9b25c32ca1197b3e9392d556549b7ed919315fb35f1f237a717bfee2e495f8"
+    },
+    {
+      "source": "C:\\Users\\atooz\\Programming\\fractalengine-workspace\\fractalengine\\.qa\\run\\20261104-204745-332\\shots\\210936-075-qa60-matrix-1161-scale1.png",
+      "file": "screenshots/210936-075-qa60-matrix-1161-scale1.png",
+      "bytes": 221351,
+      "sha256": "382b79c2efe47cc573a782bf1318b6dc4b738f94337ac862bd7db79519b0927a"
+    },
+    {
+      "source": "C:\\Users\\atooz\\Programming\\fractalengine-workspace\\fractalengine\\.qa\\run\\20261104-204745-332\\shots\\210900-727-qa60-matrix-1280-scale1.png",
+      "file": "screenshots/210900-727-qa60-matrix-1280-scale1.png",
+      "bytes": 244218,
+      "sha256": "5905b68ee7dfb8ac3ee79ab002451f9d9d69af001addc5abd01d7aee84a1746f"
+    },
+    {
+      "source": "C:\\Users\\atooz\\Programming\\fractalengine-workspace\\fractalengine\\.qa\\run\\20261104-204745-332\\shots\\210915-576-qa60-matrix-1280-scale2.png",
+      "file": "screenshots/210915-576-qa60-matrix-1280-scale2.png",
+      "bytes": 182203,
+      "sha256": "30593fdbb3d0ec6fcbb510139aa204e28a09b8a9617dcd64702da3cdf7d36c61"
+    },
+    {
+      "source": "C:\\Users\\atooz\\Programming\\fractalengine-workspace\\fractalengine\\.qa\\run\\20261104-204745-332\\shots\\210906-040-qa60-matrix-1600-scale1.png",
+      "file": "screenshots/210906-040-qa60-matrix-1600-scale1.png",
+      "bytes": 343563,
+      "sha256": "9aa3c439967fdbc4ef48fff1757f71182c7fe56d2196fcdbe2b9b54211270c39"
+    },
+    {
+      "source": "C:\\Users\\atooz\\Programming\\fractalengine-workspace\\fractalengine\\.qa\\run\\20261104-204745-332\\shots\\210920-580-qa60-matrix-1600-scale2.png",
+      "file": "screenshots/210920-580-qa60-matrix-1600-scale2.png",
+      "bytes": 244094,
+      "sha256": "a8a1bd79c620a6be579fc1a14371d86eae8c45def1ee917a263d3fab11568d8e"
+    },
+    {
+      "source": "C:\\Users\\atooz\\Programming\\fractalengine-workspace\\fractalengine\\.qa\\run\\20261104-204745-332\\shots\\205243-065-qa60-selected-icons.png",
+      "file": "screenshots/205243-065-qa60-selected-icons.png",
+      "bytes": 253259,
+      "sha256": "b38786f908f1afb74965f8291363d53dc138d099d35aa10956d286220f74313b"
+    },
+    {
+      "source": "C:\\Users\\atooz\\Programming\\fractalengine-workspace\\fractalengine\\.omc\\research\\qa60_freeze.py",
+      "file": "execution/qa60_freeze.py",
+      "bytes": 6678,
+      "sha256": "4030c0e30f923f4c1ca94ee0f25e29b08cd88ec729be0e16319c496d09feb2b2"
+    },
+    {
+      "source": "C:\\Users\\atooz\\Programming\\fractalengine-workspace\\fractalengine\\.omc\\research\\qa_pair_drive.py",
+      "file": "execution/qa_pair_drive.py",
+      "bytes": 1769,
+      "sha256": "6f00d9dc09216681559e7f29c114670921f394f4b70dcc8d9052ae75fa2e746c"
+    },
+    {
+      "source": "C:\\Users\\atooz\\Programming\\fractalengine-workspace\\fractalengine\\.omc\\research\\qa_packet_lib.py",
+      "file": "execution/qa_packet_lib.py",
+      "bytes": 2484,
+      "sha256": "055349a1bedc4bfaabcaaa03234f15096f6511440517d075347c8621783caf9f"
+    },
+    {
+      "source": "C:\\Users\\atooz\\Programming\\fractalengine-workspace\\fractalengine\\.omc\\research\\check_qa60_cleanup.ps1",
+      "file": "execution/check_qa60_cleanup.ps1",
+      "bytes": 1142,
+      "sha256": "760bb7aa9ce6e3ead9703e782d6d68b10427256a73ac9e5127e1cd9db3a3866d"
+    },
+    {
+      "source": "C:\\Users\\atooz\\Programming\\fractalengine-workspace\\fractalengine\\.omc\\research\\qa60-owned-context.json",
+      "file": "provenance/qa60-owned-context.json",
+      "bytes": 3051,
+      "sha256": "33559e4ee1123a6f7326889b8f3f88268c00d6e28307aa398f4821f223c04380"
+    },
+    {
+      "source": "C:\\Users\\atooz\\Programming\\fractalengine-workspace\\fractalengine\\.omc\\research\\qa60-cleanup-identities.json",
+      "file": "provenance/qa60-cleanup-identities.json",
+      "bytes": 4310,
+      "sha256": "a272aeeb9f57bb8816fa93e90f4e15143efbf88e05e816527166a429f148ea0c"
+    },
+    {
+      "source": "C:\\Users\\atooz\\Programming\\fractalengine-workspace\\fractalengine\\.omc\\research\\qa60-launch.log",
+      "file": "provenance/qa60-launch.log",
+      "bytes": 1672,
+      "sha256": "a6be3d711e94d2f9727e9a028d2460c3cb8a4809e53e0656b7dbdeb1a0e63bf8"
+    },
+    {
+      "source": "C:\\Users\\atooz\\Programming\\fractalengine-workspace\\fractalengine\\.omc\\research\\qa60-stop.log",
+      "file": "provenance/qa60-stop.log",
+      "bytes": 270,
+      "sha256": "87860334f216bd039cad618ec71b2ca01630813b2104fa94d91bdcbeb47ccc06"
+    },
+    {
+      "source": "C:\\Users\\atooz\\Programming\\fractalengine-workspace\\fractalengine\\conductor\\tracks\\project_completion_20261104\\evidence\\source-batch-20261104\\build-stage-receipt.json",
+      "file": "provenance/build-stage-receipt.json",
+      "bytes": 561,
+      "sha256": "a162474c65df483ce3ec05efec6e128c553c2fa82edec1b905b356fe8158526d"
+    },
+    {
+      "source": "C:\\Users\\atooz\\Programming\\fractalengine-workspace\\fractalengine\\conductor\\tracks\\project_completion_20261104\\evidence\\source-batch-20261104\\build-stage.log",
+      "file": "provenance/build-stage.log",
+      "bytes": 2288,
+      "sha256": "c3a6daac3756021cc8878a29b0aa8ce8d320da9766510108a4ee7c426b227866"
+    },
+    {
+      "source": "C:\\Users\\atooz\\Programming\\fractalengine-workspace\\fractalengine\\.qa\\stage\\9498869e-20261104204501360\\stage.json",
+      "file": "provenance/stage.json",
+      "bytes": 1166,
+      "sha256": "1e8a08881931c22db76a93939b010d7caea9552c1dfad1844ff97caaa74276a7"
+    }
+  ],
+  "matrix": {
+    "six_canonical_size_scale_cases_pass_whole_numeric_row_actions": true,
+    "all_nine_cases_pass_whole_numeric_row_actions": true,
+    "all_nine_cases_selected_tree_row_whole_visible": true,
+    "canonical_six_and_1159_actual_topbar_fit": true,
+    "breakpoint_1160_and_1161_actual_topbar_fit": false,
+    "breakpoint_1160_deselect_to_maps_gap_px": -72.8125,
+    "breakpoint_1161_deselect_to_maps_gap_px": -71.8125,
+    "window_sizes": [
+      [
+        1024,
+        720
+      ],
+      [
+        1280,
+        720
+      ],
+      [
+        1600,
+        900
+      ],
+      [
+        1159,
+        720
+      ],
+      [
+        1160,
+        720
+      ],
+      [
+        1161,
+        720
+      ]
+    ],
+    "scales": [
+      1,
+      2
+    ],
+    "layout_check_each_case": true,
+    "layout_coverage_complete": false,
+    "measured_violations": 0
+  },
+  "root_visual_inspection": {
+    "actual_pngs_inspected": 10,
+    "painted_icons_verified": "All 10 screenshots show clear thin vector icons in topbar tools/panels/Deselect/window controls, Inspector section rail, hierarchy visibility/type/disclosure controls, and stored-value disclosure with zero missing-glyph squares.",
+    "selected_tree_row_verified": "Selected node QA60 icon probe is scrolled wholly into the Hierarchy clip and renders clear blue selection fill and outline at both 1x and 2x across all nine matrix cases.",
+    "residual": "At 1160x720@1x and 1161x720@1x with an active selection, the expanded topbar switches on at the 1160.0 breakpoint while Deselect object (right edge 743.5) overlaps Toggle Maps section (x=670.6875/671.6875) and Toggle Settings section (x=734.25/735.25). At 1159x720@1x compact Tools/Panels dropdowns fit cleanly; at 1280x720@1x Deselect and Maps have a 47.1875px gap."
+  },
+  "owned_cleanup": {
+    "recorded_identities": 8,
+    "all_absent_at": "2026-11-05T06:19:38.1331795Z"
+  },
+  "limits": [
+    "Focused GUI/visual evidence only; no FULL or universal visual acceptance.",
+    "QA0075 painted icons are verified across all 10 screenshots, but the 1160/1161 expanded topbar overlap with Deselect active remains an open responsive breakpoint defect.",
+    "Naive y<40*ppp button filter in qa60_matrix.py also matched scrolled Hierarchy/Inspector buttons above their scroll clips (y=113 and y=191); topbar-layer-oracle.json separates actual unclipped topbar buttons from clipped scroll content without rewriting raw artifacts.",
+    "No data mutations beyond probe creation, no native UIA, peer, retained restart, tests/fmt/final integrated sweep/CI/tag/release executed in this pass."
+  ]
+}

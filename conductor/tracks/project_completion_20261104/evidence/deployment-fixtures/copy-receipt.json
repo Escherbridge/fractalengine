@@ -1,0 +1,33 @@
+{
+  "kind": "p2p-relay-query-deployment-evidence-copy-v1",
+  "copied_at_utc": "2026-11-05T04:04:05.821107+00:00",
+  "status": "copied_unreviewed",
+  "copies": [
+    {
+      "source": ".omc/research/p2p-relay-query-fixture-inventory.md",
+      "copy": "conductor/tracks/project_completion_20261104/evidence/deployment-fixtures/fixture-inventory.txt",
+      "bytes": 15958,
+      "sha256": "56455bb73036e76b50a17d41ef8e1b7fca8340d854288ffcdf463e19ebffd71b",
+      "raw_exact": true
+    },
+    {
+      "source": ".omc/research/p2p-relay-query-runtime-state.json",
+      "copy": "conductor/tracks/project_completion_20261104/evidence/deployment-fixtures/runtime-state.json",
+      "bytes": 1408,
+      "sha256": "65e0a4ceb68d716f473abb33e4466d39836f162033233c6d5d487daf846bba99",
+      "raw_exact": true
+    }
+  ],
+  "plan": {
+    "path": "conductor/tracks/project_completion_20261104/p2p-relay-query-lab.md",
+    "bytes": 8251,
+    "sha256": "fcc3f8a40d7ffa8ccdd01e5aa5197af58f674f84e40a8a5df498eae1ad9992f0",
+    "status": "proposed"
+  },
+  "limits": [
+    "Copies preserve source bytes without frontmatter or rewriting.",
+    "No deployment, installation, services, tests, builds, Git or retained-store opens performed.",
+    "Runtime observation is a historical root-owned read-only inventory, not a current liveness promise.",
+    "No goal, plan.md, metadata or decision-ledger change."
+  ]
+}

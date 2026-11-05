@@ -1,0 +1,12 @@
+{
+  "source_commit": "9498869e2e1577e939a10f0a1e0f9e07de3b7053",
+  "session": 19551,
+  "terminal_exit_code": 0,
+  "stage": ".qa/stage/9498869e-20261104204501360",
+  "duration_seconds": 256.8,
+  "rust_msvc_compiler_warning_error_diagnostics": 0,
+  "application_and_helper_hashes_verified": true,
+  "log_sha256": "c3a6daac3756021cc8878a29b0aa8ce8d320da9766510108a4ee7c426b227866",
+  "log_encoding": "utf-16-bom",
+  "limits": "Production build only. Matching icon and native focused acceptance, authored journeys and final integrated sweep pending."
+}
