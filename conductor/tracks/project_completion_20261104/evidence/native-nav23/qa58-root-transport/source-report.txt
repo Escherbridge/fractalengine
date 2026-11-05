@@ -1,0 +1,88 @@
+# QA58 actual root continuity and transport classification — candidate v1
+
+Frozen isolated source for independent functional/security review. Only this
+candidate directory was written after the separately frozen trace/design review.
+All nine canonical files still match their before snapshots. Baseline identity
+be081abed05be3c623b93bef33d4dd31d43d9b46 is qualified by those exact bytes, not a
+clean-checkout assertion. Frozen QA58, GUI59, prior UI/native packets and canonical
+source are untouched. Shared directory docs are additive candidate deltas only.
+
+## Actual producer boundary
+
+The trace/designed correction addresses a primary-source integration mismatch:
+Bevy's direct activation returns its actual Window Entity root; later egui output
+uses its public accesskit_root_id. AccessKit's retained fixed-ID provider can
+outlive the old root node. This mechanism is consistent with QA58's stage1 error,
+not proof of its exact removed element/phase.
+
+`provider_identity::with_window_root` requires the exact public
+egui::accesskit_root_id().value() source and Role::Window. It uses the existing
+bounded full-tree validator/reference rewrite before and after mapping exactly
+one root to OwnedRoot.window.to_bits. It rejects wrong source/role, incomplete
+closure, physical-node collision and issued private IDs, including unavailable
+ledger state. Postvalidation checks root, count and private destination again.
+All non-root widgets/properties and text-selection offsets remain; no wrapper,
+cache, new ID allocation or dependency fork. Already-normalized arbitrary input
+is not accepted as a replacement original producer output.
+
+The host calls it on the actual output before existing provider_handoff, so both
+positive aliases and sanitized full fallback have the same stable root. Failure
+empties that slot, reaches existing retirement/quarantine and cannot publish an
+unnormalized fallback. Existing alternate-publisher hold, annotation, current-pass
+guards, context/window/handler lifetime, witness epochs, native floor and final
+callbacks remain. Physical Owner QA observation still runs earlier. Root identity
+continuity does not renew proofs or permit stale targets. C++ worker discovery,
+original-element retention and all failed-provider refusals are unchanged.
+
+## Transport boundary
+
+`windows.py` now distinguishes an actually requested parent deadline stop after
+confirmed wait/drain as worker_deadline_stop_requested. It does not claim that
+request caused exit; a natural race remains possible. Collector/unjoined-IO
+refusal stays primary; existing failed/unknown lifetime ownership stays intact.
+No deadline increase, raw output, byte-count claim or new receipt schema.
+
+`controller.py` adds exact-int0/2 exit validation before decode. Its entire
+execute/entry byte range is unchanged: durable terminal receipt precedes
+classification/decoding; reservations, intent, independent spent ledger, unknown
+outcome handling and cleanup ownership retain their existing code. Unexpected
+exit/refused stop cannot be masked by a later JSON-size error. The existing
+lifecycle reader accepts the bounded fixed terminal code without schema changes.
+
+## Authored checks, not execution
+
+Existing root/host journeys add exact source identity, initial/successive stable
+root, focus/relationship/selection-offset translation, unchanged ordinary buttons,
+wrong/missing/duplicate/dangling trees, physical/issued-alias collision, actual
+slot suppression and full sanitized recovery. Existing alias-reference checks
+remain in the same journey; no new test registration.
+
+The existing offline exercise adds Windows-only controlled fake processes,
+events/threads and collectors around actual run_worker: natural0/2, unexpected1,
+deadline request, exit race, collector/overflow failure, retained IO, join failure,
+unknown start/kill/wait. A controlled owned-context/files harness calls actual
+controller.execute to verify its three durable phases precede decoder entry and
+deadline/unexpected exits never decode. Admission is explicitly mocked for that
+ordering case; it proves no live authority. The independent MemoryFile ledger
+remains spent. Separate guard cases cover both observe/Invoke modes.
+
+None of these assertions ran. Root still owns compilation, integrated checks and
+fresh native execution. QA58's actual element/phase, follow-up raw size and death
+cause remain unknown. No successful UIA/witness/Invoke/capture/peer/FULL/CI/release
+credit follows from this source candidate.
+
+## Freeze receipt
+
+Manifest **6423 bytes**, SHA256
+`a842949e6e034a8fbc175c25fbc6908583cdf7b7ad350a9c5ab195c4490f0862`.
+Standard source.patch **26281 bytes**, SHA256
+`6d3a05cb0e43b19d21a860bfd376f2d82b427c6749f96a7d46f8ca9c380b40b1`.
+Manifest maps all nine canonical/before/raw paths, lengths, hashes and deltas,
+and pins trace c699c47a… / approved design fbfe2a4f… / frozen QA58 manifest20612f50….
+
+Source scope: fe-ui native_accessibility provider_identity(+25), its existing
+journey(+51), directory guide(+15); host provider_output(+28/−6), guide(+23);
+native operator windows(+4/−1), controller(+1), existing scenario(+123), guide(+32).
+Filesystem/text/hash checks: canonical mismatches0; controller execute/entry exact.
+No implementation parser/tests/formatter/compiler/build/apps/OS/native/API/DB/
+network or Git action was performed. Both independent source reviews remain pending.

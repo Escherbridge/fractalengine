@@ -43,6 +43,57 @@ fn fixture() -> ak::TreeUpdate {
 
 pub(super) fn run() {
     let original = fixture();
+    let root = ak::NodeId(bevy_egui::egui::accesskit_root_id().value());
+    let window_root = ak::NodeId(200);
+    let mut root_links = original.clone();
+    root_links.nodes[0].0 = root;
+    root_links.tree.as_mut().unwrap().root = root;
+    root_links.focus = root;
+    root_links.nodes[2].1.set_controls(vec![root]);
+    root_links.nodes[2].1.set_text_selection(ak::TextSelection {
+        anchor: ak::TextPosition { node: root, character_index: 5 },
+        focus: ak::TextPosition { node: ak::NodeId(3), character_index: 9 },
+    });
+    let stable = with_window_root(&root_links, window_root).unwrap();
+    assert_eq!(stable.tree.as_ref().unwrap().root, window_root);
+    assert_eq!(stable.focus, window_root);
+    assert_eq!(stable.nodes.len(), root_links.nodes.len(), "same actual root, no wrapper node");
+    assert_eq!(stable.nodes[0].0, window_root);
+    assert_eq!(stable.nodes[1], root_links.nodes[1], "ordinary button identity and data remain unchanged");
+    assert_eq!(stable.nodes[2].1.controls(), &[window_root]);
+    let selection = stable.nodes[2].1.text_selection().unwrap();
+    assert_eq!(selection.anchor.node, window_root);
+    assert_eq!(selection.anchor.character_index, 5);
+    assert_eq!(selection.focus.node, ak::NodeId(3));
+    assert_eq!(selection.focus.character_index, 9);
+    assert_eq!(root_links.nodes[0].0, root, "original completed output is untouched");
+    let same = with_window_root(&root_links, window_root).unwrap();
+    assert_eq!(same.nodes, stable.nodes);
+    assert_eq!(same.focus, stable.focus);
+    let mut later = root_links.clone();
+    later.nodes[1].1.set_label("Changed ordinary label");
+    let later = with_window_root(&later, window_root).unwrap();
+    assert_eq!(later.tree.as_ref().unwrap().root, window_root);
+    assert_eq!(later.nodes[1].0, stable.nodes[1].0);
+    assert_eq!(later.nodes[1].1.label(), Some("Changed ordinary label"));
+    assert!(with_window_root(&stable, window_root).is_none(), "only original producer output may enter normalization");
+    assert!(with_window_root(&original, window_root).is_none(), "arbitrary Window-shaped source root must refuse");
+    assert!(with_window_root(&root_links, ak::NodeId(1)).is_none(), "cannot collide with another real node");
+    let mut invalid_root = root_links.clone();
+    invalid_root.tree = None;
+    assert!(with_window_root(&invalid_root, window_root).is_none());
+    invalid_root = root_links.clone();
+    invalid_root.nodes[0].1.set_role(ak::Role::Button);
+    assert!(with_window_root(&invalid_root, window_root).is_none(), "only an actual Window root is normalized");
+    invalid_root = root_links.clone();
+    invalid_root.nodes.remove(0);
+    assert!(with_window_root(&invalid_root, window_root).is_none());
+    invalid_root = root_links.clone();
+    invalid_root.nodes.push(invalid_root.nodes[1].clone());
+    assert!(with_window_root(&invalid_root, window_root).is_none());
+    invalid_root = root_links.clone();
+    invalid_root.nodes[2].1.set_controls(vec![ak::NodeId(999)]);
+    assert!(with_window_root(&invalid_root, window_root).is_none());
     let targets = [TargetIdentity { physical: ak::NodeId(1), epoch: 17 }];
     let mut ledger = Ledger::new();
     assert!(full_tree_is_safe(&original));

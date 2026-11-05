@@ -52,7 +52,8 @@ fn prepare(
             suppressed = true;
             continue;
         };
-        let safe = handoff(&root.egui, &mut output, |original| {
+        let safe = handoff(&root.egui, &mut output,
+            bevy_egui::egui::accesskit::NodeId(root.window.to_bits()), |original| {
             positive.then(|| ui::surface::snapshot(&root.egui, root.guard)).flatten()
                 .filter(|surface| surface.profile() == "navigation_petal_v1")
                 .and_then(|_| ui::navigation_ui::remap(&root.egui, original))
@@ -74,8 +75,11 @@ fn prepare(
 }
 
 fn handoff(ctx: &bevy_egui::egui::Context, output: &mut EguiOutput,
+    window_root: bevy_egui::egui::accesskit::NodeId,
     mapping: impl FnOnce(&bevy_egui::egui::accesskit::TreeUpdate)
         -> Option<bevy_egui::egui::accesskit::TreeUpdate>) -> bool {
+    output.platform_output.accesskit_update = output.platform_output.accesskit_update.as_ref()
+        .and_then(|tree| ui::provider_identity::with_window_root(tree, window_root));
     ui::navigation_ui::provider_handoff(ctx, &mut output.platform_output.accesskit_update, mapping)
 }
 
@@ -83,7 +87,12 @@ fn handoff(ctx: &bevy_egui::egui::Context, output: &mut EguiOutput,
 pub(super) fn extend_existing_journey() {
     use bevy_egui::egui::accesskit as ak;
     let ctx = bevy_egui::egui::Context::default();
-    let root = ak::NodeId(1);
+    let root = ak::NodeId(bevy_egui::egui::accesskit_root_id().value());
+    let window_root = ak::NodeId(77);
+    let initial = ak::TreeUpdate {
+        nodes: vec![(window_root, ak::Node::new(ak::Role::Window))],
+        tree: Some(ak::Tree::new(window_root)), focus: window_root,
+    };
     let physical = ak::NodeId(2);
     let mut parent = ak::Node::new(ak::Role::Window);
     parent.set_children(vec![physical]);
@@ -95,14 +104,25 @@ pub(super) fn extend_existing_journey() {
     let identities = [ui::provider_identity::TargetIdentity { physical, epoch: 900002 }];
     let mut output = EguiOutput::default();
     output.platform_output.accesskit_update = Some(full.clone());
-    assert!(handoff(&ctx, &mut output, |tree| {
+    assert!(handoff(&ctx, &mut output, window_root, |tree| {
         ui::provider_identity::remap(tree, 900001, &identities).map(|(tree, _)| tree)
     }));
     let mapped = output.platform_output.accesskit_update.take().unwrap();
+    assert_eq!(mapped.tree.as_ref().unwrap().root, window_root);
+    assert_eq!(mapped.tree.as_ref().unwrap().root, initial.tree.as_ref().unwrap().root);
+    assert_eq!(mapped.nodes[0].0, window_root);
     let alias = mapped.focus;
     assert_ne!(alias, physical);
     assert_eq!(mapped.nodes[0].1.children(), &[alias]);
     let mut forwarded = vec![mapped];
+
+    output.platform_output.accesskit_update = Some(full.clone());
+    assert!(!handoff(&ctx, &mut output, alias, |_| panic!("issued alias cannot become a Window root")));
+    assert!(output.platform_output.accesskit_update.is_none());
+    assert!(ui::provider_identity::was_issued(alias));
+    output.platform_output.accesskit_update = Some(full.clone());
+    assert!(!handoff(&ctx, &mut output, physical, |_| panic!("root collision must suppress before mapping")));
+    assert!(output.platform_output.accesskit_update.is_none());
 
     for failure in 0..4 {
         let mut unsafe_update = full.clone();
@@ -113,7 +133,7 @@ pub(super) fn extend_existing_journey() {
             _ => unsafe_update.focus = ak::NodeId(99),
         }
         output.platform_output.accesskit_update = Some(unsafe_update);
-        HOLD.store(!handoff(&ctx, &mut output, |_| panic!("unsafe original must never reach positive checks")), Ordering::SeqCst);
+        HOLD.store(!handoff(&ctx, &mut output, window_root, |_| panic!("unsafe original must never reach positive checks")), Ordering::SeqCst);
         let mut app = App::new();
         app.init_resource::<ManageAccessibilityUpdates>();
         app.world_mut().resource_mut::<ManageAccessibilityUpdates>().set(true);
@@ -125,13 +145,15 @@ pub(super) fn extend_existing_journey() {
         assert_eq!(forwarded.len(), 1, "neither stand-in forwards an unsafe delta");
         assert!(ui::provider_identity::was_issued(alias));
     }
-    assert!(!handoff(&ctx, &mut output, |_| None), "missing output cannot recover");
+    assert!(!handoff(&ctx, &mut output, window_root, |_| None), "missing output cannot recover");
     assert!(HOLD.load(Ordering::SeqCst));
     output.platform_output.accesskit_update = Some(full);
-    let recovered = handoff(&ctx, &mut output, |_| None);
+    let recovered = handoff(&ctx, &mut output, window_root, |_| None);
     HOLD.store(!recovered, Ordering::SeqCst);
     assert!(recovered, "positive failure permits only independently validated full fallback");
     forwarded.push(output.platform_output.accesskit_update.take().unwrap());
+    assert_eq!(forwarded[1].tree.as_ref().unwrap().root, window_root);
+    assert_eq!(forwarded[1].tree.as_ref().unwrap().root, initial.tree.as_ref().unwrap().root);
     assert_eq!(forwarded[1].nodes[0].1.children(), &[physical]);
     assert_eq!(forwarded[1].focus, physical);
     assert!(forwarded[1].nodes.iter().all(|(id, node)| *id != alias && node.author_id().is_none()));

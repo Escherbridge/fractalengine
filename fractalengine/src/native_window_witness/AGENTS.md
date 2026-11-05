@@ -1,5 +1,28 @@
 # Actual native window/context witness
 
+## Stable actual provider root
+
+Bevy_winit0.18.1's direct activation handler returns a tree rooted at the actual
+Window Entity bits. AccessKit_windows retains that fixed node ID; replacing it
+with egui's accesskit_root ID can make an already-retained provider unavailable.
+ProviderHandoff therefore normalizes the same real Window root to that existing
+ID before navigation remapping, annotation and the actual SDK publisher. The
+current OwnedRoot supplies the exact Window generation; no second root or SDK
+fork is introduced. Owner QA continues reading physical egui output earlier.
+
+The bounded full-tree/root-role/reference/focus rewrite rejects collisions,
+including issued alias tombstones. Source identity must be the public egui root
+ID; the destination is only the current OwnedRoot Window generation. It validates
+both sides and runs before both positive aliasing and sanitized fallback. Failure
+empties the actual output slot and
+uses existing provider retirement/quarantine; no unnormalized cached fallback.
+Only a fresh independently validated full tree can recover. Original physical
+button/private target identities and all guard/deadline/witness/input semantics
+remain. Root continuity across Context replacement does not preserve a witness:
+existing lifetime observers and binding epochs still retire it. The existing
+handoff journey checks stable initial/recovery root, alias/collision refusal and
+unchanged real buttons. Source assertions are not native execution evidence.
+
 ## Owner QA observation ordering
 
 The guarded Owner QA service reads the current completed physical-ID AccessKit

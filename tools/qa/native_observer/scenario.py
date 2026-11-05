@@ -343,6 +343,129 @@ def exercise():
         except Refused:
             refused = True
         record("provider-duplicate-" + str(index) + "-refused", refused)
+    if os.name == "nt":
+        from . import windows
+        from types import SimpleNamespace
+
+        class ControlledEvent:
+            def __init__(self): self.value = False
+            def set(self): self.value = True
+            def is_set(self): return self.value
+            def wait(self, timeout=None): return self.value
+
+        class ControlledThread:
+            def __init__(self, target, args=(), daemon=False):
+                self.target, self.args = target, args
+            def start(self):
+                if not (case == "start-unknown" and self.target.__name__ == "start"):
+                    self.target(*self.args)
+            def join(self, timeout=None):
+                if case == "join-failed": raise OSError("controlled join failure")
+            def is_alive(self): return case == "io-retained" and self.target.__name__ == "collect"
+
+        class ControlledProcess:
+            def __init__(self, exit_code):
+                self.pid, self._handle, self.returncode, self.kills = 1235, 2, exit_code, 0
+                self.stdin, self.stdout, self.stderr = io.BytesIO(), io.BytesIO(b"bounded"), io.BytesIO()
+                if case == "collector-refusal": self.stderr = io.BytesIO(b"x")
+                if case == "overflow-refusal": self.stdout = io.BytesIO(b"x" * (windows.MAX_OUTPUT + 1))
+            def poll(self): return self.returncode
+            def kill(self):
+                self.kills += 1
+                if case == "kill-unknown": raise OSError("controlled kill failure")
+                self.returncode = 0 if case == "natural-race" else 1
+            def wait(self, timeout=None):
+                if case == "wait-unknown": raise OSError("controlled wait failure")
+                return self.returncode
+
+        for case, initial_exit, expected in (
+            ("natural-zero", 0, "worker_exited"), ("natural-two", 2, "worker_exited"),
+            ("unexpected-exit", 1, "worker_exited"), ("deadline", None, "worker_deadline_stop_requested"),
+            ("natural-race", None, "worker_deadline_stop_requested"),
+            ("collector-refusal", None, "worker_output_refused"), ("overflow-refusal", None, "worker_output_refused"),
+            ("io-retained", 2, "worker_output_refused"), ("join-failed", 2, "worker_failed_after_start"),
+            ("kill-unknown", None, "worker_lifetime_unknown"), ("wait-unknown", None, "worker_lifetime_unknown"),
+            ("start-unknown", None, "worker_start_lifetime_unknown"),
+        ):
+            helper = Path("controlled-native-observer.exe")
+            process = ControlledProcess(initial_exit)
+            worker_identity = {"pid": process.pid, "start_ticks": "123456790", "exe_path": str(helper)}
+            lease = SimpleNamespace(inherited=lambda: [], retained_unknown=False,
+                                    process_identity=lambda handle: worker_identity,
+                                    api=SimpleNamespace(SetHandleInformation=lambda *args: True))
+            clock = iter((0.0, 0.0, 0.0))
+            started_workers = []
+            with patch.object(windows.subprocess, "Popen", return_value=process), \
+                    patch.object(windows.threading, "Event", ControlledEvent), \
+                    patch.object(windows.threading, "Thread", ControlledThread), \
+                    patch.object(windows.time, "monotonic", side_effect=lambda: next(clock, 5.0)), \
+                    patch.object(windows, "UNKNOWN_LIFETIMES", []), patch.object(windows, "UNKNOWN_IO", []):
+                try:
+                    result = windows.run_worker(lease, helper, b"bounded request", 5.0, started_workers.append)
+                    actual = result.code
+                    record("transport-" + case + "-identity", result.identity == worker_identity)
+                    if case == "natural-race":
+                        record("transport-race-reports-request-not-cause", process.kills == 1 and result.exit_code == 0)
+                    if case == "io-retained":
+                        record("transport-unfinished-io-retained", len(windows.UNKNOWN_IO) == 1)
+                except Refused as error:
+                    actual = error.code
+                    record("transport-" + case + "-owner-retained",
+                           lease.retained_unknown and len(windows.UNKNOWN_LIFETIMES) == 1)
+                record("transport-" + case, actual == expected and ledger.spent())
+
+        class ControlledLease:
+            def __enter__(self): return self
+            def __exit__(self, *args): return False
+            def owned_file(self, *args, **kwargs): return owner_file
+            def process_identity(self, handle): return worker_identity
+            def check_live(self): events.append("live")
+            api = SimpleNamespace(GetCurrentProcess=lambda: 1, GetTickCount64=lambda: 0)
+            processes = [1]
+
+        context = SimpleNamespace(directory=controller.ROOT/".qa/run/controlled", native_dir=controller.ROOT/".qa/run/controlled/native",
+                                  identity=worker_identity, helper=helper, helper_manifest={"helper_sha256": "c" * 64},
+                                  current={"stage_manifest": {"exe_sha256": "a" * 64}}, ledger=ledger, born="123456790",
+                                  run_id="1" * 32, ledger_id="2" * 32, ledger_file_id=file_id)
+        args = SimpleNamespace(run="controlled", operation="observe", verse=None, name=None)
+        for terminal_code, exit_code, expected in (("worker_deadline_stop_requested", 1, "worker_deadline_stop_requested"),
+                                                    ("worker_exited", 1, "worker_exit_refused"),
+                                                    ("worker_exited", 0, "controlled_decode"),
+                                                    ("worker_exited", 2, "controlled_decode")):
+            owner_file, events = MemoryFile(b""), []
+            def controlled_worker(files, helper, payload, deadline, on_started):
+                on_started(worker_identity)
+                return windows.WorkerResult(None, worker_identity, b"", exit_code, terminal_code)
+            def controlled_decode(*args):
+                phases = [json.loads(line)["phase"] for line in owner_file.raw.splitlines()]
+                events.append(("decode", phases))
+                raise Refused("controlled_decode")
+            with patch.object(controller, "NativeLease", ControlledLease), \
+                    patch.object(controller, "Context", return_value=context), \
+                    patch.object(controller, "admit_operation"), patch.object(controller, "run_worker", controlled_worker), \
+                    patch.object(controller, "decode", controlled_decode):
+                try:
+                    controller.execute(args)
+                    actual = "unexpected_success"
+                except Refused as error:
+                    actual = error.code
+            phases = [json.loads(line)["phase"] for line in owner_file.raw.splitlines()]
+            record("transport-receipt-before-decode-" + terminal_code + "-" + str(exit_code),
+                   actual == expected and phases == ["reserved", "worker_started", "exit_confirmed"]
+                   and (events == [("decode", phases)] if expected == "controlled_decode" else not events)
+                   and ledger.spent())
+
+    ledger_before_exit_refusal = file.raw
+    with patch.object(controller, "decode", side_effect=AssertionError("unexpected helper exit must precede JSON decode")):
+        for observe in (True, False):
+            for exit_code in (1, 3, 124, -1073741819, True, 2.0, "2", None):
+                refused = False
+                try:
+                    controller.worker_output(b"", observe=observe, helper_exit_code=exit_code)
+                except Refused as error:
+                    refused = error.code == "worker_exit_refused"
+                record("exit-before-decode-" + str(observe) + "-" + repr(exit_code),
+                       refused and ledger.spent() and file.raw == ledger_before_exit_refusal)
     called = []
     def native_entry(args):
         called.append((args.run, args.operation, args.member))

@@ -1,0 +1,61 @@
+{
+  "candidate": "qa58-native-root-transport-v1",
+  "manifest_sha256": "a842949e6e034a8fbc175c25fbc6908583cdf7b7ad350a9c5ab195c4490f0862",
+  "all_before_and_raw_checked_before_first_write": true,
+  "files": [
+    {
+      "file": "fe-ui/src/native_accessibility/provider_identity.rs",
+      "bytes": 10235,
+      "raw_sha256": "54713686ffbed4c76b6331b0a6f873a9115f3b8c20a1a087fc96e39de78b44bf",
+      "lf_normalized_sha256": "89e3ea042bb3ebb26e8d60039943ea1b3b6b1a448eb519f8de3bc5e1fe0eb7ff"
+    },
+    {
+      "file": "fe-ui/src/native_accessibility/provider_identity_journey.rs",
+      "bytes": 11786,
+      "raw_sha256": "7a29a12dd9766d49c4b391bd136d08d38dadf1de958801227da1d6bdcceddca0",
+      "lf_normalized_sha256": "f6544315624a549279b38b465b23746c2fe499ab77488b698f19c0b47fd4b927"
+    },
+    {
+      "file": "fe-ui/src/native_accessibility/AGENTS.md",
+      "bytes": 22966,
+      "raw_sha256": "3dd8b7de97df60bd0f940b478d1d382bd69a73930ef388d20f4d1116c05d6193",
+      "lf_normalized_sha256": "1c8399777d86a36a27ca743e4289df973e7255bb7c619caf1638492b9596c20b"
+    },
+    {
+      "file": "fractalengine/src/native_window_witness/provider_output.rs",
+      "bytes": 8648,
+      "raw_sha256": "e95d12b8a2ea7fa8390beb64439deadfb429a5667622c82b2e030a3d4da3b837",
+      "lf_normalized_sha256": "4b79ca3f5259b089830440fdb7201c2413df2af8f7e0fd6380faef68c527cb5f"
+    },
+    {
+      "file": "fractalengine/src/native_window_witness/AGENTS.md",
+      "bytes": 12888,
+      "raw_sha256": "d36defb4b423a8b0fce17de529f7eb0bf8c1cb5b514aa036a83c6bbfd59d01f8",
+      "lf_normalized_sha256": "c0505dc4c8e97766331fdc258d121f3cde684ba6cea570bdbc9622d796e7fc12"
+    },
+    {
+      "file": "tools/qa/native_observer/windows.py",
+      "bytes": 12366,
+      "raw_sha256": "43a288ca5ec187abf1649d169e23cab1cb54805fb008bf14119797dae0e5d891",
+      "lf_normalized_sha256": "43a288ca5ec187abf1649d169e23cab1cb54805fb008bf14119797dae0e5d891"
+    },
+    {
+      "file": "tools/qa/native_observer/controller.py",
+      "bytes": 20218,
+      "raw_sha256": "16e5efe5486816d26ffd1537e9800967c817a05c04d5ee3a749d31b3f827ef80",
+      "lf_normalized_sha256": "16e5efe5486816d26ffd1537e9800967c817a05c04d5ee3a749d31b3f827ef80"
+    },
+    {
+      "file": "tools/qa/native_observer/scenario.py",
+      "bytes": 31642,
+      "raw_sha256": "a49d5b6955faa5b1c430258ab641903a236a2a4f3ef6ab7deb16309440fc1657",
+      "lf_normalized_sha256": "a49d5b6955faa5b1c430258ab641903a236a2a4f3ef6ab7deb16309440fc1657"
+    },
+    {
+      "file": "tools/qa/native_observer/AGENTS.md",
+      "bytes": 37935,
+      "raw_sha256": "e33022a20b04f3115cc80d448a94a369e7c14cd3b963302f56a504efdd300ecf",
+      "lf_normalized_sha256": "e33022a20b04f3115cc80d448a94a369e7c14cd3b963302f56a504efdd300ecf"
+    }
+  ]
+}

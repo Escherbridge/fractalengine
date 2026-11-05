@@ -1,0 +1,447 @@
+--- a/fe-ui/src/native_accessibility/provider_identity.rs
++++ b/fe-ui/src/native_accessibility/provider_identity.rs
+@@ -173,6 +173,31 @@
+     ledger.issued.iter().any(|issued| issued.alias.provider == id)
+ }
+ 
++/// Keeps the same Window root at the existing Bevy provider identity.
++pub fn with_window_root(update: &ak::TreeUpdate, window_root: ak::NodeId) -> Option<ak::TreeUpdate> {
++    let full = validate(update)?;
++    let source_root = ak::NodeId(bevy_egui::egui::accesskit_root_id().value());
++    if full.root != source_root || full.nodes.get(&full.root)?.role() != ak::Role::Window
++        || was_issued(source_root) || was_issued(window_root)
++        || (window_root != full.root && full.nodes.contains_key(&window_root)) {
++        return None;
++    }
++    let translate = |id| if id == full.root { window_root } else { id };
++    let mut mapped = update.clone();
++    for (id, node) in &mut mapped.nodes {
++        *id = translate(*id);
++        rewrite(node, &translate);
++    }
++    mapped.tree.as_mut()?.root = window_root;
++    mapped.focus = translate(update.focus);
++    let checked = validate(&mapped)?;
++    if checked.root != window_root || checked.nodes.len() != full.nodes.len()
++        || was_issued(window_root) {
++        return None;
++    }
++    Some(mapped)
++}
++
+ /// Remaps the same real buttons; epochs identify exact original immutable bindings.
+ pub fn remap(
+     update: &ak::TreeUpdate,
+--- a/fe-ui/src/native_accessibility/provider_identity_journey.rs
++++ b/fe-ui/src/native_accessibility/provider_identity_journey.rs
+@@ -43,6 +43,57 @@
+ 
+ pub(super) fn run() {
+     let original = fixture();
++    let root = ak::NodeId(bevy_egui::egui::accesskit_root_id().value());
++    let window_root = ak::NodeId(200);
++    let mut root_links = original.clone();
++    root_links.nodes[0].0 = root;
++    root_links.tree.as_mut().unwrap().root = root;
++    root_links.focus = root;
++    root_links.nodes[2].1.set_controls(vec![root]);
++    root_links.nodes[2].1.set_text_selection(ak::TextSelection {
++        anchor: ak::TextPosition { node: root, character_index: 5 },
++        focus: ak::TextPosition { node: ak::NodeId(3), character_index: 9 },
++    });
++    let stable = with_window_root(&root_links, window_root).unwrap();
++    assert_eq!(stable.tree.as_ref().unwrap().root, window_root);
++    assert_eq!(stable.focus, window_root);
++    assert_eq!(stable.nodes.len(), root_links.nodes.len(), "same actual root, no wrapper node");
++    assert_eq!(stable.nodes[0].0, window_root);
++    assert_eq!(stable.nodes[1], root_links.nodes[1], "ordinary button identity and data remain unchanged");
++    assert_eq!(stable.nodes[2].1.controls(), &[window_root]);
++    let selection = stable.nodes[2].1.text_selection().unwrap();
++    assert_eq!(selection.anchor.node, window_root);
++    assert_eq!(selection.anchor.character_index, 5);
++    assert_eq!(selection.focus.node, ak::NodeId(3));
++    assert_eq!(selection.focus.character_index, 9);
++    assert_eq!(root_links.nodes[0].0, root, "original completed output is untouched");
++    let same = with_window_root(&root_links, window_root).unwrap();
++    assert_eq!(same.nodes, stable.nodes);
++    assert_eq!(same.focus, stable.focus);
++    let mut later = root_links.clone();
++    later.nodes[1].1.set_label("Changed ordinary label");
++    let later = with_window_root(&later, window_root).unwrap();
++    assert_eq!(later.tree.as_ref().unwrap().root, window_root);
++    assert_eq!(later.nodes[1].0, stable.nodes[1].0);
++    assert_eq!(later.nodes[1].1.label(), Some("Changed ordinary label"));
++    assert!(with_window_root(&stable, window_root).is_none(), "only original producer output may enter normalization");
++    assert!(with_window_root(&original, window_root).is_none(), "arbitrary Window-shaped source root must refuse");
++    assert!(with_window_root(&root_links, ak::NodeId(1)).is_none(), "cannot collide with another real node");
++    let mut invalid_root = root_links.clone();
++    invalid_root.tree = None;
++    assert!(with_window_root(&invalid_root, window_root).is_none());
++    invalid_root = root_links.clone();
++    invalid_root.nodes[0].1.set_role(ak::Role::Button);
++    assert!(with_window_root(&invalid_root, window_root).is_none(), "only an actual Window root is normalized");
++    invalid_root = root_links.clone();
++    invalid_root.nodes.remove(0);
++    assert!(with_window_root(&invalid_root, window_root).is_none());
++    invalid_root = root_links.clone();
++    invalid_root.nodes.push(invalid_root.nodes[1].clone());
++    assert!(with_window_root(&invalid_root, window_root).is_none());
++    invalid_root = root_links.clone();
++    invalid_root.nodes[2].1.set_controls(vec![ak::NodeId(999)]);
++    assert!(with_window_root(&invalid_root, window_root).is_none());
+     let targets = [TargetIdentity { physical: ak::NodeId(1), epoch: 17 }];
+     let mut ledger = Ledger::new();
+     assert!(full_tree_is_safe(&original));
+--- a/fe-ui/src/native_accessibility/AGENTS.md
++++ b/fe-ui/src/native_accessibility/AGENTS.md
+@@ -7,6 +7,21 @@
+ No synthetic-input flag, HTTP floor, clipboard guard or entity role is changed.
+ 
+ ## Frame contract
++
++The host's actual provider handoff gives the one completed Window root the
++existing Bevy Window Entity root ID. Bevy's direct activation handler initially
++returns that fixed provider root; forwarding egui's unrelated root ID would remove
++it while a UIA client still retains it. provider_identity::with_window_root rewrites
++only that real root and all supported references/focus using the existing bounded
++full-tree validator/rewriter. It adds no wrapper node, cached update or target ID.
++The source must be the exact public egui accesskit_root_id().value() identity,
++not any Window-shaped tree or previously normalized cache. Wrong root role,
++incomplete tree, collision with another node or issued private ID refuse. Full
++closure, node count and private root collisions are checked again after rewriting.
++Ordinary buttons and navigation aliases stay unchanged. Normalization is
++not a proof/authority source: snapshot guards, immutable navigation bindings and
++context/window lifetime retirement still apply. Its existing journey covers the
++same root across full updates, root references/focus, collision and invalid input.
+ 
+ The host activates the private context state only when OS accessibility is requested.
+ The normal UI root calls begin_pass before widgets and finish_pass after them. Response
+--- a/fractalengine/src/native_window_witness/provider_output.rs
++++ b/fractalengine/src/native_window_witness/provider_output.rs
+@@ -52,7 +52,8 @@
+             suppressed = true;
+             continue;
+         };
+-        let safe = handoff(&root.egui, &mut output, |original| {
++        let safe = handoff(&root.egui, &mut output,
++            bevy_egui::egui::accesskit::NodeId(root.window.to_bits()), |original| {
+             positive.then(|| ui::surface::snapshot(&root.egui, root.guard)).flatten()
+                 .filter(|surface| surface.profile() == "navigation_petal_v1")
+                 .and_then(|_| ui::navigation_ui::remap(&root.egui, original))
+@@ -74,8 +75,11 @@
+ }
+ 
+ fn handoff(ctx: &bevy_egui::egui::Context, output: &mut EguiOutput,
++    window_root: bevy_egui::egui::accesskit::NodeId,
+     mapping: impl FnOnce(&bevy_egui::egui::accesskit::TreeUpdate)
+         -> Option<bevy_egui::egui::accesskit::TreeUpdate>) -> bool {
++    output.platform_output.accesskit_update = output.platform_output.accesskit_update.as_ref()
++        .and_then(|tree| ui::provider_identity::with_window_root(tree, window_root));
+     ui::navigation_ui::provider_handoff(ctx, &mut output.platform_output.accesskit_update, mapping)
+ }
+ 
+@@ -83,7 +87,12 @@
+ pub(super) fn extend_existing_journey() {
+     use bevy_egui::egui::accesskit as ak;
+     let ctx = bevy_egui::egui::Context::default();
+-    let root = ak::NodeId(1);
++    let root = ak::NodeId(bevy_egui::egui::accesskit_root_id().value());
++    let window_root = ak::NodeId(77);
++    let initial = ak::TreeUpdate {
++        nodes: vec![(window_root, ak::Node::new(ak::Role::Window))],
++        tree: Some(ak::Tree::new(window_root)), focus: window_root,
++    };
+     let physical = ak::NodeId(2);
+     let mut parent = ak::Node::new(ak::Role::Window);
+     parent.set_children(vec![physical]);
+@@ -95,14 +104,25 @@
+     let identities = [ui::provider_identity::TargetIdentity { physical, epoch: 900002 }];
+     let mut output = EguiOutput::default();
+     output.platform_output.accesskit_update = Some(full.clone());
+-    assert!(handoff(&ctx, &mut output, |tree| {
++    assert!(handoff(&ctx, &mut output, window_root, |tree| {
+         ui::provider_identity::remap(tree, 900001, &identities).map(|(tree, _)| tree)
+     }));
+     let mapped = output.platform_output.accesskit_update.take().unwrap();
++    assert_eq!(mapped.tree.as_ref().unwrap().root, window_root);
++    assert_eq!(mapped.tree.as_ref().unwrap().root, initial.tree.as_ref().unwrap().root);
++    assert_eq!(mapped.nodes[0].0, window_root);
+     let alias = mapped.focus;
+     assert_ne!(alias, physical);
+     assert_eq!(mapped.nodes[0].1.children(), &[alias]);
+     let mut forwarded = vec![mapped];
++
++    output.platform_output.accesskit_update = Some(full.clone());
++    assert!(!handoff(&ctx, &mut output, alias, |_| panic!("issued alias cannot become a Window root")));
++    assert!(output.platform_output.accesskit_update.is_none());
++    assert!(ui::provider_identity::was_issued(alias));
++    output.platform_output.accesskit_update = Some(full.clone());
++    assert!(!handoff(&ctx, &mut output, physical, |_| panic!("root collision must suppress before mapping")));
++    assert!(output.platform_output.accesskit_update.is_none());
+ 
+     for failure in 0..4 {
+         let mut unsafe_update = full.clone();
+@@ -113,7 +133,7 @@
+             _ => unsafe_update.focus = ak::NodeId(99),
+         }
+         output.platform_output.accesskit_update = Some(unsafe_update);
+-        HOLD.store(!handoff(&ctx, &mut output, |_| panic!("unsafe original must never reach positive checks")), Ordering::SeqCst);
++        HOLD.store(!handoff(&ctx, &mut output, window_root, |_| panic!("unsafe original must never reach positive checks")), Ordering::SeqCst);
+         let mut app = App::new();
+         app.init_resource::<ManageAccessibilityUpdates>();
+         app.world_mut().resource_mut::<ManageAccessibilityUpdates>().set(true);
+@@ -125,13 +145,15 @@
+         assert_eq!(forwarded.len(), 1, "neither stand-in forwards an unsafe delta");
+         assert!(ui::provider_identity::was_issued(alias));
+     }
+-    assert!(!handoff(&ctx, &mut output, |_| None), "missing output cannot recover");
++    assert!(!handoff(&ctx, &mut output, window_root, |_| None), "missing output cannot recover");
+     assert!(HOLD.load(Ordering::SeqCst));
+     output.platform_output.accesskit_update = Some(full);
+-    let recovered = handoff(&ctx, &mut output, |_| None);
++    let recovered = handoff(&ctx, &mut output, window_root, |_| None);
+     HOLD.store(!recovered, Ordering::SeqCst);
+     assert!(recovered, "positive failure permits only independently validated full fallback");
+     forwarded.push(output.platform_output.accesskit_update.take().unwrap());
++    assert_eq!(forwarded[1].tree.as_ref().unwrap().root, window_root);
++    assert_eq!(forwarded[1].tree.as_ref().unwrap().root, initial.tree.as_ref().unwrap().root);
+     assert_eq!(forwarded[1].nodes[0].1.children(), &[physical]);
+     assert_eq!(forwarded[1].focus, physical);
+     assert!(forwarded[1].nodes.iter().all(|(id, node)| *id != alias && node.author_id().is_none()));
+--- a/fractalengine/src/native_window_witness/AGENTS.md
++++ b/fractalengine/src/native_window_witness/AGENTS.md
+@@ -1,4 +1,27 @@
+ # Actual native window/context witness
++
++## Stable actual provider root
++
++Bevy_winit0.18.1's direct activation handler returns a tree rooted at the actual
++Window Entity bits. AccessKit_windows retains that fixed node ID; replacing it
++with egui's accesskit_root ID can make an already-retained provider unavailable.
++ProviderHandoff therefore normalizes the same real Window root to that existing
++ID before navigation remapping, annotation and the actual SDK publisher. The
++current OwnedRoot supplies the exact Window generation; no second root or SDK
++fork is introduced. Owner QA continues reading physical egui output earlier.
++
++The bounded full-tree/root-role/reference/focus rewrite rejects collisions,
++including issued alias tombstones. Source identity must be the public egui root
++ID; the destination is only the current OwnedRoot Window generation. It validates
++both sides and runs before both positive aliasing and sanitized fallback. Failure
++empties the actual output slot and
++uses existing provider retirement/quarantine; no unnormalized cached fallback.
++Only a fresh independently validated full tree can recover. Original physical
++button/private target identities and all guard/deadline/witness/input semantics
++remain. Root continuity across Context replacement does not preserve a witness:
++existing lifetime observers and binding epochs still retire it. The existing
++handoff journey checks stable initial/recovery root, alias/collision refusal and
++unchanged real buttons. Source assertions are not native execution evidence.
+ 
+ ## Owner QA observation ordering
+ 
+--- a/tools/qa/native_observer/windows.py
++++ b/tools/qa/native_observer/windows.py
+@@ -216,6 +216,7 @@
+             failure.set()
+ 
+     threads = []
++    deadline_stop_requested = False
+     try:
+         require(not start_state["failed"] and time.monotonic() < deadline - 0.2, "worker_start_refused")
+         identity = lease.process_identity(process._handle)
+@@ -230,12 +231,14 @@
+         while process.poll() is None and not failure.is_set() and time.monotonic() < deadline - 0.2:
+             failure.wait(min(0.01, max(0, deadline - 0.2 - time.monotonic())))
+         if process.poll() is None:
++            deadline_stop_requested = not failure.is_set()
+             process.kill()
+         remaining = max(0, deadline - time.monotonic())
+         process.wait(timeout=remaining)
+         for thread in threads:
+             thread.join(timeout=max(0, deadline - time.monotonic()))
+-        code = "worker_output_refused" if failure.is_set() or any(thread.is_alive() for thread in threads) else "worker_exited"
++        code = ("worker_output_refused" if failure.is_set() or any(thread.is_alive() for thread in threads)
++                else "worker_deadline_stop_requested" if deadline_stop_requested else "worker_exited")
+         return WorkerResult(process, identity, bytes(output), process.returncode, code)
+     except BaseException:
+         try:
+--- a/tools/qa/native_observer/controller.py
++++ b/tools/qa/native_observer/controller.py
+@@ -201,6 +201,7 @@
+ 
+ 
+ def worker_output(raw, *, observe, helper_exit_code):
++    require(type(helper_exit_code) is int and helper_exit_code in (0, 2), "worker_exit_refused")
+     value = decode(raw, MAX_OUTPUT)
+     require(set(value) in (OUTPUT_KEYS, OUTPUT_KEYS | {"service_style_u32"}, OUTPUT_KEYS | {"service_signature"},
+                            OUTPUT_KEYS | {"provider_failure"})
+--- a/tools/qa/native_observer/scenario.py
++++ b/tools/qa/native_observer/scenario.py
+@@ -343,6 +343,129 @@
+         except Refused:
+             refused = True
+         record("provider-duplicate-" + str(index) + "-refused", refused)
++    if os.name == "nt":
++        from . import windows
++        from types import SimpleNamespace
++
++        class ControlledEvent:
++            def __init__(self): self.value = False
++            def set(self): self.value = True
++            def is_set(self): return self.value
++            def wait(self, timeout=None): return self.value
++
++        class ControlledThread:
++            def __init__(self, target, args=(), daemon=False):
++                self.target, self.args = target, args
++            def start(self):
++                if not (case == "start-unknown" and self.target.__name__ == "start"):
++                    self.target(*self.args)
++            def join(self, timeout=None):
++                if case == "join-failed": raise OSError("controlled join failure")
++            def is_alive(self): return case == "io-retained" and self.target.__name__ == "collect"
++
++        class ControlledProcess:
++            def __init__(self, exit_code):
++                self.pid, self._handle, self.returncode, self.kills = 1235, 2, exit_code, 0
++                self.stdin, self.stdout, self.stderr = io.BytesIO(), io.BytesIO(b"bounded"), io.BytesIO()
++                if case == "collector-refusal": self.stderr = io.BytesIO(b"x")
++                if case == "overflow-refusal": self.stdout = io.BytesIO(b"x" * (windows.MAX_OUTPUT + 1))
++            def poll(self): return self.returncode
++            def kill(self):
++                self.kills += 1
++                if case == "kill-unknown": raise OSError("controlled kill failure")
++                self.returncode = 0 if case == "natural-race" else 1
++            def wait(self, timeout=None):
++                if case == "wait-unknown": raise OSError("controlled wait failure")
++                return self.returncode
++
++        for case, initial_exit, expected in (
++            ("natural-zero", 0, "worker_exited"), ("natural-two", 2, "worker_exited"),
++            ("unexpected-exit", 1, "worker_exited"), ("deadline", None, "worker_deadline_stop_requested"),
++            ("natural-race", None, "worker_deadline_stop_requested"),
++            ("collector-refusal", None, "worker_output_refused"), ("overflow-refusal", None, "worker_output_refused"),
++            ("io-retained", 2, "worker_output_refused"), ("join-failed", 2, "worker_failed_after_start"),
++            ("kill-unknown", None, "worker_lifetime_unknown"), ("wait-unknown", None, "worker_lifetime_unknown"),
++            ("start-unknown", None, "worker_start_lifetime_unknown"),
++        ):
++            helper = Path("controlled-native-observer.exe")
++            process = ControlledProcess(initial_exit)
++            worker_identity = {"pid": process.pid, "start_ticks": "123456790", "exe_path": str(helper)}
++            lease = SimpleNamespace(inherited=lambda: [], retained_unknown=False,
++                                    process_identity=lambda handle: worker_identity,
++                                    api=SimpleNamespace(SetHandleInformation=lambda *args: True))
++            clock = iter((0.0, 0.0, 0.0))
++            started_workers = []
++            with patch.object(windows.subprocess, "Popen", return_value=process), \
++                    patch.object(windows.threading, "Event", ControlledEvent), \
++                    patch.object(windows.threading, "Thread", ControlledThread), \
++                    patch.object(windows.time, "monotonic", side_effect=lambda: next(clock, 5.0)), \
++                    patch.object(windows, "UNKNOWN_LIFETIMES", []), patch.object(windows, "UNKNOWN_IO", []):
++                try:
++                    result = windows.run_worker(lease, helper, b"bounded request", 5.0, started_workers.append)
++                    actual = result.code
++                    record("transport-" + case + "-identity", result.identity == worker_identity)
++                    if case == "natural-race":
++                        record("transport-race-reports-request-not-cause", process.kills == 1 and result.exit_code == 0)
++                    if case == "io-retained":
++                        record("transport-unfinished-io-retained", len(windows.UNKNOWN_IO) == 1)
++                except Refused as error:
++                    actual = error.code
++                    record("transport-" + case + "-owner-retained",
++                           lease.retained_unknown and len(windows.UNKNOWN_LIFETIMES) == 1)
++                record("transport-" + case, actual == expected and ledger.spent())
++
++        class ControlledLease:
++            def __enter__(self): return self
++            def __exit__(self, *args): return False
++            def owned_file(self, *args, **kwargs): return owner_file
++            def process_identity(self, handle): return worker_identity
++            def check_live(self): events.append("live")
++            api = SimpleNamespace(GetCurrentProcess=lambda: 1, GetTickCount64=lambda: 0)
++            processes = [1]
++
++        context = SimpleNamespace(directory=controller.ROOT/".qa/run/controlled", native_dir=controller.ROOT/".qa/run/controlled/native",
++                                  identity=worker_identity, helper=helper, helper_manifest={"helper_sha256": "c" * 64},
++                                  current={"stage_manifest": {"exe_sha256": "a" * 64}}, ledger=ledger, born="123456790",
++                                  run_id="1" * 32, ledger_id="2" * 32, ledger_file_id=file_id)
++        args = SimpleNamespace(run="controlled", operation="observe", verse=None, name=None)
++        for terminal_code, exit_code, expected in (("worker_deadline_stop_requested", 1, "worker_deadline_stop_requested"),
++                                                    ("worker_exited", 1, "worker_exit_refused"),
++                                                    ("worker_exited", 0, "controlled_decode"),
++                                                    ("worker_exited", 2, "controlled_decode")):
++            owner_file, events = MemoryFile(b""), []
++            def controlled_worker(files, helper, payload, deadline, on_started):
++                on_started(worker_identity)
++                return windows.WorkerResult(None, worker_identity, b"", exit_code, terminal_code)
++            def controlled_decode(*args):
++                phases = [json.loads(line)["phase"] for line in owner_file.raw.splitlines()]
++                events.append(("decode", phases))
++                raise Refused("controlled_decode")
++            with patch.object(controller, "NativeLease", ControlledLease), \
++                    patch.object(controller, "Context", return_value=context), \
++                    patch.object(controller, "admit_operation"), patch.object(controller, "run_worker", controlled_worker), \
++                    patch.object(controller, "decode", controlled_decode):
++                try:
++                    controller.execute(args)
++                    actual = "unexpected_success"
++                except Refused as error:
++                    actual = error.code
++            phases = [json.loads(line)["phase"] for line in owner_file.raw.splitlines()]
++            record("transport-receipt-before-decode-" + terminal_code + "-" + str(exit_code),
++                   actual == expected and phases == ["reserved", "worker_started", "exit_confirmed"]
++                   and (events == [("decode", phases)] if expected == "controlled_decode" else not events)
++                   and ledger.spent())
++
++    ledger_before_exit_refusal = file.raw
++    with patch.object(controller, "decode", side_effect=AssertionError("unexpected helper exit must precede JSON decode")):
++        for observe in (True, False):
++            for exit_code in (1, 3, 124, -1073741819, True, 2.0, "2", None):
++                refused = False
++                try:
++                    controller.worker_output(b"", observe=observe, helper_exit_code=exit_code)
++                except Refused as error:
++                    refused = error.code == "worker_exit_refused"
++                record("exit-before-decode-" + str(observe) + "-" + repr(exit_code),
++                       refused and ledger.spent() and file.raw == ledger_before_exit_refusal)
+     called = []
+     def native_entry(args):
+         called.append((args.run, args.operation, args.member))
+--- a/tools/qa/native_observer/AGENTS.md
++++ b/tools/qa/native_observer/AGENTS.md
+@@ -1,4 +1,36 @@
+ # Native observer operator contract
++
++## Confirmed worker stop classification
++
++run_worker retains the existing absolute deadline, controller0.2-second cleanup
++reserve, collector limits and confirmed wait/join. When it calls kill because
++that budget expires, its terminal code is worker_deadline_stop_requested rather
++than worker_exited. This records the controller's request, not proof of which
++actor caused death; Windows CPython kill uses TerminateProcess(handle,1), and a
++natural-exit race remains possible. Collector/unfinished-IO refusal takes priority.
++Unknown process/IO lifetimes retain their existing owners and are never replayed.
++
++Controller durably records the same exact ownership/exit receipt first, then
++refuses a deadline-stop code before worker JSON decoding. An unexpected natural
++helper exit also refuses before decode as worker_exit_refused; only exact-int0/2
++are normal worker contract exits. This prevents an empty/invalid JSON message
++from hiding an already-observed abnormal exit. No new receipt schema, output
++content, guessed byte count, native read or increased time budget is introduced.
++Invocation reservation/intent and independent spent/unknown ledger ownership are
++unchanged. The existing exercise checks pre-decode refusal in observe/Invoke
++modes while the actual ledger remains spent. Windows-only controlled fake
++processes/collectors exercise the production parent branch for natural0/2,
++unexpected1, deadline request, natural-exit race, collector/overflow failure,
++retained IO, join failure and unknown start/kill/wait. A separately mocked owned
++context/files harness calls actual controller.execute and requires its three
++durable lifetime phases before decoding, with deadline/unexpected exit never
++reaching the decoder. Only that ordering is covered by mocked admission; it
++does not prove owned-run validation, real timing, native process or UIA behavior.
++
++QA58's historical stage1/80040201 identifies CurrentAutomationId returning the
++SDK's ELEMENTNOTAVAILABLE, not the exact element/phase or root cause. Its separate
++follow-up exit1/json_size_refused lacks a captured stop reason/raw size. These
++records stay unknown; future classification cannot retrospectively resolve them.
+ 
+ ## Retained UIA worker
+ 

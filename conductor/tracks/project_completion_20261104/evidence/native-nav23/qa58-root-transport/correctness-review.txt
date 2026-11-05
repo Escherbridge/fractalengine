@@ -1,0 +1,71 @@
+# QA58 root continuity / worker transport — independent exact source review
+
+**APPROVED for the exact frozen nine-file candidate.** The local root rewrite satisfies the design's source/window/collision/reference/forwarding requirements, and transport classification preserves lifetime/ledger ownership while rejecting abnormal exits before JSON decoding. No source correctness blocker was found. Approval supplies no executed journey, positive native provider/root/witness/Invoke/capture or broader acceptance result.
+
+Reviewed `.omc/research/qa58-native-root-transport-v1/**`: manifest **6,423 bytes**, SHA256 **`a842949e6e034a8fbc175c25fbc6908583cdf7b7ad350a9c5ab195c4490f0862`**; full patch **26,281 bytes**, SHA256 **`6d3a05cb0e43b19d21a860bfd376f2d82b427c6749f96a7d46f8ca9c380b40b1`**. Baseline identity is `be081abed05be3c623b93bef33d4dd31d43d9b46`, qualified by exact before bytes rather than a clean-checkout claim. Independently checked all18 before/raw file lengths/hashes, patch and all trace/design/frozen-QA58 anchors: zero mismatches. All nine canonical files still equal before snapshots; no live app/source changes were made by this review.
+
+Applied `C:/Users/atooz/.gemini/UI-UX-guidance.md`: this is an ordinary accessibility integration correction through existing identity/guard seams, with no new visible flow or authority source. The approved design was independently reassessed against final source; its approval was not substituted for this review.
+
+## Root identity, closure and relationships
+
+`raw/fe-ui/src/native_accessibility/provider_identity.rs:177–199` adds only `with_window_root`. It validates the input using the existing bounded full-tree validator, then requires exactly `ak::NodeId(egui::accesskit_root_id().value())` and Role::Window. The public APIs are present in locked egui0.33.3; `accesskit_root_id` returns Id::new("accesskit_root"), and public Id::value matches the numeric conversion used by egui's crate-private accesskit_id. An arbitrary Window-shaped or previously normalized different-root tree cannot be substituted.
+
+The host destination is only `ak::NodeId(root.window.to_bits())`, supplied by the already-owned current Window/context/handler binding (`raw/fractalengine/src/native_window_witness/provider_output.rs:55–61`). It does not use the egui context entity, HWND, client selector, new counter or generated surrogate. That matches Bevy_winit0.18.1's actual direct initial-tree root, which AccessKit_windows0.29.2 retains as a fixed-ID PlatformNode. An unchanged ID keeps that real initial root in successive full trees; it does not change which adapter/context owns it.
+
+The new function refuses source or destination IDs already issued as private aliases, including tombstones/unavailable ledger lock state via was_issued. It also refuses a destination occupied by another physical node. If source and destination happen to be identical, no arbitrary rewrite occurs; the exact original producer root and all validation requirements still apply. The operation allocates no alias and adds no wrapper node.
+
+Only the root node key changes. The existing `rewrite` covers all supported node-ID vector/scalar relations and text-selection endpoints; mapped tree.root and focus use the same translation. Selection offsets, all non-ID properties and other physical node keys remain unchanged. Checked against locked AccessKit0.21.1's relationship accessors: children, controls, details, described_by, flow_to, labelled_by, owns, radio_group; active_descendant, error_message, in_page_link_target, member_of, next_on_line, previous_on_line, popup_for; and selection anchor/focus. No second relation list/parser was introduced.
+
+Postvalidation requires the intended root, unchanged node count and a still-unissued private destination. The inherited validator rejects missing root/focus, duplicate/dangling IDs, multi-parent/root-as-child relations, disconnected/cyclic children and node/reference budget overflow, before and after transformation. Existing private target allocation checks physical node collisions and therefore cannot deliberately allocate the current mapped root as a navigation alias. No ID-collision probability assumption replaces a check.
+
+## Actual output / positive and fallback paths
+
+`provider_output::handoff` first replaces the actual accesskit_update slot with the normalized result, then invokes the existing provider_handoff. This is **outside** optional navigation eligibility, so both positive aliasing and sanitized full fallback receive the same stable root. Normalization failure produces None; existing provider_update_is_safe then retires the provider and returns false before the positive mapping callback. It cannot be confused with a benign positive-mapping failure that publishes an unnormalized fallback.
+
+In the production prepare loop, that false result sets suppressed, preserves HOLD/quarantine and retires the binding. The existing hold_alternate_publisher still prevents Bevy's alternate tree publisher from undoing suppression. Only a later valid full tree can recover, using existing sanitized fallback rules and retaining issued-alias tombstones. No cached/partial update is used as recovery evidence.
+
+Owner QA observation remains before ProviderHandoff; scheduling/annotation/actual bevy_egui publication order is unchanged. The completed physical egui observation is therefore not rewritten into provider IDs. Ordinary widget IDs and private target aliases remain consistent with existing snapshot/navigation translation. `ui::complete` follows the supplied full root and then resolves unchanged physical children/current aliases; it does not require the former egui root number. Merely giving a Role::Window node the Bevy root ID grants no Click target capability.
+
+All unrelated guards and authority paths remain outside the patch: current context/window/handler lifetime, RawHandleWrapper changes, window/context epochs, current pass/guard, exact target-set/target proof epochs, lifecycle retirement, capture/terminal locks, annotation/FEW1 freshness and final publication. A root ID stable across frames does not revive an old Weak adapter context or stale private target. Existing worker retained-element identity/error behavior and C++ source are untouched: no rediscovery, stale-node skip, new read, retry, focus operation, admission relaxation or automatic invocation replay.
+
+## Actual parent stop and pre-decode exit classification
+
+`raw/tools/qa/native_observer/windows.py:219,235–244` adds a local flag, set only in the existing still-live kill branch when collector failure is not already set. The loop's other exit condition is its unchanged absolute deadline minus0.2s. After unchanged wait/join, classification is:
+
+1. existing collector failure or live collector → worker_output_refused;
+2. actual parent deadline-stop request → worker_deadline_stop_requested;
+3. otherwise → worker_exited.
+
+This reports the request, not proven cause of death. A process can naturally finish between poll and kill; the request flag remains meaningful even when the confirmed exit is0. CPython's Windows kill uses TerminateProcess(handle,1); exit1 remains compatible with parent termination, not proof of a C++ crash. No extra stop, enlarged deadline, output bytes or size guess was added.
+
+If kill/wait/join throws, the existing BaseException cleanup still owns the result. A second failed kill/wait retains UNKNOWN_LIFETIMES/lease and raises worker_lifetime_unknown; unconfirmed start keeps its existing start ownership. A confirmed failure-after-start remains worker_failed_after_start. Live collector threads retain UNKNOWN_IO in finally. The new flag cannot turn those paths into successful/drained deadline results. A collector failure arriving during drain still wins over deadline classification.
+
+`raw/controller.py:203–205` now requires exact integer exit0/2 before decode. This also rejects bool/float/string aliases. Controller execute/entry bytes are independently **identical to before**: it first durably appends the terminal receipt with actual exit/code, then reads independent ledger state, rejects non-worker_exited classifications, calls worker_output, checks live ownership and applies the existing ledger override. Thus a requested deadline stop or abnormal exit is not masked by a later empty/invalid JSON error. Unexpected exit remains in the durable receipt; no new receipt schema is introduced. The existing lifecycle reader's fixed-code and integer-range rules accept the new categorical code without weakening cleanup binding.
+
+Reservation, intent, spent ledger, unknown attempt outcome, historical-stage pruning and pair/restart ownership code are untouched. No refused classification clears or retries an invocation. Entry's existing attempt_spent=null on unavailable/unknown results is not reinterpreted as a pristine ledger.
+
+## Authored source coverage and practical limits
+
+The existing provider identity journey adds exact source root, focus/root-reference and text-selection translation, unchanged ordinary button identity/data, repeated/successive full updates, wrong original, normalized-cache refusal, physical collision, missing/duplicate/dangling trees and role refusal. It shares the existing exhaustive alias/reference/disabled/closure/cap journey rather than replacing it. The host's actual handoff journey adds a Bevy-shaped initial root, verifies positive and sanitized full recovery keep that ID, exercises issued alias and physical-root collision against the **actual output slot**, and requires unsafe/missing output not to reach positive mapping. Existing alternate-publisher/quarantine/tombstone checks remain. These authored fixtures are not actual retained COM interfaces or native publication success.
+
+The existing Python exercise's Windows-only controlled Event/Thread/Process adapters call actual run_worker. Static branch inspection confirms they reach natural0/2, unexpected1, real deadline-stop branch, natural-exit race, collector/nonempty-stderr and stdout overflow refusal, retained IO, join-failed, unknown start and failed kill/wait ownership. The clock sequence drives the intended deadline condition without real processes; mocks exercise classification/lifetime logic, not genuine timing, scheduling or OS semantics.
+
+The controlled owned-context/files harness calls actual controller.execute. It records reserved→worker_started→exit_confirmed, instruments the decoder and distinguishes deadline/unexpected exits from normal0/2. Admission is deliberately mocked and the independent MemoryFile ledger is already spent; this proves only local receipt/decoder ordering, not real owned-run authorization. Additional cross-platform worker_output cases guard both observe and Invoke modes before decoding and assert unchanged spent ledger bytes.
+
+No new test registration is added, and **none of the assertions ran**. This source review does not certify syntax/typecheck, actual subprocess behavior or UIA success. Root must integrate the reviewed exact bytes, build, then use fresh owned evidence to assess stable provider root/witness/tree behavior. The historical QA58 stage1/80040201 element/phase and follow-up raw size/exit cause remain unknown; no future result may rewrite that packet. Capture remains unavailable; Invoke/peer/FULL/CI/release gates remain separate.
+
+## Approved exact raw files
+
+| Canonical path | Bytes | SHA256 |
+| --- | ---: | --- |
+| fe-ui/src/native_accessibility/provider_identity.rs |10235 |54713686ffbed4c76b6331b0a6f873a9115f3b8c20a1a087fc96e39de78b44bf |
+| fe-ui/src/native_accessibility/provider_identity_journey.rs |11786 |7a29a12dd9766d49c4b391bd136d08d38dadf1de958801227da1d6bdcceddca0 |
+| fe-ui/src/native_accessibility/AGENTS.md |22966 |3dd8b7de97df60bd0f940b478d1d382bd69a73930ef388d20f4d1116c05d6193 |
+| fractalengine/src/native_window_witness/provider_output.rs |8648 |e95d12b8a2ea7fa8390beb64439deadfb429a5667622c82b2e030a3d4da3b837 |
+| fractalengine/src/native_window_witness/AGENTS.md |12888 |d36defb4b423a8b0fce17de529f7eb0bf8c1cb5b514aa036a83c6bbfd59d01f8 |
+| tools/qa/native_observer/windows.py |12366 |43a288ca5ec187abf1649d169e23cab1cb54805fb008bf14119797dae0e5d891 |
+| tools/qa/native_observer/controller.py |20218 |16e5efe5486816d26ffd1537e9800967c817a05c04d5ee3a749d31b3f827ef80 |
+| tools/qa/native_observer/scenario.py |31642 |a49d5b6955faa5b1c430258ab641903a236a2a4f3ef6ab7deb16309440fc1657 |
+| tools/qa/native_observer/AGENTS.md |37935 |e33022a20b04f3115cc80d448a94a369e7c14cd3b963302f56a504efdd300ecf |
+
+Only this review report was written. Read-only source/primary-SDK/evidence/hash inspection was used; no canonical/candidate edits, implementation parser/tests/formatter/compiler/build, apps/OS/native/API/DB/network or Git mutation occurred. Later integration edits require exact-byte reconciliation.

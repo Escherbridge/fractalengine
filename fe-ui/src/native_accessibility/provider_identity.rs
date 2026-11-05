@@ -173,6 +173,31 @@ pub fn was_issued(id: ak::NodeId) -> bool {
     ledger.issued.iter().any(|issued| issued.alias.provider == id)
 }
 
+/// Keeps the same Window root at the existing Bevy provider identity.
+pub fn with_window_root(update: &ak::TreeUpdate, window_root: ak::NodeId) -> Option<ak::TreeUpdate> {
+    let full = validate(update)?;
+    let source_root = ak::NodeId(bevy_egui::egui::accesskit_root_id().value());
+    if full.root != source_root || full.nodes.get(&full.root)?.role() != ak::Role::Window
+        || was_issued(source_root) || was_issued(window_root)
+        || (window_root != full.root && full.nodes.contains_key(&window_root)) {
+        return None;
+    }
+    let translate = |id| if id == full.root { window_root } else { id };
+    let mut mapped = update.clone();
+    for (id, node) in &mut mapped.nodes {
+        *id = translate(*id);
+        rewrite(node, &translate);
+    }
+    mapped.tree.as_mut()?.root = window_root;
+    mapped.focus = translate(update.focus);
+    let checked = validate(&mapped)?;
+    if checked.root != window_root || checked.nodes.len() != full.nodes.len()
+        || was_issued(window_root) {
+        return None;
+    }
+    Some(mapped)
+}
+
 /// Remaps the same real buttons; epochs identify exact original immutable bindings.
 pub fn remap(
     update: &ak::TreeUpdate,

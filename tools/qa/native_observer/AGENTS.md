@@ -1,5 +1,37 @@
 # Native observer operator contract
 
+## Confirmed worker stop classification
+
+run_worker retains the existing absolute deadline, controller0.2-second cleanup
+reserve, collector limits and confirmed wait/join. When it calls kill because
+that budget expires, its terminal code is worker_deadline_stop_requested rather
+than worker_exited. This records the controller's request, not proof of which
+actor caused death; Windows CPython kill uses TerminateProcess(handle,1), and a
+natural-exit race remains possible. Collector/unfinished-IO refusal takes priority.
+Unknown process/IO lifetimes retain their existing owners and are never replayed.
+
+Controller durably records the same exact ownership/exit receipt first, then
+refuses a deadline-stop code before worker JSON decoding. An unexpected natural
+helper exit also refuses before decode as worker_exit_refused; only exact-int0/2
+are normal worker contract exits. This prevents an empty/invalid JSON message
+from hiding an already-observed abnormal exit. No new receipt schema, output
+content, guessed byte count, native read or increased time budget is introduced.
+Invocation reservation/intent and independent spent/unknown ledger ownership are
+unchanged. The existing exercise checks pre-decode refusal in observe/Invoke
+modes while the actual ledger remains spent. Windows-only controlled fake
+processes/collectors exercise the production parent branch for natural0/2,
+unexpected1, deadline request, natural-exit race, collector/overflow failure,
+retained IO, join failure and unknown start/kill/wait. A separately mocked owned
+context/files harness calls actual controller.execute and requires its three
+durable lifetime phases before decoding, with deadline/unexpected exit never
+reaching the decoder. Only that ordering is covered by mocked admission; it
+does not prove owned-run validation, real timing, native process or UIA behavior.
+
+QA58's historical stage1/80040201 identifies CurrentAutomationId returning the
+SDK's ELEMENTNOTAVAILABLE, not the exact element/phase or root cause. Its separate
+follow-up exit1/json_size_refused lacks a captured stop reason/raw size. These
+records stay unknown; future classification cannot retrospectively resolve them.
+
 ## Retained UIA worker
 
 worker.cpp and worker_protocol.hpp implement only the fixed Windows x64 worker.

@@ -8,6 +8,21 @@ No synthetic-input flag, HTTP floor, clipboard guard or entity role is changed.
 
 ## Frame contract
 
+The host's actual provider handoff gives the one completed Window root the
+existing Bevy Window Entity root ID. Bevy's direct activation handler initially
+returns that fixed provider root; forwarding egui's unrelated root ID would remove
+it while a UIA client still retains it. provider_identity::with_window_root rewrites
+only that real root and all supported references/focus using the existing bounded
+full-tree validator/rewriter. It adds no wrapper node, cached update or target ID.
+The source must be the exact public egui accesskit_root_id().value() identity,
+not any Window-shaped tree or previously normalized cache. Wrong root role,
+incomplete tree, collision with another node or issued private ID refuse. Full
+closure, node count and private root collisions are checked again after rewriting.
+Ordinary buttons and navigation aliases stay unchanged. Normalization is
+not a proof/authority source: snapshot guards, immutable navigation bindings and
+context/window lifetime retirement still apply. Its existing journey covers the
+same root across full updates, root references/focus, collision and invalid input.
+
 The host activates the private context state only when OS accessibility is requested.
 The normal UI root calls begin_pass before widgets and finish_pass after them. Response
 observation records actual IDs, layers, clipped/enabled state and confirmation owners,

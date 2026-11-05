@@ -1,0 +1,40 @@
+{
+  "copies": [
+    {
+      "source": ".omc/research/qa58-native-root-transport-v1/manifest.json",
+      "file": "candidate-manifest.json",
+      "bytes": 6423,
+      "sha256": "a842949e6e034a8fbc175c25fbc6908583cdf7b7ad350a9c5ab195c4490f0862"
+    },
+    {
+      "source": ".omc/research/qa58-native-root-transport-v1/source.patch",
+      "file": "source.patch",
+      "bytes": 26281,
+      "sha256": "6d3a05cb0e43b19d21a860bfd376f2d82b427c6749f96a7d46f8ca9c380b40b1"
+    },
+    {
+      "source": ".omc/research/qa58-native-root-transport-v1/source-report.md",
+      "file": "source-report.txt",
+      "bytes": 5386,
+      "sha256": "2d1c318a4033635e59af99d21ea3afcb0ec505ae96deb1596e6bbba203b77123"
+    },
+    {
+      "source": ".omc/research/qa58-native-root-transport-source-review.md",
+      "file": "correctness-review.txt",
+      "bytes": 12851,
+      "sha256": "4c269186bc254135b8e4f4f09478fa52a6656814fb97e6e4740d93933cd2221a"
+    },
+    {
+      "source": ".omc/research/qa58-native-root-transport-security-review.md",
+      "file": "security-review.txt",
+      "bytes": 11925,
+      "sha256": "30acfd4820b27f14175b65fa6193fca78d13060287ed11069ffd9c28d06c734b"
+    },
+    {
+      "source": ".omc/research/qa58-native-root-transport-v1-integration-receipt.json",
+      "file": "integration-receipt.json",
+      "bytes": 2816,
+      "sha256": "112fe6fdee4d3cddb968c115275f51e9f79ca2fe07348ebd4917ac14323e3b05"
+    }
+  ]
+}

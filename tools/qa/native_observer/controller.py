@@ -201,6 +201,7 @@ def validate_provider_failure(sample):
 
 
 def worker_output(raw, *, observe, helper_exit_code):
+    require(type(helper_exit_code) is int and helper_exit_code in (0, 2), "worker_exit_refused")
     value = decode(raw, MAX_OUTPUT)
     require(set(value) in (OUTPUT_KEYS, OUTPUT_KEYS | {"service_style_u32"}, OUTPUT_KEYS | {"service_signature"},
                            OUTPUT_KEYS | {"provider_failure"})

@@ -1,0 +1,175 @@
+{
+  "kind": "fractalengine-source-candidate-v1",
+  "source_baseline_commit": "be081abed05be3c623b93bef33d4dd31d43d9b46",
+  "scope": "isolated approved stable actual root continuity and parent stop classification; canonical source untouched",
+  "files": [
+    {
+      "canonical": "fe-ui/src/native_accessibility/provider_identity.rs",
+      "before": {
+        "path": "before/fe-ui/src/native_accessibility/provider_identity.rs",
+        "bytes": 9150,
+        "sha256": "f0b01f529e0f54b2e711237ef01f91b5201209487f8194c4a1eda9db9b695b65"
+      },
+      "raw": {
+        "path": "raw/fe-ui/src/native_accessibility/provider_identity.rs",
+        "bytes": 10235,
+        "sha256": "54713686ffbed4c76b6331b0a6f873a9115f3b8c20a1a087fc96e39de78b44bf"
+      },
+      "canonical_matches_before": true,
+      "added_lines": 25,
+      "removed_lines": 0
+    },
+    {
+      "canonical": "fe-ui/src/native_accessibility/provider_identity_journey.rs",
+      "before": {
+        "path": "before/fe-ui/src/native_accessibility/provider_identity_journey.rs",
+        "bytes": 8652,
+        "sha256": "07cd61ac74dd1cba5468f4210be04db7146492ed8ed785691e4daf1d612d26de"
+      },
+      "raw": {
+        "path": "raw/fe-ui/src/native_accessibility/provider_identity_journey.rs",
+        "bytes": 11786,
+        "sha256": "7a29a12dd9766d49c4b391bd136d08d38dadf1de958801227da1d6bdcceddca0"
+      },
+      "canonical_matches_before": true,
+      "added_lines": 51,
+      "removed_lines": 0
+    },
+    {
+      "canonical": "fe-ui/src/native_accessibility/AGENTS.md",
+      "before": {
+        "path": "before/fe-ui/src/native_accessibility/AGENTS.md",
+        "bytes": 21828,
+        "sha256": "407188c5f48bb9e3fca3e9844a6403834799585c802b9de4e6fd4e7485341da3"
+      },
+      "raw": {
+        "path": "raw/fe-ui/src/native_accessibility/AGENTS.md",
+        "bytes": 22966,
+        "sha256": "3dd8b7de97df60bd0f940b478d1d382bd69a73930ef388d20f4d1116c05d6193"
+      },
+      "canonical_matches_before": true,
+      "added_lines": 15,
+      "removed_lines": 0
+    },
+    {
+      "canonical": "fractalengine/src/native_window_witness/provider_output.rs",
+      "before": {
+        "path": "before/fractalengine/src/native_window_witness/provider_output.rs",
+        "bytes": 7109,
+        "sha256": "174bb0397eda4967a93821cfcf9f2338423e66c16c450fe70efd339a29a60208"
+      },
+      "raw": {
+        "path": "raw/fractalengine/src/native_window_witness/provider_output.rs",
+        "bytes": 8648,
+        "sha256": "e95d12b8a2ea7fa8390beb64439deadfb429a5667622c82b2e030a3d4da3b837"
+      },
+      "canonical_matches_before": true,
+      "added_lines": 28,
+      "removed_lines": 6
+    },
+    {
+      "canonical": "fractalengine/src/native_window_witness/AGENTS.md",
+      "before": {
+        "path": "before/fractalengine/src/native_window_witness/AGENTS.md",
+        "bytes": 11371,
+        "sha256": "27fb73f78f06f793c0a060f683382c8b9ea407e1ad3a3446b510c05c91baea08"
+      },
+      "raw": {
+        "path": "raw/fractalengine/src/native_window_witness/AGENTS.md",
+        "bytes": 12888,
+        "sha256": "d36defb4b423a8b0fce17de529f7eb0bf8c1cb5b514aa036a83c6bbfd59d01f8"
+      },
+      "canonical_matches_before": true,
+      "added_lines": 23,
+      "removed_lines": 0
+    },
+    {
+      "canonical": "tools/qa/native_observer/windows.py",
+      "before": {
+        "path": "before/tools/qa/native_observer/windows.py",
+        "bytes": 12188,
+        "sha256": "81ed839f7ad4088e1bdbe4a1ac42926967edb2e4bc39e4774c07710a39ecee61"
+      },
+      "raw": {
+        "path": "raw/tools/qa/native_observer/windows.py",
+        "bytes": 12366,
+        "sha256": "43a288ca5ec187abf1649d169e23cab1cb54805fb008bf14119797dae0e5d891"
+      },
+      "canonical_matches_before": true,
+      "added_lines": 4,
+      "removed_lines": 1
+    },
+    {
+      "canonical": "tools/qa/native_observer/controller.py",
+      "before": {
+        "path": "before/tools/qa/native_observer/controller.py",
+        "bytes": 20121,
+        "sha256": "9b3eb778c98bf1f4f9f3464f248ad0162dd4b72d1113fcf9dcb2a8089ead2c87"
+      },
+      "raw": {
+        "path": "raw/tools/qa/native_observer/controller.py",
+        "bytes": 20218,
+        "sha256": "16e5efe5486816d26ffd1537e9800967c817a05c04d5ee3a749d31b3f827ef80"
+      },
+      "canonical_matches_before": true,
+      "added_lines": 1,
+      "removed_lines": 0
+    },
+    {
+      "canonical": "tools/qa/native_observer/scenario.py",
+      "before": {
+        "path": "before/tools/qa/native_observer/scenario.py",
+        "bytes": 23600,
+        "sha256": "43f8d3a90d3355e1001a0d24b6b10eb454d97ded8cc94dffd9447b7d385a39c5"
+      },
+      "raw": {
+        "path": "raw/tools/qa/native_observer/scenario.py",
+        "bytes": 31642,
+        "sha256": "a49d5b6955faa5b1c430258ab641903a236a2a4f3ef6ab7deb16309440fc1657"
+      },
+      "canonical_matches_before": true,
+      "added_lines": 123,
+      "removed_lines": 0
+    },
+    {
+      "canonical": "tools/qa/native_observer/AGENTS.md",
+      "before": {
+        "path": "before/tools/qa/native_observer/AGENTS.md",
+        "bytes": 35755,
+        "sha256": "f330612d8754930329c5dbd7bb781b4b4d25075d82ac22dda0d612f64e68d490"
+      },
+      "raw": {
+        "path": "raw/tools/qa/native_observer/AGENTS.md",
+        "bytes": 37935,
+        "sha256": "e33022a20b04f3115cc80d448a94a369e7c14cd3b963302f56a504efdd300ecf"
+      },
+      "canonical_matches_before": true,
+      "added_lines": 32,
+      "removed_lines": 0
+    }
+  ],
+  "patch": {
+    "path": "source.patch",
+    "bytes": 26281,
+    "sha256": "6d3a05cb0e43b19d21a860bfd376f2d82b427c6749f96a7d46f8ca9c380b40b1"
+  },
+  "anchors": [
+    {
+      "path": ".omc/research/qa58-native-failure-source-trace.md",
+      "bytes": 7673,
+      "sha256": "c699c47a9b9bf05120b8746bcaf2ad3cf11d01f70c726ff05798d5ae8a69140b"
+    },
+    {
+      "path": ".omc/research/qa58-native-root-transport-design-review.md",
+      "bytes": 12894,
+      "sha256": "fbfe2a4f3d8a83c944d555f86984e9f31681bb39b28114c79f334c1df9c9ed33"
+    },
+    {
+      "path": "qa/passes/58/packet-manifest.json",
+      "bytes": 2505,
+      "sha256": "20612f50d048ad4e02b5cfd83b7714cc8b83c2fa8f56dc0abeb536c2a15bb3d4"
+    }
+  ],
+  "controller_execute_and_entry_byte_exact": true,
+  "execution": "Source/file/text/hash operations only; no implementation parser/tests/formatter/compiler/build/apps/OS/native/API/DB/network/Git mutation. Authored fake journeys unexecuted."
+}

@@ -216,6 +216,7 @@ def run_worker(lease, helper, payload, deadline, on_started):
             failure.set()
 
     threads = []
+    deadline_stop_requested = False
     try:
         require(not start_state["failed"] and time.monotonic() < deadline - 0.2, "worker_start_refused")
         identity = lease.process_identity(process._handle)
@@ -230,12 +231,14 @@ def run_worker(lease, helper, payload, deadline, on_started):
         while process.poll() is None and not failure.is_set() and time.monotonic() < deadline - 0.2:
             failure.wait(min(0.01, max(0, deadline - 0.2 - time.monotonic())))
         if process.poll() is None:
+            deadline_stop_requested = not failure.is_set()
             process.kill()
         remaining = max(0, deadline - time.monotonic())
         process.wait(timeout=remaining)
         for thread in threads:
             thread.join(timeout=max(0, deadline - time.monotonic()))
-        code = "worker_output_refused" if failure.is_set() or any(thread.is_alive() for thread in threads) else "worker_exited"
+        code = ("worker_output_refused" if failure.is_set() or any(thread.is_alive() for thread in threads)
+                else "worker_deadline_stop_requested" if deadline_stop_requested else "worker_exited")
         return WorkerResult(process, identity, bytes(output), process.returncode, code)
     except BaseException:
         try:
