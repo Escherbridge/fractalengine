@@ -1,6 +1,0 @@
-{
-  "source_sha256": "f48681a8aceb7601f5202b9096e9d36ccf12e384b0e2d89a3a94df9d4d241166",
-  "lines": [
-    "2026-11-03T04:57:25.489906Z  INFO fe_ui::verse_manager::db_results::roles: Local role resolved at VERSE#01M6D0VZ11XK62MXZ61HENTBTD: viewer (Viewer)"
-  ]
-}

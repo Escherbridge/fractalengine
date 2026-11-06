@@ -1,8 +1,0 @@
-{
-  "previous_attempt": "qa/passes/54/rich-data/20261104-174918-156/rich-fleet-v1/summary.json",
-  "previous_attempt_stopped_at": "preflight; no scenario object writes",
-  "same_owned_run": true,
-  "readiness_evidence": "qa/passes/54/owner-rich-catalog-after-navigation.jsonl",
-  "scope": "same fresh petal, now opened in owned verse",
-  "limits": "New attempt; not erasure or success for failed QA54"
-}

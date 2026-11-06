@@ -1,2 +1,0 @@
-{"commands": [{"button": "left", "from": {"x": 220.0, "y": 390.0}, "kind": "pointer_drag", "to": {"x": 250.0, "y": 390.0}}], "outcome": {"commands_applied": 1, "ok": true, "wait_frames_used": 10}, "token_verse": "01M6KKZHT5KFQR3JSMM4P9DHWM"}
-{"generation_changed": false, "log_after": {"generation": 1, "seq": 687}, "log_watermark": {"generation": 1, "seq": 685}, "new_logs": [], "retention": {"possible_gap": false, "seq_delta": 2, "source_derived_capacity": 2000}}

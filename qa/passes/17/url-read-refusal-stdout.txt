@@ -1,1 +1,0 @@
-2026-11-02T19:33:41.364177Z  WARN fe_database: ReadNodeUrl refused or failed node_id="01M6D0VZSPGMEPRBB47TSJB80V" error=The query was not executed due to a failed transaction

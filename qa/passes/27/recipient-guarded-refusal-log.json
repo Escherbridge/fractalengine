@@ -1,7 +1,0 @@
-{
-  "source_sha256": "76af7060998414e3a05ee0b256b2a4652d96a2169f27e8303feb1da029a7dec0",
-  "lines": [
-    "2026-11-03T04:20:36.600533Z  INFO fractalengine::input_bridge: agent input injection started correlation_id=01M6FT6E3G2632MVV43XNQE6FG commands=3 frames=5 wait_frames=0",
-    "2026-11-03T04:20:36.653228Z  INFO fractalengine::input_bridge: agent input injection refused/failed code=\"guarded_join_changed\""
-  ]
-}

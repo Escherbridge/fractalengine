@@ -1,9 +1,0 @@
-{
-  "node_id": "01M6CW3ZGTGHQQXRT3DGDQ2GCY",
-  "properties": {
-    "00_complex": "{\"sensor\":{\"id\":\"probe-7\",\"units\":\"m\",\"calibration\":{\"offset\":1.25,\"valid\":true}},\"samples\":[{\"t\":\"2026-11-01T00:00:00Z\",\"value\":10.5},{\"t\":\"2026-11-01T00:01:00Z\",\"value\":12}],\"tags\":[\"qa\",\"nested\"],\"meta\":null}",
-    "qa_fixture": "terrain",
-    "qa_role": "value",
-    "qa_value": 10
-  }
-}

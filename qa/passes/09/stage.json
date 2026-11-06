@@ -1,8 +1,0 @@
-﻿{
-    "built_at":  "2026-11-02T04:29:29.9211699Z",
-    "exe_sha256":  "0340D002452E181F8E921AAD015FDBA6F423C5236B23A776D2FD5D6ABC656C10",
-    "source_dirty":  true,
-    "kind":  "fractalengine-qa-stage-v1",
-    "source_fingerprint":  "695351D7316BB10FAE098527ABDD2A9CC3031FD9963AE01AE74B64D48130C66B",
-    "source_commit":  "b190d25261ad750e490bd12ee4cdeeadab3ab3db"
-}

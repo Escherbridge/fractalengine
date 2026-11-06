@@ -1,3 +1,0 @@
-{"accepted": true, "action": {"action": "ui_scale", "factor": 1.0}}
-{"open_windows": ["Inspector", "Import GLTF", "Import GLTF Model"], "window_state": {"height": 640, "maximized": false, "minimized": false, "ui_scale": 1.0, "width": 1024}}
-{"generation_changed": false, "log_after": {"generation": 1, "seq": 610}, "log_watermark": {"generation": 1, "seq": 610}, "new_logs": [], "retention": {"possible_gap": false, "seq_delta": 0, "source_derived_capacity": 2000}}

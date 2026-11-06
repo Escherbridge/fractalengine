@@ -1,2 +1,0 @@
-{"commands": [{"key": "ControlLeft", "kind": "key_press"}, {"key": "ShiftLeft", "kind": "key_press"}, {"key": "KeyZ", "kind": "key_press"}], "outcome": {"commands_applied": 3, "ok": true, "wait_frames_used": 5}, "token_verse": "01M6MGT3K29BXG6YQ7W9QY0B2E"}
-{"generation_changed": false, "log_after": {"generation": 2, "seq": 345}, "log_watermark": {"generation": 2, "seq": 343}, "new_logs": [], "retention": {"possible_gap": false, "seq_delta": 2, "source_derived_capacity": 2000}}

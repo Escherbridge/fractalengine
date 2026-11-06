@@ -1,8 +1,0 @@
-Fatal error: Could not initialize database.
-Schema application failed: Parse error: FLEXIBLE can only be used with types containing object
- --> [7:68]
-  |
-7 | ... TYPE any FLEXIBLE;
-  |              ^^^^^^^^
-
-Please ensure the 'data/' directory is writable and the path is valid.

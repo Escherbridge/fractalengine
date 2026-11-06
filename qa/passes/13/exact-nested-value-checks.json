@@ -1,9 +1,0 @@
-{
-  "node_id": "01M6E8RJGKPZM5N24CZB7JTEYG",
-  "sequence": 9007199254740993,
-  "python_json_type": "int",
-  "expected": 9007199254740993,
-  "nested_null_preserved": true,
-  "nested_boolean_preserved": true,
-  "note": "Direct strict checks supplement the driver numeric-tolerance comparator."
-}

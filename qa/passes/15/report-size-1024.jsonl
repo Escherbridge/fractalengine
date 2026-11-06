@@ -1,3 +1,0 @@
-{"accepted": true, "action": {"action": "size", "height": 768, "width": 1024}, "close_requires_confirmation": true}
-{"open_windows": ["Volume report"], "window_state": {"height": 768, "maximized": false, "minimized": false, "ui_scale": 1.0, "width": 1024}}
-{"generation_changed": false, "log_after": {"generation": 1, "seq": 290}, "log_watermark": {"generation": 1, "seq": 290}, "new_logs": [], "retention": {"possible_gap": false, "seq_delta": 0, "source_derived_capacity": 2000}}

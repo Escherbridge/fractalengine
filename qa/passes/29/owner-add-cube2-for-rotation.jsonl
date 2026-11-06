@@ -1,2 +1,0 @@
-{"generation_changed": false, "log_after": {"generation": 1, "seq": 775}, "log_watermark": {"generation": 1, "seq": 774}, "new_logs": [], "retention": {"possible_gap": false, "seq_delta": 1, "source_derived_capacity": 2000}}
-{"code": "locator_not_found", "message": "no enabled visible widget named Select node Cube 2", "refused": true, "status": 0}

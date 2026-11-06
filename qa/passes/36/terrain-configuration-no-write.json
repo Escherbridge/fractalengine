@@ -1,6 +1,0 @@
-{
-  "terrain_byte_identical": true,
-  "before_sha256": "4e5e7a15eca658d6577dba2c0710bd7e3e6507427c1c4dcbc04967b9c63273b7",
-  "after_sha256": "4e5e7a15eca658d6577dba2c0710bd7e3e6507427c1c4dcbc04967b9c63273b7",
-  "scope": "Rectangle/radius/delta/material configuration before arming; not all QA0024 variants"
-}

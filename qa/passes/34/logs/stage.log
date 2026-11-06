@@ -1,9 +1,0 @@
-[07:19:56.986] Building fractalengine and offline QA terrain helpers...
-   Compiling fe-ui v0.1.0 (C:\Users\atooz\Programming\fractalengine-workspace\fractalengine\fe-ui)
-   Compiling fractalengine v0.1.0 (C:\Users\atooz\Programming\fractalengine-workspace\fractalengine\fractalengine)
-    Finished `dev` profile [unoptimized] target(s) in 3m 11s
-    Finished `dev` profile [unoptimized] target(s) in 8.24s
-    Finished `dev` profile [unoptimized] target(s) in 1.95s
-    Finished `dev` profile [unoptimized] target(s) in 5.37s
-[07:23:29.203] Staged 9cdd3132 -> C:\Users\atooz\Programming\fractalengine-workspace\fractalengine\.qa\stage\9cdd3132-20261104072325049 (223.8s total)
-C:\Users\atooz\Programming\fractalengine-workspace\fractalengine\.qa\stage\9cdd3132-20261104072325049

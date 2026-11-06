@@ -1,2 +1,0 @@
-{"generation_changed": false, "log_after": {"generation": 1, "seq": 355}, "log_watermark": {"generation": 1, "seq": 355}, "new_logs": [], "retention": {"possible_gap": false, "seq_delta": 0, "source_derived_capacity": 2000}}
-{"code": "locator_not_found", "message": "no enabled visible widget named Asset", "refused": true, "status": 0}

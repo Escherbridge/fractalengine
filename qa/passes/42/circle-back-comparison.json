@@ -1,8 +1,0 @@
-{
-  "checks": {
-    "terrain_raw_unchanged": true,
-    "hierarchy_raw_unchanged": true,
-    "left_petal": true
-  },
-  "limits": "Circle Back only; no journal comparison or other tool/held-gesture acceptance."
-}

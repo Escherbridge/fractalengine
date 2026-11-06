@@ -1,8 +1,0 @@
-[13:01:04.112] Building fractalengine and offline QA terrain helpers...
-   Compiling fractalengine v0.1.0 (C:\Users\atooz\Programming\fractalengine-workspace\fractalengine\fractalengine)
-    Finished `dev` profile [unoptimized] target(s) in 1m 11s
-    Finished `dev` profile [unoptimized] target(s) in 5.96s
-    Finished `dev` profile [unoptimized] target(s) in 1.23s
-    Finished `dev` profile [unoptimized] target(s) in 2.54s
-[13:02:29.180] Staged d8da3a46 -> C:\Users\atooz\Programming\fractalengine-workspace\fractalengine\.qa\stage\d8da3a46-20261104130225338 (86.5s total)
-C:\Users\atooz\Programming\fractalengine-workspace\fractalengine\.qa\stage\d8da3a46-20261104130225338

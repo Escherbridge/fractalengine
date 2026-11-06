@@ -1,7 +1,0 @@
-{
-  "cancel_retained_row": true,
-  "confirm_removed_row": true,
-  "secret_cleared_after_tab_leave": true,
-  "host_clipboard_accessed": false,
-  "scope": "focused native token metadata controls"
-}

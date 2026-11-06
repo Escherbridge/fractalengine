@@ -1,3 +1,0 @@
-﻿[19:34:49.614] Recorded root is already gone; checking only explicitly recorded descendant identities
-WARNING: Children born after the last captured snapshot cannot be proven absent after root exit
-[19:34:49.979] Stopped. Run dir kept at C:\Users\atooz\Programming\fractalengine-workspace\fractalengine\.qa\run\20261101-191920-658
