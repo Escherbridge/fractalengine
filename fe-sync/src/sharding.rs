@@ -428,6 +428,9 @@ pub struct VerseFabric {
     /// DIDs whose `role_at` rose since the last materialization, drained by
     /// the sync thread's command loop (§2.5 re-read on empowerment).
     reread_queue: VecDeque<String>,
+    /// DIDs whose `role_at` fell since the last drain (QA-0121): the sync
+    /// thread re-judges the scene rows they wrote against the new view.
+    rejudge_queue: VecDeque<String>,
     /// Rows gated on a role/petal view that has not converged yet.
     quarantine: VecDeque<QuarantinedRow>,
     quarantine_evicted: u64,
@@ -455,6 +458,7 @@ impl Default for VerseFabric {
             refused_contest_claims: HashMap::new(),
             petal_claim_refusals: 0,
             reread_queue: VecDeque::new(),
+            rejudge_queue: VecDeque::new(),
             quarantine: VecDeque::new(),
             quarantine_evicted: 0,
             holders: BTreeMap::new(),
@@ -1382,6 +1386,11 @@ impl VerseFabric {
                 self.role_statements.remove(&key);
             }
         }
+        for did in &fallen {
+            if !self.rejudge_queue.contains(did) {
+                self.rejudge_queue.push_back(did.clone());
+            }
+        }
         // Mappings before holders: a holder's scope comes from the map.
         self.reverdict_petal_mappings(verse_id, Some(&fallen));
         self.reverdict_holders(verse_id);
@@ -1394,6 +1403,13 @@ impl VerseFabric {
     /// straight from the local replica through the inbound apply path.
     pub fn drain_reread_queue(&mut self) -> Vec<String> {
         self.reread_queue.drain(..).collect()
+    }
+
+    /// Drain the DIDs whose `role_at` fell since the last drain — the QA-0121
+    /// re-judge seam: every scene row they wrote is re-decided from the
+    /// replica's entries under the new role view, on every peer alike.
+    pub fn drain_rejudge_queue(&mut self) -> Vec<String> {
+        self.rejudge_queue.drain(..).collect()
     }
 
     /// RP-5 closes `AGENTS.md` §transport-admission-control item 5: a
@@ -2357,6 +2373,14 @@ mod tests {
             fabric.drain_reread_queue().contains(&editor.to_string()),
             "the newly-empowered editor must be queued for the re-read"
         );
+        // QA-0121: the owner's revoke queues the editor for the scene re-judge,
+        // once; a re-grant queues it for the re-read again.
+        let petal_scope = fe_policy::build_scope("v1", Some("f1"), Some("p1"));
+        fabric.note_entry("v1", &role_change(&petal_scope, editor, OWNER, "editor", true, 2));
+        assert_eq!(fabric.drain_rejudge_queue(), vec![editor.to_string()]);
+        assert!(fabric.drain_rejudge_queue().is_empty());
+        fabric.note_entry("v1", &role_change(&petal_scope, editor, OWNER, "editor", false, 3));
+        assert!(fabric.drain_reread_queue().contains(&editor.to_string()));
     }
 
     #[test]

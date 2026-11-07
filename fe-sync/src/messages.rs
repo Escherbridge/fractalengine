@@ -56,6 +56,13 @@ pub enum SyncCommand {
     },
     /// Close a previously-opened verse replica.
     CloseVerseReplica { verse_id: String },
+    /// Remember how to open `verse_id`'s replica without opening it (QA-0120):
+    /// a write made while it is closed then opens a bounded publication lease.
+    RememberVerseReplica {
+        verse_id: String,
+        namespace_id: String,
+        namespace_secret: Option<String>,
+    },
     /// Write a row entry to the verse's replica.
     ///
     /// The `content_hash` references a blob in the shared blob store containing

@@ -25,6 +25,8 @@ pub(crate) use transfer::is_scene_row;
 use transfer::{fetch, finish_fetch, publish, JobLease};
 const JOB_TIMEOUT: Duration = Duration::from_secs(120);
 const MAX_JOBS: usize = 68;
+/// Retries after a failed row-arrival prefetch (back-off 1, 2, 4, 8, 16 s).
+const PREFETCH_RETRIES: u32 = 5;
 
 #[derive(Clone)]
 struct OpenVerse {
@@ -248,6 +250,38 @@ impl SceneAssetJobs {
         self.fetch_owned(verse, hash, None);
     }
 
+    /// QA-0118: fetch a scene blob as soon as its replicated metadata row
+    /// arrives, before any petal is opened. Unowned; retried with bounded
+    /// back-off while the Verse stays open. Bytes already held are skipped.
+    pub(crate) fn prefetch(&mut self, verse: &str, hash: BlobHash) {
+        if self.blobs.has_blob(&hash) {
+            return;
+        }
+        let Some(generation) = self
+            .open
+            .read()
+            .unwrap_or_else(|e| e.into_inner())
+            .get(verse)
+            .map(|lease| lease.generation)
+        else {
+            return;
+        };
+        tracing::info!(
+            verse,
+            hash = %fe_runtime::blob_store::hash_to_hex(&hash),
+            "scene asset row arrived; prefetching its blob"
+        );
+        self.enqueue_with(
+            Job::Fetch {
+                verse: verse.into(),
+                hash,
+                generation,
+            },
+            None,
+            true,
+        );
+    }
+
     pub(crate) fn fetch_owned(&mut self, verse: &str, hash: BlobHash, request_id: Option<String>) {
         if request_id
             .as_ref()
@@ -333,6 +367,10 @@ impl SceneAssetJobs {
     }
 
     fn enqueue(&mut self, key: Job, request_id: Option<String>) {
+        self.enqueue_with(key, request_id, false);
+    }
+
+    fn enqueue_with(&mut self, key: Job, request_id: Option<String>, prefetch: bool) {
         while self.jobs.try_join_next().is_some() {}
         let lease = self
             .open
@@ -409,31 +447,52 @@ impl SceneAssetJobs {
         self.jobs.spawn(async move {
             let deadline = Instant::now() + JOB_TIMEOUT;
             let future = async {
-                let job_lease = JobLease {
-                    stop: lease.stop.clone(),
-                    io_owner: Arc::new(slots.acquire_owned().await?),
-                };
-                let work = match &key {
+                match &key {
                     Job::PublishRow { verse, hash, generation } => {
+                        let job_lease = JobLease {
+                            stop: lease.stop.clone(),
+                            io_owner: Arc::new(slots.clone().acquire_owned().await?),
+                        };
                         let record_id = publish(&blobs, &transport, &gate, &db, verse, *hash, &job_lease).await?;
                         publications.try_send(SceneAssetPublication {
                             verse: verse.clone(), row_hash: *hash, record_id, generation: *generation,
                         }).map_err(|error| anyhow::anyhow!("Scene asset metadata publication queue unavailable: {error}"))?;
-                        None
+                        Ok::<_, anyhow::Error>((job_lease, None))
                     }
                     Job::Fetch { verse, hash, .. } => {
-                        let permit = admit_job(&db, verse, *hash, SceneAssetTransferPurpose::Fetch).await?;
-                        // Subscription startup and a newly joined peer may settle after metadata arrives.
-                        for attempt in 0..20 {
-                            if lease.providers().is_ok_and(|providers| !providers.is_empty()) { break; }
-                            if attempt < 19 { tokio::time::sleep(Duration::from_millis(100)).await; }
+                        // A prefetch retries without holding one of the four IO slots while it waits.
+                        let mut attempt = 0;
+                        loop {
+                            let job_lease = JobLease {
+                                stop: lease.stop.clone(),
+                                io_owner: Arc::new(slots.clone().acquire_owned().await?),
+                            };
+                            let tried = async {
+                                let permit = admit_job(&db, verse, *hash, SceneAssetTransferPurpose::Fetch).await?;
+                                // Subscription startup and a newly joined peer may settle after metadata arrives.
+                                for attempt in 0..20 {
+                                    if lease.providers().is_ok_and(|providers| !providers.is_empty()) { break; }
+                                    if attempt < 19 { tokio::time::sleep(Duration::from_millis(100)).await; }
+                                }
+                                let providers = lease.providers()?;
+                                let bytes = fetch(&transport, &gate, verse, *hash, &permit, &providers, &job_lease).await?;
+                                Ok::<_, anyhow::Error>((permit, bytes))
+                            }.await;
+                            match tried {
+                                Ok(work) => break Ok((job_lease, Some(work))),
+                                Err(error) if prefetch && attempt < PREFETCH_RETRIES => {
+                                    drop(job_lease);
+                                    let delay = Duration::from_secs(1 << attempt);
+                                    attempt += 1;
+                                    tracing::info!(verse, hash = %fe_runtime::blob_store::hash_to_hex(hash), attempt, ?delay,
+                                        "scene asset prefetch failed: {error:#}; retrying");
+                                    tokio::time::sleep(delay).await;
+                                }
+                                Err(error) => break Err(error),
+                            }
                         }
-                        let providers = lease.providers()?;
-                        let bytes = fetch(&transport, &gate, verse, *hash, &permit, &providers, &job_lease).await?;
-                        Some((permit, bytes))
                     }
-                };
-                Ok::<_, anyhow::Error>((job_lease, work))
+                }
             };
             let result = tokio::select! {
                 _ = lease.stop.cancelled() => Err(anyhow::anyhow!("Scene asset transfer cancelled because the Verse closed or changed")),

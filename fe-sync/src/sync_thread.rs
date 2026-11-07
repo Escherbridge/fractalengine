@@ -152,6 +152,126 @@ impl PendingWrites {
     }
 }
 
+/// How long a publication lease keeps a self-opened replica after its last write.
+const PUBLICATION_LEASE: std::time::Duration = std::time::Duration::from_secs(120);
+
+/// Remembered open parameters of one verse replica (QA-0120).
+#[derive(Clone)]
+struct ReplicaOpenParams {
+    namespace_id: String,
+    namespace_secret: Option<String>,
+    bootstrap_peers: Vec<String>,
+}
+
+/// QA-0120 publication leases: a write retained for a closed verse replica
+/// re-opens it (with the parameters of its last open or the host's
+/// `RememberVerseReplica`) until [`PUBLICATION_LEASE`] after the last write,
+/// so a revoke made from the verse list reaches peers now, not at the owner's
+/// next visit. A host `OpenVerseReplica` takes ownership of the replica.
+#[derive(Default)]
+struct PublicationLeases {
+    known: HashMap<String, ReplicaOpenParams>,
+    /// Self-opened replicas and their expiry.
+    leased: HashMap<String, std::time::Instant>,
+    /// Lease opens queued on the command channel, not yet handled.
+    opening: std::collections::HashSet<String>,
+}
+
+impl PublicationLeases {
+    fn remember(
+        &mut self,
+        verse_id: String,
+        namespace_id: String,
+        namespace_secret: Option<String>,
+        bootstrap_peers: Vec<String>,
+    ) {
+        if self.known.len() < 4096 || self.known.contains_key(&verse_id) {
+            self.known.insert(
+                verse_id,
+                ReplicaOpenParams {
+                    namespace_id,
+                    namespace_secret,
+                    bootstrap_peers,
+                },
+            );
+        }
+    }
+
+    /// An `OpenVerseReplica` is being handled: the lease's own, or the host taking over.
+    fn opened(
+        &mut self,
+        verse_id: &str,
+        namespace_id: &str,
+        namespace_secret: &Option<String>,
+        bootstrap_peers: &[String],
+    ) {
+        if !self.opening.remove(verse_id) {
+            self.leased.remove(verse_id);
+            self.remember(
+                verse_id.to_string(),
+                namespace_id.to_string(),
+                namespace_secret.clone(),
+                bootstrap_peers.to_vec(),
+            );
+        }
+    }
+
+    /// A write was handled; returns the open command when it needs a lease.
+    fn write(
+        &mut self,
+        verse_id: &str,
+        replica_open: bool,
+        now: std::time::Instant,
+    ) -> Option<SyncCommand> {
+        if let Some(expiry) = self.leased.get_mut(verse_id) {
+            *expiry = now + PUBLICATION_LEASE;
+            return None;
+        }
+        if replica_open || self.opening.contains(verse_id) {
+            return None;
+        }
+        let params = self.known.get(verse_id)?.clone();
+        self.opening.insert(verse_id.to_string());
+        self.leased
+            .insert(verse_id.to_string(), now + PUBLICATION_LEASE);
+        Some(SyncCommand::OpenVerseReplica {
+            verse_id: verse_id.to_string(),
+            namespace_id: params.namespace_id,
+            namespace_secret: params.namespace_secret,
+            bootstrap_peers: params.bootstrap_peers,
+        })
+    }
+
+    fn any_open(&self) -> bool {
+        !self.leased.is_empty()
+    }
+
+    /// Leases past expiry, removed; their replicas are closed by the caller.
+    fn expired(&mut self, now: std::time::Instant) -> Vec<String> {
+        let expired: Vec<String> = self
+            .leased
+            .iter()
+            .filter(|(verse, expiry)| **expiry <= now && !self.opening.contains(*verse))
+            .map(|(verse, _)| verse.clone())
+            .collect();
+        for verse in &expired {
+            self.leased.remove(verse);
+        }
+        expired
+    }
+}
+
+/// Queue a lease's own open behind the host's commands (FIFO).
+fn send_lease_command(tx: &tokio::sync::mpsc::WeakSender<SyncCommand>, command: SyncCommand) {
+    let Some(tx) = tx.upgrade() else {
+        tracing::debug!("Publication lease command dropped — sync thread stopping");
+        return;
+    };
+    if let Err(error) = tx.try_send(command) {
+        tracing::warn!("Publication lease command not queued: {error}");
+    }
+}
+
 /// Send a [`SyncEvent`] back to the main thread, warning on failure —
 /// never a bare `.ok()` (§warn-on-send-failure).
 fn send_sync_event(evt_tx: &dyn EventSink, event: SyncEvent) {
@@ -772,6 +892,11 @@ pub fn spawn_sync_thread_with_transport(
             // F21/M2: writes retained for verses whose replica is not open
             // yet, republished after the open (see PendingWrites).
             let mut pending_writes = PendingWrites::default();
+            // QA-0120: how to open each known verse, and the replicas this
+            // thread opened itself to publish a write made while closed.
+            let mut publication_leases = PublicationLeases::default();
+            let mut lease_tick = tokio::time::interval(std::time::Duration::from_secs(5));
+            lease_tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
 
             // M2/F6: per-verse timeseries fabric (settings from the verse
             // manifest, peer declarations, shard ledger). Sync-thread state,
@@ -801,6 +926,8 @@ pub fn spawn_sync_thread_with_transport(
             // bridge blocks while the sync thread is busy).
             let (async_cmd_tx, mut async_cmd_rx) =
                 tokio::sync::mpsc::channel::<SyncCommand>(256);
+            // Weak: a lease's own open/close never keeps the command loop alive.
+            let lease_cmd_tx = async_cmd_tx.downgrade();
             let forwarder_stop = fe_runtime::service_lifecycle::StopSignal::default();
             let command_forwarder = {
                 let cmd_rx = cmd_rx;
@@ -836,6 +963,7 @@ pub fn spawn_sync_thread_with_transport(
                 // handler's own return — "the select loop drains it".
                 drain_reread_queues(&mut fabrics, &replicas, &local_did, &evt_tx, &db_cmd_tx, &docs_stack)
                     .await;
+                drain_rejudge_queues(&mut fabrics, &replicas, &db_cmd_tx).await;
                 tokio::select! {
                     Some(publication)=scene_publication_rx.recv()=>{
                         if scene_assets.publication_is_current(&publication) {
@@ -845,6 +973,20 @@ pub fn spawn_sync_thread_with_transport(
                     // Wakes the loop to drain a backlog queued while the
                     // channel was full (§event-outbox / self-drain rule).
                     _ = evt_tx.backlog_ready() => {}
+                    _ = lease_tick.tick(), if publication_leases.any_open() => {
+                        // Closed inline (not queued): a host open still in the command
+                        // queue then re-opens it, and can never be closed by the lease.
+                        for verse_id in publication_leases.expired(std::time::Instant::now()) {
+                            tracing::info!(verse_id, "Publication lease ended; closing the replica this thread opened");
+                            tileset_providers.forget_verse(&verse_id);
+                            scene_assets.close(&verse_id);
+                            handle_close_verse_replica(&mut replicas, &mut inbound_pumps, &verse_id).await;
+                            unsubscribe_from_verse_gossip_topic(&mut gossip_senders, &mut gossip_pumps, &verse_id);
+                            if let Some(stack) = &docs_stack {
+                                stack.blob_access_gate().forget_verse(&verse_id);
+                            }
+                        }
+                    }
                     maybe_status = next_relay_status(&mut relay_watch), if relay_watch.is_some() => {
                         match maybe_status {
                             Some(statuses) => {
@@ -872,6 +1014,9 @@ pub fn spawn_sync_thread_with_transport(
                                 &evt_tx,
                                 &db_cmd_tx,
                             );
+                            if let Some(hash) = scene_asset_prefetch_hash(&change, &local_did) {
+                                scene_assets.prefetch(&verse_id, hash);
+                            }
                             sync_blob_access_gate(&docs_stack, &verse_id, fabric);
                         }
                     }
@@ -971,7 +1116,13 @@ pub fn spawn_sync_thread_with_transport(
                             Some(SyncCommand::FetchSceneAsset {hash,verse_id,request_id}) => {
                                 scene_assets.fetch_owned(&verse_id,hash,Some(request_id));
                             }
+                            Some(SyncCommand::RememberVerseReplica { verse_id, namespace_id, namespace_secret }) => {
+                                publication_leases.remember(verse_id, namespace_id, namespace_secret, Vec::new());
+                            }
                             Some(command @ (SyncCommand::OpenVerseReplica { .. } | SyncCommand::JoinVerseReplica { .. })) => {
+                                if let SyncCommand::OpenVerseReplica { verse_id, namespace_id, namespace_secret, bootstrap_peers } = &command {
+                                    publication_leases.opened(verse_id, namespace_id, namespace_secret, bootstrap_peers);
+                                }
                                 let (verse_id, namespace_id, namespace_secret, cmd_peers, join_reply) = match command {
                                     SyncCommand::OpenVerseReplica { verse_id, namespace_id, namespace_secret, bootstrap_peers } =>
                                         (verse_id, namespace_id, namespace_secret, bootstrap_peers, None),
@@ -1069,6 +1220,10 @@ pub fn spawn_sync_thread_with_transport(
                                 if opened.native_ready {
                                     if let Some(replica) = replicas.get(&verse_id) {
                                         scene_assets.opened_with_roster(&verse_id, &peers, replica.scene_provider_roster());
+                                        // QA-0118: blobs of metadata already in the replica fetch now, not at petal entry.
+                                        for hash in &opened.scene_asset_hashes {
+                                            scene_assets.prefetch(&verse_id, *hash);
+                                        }
                                         if let (Some(endpoint), Some(roster)) = (endpoint.as_ref(), replica.scene_provider_roster()) {
                                             crate::peer_book::spawn_recorder(endpoint.inner().clone(), roster, p2p_dir.clone(), verse_id.clone());
                                         }
@@ -1140,6 +1295,13 @@ pub fn spawn_sync_thread_with_transport(
                                     &content_hash,
                                 )
                                 .await;
+                                // QA-0120: a write for a closed verse (a revoke from the verse
+                                // list) opens a bounded publication lease instead of waiting
+                                // for the next visit; a write under a live lease renews it.
+                                if let Some(open) = publication_leases.write(&verse_id, replicas.contains_key(&verse_id), std::time::Instant::now()) {
+                                    tracing::info!(verse_id, "Write for a closed verse replica — opening a publication lease");
+                                    send_lease_command(&lease_cmd_tx, open);
+                                }
                                 sync_blob_access_gate(
                                     &docs_stack,
                                     &verse_id,
@@ -1570,6 +1732,65 @@ fn handle_inbound_row_change(
     }
 }
 
+/// QA-0121 re-judge on demotion: for every DID whose role fell, hand the DB
+/// thread each scene key it wrote together with EVERY author's replica entry
+/// for that key, so the node is re-decided from the replicated data under the
+/// new role view. Every peer runs this on learning the same role rows, so a
+/// row admitted before the revoke arrived converges with peers that refused it.
+async fn drain_rejudge_queues(
+    fabrics: &mut HashMap<String, VerseFabric>,
+    replicas: &HashMap<String, Box<dyn VerseReplicator>>,
+    db_cmd_tx: &Option<crossbeam::channel::Sender<DbCommand>>,
+) {
+    for (verse_id, fabric) in fabrics.iter_mut() {
+        let dids = fabric.drain_rejudge_queue();
+        if dids.is_empty() {
+            continue;
+        }
+        let (Some(replicator), Some(tx)) = (replicas.get(verse_id), db_cmd_tx.as_ref()) else {
+            continue;
+        };
+        let mut keys = std::collections::BTreeSet::new();
+        for did in &dids {
+            match replicator.entries_by_author(did, &["node/"]).await {
+                Ok(entries) => keys.extend(entries.into_iter().map(|change| change.record_id)),
+                Err(error) => tracing::warn!(verse_id, did, "re-judge read of a demoted author's rows failed: {error}"),
+            }
+        }
+        if keys.is_empty() {
+            continue;
+        }
+        let snapshot = match replicator.snapshot().await {
+            Ok(snapshot) => snapshot,
+            Err(error) => {
+                tracing::warn!(verse_id, "re-judge snapshot failed: {error}");
+                continue;
+            }
+        };
+        let mut candidates: std::collections::BTreeMap<String, Vec<(String, Vec<u8>)>> =
+            std::collections::BTreeMap::new();
+        for change in snapshot {
+            if change.table == "node" && !change.data.is_empty() && keys.contains(&change.record_id) {
+                candidates
+                    .entry(change.record_id)
+                    .or_default()
+                    .push((change.author_id, change.data));
+            }
+        }
+        tracing::info!(verse_id, demoted = dids.len(), rows = keys.len(), "Re-judging scene rows of demoted authors");
+        for record_id in keys {
+            let candidates = candidates.remove(&record_id).unwrap_or_default();
+            if let Err(error) = tx.try_send(DbCommand::RejudgeReplicatedNode {
+                verse_id: verse_id.clone(),
+                record_id,
+                candidates,
+            }) {
+                tracing::warn!(verse_id, "re-judge command not queued: {error}");
+            }
+        }
+    }
+}
+
 /// RP-5 §2.5 "re-read on empowerment": drain every open verse's
 /// `reread_queue` and replay each queued DID's `role`/`__shards`/
 /// `__holders`/`verse`/`petal` entries straight from the local replica through the
@@ -1596,10 +1817,11 @@ async fn drain_reread_queues(
             continue;
         };
         for did in dids {
+            // `node/`: scene rows re-judged away while the DID was demoted (QA-0121).
             match replicator
                 .entries_by_author(
                     &did,
-                    &["role/", "__shards/", "__holders/", "verse/", "petal/"],
+                    &["role/", "__shards/", "__holders/", "verse/", "petal/", "node/"],
                 )
                 .await
             {
@@ -1633,6 +1855,24 @@ fn sync_blob_access_gate(
             .blob_access_gate()
             .set_verse_access(verse_id, fabric.access_snapshot(verse_id));
     }
+}
+
+/// QA-0118: the blob a peer's replicated scene-asset metadata row references,
+/// so its bytes are fetched when the row arrives rather than at petal entry.
+fn scene_asset_prefetch_hash(
+    change: &RowChange,
+    local_did: &str,
+) -> Option<fe_runtime::blob_store::BlobHash> {
+    if change.table != "asset"
+        || change.is_tombstone
+        || change.data.is_empty()
+        || change.author_id == local_did
+    {
+        return None;
+    }
+    let row: serde_json::Value = serde_json::from_slice(&change.data).ok()?;
+    row.get(fe_runtime::scene_asset::SCENE_ASSET_ROW_MARKER)?;
+    fe_runtime::blob_store::hash_from_hex(row.get("content_hash")?.as_str()?).ok()
 }
 
 /// Compatibility requests share the admitted, verified asynchronous scene job boundary.
@@ -1679,20 +1919,24 @@ async fn seed_reconciliation(
     evt_tx: &dyn EventSink,
     db_cmd_tx: &Option<crossbeam::channel::Sender<DbCommand>>,
     fabric: &mut VerseFabric,
-) {
+) -> Vec<fe_runtime::blob_store::BlobHash> {
     let entries = match replicator.snapshot().await {
         Ok(entries) => entries,
         Err(e) => {
             tracing::warn!(verse_id, "Reconciliation snapshot failed: {e}");
-            return;
+            return Vec::new();
         }
     };
     if entries.is_empty() {
-        return;
+        return Vec::new();
     }
     let total = entries.len();
     let mut forwarded = 0usize;
+    let mut scene_asset_hashes = Vec::new();
     for change in entries {
+        if let Some(hash) = scene_asset_prefetch_hash(&change, local_did) {
+            scene_asset_hashes.push(hash);
+        }
         // The literal same inbound apply path the live pump's rows take:
         // own-author rows filtered here (loop prevention — the docs author
         // is the endpoint identity, so our own snapshot entries carry our
@@ -1708,6 +1952,7 @@ async fn seed_reconciliation(
         forwarded,
         "Reconciliation: replayed replica entries through the inbound apply path"
     );
+    scene_asset_hashes
 }
 
 /// R1: replay THIS node's own `verse/` and `petal/` entries by author after
@@ -1742,7 +1987,11 @@ async fn reassert_own_rows(
 }
 
 #[derive(Debug)]
-struct ReplicaOpenReport { native_ready: bool }
+struct ReplicaOpenReport {
+    native_ready: bool,
+    /// Scene-asset blobs the replica's metadata references (QA-0118 prefetch).
+    scene_asset_hashes: Vec<fe_runtime::blob_store::BlobHash>,
+}
 
 async fn prepare_join_replica(
     replicas: &HashMap<String, Box<dyn VerseReplicator>>,
@@ -1930,8 +2179,10 @@ async fn handle_open_verse_replica(
     // chance on every replica open. Own-author rows are filtered
     // downstream by the inbound handler like any other row. Skipped for a
     // failed online open (no document to snapshot).
+    let mut scene_asset_hashes = Vec::new();
     if replicator.open_error().is_none() {
-        seed_reconciliation(&replicator, verse_id, local_did, evt_tx, db_cmd_tx, fabric).await;
+        scene_asset_hashes =
+            seed_reconciliation(&replicator, verse_id, local_did, evt_tx, db_cmd_tx, fabric).await;
         reassert_own_rows(&replicator, verse_id, local_did, evt_tx, db_cmd_tx, fabric).await;
     }
 
@@ -2007,7 +2258,10 @@ async fn handle_open_verse_replica(
         }
         request_local_catalog_and_roles(db_cmd_tx, verse_id);
     }
-    ReplicaOpenReport { native_ready }
+    ReplicaOpenReport {
+        native_ready,
+        scene_asset_hashes,
+    }
 }
 
 /// Request stored catalog recovery and local role replay after replica open; see src/AGENTS.md.
@@ -3612,6 +3866,11 @@ mod tests {
             SyncEvent::SceneAssetFetchFailed { .. }
         ));
         assert!(evt_rx.try_recv().is_err());
+        // QA-0118: a row-arrival prefetch for a closed Verse is a silent no-op
+        // (no failure noise, no queued job).
+        jobs.prefetch("verse-2", [0xACu8; 32]);
+        assert!(evt_rx.try_recv().is_err());
+        assert_eq!(jobs.pending_job_count(), 0);
     }
     /// Serializes tests that mutate process env and spawn sync threads —
     /// env is process-global and cargo runs tests in parallel.
@@ -5160,6 +5419,42 @@ mod tests {
         std::env::remove_var(BOOTSTRAP_ENV_VAR);
         assert_eq!(peers.len(), 2, "both valid entries parse, garbage skipped");
         assert!(peers.contains(&addr));
+
+        // QA-0117: the remembered peers join that bootstrap set without ever
+        // pushing it past the 16-provider cap scene assets enforce on open.
+        use crate::peer_book::{self, BookEntry, MAX_PEERS};
+        let peer = |seed: u8, port: u16| {
+            iroh::EndpointAddr::new(iroh::SecretKey::from_bytes(&[seed; 32]).public())
+                .with_ip_addr(format!("127.0.0.1:{port}").parse().unwrap())
+        };
+        let dir = tempfile::TempDir::new().unwrap();
+        let now = 2_000_000_000;
+        let saturated: Vec<_> = (1..=16u8)
+            .map(|seed| BookEntry { addr: peer(seed, 5000 + u16::from(seed)), last_seen: now - u64::from(seed) })
+            .collect();
+        peer_book::store(dir.path(), "verse-book", &saturated).unwrap();
+        let mut bootstrap = vec![peer(40, 6000)];
+        peer_book::merge(&mut bootstrap, peer_book::load(dir.path(), "verse-book"));
+        assert_eq!(bootstrap.len(), MAX_PEERS, "explicit peer kept, book trimmed to the cap");
+        assert_eq!(bootstrap[0], peer(40, 6000));
+        assert_eq!(bootstrap[1], peer(1, 5001), "most recently synced remembered peer first");
+        // A full book evicts its least recently synced entry not currently synced.
+        let mut book = peer_book::load_entries(dir.path(), "verse-book", now);
+        let stale_but_synced = peer(16, 5016).id;
+        assert!(peer_book::record(&mut book, peer(41, 6001), &[stale_but_synced], now));
+        assert_eq!(book.len(), MAX_PEERS);
+        assert!(book.iter().any(|entry| entry.addr.id == stale_but_synced), "a live peer is never evicted");
+        assert!(!book.iter().any(|entry| entry.addr.id == peer(15, 5015).id), "the oldest idle peer was evicted");
+        // Week-old entries drop on load; the legacy bare-address book still loads.
+        let week_old = vec![BookEntry { addr: peer(2, 5002), last_seen: now - 8 * 24 * 60 * 60 }];
+        peer_book::store(dir.path(), "verse-old", &week_old).unwrap();
+        assert!(peer_book::load_entries(dir.path(), "verse-old", now).is_empty());
+        let legacy_path = dir.path().join("peer-book").join(format!(
+            "{}.json",
+            hex::encode(blake3::hash(b"verse-legacy").as_bytes())
+        ));
+        std::fs::write(&legacy_path, serde_json::to_vec(&vec![peer(3, 5003)]).unwrap()).unwrap();
+        assert_eq!(peer_book::load(dir.path(), "verse-legacy"), vec![peer(3, 5003)]);
     }
 
     #[test]
@@ -5212,6 +5507,29 @@ mod tests {
             } if verse_id == "verse-1" && table == "node" && record_id == "node-42"
                 && row_bytes == &payload && author_did == "did:key:peer-a"
         ));
+
+        // QA-0118: a peer's scene-asset metadata row names the blob to fetch on
+        // arrival; own rows, plain asset rows and tombstones name none.
+        let blob = [7u8; 32];
+        let asset_row = |marked: bool, author: &str, tombstone: bool| RowChange {
+            table: "asset".to_string(),
+            record_id: "asset-1".to_string(),
+            content_hash: [2u8; 32],
+            author_id: author.to_string(),
+            timestamp: 1235,
+            is_tombstone: tombstone,
+            data: serde_json::to_vec(&if marked {
+                serde_json::json!({"asset_id": "asset-1", "content_hash": fe_runtime::blob_store::hash_to_hex(&blob),
+                    fe_runtime::scene_asset::SCENE_ASSET_ROW_MARKER: 1})
+            } else {
+                serde_json::json!({"asset_id": "asset-1", "content_hash": fe_runtime::blob_store::hash_to_hex(&blob)})
+            })
+            .unwrap(),
+        };
+        assert_eq!(scene_asset_prefetch_hash(&asset_row(true, "did:key:peer-a", false), "did:key:local"), Some(blob));
+        assert_eq!(scene_asset_prefetch_hash(&asset_row(true, "did:key:local", false), "did:key:local"), None);
+        assert_eq!(scene_asset_prefetch_hash(&asset_row(false, "did:key:peer-a", false), "did:key:local"), None);
+        assert_eq!(scene_asset_prefetch_hash(&asset_row(true, "did:key:peer-a", true), "did:key:local"), None);
     }
 
     /// R1 owner integrity across a restart: the replica replays a forged
@@ -7080,6 +7398,78 @@ mod tests {
                 .any(|c| c.table == "fractal" && c.record_id == "f-1"),
             "direct publish landed in the doc"
         );
+
+        // QA-0120: the host leaves the verse (its replica closes) and a revoke
+        // made from the verse list follows. The publication lease re-opens the
+        // replica with the last open's parameters, publishes, then expires.
+        let mut leases = PublicationLeases::default();
+        leases.opened("v-race", &"0".repeat(64), &None, &[]);
+        handle_close_verse_replica(&mut replicas, &mut inbound_pumps, "v-race").await;
+        let revoke = br#"{"role":"editor","revoked":true}"#;
+        let revoke_hash = blob_store.add_blob(revoke).expect("revoke blob");
+        handle_write_row_entry(
+            &replicas,
+            &mut pending,
+            &mut VerseFabric::default(),
+            &blob_store,
+            "did:key:local",
+            "v-race",
+            "role",
+            "VERSE#v-race/did:key:editor/did:key:local",
+            &revoke_hash,
+        )
+        .await;
+        assert_eq!(pending.len(), 1, "closed replica: the revoke is retained");
+        let now = std::time::Instant::now();
+        let Some(SyncCommand::OpenVerseReplica {
+            verse_id,
+            namespace_id,
+            namespace_secret,
+            bootstrap_peers,
+        }) = leases.write("v-race", replicas.contains_key("v-race"), now)
+        else {
+            panic!("a write for a closed, known verse opens a publication lease");
+        };
+        assert!(
+            leases.write("v-race", false, now).is_none(),
+            "one lease per verse; later writes renew it"
+        );
+        leases.opened(&verse_id, &namespace_id, &namespace_secret, &bootstrap_peers);
+        handle_open_verse_replica(
+            &mut replicas,
+            &mut inbound_pumps,
+            inbound_tx.clone(),
+            &ReplicaTransport::Iroh(Arc::new(IrohDocsEngineHolder::new())),
+            &verse_id,
+            &namespace_id,
+            namespace_secret,
+            &[],
+            "did:key:local",
+            &evt_tx,
+            &None,
+            &blob_store,
+            &mut pending,
+            &mut VerseFabric::default(),
+            PeerDeclaration::default(),
+        )
+        .await;
+        assert!(pending.is_empty(), "the lease open published the revoke");
+        assert!(replicas
+            .get("v-race")
+            .unwrap()
+            .snapshot()
+            .await
+            .expect("snapshot")
+            .iter()
+            .any(|c| c.table == "role" && c.data == revoke.to_vec()));
+        assert!(leases.expired(now).is_empty(), "the lease outlives its write");
+        assert_eq!(leases.expired(now + PUBLICATION_LEASE), vec!["v-race".to_string()]);
+        // A host open during a lease takes the replica over: nothing left to expire.
+        leases.write("v-race", false, now);
+        leases.opened("v-race", &"0".repeat(64), &None, &[]);
+        leases.opened("v-race", &"0".repeat(64), &None, &[]);
+        assert!(leases.expired(now + PUBLICATION_LEASE * 2).is_empty());
+        assert!(leases.write("v-race", true, now).is_none(), "an open replica needs no lease");
     }
 
     /// F20-finding-4 interaction: a write retained before a FAILED online

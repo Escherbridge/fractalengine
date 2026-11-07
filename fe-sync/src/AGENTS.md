@@ -2186,7 +2186,7 @@ an earlier per-failure retry produced ~14 failed syncs/s per peer.
 
 ## §peer-book — relay-less restart addresses (QA-0086, 2026-11-07)
 
-`peer_book.rs` keeps `<p2p_dir>/peer-book/<blake3(verse)>.json`: up to 16
+`peer_book.rs` keeps `<p2p_dir>/peer-book/<blake3(verse)>.json` (LRU since QA-0117, see §peer-book-lru): up to 16
 `EndpointAddr`s of peers this node synced with. While a replica is open a task
 refreshes it every 10 s from the roster via `Endpoint::remote_info`; on
 `OpenVerseReplica`/`JoinVerseReplica` the book is merged into the bootstrap set
@@ -2200,3 +2200,39 @@ Tileset ads are ephemeral gossip. `pump_gossip_topic` forwards `NeighborUp` as a
 empty `GossipIncoming` frame and the select loop re-advertises this node's
 catalog on that verse (at most once per verse per 5 s), so a peer that joins
 after the last Refresh/seed toggle still learns the provider for petal terrain.
+
+## §peer-book-lru (QA-0117, 2026-11-07)
+
+The peer book (`peer_book.rs`) is an LRU of `{addr, last_seen}` entries (the pre-QA-0117
+bare address list still loads, counted as seen now). Entries older than 7 days drop on load;
+a full book evicts its least recently synced entry that is not in the current synced set.
+`merge` adds remembered peers only up to 16 in total, so explicit bootstrap/invite peers
+always win and `scene_assets::opened_with_roster` never sees more than its 16-provider cap.
+The recorder reads `SceneProviderRoster::peers()`, which holds only peers with a successful
+`SyncFinished` (`confirm_peer`); forwarded `InsertRemote` authors never enter it.
+
+## §scene-asset-prefetch (QA-0118, 2026-11-07)
+
+A peer's scene-asset metadata row (`asset` table, `_fe_scene_asset` marker) starts an
+unowned fetch of its blob when it arrives (`scene_asset_prefetch_hash` in the inbound
+branch) and, for rows already in the replica, right after the open
+(`ReplicaOpenReport::scene_asset_hashes` from `seed_reconciliation`). A failed prefetch
+retries after 1, 2, 4, 8, 16 s without holding an IO slot while it waits, one log line per
+attempt. Held bytes are skipped. A petal no longer has to be opened for its bytes to arrive.
+
+## §publication-lease (QA-0120, 2026-11-07)
+
+A write for a verse whose replica is closed (a revoke made from the verse list) used to wait
+in `PendingWrites` until the next visit. The sync thread now remembers each verse's open
+parameters (from every host `OpenVerseReplica` and the host's `RememberVerseReplica`) and
+opens a publication lease: it queues its own `OpenVerseReplica` (FIFO behind host commands),
+which flushes the retained writes, and closes the replica inline 120 s after the last write.
+A host open during a lease takes ownership. `PublicationLeases` is the pure state machine.
+
+## §rejudge-on-demotion (QA-0121, 2026-11-07)
+
+`VerseFabric` queues every DID whose role fell (`drain_rejudge_queue`). The loop reads that
+DID's `node/` keys, then every author's entry for those keys from the snapshot, and sends
+`DbCommand::RejudgeReplicatedNode` per key (fe-database `src/AGENTS.md`
+§p2p-fixes-swarm-run1). The empowerment re-read now includes `node/`, so a re-granted
+author's rows come back.
