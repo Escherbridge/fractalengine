@@ -1,11 +1,31 @@
 //! Shared QA read bridge and bounded redacted diagnostics; see src/AGENTS.md §qa-debug.
 
 use std::collections::VecDeque;
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, OnceLock};
 
 use serde::{Deserialize, Serialize};
 
 use crate::bridge::{bounded_bridge, BridgeReceiver, BridgeSender};
+
+/// Token scope of the QA-only local operator credential; see fractalengine src/AGENTS.md §qa-operator.
+pub const QA_OPERATOR_SCOPE: &str = "QA-OPERATOR";
+
+static QA_OPERATOR: OnceLock<bool> = OnceLock::new();
+
+/// Latch the operator scope on; only the host does this, once, after validating `FE_QA_STORAGE_ROOT`.
+pub fn enable_qa_operator() {
+    let _ = QA_OPERATOR.set(true);
+}
+
+/// Whether this process runs under a validated isolated QA storage root.
+pub fn qa_operator_enabled() -> bool {
+    QA_OPERATOR.get().copied().unwrap_or(false)
+}
+
+/// `scope` is exactly the operator scope and the QA latch is on.
+pub fn qa_operator_covers(scope: &str) -> bool {
+    qa_operator_enabled() && scope == QA_OPERATOR_SCOPE
+}
 
 #[derive(Clone, Debug, Default, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]

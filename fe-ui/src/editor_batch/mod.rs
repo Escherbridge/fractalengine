@@ -415,9 +415,8 @@ impl EditorBatchState {
         }
     }
 
-    pub(crate) fn invalidate_preview_capture(&mut self, node_id: &str) {
-        if self
-            .key
+    fn selection_touches(&self, node_id: &str) -> bool {
+        self.key
             .as_ref()
             .is_some_and(|key| key.ids.iter().any(|id| id == node_id))
             || self.capture.as_ref().is_some_and(|capture| {
@@ -428,11 +427,26 @@ impl EditorBatchState {
                         .is_some_and(|path| path.state.node_id == node_id)
                 })
             })
-        {
+    }
+
+    pub(crate) fn invalidate_preview_capture(&mut self, node_id: &str) {
+        if self.selection_touches(node_id) {
             self.capture = None;
             self.interaction = None;
             self.read = None;
             self.error = Some("An external transform preview changed the selection; refresh after its save outcome is known".into());
+        }
+    }
+
+    /// A committed current-row refresh replaced a selected node: drop the capture so
+    /// `maintain` re-reads it (no unknown save outcome, so no manual refresh).
+    pub(crate) fn refresh_committed_capture(&mut self, node_id: &str) {
+        if self.pending.is_none() && self.selection_touches(node_id) {
+            self.capture = None;
+            self.interaction = None;
+            if self.read.as_ref().is_none_or(|read| !read.edits()) {
+                self.read = None;
+            }
         }
     }
 

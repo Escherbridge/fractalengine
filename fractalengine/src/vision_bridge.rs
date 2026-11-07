@@ -380,6 +380,10 @@ pub struct ViewScope<'w, 's> {
 impl ViewScope<'_, '_> {
     /// SEC-ADDENDUM: may `caller_scope` see the view `nav` has open right now?
     pub(crate) fn covers(&self, caller_scope: &str, nav: Option<&NavigationManager>) -> bool {
+        // The QA local operator sees exactly what this window shows (src/AGENTS.md §qa-operator).
+        if fe_runtime::qa_debug::qa_operator_covers(caller_scope) {
+            return true;
+        }
         let terrain_petal = self
             .terrain
             .as_deref()
@@ -2438,6 +2442,14 @@ mod tests {
         let mut read = h.send_as("VERSE#v", VisionOp::ReadCamera);
         h.app.update();
         assert!(read.try_recv().expect("answered").result.is_ok());
+        // Under a validated QA root the local-operator scope sees this window's view,
+        // and a foreign verse token is still denied (src/AGENTS.md §qa-operator).
+        fe_runtime::qa_debug::enable_qa_operator();
+        let mut operator = h.send_as(fe_runtime::qa_debug::QA_OPERATOR_SCOPE, VisionOp::ReadCamera);
+        let mut foreign = h.send_as("VERSE#w", VisionOp::ReadCamera);
+        h.app.update();
+        assert!(operator.try_recv().expect("answered").result.is_ok());
+        assert_eq!(expect_failure(foreign.try_recv().expect("answered")), denied());
     }
 
     /// SEC-ADDENDUM 2/5: an existing target in an uncovered verse and a

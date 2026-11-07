@@ -1571,6 +1571,32 @@ disk (`icacls` oracle on Windows, mode bits on unix); a new verse rewrites the
 file with no temp left behind; then the agent captures with the token read
 from the file (Viewer refused, Owner admitted, rate limit).
 
+## §qa-operator (multi-peer QA, 2026-11-06)
+
+A joined Editor/Viewer node holds only its granted role token for a verse another node owns, so the
+Owner-gated debug surfaces (camera, screenshot, ui-tree/state, logs, input, window, dialog answers)
+could not observe or drive that window. When `main.rs` validates `FE_QA_STORAGE_ROOT` it latches
+`fe_runtime::qa_debug::enable_qa_operator()`; the dev-token writer then also mints `operator_token`:
+Owner max_role, scope exactly `QA-OPERATOR`, same signer/TTL/generation as the per-verse tokens.
+`ViewScope::covers` (the one gate every debug bridge uses) admits that scope for whatever this window
+shows, but only while the latch is on. Nothing else changes: the scope parses as no VERSE/FRACTAL/PETAL,
+so every scoped REST/MCP route still denies it, unscoped Owner routes already accepted this node's
+own Owner verse tokens from the same file, invitation consume still requires its own verse scope,
+and a verse-B token still never sees verse A. Without the QA root nothing is latched or minted.
+Actions taken through it are ordinary local GUI input, gated by the node's real role (a Viewer's
+Delete is disabled; its property delete is refused by the DB). Journey:
+`vision_bridge::tests::a_token_outside_the_active_verse_is_denied_capture_and_camera_read`.
+
+## §peer-terrain (live peer map/earthwork, 2026-11-06)
+
+A replicated `petal` row for the ACTIVE petal now re-fetches its terrain doc (fe-ui
+`db_results` `ReplicatedRowApplied` arm), so a peer's map binding or earthwork region renders without
+re-entering the petal. `terrain_bridge::bridge_petal_terrain` remembers the last applied
+(petal, raw doc fingerprint) and skips an identical doc, so non-terrain petal writes (render distance,
+rename, replica-open republish) never rebuild the terrain; leaving the petal forgets the key, so
+re-entry always rebuilds. A `role` row likewise re-resolves the local role for the active scope, so a
+peer's grant or revocation updates the role badge and edit gates live.
+
 ## §qa-debug / §ui-tree
 
 `qa_debug_bridge.rs` forces egui AccessKit generation only for active OS

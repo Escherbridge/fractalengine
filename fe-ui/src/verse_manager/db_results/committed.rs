@@ -7,6 +7,29 @@ use fe_runtime::node_history::{NodeMutationReceipt, stored_rotation_quaternion};
 use super::super::{NodeEntry, VerseManager};
 use crate::plugin::SpawnedNodeMarker;
 
+/// A fresh stored selection read is authoritative: raise a lagging known commit version
+/// so the read is not judged stale forever (property commits carry no version receipt).
+pub(super) fn advance_to_stored_read(
+    manager: &mut VerseManager,
+    capture: &fe_runtime::editor_batch::EditorBatchCapture,
+) {
+    let stored = capture.members.iter().flat_map(|member| {
+        std::iter::once((&member.node_id, member.history_version)).chain(
+            member
+                .stamp_path
+                .as_ref()
+                .map(|path| (&path.state.node_id, path.history_version)),
+        )
+    });
+    for (node_id, version) in stored {
+        if let (Some(known), Some(version)) = (manager.committed_versions.get_mut(node_id), version) {
+            if *known < version {
+                *known = version;
+            }
+        }
+    }
+}
+
 pub(super) fn external_editor_batch(
     receipt: &fe_runtime::editor_batch::EditorBatchReceipt,
     manager: &VerseManager,

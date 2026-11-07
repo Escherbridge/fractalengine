@@ -12,7 +12,6 @@ use rhai::{Array, Dynamic, Engine, EvalAltResult, Map, Position};
 use fe_sdk::node::NodeSnapshot;
 use fe_sdk::property::PropertyValue;
 use fe_sdk::query::ExtensionQueryApi;
-use fe_sdk::scene::SceneChange;
 use fe_sdk::storage::ExtensionStorageApi;
 
 use crate::mock_host::MockHostEnv;
@@ -455,6 +454,59 @@ fn json_to_dynamic(value: &serde_json::Value) -> Dynamic {
     }
 }
 
+fn checked_dynamic_to_json(value: &Dynamic) -> Result<serde_json::Value, String> {
+    fn convert(value: &Dynamic, depth: usize) -> Result<serde_json::Value, String> {
+        if depth > 16 {
+            return Err("plugin property nesting exceeds 16".into());
+        }
+        if value.is_unit() {
+            return Ok(serde_json::Value::Null);
+        }
+        if let Ok(value) = value.as_bool() {
+            return Ok(value.into());
+        }
+        if let Ok(value) = value.as_int() {
+            return Ok(value.into());
+        }
+        if let Ok(value) = value.as_float() {
+            return serde_json::Number::from_f64(value)
+                .map(serde_json::Value::Number)
+                .ok_or_else(|| "non-finite plugin property number".into());
+        }
+        if let Ok(value) = value.clone().into_string() {
+            return Ok(value.into());
+        }
+        if value.is_array() {
+            return value
+                .clone()
+                .cast::<rhai::Array>()
+                .iter()
+                .map(|value| convert(value, depth + 1))
+                .collect::<Result<Vec<_>, _>>()
+                .map(serde_json::Value::Array);
+        }
+        if value.is_map() {
+            return value
+                .clone()
+                .cast::<Map>()
+                .iter()
+                .map(|(key, value)| Ok((key.to_string(), convert(value, depth + 1)?)))
+                .collect::<Result<serde_json::Map<_, _>, String>>()
+                .map(serde_json::Value::Object);
+        }
+        Err("plugin property value is not JSON data".into())
+    }
+    let value = convert(value, 0)?;
+    if serde_json::to_vec(&value)
+        .map_err(|error| error.to_string())?
+        .len()
+        > fe_sdk::plugin_host::MAX_HOST_BYTES
+    {
+        return Err("plugin property exceeds 65536 bytes".into());
+    }
+    Ok(value)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -721,57 +773,4 @@ mod tests {
             "non-SELECT query should raise a script error"
         );
     }
-}
-
-fn checked_dynamic_to_json(value: &Dynamic) -> Result<serde_json::Value, String> {
-    fn convert(value: &Dynamic, depth: usize) -> Result<serde_json::Value, String> {
-        if depth > 16 {
-            return Err("plugin property nesting exceeds 16".into());
-        }
-        if value.is_unit() {
-            return Ok(serde_json::Value::Null);
-        }
-        if let Ok(value) = value.as_bool() {
-            return Ok(value.into());
-        }
-        if let Ok(value) = value.as_int() {
-            return Ok(value.into());
-        }
-        if let Ok(value) = value.as_float() {
-            return serde_json::Number::from_f64(value)
-                .map(serde_json::Value::Number)
-                .ok_or_else(|| "non-finite plugin property number".into());
-        }
-        if let Ok(value) = value.clone().into_string() {
-            return Ok(value.into());
-        }
-        if value.is_array() {
-            return value
-                .clone()
-                .cast::<rhai::Array>()
-                .iter()
-                .map(|value| convert(value, depth + 1))
-                .collect::<Result<Vec<_>, _>>()
-                .map(serde_json::Value::Array);
-        }
-        if value.is_map() {
-            return value
-                .clone()
-                .cast::<Map>()
-                .iter()
-                .map(|(key, value)| Ok((key.to_string(), convert(value, depth + 1)?)))
-                .collect::<Result<serde_json::Map<_, _>, String>>()
-                .map(serde_json::Value::Object);
-        }
-        Err("plugin property value is not JSON data".into())
-    }
-    let value = convert(value, 0)?;
-    if serde_json::to_vec(&value)
-        .map_err(|error| error.to_string())?
-        .len()
-        > fe_sdk::plugin_host::MAX_HOST_BYTES
-    {
-        return Err("plugin property exceeds 65536 bytes".into());
-    }
-    Ok(value)
 }

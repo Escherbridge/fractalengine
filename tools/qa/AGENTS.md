@@ -990,10 +990,10 @@ is explicitly retained for inspection rather than guessed from a replacement.
 
 The launcher deliberately disables relays. A direct local peer connection must
 be observed after real GUI invite generation/join; no global network settings,
-public services or external recipients are touched. No invite transfer seam is
-added here: synthetic Copy remains suppressed, and absence of a safe explicitly
-owned in-memory invite transfer keeps that checkpoint BLOCKED. Do not read the
-host clipboard or persist an invite to manufacture success.
+public services or external recipients are touched. Synthetic Copy remains
+suppressed; the owned one-use `transfer-invite` (below) and the scripted
+`peers_join.py` (§peers) carry the invitation in memory. Do not read the host
+clipboard or persist an invite to manufacture success.
 
 Every command remains bound to the explicit owner/viewer paths in pair.json;
 `.qa/current` will point to the second launch and is never used by pair Info/Stop.
@@ -1011,6 +1011,37 @@ cleanup of every successfully launched root and reports all cleanup failures.
 Existing stop limitations still apply after a root crash: recorded descendants
 are checked, but children born after the last snapshot cannot be proven absent.
 Fixture servers have separate ownership records and must be stopped first.
+
+## §peers
+
+`peers.ps1 -Action Start -Count N` (2..8, default 3) generalizes the two-root flow: member 0 is
+`owner` (seeded `-Fixture basic|terrain`), then `editor`, `viewer`, `viewer2`... (Count 2 keeps the
+historical `owner`/`viewer` names and also writes `pair.json` + `native_pair` links, so `pair.ps1` is now
+a thin `-Count 2` wrapper and the native-observer restart lineage is unchanged). Every peer is a fresh
+isolated root on its own loopback API port (`-BasePort 8882` + index, or `-Ports`), pinned to the owner's
+stage, with its own dev-token file. `<owner-run>/peers.json` (`fe-qa-peers-v1`) records each member's exact
+process/descendant identities, stage provenance and public DID; `.qa/peers-current` points at it (discovery
+only). `-Action Info|Stop` validate every recorded lifetime first; Stop kills exactly those identities,
+non-owners first. `-Action Restart -Peer <name>` relaunches that root through `launch.ps1 -ResumeRun` and
+rewrites its member record (revision+1). `-Action Focus -Peer <name>` activates exactly that recorded
+window: the guarded masked Join lease needs OS focus, and minimize/restore cycling shrinks open dialogs.
+
+Joining is the real GUI flow, scripted: `python tools/qa/peers_join.py [--verse-name "QA Basic"]` opens the
+owner's verse Options → Access tab, and per member sets the recipient DID and role, opens the member's
+Join dialog, generates the addressed invite, focuses the member and runs `transfer-invite`, then waits for
+the member's dev-token file to publish the granted role. `fe.py --peer <name> [--peers <owner-run>]` binds
+any command to a member (`transfer-invite --recipient-peer <name>` likewise). Names containing `…` must be
+passed from PowerShell or Python (Git Bash argv mangles non-ASCII).
+
+Transport: the launcher keeps `FE_SYNC_RELAY=disabled`; joins dial the loopback/LAN direct addresses
+carried by the native ticket. A restarted peer has no address lookup in that mode, so `Restart` hands it the
+other members' current `node_addr` (from their newest `stdout.log`) through `FE_SYNC_BOOTSTRAP`, the
+documented operator path; without it the restarted peer never re-syncs.
+
+Driving joined Editor/Viewer windows: their active verse is owned by another node, so no Owner verse token
+covers it. Under a validated `FE_QA_STORAGE_ROOT` the dev-token file also carries `operator_token`
+(scope `QA-OPERATOR`, see fractalengine `src/AGENTS.md` §qa-operator); `fe.py` falls back to it only after
+every owner verse token is refused, so owner flows behave exactly as before.
 
 ## Native Portal fixture client
 

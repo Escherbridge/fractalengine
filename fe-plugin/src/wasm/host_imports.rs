@@ -10,19 +10,19 @@ use crate::wasm::PluginStoreData;
 use crate::LogLevel;
 
 macro_rules! guest_input {
-    ($caller:expr, $ptr:expr, $len:expr, $failure:expr) => {
+    ($caller:expr, $ptr:expr, $len:expr $(, $failure:expr)?) => {
         match read_string_from_memory($caller, $ptr, $len) {
             Ok(value) => value,
-            Err(error) => { tracing::warn!(%error, "WASM input refused"); return $failure; }
+            Err(error) => { tracing::warn!(%error, "WASM input refused"); return $($failure)?; }
         }
     };
 }
 
 macro_rules! guest_json {
-    ($input:expr, $failure:expr) => {
+    ($input:expr $(, $failure:expr)?) => {
         match serde_json::from_str($input) {
             Ok(value) => value,
-            Err(error) => { tracing::warn!(%error, "WASM JSON refused"); return $failure; }
+            Err(error) => { tracing::warn!(%error, "WASM JSON refused"); return $($failure)?; }
         }
     };
 }
@@ -73,10 +73,10 @@ pub fn register_host_imports(
          key_len: i32,
          value_ptr: i32,
          value_len: i32| {
-            let node_id = guest_input!(&mut caller, node_id_ptr, node_id_len, ());
-            let key = guest_input!(&mut caller, key_ptr, key_len, ());
-            let value_str = guest_input!(&mut caller, value_ptr, value_len, ());
-            let value = guest_json!(&value_str, ());
+            let node_id = guest_input!(&mut caller, node_id_ptr, node_id_len);
+            let key = guest_input!(&mut caller, key_ptr, key_len);
+            let value_str = guest_input!(&mut caller, value_ptr, value_len);
+            let value = guest_json!(&value_str);
             if let Err(error) =
                 caller
                     .data()
@@ -159,7 +159,7 @@ pub fn register_host_imports(
         namespace,
         "delete_node",
         |mut caller: Caller<'_, PluginStoreData>, node_id_ptr: i32, node_id_len: i32| {
-            let node_id = guest_input!(&mut caller, node_id_ptr, node_id_len, ());
+            let node_id = guest_input!(&mut caller, node_id_ptr, node_id_len);
             if let Err(error) = caller
                 .data()
                 .ctx
@@ -230,10 +230,10 @@ fn register_storage_query_imports(
          key_len: i32,
          value_ptr: i32,
          value_len: i32| {
-            let node_id = guest_input!(&mut caller, node_id_ptr, node_id_len, ());
-            let key = guest_input!(&mut caller, key_ptr, key_len, ());
-            let value_str = guest_input!(&mut caller, value_ptr, value_len, ());
-            let value = fe_sdk::plugin_host::json_property(guest_json!(&value_str, ()));
+            let node_id = guest_input!(&mut caller, node_id_ptr, node_id_len);
+            let key = guest_input!(&mut caller, key_ptr, key_len);
+            let value_str = guest_input!(&mut caller, value_ptr, value_len);
+            let value = fe_sdk::plugin_host::json_property(guest_json!(&value_str));
             let ctx = caller.data();
             if let Err(e) =
                 ctx.ctx
@@ -313,9 +313,9 @@ fn register_storage_query_imports(
          key_len: i32,
          value_ptr: i32,
          value_len: i32| {
-            let key = guest_input!(&mut caller, key_ptr, key_len, ());
-            let value_str = guest_input!(&mut caller, value_ptr, value_len, ());
-            let value = fe_sdk::plugin_host::json_property(guest_json!(&value_str, ()));
+            let key = guest_input!(&mut caller, key_ptr, key_len);
+            let value_str = guest_input!(&mut caller, value_ptr, value_len);
+            let value = fe_sdk::plugin_host::json_property(guest_json!(&value_str));
             let ctx = caller.data();
             let ns = ctx.ctx.plugin_id().to_string();
             if let Err(e) = ctx
@@ -353,7 +353,7 @@ fn register_log_func(
         namespace,
         name,
         move |mut caller: Caller<'_, PluginStoreData>, msg_ptr: i32, msg_len: i32| {
-            let msg = guest_input!(&mut caller, msg_ptr, msg_len, ());
+            let msg = guest_input!(&mut caller, msg_ptr, msg_len);
             let plugin_id = caller.data().ctx.plugin_id().to_string();
 
             match level {

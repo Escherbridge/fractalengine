@@ -146,6 +146,28 @@ def load_run(explicit=None):
     return current
 
 
+PEERS_POINTER = os.path.join(REPO_ROOT, ".qa", "peers-current")
+
+
+def peer_run_dir(name, peers_run=None):
+    """Map a peers.ps1 member name (owner/editor/viewer...) to its run dir; see AGENTS.md §peers."""
+    if peers_run:
+        owner_dir = peers_run if os.path.isabs(peers_run) or os.path.exists(peers_run) else os.path.join(REPO_ROOT, ".qa", "run", peers_run)
+    else:
+        if not os.path.exists(PEERS_POINTER):
+            raise NotRunning("no .qa/peers-current pointer - run tools\\qa\\peers.ps1 -Action Start first")
+        with open(PEERS_POINTER, "r", encoding="utf-8-sig") as handle:
+            owner_dir = handle.read().strip()
+    record = read_json_file(os.path.join(os.path.realpath(owner_dir), "peers.json"))
+    if record.get("schema") != "fe-qa-peers-v1" or not isinstance(record.get("members"), list):
+        raise Refused(0, "invalid_peers", "peers.json is not a fe-qa-peers-v1 record")
+    matches = [member for member in record["members"] if isinstance(member, dict) and member.get("name") == name]
+    if len(matches) != 1:
+        names = [member.get("name") for member in record["members"] if isinstance(member, dict)]
+        raise Refused(0, "unknown_peer", "peer %r is not one of %s" % (name, names))
+    return matches[0]["run_dir"]
+
+
 def load_tokens(run):
     path = run.get("tokens_path") or os.path.join(run["run_dir"], "tokens.json")
     if not os.path.exists(path):
@@ -276,6 +298,13 @@ def resolve_token(run, verse=None, transport=None, use_cache=True, token_snapsho
         last = refusal_from(status, raw)
         if status != 404:
             raise last
+    operator = tokens.get("operator_token")
+    if isinstance(operator, str) and operator:
+        # Joined Editor/Viewer views: the QA-root local operator credential (AGENTS.md §peers).
+        status, raw = read_camera_with(run, operator, transport)
+        if status == 200:
+            return "operator", operator, decode_object(raw)
+        last = refusal_from(status, raw)
     if last is None:
         raise Refused(0, "no_owner_token", "tokens.json holds no owner token yet")
     raise Refused(
@@ -933,6 +962,8 @@ def build_parser():
                                      formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--verse", help="use this verse's token instead of probing for the active one")
     parser.add_argument("--run", help="explicit QA run directory, current.json, or run timestamp")
+    parser.add_argument("--peer", help="peers.ps1 member name (owner/editor/viewer...) instead of --run")
+    parser.add_argument("--peers", help="owner run holding peers.json (default: .qa/peers-current)")
     sub = parser.add_subparsers(dest="command", required=True)
 
     native = sub.add_parser("native", help="ordinary owned UIA observation or one durable Petal invocation; no HTTP")
@@ -1057,7 +1088,9 @@ def build_parser():
     settle.set_defaults(func=command_wait_settle)
 
     invitation = sub.add_parser("transfer-invite", help="consume the latest GUI invitation once and drive masked Join in another owned app")
-    invitation.add_argument("--recipient-run", required=True)
+    recipient = invitation.add_mutually_exclusive_group(required=True)
+    recipient.add_argument("--recipient-run")
+    recipient.add_argument("--recipient-peer", help="peers.ps1 member name of the recipient")
     invitation.add_argument("--recipient-verse")
     invitation.set_defaults(func=command_transfer_invite)
 
@@ -1077,6 +1110,12 @@ def main(argv=None):
         emit(value)
         return status
     try:
+        if args.peer:
+            if args.run:
+                raise Refused(0, "ambiguous_run", "--peer and --run are mutually exclusive")
+            args.run = peer_run_dir(args.peer, args.peers)
+        if getattr(args, "recipient_peer", None):
+            args.recipient_run = peer_run_dir(args.recipient_peer, args.peers)
         run = load_run(args.run)
         observe_logs = args.command in {"move","click","drag","key","type","scroll","dialog-answer","window","portal-fixture"}
         watermark = log_watermark(run, args.verse) if observe_logs else None

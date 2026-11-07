@@ -102,14 +102,30 @@ pub async fn emit_dev_tokens(
         roles.insert(verse_id.clone(), role);
     }
 
+    // Isolated QA roots also get the local-operator debug credential (fractalengine src/AGENTS.md §qa-operator).
+    let operator_token = if fe_runtime::qa_debug::qa_operator_enabled() {
+        Some(fe_identity::mint_client_api_token(
+            keypair,
+            fe_runtime::qa_debug::QA_OPERATOR_SCOPE,
+            &RoleLevel::Owner.to_string(),
+            DEV_TOKEN_TTL_SECS,
+            &fe_database::api_auth::new_jti(&generation)?,
+            client_did,
+        )?)
+    } else {
+        None
+    };
     anyhow::ensure!(fe_database::api_auth::current_generation(db).await? == generation, "Credential generation changed during dev-token publication");
-    let document = serde_json::json!({
+    let mut document = serde_json::json!({
         "api_base": api_base,
         "tokens": tokens,
         "roles": roles,
         "client": client_did,
         "expires_at": expires_at,
     });
+    if let Some(operator_token) = operator_token {
+        document["operator_token"] = serde_json::Value::String(operator_token);
+    }
     fe_identity::file_fallback::replace_owner_only_file(
         path,
         &serde_json::to_vec_pretty(&document)?,

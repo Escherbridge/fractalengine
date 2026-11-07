@@ -45,6 +45,7 @@ fn main() {
         }
     };
     if let Some(root) = qa_root.as_ref() {
+        fe_runtime::qa_debug::enable_qa_operator();
         for (name, suffix) in [
             ("FE_BLOB_DIR", "data/blobs"),
             ("FE_P2P_DIR", "data/p2p"),

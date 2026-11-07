@@ -328,6 +328,9 @@ pub(super) fn apply_db_results(
             continue;
         }
         let batch_result = if ui_mgr.editor_batch.owns(result) {
+            if let DbResult::EditorBatchLoaded { capture, .. } = result {
+                committed::advance_to_stored_read(&mut verse_mgr, capture);
+            }
             Some(ui_mgr.editor_batch.route(
                 result,
                 &nav,
@@ -1066,10 +1069,10 @@ pub(super) fn apply_db_results(
             ),
             // S6: a peer's converged `petal` row — re-fetch render_distance
             // so a peer's change lands without a full hierarchy reload
-            // (fe-ui/src/AGENTS.md §app-settings). Not the terrain field: a
-            // peer's converged `terrain` reaches this GUI on the next petal
-            // entry (`GetPetalTerrain`), not live — re-fetching it here would
-            // rebuild the whole terrain on every peer petal-row write.
+            // (fe-ui/src/AGENTS.md §app-settings). The ACTIVE petal also
+            // re-fetches its terrain doc so a peer's map binding / earthwork
+            // region shows live; the host bridge skips an unchanged doc, so a
+            // non-terrain petal write never rebuilds the terrain (§peer-terrain).
             DbResult::ReplicatedRowApplied {
                 table,
                 record_id,
@@ -1087,6 +1090,36 @@ pub(super) fn apply_db_results(
                     bevy::log::warn!(
                         "db_sender channel closed — GetPetalRenderDistance re-fetch dropped for {record_id}: {e}"
                     );
+                }
+                if nav.active_petal_id.as_deref() == Some(record_id.as_str()) {
+                    if let Err(e) =
+                        db_sender
+                            .0
+                            .send(fe_runtime::messages::DbCommand::GetPetalTerrain {
+                                petal_id: record_id.clone(),
+                                correlation_id: None,
+                            })
+                    {
+                        bevy::log::warn!(
+                            "db_sender channel closed — GetPetalTerrain re-fetch dropped for {record_id}: {e}"
+                        );
+                    }
+                }
+            }
+            // A peer's grant/revocation can change this node's own role: re-resolve
+            // the active scope so the badge and edit gates follow it live.
+            DbResult::ReplicatedRowApplied {
+                table,
+                outcome: fe_runtime::messages::ReplicatedRowOutcome::Applied,
+                ..
+            } if table.as_str() == "role" => {
+                if let Some(scope) = nav.active_scope() {
+                    if let Err(e) = db_sender
+                        .0
+                        .send(fe_runtime::messages::DbCommand::ResolveLocalRole { scope })
+                    {
+                        bevy::log::warn!("db_sender channel closed — ResolveLocalRole re-fetch dropped: {e}");
+                    }
                 }
             }
             _ => {}
@@ -1203,7 +1236,7 @@ fn apply_replica_current(
             );
         }
     }
-    ui.editor_batch.invalidate_preview_capture(&state.node_id);
+    ui.editor_batch.refresh_committed_capture(&state.node_id);
     ui.editor_batch.invalidate_path_projection(&state.node_id);
     ui.editor_batch.invalidate_redo();
     if let Some(undo) = caches.undo.as_deref_mut() {
@@ -3626,6 +3659,25 @@ mod tests {
         assert!(
             matches!(rx.try_recv(), Ok(DbCommand::GetNodeProperties { node_id, correlation_id: Some(_) }) if node_id == "n1")
         );
+        // The property commit carries no version receipt: the next stored selection read
+        // raises the lagging known version (else the Inspector re-reads it forever).
+        let mut manager = tree();
+        manager.committed_versions.insert("n1".into(), 3);
+        let read = |version: i64| -> fe_runtime::editor_batch::EditorBatchCapture {
+            serde_json::from_value(json!({
+                "scope": "s", "petal_id": "p1", "groups": [], "petal_snapshot": "", "world_scale": 1.0,
+                "members": [{"node_id": "n1", "history_version": version, "stamp_path": null, "state": {
+                    "node_id": "n1", "petal_id": "p1", "display_name": "N", "asset_id": null,
+                    "position": [0.0, 0.0, 0.0], "elevation": 0.0, "rotation": [0.0, 0.0, 0.0],
+                    "scale": [1.0, 1.0, 1.0], "interactive": true, "created_at": "test",
+                    "edit_seq": 1, "properties": {"some.key": 1}}}]
+            }))
+            .unwrap()
+        };
+        committed::advance_to_stored_read(&mut manager, &read(4));
+        assert_eq!(manager.committed_versions.get("n1"), Some(&4));
+        committed::advance_to_stored_read(&mut manager, &read(2));
+        assert_eq!(manager.committed_versions.get("n1"), Some(&4), "an older read never lowers it");
     }
 
     #[test]

@@ -154,7 +154,15 @@ pub fn bridge_petal_terrain(
     mut assignments: MessageWriter<TerrainAssignmentMsg>,
     mut view_modes: MessageWriter<TerrainViewModeMsg>,
     mut volume_binding: ResMut<fe_renderer::terrain_overlay::EarthworkTerrainBinding>,
+    mut applied: Local<Option<(String, [u8; 32])>>,
 ) {
+    // Leaving the petal forgets the dedupe key, so re-entry always rebuilds.
+    if applied
+        .as_ref()
+        .is_some_and(|(petal, _)| nav.active_petal_id.as_deref() != Some(petal.as_str()))
+    {
+        *applied = None;
+    }
     for result in db_results.read() {
         // Correlated (API-initiated) sets apply too — see fe-runtime §api-reply-correlation.
         if let DbResult::PetalTerrainLoaded {
@@ -167,11 +175,22 @@ pub fn bridge_petal_terrain(
             if nav.active_petal_id.as_deref() != Some(petal_id.as_str()) {
                 continue;
             }
-            let config = terrain.as_ref().and_then(terrain_config_from_petal_json);
-            volume_binding.petal_id = Some(petal_id.clone());
-            volume_binding.raw_fingerprint = terrain
+            // A peer-row re-fetch of the unchanged doc must not rebuild the
+            // terrain (src/AGENTS.md §peer-terrain).
+            let fingerprint = terrain
                 .as_ref()
                 .and_then(fe_runtime::editor_batch::terrain_source_fingerprint);
+            if let Some(fingerprint) = fingerprint {
+                if applied.as_ref() == Some(&(petal_id.clone(), fingerprint)) {
+                    continue;
+                }
+                *applied = Some((petal_id.clone(), fingerprint));
+            } else {
+                *applied = None;
+            }
+            let config = terrain.as_ref().and_then(terrain_config_from_petal_json);
+            volume_binding.petal_id = Some(petal_id.clone());
+            volume_binding.raw_fingerprint = fingerprint;
             volume_binding.input_scale_valid = config.as_ref().is_some_and(|config| {
                 fe_renderer::terrain_overlay::EarthworkTerrainBinding::valid_scale(
                     config.world_scale,
@@ -2301,6 +2320,23 @@ mod tests {
             }
             previous = Some((parsed, fingerprint));
         }
+
+        // A peer-row re-fetch of the unchanged doc never rebuilds the terrain,
+        // but re-entering the petal does (§peer-terrain).
+        let forwarded_after = |app: &mut App, result: DbResult| {
+            app.world_mut().write_message(result);
+            app.update();
+            app.world_mut()
+                .resource_mut::<Messages<TerrainAssignmentMsg>>()
+                .drain()
+                .count()
+        };
+        assert_eq!(forwarded_after(&mut app, loaded("petal-a", true, None)), 1);
+        assert_eq!(forwarded_after(&mut app, loaded("petal-a", true, None)), 0, "unchanged doc deduped");
+        app.world_mut().resource_mut::<NavigationManager>().active_petal_id = Some("petal-b".into());
+        app.update();
+        app.world_mut().resource_mut::<NavigationManager>().active_petal_id = Some("petal-a".into());
+        assert_eq!(forwarded_after(&mut app, loaded("petal-a", true, None)), 1, "re-entry rebuilds");
     }
 
     fn synthetic_tileset_manifest(id: &str) -> fe_format::manifest::HexonManifest {

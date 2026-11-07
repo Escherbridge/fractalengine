@@ -197,3 +197,21 @@ No transform becomes available until the existing complete capture validates.
 The existing Inspector journey authors a terminal owned read, visible error,
 actual Refresh click and exactly one subsequent read with no edit or invented
 capture. Compilation and live failure/retry acceptance remain separate gates.
+
+## Committed refresh and stale-read convergence (QA pass 74/75, 2026-11-06)
+
+Two loops made a selected node's transform permanently unavailable ("Reading stored
+targets" forever, or a manual-refresh error naming an "external transform preview"):
+
+- A committed current-row refresh (a peer's replicated edit, or the read-back after a
+  local property set) called `invalidate_preview_capture`, whose error is meant for
+  optimistic REST/WS previews with an unknown save outcome. Those refreshes now call
+  `refresh_committed_capture`: drop the capture (never an accepted pending write) and
+  let `maintain` re-read it automatically, with no error and no manual Refresh.
+- Property commits (`NodePropertySet`) carry no history-version receipt, so
+  `VerseManager.committed_versions` lagged the stored `node_log` row and `maintain`
+  judged every fresh capture stale and re-read it every frame. A fresh owned
+  `EditorBatchLoaded` now raises a lagging known version to the stored one
+  (`db_results::committed::advance_to_stored_read`, monotonic; it never lowers a
+  version), which also keeps the group-gimbal and stamp equality fences consistent.
+  Journey: `db_results::tests::property_set_issues_readback_for_selected_node`.
