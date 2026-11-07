@@ -511,6 +511,18 @@ impl BlobAccessGate {
             .cloned()
     }
 
+    /// Which gate refuses the requester on `connection_id` any of `hashes`
+    /// (`None`: both admit) — named in the refusal log (QA-0137).
+    async fn refusing_gate(&self, connection_id: u64, hashes: &[[u8; 32]]) -> Option<&'static str> {
+        if !self.admits_connection(connection_id, hashes.iter()) {
+            return Some("tileset");
+        }
+        if !self.admits_current_scene(connection_id, hashes).await {
+            return Some("scene-asset");
+        }
+        None
+    }
+
     /// Whether the requester on `connection_id` may read every hash in `hashes`.
     fn admits_connection<'a>(
         &self,
@@ -527,17 +539,20 @@ impl BlobAccessGate {
 /// Answer one intercepted request and drain its update channel so the
 /// responder's progress sends never block on a reader we never consult.
 macro_rules! answer_intercepted {
-    ($msg:expr, $admitted:expr, $connection_id:expr, $kind:literal) => {{
+    ($msg:expr, $refused_by:expr, $connection_id:expr, $kind:literal) => {{
         let msg = $msg;
-        let decision = if $admitted {
-            Ok(())
-        } else {
-            tracing::warn!(
-                connection_id = $connection_id,
-                kind = $kind,
-                "blob-ALPN request refused — requester holds no role in the tileset's verse                  (AC-21(e))"
-            );
-            Err(AbortReason::Permission)
+        let refused_by: Option<&str> = $refused_by;
+        let decision = match refused_by {
+            None => Ok(()),
+            Some(gate) => {
+                tracing::warn!(
+                    connection_id = $connection_id,
+                    kind = $kind,
+                    gate,
+                    "blob-ALPN request refused — requester holds no role in the content's verse (AC-21(e))"
+                );
+                Err(AbortReason::Permission)
+            }
         };
         let _ = msg.tx.send(decision).await;
         let mut updates = msg.rx;
@@ -582,11 +597,11 @@ fn spawn_blob_access_filter(gate: BlobAccessGate) -> EventSender {
                     let ranges = &msg.inner.request.ranges;
                     let reaches_children = !ranges.is_empty() && !ranges.is_blob();
                     let connection_id = msg.inner.connection_id;
-                    let admitted = match gate.get_request_hashes(hash, reaches_children) {
-                        Some(hashes) => gate.admits_connection(connection_id, hashes.iter()) && gate.admits_current_scene(connection_id,&hashes).await,
-                        None => false,
+                    let refused_by = match gate.get_request_hashes(hash, reaches_children) {
+                        Some(hashes) => gate.refusing_gate(connection_id, &hashes).await,
+                        None => Some("child-range"),
                     };
-                    answer_intercepted!(msg, admitted, connection_id, "get");
+                    answer_intercepted!(msg, refused_by, connection_id, "get");
                 }
                 ProviderMessage::GetManyRequestReceived(msg) => {
                     let hashes: Vec<[u8; 32]> = msg
@@ -597,14 +612,14 @@ fn spawn_blob_access_filter(gate: BlobAccessGate) -> EventSender {
                         .map(|h| (*h).into())
                         .collect();
                     let connection_id = msg.inner.connection_id;
-                    let admitted = gate.admits_connection(connection_id, hashes.iter()) && gate.admits_current_scene(connection_id,&hashes).await;
-                    answer_intercepted!(msg, admitted, connection_id, "get_many");
+                    let refused_by = gate.refusing_gate(connection_id, &hashes).await;
+                    answer_intercepted!(msg, refused_by, connection_id, "get_many");
                 }
                 ProviderMessage::ObserveRequestReceived(msg) => {
                     let hash: [u8; 32] = msg.inner.request.hash.into();
                     let connection_id = msg.inner.connection_id;
-                    let admitted = gate.admits_connection(connection_id, std::iter::once(&hash)) && gate.admits_current_scene(connection_id,&[hash]).await;
-                    answer_intercepted!(msg, admitted, connection_id, "observe");
+                    let refused_by = gate.refusing_gate(connection_id, &[hash]).await;
+                    answer_intercepted!(msg, refused_by, connection_id, "observe");
                 }
                 _ => {}
             }
@@ -1442,7 +1457,27 @@ mod tests {
         while let Ok(event) = events_rx.try_recv() {
             assert!(!matches!(event, SyncEvent::BlobReady { .. }));
         }
+        // QA-0118: a refused fetch is re-armed, never given up: once the provider
+        // admits again, a pump retries it with no new row and no petal entry.
+        requester_files.remove_blob(&scene_hash).unwrap();
         allowed.store(true, std::sync::atomic::Ordering::Release);
+        receiver_jobs.rearm("scene-v");
+        assert!(receiver_jobs.pump_prefetches(), "the unavailable blob is kept for retry");
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(20);
+        loop {
+            assert!(std::time::Instant::now() < deadline, "re-armed fetch did not settle");
+            match events_rx.try_recv() {
+                Ok(SyncEvent::BlobReady { hash }) => {
+                    assert_eq!(hash, scene_hash);
+                    break;
+                }
+                Ok(SyncEvent::SceneAssetFetchFailed { reason, .. }) => panic!("re-armed fetch failed: {reason}"),
+                Ok(_) => {}
+                Err(_) => tokio::time::sleep(std::time::Duration::from_millis(5)).await,
+            }
+        }
+        assert_eq!(std::fs::read(&canonical).unwrap(), glb);
+        assert!(!receiver_jobs.pump_prefetches(), "a delivered blob leaves the re-arm set");
         receiver_jobs.fetch_owned("scene-v", scene_hash, Some("scene-old-generation".into()));
         receiver_jobs.close("scene-v");
         owner_replica.close().await.unwrap();

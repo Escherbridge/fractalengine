@@ -7053,6 +7053,33 @@ mod tests {
                     .is_err(),
                     "adoption cannot silently overwrite an existing responsibility"
                 );
+                // QA-0137: a received copy carries no upload/adoption proof (inbound rows strip
+                // it). It is never re-published, yet a Viewer node that fetched it re-serves it.
+                legacy
+                    .query("UPDATE verse SET default_access='viewer' WHERE verse_id='scene-v'; UPDATE asset SET publication_provenance=NONE WHERE content_hash=$hash")
+                    .bind(("hash", crate::hash_to_hex(&digest)))
+                    .await
+                    .unwrap()
+                    .check()
+                    .unwrap();
+                assert!(
+                    crate::handlers::scene_asset_transfer::inspect(&legacy, &request, "did:qa")
+                        .await
+                        .is_err(),
+                    "a received copy is never re-published"
+                );
+                let reserve = SceneAssetTransferRequest {
+                    purpose: SceneAssetTransferPurpose::Serve {
+                        requester_did: "did:third-peer".into(),
+                    },
+                    ..request.clone()
+                };
+                assert!(
+                    crate::handlers::scene_asset_transfer::inspect(&legacy, &reserve, "did:viewer")
+                        .await
+                        .is_ok(),
+                    "a fetched copy re-serves to another Verse Viewer"
+                );
             }
 
             // The 1025th candidate refuses before any node prefix is emitted.

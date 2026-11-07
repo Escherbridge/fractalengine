@@ -90,7 +90,9 @@ pub(crate) async fn inspect(
         if crate::parse_scope(&scope)?.verse_id != request.verse_id {
             continue;
         }
-        let publishing = !matches!(request.purpose, SceneAssetTransferPurpose::Fetch);
+        // QA-0137: Serve re-shares verified bytes of a current row; only Publish
+        // originates metadata, so only it needs Editor and upload/adoption proof.
+        let publishing = matches!(request.purpose, SceneAssetTransferPurpose::Publish { .. });
         let floor = if publishing {
             fe_policy::RoleLevel::Editor
         } else {

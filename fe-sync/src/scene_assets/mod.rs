@@ -33,6 +33,46 @@ const PREFETCH_CAP: usize = 8;
 /// Row-arrival prefetches waiting for a free slot; beyond this they are left
 /// to the on-demand fetch at petal entry.
 const PREFETCH_BACKLOG_CAP: usize = 256;
+/// Blobs whose fetch failed while their Verse stayed open (QA-0118): re-armed
+/// with capped back-off (15, 30, 60, 60 ... s) instead of given up.
+const UNAVAILABLE_CAP: usize = 1024;
+const REARM_BASE: Duration = Duration::from_secs(15);
+const REARM_CAP: Duration = Duration::from_secs(60);
+
+/// One unavailable blob's re-arm schedule.
+#[derive(Clone, Copy)]
+struct Rearm {
+    failures: u32,
+    due: Instant,
+}
+
+impl Rearm {
+    fn delay(failures: u32) -> Duration {
+        REARM_BASE
+            .saturating_mul(1 << failures.saturating_sub(1).min(8))
+            .min(REARM_CAP)
+    }
+}
+
+type Unavailable = Arc<Mutex<HashMap<(String, BlobHash), Rearm>>>;
+
+/// Record a failed fetch of an open Verse's blob for a later re-arm.
+fn note_unavailable(unavailable: &Unavailable, verse: &str, hash: BlobHash) {
+    let mut map = unavailable.lock().unwrap_or_else(|e| e.into_inner());
+    let key = (verse.to_string(), hash);
+    if map.len() >= UNAVAILABLE_CAP && !map.contains_key(&key) {
+        tracing::warn!(verse, "scene asset re-arm set full; this blob waits for petal entry");
+        return;
+    }
+    let failures = map.get(&key).map_or(0, |rearm| rearm.failures).saturating_add(1);
+    map.insert(
+        key,
+        Rearm {
+            failures,
+            due: Instant::now() + Rearm::delay(failures),
+        },
+    );
+}
 
 /// One in-flight row-arrival prefetch; released when its job ends.
 struct PrefetchSlot(Arc<std::sync::atomic::AtomicUsize>);
@@ -172,6 +212,7 @@ pub(crate) struct SceneAssetJobs {
     next_generation: u64,
     prefetches: Arc<std::sync::atomic::AtomicUsize>,
     prefetch_backlog: std::collections::VecDeque<(String, BlobHash)>,
+    unavailable: Unavailable,
 }
 
 impl SceneAssetJobs {
@@ -225,6 +266,7 @@ impl SceneAssetJobs {
             next_generation: 0,
             prefetches: Default::default(),
             prefetch_backlog: Default::default(),
+            unavailable: Default::default(),
         }
     }
 
@@ -279,6 +321,10 @@ impl SceneAssetJobs {
 
     pub(crate) fn close(&mut self, verse: &str) {
         self.prefetch_backlog.retain(|(waiting, _)| waiting != verse);
+        self.unavailable
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .retain(|(waiting, _), _| waiting != verse);
         if let Some(lease) = self
             .open
             .write()
@@ -293,8 +339,35 @@ impl SceneAssetJobs {
         self.fetch_owned(verse, hash, None);
     }
 
-    /// Start backlogged prefetches while slots are free; true while any wait.
+    /// Start backlogged and due re-armed prefetches while slots are free;
+    /// true while any wait (the sync loop then wakes on its kept-work timer).
     pub(crate) fn pump_prefetches(&mut self) -> bool {
+        let now = Instant::now();
+        let due: Vec<(String, BlobHash)> = {
+            let mut map = self.unavailable.lock().unwrap_or_else(|e| e.into_inner());
+            let due: Vec<_> = map
+                .iter()
+                .filter(|(_, rearm)| rearm.due <= now)
+                .map(|(key, _)| key.clone())
+                .collect();
+            // Not due again until this attempt fails (which reschedules it).
+            for key in &due {
+                if let Some(rearm) = map.get_mut(key) {
+                    rearm.due = now + Rearm::delay(rearm.failures.saturating_add(1));
+                }
+            }
+            due
+        };
+        for (verse, hash) in due {
+            if self.blobs.has_blob(&hash) {
+                self.unavailable
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .remove(&(verse, hash));
+            } else {
+                self.prefetch(&verse, hash);
+            }
+        }
         while self.prefetches.load(std::sync::atomic::Ordering::Relaxed) < PREFETCH_CAP {
             let Some((verse, hash)) = self.prefetch_backlog.pop_front() else {
                 break;
@@ -302,6 +375,27 @@ impl SceneAssetJobs {
             self.prefetch(&verse, hash);
         }
         !self.prefetch_backlog.is_empty()
+            || !self
+                .unavailable
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .is_empty()
+    }
+
+    /// QA-0118: a new provider may now serve `verse`'s unavailable blobs (a
+    /// neighbor joined, or the role view changed): retry them on the next pump.
+    pub(crate) fn rearm(&mut self, verse: &str) {
+        let now = Instant::now();
+        for ((waiting, _), rearm) in self
+            .unavailable
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .iter_mut()
+        {
+            if waiting == verse {
+                rearm.due = now;
+            }
+        }
     }
 
     /// QA-0118: fetch a scene blob as soon as its replicated metadata row
@@ -514,6 +608,7 @@ impl SceneAssetJobs {
         let events = self.events.clone();
         let gate = self.gate.clone();
         let slots = self.slots.clone();
+        let unavailable = self.unavailable.clone();
         self.jobs.spawn(async move {
             let _prefetch_slot = prefetch_slot;
             let deadline = Instant::now() + JOB_TIMEOUT;
@@ -590,6 +685,18 @@ impl SceneAssetJobs {
                         verse_id: key.verse().into(), hash: key.hash(), request_ids: owners,
                         result: final_result,
                     });
+                }
+                if !lease.stop.is_requested() {
+                    match &result {
+                        Ok(()) => {
+                            unavailable
+                                .lock()
+                                .unwrap_or_else(|e| e.into_inner())
+                                .remove(&(key.verse().to_string(), key.hash()));
+                        }
+                        // QA-0118: never a terminal state while the Verse stays open.
+                        Err(_) => note_unavailable(&unavailable, key.verse(), key.hash()),
+                    }
                 }
                 match result {
                     Ok(()) if !lease.stop.is_requested() && Instant::now() < deadline => {

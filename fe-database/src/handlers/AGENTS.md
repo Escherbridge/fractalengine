@@ -484,10 +484,14 @@ asset/model/schema dependency limits. Ordinary post-commit dispatch and plugin s
 ## scene-asset-transfer and explicit legacy adoption
 
 InspectSceneAssetTransfer is a private bounded query with a deadline and private reply.
-Fetch requires actual local Viewer at the stored current reference scope. Publish and
-Serve require actual local Editor, retained local upload/adoption proof and exact asset
-metadata; Serve also captures the authenticated connection requester's current Viewer
-authority. Metadata, live reference, ancestry and role guards execute in one transaction.
+Fetch requires actual local Viewer at the stored current reference scope. Publish
+requires actual local Editor, retained local upload/adoption proof and exact asset
+metadata. Serve (QA-0137) requires actual local Viewer, exact current metadata and a live
+reference, plus the authenticated connection requester's current Viewer authority — but
+no upload/adoption proof: it re-shares content-addressed bytes of a row that is already
+current Verse content and originates no metadata identity, so a peer that fetched an
+Editor's asset seeds it to a third peer. Only hashes the native gate classified (own
+proven publish or an admitted fetch) consult Serve at all. Metadata, live reference, ancestry and role guards execute in one transaction.
 One hash probes at most 17 metadata identities (16 permitted), and each identity probes
 257 live references (256 permitted); ambiguous/oversize inputs never produce a prefix.
 
@@ -500,7 +504,7 @@ re-derives and compares the exact candidate, re-verifies bytes, and fences raw m
 all reference fingerprints, live target, roles and ancestry before one operation commit.
 It preserves asset ID/bytes and node TRS/properties/history. The added publication_provenance
 records explicit_local_copy_adoption, actual adopter, time and operation ID; owner_did is
-not invented. Publish/Serve require the matching LOCAL immutable adoption operation.
+not invented. Publish requires the matching LOCAL immutable adoption operation.
 Inbound rows strip this local provenance and cannot create upload/adoption proof.
 The new mutation remains UnmappedDeferred in the canonical mapping inventory.
 
