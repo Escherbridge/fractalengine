@@ -1131,6 +1131,17 @@ Editor+-gated (RP-4) and every writer validates its `did:key` grammar
   It returns the `Screenshot` entity so a torn-down §vision job can despawn a
   capture that will never fire. `capture_primary_window_png` (F12 + GET) is a
   one-line wrapper over it.
+- **Abandoned captures (QA-0080, 2026-11-06).** A torn-down input or vision
+  job releases its unread `Screenshot` through `release_unread_screenshot`,
+  never a bare despawn. Bevy marks the entity `Capturing` at render
+  extraction, later inserts `Captured` from `trigger_screenshots` and despawns
+  it in `clear_screenshots`; despawning it between those steps made that
+  `insert` fail, and the default command error handler PANICKED (panic=abort:
+  the app died right after a 202 `applied_unsettled` navigation with
+  `capture_after`). The helper is a queued world command: despawn only while
+  the entity is not yet `Capturing` (extraction runs after the main schedule,
+  so there is no race); an in-flight one is left for Bevy, and the job's
+  dropped result channel turns the late PNG into a WARN.
 - **Two stages, two scope checks (agent_vision SEC-ADDENDUM).** `install`
   registers `drain_screenshot_requests` in `Update` (arrival check: an
   uncovered caller gets the uniform denial at once, the rest wait in

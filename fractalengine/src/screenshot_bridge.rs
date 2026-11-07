@@ -8,9 +8,9 @@ use bevy::image::Image;
 use bevy::input::ButtonInput;
 use bevy::prelude::{
     App, Commands, Entity, KeyCode, On, PostUpdate, Query, Res, ResMut, Resource, Time, Update,
-    With,
+    With, World,
 };
-use bevy::render::view::screenshot::{Screenshot, ScreenshotCaptured};
+use bevy::render::view::screenshot::{Capturing, Screenshot, ScreenshotCaptured};
 use bevy::tasks::AsyncComputeTaskPool;
 use bevy::window::{PrimaryWindow, Window};
 use fe_renderer::camera::CameraCaptureLock;
@@ -77,6 +77,20 @@ pub(crate) fn capture_png(
                 .detach();
         })
         .id()
+}
+
+/// Drop an unread capture without racing Bevy: despawn it only before render
+/// extraction marks it `Capturing`; an in-flight one is left to Bevy's own
+/// `clear_screenshots` — despawning it makes `trigger_screenshots` panic
+/// (QA-0080, src/AGENTS.md §screenshot "Abandoned captures").
+pub(crate) fn release_unread_screenshot(commands: &mut Commands, screenshot: Entity) {
+    commands.queue(move |world: &mut World| {
+        if let Ok(entity) = world.get_entity_mut(screenshot) {
+            if !entity.contains::<Capturing>() {
+                entity.despawn();
+            }
+        }
+    });
 }
 
 /// Capture the primary window once (egui included); see [`capture_png`].

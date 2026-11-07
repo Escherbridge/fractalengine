@@ -1590,9 +1590,7 @@ fn finish_job(
     }
     if !succeeded {
         if let Some(screenshot) = active.screenshot.take() {
-            if let Ok(mut entity) = commands.get_entity(screenshot) {
-                entity.try_despawn();
-            }
+            crate::screenshot_bridge::release_unread_screenshot(commands, screenshot);
         }
     }
     let result = outcome.and_then(|png| {

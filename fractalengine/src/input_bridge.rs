@@ -22,7 +22,7 @@ use fe_runtime::input::{
 };
 use fe_ui::navigation_manager::NavigationManager;
 
-use crate::screenshot_bridge::{capture_png, capture_refusal};
+use crate::screenshot_bridge::{capture_png, capture_refusal, release_unread_screenshot};
 use crate::vision_bridge::ViewScope;
 
 /// Bevy-side wall-clock bound on one injection (input frames + settle +
@@ -984,9 +984,7 @@ fn finish(
     if let Phase::Capturing { screenshot, .. } = active.phase {
         // A failed or unsettled job never reads its pending capture.
         if !matches!(&outcome, Ok(output) if output.png.is_some()) {
-            if let Ok(mut entity) = commands.get_entity(screenshot) {
-                entity.try_despawn();
-            }
+            release_unread_screenshot(commands, screenshot);
         }
     }
     if let Err(failure) = &outcome {
@@ -1018,7 +1016,7 @@ mod tests {
     use bevy::input::mouse::AccumulatedMouseScroll;
     use bevy::input::InputPlugin;
     use bevy::render::render_resource::{Extent3d, TextureDimension, TextureFormat};
-    use bevy::render::view::screenshot::ScreenshotCaptured;
+    use bevy::render::view::screenshot::{Capturing, ScreenshotCaptured};
     use bevy::tasks::{AsyncComputeTaskPool, TaskPool};
     use bevy_egui::input::{write_modifiers_keys_state_system, ModifierKeysState};
     use fe_runtime::input::{
@@ -2041,6 +2039,39 @@ mod tests {
             .expect("replied once the PNG encoded");
         let output = answer.result.expect("applied and captured");
         assert_eq!(output.png, Some(direct));
+
+        // QA-0080: abandoning a capture the renderer already holds
+        // (`Capturing`) leaves its entity to Bevy — despawning it made
+        // `trigger_screenshots` panic and abort the app. An unextracted one
+        // is still despawned.
+        let screenshots = |h: &mut Harness| -> Vec<Entity> {
+            let world = h.app.world_mut();
+            world
+                .query_filtered::<Entity, With<Screenshot>>()
+                .iter(world)
+                .collect()
+        };
+        for in_flight in [true, false] {
+            let before = screenshots(&mut h);
+            let reply = h.send(batch(vec![click(65.0, 65.0)], 0, true));
+            let shot = (0..10)
+                .find_map(|_| {
+                    h.app.update();
+                    screenshots(&mut h).into_iter().find(|e| !before.contains(e))
+                })
+                .expect("capture_after queues one Screenshot");
+            if in_flight {
+                h.app.world_mut().entity_mut(shot).insert(Capturing);
+            }
+            drop(reply);
+            h.app.update();
+            assert!(h.idle());
+            assert_eq!(
+                h.app.world().get_entity(shot).is_ok(),
+                in_flight,
+                "only an in-flight capture outlives the abandoned job"
+            );
+        }
 
         // Abort during a modifier prefix releases it through the same production collector.
         let mut reply = h.send(batch(
