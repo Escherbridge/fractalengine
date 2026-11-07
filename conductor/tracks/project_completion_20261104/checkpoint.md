@@ -3,7 +3,7 @@ type: ProgressCheckpoint
 date: 2026-11-04
 status: in_progress
 title: Current completion state and next actions
-last_verified_utc: 2026-11-07T18:15:00.000000+00:00
+last_verified_utc: 2026-11-07T22:30:00.000000+00:00
 ---
 
 ## ORCHESTRATOR STEER (binding; maintained by the orchestrating session, do not edit or remove)
@@ -109,11 +109,32 @@ are upper bounds.
   arrives. New S3: QA-0126 to QA-0130.
 - QA-0101 stays pending: the join half is verified, but the terrain half never ran (step 10 skipped "Seed map").
 
+Sim run 1 triage (2026-11-07, stage 5d329932, 3 peers, tools/qa/sim; runs `qa/sim/runs/{p2p-core-20261107-142447,
+p2p-assets-20261107-144039,city-lite-20261107-144555}`; all peers stopped by exact identity). Host CPU stayed
+below 50 % for every latency sample, so no latency below is contention.
+
+- 534 analyzer anomalies + 10 vision findings collapse to 5 product items and 2 S3. About 290 (city-lite step 5)
+  are QA-0138 symptoms. About 215 are one harness root, QA-0140 (S3): GUI clicks fire once with no wait, so
+  `+ Node` (p2p-core 1), the step-1 navigations and the 13a revoke never happened. N1 became a literal null target, the editor was never revoked (step 15's 60 "write
+  accepted that the role forbids" are that, not a bypass), and the 6.e1/9b.e0 "regressions" are a race transient
+  and the scenario's own rename. Blank peer frames (V1, V4) are peers outside any petal (QA-0141, S3).
+- Verified: QA-0101 (all three halves met on every peer), QA-0119 (CPU mean 15.5 % with 3 GUI peers).
+- Reopened S1: QA-0118 (prefetch gives up after 5 refused attempts in ~31 s and never re-arms; rows present at
+  join are never prefetched) and QA-0123 (the visibility-group registry still never reaches editor/viewer; the
+  final fingerprints differ only on it).
+- New S1: QA-0137. The owner refuses to re-serve an editor's GLB ("requester holds no role in the tileset's verse
+  (AC-21(e))", fe-sync/src/docs_engine.rs:389), so the viewer never gets editor-placed assets.
+  New S2: QA-0138 (the owner's DB thread saturates during the 2 Hz drone flight: 3 s transforms, 504 readings, a
+  3-minute flight took 28 min) and QA-0139 (query_timeseries returns no rows on any peer).
+- Not exercised, still `fixed_source_live_pending`: QA-0100 GUI race, QA-0103, QA-0117, QA-0120 to QA-0122,
+  QA-0124, QA-0125, QA-0131 to QA-0133 and QA-0136. They wait on the QA-0140 harness fix (QA-0117/QA-0136 need
+  more peers than this host can run).
+
 ## Next actions
 
-1. FIX:1 (product): QA-0122, QA-0120, QA-0121, QA-0123 (S1), then QA-0125, QA-0124, QA-0103, QA-0117, QA-0118,
-   QA-0119 (S2) and the steer's S3 items (QA-0128 -0.0, QA-0129 atomic clear). The tools/qa/sim simulator then
-   re-verifies the GUI race (QA-0100), the seeded-terrain half of QA-0101 and every new fix.
+1. FIX:2: QA-0140 harness first (it gates every unexercised id), then QA-0137, QA-0118, QA-0123 (S1), QA-0138,
+   QA-0139 (S2). Re-run the three scenarios, then verify the pending list above. FIX:1 (QA-0120 to QA-0125,
+   QA-0103, QA-0117, QA-0118, QA-0119, QA-0128, QA-0129) has landed.
 2. Run FULL pass 78 (2/3) then pass 79; convergence needs zero new S1/S2 in two consecutive passes and all gold.
 3. Fix the S3 test debt (QA-0079, QA-0082, QA-0115, QA-0116), then the integrated sweep, CI Lint (QA-0078), tag
    and release.
