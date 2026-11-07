@@ -226,7 +226,13 @@ components so an agent-posed screenshot/`GET /camera` capture (V5, in
   `deactivate_foreign_cameras` gained `Without<CaptureCamera>` on its query —
   without it, a scene-mode capture camera (V5 spawns a second `Camera3d`)
   would be deactivated the same frame it appears, since the query only
-  excludes `OrbitCameraController` today. `CaptureCamera` carries no data; a
+  excludes `OrbitCameraController` today. fe-ui's own GLB-camera stripper
+  (`plugin.rs::strip_gltf_embedded_cameras`, which DESPAWNS rather than
+  deactivates, at debug level) lacked the same exclusion until QA-0025
+  (2026-11-06): every scene-mode capture camera died on its first frame, so
+  the render-target image stayed zero-filled (pure black) and fe-terrain never
+  published it as a capture focus (`settled:false` after 600 frames, 0 tiles
+  pending). Any future camera filter must spare `CaptureCamera` too. `CaptureCamera` carries no data; a
   capture job's lifetime is this component's lifetime (spawn on job start,
   despawn on job end).
 - **`frame_world_box(min, max, view_dir, fov) -> LookAtPose`** (advocate

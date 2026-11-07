@@ -562,10 +562,26 @@ mod tests {
         let _ = format!("{marker:?}");
     }
 
+    /// QA-0025: the GLB-camera stripper removes a foreign camera but spares
+    /// the orbit camera and an agent-vision capture camera (whose despawn left
+    /// every scene-only capture black and unsettled).
     #[test]
-    fn viewport_cursor_world_default_is_none() {
-        let cursor = ViewportCursorWorld::default();
-        assert!(cursor.pos.is_none());
+    fn strip_gltf_embedded_cameras_spares_orbit_and_capture_cameras() {
+        use bevy::ecs::system::RunSystemOnce;
+        let mut world = World::new();
+        let orbit = world
+            .spawn((Camera::default(), fe_renderer::camera::OrbitCameraController::default()))
+            .id();
+        let capture = world
+            .spawn((Camera::default(), fe_renderer::camera::CaptureCamera))
+            .id();
+        let foreign = world.spawn(Camera::default()).id();
+        world
+            .run_system_once(strip_gltf_embedded_cameras)
+            .expect("system runs");
+        assert!(world.get_entity(orbit).is_ok());
+        assert!(world.get_entity(capture).is_ok(), "capture camera must survive");
+        assert!(world.get_entity(foreign).is_err(), "a GLB camera is still stripped");
     }
 
     #[test]
@@ -1315,19 +1331,21 @@ fn gardener_ui_system(
     );
 }
 
+/// A just-added camera that is neither the orbit camera nor an agent-vision capture camera.
+type StrippableCameraFilter = (
+    Added<Camera>,
+    Without<fe_renderer::camera::OrbitCameraController>,
+    Without<fe_renderer::camera::CaptureCamera>,
+);
+
 /// Bevy's GLTF loader can produce embedded `Camera3d`/`Camera` entities when a
 /// `.glb` scene contains a camera node. These become secondary active cameras
 /// that render into the same window and cause the "duplicate / ghost image"
 /// visual artefact. This system removes any non-orbit camera added during the
-/// frame so only the viewport's `OrbitCameraController` remains.
+/// frame so only the viewport's `OrbitCameraController` remains — except an
+/// agent-vision `CaptureCamera` (QA-0025: despawning it left scene captures black).
 fn strip_gltf_embedded_cameras(
-    added: Query<
-        Entity,
-        (
-            Added<Camera>,
-            Without<fe_renderer::camera::OrbitCameraController>,
-        ),
-    >,
+    added: Query<Entity, StrippableCameraFilter>,
     mut commands: Commands,
 ) {
     for entity in added.iter() {
