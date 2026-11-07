@@ -1,0 +1,364 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "fe-qa-sim-scenario-v1",
+  "title": "FractalEngine P2P simulation scenario",
+  "type": "object",
+  "required": [
+    "name",
+    "seed",
+    "peers",
+    "fixture",
+    "steps"
+  ],
+  "additionalProperties": false,
+  "properties": {
+    "name": {
+      "type": "string",
+      "pattern": "^[a-z][a-z0-9-]{0,47}$"
+    },
+    "description": {
+      "type": "string"
+    },
+    "seed": {
+      "type": "integer"
+    },
+    "fixture": {
+      "enum": [
+        "basic",
+        "terrain"
+      ]
+    },
+    "verse_name": {
+      "type": "string"
+    },
+    "assets": {
+      "type": "string",
+      "description": "asset manifest the scenario reads ($assets.*): generated|khronos|both"
+    },
+    "peers": {
+      "type": "array",
+      "minItems": 2,
+      "maxItems": 8,
+      "items": {
+        "type": "object",
+        "required": [
+          "name",
+          "role"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "name": {
+            "type": "string",
+            "pattern": "^[a-z][a-z0-9]{0,15}$"
+          },
+          "role": {
+            "enum": [
+              "owner",
+              "editor",
+              "viewer"
+            ]
+          }
+        }
+      }
+    },
+    "probe": {
+      "$ref": "#/$defs/cadence"
+    },
+    "watch": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/watch"
+      }
+    },
+    "steps": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "$ref": "#/$defs/step"
+      }
+    }
+  },
+  "$defs": {
+    "cadence": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "rest_ms": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "hierarchy_ms": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "ui_ms": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "query_ms": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "host_ms": {
+          "type": "integer",
+          "minimum": 0
+        }
+      }
+    },
+    "watch": {
+      "type": "object",
+      "required": [
+        "probe",
+        "target"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "probe": {
+          "enum": [
+            "node",
+            "transform",
+            "properties",
+            "hierarchy",
+            "groups",
+            "terrain",
+            "role",
+            "nav",
+            "ui",
+            "asset_blob",
+            "query",
+            "timeseries",
+            "get",
+            "alive"
+          ]
+        },
+        "target": {}
+      }
+    },
+    "step": {
+      "type": "object",
+      "required": [
+        "id",
+        "title",
+        "settle_s"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "id": {
+          "type": "string",
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9_.-]{0,31}$"
+        },
+        "title": {
+          "type": "string"
+        },
+        "settle_s": {
+          "type": "number",
+          "minimum": 0
+        },
+        "covers": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "note": {
+          "type": "string"
+        },
+        "probe": {
+          "$ref": "#/$defs/cadence"
+        },
+        "prepare": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/action"
+          }
+        },
+        "actions": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/action"
+          }
+        },
+        "expect": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/expect"
+          }
+        },
+        "checkpoints": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/checkpoint"
+          }
+        }
+      }
+    },
+    "action": {
+      "type": "object",
+      "required": [
+        "peer",
+        "via",
+        "op"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "id": {
+          "type": "string",
+          "pattern": "^[A-Za-z][A-Za-z0-9_]{0,47}$"
+        },
+        "peer": {
+          "type": "string"
+        },
+        "via": {
+          "enum": [
+            "rest",
+            "mcp",
+            "gui",
+            "host",
+            "macro"
+          ]
+        },
+        "op": {
+          "type": "string"
+        },
+        "args": {
+          "type": "object"
+        },
+        "sync": {
+          "type": "string",
+          "pattern": "^(barrier|seq|\\+\\d+(\\.\\d+)?)$"
+        },
+        "expect": {
+          "enum": [
+            "ok",
+            "refused",
+            "any"
+          ]
+        },
+        "optional": {
+          "type": "boolean"
+        },
+        "bind": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "string"
+          }
+        },
+        "covers": {
+          "type": "string"
+        },
+        "note": {
+          "type": "string"
+        }
+      }
+    },
+    "expect": {
+      "type": "object",
+      "required": [
+        "probe",
+        "target",
+        "predicate"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "probe": {
+          "enum": [
+            "node",
+            "transform",
+            "properties",
+            "hierarchy",
+            "groups",
+            "terrain",
+            "role",
+            "nav",
+            "ui",
+            "asset_blob",
+            "query",
+            "timeseries",
+            "get",
+            "alive"
+          ]
+        },
+        "target": {},
+        "path": {
+          "type": "string"
+        },
+        "peers": {
+          "oneOf": [
+            {
+              "const": "all"
+            },
+            {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            }
+          ]
+        },
+        "predicate": {
+          "enum": [
+            "equals",
+            "not_equals",
+            "includes",
+            "excludes",
+            "absent",
+            "present",
+            "count",
+            "agree"
+          ]
+        },
+        "value": {},
+        "within_s": {
+          "type": "number",
+          "exclusiveMinimum": 0
+        },
+        "after": {
+          "type": "string"
+        },
+        "mode": {
+          "enum": [
+            "eventually",
+            "always"
+          ]
+        },
+        "hold_s": {
+          "type": "number",
+          "minimum": 0
+        },
+        "covers": {
+          "type": "string"
+        },
+        "meta": {
+          "type": "object"
+        },
+        "note": {
+          "type": "string"
+        }
+      }
+    },
+    "checkpoint": {
+      "type": "object",
+      "required": [
+        "peer"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "peer": {
+          "type": "string"
+        },
+        "capture": {
+          "enum": [
+            "scene",
+            "window"
+          ]
+        },
+        "pose": {
+          "type": "object"
+        },
+        "expect_visual": {
+          "type": "string"
+        }
+      }
+    }
+  }
+}
