@@ -396,6 +396,7 @@ pub async fn update_transform(
         return Json(ApiResponse::error(denial));
     }
 
+    let mut outcomes = state.entity_change_tx.subscribe();
     let broadcast_receivers = persist_transform(
         &state,
         &claims,
@@ -404,12 +405,50 @@ pub async fn update_transform(
         req.rotation,
         req.scale,
     );
+    let persist = match transform_outcome(&mut outcomes, &node_id, req.position).await {
+        Some(true) => "persisted",
+        Some(false) => return Json(ApiResponse::error(TRANSFORM_REFUSED)),
+        None => "queued",
+    };
 
     Json(ApiResponse::success(serde_json::json!({
         "node_id": node_id,
         "broadcast_receivers": broadcast_receivers,
-        "persist": "queued"
+        "persist": persist
     })))
+}
+
+/// Reply copy for a transform the DB refused after the optimistic preview.
+pub(crate) const TRANSFORM_REFUSED: &str =
+    "transform refused by the database (current access or validation); the preview was rolled back";
+
+/// Bounded wait (3 s) for the DB's verdict on one fire-and-forget transform
+/// persist (QA-0087): `Some(true)` committed at `position`, `Some(false)`
+/// refused, `None` unconfirmed. Subscribe BEFORE sending the persist.
+pub(crate) async fn transform_outcome(
+    outcomes: &mut tokio::sync::broadcast::Receiver<fe_runtime::messages::SceneChange>,
+    node_id: &str,
+    position: [f32; 3],
+) -> Option<bool> {
+    use fe_runtime::messages::SceneChange;
+    use tokio::sync::broadcast::error::RecvError;
+    let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(3);
+    loop {
+        match tokio::time::timeout_at(deadline, outcomes.recv()).await {
+            Err(_) | Ok(Err(RecvError::Closed)) => return None,
+            Ok(Err(RecvError::Lagged(_))) => continue,
+            Ok(Ok(SceneChange::NodeTransform { node_id: id, position: stored, .. }))
+                if id == node_id
+                    && stored.iter().zip(position).all(|(a, b)| (a - b).abs() <= 1e-4) =>
+            {
+                return Some(true)
+            }
+            Ok(Ok(SceneChange::TransformFailed { node_id: id, .. })) if id == node_id => {
+                return Some(false)
+            }
+            Ok(Ok(_)) => continue,
+        }
+    }
 }
 
 /// D-A5 translate lock, checked BEFORE the optimistic broadcast: a promoted

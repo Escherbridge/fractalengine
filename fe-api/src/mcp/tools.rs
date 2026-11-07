@@ -172,9 +172,14 @@ pub(super) fn update_transform(call: ToolCall<'_>) -> ToolFuture<'_> {
         {
             return Err(denial.to_string());
         }
-        // Same core as REST PATCH .../transform (fire-and-forget persist).
+        // Same core and verdict wait as REST PATCH .../transform (QA-0087).
+        let mut outcomes = call.state.entity_change_tx.subscribe();
         crate::rest::persist_transform(call.state, call.claims, node_id, position, rotation, scale);
-        Ok(json!({ "status": "ok" }))
+        // The MCP reply contract stays `{"status":"ok"}`; a DB refusal is an error.
+        match crate::rest::transform_outcome(&mut outcomes, node_id, position).await {
+            Some(false) => Err(crate::rest::TRANSFORM_REFUSED.to_string()),
+            Some(true) | None => Ok(json!({ "status": "ok" })),
+        }
     })
 }
 

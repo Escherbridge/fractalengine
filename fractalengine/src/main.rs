@@ -979,6 +979,7 @@ struct SharedEntityStore(Arc<fe_entity_store::EntityStore>);
 fn drain_scene_changes_to_store(
     receiver: bevy::prelude::Res<SceneChangeReceiver>,
     store: bevy::prelude::Res<SharedEntityStore>,
+    transforms: bevy::prelude::Res<TransformBroadcastSender>,
 ) {
     let now_ms = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -986,6 +987,21 @@ fn drain_scene_changes_to_store(
         .as_millis() as u64;
 
     while let Ok(change) = receiver.0.try_recv() {
+        // QA-0087: a refused persist re-broadcasts the last-good transform, so
+        // the GUI's optimistic preview (and every WS client) rolls back.
+        if let fe_runtime::messages::SceneChange::TransformFailed { node_id, petal_id, position, rotation, scale } = &change {
+            if transforms.0.send(fe_runtime::messages::TransformUpdate {
+                node_id: node_id.clone(),
+                petal_id: petal_id.clone(),
+                position: *position,
+                rotation: *rotation,
+                scale: *scale,
+                timestamp_ms: now_ms,
+                source_did: String::new(),
+            }).is_err() {
+                tracing::debug!(node_id, "transform rollback had no subscribers");
+            }
+        }
         store.0.apply_scene_change(
             &fe_api::entity_store_bridge::runtime_scene_change_to_store(change),
             now_ms,
