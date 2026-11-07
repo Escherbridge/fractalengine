@@ -149,7 +149,10 @@ pub struct NavigationManagerPlugin;
 impl Plugin for NavigationManagerPlugin {
     fn build(&self, app: &mut App) {
         app.init_resource::<NavigationManager>();
-        app.add_systems(Update, handle_verse_replica_lifecycle);
+        app.add_systems(
+            Update,
+            (handle_verse_replica_lifecycle, remember_verse_replicas).chain(),
+        );
     }
 }
 
@@ -202,6 +205,46 @@ pub(crate) fn handle_verse_replica_lifecycle(
             .is_some_and(|handoff| handoff.take_for(new_verse, &verse_mgr));
         if adopted || open_replica(sync, new_verse, &verse_mgr, secret_store.as_deref()) {
             *last_verse = Some(new_verse.into());
+        }
+    }
+}
+
+/// QA-0120: hand the sync thread every known verse's open parameters once, so
+/// a write made while that verse's replica is closed (a revoke from the verse
+/// list) can open a publication lease instead of waiting for the next visit.
+/// Runs after the replica lifecycle, so it never delays an open or close.
+pub(crate) fn remember_verse_replicas(
+    verse_mgr: Res<VerseManager>,
+    sync_sender: Option<Res<fe_sync::SyncCommandSenderRes>>,
+    secret_store: Option<Res<fe_database::SecretStoreRes>>,
+    mut remembered: Local<std::collections::HashSet<String>>,
+) {
+    let Some(sync) = sync_sender else {
+        return;
+    };
+    let secret_store = secret_store.as_deref();
+    for verse in &verse_mgr.verses {
+        let Some(namespace_id) = verse.namespace_id.as_ref() else {
+            continue;
+        };
+        if remembered.contains(&verse.id) {
+            continue;
+        }
+        let namespace_secret = secret_store
+            .and_then(|store| fe_database::get_namespace_secret(store.0.as_ref(), &verse.id).ok())
+            .flatten();
+        match sync.0.try_send(fe_sync::SyncCommand::RememberVerseReplica {
+            verse_id: verse.id.clone(),
+            namespace_id: namespace_id.clone(),
+            namespace_secret,
+        }) {
+            Ok(()) => {
+                remembered.insert(verse.id.clone());
+            }
+            Err(crossbeam::channel::TrySendError::Full(_)) => return,
+            Err(crossbeam::channel::TrySendError::Disconnected(_)) => {
+                remembered.insert(verse.id.clone());
+            }
         }
     }
 }
@@ -426,6 +469,27 @@ mod tests {
             sync_rx.try_recv().is_err(),
             "a verse without a namespace_id must not open a replica"
         );
+        // QA-0120: the sync thread learns every namespaced verse's open
+        // parameters (never one without a namespace), for publication leases.
+        use bevy::ecs::system::RunSystemOnce;
+        app.world_mut().run_system_once(remember_verse_replicas).unwrap();
+        assert!(sync_rx.try_recv().is_err());
+        app.world_mut()
+            .resource_mut::<crate::verse_manager::VerseManager>()
+            .verses
+            .push(VerseEntry {
+                id: "R".into(),
+                name: "R".into(),
+                namespace_id: Some("ef".repeat(32)),
+                expanded: true,
+                fractals: Vec::new(),
+            });
+        app.world_mut().run_system_once(remember_verse_replicas).unwrap();
+        assert!(matches!(
+            sync_rx.try_recv(),
+            Ok(fe_sync::SyncCommand::RememberVerseReplica { verse_id, namespace_id, .. })
+                if verse_id == "R" && namespace_id == "ef".repeat(32)
+        ));
         use crate::invitations::ReplicaHandoff;
         use fe_sync::{join_ticket::JoinedReplicaLease, SyncCommand};
         let old_join = JoinedReplicaLease {

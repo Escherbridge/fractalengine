@@ -228,6 +228,21 @@ fn queue_registry_read(
     Ok(())
 }
 
+/// A peer's petal row landed for the active Petal (QA-0123): re-read the stored
+/// registry so a replicated Group shows live. Skipped while a read is queued.
+pub(crate) fn refresh_registry_from_replica(
+    db_sender: &DbCommandSender,
+    state: &mut VisibilityState,
+    petal_id: String,
+) {
+    if state.registry_read_pending() {
+        return;
+    }
+    if let Err(error) = queue_registry_read(db_sender, state, petal_id) {
+        bevy::log::warn!("Replicated Group registry re-read not queued: {error}");
+    }
+}
+
 /// Admit the active Petal's authoritative registry, retaining exact CAS order values.
 pub(crate) fn apply_registry_loaded(
     state: &mut VisibilityState,

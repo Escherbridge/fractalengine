@@ -104,6 +104,10 @@ pub(super) fn handle_hierarchy_loaded(
     asset_server: &AssetServer,
     pending_api: &mut PendingApiRequests,
     already_spawned: &mut std::collections::HashSet<String>,
+    entities: &Query<
+        (Entity, &crate::plugin::SpawnedNodeMarker, &Transform),
+        With<super::super::spawn::ResidentNode>,
+    >,
     budget_exceeded: bool,
     residency: &super::super::ResidencyLedger,
     ts_settings: &mut crate::timeseries_settings::TimeseriesSettingsState,
@@ -122,6 +126,9 @@ pub(super) fn handle_hierarchy_loaded(
     select_initial_navigation(verses, nav, first_load);
 
     let active_petal = nav.active_petal_id.clone();
+    if let Some(active) = active_petal.as_deref() {
+        respawn_changed_assets(verses, verse_mgr, active, commands, already_spawned, entities, residency);
+    }
 
     // Spawn budget: skip nodes already materialized (repeat HierarchyLoaded
     // must be idempotent) and saturate at MAX_PETAL_NODES / the app-wide mesh
@@ -243,6 +250,55 @@ pub(super) fn handle_hierarchy_loaded(
 
     // Deliver to pending API requests (GET /api/v1/hierarchy).
     pending_api.deliver_hierarchy(verses.to_vec());
+}
+
+/// QA-0124: a live node of the active petal whose stored asset path changed —
+/// a placeholder whose scene blob landed after the petal opened — is despawned
+/// here so the asset branch of the same load respawns it with its model.
+fn respawn_changed_assets(
+    verses: &[VerseHierarchyData],
+    verse_mgr: &VerseManager,
+    active_petal: &str,
+    commands: &mut Commands,
+    already_spawned: &mut std::collections::HashSet<String>,
+    entities: &Query<
+        (Entity, &crate::plugin::SpawnedNodeMarker, &Transform),
+        With<super::super::spawn::ResidentNode>,
+    >,
+    residency: &super::super::ResidencyLedger,
+) {
+    let previous: std::collections::HashMap<&str, Option<&str>> = verse_mgr
+        .all_nodes()
+        .map(|node| (node.id.as_str(), node.asset_path.as_deref()))
+        .collect();
+    let changed: std::collections::HashSet<&str> = verses
+        .iter()
+        .flat_map(|verse| &verse.fractals)
+        .flat_map(|fractal| &fractal.petals)
+        .filter(|petal| petal.id == active_petal)
+        .flat_map(|petal| &petal.nodes)
+        .filter(|node| {
+            node.asset_path.is_some()
+                && already_spawned.contains(&node.id)
+                && residency.admits_node(&node.id)
+                && previous
+                    .get(node.id.as_str())
+                    .is_some_and(|old| *old != node.asset_path.as_deref())
+        })
+        .map(|node| node.id.as_str())
+        .collect();
+    if changed.is_empty() {
+        return;
+    }
+    for (entity, marker, _) in entities.iter() {
+        if marker.petal_id == active_petal && changed.contains(marker.node_id.as_str()) {
+            commands.entity(entity).try_despawn();
+        }
+    }
+    for node_id in changed {
+        bevy::log::info!(node_id, "scene asset now available — respawning its placeholder");
+        already_spawned.remove(node_id);
+    }
 }
 
 /// Choose one populated petal and its ancestors, or the first empty verse.

@@ -1538,3 +1538,17 @@ the real terrain ruler draws before egui output completion. fe-ui acquires no
 terrain dependency. This cosmetic geometry seam confers no native authority,
 scene selection, capture grant or camera crop. See terrain/host directory docs
 and native_accessibility/AGENTS.md for the separately audited painter contract.
+
+## §p2p-fixes-swarm-run1 (2026-11-07: QA-0103/0120/0123/0124/0125)
+
+- A replicated current (`ReplicatedNodeCurrent`, Applied) applies `view.groups` as committed
+  shared state (`cache::apply_replicated_membership`: absent means no Groups); `view.state`
+  keeps the hydration rule. A peer leaving a Group now clears this GUI's membership.
+- A peer's petal row for the active petal re-reads the stored Group registry
+  (`groups::refresh_registry_from_replica`) next to the terrain/render-distance re-fetch.
+- `HierarchyLoaded` respawns a live node of the active petal whose stored asset path changed
+  (`hierarchy::respawn_changed_assets`), so a placeholder whose blob landed after the petal
+  opened becomes its model.
+- `DbResult::HierarchyRead` (an API hierarchy read) only answers pending API waiters.
+- `handle_verse_replica_lifecycle` sends `RememberVerseReplica` once per verse with a
+  namespace id, so the sync thread can open a publication lease (fe-sync §publication-lease).

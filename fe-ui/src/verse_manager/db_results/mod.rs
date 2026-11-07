@@ -576,6 +576,8 @@ pub(super) fn apply_db_results(
         ) { continue; }
         match result {
             DbResult::Seeded { .. } => hierarchy::handle_seeded(&db_sender),
+            // QA-0125: an API read answers its waiters only; the GUI tree is untouched.
+            DbResult::HierarchyRead { verses } => pending_api.deliver_hierarchy(verses.clone()),
             DbResult::HierarchyLoaded { verses } => {
                 // Phase 4: the persisted verse/fractal/petal eyes ride the tree.
                 crate::visibility::groups::hydrate_scope_hidden(&mut caches.visibility, verses);
@@ -588,6 +590,7 @@ pub(super) fn apply_db_results(
                     &asset_server,
                     &mut pending_api,
                     &mut already_spawned,
+                    &caches.current_nodes,
                     mesh_budget_exceeded,
                     &caches.residency,
                     &mut caches.ts_settings,
@@ -1112,6 +1115,11 @@ pub(super) fn apply_db_results(
                             "db_sender channel closed — GetPetalTerrain re-fetch dropped for {record_id}: {e}"
                         );
                     }
+                    crate::visibility::groups::refresh_registry_from_replica(
+                        &db_sender,
+                        &mut caches.visibility,
+                        record_id.clone(),
+                    );
                 }
             }
             // A peer's grant/revocation can change this node's own role (re-resolved after the loop).
@@ -1240,6 +1248,11 @@ fn apply_replica_current(
                 &mut caches.earthwork_map,
                 &mut caches.visibility,
                 &mut caches.callout_map,
+            );
+            crate::visibility::cache::apply_replicated_membership(
+                &mut caches.visibility,
+                &state.node_id,
+                &properties,
             );
         }
     }
@@ -3024,6 +3037,24 @@ mod tests {
                 .is_none(),
             "repeated reloads preserve exit"
         );
+        // QA-0125: a REST hierarchy poll answers its waiter and never rebuilds the GUI tree.
+        let (api_tx, mut api_rx) = tokio::sync::oneshot::channel();
+        app.world_mut()
+            .resource_mut::<fe_runtime::app::PendingApiRequests>()
+            .enqueue_hierarchy(api_tx);
+        app.world_mut()
+            .write_message(DbResult::HierarchyRead { verses: Vec::new() });
+        app.update();
+        assert_eq!(api_rx.try_recv().map(|verses| verses.len()), Ok(0));
+        assert_eq!(
+            app.world()
+                .resource::<VerseManager>()
+                .all_nodes()
+                .filter(|node| node.id == "late-import")
+                .count(),
+            1,
+            "the API read left the GUI tree as it was"
+        );
         app.insert_resource(NavigationManager::default());
         app.world_mut().write_message(hydration);
         app.update();
@@ -3339,6 +3370,18 @@ mod tests {
         assert_eq!(app.world().get::<Transform>(ordinary).unwrap().translation.x, 24.0);
         assert!(!app.world().resource::<NodeManager>().primary().unwrap().drag_committed);
         assert_eq!(app.world().resource::<InspectorFormState>().node_properties["complex"]["missing"], serde_json::Value::Null);
+        // QA-0103: a peer's committed join and then leave of a Group both reach this GUI's membership.
+        let membership = |app: &App| app.world().resource::<crate::visibility::VisibilityState>().group_membership.get("cold-node").cloned();
+        remote.state.properties.insert("view.groups".into(), json!(["g-shared"]));
+        remote.provenance = ReplicaNodeProvenance::OriginalSceneCommit { hlc: 4, publisher: "did:key:fixture".into() };
+        app.world_mut().write_message(DbResult::ReplicatedNodeCurrent { current: remote.clone() });
+        app.update();
+        assert_eq!(membership(&app), Some(vec!["g-shared".to_string()]));
+        remote.state.properties.remove("view.groups");
+        remote.provenance = ReplicaNodeProvenance::OriginalSceneCommit { hlc: 5, publisher: "did:key:fixture".into() };
+        app.world_mut().write_message(DbResult::ReplicatedNodeCurrent { current: remote.clone() });
+        app.update();
+        assert_eq!(membership(&app), None, "a replicated leave clears the stale membership");
 
         let _ = db_commands.try_iter().collect::<Vec<_>>();
         app.world_mut().write_message(DbResult::NodePropertiesLoaded { node_id: "cold-node".into(), properties: json!({"stale": true}), correlation_id: None });
@@ -3420,6 +3463,34 @@ mod tests {
         assert_eq!(unavailable.len(), 1);
         assert_ne!(unavailable[0], births[0], "a replaced asset binding rematerializes through residency");
         assert!(app.world().resource::<VerseManager>().all_nodes().find(|node| node.id == "remote-birth").unwrap().asset_path.is_none());
+        // QA-0124: the blob lands and a hierarchy load (not a replica read) is the
+        // first to carry its path: the placeholder is respawned as the model.
+        let reload = {
+            use fe_runtime::messages::{FractalHierarchyData, NodeHierarchyData, PetalHierarchyData, VerseHierarchyData};
+            let manager = app.world().resource::<VerseManager>();
+            DbResult::HierarchyLoaded { verses: manager.verses.iter().map(|verse| VerseHierarchyData {
+                id: verse.id.clone(), name: verse.name.clone(), namespace_id: verse.namespace_id.clone(),
+                timeseries: Default::default(), view_hidden: false,
+                fractals: verse.fractals.iter().map(|fractal| FractalHierarchyData {
+                    id: fractal.id.clone(), name: fractal.name.clone(), view_hidden: false,
+                    petals: fractal.petals.iter().map(|petal| PetalHierarchyData {
+                        id: petal.id.clone(), name: petal.name.clone(), view_hidden: false, render_distance: petal.render_distance,
+                        nodes: petal.nodes.iter().map(|node| NodeHierarchyData {
+                            id: node.id.clone(), name: node.name.clone(), petal_id: petal.id.clone(), position: node.position,
+                            rotation: node.transform.rotation.to_array(), scale: node.transform.scale.to_array(),
+                            has_asset: node.has_asset, webpage_url: node.webpage_url.clone(),
+                            asset_path: if node.id == "remote-birth" { Some("models/replica.glb".into()) } else { node.asset_path.clone() },
+                        }).collect(),
+                    }).collect(),
+                }).collect(),
+            }).collect() }
+        };
+        app.world_mut().write_message(reload);
+        app.update();
+        let landed: Vec<_> = residents.iter(app.world()).filter(|(_, marker)| marker.node_id == "remote-birth").map(|(entity, _)| entity).collect();
+        assert_eq!(landed.len(), 1, "the placeholder is replaced, never duplicated");
+        assert_ne!(landed[0], unavailable[0]);
+        assert!(app.world().get::<bevy::scene::SceneRoot>(landed[0]).is_some(), "the late blob renders as its model");
         asset_birth.asset = ReplicaNodeAsset::LocalBlob { asset_id: "remote-asset".into(), content_hash: "a".repeat(64), content_type: "model/gltf-binary".into(), asset_path: "models/replica.glb".into() };
         app.world_mut().write_message(DbResult::ReplicatedNodeCurrent { current: asset_birth.clone() });
         app.update();

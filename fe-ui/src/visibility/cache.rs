@@ -103,6 +103,21 @@ pub(crate) fn apply_committed_view(
     );
 }
 
+/// A replicated current bag is committed shared state (QA-0103): its Group
+/// membership is authoritative (absent = no Groups) like a `NodeViewSet` echo;
+/// the `view.state` eye keeps the hydration rule.
+pub(crate) fn apply_replicated_membership(
+    state: &mut VisibilityState,
+    node_id: &str,
+    properties: &serde_json::Value,
+) {
+    let groups = properties
+        .get(VIEW_GROUPS_KEY)
+        .and_then(groups_from_json)
+        .unwrap_or_default();
+    apply_view(state, node_id, None, Some(groups));
+}
+
 /// `PetalViewStateLoaded` hydration (petal entry / restart): same rule as
 /// [`hydrate_from_properties`] for every listed node.
 pub(crate) fn apply_petal_view_state(state: &mut VisibilityState, entries: &[NodeViewDto]) {
