@@ -457,7 +457,12 @@ impl Plugin for NodeManagerPlugin {
                 inspector_sync::sync_manager_to_inspector,
                 selection::update_selection_state, // FR-1: project the read-model before the gimbal draws
                 path_handle_interaction::draw_handle_stems, // anchor→handle stems (draws only, steals no clicks)
-                (gimbal_interaction::draw_gimbal_system,terrain_authoring::draw_terrain_draft).chain(),
+                (
+                    gimbal_interaction::draw_gimbal_system,
+                    gimbal_interaction::draw_selection_outline_system, // QA-0006: visible feedback even in Select tool
+                    terrain_authoring::draw_terrain_draft,
+                )
+                    .chain(),
                 transform_broadcast::broadcast_transform,
                 transform_broadcast::apply_inbound_transforms,
             )

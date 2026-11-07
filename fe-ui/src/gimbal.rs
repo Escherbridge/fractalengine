@@ -197,6 +197,45 @@ pub fn draw_gimbal(
     }
 }
 
+/// QA-0006: before this, a selected node's ONLY visible feedback was the
+/// Move/Rotate/Scale gimbal — which draws nothing at all in Select tool
+/// (`draw_gimbal` returns early for `Tool::Select`), so a plain click-select
+/// left the scene looking unchanged. A bright wireframe box, independent of
+/// `tool`, gives every selection a visible outline.
+pub const COLOR_SELECTION_OUTLINE: Color = Color::srgb(0.1, 0.95, 1.0);
+
+/// Draw the 12-edge wireframe of an axis-aligned world-space box `min..max`
+/// (as returned by [`subtree_world_aabb`]) in [`COLOR_SELECTION_OUTLINE`].
+pub fn draw_selection_outline(min: Vec3, max: Vec3, gizmos: &mut Gizmos<GimbalGizmoGroup>) {
+    let corners = [
+        Vec3::new(min.x, min.y, min.z),
+        Vec3::new(max.x, min.y, min.z),
+        Vec3::new(max.x, max.y, min.z),
+        Vec3::new(min.x, max.y, min.z),
+        Vec3::new(min.x, min.y, max.z),
+        Vec3::new(max.x, min.y, max.z),
+        Vec3::new(max.x, max.y, max.z),
+        Vec3::new(min.x, max.y, max.z),
+    ];
+    const EDGES: [(usize, usize); 12] = [
+        (0, 1),
+        (1, 2),
+        (2, 3),
+        (3, 0), // bottom face
+        (4, 5),
+        (5, 6),
+        (6, 7),
+        (7, 4), // top face
+        (0, 4),
+        (1, 5),
+        (2, 6),
+        (3, 7), // verticals joining the two faces
+    ];
+    for (a, b) in EDGES {
+        gizmos.line(corners[a], corners[b], COLOR_SELECTION_OUTLINE);
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Drawing helpers
 // ---------------------------------------------------------------------------

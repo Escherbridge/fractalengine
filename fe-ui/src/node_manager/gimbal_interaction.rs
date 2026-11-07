@@ -521,3 +521,33 @@ pub(super) fn draw_gimbal_system(
     let highlight = sel.drag.as_ref().map(|d| d.axis).or(manager.hovered_axis);
     draw_gimbal(center, tool.active_tool, highlight, gizmos);
 }
+
+/// QA-0006: a selected cube had no visible feedback beyond the gimbal, and
+/// Select tool draws no gimbal at all (`draw_gimbal` early-returns for
+/// `Tool::Select`), so plain clicking left the viewport looking unchanged.
+/// Draws a wireframe box around the single selected node's full mesh AABB
+/// in every tool, independent of `draw_gimbal_system`'s tool gating. Multiple
+/// selection and path sub-selections (vertex/segment/track) are left to their
+/// own existing feedback (the handles above) rather than drawing a box around
+/// a resolved point with no extent.
+pub(super) fn draw_selection_outline_system(
+    manager: Res<NodeManager>,
+    selection: Res<SelectionState>,
+    g_transform_query: Query<&GlobalTransform>,
+    aabb_query: Query<&bevy::camera::primitives::Aabb>,
+    children_query: Query<&Children>,
+    mut gizmos: Gizmos<GimbalGizmoGroup>,
+) {
+    if manager.selection_count() != 1 {
+        return;
+    }
+    let SelectionKind::Node(entity) = selection.kind else {
+        return;
+    };
+    let Some((min, max)) =
+        crate::gimbal::subtree_world_aabb(entity, &g_transform_query, &aabb_query, &children_query)
+    else {
+        return;
+    };
+    crate::gimbal::draw_selection_outline(min, max, &mut gizmos);
+}

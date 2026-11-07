@@ -68,14 +68,27 @@ pub fn render_create_dialog(
                         .desired_width(f32::INFINITY),
                 )
                 .labelled(ui, &name_label);
+            // QA-0007: `lost_focus()` is a LIVE query (`ctx.memory(|mem|
+            // mem.lost_focus(id))`), not a value frozen at `ui.add()` time.
+            // Reading it had to come BEFORE the autofocus reclaim below:
+            // egui's own TextEdit surrenders focus when Enter is pressed
+            // (so `lost_focus()` would read true right after `ui.add()`) —
+            // but the old order ran the "nothing is focused yet" reclaim
+            // first every frame, including the frame Enter just surrendered
+            // it, immediately re-granting this same field focus and making
+            // `lost_focus()` read false by the time it was checked. Net
+            // effect: Enter silently never submitted (D-07's stated goal),
+            // while a plain Create click still worked (it never depends on
+            // this flag). Reading the flag first, then reclaiming focus,
+            // preserves the sticky-autofocus behavior without racing it.
+            let submit_via_enter = name_resp.lost_focus()
+                && ui.input(|i| i.key_pressed(egui::Key::Enter));
             // D-07: autofocus — the Name field is the only control worth
             // typing into first, and nothing else in this dialog competes
             // for focus, so "nothing is focused yet" always means this.
             if ctx.memory(|m| m.focused().is_none()) {
                 name_resp.request_focus();
             }
-            let submit_via_enter = name_resp.lost_focus()
-                && ui.input(|i| i.key_pressed(egui::Key::Enter));
 
             ui.add_space(8.0);
             ui.horizontal(|ui| {

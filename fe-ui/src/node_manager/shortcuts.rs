@@ -234,7 +234,14 @@ enum EscapeRung {
     Deselect,
     /// 3 — return the active tool to Select.
     ResetTool,
-    /// Fully at rest: nothing left to back out of.
+    /// 4 — QA-0008: once nothing else is pending, back out one hierarchy
+    /// level (Petal → Fractal → Verse), mirroring the viewport's explicit
+    /// "Back"/breadcrumb controls (`viewport.rs`) so Escape stays usable as a
+    /// one-key "go back" once a gesture/selection/tool has nothing left to
+    /// cancel — rather than going dead at `Rest` while still deep in the
+    /// hierarchy.
+    NavigateBack,
+    /// Fully at rest: nothing left to back out of (no verse/fractal/petal).
     Rest,
 }
 
@@ -247,6 +254,7 @@ fn escape_rung(
     editing_track: bool,
     has_selection: bool,
     tool_is_select: bool,
+    can_navigate_back: bool,
 ) -> EscapeRung {
     if context_menu_open {
         EscapeRung::CloseContextMenu
@@ -260,6 +268,8 @@ fn escape_rung(
         EscapeRung::Deselect
     } else if !tool_is_select {
         EscapeRung::ResetTool
+    } else if can_navigate_back {
+        EscapeRung::NavigateBack
     } else {
         EscapeRung::Rest
     }
@@ -278,7 +288,7 @@ pub(super) fn handle_tool_shortcuts(
     mut gestures: GestureParams,
     mut egui_ctx: EguiContexts,
     mut visibility: ResMut<VisibilityState>,
-    nav: Res<NavigationManager>,
+    mut nav: ResMut<NavigationManager>,
     hierarchy: Res<VerseManager>,
     mut ui_mgr: ResMut<UiManager>,
     local_role: Res<LocalUserRole>,
@@ -347,6 +357,9 @@ pub(super) fn handle_tool_shortcuts(
                 path_state.editing_track_id.is_some(),
                 gestures.node_mgr.selected.is_some(),
                 tool.active_tool == Tool::Select,
+                nav.active_petal_id.is_some()
+                    || nav.active_fractal_id.is_some()
+                    || nav.active_verse_id.is_some(),
             ) {
                 EscapeRung::CloseContextMenu => ui_mgr.close_dialog(),
                 EscapeRung::CancelGesture => {
@@ -358,6 +371,18 @@ pub(super) fn handle_tool_shortcuts(
                 EscapeRung::StopEditing => path_state.stop_editing(),
                 EscapeRung::Deselect => gestures.node_mgr.deselect(),
                 EscapeRung::ResetTool => tool.activate(Tool::Select, &mut right_sidebar),
+                // QA-0008: same back-out the viewport's explicit controls use
+                // (`viewport.rs`'s "Back" button / breadcrumbs), one level at
+                // a time — Petal first, then Fractal, then Verse.
+                EscapeRung::NavigateBack => {
+                    if nav.active_petal_id.is_some() {
+                        nav.back_from_petal();
+                    } else if nav.active_fractal_id.is_some() {
+                        nav.back_from_fractal();
+                    } else if nav.active_verse_id.is_some() {
+                        nav.back_from_verse();
+                    }
+                }
                 EscapeRung::Rest => {}
             }
         }
@@ -610,7 +635,7 @@ mod tests {
     #[test]
     fn rung0_gesture_wins_over_every_lower_rung() {
         assert_eq!(
-            escape_rung(true, true, true, true, true, false),
+            escape_rung(true, true, true, true, true, false, true),
             EscapeRung::CloseContextMenu
         );
         let mut ui = UiManager::default();
@@ -621,7 +646,8 @@ mod tests {
             pending_delete: false,
             descendant_count: None,
         });
-        if escape_rung(true, true, false, false, true, false) == EscapeRung::CloseContextMenu {
+        if escape_rung(true, true, false, false, true, false, true) == EscapeRung::CloseContextMenu
+        {
             ui.close_dialog();
         }
         assert!(!ui.any_dialog_open());
@@ -629,11 +655,11 @@ mod tests {
         // A live gesture consumes Escape even when a track is open, a node is
         // selected, AND a non-Select tool is active.
         assert_eq!(
-            escape_rung(false, true, false, true, true, false),
+            escape_rung(false, true, false, true, true, false, true),
             EscapeRung::CancelGesture
         );
         assert_eq!(
-            escape_rung(false, true, false, false, false, true),
+            escape_rung(false, true, false, false, false, true, true),
             EscapeRung::CancelGesture
         );
     }
@@ -650,7 +676,7 @@ mod tests {
         manager.select(Entity::from_bits(1), "n1");
         // Selected, not dragging, non-Select tool → plain deselect.
         assert_eq!(
-            escape_rung(false, manager.is_dragging(), false, false, true, false),
+            escape_rung(false, manager.is_dragging(), false, false, true, false, true),
             EscapeRung::Deselect
         );
         if let Some(ref mut sel) = manager.selected {
@@ -664,7 +690,7 @@ mod tests {
             });
         }
         assert_eq!(
-            escape_rung(false, manager.is_dragging(), false, false, true, false),
+            escape_rung(false, manager.is_dragging(), false, false, true, false, true),
             EscapeRung::CancelGesture
         );
         // …and the cancel restores the press-time transform instead of
@@ -807,7 +833,7 @@ mod tests {
     #[test]
     fn rung1_stop_editing_wins_over_deselect_and_tool_reset() {
         assert_eq!(
-            escape_rung(false, false, false, true, true, false),
+            escape_rung(false, false, false, true, true, false, true),
             EscapeRung::StopEditing
         );
     }
@@ -815,24 +841,37 @@ mod tests {
     #[test]
     fn rung2_deselect_wins_over_tool_reset() {
         assert_eq!(
-            escape_rung(false, false, false, false, true, false),
+            escape_rung(false, false, false, false, true, false, true),
             EscapeRung::Deselect
         );
     }
 
     #[test]
     fn rung3_resets_a_non_select_tool_when_nothing_else_is_pending() {
-        // Fixes the sticky-Pen complaint (#12).
+        // Fixes the sticky-Pen complaint (#12). A non-Select tool still wins
+        // rung 3 even deep in the hierarchy (QA-0008's NavigateBack is rung 4,
+        // strictly below ResetTool).
         assert_eq!(
-            escape_rung(false, false, false, false, false, false),
+            escape_rung(false, false, false, false, false, false, true),
             EscapeRung::ResetTool
         );
     }
 
     #[test]
-    fn fully_at_rest_escape_does_nothing() {
+    fn rung4_navigates_back_one_level_once_nothing_else_is_pending() {
+        // QA-0008: with the tool already Select and nothing selected/editing,
+        // Escape backs out of the hierarchy instead of going dead.
         assert_eq!(
-            escape_rung(false, false, false, false, false, true),
+            escape_rung(false, false, false, false, false, true, true),
+            EscapeRung::NavigateBack
+        );
+    }
+
+    #[test]
+    fn fully_at_rest_escape_does_nothing() {
+        // Only when there is nowhere left to navigate back to either.
+        assert_eq!(
+            escape_rung(false, false, false, false, false, true, false),
             EscapeRung::Rest
         );
     }
@@ -841,14 +880,24 @@ mod tests {
     fn ladder_is_the_same_for_brush_as_for_every_other_tool() {
         // Regression guard for the deleted Brush short-circuit (#6): the rung
         // resolution takes no `Tool` at all, so Brush cannot swallow Escape.
-        // Pressing Escape three times from "Brush + track open + selection"
-        // walks the ladder down to the rest state.
+        // Pressing Escape five times from "Brush + track open + selection,
+        // one hierarchy level deep" walks the ladder all the way to rest,
+        // including the QA-0008 NavigateBack rung before it goes dead.
         let mut editing = true;
         let mut selected = true;
         let mut tool_is_select = false;
+        let mut can_navigate_back = true;
         let mut walked = Vec::new();
-        for _ in 0..4 {
-            let rung = escape_rung(false, false, false, editing, selected, tool_is_select);
+        for _ in 0..5 {
+            let rung = escape_rung(
+                false,
+                false,
+                false,
+                editing,
+                selected,
+                tool_is_select,
+                can_navigate_back,
+            );
             walked.push(rung);
             match rung {
                 // The bridge clears the selection alongside the session (D4
@@ -859,6 +908,7 @@ mod tests {
                 }
                 EscapeRung::Deselect => selected = false,
                 EscapeRung::ResetTool => tool_is_select = true,
+                EscapeRung::NavigateBack => can_navigate_back = false,
                 EscapeRung::CloseContextMenu
                 | EscapeRung::CancelGesture
                 | EscapeRung::ClearIsolate
@@ -870,6 +920,7 @@ mod tests {
             vec![
                 EscapeRung::StopEditing,
                 EscapeRung::ResetTool,
+                EscapeRung::NavigateBack,
                 EscapeRung::Rest,
                 EscapeRung::Rest,
             ]
@@ -881,11 +932,11 @@ mod tests {
         // Documents WHAT D4-override buys: if `stop_editing` left the track
         // selected, rung 2 would fire on the next press for the same object.
         assert_eq!(
-            escape_rung(false, false, false, true, true, true),
+            escape_rung(false, false, false, true, true, true, false),
             EscapeRung::StopEditing
         );
         assert_eq!(
-            escape_rung(false, false, false, false, true, true),
+            escape_rung(false, false, false, false, true, true, false),
             EscapeRung::Deselect
         );
     }
@@ -896,12 +947,12 @@ mod tests {
     fn clear_isolate_sits_between_a_live_gesture_and_every_session_rung() {
         // A live drag still owns rung 0 even while isolated (F5).
         assert_eq!(
-            escape_rung(false, true, true, true, true, false),
+            escape_rung(false, true, true, true, true, false, true),
             EscapeRung::CancelGesture
         );
         // Isolate outranks an open track, a selection and a non-Select tool.
         assert_eq!(
-            escape_rung(false, false, true, true, true, false),
+            escape_rung(false, false, true, true, true, false, true),
             EscapeRung::ClearIsolate
         );
         // Walking the ladder from "isolated + track open + Pen": isolate goes
@@ -909,14 +960,17 @@ mod tests {
         let (mut solo, mut editing, mut selected, mut tool_is_select) = (true, true, true, false);
         let mut walked = Vec::new();
         for _ in 0..4 {
-            let rung = escape_rung(false, false, solo, editing, selected, tool_is_select);
+            let rung = escape_rung(false, false, solo, editing, selected, tool_is_select, false);
             walked.push(rung);
             match rung {
                 EscapeRung::ClearIsolate => solo = false,
                 EscapeRung::StopEditing => (editing, selected) = (false, false),
                 EscapeRung::Deselect => selected = false,
                 EscapeRung::ResetTool => tool_is_select = true,
-                EscapeRung::CloseContextMenu | EscapeRung::CancelGesture | EscapeRung::Rest => {}
+                EscapeRung::CloseContextMenu
+                | EscapeRung::CancelGesture
+                | EscapeRung::NavigateBack
+                | EscapeRung::Rest => {}
             }
         }
         assert_eq!(
