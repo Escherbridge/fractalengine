@@ -1275,14 +1275,24 @@ async fn apply_static_row(
 
     let mut row: serde_json::Value = serde_json::from_slice(row_bytes)
         .map_err(|e| anyhow::anyhow!("replicated row {table}/{record_id}: bad JSON: {e}"))?;
+    // QA-0123: a projected catalog row carries NONE columns as null — absent, not
+    // malformed — so nulls go before any per-field check.
+    strip_toplevel_nulls(&mut row);
     if table == "petal" {
         if let Some(document) = row.get("hexon_manifest") {
-            if fe_runtime::petal_requirements::PetalRequirements::from_document(Some(document)).is_err() {
+            if let Err(reason) =
+                fe_runtime::petal_requirements::PetalRequirements::from_document(Some(document))
+            {
+                tracing::warn!(
+                    table,
+                    record_id,
+                    reason,
+                    "Inbound petal row carries malformed requirements — denied"
+                );
                 return Ok(ReplicatedRowOutcome::Denied);
             }
         }
     }
-    strip_toplevel_nulls(&mut row);
     // The SurrealDB `id` is the AUTHOR's local record identity (a `RETURN AFTER` read-back
     // carries it), never wire data: MERGEing it into an existing row fails, and on CREATE it
     // would let a peer choose the local record id. Rows are keyed by `id_field` alone.

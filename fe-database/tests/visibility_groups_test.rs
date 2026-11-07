@@ -39,8 +39,15 @@ struct Harness {
     repl_rx: crossbeam::channel::Receiver<fe_database::ReplicationEvent>,
 }
 
+/// The owner node's identity seed (a did:key, so a peer trusts its manifest on first use).
+const OWNER_SEED: [u8; 32] = [7; 32];
+
 impl Harness {
     fn open(dir: &Path) -> Self {
+        Self::open_as(dir, OWNER_SEED)
+    }
+
+    fn open_as(dir: &Path, seed: [u8; 32]) -> Self {
         let (cmd_tx, cmd_rx) = crossbeam::channel::bounded::<DbCommand>(64);
         let (res_tx, res_rx) = crossbeam::channel::bounded::<DbResult>(64);
         let (repl_tx, repl_rx) = crossbeam::channel::bounded(256);
@@ -51,7 +58,7 @@ impl Harness {
             res_tx,
             blob_store.clone() as BlobStoreHandle,
             Some(repl_tx),
-            None,
+            Some(fe_identity::NodeKeypair::from_bytes(&seed).expect("node keypair")),
             None,
             None,
             Some(db_path),
@@ -125,26 +132,28 @@ impl Harness {
         })
     }
 
-    /// The registry the last replicated `petal` row for `petal_id` carries (QA-0123).
-    fn published_registry(&self, petal_id: &str) -> Option<serde_json::Value> {
-        let mut last = None;
+    /// Every row published so far, in order, with its wire bytes (QA-0123).
+    fn published_rows(&self) -> Vec<(fe_database::ReplicationEvent, Vec<u8>)> {
+        let mut rows = Vec::new();
         while let Ok(event) = self.repl_rx.try_recv() {
-            if event.table == "petal" && event.record_id == petal_id {
-                let bytes = self.blob_store.bytes_for(&event.content_hash).expect("row blob");
-                let row: serde_json::Value = serde_json::from_slice(&bytes).expect("row json");
-                last = Some(row["visibility_groups"].clone());
-            }
+            let bytes = self.blob_store.bytes_for(&event.content_hash).expect("row blob");
+            rows.push((event, bytes));
         }
-        last
+        rows
     }
 
     fn groups(&self, petal_id: &str) -> Vec<VisibilityGroupDto> {
-        match self.ask(DbCommand::GetPetalVisibilityGroups {
+        self.send(DbCommand::GetPetalVisibilityGroups {
             petal_id: petal_id.into(),
             correlation_id: None,
-        }) {
-            DbResult::PetalVisibilityGroupsLoaded { groups, .. } => groups,
-            o => panic!("expected PetalVisibilityGroupsLoaded, got {o:?}"),
+        });
+        loop {
+            match self.recv() {
+                DbResult::PetalVisibilityGroupsLoaded { groups, .. } => return groups,
+                // A peer applying replicated rows interleaves their echoes; skip them.
+                DbResult::Error(e) => panic!("expected PetalVisibilityGroupsLoaded, got Error({e})"),
+                _ => continue,
+            }
         }
     }
 
@@ -247,10 +256,38 @@ fn the_group_registry_is_editor_gated_round_trips_and_survives_a_restart() {
             o => panic!("editor SetPetalVisibilityGroups must succeed, got {o:?}"),
         }
         assert_eq!(h.groups(&ids.petal), registry(), "Get round-trips exactly");
+        let rows = h.published_rows();
+        let published = rows
+            .iter()
+            .rev()
+            .find(|(event, _)| event.table == "petal" && event.record_id == ids.petal)
+            .map(|(_, bytes)| serde_json::from_slice::<serde_json::Value>(bytes).expect("row json"));
         assert_eq!(
-            h.published_registry(&ids.petal),
+            published.as_ref().map(|row| row["visibility_groups"].clone()),
             Some(serde_json::to_value(registry()).unwrap()),
             "the committed registry is published to peers, not held until a verse reopen"
+        );
+
+        // QA-0123: a peer that applies the owner's rows in publication order holds the
+        // same registry — the registry row's other catalog columns never refuse it.
+        let peer_dir = tempfile::tempdir().expect("peer temp dir");
+        let peer = Harness::open_as(peer_dir.path(), [9; 32]);
+        let owner_did = fe_identity::NodeKeypair::from_bytes(&OWNER_SEED)
+            .expect("owner keypair")
+            .to_did_key();
+        for (event, bytes) in rows {
+            peer.send(DbCommand::ApplyReplicatedRow {
+                verse_id: event.verse_id,
+                table: event.table,
+                record_id: event.record_id,
+                row_bytes: bytes,
+                author_did: owner_did.clone(),
+            });
+        }
+        assert_eq!(
+            peer.groups(&ids.petal),
+            registry(),
+            "the replicated registry reaches the peer's store"
         );
         ids.petal
     };
