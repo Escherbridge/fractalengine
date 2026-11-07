@@ -877,6 +877,7 @@ impl VerseReplicator for IrohDocsReplicator {
                 stack.blob_store().clone(),
                 tx,
                 readiness,
+                Some(doc.clone()),
             ));
             *self.pump.lock().unwrap_or_else(|e| e.into_inner()) = Some(handle.abort_handle());
             Ok(rx)
@@ -914,11 +915,21 @@ impl VerseReplicator for IrohDocsReplicator {
             // fresh peer whose only source is this snapshot. Drop the
             // single-winner `role` rows this pass picked up and replace them
             // with every author's entry under the `role/` prefix.
-            out.retain(|c| c.table != "role");
+            out.retain(|c| c.table != "role" && c.table != "node");
             let role_query = iroh_docs::store::Query::key_prefix("role/")
                 .include_empty()
                 .build();
             out.extend(collect_query_rows(&doc, &blobs, role_query).await);
+            // QA-0100: a node's transform is an `edit_seq` register merged by the
+            // DB, so a (re)joining peer must see EVERY author's entry — the newest
+            // one can be the register's tie loser. Oldest first, so the blind-merged
+            // non-transform fields still end on the newest entry.
+            let node_query = iroh_docs::store::Query::key_prefix("node/")
+                .include_empty()
+                .build();
+            let mut nodes = collect_query_rows(&doc, &blobs, node_query).await;
+            nodes.sort_by_key(|change| change.timestamp);
+            out.extend(nodes);
             Ok(out)
         })
     }
@@ -1201,6 +1212,56 @@ async fn read_blob_bytes(
         .map_err(|e| anyhow::anyhow!("reading blob bytes: {e}"))
 }
 
+/// Fallback re-dial for a peer still unconfirmed after a failed sync: at most
+/// once per peer per `RESYNC_COOLDOWN`, and only if no other evidence (a later
+/// successful sync or delivered content) confirmed it during the delay. A
+/// re-dial re-joins gossip and makes the remote dial back, so an unthrottled
+/// retry storms (QA-0101; fe-sync `src/AGENTS.md` §join-readiness).
+fn schedule_resync(
+    doc: &DocHandle,
+    readiness: &Arc<JoinReadiness>,
+    peer: iroh::EndpointId,
+    last_attempt: &mut HashMap<iroh::EndpointId, std::time::Instant>,
+) {
+    const RESYNC_COOLDOWN: std::time::Duration = std::time::Duration::from_secs(60);
+    if last_attempt.get(&peer).is_some_and(|at| at.elapsed() < RESYNC_COOLDOWN)
+        || (last_attempt.len() >= 256 && !last_attempt.contains_key(&peer))
+    {
+        return;
+    }
+    last_attempt.insert(peer, std::time::Instant::now());
+    // Jitter from the clock's sub-second nanos so two dialers drift apart.
+    let jitter = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|elapsed| u64::from(elapsed.subsec_nanos()) % 1000)
+        .unwrap_or(0);
+    let delay = std::time::Duration::from_millis(1000 + jitter);
+    let doc = doc.clone();
+    let readiness = readiness.clone();
+    tokio::spawn(async move {
+        tokio::time::sleep(delay).await;
+        let confirmed = readiness
+            .successful_peers
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .contains(&peer);
+        if confirmed || !readiness.alive.load(Ordering::Acquire) {
+            return;
+        }
+        if let Err(error) = doc.start_sync(vec![iroh::EndpointAddr::new(peer)]).await {
+            tracing::debug!(peer = %peer_did_key(&peer), "replica re-sync request failed: {error}");
+        }
+    });
+}
+
+/// Record `peer` as a live, authenticated sync partner (bounded).
+fn confirm_peer(readiness: &JoinReadiness, peer: iroh::EndpointId) {
+    let mut peers = readiness.successful_peers.lock().unwrap_or_else(|error| error.into_inner());
+    if peers.len() < 256 {
+        peers.insert(peer);
+    }
+}
+
 /// The per-replica inbound event pump: maps the iroh-docs `LiveEvent` stream
 /// to `RowChange`s carrying the payload bytes.
 ///
@@ -1215,8 +1276,11 @@ async fn pump_live_events(
     blobs: iroh_blobs::api::Store,
     out: mpsc::Sender<RowChange>,
     readiness: Arc<JoinReadiness>,
+    resync: Option<DocHandle>,
 ) {
     readiness.alive.store(true, Ordering::Release);
+    // QA-0101: when each peer was last re-dialed (fallback cooldown).
+    let mut resync_attempts: HashMap<iroh::EndpointId, std::time::Instant> = HashMap::new();
     let _readiness_guard = JoinReadinessGuard(readiness.clone());
     // Entries whose content hash has not finished downloading yet.
     let mut pending: HashMap<iroh_blobs::Hash, Vec<PendingContent>> = HashMap::new();
@@ -1255,6 +1319,7 @@ async fn pump_live_events(
                 // the relaying node, and the snapshot path (which always
                 // read `entry.author()`) agrees with live delivery. `from`
                 // is retained only as tracing context.
+                confirm_peer(&readiness, from);
                 let content_hash: BlobHash = *entry.content_hash().as_bytes();
                 let meta = PendingContent {
                     table: table.to_string(),
@@ -1355,12 +1420,19 @@ async fn pump_live_events(
                 readiness.successful_peers.lock().unwrap_or_else(|error| error.into_inner()).remove(&peer);
                 tracing::debug!(peer = %peer_did_key(&peer), "replica swarm neighbor down");
             }
-            LiveEvent::SyncFinished(event) => {
-                let mut peers = readiness.successful_peers.lock().unwrap_or_else(|error| error.into_inner());
-                if event.result.is_ok() {
-                    if peers.len() < 256 { peers.insert(event.peer); }
-                } else { peers.remove(&event.peer); }
-            }
+            LiveEvent::SyncFinished(event) => match &event.result {
+                Ok(_) => confirm_peer(&readiness, event.peer),
+                Err(error) => {
+                    // A close failure is the simultaneous-dial artifact: the other
+                    // leg carried the sync, so it is not evidence against the peer.
+                    if !error.contains("Failed to close") {
+                        readiness.successful_peers.lock().unwrap_or_else(|error| error.into_inner()).remove(&event.peer);
+                    }
+                    if let Some(doc) = &resync {
+                        schedule_resync(doc, &readiness, event.peer, &mut resync_attempts);
+                    }
+                }
+            },
             LiveEvent::PendingContentReady => {
                 tracing::debug!("replica sync progress event");
             }
@@ -1931,7 +2003,7 @@ mod tests {
             .chain(futures_lite::stream::pending());
         let (error_tx, _error_rx) = mpsc::channel(1);
         let error_pump = tokio::spawn(pump_live_events(
-            Box::pin(errors), stack_b.blob_store().clone(), error_tx, readiness.clone(),
+            Box::pin(errors), stack_b.blob_store().clone(), error_tx, readiness.clone(), None,
         ));
         tokio::time::timeout(std::time::Duration::from_secs(1), async {
             loop {

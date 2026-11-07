@@ -18,6 +18,7 @@ pub mod relay_config;
 pub mod replication;
 pub mod replicator;
 pub mod sharding;
+mod peer_book;
 mod scene_asset_gate;
 mod scene_assets;
 pub mod status;

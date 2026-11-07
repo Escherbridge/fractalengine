@@ -2167,3 +2167,36 @@ generic over FromIterator, while the adapter accepts IntoIterator; leaving both
 sides generic can send trait inference through Bevy's recursive reference-to-Res
 blanket impl. Keep this collection concrete; increasing recursion_limit masks the
 missing inference boundary and does not describe the intended container.
+
+## §join-readiness — simultaneous-dial recovery (QA-0101, 2026-11-07)
+
+`successful_peers` (join readiness + the scene provider roster) is fed by two
+signals in `replicator.rs::pump_live_events`: `SyncFinished(Ok)`, and
+`InsertRemote.from` (content delivered by a peer proves a live session).
+When two peers dial each other at once, iroh-docs 0.101 fails the Connect leg
+with `Failed to close connection1` and then DROPS the Accept leg's successful
+`SyncFinished` ("sync state finish called but not in running state"), so the
+event stream alone can leave a synced peer unconfirmed forever (the viewer's
+false "Join timed out" and "No native provider" in pass 77). A close failure is
+therefore not evidence against the peer (it is not removed). `schedule_resync`
+is a fallback only: one jittered re-dial per peer per 60 s, skipped if the peer
+was confirmed during the delay. Never re-dial unthrottled: `Doc::start_sync`
+re-joins gossip, the remote dials back on NeighborUp and recreates the race —
+an earlier per-failure retry produced ~14 failed syncs/s per peer.
+
+## §peer-book — relay-less restart addresses (QA-0086, 2026-11-07)
+
+`peer_book.rs` keeps `<p2p_dir>/peer-book/<blake3(verse)>.json`: up to 16
+`EndpointAddr`s of peers this node synced with. While a replica is open a task
+refreshes it every 10 s from the roster via `Endpoint::remote_info`; on
+`OpenVerseReplica`/`JoinVerseReplica` the book is merged into the bootstrap set
+(explicit/env entries first). With `FE_SYNC_RELAY=disabled` there is no address
+lookup, so this is what lets a restarted peer re-dial a peer that kept its port.
+Both sides restarting at once still needs `FE_SYNC_BOOTSTRAP` (ports are random).
+
+## §tileset-readvertise (QA-0101, 2026-11-07)
+
+Tileset ads are ephemeral gossip. `pump_gossip_topic` forwards `NeighborUp` as an
+empty `GossipIncoming` frame and the select loop re-advertises this node's
+catalog on that verse (at most once per verse per 5 s), so a peer that joins
+after the last Refresh/seed toggle still learns the provider for petal terrain.

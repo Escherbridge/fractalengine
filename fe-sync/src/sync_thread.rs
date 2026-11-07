@@ -766,6 +766,8 @@ pub fn spawn_sync_thread_with_transport(
             // Phase-F.5 `TilesetDownloadTracker` HashMap — "received" now
             // lives in `TilesetTransfer`'s persisted ledger.
             let mut tileset_providers = TilesetProviderMap::default();
+            // QA-0101: last neighbor-triggered tileset advertisement per verse (rate limit).
+            let mut neighbor_ads: HashMap<String, std::time::Instant> = HashMap::new();
 
             // F21/M2: writes retained for verses whose replica is not open
             // yet, republished after the open (see PendingWrites).
@@ -874,6 +876,26 @@ pub fn spawn_sync_thread_with_transport(
                         }
                     }
                     maybe_gossip = gossip_inbound_rx.recv() => {
+                        // QA-0101: an empty frame is the pump's NeighborUp signal — a
+                        // peer that joins after the last advertisement must still learn
+                        // this node's tilesets (at most one re-advertisement per 5 s).
+                        if let Some(incoming) = maybe_gossip.as_ref().filter(|incoming| incoming.content.is_empty()) {
+                            let due = neighbor_ads
+                                .get(&incoming.verse_id)
+                                .is_none_or(|last| last.elapsed() >= std::time::Duration::from_secs(5));
+                            if due && neighbor_ads.len() < 1024 {
+                                neighbor_ads.insert(incoming.verse_id.clone(), std::time::Instant::now());
+                                handle_advertise_tilesets(
+                                    &gossip_host,
+                                    &gossip_senders,
+                                    &tileset_transfer,
+                                    my_provider_addr.as_deref(),
+                                    &incoming.verse_id,
+                                )
+                                .await;
+                            }
+                            continue;
+                        }
                         if let Some(incoming) = maybe_gossip {
                             // PAS-P3 S3: tileset ads ride the same verse
                             // topic as compute envelopes, tagged `kind`
@@ -978,6 +1000,11 @@ pub fn spawn_sync_thread_with_transport(
                                         }
                                     }
                                 }
+                                // QA-0086: last-synced peers of this verse, so a
+                                // relay-less restart can dial them.
+                                if endpoint.is_some() {
+                                    crate::peer_book::merge(&mut peers, crate::peer_book::load(&p2p_dir, &verse_id));
+                                }
                                 // Phase F.4 + M2/F7: subscribe the verse's
                                 // compute gossip topic BEFORE the open
                                 // sequence. The gossip actor is an independent
@@ -1042,6 +1069,9 @@ pub fn spawn_sync_thread_with_transport(
                                 if opened.native_ready {
                                     if let Some(replica) = replicas.get(&verse_id) {
                                         scene_assets.opened_with_roster(&verse_id, &peers, replica.scene_provider_roster());
+                                        if let (Some(endpoint), Some(roster)) = (endpoint.as_ref(), replica.scene_provider_roster()) {
+                                            crate::peer_book::spawn_recorder(endpoint.inner().clone(), roster, p2p_dir.clone(), verse_id.clone());
+                                        }
                                     }
                                 }
                                 sync_blob_access_gate(
@@ -2456,9 +2486,8 @@ async fn pump_virtual_gossip_topic(
 }
 
 /// Drain one topic's gossip event stream, forwarding messages to the sync
-/// loop's aggregated inbound channel. Membership events (NeighborUp /
-/// NeighborDown) are intentionally not consumed — nothing acts
-/// on them today. A pump is a separate task, so the awaiting send below is
+/// loop's aggregated inbound channel. NeighborUp is forwarded as an empty
+/// frame (tileset re-advertisement, QA-0101); NeighborDown is not consumed. A pump is a separate task, so the awaiting send below is
 /// backpressure, not a self-drain (§self-drain applies to the select loop
 /// itself).
 async fn pump_gossip_topic(
@@ -2487,7 +2516,19 @@ async fn pump_gossip_topic(
             Some(Ok(GossipTopicEvent::Lagged)) => {
                 tracing::warn!(verse_id, "gossip topic receiver lagged — messages missed");
             }
-            Some(Ok(GossipTopicEvent::NeighborUp(_) | GossipTopicEvent::NeighborDown(_))) => {} // not consumed
+            Some(Ok(GossipTopicEvent::NeighborUp(peer))) => {
+                // Empty content = membership signal; see the select loop (QA-0101).
+                let signal = GossipIncoming {
+                    verse_id: verse_id.clone(),
+                    from: peer,
+                    direct: true,
+                    content: bytes::Bytes::new(),
+                };
+                if inbound_tx.send(signal).await.is_err() {
+                    break;
+                }
+            }
+            Some(Ok(GossipTopicEvent::NeighborDown(_))) => {} // not consumed
             Some(Err(e)) => {
                 tracing::warn!(verse_id, "gossip topic stream error: {e}");
             }
@@ -3629,7 +3670,7 @@ mod tests {
         cmd_tx.send(SyncCommand::Shutdown).unwrap();
         handle.join().expect("sync thread panicked");
         assert!(matches!(
-            cmd_tx.try_send(SyncCommand::Ping),
+            cmd_tx.try_send(SyncCommand::Shutdown),
             Err(crossbeam::channel::TrySendError::Disconnected(_))
         ), "the joined runtime must not leave a forwarder owning its receiver");
 
@@ -7268,41 +7309,8 @@ mod tests {
             })
             .expect("replica open command");
 
-        // Deterministic sequencing barrier: the command loop processes
-        // commands in order, so a BlobReady emitted for this FetchBlob
-        // proves the open (and its pending flush) has fully completed —
-        // the fresh peer can then join without racing the open.
-        let probe_hash = blob_store
-            .add_blob(b"open-complete-probe")
-            .expect("probe blob");
-        cmd_tx
-            .send(SyncCommand::FetchBlob {
-                hash: probe_hash,
-                verse_id: verse_id.clone(),
-            })
-            .expect("probe command");
-        {
-            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(20);
-            loop {
-                let rx = evt_rx.clone();
-                let next = tokio::task::spawn_blocking(move || {
-                    rx.recv_timeout(std::time::Duration::from_millis(500))
-                })
-                .await
-                .expect("event-wait task");
-                match next {
-                    Ok(SyncEvent::BlobReady { hash }) if hash == probe_hash => break,
-                    Ok(_) => continue,
-                    Err(crossbeam::channel::RecvTimeoutError::Timeout)
-                        if std::time::Instant::now() < deadline =>
-                    {
-                        continue
-                    }
-                    Err(other) => panic!("open barrier never fired: {other:?}"),
-                }
-            }
-        }
-
+        // Sequencing barrier: commands run in order, so the ExportJoinTicket
+        // reply below proves the open (and its pending flush) completed.
         let (ticket_tx, ticket_rx) = crossbeam::channel::bounded(1);
         cmd_tx.send(SyncCommand::ExportJoinTicket {
             request: crate::join_ticket::ExportJoinTicket {
