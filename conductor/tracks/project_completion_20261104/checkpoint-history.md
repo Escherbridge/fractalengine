@@ -762,3 +762,27 @@ P2P multi-session fixer 2026-11-06 (lean evidence `qa/passes/73`-`75`, register 
 Only root owns Cargo/apps/process lifecycle/Git mutations. Preserve
 `conductor/.conductor_session_log`. No source/focused approval substitutes for
 remaining acceptance, and no release gate has been achieved.
+
+# Superseded 2026-11-07 (FULL QA pass 77)
+
+## Current blockers and source work
+
+Independent critic 2026-11-06 over terrain `b0598bbc`, api-timing `ed2f8bb1`, ui-s2s3 `2a6dc781`, p2p `35ee29fc` (source `86095074`..`d6b3d1bc`; lean evidence `qa/passes/76`, register `qa/findings.jsonl` 89 records). Fix commit `a8e206c6`, live on fresh stage `a8e206c6-20261106225729173`:
+
+- Reviewed and upheld: scale-bar pointer withholding (QA-0024/0071), truthful late input acks (QA-0034/0026), capture-camera survival (QA-0025), minimized restore (QA-0028), screenshot release (QA-0080), selection outline / Enter-submit / Escape back-nav (QA-0006/0007/0008), committed-capture refresh and stored-read version raise, peer terrain re-fetch dedupe, role re-resolve, `QA-OPERATOR` credential (scoped REST/MCP still refuse it; a Viewer stays read-only), peers harness (fresh run roots only, exact-identity Stop).
+- Fixed: QA-0095 S3 (504 `input_not_started` could race a host that already admitted the batch; SeqCst fence pair in `InputProgress`), QA-0096 S4 (outline AABB walk allocated per node per frame), QA-0097 S4 (one `ResolveLocalRole` per replicated role row; now once per batch, journey asserts it and the active-petal terrain re-fetch). `fractalengine/src/AGENTS.md` §qa-operator now states the real widening: role-floor-only node routes (`POST /verses`, crate publish) admit the local operator.
+- Live pass 76 (3 peers, real invite joins): outline on selected Cube 1, Escape walks Petal -> Fractal -> Verse, Revoke+Confirm drops the editor to `Current role: Viewer` in 0.4 s with edit tools disabled. AccessKit ui-tree served the Owner and the joined Editor (QA-0072 stays closed as superseded).
+- New open: QA-0098 S4 (operator token cannot use `shot --focus-* --navigate` on joined peers; click the tree instead; widening is the orchestrator's call).
+- Gate: `cargo check`, `cargo +1.99.0 clippy --all-targets -D warnings` clean on fe-runtime and fe-ui; fe-runtime `input::` 1/1; fe-ui R1+R2 379/382, the 3 failures are QA-0077's (reproduced with the critic changes stashed).
+- Still open: QA-0086, QA-0087 (S2), QA-0088..0094, QA-0077, QA-0076, QA-0078 remainder, QA-0079, QA-0081, QA-0082, divider eligibility, retained-store HOLD, groups/selection, rich-data/concurrency/restart, permissions/lifecycle, catalog, UX audits and release gates in `plan.md`.
+
+## Next actions
+
+1. QA-0086: persist last-known peer EndpointAddrs per verse and merge them as bootstrap on replica open, then re-run CP6 without the harness bootstrap. Then QA-0087 (roll the GUI back on `SceneChange::TransformFailed`; re-mint the revoked peer's dev token) and QA-0088/QA-0091.
+2. Extend the 3-peer run to the Podman relay lab (`FE_SYNC_RELAY` custom relay) and to an owner restart.
+3. QA-0081 chunk-meshing budget, QA-0077/QA-0082/QA-0094 test triage, QA-0078 remainder for CI Lint.
+4. Remaining feature/selection/groups/data/role/catalog work, five live UX audits, two FULL passes, a single integrated sweep, CI, tag and release.
+
+Only root owns Cargo/apps/process lifecycle/Git mutations. Preserve
+`conductor/.conductor_session_log`. No source/focused approval substitutes for
+remaining acceptance, and no release gate has been achieved.

@@ -3,7 +3,7 @@ type: ProgressCheckpoint
 date: 2026-11-04
 status: in_progress
 title: Current completion state and next actions
-last_verified_utc: 2026-11-07T06:22:00.000000+00:00
+last_verified_utc: 2026-11-07T08:30:00.000000+00:00
 ---
 
 ## ORCHESTRATOR STEER (binding; maintained by the orchestrating session, do not edit or remove)
@@ -65,21 +65,40 @@ boundary rules, `desktop_refused` is preserved intact and never bypassed.
 
 ## Current blockers and source work
 
-Independent critic 2026-11-06 over terrain `b0598bbc`, api-timing `ed2f8bb1`, ui-s2s3 `2a6dc781`, p2p `35ee29fc` (source `86095074`..`d6b3d1bc`; lean evidence `qa/passes/76`, register `qa/findings.jsonl` 89 records). Fix commit `a8e206c6`, live on fresh stage `a8e206c6-20261106225729173`:
+FULL QA pass 77 (1/3) on stage `a8e206c6-20261106225729173` (source `a8e206c6`, HEAD `c62aff4c` docs-only). It
+covered every journey J01-J11 (J07/J09/J11 partly) and S-P2P-replication on 3 peers. Lean evidence is in
+`qa/passes/77` (local, verdict.md). The register `qa/findings.jsonl` has 105 records. The pass is not converged and gold
+is 1/11: only G4 terrain passes (raise 200 / lower -100 exact, 16384/16384 samples).
 
-- Reviewed and upheld: scale-bar pointer withholding (QA-0024/0071), truthful late input acks (QA-0034/0026), capture-camera survival (QA-0025), minimized restore (QA-0028), screenshot release (QA-0080), selection outline / Enter-submit / Escape back-nav (QA-0006/0007/0008), committed-capture refresh and stored-read version raise, peer terrain re-fetch dedupe, role re-resolve, `QA-OPERATOR` credential (scoped REST/MCP still refuse it; a Viewer stays read-only), peers harness (fresh run roots only, exact-identity Stop).
-- Fixed: QA-0095 S3 (504 `input_not_started` could race a host that already admitted the batch; SeqCst fence pair in `InputProgress`), QA-0096 S4 (outline AABB walk allocated per node per frame), QA-0097 S4 (one `ResolveLocalRole` per replicated role row; now once per batch, journey asserts it and the active-petal terrain re-fetch). `fractalengine/src/AGENTS.md` §qa-operator now states the real widening: role-floor-only node routes (`POST /verses`, crate publish) admit the local operator.
-- Live pass 76 (3 peers, real invite joins): outline on selected Cube 1, Escape walks Petal -> Fractal -> Verse, Revoke+Confirm drops the editor to `Current role: Viewer` in 0.4 s with edit tools disabled. AccessKit ui-tree served the Owner and the joined Editor (QA-0072 stays closed as superseded).
-- New open: QA-0098 S4 (operator token cannot use `shot --focus-* --navigate` on joined peers; click the tree instead; widening is the orchestrator's call).
-- Gate: `cargo check`, `cargo +1.99.0 clippy --all-targets -D warnings` clean on fe-runtime and fe-ui; fe-runtime `input::` 1/1; fe-ui R1+R2 379/382, the 3 failures are QA-0077's (reproduced with the critic changes stashed).
-- Still open: QA-0086, QA-0087 (S2), QA-0088..0094, QA-0077, QA-0076, QA-0078 remainder, QA-0079, QA-0081, QA-0082, divider eligibility, retained-store HOLD, groups/selection, rich-data/concurrency/restart, permissions/lifecycle, catalog, UX audits and release gates in `plan.md`.
+- New S1: QA-0099. Node delete always fails. GUI Confirm Delete, the Delete key, REST DELETE and MCP delete_node all
+  return "TombstoneNode soft-delete failed". This is the live counterpart of QA-0077. The suspected cause is the
+  `crud.rs` tombstone member-set guard comparing NONE against a rebound JSON null.
+- New S1: QA-0100. When two peers commit different X for the same node at the same instant, they stay diverged
+  permanently (7 vs -7), even after the editor restarts. This is a regression from pass 74 CP5.
+- New S2: QA-0101. The Viewer's Join dialog reports "timed out" although the join succeeded. The Viewer never learns a
+  native provider, so GLB placeholders and missing terrain follow.
+- New S2: QA-0102. Clear Properties only clears the annotation keys.
+- New S2: QA-0103. After a node leaves a group, its in-memory membership stays stale, so hiding the group still hides
+  the node.
+- New S2: QA-0104. The QA input bridge cannot orbit or pan, because no MouseMotion is emitted.
+- Reopened S2: QA-0075. Proposal Delete and stamp-asset Clear icons paint missing-glyph squares again.
+- New S3: QA-0105 to QA-0113. New S4: QA-0114.
+- Closed by live re-run: 25 fixed findings, listed in verdict.md.
+- Still reproducing: QA-0076, QA-0087, QA-0089, QA-0091, QA-0092 and QA-0093.
+- Still open from before: QA-0077, QA-0078 remainder, QA-0079, QA-0081, QA-0082, QA-0086, QA-0088, QA-0090, QA-0094,
+  QA-0098, divider eligibility, retained-store HOLD, and the release gates in `plan.md`.
+- Layout-check found 0 measured violations in 36 runs (3 sizes x 10 panel states). OS/UIA checks stay out of scope
+  because the sandbox returns desktop_refused.
 
 ## Next actions
 
-1. QA-0086: persist last-known peer EndpointAddrs per verse and merge them as bootstrap on replica open, then re-run CP6 without the harness bootstrap. Then QA-0087 (roll the GUI back on `SceneChange::TransformFailed`; re-mint the revoked peer's dev token) and QA-0088/QA-0091.
-2. Extend the 3-peer run to the Podman relay lab (`FE_SYNC_RELAY` custom relay) and to an owner restart.
-3. QA-0081 chunk-meshing budget, QA-0077/QA-0082/QA-0094 test triage, QA-0078 remainder for CI Lint.
-4. Remaining feature/selection/groups/data/role/catalog work, five live UX audits, two FULL passes, a single integrated sweep, CI, tag and release.
+1. Fix QA-0099 (tombstone guard) and QA-0100 (one deterministic tie-break shared by the docs entry and the DB merge).
+   Then re-run J01 delete and S-P2P CP5 live on a fresh stage.
+2. Fix QA-0101 to QA-0104 and the QA-0075 regression. QA-0104 needs synthetic MouseMotion in the input bridge.
+3. Run FULL pass 78 (2/3) after the fixes, then pass 79. Convergence needs zero new S1/S2 in two consecutive passes,
+   all gold PASS, and a strict checkpoint ledger.
+4. Carried over: QA-0086 bootstrap persistence, QA-0087 rollback, the relay-lab and owner-restart P2P runs, QA-0081,
+   test triage (QA-0077/0082/0094), CI Lint (QA-0078), the integrated sweep, CI, tag and release.
 
 Only root owns Cargo/apps/process lifecycle/Git mutations. Preserve
 `conductor/.conductor_session_log`. No source/focused approval substitutes for
