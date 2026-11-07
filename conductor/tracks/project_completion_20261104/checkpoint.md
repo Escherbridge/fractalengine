@@ -3,7 +3,7 @@ type: ProgressCheckpoint
 date: 2026-11-04
 status: in_progress
 title: Current completion state and next actions
-last_verified_utc: 2026-11-07T12:00:00.000000+00:00
+last_verified_utc: 2026-11-07T18:15:00.000000+00:00
 ---
 
 ## ORCHESTRATOR STEER (binding; maintained by the orchestrating session, do not edit or remove)
@@ -86,10 +86,31 @@ coverage), QA-0077 (17 journeys green), QA-0086 (persistent peer book) and QA-00
 - Still open: QA-0076, QA-0078, QA-0081, QA-0088 to QA-0094, QA-0098, QA-0105 to QA-0116, divider eligibility,
   retained-store HOLD, and the release gates in `plan.md`.
 
+Swarm run 1 triage (2026-11-07, stage 9da98227, 4 peers; all peers stopped by exact identity; evidence
+`qa/swarm/run1-20261107/swarm/`, register `qa/findings.jsonl`). Latencies were measured at 100% CPU (QA-0119) and
+are upper bounds.
+
+- Converged: steps 2-8, 10-11 (node rows 0-4.5 s; delete via GUI/REST/MCP; 28 ms 3-way REST race; Clear Properties;
+  relay-less restart via the peer book). Verified: QA-0086, QA-0087 (transform path), QA-0099, QA-0100 (REST layer;
+  the GUI race never ran, harness), QA-0102.
+- Not converged: the final fingerprints differ on one key (Cube 1 `fp_deny_editor_mcp`, editor only). The
+  visibility-group registry reached other peers after 47 min, and N1 was split between the owner and the other
+  peers after the revoke.
+- New S1: QA-0120 (a revoke from the verse list waits until the owner re-enters the verse; owner replica closed
+  17:26-17:39Z), QA-0121 (a row admitted before the revoke arrived is never re-checked, so peers split),
+  QA-0122 (REST/MCP property writes use the token's role, so a revoked editor writes locally),
+  QA-0123 (the petal `visibility_groups` registry is never published when it changes).
+- New S2: QA-0124 (a GLB that arrives late keeps its placeholder until the petal is re-entered), QA-0125 (each
+  REST hierarchy read rebuilds the GUI tree and drops typed edits). QA-0103 reopened (stale membership on
+  replicated peers). QA-0118 refined: blobs are fetched when a peer opens the petal (0-3 s), never when the row
+  arrives. New S3: QA-0126 to QA-0130.
+- QA-0101 stays pending: the join half is verified, but the terrain half never ran (step 10 skipped "Seed map").
+
 ## Next actions
 
-1. Stage the new HEAD and re-verify live with the peer swarm: J01 delete through GUI/REST/MCP, S-P2P CP5
-   contested transforms on 3 peers, CP6 relay-disabled restart, CP7 revoked-editor REST, viewer join + assets.
+1. FIX:1 (product): QA-0122, QA-0120, QA-0121, QA-0123 (S1), then QA-0125, QA-0124, QA-0103, QA-0117, QA-0118,
+   QA-0119 (S2) and the steer's S3 items (QA-0128 -0.0, QA-0129 atomic clear). The tools/qa/sim simulator then
+   re-verifies the GUI race (QA-0100), the seeded-terrain half of QA-0101 and every new fix.
 2. Run FULL pass 78 (2/3) then pass 79; convergence needs zero new S1/S2 in two consecutive passes and all gold.
 3. Fix the S3 test debt (QA-0079, QA-0082, QA-0115, QA-0116), then the integrated sweep, CI Lint (QA-0078), tag
    and release.
