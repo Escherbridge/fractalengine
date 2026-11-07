@@ -655,6 +655,8 @@ pub struct UiManager {
     /// glTF Import dialog's in-flight state (D-06); `gltf_import.rs` starts
     /// it, `db_results`' `GltfImported` arm finishes it.
     pub gltf_import_request: GltfImportRequestState,
+    /// Nodes whose Clear Properties waits on their property bag (QA-0102).
+    pub(crate) pending_property_clears: std::collections::HashSet<String>,
 }
 
 impl Default for UiManager {
@@ -685,6 +687,7 @@ impl Default for UiManager {
             join_request: DialogRequestState::default(),
             join_flow: crate::invitations::JoinState::default(),
             gltf_import_request: GltfImportRequestState::default(),
+            pending_property_clears: Default::default(),
         }
     }
 }
@@ -1901,7 +1904,7 @@ pub(crate) fn process_ui_actions(
             }
             UiAction::PromoteStamp {origin} => {stamp_requests.push(origin);}
             UiAction::ClearNodeProperties { node_id } => {
-                node_props::handle_clear(&db_sender, node_id);
+                node_props::handle_clear(&db_sender, &mut ui_mgr, node_id);
             }
             UiAction::CopyApiString { node_id } => {
                 // Wave 1 / needs T5: endpoint_api_surface supplies the address→

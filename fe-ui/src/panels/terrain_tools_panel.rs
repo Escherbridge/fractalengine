@@ -296,7 +296,7 @@ pub(crate) fn render_proposal_list(
                     {
                         proposal_state.selected = Some(id.clone());
                     }
-                    if crate::ui_shell::layout_policy::small_button(ui, "\u{2715}")
+                    if ui.add(crate::ui_shell::icons::Icon::Close.button(ui))
                         .named(ui, format_args!("Delete {label} proposal {id}"))
                         .on_hover_text("Delete proposal")
                         .clicked()

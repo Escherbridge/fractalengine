@@ -133,8 +133,12 @@ fn counts_label(counts: &ContentCounts<'_>) -> String {
 fn bounded_details(ui: &mut egui::Ui, body: impl FnOnce(&mut egui::Ui)) {
     ui.set_max_width(520.0_f32.min((ui.ctx().viewport_rect().width() - 32.0).max(120.0)));
     ui.style_mut().wrap_mode = Some(egui::TextWrapMode::Wrap);
+    let max_height = (ui.ctx().viewport_rect().height() - 100.0).max(80.0);
+    // An upward popup is placed from its previous size; without a floor the
+    // shrink-to-fit scroll area would keep it at its first, too-small height.
     egui::ScrollArea::vertical()
-        .max_height((ui.ctx().viewport_rect().height() - 100.0).max(80.0))
+        .max_height(max_height)
+        .min_scrolled_height(max_height.min(240.0))
         .show(ui, body);
 }
 

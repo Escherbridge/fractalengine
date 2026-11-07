@@ -1960,12 +1960,17 @@ fn render_property_row(
             let preview = super::property_grid::preview(value);
             if value.is_object() || value.is_array() {
                 let marker = if expanded { Icon::Collapse } else { Icon::Expand };
+                // Icon + truncated preview has an intrinsic minimum wider than one
+                // target; a narrow compact value cell keeps the icon alone.
+                let button = if ui.available_width() < 2.0 * columns.height {
+                    marker.button(ui)
+                } else {
+                    marker.text_button(ui, preview).truncate()
+                };
                 if ui
                     .add_enabled(
                         !editing,
-                        marker.text_button(ui, preview)
-                            .truncate()
-                            .min_size(egui::vec2(ui.available_width(), columns.height)),
+                        button.min_size(egui::vec2(ui.available_width(), columns.height)),
                     )
                     .named(
                         ui,
@@ -2318,7 +2323,7 @@ fn inspector_schema_section(
                                 .monospace()
                                 .color(theme::TEXT_AXIS),
                         );
-                        let req_label = if fd.required { "\u{2713}" } else { "\u{2014}" };
+                        let req_label = if fd.required { "\u{2714}" } else { "\u{2014}" };
                         ui.label(
                             egui::RichText::new(req_label)
                                 .small()
@@ -2479,7 +2484,7 @@ mod tests {
             let mut manager = UiManager::default();
             let mut shell = crate::ui_shell::right_sidebar::RightSidebarState::default();
             let (sender, _receiver) = crossbeam::channel::unbounded();
-            for _ in 0..3 {
+            for frame_index in 0..3 {
                 layout_policy::begin_frame(&ctx, true);
                 let output = ctx.run(egui::RawInput {
                     screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO,
@@ -2513,12 +2518,16 @@ mod tests {
                     "headers/forms cannot inflate the disabled horizontal axis at scale {scale}");
                 assert_eq!(selected.selection_count(), 1);
                 assert_eq!(form.node_properties["count"], 12);
-                if scale == 2.0 {
+                // Compact navigation settles after the first measured frame.
+                if scale == 2.0 && frame_index == 2 {
                     assert!(body.viewport.height() >= 3.0 * layout_policy::target_size(&ctx),
                         "compact navigation preserves several real body rows");
                     for label in ["Choose sidebar section: Inspector", "Choose Inspector tab: Properties", "Deselect object"] {
-                        let id = output.platform_output.accesskit_update.as_ref().unwrap().nodes.iter()
-                            .find_map(|(id, node)| (node.label() == Some(label)).then_some(id.0)).unwrap();
+                        let nodes = &output.platform_output.accesskit_update.as_ref().unwrap().nodes;
+                        let id = nodes.iter()
+                            .find_map(|(id, node)| (node.label() == Some(label)).then_some(id.0))
+                            .unwrap_or_else(|| panic!("{label} missing; labels: {:?}",
+                                nodes.iter().filter_map(|(_, node)| node.label()).collect::<Vec<_>>()));
                         let control = observations.controls.iter().find(|control| control.id == id).unwrap();
                         let visible = control.hit.intersect(control.clip);
                         assert!(visible.width() * scale >= 20.0 && visible.height() * scale >= 20.0);
@@ -2596,10 +2605,12 @@ mod tests {
                 for section in crate::ui_shell::right_sidebar::ALL_SECTIONS {
                     let frame = draw(vec![], &mut form, &mut selected, &mut shell, &mut manager, &mut time);
                     let at = locate(&frame, "Choose sidebar section: Inspector");
-                    let menu = click(at, &mut form, &mut selected, &mut shell, &mut manager, &mut time);
+                    click(at, &mut form, &mut selected, &mut shell, &mut manager, &mut time);
+                    // The popup is positioned under its button only after its opening frame.
+                    let menu = draw(vec![], &mut form, &mut selected, &mut shell, &mut manager, &mut time);
                     let option = locate(&menu, &format!("Toggle {} section", crate::ui_shell::right_sidebar::section_label(section)));
                     click(option, &mut form, &mut selected, &mut shell, &mut manager, &mut time);
-                    assert_eq!(shell.requested, Some(section));
+                    assert_eq!(shell.requested, Some(section), "{section:?} picked at {option:?}");
                 }
             }
         }
@@ -3146,7 +3157,12 @@ mod tests {
                     .intersect(control.clip)
                     .intersect(table_editing.clip);
                 assert!((visible.width() - control.rect.width()).abs() < 0.5, "the complete editor header, input, status and footer must fit the visible viewport");
-                assert!((visible.height() - control.rect.height()).abs() < 0.5);
+                // The value input scrolls inside its own bounded viewport, so the
+                // vertical fit is judged against the table viewport only.
+                let in_table = control.rect.intersect(table_editing.clip);
+                assert!((in_table.height() - control.rect.height()).abs() < 0.5,
+                    "editor control leaves the table viewport at width {width}: rect {:?} table clip {:?}",
+                    control.rect, table_editing.clip);
             }
             for control in &editing.controls[6..] {
                 assert!(control.rect.width() >= 20.0 && control.rect.height() >= 20.0);
@@ -3181,7 +3197,9 @@ mod tests {
             assert!(table.offset.x.abs() < 0.5);
             for control in &observed.controls {
                 let visible = control.rect.intersect(control.hit).intersect(control.clip).intersect(table.clip);
-                assert!((visible.width() - control.rect.width()).abs() < 0.5);
+                assert!((visible.width() - control.rect.width()).abs() < 0.5,
+                    "control wider than its clip: rect {:?} hit {:?} clip {:?} table {:?}",
+                    control.rect, control.hit, control.clip, table.clip);
                 assert!(
                     (visible.height() - control.rect.height()).abs() < 0.5,
                     "padded button text must fit its complete row/action clip"
@@ -3687,14 +3705,16 @@ mod tests {
                     "confirming an older submitted revision must preserve exact newer edits"
                 );
                 inspector.object_data.schema.save(&db_sender.0);
-                if newer == schema_v3 {
+                // A String never equals an object Value; compare the parsed draft.
+                if serde_json::from_str::<serde_json::Value>(&newer).ok().as_ref() == Some(&schema_v3) {
                     assert!(
                         matches!(rx.try_recv().unwrap(), DbCommand::SetFieldSchema { descriptor,.. } if descriptor == schema_v3)
                     );
                 } else {
+                    let queued = rx.try_recv();
                     assert!(
-                        rx.try_recv().is_err(),
-                        "partial JSON or stale revision cannot queue another write"
+                        queued.is_err(),
+                        "partial JSON or stale revision cannot queue another write: {queued:?}"
                     );
                 }
             } else {
@@ -4364,7 +4384,7 @@ mod tests {
                 &mut notices,
             );
             assert!(painted(&output).contains("Config URL editing is unavailable"));
-            assert_eq!(observed.controls.len(),3,"Portal draft, Save and Open remain; ignored Config editor is absent");
+            assert_eq!(observed.controls.len(),4,"Portal draft, Save, Open and the section header remain; ignored Config editor is absent");
             assert!(matches!(
                 crate::actions::portal::compute_save_url(&polish_nodes, &polish),
                 crate::actions::portal::SaveUrlOutcome::Blocked { .. }
@@ -4384,7 +4404,8 @@ mod tests {
                 "polish-node"
             );
         }
-        polish.external_url.clear();
+        // Clearing an absent URL is a no-op (URL read model); a real URL saves.
+        polish.external_url = "https://example.com/portal".into();
         let (observed, _) = surface(
             false,
             vec![],
@@ -4401,7 +4422,8 @@ mod tests {
             &polish_nodes,
             &mut notices,
         );
-        assert!(matches!(&notices.drain_actions()[..], [UiAction::SaveNodeUrl { .. }]));
+        let saved = notices.drain_actions();
+        assert!(matches!(&saved[..], [UiAction::SaveNodeUrl { .. }]), "{saved:?}");
         let scope = "VERSE#v#FRACTAL#f#PETAL#p";
         polish.set_active_tab(InspectorTab::ApiAccess);
         synchronize_token_target(&mut polish, Some("polish-node"), scope, true);
@@ -4637,20 +4659,16 @@ mod tests {
             };
             let navigation_ctx = egui::Context::default();
             layout_policy::apply_style(&navigation_ctx);
-            navigation_ctx.data_mut(|data| {
-                data.insert_persisted(
-                    egui::Id::new("right_section"),
-                    egui::containers::panel::PanelState {
-                        rect: egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(width, 760.0)),
-                    },
-                );
-            });
             let mut navigation_time = 500.0;
             let mut form = InspectorFormState::default();
             form.set_active_tab(InspectorTab::ApiAccess);
             let mut selected = NodeManager::default();
             selected.select(Entity::from_bits(1), "node-1");
-            let mut shell = RightSidebarState::default();
+            // The sidebar width is the session preference, not egui's PanelState.
+            let mut shell = RightSidebarState {
+                width: layout_policy::PanelWidthState::new(width),
+                ..Default::default()
+            };
             shell.reveal(RightSidebarSection::Inspector);
             let mut feedback = UiManager::default();
             let (navigation_tx, navigation_rx) = crossbeam::channel::unbounded();

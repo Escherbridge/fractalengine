@@ -745,7 +745,7 @@ fn render_asset_picker(ui: &mut egui::Ui, state: &mut ToolPanelState, verse_mgr:
                 )
                 .on_hover_text(&sel);
                 if ui
-                    .add(egui::Button::new("\u{2715}").min_size(minimum))
+                    .add(crate::ui_shell::icons::Icon::Close.button(ui).min_size(minimum))
                     .named(ui, "Clear selected stamp asset")
                     .on_hover_text("Clear selection")
                     .clicked()

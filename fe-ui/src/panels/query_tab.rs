@@ -245,7 +245,11 @@ mod tests {
 
     #[test]
     fn templates_add_node_scoped_queries_when_a_node_is_selected() {
-        let nav = NavigationManager::default();
+        // A selected node always sits in the active petal (no petal = no templates).
+        let nav = NavigationManager {
+            active_petal_id: Some("petal-123".to_string()),
+            ..Default::default()
+        };
         let mut node_mgr = NodeManager::default();
         node_mgr.select(bevy::prelude::Entity::from_bits(1), "node-42");
         let templates = query_templates(&nav, &node_mgr);

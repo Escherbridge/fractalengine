@@ -6,7 +6,7 @@ use std::time::Duration;
 
 use bevy::ecs::system::SystemParam;
 use bevy::input::keyboard::{Key, KeyCode, KeyboardInput, NativeKeyCode};
-use bevy::input::mouse::{MouseButton, MouseButtonInput, MouseScrollUnit, MouseWheel};
+use bevy::input::mouse::{MouseButton, MouseButtonInput, MouseMotion, MouseScrollUnit, MouseWheel};
 use bevy::input::{ButtonState, InputSystems};
 use bevy::math::DVec2;
 use bevy::prelude::*;
@@ -109,10 +109,12 @@ pub struct ActiveInjection {
     progress: InputProgress,
 }
 
-/// The four message streams winit itself writes for pointer, wheel and keys.
+/// The message streams winit itself writes for pointer, raw motion, wheel and keys.
 #[derive(SystemParam)]
 pub struct SyntheticWriters<'w> {
     cursor: MessageWriter<'w, CursorMoved>,
+    /// Raw device motion: the orbit camera reads it, not `CursorMoved` (QA-0104).
+    motion: MessageWriter<'w, MouseMotion>,
     buttons: MessageWriter<'w, MouseButtonInput>,
     wheel: MessageWriter<'w, MouseWheel>,
     keys: MessageWriter<'w, KeyboardInput>,
@@ -600,6 +602,11 @@ impl ActiveInjection {
         for event in frame {
             match event {
                 Synthetic::Cursor(physical) => {
+                    if let Some(previous) = self.cursor {
+                        writers.motion.write(MouseMotion {
+                            delta: *physical - previous,
+                        });
+                    }
                     let position = *physical / scale;
                     writers.cursor.write(CursorMoved {
                         window,

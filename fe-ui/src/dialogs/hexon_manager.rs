@@ -353,7 +353,7 @@ fn render_installed_map_card(
                         local_role.can_edit(),
                         &reason,
                         egui::Button::new(
-                            egui::RichText::new("Active map \u{2713}").color(theme::TEXT_BRIGHT),
+                            egui::RichText::new("Active map \u{2714}").color(theme::TEXT_BRIGHT),
                         )
                         .fill(theme::BG_BUTTON_ACTIVE),
                     )

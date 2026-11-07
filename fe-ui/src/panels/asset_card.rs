@@ -89,13 +89,13 @@ pub(crate) fn asset_card_section(
             ui.add_space(4.0);
             if let Some(path) = &status.saved_path {
                 ui.label(
-                    egui::RichText::new(format!("\u{2713} Saved to {path}"))
+                    egui::RichText::new(format!("\u{2714} Saved to {path}"))
                         .small()
                         .color(theme::STATUS_ONLINE),
                 );
             } else if let Some(err) = &status.error {
                 ui.label(
-                    egui::RichText::new(format!("\u{2717} {err}"))
+                    egui::RichText::new(format!("\u{2716} {err}"))
                         .small()
                         .color(theme::STATUS_OFFLINE),
                 );

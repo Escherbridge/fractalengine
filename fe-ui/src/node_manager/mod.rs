@@ -793,6 +793,61 @@ mod tests {
         ]));
     }
 
+    /// Load `node-1`'s stored capture: a single-object gimbal commits only on the
+    /// ordinary-single transform route, which needs the selection's capture.
+    fn seed_single_capture(app: &mut App) {
+        app.world_mut()
+            .resource_scope(|world, mut ui: Mut<crate::actions::UiManager>| {
+                let (batch_tx, batch_rx) = crossbeam::channel::unbounded();
+                let nav = world.resource::<crate::navigation_manager::NavigationManager>();
+                ui.editor_batch.maintain(
+                    nav,
+                    world.resource::<NodeManager>(),
+                    world.resource::<crate::verse_manager::VerseManager>(),
+                    &batch_tx,
+                );
+                let Ok(fe_runtime::messages::DbCommand::ReadEditorBatch { correlation_id, .. }) = batch_rx.try_recv()
+                else {
+                    panic!("the selection requests its stored capture")
+                };
+                let state: fe_runtime::node_history::NodeRowSnapshot =
+                    serde_json::from_value(serde_json::json!({
+                        "node_id": "node-1", "petal_id": "p", "position": [1.0, 2.0, 3.0],
+                        "elevation": 2.0, "rotation": [0.0, 0.0, 0.0], "scale": [2.0, 2.0, 2.0],
+                        "interactive": true, "created_at": "test", "edit_seq": 0, "properties": {}
+                    }))
+                    .unwrap();
+                let capture = fe_runtime::editor_batch::EditorBatchCapture {
+                    target: fe_runtime::editor_batch::EditorBatchTarget::Nodes,
+                    deleted_group: None,
+                    scope: "VERSE#v-FRACTAL#f-PETAL#p".into(),
+                    petal_id: "p".into(),
+                    members: vec![fe_runtime::editor_batch::EditorBatchMember {
+                        node_id: "node-1".into(),
+                        history_version: Some(1),
+                        stamp_path: None,
+                        state,
+                    }],
+                    groups: vec![],
+                    petal_snapshot: "fixture".into(),
+                    world_scale: 1.0,
+                    terrain_source_fingerprint: None,
+                };
+                ui.editor_batch
+                    .route(
+                        &fe_runtime::messages::DbResult::EditorBatchLoaded {
+                            capture,
+                            correlation_id,
+                        },
+                        nav,
+                        |_| Ok(()),
+                        |_| Ok(()),
+                        &batch_tx,
+                    )
+                    .expect("the stored capture loads");
+            });
+    }
+
     #[test]
     fn cancel_axis_drag_returns_the_pre_drag_snapshot_and_keeps_the_selection() {
         let mut mgr = NodeManager::default();
@@ -875,6 +930,7 @@ mod tests {
             manager.select(target, "node-1");
             begin_axis_drag(&mut manager);
         }
+        seed_single_capture(&mut app);
         let mut mouse = ButtonInput::<MouseButton>::default();
         mouse.press(MouseButton::Left);
         mouse.clear();
@@ -1276,6 +1332,7 @@ mod tests {
                     start_scale: before.scale,
                 });
             }
+            seed_single_capture(&mut app);
             {
                 let mut mouse = app.world_mut().resource_mut::<ButtonInput<MouseButton>>();
                 mouse.press(MouseButton::Left);

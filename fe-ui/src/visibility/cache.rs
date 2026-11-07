@@ -87,6 +87,22 @@ pub(crate) fn hydrate_from_properties(
     apply_view(state, node_id, next_state, next_groups);
 }
 
+/// A committed batch's full stored bag is authoritative like a `NodeViewSet`
+/// echo: an absent `view.*` key means Auto / no Groups (QA-0103).
+pub(crate) fn apply_committed_view(
+    state: &mut VisibilityState,
+    node_id: &str,
+    properties: &serde_json::Value,
+) {
+    let groups = properties.get(VIEW_GROUPS_KEY).and_then(groups_from_json);
+    apply_node_view_echo(
+        state,
+        node_id,
+        properties.get(VIEW_STATE_KEY).and_then(|v| v.as_str()),
+        groups.as_deref(),
+    );
+}
+
 /// `PetalViewStateLoaded` hydration (petal entry / restart): same rule as
 /// [`hydrate_from_properties`] for every listed node.
 pub(crate) fn apply_petal_view_state(state: &mut VisibilityState, entries: &[NodeViewDto]) {

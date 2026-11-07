@@ -932,6 +932,7 @@ mod tests {
         notices.show_error("Import failed: choose a readable file", 100.0);
         let notice_id = notices.active_notice(100.0).unwrap().0.id;
         let frame = |time: f64, events: Vec<egui::Event>, manager: &mut UiManager| {
+            crate::ui_shell::layout_policy::begin_frame(&ctx, true);
             let _ = ctx.run(
                 egui::RawInput {
                     screen_rect: Some(egui::Rect::from_min_size(
@@ -943,7 +944,6 @@ mod tests {
                     ..Default::default()
                 },
                 |ctx| {
-                    crate::ui_shell::layout_policy::begin_frame(ctx, true);
                     crate::ui_shell::layout_policy::begin_ui_pass(ctx);
                     render_toast(ctx, manager);
                 },
@@ -952,9 +952,11 @@ mod tests {
         };
         frame(100.1, vec![], &mut notices);
         let controls = frame(100.2, vec![], &mut notices);
+        // The named notice label also senses clicks; Dismiss is the trailing action.
         let dismiss = controls
             .controls
             .iter()
+            .rev()
             .find(|c| c.clickable)
             .expect("visible Dismiss action");
         let point = dismiss.hit.intersect(dismiss.clip).center();

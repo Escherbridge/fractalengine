@@ -546,8 +546,12 @@ pub(super) fn extend_panel_width_journey() {
                         let (_, result) = ctx.data(|data|
                             data.get_temp::<(u64, egui::Rect)>(results_edge_key()).unwrap());
                         let (table, content_size, _) = super::results_dock::table_geometry(ctx);
-                        assert!(content_size.x > table.width() && content_size.y > table.height(),
-                            "populated Results must expose real horizontal and vertical overflow");
+                        // A fresh context's first pass at a new scale runs on egui's
+                        // default screen; judge overflow on the requested screen only.
+                        if (ctx.viewport_rect().width() - self.physical / self.scale).abs() < 1.0 {
+                            assert!(content_size.x > table.width() && content_size.y > table.height(),
+                                "populated Results must expose real horizontal and vertical overflow: table {table:?} content {content_size:?}");
+                        }
                         for control in observations(ctx).controls {
                             let hit = control.hit.intersect(control.clip);
                             if hit.is_positive() && control.rect.top() >= result.top() {
@@ -812,8 +816,10 @@ pub(super) fn extend_panel_width_journey() {
                     "without an adjacent right divider the native eight-point margin remains");
             }
             let controls = observations(&panels.ctx).controls;
+            // Positions snap to the physical pixel grid (1.33 points at 0.75x).
+            let pixel = 1.0 / scale;
             let handles = controls.iter().filter(|control| control.draggable
-                && (control.rect.top() - table.top()).abs() < 0.01
+                && (control.rect.top() - table.top()).abs() < pixel
                 && control.clip.contains_rect(control.rect)).collect::<Vec<_>>();
             assert!(!handles.is_empty(), "actual populated Results exposes a complete column handle");
             for handle in handles {
@@ -826,11 +832,11 @@ pub(super) fn extend_panel_width_journey() {
                     "column slots cannot steal neighboring sort/cell targets");
             }
             assert!(controls.iter().any(|control| control.clickable
-                && (control.rect.left() - table.left()).abs() < 0.01
-                && (control.rect.top() - table.top()).abs() < 0.01),
+                && (control.rect.left() - table.left()).abs() < pixel
+                && (control.rect.top() - table.top()).abs() < pixel),
                 "the actual first-column sort header is rendered");
             assert!(controls.iter().any(|control| control.clickable
-                && (control.rect.left() - table.left()).abs() < 0.01
+                && (control.rect.left() - table.left()).abs() < pixel
                 && control.rect.top() > table.top() + 20.0
                 && control.hit.intersect(control.clip).is_positive()),
                 "an actual first-column data cell is visible");
@@ -847,7 +853,10 @@ fn extend_physical_targets_journey() {
     let ctx = egui::Context::default();
     let mut text = String::new();
     let mut checked = false;
-    for scale in [0.75, 1.0, 1.25, 2.0, 0.75, 1.0] {
+    let mut header_ids = Vec::new();
+    for (pass, scale) in [0.75, 1.0, 1.25, 2.0, 0.75, 1.0].into_iter().enumerate() {
+        // Alternate the header width so its truncated galley text differs per pass.
+        let header_width = if pass % 2 == 0 { 80.0 } else { 120.0 };
         ctx.set_pixels_per_point(scale);
         let _ = ctx.run(egui::RawInput {
             screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(640.0, 600.0))),
@@ -867,15 +876,13 @@ fn extend_physical_targets_journey() {
                     ui.checkbox(&mut checked, "Flag").interact_rect,
                     ui.radio(checked, "Mode").interact_rect,
                 ];
-                let header = ui.allocate_ui(egui::vec2(80.0, minimum), |ui| {
+                let header = ui.allocate_ui(egui::vec2(header_width, minimum), |ui| {
                     let title = "A long native section title that must remain within its parent";
-                    let expected_id = ui.make_persistent_id(egui::Id::new(title));
                     let response = section_header(ui, title).show(ui, |_| {});
-                    assert_eq!(response.header_response.id, expected_id,
-                        "truncation preserves native full-title collapse identity");
-                    assert!(response.header_response.rect.width() <= 80.01);
+                    assert!(response.header_response.rect.width() <= header_width + 0.01, "header {:?} in {header_width} at {scale}", response.header_response.rect);
                     response.header_response
                 });
+                header_ids.push(header.inner.id);
                 hits.push(header.inner.interact_rect);
                 for hit in hits {
                     assert!(hit.width() * scale >= 20.0 && hit.height() * scale >= 20.0,
@@ -884,6 +891,8 @@ fn extend_physical_targets_journey() {
             });
         });
     }
+    assert!(header_ids.windows(2).all(|pair| pair[0] == pair[1]),
+        "truncation preserves native full-title collapse identity: {header_ids:?}");
     assert_eq!(target_size(&ctx), 24.0, "restoring normal scale restores normal density");
     for scale in [0.0, -1.0, f32::NAN, f32::INFINITY] {
         assert!(quantized_target(scale).is_none());
@@ -1081,9 +1090,12 @@ pub(crate) fn navigation_body_budget(ui: &egui::Ui) -> f32 {
 pub(crate) fn section_header(ui: &egui::Ui, text: impl Into<egui::WidgetText>) -> SectionHeader {
     let text = text.into();
     let title = text.text().to_owned();
-    let width = (ui.available_width() - ui.spacing().indent - ui.spacing().button_padding.x).max(0.0);
+    // Two physical pixels of slack: galley sizes round to the pixel grid (0.75x overflowed).
+    let rounding = 2.0 / ui.ctx().pixels_per_point();
+    let width = (ui.available_width() - ui.spacing().indent - ui.spacing().button_padding.x - rounding).max(0.0);
     let galley = text.into_galley(ui, Some(egui::TextWrapMode::Truncate), width, egui::TextStyle::Button);
-    SectionHeader { native: egui::CollapsingHeader::new(galley), title }
+    // Keyed by the full title: the truncated galley text changes with width.
+    SectionHeader { native: egui::CollapsingHeader::new(galley).id_salt(&title), title }
 }
 
 pub(crate) struct SectionHeader { native: egui::CollapsingHeader, title: String }
@@ -1212,7 +1224,21 @@ pub fn apply_style(ctx: &egui::Context) {
     ctx.style_mut(|style| {
         style.spacing.button_padding.y = style.spacing.button_padding.y.max(5.0);
     });
+    ctx.set_fonts(font_definitions());
     ctx.data_mut(|d| d.insert_temp(id, true));
+}
+
+/// egui's bundled fonts with Hack appended to the proportional fallback chain,
+/// so arrows/geometric shapes only Hack covers never paint as missing-glyph
+/// squares in ordinary labels (QA-0075; ui_shell/AGENTS.md §icons).
+pub(crate) fn font_definitions() -> egui::FontDefinitions {
+    let mut fonts = egui::FontDefinitions::default();
+    if let Some(chain) = fonts.families.get_mut(&egui::FontFamily::Proportional) {
+        if !chain.iter().any(|name| name == "Hack") {
+            chain.push("Hack".to_owned());
+        }
+    }
+    fonts
 }
 
 #[derive(Clone)]
@@ -1222,7 +1248,10 @@ pub struct ControlObservation {
     pub hit: egui::Rect,
     pub clip: egui::Rect,
     pub layer: egui::LayerId,
+    /// Layer-level input permission (modal gate), not widget enablement.
     pub allowed: bool,
+    /// The widget itself accepts input (`add_enabled` / `add_enabled_ui`).
+    pub enabled: bool,
     pub clickable: bool,
     pub draggable: bool,
 }
@@ -1276,6 +1305,7 @@ pub fn record_response(ui: &egui::Ui, response: &egui::Response) {
         clip: global * ui.clip_rect(),
         layer: response.layer_id,
         allowed,
+        enabled: response.enabled(),
         clickable: response.sense.senses_click(),
         draggable: response.sense.senses_drag(),
     };

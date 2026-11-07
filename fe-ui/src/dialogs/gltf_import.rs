@@ -382,17 +382,22 @@ mod tests {
             let close = close_bounds.expect("the nonpending native import window has its real close control");
             assert!(close.width() >= 24.0 && close.height() >= 24.0);
             let center = egui::pos2((close.x0 + close.x1) as f32 / 2.0, (close.y0 + close.y1) as f32 / 2.0);
-            for (frame, pressed) in [(3, true), (4, false)] {
+            // Press and release 0.1 s apart: egui ignores a release past max_click_duration.
+            for (frame, pressed) in [(3.0, true), (3.1, false)] {
+                crate::ui_shell::layout_policy::begin_frame(&ctx, true);
                 let _ = ctx.run(egui::RawInput {
                     screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO,
                         egui::vec2(physical_width / scale, 720.0 / scale))),
-                    time: Some(frame as f64),
+                    time: Some(frame),
                     events: vec![egui::Event::PointerMoved(center), egui::Event::PointerButton {
                         pos: center, button: egui::PointerButton::Primary, pressed, modifiers: egui::Modifiers::NONE,
                     }], ..Default::default()
-                }, |ctx| render_gltf_import_dialog(ctx, &mut manager, &nav, &tx, 1.0));
+                }, |ctx| {
+                    crate::ui_shell::layout_policy::begin_ui_pass(ctx);
+                    render_gltf_import_dialog(ctx, &mut manager, &nav, &tx, 1.0);
+                });
             }
-            assert!(matches!(manager.active_dialog, ActiveDialog::None), "native Close retains the normal cancel path");
+            assert!(matches!(manager.active_dialog, ActiveDialog::None), "native Close retains the normal cancel path at {physical_width}px/{scale}x (close {close:?})");
             assert!(rx.try_recv().is_err());
             manager.open_dialog(ActiveDialog::GltfImport {
                 file_path_buf: "model.glb".into(), name_buf: "Model".into(), position: [0.0; 3],

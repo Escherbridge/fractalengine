@@ -570,3 +570,14 @@ cleanup-callback assertions do not claim to execute a real DB reset/join.
 No background save manufactures a user Undo entry, object event-time measurement,
 P2P batch atomicity or geometry/coverage proof from a DB row. Retained false-zero
 history remains unchanged and auditable.
+
+## §clear-properties (QA-0102, 2026-11-07)
+
+Clear Properties removes every user-authored custom property and keeps the node.
+`node_props::handle_clear` reads the bag (`GetNodeProperties`) and records the node
+in `UiManager::pending_property_clears`; the `NodePropertiesLoaded` arm calls
+`finish_clear`, which sends one `DeleteNodeProperty` per clearable key. Engine
+keys stay (`STRUCTURAL_PROPERTY_KEYS` / `_PREFIXES`: parent edges, gpx/path/stamp
+definitions, earthwork identity, `view.*` — group membership changes go through
+the Groups commands, never a raw property delete). Extend those lists when a new
+engine object kind stores its definition in `properties`.

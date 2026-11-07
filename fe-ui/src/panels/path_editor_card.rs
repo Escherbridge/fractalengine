@@ -22,8 +22,8 @@ use crate::theme;
 // Plain `\u{25xx}`/`\u{27xx}` codepoints that egui recolors reliably (color
 // emoji do not) — see `sidebar.rs:306` precedent. `type_glyph` maps a
 // `gpx_type` discriminant to its glyph for the 3D overlay (FR-3) too.
-/// Route/path glyph for a track row (`\u{29BF}`, circled dot in a ring).
-const GLYPH_TRACK: &str = "\u{29BF}";
+/// Route/path glyph for a track row (`\u{25C9}`, fisheye; Hack fallback).
+const GLYPH_TRACK: &str = "\u{25C9}";
 /// Filled circle for a timestamped/plain path point (`\u{25CF}`).
 const GLYPH_POINT: &str = "\u{25CF}";
 /// Hollow circle for a point with no timestamp (`\u{25CB}`) — authored via the
@@ -392,13 +392,13 @@ fn render_edit_view(
         ui.add_space(4.0);
         if let Some(err) = &path_status.error {
             ui.label(
-                egui::RichText::new(format!("\u{2717} {err}"))
+                egui::RichText::new(format!("\u{2716} {err}"))
                     .small()
                     .color(theme::STATUS_OFFLINE),
             );
         } else if let Some(msg) = &path_status.message {
             ui.label(
-                egui::RichText::new(format!("\u{2713} {msg}"))
+                egui::RichText::new(format!("\u{2714} {msg}"))
                     .small()
                     .color(theme::STATUS_ONLINE),
             );
@@ -1723,6 +1723,9 @@ mod tests {
                 model.pending_track_delete.is_none() && manager.drain_actions().is_empty(),
                 "Viewer cannot arm deletion"
             );
+            // egui hit-tests against the previous frame: render the enabled
+            // Editor row once before pressing it.
+            frame(0, true, vec![], &mut time, &mut model, &mut manager);
             click(
                 0,
                 true,

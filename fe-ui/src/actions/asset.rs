@@ -1136,7 +1136,9 @@ mod tests {
         assert!(
             bevy::math::Quat::from_array(restored.rotation).angle_between(
                 bevy::math::Quat::from_rotation_y(std::f32::consts::FRAC_PI_2)
-            ) < 0.0001
+            ) < 0.001, // acos near 1 is ill-conditioned in f32: 1e-4 rad is below its resolution
+            "restored rotation {:?}",
+            restored.rotation
         );
         // The native editor must preserve legacy values until their own explicit edit.
         let mut legacy = props.clone();

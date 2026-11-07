@@ -1456,8 +1456,10 @@ mod tests {
                 let id = frame.0.platform_output.accesskit_update.as_ref().unwrap().nodes.iter()
                     .find_map(|(id, node)| (node.label() == Some(label)).then_some(id.0)).unwrap();
                 let control = frame.1.controls.iter().find(|control| control.id == id).unwrap();
-                assert!(control.hit.width() * scale >= 20.0 && control.hit.height() * scale >= 20.0,
-                    "every depth reserves its actual name Button before clipping: {label}");
+                // `hit` is already clipped by the horizontally scrolling viewport.
+                assert!(control.rect.width() * scale >= 20.0 && control.rect.height() * scale >= 20.0,
+                    "every depth reserves its actual name Button before clipping: {label} at {scale}x: {:?}",
+                    control.rect);
             }
             let center = scroll.viewport.center();
             frame = draw(vec![egui::Event::PointerMoved(center), egui::Event::MouseWheel {
@@ -1813,6 +1815,8 @@ mod tests {
                 pressed: false,
                 modifiers: egui::Modifiers::NONE,
             }]);
+            // A popup sizes from its previous frame; measure once it has settled.
+            let _ = draw(Vec::new());
             let output = draw(Vec::new());
             let (rect, clip) = output
                 .shapes
@@ -1821,7 +1825,7 @@ mod tests {
                     text_rect(&shape.shape, &recent_error).map(|rect| (rect, shape.clip_rect))
                 })
                 .expect("complete error history is reachable");
-            assert!(clip.contains_rect(rect));
+            assert!(clip.contains_rect(rect), "error history text {rect:?} outside clip {clip:?}");
             let popup_actions = crate::ui_shell::layout_policy::observations(&ctx)
                 .controls
                 .into_iter()

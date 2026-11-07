@@ -794,6 +794,16 @@ native accessible Button names/roles, stable IDs and disabled-click checks at
 Actual screenshots must still establish icon recognition, contrast and toolbar
 fit, including responsive breakpoint cases, before visual acceptance.
 
+
+### Glyph coverage (QA-0075 reopen, 2026-11-07)
+
+egui's proportional family is Ubuntu-Light + NotoEmoji + emoji-icon-font; Hack is
+monospace-only, so arrows/triangles/dots that only Hack covers (→ ← ↑ ↓ ▲ ▼ ● ◆)
+painted missing-glyph squares in ordinary labels. `layout_policy::font_definitions`
+appends Hack to the proportional fallback once (`apply_style`). Glyphs no bundled
+font covers (✓ ✕ ✗ ⦿ ⁿ) are not used: icon-only buttons use `Icon::Close`, status
+text uses ✔/✖. Scan new literals against the proportional set before adding one.
+
 ## Divider eligibility observations (QA59)
 
 The existing width owner captures a fixed eligibility value at each existing

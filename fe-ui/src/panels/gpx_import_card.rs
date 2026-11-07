@@ -61,14 +61,14 @@ pub(crate) fn gpx_import_section(
         ui.add_space(4.0);
         if let Some(err) = &gpx_status.error {
             ui.label(
-                egui::RichText::new(format!("\u{2717} {err}"))
+                egui::RichText::new(format!("\u{2716} {err}"))
                     .small()
                     .color(theme::STATUS_OFFLINE),
             );
         } else {
             ui.label(
                 egui::RichText::new(format!(
-                    "\u{2713} Imported {} track(s), {} waypoint(s)",
+                    "\u{2714} Imported {} track(s), {} waypoint(s)",
                     gpx_status.track_count, gpx_status.waypoint_count
                 ))
                 .small()

@@ -283,6 +283,17 @@ fn ray_aabb_hit(
 mod tests {
     use super::*;
 
+    /// Queued commands other than a selection's stored-capture read.
+    fn mutations(
+        rx: &crossbeam::channel::Receiver<fe_runtime::messages::DbCommand>,
+    ) -> Vec<fe_runtime::messages::DbCommand> {
+        rx.try_iter()
+            .filter(|command| {
+                !matches!(command, fe_runtime::messages::DbCommand::ReadEditorBatch { .. })
+            })
+            .collect()
+    }
+
     /// A ribbon its map layer (or style) hides — `Visibility::Hidden` set outside
     /// the lattice — refuses the click; shown again, the same click selects it.
     #[test]
@@ -992,9 +1003,13 @@ mod tests {
                 .is_some(),
             "actual selection and receipt load the atomic editor"
         );
+        // The loaded selection may request its stored capture; it never promotes again.
+        let commands: Vec<_> = stamp_rx.try_iter().collect();
         assert!(
-            stamp_rx.try_recv().is_err(),
-            "idle receipt projection cannot re-promote"
+            !commands
+                .iter()
+                .any(|command| matches!(command, DbCommand::PromoteCheckedStamp { .. })),
+            "idle receipt projection cannot re-promote: {commands:?}"
         );
         let observed = native(vec![], &mut time, &mut app);
         let x = observed.controls[observed.controls.len() - 8].hit.center();
@@ -1086,7 +1101,7 @@ mod tests {
             "late promotion properties cannot reopen a stamp after another object was picked"
         );
         assert!(
-            stamp_rx.try_recv().is_err(),
+            mutations(&stamp_rx).is_empty(),
             "late receipts cannot resubmit or promote"
         );
 
@@ -1124,7 +1139,7 @@ mod tests {
         assert!(state.selected().is_none() && state.loaded_properties(&reset_stamp).is_none());
         assert!(!state.edit_pending() && state.edit_error().is_none() && state.saved_revision() == 0);
         assert!(app.world().resource::<NodeManager>().selected_entity().is_none());
-        assert!(stamp_rx.try_recv().is_err(), "reset invalidation and late replies cannot enqueue another mutation");
+        assert!(mutations(&stamp_rx).is_empty(), "reset invalidation and late replies cannot enqueue another mutation");
     }
 
     /// A unit box centered at the origin in identity local space.

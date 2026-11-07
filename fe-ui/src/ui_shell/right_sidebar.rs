@@ -882,7 +882,7 @@ fn render_settings_section(
             .on_hover_text("Bottom-left real-distance scale bar");
         ui.checkbox(&mut app_settings.show_world_grid, "Metric grid")
             .observed(ui)
-            .on_hover_text("Ground grid at round metric spacing (1 / 2 / 5 × 10ⁿ m); needs a map");
+            .on_hover_text("Ground grid at round metric spacing (1 / 2 / 5 × 10^n m); needs a map");
 
         ui.add_space(8.0);
         settings_heading(ui, "Terrain");
@@ -1263,6 +1263,11 @@ fn render_timeseries_fabric_controls(
                 .on_disabled_hover_text(
                     "R applies to balanced mode only (sharded = one host, mirror = all).",
                 );
+            // egui never focuses a Slider from the pointer; arrow-key fine tuning
+            // after grabbing it needs the focus.
+            if response.drag_started() || response.clicked() {
+                response.request_focus();
+            }
             draft.observe(ui, "replication-factor", &response);
         });
         ui.add_space(4.0);
@@ -2091,6 +2096,8 @@ mod tests {
             ctx.set_pixels_per_point(scale);
             for width in [220.0, 280.0, 318.0, 480.0] {
                 group_width.set(width);
+                // The first frame after a scale/width change lays out from stale sizes.
+                group_frame(&editor, vec![], &mut time, &visibility, &mut notices);
                 let resting = group_frame(&editor, vec![], &mut time, &visibility, &mut notices);
                 group_click(
                     &editor,
@@ -2099,7 +2106,8 @@ mod tests {
                     &visibility,
                     &mut notices,
                 );
-                assert!(notices.drain_actions().is_empty(), "arming is not deletion");
+                let premature = notices.drain_actions();
+                assert!(premature.is_empty(), "arming is not deletion at {scale}x/{width}: {premature:?}");
                 let armed = group_frame(&editor, vec![], &mut time, &visibility, &mut notices);
                 for control in &armed.controls[2..8] {
                     assert!(
@@ -2182,7 +2190,7 @@ mod tests {
         batch_rx.try_recv().unwrap();
         let batch_busy = group_frame(&editor, vec![], &mut time, &visibility, &mut notices);
         assert!(
-            batch_busy.controls.iter().all(|control| !control.allowed),
+            batch_busy.controls.iter().all(|control| !control.enabled),
             "registry controls cannot compete with an accepted Group read/edit"
         );
         notices.editor_batch = Default::default();
@@ -2218,11 +2226,11 @@ mod tests {
         registry_rx.try_recv().unwrap();
         let pending = group_frame(&editor, vec![], &mut time, &visibility, &mut notices);
         assert!(
-            pending.controls[0].allowed && pending.controls[0].clickable,
+            pending.controls[0].enabled && pending.controls[0].clickable,
             "the pending registry offers a read-only check"
         );
         assert!(
-            pending.controls[1..].iter().all(|control| !control.allowed),
+            pending.controls[1..].iter().all(|control| !control.enabled),
             "accepted registry edit disables competing registry controls"
         );
         assert_eq!(
@@ -2892,7 +2900,9 @@ mod tests {
             super::super::layout_policy::observations(&retry_ctx)
         };
         let observed = retry_frame(vec![], &mut retry_time, &mut retry_state, &mut quarantine);
-        let retry_point = observed.controls.last().unwrap().hit.center();
+        // The section's resize divider registers after the body; Retry is the last click-only control.
+        let retry_point = observed.controls.iter().rev()
+            .find(|control| control.clickable && !control.draggable).unwrap().hit.center();
         for pressed in [true, false] {
             retry_frame(vec![egui::Event::PointerMoved(retry_point), egui::Event::PointerButton { pos: retry_point, button: egui::PointerButton::Primary, pressed, modifiers: egui::Modifiers::NONE }], &mut retry_time, &mut retry_state, &mut quarantine);
         }
@@ -2910,7 +2920,7 @@ mod tests {
         });
         let observed = super::super::layout_policy::observations(&reset_ctx);
         assert!(!observed.controls.is_empty());
-        assert!(observed.controls.iter().all(|control| !control.allowed), "typing RESET cannot bypass runtime quiescence");
+        assert!(observed.controls.iter().all(|control| !control.enabled), "typing RESET cannot bypass runtime quiescence");
         assert!(rx.is_empty());
 
         // Exercise the actual Paths height widget through retained text and pointer frames.

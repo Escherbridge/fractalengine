@@ -408,6 +408,11 @@ pub(super) fn apply_db_results(
                                 &mut caches.visibility,
                                 &mut caches.callout_map,
                             );
+                            crate::visibility::cache::apply_committed_view(
+                                &mut caches.visibility,
+                                &current.node.node_id,
+                                &current.properties,
+                            );
                             if nav.active_petal_id.as_deref() == Some(current.node.petal_id.as_str())
                                 && !verse_mgr.queue_current_path(&current.node.node_id, &current.node.petal_id, Some(current.properties.clone())) {
                                     ui_mgr.show_advisory("Current path refresh is full; reopen this Petal to refresh its geometry", caches.time.elapsed_secs_f64());
@@ -892,6 +897,7 @@ pub(super) fn apply_db_results(
                 properties,
                 ..
             } => {
+                crate::actions::node_props::finish_clear(&db_sender, &mut ui_mgr, node_id, properties);
                 // Resolve the node's owning petal so the path-asset cache entry
                 // knows where to materialize (borrow ends before the handler call).
                 let petal_id = verse_mgr.petal_id_of(node_id).map(str::to_string);
@@ -3097,15 +3103,18 @@ mod tests {
         app.update();
         assert!(!db_commands.try_iter().any(|command| matches!(command, DbCommand::GetNodeProperties { node_id, .. } if node_id == "cold-node")),
             "matching failure leaves bounded backoff, not a per-frame resend");
-        app.update();
-        let second_read = db_commands
-            .try_iter()
-            .find_map(|command| match command {
-                DbCommand::GetNodeProperties {
-                    node_id,
-                    correlation_id: Some(id),
-                } if node_id == "cold-node" => Some(id),
-                _ => None,
+        // The failure arm and the read poll are separate systems, so the
+        // backoff can expire one frame later; allow a bounded few frames.
+        let second_read = (0..3)
+            .find_map(|_| {
+                app.update();
+                db_commands.try_iter().find_map(|command| match command {
+                    DbCommand::GetNodeProperties {
+                        node_id,
+                        correlation_id: Some(id),
+                    } if node_id == "cold-node" => Some(id),
+                    _ => None,
+                })
             })
             .expect("read retries after bounded backoff");
         assert_ne!(first_read, second_read);
@@ -3135,17 +3144,16 @@ mod tests {
                 .is_classified("cold-node"),
             "a timed-out reply cannot classify the current attempt"
         );
-        for _ in 0..3 {
-            app.update();
-        }
-        let third_read = db_commands
-            .try_iter()
-            .find_map(|command| match command {
-                DbCommand::GetNodeProperties {
-                    node_id,
-                    correlation_id: Some(id),
-                } if node_id == "cold-node" => Some(id),
-                _ => None,
+        let third_read = (0..8)
+            .find_map(|_| {
+                app.update();
+                db_commands.try_iter().find_map(|command| match command {
+                    DbCommand::GetNodeProperties {
+                        node_id,
+                        correlation_id: Some(id),
+                    } if node_id == "cold-node" => Some(id),
+                    _ => None,
+                })
             })
             .expect("a lost response remains recoverable after deadline and backoff");
         assert_ne!(second_read, third_read);
