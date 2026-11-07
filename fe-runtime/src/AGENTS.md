@@ -670,7 +670,12 @@ will skip it — never applied), `PartiallyApplied` → 504
 frame), `Applied` → **202** success with `settled: false` and code
 `applied_unsettled` (`InputOutput.settled`). Release/Acquire ordering: the
 host publishes `frames_planned` before `admitted`, so a reader that sees
-`admitted` never sees a stale zero plan.
+`admitted` never sees a stale zero plan. `NotStarted` is a store-buffer
+(Dekker) handshake — host: store `admitted`, then check the reply slot closed;
+API: close the slot (timeout drops it), then load `admitted` — so `admit` and
+`stage` each carry a `SeqCst` fence; without them a host could pass the
+open-slot check and apply frames while the API already answered "no input was
+applied" (critic 2026-11-06).
 
 **Why `InputKey` is a `String`, not `bevy::input::keyboard::KeyCode`.**
 `bevy::input::keyboard::KeyCode` and `bevy::input::mouse::MouseButton` only

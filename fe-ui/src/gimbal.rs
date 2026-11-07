@@ -99,7 +99,7 @@ pub fn gimbal_center(
 }
 
 /// World-space `(min, max)` box enclosing every `Aabb` in `entity`'s subtree —
-/// the same DFS as [`gimbal_center`], but visiting all nodes rather than
+/// a DFS like [`gimbal_center`]'s, but visiting all nodes rather than
 /// stopping at the first; `None` when no node carries an `Aabb`. Agent-vision
 /// `focus` framing uses it (fractalengine `src/AGENTS.md` §vision).
 pub fn subtree_world_aabb(
@@ -109,26 +109,20 @@ pub fn subtree_world_aabb(
     children_query: &Query<&Children>,
 ) -> Option<(Vec3, Vec3)> {
     let mut bounds: Option<(Vec3, Vec3)> = None;
-    // `visit` never returns `Some`, so the walk covers the whole subtree.
-    find_in_subtree::<()>(
-        entity,
-        |ent| {
-            if let (Ok(ent_gtx), Ok(aabb)) = (g_transform_query.get(ent), aabb_query.get(ent)) {
-                let (lo, hi) = world_box(ent_gtx, aabb);
-                bounds = Some(match bounds {
-                    Some((min, max)) => (min.min(lo), max.max(hi)),
-                    None => (lo, hi),
-                });
-            }
-            None
-        },
-        |ent| {
-            children_query
-                .get(ent)
-                .map(|c| c.iter().collect())
-                .unwrap_or_default()
-        },
-    );
+    // One stack for the whole walk: the selection outline calls this every frame.
+    let mut stack = vec![entity];
+    while let Some(ent) = stack.pop() {
+        if let (Ok(ent_gtx), Ok(aabb)) = (g_transform_query.get(ent), aabb_query.get(ent)) {
+            let (lo, hi) = world_box(ent_gtx, aabb);
+            bounds = Some(match bounds {
+                Some((min, max)) => (min.min(lo), max.max(hi)),
+                None => (lo, hi),
+            });
+        }
+        if let Ok(children) = children_query.get(ent) {
+            stack.extend(children.iter());
+        }
+    }
     bounds
 }
 

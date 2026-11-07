@@ -172,6 +172,8 @@ pub(super) fn apply_db_results(
         caches.spawned.iter().map(|m| m.node_id.clone()).collect();
     let mesh_budget_exceeded = caches.mesh_budget.exceeded;
     verse_mgr.synchronize_scene_navigation(&nav);
+    // A replicated role row arrived: re-resolve the local role once for the whole batch.
+    let mut role_rows_applied = false;
     for result in reader.read() {
         verse_mgr.synchronize_scene_navigation(&nav);
         match result {
@@ -1106,22 +1108,12 @@ pub(super) fn apply_db_results(
                     }
                 }
             }
-            // A peer's grant/revocation can change this node's own role: re-resolve
-            // the active scope so the badge and edit gates follow it live.
+            // A peer's grant/revocation can change this node's own role (re-resolved after the loop).
             DbResult::ReplicatedRowApplied {
                 table,
                 outcome: fe_runtime::messages::ReplicatedRowOutcome::Applied,
                 ..
-            } if table.as_str() == "role" => {
-                if let Some(scope) = nav.active_scope() {
-                    if let Err(e) = db_sender
-                        .0
-                        .send(fe_runtime::messages::DbCommand::ResolveLocalRole { scope })
-                    {
-                        bevy::log::warn!("db_sender channel closed — ResolveLocalRole re-fetch dropped: {e}");
-                    }
-                }
-            }
+            } if table.as_str() == "role" => role_rows_applied = true,
             _ => {}
         }
 
@@ -1130,6 +1122,15 @@ pub(super) fn apply_db_results(
         // the API thread may be waiting on.
         if !property_forwarded {
             pending_api.try_deliver(result.clone());
+        }
+    }
+    // One resolve per batch, not per row: an initial sync replicates many role statements at once.
+    if let Some(scope) = role_rows_applied.then(|| nav.active_scope()).flatten() {
+        if let Err(e) = db_sender
+            .0
+            .send(fe_runtime::messages::DbCommand::ResolveLocalRole { scope })
+        {
+            bevy::log::warn!("db_sender channel closed — ResolveLocalRole re-fetch dropped: {e}");
         }
     }
     flush_committed_hierarchy(&db_sender, &mut caches.committed_hierarchy_pending);
@@ -2738,6 +2739,25 @@ mod tests {
             Some(&2)
         );
         let _ = db_commands.try_iter().collect::<Vec<_>>();
+        // Peer convergence (§peer-terrain): a burst of replicated role rows re-resolves the
+        // local role once, and the active petal's row re-fetches its terrain doc.
+        let replicated = |table: &str, record_id: &str| DbResult::ReplicatedRowApplied {
+            verse_id: "v1".into(),
+            table: table.into(),
+            record_id: record_id.into(),
+            outcome: fe_runtime::messages::ReplicatedRowOutcome::Applied,
+        };
+        for row in [replicated("role", "r1"), replicated("role", "r2"), replicated("petal", "p1")] {
+            app.world_mut().write_message(row);
+        }
+        app.update();
+        let sent: Vec<_> = db_commands.try_iter().collect();
+        assert_eq!(
+            sent.iter().filter(|command| matches!(command, DbCommand::ResolveLocalRole { scope } if scope.contains("PETAL#p1"))).count(),
+            1,
+            "one role re-resolve per batch: {sent:?}"
+        );
+        assert!(sent.iter().any(|command| matches!(command, DbCommand::GetPetalTerrain { petal_id, .. } if petal_id == "p1")));
         let mut unsupported = placed.clone();
         if let DbResult::GltfImported {
             materialization, ..

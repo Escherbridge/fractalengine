@@ -1580,11 +1580,14 @@ could not observe or drive that window. When `main.rs` validates `FE_QA_STORAGE_
 Owner max_role, scope exactly `QA-OPERATOR`, same signer/TTL/generation as the per-verse tokens.
 `ViewScope::covers` (the one gate every debug bridge uses) admits that scope for whatever this window
 shows, but only while the latch is on. Nothing else changes: the scope parses as no VERSE/FRACTAL/PETAL,
-so every scoped REST/MCP route still denies it, unscoped Owner routes already accepted this node's
-own Owner verse tokens from the same file, invitation consume still requires its own verse scope,
+so every scoped REST/MCP route still denies it, invitation consume still requires its own verse scope,
 and a verse-B token still never sees verse A. Without the QA root nothing is latched or minted.
 Actions taken through it are ordinary local GUI input, gated by the node's real role (a Viewer's
-Delete is disabled; its property delete is refused by the DB). Journey:
+Delete is disabled; its property delete is refused by the DB). One real widening (critic 2026-11-06):
+the unscoped node-level routes gated only by a role floor (`POST /verses` Manager, hexon crate publish
+Owner, the QA gates) now admit this node's local operator even when it owns no verse. They act on the
+node's own registry/new verses, never on a verse it was granted, which is the same power its GUI user
+already has; keep any future verse-data route behind `require_scope`. Journey:
 `vision_bridge::tests::a_token_outside_the_active_verse_is_denied_capture_and_camera_read`.
 
 ## §peer-terrain (live peer map/earthwork, 2026-11-06)

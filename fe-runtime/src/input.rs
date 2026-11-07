@@ -223,6 +223,9 @@ impl InputProgress {
         let planned = u32::try_from(frames).unwrap_or(u32::MAX);
         self.0.frames_planned.store(planned, Ordering::Release);
         self.0.admitted.store(true, Ordering::Release);
+        // Dekker pairing with `stage`: the host's later reply-closed check cannot
+        // be reordered before this store, so `NotStarted` is never a lie.
+        std::sync::atomic::fence(Ordering::SeqCst);
     }
     /// Host: one planned input frame was written to the input messages.
     pub fn frame_applied(&self) {
@@ -235,6 +238,8 @@ impl InputProgress {
     /// API: the stage this batch reached.
     pub fn stage(&self) -> InputStage {
         use std::sync::atomic::Ordering;
+        // Pairs with `admit`'s fence: the caller dropped its reply slot before this read.
+        std::sync::atomic::fence(Ordering::SeqCst);
         if !self.0.admitted.load(Ordering::Acquire) {
             return InputStage::NotStarted;
         }
