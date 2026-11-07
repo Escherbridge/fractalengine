@@ -2011,3 +2011,17 @@ or an independent OS focus assertion. Missing records remain unknown. This adds
 no HTTP route, input authority, focus request, OS query, dialog payload, clipboard
 data, native proof/capture admission or mutation. Existing layout fields and
 scope/admission are unchanged.
+
+## §render-loop (QA-0119, 2026-11-07)
+
+Every build runs a reactive loop (`render_wake.rs`): focused `reactive(250 ms)`, unfocused
+`reactive_low_power(1 s)`; `FE_QA_A11Y_CONTINUOUS=1` still opts into continuous. Background
+work never waits for the idle tick: a `render-wake` thread polls every queue a Bevy system
+drains (DB results, sync events, API commands, input/screenshot/vision bridges, QA bridges
+when QA is on, inbound transforms) every 4 ms and sends `WinitUserEvent::WakeUp` at most once
+per frame; only queues that are actually drained may be watched, or the loop never sleeps.
+`keep_awake_while_working` (Last) requests a redraw while any watched queue is non-empty or a
+multi-frame job runs (input batch, posed capture, pending screenshot, live `Screenshot`
+entity), so a settle or capture never stalls asleep. The steer asked for `desktop_app()`
+(5 s / 60 s); the bounded waits keep deadline- and timer-driven systems (replica reads,
+transfer deadlines, notices) within 1 s.

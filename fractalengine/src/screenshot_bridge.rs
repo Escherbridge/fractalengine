@@ -119,6 +119,13 @@ pub fn capture_refusal(primary_window: Option<&Window>) -> Option<&'static str> 
 #[derive(Resource, Default)]
 pub struct PendingScreenshots(Vec<ScreenshotRequest>);
 
+impl PendingScreenshots {
+    /// No admitted request awaits its frame.
+    pub fn is_empty(&self) -> bool {
+        self.0.is_empty()
+    }
+}
+
 /// Register the plain-GET bridge: the arrival check in `Update`, the
 /// frame-time re-check + capture in `PostUpdate` (src/AGENTS.md §screenshot).
 pub fn install(app: &mut App, receiver: ScreenshotRequestReceiver) {

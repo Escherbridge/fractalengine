@@ -27,6 +27,7 @@ mod qa_dev_token;
 mod qa_log;
 mod qa_portal_bridge;
 mod qa_invitation_bridge;
+mod render_wake;
 mod screenshot_bridge;
 mod terrain_bridge;
 mod terminal_reset;
@@ -486,6 +487,10 @@ fn main() {
 
     // Frameless primary window: fe-ui's topbar is the title bar (src/AGENTS.md
     // §window-chrome).
+    // QA-0119: every cross-thread queue a Bevy system drains wakes the reactive loop.
+    let render_work = render_wake::PendingWork::default();
+    render_work.watch(ch.db_res_rx.clone());
+    render_work.watch(sync_evt_rx.clone());
     let mut app = fe_runtime::app::build_app_with_options(
         BevyHandles {
             net_cmd_tx: ch.net_cmd_tx,
@@ -507,9 +512,8 @@ fn main() {
 
     // GUI-only plugins (removed from fe-runtime so the headless relay can skip them)
     app.add_plugins(bevy_egui::EguiPlugin::default());
-    if qa_enabled {
-        app.insert_resource(bevy::winit::WinitSettings::continuous());
-    }
+    // QA-0119: reactive, not continuous, in every build (src/AGENTS.md §render-loop).
+    render_wake::install(&mut app, render_work.clone());
     app.add_plugins(bevy::diagnostic::FrameTimeDiagnosticsPlugin::default());
 
     // Insert sync resources into Bevy world
@@ -553,6 +557,16 @@ fn main() {
     let (qa_tx, qa_rx) = fe_runtime::qa_debug::qa_bridge();
     let (portal_fixture_tx, portal_fixture_rx) = fe_runtime::qa_portal::fixture_bridge();
     let (invitation_transfer_tx,invitation_transfer_rx)=fe_runtime::qa_invitation::invitation_bridge();
+    render_work.watch(api_cmd_rx.clone());
+    render_work.watch(screenshot_rx.clone());
+    render_work.watch(vision_rx.clone());
+    render_work.watch(input_rx.clone());
+    // QA-only bridges are drained only when QA is enabled; never probe an undrained queue.
+    if qa_enabled {
+        render_work.watch(qa_rx.clone());
+        render_work.watch(portal_fixture_rx.clone());
+        render_work.watch(invitation_transfer_rx.clone());
+    }
     let (transform_broadcast_tx, _) =
         tokio::sync::broadcast::channel::<fe_runtime::messages::TransformUpdate>(1024);
     // Revocation broadcast: Bevy sends revoked JTIs, API thread updates its cache.
@@ -832,6 +846,7 @@ fn main() {
             });
         }));
     }
+    render_work.watch(inbound_rx.clone());
     app.insert_resource(fe_runtime::app::InboundTransformReceiver(inbound_rx));
 
     app.init_resource::<PendingApiRequests>();

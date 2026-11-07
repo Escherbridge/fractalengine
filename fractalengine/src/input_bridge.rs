@@ -42,6 +42,13 @@ pub struct InputBridge(pub InputRequestReceiver);
 #[derive(Resource, Default)]
 pub struct InputJob(Option<ActiveInjection>);
 
+impl InputJob {
+    /// A batch is injecting, settling or capturing (the render loop keeps waking for it).
+    pub fn is_active(&self) -> bool {
+        self.0.is_some()
+    }
+}
+
 /// Suppress clipboard writes for every frame touched by synthetic input.
 #[derive(Resource, Default)]
 pub struct SyntheticClipboardGuard(bool);

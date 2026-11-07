@@ -70,6 +70,11 @@ pub struct VisionBridge(pub VisionRequestReceiver);
 pub struct VisionJob(Option<ActiveJob>);
 
 impl VisionJob {
+    /// A posed capture is in flight (the render loop keeps waking for it).
+    pub fn is_active(&self) -> bool {
+        self.0.is_some()
+    }
+
     /// True while a window-mode job holds the main camera at its pose.
     fn holds_camera(&self) -> bool {
         self.0.as_ref().is_some_and(|job| job.holds_camera)
