@@ -552,6 +552,9 @@ struct JoinReadiness {
 #[derive(Clone)]
 pub struct SceneProviderRoster(Arc<JoinReadiness>);
 impl SceneProviderRoster {
+    /// Every live sync-confirmed peer, sorted (at most 256, `confirm_peer`). A
+    /// verse with more than 16 collaborators keeps its roster (QA-0136): the
+    /// scene-asset layer samples a 16-provider window from it per fetch.
     pub(crate) fn peers(&self) -> anyhow::Result<Vec<iroh::EndpointId>> {
         anyhow::ensure!(
             self.0.alive.load(Ordering::Acquire) && !self.0.invalidated.load(Ordering::Acquire),
@@ -562,10 +565,6 @@ impl SceneProviderRoster {
             .successful_peers
             .lock()
             .unwrap_or_else(|error| error.into_inner());
-        anyhow::ensure!(
-            peers.len() <= 16,
-            "More than 16 authenticated scene providers; no prefix selected"
-        );
         let mut peers: Vec<_> = peers.iter().copied().collect();
         peers.sort();
         anyhow::ensure!(
@@ -575,6 +574,21 @@ impl SceneProviderRoster {
         Ok(peers)
     }
 }
+#[cfg(test)]
+impl SceneProviderRoster {
+    /// A live roster of `peers`, for journeys that need more than a loopback pair.
+    pub(crate) fn live_for_test(peers: impl IntoIterator<Item = iroh::EndpointId>) -> Self {
+        let readiness = JoinReadiness::default();
+        readiness.alive.store(true, Ordering::Release);
+        readiness
+            .successful_peers
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .extend(peers);
+        Self(Arc::new(readiness))
+    }
+}
+
 struct JoinReadinessGuard(Arc<JoinReadiness>);
 
 impl Drop for JoinReadinessGuard {

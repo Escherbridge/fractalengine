@@ -5588,6 +5588,24 @@ mod tests {
         ));
         std::fs::write(&legacy_path, serde_json::to_vec(&vec![peer(3, 5003)]).unwrap()).unwrap();
         assert_eq!(peer_book::load(dir.path(), "verse-legacy"), vec![peer(3, 5003)]);
+
+        // QA-0136: twenty synced collaborators keep a live roster (the recorder and
+        // scene fetches used to fail past 16); each fetch asks a 16-provider window
+        // after the explicit peer, and rotating windows reach every collaborator.
+        let crowd: Vec<_> = (60..80u8).map(|seed| peer(seed, 7000).id).collect();
+        let roster = crate::replicator::SceneProviderRoster::live_for_test(crowd.clone());
+        assert_eq!(roster.peers().unwrap().len(), 20);
+        let explicit = vec![crate::blob_transport::IrohBlobTransport::provider_ref(&peer(40, 6000)).unwrap()];
+        let mut asked = std::collections::HashSet::new();
+        for rotation in 0..20 {
+            let window = crate::scene_assets::provider_window(&explicit, roster.peers().unwrap(), rotation).unwrap();
+            assert_eq!(window.len(), 16);
+            assert_eq!(window[0], explicit[0], "explicit providers are asked first");
+            asked.extend(window.iter().filter_map(|provider| {
+                crate::blob_transport::IrohBlobTransport::parse_provider(provider).ok().map(|address| address.id)
+            }));
+        }
+        assert!(crowd.iter().all(|id| asked.contains(id)), "every collaborator is eventually asked");
     }
 
     #[test]

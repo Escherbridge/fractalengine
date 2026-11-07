@@ -2211,6 +2211,13 @@ always win and `scene_assets::opened_with_roster` never sees more than its 16-pr
 The recorder reads `SceneProviderRoster::peers()`, which holds only peers with a successful
 `SyncFinished` (`confirm_peer`); forwarded `InsertRemote` authors never enter it.
 
+QA-0136 (critic, 2026-11-07): `peers()` used to fail once more than 16 peers had synced,
+which stopped the recorder and failed every scene fetch in a verse with 17+ collaborators.
+It now returns every confirmed peer (bounded at 256), and `scene_assets::provider_window`
+asks the explicit providers first, then a window of roster peers rotated per call, 16 in
+all. Prefetch retries and later petal-entry fetches sample different windows, so every
+collaborator is eventually asked.
+
 ## §scene-asset-prefetch (QA-0118, 2026-11-07)
 
 A peer's scene-asset metadata row (`asset` table, `_fe_scene_asset` marker) starts an

@@ -57,25 +57,48 @@ impl OpenVerse {
             !self.stop.is_requested(),
             "Scene provider generation closed"
         );
-        let mut providers = self.providers.clone();
-        if let Some(roster) = &self.roster {
-            for peer in roster.peers()? {
-                if !providers.iter().any(|provider| {
-                    IrohBlobTransport::parse_provider(provider)
-                        .is_ok_and(|address| address.id == peer)
-                }) {
-                    providers.push(IrohBlobTransport::provider_ref(&iroh::EndpointAddr::new(
-                        peer,
-                    ))?);
-                }
-            }
-        }
-        anyhow::ensure!(
-            providers.len() <= 16,
-            "More than 16 native scene providers; no prefix selected"
-        );
-        Ok(providers)
+        let peers = match &self.roster {
+            Some(roster) => roster.peers()?,
+            None => Vec::new(),
+        };
+        // Sub-second clock nanos rotate the window (the replicator's jitter idiom).
+        let rotation = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|elapsed| elapsed.subsec_nanos() as usize)
+            .unwrap_or(0);
+        provider_window(&self.providers, peers, rotation)
     }
+}
+
+/// The explicit providers, then a window of roster peers rotated by `rotation`,
+/// at most 16 in all (QA-0136): more than 16 collaborators never disables
+/// fetching, and successive fetches (prefetch retries, petal entry) sample
+/// different windows, so every confirmed peer is eventually asked.
+pub(crate) fn provider_window(
+    explicit: &[ProviderRef],
+    mut roster: Vec<iroh::EndpointId>,
+    rotation: usize,
+) -> anyhow::Result<Vec<ProviderRef>> {
+    anyhow::ensure!(
+        explicit.len() <= 16,
+        "More than 16 explicit native scene providers"
+    );
+    let mut providers = explicit.to_vec();
+    if !roster.is_empty() {
+        let offset = rotation % roster.len();
+        roster.rotate_left(offset);
+    }
+    for peer in roster {
+        if providers.len() >= 16 {
+            break;
+        }
+        if !providers.iter().any(|provider| {
+            IrohBlobTransport::parse_provider(provider).is_ok_and(|address| address.id == peer)
+        }) {
+            providers.push(IrohBlobTransport::provider_ref(&iroh::EndpointAddr::new(peer))?);
+        }
+    }
+    Ok(providers)
 }
 
 type OpenVerses = Arc<RwLock<HashMap<String, OpenVerse>>>;
