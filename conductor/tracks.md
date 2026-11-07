@@ -115,6 +115,26 @@ Order: signing and release first, then agent QA, then the operator seams.
 
 ---
 
+## P1 — Extension platform (user grill 2026-11-07)
+
+Builds on the S-PLUGIN enabler above. Decisions D-X1..D-X8 live in the track's checkpoint.
+
+- [ ] **extension_platform** (P1) — extends **S-PLUGIN** and consumes **S-REGISTRY** / **S-ENTITLEMENT**: the
+  extension surface becomes the way capabilities plug in.
+  - Sealed `.hexon` packages (`HexonType::Plugin`, closing OD-9) carry a Wasm component against WIT
+    `fractalengine:plugin@2.0`.
+  - A worker-driven tick writes motion and readings in one batched command per tick.
+  - An integration bus (D-X6) brokers streams, commands and hooks.
+  - Per-verse governance adds consent, audit and a package kill switch.
+  - The `fe-ext` CLI and an in-app Extensions UI follow.
+  - First-party migrations start with fe-sim fleets, then device adapters, the hexon registry client and BI
+    connectors.
+
+  Author-only until the build gate opens (D-X2). `portal_surface_20261107` depends on it —
+  [./tracks/extension_platform_20261107/](./tracks/extension_platform_20261107/)
+
+---
+
 ## P0 — Polish lane (user directive 2026-10-31)
 
 ### [~] qa_chain_20261101 — finish agent QA surfaces, full-coverage loop, UX audit and queued polish
