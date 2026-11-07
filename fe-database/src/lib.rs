@@ -141,6 +141,29 @@ pub struct ReplicationEvent {
     pub petal_id: Option<String>,
 }
 
+/// A DB command at least this slow is logged with its kind and the queue behind it (QA-0138).
+const SLOW_DB_COMMAND: std::time::Duration = std::time::Duration::from_millis(250);
+
+/// The variant name of a derived-`Debug` value, without formatting its fields:
+/// the writer refuses the first non-identifier character, which ends formatting.
+fn variant_name<T: std::fmt::Debug>(value: &T) -> String {
+    struct Head(String);
+    impl std::fmt::Write for Head {
+        fn write_str(&mut self, text: &str) -> std::fmt::Result {
+            for c in text.chars() {
+                if !(c.is_alphanumeric() || c == '_') {
+                    return Err(std::fmt::Error);
+                }
+                self.0.push(c);
+            }
+            Ok(())
+        }
+    }
+    let mut head = Head(String::new());
+    let _ = std::fmt::write(&mut head, format_args!("{value:?}"));
+    head.0
+}
+
 /// Sender half for replication events.
 pub type ReplicationSender = crossbeam::channel::Sender<ReplicationEvent>;
 
@@ -649,6 +672,7 @@ pub fn spawn_db_thread_shared(
             loop {
                 let cmd = rx.recv();
                 let cmd_start = std::time::Instant::now();
+                let cmd_kind = cmd.as_ref().map(variant_name).unwrap_or_default();
                 match cmd {
                     Ok(DbCommand::PluginRead {admission,request,reply}) => {
                         let result=handlers::plugin_host::read(&db,&admission,request,&local_did).await.map_err(|error|error.to_string());
@@ -1961,7 +1985,12 @@ pub fn spawn_db_thread_shared(
                     // through PendingApiRequests (see fe-runtime AGENTS.md
                     // §api-reply-correlation). The row cap is enforced in
                     // the handler against the caller's cap.
-                    Ok(DbCommand::ExecuteTsPartial { verse_id, spec, shards, row_cap, reply }) => {
+                    // QA-0138: a partial whose waiter already gave up is skipped —
+                    // executing it would only delay every command queued behind it.
+                    Ok(DbCommand::ExecuteTsPartial { deadline, .. }) if std::time::Instant::now() >= deadline => {
+                        tracing::debug!("ExecuteTsPartial skipped: its waiter's deadline passed while queued");
+                    }
+                    Ok(DbCommand::ExecuteTsPartial { verse_id, spec, shards, row_cap, deadline: _, reply }) => {
                         // RP-6 §2.6: the deferred-admission queue reports which
                         // requested shards still hold deferred readings here
                         // (OF-7b: scoped to the query's verse).
@@ -2192,7 +2221,13 @@ pub fn spawn_db_thread_shared(
                     }
                     Ok(DbCommand::Shutdown) | Err(_) => break,
                 }
-                tracing::debug!(elapsed_ms = %cmd_start.elapsed().as_millis(), "DB command processed");
+                // QA-0138: the DB thread is one serial queue — name what holds it.
+                let elapsed = cmd_start.elapsed();
+                if elapsed >= SLOW_DB_COMMAND {
+                    tracing::warn!(kind = %cmd_kind, elapsed_ms = elapsed.as_millis() as u64, queued = rx.len(), "slow DB command");
+                } else {
+                    tracing::debug!(kind = %cmd_kind, elapsed_ms = elapsed.as_millis() as u64, "DB command processed");
+                }
             }
             tracing::info!("Database thread shutting down");
             // Release the store while this runtime can still drive the

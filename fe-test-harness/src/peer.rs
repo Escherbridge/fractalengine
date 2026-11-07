@@ -575,6 +575,7 @@ impl TestPeer {
                             spec,
                             shards,
                             row_cap,
+                            deadline: _,
                             reply,
                         }) => {
                             let partial = fe_database::handlers::ts_partial::execute_ts_partial(

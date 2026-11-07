@@ -22,8 +22,9 @@
 //!   holds deferred readings, so a covered-empty answer never settles them.
 
 use fe_query::builder::timeseries::{
-    latest_per_anchor, readings_for_petal, readings_in_window, window_aggregate_partial,
+    readings_in_window, window_aggregate_partial, READINGS_TABLE,
 };
+use fe_query::{Filter, QueryBuilder, SortDir};
 use fe_runtime::distributed_query::{
     clamp_partial_row_cap, PartialShard, TsPartialRows, TsQueryKind,
 };
@@ -191,9 +192,18 @@ async fn execute_partial_rows(
             })
         }
         TsQueryKind::LatestPerAnchor { petal_id, metric } => {
-            let q = latest_per_anchor(Some(petal_id), metric.as_deref());
-            let mut res = exec_query(db, &q).await.map_err(|e| e.to_string())?;
-            let mut rows: Vec<serde_json::Value> = res.take(0).unwrap_or_default();
+            // QA-0138: one indexed petal scan reduced here — the correlated
+            // per-row `math::max` subquery was quadratic in the readings table
+            // and held the serial DB thread for seconds per partial.
+            let mut q = QueryBuilder::new()
+                .select(&["*"])
+                .from(READINGS_TABLE)
+                .filter(Filter::eq("petal_id", petal_id.as_str()));
+            if let Some(metric) = metric {
+                q = q.and(Filter::eq("metric", metric.as_str()));
+            }
+            let mut res = exec_query(db, &q.build()).await.map_err(|e| e.to_string())?;
+            let mut rows = newest_per_anchor_metric(res.take(0).unwrap_or_default());
             let truncated = rows.len() > row_cap;
             rows.truncate(row_cap);
             Ok(TsPartialRows {
@@ -205,7 +215,15 @@ async fn execute_partial_rows(
             })
         }
         TsQueryKind::AllReadings { petal_id } => {
-            let q = readings_for_petal(petal_id);
+            // `readings_for_petal` bounded in the query: one row past the cap
+            // flags truncation without materializing the whole petal.
+            let q = QueryBuilder::new()
+                .select(&["*"])
+                .from(READINGS_TABLE)
+                .filter(Filter::eq("petal_id", petal_id.as_str()))
+                .order_by("recorded_at_ms", SortDir::Asc)
+                .limit(row_cap as u64 + 1)
+                .build();
             let mut res = exec_query(db, &q).await.map_err(|e| e.to_string())?;
             let mut rows: Vec<serde_json::Value> = res.take(0).unwrap_or_default();
             let truncated = rows.len() > row_cap;
@@ -219,6 +237,32 @@ async fn execute_partial_rows(
             })
         }
     }
+}
+
+/// The newest reading per (anchor, metric) — max `recorded_at_ms`, ties by
+/// `hlc_timestamp` (the requester's `merge_latest` order), in key order.
+fn newest_per_anchor_metric(rows: Vec<serde_json::Value>) -> Vec<serde_json::Value> {
+    let order = |row: &serde_json::Value| {
+        (
+            row["recorded_at_ms"].as_i64().unwrap_or(i64::MIN),
+            row["hlc_timestamp"].as_i64().unwrap_or(i64::MIN),
+        )
+    };
+    let mut newest: std::collections::BTreeMap<(String, String), serde_json::Value> =
+        std::collections::BTreeMap::new();
+    for row in rows {
+        let key = (
+            row["node_id"].as_str().unwrap_or_default().to_string(),
+            row["metric"].as_str().unwrap_or_default().to_string(),
+        );
+        match newest.get(&key) {
+            Some(kept) if order(kept) >= order(&row) => {}
+            _ => {
+                newest.insert(key, row);
+            }
+        }
+    }
+    newest.into_values().collect()
 }
 
 #[cfg(test)]

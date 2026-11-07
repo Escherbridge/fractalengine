@@ -400,9 +400,15 @@ Inbound rows flow: pump → aggregated stream → `handle_inbound_row_change`,
 which (a) skips own-author rows (E.8 — the mock fallback echoes local
 writes; the real path never echoes because `InsertLocal` is skipped at the
 source), (b) emits `SyncEvent::RowApplied`, (c) `try_send`s
-`DbCommand::ApplyReplicatedRow` to the DB thread — drop-and-count
-(`INBOUND_APPLY_DROPS` / `inbound_apply_drop_count()`), never a blocking
-send. The DB thread is the single SurrealDB writer and the A4 enforcement
+`DbCommand::ApplyReplicatedRow` to the DB thread — never a blocking send.
+A full channel keeps the row (QA-0138; counted in `INBOUND_APPLY_DROPS` /
+`inbound_apply_drop_count()`): content rows go to the fabric's `KeptRows`
+(one live entry per table/record/author — a newer replica entry supersedes
+the kept one), role rows to their own QA-0132 queue, and later rows of the
+verse queue behind kept ones so nothing overtakes them. `resend_unsent_rows`
+drains them at the top of every loop turn (kept work wakes the loop) and
+prefetches the blob of each resent scene-asset row. Before QA-0138 a 2 Hz
+stream behind a busy DB thread lost rows here until the next replica open. The DB thread is the single SurrealDB writer and the A4 enforcement
 point (see fe-database `handlers/replicated_row.rs`), where the A3 role gate
 also lives (landed F3, 2026-10-07: deny-by-default, Editor+, roles resolved
 from the local tables at the verse scope — never wire-supplied).
@@ -2234,6 +2240,18 @@ verse scope while the petal is unmapped), judged in `seed_reconciliation` after 
 snapshot replayed. At most `PREFETCH_CAP` (8) prefetches run at once, so unowned work never
 takes the `MAX_JOBS` owned-fetch budget; the rest wait in a bounded backlog (256) that
 `pump_prefetches` drains from the loop's kept-work tick, and a verse close drops its share.
+
+Reopened QA-0118 (fix:2, 2026-11-07): a failed fetch is never terminal while its verse stays
+open. Every in-job failure (prefetch after its 1-16 s retries, or an owned fetch) records the
+blob in `SceneAssetJobs::unavailable` (cap 1024), which `pump_prefetches` re-arms after 15,
+30, 60, 60 ... s; `rearm(verse)` makes them due now on a gossip NeighborUp and after a
+role re-read (a provider may now admit this node). A success, held bytes or the verse close
+clears the entry. Rows that arrived before their author's grant skipped the arrival
+prefetch; `drain_reread_queues` reads each empowered author's `asset/` entries and prefetches
+them. Run 1's refusals were the provider's Serve admission demanding upload proof (QA-0137,
+fe-database `handlers/AGENTS.md` scene-asset-transfer) and, under load, Serve admissions
+timing out behind the saturated DB thread (QA-0138); the refusal log now names the gate
+(`gate="tileset"|"scene-asset"|"child-range"`).
 
 ## §publication-lease (QA-0120, 2026-11-07)
 

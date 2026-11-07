@@ -1005,6 +1005,7 @@ async fn collect_distributed_query(transport: DistributedTransport, task: Collec
         .as_ref()
         .map(|db| {
             let (tx, rx) = crossbeam::channel::bounded::<TsPartialRows>(1);
+            let wait = Duration::from_millis(request.timeout_ms.min(MAX_QUERY_TIMEOUT_MS));
             // Every shape carries the target shards: aggregates attribute
             // per shard, and every shape reports `deferred_shards` against
             // them (RP-6 host honesty).
@@ -1013,6 +1014,7 @@ async fn collect_distributed_query(transport: DistributedTransport, task: Collec
                 spec: request.spec.clone(),
                 shards: plan.target_shards.clone(),
                 row_cap,
+                deadline: std::time::Instant::now() + wait,
                 reply: tx,
             };
             if let Err(e) = db.try_send(cmd) {
@@ -1025,7 +1027,6 @@ async fn collect_distributed_query(transport: DistributedTransport, task: Collec
             let pending = transport.pending.clone();
             let host = transport.local_did.clone();
             let request_id = request.request_id.clone();
-            let wait = Duration::from_millis(request.timeout_ms.min(MAX_QUERY_TIMEOUT_MS));
             tokio::spawn(async move {
                 let partial = tokio::task::spawn_blocking(move || rx.recv_timeout(wait).ok()).await;
                 match partial {
@@ -1503,18 +1504,19 @@ async fn respond_to_compute_request(args: ComputeResponseArgs) {
         return; // a peer with no DB thread cannot answer
     };
     let (tx, rx) = crossbeam::channel::bounded::<TsPartialRows>(1);
+    let wait = Duration::from_millis(timeout_ms.min(RESPONDER_EXEC_CAP_MS));
     let cmd = DbCommand::ExecuteTsPartial {
         verse_id,
         spec,
         shards,
         row_cap,
+        deadline: std::time::Instant::now() + wait,
         reply: tx,
     };
     if let Err(e) = db.try_send(cmd) {
         tracing::warn!(request_id, "compute partial send failed (DB busy): {e:?}");
         return;
     }
-    let wait = Duration::from_millis(timeout_ms.min(RESPONDER_EXEC_CAP_MS));
     let partial = match tokio::task::spawn_blocking(move || rx.recv_timeout(wait)).await {
         Ok(Ok(p)) => p,
         Ok(Err(_)) => {

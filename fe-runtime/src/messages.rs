@@ -1121,6 +1121,9 @@ pub enum DbCommand {
         /// Per-partial row cap (clamped by the executor into
         /// `distributed_query::{MIN,MAX}_PARTIAL_ROW_CAP`).
         row_cap: usize,
+        /// When the waiter stops listening: a partial still queued past it is
+        /// skipped, never executed for nobody (QA-0138).
+        deadline: std::time::Instant,
         reply: crossbeam::channel::Sender<crate::distributed_query::TsPartialRows>,
     },
     /// Ingest a batch of IoT readings through the DB thread (M2/F7 — the

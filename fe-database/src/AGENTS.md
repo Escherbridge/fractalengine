@@ -1112,6 +1112,16 @@ Partial semantics are dictated by the merge contract (fe-sync
 - **`row_cap` is clamped** (`clamp_partial_row_cap`) — an executing host
   never trusts an unbounded request; the partial is truncated row-wise and
   flagged `truncated` rather than dropped.
+- **Cost bound (QA-0138/QA-0139, 2026-11-07).** `LatestPerAnchor` is one
+  indexed petal scan reduced in Rust (`newest_per_anchor_metric`: max
+  `recorded_at_ms`, ties by `hlc_timestamp`) — the fe-query correlated
+  `math::max` predicate is quadratic in `iot_reading` and measured 4-5 s per
+  partial in a debug build at a few hundred readings, back to back on every
+  peer, which starved transforms, readings and Serve admissions. `AllReadings`
+  carries `LIMIT row_cap + 1`. `DbCommand::ExecuteTsPartial.deadline` is the
+  waiter's give-up time: a partial still queued past it is skipped, never run
+  for nobody. Every DB command slower than 250 ms logs `slow DB command` with
+  its variant and the queue depth behind it (`lib.rs`, `variant_name`).
 
 ## §node-log
 
@@ -2032,7 +2042,12 @@ retry, on a restart replay and on the empowerment re-read.
   `REGISTRY_WRITE` (`PreparedBatch::writes_registry`) publish the petal row's catalog columns
   through `visibility_groups::publish_registry`, the same full-row shape `petal_terrain` uses.
   Inbound petal rows carrying a malformed `visibility_groups` are denied
-  (`is_valid_inbound_registry`, strictest reader).
+  (`is_valid_inbound_registry`, strictest reader). Reopened (fix:2): the registry row
+  is an explicit-column projection, so the petal's absent `hexon_manifest` rides as
+  `null`; `apply_static_row` validated requirements BEFORE stripping nulls and silently
+  denied every registry row of a petal with no requirements. Nulls are now stripped
+  first and a requirements denial warns. Journey: `tests/visibility_groups_test.rs`
+  replays the owner's published rows into a second peer store.
 - **Scene rows are re-judged on demotion (QA-0121).** `DbCommand::RejudgeReplicatedNode`
   carries every author's replica entry for one node key (sent by fe-sync for DIDs whose role
   fell). `scene_publication::rejudge` acts only when the stored clock's publisher no longer

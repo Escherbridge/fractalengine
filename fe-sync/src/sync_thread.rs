@@ -58,11 +58,11 @@ use crate::virtual_transport::{VirtualReplica, VirtualTransportFactory};
 /// §relay-health for the relay config this rides alongside).
 pub const BOOTSTRAP_ENV_VAR: &str = "FE_SYNC_BOOTSTRAP";
 
-/// Inbound rows dropped because the DB-thread command channel was full
-/// (§replication-backpressure — drop-and-count, never block the sync thread).
+/// Inbound rows the DB-thread command channel was too full to take (keep-and-
+/// count, never block the sync thread — QA-0138 keeps them for resend).
 static INBOUND_APPLY_DROPS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 
-/// Total inbound rows dropped due to a full DB command channel.
+/// Total inbound rows a full DB command channel refused at first send.
 pub fn inbound_apply_drop_count() -> u64 {
     INBOUND_APPLY_DROPS.load(std::sync::atomic::Ordering::Relaxed)
 }
@@ -966,11 +966,12 @@ pub fn spawn_sync_thread_with_transport(
                 // of the loop, not inline inside the handler that raised
                 // the DID's role, so a slow drain never delays that
                 // handler's own return — "the select loop drains it".
-                let reread_left = drain_reread_queues(&mut fabrics, &replicas, &local_did, &evt_tx, &db_cmd_tx, &docs_stack)
+                let reread_left = drain_reread_queues(&mut fabrics, &replicas, &local_did, &evt_tx, &db_cmd_tx, &docs_stack, Some(&mut scene_assets))
                     .await;
                 let rejudge_left = drain_rejudge_queues(&mut fabrics, &replicas, &db_cmd_tx).await;
+                let rows_left = !resend_unsent_rows(&mut fabrics, &db_cmd_tx, &mut scene_assets);
                 let prefetch_left = scene_assets.pump_prefetches();
-                let kept_work = reread_left || rejudge_left || prefetch_left;
+                let kept_work = reread_left || rejudge_left || rows_left || prefetch_left;
                 tokio::select! {
                     // QA-0132/QA-0133: kept role work and the capped prefetch
                     // backlog are retried even when no event wakes the loop.
@@ -1039,6 +1040,8 @@ pub fn spawn_sync_thread_with_transport(
                         // peer that joins after the last advertisement must still learn
                         // this node's tilesets (at most one re-advertisement per 5 s).
                         if let Some(incoming) = maybe_gossip.as_ref().filter(|incoming| incoming.content.is_empty()) {
+                            // QA-0118: the new neighbor may serve blobs no provider could.
+                            scene_assets.rearm(&incoming.verse_id);
                             let due = neighbor_ads
                                 .get(&incoming.verse_id)
                                 .is_none_or(|last| last.elapsed() >= std::time::Duration::from_secs(5));
@@ -1601,6 +1604,8 @@ fn cmd_rx_bridge_send(tx: &tokio::sync::mpsc::Sender<SyncCommand>, cmd: SyncComm
 enum InboundVerdict {
     /// Queued on the DB thread's command channel for admission.
     Forwarded,
+    /// Kept for resend behind a full DB channel (QA-0138); judged at resend.
+    Kept,
     /// Consumed on the sync plane, an own echo, not retained, or dropped.
     NotForwarded,
 }
@@ -1733,6 +1738,14 @@ fn handle_inbound_row_change(
         );
         return InboundVerdict::NotForwarded;
     };
+    // QA-0138: rows already waiting for the DB thread go first — a newer row
+    // never overtakes them, and a newer version of a kept key supersedes it.
+    if change.table != fe_database::role_grants::ROLE_DOC_TABLE
+        && !fabric.unsent_rows_mut().is_empty()
+    {
+        fabric.unsent_rows_mut().keep(change.clone());
+        return InboundVerdict::Kept;
+    }
     match tx.try_send(DbCommand::ApplyReplicatedRow {
         verse_id: verse_id.to_string(),
         table: change.table.clone(),
@@ -1748,16 +1761,17 @@ fn handle_inbound_row_change(
                 fabric.keep_unsent_role_row(change.clone());
                 return InboundVerdict::NotForwarded;
             }
-            let dropped =
+            let refused =
                 INBOUND_APPLY_DROPS.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1;
             tracing::warn!(
                 verse_id,
                 table = %change.table,
                 record_id = %change.record_id,
-                dropped_total = dropped,
-                "DB command channel full — dropping inbound replicated row"
+                refused_total = refused,
+                "DB command channel full — inbound replicated row kept for resend"
             );
-            InboundVerdict::NotForwarded
+            fabric.unsent_rows_mut().keep(change.clone());
+            InboundVerdict::Kept
         }
         Err(crossbeam::channel::TrySendError::Disconnected(_)) => InboundVerdict::NotForwarded,
     }
@@ -1804,6 +1818,46 @@ async fn send_rejudge_batch(
     })
     .map_err(|error| format!("DB command channel: {error}"))?;
     Ok(rows)
+}
+
+/// Resend content rows a full DB channel refused, oldest first (QA-0138),
+/// prefetching the blob of each resent scene-asset row. Returns true when
+/// every verse's kept rows are on the channel.
+fn resend_unsent_rows(
+    fabrics: &mut HashMap<String, VerseFabric>,
+    db_cmd_tx: &Option<crossbeam::channel::Sender<DbCommand>>,
+    scene_assets: &mut crate::scene_assets::SceneAssetJobs,
+) -> bool {
+    let Some(tx) = db_cmd_tx.as_ref() else {
+        return true;
+    };
+    for (verse_id, fabric) in fabrics.iter_mut() {
+        while let Some((seq, change)) = fabric.unsent_rows_mut().pop() {
+            let command = DbCommand::ApplyReplicatedRow {
+                verse_id: verse_id.clone(),
+                table: change.table.clone(),
+                record_id: change.record_id.clone(),
+                row_bytes: change.data.clone(),
+                author_did: change.author_id.clone(),
+            };
+            match tx.try_send(command) {
+                Ok(()) => {
+                    if let Some(hash) = scene_asset_prefetch_hash(fabric, verse_id, &change) {
+                        scene_assets.prefetch(verse_id, hash);
+                    }
+                }
+                Err(crossbeam::channel::TrySendError::Full(_)) => {
+                    fabric.unsent_rows_mut().restore(seq, change);
+                    return false;
+                }
+                Err(crossbeam::channel::TrySendError::Disconnected(_)) => {
+                    fabric.unsent_rows_mut().clear();
+                    return true;
+                }
+            }
+        }
+    }
+    true
 }
 
 /// Resend `role` rows a full DB channel refused, oldest first (QA-0132).
@@ -1905,6 +1959,7 @@ async fn drain_reread_queues(
     evt_tx: &dyn EventSink,
     db_cmd_tx: &Option<crossbeam::channel::Sender<DbCommand>>,
     docs_stack: &Option<Arc<DocsStack>>,
+    mut scene_assets: Option<&mut crate::scene_assets::SceneAssetJobs>,
 ) -> bool {
     // A restore is judged against the grants the DB plane holds: send kept ones first.
     if !resend_unsent_role_rows(fabrics, db_cmd_tx) {
@@ -1950,6 +2005,24 @@ async fn drain_reread_queues(
                 retry = true;
                 done.clear();
             }
+        }
+        // QA-0118: asset rows that arrived before their author's grant skipped
+        // the row-arrival prefetch; fetch them now, and retry unavailable blobs
+        // a provider may now serve under the new role view.
+        if let (Some(jobs), false) = (scene_assets.as_deref_mut(), done.is_empty()) {
+            for did in &done {
+                match replicator.entries_by_author(did, &["asset/"]).await {
+                    Ok(entries) => {
+                        for change in entries {
+                            if let Some(hash) = scene_asset_prefetch_hash(fabric, verse_id, &change) {
+                                jobs.prefetch(verse_id, hash);
+                            }
+                        }
+                    }
+                    Err(e) => tracing::debug!(verse_id, did, "empowered author's asset rows unreadable: {e}"),
+                }
+            }
+            jobs.rearm(verse_id);
         }
         fabric.ack_rereads(&done);
         sync_blob_access_gate(docs_stack, verse_id, fabric);
@@ -5817,18 +5890,21 @@ mod tests {
         ));
     }
 
+    /// QA-0138: a full DB channel never blocks the sync thread and never loses a
+    /// row: the row is kept (and counted), later rows queue behind it, a newer
+    /// version of a kept key supersedes it, and the resend delivers in order.
     #[test]
-    fn inbound_row_change_drops_and_counts_on_full_db_channel() {
+    fn inbound_row_change_keeps_and_resends_on_full_db_channel() {
         let (evt_tx, _evt_rx) = crossbeam::channel::bounded(8);
-        let (db_tx, _db_rx) = crossbeam::channel::bounded(1);
-        let change = RowChange {
+        let (db_tx, db_rx) = crossbeam::channel::bounded(1);
+        let change = |record_id: &str, name: &str| RowChange {
             table: "node".to_string(),
-            record_id: "node-full".to_string(),
+            record_id: record_id.to_string(),
             content_hash: [4u8; 32],
             author_id: "did:key:peer-c".to_string(),
             timestamp: 7,
             is_tombstone: false,
-            data: br#"{"name":"overflow"}"#.to_vec(),
+            data: format!(r#"{{"name":"{name}"}}"#).into_bytes(),
         };
 
         // Fill the DB channel to capacity.
@@ -5842,18 +5918,57 @@ mod tests {
             })
             .unwrap();
 
+        let db = Some(db_tx);
+        let mut fabrics = HashMap::from([("verse-3".to_string(), VerseFabric::default())]);
         let before = inbound_apply_drop_count();
-        handle_inbound_row_change(
-            &mut VerseFabric::default(),
-            "verse-3",
-            &change,
-            "did:key:local",
-            &evt_tx,
-            &Some(db_tx),
-        );
+        for (record_id, name) in [("node-full", "first"), ("node-other", "other"), ("node-full", "latest")] {
+            let verdict = handle_inbound_row_change(
+                fabrics.get_mut("verse-3").unwrap(),
+                "verse-3",
+                &change(record_id, name),
+                "did:key:local",
+                &evt_tx,
+                &db,
+            );
+            assert!(verdict == InboundVerdict::Kept, "a full channel keeps the row");
+        }
         assert!(
             inbound_apply_drop_count() > before,
-            "a full DB channel must drop-and-count, never block the sync thread"
+            "a full DB channel must keep-and-count, never block the sync thread"
+        );
+
+        let (publication_tx, _) = tokio::sync::mpsc::channel(1);
+        let mut jobs = crate::scene_assets::SceneAssetJobs::new(
+            Arc::new(MockBlobStore::new()),
+            None,
+            Default::default(),
+            None,
+            crate::event_outbox::EventOutbox::new(crossbeam::channel::bounded(8).0),
+            publication_tx,
+        );
+        assert!(!resend_unsent_rows(&mut fabrics, &db, &mut jobs), "still full: kept for retry");
+        db_rx.try_recv().unwrap();
+        let mut delivered = Vec::new();
+        while !resend_unsent_rows(&mut fabrics, &db, &mut jobs) {
+            delivered.push(db_rx.try_recv().unwrap());
+        }
+        delivered.extend(db_rx.try_iter());
+        let delivered: Vec<(String, String)> = delivered
+            .into_iter()
+            .map(|command| match command {
+                DbCommand::ApplyReplicatedRow { record_id, row_bytes, .. } => {
+                    (record_id, String::from_utf8(row_bytes).unwrap())
+                }
+                other => panic!("unexpected command {other:?}"),
+            })
+            .collect();
+        assert_eq!(
+            delivered,
+            vec![
+                ("node-other".to_string(), r#"{"name":"other"}"#.to_string()),
+                ("node-full".to_string(), r#"{"name":"latest"}"#.to_string()),
+            ],
+            "the superseded version is never applied; order of the live entries holds"
         );
     }
 
@@ -6590,6 +6705,7 @@ mod tests {
             &evt_tx,
             &None,
             &None,
+            None,
         )
         .await;
 
@@ -6663,6 +6779,10 @@ mod tests {
             .write_row("node", "n1", br#"{"node_id":"n1"}"#)
             .await
             .unwrap();
+        x_replica
+            .write_row("asset", "asset-1", &asset_row(x, true).data)
+            .await
+            .unwrap();
         replicas.remove(verse_id);
         let (db_tx, db_rx) = crossbeam::channel::bounded(1);
         let db = Some(db_tx);
@@ -6702,7 +6822,24 @@ mod tests {
         // which admits only versions X wrote while holding Editor.
         fabrics.get_mut(verse_id).unwrap().note_entry(verse_id, &role_row(false, 5));
         assert!(fabrics[verse_id].pending_rereads().contains(&x.to_string()));
-        assert!(!drain_reread_queues(&mut fabrics, &replicas, "did:key:local", &evt_tx, &db, &None).await);
+        // QA-0118: X's asset row skipped its prefetch while X was revoked; the
+        // re-grant fetches it (no transport here, so the attempt reports failure).
+        let (scene_tx, scene_rx) = crossbeam::channel::bounded(8);
+        let (publication_tx, _) = tokio::sync::mpsc::channel(1);
+        let mut jobs = crate::scene_assets::SceneAssetJobs::new(
+            Arc::new(MockBlobStore::new()),
+            None,
+            Default::default(),
+            None,
+            crate::event_outbox::EventOutbox::new(scene_tx),
+            publication_tx,
+        );
+        jobs.opened(verse_id, &[]);
+        assert!(!drain_reread_queues(&mut fabrics, &replicas, "did:key:local", &evt_tx, &db, &None, Some(&mut jobs)).await);
+        assert!(
+            matches!(scene_rx.try_recv(), Ok(SyncEvent::SceneAssetFetchFailed { hash, .. }) if hash == blob),
+            "an empowered author's unfetched asset row is prefetched on re-read"
+        );
         let sent: Vec<DbCommand> = db_rx.try_iter().collect();
         assert!(
             !sent.iter().any(|cmd| matches!(cmd, DbCommand::ApplyReplicatedRow { table, .. } if table == "node")),
@@ -6842,6 +6979,7 @@ mod tests {
             &evt_tx,
             &None,
             &None,
+            None,
         )
         .await;
 
@@ -6935,6 +7073,7 @@ mod tests {
             &evt_tx,
             &None,
             &None,
+            None,
         )
         .await;
 

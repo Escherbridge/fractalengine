@@ -145,6 +145,78 @@ const QUARANTINE_CAP: usize = 1024;
 /// beyond this the oldest is dropped and the next replica open replays it.
 const UNSENT_ROLE_ROWS_CAP: usize = 4096;
 
+/// Distinct content keys kept for resend after a full DB channel (QA-0138);
+/// beyond this the oldest is dropped and the next replica open replays it.
+const UNSENT_ROWS_CAP: usize = 4096;
+
+/// Inbound content rows a full DB channel refused (QA-0138), resent oldest
+/// first. One live entry per `(table, record, author)`: a newer replica entry
+/// supersedes the kept one (iroh-docs keeps only the latest per author and
+/// key), so a 2 Hz stream behind a busy DB thread delivers its latest state
+/// instead of a growing backlog of stale versions.
+#[derive(Default, Debug)]
+pub struct KeptRows {
+    order: VecDeque<(u64, crate::replicator::RowChange)>,
+    live: HashMap<(String, String, String), u64>,
+    next: u64,
+}
+
+impl KeptRows {
+    fn key(change: &crate::replicator::RowChange) -> (String, String, String) {
+        (change.table.clone(), change.record_id.clone(), change.author_id.clone())
+    }
+
+    /// Keep `change`, superseding a kept entry of the same key.
+    pub fn keep(&mut self, change: crate::replicator::RowChange) {
+        let seq = self.next;
+        self.next += 1;
+        self.live.insert(Self::key(&change), seq);
+        self.order.push_back((seq, change));
+        while self.live.len() > UNSENT_ROWS_CAP {
+            if let Some((_, dropped)) = self.pop() {
+                tracing::warn!(
+                    table = %dropped.table,
+                    record_id = %dropped.record_id,
+                    "kept inbound rows at cap; the oldest waits for the next replica open"
+                );
+            }
+        }
+        // Superseded entries only cost memory: compact once they dominate.
+        if self.order.len() > 2 * UNSENT_ROWS_CAP {
+            let live = &self.live;
+            self.order
+                .retain(|(seq, change)| live.get(&Self::key(change)) == Some(seq));
+        }
+    }
+
+    /// The oldest live entry, removed (superseded ones are skipped).
+    pub fn pop(&mut self) -> Option<(u64, crate::replicator::RowChange)> {
+        while let Some((seq, change)) = self.order.pop_front() {
+            let key = Self::key(&change);
+            if self.live.get(&key) == Some(&seq) {
+                self.live.remove(&key);
+                return Some((seq, change));
+            }
+        }
+        None
+    }
+
+    /// Put a popped entry back at the front (its send was refused).
+    pub fn restore(&mut self, seq: u64, change: crate::replicator::RowChange) {
+        self.live.insert(Self::key(&change), seq);
+        self.order.push_front((seq, change));
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.live.is_empty()
+    }
+
+    pub fn clear(&mut self) {
+        self.order.clear();
+        self.live.clear();
+    }
+}
+
 /// One shard's identity: (petal, anchor node, epoch-aligned time bucket).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ShardId {
@@ -438,6 +510,8 @@ pub struct VerseFabric {
     /// Inbound `role` rows the DB thread's full channel refused (QA-0132): the
     /// DB plane must learn every revoke before a re-judge runs against it.
     unsent_role_rows: VecDeque<crate::replicator::RowChange>,
+    /// Inbound content rows the DB thread's full channel refused (QA-0138).
+    unsent_rows: KeptRows,
     /// Rows gated on a role/petal view that has not converged yet.
     quarantine: VecDeque<QuarantinedRow>,
     quarantine_evicted: u64,
@@ -467,6 +541,7 @@ impl Default for VerseFabric {
             reread_queue: VecDeque::new(),
             rejudge_queue: VecDeque::new(),
             unsent_role_rows: VecDeque::new(),
+            unsent_rows: KeptRows::default(),
             quarantine: VecDeque::new(),
             quarantine_evicted: 0,
             holders: BTreeMap::new(),
@@ -1443,6 +1518,11 @@ impl VerseFabric {
     /// The kept role rows, oldest first, for the caller to resend in order.
     pub fn unsent_role_rows_mut(&mut self) -> &mut VecDeque<crate::replicator::RowChange> {
         &mut self.unsent_role_rows
+    }
+
+    /// The kept content rows (QA-0138), for the caller to resend in order.
+    pub fn unsent_rows_mut(&mut self) -> &mut KeptRows {
+        &mut self.unsent_rows
     }
 
     #[cfg(test)]
