@@ -738,3 +738,27 @@ UI fixer ui-s2s3 2026-11-06 (lean evidence `qa/passes/72`, register `qa/findings
 Only root owns Cargo/apps/process lifecycle/Git mutations. Preserve
 `conductor/.conductor_session_log`. No source/focused approval substitutes for
 remaining acceptance, and no release gate has been achieved.
+
+# Superseded 2026-11-06 (independent critic)
+
+## Current blockers and source work
+
+P2P multi-session fixer 2026-11-06 (lean evidence `qa/passes/73`-`75`, register `qa/findings.jsonl` 85 records), commit `d6b3d1bc`, live re-verified on fresh stage `2a6dc781-20261106220210630` (d6b3d1bc content):
+
+- Harness: `tools/qa/peers.ps1` (Start/Stop/Info/Restart/Focus, N peers owner/editor/viewer..., one pinned stage, exact-identity stop; `pair.ps1` is now its Count-2 wrapper), `tools/qa/peers_join.py` (real GUI invite -> masked Join for every member, 27 s for two joins), `fe.py --peer`. QA-only `operator_token` (scope `QA-OPERATOR`, latched only under a validated `FE_QA_STORAGE_ROOT`) lets the debug surfaces drive joined Editor/Viewer windows. Transport: `FE_SYNC_RELAY=disabled`, direct loopback/LAN addresses from the join ticket. Docs: `tools/qa/AGENTS.md` section peers, `fractalengine/src/AGENTS.md` sections qa-operator and peer-terrain.
+- QA-0063 closed (pass 75): ordinary nodes and their scene assets replicate and render on joined Editor and Viewer.
+- 3-peer scenario `qa/scenarios/S-P2P-replication.md` (pass 74): CP1 create, CP2 editor move + property, CP3 viewer refusal, CP5 simultaneous commits (deterministic), CP8 query rows all converged byte-equal. Fixed and live re-verified in pass 75: QA-0083 S2 (transform Inspector stranded after a property save or peer edit), QA-0084 S2 (peer earthwork region needed petal re-entry), QA-0085 S3 (revoked role not reflected live).
+- Open from this phase: QA-0086 S2 (relay-disabled restarted peer never re-syncs without `FE_SYNC_BOOTSTRAP`; harness Restart passes it), QA-0087 S2 (refused REST transform preview stays in the GUI), QA-0088..0091 S3 (Available maps tab, "0 peers", minimize shrinks dialogs, viewer property controls), QA-0092/0093 S4, QA-0094 (pre-existing failing tests in touched batches, confirmed at HEAD by stash).
+- Gate: `cargo check` and `cargo +1.99.0 clippy --all-targets -D warnings` clean on fe-runtime, fe-api, fe-ui, fractalengine, fe-plugin, fe-plugin-test (fe-plugin/fe-plugin-test QA-0078 debt cleared). Touched batches: R1+editor_batch fe-ui 208/209, fractalengine bridges 71/72, fe-api screenshot/vision_scope 7/7, fe-plugin 56/57, fe-plugin-test 31/34; every failure reproduces with the changes stashed (QA-0094, QA-0082).
+- Still open from before: QA-0077, QA-0076, QA-0078 remainder, QA-0079, QA-0081, QA-0082, divider eligibility, retained-store HOLD, groups/selection, rich-data/concurrency/restart, permissions/lifecycle, catalog, UX audits and release gates in `plan.md`.
+
+## Next actions
+
+1. QA-0086: persist last-known peer EndpointAddrs per verse (SyncFinished peers) and merge them as bootstrap on replica open, then re-run CP6 without the harness bootstrap. Then QA-0087 (roll the GUI back on `SceneChange::TransformFailed`) and QA-0088/QA-0091.
+2. Extend the 3-peer run to the Podman relay lab (`FE_SYNC_RELAY` custom relay) and to an owner restart.
+3. QA-0081 chunk-meshing budget, QA-0077/QA-0082/QA-0094 test triage, QA-0078 remainder for CI Lint.
+4. Remaining feature/selection/groups/data/role/catalog work, five live UX audits, two FULL passes, a single integrated sweep, CI, tag and release.
+
+Only root owns Cargo/apps/process lifecycle/Git mutations. Preserve
+`conductor/.conductor_session_log`. No source/focused approval substitutes for
+remaining acceptance, and no release gate has been achieved.
