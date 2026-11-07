@@ -9,7 +9,7 @@ pub(crate) mod wire;
 pub(crate) use current::{echo_applied, read_current_and_need};
 #[cfg(test)]
 pub(crate) use current::{read_current, current_read_transaction_error, capture_asset_metadata, asset_metadata_fence};
-pub(crate) use inbound::apply_complete;
+pub(crate) use inbound::{apply_complete, rejudge, Rejudged};
 #[cfg(test)]
 pub(crate) use inbound::capture_ordering_fact;
 #[cfg(test)]

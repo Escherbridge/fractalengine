@@ -215,6 +215,13 @@ fn compile(prepared: PreparedBatch) -> anyhow::Result<CompiledBatch> {
     })
 }
 
+impl PreparedBatch {
+    /// The batch rewrites `petal.visibility_groups` (group create/delete/undo/redo).
+    pub(crate) fn writes_registry(&self) -> bool {
+        self.guards.iter().any(|statement| statement == prepare::REGISTRY_WRITE)
+    }
+}
+
 /// Persist the complete admitted envelope in one existing atomic transaction.
 pub(crate) async fn commit(db: &Db, prepared: PreparedBatch) -> anyhow::Result<EditorBatchReceipt> {
     let CompiledBatch {

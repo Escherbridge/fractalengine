@@ -642,6 +642,17 @@ pub enum DbCommand {
         correlation_id: Option<String>,
     },
     LoadHierarchy,
+    /// QA-0121: re-decide one replicated node whose current author fell below
+    /// Editor, from every author's replica entry for that key
+    /// (`(author_did, row_bytes)`), under the stored role view.
+    RejudgeReplicatedNode {
+        verse_id: String,
+        record_id: String,
+        candidates: Vec<(String, Vec<u8>)>,
+    },
+    /// API-only hierarchy read (`GET /api/v1/hierarchy`): answered with
+    /// `HierarchyRead`, which never rebuilds the GUI tree (QA-0125).
+    ReadHierarchy,
     /// Phase F: generate an invite string for a verse.
     GenerateVerseInvite {
         verse_id: String,
@@ -1497,6 +1508,10 @@ pub enum DbResult {
         removed_blobs: u64,
     },
     HierarchyLoaded {
+        verses: Vec<VerseHierarchyData>,
+    },
+    /// Reply to `ReadHierarchy`: the same tree, for API waiters only (QA-0125).
+    HierarchyRead {
         verses: Vec<VerseHierarchyData>,
     },
     /// Phase F: a verse invite string was generated.

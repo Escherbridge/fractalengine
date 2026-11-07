@@ -1985,3 +1985,32 @@ proof lifetime starts earlier at original UI-owner admission and cannot be
 extended by DB execution or reply arrival. This slice adds no second DB opener,
 write, public endpoint or automatic navigation. Existing hierarchy-thread
 journey coverage is extended; it remains authored rather than executed here.
+
+## §p2p-fixes-swarm-run1 (2026-11-07: QA-0121/0122/0123/0125)
+
+- **Object doors are capped by the node's stored role (QA-0122, AC-46).** `CreateObject` and
+  `CommitNodeMutation` with a `NodeAccessGrant::Scoped` (REST/MCP token) first pass
+  `require_granted_node_role` in the DB dispatch: THIS node must hold Editor at the target
+  scope, exactly like a Local command. The token subject is attribution only; it never
+  carries authority. `SetFieldSchema` applies the same cap (Manager) in `field_def`. Journey:
+  `tests/role_propagation_api_cap_test.rs`.
+- **The Group registry replicates on commit (QA-0123).** `SetPetalVisibilityGroups`,
+  `ComparePetalVisibilityGroups` and an editor batch whose statements include
+  `REGISTRY_WRITE` (`PreparedBatch::writes_registry`) publish the petal row's catalog columns
+  through `visibility_groups::publish_registry`, the same full-row shape `petal_terrain` uses.
+  Inbound petal rows carrying a malformed `visibility_groups` are denied
+  (`is_valid_inbound_registry`, strictest reader).
+- **Scene rows are re-judged on demotion (QA-0121).** `DbCommand::RejudgeReplicatedNode`
+  carries every author's replica entry for one node key (sent by fe-sync for DIDs whose role
+  fell). `scene_publication::rejudge` acts only when the stored clock's publisher no longer
+  holds Editor at the node scope: it restores the newest complete snapshot whose author still
+  does (`apply_complete(.., rejudge = true)` bypasses the newer-clock and local-fact
+  shortcuts), or deletes the node row and clock locally when no author qualifies
+  (`DbResult::NodeDeleted`). Semantics are current-role: a demoted author's version is
+  replaced even if written before the revoke, so every peer reaches the same state from the
+  same entries and role rows whatever order it saw them in. A re-grant replays the author's
+  `node/` entries (fe-sync re-read on empowerment) and the newer clock wins again.
+- **API hierarchy reads never rebuild the GUI tree (QA-0125).** `DbCommand::ReadHierarchy`
+  answers `DbResult::HierarchyRead`, which only pending API waiters consume;
+  `LoadHierarchy`/`HierarchyLoaded` stay the GUI's own reload.
+- `load_hierarchy_handler` warns once per missing scene blob until it lands (QA-0118).

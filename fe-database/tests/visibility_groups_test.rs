@@ -35,19 +35,22 @@ struct Harness {
     cmd_tx: Option<crossbeam::channel::Sender<DbCommand>>,
     res_rx: crossbeam::channel::Receiver<DbResult>,
     handle: Option<std::thread::JoinHandle<()>>,
+    blob_store: Arc<MockBlobStore>,
+    repl_rx: crossbeam::channel::Receiver<fe_database::ReplicationEvent>,
 }
 
 impl Harness {
     fn open(dir: &Path) -> Self {
         let (cmd_tx, cmd_rx) = crossbeam::channel::bounded::<DbCommand>(64);
         let (res_tx, res_rx) = crossbeam::channel::bounded::<DbResult>(64);
-        let blob_store: BlobStoreHandle = Arc::new(MockBlobStore::new());
+        let (repl_tx, repl_rx) = crossbeam::channel::bounded(256);
+        let blob_store = Arc::new(MockBlobStore::new());
         let db_path = dir.join("fe.db").to_string_lossy().to_string();
         let handle = spawn_db_thread_with_sync_and_lifecycle(
             cmd_rx,
             res_tx,
-            blob_store,
-            None,
+            blob_store.clone() as BlobStoreHandle,
+            Some(repl_tx),
             None,
             None,
             None,
@@ -59,6 +62,8 @@ impl Harness {
             cmd_tx: Some(cmd_tx),
             res_rx,
             handle: Some(handle),
+            blob_store,
+            repl_rx,
         };
         assert!(
             matches!(h.recv(), DbResult::Started),
@@ -118,6 +123,19 @@ impl Harness {
             auth,
             correlation_id: None,
         })
+    }
+
+    /// The registry the last replicated `petal` row for `petal_id` carries (QA-0123).
+    fn published_registry(&self, petal_id: &str) -> Option<serde_json::Value> {
+        let mut last = None;
+        while let Ok(event) = self.repl_rx.try_recv() {
+            if event.table == "petal" && event.record_id == petal_id {
+                let bytes = self.blob_store.bytes_for(&event.content_hash).expect("row blob");
+                let row: serde_json::Value = serde_json::from_slice(&bytes).expect("row json");
+                last = Some(row["visibility_groups"].clone());
+            }
+        }
+        last
     }
 
     fn groups(&self, petal_id: &str) -> Vec<VisibilityGroupDto> {
@@ -229,6 +247,11 @@ fn the_group_registry_is_editor_gated_round_trips_and_survives_a_restart() {
             o => panic!("editor SetPetalVisibilityGroups must succeed, got {o:?}"),
         }
         assert_eq!(h.groups(&ids.petal), registry(), "Get round-trips exactly");
+        assert_eq!(
+            h.published_registry(&ids.petal),
+            Some(serde_json::to_value(registry()).unwrap()),
+            "the committed registry is published to peers, not held until a verse reopen"
+        );
         ids.petal
     };
 

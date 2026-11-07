@@ -551,9 +551,12 @@ pub(crate) async fn load_hierarchy_handler(
             return None;
         };
         match hash_from_hex(ch) {
-            Ok(hash) if blob_store.has_blob(&hash) => Some(format!("blob://{ch}.glb")),
+            Ok(hash) if blob_store.has_blob(&hash) => {
+                note_missing_blob(aid, ch, false);
+                Some(format!("blob://{ch}.glb"))
+            }
             Ok(_) => {
-                tracing::warn!("Blob missing for asset_id={aid} content_hash={ch}");
+                note_missing_blob(aid, ch, true);
                 None
             }
             Err(e) => {
@@ -1564,6 +1567,23 @@ pub(crate) async fn rename_node_handler(
     )
     .await?;
     Ok(())
+}
+
+/// One warning per missing scene blob until it lands (QA-0118): a hierarchy
+/// load per frame burst must not repeat the same line every couple of seconds.
+fn note_missing_blob(asset_id: &str, content_hash: &str, missing: bool) {
+    static WARNED: std::sync::LazyLock<std::sync::Mutex<std::collections::HashSet<String>>> =
+        std::sync::LazyLock::new(Default::default);
+    let mut warned = WARNED.lock().unwrap_or_else(|error| error.into_inner());
+    if !missing {
+        if warned.remove(content_hash) {
+            tracing::info!("Blob now present for asset_id={asset_id} content_hash={content_hash}");
+        }
+    } else if warned.len() < 4096 && warned.insert(content_hash.to_string()) {
+        tracing::warn!("Blob missing for asset_id={asset_id} content_hash={content_hash}");
+    } else {
+        tracing::debug!("Blob still missing for asset_id={asset_id} content_hash={content_hash}");
+    }
 }
 
 /// Duplicated-node row data the dispatch arm needs to mirror the CreateNode

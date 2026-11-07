@@ -168,6 +168,62 @@ impl Node {
             _ => false,
         })
     }
+
+    /// One REST/MCP object door (`CreateObject` / `CommitNodeMutation`) under a
+    /// Manager token's Scoped grant, attributed to an opaque API client (QA-0122).
+    fn object_door(&self, cmd: DbCommand, correlation: &str) -> DbResult {
+        self.send(cmd);
+        self.until(|r| match r {
+            DbResult::NodeMutationCommitted { correlation_id, .. } => {
+                correlation_id.as_deref() == Some(correlation)
+            }
+            DbResult::RequestFailed { correlation_id, .. } => correlation_id == correlation,
+            _ => false,
+        })
+    }
+
+    fn create_object(&self, correlation: &str) -> DbResult {
+        self.object_door(
+            DbCommand::CreateObject {
+                petal_id: PETAL.to_string(),
+                input: fe_runtime::messages::CreateObjectInput {
+                    name: format!("object-{correlation}"),
+                    asset_id: None,
+                    position: [0.0; 3],
+                    rotation: [0.0; 3],
+                    scale: [1.0; 3],
+                    properties: serde_json::Map::new(),
+                },
+                actor_did: API_CLIENT.to_string(),
+                grant: api_grant(),
+                correlation_id: Some(correlation.to_string()),
+            },
+            correlation,
+        )
+    }
+
+    fn set_property(&self, node_id: &str, key: &str, correlation: &str) -> DbResult {
+        self.object_door(
+            DbCommand::CommitNodeMutation {
+                node_id: node_id.to_string(),
+                mutation: fe_runtime::messages::NodeMutation::PropertySet {
+                    key: key.to_string(),
+                    value: serde_json::json!(1),
+                },
+                actor_did: API_CLIENT.to_string(),
+                grant: api_grant(),
+                correlation_id: Some(correlation.to_string()),
+            },
+            correlation,
+        )
+    }
+}
+
+/// An opaque token subject: never this node's DID, so it holds no stored role itself.
+const API_CLIENT: &str = "did:key:z6MkApiCapClient";
+
+fn api_grant() -> fe_runtime::node_history::NodeAccessGrant {
+    fe_runtime::node_history::NodeAccessGrant::Scoped(build_scope(VERSE, None, None))
 }
 
 impl Drop for Node {
@@ -261,6 +317,18 @@ fn an_api_token_minted_before_the_nodes_demotion_cannot_write_after_it() {
         ),
         "an anchored upload registers while the node holds Editor+ at the petal"
     );
+    // QA-0122: the object doors (REST/MCP create, PATCH /properties, set_property) too.
+    let object_id = match node.create_object("object-before") {
+        DbResult::NodeMutationCommitted { receipt, .. } => receipt.node_id,
+        other => panic!("the token creates while the node holds Manager: {other:?}"),
+    };
+    assert!(
+        matches!(
+            node.set_property(&object_id, "before", "property-before"),
+            DbResult::NodeMutationCommitted { .. }
+        ),
+        "the token sets a property while the node holds Manager"
+    );
 
     // The owner demotes the node (a replicated revocation of the owner's own grant).
     let (revoke_key, revoke) = statement(&owner, &local, "none", true, 2);
@@ -286,6 +354,17 @@ fn an_api_token_minted_before_the_nodes_demotion_cannot_write_after_it() {
     assert!(
         matches!(refused, DbResult::RequestFailed { .. }),
         "a stale token's upload must not register an anchored asset: {refused:?}"
+    );
+    // QA-0122: the token's role claim never outranks the node's replicated demotion.
+    let refused = node.set_property(&object_id, "after", "property-after");
+    assert!(
+        matches!(refused, DbResult::RequestFailed { .. }),
+        "a stale token's property write must be refused: {refused:?}"
+    );
+    let refused = node.create_object("object-after");
+    assert!(
+        matches!(refused, DbResult::RequestFailed { .. }),
+        "a stale token's object create must be refused: {refused:?}"
     );
 
     // READ-BACK: nothing the stale token sent landed.
@@ -331,4 +410,15 @@ fn an_api_token_minted_before_the_nodes_demotion_cannot_write_after_it() {
         vec!["asset-asset-before"],
         "only the pre-demotion upload registered"
     );
+    let objects: Vec<serde_json::Value> = rt
+        .block_on(async {
+            db.query("SELECT display_name, properties FROM node WHERE petal_id = $p")
+                .bind(("p", PETAL.to_string()))
+                .await
+                .expect("select nodes")
+                .take(0)
+        })
+        .expect("rows");
+    assert_eq!(objects.len(), 1, "only the pre-demotion object exists: {objects:?}");
+    assert_eq!(objects[0]["properties"], serde_json::json!({"before": 1}));
 }

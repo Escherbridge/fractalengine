@@ -5780,6 +5780,90 @@ mod tests {
                 scene::prepare(&source, &tie_id, "did:qa").await.is_err(),
                 "automatic recovery does not re-sign changed foreign state"
             );
+
+            // QA-0121: a row admitted while its author was an Editor is re-judged once
+            // the author is demoted: the newest admissible replica version is restored,
+            // and a node only the demoted author ever wrote is removed — the same
+            // decision every peer reaches, whichever of revoke and row it saw first.
+            let (judged, _) = node_history::create_object_granted(
+                &source,
+                "scene-p",
+                "Judged",
+                None,
+                [0.0; 3],
+                vec![0.0; 3],
+                vec![1.0; 3],
+                serde_json::Map::new(),
+                "did:qa",
+                &NodeAccessGrant::Local,
+            )
+            .await
+            .unwrap();
+            scene::prepare(&source, &judged, "did:qa")
+                .await
+                .unwrap()
+                .emit(&source, &blobs, &tx)
+                .await
+                .unwrap();
+            let owner_bytes = concrete
+                .bytes_for(&rx.try_recv().unwrap().content_hash)
+                .unwrap();
+            let mut revoked: serde_json::Value = serde_json::from_slice(&owner_bytes).unwrap();
+            let owner_hlc: u64 = revoked["_fe_scene"]["hlc"].as_str().unwrap().parse().unwrap();
+            revoked["_fe_scene"]["hlc"] = json!((owner_hlc + 1).to_string());
+            revoked["_fe_scene"]["publisher"] = json!("did:rb");
+            revoked["properties"]["revoked_wrote"] = json!(1);
+            let mut orphan = revoked.clone();
+            orphan["node_id"] = json!("judged-orphan");
+            source
+                .query("CREATE role CONTENT {peer_did:'did:rb',scope:$scope,role:'editor'}")
+                .bind(("scope", scope))
+                .await
+                .unwrap()
+                .check()
+                .unwrap();
+            for (id, row) in [(judged.as_str(), &revoked), ("judged-orphan", &orphan)] {
+                let reports = admissions
+                    .apply(&source, "scene-v", "node", id, &serde_json::to_vec(row).unwrap(), "did:rb", None)
+                    .await;
+                assert_eq!(reports[0].outcome, ReplicatedRowOutcome::Applied, "{id}");
+            }
+            source
+                .query("DELETE role WHERE peer_did='did:rb'")
+                .await
+                .unwrap()
+                .check()
+                .unwrap();
+            let candidates = vec![
+                ("did:qa".to_string(), owner_bytes.clone()),
+                ("did:rb".to_string(), serde_json::to_vec(&revoked).unwrap()),
+            ];
+            assert_eq!(
+                scene::rejudge(&source, "scene-v", &judged, &candidates, "did:qa", None)
+                    .await
+                    .unwrap(),
+                scene::Rejudged::Restored(ReplicatedRowOutcome::Applied)
+            );
+            let restored = node_history::snapshot(&source, &judged).await.unwrap().unwrap();
+            assert!(
+                restored["properties"].get("revoked_wrote").is_none(),
+                "the demoted author's newer version is gone: {restored}"
+            );
+            assert_eq!(
+                scene::rejudge(&source, "scene-v", &judged, &candidates, "did:qa", None)
+                    .await
+                    .unwrap(),
+                scene::Rejudged::Unchanged,
+                "an admissible current version is left alone"
+            );
+            let only_revoked = vec![("did:rb".to_string(), serde_json::to_vec(&orphan).unwrap())];
+            assert!(matches!(
+                scene::rejudge(&source, "scene-v", "judged-orphan", &only_revoked, "did:qa", None)
+                    .await
+                    .unwrap(),
+                scene::Rejudged::Removed { ref petal_id } if petal_id == "scene-p"
+            ));
+            assert!(node_history::snapshot(&source, "judged-orphan").await.unwrap().is_none());
             crate::handlers::entity_property::set_entity_property_as(
                 &source,
                 &tie_id,

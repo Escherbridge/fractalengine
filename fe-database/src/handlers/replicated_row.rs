@@ -170,7 +170,7 @@ pub(crate) async fn apply_replicated_row_reporting_with_publisher(
     }
     if table == "node" {
         if let Some(outcome) = super::scene_publication::apply_complete(
-            db, verse_id, record_id, row_bytes, author_did, local_publisher, entity_change_tx,
+            db, verse_id, record_id, row_bytes, author_did, local_publisher, entity_change_tx, false,
         ).await? {
             return Ok(ApplyReport::of(outcome));
         }
@@ -1296,6 +1296,16 @@ async fn apply_static_row(
                     record_id,
                     render_distance = ?rd,
                     "Inbound petal row carries an out-of-range render_distance — denied"
+                );
+                return Ok(ReplicatedRowOutcome::Denied);
+            }
+        }
+        if let Some(groups) = row.get("visibility_groups") {
+            if !groups.is_null() && !super::visibility_groups::is_valid_inbound_registry(groups) {
+                tracing::warn!(
+                    table,
+                    record_id,
+                    "Inbound petal row carries a malformed visibility group registry — denied"
                 );
                 return Ok(ReplicatedRowOutcome::Denied);
             }

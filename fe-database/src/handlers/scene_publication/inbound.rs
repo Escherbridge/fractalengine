@@ -9,7 +9,91 @@ use crate::repo::Db;
 use fe_runtime::messages::{ReplicatedRowOutcome, SceneChange};
 use serde_json::{json, Value};
 
+/// What [`rejudge`] did to one node.
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) enum Rejudged {
+    /// The current version's author still holds Editor (or no clock to judge).
+    Unchanged,
+    /// The latest admissible replica version replaced an inadmissible current one.
+    Restored(ReplicatedRowOutcome),
+    /// No author of any replica version holds Editor: the node is removed locally.
+    Removed { petal_id: String },
+}
+
+/// QA-0121 re-judge: when the current version's publisher no longer holds
+/// Editor at the node's scope, replace it by the newest complete snapshot among
+/// `candidates` (every author's replica entry for this key) whose author still
+/// does — or remove the node locally when none does. A pure function of the
+/// replicated entries and role rows, so peers that admitted the row before the
+/// revoke arrived converge with peers that refused it.
+pub(crate) async fn rejudge(
+    db: &Db,
+    verse: &str,
+    id: &str,
+    candidates: &[(String, Vec<u8>)],
+    local_publisher: &str,
+    changes: Option<&super::super::replicated_row::SceneChangeSender>,
+) -> anyhow::Result<Rejudged> {
+    let Some(current) = clock_of(&read_clock(db, id).await?)? else {
+        return Ok(Rejudged::Unchanged);
+    };
+    let Some(scope) = super::super::crud::resolve_node_scope_handler(db, id).await? else {
+        return Ok(Rejudged::Unchanged);
+    };
+    let editor = |did: String, scope: String| async move {
+        crate::role_manager::resolve_role(db, &did, &scope)
+            .await
+            .map(|role| role.is_at_least(fe_policy::RoleLevel::Editor))
+    };
+    if editor(current.publisher.clone(), scope.clone()).await? {
+        return Ok(Rejudged::Unchanged);
+    }
+    let mut best: Option<(SceneClock, &str, &[u8])> = None;
+    for (author, bytes) in candidates {
+        let Ok(row) = serde_json::from_slice::<Value>(bytes) else { continue };
+        let Ok(Some(version)) = SceneClock::from_marker(&row) else { continue };
+        let Some(petal) = row["petal_id"].as_str() else { continue };
+        if version.publisher != *author
+            || row["node_id"].as_str() != Some(id)
+            || wire::validate_complete(&row).is_err()
+            || best.as_ref().is_some_and(|(kept, _, _)| *kept >= version)
+        {
+            continue;
+        }
+        let Some(row_scope) = super::super::crud::resolve_petal_scope_handler(db, petal).await? else {
+            continue;
+        };
+        if editor(author.clone(), row_scope).await? {
+            best = Some((version, author.as_str(), bytes.as_slice()));
+        }
+    }
+    if let Some((_, author, bytes)) = best {
+        let outcome = apply_complete(db, verse, id, bytes, author, Some(local_publisher), changes, true)
+            .await?
+            .unwrap_or(ReplicatedRowOutcome::NotApplicable);
+        return Ok(Rejudged::Restored(outcome));
+    }
+    let mut response = db
+        .query("SELECT VALUE petal_id FROM node WHERE node_id=$scene_id LIMIT 1; DELETE node WHERE node_id=$scene_id; DELETE node_scene_clock WHERE node_id=$scene_id;")
+        .bind(("scene_id", id.to_owned()))
+        .await?
+        .check()?;
+    let petals: Vec<String> = response.take(0)?;
+    let petal_id = petals.into_iter().next().unwrap_or_default();
+    super::super::replicated_row::emit_scene_change(
+        changes,
+        SceneChange::NodeRemoved {
+            node_id: id.into(),
+            petal_id: petal_id.clone(),
+        },
+    );
+    Ok(Rejudged::Removed { petal_id })
+}
+
 /// Handle tagged full snapshots, retaining legacy partial-row behavior only before a known version.
+/// `rejudge` (QA-0121) replaces a current version whose publisher lost Editor even
+/// when it is newer, including this node's own inadmissible local commit.
+#[allow(clippy::too_many_arguments)]
 pub(crate) async fn apply_complete(
     db: &Db,
     verse: &str,
@@ -18,6 +102,7 @@ pub(crate) async fn apply_complete(
     author: &str,
     local_publisher: Option<&str>,
     changes: Option<&super::super::replicated_row::SceneChangeSender>,
+    rejudge: bool,
 ) -> anyhow::Result<Option<ReplicatedRowOutcome>> {
     if bytes.is_empty() {
         return Ok(None);
@@ -116,7 +201,7 @@ pub(crate) async fn apply_complete(
     let mut current = clock_of(&clocks)?;
     // Fence the same journal capture used to order unpublished local commits.
     let local_fact = capture_ordering_fact(db, id, &mut guards, &mut bindings).await?;
-    if let (Some(old), Some(fact)) = (before.first(), local_fact.as_ref()) {
+    if let (false, Some(old), Some(fact)) = (rejudge, before.first(), local_fact.as_ref()) {
         if fact["payload"]["journal_version"] == super::super::node_history::JOURNAL_VERSION
             && fact["payload"]["scope"].as_str() == Some(scope.as_str())
             && fact["payload"]["after_state"]
@@ -140,7 +225,8 @@ pub(crate) async fn apply_complete(
             }
         }
     }
-    if current.as_ref().is_some_and(|clock| version <= *clock)
+    if !rejudge
+        && current.as_ref().is_some_and(|clock| version <= *clock)
         && (!incoming_deleted || local_deleted)
     {
         tracing::debug!(

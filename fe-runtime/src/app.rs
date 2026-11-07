@@ -479,7 +479,7 @@ fn reply_kind_of_command(cmd: &DbCommand) -> Option<ReplyKind> {
         CreateFractal { .. } => ReplyKind::FractalCreated,
         CreatePetal { .. } => ReplyKind::PetalCreated,
         CreateNode { .. } => ReplyKind::NodeCreated,
-        LoadHierarchy => ReplyKind::Hierarchy,
+        LoadHierarchy | ReadHierarchy => ReplyKind::Hierarchy,
         ResolvePetalScope { .. }
         | ResolveNodeScope { .. }
         | ResolveFractalScope { .. }
@@ -551,7 +551,7 @@ fn reply_kind_of_result(result: &DbResult) -> Option<ReplyKind> {
         FractalCreated { .. } => ReplyKind::FractalCreated,
         PetalCreated { .. } => ReplyKind::PetalCreated,
         NodeCreated { .. } => ReplyKind::NodeCreated,
-        HierarchyLoaded { .. } => ReplyKind::Hierarchy,
+        HierarchyLoaded { .. } | HierarchyRead { .. } => ReplyKind::Hierarchy,
         ScopeResolved { .. } => ReplyKind::ScopeResolved,
         NodesLoaded { .. } => ReplyKind::NodesLoaded,
         NodeTransformLoaded { .. } => ReplyKind::NodeTransformLoaded,
@@ -883,7 +883,7 @@ pub fn deliver_pending_api_results(
 ) {
     let _span = tracing::debug_span!("deliver_pending_api_results").entered();
     for result in results.read() {
-        if let DbResult::HierarchyLoaded { verses } = result {
+        if let DbResult::HierarchyLoaded { verses } | DbResult::HierarchyRead { verses } = result {
             // Full verse tree to pending hierarchy requests (the
             // `GET /api/v1/hierarchy` channel fallback) — mirrors the fe-ui
             // dispatcher's `HierarchyLoaded` arm.
@@ -924,7 +924,8 @@ pub fn drain_api_commands(
             }
             Ok(ApiCommand::GetHierarchy { reply_tx }) => {
                 pending.enqueue_hierarchy(reply_tx);
-                if let Err(e) = db_tx.0.send(DbCommand::LoadHierarchy) {
+                // QA-0125: an API read must not rebuild (and re-hydrate) the GUI tree.
+                if let Err(e) = db_tx.0.send(DbCommand::ReadHierarchy) {
                     tracing::warn!(
                         "API hierarchy request dropped — DB command channel closed: {e}"
                     );
@@ -2243,6 +2244,10 @@ mod tests {
             (
                 DbCommand::LoadHierarchy,
                 DbResult::HierarchyLoaded { verses: Vec::new() },
+            ),
+            (
+                DbCommand::ReadHierarchy,
+                DbResult::HierarchyRead { verses: Vec::new() },
             ),
             (
                 DbCommand::ResolvePetalScope {

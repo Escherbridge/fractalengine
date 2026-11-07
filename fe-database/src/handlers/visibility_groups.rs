@@ -148,6 +148,13 @@ pub fn validate_groups(groups: &[VisibilityGroupDto]) -> Result<(), String> {
 
 /// The stored registry as DTOs (`NONE`/missing = empty). Malformed entries are
 /// skipped rather than failing the whole read.
+/// Strictest-reader check for an inbound petal row's registry (QA-0123): the
+/// shape and limits the local writer enforces.
+pub(crate) fn is_valid_inbound_registry(value: &serde_json::Value) -> bool {
+    serde_json::from_value::<Vec<VisibilityGroupDto>>(value.clone())
+        .is_ok_and(|groups| validate_groups(&groups).is_ok())
+}
+
 fn groups_from_value(value: Option<&serde_json::Value>) -> Vec<VisibilityGroupDto> {
     value
         .and_then(|v| v.as_array())
@@ -200,6 +207,50 @@ pub(crate) async fn authorize_edit(
             ctx.subject_label(),
             decision.reason().unwrap_or("unauthorized")
         ))
+    }
+}
+
+/// Replicate a committed registry change (QA-0123): the petal row's catalog
+/// columns, under the Editor floor every registry writer already cleared — the
+/// same row shape `petal_terrain` publishes. Best-effort, never fails the write.
+pub(crate) async fn publish_registry(
+    db: &Db,
+    repl_tx: Option<&crate::ReplicationSender>,
+    blob_store: &crate::BlobStoreHandle,
+    petal_id: &str,
+) {
+    if repl_tx.is_none() {
+        return;
+    }
+    let published = async {
+        let scope = super::crud::resolve_petal_scope_handler(db, petal_id)
+            .await?
+            .ok_or_else(|| anyhow::anyhow!("committed Petal ancestry is unavailable"))?;
+        let verse = crate::parse_scope(&scope)?.verse_id;
+        let mut response = db
+            .query(
+                "SELECT petal_id, fractal_id, name, node_id, bounds, created_at, description, visibility, tags, \
+                 hexon_manifest, terrain, visibility_groups, render_distance \
+                 FROM petal WHERE petal_id = $pid LIMIT 2",
+            )
+            .bind(("pid", petal_id.to_string()))
+            .await?
+            .check()?;
+        let rows: Vec<serde_json::Value> = response.take(0)?;
+        anyhow::ensure!(rows.len() == 1, "committed Petal row is unavailable");
+        crate::replicate_row_with_petal(
+            repl_tx,
+            blob_store,
+            &verse,
+            "petal",
+            petal_id,
+            &serde_json::to_vec(&rows[0])?,
+            Some(petal_id.to_string()),
+        );
+        Ok::<_, anyhow::Error>(())
+    };
+    if let Err(error) = published.await {
+        tracing::warn!(petal_id, "visibility group registry committed; publication deferred: {error:#}");
     }
 }
 

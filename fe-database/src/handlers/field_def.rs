@@ -258,6 +258,18 @@ pub(crate) async fn set_field_schema_handler(
         fe_policy::RoleLevel::Manager,
     )
     .await?;
+    // AC-46 (QA-0122): a token grant is capped by this node's stored role too.
+    if matches!(grant, fe_runtime::node_history::NodeAccessGrant::Scoped(_)) {
+        crate::require_node_role(
+            db,
+            local_did,
+            definition_scope,
+            fe_policy::RoleLevel::Manager,
+            "Field schema change",
+        )
+        .await
+        .map_err(anyhow::Error::msg)?;
+    }
     if row["entity_type"].as_str() != Some("node") {
         anyhow::bail!("enforced property schemas currently support node definitions only");
     }

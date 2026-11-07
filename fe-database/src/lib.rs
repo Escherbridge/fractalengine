@@ -314,6 +314,24 @@ async fn require_node_role(
     }
 }
 
+/// AC-46 for the granted object doors (QA-0122): an API token's role claim is
+/// capped by THIS node's stored role at `scope`, exactly like a Local command
+/// (which its handler judges); the claim alone never authorizes a write.
+async fn require_granted_node_role(
+    db: &crate::repo::Db,
+    grant: &fe_runtime::node_history::NodeAccessGrant,
+    local_did: &str,
+    scope: Option<String>,
+    floor: fe_policy::RoleLevel,
+    what: &str,
+) -> Result<(), String> {
+    if matches!(grant, fe_runtime::node_history::NodeAccessGrant::Local) {
+        return Ok(());
+    }
+    let scope = scope.ok_or_else(|| format!("{what} refused: not found or not permitted"))?;
+    require_node_role(db, local_did, &scope, floor, what).await
+}
+
 /// Local command actor is the resolved application identity, never the supplied label.
 fn object_command_actor<'a>(
     grant: &fe_runtime::node_history::NodeAccessGrant,
@@ -795,8 +813,9 @@ pub fn spawn_db_thread_shared(
                             Err(e) => send_result(&tx, handlers::correlated_failure(&correlation_id, format!("Place asset failed: {e}"))),
                         }
                     }
-                    Ok(DbCommand::LoadHierarchy) => {
+                    Ok(command @ (DbCommand::LoadHierarchy | DbCommand::ReadHierarchy)) => {
                         match handlers::crud::load_hierarchy_handler(&db, &blob_store).await {
+                            Ok(verses) if matches!(command, DbCommand::ReadHierarchy) => send_result(&tx, DbResult::HierarchyRead { verses }),
                             Ok(verses) => send_result(&tx, DbResult::HierarchyLoaded { verses }),
                             Err(e) => send_result(&tx, DbResult::Error(format!("Load hierarchy failed: {e}"))),
                         }
@@ -1577,6 +1596,9 @@ pub fn spawn_db_thread_shared(
                         let reply = handlers::visibility_groups::set_petal_visibility_groups_reply(
                             &db, &local_did, petal_id, groups, auth, correlation_id,
                         ).await;
+                        if let DbResult::PetalVisibilityGroupsLoaded { petal_id, .. } = &reply {
+                            handlers::visibility_groups::publish_registry(&db, repl_tx.as_ref(), &blob_store, petal_id).await;
+                        }
                         send_result(&tx, reply);
                     }
                     Ok(DbCommand::GetPetalVisibilityGroups { petal_id, correlation_id }) => {
@@ -1585,6 +1607,9 @@ pub fn spawn_db_thread_shared(
                     }
                     Ok(DbCommand::ComparePetalVisibilityGroups {petal_id,expected,groups,auth,correlation_id}) => {
                         let reply=handlers::visibility_groups::set_petal_visibility_groups_checked_reply(&db,&local_did,petal_id,groups,auth,correlation_id,Some(expected)).await;
+                        if let DbResult::PetalVisibilityGroupsLoaded { petal_id, .. } = &reply {
+                            handlers::visibility_groups::publish_registry(&db, repl_tx.as_ref(), &blob_store, petal_id).await;
+                        }
                         send_result(&tx,reply);
                     }
                     Ok(DbCommand::SetScopeHidden { level, id, hidden, auth, correlation_id }) => {
@@ -1703,6 +1728,11 @@ pub fn spawn_db_thread_shared(
                         send_result(&tx, reply);
                     }
                     Ok(DbCommand::CreateObject { petal_id, input, actor_did, grant, correlation_id }) => {
+                        let petal_scope = handlers::crud::resolve_petal_scope_handler(&db, &petal_id).await.ok().flatten();
+                        if let Err(error) = require_granted_node_role(&db, &grant, &local_did, petal_scope, fe_policy::RoleLevel::Editor, "Object creation").await {
+                            send_result(&tx, handlers::correlated_failure(&correlation_id, format!("Create object refused: {error}")));
+                            continue;
+                        }
                         let actor = object_command_actor(&grant,&local_did,&actor_did);
                         let outcome = handlers::node_history::create_object_granted(&db, &petal_id, &input.name, input.asset_id.as_deref(), input.position,
                             input.rotation.iter().map(|v|f64::from(*v)).collect(), input.scale.iter().map(|v|f64::from(*v)).collect(), input.properties, actor,&grant).await;
@@ -1813,12 +1843,17 @@ pub fn spawn_db_thread_shared(
                     Ok(DbCommand::CommitCheckedEditorBatch {request,correlation_id}) => {
                         let result=async {
                             let prepared=handlers::editor_batch::prepare(&db,&request,&correlation_id,&local_did).await?;
-                            handlers::editor_batch::commit(&db,prepared).await
+                            let writes_registry=prepared.writes_registry();
+                            handlers::editor_batch::commit(&db,prepared).await.map(|receipt|(receipt,writes_registry))
                         }.await;
                         let reply=match result {
-                            Ok(receipt)=>{
+                            Ok((receipt,writes_registry))=>{
                                 for member in &receipt.members {
                                     handlers::scene_publication::publish_after_commit(&db,&blob_store,repl_tx.as_ref(),&local_did,&member.node_id).await;
+                                }
+                                // QA-0123: a group create/delete/undo also changed the petal's registry.
+                                if writes_registry {
+                                    handlers::visibility_groups::publish_registry(&db,repl_tx.as_ref(),&blob_store,&receipt.petal_id).await;
                                 }
                                 DbResult::EditorBatchCommitted {receipt,correlation_id}
                             },
@@ -1857,6 +1892,11 @@ pub fn spawn_db_thread_shared(
                         }
                     }
                     Ok(DbCommand::CommitNodeMutation { node_id, mutation, actor_did, grant, correlation_id }) => {
+                        let node_scope = handlers::crud::resolve_node_scope_handler(&db, &node_id).await.ok().flatten();
+                        if let Err(error) = require_granted_node_role(&db, &grant, &local_did, node_scope, fe_policy::RoleLevel::Editor, "Node mutation").await {
+                            send_result(&tx, handlers::correlated_failure(&correlation_id, format!("Node mutation refused: {error}")));
+                            continue;
+                        }
                         let actor = object_command_actor(&grant,&local_did,&actor_did);
                         use fe_runtime::messages::NodeMutation;
                         let outcome = match &mutation {
@@ -2103,6 +2143,23 @@ pub fn spawn_db_thread_shared(
                                     entity_change_tx.as_ref(),
                                 )
                                 .await).await;
+                    }
+                    Ok(DbCommand::RejudgeReplicatedNode { verse_id, record_id, candidates }) => {
+                        use handlers::scene_publication::Rejudged;
+                        match handlers::scene_publication::rejudge(&db, &verse_id, &record_id, &candidates, &local_did, entity_change_tx.as_ref()).await {
+                            Ok(Rejudged::Unchanged) => {}
+                            Ok(Rejudged::Restored(outcome)) => {
+                                tracing::info!(verse_id, node_id = record_id, "Re-judged a demoted author's scene row: restored the latest admissible version");
+                                handlers::scene_publication::echo_applied(&db, &blob_store, &local_did, &tx, vec![handlers::inbound_admissions::RowReport {
+                                    verse_id, table: "node".into(), record_id, outcome,
+                                }]).await;
+                            }
+                            Ok(Rejudged::Removed { petal_id }) => {
+                                tracing::info!(verse_id, node_id = record_id, "Re-judged a demoted author's scene row: no admissible version, removed locally");
+                                send_result(&tx, DbResult::NodeDeleted { node_id: record_id, petal_id });
+                            }
+                            Err(error) => tracing::warn!(verse_id, node_id = record_id, "scene re-judge failed: {error:#}"),
+                        }
                     }
                     Ok(DbCommand::ReemitLocalVerseCatalog { verse_id }) => {
                         match handlers::local_catalog::reemit(
