@@ -716,3 +716,25 @@ API-timing fixer 2026-11-06 (lean evidence `qa/passes/71`, register `qa/findings
 Only root owns Cargo/apps/process lifecycle/Git mutations. Preserve
 `conductor/.conductor_session_log`. No source/focused approval substitutes for
 remaining acceptance, and no release gate has been achieved.
+
+# Superseded 2026-11-06 (P2P multi-session fixer)
+
+## Current blockers and source work
+
+UI fixer ui-s2s3 2026-11-06 (lean evidence `qa/passes/72`, register `qa/findings.jsonl` 73 records), live on fresh stage `ed2f8bb1` + source fix commit `42c2f169`:
+
+- Fixed and live-verified (new source fixes, commit `42c2f169`): QA-0006 (selected node had no visible feedback beyond the tool-gated gimbal; added a cyan wireframe world-AABB outline, `gimbal::draw_selection_outline` + `draw_selection_outline_system`, shown in every tool including Select). QA-0008 (staged Escape ladder had no rung below ResetTool, so Escape went dead while still deep in Petal/Fractal/Verse; added `EscapeRung::NavigateBack`, one hierarchy level per press, reusing the viewport's existing `back_from_petal/fractal/verse`). QA-0007 (Create Verse Enter-to-submit silently never fired: `lost_focus()` is a live `ctx.memory()` query, and the autofocus reclaim ran BEFORE reading it, so the very frame Enter made the field surrender focus, the reclaim immediately re-granted it, erasing the signal; reordered the two lines in `create_entity.rs`).
+- Already fixed in source from earlier waves, live-reverified only: QA-0004 (`0f1a6a09` honest scope counts — Petal A shows "1 petal · 4 objects", not zero), QA-0016 (`a8d9ed78` Inspector transform guard — empty-petal Inspector shows only placeholder text, zero stale digits), QA-0039 (`6f473264` shared `target_size()` hit-target minimum — layout-check zero violations, chevrons 24x24px), QA-0075 (`647f507a` `COMPACT_TOPBAR_WIDTH=1248.0` — zero violations at all 9 required size/scale/selection combinations). QA-0072 re-verified closed (fresh-launch `ui --interactive` returns 113 nodes/66.7KB/exit0 before any input; stays superseded by the AccessKit path).
+- `cargo check -p fe-ui`, `cargo +1.99.0 clippy -p fe-ui --all-targets -- -D warnings` and the full `cargo test -p fe-ui` sweep are clean for every touched file. The full-crate test run surfaces 12 pre-existing failing unit tests unrelated to this ticket's files (confirmed present on HEAD before these changes via `git stash` bisection) — the same latent-failure pattern as QA-0082; not triaged here, out of this fixer's scope.
+- Still open from before: QA-0077, QA-0076, QA-0078 remainder, QA-0079, QA-0081, QA-0082, divider eligibility, peer/QA0063 P2P lab, retained-store HOLD, groups/selection, rich-data/concurrency/restart, permissions/lifecycle, catalog, UX audits and release gates in `plan.md`.
+
+## Next actions
+
+1. Multi-session P2P replication (user request, still the top priority — not attempted this pass): spawn multiple sessions and run a two-root `pair.ps1` session that replicates an earthwork region and its volume pair between peers. Drivers should treat 202 `applied_unsettled` as "happened, do not resend". Then the Podman relay lab.
+2. QA-0081: bound per-frame chunk meshing (a frame-time budget or async mesh build) and measure the release build. Then QA-0077/QA-0082 triage, starting with the DeleteNode tombstone failures and the 12 fe-ui unit-test failures noted above.
+3. Clear the QA-0078 remainder (fe-plugin and the rest) so CI Lint can go green, then the divider-eligibility live check.
+4. Remaining feature/selection/groups/data/role/catalog work, five live UX audits, two FULL passes, a single integrated sweep, CI, tag and release.
+
+Only root owns Cargo/apps/process lifecycle/Git mutations. Preserve
+`conductor/.conductor_session_log`. No source/focused approval substitutes for
+remaining acceptance, and no release gate has been achieved.
