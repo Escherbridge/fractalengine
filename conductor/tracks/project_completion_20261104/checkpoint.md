@@ -6,6 +6,11 @@ title: Current completion state and next actions
 last_verified_utc: 2026-11-05T06:35:24.442186+00:00
 ---
 
+## ORCHESTRATOR STEER (binding; maintained by the orchestrating session, do not edit or remove)
+
+- 2026-11-06: none yet. The orchestrator adds dated steers here; every agent must apply them over any other instruction except safety rules.
+
+
 # Current completion state
 
 The full goal remains active in [goal-service.txt](./goal-service.txt),
@@ -60,19 +65,20 @@ boundary rules, `desktop_refused` is preserved intact and never bypassed.
 
 ## Current blockers and source work
 
-Terrain fixer 2026-11-06 (lean evidence, `qa/passes/69`-`70`, register `qa/findings.jsonl` 70 records):
+API-timing fixer 2026-11-06 (lean evidence `qa/passes/71`, register `qa/findings.jsonl` 73 records), live on fresh stage `9ac0fedf`:
 
-- Fixed and live-verified on fresh stage `28972bf8`: QA-0024 + QA-0071 (`86095074`: the ruler scale bar/unscaled chip was an unregistered Foreground painter, so a press on it with Brush or an armed shape persisted a region; QA69 reproduced 1 region+node per click, QA70 shows 0, positive authoring intact, exact armed-Circle/Back repro clean), QA-0069 (one atomic cut/fill pair, oracle fill 200/cut 0, no navigation churn), QA-0070 (cross-verse token refused, admitted token writes, executed 12-case DB guard journey). QA-0072 closed as superseded by the AccessKit ui-tree API.
-- `28972bf8` restored the uncompilable fe-ui/fe-database/fe-test-harness test targets and made pinned clippy clean (`--no-deps`) on fe-renderer, fe-terrain, fractalengine, fe-ui, fe-database and fe-test-harness.
-- New open: QA-0077 S2 (17 pre-existing failing journeys now visible, including DeleteNode tombstone failure), QA-0076 S3 (petal terrain lingers in fractal browser), QA-0078 S3 (clippy 1.99 debt in untouched crates: fe-runtime, fe-plugin, others), QA-0079 S3 (shared_handle_test SurrealKV os error 33 on Windows).
-- Still open from before: QA-0075 live topbar recheck, divider eligibility, peer/QA0063 P2P lab, retained-store HOLD, groups/selection, rich-data/concurrency/restart, permissions/lifecycle, catalog, UX audits and release gates in `plan.md`.
+- Fixed and live-verified: QA-0034 + QA-0026 (`735e4624`: input acks are truthful about late work. `ValidInputSpec` carries a shared `InputProgress`, so a missed deadline answers 202 `applied_unsettled` when every frame landed, else 504 `input_partially_applied` (k of n) or `input_not_started`. Terrain petal A/B/A opens now return 202 and land; they previously gave 504/500). QA-0025 (`40620e41`: fe-ui's GLB camera stripper despawned the vision `CaptureCamera`, so every scene-only capture was black and unsettled, terrain or not; it now renders, settled in 30 frames). QA-0028 (`2c223475`: restore from minimized un-maximizes on the next frame after the OS un-minimizes; maximize/minimize/restore ends 1280x720).
+- New S1 found and fixed live: QA-0080 (`9ac0fedf`: abandoning an in-flight capture despawned a `Capturing` screenshot and Bevy's `trigger_screenshots` panicked; this was pre-existing for `caller_gone`). The exact sequence was run 3x on the fixed stage with the app alive.
+- Lint: `8b0e3b4e` makes fe-runtime and the fe-api test targets clippy +1.99.0 clean and compiles `mcp_integration` (QA-0078 partial; fe-plugin and others remain). The four touched crates are clippy-clean with `--all-targets`.
+- New open: QA-0081 S3 (every terrain petal open or earthwork placement freezes the dev build ~4.5 s; synchronous chunk meshing), QA-0082 S3 (6 latent R9 test failures outside the input surface: mcp_integration x3, vision_test 409 race, token_lifecycle live revoke, vision_bridge window-mode FOV).
+- Still open from before: QA-0077, QA-0076, QA-0078 remainder, QA-0079, QA-0075 topbar recheck, divider eligibility, peer/QA0063 P2P lab, retained-store HOLD, groups/selection, rich-data/concurrency/restart, permissions/lifecycle, catalog, UX audits and release gates in `plan.md`.
 
 ## Next actions
 
-1. Triage QA-0077, starting with the DeleteNode/tombstone failures (possible live data defect), then the 11 fe-ui journeys by region.
-2. Clear QA-0078 workspace lint debt so CI Lint can go green; then the QA-0075 topbar and divider live checks.
-3. Multi-session P2P replication (user request): two-root `pair.ps1` run that replicates an earthwork region and its volume pair between peers, then the Podman relay lab.
-4. Remaining feature/selection/groups/data/role/catalog work, five live UX audits, two FULL passes, single integrated sweep, CI, tag and release.
+1. Multi-session P2P replication (user request): run a two-root `pair.ps1` session that replicates an earthwork region and its volume pair between peers. Drivers should treat 202 `applied_unsettled` as "happened, do not resend". Then the Podman relay lab.
+2. QA-0081: bound per-frame chunk meshing (a frame-time budget or async mesh build) and measure the release build. Then QA-0077/QA-0082 triage, starting with the DeleteNode tombstone failures.
+3. Clear the QA-0078 remainder (fe-plugin and the rest) so CI Lint can go green, then the QA-0075 topbar and divider live checks.
+4. Remaining feature/selection/groups/data/role/catalog work, five live UX audits, two FULL passes, a single integrated sweep, CI, tag and release.
 
 Only root owns Cargo/apps/process lifecycle/Git mutations. Preserve
 `conductor/.conductor_session_log`. No source/focused approval substitutes for

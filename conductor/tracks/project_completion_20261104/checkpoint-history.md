@@ -671,3 +671,25 @@ byte-identical.
 3. Resolve the observed divider eligibility guard, complete `QA-0070` terrain API grant continuity and safe `require-existing` startup on disposable fixtures.
 4. Complete all remaining original feature/selection/groups/data/terrain/role/catalog/polish work, five actual live UX audits plus synthesis, and two100% required FULL passes with zero newS1/S2.
 5. After all implementation/review fixes, run the single integrated sweep and exact18-scenario harness with required real store/Podman fixtures, then exact-SHA green CI before immutable QA tag, whole Release includingDocker, and actual download/hash inspection of all seven archives.
+
+# Superseded 2026-11-06 (api-timing fixer, QA71)
+
+## Current blockers and source work
+
+Terrain fixer 2026-11-06 (lean evidence, `qa/passes/69`-`70`, register `qa/findings.jsonl` 70 records):
+
+- Fixed and live-verified on fresh stage `28972bf8`: QA-0024 + QA-0071 (`86095074`: the ruler scale bar/unscaled chip was an unregistered Foreground painter, so a press on it with Brush or an armed shape persisted a region; QA69 reproduced 1 region+node per click, QA70 shows 0, positive authoring intact, exact armed-Circle/Back repro clean), QA-0069 (one atomic cut/fill pair, oracle fill 200/cut 0, no navigation churn), QA-0070 (cross-verse token refused, admitted token writes, executed 12-case DB guard journey). QA-0072 closed as superseded by the AccessKit ui-tree API.
+- `28972bf8` restored the uncompilable fe-ui/fe-database/fe-test-harness test targets and made pinned clippy clean (`--no-deps`) on fe-renderer, fe-terrain, fractalengine, fe-ui, fe-database and fe-test-harness.
+- New open: QA-0077 S2 (17 pre-existing failing journeys now visible, including DeleteNode tombstone failure), QA-0076 S3 (petal terrain lingers in fractal browser), QA-0078 S3 (clippy 1.99 debt in untouched crates: fe-runtime, fe-plugin, others), QA-0079 S3 (shared_handle_test SurrealKV os error 33 on Windows).
+- Still open from before: QA-0075 live topbar recheck, divider eligibility, peer/QA0063 P2P lab, retained-store HOLD, groups/selection, rich-data/concurrency/restart, permissions/lifecycle, catalog, UX audits and release gates in `plan.md`.
+
+## Next actions
+
+1. Triage QA-0077, starting with the DeleteNode/tombstone failures (possible live data defect), then the 11 fe-ui journeys by region.
+2. Clear QA-0078 workspace lint debt so CI Lint can go green; then the QA-0075 topbar and divider live checks.
+3. Multi-session P2P replication (user request): two-root `pair.ps1` run that replicates an earthwork region and its volume pair between peers, then the Podman relay lab.
+4. Remaining feature/selection/groups/data/role/catalog work, five live UX audits, two FULL passes, single integrated sweep, CI, tag and release.
+
+Only root owns Cargo/apps/process lifecycle/Git mutations. Preserve
+`conductor/.conductor_session_log`. No source/focused approval substitutes for
+remaining acceptance, and no release gate has been achieved.
