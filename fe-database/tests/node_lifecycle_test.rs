@@ -98,6 +98,17 @@ impl Harness {
             DbResult::VerseCreated { id, .. } => id,
             o => panic!("expected VerseCreated, got {o:?}"),
         };
+        // The effective role is min(token claim, stored grant): the owner grants
+        // the editor DID for real; the viewer DID keeps the default access.
+        self.send(DbCommand::AssignRole {
+            peer_did: "did:key:z6MkEditor".into(),
+            scope: format!("VERSE#{verse_id}"),
+            role: "editor".into(),
+        });
+        match self.recv() {
+            DbResult::RoleAssigned { .. } => {}
+            o => panic!("expected RoleAssigned, got {o:?}"),
+        }
         self.send(DbCommand::CreateFractal {
             verse_id,
             name: "F".into(),

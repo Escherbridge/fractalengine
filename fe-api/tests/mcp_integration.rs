@@ -21,7 +21,9 @@ use axum::{Extension, Json};
 use base64::Engine as _;
 use serde_json::json;
 
-use fe_api::mcp::{mcp_handler, tool_specs, HierarchyTarget, JsonRpcRequest, ScopeRule, ToolSeam};
+use fe_api::mcp::{
+    mcp_handler, tool_available, tool_specs, HierarchyTarget, JsonRpcRequest, ScopeRule, ToolSeam,
+};
 use fe_api::rest::NOT_FOUND_OR_DENIED;
 use fe_api::server::ApiState;
 use fe_api::upload::{ingest_glb_with_limit, GlbPayload, UploadError, UploadOwner, UNKNOWN_ASSET};
@@ -305,9 +307,14 @@ fn db_command(m: &mut Model, cmd: DbCommand, store: Option<&BlobStoreHandle>) ->
     match cmd {
         DbCommand::ReadTerrainApiCredential { request } => {
             // This legacy model exercises transport only; real-store terrain journeys own durable guards.
-            let snapshot = request.active().then(||
-                fe_runtime::terrain_grant::TerrainCredentialSnapshot::new("legacy".into(), vec![]).unwrap());
-            DbResult::TerrainApiCredentialRead(fe_runtime::terrain_grant::TerrainCredentialReply { request, snapshot })
+            let snapshot = request.active().then(|| {
+                fe_runtime::terrain_grant::TerrainCredentialSnapshot::new("legacy".into(), vec![])
+                    .unwrap()
+            });
+            DbResult::TerrainApiCredentialRead(fe_runtime::terrain_grant::TerrainCredentialReply {
+                request,
+                snapshot,
+            })
         }
         DbCommand::CommitNodeMutation {
             node_id,
@@ -2101,7 +2108,9 @@ fn role_below(level: RoleLevel) -> &'static str {
 async fn every_tool_rejects_a_sub_min_role_token() {
     let Emu { state, model, .. } = emu(true);
     let home = seed_chain(&model, "home");
-    for spec in tool_specs() {
+    // An unwired seam's tool does not exist (answers "unknown tool"), so it
+    // has no role floor to probe.
+    for spec in tool_specs().iter().filter(|t| tool_available(t, &state)) {
         // Args point at a resource the token's scope DOES cover, so the only
         // reason to deny is the role floor.
         let c = claims(&home.verse_scope(), role_below(spec.min_role));
@@ -2726,15 +2735,26 @@ async fn waypoint_and_gpx_tools_round_trip() {
     .await;
     assert_tool_error(&resp, "invalid GPX");
 
-    let promoted = call_tool(&state, &editor, "promote_instance",
-        json!({"petal_id":home.petal,"path_id":home.node,"instance_index":3})).await;
+    let promoted = call_tool(
+        &state,
+        &editor,
+        "promote_instance",
+        json!({"petal_id":home.petal,"path_id":home.node,"instance_index":3}),
+    )
+    .await;
     let stamp = tool_json(&promoted)["node_id"].as_str().unwrap().to_owned();
     let read = call_tool(&state, &viewer, "get_properties", json!({"node_id":stamp})).await;
     assert_eq!(tool_json(&read)["node_id"], stamp);
     assert_eq!(tool_json(&read)["properties"]["node_kind"], "stamp");
     let foreign = seed_chain(&model, "foreign-read");
     let foreign_viewer = claims(&foreign.verse_scope(), "viewer");
-    let refused = call_tool(&state, &foreign_viewer, "get_properties", json!({"node_id":stamp})).await;
+    let refused = call_tool(
+        &state,
+        &foreign_viewer,
+        "get_properties",
+        json!({"node_id":stamp}),
+    )
+    .await;
     assert_tool_error(&refused, "not found or not permitted");
 }
 
@@ -2997,7 +3017,7 @@ async fn mcp_structured_fuzz_never_panics_or_leaks_to_channel() {
     const N: u64 = 25;
     let mut unreached: Vec<&str> = Vec::new();
 
-    for spec in tool_specs() {
+    for spec in tool_specs().iter().filter(|t| tool_available(t, &state)) {
         // Fresh chain + registered asset per tool: one tool's delete_node
         // (or cascade) can never tombstone another tool's fixture.
         let home = seed_chain(&model, spec.name);

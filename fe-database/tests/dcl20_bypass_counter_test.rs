@@ -284,10 +284,12 @@ async fn each_dcl20_mutation_records_exactly_one_bypass_of_its_own_kind() {
         other => panic!("expected NodeRenamed, got {other:?}"),
     }
     assert_only_this_kind_bypassed(before, snapshot_counts(), "RenameNode");
+    // Rename journals through commit_mutation (one NodeRenamed op); the bypass
+    // counter itself adds nothing on top of that.
     assert_eq!(
         h.op_log_count().await,
-        op_log_before,
-        "RenameNode: the bypass counter added no op_log row"
+        op_log_before + 1,
+        "RenameNode: exactly its own NodeRenamed op_log row"
     );
 
     // --- DuplicateNode -------------------------------------------------------
@@ -306,8 +308,8 @@ async fn each_dcl20_mutation_records_exactly_one_bypass_of_its_own_kind() {
     assert_only_this_kind_bypassed(before, snapshot_counts(), "DuplicateNode");
     assert_eq!(
         h.op_log_count().await,
-        op_log_before,
-        "DuplicateNode: the bypass counter added no op_log row"
+        op_log_before + 1,
+        "DuplicateNode: exactly its own journaled creation (object_creation::commit)"
     );
 }
 
@@ -374,9 +376,7 @@ async fn a_rename_on_a_tombstoned_node_still_records_the_bypass_and_keeps_the_er
     match h.recv() {
         DbResult::Error(e) => {
             assert!(
-                e.contains(&format!(
-                    "RenameNode matched no live node with node_id = {node_id}"
-                )),
+                e.contains("RenameNode matched no unique live node"),
                 "original error text must survive unchanged, got: {e}"
             );
         }

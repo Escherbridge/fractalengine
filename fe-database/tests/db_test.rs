@@ -414,8 +414,9 @@ fn test_legacy_node_create_and_delete_record_oplog() {
         .expect("DeleteNode op-log query")
     {
         DbResult::QueryResult { data, .. } => assert!(
-            data.iter().any(|row| row["op_type"] == "NodeDeleted"),
-            "DeleteNode must persist NodeDeleted before materialization, got {data:?}"
+            // DeleteNode is the sync-safe soft delete (FR-1): a durable tombstone op.
+            data.iter().any(|row| row["op_type"] == "NodeTombstoned"),
+            "DeleteNode must persist NodeTombstoned before materialization, got {data:?}"
         ),
         other => panic!("expected QueryResult, got {other:?}"),
     }

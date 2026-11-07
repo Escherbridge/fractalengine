@@ -182,7 +182,7 @@ $appEnvironment = @{
     FE_QA_A11Y_CONTINUOUS = $(if ($A11yContinuous) { '1' } else { '0' })
     FE_SYNC_RELAY = 'disabled'
     FE_HEXON_DIR = $hexonDir
-    RUST_LOG = 'info'
+    RUST_LOG = $(if ($env:FE_QA_RUST_LOG) { $env:FE_QA_RUST_LOG } else { 'info' })
 }
 
 $swHealth = [System.Diagnostics.Stopwatch]::StartNew()

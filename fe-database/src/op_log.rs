@@ -428,7 +428,8 @@ mod tests {
             .expect("in-memory SurrealDB");
         db.use_ns("op_log").use_db("op_log").await.expect("ns/db");
         crate::schema::apply_all(&db).await.expect("apply schema");
-        db.query("DEFINE TABLE IF NOT EXISTS atomicity_probe SCHEMALESS")
+        // Probe tables exist up front: SurrealDB 3 refuses reads of an undefined table.
+        db.query("DEFINE TABLE IF NOT EXISTS atomicity_probe SCHEMALESS; DEFINE TABLE IF NOT EXISTS publication_guard_probe SCHEMALESS")
             .await
             .expect("probe table")
             .check()
@@ -940,6 +941,13 @@ mod tests {
         )
         .await
         .is_ok());
+        // An identity without access exists only when the verse's default is
+        // `none`; the schema default (`viewer`) admits every reader.
+        let set_default = |access: &'static str| {
+            db.query("UPDATE verse SET default_access=$default_access WHERE verse_id='history-verse'")
+                .bind(("default_access", access))
+        };
+        set_default("none").await.unwrap().check().unwrap();
         assert!(crate::handlers::scene_materials::read(
             &db,
             &local_petal,
@@ -949,6 +957,7 @@ mod tests {
         )
         .await
         .is_err());
+        set_default("viewer").await.unwrap().check().unwrap();
         let local_op_count = op_log_count(&db).await;
         let local_refusals = [
             crate::handlers::entity_property::set_entity_property_as(
@@ -1840,8 +1849,8 @@ mod tests {
                 "terrain"=>{db.query("UPDATE petal SET terrain={world_scale:1.0,origin:{lat:0.0,lon:0.0},tileset_hexon_uris:[]} WHERE petal_id='tree-other-petal'").await.unwrap().check().unwrap();}
                 "bounds"=>{db.query("UPDATE petal SET bounds=<geometry<polygon>> {type:'Polygon',coordinates:[[[-20.0,-20.0],[20.0,-20.0],[20.0,20.0],[-20.0,20.0],[-20.0,-20.0]]]} WHERE petal_id='tree-other-petal'").await.unwrap().check().unwrap();}
                 "metadata"=>{db.query("UPDATE petal SET view_hidden=false WHERE petal_id='tree-other-petal'").await.unwrap().check().unwrap();}
-                "collision"=>{db.query("CREATE node CONTENT {node_id:$id,petal_id:'tree-other-petal',properties:{node_kind:'ordinary'}}").bind(("id",promotion_node.clone())).await.unwrap().check().unwrap();}
-                "schema"=>{db.query("CREATE field_def CONTENT {field_def_id:'qa-promotion-schema',scope:$scope,entity_type:'node',key:'node_kind',enforced_schema:{version:1,schema:{type:'string'}}}").bind(("scope",plugin_scope.clone())).await.unwrap().check().unwrap();}
+                "collision"=>{db.query("CREATE node CONTENT {node_id:$id,petal_id:'tree-other-petal',position:<geometry<point>> [0,0],elevation:0,rotation:[0,0,0],scale:[1,1,1],interactive:true,edit_seq:0,created_at:'2026-11-02',properties:{node_kind:'ordinary'}}").bind(("id",promotion_node.clone())).await.unwrap().check().unwrap();}
+                "schema"=>{db.query("CREATE field_def CONTENT {field_def_id:'qa-promotion-schema',scope:$scope,entity_type:'node',key:'node_kind',value_type:'string',created_by:'did:qa',created_at:'2026-11-02',enforced_schema:{version:1,schema:{type:'string'}}}").bind(("scope",plugin_scope.clone())).await.unwrap().check().unwrap();}
                 "birth_journal"=>{db.query("DEFINE EVENT fail_promotion_birth ON TABLE node_log WHEN $after.op='baseline' THEN { THROW 'induced promotion baseline failure' }").await.unwrap().check().unwrap();}
                 "history_collision"=>{db.query("CREATE node_log CONTENT {log_id:'promotion-orphan',node_id:$id,hlc_timestamp:1,op:'created',source_did:'legacy',row_version:1,payload:{},created_at:'legacy'}").bind(("id",promotion_node.clone())).await.unwrap().check().unwrap();}
                 _=>{db.query("DEFINE EVENT fail_checked_promotion ON TABLE node WHEN $after.properties.node_kind='stamp' THEN { THROW 'induced promotion row failure' }").await.unwrap().check().unwrap();}
@@ -1910,7 +1919,7 @@ mod tests {
                 "terrain"=>{db.query("UPDATE petal SET terrain={world_scale:1.0,origin:{lat:0.0,lon:0.0},tileset_hexon_uris:[]} WHERE petal_id='tree-other-petal'").await.unwrap().check().unwrap();}
                 "bounds"=>{db.query("UPDATE petal SET bounds=<geometry<polygon>> {type:'Polygon',coordinates:[[[-20.0,-20.0],[20.0,-20.0],[20.0,20.0],[-20.0,20.0],[-20.0,-20.0]]]} WHERE petal_id='tree-other-petal'").await.unwrap().check().unwrap();}
                 "metadata"=>{db.query("UPDATE petal SET view_hidden=false WHERE petal_id='tree-other-petal'").await.unwrap().check().unwrap();}
-                "schema"=>{db.query("CREATE field_def CONTENT {field_def_id:'qa-stamp-schema-race',scope:$scope,entity_type:'node',key:'stamp.override.scale',enforced_schema:{version:1,schema:{type:'array'}}}").bind(("scope",plugin_scope.clone())).await.unwrap().check().unwrap();}
+                "schema"=>{db.query("CREATE field_def CONTENT {field_def_id:'qa-stamp-schema-race',scope:$scope,entity_type:'node',key:'stamp.override.scale',value_type:'json',created_by:'did:qa',created_at:'2026-11-02',enforced_schema:{version:1,schema:{type:'array'}}}").bind(("scope",plugin_scope.clone())).await.unwrap().check().unwrap();}
                 _=>{db.query("DEFINE EVENT fail_stamp_fact ON TABLE node_log WHEN $after.payload.stamp_batch_id='qa-stamp-journal' AND $after.payload.data.key='stamp.override.rotation' THEN { THROW 'induced second stamp fact failure' }").await.unwrap().check().unwrap();}
             }
             let before_ops=op_log_count(&db).await;
@@ -1974,10 +1983,11 @@ mod tests {
             } else {
                 assert_eq!(replay["availability"], "available");
                 if version == 4 {
-                    assert_eq!(
-                        replay["state"],
-                        serde_json::to_value(&stamp_saved.state).unwrap()
-                    );
+                    // The typed receipt serializes absent options as null; the
+                    // replayed row omits them.
+                    let mut expected = serde_json::to_value(&stamp_saved.state).unwrap();
+                    expected.as_object_mut().unwrap().retain(|_, value| !value.is_null());
+                    assert_eq!(replay["state"], expected);
                 }
             }
         }
@@ -2707,7 +2717,7 @@ mod tests {
                         db.query("UPDATE petal SET visibility_groups=[{id:'race',name:'Race',visible:true,order:0.0}] WHERE petal_id='tree-other-petal'").await.unwrap().check().unwrap();
                     }
                     "schema" => {
-                        db.query("CREATE field_def CONTENT {field_def_id:'batch-race-rule',scope:$scope,entity_type:'node',key:'qa.shared',enforced_schema:{version:1,schema:{type:'number'}}}").bind(("scope",plugin_scope.clone())).await.unwrap().check().unwrap();
+                        db.query("CREATE field_def CONTENT {field_def_id:'batch-race-rule',scope:$scope,entity_type:'node',key:'qa.shared',value_type:'json',created_by:'did:qa',created_at:'2026-11-02',enforced_schema:{version:1,schema:{type:'number'}}}").bind(("scope",plugin_scope.clone())).await.unwrap().check().unwrap();
                     }
                     _ => {
                         db.query("UPDATE node SET petal_id='tree-petal' WHERE node_id=$id")
@@ -4716,7 +4726,7 @@ mod tests {
             match race {
                 "role"=>{url_db.query("UPDATE verse SET created_by='did:changed-import-owner' WHERE verse_id='url-v'").await.unwrap().check().unwrap();}
                 "ancestry"=>{url_db.query("UPDATE petal SET fractal_id='import-other-fractal' WHERE petal_id='url-p'").await.unwrap().check().unwrap();}
-                "schema"=>{url_db.query("CREATE field_def CONTENT {field_def_id:'import-schema-race',scope:$scope,entity_type:'node',key:'import_marker',enforced_schema:{version:1,schema:{type:'string'}}}").bind(("scope",url_scope.clone())).await.unwrap().check().unwrap();}
+                "schema"=>{url_db.query("CREATE field_def CONTENT {field_def_id:'import-schema-race',scope:$scope,entity_type:'node',key:'import_marker',value_type:'json',created_by:'did:qa',created_at:'2026-11-02',enforced_schema:{version:1,schema:{type:'string'}}}").bind(("scope",url_scope.clone())).await.unwrap().check().unwrap();}
                 _=>{url_db.query("DEFINE EVENT fail_import_baseline ON TABLE node_log WHEN $event='CREATE' AND $after.op='baseline' AND $after.payload.state.display_name='import race' THEN {THROW 'induced import journal failure'}").await.unwrap().check().unwrap();}
             }
             if race == "journal" {
@@ -4904,11 +4914,13 @@ mod tests {
             let metadata_db = probe_db().await;
             for mutation in [
                 "asset_id=$replacement",
-                "petal_id=NULL",
-                "owner_did=NULL",
+                // NULL is no longer storable (`option<string>`); a value change still witnesses the fence.
+                "petal_id='other-petal'",
+                "owner_did='did:other'",
                 "content_hash=$replacement_hash",
                 "content_type='model/gltf+json'",
-                "size_bytes=4.0",
+                // The typed `int` column coerces 4.0 back to 4, so witness a real value change.
+                "size_bytes=5",
             ] {
                 let fixture = ulid::Ulid::new().to_string();
                 let replacement = ulid::Ulid::new().to_string();
@@ -5037,12 +5049,11 @@ mod tests {
                 "asset_id=$replacement",
                 "name='changed metadata name'",
                 "content_type='model/gltf+json'",
-                "size_bytes=4.0",
+                "size_bytes=5",
                 "content_hash=$replacement_hash",
                 "created_at='changed metadata time'",
                 "owner_did='did:changed'",
                 "petal_id='changed-petal'",
-                "publication_provenance=NULL",
                 "publication_provenance={kind:'changed'}",
                 "delete",
                 "duplicate",
@@ -5072,7 +5083,7 @@ mod tests {
                     .await.unwrap().check().unwrap();
                 let change = match mutation {
                     "delete" => "DELETE asset WHERE asset_id=$fixture".to_owned(),
-                    "duplicate" => "CREATE asset SET asset_id=$fixture,name='duplicate publication fixture'".to_owned(),
+                    "duplicate" => "CREATE asset SET asset_id=$fixture,name='duplicate publication fixture',content_hash=$replacement_hash,content_type='model/gltf-binary',size_bytes=4,created_at='2026-11-04'".to_owned(),
                     _ => format!("UPDATE asset SET {mutation} WHERE asset_id=$fixture"),
                 };
                 publication_db.query(change).bind(("fixture", fixture.clone()))
@@ -5161,7 +5172,8 @@ mod tests {
                 fe_runtime::scene_replication::ReplicaNodeAsset::NoAsset
             ));
             assert!(
-                matches!(projected.provenance,fe_runtime::scene_replication::ReplicaNodeProvenance::OriginalSceneCommit {hlc,..} if hlc==original_fact["hlc_timestamp"].as_u64().unwrap())
+                matches!(projected.provenance,fe_runtime::scene_replication::ReplicaNodeProvenance::OriginalSceneCommit {hlc,..} if hlc==original_fact["hlc_timestamp"].as_u64().unwrap()),
+                "{:?} vs {}", projected.provenance, original_fact["hlc_timestamp"]
             );
             let (projection_tx, projection_rx) = crossbeam::channel::bounded(8);
             scene::echo_applied(
@@ -5326,7 +5338,7 @@ mod tests {
                 .unwrap();
             let second = rx.try_recv().unwrap();
             let second_bytes = concrete.bytes_for(&second.content_hash).unwrap();
-            peer.query("CREATE field_def CONTENT {field_def_id:'scene-known-schema',scope:$scope,entity_type:'node',key:'explicit_null',enforced_schema:{version:1,schema:{type:'string'}}}").bind(("scope",scope)).await.unwrap().check().unwrap();
+            peer.query("CREATE field_def CONTENT {field_def_id:'scene-known-schema',scope:$scope,entity_type:'node',key:'explicit_null',value_type:'json',created_by:'did:qa',created_at:'2026-11-02',enforced_schema:{version:1,schema:{type:'string'}}}").bind(("scope",scope)).await.unwrap().check().unwrap();
             assert_eq!(
                 apply_replicated_row_handler(
                     &peer,
@@ -5427,13 +5439,13 @@ mod tests {
             // A failed clock write rolls back the full row and cannot advance the process HLC.
             let failed = probe_db().await;
             crate::schema::apply_all(&failed).await.unwrap();
-            failed.query("CREATE verse CONTENT {verse_id:'scene-v',name:'v',created_by:'did:qa',created_at:'2026-11-02'}; CREATE fractal CONTENT {fractal_id:'scene-f',verse_id:'scene-v',owner_did:'did:qa',name:'f',created_at:'2026-11-02'}; CREATE petal CONTENT {petal_id:'scene-p',fractal_id:'scene-f',name:'p',node_id:'p',created_at:'2026-11-02'}; DEFINE EVENT fail_scene_clock ON TABLE node_scene_clock WHEN $event='CREATE' THEN {THROW 'induced scene clock failure'}")
+            failed.query("CREATE verse CONTENT {verse_id:'scene-v',name:'v',created_by:'did:qa',created_at:'2026-11-02'}; CREATE fractal CONTENT {fractal_id:'scene-f',verse_id:'scene-v',owner_did:'did:qa',name:'f',created_at:'2026-11-02'}; CREATE petal CONTENT {petal_id:'scene-p',fractal_id:'scene-f',name:'p',node_id:'p',created_at:'2026-11-02'}; DEFINE FIELD OVERWRITE hlc ON node_scene_clock TYPE int ASSERT $value < 0")
                             .await.unwrap().check().unwrap();
             let mut advancing: serde_json::Value = serde_json::from_slice(&second_bytes).unwrap();
             let advanced = next_hlc_timestamp().0 + 1;
             advancing["_fe_scene"]["hlc"] = json!(advanced.to_string());
             let before_clock = snapshot_hlc();
-            assert!(apply_replicated_row_handler(
+            let failed_apply = apply_replicated_row_handler(
                 &failed,
                 "scene-v",
                 "node",
@@ -5442,8 +5454,10 @@ mod tests {
                 "did:qa",
                 None
             )
-            .await
-            .is_err());
+            .await;
+            // SurrealDB 3 swallows an event THROW on an UPSERT-create, so the clock
+            // write is made to fail through its field assertion instead.
+            assert!(failed_apply.is_err(), "{failed_apply:?}");
             assert!(node_history::snapshot(&failed, &id)
                 .await
                 .unwrap()
@@ -5451,7 +5465,7 @@ mod tests {
             assert!(scene::read_clock(&failed, &id).await.unwrap().is_empty());
             assert_eq!(snapshot_hlc(), before_clock);
             failed
-                .query("REMOVE EVENT fail_scene_clock ON TABLE node_scene_clock")
+                .query("DEFINE FIELD OVERWRITE hlc ON node_scene_clock TYPE int ASSERT $value > 0")
                 .await
                 .unwrap()
                 .check()
@@ -6170,7 +6184,8 @@ mod tests {
                 let nonce = "01ARZ3NDEKTSV4RRFFQ69G5FAV";
                 let bytes = br#"{"asset":{"version":"2.0"}}"#;
                 let hash = crate::hash_to_hex(blake3::hash(bytes).as_bytes());
-                audit_db.query("CREATE verse CONTENT {verse_id:'audit-v',created_by:$owner,default_access:'viewer'}; CREATE fractal CONTENT {fractal_id:'audit-f',verse_id:'audit-v'}; CREATE petal CONTENT {petal_id:'audit-p',fractal_id:'audit-f'}; CREATE asset CONTENT {asset_id:'audit-a',content_hash:$hash,content_type:'model/gltf+json',size_bytes:$size}; CREATE node CONTENT {node_id:'audit-one',petal_id:'audit-p',asset_id:'audit-a',properties:{samples:[1,2,null]}}; CREATE node CONTENT {node_id:'audit-two',petal_id:'audit-p',asset_id:'audit-a',tombstone:'retained'}")
+                // SurrealDB 3 refuses reads of undefined tables; the audit consults these.
+                audit_db.query("DEFINE TABLE IF NOT EXISTS role SCHEMALESS; DEFINE TABLE IF NOT EXISTS model SCHEMALESS; DEFINE TABLE IF NOT EXISTS op_log SCHEMALESS; DEFINE TABLE IF NOT EXISTS device_payload SCHEMALESS; DEFINE TABLE IF NOT EXISTS node_log SCHEMALESS; CREATE verse CONTENT {verse_id:'audit-v',created_by:$owner,default_access:'viewer'}; CREATE fractal CONTENT {fractal_id:'audit-f',verse_id:'audit-v'}; CREATE petal CONTENT {petal_id:'audit-p',fractal_id:'audit-f'}; CREATE asset CONTENT {asset_id:'audit-a',content_hash:$hash,content_type:'model/gltf+json',size_bytes:$size}; CREATE node CONTENT {node_id:'audit-one',petal_id:'audit-p',asset_id:'audit-a',properties:{samples:[1,2,null]}}; CREATE node CONTENT {node_id:'audit-two',petal_id:'audit-p',asset_id:'audit-a',tombstone:'retained'}")
                     .bind(("owner",owner.clone())).bind(("hash",hash.clone())).bind(("size",bytes.len() as u64)).await.unwrap().check().unwrap();
                 let request = || SceneAssetAuditRequest {
                     node_id: "audit-one".into(),
@@ -6627,7 +6642,7 @@ mod tests {
                 )
                 .await
                 .is_err());
-                legacy.query("CREATE node CONTENT {node_id:'legacy-foreign-reference',petal_id:'foreign-p',asset_id:$asset,name:'foreign',position:<geometry<point>> [0,0],elevation:0,rotation:[0,0,0],scale:[1,1,1],interactive:true,edit_seq:0,created_at:'2026-11-02'}")
+                legacy.query("CREATE node CONTENT {node_id:'legacy-foreign-reference',petal_id:'foreign-p',asset_id:$asset,display_name:'foreign',position:<geometry<point>> [0,0],elevation:0,rotation:[0,0,0],scale:[1,1,1],interactive:true,edit_seq:0,created_at:'2026-11-02'}")
                     .bind(("asset",legacy_asset.clone())).await.unwrap().check().unwrap();
                 assert!(
                     crate::handlers::scene_asset_adoption::read(&legacy, &disk, node_id, "did:qa")
