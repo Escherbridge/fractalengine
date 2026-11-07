@@ -3,7 +3,7 @@ type: ProgressCheckpoint
 date: 2026-11-04
 status: in_progress
 title: Current completion state and next actions
-last_verified_utc: 2026-11-07T08:30:00.000000+00:00
+last_verified_utc: 2026-11-07T12:00:00.000000+00:00
 ---
 
 ## ORCHESTRATOR STEER (binding; maintained by the orchestrating session, do not edit or remove)
@@ -65,40 +65,27 @@ boundary rules, `desktop_refused` is preserved intact and never bypassed.
 
 ## Current blockers and source work
 
-FULL QA pass 77 (1/3) on stage `a8e206c6-20261106225729173` (source `a8e206c6`, HEAD `c62aff4c` docs-only). It
-covered every journey J01-J11 (J07/J09/J11 partly) and S-P2P-replication on 3 peers. Lean evidence is in
-`qa/passes/77` (local, verdict.md). The register `qa/findings.jsonl` has 105 records. The pass is not converged and gold
-is 1/11: only G4 terrain passes (raise 200 / lower -100 exact, 16384/16384 samples).
+Convergence-fixer recovery (2026-11-07): the dead fixer's 52-file tree was gated and committed. Source-fixed and
+live-checked once on pass-78 stages, status `fixed_source_live_pending` until the swarm re-verifies: QA-0099
+(tombstone guard), QA-0100 (transform LWW register in merge.rs + all-author snapshot), QA-0101 (join readiness,
+dial-race resync, tileset re-advertise), QA-0102, QA-0103, QA-0104 (synthetic MouseMotion), QA-0075 (glyph
+coverage), QA-0077 (17 journeys green), QA-0086 (persistent peer book) and QA-0087 (transform verdict + rollback).
 
-- New S1: QA-0099. Node delete always fails. GUI Confirm Delete, the Delete key, REST DELETE and MCP delete_node all
-  return "TombstoneNode soft-delete failed". This is the live counterpart of QA-0077. The suspected cause is the
-  `crud.rs` tombstone member-set guard comparing NONE against a rebound JSON null.
-- New S1: QA-0100. When two peers commit different X for the same node at the same instant, they stay diverged
-  permanently (7 vs -7), even after the editor restarts. This is a regression from pass 74 CP5.
-- New S2: QA-0101. The Viewer's Join dialog reports "timed out" although the join succeeded. The Viewer never learns a
-  native provider, so GLB placeholders and missing terrain follow.
-- New S2: QA-0102. Clear Properties only clears the annotation keys.
-- New S2: QA-0103. After a node leaves a group, its in-memory membership stays stale, so hiding the group still hides
-  the node.
-- New S2: QA-0104. The QA input bridge cannot orbit or pan, because no MouseMotion is emitted.
-- Reopened S2: QA-0075. Proposal Delete and stamp-asset Clear icons paint missing-glyph squares again.
-- New S3: QA-0105 to QA-0113. New S4: QA-0114.
-- Closed by live re-run: 25 fixed findings, listed in verdict.md.
-- Still reproducing: QA-0076, QA-0087, QA-0089, QA-0091, QA-0092 and QA-0093.
-- Still open from before: QA-0077, QA-0078 remainder, QA-0079, QA-0081, QA-0082, QA-0086, QA-0088, QA-0090, QA-0094,
-  QA-0098, divider eligibility, retained-store HOLD, and the release gates in `plan.md`.
-- Layout-check found 0 measured violations in 36 runs (3 sizes x 10 panel states). OS/UIA checks stay out of scope
-  because the sandbox returns desktop_refused.
+- Gate: cargo check + `cargo +1.99.0 clippy --all-targets -D warnings` on fe-database/fe-sync/fe-api/fe-ui/
+  fractalengine green; fe-ui lib 1057/1057, fe-database lib + touched integration batches, fe-sync 295 + 4, fe-api
+  lib 95 and R9 binaries green except pre-existing failures (QA-0115/0116 re-run on a clean 1f8ef7d2 worktree):
+  QA-0079 shared_handle_test, QA-0082 (terrain_and_tileset, token_lifecycle, vision_test 409, vision_bridge fov),
+  new S3 QA-0115 ws_integration socket reset and QA-0116 fuzz never reaches get/set_field_schema.
+- Still open: QA-0076, QA-0078, QA-0081, QA-0088 to QA-0094, QA-0098, QA-0105 to QA-0116, divider eligibility,
+  retained-store HOLD, and the release gates in `plan.md`.
 
 ## Next actions
 
-1. Fix QA-0099 (tombstone guard) and QA-0100 (one deterministic tie-break shared by the docs entry and the DB merge).
-   Then re-run J01 delete and S-P2P CP5 live on a fresh stage.
-2. Fix QA-0101 to QA-0104 and the QA-0075 regression. QA-0104 needs synthetic MouseMotion in the input bridge.
-3. Run FULL pass 78 (2/3) after the fixes, then pass 79. Convergence needs zero new S1/S2 in two consecutive passes,
-   all gold PASS, and a strict checkpoint ledger.
-4. Carried over: QA-0086 bootstrap persistence, QA-0087 rollback, the relay-lab and owner-restart P2P runs, QA-0081,
-   test triage (QA-0077/0082/0094), CI Lint (QA-0078), the integrated sweep, CI, tag and release.
+1. Stage the new HEAD and re-verify live with the peer swarm: J01 delete through GUI/REST/MCP, S-P2P CP5
+   contested transforms on 3 peers, CP6 relay-disabled restart, CP7 revoked-editor REST, viewer join + assets.
+2. Run FULL pass 78 (2/3) then pass 79; convergence needs zero new S1/S2 in two consecutive passes and all gold.
+3. Fix the S3 test debt (QA-0079, QA-0082, QA-0115, QA-0116), then the integrated sweep, CI Lint (QA-0078), tag
+   and release.
 
 Only root owns Cargo/apps/process lifecycle/Git mutations. Preserve
 `conductor/.conductor_session_log`. No source/focused approval substitutes for

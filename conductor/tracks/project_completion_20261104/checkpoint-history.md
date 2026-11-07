@@ -786,3 +786,42 @@ Independent critic 2026-11-06 over terrain `b0598bbc`, api-timing `ed2f8bb1`, ui
 Only root owns Cargo/apps/process lifecycle/Git mutations. Preserve
 `conductor/.conductor_session_log`. No source/focused approval substitutes for
 remaining acceptance, and no release gate has been achieved.
+
+## Superseded status sections (rotated 2026-11-07, convergence-fixer recovery)
+
+### Current blockers and source work
+
+FULL QA pass 77 (1/3) on stage `a8e206c6-20261106225729173` (source `a8e206c6`, HEAD `c62aff4c` docs-only). It
+covered every journey J01-J11 (J07/J09/J11 partly) and S-P2P-replication on 3 peers. Lean evidence is in
+`qa/passes/77` (local, verdict.md). The register `qa/findings.jsonl` has 105 records. The pass is not converged and gold
+is 1/11: only G4 terrain passes (raise 200 / lower -100 exact, 16384/16384 samples).
+
+- New S1: QA-0099. Node delete always fails. GUI Confirm Delete, the Delete key, REST DELETE and MCP delete_node all
+  return "TombstoneNode soft-delete failed". This is the live counterpart of QA-0077. The suspected cause is the
+  `crud.rs` tombstone member-set guard comparing NONE against a rebound JSON null.
+- New S1: QA-0100. When two peers commit different X for the same node at the same instant, they stay diverged
+  permanently (7 vs -7), even after the editor restarts. This is a regression from pass 74 CP5.
+- New S2: QA-0101. The Viewer's Join dialog reports "timed out" although the join succeeded. The Viewer never learns a
+  native provider, so GLB placeholders and missing terrain follow.
+- New S2: QA-0102. Clear Properties only clears the annotation keys.
+- New S2: QA-0103. After a node leaves a group, its in-memory membership stays stale, so hiding the group still hides
+  the node.
+- New S2: QA-0104. The QA input bridge cannot orbit or pan, because no MouseMotion is emitted.
+- Reopened S2: QA-0075. Proposal Delete and stamp-asset Clear icons paint missing-glyph squares again.
+- New S3: QA-0105 to QA-0113. New S4: QA-0114.
+- Closed by live re-run: 25 fixed findings, listed in verdict.md.
+- Still reproducing: QA-0076, QA-0087, QA-0089, QA-0091, QA-0092 and QA-0093.
+- Still open from before: QA-0077, QA-0078 remainder, QA-0079, QA-0081, QA-0082, QA-0086, QA-0088, QA-0090, QA-0094,
+  QA-0098, divider eligibility, retained-store HOLD, and the release gates in `plan.md`.
+- Layout-check found 0 measured violations in 36 runs (3 sizes x 10 panel states). OS/UIA checks stay out of scope
+  because the sandbox returns desktop_refused.
+
+### Next actions
+
+1. Fix QA-0099 (tombstone guard) and QA-0100 (one deterministic tie-break shared by the docs entry and the DB merge).
+   Then re-run J01 delete and S-P2P CP5 live on a fresh stage.
+2. Fix QA-0101 to QA-0104 and the QA-0075 regression. QA-0104 needs synthetic MouseMotion in the input bridge.
+3. Run FULL pass 78 (2/3) after the fixes, then pass 79. Convergence needs zero new S1/S2 in two consecutive passes,
+   all gold PASS, and a strict checkpoint ledger.
+4. Carried over: QA-0086 bootstrap persistence, QA-0087 rollback, the relay-lab and owner-restart P2P runs, QA-0081,
+   test triage (QA-0077/0082/0094), CI Lint (QA-0078), the integrated sweep, CI, tag and release.
