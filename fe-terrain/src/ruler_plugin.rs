@@ -120,14 +120,18 @@ impl RulerHudInput {
         }).map(|frame| frame.placement.scene)
     }
 
-    /// Paint a complete bounded cosmetic footprint from this pass's owned geometry.
+    /// Paint a complete bounded cosmetic footprint and withhold it from scene pointer admission.
     pub fn paint(&self, ctx: &egui::Context, scaled: Option<ScaleBarSpec>) -> Option<egui::Rect> {
         self.current(ctx)?;
         let placement = self.frame.as_ref()?.placement;
-        match scaled {
+        let painted = match scaled {
             Some(spec) => paint_scale_bar(ctx, placement, spec),
             None => draw_unscaled_chip(ctx, placement),
+        };
+        if let Some(rect) = painted {
+            fe_renderer::scene_pointer::ScenePointerChrome::exclude_completed_hud(ctx, rect.intersect(placement.scene));
         }
+        painted
     }
 }
 
@@ -151,14 +155,17 @@ impl Plugin for RulerPlugin {
     }
 }
 
+/// The orbit camera that owns the primary egui context.
+type PrimaryOrbitCamera<'w, 's> = Query<'w, 's, (&'static GlobalTransform, &'static CameraProjection, &'static Camera),
+    (With<OrbitCameraController>, With<PrimaryEguiContext>, With<EguiContext>)>;
+
 /// Thin egui pass: all bar-length/label math lives in `ruler.rs` (testable).
 fn draw_scale_bar(
     mut ctx: EguiContexts,
     settings: Res<RulerSettings>,
     hud: Res<RulerHudInput>,
     active: Res<ActivePetalTerrain>,
-    cameras: Query<(&GlobalTransform, &CameraProjection, &Camera),
-        (With<OrbitCameraController>, With<PrimaryEguiContext>, With<EguiContext>)>,
+    cameras: PrimaryOrbitCamera,
 ) {
     if !settings.show_scale_bar {
         return;

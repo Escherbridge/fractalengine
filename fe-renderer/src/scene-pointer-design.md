@@ -59,3 +59,16 @@ closure releases its lock. The pass stamp is used only by this cosmetic accessor
 it does not enter any existing pointer validity predicate or derived comparison.
 Normal Update input still uses the last completed visible geometry exactly as
 before. No native authority, new exclusion producer or input exception is added.
+
+## §passive-hud — direct-painted HUD after finish (QA-0024, QA69)
+
+The terrain ruler/unscaled chip is a raw Foreground layer painter, not an Area,
+so egui's layer_id_at never reports it and the four-slot collector cannot hold
+it (it is placed from that collector's finished rects). QA69 showed a press on
+it with Brush or an armed Circle persisted a region. exclude_completed_hud adds
+one union slot to the completed snapshot of the SAME pass, only after finish
+and never while building; non-finite geometry fails the snapshot closed. The
+slot joins pointer/secondary admission via contains() but is never returned by
+completed_exclusions_current_ui, so ruler placement input and the native
+producer inventory are unchanged. Each begin_pass resets it, so a hidden ruler
+frees its scene on the next completed pass.

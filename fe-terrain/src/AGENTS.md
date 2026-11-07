@@ -1552,3 +1552,10 @@ background persistence target. Source encodings are identities, not permissions.
 The existing region integration and volume-request journeys extend to absent,
 partial, nonfinite, ready and true-zero coverage, no-mesh remeasurement and foreign
 Petal revisions. These assertions are source-authored until the parent sweep.
+
+## §ruler-pointer-exclusion
+
+QA69 (QA-0024): RulerHudInput::paint reports the complete painted footprint to
+fe-renderer's ScenePointerChrome::exclude_completed_hud, so the HUD's pixels
+never admit a scene press (Brush stroke, armed shape, camera). Pointer-only; see
+fe-renderer/src/scene-pointer-design.md §passive-hud.

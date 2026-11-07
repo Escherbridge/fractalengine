@@ -38,6 +38,8 @@ struct ChromeSnapshot {
     pixels_per_point: f32,
     rects: [egui::Rect; CHROME_CAPACITY],
     count: usize,
+    /// Passive HUD painted after finish in this pass; pointer-only, never cosmetic placement input.
+    hud: egui::Rect,
     valid: bool,
 }
 
@@ -54,7 +56,7 @@ impl SceneChromeRects {
 
 impl ChromeSnapshot {
     fn contains(self, point: egui::Pos2) -> bool {
-        self.rects[..self.count].iter().any(|rect| rect.contains(point))
+        self.hud.contains(point) || self.rects[..self.count].iter().any(|rect| rect.contains(point))
     }
     fn current(self, ctx: &egui::Context, expected: Option<ScenePointerStamp>) -> bool {
         self.valid && expected == Some(self.stamp) && self.stamp.valid()
@@ -113,7 +115,7 @@ impl ScenePointerChrome {
             state.building = state.expected.map(|stamp| ChromeSnapshot {
                 pass, stamp, viewport, screen, scene: egui::Rect::NOTHING,
                 pixels_per_point, rects: [egui::Rect::NOTHING; CHROME_CAPACITY],
-                count: 0, valid: stamp.navigation_revision == navigation_revision,
+                count: 0, hud: egui::Rect::NOTHING, valid: stamp.navigation_revision == navigation_revision,
             });
         });
     }
@@ -143,6 +145,19 @@ impl ScenePointerChrome {
                 && finite(scene) && scene.is_positive()).then_some(snapshot)
         });
         Self::store(ctx, state);
+    }
+
+    /// Passive direct-painted HUD drawn after this pass finished; see scene-pointer-design.md §passive-hud.
+    pub fn exclude_completed_hud(ctx: &egui::Context, rect: egui::Rect) {
+        let pass = ctx.cumulative_pass_nr();
+        ctx.data_mut(|data| {
+            let state = data.get_temp_mut_or_default::<Self>(key());
+            if state.building.is_some() { return; }
+            if let Some(snapshot) = state.completed.as_mut().filter(|snapshot| snapshot.pass == pass) {
+                if !finite(rect) { snapshot.valid = false; }
+                else if rect.is_positive() { snapshot.hud = snapshot.hud.union(rect); }
+            }
+        });
     }
 
     pub fn accepts(ctx: &egui::Context, scene: egui::Rect, pixels_per_point: f32, point: egui::Pos2) -> bool {
@@ -195,15 +210,19 @@ pub(crate) fn assert_completed_chrome_journey() {
         let ctx = egui::Context::default();
         ctx.set_pixels_per_point(scale);
         let screen = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1024.0, 768.0));
+        // The first pass after a zoom change rescales the previous rect instead of screen_rect.
+        let _warm = ctx.run(egui::RawInput { screen_rect: Some(screen), ..Default::default() }, |_| {});
         let stamp = ScenePointerStamp::new(Entity::from_bits(1),
             UVec2::new((1024.0 * scale) as u32, (768.0 * scale) as u32), 1.0, 7);
         let mut header = egui::Rect::NOTHING;
         let mut hint = egui::Rect::NOTHING;
         let mut scene = egui::Rect::NOTHING;
+        let ruler = egui::Rect::from_min_size(egui::pos2(30.0, 620.0), egui::vec2(112.0, 22.0));
         for _ in 0..2 {
             let _output = ctx.run(egui::RawInput { screen_rect: Some(screen), ..Default::default() }, |ctx| {
                 ScenePointerChrome::observe(ctx, stamp);
                 ScenePointerChrome::begin_pass(ctx, 7);
+                ScenePointerChrome::exclude_completed_hud(ctx, egui::Rect::EVERYTHING);
                 assert!(ScenePointerChrome::completed_exclusions_current_ui(ctx).is_none(),
                     "cosmetic consumers cannot reuse completed geometry during a pending pass");
                 let panel = egui::CentralPanel::default().show(ctx, |ui| {
@@ -215,10 +234,21 @@ pub(crate) fn assert_completed_chrome_journey() {
                     .fixed_pos(egui::pos2(400.0, 700.0)).show(ctx, |ui| { ui.label("Tool hint"); }).response.rect;
                 ScenePointerChrome::exclude(ctx, hint.intersect(screen));
                 ScenePointerChrome::finish_pass(ctx, scene, 7);
+                ScenePointerChrome::exclude_completed_hud(ctx, ruler);
                 let cosmetic = ScenePointerChrome::completed_exclusions_current_ui(ctx).unwrap();
-                assert_eq!(cosmetic.rects(), &[header, hint.intersect(screen)]);
+                assert_eq!(cosmetic.rects(), &[header, hint.intersect(screen)],
+                    "the passive HUD never feeds its own placement input");
             });
         }
+        let hud_region = CameraPointerRegion { rect: scene, pixels_per_point: scale };
+        let hud_point = Vec2::new(ruler.center().x, ruler.center().y) * scale;
+        assert!(!hud_region.accepts_editor_pointer(hud_point, &ctx), "QA-0024: the painted scale bar is not a scene press");
+        assert!(ScenePointerChrome::blocks_current_ui(&ctx, ruler.center()), "secondary clicks respect the painted HUD");
+        ScenePointerChrome::begin_pass(&ctx, 7);
+        ScenePointerChrome::exclude(&ctx, header);
+        ScenePointerChrome::exclude(&ctx, hint.intersect(screen));
+        ScenePointerChrome::finish_pass(&ctx, scene, 7);
+        assert!(hud_region.accepts_editor_pointer(hud_point, &ctx), "a pass that no longer paints the HUD frees its scene");
         let region = CameraPointerRegion { rect: scene, pixels_per_point: scale };
         let physical = |point: egui::Pos2| Vec2::new(point.x, point.y) * scale;
         let standalone = egui::Context::default();

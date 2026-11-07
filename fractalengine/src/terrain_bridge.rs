@@ -2080,6 +2080,9 @@ mod tests {
             let mut manager = UiManager::default();
             for scale in [0.75, 1.0, 1.25, 2.0, 1.0] {
                 ctx.set_pixels_per_point(scale);
+                // The first pass after a zoom change rescales the previous rect instead of screen_rect.
+                let _warm = ctx.run(egui::RawInput { screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO,
+                    egui::vec2(1280.0 / scale, 720.0 / scale))), ..Default::default() }, |_| {});
                 for physical_width in [1280.0, 1024.0] {
                     for results_height in [0.0, 120.0] {
                         for scaled in [false, true] {
@@ -2090,8 +2093,8 @@ mod tests {
                                     ..Default::default()
                                 }, |ctx| {
                                     ScenePointerChrome::observe(ctx, ScenePointerStamp::new(Entity::from_bits(1),
-                                        UVec2::new(physical_width as u32, 720), 1.0, nav.intent_revision()));
-                                    ScenePointerChrome::begin_pass(ctx, nav.intent_revision());
+                                        UVec2::new(physical_width as u32, 720), 1.0, nav.intent_revision));
+                                    ScenePointerChrome::begin_pass(ctx, nav.intent_revision);
                                     egui::SidePanel::left("ruler-real-tree").exact_width((ctx.viewport_rect().width() * 0.25).min(220.0))
                                         .show(ctx, |_| {});
                                     egui::SidePanel::right("ruler-real-inspector").exact_width((ctx.viewport_rect().width() * 0.25).min(320.0))
@@ -2108,7 +2111,7 @@ mod tests {
                                             &fe_ui::plugin::ViewportCursorWorld::default(), &mut manager,
                                             &fe_ui::plugin::LocalUserRole::default(), true);
                                     }).response.rect;
-                                    ScenePointerChrome::finish_pass(ctx, scene, nav.intent_revision());
+                                    ScenePointerChrome::finish_pass(ctx, scene, nav.intent_revision);
                                     let chrome = ScenePointerChrome::completed_exclusions_current_ui(ctx).unwrap();
                                     assert!(chrome.rects().len() >= 2, "real navigation header and long Select hint are present");
                                     hud.publish(ctx, scene, chrome.rects());
@@ -2119,6 +2122,8 @@ mod tests {
                                         assert!(scene.contains_rect(footprint));
                                         assert!(chrome.rects().iter().all(|rect| !rect.intersect(footprint).is_positive()),
                                             "actual complete ruler/chip paint cannot overlap actual same-pass chrome");
+                                        assert!(ScenePointerChrome::blocks_current_ui(ctx, footprint.center()),
+                                            "QA-0024: the painted ruler/chip is withheld from scene pointer admission");
                                     }
                                     if physical_width == 1280.0 && scale == 1.0 && results_height == 0.0 {
                                         assert!(footprint.is_some(), "ordinary scenes retain a ruler above the real hint");
