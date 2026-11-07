@@ -271,6 +271,7 @@ fn summary(samples: &[Sample], phase: Phase) -> Value {
         "minimum_ms": values[0], "maximum_ms": values[n - 1], "stddev_ms": stddev})
 }
 
+#[allow(clippy::too_many_arguments)] // Bevy system parameters
 fn collect(
     mut state: ResMut<Collector>,
     diagnostics: Res<DiagnosticsStore>,

@@ -502,7 +502,6 @@ pub(super) fn handle_tool_shortcuts(
                 &mut visibility,
                 &mut ui_mgr,
             );
-            return;
         }
     }
 }
@@ -691,8 +690,9 @@ mod tests {
             position: [1.0, 2.0, 3.0],
             ..Default::default()
         };
-        let tree = VerseManager {
-            verses: vec![VerseEntry {
+        let tree = {
+            let mut value = VerseManager::default();
+            value.verses = vec![VerseEntry {
                 id: "v1".into(),
                 fractals: vec![FractalEntry {
                     id: "f1".into(),
@@ -704,8 +704,8 @@ mod tests {
                     ..Default::default()
                 }],
                 ..Default::default()
-            }],
-            ..Default::default()
+            }];
+            value
         };
         let nav = NavigationManager {
             active_verse_id: Some("v1".into()),

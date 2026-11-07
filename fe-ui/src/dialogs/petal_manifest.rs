@@ -188,9 +188,8 @@ pub fn render_petal_manifest(ctx: &egui::Context, ui_mgr: &mut UiManager, nav: &
                     }).response.named(ui, "Installed hexon choices");
                 ui.checkbox(&mut manual, "Enter another ID manually").observed(ui);
             }
-            if manual {
-                if ui.add(crate::ui_shell::layout_policy::text_input(ui, add_hexon_id_buf).hint_text("hexon-id").desired_width(ui.available_width())).named(ui, "Hexon ID to add").changed() { *dirty = true; }
-            }
+            if manual
+                && ui.add(crate::ui_shell::layout_policy::text_input(ui, add_hexon_id_buf).hint_text("hexon-id").desired_width(ui.available_width())).named(ui, "Hexon ID to add").changed() { *dirty = true; }
             ctx.data_mut(|data| data.insert_temp(scope.with("manual_id"), manual));
             ui.horizontal_wrapped(|ui| {
                 ui.label("Type:");

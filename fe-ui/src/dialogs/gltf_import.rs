@@ -405,7 +405,8 @@ mod tests {
             }, |ctx| render_gltf_import_dialog(ctx, &mut manager, &nav, &tx, 1.0));
             assert!(!output.platform_output.accesskit_update.unwrap().nodes.iter()
                 .any(|(_, node)| node.label() == Some("Close window")), "pending import still withholds native Close");
-            assert!(manager.gltf_import_request.waiting_within(5.5, IMPORT_LOCK_TIMEOUT_SECONDS));
+            let request = &manager.gltf_import_request;
+            assert!(request.pending && !request.outcome_unknown && 5.5 - request.sent_at < IMPORT_LOCK_TIMEOUT_SECONDS);
             assert_eq!(ctx.style().spacing.icon_width, ordinary_icon_width);
             assert!(rx.try_recv().is_err());
         }

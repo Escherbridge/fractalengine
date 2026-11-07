@@ -68,7 +68,7 @@ pub async fn terrain_credential_reply(db: &Db, request: fe_runtime::terrain_gran
 /// Fences the exact admitted credential inside its containing terrain transaction.
 pub fn terrain_credential_fence(grant: &fe_runtime::terrain_grant::TerrainApiGrant,
     snapshot: &fe_runtime::terrain_grant::TerrainCredentialSnapshot)
-    -> anyhow::Result<(Vec<String>, Vec<(String, Value)>)>
+    -> anyhow::Result<crate::GuardedStatements>
 {
     anyhow::ensure!(snapshot.generation() == grant.generation(), "Terrain credential generation changed");
     anyhow::ensure!(snapshot.tokens() == grant.tokens(), "Terrain credential changed since admission");

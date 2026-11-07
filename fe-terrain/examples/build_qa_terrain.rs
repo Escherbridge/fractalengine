@@ -13,6 +13,9 @@ use fe_terrain::{
 use image::{ImageFormat, Rgb, RgbImage};
 use serde_json::json;
 
+/// Named encoded tile payloads in generation order.
+type NamedTiles = Vec<(String, Vec<u8>)>;
+
 const TILESET_ID: &str = "qa-analytic-terrain";
 const ZOOM: u8 = 17;
 const PIXELS: u32 = 256;
@@ -139,7 +142,7 @@ fn manifest() -> Result<HexonManifest> {
 fn elevation_tiles(
     center: TileCoord,
     origin: &Projection,
-) -> Result<(Vec<(String, Vec<u8>)>, usize, f64)> {
+) -> Result<(NamedTiles, usize, f64)> {
     let mut tiles = Vec::with_capacity(TILE_COUNT);
     let mut flat_samples = 0;
     let mut peak_m: f64 = 0.0;

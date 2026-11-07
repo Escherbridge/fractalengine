@@ -796,17 +796,18 @@ mod tests {
             ..Default::default()
         };
         let path_status = crate::path_ops::PathEditStatus::default();
-        let mut tool_panel = crate::panels::tool_panel::ToolPanelState {
-            spacing_value: f32::NAN,
-            shape_radius: f32::INFINITY,
-            shape_radius_z: f32::NAN,
-            stamp_scale: f32::NEG_INFINITY,
-            stamp_yaw_deg: f32::NAN,
-            stamp_arc_m: f32::INFINITY,
-            terrain_footprint_radius: f32::NAN,
-            terrain_target_height: f32::INFINITY,
-            terrain_delta: f32::NEG_INFINITY,
-            ..Default::default()
+        let mut tool_panel = {
+            let mut value = crate::panels::tool_panel::ToolPanelState::default();
+            value.spacing_value = f32::NAN;
+            value.shape_radius = f32::INFINITY;
+            value.shape_radius_z = f32::NAN;
+            value.stamp_scale = f32::NEG_INFINITY;
+            value.stamp_yaw_deg = f32::NAN;
+            value.stamp_arc_m = f32::INFINITY;
+            value.terrain_footprint_radius = f32::NAN;
+            value.terrain_target_height = f32::INFINITY;
+            value.terrain_delta = f32::NEG_INFINITY;
+            value
         };
         let mut proposal_state = crate::terrain_proposal_state::ProposalEditState::default();
         proposal_state.push_new(

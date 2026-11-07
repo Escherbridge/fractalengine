@@ -39,6 +39,7 @@ use crate::terrain_proposal_state::{ProposalEditState, ProposalOp};
 /// Actions queued by the egui render pass, drained by a single Update system.
 /// Replaces scattered one-frame signal fields.
 #[derive(Debug, Clone)]
+#[allow(clippy::large_enum_variant)] // one-frame queue entries; boxing would touch every producer
 pub enum UiAction {
     /// Open the portal webview for the given URL (replaces WebViewOpenRequest.url).
     OpenPortal {
@@ -2006,9 +2007,61 @@ pub(crate) fn process_ui_actions(
     }
 }
 
+fn active_path_edit_allowed(
+    role:&crate::plugin::LocalUserRole, nav:&crate::navigation_manager::NavigationManager,
+    hierarchy:&crate::verse_manager::VerseManager, state:&crate::gis::PathEditorState, track:&str,
+) -> bool {
+    role.role.is_some_and(|role|role.can_edit()) && state.editing_track_id.as_deref()==Some(track)
+        && nav.active_scope().is_some()
+        && hierarchy.find_petal(nav.active_petal_id.as_deref().unwrap_or_default())
+            .is_some_and(|petal|petal.nodes.iter().any(|node|node.id==track))
+}
+
+fn queue_checked_point(
+    undo: &mut crate::undo::UndoState,
+    nav: &crate::navigation_manager::NavigationManager,
+    hierarchy: &crate::verse_manager::VerseManager,
+    ops: &mut crate::path_ops::PendingPathOps,
+    state: &crate::gis::PathEditorState,
+    track: String,
+    index: usize,
+    position: [f32; 3],
+    ui: &mut UiManager,
+    now: f64,
+) {
+    if state.editing_track_id.as_deref() != Some(track.as_str()) {
+        ui.show_advisory("Path selection changed; move skipped", now);
+        return;
+    }
+    let Some(before) = state.points.get(index).map(|row| row.position) else {
+        ui.show_advisory("Path point is unavailable", now);
+        return;
+    };
+    match undo.reserve_path(
+        nav,
+        &track,
+        index,
+        before,
+        position,
+        hierarchy.committed_versions.get(&track).copied(),
+        &state.points,
+    ) {
+        Ok(Some(request_id)) => {
+            ops.0.push(crate::path_ops::PathOp::CheckedMovePoint {
+                track_node_id: track,
+                request_id,
+            });
+            ui.show_toast("Saving point move...", now);
+        }
+        Ok(None) => {}
+        Err(error) => ui.show_advisory(error, now),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use fe_runtime::messages::DbCommand;
 
     // ---- W1-S1: notice queue (OD-1) ---------------------------------------
 
@@ -2845,56 +2898,5 @@ mod tests {
             Some("track-1"),
             "deleting a DIFFERENT track must not touch the active editing session"
         );
-    }
-}
-
-fn active_path_edit_allowed(
-    role:&crate::plugin::LocalUserRole, nav:&crate::navigation_manager::NavigationManager,
-    hierarchy:&crate::verse_manager::VerseManager, state:&crate::gis::PathEditorState, track:&str,
-) -> bool {
-    role.role.is_some_and(|role|role.can_edit()) && state.editing_track_id.as_deref()==Some(track)
-        && nav.active_scope().is_some()
-        && hierarchy.find_petal(nav.active_petal_id.as_deref().unwrap_or_default())
-            .is_some_and(|petal|petal.nodes.iter().any(|node|node.id==track))
-}
-
-fn queue_checked_point(
-    undo: &mut crate::undo::UndoState,
-    nav: &crate::navigation_manager::NavigationManager,
-    hierarchy: &crate::verse_manager::VerseManager,
-    ops: &mut crate::path_ops::PendingPathOps,
-    state: &crate::gis::PathEditorState,
-    track: String,
-    index: usize,
-    position: [f32; 3],
-    ui: &mut UiManager,
-    now: f64,
-) {
-    if state.editing_track_id.as_deref() != Some(track.as_str()) {
-        ui.show_advisory("Path selection changed; move skipped", now);
-        return;
-    }
-    let Some(before) = state.points.get(index).map(|row| row.position) else {
-        ui.show_advisory("Path point is unavailable", now);
-        return;
-    };
-    match undo.reserve_path(
-        nav,
-        &track,
-        index,
-        before,
-        position,
-        hierarchy.committed_versions.get(&track).copied(),
-        &state.points,
-    ) {
-        Ok(Some(request_id)) => {
-            ops.0.push(crate::path_ops::PathOp::CheckedMovePoint {
-                track_node_id: track,
-                request_id,
-            });
-            ui.show_toast("Saving point move...", now);
-        }
-        Ok(None) => {}
-        Err(error) => ui.show_advisory(error, now),
     }
 }

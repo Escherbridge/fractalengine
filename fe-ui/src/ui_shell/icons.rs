@@ -63,7 +63,7 @@ impl Icon {
         let rect = egui::Rect::from_center_size(rect.center(), egui::Vec2::splat(side));
         let inner = rect.shrink(1.25);
         let point = |x: f32, y: f32| egui::pos2(inner.left() + inner.width() * x, inner.top() + inner.height() * y);
-        let stroke = egui::Stroke::new(1.25, color);
+        let stroke = egui::Stroke::new(1.25_f32, color);
         let line = |points: &[[f32; 2]]| {
             for pair in points.windows(2) {
                 painter.line_segment([point(pair[0][0], pair[0][1]), point(pair[1][0], pair[1][1])], stroke);

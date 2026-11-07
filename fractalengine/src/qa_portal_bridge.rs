@@ -62,6 +62,7 @@ pub(crate) fn context(
     })
 }
 
+#[allow(clippy::too_many_arguments)] // Bevy system parameters
 fn serve(
     mut host: ResMut<Host>,
     nav: Res<NavigationManager>,
@@ -90,12 +91,17 @@ fn serve(
         let native = backend
             .as_mut()
             .and_then(|resource| resource.backend.as_mut());
-        if !valid || native.is_none() {
-            if let Some(native) = native {
-                native.fixture_cancel();
+        let native = match native {
+            Some(native) if valid => native,
+            other => {
+                if let Some(native) = other {
+                    native.fixture_cancel();
+                }
+                job.request.reply(Err(fixture::stale()));
+                return;
             }
-            job.request.reply(Err(fixture::stale()));
-        } else if let Some(result) = native.unwrap().fixture_poll() {
+        };
+        if let Some(result) = native.fixture_poll() {
             if !job.request.op.is_current() || !view.covers(&job.request.caller_scope, Some(&nav)) {
                 job.request.reply(Err(fixture::stale()));
                 return;

@@ -449,7 +449,6 @@ mod tests {
             !handoff.take_for("C", &hierarchy) && handoff.pending(),
             "A mismatched take cannot discard the ready-B ownership lease"
         );
-        drop(hierarchy);
         app.insert_resource(handoff);
         app.world_mut()
             .resource_mut::<NavigationManager>()

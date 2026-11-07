@@ -29,6 +29,7 @@ pub(super) fn successor(value: u64) -> Option<u64> {
         .filter(|next| *next <= isize::MAX as u64)
 }
 
+#[allow(deprecated)] // try_update needs Rust 1.95; MSRV is 1.91
 pub(super) fn fresh() -> Option<u64> {
     match NEXT.fetch_update(Ordering::SeqCst, Ordering::SeqCst, successor) {
         Ok(value) => Some(value),

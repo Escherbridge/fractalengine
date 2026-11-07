@@ -1138,9 +1138,10 @@ mod tests {
             expanded: true,
             fractals: vec![fractal],
         };
-        VerseManager {
-            verses: vec![verse],
-            ..Default::default()
+        {
+            let mut value = VerseManager::default();
+            value.verses = vec![verse];
+            value
         }
     }
 

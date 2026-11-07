@@ -56,7 +56,7 @@ struct PreparedTerrainWrite {
     petal: String,
     terrain: Option<serde_json::Value>,
     authority: super::entity::ParentMutation,
-    credential_fence: Option<(Vec<String>, Vec<(String, serde_json::Value)>)>,
+    credential_fence: Option<crate::GuardedStatements>,
 }
 
 /// Capture the actual local writer's authority and exact target ancestry.
@@ -309,6 +309,8 @@ mod tests {
             .expect("mem db");
         db.use_ns("test").use_db("test").await.expect("ns/db");
         crate::schema::apply_all(&db).await.expect("schema");
+        // DB-thread startup always defines api_token before serving (lib.rs startup).
+        crate::api_token_store::apply_api_token_schema(&db).await.expect("api_token schema");
         crate::op_log::init_hlc(0);
         db.query(
             "CREATE verse CONTENT { verse_id: 'v1', name: 'V', created_by: 'owner-did', \

@@ -102,7 +102,7 @@ async fn run() -> Result<Value> {
         files::create_json(&context.run.join("legacy-fixture.json"), &prepared)?;
         return Ok(prepared);
     }
-    let report = inspect::run(&context, &request, &mode).await?;
+    let report = inspect::run(context, &request, &mode).await?;
     if mode != "resume" {
         files::create_json(&context.run.join(format!("legacy-{mode}.json")), &report)?;
     }

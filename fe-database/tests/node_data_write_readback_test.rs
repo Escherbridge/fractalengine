@@ -391,7 +391,7 @@ fn node_data_written_on_both_planes_reads_back_through_query_tab_raw_query() {
             &h.db,
             "SELECT * FROM node",
             &Default::default(),
-            &[private_petal.clone()],
+            std::slice::from_ref(&private_petal),
             "local-node",
             "viewer-denied".into(),
         )
@@ -410,7 +410,7 @@ fn node_data_written_on_both_planes_reads_back_through_query_tab_raw_query() {
             &h.db,
             "SELECT * FROM node",
             &Default::default(),
-            &[private_petal.clone()],
+            std::slice::from_ref(&private_petal),
             "local-node",
             "viewer-read".into(),
         )
@@ -424,7 +424,7 @@ fn node_data_written_on_both_planes_reads_back_through_query_tab_raw_query() {
             &h.db,
             "SELECT * FROM node",
             &Default::default(),
-            &[private_petal.clone()],
+            std::slice::from_ref(&private_petal),
             "local-node",
         )
         .await

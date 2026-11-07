@@ -323,13 +323,13 @@ pub(crate) fn role_controls(
                 }).response.named(ui,format_args!("Role to assign for {did}"));
                 let grantable=matches!(draft.as_str(),"viewer"|"editor"|"manager") || (owner && draft=="none");
                 ui.add_enabled_ui(grantable,|ui| {
-                    if crate::panels::widgets::confirm_button(ui,("assign_role",&state.confirmed_request_id,did,draft.as_str()),"Save role...","Confirm role change",&format!("Assign role {draft} to {did}")) {
+                    if crate::panels::widgets::confirm_button(ui,("assign_role",&state.confirmed_request_id,did,draft.as_str()),"Save role...","Confirm role change",format!("Assign role {draft} to {did}")) {
                         action=Some(EntityAccessAction::Assign {peer_did:did.clone(),role:draft.clone()});
                     }
                 });
                 let revoke_label=if owner {"Block access here..."}else{"Revoke my grant..."};
                 if owner {ui.label("Owner revocation blocks this scope. Other grants may still provide access elsewhere.");}
-                if crate::panels::widgets::confirm_button(ui,("revoke_role",&state.confirmed_request_id,did),revoke_label,"Confirm revoke",&format!("Revoke role grant for {did}")) {
+                if crate::panels::widgets::confirm_button(ui,("revoke_role",&state.confirmed_request_id,did),revoke_label,"Confirm revoke",format!("Revoke role grant for {did}")) {
                     action=Some(EntityAccessAction::Revoke {peer_did:did.clone()});
                 }
             });
@@ -393,7 +393,7 @@ pub(crate) fn token_controls(
                     ),
                     "Revoke token...",
                     "Confirm token revoke",
-                    &format!("Revoke API token {}", token.jti),
+                    format!("Revoke API token {}", token.jti),
                 ) {
                     action = Some(EntityAccessAction::RevokeToken {
                         jti: token.jti.clone(),

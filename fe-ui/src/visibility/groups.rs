@@ -213,6 +213,7 @@ pub(crate) fn check_registry(
     })
 }
 
+#[allow(clippy::result_large_err)] // TrySendError hands the unsent command back to the caller
 fn queue_registry_read(
     db_sender: &DbCommandSender,
     state: &mut VisibilityState,

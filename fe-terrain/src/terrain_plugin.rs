@@ -2593,8 +2593,10 @@ fn answer_volume_report_requests(
     );
 
     // Match scene geometry to this selected combined terrain surface.
-    let mut object_impacts = fe_renderer::scene_analysis::ObjectImpactReport::default();
-    object_impacts.scene_revision = scene.as_ref().map_or(0, |scene| scene.revision);
+    let mut object_impacts = fe_renderer::scene_analysis::ObjectImpactReport {
+        scene_revision: scene.as_ref().map_or(0, |scene| scene.revision),
+        ..Default::default()
+    };
     if let Some(scene) = scene
         .as_ref()
         .filter(|scene| scene.petal_id.as_deref() == Some(request.petal_id.as_str()))

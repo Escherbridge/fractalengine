@@ -100,7 +100,7 @@ impl StampInteractionState {
     /// Forget a removed promoted row without inventing another promotion result.
     pub(crate) fn forget_node(&mut self, node_id: &str) {
         let removed: std::collections::HashSet<_> = self.promoted.iter()
-            .filter_map(|(stamp, id)| (id == node_id || stamp.track_node_id == node_id).then(|| stamp.clone()))
+            .filter(|&(stamp, id)| id == node_id || stamp.track_node_id == node_id).map(|(stamp, _id)| stamp.clone())
             .collect();
         self.promoted.retain(|stamp, _| !removed.contains(stamp));
         self.loaded_properties.retain(|stamp, _| stamp.track_node_id != node_id && !removed.contains(stamp));
@@ -671,9 +671,7 @@ pub(crate) fn hydrate_promoted_stamp(
     let obsolete: Vec<_> = stamp_state
         .promoted
         .iter()
-        .filter_map(|(stamp, id)| {
-            (id == node_id && Some(stamp) != identity.as_ref()).then(|| stamp.clone())
-        })
+        .filter(|&(stamp, id)| id == node_id && Some(stamp) != identity.as_ref()).map(|(stamp, _id)| stamp.clone())
         .collect();
     for stamp in obsolete {
         stamp_state.promoted.remove(&stamp);
@@ -731,6 +729,7 @@ fn json_f32_array<const N: usize>(value: &serde_json::Value) -> Option<[f32; N]>
 #[cfg(test)]
 mod tests {
     use super::*;
+    use bevy_egui::egui;
 
     fn sender() -> (DbCommandSender, crossbeam::channel::Receiver<DbCommand>) {
         let (tx, rx) = crossbeam::channel::bounded(8);

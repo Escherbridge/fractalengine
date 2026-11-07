@@ -81,7 +81,7 @@ impl RowSelection {
             painter.rect_stroke(
                 rect,
                 2.0,
-                egui::Stroke::new(1.0, color),
+                egui::Stroke::new(1.0_f32, color),
                 egui::StrokeKind::Inside,
             );
         }

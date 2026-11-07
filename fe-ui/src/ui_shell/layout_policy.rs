@@ -27,7 +27,7 @@ impl DividerMetrics {
         (radius.is_finite() && clearance.is_finite() && gutter.is_finite()
             && (clearance - radius) * scale >= 1.0 && (gutter - clearance) * scale >= 1.0
             && gutter >= 0.0 && gutter <= i8::MAX as f32)
-            .then(|| Self { radius, gutter: gutter as i8, clearance })
+            .then_some(Self { radius, gutter: gutter as i8, clearance })
     }
 
     fn horizontal_hit(self, edge: f32, scale: f32) -> Option<std::ops::RangeInclusive<f32>> {
@@ -196,7 +196,7 @@ pub struct DividerEligibility {
 
 impl DividerEligibility {
     fn interaction_blocker(self) -> Option<&'static str> {
-        self.gates.blocker().or_else(|| {
+        self.gates.blocker().or({
             if !self.input_focused { Some("input_unfocused") }
             else if self.escape_pressed { Some("escape_pressed") }
             else if self.popup_open { Some("popup_open") }
@@ -858,14 +858,15 @@ fn extend_physical_targets_journey() {
             assert_eq!(ctx.style().spacing.interact_size.y, minimum);
             assert!(minimum * scale >= 20.0);
             egui::CentralPanel::default().show(ctx, |ui| {
-                let mut hits = Vec::new();
-                hits.push(ui.button("Ordinary action").interact_rect);
-                hits.push(small_button(ui, "Compact action").interact_rect);
-                hits.push(action(ui, egui::Button::new("+"), "Add fixture").interact_rect);
-                hits.push(ui.add_sized(control_size(ctx, [26.0, 26.0]), egui::Button::new("X")).interact_rect);
-                hits.push(ui.add(text_input(ui, &mut text).desired_width(100.0)).interact_rect);
-                hits.push(ui.checkbox(&mut checked, "Flag").interact_rect);
-                hits.push(ui.radio(checked, "Mode").interact_rect);
+                let mut hits = vec![
+                    ui.button("Ordinary action").interact_rect,
+                    small_button(ui, "Compact action").interact_rect,
+                    action(ui, egui::Button::new("+"), "Add fixture").interact_rect,
+                    ui.add_sized(control_size(ctx, [26.0, 26.0]), egui::Button::new("X")).interact_rect,
+                    ui.add(text_input(ui, &mut text).desired_width(100.0)).interact_rect,
+                    ui.checkbox(&mut checked, "Flag").interact_rect,
+                    ui.radio(checked, "Mode").interact_rect,
+                ];
                 let header = ui.allocate_ui(egui::vec2(80.0, minimum), |ui| {
                     let title = "A long native section title that must remain within its parent";
                     let expected_id = ui.make_persistent_id(egui::Id::new(title));

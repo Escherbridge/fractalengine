@@ -62,7 +62,7 @@ pub(crate) async fn authorized_node_scope(
 pub(crate) fn scope_fence(
     scope: &str,
     node_id: Option<&str>,
-) -> anyhow::Result<(Vec<String>, Vec<(String, Value)>)> {
+) -> anyhow::Result<crate::GuardedStatements> {
     let parts = crate::parse_scope(scope)?;
     let fractal = parts
         .fractal_id

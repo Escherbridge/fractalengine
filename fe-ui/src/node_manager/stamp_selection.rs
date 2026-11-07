@@ -438,7 +438,7 @@ impl StampPickParams<'_, '_> {
             return;
         };
         let Some(source) = source_for(
-            &track,
+            track,
             &self.nav,
             &self.path,
             &self.cache,

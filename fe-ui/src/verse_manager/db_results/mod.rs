@@ -403,11 +403,10 @@ pub(super) fn apply_db_results(
                                 &mut caches.visibility,
                                 &mut caches.callout_map,
                             );
-                            if nav.active_petal_id.as_deref() == Some(current.node.petal_id.as_str()) {
-                                if !verse_mgr.queue_current_path(&current.node.node_id, &current.node.petal_id, Some(current.properties.clone())) {
+                            if nav.active_petal_id.as_deref() == Some(current.node.petal_id.as_str())
+                                && !verse_mgr.queue_current_path(&current.node.node_id, &current.node.petal_id, Some(current.properties.clone())) {
                                     ui_mgr.show_advisory("Current path refresh is full; reopen this Petal to refresh its geometry", caches.time.elapsed_secs_f64());
                                 }
-                            }
                         }
                         crate::visibility::groups::apply_registry_loaded(
                             &mut caches.visibility,
@@ -549,11 +548,10 @@ pub(super) fn apply_db_results(
                     &mut caches.visibility,
                     &mut caches.callout_map,
                 );
-                if nav.active_petal_id.as_deref() == Some(current.node.petal_id.as_str()) {
-                    if !verse_mgr.queue_current_path(&current.node.node_id, &current.node.petal_id, Some(current.properties.clone())) {
+                if nav.active_petal_id.as_deref() == Some(current.node.petal_id.as_str())
+                    && !verse_mgr.queue_current_path(&current.node.node_id, &current.node.petal_id, Some(current.properties.clone())) {
                         ui_mgr.show_advisory("Current path refresh is full; reopen this Petal to refresh its geometry", caches.time.elapsed_secs_f64());
                     }
-                }
             }
         }
         inspector
@@ -1650,7 +1648,7 @@ mod tests {
             Some("VERSE#populated-verse-FRACTAL#f-PETAL#p")
         );
         let mut nav = NavigationManager::default();
-        hierarchy::select_initial_navigation(&[empty.clone()], &mut nav, true);
+        hierarchy::select_initial_navigation(std::slice::from_ref(&empty), &mut nav, true);
         assert_eq!(nav.active_scope().as_deref(), Some("VERSE#empty-verse"));
         let mut nav = NavigationManager::default();
         let mut ui = UiManager::default();
@@ -1659,10 +1657,10 @@ mod tests {
         ui.close_dialog();
         assert!(!ui.join_flow.active());
         let allow = ui.join_flow.allow_initial_navigation(&nav);
-        hierarchy::select_initial_navigation(&[empty.clone()],&mut nav,allow);
+        hierarchy::select_initial_navigation(std::slice::from_ref(&empty),&mut nav,allow);
         assert!(nav.active_verse_id.is_none(),"Cancel retains suppression when a late admitted HierarchyLoaded reaches an empty cursor");
         let allow = ui.join_flow.allow_initial_navigation(&nav);
-        hierarchy::select_initial_navigation(&[empty.clone()],&mut nav,allow);
+        hierarchy::select_initial_navigation(std::slice::from_ref(&empty),&mut nav,allow);
         assert!(nav.active_verse_id.is_none(),"Additional uncorrelated reloads cannot resurrect a canceled join");
         nav.navigate_to_verse("chosen","Chosen explicitly");nav.back_from_verse();
         assert!(ui.join_flow.allow_initial_navigation(&nav),"An explicit navigation lifecycle changes the admission cursor revision");
@@ -3244,7 +3242,7 @@ mod tests {
         assert_eq!(source.local_history_version(), None, "peer current state is not a local history receipt");
         app.world_mut().resource_mut::<NodeManager>().select(ordinary, "cold-node");
         let before = *app.world().get::<Transform>(ordinary).unwrap();
-        app.world_mut().resource_mut::<NodeManager>().mark_transform_committed(ordinary, before);
+        let _ = app.world_mut().resource_mut::<NodeManager>().mark_transform_committed(ordinary, before);
         app.world_mut().get_mut::<Transform>(ordinary).unwrap().translation.x = 23.0;
         app.world_mut().write_message(DbResult::ReplicatedNodeCurrent { current: remote.clone() });
         app.update();

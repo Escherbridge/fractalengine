@@ -347,8 +347,8 @@ impl Fetches {
                     .collect();
                 for node in matched {
                     self.pending.remove(&node);
-                    if self.wanted.get(&node).is_some_and(|wanted| wanted.can_refresh(frame.manager, frame.nav)) { refresh.push(node.clone()); }
-                    else if frame.nav.active_verse_id.as_deref() == Some(verse_id.as_str()) && frame.nav.active_petal_id.as_deref().is_some_and(|petal| {
+                    if self.wanted.get(&node).is_some_and(|wanted| wanted.can_refresh(frame.manager, frame.nav))
+                    || frame.nav.active_verse_id.as_deref() == Some(verse_id.as_str()) && frame.nav.active_petal_id.as_deref().is_some_and(|petal| {
                         frame.manager.scene_asset_source(&node, petal).is_some_and(|source| matches!(source.asset, ReplicaNodeAsset::LocalBlob { content_hash, .. }
                             if fe_runtime::blob_store::hash_from_hex(content_hash).is_ok_and(|known| known == *hash)))
                     }) { refresh.push(node.clone()); }

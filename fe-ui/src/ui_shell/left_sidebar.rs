@@ -263,7 +263,7 @@ mod tests {
                 );
             }
         }
-        use super::super::layout_policy::{self, WindowTargets};
+        use super::super::layout_policy::WindowTargets;
         let ctx = egui::Context::default();
         let ordinary_icon_width = ctx.style().spacing.icon_width;
         let mut body_seen = false;

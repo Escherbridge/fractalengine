@@ -1360,6 +1360,8 @@ impl TestPeer {
                             }
                         }
                         Ok(DbCommand::Shutdown) | Err(_) => break,
+                        // Commands this simplified loop does not model; dropping closes any reply channel.
+                        Ok(_) => tracing::warn!("harness peer: DbCommand not modelled; dropped"),
                     }
                 }
                 tracing::info!("Peer DB thread shutting down");

@@ -212,7 +212,8 @@ mod tests {
     fn options_hints_exist_exactly_for_the_tools_without_live_controls() {
         // Never-blank (ui_ux.md §7) without double-documenting (finding #15):
         // Pen/Brush have real Options bodies, everything else needs hints.
-        for tool in [Tool::Select] {
+        {
+            let tool = Tool::Select;
             assert!(
                 !panel_descriptor(tool).options_hints.is_empty(),
                 "{tool:?} has no live Options controls and no hints either"

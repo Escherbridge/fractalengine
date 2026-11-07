@@ -5577,6 +5577,7 @@ dependencies = [
  "fe-database",
  "fe-hexon",
  "fe-identity",
+ "fe-policy",
  "fe-renderer",
  "fe-runtime",
  "fe-sdk",
@@ -5587,6 +5588,7 @@ dependencies = [
  "serde",
  "serde_json",
  "tempfile",
+ "tokio",
  "ulid",
  "url",
 ]

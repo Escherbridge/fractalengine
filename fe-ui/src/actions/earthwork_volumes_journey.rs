@@ -1,3 +1,4 @@
+#![allow(clippy::field_reassign_with_default)] // default-then-set is clearer in test fixtures
 use super::*;
 use crate::verse_manager::{FractalEntry, NodeEntry, PetalEntry, VerseEntry};
 use fe_renderer::terrain_overlay::{EarthworkVolumePair, EarthworkVolumeSource};
@@ -44,11 +45,12 @@ fn brush_commit_bind_and_volume_gate_compose_without_repeat_writes() {
     };
     map.record("p", &region, "node");
     let mut nav = NavigationManager::default();
-    nav.navigate_to_verse("v".into(), "Verse".into());
-    nav.navigate_to_fractal("f".into(), "Fractal".into());
-    nav.navigate_to_petal("p".into());
-    let manager = VerseManager {
-        verses: vec![VerseEntry {
+    nav.navigate_to_verse("v", "Verse");
+    nav.navigate_to_fractal("f", "Fractal");
+    nav.navigate_to_petal("p");
+    let manager = {
+        let mut value = VerseManager::default();
+        value.verses = vec![VerseEntry {
             id: "v".into(),
             fractals: vec![FractalEntry {
                 id: "f".into(),
@@ -63,8 +65,8 @@ fn brush_commit_bind_and_volume_gate_compose_without_repeat_writes() {
                 ..Default::default()
             }],
             ..Default::default()
-        }],
-        ..Default::default()
+        }];
+        value
     };
     let role = LocalUserRole {
         role: Some(fe_database::RoleLevel::Owner),
@@ -442,7 +444,7 @@ fn brush_commit_bind_and_volume_gate_compose_without_repeat_writes() {
     );
     retagged_state.reports.clear();
     let mut foreign_nav = NavigationManager::default();
-    foreign_nav.navigate_to_verse("foreign".into(), "Other".into());
+    foreign_nav.navigate_to_verse("foreign", "Other");
     assert!(
         !Live {
             nav: &foreign_nav,
@@ -531,8 +533,9 @@ pub(crate) fn assert_dispatcher_ownership(
         let node = format!("volume-{scenario}");
         let mut nav = NavigationManager::default();
         nav.navigate_to_petal_in_fractal("volume-v", "V", "volume-f", "F", "volume-p");
-        let mut manager = VerseManager {
-            verses: vec![VerseEntry {
+        let mut manager = {
+            let mut value = VerseManager::default();
+            value.verses = vec![VerseEntry {
                 id: "volume-v".into(),
                 fractals: vec![FractalEntry {
                     id: "volume-f".into(),
@@ -548,8 +551,8 @@ pub(crate) fn assert_dispatcher_ownership(
                     ..Default::default()
                 }],
                 ..Default::default()
-            }],
-            ..Default::default()
+            }];
+            value
         };
         manager.synchronize_scene_navigation(&nav);
         let mut terrain = PetalMapState {

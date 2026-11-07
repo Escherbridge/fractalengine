@@ -84,12 +84,10 @@ impl SceneAssets {
                 && manager
                     .scene_asset_source(node, nav.active_petal_id.as_deref().unwrap_or_default())
                     .is_none()
-            {
-                if !manager.request_scene_refresh(node, nav) {
+                && !manager.request_scene_refresh(node, nav) {
                     self.set_status((node.into(), "Current asset refresh queue is full; reopen this Petal to refresh its asset details".into()));
                     return;
                 }
-            }
             self.set_status((node.into(), error));
         } else {
             self.set_status((

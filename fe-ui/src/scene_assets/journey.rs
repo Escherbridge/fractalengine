@@ -499,8 +499,8 @@ pub(crate) fn extend_asset_workflow(
         app.world()
             .resource::<VerseManager>()
             .committed_versions
-            .get(&node)
-            .is_none(),
+            .contains_key(&node)
+            .eq(&false),
         "adoption is not an object-history receipt"
     );
 
@@ -665,7 +665,6 @@ pub(crate) fn extend_asset_workflow(
     );
     let editor = LocalUserRole {
         role: Some(fe_database::RoleLevel::Editor),
-        ..Default::default()
     };
     let editor_frame = Frame {
         role: &editor,

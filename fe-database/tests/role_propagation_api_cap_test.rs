@@ -12,7 +12,7 @@ use fe_database::{build_scope, spawn_db_thread_shared, DbThread};
 use fe_policy::RoleStatementPayload;
 use fe_runtime::blob_store::mock::MockBlobStore;
 use fe_runtime::blob_store::{hash_to_hex, BlobStore};
-use fe_runtime::messages::{CallerAuth, DbCommand, DbResult, ReplicatedRowOutcome};
+use fe_runtime::messages::{DbCommand, DbResult, ReplicatedRowOutcome};
 use fe_sdk::device_format::DeviceFormatDescriptor;
 
 const VERSE: &str = "verse-api-cap";
@@ -177,14 +177,6 @@ impl Drop for Node {
         if let Some(join) = self.join.take() {
             let _ = join.join();
         }
-    }
-}
-
-/// What fe-api hands the DB thread for a token minted with `max_role = manager`.
-fn manager_token() -> CallerAuth {
-    CallerAuth::Identified {
-        did: "api".to_string(),
-        role: "manager".to_string(),
     }
 }
 

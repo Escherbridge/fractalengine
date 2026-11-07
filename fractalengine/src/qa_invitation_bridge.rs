@@ -74,6 +74,7 @@ fn current(
             .as_ref()
             == Some(expected)
 }
+#[allow(clippy::too_many_arguments)] // Bevy system parameters
 fn serve(
     mut host: ResMut<Host>,
     mut ui: ResMut<UiManager>,

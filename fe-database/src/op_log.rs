@@ -1821,7 +1821,7 @@ mod tests {
         ] {
             let snapshot=crate::handlers::preconditions::PETAL_TYPED_SNAPSHOT_SQL;
             let distinct: bool=db.query(format!("RETURN {} != {};",snapshot.replace("$this",left),snapshot.replace("$this",right)))
-                .await.unwrap().check().unwrap().take(0).unwrap();
+                .await.unwrap().check().unwrap().take::<Option<bool>>(0).unwrap().unwrap();
             assert!(distinct,"typed snapshot must preserve {left} versus {right}");
         }
         let promotion_source=crate::handlers::entity_property::get_entity_properties_handler(&db,&undo_node).await.unwrap();
@@ -3761,7 +3761,7 @@ mod tests {
                 &db,
                 &plugin_scope,
                 "tree-other-petal",
-                &[path.clone()],
+                std::slice::from_ref(&path),
                 "did:qa",
             )
             .await
@@ -3809,7 +3809,7 @@ mod tests {
                 &db,
                 &plugin_scope,
                 "tree-other-petal",
-                &[path.clone()],
+                std::slice::from_ref(&path),
                 "did:qa",
             )
             .await
@@ -3962,7 +3962,7 @@ mod tests {
                 &db,
                 &plugin_scope,
                 "tree-other-petal",
-                &[fresh_stamp.clone()],
+                std::slice::from_ref(&fresh_stamp),
                 "did:qa",
             )
             .await
@@ -4023,7 +4023,7 @@ mod tests {
                 &db,
                 &plugin_scope,
                 "tree-other-petal",
-                &[fresh_stamp.clone()],
+                std::slice::from_ref(&fresh_stamp),
                 "did:qa",
             )
             .await
@@ -4751,7 +4751,7 @@ mod tests {
         let raw_tombstone: Vec<serde_json::Value> = before.take(3).unwrap();
         let mut binding_probe = url_db.query("RETURN {raw_matches: (SELECT tombstone FROM node WHERE node_id=$node) = $snapshot, none_matches_null: NONE = $null, null_matches_null: NULL = $null, live_none: (NONE = NONE OR NONE = NULL), live_null: (NULL = NONE OR NULL = NULL)}")
             .bind(("node",imported_node.clone())).bind(("snapshot",serde_json::json!(raw_tombstone))).bind(("null",serde_json::Value::Null)).await.unwrap().check().unwrap();
-        let probe: serde_json::Value = binding_probe.take(0).unwrap();
+        let probe: serde_json::Value = binding_probe.take::<Option<serde_json::Value>>(0).unwrap().unwrap();
         assert_eq!(probe["raw_matches"],false,"raw NONE snapshots rebound as JSON NULL are not an exact CAS");
         assert_eq!(probe["none_matches_null"],false);
         assert_eq!(probe["null_matches_null"],true);

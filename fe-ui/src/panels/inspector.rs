@@ -2459,6 +2459,7 @@ fn inspector_schema_section(
 
 #[cfg(test)]
 mod tests {
+    #![allow(clippy::field_reassign_with_default)] // default-then-set is clearer in test fixtures
     use super::*;
 
     const EPS: f32 = 1e-4;
@@ -3686,7 +3687,7 @@ mod tests {
                     "confirming an older submitted revision must preserve exact newer edits"
                 );
                 inspector.object_data.schema.save(&db_sender.0);
-                if newer == schema_v3.to_string() {
+                if newer == schema_v3 {
                     assert!(
                         matches!(rx.try_recv().unwrap(), DbCommand::SetFieldSchema { descriptor,.. } if descriptor == schema_v3)
                     );
@@ -5554,7 +5555,7 @@ mod tests {
                     "accepted commits remain committed; draft retention is not rollback"
                 );
                 assert!(source_feedback.editor_batch.newest(false).is_some());
-                source_feedback.editor_batch.queue_projection(&projection);
+                source_feedback.editor_batch.queue_projection(&projection, crate::verse_manager::VerseManager::default().scene_incarnation());
                 let queued = source_feedback
                     .editor_batch
                     .take_path_projection(&nav)
@@ -5792,7 +5793,7 @@ mod tests {
                         correlation_id: correlation_id.clone()
                     },
                     &nav,
-                    &preflight,
+                    preflight,
                     |_| Ok(()),
                     &batch_tx
                 )
@@ -5814,7 +5815,7 @@ mod tests {
                         correlation_id
                     },
                     &nav,
-                    &preflight,
+                    preflight,
                     |_| Ok(()),
                     &batch_tx
                 )
@@ -5847,7 +5848,7 @@ mod tests {
                         correlation_id,
                     },
                     &nav,
-                    &preflight,
+                    preflight,
                     |_| Ok(()),
                     &batch_tx,
                 )
@@ -5916,7 +5917,7 @@ mod tests {
                                 }
                             }
                             EditorTargetMutation::Transform(value) => {
-                                let (x, y, z) = Quat::from_array(value.rotation).to_euler(EulerRot::XYZ);
+                                let (x, y, z) = bevy::math::Quat::from_array(value.rotation).to_euler(bevy::math::EulerRot::XYZ);
                                 member.state.position = value.position;
                                 member.state.elevation = value.position[1];
                                 member.state.rotation = [x, y, z].map(f64::from).to_vec();

@@ -164,6 +164,7 @@ pub(crate) async fn load(
     })
 }
 
+#[allow(clippy::too_many_arguments)] // one entity-access transaction input set
 pub(crate) async fn execute(
     db: &Db,
     blob_store: &BlobStoreHandle,

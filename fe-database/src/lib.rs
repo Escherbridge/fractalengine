@@ -59,6 +59,9 @@ pub use fe_runtime::timeseries::{
 
 pub mod admin;
 pub mod api_auth;
+
+/// SQL guard statements plus their named bindings, appended inside one transaction.
+pub type GuardedStatements = (Vec<String>, Vec<(String, serde_json::Value)>);
 pub mod api_token_store;
 pub mod atlas;
 pub mod canon_log;
@@ -1040,13 +1043,12 @@ pub fn spawn_db_thread_shared(
                     }
                     Ok(DbCommand::EntityAccess { target, action, request_id }) => {
                         let result=handlers::entity_access::execute(&db,&blob_store,repl_tx.as_ref(),&local_did,&target,&action,keypair.as_ref(),|jti| send_result(&tx,DbResult::ApiTokenRevoked { jti:jti.to_owned() })).await;
-                        if result.is_ok() {
-                            if matches!(action,fe_runtime::entity_access::EntityAccessAction::Assign {..} | fe_runtime::entity_access::EntityAccessAction::Revoke {..}) {
+                        if result.is_ok()
+                            && matches!(action,fe_runtime::entity_access::EntityAccessAction::Assign {..} | fe_runtime::entity_access::EntityAccessAction::Revoke {..}) {
                                 if let Some(verse)=role_grants::verse_of_scope(&target.scope) {
                                     handlers::scene_publication::echo_applied(&db,&blob_store,&local_did,&tx,admissions.retry_author_roles(&db,&verse,entity_change_tx.as_ref()).await).await;
                                 }
                             }
-                        }
                         send_result(&tx,DbResult::EntityAccessFinished { target,request_id,result:result.map_err(|error| error.to_string()) });
                     }
                     Ok(DbCommand::ResolveRolesForPeers { scope, peer_dids }) => {

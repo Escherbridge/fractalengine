@@ -347,7 +347,7 @@ fn a_dimension_callout_node_round_trips_through_the_property_store() {
     }
     db.cmd_tx
         .send(DbCommand::CreateFieldDef {
-            scope,
+            scope: scope.clone(),
             entity_type: "node".into(),
             key: "overflow".into(),
             value_type: "object".into(),

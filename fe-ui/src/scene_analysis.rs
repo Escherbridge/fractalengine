@@ -130,6 +130,7 @@ fn axis_aligned(transform: &GlobalTransform) -> bool {
 }
 
 #[derive(bevy::ecs::system::SystemParam)]
+#[allow(clippy::type_complexity)] // Bevy query tuple
 pub(crate) struct SceneGeometry<'w, 's> {
     roots: Query<
         'w,

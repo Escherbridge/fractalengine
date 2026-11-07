@@ -858,6 +858,7 @@ pub(crate) fn render_volume_report_body(
 
 #[cfg(test)]
 mod tests {
+    #![allow(clippy::field_reassign_with_default)] // default-then-set is clearer in test fixtures
     use super::*;
 
     fn sample_result(correlation_id: &str) -> VolumeReportResult {

@@ -84,6 +84,7 @@ impl Product<'_> {
 }
 
 #[derive(SystemParam)]
+#[allow(clippy::type_complexity)] // Bevy query tuple
 struct Contexts<'w, 's> {
     map: Res<'w, WindowToEguiContextMap>,
     contexts: Query<
@@ -267,6 +268,7 @@ fn quarantine_owned(
     };
 }
 
+#[allow(clippy::too_many_arguments)] // Bevy system parameters
 fn deliver(
     mut adapter: ResMut<Adapter>,
     requested: Res<AccessibilityRequested>,
@@ -336,6 +338,7 @@ fn deliver(
     }
 }
 
+#[allow(clippy::too_many_arguments)] // Bevy system parameters
 fn intake(
     mut adapter: ResMut<Adapter>,
     requested: Res<AccessibilityRequested>,

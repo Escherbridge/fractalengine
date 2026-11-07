@@ -549,7 +549,7 @@ pub(super) fn apply_node_residency(
 mod tests {
     use std::collections::{BTreeMap, BTreeSet};
 
-    use fe_sdk::path_asset::{PathAssetDescriptor, SpacingMode};
+    use fe_sdk::path_asset::PathAssetDescriptor;
 
     use super::*;
     use crate::verse_manager::spawn::PathAssetInstance;

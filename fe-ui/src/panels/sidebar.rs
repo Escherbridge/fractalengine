@@ -324,7 +324,7 @@ fn render_fractals(
                             kind: EntryKind::Fractal,
                             id: &fractal_id,
                             name: &fractal_name,
-                            verse_id: verse_id,
+                            verse_id,
                             fractal_id: None,
                             petal_id: None,
                             url: None,
@@ -441,7 +441,7 @@ fn render_petals(
                             kind: EntryKind::Petal,
                             id: &petal_id,
                             name: &petal_name,
-                            verse_id: verse_id,
+                            verse_id,
                             fractal_id: Some(fractal_id),
                             petal_id: Some(&petal_id),
                             url: None,
@@ -996,8 +996,8 @@ fn render_node_rows(
     }
 
     if let Some((nid, verb)) = row_verb {
-        if verb == NodeRowVerb::AddToGroup {
-            if !node_mgr.contains_node(&nid) {
+        if verb == NodeRowVerb::AddToGroup
+            && !node_mgr.contains_node(&nid) {
                 node_mgr.request_selection(
                     ancestry.petal_id,
                     vec![nid.clone()],
@@ -1005,7 +1005,6 @@ fn render_node_rows(
                     Vec::new(),
                 );
             }
-        }
         let petal_node_ids: Vec<&str> = nodes.iter().map(|n| n.id.as_str()).collect();
         apply_node_row_verb(verb, &nid, &petal_node_ids, ancestry, vis_state, ui_mgr);
     }
@@ -1424,7 +1423,7 @@ mod tests {
                 active_fractal_id: Some("f".into()), active_fractal_name: "Counted fractal".into(),
                 active_petal_id: Some("p".into()), ..Default::default()
             };
-            let mut sidebar = crate::plugin::SidebarState { open: true, ..Default::default() };
+            let mut sidebar = crate::plugin::SidebarState { open: true };
             let mut width = crate::ui_shell::layout_policy::PanelWidthState::new(120.0);
             let mut focus = crate::plugin::CameraFocusTarget::default();
             let mut nodes = crate::node_manager::NodeManager::default();

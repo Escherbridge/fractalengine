@@ -338,7 +338,7 @@ pub fn render(
                                                 ui.painter().vline(
                                                     rect.center().x,
                                                     rect.y_range(),
-                                                    egui::Stroke::new(1.0, crate::theme::TEXT_DIM),
+                                                    egui::Stroke::new(1.0_f32, crate::theme::TEXT_DIM),
                                                 );
                                                 if response.dragged() {
                                                     results.widths[col] = (results.widths[col]

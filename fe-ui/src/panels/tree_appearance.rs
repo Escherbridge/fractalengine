@@ -25,7 +25,7 @@ impl TreeIcon {
     pub(crate) fn paint(self, painter: &egui::Painter, rect: egui::Rect, color: egui::Color32) {
         let center = rect.center();
         let radius = (rect.width().min(rect.height()).clamp(2.0, 20.0) - 1.25) * 0.5;
-        let stroke = egui::Stroke::new(1.25, color);
+        let stroke = egui::Stroke::new(1.25_f32, color);
         match self {
             Self::Circle => {
                 painter.circle_filled(center, radius * 0.8, color);
@@ -216,9 +216,9 @@ fn wheel(ui: &mut egui::Ui, hsva: &mut Hsva) -> bool {
     let angle = hsva.h * std::f32::consts::TAU;
     let marker = center + egui::vec2(angle.cos(), angle.sin()) * hsva.s * radius;
     ui.painter()
-        .circle_stroke(marker, 5.0, egui::Stroke::new(3.0, egui::Color32::BLACK));
+        .circle_stroke(marker, 5.0, egui::Stroke::new(3.0_f32, egui::Color32::BLACK));
     ui.painter()
-        .circle_stroke(marker, 5.0, egui::Stroke::new(1.5, egui::Color32::WHITE));
+        .circle_stroke(marker, 5.0, egui::Stroke::new(1.5_f32, egui::Color32::WHITE));
     changed
 }
 

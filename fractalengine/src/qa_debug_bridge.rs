@@ -591,6 +591,7 @@ impl UiState<'_, '_> {
     }
 }
 
+#[allow(clippy::too_many_arguments)] // Bevy system parameters
 fn serve(
     host: Res<QaHost>,
     frame_nav: Res<FrameNavigation>,

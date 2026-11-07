@@ -10,6 +10,7 @@ static POISONED: AtomicBool = AtomicBool::new(false);
 static NATIVE_DIALOGS: AtomicUsize = AtomicUsize::new(0);
 static PORTAL_UNPROVED: AtomicBool = AtomicBool::new(false);
 
+#[allow(deprecated)] // try_update needs Rust 1.95; MSRV is 1.91
 pub fn transition() {
     if OBSERVED.fetch_update(Ordering::SeqCst, Ordering::SeqCst, |value| {
         value.checked_add(1).filter(|next| *next <= isize::MAX as u64)
@@ -19,6 +20,7 @@ pub fn transition() {
 
 pub(crate) fn observed_generation() -> u64 { OBSERVED.load(Ordering::SeqCst) }
 
+#[allow(deprecated)] // try_update needs Rust 1.95; MSRV is 1.91
 pub(crate) fn publication_transition() {
     if EPOCH
         .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |value| {
@@ -39,6 +41,7 @@ pub fn native_overlay_unproved() {
 
 pub(crate) struct NativeDialog;
 impl NativeDialog {
+    #[allow(deprecated)] // try_update needs Rust 1.95; MSRV is 1.91
     pub(crate) fn enter() -> Self {
         if NATIVE_DIALOGS
             .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |value| {
@@ -53,6 +56,7 @@ impl NativeDialog {
     }
 }
 impl Drop for NativeDialog {
+    #[allow(deprecated)] // try_update needs Rust 1.95; MSRV is 1.91
     fn drop(&mut self) {
         if NATIVE_DIALOGS
             .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |value| {

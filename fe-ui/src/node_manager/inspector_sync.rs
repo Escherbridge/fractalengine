@@ -85,8 +85,8 @@ pub(super) fn sync_manager_to_inspector(
             inspector.annotation_title_buf.clear();
             inspector.annotation_body_buf.clear();
             inspector.annotation_color_buf.clear();
-            if !unpromoted {
-                if db_sender
+            if !unpromoted
+                && db_sender
                     .0
                     .send(fe_runtime::messages::DbCommand::GetNodeProperties {
                         node_id: sel.node_id.clone(),
@@ -96,7 +96,6 @@ pub(super) fn sync_manager_to_inspector(
                 {
                     bevy::log::warn!("selected node property read channel closed");
                 }
-            }
         }
         // Reset API token tab state for the new selection
         inspector.generated_api_token = None;
@@ -146,8 +145,9 @@ mod tests {
     /// A VerseManager as `DbResult::HierarchyLoaded` would hydrate it after a
     /// restart: one node whose `webpage_url` came back from SurrealDB.
     fn hydrated_manager(node_id: &str, stored_url: Option<String>) -> VerseManager {
-        let mut mgr = VerseManager {
-            verses: vec![VerseEntry {
+        let mut mgr = {
+            let mut value = VerseManager::default();
+            value.verses = vec![VerseEntry {
                 id: "verse-1".to_string(),
                 name: "Verse 1".to_string(),
                 namespace_id: None,
@@ -172,8 +172,8 @@ mod tests {
                         }],
                     }],
                 }],
-            }],
-            ..Default::default()
+            }];
+            value
         };
         mgr.rebuild_node_index();
         mgr

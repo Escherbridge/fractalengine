@@ -112,6 +112,7 @@ struct HistoryEntry {
 }
 
 #[derive(Debug)]
+#[allow(clippy::large_enum_variant)] // a single owned read slot, never collected
 enum ReadPurpose {
     Selection,
     DeleteGroup,

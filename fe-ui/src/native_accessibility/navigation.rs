@@ -9,6 +9,7 @@ const LIFETIME: Duration = Duration::from_secs(1);
 static NEXT_EPOCH: AtomicU64 = AtomicU64::new(1);
 static EXHAUSTED: AtomicBool = AtomicBool::new(false);
 
+#[allow(deprecated)] // try_update needs Rust 1.95; MSRV is 1.91
 fn fresh_epoch() -> Option<u64> {
     if EXHAUSTED.load(Ordering::SeqCst) { return None; }
     match NEXT_EPOCH.fetch_update(Ordering::SeqCst, Ordering::SeqCst, |value| {
@@ -318,7 +319,7 @@ pub(super) fn extend_existing_journey() {
     } };
     let (sender, receiver) = crossbeam::channel::bounded(1);
     let mut owner = ProofOwner::default();
-    assert!(owner.observe(&source, &[target.clone()], now));
+    assert!(owner.observe(&source, std::slice::from_ref(&target), now));
     let original_request = owner.slots[0].demand.request.clone();
     let deadline = owner.slots[0].demand.deadline;
     sender.try_send(DbCommand::LoadHierarchy).unwrap();
@@ -366,17 +367,17 @@ pub(super) fn extend_existing_journey() {
     assert!(!owner.proof_is_current(&proof, &source, deadline));
     assert!(!owner.bindings_are_current(&bindings, &source, deadline));
     assert_eq!(owner.epoch, Some(epoch), "expiry refuses without pumping or changing generation");
-    assert!(owner.observe(&source, &[target.clone()], deadline));
+    assert!(owner.observe(&source, std::slice::from_ref(&target), deadline));
     assert_ne!(owner.slots[0].demand.request, request_id);
     assert!(!owner.proof_is_current(&proof, &source, deadline), "a new read cannot renew retained proof");
 
     for delay in [1000, 1500] {
         let mut delayed = ProofOwner::default();
-        assert!(delayed.observe(&source, &[target.clone()], now));
+        assert!(delayed.observe(&source, std::slice::from_ref(&target), now));
         assert_eq!(delayed.submit(&source, now + Duration::from_millis(delay), &sender), Submission::NoWork);
         assert!(receiver.try_recv().is_err(), "late unsent read is unavailable");
         let mut delayed = ProofOwner::default();
-        assert!(delayed.observe(&source, &[target.clone()], now));
+        assert!(delayed.observe(&source, std::slice::from_ref(&target), now));
         assert_eq!(delayed.submit(&source, now, &sender), Submission::Queued);
         let DbCommand::ReadNativePetalView { request_id, .. } = receiver.try_recv().unwrap()
             else { panic!("native read expected"); };
@@ -387,11 +388,11 @@ pub(super) fn extend_existing_journey() {
     }
 
     let mut pending = ProofOwner::default();
-    assert!(pending.observe(&source, &[target.clone()], now));
+    assert!(pending.observe(&source, std::slice::from_ref(&target), now));
     assert_eq!(pending.submit(&source, now, &sender), Submission::Queued);
     let DbCommand::ReadNativePetalView { request_id, .. } = receiver.try_recv().unwrap()
         else { panic!("native read expected"); };
-    assert!(pending.observe(&changed, &[target.clone()], now + Duration::from_millis(100)));
+    assert!(pending.observe(&changed, std::slice::from_ref(&target), now + Duration::from_millis(100)));
     assert_eq!(pending.submit(&changed, now + Duration::from_millis(100), &sender), Submission::NoWork,
         "source retirement retains the one accepted read until its exact reply");
     let old = DbResult::NativePetalViewRead { request_id, target: target.petal.clone(),
@@ -400,7 +401,7 @@ pub(super) fn extend_existing_journey() {
     assert!(pending.bindings(&changed, now + Duration::from_millis(100)).is_none());
 
     let mut malformed = ProofOwner::default();
-    assert!(malformed.observe(&source, &[target.clone()], now));
+    assert!(malformed.observe(&source, std::slice::from_ref(&target), now));
     assert_eq!(malformed.submit(&source, now, &sender), Submission::Queued);
     let DbCommand::ReadNativePetalView { request_id, .. } = receiver.try_recv().unwrap()
         else { panic!("native read expected"); };
@@ -431,15 +432,15 @@ pub(super) fn extend_existing_journey() {
     }
     let mut no_access = source.clone();
     no_access.eligible = false;
-    assert!(!owner.observe(&no_access, &[target.clone()], now));
+    assert!(!owner.observe(&no_access, std::slice::from_ref(&target), now));
     no_access.eligible = true;
     no_access.role = Some(fe_database::RoleLevel::None);
-    assert!(!owner.observe(&no_access, &[target.clone()], now));
+    assert!(!owner.observe(&no_access, std::slice::from_ref(&target), now));
     no_access.role = None;
-    assert!(!owner.observe(&no_access, &[target.clone()], now));
+    assert!(!owner.observe(&no_access, std::slice::from_ref(&target), now));
     let (gone, receiver) = crossbeam::channel::bounded(1);
     drop(receiver);
-    assert!(owner.observe(&source, &[target.clone()], now));
+    assert!(owner.observe(&source, std::slice::from_ref(&target), now));
     assert_eq!(owner.submit(&source, now, &gone), Submission::Disconnected);
     assert!(!owner.observe(&source, &[target], now));
 }

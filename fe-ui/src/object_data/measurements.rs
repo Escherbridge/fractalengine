@@ -252,11 +252,11 @@ fn chart(ui: &mut egui::Ui, points: &[MeasurementPoint], min: f64, max: f64) {
     painter.rect_filled(rect, 4.0, crate::theme::BG_BUTTON);
     painter.line_segment(
         [plot.left_bottom(), plot.right_bottom()],
-        egui::Stroke::new(1.0, crate::theme::TEXT_DIM),
+        egui::Stroke::new(1.0_f32, crate::theme::TEXT_DIM),
     );
     painter.line_segment(
         [plot.left_bottom(), plot.left_top()],
-        egui::Stroke::new(1.0, crate::theme::TEXT_DIM),
+        egui::Stroke::new(1.0_f32, crate::theme::TEXT_DIM),
     );
     let first = points.first().map_or(0, |point| point.recorded_at_ms);
     let last = points.last().map_or(first, |point| point.recorded_at_ms);
@@ -283,7 +283,7 @@ fn chart(ui: &mut egui::Ui, points: &[MeasurementPoint], min: f64, max: f64) {
         if let Some(previous) = previous {
             painter.line_segment(
                 [previous, position],
-                egui::Stroke::new(1.5, crate::theme::TREE_NODE_ICON),
+                egui::Stroke::new(1.5_f32, crate::theme::TREE_NODE_ICON),
             );
         }
         if points.len() <= 64 {

@@ -17,8 +17,6 @@ use crate::verse_manager::VerseManager;
 
 /// Reasonable minimum rows for the SQL editor regardless of panel height.
 const QUERY_EDITOR_MIN_ROWS: usize = 4;
-/// Floor for the Result scroll area so a short panel still shows something
-/// rather than collapsing to near-zero (F2).
 
 /// Escapes a value for literal interpolation into a template SQL string.
 /// `actions::query::submit` always sends an empty `vars` map (the GUI tab has
@@ -50,16 +48,13 @@ fn query_templates(nav: &NavigationManager, node_mgr: &NodeManager) -> Vec<(&'st
             format!("SELECT * FROM iot_reading WHERE node_id = '{id}'"),
         ));
     }
-    match nav.active_petal_id.as_deref() {
-        Some(petal_id) => templates.push((
-            "All nodes in this petal",
-            format!(
-                "SELECT * FROM node WHERE petal_id = '{}'",
-                sql_literal(petal_id)
-            ),
-        )),
-        None => {}
-    }
+    if let Some(petal_id) = nav.active_petal_id.as_deref() { templates.push((
+        "All nodes in this petal",
+        format!(
+            "SELECT * FROM node WHERE petal_id = '{}'",
+            sql_literal(petal_id)
+        ),
+    )) }
     templates
 }
 

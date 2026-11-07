@@ -269,7 +269,7 @@ fn browser_card(
     let mut action = None;
     let frame = egui::Frame::NONE
         .fill(theme::BG_PANEL)
-        .stroke(egui::Stroke::new(1.0, theme::TEXT_DIM))
+        .stroke(egui::Stroke::new(1.0_f32, theme::TEXT_DIM))
         .corner_radius(6.0)
         .inner_margin(egui::Margin::same(8));
     let content_width = (width - frame.total_margin().sum().x).max(1.0);

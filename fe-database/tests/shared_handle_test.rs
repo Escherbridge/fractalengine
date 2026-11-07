@@ -184,7 +184,7 @@ fn shared_reader_errors_instead_of_hanging_after_db_thread_exit() {
     );
 
     let identity = fe_identity::NodeKeypair::generate();
-    let terminal = spawn_on_with_identity(dir.path(), Some(identity.clone()));
+    let terminal = spawn_on_with_identity(dir.path(), Some(fe_identity::NodeKeypair::from_bytes(&identity.seed_bytes()).unwrap()));
     terminal.cmd_tx.send(DbCommand::CreateVerse { name: "before-terminal".into() }).unwrap();
     let DbResult::VerseCreated {id:before_verse,..}=terminal.res_rx.recv_timeout(TIMEOUT).unwrap() else {panic!("created owned verse")};
     let auth_runtime=tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
@@ -199,7 +199,7 @@ fn shared_reader_errors_instead_of_hanging_after_db_thread_exit() {
     assert!(matches!(terminal.res_rx.recv_timeout(TIMEOUT).unwrap(),DbResult::Stopped));
     terminal.db_thread.join_handle.join().unwrap();
     drop(terminal.db_thread.shared_db);
-    let terminal=spawn_on_with_identity(dir.path(),Some(identity.clone()));
+    let terminal=spawn_on_with_identity(dir.path(),Some(fe_identity::NodeKeypair::from_bytes(&identity.seed_bytes()).unwrap()));
     assert!(auth_runtime.block_on(fe_database::api_token_store::is_token_revoked(&terminal.db_thread.shared_db,&revoked_jti)).unwrap(),"Ordinary revocation survives closing and reopening the real store");
     assert_eq!(auth_runtime.block_on(fe_database::api_auth::current_generation(&terminal.db_thread.shared_db)).unwrap(),previous_generation,"Ordinary restart does not invalidate unrelated credentials");
     let reader = terminal.db_thread.shared_db.clone();
@@ -247,7 +247,7 @@ fn shared_reader_errors_instead_of_hanging_after_db_thread_exit() {
     assert!(read_verse_on_foreign_runtime(reader, "any".into()).is_err());
     drop(terminal.db_thread.shared_db);
 
-    let reopened = spawn_on_with_identity(dir.path(), Some(identity.clone()));
+    let reopened = spawn_on_with_identity(dir.path(), Some(fe_identity::NodeKeypair::from_bytes(&identity.seed_bytes()).unwrap()));
     reopened.cmd_tx.send(DbCommand::LoadHierarchy).unwrap();
     match reopened.res_rx.recv_timeout(TIMEOUT).unwrap() {
         DbResult::HierarchyLoaded { verses } => {

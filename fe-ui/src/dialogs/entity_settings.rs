@@ -216,12 +216,11 @@ pub fn render_entity_settings_dialog(
                         } else if details.loaded.is_some() {
                             ui.label("No default access is stored. Choose an explicit setting.");
                             for (label, value) in [("Set public (viewer)", "viewer"), ("Set private (none)", "none")] {
-                                if ui.button(label).named(ui, format_args!("{label} for {entity_name}")).clicked() {
-                                    if db_tx.send(DbCommand::SetVerseDefaultAccess { verse_id: entity_id.clone(), default_access: value.into() }).is_err() {
+                                if ui.button(label).named(ui, format_args!("{label} for {entity_name}")).clicked()
+                                    && db_tx.send(DbCommand::SetVerseDefaultAccess { verse_id: entity_id.clone(), default_access: value.into() }).is_err() {
                                         bevy::log::warn!("SetVerseDefaultAccess channel closed");
                                         send_failure = Some("Default access could not be sent. The database is unavailable.");
                                     }
-                                }
                             }
                         } else { ui.label("Waiting for the stored default access setting."); }
                         });

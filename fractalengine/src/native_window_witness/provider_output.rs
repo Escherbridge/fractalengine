@@ -26,6 +26,7 @@ fn hold_alternate_publisher(mut manage: ResMut<ManageAccessibilityUpdates>) {
     **manage = false;
 }
 
+#[allow(clippy::type_complexity)] // Bevy ParamSet query tuple
 fn prepare(
     mut reads: ParamSet<(Ownership, Query<(Entity, &mut EguiOutput, Option<&PrimaryEguiContext>, Option<&mut EguiContext>)>)>,
     map: Res<WindowToEguiContextMap>,

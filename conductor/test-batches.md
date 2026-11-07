@@ -72,7 +72,7 @@ Selection, gimbal, transforms, snapping, viewport camera, GLTF asset import, rig
 ```bash
 cargo test -p fe-ui --lib -- node_manager::mod node_manager::context_pick node_manager::viewport_pick node_manager::selection node_manager::shortcuts node_manager::sidebar_sync node_manager::inspector_sync node_manager::transform_broadcast node_manager::dispatch node_manager::router node_manager::pointer node_manager::measure gimbal:: geometry:: actions::transform actions::node:: actions::node_props actions::dimension_callout actions::asset dialogs::gltf_import dialogs::context_menu dialogs::node_options panels::annotation_card
 cargo test -p fe-renderer
-cargo test -p fractalengine --lib -- asset_bridge::
+cargo test -p fractalengine --bin fractalengine -- asset_bridge::
 ```
 
 ---
@@ -142,7 +142,7 @@ cargo test -p fe-ui --lib -- terrain_map:: terrain_preview terrain_proposal_stat
 cargo test -p fe-database --lib -- handlers::petal_terrain handlers::petal_render_distance
 cargo test -p fe-database --test petal_render_distance_test
 cargo test -p fe-api --test terrain_mutation_test --test petal_render_distance_api_test --test hexon_tileset_test
-cargo test -p fractalengine --lib -- terrain_bridge::
+cargo test -p fractalengine --bin fractalengine -- terrain_bridge::
 cargo test -p fe-renderer --lib -- terrain_overlay terrain_height
 
 # IoT/sensor sub-batch
@@ -173,7 +173,7 @@ GPX import, pen tool, curve/handle editing, stamped-asset materialization.
 ```bash
 cargo test -p fe-ui --lib -- node_manager::path_handle_interaction node_manager::path_gimbal_drag node_manager::path_segment_interaction node_manager::path_point_interaction node_manager::curve actions::path panels::path_editor_card verse_manager::path_asset
 cargo test -p fe-database --test gpx_path_persistence_test --test gpx_pipeline_test
-cargo test -p fractalengine --lib -- gpx_bridge::
+cargo test -p fractalengine --bin fractalengine -- gpx_bridge::
 ```
 
 ---
@@ -195,7 +195,7 @@ Toasts, dialogs, window chrome, status bar, embedded webview (PetalPortal), app 
 ```bash
 cargo test -p fe-ui --lib -- notice:: ui_shell:: dialogs::join panels::widgets panels::toolbar panels::sidebar panels::tool_options panels::tool_inspector panels::tool_panel settings:: portal:: plugin::
 cargo test -p fe-webview
-cargo test -p fractalengine --lib -- panic_log:: window_chrome::
+cargo test -p fractalengine --bin fractalengine -- panic_log:: window_chrome::
 ```
 
 ---
@@ -275,7 +275,7 @@ cargo test -p fe-api --test api_integration --test api_harness_smoke --test mcp_
 cargo test -p fe-api --lib -- auth:: crs:: bridge_client endpoint:: entity_store_bridge export:: operator_gate query_guard rest:: mcp:: share:: upload:: visibility:: vision:: ws::
 cargo test -p fe-database --lib -- handlers::elevated_query api_token_store session_cache handlers::api_token
 cargo test -p fe-runtime --lib -- vision::
-cargo test -p fractalengine --lib -- screenshot_bridge vision_bridge
+cargo test -p fractalengine --bin fractalengine -- screenshot_bridge vision_bridge
 cargo test -p fractalengine --test security_harness
 ```
 
