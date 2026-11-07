@@ -1,0 +1,463 @@
+{
+  "name": "p2p-core",
+  "description": "Run-1 P2P replication scenario (17 steps) ported to the scripted simulator, plus the exact run-1 S1/S2 repros: revoke from the verse list (QA-0120) and from inside the verse, revoked REST/MCP property writes (QA-0122) and transforms (QA-0121), group registry create/change/leave (QA-0123, QA-0103), petal opened before its asset arrives (QA-0124). Full coverage needs owner, editor, viewer, editor2; with 3 peers editor2's actions and expectations are skipped.",
+  "seed": 20261107,
+  "fixture": "basic",
+  "verse_name": "QA Basic",
+  "assets": "generated",
+  "peers": [
+    {"name": "owner", "role": "owner"},
+    {"name": "editor", "role": "editor"},
+    {"name": "viewer", "role": "viewer"},
+    {"name": "editor2", "role": "editor"}
+  ],
+  "probe": {"rest_ms": 500, "hierarchy_ms": 2000, "ui_ms": 1000, "query_ms": 5000, "host_ms": 2000},
+  "steps": [
+    {
+      "id": "0", "title": "Preflight: every peer in the shared verse", "settle_s": 15, "covers": ["QA-0101"],
+      "actions": [
+        {"peer": "editor", "via": "gui", "op": "click", "args": {"name": "Close window", "role": "button"}, "optional": true},
+        {"peer": "editor", "via": "gui", "op": "click", "args": {"name": "Open verse QA Basic"}, "optional": true},
+        {"peer": "viewer", "via": "gui", "op": "click", "args": {"name": "Close window", "role": "button"}, "optional": true},
+        {"peer": "viewer", "via": "gui", "op": "click", "args": {"name": "Open verse QA Basic"}, "optional": true},
+        {"peer": "editor2", "via": "gui", "op": "click", "args": {"name": "Close window", "role": "button"}, "optional": true},
+        {"peer": "editor2", "via": "gui", "op": "click", "args": {"name": "Open verse QA Basic"}, "optional": true}
+      ],
+      "expect": [
+        {"probe": "nav", "target": "view", "path": "verse_id", "predicate": "equals", "value": "$fixture.verse_id"},
+        {"probe": "role", "target": "$fixture.verse_id", "peers": ["owner"], "predicate": "equals", "value": "owner"},
+        {"probe": "role", "target": "$fixture.verse_id", "peers": ["editor", "editor2"], "predicate": "equals", "value": "editor"},
+        {"probe": "role", "target": "$fixture.verse_id", "peers": ["viewer"], "predicate": "equals", "value": "viewer"},
+        {"probe": "ui", "target": "view", "path": "notice.text", "predicate": "excludes", "value": "timed out", "mode": "always", "covers": "QA-0101 false join timeout"}
+      ]
+    },
+    {
+      "id": "1", "title": "Owner builds fractal, petal and N1 in the GUI; N2/N3 and node data over REST + MCP", "settle_s": 20,
+      "actions": [
+        {"peer": "owner", "via": "gui", "op": "click", "args": {"name": "+ New Fractal", "role": "button"}},
+        {"peer": "owner", "via": "gui", "op": "type", "args": {"into": "Name:", "role": "textinput", "text": "Swarm Fractal"}},
+        {"peer": "owner", "via": "gui", "op": "key", "args": {"combo": "Enter"}},
+        {"peer": "owner", "via": "gui", "op": "click", "args": {"name": "Open fractal Swarm Fractal"}},
+        {"peer": "owner", "via": "gui", "op": "click", "args": {"name": "+ New Petal", "role": "button"}},
+        {"peer": "owner", "via": "gui", "op": "type", "args": {"into": "Name:", "role": "textinput", "text": "Swarm Petal"}},
+        {"peer": "owner", "via": "gui", "op": "key", "args": {"combo": "Enter"}},
+        {"peer": "owner", "via": "gui", "op": "click", "args": {"name": "Open petal Swarm Petal"}},
+        {"peer": "owner", "via": "gui", "op": "click", "args": {"name": "+ Node"}},
+        {"peer": "owner", "via": "gui", "op": "type", "args": {"into": "Name:", "role": "textinput", "text": "N1"}},
+        {"peer": "owner", "via": "gui", "op": "key", "args": {"combo": "Enter"}},
+        {"id": "sp", "peer": "owner", "via": "rest", "op": "lookup_petal", "args": {"name": "Swarm Petal", "wait_s": 15}},
+        {"id": "n1", "peer": "owner", "via": "rest", "op": "lookup_node", "args": {"petal_id": "$sp.id", "name": "N1", "wait_s": 15}},
+        {"id": "n2", "peer": "owner", "via": "rest", "op": "create_node", "args": {"fractal_id": "$sp.fractal_id", "petal_id": "$sp.id", "name": "N2", "position": [2, 0, 0]}},
+        {"id": "n3", "peer": "owner", "via": "rest", "op": "create_node", "args": {"fractal_id": "$sp.fractal_id", "petal_id": "$sp.id", "name": "N3", "position": [-2, 0, 0]}},
+        {"peer": "owner", "via": "rest", "op": "set_property", "args": {"node_id": "$n1.id", "key": "sw_owner", "value": "alpha-n1"}},
+        {"peer": "owner", "via": "rest", "op": "set_property", "args": {"node_id": "$n2.id", "key": "sw_owner", "value": "alpha-n2"}},
+        {"peer": "owner", "via": "rest", "op": "set_property", "args": {"node_id": "$n3.id", "key": "sw_owner", "value": "alpha-n3"}},
+        {"peer": "owner", "via": "rest", "op": "set_property", "args": {"node_id": "$n2.id", "key": "sw_num", "value": 2.5}},
+        {"peer": "owner", "via": "mcp", "op": "set_property", "args": {"node_id": "$n3.id", "key": "sw_mcp", "value": true}}
+      ],
+      "expect": [
+        {"probe": "node", "target": "$n1.id", "path": "petal_id", "predicate": "equals", "value": "$sp.id"},
+        {"probe": "transform", "target": "$n2.id", "path": "position", "predicate": "equals", "value": [2, 0, 0]},
+        {"probe": "properties", "target": "$n1.id", "path": "sw_owner", "predicate": "equals", "value": "alpha-n1"},
+        {"probe": "properties", "target": "$n2.id", "path": "sw_num", "predicate": "equals", "value": 2.5},
+        {"probe": "properties", "target": "$n3.id", "path": "sw_mcp", "predicate": "equals", "value": true},
+        {"probe": "hierarchy", "target": "$sp.id", "path": "names", "predicate": "includes", "value": ["N1", "N2", "N3"], "within_s": 30}
+      ]
+    },
+    {
+      "id": "2a", "title": "Every joined peer opens Petal A (fixture GLB cubes must render, asset_path resolved)", "settle_s": 30, "covers": ["QA-0101"],
+      "actions": [
+        {"peer": "editor", "via": "gui", "op": "click", "args": {"name": "Open fractal QA Fractal"}, "optional": true},
+        {"peer": "editor", "via": "gui", "op": "click", "args": {"name": "Open petal Petal A"}},
+        {"peer": "viewer", "via": "gui", "op": "click", "args": {"name": "Open fractal QA Fractal"}, "optional": true},
+        {"peer": "viewer", "via": "gui", "op": "click", "args": {"name": "Open petal Petal A"}},
+        {"peer": "editor2", "via": "gui", "op": "click", "args": {"name": "Open fractal QA Fractal"}, "optional": true},
+        {"peer": "editor2", "via": "gui", "op": "click", "args": {"name": "Open petal Petal A"}}
+      ],
+      "expect": [
+        {"probe": "nav", "target": "view", "path": "petal_id", "peers": ["editor", "viewer", "editor2"], "predicate": "equals", "value": "$fixture.petal_a_id"},
+        {"probe": "hierarchy", "target": "$fixture.petal_a_id", "path": "nodes.${fixture.node_ids.0}.asset_path", "predicate": "present", "covers": "QA-0101 null asset_path on joined peers"}
+      ],
+      "checkpoints": [
+        {"peer": "editor", "capture": "scene", "pose": {"orbit": {"focus": [0, 0, 0], "yaw_deg": 45, "pitch_deg": 35, "distance": 30}}, "expect_visual": "three real GLB cubes, not flat placeholder cards"},
+        {"peer": "viewer", "capture": "scene", "pose": {"orbit": {"focus": [0, 0, 0], "yaw_deg": 45, "pitch_deg": 35, "distance": 30}}, "expect_visual": "three real GLB cubes, not flat placeholder cards"}
+      ]
+    },
+    {
+      "id": "2b", "title": "Every joined peer goes Back and opens Swarm Petal", "settle_s": 30,
+      "actions": [
+        {"peer": "editor", "via": "gui", "op": "click", "args": {"name": "Back", "role": "button"}},
+        {"peer": "editor", "via": "gui", "op": "click", "args": {"name": "Open fractal Swarm Fractal"}},
+        {"peer": "editor", "via": "gui", "op": "click", "args": {"name": "Open petal Swarm Petal"}},
+        {"peer": "viewer", "via": "gui", "op": "click", "args": {"name": "Back", "role": "button"}},
+        {"peer": "viewer", "via": "gui", "op": "click", "args": {"name": "Open fractal Swarm Fractal"}},
+        {"peer": "viewer", "via": "gui", "op": "click", "args": {"name": "Open petal Swarm Petal"}},
+        {"peer": "editor2", "via": "gui", "op": "click", "args": {"name": "Back", "role": "button"}},
+        {"peer": "editor2", "via": "gui", "op": "click", "args": {"name": "Open fractal Swarm Fractal"}},
+        {"peer": "editor2", "via": "gui", "op": "click", "args": {"name": "Open petal Swarm Petal"}}
+      ],
+      "expect": [
+        {"probe": "nav", "target": "view", "path": "petal_id", "predicate": "equals", "value": "$sp.id"}
+      ]
+    },
+    {
+      "id": "3", "title": "Editor edits N1 in the GUI and N2 over REST + MCP", "settle_s": 15,
+      "probe": {"hierarchy_ms": 0},
+      "note": "Hierarchy polling paused: every GET /hierarchy rebuilds the GUI tree and can drop a typed Enter (QA-0125).",
+      "actions": [
+        {"peer": "editor", "via": "gui", "op": "click", "args": {"name": "Select node N1"}},
+        {"peer": "editor", "via": "gui", "op": "scroll_until", "args": {"until": "Position (m) X", "role": "textinput"}},
+        {"peer": "editor", "via": "gui", "op": "type", "args": {"into": "Position (m) X", "role": "textinput", "text": "4.5"}},
+        {"peer": "editor", "via": "gui", "op": "key", "args": {"combo": "Enter"}},
+        {"peer": "editor", "via": "gui", "op": "scroll_until", "args": {"until": "New property key", "role": "textinput"}},
+        {"peer": "editor", "via": "gui", "op": "type", "args": {"into": "New property key", "role": "textinput", "text": "cp_editor"}},
+        {"peer": "editor", "via": "gui", "op": "scroll_until", "args": {"until": "Add property", "role": "button"}, "expect": "any", "note": "Add property is disabled until key+value are set; scrolling reveals the value field"},
+        {"peer": "editor", "via": "gui", "op": "type", "args": {"into": "New property value", "role": "multilinetextinput", "text": "from editor"}},
+        {"peer": "editor", "via": "gui", "op": "scroll_until", "args": {"until": "Add property", "role": "button"}},
+        {"peer": "editor", "via": "gui", "op": "click", "args": {"name": "Add property", "role": "button"}},
+        {"peer": "editor", "via": "rest", "op": "set_transform", "args": {"node_id": "$n2.id", "position": [2, 0, 0], "rotation": [0, 1.5708, 0], "scale": [2, 2, 2]}},
+        {"peer": "editor", "via": "mcp", "op": "set_property", "args": {"node_id": "$n2.id", "key": "sw_editor2", "value": 42}}
+      ],
+      "expect": [
+        {"probe": "transform", "target": "$n1.id", "path": "position", "predicate": "equals", "value": [4.5, 0, 0]},
+        {"probe": "properties", "target": "$n1.id", "path": "cp_editor", "predicate": "equals", "value": "from editor"},
+        {"probe": "transform", "target": "$n2.id", "path": "rotation", "predicate": "equals", "value": [0, 1.5708, 0]},
+        {"probe": "transform", "target": "$n2.id", "path": "scale", "predicate": "equals", "value": [2, 2, 2]},
+        {"probe": "properties", "target": "$n2.id", "path": "sw_editor2", "predicate": "equals", "value": 42}
+      ]
+    },
+    {
+      "id": "4", "title": "Viewer writes are refused at every door and nothing replicates", "settle_s": 15, "covers": ["QA-0091"],
+      "probe": {"hierarchy_ms": 0},
+      "actions": [
+        {"peer": "viewer", "via": "gui", "op": "click", "args": {"name": "Select node N2"}},
+        {"peer": "viewer", "via": "gui", "op": "scroll_until", "args": {"until": "Delete node", "max": 4}, "expect": "any", "note": "bring the Inspector edit block into view before asserting it is disabled"},
+        {"peer": "viewer", "via": "gui", "op": "click", "args": {"name": "Position (m) X", "role": "textinput"}, "expect": "refused", "note": "edit controls must be disabled (locator excludes disabled widgets)"},
+        {"peer": "viewer", "via": "gui", "op": "click", "args": {"name": "Add property", "role": "button"}, "expect": "refused"},
+        {"peer": "viewer", "via": "gui", "op": "key", "args": {"combos": ["g", "Delete"]}, "expect": "any"},
+        {"peer": "viewer", "via": "rest", "op": "set_transform", "args": {"node_id": "$n2.id", "position": [99, 0, 99], "rotation": [0, 0, 0], "scale": [1, 1, 1]}, "expect": "refused"},
+        {"peer": "viewer", "via": "rest", "op": "set_property", "args": {"node_id": "$n2.id", "key": "viewer_wrote", "value": 1}, "expect": "refused"},
+        {"peer": "viewer", "via": "rest", "op": "delete_property", "args": {"node_id": "$n2.id", "key": "sw_owner"}, "expect": "refused"},
+        {"peer": "viewer", "via": "rest", "op": "delete_node", "args": {"node_id": "$n2.id"}, "expect": "refused"},
+        {"peer": "viewer", "via": "mcp", "op": "delete_node", "args": {"node_id": "$n2.id"}, "expect": "refused"},
+        {"peer": "viewer", "via": "mcp", "op": "set_property", "args": {"node_id": "$n2.id", "key": "viewer_wrote_mcp", "value": 1}, "expect": "refused"}
+      ],
+      "expect": [
+        {"probe": "ui", "target": "view", "peers": ["viewer"], "path": "open_windows", "predicate": "excludes", "value": "Confirm Delete", "mode": "always"},
+        {"probe": "transform", "target": "$n2.id", "path": "position", "predicate": "not_equals", "value": [99, 0, 99], "mode": "always", "hold_s": 15},
+        {"probe": "properties", "target": "$n2.id", "path": "viewer_wrote", "predicate": "absent", "mode": "always", "hold_s": 15},
+        {"probe": "properties", "target": "$n2.id", "path": "viewer_wrote_mcp", "predicate": "absent", "mode": "always", "hold_s": 15},
+        {"probe": "properties", "target": "$n2.id", "path": "sw_owner", "predicate": "present", "mode": "always", "hold_s": 15},
+        {"probe": "node", "target": "$n2.id", "predicate": "present", "mode": "always", "hold_s": 15}
+      ]
+    },
+    {
+      "id": "5", "title": "SAME-INSTANT conflicting GUI transforms of N1 (barrier)", "settle_s": 20, "covers": ["QA-0100", "QA-0126"],
+      "probe": {"hierarchy_ms": 0},
+      "prepare": [
+        {"peer": "owner", "via": "gui", "op": "click", "args": {"name": "Select node N1"}},
+        {"peer": "owner", "via": "gui", "op": "scroll_until", "args": {"until": "Position (m) X", "role": "textinput"}},
+        {"peer": "owner", "via": "gui", "op": "type", "args": {"into": "Position (m) X", "role": "textinput", "text": "7"}},
+        {"peer": "editor", "via": "gui", "op": "click", "args": {"name": "Select node N1"}},
+        {"peer": "editor", "via": "gui", "op": "scroll_until", "args": {"until": "Position (m) X", "role": "textinput"}},
+        {"peer": "editor", "via": "gui", "op": "type", "args": {"into": "Position (m) X", "role": "textinput", "text": "-7"}},
+        {"peer": "editor2", "via": "gui", "op": "click", "args": {"name": "Select node N1"}},
+        {"peer": "editor2", "via": "gui", "op": "scroll_until", "args": {"until": "Position (m) X", "role": "textinput"}},
+        {"peer": "editor2", "via": "gui", "op": "type", "args": {"into": "Position (m) X", "role": "textinput", "text": "3"}}
+      ],
+      "actions": [
+        {"id": "gui_owner", "peer": "owner", "via": "gui", "op": "key", "args": {"combo": "Enter"}, "sync": "barrier"},
+        {"id": "gui_editor", "peer": "editor", "via": "gui", "op": "key", "args": {"combo": "Enter"}, "sync": "barrier"},
+        {"id": "gui_editor2", "peer": "editor2", "via": "gui", "op": "key", "args": {"combo": "Enter"}, "sync": "barrier"}
+      ],
+      "expect": [
+        {"probe": "transform", "target": "$n1.id", "path": "position", "predicate": "agree", "within_s": 15},
+        {"probe": "transform", "target": "$n1.id", "path": "position.0", "predicate": "equals", "value": 7, "within_s": 15, "meta": {"severity": "S3"}, "covers": "documented LWW tie-break predicts the owner's X=7 (QA-0126)"}
+      ]
+    },
+    {
+      "id": "5r", "title": "N1 still agrees 60 s after the GUI conflict", "settle_s": 10,
+      "actions": [
+        {"id": "wait60", "peer": "owner", "via": "host", "op": "sleep", "args": {"seconds": 60}}
+      ],
+      "expect": [
+        {"probe": "transform", "target": "$n1.id", "path": "position", "predicate": "agree", "after": "wait60", "within_s": 10}
+      ]
+    },
+    {
+      "id": "6", "title": "SAME-INSTANT conflicting REST transforms of N2 (barrier)", "settle_s": 15, "covers": ["QA-0126", "QA-0128"],
+      "actions": [
+        {"peer": "owner", "via": "rest", "op": "set_transform", "args": {"node_id": "$n2.id", "position": [5, 0, 0], "rotation": [0, 1.5708, 0], "scale": [2, 2, 2]}, "sync": "barrier"},
+        {"peer": "editor", "via": "rest", "op": "set_transform", "args": {"node_id": "$n2.id", "position": [-5, 0, 0], "rotation": [0, 1.5708, 0], "scale": [2, 2, 2]}, "sync": "barrier"},
+        {"peer": "editor2", "via": "rest", "op": "set_transform", "args": {"node_id": "$n2.id", "position": [1, 0, 0], "rotation": [0, 1.5708, 0], "scale": [2, 2, 2]}, "sync": "barrier"}
+      ],
+      "expect": [
+        {"probe": "transform", "target": "$n2.id", "predicate": "agree", "within_s": 15},
+        {"probe": "transform", "target": "$n2.id", "path": "position", "predicate": "equals", "value": [5, 0, 0], "within_s": 15, "meta": {"severity": "S3"}, "covers": "documented tie-break predicts [5,0,0]; run 1 settled on [-5,0,0] (QA-0126)"}
+      ]
+    },
+    {
+      "id": "7", "title": "Editor deletes Cube 3 (GUI), N3 (REST) and Cube 2 (MCP); no resurrection for 60 s", "settle_s": 25, "covers": ["QA-0099"],
+      "actions": [
+        {"peer": "editor", "via": "gui", "op": "click", "args": {"name": "Back", "role": "button"}},
+        {"peer": "editor", "via": "gui", "op": "click", "args": {"name": "Open fractal QA Fractal"}, "optional": true},
+        {"peer": "editor", "via": "gui", "op": "click", "args": {"name": "Open petal Petal A"}},
+        {"peer": "editor", "via": "gui", "op": "click", "args": {"name": "Select node Cube 3"}},
+        {"peer": "editor", "via": "gui", "op": "key", "args": {"combo": "Delete"}},
+        {"peer": "editor", "via": "gui", "op": "click", "args": {"name": "Confirm Delete"}},
+        {"peer": "editor", "via": "rest", "op": "delete_node", "args": {"node_id": "$n3.id"}},
+        {"peer": "editor", "via": "mcp", "op": "delete_node", "args": {"node_id": "$fixture.node_ids.1"}},
+        {"peer": "editor", "via": "gui", "op": "click", "args": {"name": "Back", "role": "button"}},
+        {"peer": "editor", "via": "gui", "op": "click", "args": {"name": "Open fractal Swarm Fractal"}},
+        {"peer": "editor", "via": "gui", "op": "click", "args": {"name": "Open petal Swarm Petal"}}
+      ],
+      "expect": [
+        {"probe": "node", "target": "$fixture.node_ids.2", "predicate": "absent", "hold_s": 60, "covers": "GUI delete"},
+        {"probe": "node", "target": "$n3.id", "predicate": "absent", "hold_s": 60, "covers": "REST delete"},
+        {"probe": "node", "target": "$fixture.node_ids.1", "predicate": "absent", "hold_s": 60, "covers": "MCP delete"},
+        {"probe": "node", "target": "$fixture.node_ids.0", "predicate": "present", "mode": "always", "hold_s": 30},
+        {"probe": "node", "target": "$fixture.marker_node_ids.0", "predicate": "present", "mode": "always", "hold_s": 30},
+        {"probe": "node", "target": "$n1.id", "predicate": "present", "mode": "always", "hold_s": 30}
+      ]
+    },
+    {
+      "id": "8", "title": "Editor clears N2's properties in the GUI (atomic, no partial bag)", "settle_s": 15, "covers": ["QA-0102", "QA-0129"],
+      "probe": {"hierarchy_ms": 0},
+      "actions": [
+        {"peer": "editor", "via": "gui", "op": "click", "args": {"name": "Options menu for node N2"}},
+        {"peer": "editor", "via": "gui", "op": "click", "args": {"name": "Clear Properties"}},
+        {"peer": "editor", "via": "gui", "op": "click", "args": {"name": "Clear node properties"}},
+        {"peer": "editor", "via": "gui", "op": "click", "args": {"name": "Confirm Clear node properties"}}
+      ],
+      "expect": [
+        {"probe": "properties", "target": "$n2.id", "path": "sw_owner", "predicate": "absent", "meta": {"atomic": true}},
+        {"probe": "properties", "target": "$n2.id", "path": "sw_num", "predicate": "absent", "meta": {"atomic": true}},
+        {"probe": "properties", "target": "$n2.id", "path": "sw_editor2", "predicate": "absent", "meta": {"atomic": true}},
+        {"probe": "properties", "target": "$n1.id", "path": "sw_owner", "predicate": "present", "mode": "always"},
+        {"probe": "properties", "target": "$n1.id", "path": "cp_editor", "predicate": "present", "mode": "always"}
+      ]
+    },
+    {
+      "id": "9a", "title": "Owner creates visibility group SG in the GUI and adds N1", "settle_s": 20, "covers": ["QA-0123", "QA-0103"],
+      "probe": {"hierarchy_ms": 0},
+      "actions": [
+        {"peer": "owner", "via": "gui", "op": "click", "args": {"name": "Select node N1"}},
+        {"peer": "owner", "via": "gui", "op": "click", "args": {"name": "Toggle Groups section"}},
+        {"peer": "owner", "via": "gui", "op": "type", "args": {"into": "New visibility group name", "role": "textinput", "text": "SG"}},
+        {"peer": "owner", "via": "gui", "op": "click", "args": {"name": "Add group"}},
+        {"peer": "owner", "via": "gui", "op": "click", "args": {"name": "Refresh selected objects"}},
+        {"peer": "owner", "via": "gui", "op": "click", "args": {"name": "Add all selected SG"}},
+        {"id": "sg", "peer": "owner", "via": "rest", "op": "lookup_group", "args": {"petal_id": "$sp.id", "name": "SG", "wait_s": 10}}
+      ],
+      "expect": [
+        {"probe": "groups", "target": "$sp.id", "predicate": "includes", "value": [{"name": "SG"}], "covers": "QA-0123 registry replicates"},
+        {"probe": "properties", "target": "$n1.id", "path": "view\\.groups", "predicate": "includes", "value": "$sg.id", "covers": "membership replicates"}
+      ]
+    },
+    {
+      "id": "9b", "title": "Owner changes SG (hide over REST, then show); registry change replicates", "settle_s": 20, "covers": ["QA-0123"],
+      "actions": [
+        {"id": "hide", "peer": "owner", "via": "rest", "op": "upsert_group", "args": {"petal_id": "$sp.id", "group_id": "$sg.id", "visible": false}},
+        {"id": "renamed", "peer": "owner", "via": "rest", "op": "upsert_group", "args": {"petal_id": "$sp.id", "group_id": "$sg.id", "name": "SG2", "visible": true}, "sync": "+8"}
+      ],
+      "expect": [
+        {"probe": "groups", "target": "$sp.id", "predicate": "includes", "value": [{"name": "SG", "visible": false}], "after": "hide", "within_s": 8},
+        {"probe": "groups", "target": "$sp.id", "predicate": "includes", "value": [{"name": "SG2", "visible": true}], "after": "renamed"},
+        {"probe": "node", "target": "$n1.id", "predicate": "present", "mode": "always"}
+      ]
+    },
+    {
+      "id": "9c", "title": "Owner removes N1 from the group in the GUI (leave replicates)", "settle_s": 20, "covers": ["QA-0103"],
+      "probe": {"hierarchy_ms": 0},
+      "actions": [
+        {"peer": "owner", "via": "gui", "op": "click", "args": {"name": "Refresh selected objects"}, "optional": true},
+        {"peer": "owner", "via": "gui", "op": "click", "args": {"name": "Remove all selected SG2"}}
+      ],
+      "expect": [
+        {"probe": "properties", "target": "$n1.id", "path": "view\\.groups", "predicate": "excludes", "value": "$sg.id"}
+      ]
+    },
+    {
+      "id": "10", "title": "Every peer opens Petal B; owner raises one earthwork region", "settle_s": 30, "covers": ["S-P2P CP4", "QA-0081"],
+      "actions": [
+        {"peer": "owner", "via": "gui", "op": "click", "args": {"name": "Back", "role": "button"}},
+        {"peer": "owner", "via": "gui", "op": "click", "args": {"name": "Open fractal QA Fractal"}, "optional": true},
+        {"peer": "owner", "via": "gui", "op": "click", "args": {"name": "Open petal Petal B"}},
+        {"peer": "editor", "via": "gui", "op": "click", "args": {"name": "Back", "role": "button"}},
+        {"peer": "editor", "via": "gui", "op": "click", "args": {"name": "Open fractal QA Fractal"}, "optional": true},
+        {"peer": "editor", "via": "gui", "op": "click", "args": {"name": "Open petal Petal B"}},
+        {"peer": "viewer", "via": "gui", "op": "click", "args": {"name": "Back", "role": "button"}},
+        {"peer": "viewer", "via": "gui", "op": "click", "args": {"name": "Open fractal QA Fractal"}, "optional": true},
+        {"peer": "viewer", "via": "gui", "op": "click", "args": {"name": "Open petal Petal B"}},
+        {"peer": "editor2", "via": "gui", "op": "click", "args": {"name": "Back", "role": "button"}},
+        {"peer": "editor2", "via": "gui", "op": "click", "args": {"name": "Open fractal QA Fractal"}, "optional": true},
+        {"peer": "editor2", "via": "gui", "op": "click", "args": {"name": "Open petal Petal B"}},
+        {"peer": "owner", "via": "host", "op": "sleep", "args": {"seconds": 5}},
+        {"peer": "owner", "via": "gui", "op": "key", "args": {"combo": "b"}},
+        {"peer": "owner", "via": "gui", "op": "click", "args": {"name": "Toggle Options section", "nth": 1}},
+        {"peer": "owner", "via": "gui", "op": "click", "args": {"name": "Brush operation: Raise", "role": "button"}},
+        {"peer": "owner", "via": "gui", "op": "click", "args": {"name": "Brush height delta in meters", "role": "spinbutton", "double": true}},
+        {"peer": "owner", "via": "gui", "op": "key", "args": {"combos": ["ctrl+a"]}},
+        {"peer": "owner", "via": "gui", "op": "type", "args": {"text": "2"}},
+        {"peer": "owner", "via": "gui", "op": "key", "args": {"combo": "Enter"}},
+        {"peer": "owner", "via": "gui", "op": "click", "args": {"name": "Earthwork shape: Rectangle", "role": "button"}},
+        {"peer": "owner", "via": "gui", "op": "click", "args": {"name": "Arm earthwork region placement", "role": "button"}},
+        {"id": "place_region", "peer": "owner", "via": "gui", "op": "click_at", "args": {"viewport_frac": [0.5, 0.5]}}
+      ],
+      "expect": [
+        {"probe": "nav", "target": "view", "path": "petal_id", "predicate": "equals", "value": "$fixture.petal_b_id"},
+        {"probe": "terrain", "target": "$fixture.petal_b_id", "path": "tileset_hexon_uris", "predicate": "agree"},
+        {"probe": "get", "target": "/api/v1/petals/${fixture.petal_b_id}/earthwork/summary", "path": "0.total_fill_m3", "predicate": "equals", "value": 200}
+      ],
+      "checkpoints": [
+        {"peer": "all", "capture": "scene", "pose": {"orbit": {"focus": [0, 0, 0], "yaw_deg": 45, "pitch_deg": 45, "distance": 40}}, "expect_visual": "terrain with one raised 10x10 m region on every peer (viewer included)"}
+      ]
+    },
+    {
+      "id": "11", "title": "Peers sit in Swarm Petal BEFORE an asset arrives; editor uploads a 1 MB GLB and places it", "settle_s": 90, "covers": ["QA-0124", "QA-0118"],
+      "prepare": [
+        {"peer": "owner", "via": "gui", "op": "click", "args": {"name": "Back", "role": "button"}},
+        {"peer": "owner", "via": "gui", "op": "click", "args": {"name": "Open fractal Swarm Fractal"}},
+        {"peer": "owner", "via": "gui", "op": "click", "args": {"name": "Open petal Swarm Petal"}},
+        {"peer": "editor", "via": "gui", "op": "click", "args": {"name": "Back", "role": "button"}},
+        {"peer": "editor", "via": "gui", "op": "click", "args": {"name": "Open fractal Swarm Fractal"}},
+        {"peer": "editor", "via": "gui", "op": "click", "args": {"name": "Open petal Swarm Petal"}},
+        {"peer": "viewer", "via": "gui", "op": "click", "args": {"name": "Back", "role": "button"}},
+        {"peer": "viewer", "via": "gui", "op": "click", "args": {"name": "Open fractal Swarm Fractal"}},
+        {"peer": "viewer", "via": "gui", "op": "click", "args": {"name": "Open petal Swarm Petal"}},
+        {"peer": "editor2", "via": "gui", "op": "click", "args": {"name": "Back", "role": "button"}},
+        {"peer": "editor2", "via": "gui", "op": "click", "args": {"name": "Open fractal Swarm Fractal"}},
+        {"peer": "editor2", "via": "gui", "op": "click", "args": {"name": "Open petal Swarm Petal"}}
+      ],
+      "actions": [
+        {"id": "up", "peer": "editor", "via": "rest", "op": "upload_asset", "args": {"petal_id": "$sp.id", "path": "$assets.generated.tier_1mb.path", "name": "tier_1mb.glb"}, "bind": {"content_hash": "data.content_hash"}},
+        {"id": "panel", "peer": "editor", "via": "mcp", "op": "place_asset", "args": {"petal_id": "$sp.id", "asset_id": "$up.id", "name": "Swarm Panel", "position": [0, 0, 4]}}
+      ],
+      "expect": [
+        {"probe": "asset_blob", "target": "$up.content_hash", "predicate": "present", "within_s": 60, "meta": {"size_bytes": "$assets.generated.tier_1mb.size"}, "covers": "QA-0118 event-driven blob fetch"},
+        {"probe": "hierarchy", "target": "$sp.id", "path": "nodes.${panel.id}.asset_path", "predicate": "present", "within_s": 60, "covers": "QA-0124 asset resolves without re-opening the petal"},
+        {"probe": "node", "target": "$panel.id", "path": "asset_id", "predicate": "equals", "value": "$up.id"}
+      ],
+      "checkpoints": [
+        {"peer": "all", "capture": "scene", "pose": {"orbit": {"focus": [0, 0, 4], "yaw_deg": 30, "pitch_deg": 25, "distance": 60}}, "expect_visual": "Swarm Panel building mesh rendered (not a placeholder card) on every peer WITHOUT re-opening the petal (QA-0124)"}
+      ]
+    },
+    {
+      "id": "12", "title": "Editor stops; owner edits while it is down; editor restarts relay-less with -NoBootstrap", "settle_s": 120, "covers": ["QA-0086", "QA-0117"],
+      "actions": [
+        {"id": "down", "peer": "editor", "via": "host", "op": "stop_peer"},
+        {"peer": "owner", "via": "rest", "op": "set_transform", "args": {"node_id": "$n1.id", "position": [7, 0, -3.25], "rotation": [0, 0, 0], "scale": [1, 1, 1]}},
+        {"id": "n4", "peer": "owner", "via": "rest", "op": "create_node", "args": {"fractal_id": "$sp.fractal_id", "petal_id": "$sp.id", "name": "N4 offline", "position": [0, 0, -4]}},
+        {"peer": "owner", "via": "rest", "op": "set_property", "args": {"node_id": "$n4.id", "key": "while_down", "value": true}},
+        {"id": "back_up", "peer": "editor", "via": "host", "op": "restart", "args": {"no_bootstrap": true}},
+        {"peer": "editor", "via": "gui", "op": "click", "args": {"name": "Open verse QA Basic"}, "optional": true},
+        {"peer": "editor", "via": "gui", "op": "click", "args": {"name": "Open fractal Swarm Fractal"}, "optional": true},
+        {"peer": "editor", "via": "gui", "op": "click", "args": {"name": "Open petal Swarm Petal"}, "optional": true}
+      ],
+      "expect": [
+        {"probe": "transform", "target": "$n1.id", "path": "position", "predicate": "equals", "value": [7, 0, -3.25], "after": "back_up", "within_s": 120},
+        {"probe": "properties", "target": "$n4.id", "path": "while_down", "predicate": "equals", "value": true, "after": "back_up", "within_s": 120},
+        {"probe": "node", "target": "$n3.id", "peers": ["editor"], "predicate": "absent", "after": "back_up", "within_s": 120, "covers": "deletes stay deleted after restart"}
+      ]
+    },
+    {
+      "id": "13a", "title": "Owner revokes the editor FROM THE VERSE LIST, stays there 60 s, then re-enters; the editor keeps writing", "settle_s": 40, "covers": ["QA-0120", "QA-0121", "QA-0122", "QA-0087"],
+      "actions": [
+        {"peer": "owner", "via": "gui", "op": "click_until", "args": {"click": {"name": "Back", "role": "button"}, "until": "Options menu for verse QA Basic", "max": 4}},
+        {"peer": "owner", "via": "gui", "op": "click", "args": {"name": "Options menu for verse QA Basic"}},
+        {"peer": "owner", "via": "gui", "op": "click", "args": {"name": "Options… verse QA Basic"}},
+        {"peer": "owner", "via": "gui", "op": "click", "args": {"name": "Access", "role": "button"}},
+        {"peer": "owner", "via": "gui", "op": "click", "args": {"name": "Revoke role grant for ${peers.editor.did}"}},
+        {"id": "revoke", "peer": "owner", "via": "gui", "op": "click", "args": {"name": "Confirm revoke"}},
+        {"peer": "owner", "via": "gui", "op": "click", "args": {"name": "Close window", "role": "button"}, "optional": true},
+        {"id": "rest_tf", "peer": "editor", "via": "rest", "op": "set_transform", "args": {"node_id": "$n1.id", "position": [9, 0, 9], "rotation": [0, 0, 0], "scale": [1, 1, 1]}, "sync": "+25", "expect": "refused", "covers": "QA-0121"},
+        {"id": "rest_prop", "peer": "editor", "via": "rest", "op": "set_property", "args": {"node_id": "$n1.id", "key": "revoked_rest", "value": 1}, "sync": "+26", "expect": "refused"},
+        {"id": "mcp_prop", "peer": "editor", "via": "mcp", "op": "set_property", "args": {"node_id": "$n1.id", "key": "revoked_mcp", "value": 1}, "sync": "+27", "expect": "refused"},
+        {"id": "mcp_tf", "peer": "editor", "via": "mcp", "op": "update_transform", "args": {"node_id": "$n1.id", "position": [9, 0, 9], "rotation": [0, 0, 0], "scale": [1, 1, 1]}, "sync": "+28", "expect": "refused"},
+        {"id": "reenter", "peer": "owner", "via": "gui", "op": "click", "args": {"name": "Open verse QA Basic"}, "sync": "+75"}
+      ],
+      "expect": [
+        {"probe": "role", "target": "$fixture.verse_id", "peers": ["editor"], "predicate": "not_equals", "value": "editor", "after": "revoke", "within_s": 30, "covers": "QA-0120 revoke published while the owner stays on the verse list"},
+        {"probe": "properties", "target": "$n1.id", "peers": ["owner", "viewer", "editor2"], "path": "revoked_rest", "predicate": "absent", "mode": "always", "after": "revoke", "hold_s": 40, "covers": "QA-0122 REST write never accepted elsewhere"},
+        {"probe": "properties", "target": "$n1.id", "peers": ["owner", "viewer", "editor2"], "path": "revoked_mcp", "predicate": "absent", "mode": "always", "after": "revoke", "hold_s": 40, "covers": "QA-0122 MCP write never accepted elsewhere"},
+        {"probe": "transform", "target": "$n1.id", "peers": ["owner", "viewer", "editor2"], "path": "position", "predicate": "not_equals", "value": [9, 0, 9], "mode": "always", "after": "revoke", "hold_s": 40, "covers": "QA-0121 transform never accepted elsewhere"},
+        {"probe": "properties", "target": "$n1.id", "path": "revoked_rest", "predicate": "absent", "after": "reenter", "within_s": 30, "covers": "QA-0121/0122 rows that arrived before the revoke are dropped on every peer"},
+        {"probe": "properties", "target": "$n1.id", "path": "revoked_mcp", "predicate": "absent", "after": "reenter", "within_s": 30},
+        {"probe": "transform", "target": "$n1.id", "path": "position", "predicate": "equals", "value": [7, 0, -3.25], "after": "reenter", "within_s": 30, "covers": "QA-0121 every peer back on the durable value"}
+      ]
+    },
+    {
+      "id": "13b", "title": "Owner revokes editor2 FROM INSIDE the verse; editor2 writes property + transform after the revoke", "settle_s": 40, "covers": ["QA-0121", "QA-0122"],
+      "actions": [
+        {"peer": "owner", "via": "gui", "op": "click", "args": {"name": "Options menu for verse QA Basic"}, "optional": true},
+        {"peer": "owner", "via": "gui", "op": "click", "args": {"name": "Options… verse QA Basic"}, "optional": true},
+        {"peer": "owner", "via": "gui", "op": "click", "args": {"name": "Access", "role": "button"}, "optional": true},
+        {"peer": "owner", "via": "gui", "op": "click", "args": {"name": "Revoke role grant for ${peers.editor2.did}"}, "optional": true},
+        {"id": "revoke2", "peer": "owner", "via": "gui", "op": "click", "args": {"name": "Confirm revoke"}, "optional": true},
+        {"peer": "owner", "via": "gui", "op": "click", "args": {"name": "Close window", "role": "button"}, "optional": true},
+        {"peer": "editor2", "via": "rest", "op": "set_property", "args": {"node_id": "$n2.id", "key": "revoked2_rest", "value": 1}, "sync": "+15", "expect": "refused"},
+        {"peer": "editor2", "via": "mcp", "op": "set_property", "args": {"node_id": "$n2.id", "key": "revoked2_mcp", "value": 1}, "sync": "+16", "expect": "refused"},
+        {"peer": "editor2", "via": "rest", "op": "set_transform", "args": {"node_id": "$n2.id", "position": [9, 0, 9], "rotation": [0, 0, 0], "scale": [1, 1, 1]}, "sync": "+17", "expect": "refused"}
+      ],
+      "expect": [
+        {"probe": "role", "target": "$fixture.verse_id", "peers": ["editor2"], "predicate": "not_equals", "value": "editor", "after": "revoke2", "within_s": 30},
+        {"probe": "properties", "target": "$n2.id", "path": "revoked2_rest", "predicate": "absent", "within_s": 30},
+        {"probe": "properties", "target": "$n2.id", "path": "revoked2_mcp", "predicate": "absent", "within_s": 30},
+        {"probe": "transform", "target": "$n2.id", "path": "position", "predicate": "not_equals", "value": [9, 0, 9], "within_s": 30},
+        {"probe": "properties", "target": "$n2.id", "peers": ["owner", "viewer", "editor"], "path": "revoked2_rest", "predicate": "absent", "mode": "always", "hold_s": 40}
+      ]
+    },
+    {
+      "id": "14", "title": "Same query on every peer (REST rows + GUI Query tab)", "settle_s": 20, "covers": ["S-P2P CP8", "QA-0127"],
+      "probe": {"query_ms": 2000},
+      "actions": [
+        {"peer": "owner", "via": "gui", "op": "click", "args": {"name": "Open fractal Swarm Fractal"}, "optional": true},
+        {"peer": "owner", "via": "gui", "op": "click", "args": {"name": "Open petal Swarm Petal"}, "optional": true},
+        {"peer": "owner", "via": "gui", "op": "click", "args": {"name": "Inspector tab: Query"}, "optional": true},
+        {"peer": "owner", "via": "gui", "op": "click", "args": {"name": "All nodes in this petal"}, "optional": true},
+        {"peer": "owner", "via": "gui", "op": "click", "args": {"name": "Run Query"}, "optional": true}
+      ],
+      "expect": [
+        {"probe": "query", "target": "SELECT node_id, display_name, position, elevation, properties FROM node WHERE petal_id = '${sp.id}' AND tombstone = NONE ORDER BY node_id", "path": "digest", "predicate": "agree"},
+        {"probe": "query", "target": "SELECT node_id, display_name, position, elevation, properties FROM node WHERE petal_id = '${sp.id}' AND tombstone = NONE ORDER BY node_id", "path": "count", "predicate": "equals", "value": 4, "covers": "N1, N2, Swarm Panel, N4 offline"}
+      ],
+      "checkpoints": [
+        {"peer": "owner", "capture": "window", "expect_visual": "Query tab shows 'Results 4 rows' (deleted N3 must not be listed: QA-0127)"}
+      ]
+    },
+    {
+      "id": "15", "title": "FREE PLAY: 60 s concurrent, role-appropriate, seeded and logged", "settle_s": 10,
+      "actions": [
+        {"id": "fp_owner", "peer": "owner", "via": "macro", "op": "freeplay", "args": {"mode": "writer", "duration_s": 60, "rate_hz": 1, "targets": ["$n1.id", "$n2.id", "$fixture.node_ids.0", "$panel.id"]}, "sync": "barrier"},
+        {"id": "fp_editor", "peer": "editor", "via": "macro", "op": "freeplay", "args": {"mode": "denied", "sentinel": 77, "duration_s": 60, "rate_hz": 1, "targets": ["$n1.id", "$n2.id", "$fixture.node_ids.0", "$panel.id"]}, "sync": "barrier"},
+        {"id": "fp_viewer", "peer": "viewer", "via": "macro", "op": "freeplay", "args": {"mode": "denied", "sentinel": 99, "duration_s": 60, "rate_hz": 1, "targets": ["$n1.id", "$n2.id", "$fixture.node_ids.0", "$panel.id"]}, "sync": "barrier"},
+        {"id": "fp_editor2", "peer": "editor2", "via": "macro", "op": "freeplay", "args": {"mode": "denied", "sentinel": 55, "duration_s": 60, "rate_hz": 1, "targets": ["$n1.id", "$n2.id", "$fixture.node_ids.0", "$panel.id"]}, "sync": "barrier"}
+      ],
+      "expect": [
+        {"probe": "properties", "target": "$n1.id", "path": "fp_deny_editor", "predicate": "absent", "mode": "always", "hold_s": 30},
+        {"probe": "properties", "target": "$n1.id", "path": "fp_deny_viewer", "predicate": "absent", "mode": "always", "hold_s": 30},
+        {"probe": "transform", "target": "$n1.id", "path": "position", "predicate": "not_equals", "value": [77, 0, 77], "mode": "always", "hold_s": 30},
+        {"probe": "transform", "target": "$n1.id", "path": "position", "predicate": "not_equals", "value": [99, 0, 99], "mode": "always", "hold_s": 30},
+        {"probe": "alive", "target": "peer", "path": "alive", "predicate": "equals", "value": true, "mode": "always", "hold_s": 30, "covers": "no peer crashes"}
+      ]
+    },
+    {
+      "id": "16", "title": "Settle: every contested row agrees on every peer", "settle_s": 45,
+      "actions": [
+        {"id": "settle", "peer": "owner", "via": "host", "op": "sleep", "args": {"seconds": 1}}
+      ],
+      "expect": [
+        {"probe": "node", "target": "$n1.id", "predicate": "agree", "within_s": 45},
+        {"probe": "node", "target": "$n2.id", "predicate": "agree", "within_s": 45},
+        {"probe": "node", "target": "$fixture.node_ids.0", "predicate": "agree", "within_s": 45},
+        {"probe": "node", "target": "$panel.id", "predicate": "agree", "within_s": 45}
+      ]
+    },
+    {
+      "id": "17", "title": "Final fingerprint", "settle_s": 5,
+      "actions": [
+        {"peer": "owner", "via": "host", "op": "fingerprint", "args": {"label": "s17"}}
+      ]
+    }
+  ]
+}

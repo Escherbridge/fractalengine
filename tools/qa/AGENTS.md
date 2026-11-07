@@ -1059,6 +1059,99 @@ forces a child process. Timeout fires with the peers present and exits 3 (`barri
 otherwise the exit code is CMD's. Barrier ids are single-use: a retried step takes a fresh id (`5b`), because a
 stale ready file from the first attempt would release the retry immediately.
 
+## §sim
+
+`tools/qa/sim/` is the scripted P2P simulator that replaced LLM-driven peer agents (checkpoint steer
+2026-11-07): scripts execute, agents design scenarios and triage the report. One Python process drives every
+peer in-process through `fe.py`'s loopback transport (no subprocess per action), probes every peer on one
+`time.perf_counter` clock, stops the peers by exact identity and analyzes the run with pandas.
+
+```powershell
+python tools/qa/sim/run.py validate [NAME...]           # structural + $-reference validation (no app)
+python tools/qa/sim/run.py schema                        # regenerate tools/qa/sim/scenario.schema.json
+python tools/qa/sim/run.py assets                        # .qa/assets/generated: buildings/trees/vehicles + 100KB..25MB ladder
+python tools/qa/sim/run.py fetch-khronos                 # optional .qa/assets/khronos (CC0/CC-BY-4.0 only; skips offline)
+python tools/qa/sim/run.py p2p-core --peers owner,editor --steps 0-3 --allow-stale-stage   # the 2-peer dry run
+python tools/qa/sim/run.py analyze qa/sim/runs/<scenario>-<ts>                             # re-analyze a run dir
+```
+
+`run.py` order: stage when HEAD moved (refused while a non-rust-analyzer cargo runs; `--allow-stale-stage`
+reuses the newest stage with limited provenance) -> resource gate (until QA-0119 lands N <= floor((cores-4)/2.5),
+3 on this host; RAM >= 0.9 GB per peer; `--reactive` drops the CPU cap) -> `peers.ps1 Start -Count N -Names ...`
+-> disjoint affinity masks + AboveNormal through `Get-QaOwnedProcess` (pid + creation ticks + exe) -> windows tiled
+by OS `SetWindowPos` on the identity-checked pid -> `peers_join.py` (real GUI invite flow) -> host sampler, probers,
+driver -> `peers.ps1 Stop -OwnerRun` in `finally` (also on exceptions and the `--max-uptime-s` watchdog) -> analyze.
+`--attach` drives the peers in `.qa/peers-current` and never starts or stops them. Run dirs: `qa/sim/runs/`.
+
+Scenarios: tracked in `tools/qa/sim/scenarios/` (`p2p-core`, `p2p-assets`, `city-lite`); a same-named file in
+`qa/sim/scenarios/` (gitignored) overrides one locally. Peers absent from a run (`--peers`, gate) skip their
+actions and drop out of expectations; `p2p-core` needs owner/editor/viewer/editor2 for full coverage.
+
+### DSL reference
+
+```
+{name, seed, fixture: basic|terrain, peers: [{name, role}], probe: {rest_ms, hierarchy_ms, ui_ms, query_ms, host_ms},
+ watch: [{probe, target}],
+ steps: [{id, title, settle_s, probe: {...per-step override, 0 pauses a family}, prepare: [action], actions: [action],
+          expect: [expect], checkpoints: [{peer|all, capture: scene|window, pose, expect_visual}]}]}
+action = {id?, peer, via: rest|mcp|gui|host|macro, op, args, sync: seq|barrier|+<s>, expect: ok|refused|any,
+          optional?, bind?: {name: result.path}}
+expect = {probe, target, path?, peers: all|[names], predicate, value?, within_s?, after?: action id,
+          mode: eventually|always, hold_s?, meta?: {severity, atomic, optional, size_bytes}}
+```
+
+- **References.** An action id binds `{id, ok, status, data, ...bind}`: `"$n2.id"` (typed) or `"${n2.id}"`
+  (inside a string) in later args, targets, paths and values. Namespaces: `$fixture.*` (owner `current.json`
+  `fixture_detail`), `$peers.<name>.did|run_dir`, `$assets.generated|khronos.<key>.path|size|sha256`, `$run.dir`.
+  Paths are dotted; `\\.` keeps a literal dot (`view\\.groups`).
+- **Ops.** rest: `create_fractal|create_petal|create_node|set_transform|set_property|delete_property|delete_node|
+  upsert_group|delete_group|upload_asset` (multipart; MCP caps at 11 MiB)`|query|ingest_readings|lookup_node`
+  (query, not hierarchy)`|lookup_petal|lookup_group|request`. mcp: any tool name, args = tool arguments
+  (`isError` = refused). gui: `click|type|key|scroll|scroll_until|click_until|click_at` (`viewport_frac`)`|wait_for`,
+  fe.py locators (`name`, `role`, `nth`). host: `restart` (peers.ps1 Restart, `no_bootstrap`)`|stop_peer`
+  (stop.ps1 exact identity)`|sleep|wait_role|fingerprint`. macro: `place_grid|drone_flight|freeplay`; every
+  sub-call is logged as `<macro id>.<n>`, and freeplay is seeded by scenario seed + step + peer (replayable).
+- **Sync.** `seq` actions run in declared order across peers; `barrier` actions (distinct peers) wait on a
+  `threading.Barrier` whose action sets `fire_at = now + 0.5 s`, then spin-sleep to it (GUI barrier actions
+  pre-resolve their view token); `+<s>` fires at step start + s. All three lanes start together; `prepare`
+  runs first, before any barrier. A step waits until every eventually-expectation holds live (+ `hold_s`) or
+  `settle_s` passes, then takes its checkpoints (scene-mode by default: no re-pose in front of the user).
+- **Expectations.** Probes: `node` (`GET /nodes/{id}`: GeoJSON `position.coordinates` [x,z] + `elevation`; its
+  `rotation` shape varies, quaternion at creation vs Euler after an edit), `transform` (`GET /nodes/{id}/transform`,
+  the canonical [x,y,z] triple), `properties` (derived from `node`), `hierarchy` (target petal
+  id -> `{names, nodes}`; verse id -> fractal/petal names), `groups`, `terrain`, `get` (target = GET path),
+  `query` (target = SQL), `timeseries` (target = `query_timeseries` args), `role` (token file), `nav`/`ui`
+  (ui-state), `asset_blob` (target = content hash: `<run>/data/blobs/<h[:2]>/<h>` size, no HTTP), `alive`.
+  Predicates: `equals|not_equals` (1e-3 float tolerance, -0.0 == 0), `includes|excludes` (substring, subset,
+  list membership), `absent|present`, `count` (int or `{min,max}`), `agree` (all listed peers digest-equal at
+  one instant). `t0` = the step's last fire, or `after`'s fire. `always` checks every observation in
+  [t0, step end + hold_s].
+- **Probing does not perturb.** QA-0125: every `GET /hierarchy` rebuilds the GUI tree, so hierarchy polls are
+  capped at 0.5 Hz (validator), per-node GETs carry the nodes under test, GUI typing steps set
+  `"probe": {"hierarchy_ms": 0}`, and probers only poll targets of steps that have started. Observations are
+  logged on change; each prober round logs a `_tick` with request counts so the report puts request rates
+  next to the latencies they measured.
+
+### Adding a scenario
+
+Copy the closest scenario, keep ids short, bind every created id, express each claim as an expectation (never
+in the analyzer), give refusals `"expect": "refused"`, mark single logical writes whose intermediate states
+must not be visible `"meta": {"atomic": true}`, and run `run.py validate NAME` before any app launch.
+
+### Reading the report
+
+`<run>/report.md` (tables), `latency.csv` (one row per expectation x peer), `convergence.csv`, `timeline.svg`
+(per step x peer: green fire->converged within budget, red past budget or never, action ticks, host CPU band),
+`anomalies.json` (`[{id, severity_hint, scenario, step, peers, title, evidence, repro}]`, never truncated), plus
+the raw `events.jsonl`, `observations.jsonl`, `expectations.jsonl`, `steps.jsonl`, `host.csv`,
+`fingerprint-final.json`. Severity hints: S1 = a forbidden write accepted, an `always` violation, a held state
+that regressed (resurrection), divergence still open at run end, final fingerprint mismatch, a peer that stopped
+answering; S2 = never converged, convergence beyond 2x budget, a permitted action refused, a resolved divergence
+episode > 15 s; S3 = in budget x2, atomic partial state; `harness` = the simulator could not run an action or
+resolve an expectation. Until QA-0119 lands, read every latency with the CPU table: they are upper bounds under
+host contention. `repro` re-runs one step: `python tools/qa/sim/run.py <scenario> --steps <id>` (earlier steps
+that bind ids must be included in the range).
+
 ## Native Portal fixture client
 
 `fe.py portal-fixture observe` reads only the fixed native fixture document facts. `second-link` invokes its actual second anchor and waits for a current observed page two. `refused-third-link` invokes the actual third anchor and reports the exact native refusal with the original page retained. Neither action submits a Navigate URL. These routes require input opt-in, Owner, the current selected Portal/Petal and a captured live helper. A loading document is a retryable refusal; wrong content is never reported as a successful page identity.

@@ -1,0 +1,104 @@
+{
+  "name": "city-lite",
+  "description": "Seed of the city simulation: three builders each place a 20-building district on a street grid at the same instant, then four drones fly at 2 Hz for 3 minutes (MCP update_transform + IoT readings + device-payload telemetry); every peer must agree on the scene and on query_timeseries.",
+  "seed": 20261109,
+  "fixture": "basic",
+  "verse_name": "QA Basic",
+  "assets": "generated",
+  "peers": [
+    {"name": "owner", "role": "owner"},
+    {"name": "editor", "role": "editor"},
+    {"name": "editor2", "role": "editor"}
+  ],
+  "probe": {"rest_ms": 1000, "hierarchy_ms": 6000, "ui_ms": 2000, "query_ms": 10000, "host_ms": 2000},
+  "steps": [
+    {
+      "id": "0", "title": "Preflight: builders open the shared verse", "settle_s": 15,
+      "actions": [
+        {"peer": "editor", "via": "gui", "op": "click", "args": {"name": "Close window", "role": "button"}, "optional": true},
+        {"peer": "editor", "via": "gui", "op": "click", "args": {"name": "Open verse QA Basic"}, "optional": true},
+        {"peer": "editor2", "via": "gui", "op": "click", "args": {"name": "Close window", "role": "button"}, "optional": true},
+        {"peer": "editor2", "via": "gui", "op": "click", "args": {"name": "Open verse QA Basic"}, "optional": true}
+      ],
+      "expect": [
+        {"probe": "role", "target": "$fixture.verse_id", "peers": ["editor", "editor2"], "predicate": "equals", "value": "editor"}
+      ]
+    },
+    {
+      "id": "1", "title": "Owner creates City / Downtown and the drone telemetry format; every builder opens Downtown", "settle_s": 30,
+      "actions": [
+        {"id": "city", "peer": "owner", "via": "rest", "op": "create_fractal", "args": {"name": "City"}},
+        {"id": "dt", "peer": "owner", "via": "rest", "op": "create_petal", "args": {"fractal_id": "$city.id", "name": "Downtown"}},
+        {"id": "fmt", "peer": "owner", "via": "mcp", "op": "register_device_format", "args": {"verse_id": "$fixture.verse_id", "format_id": "qa.fractalengine/drone-telemetry@1", "mime": "application/json", "description": "fe-qa-sim drone telemetry"}, "expect": "any"},
+        {"peer": "owner", "via": "host", "op": "sleep", "args": {"seconds": 5}},
+        {"peer": "owner", "via": "gui", "op": "click", "args": {"name": "Open fractal City"}},
+        {"peer": "owner", "via": "gui", "op": "click", "args": {"name": "Open petal Downtown"}},
+        {"peer": "editor", "via": "gui", "op": "click", "args": {"name": "Open fractal City"}},
+        {"peer": "editor", "via": "gui", "op": "click", "args": {"name": "Open petal Downtown"}},
+        {"peer": "editor2", "via": "gui", "op": "click", "args": {"name": "Open fractal City"}},
+        {"peer": "editor2", "via": "gui", "op": "click", "args": {"name": "Open petal Downtown"}}
+      ],
+      "expect": [
+        {"probe": "nav", "target": "view", "path": "petal_id", "predicate": "equals", "value": "$dt.id"}
+      ]
+    },
+    {
+      "id": "2", "title": "Each builder uploads its building variant", "settle_s": 60,
+      "actions": [
+        {"id": "b0", "peer": "owner", "via": "rest", "op": "upload_asset", "args": {"petal_id": "$dt.id", "path": "$assets.generated.building_0.path"}, "bind": {"content_hash": "data.content_hash"}},
+        {"id": "b1", "peer": "editor", "via": "rest", "op": "upload_asset", "args": {"petal_id": "$dt.id", "path": "$assets.generated.building_1.path"}, "bind": {"content_hash": "data.content_hash"}},
+        {"id": "b2", "peer": "editor2", "via": "rest", "op": "upload_asset", "args": {"petal_id": "$dt.id", "path": "$assets.generated.building_2.path"}, "bind": {"content_hash": "data.content_hash"}}
+      ],
+      "expect": [
+        {"probe": "asset_blob", "target": "$b0.content_hash", "predicate": "present", "within_s": 60, "meta": {"size_bytes": "$assets.generated.building_0.size"}},
+        {"probe": "asset_blob", "target": "$b1.content_hash", "predicate": "present", "within_s": 60, "meta": {"size_bytes": "$assets.generated.building_1.size"}},
+        {"probe": "asset_blob", "target": "$b2.content_hash", "predicate": "present", "within_s": 60, "meta": {"size_bytes": "$assets.generated.building_2.size"}}
+      ]
+    },
+    {
+      "id": "3", "title": "Three districts of 20 buildings placed at the same instant (barrier)", "settle_s": 120,
+      "probe": {"query_ms": 3000},
+      "actions": [
+        {"id": "d0", "peer": "owner", "via": "macro", "op": "place_grid", "args": {"petal_id": "$dt.id", "asset_id": "$b0.id", "rows": 4, "cols": 5, "spacing": 18, "origin": [-120, 0, -30], "name_prefix": "North"}, "sync": "barrier"},
+        {"id": "d1", "peer": "editor", "via": "macro", "op": "place_grid", "args": {"petal_id": "$dt.id", "asset_id": "$b1.id", "rows": 4, "cols": 5, "spacing": 18, "origin": [-30, 0, -30], "name_prefix": "Centre"}, "sync": "barrier"},
+        {"id": "d2", "peer": "editor2", "via": "macro", "op": "place_grid", "args": {"petal_id": "$dt.id", "asset_id": "$b2.id", "rows": 4, "cols": 5, "spacing": 18, "origin": [60, 0, -30], "name_prefix": "South"}, "sync": "barrier"}
+      ],
+      "expect": [
+        {"probe": "query", "target": "SELECT count() AS n FROM node WHERE petal_id = '${dt.id}' AND tombstone = NONE GROUP ALL", "path": "rows.0.n", "predicate": "equals", "value": 60, "within_s": 120},
+        {"probe": "query", "target": "SELECT node_id, display_name, position FROM node WHERE petal_id = '${dt.id}' AND tombstone = NONE ORDER BY node_id", "path": "digest", "predicate": "agree", "within_s": 120}
+      ],
+      "checkpoints": [
+        {"peer": "all", "capture": "scene", "pose": {"orbit": {"focus": [0, 0, 0], "yaw_deg": 35, "pitch_deg": 40, "distance": 260}}, "expect_visual": "three districts of textured buildings on a street grid, identical on every peer"}
+      ]
+    },
+    {
+      "id": "4", "title": "Owner adds four drones", "settle_s": 30,
+      "actions": [
+        {"id": "dr0", "peer": "owner", "via": "rest", "op": "create_node", "args": {"fractal_id": "$city.id", "petal_id": "$dt.id", "name": "Drone 0", "position": [20, 30, 0]}},
+        {"id": "dr1", "peer": "owner", "via": "rest", "op": "create_node", "args": {"fractal_id": "$city.id", "petal_id": "$dt.id", "name": "Drone 1", "position": [0, 32, 20]}},
+        {"id": "dr2", "peer": "owner", "via": "rest", "op": "create_node", "args": {"fractal_id": "$city.id", "petal_id": "$dt.id", "name": "Drone 2", "position": [-20, 34, 0]}},
+        {"id": "dr3", "peer": "owner", "via": "rest", "op": "create_node", "args": {"fractal_id": "$city.id", "petal_id": "$dt.id", "name": "Drone 3", "position": [0, 36, -20]}}
+      ],
+      "expect": [
+        {"probe": "node", "target": "$dr0.id", "predicate": "present"},
+        {"probe": "node", "target": "$dr3.id", "predicate": "present"}
+      ]
+    },
+    {
+      "id": "5", "title": "Four drones fly at 2 Hz for 3 minutes (update_transform + readings + device payloads)", "settle_s": 60,
+      "actions": [
+        {"id": "flight", "peer": "owner", "via": "macro", "op": "drone_flight", "args": {"petal_id": "$dt.id", "node_ids": ["$dr0.id", "$dr1.id", "$dr2.id", "$dr3.id"], "rate_hz": 2, "duration_s": 180, "radius": 40, "altitude": 30, "period_s": 30, "metric": "altitude_m", "format_id": "qa.fractalengine/drone-telemetry@1", "payload_every": 20}}
+      ],
+      "expect": [
+        {"probe": "transform", "target": "$dr0.id", "path": "position", "predicate": "agree", "within_s": 30},
+        {"probe": "transform", "target": "$dr3.id", "path": "position", "predicate": "agree", "within_s": 30},
+        {"probe": "timeseries", "target": {"petal_id": "$dt.id", "kind": "latest_per_anchor", "metric": "altitude_m"}, "path": "digest", "predicate": "agree", "within_s": 60},
+        {"probe": "timeseries", "target": {"petal_id": "$dt.id", "kind": "all_readings"}, "path": "digest", "predicate": "agree", "within_s": 60},
+        {"probe": "alive", "target": "peer", "path": "alive", "predicate": "equals", "value": true, "mode": "always"}
+      ],
+      "checkpoints": [
+        {"peer": "all", "capture": "scene", "pose": {"orbit": {"focus": [0, 20, 0], "yaw_deg": 35, "pitch_deg": 35, "distance": 200}}, "expect_visual": "four drones above the districts at the same positions on every peer"}
+      ]
+    }
+  ]
+}

@@ -1,0 +1,98 @@
+{
+  "name": "p2p-assets",
+  "description": "Scene-asset replication vs size: the generated 100 KB / 1 MB / 5 MB ladder, two cached Khronos models (optional), and a 25 MB GLB whose receiving editor restarts mid-transfer and must resume. Run `python tools/qa/sim/run.py assets` (and optionally `fetch-khronos`) first.",
+  "seed": 20261108,
+  "fixture": "basic",
+  "verse_name": "QA Basic",
+  "assets": "generated+khronos",
+  "peers": [
+    {"name": "owner", "role": "owner"},
+    {"name": "editor", "role": "editor"},
+    {"name": "viewer", "role": "viewer"}
+  ],
+  "probe": {"rest_ms": 500, "hierarchy_ms": 4000, "ui_ms": 2000, "query_ms": 10000, "host_ms": 2000},
+  "steps": [
+    {
+      "id": "0", "title": "Preflight: joined peers open the shared verse", "settle_s": 15,
+      "actions": [
+        {"peer": "editor", "via": "gui", "op": "click", "args": {"name": "Close window", "role": "button"}, "optional": true},
+        {"peer": "editor", "via": "gui", "op": "click", "args": {"name": "Open verse QA Basic"}, "optional": true},
+        {"peer": "viewer", "via": "gui", "op": "click", "args": {"name": "Close window", "role": "button"}, "optional": true},
+        {"peer": "viewer", "via": "gui", "op": "click", "args": {"name": "Open verse QA Basic"}, "optional": true}
+      ],
+      "expect": [
+        {"probe": "nav", "target": "view", "path": "verse_id", "predicate": "equals", "value": "$fixture.verse_id"}
+      ]
+    },
+    {
+      "id": "1", "title": "Owner creates Asset Fractal / Asset Petal over REST; every peer opens it BEFORE any asset exists", "settle_s": 30,
+      "actions": [
+        {"id": "af", "peer": "owner", "via": "rest", "op": "create_fractal", "args": {"name": "Asset Fractal"}},
+        {"id": "ap", "peer": "owner", "via": "rest", "op": "create_petal", "args": {"fractal_id": "$af.id", "name": "Asset Petal"}},
+        {"peer": "owner", "via": "host", "op": "sleep", "args": {"seconds": 5}},
+        {"peer": "owner", "via": "gui", "op": "click", "args": {"name": "Open fractal Asset Fractal"}},
+        {"peer": "owner", "via": "gui", "op": "click", "args": {"name": "Open petal Asset Petal"}},
+        {"peer": "editor", "via": "gui", "op": "click", "args": {"name": "Open fractal Asset Fractal"}},
+        {"peer": "editor", "via": "gui", "op": "click", "args": {"name": "Open petal Asset Petal"}},
+        {"peer": "viewer", "via": "gui", "op": "click", "args": {"name": "Open fractal Asset Fractal"}},
+        {"peer": "viewer", "via": "gui", "op": "click", "args": {"name": "Open petal Asset Petal"}}
+      ],
+      "expect": [
+        {"probe": "nav", "target": "view", "path": "petal_id", "predicate": "equals", "value": "$ap.id"}
+      ]
+    },
+    {
+      "id": "2", "title": "Editor uploads and places the 100 KB, 1 MB and 5 MB tiers", "settle_s": 150, "covers": ["QA-0118", "QA-0124"],
+      "actions": [
+        {"id": "up100k", "peer": "editor", "via": "rest", "op": "upload_asset", "args": {"petal_id": "$ap.id", "path": "$assets.generated.tier_100kb.path"}, "bind": {"content_hash": "data.content_hash"}},
+        {"id": "p100k", "peer": "editor", "via": "mcp", "op": "place_asset", "args": {"petal_id": "$ap.id", "asset_id": "$up100k.id", "name": "Tier 100KB", "position": [-30, 0, 0]}},
+        {"id": "up1m", "peer": "editor", "via": "rest", "op": "upload_asset", "args": {"petal_id": "$ap.id", "path": "$assets.generated.tier_1mb.path"}, "bind": {"content_hash": "data.content_hash"}},
+        {"id": "p1m", "peer": "editor", "via": "mcp", "op": "place_asset", "args": {"petal_id": "$ap.id", "asset_id": "$up1m.id", "name": "Tier 1MB", "position": [0, 0, 0]}},
+        {"id": "up5m", "peer": "editor", "via": "rest", "op": "upload_asset", "args": {"petal_id": "$ap.id", "path": "$assets.generated.tier_5mb.path"}, "bind": {"content_hash": "data.content_hash"}},
+        {"id": "p5m", "peer": "editor", "via": "mcp", "op": "place_asset", "args": {"petal_id": "$ap.id", "asset_id": "$up5m.id", "name": "Tier 5MB", "position": [30, 0, 0]}}
+      ],
+      "expect": [
+        {"probe": "asset_blob", "target": "$up100k.content_hash", "predicate": "present", "after": "p100k", "within_s": 60, "meta": {"size_bytes": "$assets.generated.tier_100kb.size"}},
+        {"probe": "asset_blob", "target": "$up1m.content_hash", "predicate": "present", "after": "p1m", "within_s": 60, "meta": {"size_bytes": "$assets.generated.tier_1mb.size"}},
+        {"probe": "asset_blob", "target": "$up5m.content_hash", "predicate": "present", "after": "p5m", "within_s": 90, "meta": {"size_bytes": "$assets.generated.tier_5mb.size"}},
+        {"probe": "hierarchy", "target": "$ap.id", "path": "nodes.${p5m.id}.asset_path", "predicate": "present", "after": "p5m", "within_s": 90, "covers": "QA-0124 resolves without re-opening the petal"}
+      ],
+      "checkpoints": [
+        {"peer": "all", "capture": "scene", "pose": {"orbit": {"focus": [0, 0, 0], "yaw_deg": 30, "pitch_deg": 25, "distance": 110}}, "expect_visual": "three textured buildings (window-grid facades) on every peer, no placeholder cards, petal never re-opened"}
+      ]
+    },
+    {
+      "id": "3", "title": "Owner places two cached Khronos models (skipped when not cached)", "settle_s": 120,
+      "actions": [
+        {"id": "upAvocado", "peer": "owner", "via": "rest", "op": "upload_asset", "args": {"petal_id": "$ap.id", "path": "$assets.khronos.Avocado.path"}, "bind": {"content_hash": "data.content_hash"}, "optional": true},
+        {"id": "pAvocado", "peer": "owner", "via": "mcp", "op": "place_asset", "args": {"petal_id": "$ap.id", "asset_id": "$upAvocado.id", "name": "Avocado", "position": [-15, 0, 25], "scale": [60, 60, 60]}, "optional": true},
+        {"id": "upBoomBox", "peer": "owner", "via": "rest", "op": "upload_asset", "args": {"petal_id": "$ap.id", "path": "$assets.khronos.BoomBox.path"}, "bind": {"content_hash": "data.content_hash"}, "optional": true},
+        {"id": "pBoomBox", "peer": "owner", "via": "mcp", "op": "place_asset", "args": {"petal_id": "$ap.id", "asset_id": "$upBoomBox.id", "name": "BoomBox", "position": [15, 0, 25], "scale": [200, 200, 200]}, "optional": true}
+      ],
+      "expect": [
+        {"probe": "asset_blob", "target": "$upAvocado.content_hash", "predicate": "present", "within_s": 90, "meta": {"optional": true, "size_bytes": "$assets.khronos.Avocado.size"}},
+        {"probe": "asset_blob", "target": "$upBoomBox.content_hash", "predicate": "present", "within_s": 90, "meta": {"optional": true, "size_bytes": "$assets.khronos.BoomBox.size"}}
+      ],
+      "checkpoints": [
+        {"peer": "all", "capture": "scene", "pose": {"orbit": {"focus": [0, 0, 20], "yaw_deg": 20, "pitch_deg": 20, "distance": 70}}, "expect_visual": "Avocado and BoomBox PBR models rendered with textures on every peer"}
+      ]
+    },
+    {
+      "id": "4", "title": "Owner uploads + places the 25 MB tier; the receiving editor restarts mid-transfer and must resume", "settle_s": 300, "covers": ["QA-0118", "chunked resume"],
+      "actions": [
+        {"id": "up25m", "peer": "owner", "via": "rest", "op": "upload_asset", "args": {"petal_id": "$ap.id", "path": "$assets.generated.tier_25mb.path"}, "bind": {"content_hash": "data.content_hash"}},
+        {"id": "p25m", "peer": "owner", "via": "mcp", "op": "place_asset", "args": {"petal_id": "$ap.id", "asset_id": "$up25m.id", "name": "Tier 25MB", "position": [0, 0, -40]}},
+        {"id": "editor_restart", "peer": "editor", "via": "host", "op": "restart", "args": {"no_bootstrap": false}, "sync": "+6"},
+        {"peer": "editor", "via": "gui", "op": "click", "args": {"name": "Open verse QA Basic"}, "sync": "+60", "optional": true}
+      ],
+      "expect": [
+        {"probe": "asset_blob", "target": "$up25m.content_hash", "peers": ["editor"], "predicate": "present", "after": "editor_restart", "within_s": 240, "meta": {"size_bytes": "$assets.generated.tier_25mb.size"}, "covers": "transfer resumes after the receiver restarts"},
+        {"probe": "asset_blob", "target": "$up25m.content_hash", "path": "size", "predicate": "equals", "value": "$assets.generated.tier_25mb.size", "after": "p25m", "within_s": 300, "meta": {"size_bytes": "$assets.generated.tier_25mb.size"}},
+        {"probe": "asset_blob", "target": "$up25m.content_hash", "peers": ["viewer"], "predicate": "present", "after": "p25m", "within_s": 180, "meta": {"size_bytes": "$assets.generated.tier_25mb.size"}}
+      ],
+      "checkpoints": [
+        {"peer": "all", "capture": "scene", "pose": {"orbit": {"focus": [0, 0, -40], "yaw_deg": 30, "pitch_deg": 25, "distance": 70}}, "expect_visual": "the 25 MB noisy-facade building rendered on every peer, including the restarted editor"}
+      ]
+    }
+  ]
+}
