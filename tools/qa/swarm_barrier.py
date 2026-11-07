@@ -45,7 +45,13 @@ def prepare_in_process(command):
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
     entry = getattr(module, "main", None)
-    return (lambda: entry(command[1:])) if callable(entry) else None
+    if not callable(entry):
+        return None
+
+    def invoke():
+        sys.argv = [script] + list(command[1:])  # the target sees its own argv, as a child process would
+        return entry(command[1:])
+    return invoke
 
 
 def run_command(command, in_process):
