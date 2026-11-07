@@ -273,7 +273,10 @@ class Prober:
                 self._emit(name, previous, "query", key, value, t)
             elif kind == "timeseries":
                 data = outcome.get("data") if outcome.ok else None
-                value = {"digest": predicates.digest(data), "small": small(data, 2048)} if outcome.ok else {"absent": True, "code": outcome.get("code")}
+                # QA-0140(5): digest the rows only; meta (answered/missing hosts) is peer-relative.
+                rows = data.get("rows") if isinstance(data, dict) else data
+                value = {"count": len(rows) if isinstance(rows, list) else None, "digest": predicates.digest(rows),
+                         "small": small(data, 2048)} if outcome.ok else {"absent": True, "code": outcome.get("code")}
                 self._emit(name, previous, "timeseries", key, value, t)
         t = self.clock.now()
         for target, key in targets.get("role", []):
