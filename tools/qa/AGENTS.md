@@ -196,6 +196,14 @@ to another owned verse is reported as `view_changed_verse`, because the
 host correctly denies the remaining old-scope batch. Capture again under
 the new verse's token before continuing.
 
+Input acknowledgements are truthful about late work (QA-0034/QA-0026): a
+batch whose every frame landed but whose settle/`capture_after` outlived the
+reply budget (a terrain rebuild can freeze the dev build ~4.5 s) answers 202
+with `outcome.settled=false`, code `applied_unsettled`, no PNG and a `warning`
+— the action HAPPENED; re-read state or `shot` separately and never resend.
+A 504 now carries `input_partially_applied` (k of n frames; held input is
+released) or `input_not_started` (nothing applied; safe to resend).
+
 `wait-settle` requires three consecutive equal camera poses by default;
 it does not certify asset/terrain completion. The pass method and gold
 tasks live in `.claude/skills/fe-qa-pass/SKILL.md` and `qa/scenarios/`.

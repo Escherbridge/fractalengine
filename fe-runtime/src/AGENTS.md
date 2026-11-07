@@ -656,6 +656,22 @@ injection time, check-at-use, never cached) — this module only supplies the
 vocabulary and the two typed failure constructors fe-api/the Bevy
 orchestrator need; the scope check itself lives on those sides.
 
+**Truthful late replies (QA-0034/QA-0026, 2026-11-06).** A correlated reply
+is one oneshot, so a host frozen inside one long frame (a terrain chunk
+rebuild) cannot answer before fe-api's 5 s deadline — and the deadline alone
+cannot tell "nothing happened" from "the click landed and a petal opened".
+`ValidInputSpec` therefore carries an `InputProgress` (`Arc` of atomics; clones
+share it; `PartialEq` ignores it — it is an observation channel, not spec
+identity). The host writes `admit(frames)`, `frame_applied()` and
+`frame_settled()`; when the deadline fires the API reads `stage()`:
+`NotStarted` → 504 `input_not_started` (the closed reply slot means the host
+will skip it — never applied), `PartiallyApplied` → 504
+`input_partially_applied` with k-of-n (the host releases held input next
+frame), `Applied` → **202** success with `settled: false` and code
+`applied_unsettled` (`InputOutput.settled`). Release/Acquire ordering: the
+host publishes `frames_planned` before `admitted`, so a reader that sees
+`admitted` never sees a stale zero plan.
+
 **Why `InputKey` is a `String`, not `bevy::input::keyboard::KeyCode`.**
 `bevy::input::keyboard::KeyCode` and `bevy::input::mouse::MouseButton` only
 derive `Serialize`/`Deserialize` behind `bevy_input`'s own `serialize`
@@ -745,7 +761,7 @@ callers must continue to avoid logging secrets at their source.
 
 Set/Get/DeleteNodeProperty and their three typed replies carry optional correlation IDs. GUI requests use None; every API origin, including background tracking writes with a dropped receiver, uses a fresh ID. The existing reply-family hub delivers only an exact correlation match and consumes closed waiters without shifting a reply. Database failures reuse correlated_failure and RequestFailed. This prevents both lost GUI-filtered acknowledgments and unrelated property results satisfying an API waiter.
 
-## �ordinary-object-history
+## �ordinary-object-history
 
 CreateObject/CommitNodeMutation reply NodeMutationCommitted; ReadNodeHistory replies
 NodeHistoryLoaded or NodeStateAtVersionLoaded according to at_version. SetFieldSchema

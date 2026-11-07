@@ -526,6 +526,11 @@ def run_input(run, args, commands):
         result["locator"] = args.locator_evidence
     png = payload.pop("capture_after_png_base64", None) if isinstance(payload, dict) else None
     result["outcome"] = payload
+    if payload.get("settled") is False:
+        # 202 applied_unsettled: the input landed; only settle/capture was cut short.
+        result["warning"] = ("input applied but the window stalled before settling%s; re-read state "
+                             "or shoot separately - do not resend the batch"
+                             % (" (no capture_after PNG)" if args.capture else ""))
     if png:
         path = shot_path(run, args.out, args.label, "-after")
         with open(path, "wb") as handle:

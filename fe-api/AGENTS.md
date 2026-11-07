@@ -2008,7 +2008,13 @@ exactly one place:
   Both doors go through `bridge_client::round_trip(bridge, caller_scope, op,
   timeout, name)`, so the caller's scope can never be left off a request —
   exactly like vision's capture/camera ops. `input::request_inject` maps
-  `RoundTripError` to `InputError` (busy/host-gone/timeout/uncorrelated), and
+  `RoundTripError` to `InputError` (busy/host-gone/timeout/uncorrelated) —
+  except a missed deadline, which it first maps through the spec's shared
+  `InputProgress` (fe-runtime §input-bridge "Truthful late replies"): all
+  frames applied → **202** `{ok:true, settled:false, code:"applied_unsettled"}`
+  on REST and the same fields on MCP (never a 504 that invites resending a
+  world edit, QA-0034/QA-0026); otherwise 504 `input_partially_applied` (k of
+  n) or `input_not_started`. A settled reply is 200 with `settled:true`. And
   `input::run_inject` (shared by the REST handler and the MCP `inject_input`
   handler) audits before crossing the bridge (`input::audit_inject`: did,
   scope, command count, wait_frames, capture_after — mirrors
@@ -2131,7 +2137,7 @@ it was rendered, allowing clients to retry rather than reading a stale tree.
 
 REST, MCP and WebSocket property operations share the property core methods. Each method supplies a fresh correlation ID and requires the expected reply variant, echoed ID, node ID and applicable key. Correlated failures must echo the same ID. The projection fallback uses the same checked read core; route-tracker background property writes also carry fresh IDs despite dropped receivers. WebSocket errors retain the client-safe operation failed envelope while logging internal detail. The API never waits for a node to become selected in the GUI.
 
-## �property-schema
+## �property-schema
 
 GET/PUT `/api/v1/field-defs/by-id/{id}/schema` and MCP
 `get_field_schema` / `set_field_schema` share the same core. Reads require Viewer,
@@ -2145,7 +2151,7 @@ migration, automatic default insertion or outer required-field constraint. The
 correlated committed reply is independent of GUI selection. Legacy field-def
 constructors and metadata-only behavior remain compatible.
 
-## �node-history
+## �node-history
 
 POST `/api/v1/petals/{p}/objects` accepts `{name,asset_id?,position?,rotation?,scale?,properties?:{...}}`.
 Transform defaults are zero position/Euler XYZ radians and unit scale. Initial

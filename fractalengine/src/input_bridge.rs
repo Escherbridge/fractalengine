@@ -17,8 +17,8 @@ use bevy_egui::{EguiContext, EguiFullOutput, EguiPostUpdateSet, EguiPreUpdateSet
 use fe_renderer::camera::CameraCaptureLock;
 use fe_runtime::input::{
     camera_locked_by_capture, denied, InputCommand, InputFailure, InputFailureClass, InputOp,
-    InputOutcome, InputOutput, InputRequest, InputRequestReceiver, PointerButton, ValidInputSpec,
-    NO_EFFECTIVE_INPUT_CODE,
+    InputOutcome, InputOutput, InputProgress, InputRequest, InputRequestReceiver, PointerButton,
+    ValidInputSpec, INPUT_PARTIALLY_APPLIED_CODE, NO_EFFECTIVE_INPUT_CODE,
 };
 use fe_ui::navigation_manager::NavigationManager;
 
@@ -26,8 +26,9 @@ use crate::screenshot_bridge::{capture_png, capture_refusal};
 use crate::vision_bridge::ViewScope;
 
 /// Bevy-side wall-clock bound on one injection (input frames + settle +
-/// capture), kept under fe-api's 5 s `DEFAULT_INPUT_REPLY_TIMEOUT` so a slow
-/// frame rate yields a typed `input_timed_out`, never a 504 with keys held.
+/// capture), kept under fe-api's 5 s `DEFAULT_INPUT_REPLY_TIMEOUT`: past it a
+/// batch still injecting is a typed partial failure (held input released),
+/// one fully applied is an unsettled success (src/AGENTS.md §agent-input-surface).
 pub const INPUT_WALL_CLOCK_CAP: Duration = Duration::from_millis(4_500);
 
 /// Largest scroll delta (lines, either axis) one command may carry.
@@ -104,6 +105,8 @@ pub struct ActiveInjection {
     last_logical: Option<Vec2>,
     held_buttons: Vec<MouseButton>,
     held_keys: Vec<(KeyCode, Key)>,
+    /// Shared with the API so a late reply still says how far the batch got.
+    progress: InputProgress,
 }
 
 /// The four message streams winit itself writes for pointer, wheel and keys.
@@ -767,6 +770,8 @@ pub fn drive_synthetic_input(
                     spec.wait_frames(),
                     spec.capture_after(),
                 );
+                let progress = spec.progress().clone();
+                progress.admit(frames.len());
                 job.0 = Some(ActiveInjection {
                     request,
                     frames,
@@ -781,6 +786,7 @@ pub fn drive_synthetic_input(
                     last_logical: window.and_then(Window::cursor_position),
                     held_buttons: Vec::new(),
                     held_keys: Vec::new(),
+                    progress,
                 });
             }
             Err(refusal) => {
@@ -817,13 +823,13 @@ pub fn drive_synthetic_input(
         Some(refusal)
     } else if !view.covers(&active.request.caller_scope, nav.as_deref()) {
         Some(denied())
-    } else if elapsed >= INPUT_WALL_CLOCK_CAP {
+    } else if elapsed >= INPUT_WALL_CLOCK_CAP && matches!(active.phase, Phase::Injecting) {
         Some(InputFailure::new(
             InputFailureClass::Failed,
-            "input_timed_out",
+            INPUT_PARTIALLY_APPLIED_CODE,
             format!(
-                "the batch did not finish within {} ms ({}); send fewer commands or a smaller \
-                 wait_frames",
+                "the batch did not finish injecting within {} ms ({}); the rest was abandoned \
+                 and held input released — re-read state before retrying",
                 INPUT_WALL_CLOCK_CAP.as_millis(),
                 active.frames_note()
             ),
@@ -859,14 +865,18 @@ pub fn drive_synthetic_input(
         }
     }
 
+    // Every frame applied, only settle/capture outstanding: reply truthfully unsettled.
+    let out_of_time = elapsed >= INPUT_WALL_CLOCK_CAP;
     // `Some(png?)` once the job is done; `None` while it still runs.
     let done: Option<Result<Option<Vec<u8>>, InputFailure>> = match active.phase {
+        Phase::Settling | Phase::Capturing { .. } if out_of_time => Some(Ok(None)),
         Phase::Injecting => {
             // Checked access (INPUT-ADDENDUM item 7): no per-frame input
             // system indexes unchecked — the app is panic=abort.
             if let Some(frame) = active.frames.get_mut(active.next_frame).map(std::mem::take) {
                 active.apply(&frame, window_entity, window.scale_factor(), &mut writers);
                 active.next_frame += 1;
+                active.progress.frame_applied();
             }
             if active.next_frame >= active.frames.len() {
                 active.phase = Phase::Settling;
@@ -875,6 +885,7 @@ pub fn drive_synthetic_input(
         }
         Phase::Settling if active.waited < active.wait_frames => {
             active.waited += 1;
+            active.progress.frame_settled();
             None
         }
         Phase::Settling if active.capture_after => match window_failure(Some(&*window)) {
@@ -915,6 +926,7 @@ pub fn drive_synthetic_input(
         let output = done.map(|png| InputOutput {
             commands_applied: active.commands,
             wait_frames_used: active.waited,
+            settled: !out_of_time,
             png,
         });
         let active = job.0.take().expect("checked above");
@@ -970,7 +982,8 @@ fn finish(
         }
     }
     if let Phase::Capturing { screenshot, .. } = active.phase {
-        if outcome.is_err() {
+        // A failed or unsettled job never reads its pending capture.
+        if !matches!(&outcome, Ok(output) if output.png.is_some()) {
             if let Ok(mut entity) = commands.get_entity(screenshot) {
                 entity.try_despawn();
             }
@@ -1956,7 +1969,7 @@ mod tests {
         assert!(!h.mouse().pressed(MouseButton::Left));
         h.app.world_mut().remove_resource::<CameraCaptureLock>();
 
-        // Wall-clock cap: a stalled frame loop yields a typed timeout.
+        // Wall-clock cap mid-injection: a typed partial failure, held input released.
         let mut reply = h.send(batch(vec![click(50.0, 50.0)], 100, false));
         h.app.update();
         h.app.update();
@@ -1966,8 +1979,30 @@ mod tests {
             .resource_mut::<Time<Real>>()
             .update_with_duration(INPUT_WALL_CLOCK_CAP);
         h.app.update();
-        assert_eq!(refusal_code(&mut reply), "input_timed_out");
+        assert_eq!(refusal_code(&mut reply), INPUT_PARTIALLY_APPLIED_CODE);
         assert!(!h.mouse().pressed(MouseButton::Left));
+
+        // Wall-clock cap after every frame landed (a stalled settle, QA-0034):
+        // the click happened, so the reply is an unsettled success, not a failure.
+        let mut reply = h.send(batch(vec![click(55.0, 55.0)], 100, false));
+        for _ in 0..5 {
+            h.app.update();
+        }
+        assert!(!h.mouse().pressed(MouseButton::Left), "press and release both landed");
+        h.app
+            .world_mut()
+            .resource_mut::<Time<Real>>()
+            .update_with_duration(INPUT_WALL_CLOCK_CAP);
+        h.app.update();
+        let output = reply
+            .try_recv()
+            .expect("the capped job replied")
+            .result
+            .expect("fully applied input is a success");
+        assert!(!output.settled, "the settle outlived the cap");
+        assert_eq!((output.commands_applied, output.png), (1, None));
+        assert!(output.wait_frames_used < 100);
+        assert!(h.idle());
 
         // capture_after: the reply carries exactly the PNG a direct capture encodes.
         let mut reply = h.send(batch(vec![click(60.0, 60.0)], 0, true));

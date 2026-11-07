@@ -19,7 +19,8 @@ use base64::Engine as _;
 use fe_identity::api_token::ApiClaims;
 use fe_runtime::input::{
     InputFailure, InputFailureClass, InputOp, InputOutput, InputRefusal, InputRequestSender,
-    InputSpec, ValidInputSpec,
+    InputSpec, InputStage, ValidInputSpec, APPLIED_UNSETTLED_CODE, INPUT_NOT_STARTED_CODE,
+    INPUT_PARTIALLY_APPLIED_CODE,
 };
 
 use crate::bridge_client::{round_trip, RoundTripError};
@@ -143,7 +144,9 @@ pub enum InputError {
     /// A static validation check failed (`InputSpec::validate`) — 400.
     Refusal(InputRefusal),
     Unavailable(&'static str),
-    TimedOut(Duration),
+    /// The reply deadline passed before the batch was fully applied; the stage
+    /// says how much input landed (never `Applied` — that is a 202 success).
+    TimedOut(Duration, InputStage),
     /// A dynamic (Bevy-side) refusal or failure — includes the uniform scope
     /// denial and "a posed capture holds the camera" (409).
     Failure(InputFailure),
@@ -163,7 +166,7 @@ impl InputError {
             Self::Refused(refusal) => refusal.status(),
             Self::Refusal(_) => StatusCode::BAD_REQUEST,
             Self::Unavailable(_) => StatusCode::SERVICE_UNAVAILABLE,
-            Self::TimedOut(_) => StatusCode::GATEWAY_TIMEOUT,
+            Self::TimedOut(..) => StatusCode::GATEWAY_TIMEOUT,
             Self::Failure(failure) => match failure.status_class {
                 InputFailureClass::Unresolvable => StatusCode::UNPROCESSABLE_ENTITY,
                 InputFailureClass::Busy => StatusCode::CONFLICT,
@@ -179,7 +182,9 @@ impl InputError {
         match self {
             Self::Refusal(refusal) => Some(refusal.code),
             Self::Failure(failure) => Some(failure.code),
-            Self::Refused(_) | Self::Unavailable(_) | Self::TimedOut(_) => None,
+            Self::TimedOut(_, InputStage::NotStarted) => Some(INPUT_NOT_STARTED_CODE),
+            Self::TimedOut(..) => Some(INPUT_PARTIALLY_APPLIED_CODE),
+            Self::Refused(_) | Self::Unavailable(_) => None,
         }
     }
 
@@ -199,8 +204,15 @@ impl InputError {
             Self::Refused(refusal) => refusal.message(),
             Self::Refusal(refusal) => refusal.message.clone(),
             Self::Unavailable(reason) => (*reason).to_string(),
-            Self::TimedOut(waited) => format!(
-                "input injection timed out — the window did not answer within {:.1}s",
+            Self::TimedOut(waited, InputStage::PartiallyApplied { applied, planned }) => format!(
+                "input injection timed out after {applied} of {planned} input frames were \
+                 applied — the window stalled for {:.1}s; the rest were abandoned and any held \
+                 key or button is released. Re-read state before retrying",
+                waited.as_secs_f32()
+            ),
+            Self::TimedOut(waited, _) => format!(
+                "input injection timed out — the window did not answer within {:.1}s; no input \
+                 was applied (the request was withdrawn)",
                 waited.as_secs_f32()
             ),
             Self::Failure(failure) => failure.message.clone(),
@@ -258,16 +270,42 @@ struct InputSuccessBody {
     ok: bool,
     commands_applied: u32,
     wait_frames_used: u32,
+    settled: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    code: Option<&'static str>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    message: Option<&'static str>,
     #[serde(skip_serializing_if = "Option::is_none")]
     capture_after_png_base64: Option<String>,
 }
 
+/// Text of an applied-but-unsettled reply (REST body and MCP result alike).
+pub(crate) const APPLIED_UNSETTLED_MESSAGE: &str =
+    "every input frame was applied, but the window stalled before the settle frames (and any \
+     capture_after) finished; no capture was taken — re-read state or capture separately, and \
+     do not resend the batch";
+
+impl InputSuccessBody {
+    /// 200 when settled; 202 Accepted when the input landed but settle did not.
+    fn status(&self) -> StatusCode {
+        if self.settled {
+            StatusCode::OK
+        } else {
+            StatusCode::ACCEPTED
+        }
+    }
+}
+
 impl From<InputOutput> for InputSuccessBody {
     fn from(output: InputOutput) -> Self {
+        let unsettled = !output.settled;
         Self {
             ok: true,
             commands_applied: output.commands_applied,
             wait_frames_used: output.wait_frames_used,
+            settled: output.settled,
+            code: unsettled.then_some(APPLIED_UNSETTLED_CODE),
+            message: unsettled.then_some(APPLIED_UNSETTLED_MESSAGE),
             capture_after_png_base64: output
                 .png
                 .map(|bytes| base64::engine::general_purpose::STANDARD.encode(bytes)),
@@ -296,6 +334,9 @@ pub async fn request_inject(
             "input injection unavailable: this host has no window",
         ));
     };
+    // Read after a missed deadline: a stall after the input landed is not a failure.
+    let progress = spec.progress().clone();
+    let commands_applied = u32::try_from(spec.commands().len()).unwrap_or(u32::MAX);
     let reply = round_trip(
         bridge,
         caller_scope,
@@ -303,13 +344,24 @@ pub async fn request_inject(
         state.input.reply_timeout,
         "input",
     )
-    .await
-    .map_err(|error| match error {
+    .await;
+    if let Err(RoundTripError::TimedOut(waited)) = reply {
+        return match progress.stage() {
+            InputStage::Applied { settled_frames } => Ok(InputOutput {
+                commands_applied,
+                wait_frames_used: settled_frames,
+                png: None,
+                settled: false,
+            }),
+            stage => Err(InputError::TimedOut(waited, stage)),
+        };
+    }
+    let reply = reply.map_err(|error| match error {
         RoundTripError::Saturated => InputError::Unavailable("input bridge busy — retry shortly"),
         RoundTripError::HostGone => {
             InputError::Unavailable("input unavailable: render host stopped")
         }
-        RoundTripError::TimedOut(waited) => InputError::TimedOut(waited),
+        RoundTripError::TimedOut(waited) => InputError::TimedOut(waited, InputStage::NotStarted),
         RoundTripError::Uncorrelated => InputError::Failure(InputFailure::new(
             InputFailureClass::Failed,
             "uncorrelated_reply",
@@ -461,7 +513,10 @@ pub async fn post_input(
         run_inject(&state, &claims, spec).await
     };
     match outcome.await {
-        Ok(output) => (StatusCode::OK, Json(InputSuccessBody::from(output))).into_response(),
+        Ok(output) => {
+            let body = InputSuccessBody::from(output);
+            (body.status(), Json(body)).into_response()
+        }
         Err(error) => (error.status(), Json(InputErrorBody::error(&error))).into_response(),
     }
 }
@@ -563,7 +618,14 @@ mod tests {
                 StatusCode::SERVICE_UNAVAILABLE,
             ),
             (
-                InputError::TimedOut(Duration::from_secs(5)),
+                InputError::TimedOut(Duration::from_secs(5), InputStage::NotStarted),
+                StatusCode::GATEWAY_TIMEOUT,
+            ),
+            (
+                InputError::TimedOut(
+                    Duration::from_secs(5),
+                    InputStage::PartiallyApplied { applied: 1, planned: 3 },
+                ),
                 StatusCode::GATEWAY_TIMEOUT,
             ),
             (
@@ -602,6 +664,18 @@ mod tests {
         for (error, expected) in status_cases {
             assert_eq!(error.status(), expected, "{error:?}");
         }
+
+        // A missed deadline says how much input landed, so a caller knows
+        // whether resending would duplicate a world edit.
+        let withdrawn = InputError::TimedOut(Duration::from_secs(5), InputStage::NotStarted);
+        assert_eq!(withdrawn.code(), Some(INPUT_NOT_STARTED_CODE));
+        assert!(withdrawn.message().contains("no input was applied"));
+        let partial = InputError::TimedOut(
+            Duration::from_secs(5),
+            InputStage::PartiallyApplied { applied: 1, planned: 3 },
+        );
+        assert_eq!(partial.code(), Some(INPUT_PARTIALLY_APPLIED_CODE));
+        assert!(partial.message().contains("1 of 3 input frames"));
 
         // `coded_message` prefixes code(+field), except the bare scope
         // denial — which is byte-identical to the REST existence-oracle text
@@ -642,7 +716,9 @@ mod tests {
             commands_applied: 1,
             wait_frames_used: 10,
             png: Some(vec![1, 2, 3]),
+            settled: true,
         });
+        assert_eq!(with_png.status(), StatusCode::OK);
         let encoded = serde_json::to_value(&with_png).expect("serializes");
         assert_eq!(
             encoded["capture_after_png_base64"],
@@ -653,11 +729,27 @@ mod tests {
             commands_applied: 2,
             wait_frames_used: 0,
             png: None,
+            settled: true,
         });
         let encoded_without = serde_json::to_value(&without_png).expect("serializes");
         assert!(
             encoded_without.get("capture_after_png_base64").is_none(),
             "no PNG means the field is omitted, not null"
         );
+        assert!(encoded_without.get("code").is_none(), "a settled reply carries no code");
+
+        // Applied but unsettled (the window stalled after the input landed):
+        // a 202 success with a stable code, never a 504 that invites a resend.
+        let unsettled = InputSuccessBody::from(InputOutput {
+            commands_applied: 1,
+            wait_frames_used: 0,
+            png: None,
+            settled: false,
+        });
+        assert_eq!(unsettled.status(), StatusCode::ACCEPTED);
+        let encoded_unsettled = serde_json::to_value(&unsettled).expect("serializes");
+        assert_eq!(encoded_unsettled["ok"], true);
+        assert_eq!(encoded_unsettled["settled"], false);
+        assert_eq!(encoded_unsettled["code"], APPLIED_UNSETTLED_CODE);
     }
 }

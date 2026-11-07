@@ -13,7 +13,8 @@ use fe_api::operator_gate::OWNER_REQUIRED;
 use fe_api::screenshot::{ScreenshotSurface, SCREENSHOT_GATE};
 use fe_runtime::input::{
     camera_locked_by_capture, input_bridge, InputOp, InputOutput, InputRequestReceiver,
-    CAMERA_LOCKED_BY_CAPTURE_CODE, NO_EFFECTIVE_INPUT_CODE,
+    APPLIED_UNSETTLED_CODE, CAMERA_LOCKED_BY_CAPTURE_CODE, INPUT_NOT_STARTED_CODE,
+    INPUT_PARTIALLY_APPLIED_CODE, NO_EFFECTIVE_INPUT_CODE,
 };
 use fe_runtime::screenshot::screenshot_bridge;
 use fe_runtime::vision::{
@@ -289,6 +290,27 @@ fn serve_vision(rx: VisionRequestReceiver, delay: Duration) {
 /// [`camera_locked_by_capture`], simulating a posed vision capture holding
 /// `CameraCaptureLock` (`§INPUT-ADDENDUM` item 4) without needing a second,
 /// real capture job in flight.
+/// A host whose window stalls mid-job (QA-0034/QA-0026: a multi-second
+/// terrain rebuild): it records how many of 3 planned frames it applied per
+/// request (`None` = never admitted), then never answers — like the real
+/// host frozen inside one frame while the API's deadline passes.
+fn serve_stalled(rx: InputRequestReceiver, applied_per_request: Vec<Option<u32>>) {
+    std::thread::spawn(move || {
+        let mut held = Vec::new();
+        let mut plan = applied_per_request.into_iter();
+        while let Ok(request) = rx.recv() {
+            let InputOp::Inject(spec) = &request.op;
+            if let Some(Some(applied)) = plan.next() {
+                spec.progress().admit(3);
+                for _ in 0..applied {
+                    spec.progress().frame_applied();
+                }
+            }
+            held.push(request);
+        }
+    });
+}
+
 fn serve_input(rx: InputRequestReceiver, lock: bool) {
     std::thread::spawn(move || {
         while let Ok(request) = rx.recv() {
@@ -300,6 +322,7 @@ fn serve_input(rx: InputRequestReceiver, lock: bool) {
                     commands_applied: spec.commands().len() as u32,
                     wait_frames_used: spec.wait_frames(),
                     png: spec.capture_after().then(|| FAKE_PNG.to_vec()),
+                    settled: true,
                 })
             };
             request.reply(result);
@@ -1053,6 +1076,44 @@ async fn input_injection_disabled_role_round_trip_rate_limited_headless_and_came
                 .expect("valid base64"),
             FAKE_PNG
         );
+        assert_eq!(reply["settled"], true);
+    }
+
+    // Truthful late replies (QA-0034/QA-0026): the window stalls after or
+    // during the batch. Fully applied -> 202 `applied_unsettled` on both doors
+    // (no resend, no PNG); partly applied / never admitted -> typed 504s.
+    {
+        let (tx, rx) = input_bridge();
+        let h = ApiHarness::spawn_with_screenshot_and_input(
+            ScreenshotSurface::new(true, None),
+            InputSurface::new(true, Some(tx)).with_reply_timeout(Duration::from_millis(200)),
+        )
+        .await
+        .expect("spawn harness");
+        serve_stalled(rx, vec![Some(3), Some(3), Some(1), None]);
+        let owner = owner_token(&h).await;
+        // One capture_after only: the screenshot gate allows 1 capture/s per DID.
+        let with_capture = json!({ "commands": [click(5.0, 5.0)], "capture_after": true });
+        let body = json!({ "commands": [click(5.0, 5.0)] });
+
+        let applied = post_input(&h, &owner, &with_capture).await;
+        assert_eq!(applied.status, StatusCode::ACCEPTED, "{:?}", applied.json());
+        assert_eq!(applied.json()["code"], APPLIED_UNSETTLED_CODE);
+        assert_eq!(applied.json()["settled"], false);
+        assert_eq!(applied.json()["commands_applied"], 1);
+        assert!(applied.json().get("capture_after_png_base64").is_none());
+
+        let mcp = mcp_call(&h, &owner, "inject_input", body.clone()).await;
+        assert_ne!(mcp["isError"], true, "{mcp}");
+        assert!(mcp.to_string().contains(APPLIED_UNSETTLED_CODE), "{mcp}");
+
+        let partial = post_input(&h, &owner, &body).await;
+        assert_eq!(partial.status, StatusCode::GATEWAY_TIMEOUT, "{:?}", partial.json());
+        assert_eq!(partial.json()["code"], INPUT_PARTIALLY_APPLIED_CODE);
+
+        let withdrawn = post_input(&h, &owner, &body).await;
+        assert_eq!(withdrawn.status, StatusCode::GATEWAY_TIMEOUT, "{:?}", withdrawn.json());
+        assert_eq!(withdrawn.json()["code"], INPUT_NOT_STARTED_CODE);
     }
 
     // AC-4: a burst past the 5/s per-DID budget is rate limited on the 6th

@@ -181,9 +181,79 @@ pub struct ValidInputSpec {
     wait_frames: u32,
     capture_after: bool,
     join_lease: Option<String>,
+    progress: InputProgress,
+}
+
+/// Live progress of one batch: the Bevy host writes it as frames land, the API
+/// reads it when its reply deadline fires — see src/AGENTS.md §input-bridge
+/// "Truthful late replies". Clones share one record.
+#[derive(Debug, Clone, Default)]
+pub struct InputProgress(std::sync::Arc<ProgressCells>);
+
+#[derive(Debug, Default)]
+struct ProgressCells {
+    admitted: std::sync::atomic::AtomicBool,
+    frames_planned: std::sync::atomic::AtomicU32,
+    frames_applied: std::sync::atomic::AtomicU32,
+    frames_settled: std::sync::atomic::AtomicU32,
+}
+
+/// Progress is an observation channel, not part of a spec's identity.
+impl PartialEq for InputProgress {
+    fn eq(&self, _other: &Self) -> bool {
+        true
+    }
+}
+
+/// How far a batch got, read once by the API after its deadline.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum InputStage {
+    /// The host never admitted it; once the caller hangs up it never will.
+    NotStarted,
+    /// Some planned input frames were written before the window stalled.
+    PartiallyApplied { applied: u32, planned: u32 },
+    /// Every planned frame was written; only settle/capture was outstanding.
+    Applied { settled_frames: u32 },
+}
+
+impl InputProgress {
+    /// Host, at admission: the batch plans `frames` input frames.
+    pub fn admit(&self, frames: usize) {
+        use std::sync::atomic::Ordering;
+        let planned = u32::try_from(frames).unwrap_or(u32::MAX);
+        self.0.frames_planned.store(planned, Ordering::Release);
+        self.0.admitted.store(true, Ordering::Release);
+    }
+    /// Host: one planned input frame was written to the input messages.
+    pub fn frame_applied(&self) {
+        self.0.frames_applied.fetch_add(1, std::sync::atomic::Ordering::AcqRel);
+    }
+    /// Host: one `wait_frames` settle frame elapsed.
+    pub fn frame_settled(&self) {
+        self.0.frames_settled.fetch_add(1, std::sync::atomic::Ordering::AcqRel);
+    }
+    /// API: the stage this batch reached.
+    pub fn stage(&self) -> InputStage {
+        use std::sync::atomic::Ordering;
+        if !self.0.admitted.load(Ordering::Acquire) {
+            return InputStage::NotStarted;
+        }
+        let planned = self.0.frames_planned.load(Ordering::Acquire);
+        let applied = self.0.frames_applied.load(Ordering::Acquire);
+        if applied < planned {
+            InputStage::PartiallyApplied { applied, planned }
+        } else {
+            InputStage::Applied {
+                settled_frames: self.0.frames_settled.load(Ordering::Acquire),
+            }
+        }
+    }
 }
 
 impl ValidInputSpec {
+    pub fn progress(&self) -> &InputProgress {
+        &self.progress
+    }
     pub fn join_lease(&self) -> Option<&str> {
         self.join_lease.as_deref()
     }
@@ -260,6 +330,7 @@ impl InputSpec {
             wait_frames,
             capture_after,
             join_lease: None,
+            progress: InputProgress::default(),
         })
     }
 }
@@ -423,7 +494,18 @@ pub struct InputOutput {
     pub commands_applied: u32,
     pub wait_frames_used: u32,
     pub png: Option<Vec<u8>>,
+    /// False: every input frame was applied, but the settle (and any
+    /// `capture_after`) did not finish in time — no PNG, re-read state.
+    pub settled: bool,
 }
+
+/// Stable code of an input batch applied in full whose settle/capture did not
+/// finish within the reply budget (fe-api answers 202, never 504).
+pub const APPLIED_UNSETTLED_CODE: &str = "applied_unsettled";
+/// Stable code of a timed-out batch the host never admitted: nothing was applied.
+pub const INPUT_NOT_STARTED_CODE: &str = "input_not_started";
+/// Stable code of a timed-out batch whose input landed only in part.
+pub const INPUT_PARTIALLY_APPLIED_CODE: &str = "input_partially_applied";
 
 /// What an input op produced, or the host's typed refusal/failure.
 pub type InputOutcome = Result<InputOutput, InputFailure>;
@@ -656,6 +738,18 @@ mod tests {
         assert_eq!(valid.wait_frames(), 10);
         assert!(valid.capture_after());
         assert_eq!(valid.commands().len(), 6);
+
+        // Truthful late replies: a cloned handle (the API's) sees the host's
+        // writes, walking NotStarted -> PartiallyApplied -> Applied.
+        let watcher = valid.progress().clone();
+        assert_eq!(watcher.stage(), InputStage::NotStarted);
+        valid.progress().admit(3);
+        valid.progress().frame_applied();
+        assert_eq!(watcher.stage(), InputStage::PartiallyApplied { applied: 1, planned: 3 });
+        valid.progress().frame_applied();
+        valid.progress().frame_applied();
+        valid.progress().frame_settled();
+        assert_eq!(watcher.stage(), InputStage::Applied { settled_frames: 1 });
 
         // The two typed failure helpers carry their documented codes/classes.
         let scope_denied = denied();

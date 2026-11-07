@@ -1443,8 +1443,16 @@ the capture is queued in.
 **Check at use, every frame a job runs** (INPUT-ADDENDUM item 2): caller hung
 up → `caller_gone`; `CameraCaptureLock` appeared → `camera_locked_by_capture`;
 the view stopped being covered (user switched verse) → the uniform denial;
-`INPUT_WALL_CLOCK_CAP` (4.5 s, under fe-api's 5 s reply timeout) →
-`input_timed_out`. Every abort goes through `finish`, the single exit, which
+`INPUT_WALL_CLOCK_CAP` (4.5 s, under fe-api's 5 s reply timeout) while still
+injecting → `input_partially_applied` ("k of n input frames"). Past the cap
+with every frame applied (only settle/capture outstanding) the job is NOT a
+failure: it replies `Ok` with `settled: false` and no PNG (QA-0034/QA-0026 —
+a terrain chunk rebuild froze the frame loop for ~4.5 s after the click
+landed, and the old blanket `input_timed_out` 500 / API 504 invited a
+duplicate world edit). The job shares an `InputProgress` with the API
+(admitted, frames applied, settle frames) so even a deadline the frozen host
+cannot answer is mapped truthfully by fe-api (fe-runtime §input-bridge
+"Truthful late replies"). Every abort goes through `finish`, the single exit, which
 writes a release for every button/key the job still holds (a half-done drag
 never leaves `ButtonInput` stuck pressed), despawns an unread capture, sends
 egui/picking a `CursorMoved` back to the user's real pointer, then replies.

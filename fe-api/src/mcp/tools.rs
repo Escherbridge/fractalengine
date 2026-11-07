@@ -1135,7 +1135,12 @@ pub(super) fn inject_input(call: ToolCall<'_>) -> ToolFuture<'_> {
         let mut body = json!({
             "commands_applied": output.commands_applied,
             "wait_frames_used": output.wait_frames_used,
+            "settled": output.settled,
         });
+        if !output.settled {
+            body["code"] = json!(fe_runtime::input::APPLIED_UNSETTLED_CODE);
+            body["message"] = json!(crate::input::APPLIED_UNSETTLED_MESSAGE);
+        }
         if let Some(png) = output.png {
             body["capture_after_png_base64"] = json!(encode_base64(png).await?);
         }
