@@ -154,7 +154,7 @@ pub async fn consume(
     if !expected.validate() {
         return no_store(refusal(StatusCode::BAD_REQUEST));
     }
-    let response = match run(&state, &claims, TransferOperation::Consume(expected)).await {
+    let response = match run(&state, &claims, TransferOperation::Consume(Box::new(expected))).await {
         Ok(TransferReply::Consumed {
             metadata,
             credential,

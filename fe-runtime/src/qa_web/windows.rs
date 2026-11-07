@@ -147,7 +147,7 @@ fn listener_owned_by(pid: u32, port: u16) -> bool {
         if count > ((size as usize - 4) / 24) {
             return false;
         }
-        return words[1..1 + count * 6].chunks_exact(6).any(|row| {
+        return words[1..1 + count * 6].as_chunks::<6>().0.iter().any(|row| {
             row[0] == 2
                 && row[1] == u32::from_ne_bytes([127, 0, 0, 1])
                 && u16::from_be(row[2] as u16) == port

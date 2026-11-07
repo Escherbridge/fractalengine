@@ -2663,6 +2663,7 @@ async fn waypoint_and_gpx_tools_round_trip() {
     let Emu { state, model, .. } = emu(true);
     let home = seed_chain(&model, "home");
     let editor = claims(&home.verse_scope(), "editor");
+    let viewer = claims(&home.verse_scope(), "viewer");
 
     let resp = call_tool(
         &state,

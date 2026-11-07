@@ -228,7 +228,7 @@ fn serve(
                 }));
                 return;
             }
-            let expected = expected.clone();
+            let expected = (**expected).clone();
             host.pending = Some(Pending {
                 request,
                 expected,

@@ -53,7 +53,7 @@ impl TransferMetadata {
 #[derive(Debug, Clone)]
 pub enum TransferOperation {
     Observe,
-    Consume(TransferMetadata),
+    Consume(Box<TransferMetadata>),
 }
 
 #[derive(Debug, Clone)]

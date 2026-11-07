@@ -487,7 +487,7 @@ enum InsertBehaviour {
     Real,
     /// Reply with a fixed `DbResult` instead (simulates a DB/transport
     /// failure behind the seam).
-    Fixed(DbResult),
+    Fixed(Box<DbResult>),
 }
 
 struct FallbackHarness {
@@ -643,7 +643,7 @@ fn fallback_harness(db: Db, insert_behaviour: InsertBehaviour) -> FallbackHarnes
                                 },
                             }
                         }
-                        InsertBehaviour::Fixed(fixed) => fixed.clone(),
+                        InsertBehaviour::Fixed(fixed) => (**fixed).clone(),
                     };
                     let _ = reply_tx.send(reply);
                 }
@@ -925,7 +925,7 @@ async fn fallback_maps_typed_rejection_to_422_and_db_failure_to_502() {
     seed_node(&db2, &pc, "sensor-1", 0.0, 0.0).await;
     let harness = fallback_harness(
         db2,
-        InsertBehaviour::Fixed(DbResult::Error("storage exploded".into())),
+        InsertBehaviour::Fixed(Box::new(DbResult::Error("storage exploded".into()))),
     );
     let resp = post_readings(
         &harness.state,

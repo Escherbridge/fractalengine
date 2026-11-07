@@ -237,7 +237,7 @@ async fn minted_token_authenticates_then_is_revoked_live() {
         &h.db,
         &h.keypair,
         &client,
-        &[rebuilt.verse_id.clone()],
+        std::slice::from_ref(&rebuilt.verse_id),
     )
     .await
     .unwrap();

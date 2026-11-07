@@ -353,6 +353,10 @@ pub struct TransformUpdate {
 /// async API handler can `.await` the typed response without blocking the
 /// crossbeam channel for other traffic.
 #[derive(Debug)]
+#[allow(
+    clippy::large_enum_variant,
+    reason = "one short-lived message per API request; boxing DbCommand would touch ~50 call sites for no measured cost"
+)]
 pub enum ApiCommand {
     /// Forward a DbCommand and route the DbResult back to the caller.
     DbRequest {
