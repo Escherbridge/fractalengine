@@ -1089,7 +1089,7 @@ async fn commit_tombstone_atomic(
         "ids" => "node_id IN $ids",
         _ => anyhow::bail!("unknown delete target binding"),
     };
-    let select=format!("SELECT node_id,petal_id,tombstone FROM node WHERE {predicate} AND tombstone=NONE ORDER BY node_id LIMIT 1025 TIMEOUT 5s");
+    let select=format!("SELECT node_id,petal_id FROM node WHERE {predicate} AND tombstone=NONE ORDER BY node_id LIMIT 1025 TIMEOUT 5s");
     let mut response = db
         .query(&select)
         .bind((target_name.to_owned(), target_value.clone()))
@@ -1109,7 +1109,8 @@ async fn commit_tombstone_atomic(
         .map(|row| row["node_id"].clone())
         .collect::<Vec<_>>();
     entry.payload["tombstoned_ids"] = serde_json::json!(ids);
-    let member_select=format!("SELECT node_id,petal_id,tombstone FROM node WHERE {predicate} AND tombstone=NONE ORDER BY node_id");
+    // No `tombstone` column: NONE read back rebinds as JSON null, so the guard would always THROW (QA-0099).
+    let member_select=format!("SELECT node_id,petal_id FROM node WHERE {predicate} AND tombstone=NONE ORDER BY node_id");
     guards.push(format!(
         "IF ({member_select}) != $delete_members {{ THROW 'delete member set changed'; }}"
     ));
@@ -1426,12 +1427,24 @@ pub(crate) async fn promote_instance_handler(
                     == Some(u64::from(instance_index)),
             "stamp node identity collision"
         );
-        statements.push("IF (SELECT node_id, petal_id, tombstone, properties FROM node WHERE node_id=$promotion_existing_id) != $promotion_existing_snapshot { THROW 'promoted stamp changed'; }".into());
+        // Live-filtered, no `tombstone` column: NONE rebinds as JSON null and
+        // would make this fence always THROW (the QA-0099 pattern).
+        statements.push("IF (SELECT node_id, petal_id, properties FROM node WHERE node_id=$promotion_existing_id AND tombstone=NONE) != $promotion_existing_snapshot { THROW 'promoted stamp changed'; }".into());
+        let snapshot: Vec<serde_json::Value> = existing
+            .iter()
+            .map(|row| {
+                serde_json::json!({
+                    "node_id": row["node_id"],
+                    "petal_id": row["petal_id"],
+                    "properties": row["properties"],
+                })
+            })
+            .collect();
         bindings.extend([
             ("promotion_existing_id".into(), serde_json::json!(node_id)),
             (
                 "promotion_existing_snapshot".into(),
-                serde_json::json!(existing),
+                serde_json::json!(snapshot),
             ),
         ]);
         let script = format!(
@@ -1701,21 +1714,23 @@ pub(crate) async fn duplicate_node_handler(
 mod delete_node_tests {
     use super::*;
 
-    /// In-memory SurrealDB, no DDL — `node` is written schemaless via
-    /// `CREATE ... CONTENT {}` (mirrors production; see `create_node_handler`).
-    /// Seeds the verse→fractal→petal chain so CreateNode scope preconditions resolve.
+    /// Schema-applied in-memory SurrealDB with an owner-created
+    /// verse→fractal→petal chain, so the role-gated create path admits writes.
     async fn setup_mem_db() -> Db {
         let db = surrealdb::Surreal::new::<surrealdb::engine::local::Mem>(())
             .await
             .expect("in-memory SurrealDB");
         db.use_ns("test").use_db("test").await.expect("ns/db");
+        crate::schema::apply_all(&db).await.expect("apply schema");
         db.query(
-            "CREATE verse CONTENT { verse_id: 'verse-1', name: 'v', created_by:'local' };
-             CREATE fractal CONTENT { fractal_id: 'fractal-1', verse_id: 'verse-1', name: 'f' };
-             CREATE petal CONTENT { petal_id: 'petal-1', fractal_id: 'fractal-1', name: 'p' };",
+            "CREATE verse CONTENT { verse_id: 'verse-1', name: 'v', created_by: 'did:key:z6MkA', created_at: '2026-01-01' };
+             CREATE fractal CONTENT { fractal_id: 'fractal-1', verse_id: 'verse-1', owner_did: 'did:key:z6MkA', name: 'f', created_at: '2026-01-01' };
+             CREATE petal CONTENT { petal_id: 'petal-1', fractal_id: 'fractal-1', name: 'p', node_id: 'n', created_at: '2026-01-01' };",
         )
         .await
-        .expect("seed scope chain");
+        .expect("seed scope chain")
+        .check()
+        .expect("seed scope chain statements");
         crate::op_log::init_hlc(0);
         db
     }
@@ -1723,10 +1738,10 @@ mod delete_node_tests {
     #[tokio::test]
     async fn delete_node_removes_row_and_cascades_waypoints() {
         let db = setup_mem_db().await;
-        let track_id = create_node_handler(&db, "petal-1", "track", [0.0, 0.0, 0.0])
+        let track_id = create_node_as(&db, "petal-1", "track", [0.0, 0.0, 0.0], "did:key:z6MkA")
             .await
             .expect("create track node");
-        let wp_id = create_node_handler(&db, "petal-1", "wp", [1.0, 0.0, 1.0])
+        let wp_id = create_node_as(&db, "petal-1", "wp", [1.0, 0.0, 1.0], "did:key:z6MkA")
             .await
             .expect("create waypoint node");
 
@@ -1805,13 +1820,16 @@ mod cascade_batch_update_tests {
             .await
             .expect("in-memory SurrealDB");
         db.use_ns("test").use_db("test").await.expect("ns/db");
+        crate::schema::apply_all(&db).await.expect("apply schema");
         db.query(
-            "CREATE verse CONTENT { verse_id: 'verse-1', name: 'v', created_by:'local' };
-             CREATE fractal CONTENT { fractal_id: 'fractal-1', verse_id: 'verse-1', name: 'f' };
-             CREATE petal CONTENT { petal_id: 'petal-1', fractal_id: 'fractal-1', name: 'p' };",
+            "CREATE verse CONTENT { verse_id: 'verse-1', name: 'v', created_by: 'did:key:z6MkA', created_at: '2026-01-01' };
+             CREATE fractal CONTENT { fractal_id: 'fractal-1', verse_id: 'verse-1', owner_did: 'did:key:z6MkA', name: 'f', created_at: '2026-01-01' };
+             CREATE petal CONTENT { petal_id: 'petal-1', fractal_id: 'fractal-1', name: 'p', node_id: 'n', created_at: '2026-01-01' };",
         )
         .await
-        .expect("seed scope chain");
+        .expect("seed scope chain")
+        .check()
+        .expect("seed scope chain statements");
         // Every write path here reaches `next_hlc_timestamp`, which panics *while holding*
         // the process-global `HLC_STATE` lock when uninitialised — poisoning it for every
         // other test in this binary. The sibling `setup_mem_db` above does the same.
@@ -1833,10 +1851,10 @@ mod cascade_batch_update_tests {
     #[tokio::test]
     async fn cascade_batch_update_tombstones_every_target() {
         let db = setup_mem_db().await;
-        let a = create_node_handler(&db, "petal-1", "a", [0.0, 0.0, 0.0])
+        let a = create_node_as(&db, "petal-1", "a", [0.0, 0.0, 0.0], "did:key:z6MkA")
             .await
             .unwrap();
-        let b = create_node_handler(&db, "petal-1", "b", [0.0, 0.0, 0.0])
+        let b = create_node_as(&db, "petal-1", "b", [0.0, 0.0, 0.0], "did:key:z6MkA")
             .await
             .unwrap();
         let ids = vec![a.clone(), b.clone()];
@@ -2037,13 +2055,16 @@ mod asset_ingest_tests {
     #[tokio::test]
     async fn promote_instance_rejects_a_foreign_petal_path() {
         let (db, _, _) = setup().await;
+        // Complete rows: the schema-applied table silently drops partial CREATEs.
         db.query(
-            "CREATE petal CONTENT { petal_id: 'petal-2', fractal_id: 'fractal-1', name: 'p2' };
-             CREATE node CONTENT { node_id: 'path-foreign', petal_id: 'petal-2', display_name: 'f' };
-             CREATE node CONTENT { node_id: 'path-own', petal_id: 'petal-1', display_name: 'o' };",
+            "CREATE petal CONTENT { petal_id: 'petal-2', fractal_id: 'fractal-1', name: 'p2', node_id: 'anchor-2', created_at: '2026-11-02' };
+             CREATE node CONTENT { node_id: 'path-foreign', petal_id: 'petal-2', display_name: 'f', position: <geometry<point>> [0, 0], elevation: 0, rotation: [0, 0, 0], scale: [1, 1, 1], interactive: true, edit_seq: 0, created_at: '2026-11-02' };
+             CREATE node CONTENT { node_id: 'path-own', petal_id: 'petal-1', display_name: 'o', position: <geometry<point>> [0, 0], elevation: 0, rotation: [0, 0, 0], scale: [1, 1, 1], interactive: true, edit_seq: 0, created_at: '2026-11-02' };",
         )
         .await
-        .expect("seed paths");
+        .expect("seed paths")
+        .check()
+        .expect("seed path statements");
 
         let err = promote_instance_handler(
             &db,
@@ -2113,7 +2134,7 @@ mod asset_ingest_tests {
                 .unwrap(),
             baseline
         );
-        db.query("CREATE node CONTENT {node_id:'path-own#inst-1',petal_id:'petal-1',properties:{node_kind:'stamp',path_id:'path-own',owning_path_id:'path-own',instance_index:1}}").await.unwrap().check().unwrap();
+        db.query("CREATE node CONTENT {node_id:'path-own#inst-1',petal_id:'petal-1',position:<geometry<point>> [0,0],elevation:0,rotation:[0,0,0],scale:[1,1,1],interactive:true,edit_seq:0,created_at:'2026-11-02',properties:{node_kind:'stamp',path_id:'path-own',owning_path_id:'path-own',instance_index:1}}").await.unwrap().check().unwrap();
         let (_, newly) = promote_instance_handler(
             &db,
             "petal-1",
@@ -2151,7 +2172,7 @@ mod asset_ingest_tests {
             "UPDATE node SET properties.owning_path_id='other' WHERE node_id='path-own#inst-1'",
             "UPDATE node SET properties.instance_index=9 WHERE node_id='path-own#inst-1'",
             "UPDATE node SET tombstone={hlc:1,source_did:'local'} WHERE node_id='path-own#inst-1'",
-            "CREATE node:duplicate_existing_stamp CONTENT {node_id:'path-own#inst-1',petal_id:'petal-1',properties:{node_kind:'stamp',path_id:'path-own',owning_path_id:'path-own',instance_index:1}}",
+            "CREATE node:duplicate_existing_stamp CONTENT {node_id:'path-own#inst-1',petal_id:'petal-1',position:<geometry<point>> [0,0],elevation:0,rotation:[0,0,0],scale:[1,1,1],interactive:true,edit_seq:0,created_at:'2026-11-02',properties:{node_kind:'stamp',path_id:'path-own',owning_path_id:'path-own',instance_index:1}}",
         ] {
             db.query(mutation).await.unwrap().check().unwrap();
             promote_instance_handler(&db,"petal-1","path-own",1,"local","local","VERSE#verse-1-FRACTAL#fractal-1-PETAL#petal-1").await.expect_err("incompatible existing target must be refused");
@@ -2453,17 +2474,6 @@ mod import_gltf_ktx2_guard_tests {
             .unwrap_or_default();
         assert!(nodes.is_empty(), "no node row on refusal");
     }
-}
-
-/// Local compatibility entry for seed and test callers.
-#[cfg(test)]
-pub(crate) async fn create_node_handler(
-    db: &Db,
-    petal_id: &str,
-    name: &str,
-    position: [f32; 3],
-) -> anyhow::Result<String> {
-    create_node_as(db, petal_id, name, position, "local").await
 }
 
 /// Local compatibility entry for existing asset-placement callers.

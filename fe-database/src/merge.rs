@@ -12,8 +12,66 @@ pub enum MergeApplied {
     SkippedTombstoned,
     /// The incoming row carried a tombstone; the local node is now tombstoned.
     AppliedTombstone,
+    /// The row's non-transform fields merged, but the local transform won the
+    /// `edit_seq` register (QA-0100), so position/rotation/scale stayed local.
+    AppliedKeptLocalTransform,
     /// The payload was not a node row (no `node_id`) — ignored.
     NotANode,
+}
+
+/// Transform columns that form one last-writer-wins register keyed by
+/// `(edit_seq, transform value)`; see AGENTS.md §lifecycle "transform register".
+const TRANSFORM_FIELDS: [&str; 5] = ["position", "elevation", "rotation", "scale", "edit_seq"];
+
+/// The register's comparison key: `edit_seq`, then the flattened transform
+/// `[x, z, elevation, rotation.., scale..]` as a deterministic tie-break.
+fn transform_key(edit_seq: i64, position: Option<(f64, f64)>, row: &serde_json::Value) -> (i64, Vec<f64>) {
+    let (x, z) = position.unwrap_or((0.0, 0.0));
+    let mut values = vec![x, z, row.get("elevation").and_then(|v| v.as_f64()).unwrap_or(0.0)];
+    for field in ["rotation", "scale"] {
+        if let Some(items) = row.get(field).and_then(|v| v.as_array()) {
+            values.extend(items.iter().map(|item| item.as_f64().unwrap_or(0.0)));
+        }
+    }
+    (edit_seq, values)
+}
+
+/// Whether `incoming` beats `local`: higher `edit_seq`, else the larger value
+/// vector under `f64::total_cmp`. Every peer evaluates the same pair the same way.
+fn incoming_transform_wins(incoming: &(i64, Vec<f64>), local: &(i64, Vec<f64>)) -> bool {
+    match incoming.0.cmp(&local.0) {
+        std::cmp::Ordering::Equal => {
+            let ordering = incoming
+                .1
+                .iter()
+                .zip(local.1.iter())
+                .map(|(a, b)| a.total_cmp(b))
+                .find(|o| o.is_ne())
+                .unwrap_or_else(|| incoming.1.len().cmp(&local.1.len()));
+            ordering.is_gt()
+        }
+        other => other.is_gt(),
+    }
+}
+
+/// The local row's transform register key, or `None` when the row is absent.
+async fn read_local_transform_key(db: &Db, node_id: &str) -> anyhow::Result<Option<(i64, Vec<f64>)>> {
+    let mut response = db
+        .query("SELECT edit_seq, position, elevation, rotation, scale FROM node WHERE node_id = $nid LIMIT 1")
+        .bind(("nid", node_id.to_string()))
+        .await
+        .map_err(|e| anyhow::anyhow!("merge transform lookup failed: {e}"))?
+        .check()
+        .map_err(|e| anyhow::anyhow!("merge transform lookup statement failed: {e}"))?;
+    let rows: Vec<serde_json::Value> = response
+        .take(0)
+        .map_err(|e| anyhow::anyhow!("merge transform lookup take failed: {e}"))?;
+    Ok(rows.first().map(|row| {
+        let mut row = row.clone();
+        let seq = row.get("edit_seq").and_then(|v| v.as_i64()).unwrap_or(0);
+        let position = extract_point_2d(&mut row);
+        transform_key(seq, position, &row)
+    }))
 }
 
 /// Whether the local `node` row for `node_id` is tombstoned. Tolerates an absent
@@ -102,6 +160,23 @@ pub async fn apply_replicated_node(db: &Db, row_json: &[u8]) -> anyhow::Result<M
 
     // Live row, local not tombstoned — field-merge if present, else create.
     if exists {
+        // QA-0100: the transform is an LWW register, never arrival-ordered. A row
+        // without `edit_seq` is a legacy writer and keeps the blind merge.
+        let mut kept_local_transform = false;
+        if let Some(incoming_seq) = incoming.get("edit_seq").and_then(|v| v.as_i64()) {
+            if let Some(local_key) = read_local_transform_key(db, &node_id).await? {
+                let incoming_key = transform_key(incoming_seq, position, &incoming);
+                if !incoming_transform_wins(&incoming_key, &local_key) {
+                    kept_local_transform = true;
+                    if let Some(object) = incoming.as_object_mut() {
+                        for field in TRANSFORM_FIELDS {
+                            object.remove(field);
+                        }
+                    }
+                }
+            }
+        }
+        let position = if kept_local_transform { None } else { position };
         db.query("UPDATE node MERGE $row WHERE node_id = $nid")
             .bind(("row", incoming.clone()))
             .bind(("nid", node_id.clone()))
@@ -116,6 +191,9 @@ pub async fn apply_replicated_node(db: &Db, row_json: &[u8]) -> anyhow::Result<M
                 .await?
                 .check()
                 .map_err(|e| anyhow::anyhow!("merge position cast failed: {e}"))?;
+        }
+        if kept_local_transform {
+            return Ok(MergeApplied::AppliedKeptLocalTransform);
         }
     } else {
         create_core_node(db, &incoming, &node_id, position).await?;

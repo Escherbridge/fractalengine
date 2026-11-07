@@ -33,10 +33,13 @@ pub(crate) async fn read_current_and_need(
     ReplicatedNodeCurrent,
     Option<fe_runtime::scene_asset::SceneAssetNeeded>,
 )> {
-    let mut response=db.query("SELECT * OMIT id FROM node WHERE node_id=$scene_id LIMIT 2 TIMEOUT 5s; SELECT VALUE encoding::base64::encode(encoding::cbor::encode($this)) FROM node WHERE node_id=$scene_id LIMIT 2 TIMEOUT 5s")
+    let mut response=db.query("SELECT * OMIT id FROM node WHERE node_id=$scene_id LIMIT 2 TIMEOUT 5s; SELECT VALUE encoding::base64::encode(encoding::cbor::encode($this)) FROM node WHERE node_id=$scene_id LIMIT 2 TIMEOUT 5s; SELECT VALUE encoding::base64::encode(encoding::cbor::encode(object::remove($this, 'id'))) FROM node WHERE node_id=$scene_id LIMIT 2 TIMEOUT 5s")
         .bind(("scene_id",id.to_owned())).await?.check()?;
     let rows: Vec<Value> = response.take(0)?;
     let fingerprints: Vec<Value> = response.take(1)?;
+    // A clock written in the same transaction as an inbound apply fingerprints the
+    // uncommitted row, which carries no record `id`; accept that form too.
+    let applied_fingerprints: Vec<Value> = response.take(2)?;
     anyhow::ensure!(
         rows.len() == 1 && fingerprints.len() == 1,
         "replica current row missing or ambiguous"
@@ -81,7 +84,10 @@ pub(crate) async fn read_current_and_need(
     ]);
     let clocks = read_clock(db, id).await?;
     let provenance = match clocks.first() {
-        Some(clock) if clock["row_fingerprint"] == fingerprints[0] => {
+        Some(clock)
+            if clock["row_fingerprint"] == fingerprints[0]
+                || applied_fingerprints.first() == Some(&clock["row_fingerprint"]) =>
+        {
             let clock = clock_of(&clocks)?
                 .ok_or_else(|| anyhow::anyhow!("replica current original clock unavailable"))?;
             ReplicaNodeProvenance::OriginalSceneCommit {

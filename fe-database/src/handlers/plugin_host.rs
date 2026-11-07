@@ -276,7 +276,8 @@ pub(crate) async fn commit(
             guards.push(format!("IF (SELECT * OMIT id FROM node_log WHERE node_id=${prefix}_id ORDER BY row_version DESC LIMIT 1) != ${prefix}_history {{ THROW 'plugin history changed'; }}"));
             bindings.extend([
                 (format!("{prefix}_id"), json!(node_id)),
-                (format!("{prefix}_before"), raw),
+                // A SELECT is an array: bind `[raw]` like every sibling fence.
+                (format!("{prefix}_before"), json!([raw])),
                 (format!("{prefix}_x"), state["position"][0].clone()),
                 (format!("{prefix}_z"), state["position"][2].clone()),
                 (format!("{prefix}_history"), json!(previous_rows)),

@@ -41,12 +41,23 @@ pub struct DevelopmentResetPlan {
 
 impl DevelopmentResetPlan {
     pub async fn commit(self, db: &Db) -> anyhow::Result<()> {
-        db.query(self.sql)
+        let mut response = db
+            .query(self.sql)
             .bind(("reset_verses", self.verses))
             .bind(("reset_auth_before", self.auth_generation))
             .bind(("reset_auth_after", self.next_auth_generation))
-            .await?
-            .check()?;
+            .await?;
+        // SurrealDB 3 marks every statement of a failed transaction as "not
+        // executed"; report the statement that actually failed.
+        let mut errors: Vec<_> = response.take_errors().into_iter().collect();
+        errors.sort_by_key(|(index, _)| *index);
+        if let Some((_, cause)) = errors
+            .iter()
+            .find(|(_, error)| !error.to_string().contains("failed transaction"))
+            .or(errors.first())
+        {
+            anyhow::bail!("Local database reset failed: {cause}");
+        }
         tracing::info!(
             table_count = self.table_count,
             "Development local database rows cleared atomically"
@@ -136,7 +147,9 @@ pub async fn prepare_development_reset(
     for name in &content_tables {
         sql.push_str(&format!("IF array::len((SELECT VALUE id FROM {name} LIMIT 1)) != 0 {{ THROW 'Local database reset left rows'; }};\n"));
     }
-    sql.push_str("IF (SELECT VALUE generation FROM api_auth_state WHERE id = api_auth_state:current) != [$reset_auth_after] { THROW 'Credential reset unconfirmed'; }; COMMIT TRANSACTION;");
+    // A direct record read: after the in-transaction UPDATE, SurrealDB 3's
+    // `WHERE id = ...` table scan no longer sees the updated record.
+    sql.push_str("IF (SELECT VALUE generation FROM api_auth_state:current) != [$reset_auth_after] { THROW 'Credential reset unconfirmed'; }; COMMIT TRANSACTION;");
     Ok(DevelopmentResetPlan {
         sql,
         verses,

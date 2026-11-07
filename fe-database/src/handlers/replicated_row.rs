@@ -1855,12 +1855,19 @@ async fn apply_node_row(
             }
             ReplicatedRowOutcome::AppliedTombstone
         }
-        MergeApplied::Applied => {
+        applied @ (MergeApplied::Applied | MergeApplied::AppliedKeptLocalTransform) => {
             if let Some(petal_id) = petal_id {
+                // QA-0100: a losing remote transform must not repaint the scene;
+                // describe the durable row, whose transform stayed local.
+                let durable = if applied == MergeApplied::AppliedKeptLocalTransform {
+                    durable_node_row(db, &node_id).await
+                } else {
+                    None
+                };
                 emit_scene_change(
                     entity_change_tx,
                     SceneChange::NodeAdded {
-                        node: node_dto_from_row(&row, &node_id, &petal_id),
+                        node: node_dto_from_row(durable.as_ref().unwrap_or(&row), &node_id, &petal_id),
                     },
                 );
             }
@@ -1888,6 +1895,21 @@ async fn node_petal_id(db: &Db, node_id: &str) -> Option<String> {
         .and_then(|r| r.get("petal_id"))
         .and_then(|v| v.as_str())
         .map(String::from)
+}
+
+/// The durable node row (best-effort), for a scene change that must describe
+/// stored state rather than the inbound payload.
+async fn durable_node_row(db: &Db, node_id: &str) -> Option<serde_json::Value> {
+    let rows: Vec<serde_json::Value> = db
+        .query("SELECT * OMIT id FROM node WHERE node_id = $nid LIMIT 1")
+        .bind(("nid", node_id.to_string()))
+        .await
+        .ok()?
+        .check()
+        .ok()?
+        .take(0)
+        .ok()?;
+    rows.into_iter().next()
 }
 
 /// Read the payload's `position` as `(x, z)` for the scene-change DTO.

@@ -1391,6 +1391,27 @@ the reopen barrier. A live shared clone defeats this close (§shared-handle).
 `STAMP_INSTANCE_INDEX_KEY`); `owning_path_id` stays because the cascade BFS and
 the reflow hook traverse it as the durable parent edge.
 
+
+### Guard snapshots never project NONE columns (QA-0099, 2026-11-07)
+
+A use-time fence `IF (SELECT a,b,c ...) != $snapshot` compares against a JSON
+rebinding of an earlier read. An explicitly projected NONE column reads back as
+JSON `null` and rebinds as NULL, and `NULL != NONE`, so the fence always THROWs.
+Filter it in WHERE (`tombstone = NONE`) instead of projecting it — the tombstone
+member fence (`commit_tombstone_atomic`) and the idempotent stamp-promotion fence
+both broke every delete / re-promotion this way. A `SELECT *` fence binds `[row]`
+(the SELECT is an array; `plugin_host` once bound the bare object).
+
+### Transform register for legacy rows (QA-0100, merge.rs)
+
+Unversioned node rows (no `_fe_scene` marker) are merged by `merge.rs`. Their
+transform (position/elevation/rotation/scale) is an LWW register ordered by
+`edit_seq` (local transform writes bump it) and then the value vector under
+`f64::total_cmp`; non-transform fields keep the blind merge. Versioned scene rows
+are ordered by the `(hlc, publisher)` scene clock in `scene_publication/inbound.rs`.
+The replica snapshot feeds every author's `node/` entry (oldest first) so a
+rejoining peer sees the register winner, not just the newest entry.
+
 ## §shared-handle (OF-2, 2026-10-13)
 
 **One SurrealKV open per process.** SurrealKV takes a file lock per open

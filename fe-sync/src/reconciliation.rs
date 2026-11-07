@@ -36,7 +36,9 @@ pub async fn reconcile_petal(
                 tracing::debug!("reconcile: refused to resurrect a tombstoned node (N-4)");
             }
             Ok(MergeApplied::NotANode) => {}
-            Ok(MergeApplied::Applied) | Ok(MergeApplied::AppliedTombstone) => applied += 1,
+            Ok(MergeApplied::Applied)
+            | Ok(MergeApplied::AppliedKeptLocalTransform)
+            | Ok(MergeApplied::AppliedTombstone) => applied += 1,
             Err(e) => tracing::warn!("reconcile: merge apply failed: {e}"),
         }
     }

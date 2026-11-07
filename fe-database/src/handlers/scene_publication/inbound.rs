@@ -3,7 +3,7 @@
 use super::{
     clock_of, read_clock,
     wire::{self, SceneClock},
-    CLOCK_FENCE, CLOCK_WRITE,
+    CLOCK_FENCE, CLOCK_VERIFY, CLOCK_WRITE,
 };
 use crate::repo::Db;
 use fe_runtime::messages::{ReplicatedRowOutcome, SceneChange};
@@ -206,7 +206,7 @@ pub(crate) async fn apply_complete(
     } else {
         "UPDATE node CONTENT object::extend($scene_row,{position:<geometry<point>> [$scene_x,$scene_z]}) WHERE node_id=$scene_id"
     };
-    guards.extend([statement.into(), CLOCK_WRITE.into()]);
+    guards.extend([statement.into(), CLOCK_WRITE.into(), CLOCK_VERIFY.into()]);
     bindings.extend([
         ("scene_id".into(), json!(id)),
         ("scene_before".into(), json!(fingerprint)),

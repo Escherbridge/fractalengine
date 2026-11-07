@@ -55,6 +55,9 @@ pub(crate) fn clock_of(rows: &[Value]) -> anyhow::Result<Option<wire::SceneClock
 
 pub(crate) const CLOCK_FENCE: &str = "IF (SELECT node_id, hlc, publisher, row_fingerprint FROM node_scene_clock WHERE node_id=$scene_id) != $scene_clock_before { THROW 'scene version changed'; }";
 pub(crate) const CLOCK_WRITE: &str = "UPSERT node_scene_clock SET node_id=$scene_id, hlc=$scene_hlc, publisher=$scene_publisher, row_fingerprint=array::first((SELECT VALUE encoding::base64::encode(encoding::cbor::encode($this)) FROM node WHERE node_id=$scene_id)) WHERE node_id=$scene_id";
+/// SurrealDB 3 silently skips a failing create inside `UPSERT ... WHERE`; prove the
+/// clock row landed so the transaction aborts instead of committing a clockless row.
+pub(crate) const CLOCK_VERIFY: &str = "IF array::len((SELECT VALUE node_id FROM node_scene_clock WHERE node_id=$scene_id AND hlc=$scene_hlc AND publisher=$scene_publisher)) != 1 { THROW 'scene clock was not written'; }";
 
 /// Restore the original accepted scene watermark before issuing another local commit.
 pub(crate) async fn persisted_hlc(db: &Db) -> anyhow::Result<u64> {

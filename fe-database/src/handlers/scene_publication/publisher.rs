@@ -3,7 +3,7 @@
 use super::{
     clock_of, read_clock,
     wire::{self, SceneClock},
-    CLOCK_FENCE, CLOCK_WRITE,
+    CLOCK_FENCE, CLOCK_VERIFY, CLOCK_WRITE,
 };
 use crate::{repo::Db, BlobStoreHandle, ReplicationEvent, ReplicationSender};
 use serde_json::{json, Value};
@@ -138,13 +138,14 @@ pub(crate) async fn prepare(db: &Db, id: &str, actor: &str) -> anyhow::Result<Pr
     statements.extend([
         "IF (SELECT * OMIT id, position FROM node WHERE node_id=$scene_id) != [$scene_without_position] { THROW 'committed scene row changed'; }".into(),
         "IF array::len((SELECT VALUE node_id FROM node WHERE node_id=$scene_id AND petal_id=$scene_petal AND position=<geometry<point>> [$scene_x,$scene_z])) != 1 { THROW 'committed scene ancestry or point changed'; }".into(),
-        proof.into(),CLOCK_FENCE.into(),CLOCK_WRITE.into(),
+        proof.into(),CLOCK_FENCE.into(),CLOCK_WRITE.into(),CLOCK_VERIFY.into(),
     ]);
     guard_labels.extend([
         "node_projection",
         "point_ancestry",
         "local_proof",
         "scene_clock",
+        "clock_write",
         "clock_write",
     ]);
     bindings.extend([

@@ -39,7 +39,7 @@ pub(crate) async fn resolved_scope(state: &ApiState, node_id: &str) -> Option<St
         return Some(scope);
     }
     crate::gis::run_select(state,
-        "SELECT payload.scope AS scope FROM node_log WHERE node_id = $id AND payload.journal_version = 1 ORDER BY row_version DESC LIMIT 1",
+        "SELECT payload.scope AS scope, row_version FROM node_log WHERE node_id = $id AND payload.journal_version = 1 ORDER BY row_version DESC LIMIT 1",
         vec![("id".into(), json!(node_id))]).await?
         .first()?.get("scope")?.as_str().map(str::to_string)
 }

@@ -662,7 +662,7 @@ pub(crate) async fn read_granted(
     let admitted_scope = if let Some(scope) = current_scope {
         scope
     } else {
-        let mut response = db.query("SELECT payload.scope AS scope FROM node_log WHERE node_id = $id AND payload.journal_version = 1 ORDER BY row_version DESC LIMIT 1")
+        let mut response = db.query("SELECT payload.scope AS scope, row_version FROM node_log WHERE node_id = $id AND payload.journal_version = 1 ORDER BY row_version DESC LIMIT 1")
             .bind(("id",node_id.to_string())).await?.check()?;
         let rows: Vec<Value> = response.take(0)?;
         rows.first()
