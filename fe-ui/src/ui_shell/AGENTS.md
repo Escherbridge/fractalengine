@@ -304,6 +304,16 @@ adds a second `TopBottomPanel::top`.
   `Window::{set_minimized, set_maximized, start_drag_move, start_drag_resize}`.
   It is main-thread only (`NonSendMarker`) because it reads `WINIT_WINDOWS` to
   mirror `is_maximized()` into `TopbarState.maximized` (restore glyph, grips off).
+- **Restore from minimized is two frames (QA-0028).** Windows' `SW_RESTORE` on
+  a minimized window returns it to its pre-minimize placement — maximized
+  included — and bevy_winit applies `take_maximize_request` BEFORE
+  `take_minimize_request` in one frame, so the old same-frame
+  `set_minimized(false)` + `set_maximized(false)` ended maximized
+  (maximize → minimize → restore left 1920×1032 `maximized:true`).
+  `TopbarState::begin_restore` now only un-minimizes when the mirrored state
+  is minimized and records `restore_after_unminimize`; `take_deferred_restore`
+  un-maximizes on the first frame the OS reports un-minimized. Any newer
+  chrome request clears the pending step.
 - **Why a request slot, not a `UiAction`.** Widgets never touch `Window`: they
   write ONE typed `WindowChromeRequest` into the manager's own state
   (`TopbarState::try_request_chrome`), and `apply_window_chrome` is the single

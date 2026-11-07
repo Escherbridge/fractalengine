@@ -74,6 +74,8 @@ pub struct TopbarState {
     /// Mirror of the OS window's maximized state (restore glyph, grips off).
     pub maximized: bool,
     pub minimized: bool,
+    /// A restore issued while minimized still owes its un-maximize step.
+    restore_after_unminimize: bool,
     /// Supplied by the binary (`TopbarState::with_brand_icon`); `None` = name only.
     pub brand_icon: Option<BrandIcon>,
     brand_texture: Option<egui::TextureHandle>,
@@ -90,6 +92,22 @@ impl TopbarState {
         }
         self.chrome_request = Some(request);
         Ok(())
+    }
+
+    /// Start a Restore: true = un-maximize now; false = wait until the OS
+    /// reports un-minimized (QA-0028, src/AGENTS.md §window-chrome).
+    fn begin_restore(&mut self) -> bool {
+        self.restore_after_unminimize = self.minimized;
+        !self.minimized
+    }
+
+    /// The deferred un-maximize of a restore from minimized, once it is due.
+    fn take_deferred_restore(&mut self) -> bool {
+        let due = self.restore_after_unminimize && !self.minimized;
+        if due {
+            self.restore_after_unminimize = false;
+        }
+        due
     }
 
     fn request_from_ui(&mut self, request: WindowChromeRequest) {
@@ -417,11 +435,17 @@ pub fn apply_window_chrome(
             topbar.maximized = maximized;
         }
     }
+    if topbar.restore_after_unminimize && topbar.take_deferred_restore() {
+        window.set_maximized(false);
+        topbar.maximized = false;
+    }
     // Read through `Deref` first so an idle frame never flags `TopbarState` changed.
     let Some(request) = topbar.chrome_request else {
         return;
     };
     topbar.chrome_request = None;
+    // Any newer request supersedes a restore still waiting to un-maximize.
+    topbar.restore_after_unminimize = false;
     match request {
         WindowChromeRequest::Minimize => window.set_minimized(true),
         WindowChromeRequest::Maximize => {
@@ -429,10 +453,15 @@ pub fn apply_window_chrome(
             window.set_maximized(true);
             topbar.maximized = true;
         }
+        // Windows restores a minimized window to its pre-minimize placement
+        // (maximized included), and bevy_winit applies the maximize request
+        // before the minimize one — so from minimized, un-maximize next frame.
         WindowChromeRequest::Restore => {
             window.set_minimized(false);
-            window.set_maximized(false);
-            topbar.maximized = false;
+            if topbar.begin_restore() {
+                window.set_maximized(false);
+                topbar.maximized = false;
+            }
         }
         WindowChromeRequest::SetSize { width, height } => {
             window.set_minimized(false);
@@ -1186,6 +1215,18 @@ mod tests {
             .try_request_chrome(WindowChromeRequest::Maximize)
             .is_err());
         assert_eq!(pending.chrome_request, Some(WindowChromeRequest::Minimize));
+        // QA-0028: a restore from minimized un-maximizes only after the OS
+        // reports the window un-minimized, exactly once.
+        let mut restoring = TopbarState {
+            minimized: true,
+            ..TopbarState::default()
+        };
+        assert!(!restoring.begin_restore(), "minimized: un-minimize first");
+        assert!(!restoring.take_deferred_restore(), "still minimized: not yet");
+        restoring.minimized = false;
+        assert!(restoring.take_deferred_restore(), "un-minimized: un-maximize now");
+        assert!(!restoring.take_deferred_restore(), "only once");
+        assert!(restoring.begin_restore(), "a normal-state restore is immediate");
         let mut app = App::new();
         app.add_message::<WindowCloseRequested>()
             .init_resource::<TopbarState>()
