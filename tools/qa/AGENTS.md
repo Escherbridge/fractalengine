@@ -1038,10 +1038,25 @@ carried by the native ticket. A restarted peer has no address lookup in that mod
 other members' current `node_addr` (from their newest `stdout.log`) through `FE_SYNC_BOOTSTRAP`, the
 documented operator path; without it the restarted peer never re-syncs.
 
+`-Names owner,editor,viewer,editor2` (Start only) overrides the default names; it needs `Count` distinct
+lowercase names starting with `owner`, and any name starting with `editor` gets the editor role (others viewer).
+
 Driving joined Editor/Viewer windows: their active verse is owned by another node, so no Owner verse token
 covers it. Under a validated `FE_QA_STORAGE_ROOT` the dev-token file also carries `operator_token`
 (scope `QA-OPERATOR`, see fractalengine `src/AGENTS.md` §qa-operator); `fe.py` falls back to it only after
 every owner verse token is refused, so owner flows behave exactly as before.
+
+## §swarm-barrier
+
+`python tools/qa/swarm_barrier.py --run DIR --step K --peer NAME --count N [--timeout 180] [--then CMD ...]`
+releases N independent agents (one per peer) at one wall-clock instant, so tool-call latency never decides a
+race. Each agent atomically writes `DIR/swarm/barrier/K/NAME.ready.json` (`ready_at`), polls until N ready files
+exist, sleeps until `fire_at = max(ready_at) + 2.0`, runs CMD with inherited stdio and writes `NAME.done.json`
+(`fire_at`, `started_at`, `late_ms`, `exit_code`, `elapsed_ms`). A `.py` CMD exposing `main(argv)` (fe.py does) is
+pre-imported before the sleep and called in-process, so interpreter startup is off the fire path; `--subprocess`
+forces a child process. Timeout fires with the peers present and exits 3 (`barrier_timeout` on stderr);
+otherwise the exit code is CMD's. Barrier ids are single-use: a retried step takes a fresh id (`5b`), because a
+stale ready file from the first attempt would release the retry immediately.
 
 ## Native Portal fixture client
 

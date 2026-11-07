@@ -1,4 +1,4 @@
-# Coordinate N isolated app roots (owner/editor/viewer...) through the existing launcher; see AGENTS.md §peers.
+﻿# Coordinate N isolated app roots (owner/editor/viewer...) through the existing launcher; see AGENTS.md §peers.
 [CmdletBinding()]
 param(
     [Parameter(Mandatory)][ValidateSet('Start','Stop','Info','Restart','Focus')][string]$Action,
@@ -9,6 +9,7 @@ param(
     [ValidateSet('basic','terrain')][string]$Fixture = 'basic',
     [ValidateRange(1024,65520)][int]$BasePort = 8882,
     [int[]]$Ports,
+    [string[]]$Names,
     [switch]$AllowStaleStage,
     [switch]$NativeObserver
 )
@@ -67,7 +68,11 @@ if ($Action -eq 'Start') {
     if ($OwnerRun -or $Peer) { throw 'Start always creates fresh roots; do not supply OwnerRun/Peer' }
     if (-not $Ports) { $Ports = @(0..($Count - 1) | ForEach-Object { $BasePort + $_ }) }
     if ($Ports.Count -ne $Count -or (@($Ports | Select-Object -Unique)).Count -ne $Count) { throw 'Peers require one distinct loopback API port each' }
-    $names = Get-PeerRoleNames $Count
+    $memberNames = @(if ($Names) { $Names } else { Get-PeerRoleNames $Count })
+    if ($memberNames.Count -ne $Count -or $memberNames[0] -cne 'owner' -or (@($memberNames | Select-Object -Unique)).Count -ne $Count -or
+        @($memberNames | Where-Object { $_ -cnotmatch '^[a-z][a-z0-9]{0,15}$' }).Count) {
+        throw '-Names needs Count distinct lowercase names starting with owner'
+    }
     $launched = New-Object System.Collections.Generic.List[object]
     $complete = $false
     try {
@@ -82,11 +87,11 @@ if ($Action -eq 'Start') {
                 $options.ApiPort = $Ports[$index]
             }
             $output = @(& "$PSScriptRoot\launch.ps1" @options)
-            if (-not $output.Count) { throw "Launcher did not return an owned run path for $($names[$index])" }
+            if (-not $output.Count) { throw "Launcher did not return an owned run path for $($memberNames[$index])" }
             $path = Resolve-QaChildPath -Path ([string]$output[-1]) -Root $QaRunRoot
             $member = Get-PeerMember -Directory $path
-            $member.name = $names[$index]
-            $member.role = if ($index -eq 0) { 'owner' } elseif ($names[$index] -ceq 'editor') { 'editor' } else { 'viewer' }
+            $member.name = $memberNames[$index]
+            $member.role = if ($index -eq 0) { 'owner' } elseif ($memberNames[$index] -clike 'editor*') { 'editor' } else { 'viewer' }
             $launched.Add($member)
         }
         $publicationLease = Enter-QaLifecycleLease
