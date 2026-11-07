@@ -1036,7 +1036,8 @@ passed from PowerShell or Python (Git Bash argv mangles non-ASCII).
 Transport: the launcher keeps `FE_SYNC_RELAY=disabled`; joins dial the loopback/LAN direct addresses
 carried by the native ticket. A restarted peer has no address lookup in that mode, so `Restart` hands it the
 other members' current `node_addr` (from their newest `stdout.log`) through `FE_SYNC_BOOTSTRAP`, the
-documented operator path; without it the restarted peer never re-syncs.
+documented operator path. `Restart -NoBootstrap` withholds it so the persisted per-verse peer book
+(fe-sync `src/AGENTS.md` §peer-book, QA-0086) must re-dial on its own.
 
 `-Names owner,editor,viewer,editor2` (Start only) overrides the default names; it needs `Count` distinct
 lowercase names starting with `owner`, and any name starting with `editor` gets the editor role (others viewer).

@@ -11,6 +11,7 @@ param(
     [int[]]$Ports,
     [string[]]$Names,
     [switch]$AllowStaleStage,
+    [switch]$NoBootstrap,
     [switch]$NativeObserver
 )
 . "$PSScriptRoot\_lib.ps1"
@@ -205,7 +206,9 @@ if ($Action -eq 'Restart') {
     })
     $priorBootstrap = $env:FE_SYNC_BOOTSTRAP
     try {
-        if ($bootstrap.Count) { $env:FE_SYNC_BOOTSTRAP = ($bootstrap -join ';') }
+        # -NoBootstrap proves the persisted peer book alone re-dials (fe-sync §peer-book).
+        if ($NoBootstrap) { Remove-Item Env:FE_SYNC_BOOTSTRAP -ErrorAction SilentlyContinue }
+        elseif ($bootstrap.Count) { $env:FE_SYNC_BOOTSTRAP = ($bootstrap -join ';') }
         # Same root, port and stage; launch -ResumeRun stops the exact prior identity first.
         $null = @(& "$PSScriptRoot\launch.ps1" -ResumeRun $target.run_dir)
     } finally { $env:FE_SYNC_BOOTSTRAP = $priorBootstrap }
