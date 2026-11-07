@@ -2144,21 +2144,23 @@ pub fn spawn_db_thread_shared(
                                 )
                                 .await).await;
                     }
-                    Ok(DbCommand::RejudgeReplicatedNode { verse_id, record_id, candidates }) => {
+                    Ok(DbCommand::RejudgeReplicatedNodes { verse_id, nodes, restore_only }) => {
                         use handlers::scene_publication::Rejudged;
-                        match handlers::scene_publication::rejudge(&db, &verse_id, &record_id, &candidates, &local_did, entity_change_tx.as_ref()).await {
-                            Ok(Rejudged::Unchanged) => {}
-                            Ok(Rejudged::Restored(outcome)) => {
-                                tracing::info!(verse_id, node_id = record_id, "Re-judged a demoted author's scene row: restored the latest admissible version");
-                                handlers::scene_publication::echo_applied(&db, &blob_store, &local_did, &tx, vec![handlers::inbound_admissions::RowReport {
-                                    verse_id, table: "node".into(), record_id, outcome,
-                                }]).await;
+                        for (record_id, candidates) in nodes {
+                            match handlers::scene_publication::rejudge(&db, &verse_id, &record_id, &candidates, &local_did, entity_change_tx.as_ref(), restore_only).await {
+                                Ok(Rejudged::Unchanged) => {}
+                                Ok(Rejudged::Restored(outcome)) => {
+                                    tracing::info!(verse_id, node_id = record_id, ?outcome, "Re-judged a scene row after a role change: applied the latest admissible version");
+                                    handlers::scene_publication::echo_applied(&db, &blob_store, &local_did, &tx, vec![handlers::inbound_admissions::RowReport {
+                                        verse_id: verse_id.clone(), table: "node".into(), record_id, outcome,
+                                    }]).await;
+                                }
+                                Ok(Rejudged::Removed { petal_id }) => {
+                                    tracing::info!(verse_id, node_id = record_id, "Re-judged a scene row after a role change: no admissible version, removed locally");
+                                    send_result(&tx, DbResult::NodeDeleted { node_id: record_id, petal_id });
+                                }
+                                Err(error) => tracing::warn!(verse_id, node_id = record_id, "scene re-judge failed: {error:#}"),
                             }
-                            Ok(Rejudged::Removed { petal_id }) => {
-                                tracing::info!(verse_id, node_id = record_id, "Re-judged a demoted author's scene row: no admissible version, removed locally");
-                                send_result(&tx, DbResult::NodeDeleted { node_id: record_id, petal_id });
-                            }
-                            Err(error) => tracing::warn!(verse_id, node_id = record_id, "scene re-judge failed: {error:#}"),
                         }
                     }
                     Ok(DbCommand::ReemitLocalVerseCatalog { verse_id }) => {

@@ -190,6 +190,8 @@ async fn convert_to_owner_statement(
             role,
             revoked: false,
             hlc: lamport,
+            editor_since: None,
+            manager_since: None,
         };
         admit_local_statement(db, &verse_id, &stmt).await
     })

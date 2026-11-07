@@ -27,6 +27,21 @@ const JOB_TIMEOUT: Duration = Duration::from_secs(120);
 const MAX_JOBS: usize = 68;
 /// Retries after a failed row-arrival prefetch (back-off 1, 2, 4, 8, 16 s).
 const PREFETCH_RETRIES: u32 = 5;
+/// Row-arrival prefetches in flight at once (QA-0133): unowned work never
+/// takes more than this share of the `MAX_JOBS` owned-fetch budget.
+const PREFETCH_CAP: usize = 8;
+/// Row-arrival prefetches waiting for a free slot; beyond this they are left
+/// to the on-demand fetch at petal entry.
+const PREFETCH_BACKLOG_CAP: usize = 256;
+
+/// One in-flight row-arrival prefetch; released when its job ends.
+struct PrefetchSlot(Arc<std::sync::atomic::AtomicUsize>);
+
+impl Drop for PrefetchSlot {
+    fn drop(&mut self) {
+        self.0.fetch_sub(1, std::sync::atomic::Ordering::Relaxed);
+    }
+}
 
 #[derive(Clone)]
 struct OpenVerse {
@@ -132,6 +147,8 @@ pub(crate) struct SceneAssetJobs {
     slots: Arc<tokio::sync::Semaphore>,
     jobs: tokio::task::JoinSet<()>,
     next_generation: u64,
+    prefetches: Arc<std::sync::atomic::AtomicUsize>,
+    prefetch_backlog: std::collections::VecDeque<(String, BlobHash)>,
 }
 
 impl SceneAssetJobs {
@@ -183,6 +200,8 @@ impl SceneAssetJobs {
             slots: Arc::new(tokio::sync::Semaphore::new(4)),
             jobs: tokio::task::JoinSet::new(),
             next_generation: 0,
+            prefetches: Default::default(),
+            prefetch_backlog: Default::default(),
         }
     }
 
@@ -236,6 +255,7 @@ impl SceneAssetJobs {
     }
 
     pub(crate) fn close(&mut self, verse: &str) {
+        self.prefetch_backlog.retain(|(waiting, _)| waiting != verse);
         if let Some(lease) = self
             .open
             .write()
@@ -250,11 +270,33 @@ impl SceneAssetJobs {
         self.fetch_owned(verse, hash, None);
     }
 
+    /// Start backlogged prefetches while slots are free; true while any wait.
+    pub(crate) fn pump_prefetches(&mut self) -> bool {
+        while self.prefetches.load(std::sync::atomic::Ordering::Relaxed) < PREFETCH_CAP {
+            let Some((verse, hash)) = self.prefetch_backlog.pop_front() else {
+                break;
+            };
+            self.prefetch(&verse, hash);
+        }
+        !self.prefetch_backlog.is_empty()
+    }
+
     /// QA-0118: fetch a scene blob as soon as its replicated metadata row
     /// arrives, before any petal is opened. Unowned; retried with bounded
-    /// back-off while the Verse stays open. Bytes already held are skipped.
+    /// back-off while the Verse stays open. Bytes already held are skipped,
+    /// and at most `PREFETCH_CAP` run at once (QA-0133): the rest wait in a
+    /// bounded backlog drained by [`Self::pump_prefetches`].
     pub(crate) fn prefetch(&mut self, verse: &str, hash: BlobHash) {
         if self.blobs.has_blob(&hash) {
+            return;
+        }
+        if self.prefetches.load(std::sync::atomic::Ordering::Relaxed) >= PREFETCH_CAP {
+            let waiting = (verse.to_string(), hash);
+            if self.prefetch_backlog.len() < PREFETCH_BACKLOG_CAP
+                && !self.prefetch_backlog.contains(&waiting)
+            {
+                self.prefetch_backlog.push_back(waiting);
+            }
             return;
         }
         let Some(generation) = self
@@ -434,6 +476,11 @@ impl SceneAssetJobs {
             }
             pending.insert(key.clone(), request_id.into_iter().collect());
         }
+        let prefetch_slot = prefetch.then(|| {
+            self.prefetches
+                .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            PrefetchSlot(self.prefetches.clone())
+        });
         let pending = Pending {
             key: key.clone(),
             pending: self.pending.clone(),
@@ -445,6 +492,7 @@ impl SceneAssetJobs {
         let gate = self.gate.clone();
         let slots = self.slots.clone();
         self.jobs.spawn(async move {
+            let _prefetch_slot = prefetch_slot;
             let deadline = Instant::now() + JOB_TIMEOUT;
             let future = async {
                 match &key {

@@ -72,6 +72,11 @@ pub fn inbound_apply_drop_count() -> u64 {
 /// verse's replica. Past the cap the OLDEST entry is dropped with a warn.
 const PENDING_WRITES_CAP: usize = 1024;
 
+/// How soon kept work — role work queued after a failure (full DB channel,
+/// failed replica read; QA-0132) or the prefetch backlog (QA-0133) — is
+/// retried while the loop is otherwise idle.
+const KEPT_WORK_RETRY: std::time::Duration = std::time::Duration::from_secs(1);
+
 /// One row write that arrived while its verse's replica was not open yet.
 #[derive(Debug, Clone)]
 struct PendingWrite {
@@ -961,10 +966,15 @@ pub fn spawn_sync_thread_with_transport(
                 // of the loop, not inline inside the handler that raised
                 // the DID's role, so a slow drain never delays that
                 // handler's own return — "the select loop drains it".
-                drain_reread_queues(&mut fabrics, &replicas, &local_did, &evt_tx, &db_cmd_tx, &docs_stack)
+                let reread_left = drain_reread_queues(&mut fabrics, &replicas, &local_did, &evt_tx, &db_cmd_tx, &docs_stack)
                     .await;
-                drain_rejudge_queues(&mut fabrics, &replicas, &db_cmd_tx).await;
+                let rejudge_left = drain_rejudge_queues(&mut fabrics, &replicas, &db_cmd_tx).await;
+                let prefetch_left = scene_assets.pump_prefetches();
+                let kept_work = reread_left || rejudge_left || prefetch_left;
                 tokio::select! {
+                    // QA-0132/QA-0133: kept role work and the capped prefetch
+                    // backlog are retried even when no event wakes the loop.
+                    _ = tokio::time::sleep(KEPT_WORK_RETRY), if kept_work => {}
                     Some(publication)=scene_publication_rx.recv()=>{
                         if scene_assets.publication_is_current(&publication) {
                             handle_write_row_entry(&replicas,&mut pending_writes,fabrics.entry(publication.verse.clone()).or_default(),&blob_store,&local_did,&publication.verse,"asset",&publication.record_id,&publication.row_hash).await;
@@ -1006,7 +1016,7 @@ pub fn spawn_sync_thread_with_transport(
                         // commands still flow.
                         if let Some((verse_id, change)) = maybe_row {
                             let fabric = fabrics.entry(verse_id.clone()).or_default();
-                            handle_inbound_row_change(
+                            let verdict = handle_inbound_row_change(
                                 fabric,
                                 &verse_id,
                                 &change,
@@ -1014,8 +1024,12 @@ pub fn spawn_sync_thread_with_transport(
                                 &evt_tx,
                                 &db_cmd_tx,
                             );
-                            if let Some(hash) = scene_asset_prefetch_hash(&change, &local_did) {
-                                scene_assets.prefetch(&verse_id, hash);
+                            // QA-0133: only a forwarded row from an author this
+                            // node's role view admits may start a blob fetch.
+                            if verdict == InboundVerdict::Forwarded {
+                                if let Some(hash) = scene_asset_prefetch_hash(fabric, &verse_id, &change) {
+                                    scene_assets.prefetch(&verse_id, hash);
+                                }
                             }
                             sync_blob_access_gate(&docs_stack, &verse_id, fabric);
                         }
@@ -1581,6 +1595,16 @@ fn cmd_rx_bridge_send(tx: &tokio::sync::mpsc::Sender<SyncCommand>, cmd: SyncComm
     tx.blocking_send(cmd).is_ok()
 }
 
+/// What [`handle_inbound_row_change`] did with a row (QA-0133): only a row
+/// handed to the DB thread for admission may drive follow-up work.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum InboundVerdict {
+    /// Queued on the DB thread's command channel for admission.
+    Forwarded,
+    /// Consumed on the sync plane, an own echo, not retained, or dropped.
+    NotForwarded,
+}
+
 /// Forward one inbound replicated row to the DB thread (A4 seam).
 ///
 /// Own-author rows are skipped first (E.8 loop prevention): the real Doc
@@ -1603,7 +1627,7 @@ fn handle_inbound_row_change(
     local_did: &str,
     evt_tx: &dyn EventSink,
     db_cmd_tx: &Option<crossbeam::channel::Sender<DbCommand>>,
-) {
+) -> InboundVerdict {
     // Feed the fabric FIRST — before the own-author filter — because our own
     // snapshot rows (replayed by seed_reconciliation) are exactly how the
     // fabric re-learns settings, peer declarations, and the shard ledger
@@ -1648,10 +1672,10 @@ fn handle_inbound_row_change(
                 }
             }
         }
-        return;
+        return InboundVerdict::NotForwarded;
     }
     if change.table == SHARD_TABLE || change.table == PEER_DECL_TABLE {
-        return;
+        return InboundVerdict::NotForwarded;
     }
 
     if change.author_id == local_did {
@@ -1660,7 +1684,7 @@ fn handle_inbound_row_change(
             record_id = %change.record_id,
             "Inbound row echoes our own write — skipped (loop prevention)"
         );
-        return;
+        return InboundVerdict::NotForwarded;
     }
     tracing::debug!(
         verse_id,
@@ -1687,7 +1711,7 @@ fn handle_inbound_row_change(
                         record_id = %change.record_id,
                         "Timeseries row not retained — another peer hosts this shard (F6 retention)"
                     );
-                    return;
+                    return InboundVerdict::NotForwarded;
                 }
             }
         }
@@ -1707,7 +1731,7 @@ fn handle_inbound_row_change(
             verse_id,
             "No DB command channel — inbound row not applied (test mode)"
         );
-        return;
+        return InboundVerdict::NotForwarded;
     };
     match tx.try_send(DbCommand::ApplyReplicatedRow {
         verse_id: verse_id.to_string(),
@@ -1716,8 +1740,14 @@ fn handle_inbound_row_change(
         row_bytes: change.data.clone(),
         author_did: change.author_id.clone(),
     }) {
-        Ok(()) => {}
+        Ok(()) => InboundVerdict::Forwarded,
         Err(crossbeam::channel::TrySendError::Full(_)) => {
+            if change.table == fe_database::role_grants::ROLE_DOC_TABLE {
+                // QA-0132: a dropped revoke would leave the DB plane judging
+                // with a stale role view; kept and resent ahead of re-judges.
+                fabric.keep_unsent_role_row(change.clone());
+                return InboundVerdict::NotForwarded;
+            }
             let dropped =
                 INBOUND_APPLY_DROPS.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1;
             tracing::warn!(
@@ -1727,79 +1757,147 @@ fn handle_inbound_row_change(
                 dropped_total = dropped,
                 "DB command channel full — dropping inbound replicated row"
             );
+            InboundVerdict::NotForwarded
         }
-        Err(crossbeam::channel::TrySendError::Disconnected(_)) => {}
+        Err(crossbeam::channel::TrySendError::Disconnected(_)) => InboundVerdict::NotForwarded,
     }
 }
 
-/// QA-0121 re-judge on demotion: for every DID whose role fell, hand the DB
-/// thread each scene key it wrote together with EVERY author's replica entry
-/// for that key, so the node is re-decided from the replicated data under the
-/// new role view. Every peer runs this on learning the same role rows, so a
-/// row admitted before the revoke arrived converges with peers that refused it.
+/// Hand the DB thread every scene key `dids` wrote, each with EVERY author's
+/// replica entry for it, as ONE command (QA-0121/QA-0131). `Err` means nothing
+/// was queued, so the caller keeps the DIDs (QA-0132).
+async fn send_rejudge_batch(
+    replicator: &dyn VerseReplicator,
+    tx: &crossbeam::channel::Sender<DbCommand>,
+    verse_id: &str,
+    dids: &[String],
+    restore_only: bool,
+) -> Result<usize, String> {
+    let mut nodes: std::collections::BTreeMap<String, fe_runtime::messages::RejudgeCandidates> =
+        std::collections::BTreeMap::new();
+    for did in dids {
+        let entries = replicator
+            .entries_by_author(did, &["node/"])
+            .await
+            .map_err(|error| format!("reading {did}'s scene rows: {error}"))?;
+        nodes.extend(entries.into_iter().map(|change| (change.record_id, Vec::new())));
+    }
+    if nodes.is_empty() {
+        return Ok(0);
+    }
+    let snapshot = replicator
+        .snapshot()
+        .await
+        .map_err(|error| format!("replica snapshot: {error}"))?;
+    for change in snapshot {
+        if change.table == "node" && !change.data.is_empty() {
+            if let Some(candidates) = nodes.get_mut(&change.record_id) {
+                candidates.push((change.author_id, change.data));
+            }
+        }
+    }
+    let rows = nodes.len();
+    tx.try_send(DbCommand::RejudgeReplicatedNodes {
+        verse_id: verse_id.to_string(),
+        nodes: nodes.into_iter().collect(),
+        restore_only,
+    })
+    .map_err(|error| format!("DB command channel: {error}"))?;
+    Ok(rows)
+}
+
+/// Resend `role` rows a full DB channel refused, oldest first (QA-0132).
+/// Returns true when every verse's kept rows are on the channel.
+fn resend_unsent_role_rows(
+    fabrics: &mut HashMap<String, VerseFabric>,
+    db_cmd_tx: &Option<crossbeam::channel::Sender<DbCommand>>,
+) -> bool {
+    let Some(tx) = db_cmd_tx.as_ref() else {
+        return true;
+    };
+    for (verse_id, fabric) in fabrics.iter_mut() {
+        let kept = fabric.unsent_role_rows_mut();
+        while let Some(change) = kept.pop_front() {
+            let command = DbCommand::ApplyReplicatedRow {
+                verse_id: verse_id.clone(),
+                table: change.table.clone(),
+                record_id: change.record_id.clone(),
+                row_bytes: change.data.clone(),
+                author_did: change.author_id.clone(),
+            };
+            match tx.try_send(command) {
+                Ok(()) => {}
+                Err(crossbeam::channel::TrySendError::Full(_)) => {
+                    kept.push_front(change);
+                    return false;
+                }
+                Err(crossbeam::channel::TrySendError::Disconnected(_)) => {
+                    kept.clear();
+                    return true;
+                }
+            }
+        }
+    }
+    true
+}
+
+/// QA-0121 re-judge on demotion: for every DID whose role fell, the DB thread
+/// re-decides each scene key it wrote from EVERY author's replica entry, so a
+/// row admitted before the revoke arrived converges with peers that refused
+/// it. QA-0132: a DID leaves the queue only once its batch was accepted — a
+/// closed replica keeps it until reopen, a failed read or full channel until
+/// the retry. Returns true when kept work needs a timed retry.
 async fn drain_rejudge_queues(
     fabrics: &mut HashMap<String, VerseFabric>,
     replicas: &HashMap<String, Box<dyn VerseReplicator>>,
     db_cmd_tx: &Option<crossbeam::channel::Sender<DbCommand>>,
-) {
+) -> bool {
+    // The DB plane must hold every kept revoke before it judges against it.
+    if !resend_unsent_role_rows(fabrics, db_cmd_tx) {
+        return true;
+    }
+    let mut retry = false;
     for (verse_id, fabric) in fabrics.iter_mut() {
-        let dids = fabric.drain_rejudge_queue();
+        let dids = fabric.pending_rejudges();
         if dids.is_empty() {
             continue;
         }
-        let (Some(replicator), Some(tx)) = (replicas.get(verse_id), db_cmd_tx.as_ref()) else {
+        let Some(tx) = db_cmd_tx.as_ref() else {
+            // Offline/test mode: no DB plane holds rows to re-judge.
+            fabric.ack_rejudges(&dids);
             continue;
         };
-        let mut keys = std::collections::BTreeSet::new();
-        for did in &dids {
-            match replicator.entries_by_author(did, &["node/"]).await {
-                Ok(entries) => keys.extend(entries.into_iter().map(|change| change.record_id)),
-                Err(error) => tracing::warn!(verse_id, did, "re-judge read of a demoted author's rows failed: {error}"),
-            }
-        }
-        if keys.is_empty() {
+        let Some(replicator) = replicas.get(verse_id) else {
             continue;
-        }
-        let snapshot = match replicator.snapshot().await {
-            Ok(snapshot) => snapshot,
+        };
+        match send_rejudge_batch(replicator.as_ref(), tx, verse_id, &dids, false).await {
+            Ok(rows) => {
+                tracing::info!(verse_id, demoted = dids.len(), rows, "Re-judging scene rows of demoted authors");
+                fabric.ack_rejudges(&dids);
+            }
             Err(error) => {
-                tracing::warn!(verse_id, "re-judge snapshot failed: {error}");
-                continue;
-            }
-        };
-        let mut candidates: std::collections::BTreeMap<String, Vec<(String, Vec<u8>)>> =
-            std::collections::BTreeMap::new();
-        for change in snapshot {
-            if change.table == "node" && !change.data.is_empty() && keys.contains(&change.record_id) {
-                candidates
-                    .entry(change.record_id)
-                    .or_default()
-                    .push((change.author_id, change.data));
-            }
-        }
-        tracing::info!(verse_id, demoted = dids.len(), rows = keys.len(), "Re-judging scene rows of demoted authors");
-        for record_id in keys {
-            let candidates = candidates.remove(&record_id).unwrap_or_default();
-            if let Err(error) = tx.try_send(DbCommand::RejudgeReplicatedNode {
-                verse_id: verse_id.clone(),
-                record_id,
-                candidates,
-            }) {
-                tracing::warn!(verse_id, "re-judge command not queued: {error}");
+                tracing::warn!(verse_id, "re-judge of demoted authors kept queued for retry: {error}");
+                retry = true;
             }
         }
     }
+    retry
 }
 
-/// RP-5 §2.5 "re-read on empowerment": drain every open verse's
-/// `reread_queue` and replay each queued DID's `role`/`__shards`/
-/// `__holders`/`verse`/`petal` entries straight from the local replica through the
-/// SAME inbound apply path a live row takes. This is how a statement the
-/// fabric held back (its grantor lacked authority) — and which the fabric
-/// itself never stores — is recovered once that grantor is empowered: the
-/// replica already holds it durably, so re-fetching it is enough. The read
-/// is awaited directly here, never through a channel only this loop drains
-/// (the §inbound-apply self-drain rule).
+/// RP-5 §2.5 "re-read on empowerment": for every open verse's queued DIDs,
+/// replay their `role`/`__shards`/`__holders`/`verse`/`petal` entries straight
+/// from the local replica through the SAME inbound apply path a live row takes.
+/// This is how a statement the fabric held back (its grantor lacked authority)
+/// — and which the fabric itself never stores — is recovered once that grantor
+/// is empowered. The read is awaited directly here, never through a channel
+/// only this loop drains (the §inbound-apply self-drain rule).
+///
+/// QA-0131: scene (`node/`) rows are NEVER replayed through the current role —
+/// a row written while its author was revoked would be admitted by the
+/// re-grant. They go to the DB thread as a restore-only re-judge, which admits
+/// a version only if its author held Editor when it was written. QA-0132: a
+/// DID is acknowledged only after both steps were accepted. Returns true when
+/// kept work needs a timed retry.
 async fn drain_reread_queues(
     fabrics: &mut HashMap<String, VerseFabric>,
     replicas: &HashMap<String, Box<dyn VerseReplicator>>,
@@ -1807,22 +1905,24 @@ async fn drain_reread_queues(
     evt_tx: &dyn EventSink,
     db_cmd_tx: &Option<crossbeam::channel::Sender<DbCommand>>,
     docs_stack: &Option<Arc<DocsStack>>,
-) {
+) -> bool {
+    // A restore is judged against the grants the DB plane holds: send kept ones first.
+    if !resend_unsent_role_rows(fabrics, db_cmd_tx) {
+        return true;
+    }
+    let mut retry = false;
     for (verse_id, fabric) in fabrics.iter_mut() {
-        let dids = fabric.drain_reread_queue();
+        let dids = fabric.pending_rereads();
         if dids.is_empty() {
             continue;
         }
         let Some(replicator) = replicas.get(verse_id) else {
             continue;
         };
+        let mut done = Vec::with_capacity(dids.len());
         for did in dids {
-            // `node/`: scene rows re-judged away while the DID was demoted (QA-0121).
             match replicator
-                .entries_by_author(
-                    &did,
-                    &["role/", "__shards/", "__holders/", "verse/", "petal/", "node/"],
-                )
+                .entries_by_author(&did, &["role/", "__shards/", "__holders/", "verse/", "petal/"])
                 .await
             {
                 Ok(entries) => {
@@ -1831,14 +1931,30 @@ async fn drain_reread_queues(
                             fabric, verse_id, &change, local_did, evt_tx, db_cmd_tx,
                         );
                     }
+                    done.push(did);
                 }
                 Err(e) => {
-                    tracing::warn!(verse_id, did, "role re-read on empowerment failed: {e}");
+                    tracing::warn!(verse_id, did, "role re-read on empowerment failed; kept for retry: {e}");
+                    retry = true;
                 }
             }
         }
+        if !fabric.unsent_role_rows_mut().is_empty() {
+            // A replayed grant the full channel refused: restore only once it is sent.
+            retry = true;
+            done.clear();
+        }
+        if let (Some(tx), false) = (db_cmd_tx.as_ref(), done.is_empty()) {
+            if let Err(error) = send_rejudge_batch(replicator.as_ref(), tx, verse_id, &done, true).await {
+                tracing::warn!(verse_id, "scene restore after empowerment kept queued for retry: {error}");
+                retry = true;
+                done.clear();
+            }
+        }
+        fabric.ack_rereads(&done);
         sync_blob_access_gate(docs_stack, verse_id, fabric);
     }
+    retry
 }
 
 /// Mirror this verse's current role view into the blob-ALPN request
@@ -1859,19 +1975,30 @@ fn sync_blob_access_gate(
 
 /// QA-0118: the blob a peer's replicated scene-asset metadata row references,
 /// so its bytes are fetched when the row arrives rather than at petal entry.
+/// QA-0133: only for an author this node's role view holds at Editor+ at the
+/// row's petal (the verse when the petal is not mapped yet) — a row the DB
+/// plane would refuse never drives a fetch.
 fn scene_asset_prefetch_hash(
+    fabric: &VerseFabric,
+    verse_id: &str,
     change: &RowChange,
-    local_did: &str,
 ) -> Option<fe_runtime::blob_store::BlobHash> {
-    if change.table != "asset"
-        || change.is_tombstone
-        || change.data.is_empty()
-        || change.author_id == local_did
-    {
+    if change.table != "asset" || change.is_tombstone || change.data.is_empty() {
         return None;
     }
     let row: serde_json::Value = serde_json::from_slice(&change.data).ok()?;
     row.get(fe_runtime::scene_asset::SCENE_ASSET_ROW_MARKER)?;
+    let scope = row
+        .get("petal_id")
+        .and_then(serde_json::Value::as_str)
+        .and_then(|petal| fabric.petal_scope(verse_id, petal))
+        .unwrap_or_else(|| fe_policy::build_scope(verse_id, None, None));
+    if !fabric
+        .role_at(&change.author_id, &scope)
+        .is_at_least(fe_policy::RoleLevel::Editor)
+    {
+        return None;
+    }
     fe_runtime::blob_store::hash_from_hex(row.get("content_hash")?.as_str()?).ok()
 }
 
@@ -1932,18 +2059,19 @@ async fn seed_reconciliation(
     }
     let total = entries.len();
     let mut forwarded = 0usize;
-    let mut scene_asset_hashes = Vec::new();
+    let mut forwarded_assets = Vec::new();
     for change in entries {
-        if let Some(hash) = scene_asset_prefetch_hash(&change, local_did) {
-            scene_asset_hashes.push(hash);
-        }
         // The literal same inbound apply path the live pump's rows take:
         // own-author rows filtered here (loop prevention — the docs author
         // is the endpoint identity, so our own snapshot entries carry our
         // DID), survivors emitted + `try_send`'d to the DB thread. The
         // fabric is fed for every row (settings/peers/ledger re-learn) and
         // the retention filter drops unhosted timeseries rows.
-        handle_inbound_row_change(fabric, verse_id, &change, local_did, evt_tx, db_cmd_tx);
+        let verdict =
+            handle_inbound_row_change(fabric, verse_id, &change, local_did, evt_tx, db_cmd_tx);
+        if verdict == InboundVerdict::Forwarded && change.table == "asset" {
+            forwarded_assets.push(change);
+        }
         forwarded += 1;
     }
     tracing::info!(
@@ -1952,7 +2080,12 @@ async fn seed_reconciliation(
         forwarded,
         "Reconciliation: replayed replica entries through the inbound apply path"
     );
-    scene_asset_hashes
+    // QA-0133: judged against the role view the WHOLE snapshot converged to,
+    // so an asset row replayed before its author's grant is not skipped.
+    forwarded_assets
+        .iter()
+        .filter_map(|change| scene_asset_prefetch_hash(fabric, verse_id, change))
+        .collect()
 }
 
 /// R1: replay THIS node's own `verse/` and `petal/` entries by author after
@@ -5507,29 +5640,6 @@ mod tests {
             } if verse_id == "verse-1" && table == "node" && record_id == "node-42"
                 && row_bytes == &payload && author_did == "did:key:peer-a"
         ));
-
-        // QA-0118: a peer's scene-asset metadata row names the blob to fetch on
-        // arrival; own rows, plain asset rows and tombstones name none.
-        let blob = [7u8; 32];
-        let asset_row = |marked: bool, author: &str, tombstone: bool| RowChange {
-            table: "asset".to_string(),
-            record_id: "asset-1".to_string(),
-            content_hash: [2u8; 32],
-            author_id: author.to_string(),
-            timestamp: 1235,
-            is_tombstone: tombstone,
-            data: serde_json::to_vec(&if marked {
-                serde_json::json!({"asset_id": "asset-1", "content_hash": fe_runtime::blob_store::hash_to_hex(&blob),
-                    fe_runtime::scene_asset::SCENE_ASSET_ROW_MARKER: 1})
-            } else {
-                serde_json::json!({"asset_id": "asset-1", "content_hash": fe_runtime::blob_store::hash_to_hex(&blob)})
-            })
-            .unwrap(),
-        };
-        assert_eq!(scene_asset_prefetch_hash(&asset_row(true, "did:key:peer-a", false), "did:key:local"), Some(blob));
-        assert_eq!(scene_asset_prefetch_hash(&asset_row(true, "did:key:local", false), "did:key:local"), None);
-        assert_eq!(scene_asset_prefetch_hash(&asset_row(false, "did:key:peer-a", false), "did:key:local"), None);
-        assert_eq!(scene_asset_prefetch_hash(&asset_row(true, "did:key:peer-a", true), "did:key:local"), None);
     }
 
     /// R1 owner integrity across a restart: the replica replays a forged
@@ -6471,6 +6581,117 @@ mod tests {
             fe_policy::RoleLevel::Editor,
             "the re-read must recover M's held statement from the replica once M is empowered"
         );
+
+        // QA-0133: a scene-asset row drives a prefetch only when it was forwarded
+        // and its author holds Editor here; a refused author's row never does.
+        let blob = [7u8; 32];
+        let asset_row = |author: &str, marked: bool| {
+            let mut row = serde_json::json!({
+                "asset_id": "asset-1", "petal_id": "p-unmapped",
+                "content_hash": fe_runtime::blob_store::hash_to_hex(&blob),
+            });
+            if marked {
+                row[fe_runtime::scene_asset::SCENE_ASSET_ROW_MARKER] = serde_json::json!(1);
+            }
+            RowChange {
+                table: "asset".into(),
+                record_id: "asset-1".into(),
+                content_hash: [2u8; 32],
+                author_id: author.into(),
+                timestamp: 0,
+                is_tombstone: false,
+                data: serde_json::to_vec(&row).unwrap(),
+            }
+        };
+        assert_eq!(scene_asset_prefetch_hash(fabric, verse_id, &asset_row(x, true)), Some(blob));
+        assert_eq!(scene_asset_prefetch_hash(fabric, verse_id, &asset_row(x, false)), None);
+        assert_eq!(
+            scene_asset_prefetch_hash(fabric, verse_id, &asset_row("did:key:stranger", true)),
+            None,
+            "a row the role view refuses never fetches"
+        );
+        assert_eq!(
+            handle_inbound_row_change(
+                fabrics.get_mut(verse_id).unwrap(),
+                verse_id,
+                &asset_row("did:key:local", true),
+                "did:key:local",
+                &evt_tx,
+                &None,
+            ),
+            InboundVerdict::NotForwarded,
+            "an own echo is never forwarded, so never prefetched"
+        );
+
+        // QA-0132: M's revoke of X arrives while the DB channel is full and this
+        // node's replica of the verse is closed. The revoke row is kept and resent
+        // FIRST, the demotion waits for the reopen (no timer spin), a full channel
+        // keeps it for the retry, and only an accepted batch acknowledges it.
+        let role_row = |revoked: bool, hlc: u64| RowChange {
+            table: "role".into(),
+            record_id: format!("{verse_scope}/{x}/{m}"),
+            content_hash: [0; 32],
+            author_id: m.into(),
+            timestamp: 0,
+            is_tombstone: false,
+            data: serde_json::to_vec(&serde_json::json!({
+                "scope": verse_scope, "peer_did": x, "grantor_did": m,
+                "role": "editor", "revoked": revoked, "hlc": hlc,
+            }))
+            .unwrap(),
+        };
+        let x_replica = MockVerseReplicator::new(x);
+        x_replica
+            .write_row("node", "n1", br#"{"node_id":"n1"}"#)
+            .await
+            .unwrap();
+        replicas.remove(verse_id);
+        let (db_tx, db_rx) = crossbeam::channel::bounded(1);
+        let db = Some(db_tx);
+        db.as_ref().unwrap().try_send(DbCommand::LoadHierarchy).unwrap();
+        handle_inbound_row_change(
+            fabrics.get_mut(verse_id).unwrap(),
+            verse_id,
+            &role_row(true, 3),
+            "did:key:local",
+            &evt_tx,
+            &db,
+        );
+        assert_eq!(fabrics[verse_id].pending_rejudges(), vec![x.to_string()]);
+        assert!(drain_rejudge_queues(&mut fabrics, &replicas, &db).await, "kept revoke: retry");
+        db_rx.try_recv().unwrap();
+        assert!(!drain_rejudge_queues(&mut fabrics, &replicas, &db).await, "closed: wait for reopen");
+        assert!(matches!(
+            db_rx.try_recv().unwrap(),
+            DbCommand::ApplyReplicatedRow { ref table, .. } if table == "role"
+        ));
+        assert_eq!(fabrics[verse_id].pending_rejudges(), vec![x.to_string()]);
+        replicas.insert(verse_id.to_string(), Box::new(x_replica));
+        db.as_ref().unwrap().try_send(DbCommand::LoadHierarchy).unwrap();
+        assert!(drain_rejudge_queues(&mut fabrics, &replicas, &db).await, "full channel: retry");
+        assert_eq!(fabrics[verse_id].pending_rejudges(), vec![x.to_string()]);
+        db_rx.try_recv().unwrap();
+        assert!(!drain_rejudge_queues(&mut fabrics, &replicas, &db).await);
+        assert!(fabrics[verse_id].pending_rejudges().is_empty());
+        assert!(matches!(
+            db_rx.try_recv().unwrap(),
+            DbCommand::RejudgeReplicatedNodes { ref nodes, restore_only: false, .. }
+                if nodes.len() == 1 && nodes[0].0 == "n1" && nodes[0].1[0].0 == x
+        ));
+
+        // QA-0131: revoke, write, re-grant — the re-read never replays X's scene
+        // rows through the new role; it asks the DB for a restore-only re-judge,
+        // which admits only versions X wrote while holding Editor.
+        fabrics.get_mut(verse_id).unwrap().note_entry(verse_id, &role_row(false, 5));
+        assert!(fabrics[verse_id].pending_rereads().contains(&x.to_string()));
+        assert!(!drain_reread_queues(&mut fabrics, &replicas, "did:key:local", &evt_tx, &db, &None).await);
+        let sent: Vec<DbCommand> = db_rx.try_iter().collect();
+        assert!(
+            !sent.iter().any(|cmd| matches!(cmd, DbCommand::ApplyReplicatedRow { table, .. } if table == "node")),
+            "scene rows are never replayed through the current role"
+        );
+        assert!(sent.iter().any(|cmd| matches!(cmd, DbCommand::RejudgeReplicatedNodes { restore_only: true, .. })));
+        assert!(fabrics[verse_id].pending_rereads().is_empty());
     }
 
     /// T12: a flood of strangers' `__shards` rows can evict a legitimately

@@ -19,7 +19,7 @@ pub use policies::{
     TokenScopePolicy,
 };
 pub use role_grants::{
-    latest_per_grantor, materialize, validate_statement, CacheRow, ChangedDids, EffectiveRoles,
+    latest_per_grantor, materialize, materialize_at, validate_statement, CacheRow, ChangedDids, EffectiveRoles,
     GrantedRole, RejectReason, RoleStatement, RoleStatementPayload, StatementKey,
 };
 pub use role_level::RoleLevel;

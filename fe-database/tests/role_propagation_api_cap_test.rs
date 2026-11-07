@@ -251,6 +251,8 @@ fn statement(
         role: role.to_string(),
         revoked,
         hlc,
+        editor_since: None,
+        manager_since: None,
     };
     (
         format!("{scope}/{peer}/{owner}"),

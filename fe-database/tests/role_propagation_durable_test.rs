@@ -215,10 +215,10 @@ fn runtime() -> tokio::runtime::Runtime {
         .expect("test runtime")
 }
 
-/// T8 through the real CreatePetal path: an Editor creating a petal gets no `owner` row there
-/// and resolves to the Editor role they inherit, never Owner.
+/// T8 through the real CreatePetal path: a non-owner creating a petal (petal creation needs
+/// Manager) gets no `owner` row there; demoted to Editor it resolves to Editor, never Owner.
 #[test]
-fn an_editor_creating_a_petal_gets_no_implicit_owner_row() {
+fn a_non_owner_creating_a_petal_gets_no_implicit_owner_row() {
     let _serial = serial();
     let dir = tempfile::tempdir().expect("tempdir");
     let harness = Harness::open(dir.path(), 64);
@@ -238,9 +238,9 @@ fn an_editor_creating_a_petal_gets_no_implicit_owner_row() {
         .check()
         .expect("seed check");
         // The materialized cache entry an inbound owner grant would produce for this node.
-        fe_database::rbac::assign_role(&db, &local_did(), &verse_scope, "editor")
+        fe_database::rbac::assign_role(&db, &local_did(), &verse_scope, "manager")
             .await
-            .expect("editor cache row");
+            .expect("manager cache row");
     });
 
     let DbResult::PetalCreated { id: petal, .. } = harness.ask(
@@ -262,6 +262,8 @@ fn an_editor_creating_a_petal_gets_no_implicit_owner_row() {
             .expect("rows")
     });
     assert!(owner_rows.is_empty(), "{owner_rows:?}");
+    rt.block_on(fe_database::rbac::assign_role(&db, &local_did(), &verse_scope, "editor"))
+        .expect("demoted to editor");
     let DbResult::LocalRoleResolved { role, .. } = harness
         .ask(DbCommand::ResolveLocalRole { scope: petal_scope.clone() }, |r| {
             matches!(r, DbResult::LocalRoleResolved { .. })
@@ -289,7 +291,7 @@ fn an_editor_creating_a_petal_gets_no_implicit_owner_row() {
     let assigned=access("access-assign",Access::Assign {peer_did:PEER.into(),role:"editor".into()}).expect("checked assignment");
     assert!(assigned.roles.iter().any(|(did,role)|did==PEER&&role=="editor"));
     let revoked=access("access-revoke",Access::Revoke {peer_did:PEER.into()}).expect("checked revoke");
-    assert!(revoked.roles.iter().any(|(did,role)|did==PEER&&role=="none"),"Owner revoke pins the cell; do not fabricate inherited role");
+    assert!(revoked.roles.iter().any(|(did,role)|did==PEER&&role=="viewer"),"an owner revoke blocks the cell: the peer keeps only the verse default, never the revoked grant");
     let minted=access("access-token-mint",Access::MintToken {max_role:"viewer".into(),ttl_hours:1,client_did:None}).expect("scoped mint");
     assert!(minted.minted.is_some());assert!(!format!("{minted:?}").contains(&minted.minted.as_ref().unwrap().token),"Debug never reveals token");
     let token=minted.tokens.first().expect("readback token");

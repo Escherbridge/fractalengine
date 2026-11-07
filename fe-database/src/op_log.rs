@@ -116,6 +116,15 @@ pub(crate) fn admit_scene_hlc(packed: u64) -> anyhow::Result<AdmittedSceneHlc> {
     Ok(AdmittedSceneHlc(packed))
 }
 
+/// Observe a validated replicated role statement's grantor clock (QA-0131), so
+/// this node's next write orders after the grant that empowered it; a clock
+/// outside the scene bound is ignored.
+pub(crate) fn observe_role_statement_hlc(packed: u64) {
+    if let Ok(clock) = admit_scene_hlc(packed) {
+        observe_scene_hlc(clock);
+    }
+}
+
 /// Observe only after the corresponding scene row and clock commit atomically.
 pub(crate) fn observe_scene_hlc(clock: AdmittedSceneHlc) {
     let mut guard = HLC_STATE.lock().unwrap_or_else(|error| error.into_inner());
@@ -5839,7 +5848,7 @@ mod tests {
                 ("did:rb".to_string(), serde_json::to_vec(&revoked).unwrap()),
             ];
             assert_eq!(
-                scene::rejudge(&source, "scene-v", &judged, &candidates, "did:qa", None)
+                scene::rejudge(&source, "scene-v", &judged, &candidates, "did:qa", None, false)
                     .await
                     .unwrap(),
                 scene::Rejudged::Restored(ReplicatedRowOutcome::Applied)
@@ -5850,7 +5859,7 @@ mod tests {
                 "the demoted author's newer version is gone: {restored}"
             );
             assert_eq!(
-                scene::rejudge(&source, "scene-v", &judged, &candidates, "did:qa", None)
+                scene::rejudge(&source, "scene-v", &judged, &candidates, "did:qa", None, false)
                     .await
                     .unwrap(),
                 scene::Rejudged::Unchanged,
@@ -5858,12 +5867,68 @@ mod tests {
             );
             let only_revoked = vec![("did:rb".to_string(), serde_json::to_vec(&orphan).unwrap())];
             assert!(matches!(
-                scene::rejudge(&source, "scene-v", "judged-orphan", &only_revoked, "did:qa", None)
+                scene::rejudge(&source, "scene-v", "judged-orphan", &only_revoked, "did:qa", None, false)
                     .await
                     .unwrap(),
                 scene::Rejudged::Removed { ref petal_id } if petal_id == "scene-p"
             ));
             assert!(node_history::snapshot(&source, "judged-orphan").await.unwrap().is_none());
+
+            // QA-0131: judged by the role held WHEN WRITTEN. did:rc is granted,
+            // revoked, writes while revoked, then re-granted: that row stays
+            // refused on receipt, on the retry after the re-grant and in a
+            // restore-only re-judge, while a row written after the re-grant lands.
+            let cycling = probe_db().await;
+            crate::schema::apply_all(&cycling).await.unwrap();
+            cycling.query("CREATE verse CONTENT {verse_id:'scene-v',name:'v',created_by:'did:qa',created_at:'2026-11-02'}; CREATE fractal CONTENT {fractal_id:'scene-f',verse_id:'scene-v',owner_did:'did:qa',name:'f',created_at:'2026-11-02'}; CREATE petal CONTENT {petal_id:'scene-p',fractal_id:'scene-f',name:'p',node_id:'p',created_at:'2026-11-02'}")
+                .await.unwrap().check().unwrap();
+            let statement = |revoked: bool, hlc: u64| fe_policy::RoleStatement {
+                scope: scope.to_string(),
+                peer_did: "did:rc".into(),
+                grantor_did: "did:qa".into(),
+                role: fe_policy::GrantedRole::Editor,
+                revoked,
+                hlc,
+                editor_since: None,
+                manager_since: None,
+            };
+            let row_at = |id: &str, hlc: u64| {
+                let mut row = revoked.clone();
+                row["node_id"] = json!(id);
+                row["_fe_scene"]["publisher"] = json!("did:rc");
+                row["_fe_scene"]["hlc"] = json!(hlc.to_string());
+                serde_json::to_vec(&row).unwrap()
+            };
+            let mut cycled_admissions =
+                crate::handlers::inbound_admissions::InboundAdmissions::for_local_publisher("did:qa");
+            for (revoke, hlc) in [(false, owner_hlc + 10), (true, owner_hlc + 20)] {
+                crate::role_grants::submit_statement(&cycling, "scene-v", &statement(revoke, hlc)).await.unwrap();
+            }
+            let while_revoked = row_at("cycled", owner_hlc + 25);
+            let reports = cycled_admissions
+                .apply(&cycling, "scene-v", "node", "cycled", &while_revoked, "did:rc", None)
+                .await;
+            assert!(matches!(reports[0].outcome, ReplicatedRowOutcome::Deferred(_)), "{reports:?}");
+            crate::role_grants::submit_statement(&cycling, "scene-v", &statement(false, owner_hlc + 30)).await.unwrap();
+            let reports = cycled_admissions
+                .apply(&cycling, "scene-v", "node", "cycled", &while_revoked, "did:rc", None)
+                .await;
+            assert!(
+                reports.iter().all(|report| report.outcome == ReplicatedRowOutcome::Denied),
+                "a row stamped while revoked stays refused after the re-grant: {reports:?}"
+            );
+            let candidates = vec![("did:rc".to_string(), while_revoked)];
+            assert_eq!(
+                scene::rejudge(&cycling, "scene-v", "cycled", &candidates, "did:qa", None, true).await.unwrap(),
+                scene::Rejudged::Unchanged
+            );
+            assert!(node_history::snapshot(&cycling, "cycled").await.unwrap().is_none());
+            let after_regrant = row_at("after-regrant", owner_hlc + 35);
+            let candidates = vec![("did:rc".to_string(), after_regrant)];
+            assert!(matches!(
+                scene::rejudge(&cycling, "scene-v", "after-regrant", &candidates, "did:qa", None, true).await.unwrap(),
+                scene::Rejudged::Restored(ReplicatedRowOutcome::Applied)
+            ), "a version written after the re-grant is restored when absent");
             crate::handlers::entity_property::set_entity_property_as(
                 &source,
                 &tie_id,

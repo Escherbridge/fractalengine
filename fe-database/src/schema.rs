@@ -147,6 +147,9 @@ define_table! {
         revoked:       bool   => "TYPE bool",
         /// Grantor HLC as a decimal u64 string (the wire range exceeds SurrealDB's i64).
         hlc:           String => "TYPE string",
+        /// QA-0131 continuity HLCs (decimal strings); absent = `hlc`.
+        editor_since:  Option<String> => "TYPE option<string>",
+        manager_since: Option<String> => "TYPE option<string>",
         updated_at:    String => "TYPE string"
     }
 }
@@ -162,6 +165,8 @@ define_table! {
         role:          String => "TYPE string ASSERT $value IN ['manager', 'editor', 'viewer', 'none']",
         revoked:       bool   => "TYPE bool",
         hlc:           String => "TYPE string",
+        editor_since:  Option<String> => "TYPE option<string>",
+        manager_since: Option<String> => "TYPE option<string>",
         updated_at:    String => "TYPE string",
         received_at:   String => "TYPE string"
     }

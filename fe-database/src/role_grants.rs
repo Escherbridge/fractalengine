@@ -58,6 +58,8 @@ pub fn statement_payload_bytes(stmt: &RoleStatement) -> Vec<u8> {
         role: stmt.role.as_str().to_string(),
         revoked: stmt.revoked,
         hlc: stmt.hlc,
+        editor_since: stmt.editor_since,
+        manager_since: stmt.manager_since,
     };
     serde_json::to_vec(&payload).unwrap_or_default()
 }
@@ -134,7 +136,17 @@ fn statement_from_row(row: &serde_json::Value) -> Option<RoleStatement> {
         role: GrantedRole::parse(text("role")?)?,
         revoked: row.get("revoked").and_then(serde_json::Value::as_bool)?,
         hlc: text("hlc")?.parse().ok()?,
+        editor_since: since(row, "editor_since")?,
+        manager_since: since(row, "manager_since")?,
     })
+}
+
+/// An optional decimal-string continuity column: `Some(None)` when absent, `None` when malformed.
+fn since(row: &serde_json::Value, field: &str) -> Option<Option<u64>> {
+    match row.get(field) {
+        None | Some(serde_json::Value::Null) => Some(None),
+        Some(value) => value.as_str()?.parse().ok().map(Some),
+    }
 }
 
 fn statements_from_rows(table: &str, rows: Vec<serde_json::Value>) -> Vec<RoleStatement> {
@@ -268,6 +280,11 @@ fn statement_row(verse_id: &str, stmt: &RoleStatement, held: bool) -> serde_json
         "hlc": stmt.hlc.to_string(),
         "updated_at": now,
     });
+    for (field, since) in [("editor_since", stmt.editor_since), ("manager_since", stmt.manager_since)] {
+        if let Some(since) = since {
+            row[field] = serde_json::Value::String(since.to_string());
+        }
+    }
     if held {
         row["received_at"] = serde_json::Value::String(now);
     }
@@ -324,6 +341,35 @@ pub async fn load_effective_roles(
     };
     let admitted = load_admitted(db, verse_id).await?;
     Ok(Some(materialize(&owner, admitted.iter())))
+}
+
+/// QA-0131: false iff `author`'s Editor+ at `scope` comes from admitted statements
+/// that did not yet grant it at write clock `hlc` — a row written while unauthorized
+/// stays refused after a re-grant. Authority not derived from statements is left to
+/// the current-role gate; src/AGENTS.md §write-time-role.
+pub async fn written_while_authorized(
+    db: &Db,
+    verse_id: &str,
+    author: &str,
+    scope: &str,
+    hlc: u64,
+) -> anyhow::Result<bool> {
+    let Some(owner) = verse_owner(db, verse_id).await? else {
+        return Ok(true);
+    };
+    if owner == author {
+        return Ok(true);
+    }
+    let admitted = load_admitted(db, verse_id).await?;
+    if !materialize(&owner, admitted.iter())
+        .role_at(author, scope)
+        .is_at_least(RoleLevel::Editor)
+    {
+        return Ok(true);
+    }
+    Ok(fe_policy::materialize_at(&owner, admitted.iter(), hlc)
+        .role_at(author, scope)
+        .is_at_least(RoleLevel::Editor))
 }
 
 /// Place one VALIDATED statement (`fe_policy::validate_statement` already passed) under
@@ -424,7 +470,7 @@ pub(crate) async fn commit_local_statement(
     peer: &str, scope: &str, role: GrantedRole, revoked: bool,
     authority: crate::handlers::entity::ParentMutation, owner: &str,
 ) -> anyhow::Result<RoleStatement> {
-    let mut candidate = RoleStatement { scope: scope.into(), peer_did: peer.into(), grantor_did: caller.into(), role, revoked, hlc: 0 };
+    let mut candidate = RoleStatement { scope: scope.into(), peer_did: peer.into(), grantor_did: caller.into(), role, revoked, hlc: 0, editor_since: None, manager_since: None };
     let key = statement_record_id(&candidate);
     let grant_select = "SELECT statement_key,verse_id,scope,peer_did,grantor_did,role,revoked,hlc,updated_at FROM role_grant WHERE statement_key=$local_role_key";
     let pending_select = "SELECT statement_key,verse_id,scope,peer_did,grantor_did,role,revoked,hlc,updated_at,received_at FROM role_statement_pending WHERE statement_key=$local_role_key";
@@ -453,6 +499,8 @@ pub(crate) async fn commit_local_statement(
     let mut committed = None;
     crate::op_log::commit_operation_atomic_with(db,entry,|clock| {
         candidate.hlc=clock;
+        // QA-0131: a change that stays at Editor+/Manager keeps the key's continuity.
+        candidate=candidate.clone().continuing(prior.as_ref());
         let allowed=prior.as_ref().is_none_or(|prior| latest_per_grantor([prior,&candidate]).first()==Some(&candidate));
         bindings.push(("local_role_allowed".into(),serde_json::json!(allowed)));
         bindings.push(("local_role_row".into(),statement_row(&verse_id,&candidate,false)));
@@ -893,10 +941,16 @@ mod tests {
             role: GrantedRole::Editor,
             revoked: false,
             hlc: u64::MAX,
+            editor_since: Some(u64::MAX - 1),
+            manager_since: None,
         };
         let payload: RoleStatementPayload =
             serde_json::from_slice(&statement_payload_bytes(&stmt)).expect("payload");
         assert_eq!(payload.hlc, u64::MAX, "the full u64 HLC range survives");
+        assert_eq!(payload.editor_since, Some(u64::MAX - 1), "continuity rides the wire");
+        let stored = statement_row("v1", &stmt, false);
+        assert_eq!(stored.get("manager_since"), None, "absent continuity stays absent");
+        assert_eq!(statement_from_row(&stored), Some(stmt.clone()), "and survives storage");
         assert_eq!(payload.role, "editor");
         assert_eq!(
             statement_record_id(&stmt),

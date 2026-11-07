@@ -20,12 +20,15 @@ pub(crate) enum Rejudged {
     Removed { petal_id: String },
 }
 
-/// QA-0121 re-judge: when the current version's publisher no longer holds
-/// Editor at the node's scope, replace it by the newest complete snapshot among
-/// `candidates` (every author's replica entry for this key) whose author still
-/// does — or remove the node locally when none does. A pure function of the
-/// replicated entries and role rows, so peers that admitted the row before the
-/// revoke arrived converge with peers that refused it.
+/// QA-0121/QA-0131 re-judge: a version is admissible when its publisher holds
+/// Editor at its scope now AND held it when the version was written. An
+/// admissible current version is kept; otherwise the newest admissible
+/// snapshot among `candidates` (every author's replica entry for this key)
+/// replaces it — or is restored when the node is absent locally — and a node
+/// with no admissible version is removed. A pure function of the replicated
+/// entries and role rows, so every peer converges whatever order it saw them in.
+/// `restore_only` (a role ROSE, which never makes a kept version inadmissible)
+/// skips every node that is present locally.
 pub(crate) async fn rejudge(
     db: &Db,
     verse: &str,
@@ -33,20 +36,27 @@ pub(crate) async fn rejudge(
     candidates: &[(String, Vec<u8>)],
     local_publisher: &str,
     changes: Option<&super::super::replicated_row::SceneChangeSender>,
+    restore_only: bool,
 ) -> anyhow::Result<Rejudged> {
-    let Some(current) = clock_of(&read_clock(db, id).await?)? else {
+    let current = clock_of(&read_clock(db, id).await?)?;
+    if restore_only && current.is_some() {
         return Ok(Rejudged::Unchanged);
+    }
+    let editor = |did: String, scope: String, hlc: u64| async move {
+        Ok::<_, anyhow::Error>(
+            crate::role_manager::resolve_role(db, &did, &scope)
+                .await?
+                .is_at_least(fe_policy::RoleLevel::Editor)
+                && crate::role_grants::written_while_authorized(db, verse, &did, &scope, hlc).await?,
+        )
     };
-    let Some(scope) = super::super::crud::resolve_node_scope_handler(db, id).await? else {
-        return Ok(Rejudged::Unchanged);
-    };
-    let editor = |did: String, scope: String| async move {
-        crate::role_manager::resolve_role(db, &did, &scope)
-            .await
-            .map(|role| role.is_at_least(fe_policy::RoleLevel::Editor))
-    };
-    if editor(current.publisher.clone(), scope.clone()).await? {
-        return Ok(Rejudged::Unchanged);
+    if let Some(current) = &current {
+        let Some(scope) = super::super::crud::resolve_node_scope_handler(db, id).await? else {
+            return Ok(Rejudged::Unchanged);
+        };
+        if editor(current.publisher.clone(), scope, current.hlc).await? {
+            return Ok(Rejudged::Unchanged);
+        }
     }
     let mut best: Option<(SceneClock, &str, &[u8])> = None;
     for (author, bytes) in candidates {
@@ -63,15 +73,19 @@ pub(crate) async fn rejudge(
         let Some(row_scope) = super::super::crud::resolve_petal_scope_handler(db, petal).await? else {
             continue;
         };
-        if editor(author.clone(), row_scope).await? {
+        if editor(author.clone(), row_scope, version.hlc).await? {
             best = Some((version, author.as_str(), bytes.as_slice()));
         }
     }
     if let Some((_, author, bytes)) = best {
-        let outcome = apply_complete(db, verse, id, bytes, author, Some(local_publisher), changes, true)
+        let replacing = current.is_some();
+        let outcome = apply_complete(db, verse, id, bytes, author, Some(local_publisher), changes, replacing)
             .await?
             .unwrap_or(ReplicatedRowOutcome::NotApplicable);
         return Ok(Rejudged::Restored(outcome));
+    }
+    if current.is_none() {
+        return Ok(Rejudged::Unchanged);
     }
     let mut response = db
         .query("SELECT VALUE petal_id FROM node WHERE node_id=$scene_id LIMIT 1; DELETE node WHERE node_id=$scene_id; DELETE node_scene_clock WHERE node_id=$scene_id;")
@@ -177,6 +191,10 @@ pub(crate) async fn apply_complete(
             return Err(error);
         }
     };
+    if !crate::role_grants::written_while_authorized(db, verse, author, &scope, version.hlc).await? {
+        tracing::warn!(node_id = id, author, hlc = version.hlc, "scene row stamped before its author held Editor here; denied (QA-0131)");
+        return Ok(Some(ReplicatedRowOutcome::Denied));
+    }
     let (mut guards, mut bindings) = authority.into_parts();
     let mut response = db
         .query("SELECT * OMIT id FROM node WHERE node_id=$scene_id LIMIT 2 TIMEOUT 5s")
@@ -194,7 +212,8 @@ pub(crate) async fn apply_complete(
     let local_deleted = before
         .first()
         .is_some_and(|row| row.get("tombstone").is_some_and(|value| !value.is_null()));
-    if local_deleted && !incoming_deleted {
+    // A re-judge replaces an inadmissible tombstone too: peers that refused it hold the live row.
+    if local_deleted && !incoming_deleted && !rejudge {
         return Ok(Some(ReplicatedRowOutcome::SkippedTombstoned));
     }
     let clocks = read_clock(db, id).await?;

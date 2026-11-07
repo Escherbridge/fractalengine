@@ -2220,6 +2220,14 @@ branch) and, for rows already in the replica, right after the open
 retries after 1, 2, 4, 8, 16 s without holding an IO slot while it waits, one log line per
 attempt. Held bytes are skipped. A petal no longer has to be opened for its bytes to arrive.
 
+QA-0133 (critic, 2026-11-07): only an ADMITTED row prefetches. `handle_inbound_row_change`
+returns an `InboundVerdict`; the inbound branch and `seed_reconciliation` prefetch only a
+`Forwarded` row whose author this node's role view holds at Editor+ at the row's petal (the
+verse scope while the petal is unmapped), judged in `seed_reconciliation` after the whole
+snapshot replayed. At most `PREFETCH_CAP` (8) prefetches run at once, so unowned work never
+takes the `MAX_JOBS` owned-fetch budget; the rest wait in a bounded backlog (256) that
+`pump_prefetches` drains from the loop's kept-work tick, and a verse close drops its share.
+
 ## §publication-lease (QA-0120, 2026-11-07)
 
 A write for a verse whose replica is closed (a revoke made from the verse list) used to wait
@@ -2231,8 +2239,22 @@ A host open during a lease takes ownership. `PublicationLeases` is the pure stat
 
 ## §rejudge-on-demotion (QA-0121, 2026-11-07)
 
-`VerseFabric` queues every DID whose role fell (`drain_rejudge_queue`). The loop reads that
-DID's `node/` keys, then every author's entry for those keys from the snapshot, and sends
-`DbCommand::RejudgeReplicatedNode` per key (fe-database `src/AGENTS.md`
-§p2p-fixes-swarm-run1). The empowerment re-read now includes `node/`, so a re-granted
-author's rows come back.
+`VerseFabric` queues every DID whose role fell. The loop reads that DID's `node/` keys,
+then every author's entry for those keys from the snapshot, and sends ONE
+`DbCommand::RejudgeReplicatedNodes` batch per verse (`send_rejudge_batch`; fe-database
+`src/AGENTS.md` §write-time-role).
+
+Critic fixes, 2026-11-07:
+
+- **No lost demotion (QA-0132).** The queues are peeked (`pending_rejudges`/
+  `pending_rereads`) and a DID is acknowledged (`ack_*`) only after its work was accepted.
+  A closed replica keeps the DID until the reopen; a failed replica read or a full DB
+  channel keeps it for the loop's kept-work tick (`KEPT_WORK_RETRY`, 1 s, armed only while
+  such work exists). A `role` row a full DB channel refused is kept on the fabric
+  (`keep_unsent_role_row`, cap 4096) and resent in order BEFORE any re-judge batch, so the
+  DB plane never judges with a stale role view.
+- **No grant-cycling bypass (QA-0131).** The empowerment re-read replays only
+  `role/__shards/__holders/verse/petal`; a risen author's scene rows go to the DB as a
+  `restore_only` re-judge, which admits a version only if its author held Editor when it was
+  written. Replaying `node/` through the current role would admit rows written while the
+  author was revoked.

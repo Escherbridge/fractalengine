@@ -1986,6 +1986,39 @@ extended by DB execution or reply arrival. This slice adds no second DB opener,
 write, public endpoint or automatic navigation. Existing hierarchy-thread
 journey coverage is extended; it remains authored rather than executed here.
 
+## §write-time-role (QA-0131, critic 2026-11-07)
+
+A scene row is admitted only if its author holds Editor at its scope NOW (the existing gate)
+AND held it when the row was WRITTEN (`role_grants::written_while_authorized`). Without the
+second check a revoked editor's rows are admitted by any later re-grant: on the Deferred
+retry, on a restart replay and on the empowerment re-read.
+
+- **Write time is the snapshot's `_fe_scene` HLC.** `fe_policy::materialize_at` rebuilds
+  the role view from the admitted statements as of that clock. Each statement counts from
+  its continuity (`editor_since`/`manager_since`, fe-policy `AGENTS.md` §role-grants), not
+  its own `hlc`, so promoting an editor never un-admits their earlier rows.
+- **Only statement-derived authority is time-checked.** If the author's CURRENT Editor+ does
+  not come from `role_grant` statements (the owner; legacy cache rows), the current gate
+  decides alone. The check can only refuse, never admit.
+- **Rows written before a break stay out.** A revoke (or a fall below Editor) ends a key's
+  continuity, and the replica keeps one version per key, so a later re-grant cannot show the
+  old window. Rows from before the break were removed by the demotion re-judge on every
+  peer, and a fresh peer refuses them the same way: convergent and fail-closed. The author
+  can publish them again.
+- **Clock causality.** Every validated inbound role statement's HLC is observed
+  (`op_log::observe_role_statement_hlc`, 5-minute future bound), so a newly granted editor's
+  next write is stamped after the grant even when its wall clock lags the grantor's.
+- **Markerless node rows** (legacy writers) carry no write clock: an author with
+  statement-derived authority is denied (`legacy_node_row_provable`, judged as of clock 0).
+  Current publishers always send complete versioned snapshots.
+- **Re-judge (`scene_publication::rejudge`).** One `RejudgeReplicatedNodes` batch per verse.
+  A version is admissible when both checks hold. A demotion replaces an inadmissible
+  current version with the newest admissible candidate, including an inadmissible
+  TOMBSTONE (peers that refused it hold the live row), or removes the node. A rise
+  (`restore_only`) skips nodes present locally and restores an absent node from the newest
+  admissible candidate. Journeys: the QA-0121/QA-0131 block in `op_log.rs` and fe-policy's
+  lapse/re-grant test.
+
 ## §p2p-fixes-swarm-run1 (2026-11-07: QA-0121/0122/0123/0125)
 
 - **Object doors are capped by the node's stored role (QA-0122, AC-46).** `CreateObject` and
@@ -2008,8 +2041,8 @@ journey coverage is extended; it remains authored rather than executed here.
   shortcuts), or deletes the node row and clock locally when no author qualifies
   (`DbResult::NodeDeleted`). Semantics are current-role: a demoted author's version is
   replaced even if written before the revoke, so every peer reaches the same state from the
-  same entries and role rows whatever order it saw them in. A re-grant replays the author's
-  `node/` entries (fe-sync re-read on empowerment) and the newer clock wins again.
+  same entries and role rows whatever order it saw them in. Superseded by §write-time-role:
+  a re-grant no longer replays `node/` entries.
 - **API hierarchy reads never rebuild the GUI tree (QA-0125).** `DbCommand::ReadHierarchy`
   answers `DbResult::HierarchyRead`, which only pending API waiters consume;
   `LoadHierarchy`/`HierarchyLoaded` stay the GUI's own reload.

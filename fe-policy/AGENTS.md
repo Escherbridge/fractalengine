@@ -147,6 +147,17 @@ pre-authorized deletes.
 
 ## §role-grants (`role_grants.rs`)
 
+**Continuity and write-time views (QA-0131).** A statement carries optional
+`editor_since`/`manager_since`: the HLC since which its key has granted at least that level
+without a break. `RoleStatement::continuing(prior)` sets them on a new version: a raise or
+lower that stays at Editor+ (or Manager) keeps the prior's value; a revoke or a fall below
+the level restarts it. `validate_statement` denies a field the statement does not back, or
+one later than its `hlc` (`RejectReason::InvalidContinuity`). `materialize_at(owner,
+statements, at)` materializes only what each statement is known to have granted at `at`
+(`as_of`). Callers AND it with the current view (fe-database `src/AGENTS.md`
+§write-time-role). Both fields are skipped on the wire when absent, so older statements
+keep their bytes, and an absent field means "since its own `hlc`".
+
 Pure per-grantor role-statement model
 (`conductor/tracks/role_propagation_20261013` RP-1; plan §2.2–§2.4).
 **Algorithm: least fixpoint via Kleene iteration** on a monotone operator

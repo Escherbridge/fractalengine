@@ -174,6 +174,10 @@ pub(crate) async fn apply_replicated_row_reporting_with_publisher(
         ).await? {
             return Ok(ApplyReport::of(outcome));
         }
+        if !legacy_node_row_provable(db, verse_id, record_id, row_bytes, author_did).await? {
+            tracing::debug!(verse_id, record_id, author = author_did, "markerless node row from a statement-derived Editor carries no write clock; denied (QA-0131)");
+            return Ok(ApplyReport::of(ReplicatedRowOutcome::Denied));
+        }
     }
 
     // Per-table semantics: `Timeseries` tables take the append-only union
@@ -194,6 +198,33 @@ pub(crate) async fn apply_replicated_row_reporting_with_publisher(
         }
     }
     Ok(report)
+}
+
+/// QA-0131: a markerless (legacy) node row, live or tombstone, has no write
+/// clock, so an author whose Editor comes from role statements cannot show it
+/// held that role when writing — judged as of clock 0, only authority that is
+/// not statement-derived (the owner) applies it. Current publishers always
+/// send complete versioned snapshots; src/AGENTS.md §write-time-role.
+async fn legacy_node_row_provable(
+    db: &Db,
+    verse_id: &str,
+    record_id: &str,
+    row_bytes: &[u8],
+    author_did: &str,
+) -> anyhow::Result<bool> {
+    let petal = serde_json::from_slice::<serde_json::Value>(row_bytes)
+        .ok()
+        .and_then(|row| row.get("petal_id")?.as_str().map(str::to_owned));
+    let scope = match petal {
+        Some(petal) => super::crud::resolve_petal_scope_handler(db, &petal).await?,
+        None => super::crud::resolve_node_scope_handler(db, record_id).await?,
+    };
+    match scope {
+        Some(scope) => {
+            crate::role_grants::written_while_authorized(db, verse_id, author_did, &scope, 0).await
+        }
+        None => Ok(true),
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -261,6 +292,7 @@ async fn apply_role_statement(
         },
     };
     let (placement, changed) = crate::role_grants::submit_statement(db, verse_id, &stmt).await?;
+    crate::op_log::observe_role_statement_hlc(stmt.hlc);
     use crate::role_grants::Placement;
     let report = match placement {
         Placement::Admitted => ApplyReport {
@@ -3074,6 +3106,18 @@ mod tests {
         .unwrap()
     }
 
+    /// [`node_in`] as the complete versioned snapshot current publishers send.
+    fn complete_node_in(node_id: &str, petal_id: &str, publisher: &str) -> Vec<u8> {
+        let mut row: serde_json::Value = serde_json::from_slice(&node_in(node_id, petal_id)).unwrap();
+        row["elevation"] = serde_json::json!(0.0);
+        row["interactive"] = serde_json::json!(true);
+        row["edit_seq"] = serde_json::json!(0);
+        row["_fe_scene"] = serde_json::json!({
+            "version": 1, "complete": true, "hlc": (2u64 << 16).to_string(), "publisher": publisher,
+        });
+        serde_json::to_vec(&row).unwrap()
+    }
+
     /// P2P-REF-CONFINE acceptance: an Editor admitted in v1 cannot plant a
     /// node under v2's petal through v1's replica — known-foreign is Denied.
     #[tokio::test]
@@ -3338,6 +3382,8 @@ mod tests {
             role: "editor".to_string(),
             revoked: false,
             hlc: 1,
+            editor_since: None,
+            manager_since: None,
         };
         let mut queue = InboundAdmissions::new();
         let reports = queue
@@ -3353,18 +3399,17 @@ mod tests {
             .await;
         assert_eq!(reports[0].outcome, ReplicatedRowOutcome::Applied);
 
-        let here = apply_replicated_row_handler(
-            &db,
-            "v1",
-            "node",
-            "node-in-petal",
-            &node_in("node-in-petal", "petal-1"),
-            EDITOR,
-            None,
-        )
-        .await
-        .unwrap();
-        assert_eq!(here, ReplicatedRowOutcome::Applied);
+        // QA-0131: a markerless row carries no write clock, so a statement-derived
+        // Editor cannot show it held the role when writing; the versioned snapshot lands.
+        for (row, expected) in [
+            (node_in("node-in-petal", "petal-1"), ReplicatedRowOutcome::Denied),
+            (complete_node_in("node-in-petal", "petal-1", EDITOR), ReplicatedRowOutcome::Applied),
+        ] {
+            let here = apply_replicated_row_handler(&db, "v1", "node", "node-in-petal", &row, EDITOR, None)
+                .await
+                .unwrap();
+            assert_eq!(here, expected);
+        }
 
         let elsewhere = apply_replicated_row_handler(
             &db,

@@ -508,6 +508,9 @@ impl CallerAuth {
 // Database command/result types
 // ---------------------------------------------------------------------------
 
+/// Every author's replica entry for one node key: `(author_did, row_bytes)`.
+pub type RejudgeCandidates = Vec<(String, Vec<u8>)>;
+
 #[derive(Debug, Clone)]
 pub enum DbCommand {
     ReadSceneAssetPublication {
@@ -642,13 +645,14 @@ pub enum DbCommand {
         correlation_id: Option<String>,
     },
     LoadHierarchy,
-    /// QA-0121: re-decide one replicated node whose current author fell below
-    /// Editor, from every author's replica entry for that key
-    /// (`(author_did, row_bytes)`), under the stored role view.
-    RejudgeReplicatedNode {
+    /// QA-0121/QA-0131: re-decide replicated nodes whose authors' role changed,
+    /// one batch per verse: each `(record_id, candidates)` carries every author's
+    /// replica entry for that key, judged by the role held when each was written.
+    /// `restore_only` (an author's role ROSE) touches only nodes absent locally.
+    RejudgeReplicatedNodes {
         verse_id: String,
-        record_id: String,
-        candidates: Vec<(String, Vec<u8>)>,
+        nodes: Vec<(String, RejudgeCandidates)>,
+        restore_only: bool,
     },
     /// API-only hierarchy read (`GET /api/v1/hierarchy`): answered with
     /// `HierarchyRead`, which never rebuilds the GUI tree (QA-0125).

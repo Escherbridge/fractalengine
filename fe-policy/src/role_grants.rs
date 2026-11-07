@@ -73,6 +73,65 @@ pub struct RoleStatement {
     pub role: GrantedRole,
     pub revoked: bool,
     pub hlc: u64,
+    /// HLC since which this key has granted at least Editor without a break
+    /// (`None` = `hlc`) — QA-0131 write-time judging, AGENTS.md §write-time-role.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub editor_since: Option<u64>,
+    /// HLC since which this key has granted Manager without a break (`None` = `hlc`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub manager_since: Option<u64>,
+}
+
+impl RoleStatement {
+    /// Since when this key has continuously granted at least `level`
+    /// (Editor or Manager), or `None` when it does not grant it now.
+    pub fn granted_since(&self, level: GrantedRole) -> Option<u64> {
+        if self.revoked || self.role < level {
+            return None;
+        }
+        let manager = self.manager_since.unwrap_or(self.hlc);
+        match level {
+            GrantedRole::Manager => Some(manager),
+            _ if self.role == GrantedRole::Manager => {
+                Some(self.editor_since.unwrap_or(self.hlc).min(manager))
+            }
+            _ => Some(self.editor_since.unwrap_or(self.hlc)),
+        }
+    }
+
+    /// This NEWER version of a key, carrying the continuity of `prior` (the
+    /// key's previous live version): a raise or lower that stays at Editor+
+    /// (or Manager) keeps its original `since`; a break restarts it.
+    pub fn continuing(mut self, prior: Option<&RoleStatement>) -> Self {
+        let prior = prior.filter(|prior| prior.hlc < self.hlc);
+        let editor = prior
+            .and_then(|prior| prior.granted_since(GrantedRole::Editor))
+            .filter(|_| self.granted_since(GrantedRole::Editor).is_some());
+        let manager = prior
+            .and_then(|prior| prior.granted_since(GrantedRole::Manager))
+            .filter(|_| self.granted_since(GrantedRole::Manager).is_some());
+        self.editor_since = editor;
+        self.manager_since = manager;
+        self
+    }
+
+    /// What this key granted at HLC `at`, as far as its continuity shows: an
+    /// Editor+ grant counts from its `since`, anything else from its `hlc`;
+    /// `None` when the statement is not known to have applied at `at`.
+    fn as_of(&self, at: u64) -> Option<RoleStatement> {
+        let Some(editor_since) = self.granted_since(GrantedRole::Editor) else {
+            return (self.hlc <= at).then(|| self.clone());
+        };
+        let role = match self.granted_since(GrantedRole::Manager) {
+            Some(since) if since <= at => GrantedRole::Manager,
+            _ if editor_since <= at => GrantedRole::Editor,
+            _ => return None,
+        };
+        Some(RoleStatement {
+            role,
+            ..self.clone()
+        })
+    }
 }
 
 /// The three parsed segments of a `role` table doc key
@@ -116,6 +175,10 @@ pub struct RoleStatementPayload {
     pub role: String,
     pub revoked: bool,
     pub hlc: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub editor_since: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub manager_since: Option<u64>,
 }
 
 /// Why [`validate_statement`] denied a statement. Every variant is a
@@ -138,6 +201,9 @@ pub enum RejectReason {
     InvalidRole,
     /// T5: `peer_did` names the owner. The owner is never a grant target.
     TargetsOwner,
+    /// A continuity field (`editor_since`/`manager_since`) on a statement that
+    /// does not grant that level, or later than the statement's own `hlc`.
+    InvalidContinuity,
 }
 
 impl fmt::Display for RejectReason {
@@ -150,6 +216,9 @@ impl fmt::Display for RejectReason {
             RejectReason::CrossVerseScope => "scope's verse does not match this replica",
             RejectReason::InvalidRole => "role is not manager, editor, viewer or none",
             RejectReason::TargetsOwner => "the owner can never be a grant target",
+            RejectReason::InvalidContinuity => {
+                "continuity field does not match the granted role or follows the statement"
+            }
         };
         write!(f, "{}", s)
     }
@@ -208,14 +277,27 @@ pub fn validate_statement(
         }
     }
 
-    Ok(RoleStatement {
+    let statement = RoleStatement {
         scope: key_parts.scope.clone(),
         peer_did: key_parts.peer_did.clone(),
         grantor_did: key_parts.grantor_did.clone(),
         role,
         revoked: payload.revoked,
         hlc: payload.hlc,
-    })
+        editor_since: payload.editor_since,
+        manager_since: payload.manager_since,
+    };
+    for (since, level) in [
+        (statement.editor_since, GrantedRole::Editor),
+        (statement.manager_since, GrantedRole::Manager),
+    ] {
+        if since.is_some_and(|since| {
+            since > statement.hlc || statement.revoked || statement.role < level
+        }) {
+            return Err(RejectReason::InvalidContinuity);
+        }
+    }
+    Ok(statement)
 }
 
 /// Collapses statements for the same `(scope, peer_did, grantor_did)` key
@@ -254,7 +336,7 @@ fn is_newer(candidate: &RoleStatement, existing: &RoleStatement) -> bool {
 /// A deterministic byte encoding of a statement's payload fields, used only
 /// for the AC-51 tie-break — not a wire format, and never hashed.
 fn canonical_bytes(stmt: &RoleStatement) -> Vec<u8> {
-    format!(
+    let mut bytes = format!(
         "{}|{}|{}|{}|{}|{}",
         stmt.scope,
         stmt.peer_did,
@@ -262,8 +344,14 @@ fn canonical_bytes(stmt: &RoleStatement) -> Vec<u8> {
         stmt.role.as_str(),
         stmt.revoked,
         stmt.hlc
-    )
-    .into_bytes()
+    );
+    if let Some(since) = stmt.editor_since {
+        bytes.push_str(&format!("|e{since}"));
+    }
+    if let Some(since) = stmt.manager_since {
+        bytes.push_str(&format!("|m{since}"));
+    }
+    bytes.into_bytes()
 }
 
 /// A materialized cache row: `resolve_role` walks to the most specific of
@@ -522,6 +610,22 @@ where
     result
 }
 
+/// [`materialize`] as of HLC `at`: each statement counts only from the time
+/// its continuity shows it applied ([`RoleStatement::granted_since`]), so a
+/// row stamped `at` is judged by the role its author held when it was
+/// written (QA-0131). Callers AND it with the current view —
+/// AGENTS.md §write-time-role.
+pub fn materialize_at<'a, I>(owner_did: &str, statements: I, at: u64) -> EffectiveRoles
+where
+    I: IntoIterator<Item = &'a RoleStatement>,
+{
+    let as_of: Vec<RoleStatement> = statements
+        .into_iter()
+        .filter_map(|statement| statement.as_of(at))
+        .collect();
+    materialize(owner_did, as_of.iter())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -541,6 +645,8 @@ mod tests {
             role,
             revoked,
             hlc,
+            editor_since: None,
+            manager_since: None,
         }
     }
 
@@ -623,6 +729,8 @@ mod tests {
             role: "editor".into(),
             revoked: false,
             hlc: 1,
+            editor_since: None,
+            manager_since: None,
         };
         let result = validate_statement("v1", None, &key, "did:key:actual-author", &payload);
         assert_eq!(result, Err(RejectReason::GrantorMismatch));
@@ -642,6 +750,8 @@ mod tests {
             role: "editor".into(),
             revoked: false,
             hlc: 1,
+            editor_since: None,
+            manager_since: None,
         };
         let result = validate_statement("v1", None, &key, "did:key:grantor", &payload);
         assert_eq!(result, Err(RejectReason::CrossVerseScope));
@@ -661,6 +771,8 @@ mod tests {
             role: "owner".into(),
             revoked: false,
             hlc: 1,
+            editor_since: None,
+            manager_since: None,
         };
         let result = validate_statement("v1", Some(OWNER), &key, "did:key:some-manager", &payload);
         assert_eq!(result, Err(RejectReason::InvalidRole));
@@ -680,6 +792,8 @@ mod tests {
             role: "viewer".into(),
             revoked: false,
             hlc: 1,
+            editor_since: None,
+            manager_since: None,
         };
         let result = validate_statement("v1", Some(OWNER), &key, "did:key:some-manager", &payload);
         assert_eq!(result, Err(RejectReason::TargetsOwner));
@@ -1174,6 +1288,49 @@ mod tests {
             r3.role_at("did:key:x", "VERSE#v1-FRACTAL#f1"),
             RoleLevel::Editor,
             "re-granting M re-admits the never-resent held statement"
+        );
+
+        // QA-0131 write-time judging: a row X stamped while M was revoked (3)
+        // stays refused after M's re-grant (4); a row stamped after it is admitted.
+        let (x, scope) = ("did:key:x", "VERSE#v1-FRACTAL#f1");
+        let m_regrant = stmt("VERSE#v1", "did:key:m1", OWNER, GrantedRole::Manager, false, 4);
+        let x_editor = stmt(scope, x, "did:key:m1", GrantedRole::Editor, false, 2);
+        let at = |statements: &[RoleStatement], hlc| materialize_at(OWNER, statements, hlc).role_at(x, scope);
+        assert_eq!(at(&[m_regrant.clone(), x_editor.clone()], 3), RoleLevel::None);
+        assert_eq!(at(&[m_regrant.clone(), x_editor.clone()], 5), RoleLevel::Editor);
+        // A raise that stays at Editor+ keeps continuity (X's row at 5 survives
+        // X's promotion at 9); a break — revoke, then re-grant — restarts it.
+        let x_promoted = stmt(scope, x, "did:key:m1", GrantedRole::Manager, false, 9)
+            .continuing(Some(&x_editor));
+        assert_eq!((x_promoted.editor_since, x_promoted.manager_since), (Some(2), None));
+        assert_eq!(at(&[m_regrant.clone(), x_promoted.clone()], 5), RoleLevel::Editor);
+        let x_revoked = stmt(scope, x, "did:key:m1", GrantedRole::Manager, true, 10)
+            .continuing(Some(&x_promoted));
+        let x_regranted = stmt(scope, x, "did:key:m1", GrantedRole::Editor, false, 11)
+            .continuing(Some(&x_revoked));
+        assert_eq!((x_revoked.editor_since, x_regranted.editor_since), (None, None));
+        assert_eq!(at(&[m_regrant, x_regranted], 5), RoleLevel::None);
+        // A continuity field the statement does not back is a permanent deny.
+        let key = StatementKey::parse(&format!("{scope}/{x}/did:key:m1")).unwrap();
+        let mut payload = RoleStatementPayload {
+            scope: scope.into(),
+            peer_did: x.into(),
+            grantor_did: "did:key:m1".into(),
+            role: "viewer".into(),
+            revoked: false,
+            hlc: 12,
+            editor_since: Some(3),
+            manager_since: None,
+        };
+        assert_eq!(
+            validate_statement("v1", Some(OWNER), &key, "did:key:m1", &payload),
+            Err(RejectReason::InvalidContinuity)
+        );
+        payload.role = "editor".into();
+        assert_eq!(
+            validate_statement("v1", Some(OWNER), &key, "did:key:m1", &payload)
+                .map(|statement| statement.granted_since(GrantedRole::Editor)),
+            Ok(Some(3))
         );
     }
 

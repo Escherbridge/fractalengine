@@ -81,6 +81,8 @@ fn statements(
                     .as_bool()
                     .ok_or_else(|| anyhow::anyhow!("Invalid delegation grant state"))?,
                 hlc: canonical_hlc(row)?,
+                editor_since: None,
+                manager_since: None,
             })
         })
         .collect()

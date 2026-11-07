@@ -131,6 +131,19 @@ fn node_row(node_id: &str, petal: &str) -> Vec<u8> {
     .expect("node json")
 }
 
+/// [`node_row`] as the complete versioned snapshot a current publisher sends (QA-0131:
+/// only a stamped row can show its author held Editor when it was written).
+fn complete_node_row(node_id: &str, petal: &str, publisher: &str, hlc: u64) -> Vec<u8> {
+    let mut row: serde_json::Value = serde_json::from_slice(&node_row(node_id, petal)).expect("node");
+    row["elevation"] = serde_json::json!(0.0);
+    row["interactive"] = serde_json::json!(true);
+    row["edit_seq"] = serde_json::json!(0);
+    row["_fe_scene"] = serde_json::json!({
+        "version": 1, "complete": true, "hlc": hlc.to_string(), "publisher": publisher,
+    });
+    serde_json::to_vec(&row).expect("node json")
+}
+
 /// One role statement as its grantor publishes it: `(record_id, payload bytes)`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct Statement {
@@ -154,6 +167,8 @@ fn statement(
         role: role.to_string(),
         revoked,
         hlc,
+        editor_since: None,
+        manager_since: None,
     };
     Statement {
         grantor: grantor.to_string(),
@@ -268,13 +283,14 @@ async fn an_owner_role_statement_replicated_in_lets_the_editors_deferred_node_ro
     let mut queue = InboundAdmissions::new();
     const EDITOR: &str = "did:key:z6MkEditor";
 
+    // Stamped after the grant below (hlc 10): written once the editor held the role.
     let reports = queue
         .apply(
             &db,
             VERSE,
             "node",
             "node-early",
-            &node_row("node-early", PETAL_A),
+            &complete_node_row("node-early", PETAL_A, EDITOR, 1 << 16),
             EDITOR,
             None,
         )

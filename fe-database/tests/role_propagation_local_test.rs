@@ -465,6 +465,8 @@ async fn a_held_statement_is_promoted_when_a_local_owner_grant_empowers_its_gran
         role: GrantedRole::Editor,
         revoked: false,
         hlc: 7,
+        editor_since: None,
+        manager_since: None,
     };
     let (placement, _) = role_grants::submit_statement(&fx.db, VERSE, &early)
         .await

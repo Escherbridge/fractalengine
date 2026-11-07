@@ -141,6 +141,10 @@ impl AnswererView {
 /// catches up.
 const QUARANTINE_CAP: usize = 1024;
 
+/// Role rows kept for resend after a full DB channel dropped them (QA-0132);
+/// beyond this the oldest is dropped and the next replica open replays it.
+const UNSENT_ROLE_ROWS_CAP: usize = 4096;
+
 /// One shard's identity: (petal, anchor node, epoch-aligned time bucket).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ShardId {
@@ -431,6 +435,9 @@ pub struct VerseFabric {
     /// DIDs whose `role_at` fell since the last drain (QA-0121): the sync
     /// thread re-judges the scene rows they wrote against the new view.
     rejudge_queue: VecDeque<String>,
+    /// Inbound `role` rows the DB thread's full channel refused (QA-0132): the
+    /// DB plane must learn every revoke before a re-judge runs against it.
+    unsent_role_rows: VecDeque<crate::replicator::RowChange>,
     /// Rows gated on a role/petal view that has not converged yet.
     quarantine: VecDeque<QuarantinedRow>,
     quarantine_evicted: u64,
@@ -459,6 +466,7 @@ impl Default for VerseFabric {
             petal_claim_refusals: 0,
             reread_queue: VecDeque::new(),
             rejudge_queue: VecDeque::new(),
+            unsent_role_rows: VecDeque::new(),
             quarantine: VecDeque::new(),
             quarantine_evicted: 0,
             holders: BTreeMap::new(),
@@ -1397,19 +1405,58 @@ impl VerseFabric {
         self.reevaluate_quarantine(verse_id);
     }
 
-    /// Drain the DIDs whose `role_at` rose since the last drain — the §2.5
-    /// re-read on empowerment seam. The caller (the sync thread's command
-    /// loop) replays each one's `role/__shards/__holders/verse` entries
-    /// straight from the local replica through the inbound apply path.
-    pub fn drain_reread_queue(&mut self) -> Vec<String> {
-        self.reread_queue.drain(..).collect()
+    /// The DIDs whose `role_at` rose and are not yet re-read — the §2.5 re-read
+    /// on empowerment seam. The sync thread replays each one's `role/__shards/
+    /// __holders/verse/petal` entries from the local replica, restores their
+    /// absent scene rows (QA-0131), then [`Self::ack_rereads`] the ones done.
+    pub fn pending_rereads(&self) -> Vec<String> {
+        self.reread_queue.iter().cloned().collect()
     }
 
-    /// Drain the DIDs whose `role_at` fell since the last drain — the QA-0121
-    /// re-judge seam: every scene row they wrote is re-decided from the
-    /// replica's entries under the new role view, on every peer alike.
+    /// Remove re-read DIDs whose work was accepted (QA-0132: never before).
+    pub fn ack_rereads(&mut self, done: &[String]) {
+        self.reread_queue.retain(|did| !done.contains(did));
+    }
+
+    /// The DIDs whose `role_at` fell and are not yet re-judged — the QA-0121
+    /// seam: every scene row they wrote is re-decided from the replica's entries
+    /// under the new role view, on every peer alike. Removed only by
+    /// [`Self::ack_rejudges`] once the DB thread accepted the work (QA-0132).
+    pub fn pending_rejudges(&self) -> Vec<String> {
+        self.rejudge_queue.iter().cloned().collect()
+    }
+
+    /// Remove re-judged DIDs whose work the DB thread accepted.
+    pub fn ack_rejudges(&mut self, done: &[String]) {
+        self.rejudge_queue.retain(|did| !done.contains(did));
+    }
+
+    /// Keep a `role` row the DB thread's channel refused, for resend (QA-0132).
+    pub fn keep_unsent_role_row(&mut self, change: crate::replicator::RowChange) {
+        if self.unsent_role_rows.len() >= UNSENT_ROLE_ROWS_CAP {
+            self.unsent_role_rows.pop_front();
+            tracing::warn!("unsent role rows at cap; the oldest waits for the next replica open");
+        }
+        self.unsent_role_rows.push_back(change);
+    }
+
+    /// The kept role rows, oldest first, for the caller to resend in order.
+    pub fn unsent_role_rows_mut(&mut self) -> &mut VecDeque<crate::replicator::RowChange> {
+        &mut self.unsent_role_rows
+    }
+
+    #[cfg(test)]
+    pub fn drain_reread_queue(&mut self) -> Vec<String> {
+        let dids = self.pending_rereads();
+        self.ack_rereads(&dids);
+        dids
+    }
+
+    #[cfg(test)]
     pub fn drain_rejudge_queue(&mut self) -> Vec<String> {
-        self.rejudge_queue.drain(..).collect()
+        let dids = self.pending_rejudges();
+        self.ack_rejudges(&dids);
+        dids
     }
 
     /// RP-5 closes `AGENTS.md` §transport-admission-control item 5: a
