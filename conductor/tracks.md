@@ -133,6 +133,13 @@ Builds on the S-PLUGIN enabler above. Decisions D-X1..D-X8 live in the track's c
   Author-only until the build gate opens (D-X2). `portal_surface_20261107` depends on it —
   [./tracks/extension_platform_20261107/](./tracks/extension_platform_20261107/)
 
+- [ ] **portal_surface** (P1) — depends on **extension_platform**; extends the Petal Portal: signed web bundles
+  (dashboards, documentation sites, repository-node code bundles) in the sealed `.hexon` family, admitted per
+  peer before they get host-brokered IPC; unsigned bundles render in a no-IPC static sandbox; served in-app from
+  the local blob store via a custom protocol with per-package origins, CSP and an exact-origin navigation
+  allowlist; its own QA lane (PJ1–PJ10). Decisions D-X5..D-X8. Author-only until the build gate opens —
+  [./tracks/portal_surface_20261107/](./tracks/portal_surface_20261107/)
+
 ---
 
 ## P0 — Polish lane (user directive 2026-10-31)
