@@ -60,25 +60,19 @@ boundary rules, `desktop_refused` is preserved intact and never bypassed.
 
 ## Current blockers and source work
 
-- QA0074: focused-closed at actual67/79/167/260 widths. The 5-file read-only `DividerEligibility` diagnostic candidate (`qa59-divider-eligibility-v1`) is independently source- and design-reviewed and ready for exact integration to identify the QA59 splitter-disabling guard on live `520`/`52` drag attempts.
-- QA0075 S2 missing glyphs & topbar breakpoint: QA60 proves zero missing-glyph squares (`□`) across all 10 `1x`/`2x` screenshots. `QA-0075` remains open for the `1160`/`1161` `Deselect` topbar breakpoint overlap (`1160.0` -> `1248.0` in `fe-ui/src/ui_shell/topbar.rs`).
-- Native: `fed8dab6` worker transport is verified live through `Process` admission to clean structured `desktop_refused` under `exebox` in QA62; positive UIA root/provider/Invoke/capture on the `Default` desktop remains open.
-- Peer/QA0063: proposed disposable Podman lab plan (`p2p-relay-query-lab.md`) is independently reviewed; fresh real Viewer/Editor ordinary nodes, schemas, actual asset bytes/render/pick, role lifecycle and restart remain required.
-- Retained stores remain HOLD. Complete a safe `require-existing` admission seam and disposable acceptance before any retained restart.
-- Every remaining terrain (`QA-0070`, `QA-0069`, `QA-0071`/`QA-0024`), group/selection, full rich-data/concurrency/restart, permissions/lifecycle, feature catalog, UX audit and release gate in `plan.md` remains required.
+Terrain fixer 2026-11-06 (lean evidence, `qa/passes/69`-`70`, register `qa/findings.jsonl` 70 records):
 
-The finding register has66 records:17 open/reproduction (3S1/9S2/5S3),
-six source-fixed/live-pending, one cleanup-review-pending,41 focused verified and
-one closed. Only `QA-0075` (line 66) is updated with QA60 evidence; lines 1–65 remain
-byte-identical.
+- Fixed and live-verified on fresh stage `28972bf8`: QA-0024 + QA-0071 (`86095074`: the ruler scale bar/unscaled chip was an unregistered Foreground painter, so a press on it with Brush or an armed shape persisted a region; QA69 reproduced 1 region+node per click, QA70 shows 0, positive authoring intact, exact armed-Circle/Back repro clean), QA-0069 (one atomic cut/fill pair, oracle fill 200/cut 0, no navigation churn), QA-0070 (cross-verse token refused, admitted token writes, executed 12-case DB guard journey). QA-0072 closed as superseded by the AccessKit ui-tree API.
+- `28972bf8` restored the uncompilable fe-ui/fe-database/fe-test-harness test targets and made pinned clippy clean (`--no-deps`) on fe-renderer, fe-terrain, fractalengine, fe-ui, fe-database and fe-test-harness.
+- New open: QA-0077 S2 (17 pre-existing failing journeys now visible, including DeleteNode tombstone failure), QA-0076 S3 (petal terrain lingers in fractal browser), QA-0078 S3 (clippy 1.99 debt in untouched crates: fe-runtime, fe-plugin, others), QA-0079 S3 (shared_handle_test SurrealKV os error 33 on Windows).
+- Still open from before: QA-0075 live topbar recheck, divider eligibility, peer/QA0063 P2P lab, retained-store HOLD, groups/selection, rich-data/concurrency/restart, permissions/lifecycle, catalog, UX audits and release gates in `plan.md`.
 
 ## Next actions
 
-1. Integrate the exact reviewed 5-file `qa59-divider-eligibility-v1` candidate and author/review the `1248.0` compact topbar threshold fix in `fe-ui/src/ui_shell/topbar.rs`.
-2. Build one matching stage and run live QA63 (single-command lifecycle) to verify zero topbar overlaps at `1159`/`1160`/`1161`/`1247`/`1248`/`1280` (`1x`) and `1024`/`1280`/`1600` (`1x`/`2x`) with active selection (closing `QA-0075` at focused scope) and inspect `layout-check` `dividers` during `520`/`52` drag attempts.
-3. Resolve the observed divider eligibility guard, complete `QA-0070` terrain API grant continuity and safe `require-existing` startup on disposable fixtures.
-4. Complete all remaining original feature/selection/groups/data/terrain/role/catalog/polish work, five actual live UX audits plus synthesis, and two100% required FULL passes with zero newS1/S2.
-5. After all implementation/review fixes, run the single integrated sweep and exact18-scenario harness with required real store/Podman fixtures, then exact-SHA green CI before immutable QA tag, whole Release includingDocker, and actual download/hash inspection of all seven archives.
+1. Triage QA-0077, starting with the DeleteNode/tombstone failures (possible live data defect), then the 11 fe-ui journeys by region.
+2. Clear QA-0078 workspace lint debt so CI Lint can go green; then the QA-0075 topbar and divider live checks.
+3. Multi-session P2P replication (user request): two-root `pair.ps1` run that replicates an earthwork region and its volume pair between peers, then the Podman relay lab.
+4. Remaining feature/selection/groups/data/role/catalog work, five live UX audits, two FULL passes, single integrated sweep, CI, tag and release.
 
 Only root owns Cargo/apps/process lifecycle/Git mutations. Preserve
 `conductor/.conductor_session_log`. No source/focused approval substitutes for

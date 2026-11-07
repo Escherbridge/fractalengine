@@ -647,3 +647,27 @@ byte-identical. Focused closure is distinct from final catalog acceptance.
 Only root owns Cargo/apps/process lifecycle/Git mutations. Preserve
 `conductor/.conductor_session_log`. No source/focused approval substitutes for
 remaining acceptance, and no release gate has been achieved.
+
+# Superseded 2026-11-06 (terrain fixer, QA69/QA70)
+
+## Current blockers and source work
+
+- QA0074: focused-closed at actual67/79/167/260 widths. The 5-file read-only `DividerEligibility` diagnostic candidate (`qa59-divider-eligibility-v1`) is independently source- and design-reviewed and ready for exact integration to identify the QA59 splitter-disabling guard on live `520`/`52` drag attempts.
+- QA0075 S2 missing glyphs & topbar breakpoint: QA60 proves zero missing-glyph squares (`□`) across all 10 `1x`/`2x` screenshots. `QA-0075` remains open for the `1160`/`1161` `Deselect` topbar breakpoint overlap (`1160.0` -> `1248.0` in `fe-ui/src/ui_shell/topbar.rs`).
+- Native: `fed8dab6` worker transport is verified live through `Process` admission to clean structured `desktop_refused` under `exebox` in QA62; positive UIA root/provider/Invoke/capture on the `Default` desktop remains open.
+- Peer/QA0063: proposed disposable Podman lab plan (`p2p-relay-query-lab.md`) is independently reviewed; fresh real Viewer/Editor ordinary nodes, schemas, actual asset bytes/render/pick, role lifecycle and restart remain required.
+- Retained stores remain HOLD. Complete a safe `require-existing` admission seam and disposable acceptance before any retained restart.
+- Every remaining terrain (`QA-0070`, `QA-0069`, `QA-0071`/`QA-0024`), group/selection, full rich-data/concurrency/restart, permissions/lifecycle, feature catalog, UX audit and release gate in `plan.md` remains required.
+
+The finding register has66 records:17 open/reproduction (3S1/9S2/5S3),
+six source-fixed/live-pending, one cleanup-review-pending,41 focused verified and
+one closed. Only `QA-0075` (line 66) is updated with QA60 evidence; lines 1–65 remain
+byte-identical.
+
+## Next actions
+
+1. Integrate the exact reviewed 5-file `qa59-divider-eligibility-v1` candidate and author/review the `1248.0` compact topbar threshold fix in `fe-ui/src/ui_shell/topbar.rs`.
+2. Build one matching stage and run live QA63 (single-command lifecycle) to verify zero topbar overlaps at `1159`/`1160`/`1161`/`1247`/`1248`/`1280` (`1x`) and `1024`/`1280`/`1600` (`1x`/`2x`) with active selection (closing `QA-0075` at focused scope) and inspect `layout-check` `dividers` during `520`/`52` drag attempts.
+3. Resolve the observed divider eligibility guard, complete `QA-0070` terrain API grant continuity and safe `require-existing` startup on disposable fixtures.
+4. Complete all remaining original feature/selection/groups/data/terrain/role/catalog/polish work, five actual live UX audits plus synthesis, and two100% required FULL passes with zero newS1/S2.
+5. After all implementation/review fixes, run the single integrated sweep and exact18-scenario harness with required real store/Podman fixtures, then exact-SHA green CI before immutable QA tag, whole Release includingDocker, and actual download/hash inspection of all seven archives.
