@@ -20,21 +20,35 @@ practical workflow; for build details see [BUILDING.md](BUILDING.md).
 
 ## Before You Commit
 
-Run the pre-commit trio:
+Format, lint and type-check the crates you touched:
 
 ```bash
 cargo fmt
 cargo clippy -- -D warnings
-cargo test
+cargo check -p <crate> [-p <crate> ...]   # the crates you touched
 ```
 
 Clippy warnings are errors in this project; a PR that introduces warnings
 will not pass review.
 
+Then run only the test batches that cover your change. Each batch in
+[conductor/test-batches.md](conductor/test-batches.md) is a short list of plain
+`cargo test -p <crate> ...` commands: run them directly on any OS, or
+use the PowerShell runner, which runs one command at a time and deletes that
+command's test executables afterwards:
+
+```powershell
+tools\qa\test_batches.ps1 -Batches R1,R8
+```
+
+Do not run a bare `cargo test` or `cargo test --workspace`: it links every
+test binary at once and can fill the disk. See "Test execution policy" in
+[AGENTS.md](AGENTS.md).
+
 ### Test policy: one sweep at the end
 
 When a change involves multiple fixes or touches several crates, apply all
-of the changes first and then run the full `fmt` / `clippy` / `test` sweep
+of the changes first and then run the `fmt` / `clippy` / test-batch sweep
 **once** at the end — do not iterate test-fix-test per individual change.
 One integrated sweep surfaces the full picture and keeps iteration cheap.
 (Exception: if you touch test-harness infrastructure itself, running just

@@ -28,13 +28,17 @@ endpoints let you check it is up:
   FE_BIND_ADDR      Listen address               (default 0.0.0.0:8765)
   FE_DB_PATH        SurrealDB store path         (default data/fractalengine.db)
   FE_P2P_DIR        P2P replica store directory  (default data/p2p)
+  FE_BLOB_DIR       Blob store (uploaded models) (default: "blobs" beside
+                                                  the FE_DB_PATH folder)
   FE_CORS_ORIGINS   Allowed CORS origins         (default *)
   FE_SYNC_RELAY     iroh relay: default | disabled | https://your-relay
+                    (several relay URLs may be comma-separated)
   FE_SYNC_BOOTSTRAP Peers to dial, as iroh EndpointAddr JSON, ';'-separated
-  RUST_LOG          Log level (info, debug, ...)
+  RUST_LOG          Log level (info, debug, ...); unset means errors only
 
 The data paths are relative to the directory you start fe-relay from. For a
-service, set FE_DB_PATH and FE_P2P_DIR to absolute paths.
+service, set FE_DB_PATH and FE_P2P_DIR to absolute paths; the blob store then
+follows FE_DB_PATH unless you set FE_BLOB_DIR.
 
 Secrets come from environment variables, because the relay does not use an
 OS keychain:
