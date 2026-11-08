@@ -3,7 +3,7 @@ type: ProgressCheckpoint
 date: 2026-11-04
 status: in_progress
 title: Current completion state and next actions
-last_verified_utc: 2026-11-08T02:30:00.000000+00:00
+last_verified_utc: 2026-11-08T03:40:00.000000+00:00
 ---
 
 ## ORCHESTRATOR STEER (binding; maintained by the orchestrating session, do not edit or remove)
@@ -170,10 +170,34 @@ retried). Host CPU mean 5-28 %, so no latency below is contention.
   alias at distance). Vision evidence added to QA-0130 (V-1), QA-0076 and QA-0141 (V-2).
 - Still not exercised: QA-0100 GUI race, QA-0103, QA-0117, QA-0120 to QA-0122, QA-0125, QA-0131 to QA-0133, QA-0136.
 
+Sim run 4 triage (2026-11-07, stage 14117f46, 4 peers in 960x516 tiles; runs `qa/sim/runs/{p2p-core-20261107-194538,
+p2p-assets-20261107-200020,city-lite-20261107-200812}`; triage repro evidence in `qa/sim/triage4/`; every peer started
+for the repro was stopped by exact identity). Host CPU stayed below 50 % except 12 p2p-core samples.
+
+- 170 analyzer anomalies + 5 vision findings collapse to 1 new S1, 1 S2 raised from S3, and 1 new harness S3. Every
+  S1 in the run is false. The steer's "+ Node" blocker is not a permission defect. In the live owner-only repro the
+  button is enabled from the first poll (nav set, role owner). It sits at y=882, below the hierarchy clip (y 113..692),
+  and the panel never scrolls to it. The same off-clip rows explain every "Open fractal X" miss (QA-0146, root cause
+  now confirmed). The editor's tree held Swarm Fractal 27 ms after the row arrived, so the coalescer re-arm (steer
+  item 4) is ruled out. 13a/13b never revoked, because verse "Options…" is disabled inside a verse (QA-0093). 9b.e0
+  is the scenario's own rename. All of these are harness items in QA-0152.
+- Verified: QA-0140 (all six harness items held). Not regressed: QA-0118 (blobs 0.3-2.7 s up to 25 MB), QA-0123
+  (9a/9b), QA-0124 REST half, QA-0101/0086 (12: relay-less restart caught up in 11.7 s). Final fingerprints agree on
+  every peer in all three runs.
+- New S1: QA-0151. A click at (96,715) in the verse browser stops the owner's frame loop for good. CPU drops to 0
+  and requests return 503/504, and focusing the window does not recover it. This reproduced twice. Raised to S2:
+  QA-0143. With several authors placing at once, the owner refuses editors ("holds no role") and their GLBs arrive
+  after 63-80 s at CPU < 50 %.
+- Vision: VIS-001/003 are QA-0141 (no active petal after a missed nav). VIS-002 is QA-0130 (the editor logs "failed
+  to load tileset qa-analytic-terrain"). VIS-004 is QA-0149. VIS-005 is scenario wording (QA-0152 g).
+- Still not exercised: QA-0103, QA-0117 (saturation), QA-0120 to QA-0122, QA-0125, QA-0131 to QA-0133, QA-0136 and
+  QA-0145 (the restarted editor made no checked write).
+
 ## Next actions
 
-1. FIX:3: QA-0145 (S1) first. The orchestrator's QA-0140 harness commit gates every unexercised id; QA-0148 follows it.
-   Then re-run the three scenarios. The S3s QA-0143, QA-0144, QA-0146, QA-0147 and QA-0149 are still open.
+1. FIX:4: QA-0151 (S1), QA-0143 and QA-0150 (S2). Then QA-0152 (a) scroll-to-row, (b) 9b end, (c) a reachable
+   revoke path. These gate every unexercised id above. Add QA-0146's reveal of the active petal. Re-run all three
+   scenarios.
 2. Run FULL pass 78 (2/3) then pass 79; convergence needs zero new S1/S2 in two consecutive passes and all gold.
 3. Fix the S3 test debt (QA-0079, QA-0082, QA-0115, QA-0116), then the integrated sweep, CI Lint (QA-0078), tag
    and release.
