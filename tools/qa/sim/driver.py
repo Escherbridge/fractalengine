@@ -168,13 +168,18 @@ class Driver:
         return events
 
     def recover_gui(self, sid, events):
-        """Press Escape on each peer whose GUI sequence failed, so a menu or dialog it left open cannot cover the next step."""
-        failed = []
-        for event in events:
-            verdict = str(event.get("verdict") or "").removeprefix("optional_")
-            if (event.get("via") == "gui" and event.get("status") == "done" and event.get("ok") is False
-                    and verdict == "refused_but_expected_ok" and event["peer"] in self.present and event["peer"] not in failed):
-                failed.append(event["peer"])
+        """Press Escape on each peer whose GUI sequence ended in a failure, so a menu or dialog it left open cannot cover the next step.
+
+        Only the peer's LAST GUI action counts: after a later success (a failed optional "Close window", then
+        "Open verse") nothing is left open, and an Escape there would navigate the peer back out of the verse.
+        """
+        last_gui = {}
+        for event in sorted(events, key=lambda event: event.get("t_fire") or 0.0):
+            if event.get("via") == "gui" and event.get("status") == "done" and event["peer"] in self.present:
+                last_gui[event["peer"]] = event
+        failed = [peer for peer, event in last_gui.items()
+                  if event.get("ok") is False
+                  and str(event.get("verdict") or "").removeprefix("optional_") == "refused_but_expected_ok"]
         for peer in failed:
             base = {"step": sid, "lane": "recovery", "peer": peer, "action_id": "%s.recover.%s" % (sid, peer),
                     "via": "gui", "op": "escape", "expect": "any", "sync": "recovery", "optional": True}

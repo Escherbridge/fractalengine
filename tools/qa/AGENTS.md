@@ -1163,9 +1163,11 @@ QA-0140/0148: the harness must not report its own timing or leftovers as a produ
   stop (`expectations.jsonl` `t0_basis`); city-lite step 5 anchors its four `agree` expectations on `flight`.
 - **ULID ids.** `ingest_device_payload.payload_id` is a fresh `new_ulid()` per call (`driver.py` `_drone_flight`).
   `drone_flight` takes `scale` (default `[1,1,1]`; each tick's `update_transform` carries it).
-- **GUI recovery.** After a step's actions, each peer with a failed GUI action (optional ones included) gets one
-  Escape so a menu or dialog left open cannot cover the next step: a `recovery` event, op `escape`
-  (`driver.py` `recover_gui`).
+- **GUI recovery.** After a step's actions, each peer whose LAST GUI action in the step failed (optional ones
+  included) gets one Escape so a menu or dialog left open cannot cover the next step: a `recovery` event, op
+  `escape` (`driver.py` `recover_gui`). An earlier failure followed by a success does not count: Escape with nothing
+  open navigates back, so step 0's failed optional "Close window" before a successful "Open verse" used to throw
+  the viewer out of the verse for the rest of the run (QA-0145 fix lane, 2026-11-07).
 - **`requires`.** `"requires": [peer, ...]` skips an action as a unit (`skipped_peer_absent`, `requires_absent`) when a
   listed peer is not in the run, e.g. the owner's half of the editor2 revoke at N=3; barriers cannot use it.
 - **Join retry.** `Host.join` retries `peers_join.py` once, only after a crash exit (NTSTATUS 0xC0000000+: it died
