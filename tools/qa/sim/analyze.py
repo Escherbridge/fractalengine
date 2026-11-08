@@ -17,6 +17,7 @@ import timeline_svg  # noqa: E402
 
 PEER_LOCAL_PROBES = {"role", "nav", "ui", "alive", "_tick", "_error"}
 DIVERGENCE_S = 15.0
+MOVING_MIN_VALUES = 8  # a target that took at least this many values, one per DIVERGENCE_S or faster, is moving
 PARTIAL_MIN_S = 0.0
 WRITE_REST_OPS = {"create_fractal", "create_petal", "create_node", "set_transform", "set_property", "delete_property",
                   "delete_node", "upsert_group", "delete_group", "upload_asset", "ingest_readings"}
@@ -163,6 +164,8 @@ class Analysis:
         self.host = self._load_host()
         self.events_by_id = {e["action_id"]: e for e in self.events if e.get("status") == "done"}
         self.anomalies = []
+        self.not_exercised = []  # expectations skipped because an action they need did not run ok
+        self.moving_rows = []  # per-peer value lag of moving targets (divergence())
 
     def rel(self, t):
         return None if t is None else round(t - self.origin, 3)
@@ -190,7 +193,7 @@ class Analysis:
 
     def anomaly(self, severity, step, peers, title, evidence, kind=None):
         record = {"id": "SIM-%s-%03d" % (self.scenario, len(self.anomalies) + 1), "severity_hint": severity}
-        if kind:  # harness/throughput classes: unresolved_ref, write_timeout, write_refused, skipped_tick, no_anchor
+        if kind:  # classes: unresolved_ref, write_timeout, write_refused, skipped_tick, no_anchor (harness); unreachable (S3 UX)
             record["kind"] = kind
         record.update(scenario=self.scenario, step=step,
                       peers=sorted(peers) if isinstance(peers, (list, set, tuple)) else peers,
@@ -210,6 +213,9 @@ class Analysis:
             if record.get("status") != "registered":
                 if record.get("status") == "skipped_peers_absent":
                     continue  # every listed peer is outside this run's peer subset
+                if record.get("status") == "skipped_dependency_failed":
+                    self.not_exercised.append(record)  # its action has its own anomaly; never a never-held / forbidden-state S1
+                    continue
                 if (record.get("meta") or {}).get("optional") or (record.get("status") == "unresolved" and record.get("optional")):
                     continue  # e.g. a Khronos model that was not cached: declared optional by the scenario
                 if record.get("status") == "unresolved":
@@ -389,7 +395,8 @@ class Analysis:
         frame = pd.DataFrame(self.events)
         if not len(frame):
             return frame
-        for column in ("verdict", "status", "fire_late_ms", "lane", "t_fire", "t_ack", "ok", "code", "error", "waited_ms"):
+        for column in ("verdict", "status", "fire_late_ms", "lane", "t_fire", "t_ack", "ok", "code", "error", "waited_ms",
+                       "scrolled", "clipped"):
             if column not in frame:
                 frame[column] = None
         frame["rtt_ms"] = (frame["t_ack"] - frame["t_fire"]) * 1000.0
@@ -425,6 +432,17 @@ class Analysis:
             elif verdict == "refused_but_expected_ok":
                 if event.get("via") == "macro" and event.get("code") == "partial":
                     continue  # the failed sub-calls carry their own anomalies
+                clipped = event.get("clipped")
+                if event.get("via") == "gui" and isinstance(clipped, dict):
+                    # The widget was in the tree and enabled but not reachable: a UX finding apart from an absent widget.
+                    self.anomaly("S3", event["step"], [event["peer"]],
+                                 "permitted action refused: %s %s/%s (%s; present but not reachable: %s after %s scroll(s))" % (
+                                     event["action_id"], event["via"], event["op"], event.get("code"),
+                                     clipped.get("reason"), event.get("scrolled") or 0),
+                                 {"action_id": event["action_id"], "error": event.get("error"), "args": event.get("args_small"),
+                                  "clipped": clipped, "scrolled": event.get("scrolled") or 0,
+                                  "waited_ms": event.get("waited_ms")}, kind="unreachable")
+                    continue
                 self.anomaly("S2", event["step"], [event["peer"]], "permitted action refused: %s %s/%s (%s)" % (
                     event["action_id"], event["via"], event["op"], event.get("code")),
                     {"action_id": event["action_id"], "error": event.get("error"), "args": event.get("args_small")})
@@ -484,6 +502,9 @@ class Analysis:
         for (probe, target), by_peer in keys.items():
             if len(by_peer) < 2:
                 continue
+            if self._is_moving(by_peer):  # the majority rule would measure the write cadence, not lag (QA-0152 f)
+                episodes.extend(self._moving_target(probe, target, by_peer, peers_alive))
+                continue
             times = sorted({t for s in by_peer.values() for t in s.times})
             open_since = {}
             for t in times + [self.end]:
@@ -512,6 +533,57 @@ class Analysis:
                              episode["probe"], short(episode["target"], 30), episode["peer"], episode["duration_s"],
                              "" if episode["resolved"] else " (still diverged at run end)"), episode)
         return episodes
+
+    @staticmethod
+    def _change_times(series):
+        return [t for index, t in enumerate(series.times) if index == 0 or series.digests[index] != series.digests[index - 1]]
+
+    def _is_moving(self, by_peer):
+        """True for a target that keeps taking new values (drone transforms, readings, free-play rows)."""
+        changes = self._change_times(max(by_peer.values(), key=lambda series: len(set(series.digests))))
+        if len(changes) < MOVING_MIN_VALUES:
+            return False
+        gaps = sorted(b - a for a, b in zip(changes, changes[1:]))
+        return gaps[len(gaps) // 2] < self.divergence_s
+
+    def _moving_target(self, probe, target, by_peer, peers_alive):
+        """Per-value lag of a moving target (first time each peer showed each value vs the earliest peer), plus the quiet-tail check.
+
+        A moving target is never 'diverged from the majority' for minutes at a time, only behind; the one real
+        divergence is a peer that stays different after the writes stop (tail episode, S1 at run end).
+        """
+        first_seen = {peer: {} for peer in by_peer}
+        for peer, series in by_peer.items():
+            for t, digest in zip(series.times, series.digests):
+                if digest is not None:
+                    first_seen[peer].setdefault(digest, t)
+        earliest = {}
+        for seen in first_seen.values():
+            for digest, t in seen.items():
+                earliest[digest] = min(t, earliest.get(digest, t))
+        holders = collections.Counter(digest for seen in first_seen.values() for digest in seen)
+        for peer, seen in sorted(first_seen.items()):
+            lags = [(seen[digest] - earliest[digest], seen[digest]) for digest in seen if holders[digest] >= 2]
+            values = [lag for lag, _t in lags]
+            row = {"probe": probe, "target": target, "peer": peer, "values": len(seen), "shared": len(values),
+                   "lag_p50_s": pct(values, 50), "lag_p95_s": pct(values, 95), "lag_max_s": max(values) if values else None}
+            self.moving_rows.append(row)
+            if values and row["lag_max_s"] > self.divergence_s:
+                t_max = max(lags)[1]
+                self.anomaly("S2", self.step_at(t_max), [peer],
+                             "%s %s: %s lagged up to %.1fs behind the first peer to show each value (moving target, p95 %.1fs over %d shared values)" % (
+                                 probe, short(target, 30), peer, row["lag_max_s"], row["lag_p95_s"], len(values)), row)
+        last_change = max(t for series in by_peer.values() for t in series.times)
+        if self.end - last_change < self.divergence_s:
+            return []  # the target was still moving at run end: the final fingerprint judges the result
+        digests = {p: s.at(self.end)[1] for p, s in by_peer.items() if s.at(self.end)[1] is not None and peers_alive(p, self.end)}
+        if len(digests) < 2:
+            return []
+        top = collections.Counter(digests.values()).most_common()
+        majority = top[0][0] if len(top) == 1 or top[0][1] > top[1][1] else digests.get("owner", top[0][0])
+        return [{"probe": probe, "target": target, "peer": peer, "start_rel": self.rel(last_change), "end_rel": None,
+                 "duration_s": round(self.end - last_change, 3), "resolved": False, "moving": True}
+                for peer, digest in digests.items() if digest != majority]
 
     def _alive_windows(self):
         alive = {peer: series for (peer, probe, _t), series in self.series.items() if probe == "alive"}
@@ -733,6 +805,9 @@ class Analysis:
                 r["path"] if isinstance(r.get("path"), str) else "",
                 fmt(r.get("latency_s")), fmt(r["within_s"], 0), "yes" if r["matched"] else "**no**",
                 "yes" if r["budget_ok"] else "**no**", "; ".join(notes)))
+        if self.not_exercised:
+            lines += ["", "Not exercised (an action they need did not run ok, so the claim was never tested): %s." % ", ".join(
+                "%s (needs %s)" % (r["exp_id"], "/".join(r.get("needs_failed") or [])) for r in self.not_exercised)]
         lines += ["", "## Refusal correctness", ""]
         if len(frame):
             checked = frame[frame["expect"].isin(["ok", "refused"]) & (frame["status"] == "done")]
@@ -754,11 +829,28 @@ class Analysis:
                               len(waits), len(gui), fmt(pct(waits, 50), 0), fmt(pct(waits, 95), 0),
                               fmt(max(waits) if waits else None, 0),
                               int(((gui["code"] == "locator_not_found") & (gui_waits.fillna(0) > 0)).sum()))]
+            gui_scrolls = pd.to_numeric(gui["scrolled"], errors="coerce").fillna(0)
+            unreachable = int(gui["clipped"].apply(lambda note: isinstance(note, dict)).sum())
+            if (gui_scrolls > 0).any() or unreachable:
+                lines += ["", "GUI reveal scrolls: %d of %d GUI actions wheeled a panel to bring a clipped widget into view "
+                          "(%d wheel input(s), at most %d for one action); %d refused with the widget present but not reachable "
+                          "(the rest of the locator_not_found refusals are absent widgets)." % (
+                              int((gui_scrolls > 0).sum()), len(gui), int(gui_scrolls.sum()), int(gui_scrolls.max()), unreachable)]
         lines += ["", "## Divergence episodes (peer vs majority > %.0f s)" % self.divergence_s, ""]
         if episodes:
             lines += ["| probe | target | peer | start +s | end +s | duration s |", "|---|---|---|---|---|---|"]
             lines += ["| %s | `%s` | %s | %s | %s | %s |" % (e["probe"], short(e["target"], 30), e["peer"], e["start_rel"],
                                                           fmt(e["end_rel"]), e["duration_s"]) for e in episodes]
+        else:
+            lines.append("None.")
+        lines += ["", "## Moving-target lag (targets taking a new value every < %.0f s; first-seen lag vs the earliest peer per value)" % self.divergence_s, ""]
+        if self.moving_rows:
+            lines += ["| probe | target | peer | values seen | shared | lag p50 s | lag p95 s | lag max s |", "|---|---|---|---|---|---|---|---|"]
+            lines += ["| %s | `%s` | %s | %d | %d | %s | %s | %s |" % (
+                r["probe"], short(r["target"], 30), r["peer"], r["values"], r["shared"], fmt(r["lag_p50_s"]), fmt(r["lag_p95_s"]),
+                fmt(r["lag_max_s"])) for r in self.moving_rows]
+            lines += ["", "Peers share few values when the probe interval is longer than a value lasts; no shared value means no lag figure, "
+                      "and only a divergence that outlasts the writes is judged (run-end episode)."]
         else:
             lines.append("None.")
         lines += ["", "## Restart catch-up", ""]

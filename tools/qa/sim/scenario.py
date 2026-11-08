@@ -80,6 +80,7 @@ SCHEMA = {
                        "sync": {"type": "string", "pattern": SYNC.pattern},
                        "expect": {"enum": ["ok", "refused", "any"]}, "optional": {"type": "boolean"},
                        "requires": {"type": "array", "items": {"type": "string"}},
+                       "needs": {"type": "array", "items": {"type": "string"}},
                        "bind": {"type": "object", "additionalProperties": {"type": "string"}},
                        "covers": {"type": "string"}, "note": {"type": "string"}}},
         "expect": {"type": "object", "required": ["probe", "target", "predicate"], "additionalProperties": False,
@@ -90,6 +91,7 @@ SCHEMA = {
                        "within_s": {"type": "number", "exclusiveMinimum": 0},
                        "after": {"type": "string"}, "mode": {"enum": ["eventually", "always"]},
                        "hold_s": {"type": "number", "minimum": 0}, "covers": {"type": "string"},
+                       "needs": {"type": "array", "items": {"type": "string"}},
                        "meta": {"type": "object"}, "note": {"type": "string"}}},
         "checkpoint": {"type": "object", "required": ["peer"], "additionalProperties": False,
                        "properties": {"peer": {"type": "string"}, "capture": {"enum": list(CAPTURES)},
@@ -273,6 +275,7 @@ def _validate_action(action, where, names, defined, errors):
         errors.append("%s: requires must list scenario peer names" % label)
     elif requires and action.get("sync") == "barrier":
         errors.append("%s: requires cannot combine with sync barrier (a skipped participant would stall it)" % label)
+    _validate_needs(action.get("needs", []), defined, label, errors)
     if isinstance(action.get("args"), dict) and "wait_s" in action["args"] and via == "gui":
         wait = action["args"]["wait_s"]
         if action.get("op") not in WIDGET_WAIT_OPS:
@@ -283,6 +286,12 @@ def _validate_action(action, where, names, defined, errors):
         root = ref.split(".")[0]
         if root not in NAMESPACES and root not in defined and root not in LOOP_VARS:
             errors.append("%s: $%s refers to no earlier action id" % (label, ref))
+
+
+def _validate_needs(needs, defined, where, errors):
+    """needs: ids of earlier actions that must have run ok, else the action or expectation is skipped (not exercised)."""
+    if not isinstance(needs, list) or any(not isinstance(dep, str) or dep not in defined for dep in needs):
+        errors.append("%s: needs must list ids of earlier actions" % where)
 
 
 def _validate_expect(expect, where, names, defined, step, errors):
@@ -308,6 +317,7 @@ def _validate_expect(expect, where, names, defined, step, errors):
         errors.append(where + ": mode must be eventually|always")
     if expect.get("predicate") == "agree" and expect.get("mode") == "always":
         errors.append(where + ": agree is an eventually-only predicate")
+    _validate_needs(expect.get("needs", []), defined, where, errors)
     for ref in refs_in([expect.get("target"), expect.get("value"), expect.get("path")]):
         root = ref.split(".")[0]
         if root not in NAMESPACES and root not in defined:

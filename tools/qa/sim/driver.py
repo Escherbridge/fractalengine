@@ -8,6 +8,7 @@ import random
 import threading
 import time
 import urllib.parse
+from concurrent.futures import ThreadPoolExecutor
 
 import predicates
 from client import Outcome, extract_id
@@ -45,10 +46,14 @@ def verdict_of(expect, outcome):
 
 
 def outcome_extras(outcome):
-    """Optional event fields an outcome may carry: the GUI widget wait and a client-side timeout."""
+    """Optional event fields an outcome may carry: the GUI widget wait, the wheel scrolls that revealed a clipped widget, why a refused widget was unreachable, a client-side timeout."""
     extras = {}
     if outcome.get("waited_ms") is not None:
         extras["waited_ms"] = outcome["waited_ms"]
+    if outcome.get("scrolled"):
+        extras["scrolled"] = outcome["scrolled"]
+    if outcome.get("clipped"):
+        extras["clipped"] = outcome["clipped"]
     if outcome.get("timed_out"):
         extras["timed_out"] = True
     return extras
@@ -139,9 +144,9 @@ class Driver:
                 events.append(event)
 
         threads = []
-        live_barrier = [a for a in barrier if a["peer"] in self.present]
+        live_barrier = [a for a in barrier if a["peer"] in self.present and not self.unmet_needs(a)]
         for action in barrier:
-            if action["peer"] not in self.present:
+            if action not in live_barrier:  # absent peer or unmet needs: logged as skipped, never a half-filled barrier
                 keep(self.execute(action, sid, "barrier", t_step))
         if len(live_barrier) >= 2:
             fire_at = [None]
@@ -166,6 +171,10 @@ class Driver:
         for thread in threads:
             thread.join()
         return events
+
+    def unmet_needs(self, item):
+        """Ids in item["needs"] whose action did not run ok (it failed, was skipped or has not run)."""
+        return [dep for dep in item.get("needs", []) if self.ctx.try_resolve("$%s.ok" % dep) is not True]
 
     def recover_gui(self, sid, events):
         """Press Escape on each peer whose GUI sequence ended in a failure, so a menu or dialog it left open cannot cover the next step.
@@ -202,6 +211,9 @@ class Driver:
         absent = [peer for peer in action.get("requires", []) if peer not in self.present]
         if absent:  # e.g. the owner's half of an editor2 revoke: skipped as a unit, never a half-run GUI sequence
             return self._event(base, status="skipped_peer_absent", requires_absent=absent)
+        unmet = self.unmet_needs(action)
+        if unmet:  # e.g. a write expected to be refused after a revoke whose click never landed: not exercised
+            return self._event(base, status="skipped_dependency_failed", needs_failed=unmet)
         try:
             args = self.ctx.resolve(action.get("args", {}), extra)
         except UnresolvedRef as missing:
@@ -452,42 +464,42 @@ class Driver:
         start = self.clock.now()
         flight_end = start + ticks * period
         index = failures = skipped = 0
-        for tick in range(ticks):
-            if self.abort.is_set():
-                break
-            late = self.clock.now() - (start + tick * period)
-            if late >= period:  # wall-clock schedule: a tick whose whole slot passed is skipped, never caught up
-                skipped += 1
-                self._skipped_tick(client, sid, action_id, tick, period, late)
-                continue
-            self.clock.sleep_until(start + tick * period)
-            readings = []
-            stamp = time.strftime("%Y-%m-%dT%H:%M:%S", time.gmtime()) + ".%03dZ" % (int(time.time() * 1000) % 1000)
-            for k, node_id in enumerate(nodes):
-                if self.clock.now() >= flight_end:  # a hung call must not stretch the flight past its end
+        # A tick's writes go out together (serial round trips of ~130 ms each skipped 101 of 360 ticks, QA-0152 e).
+        with ThreadPoolExecutor(max_workers=2 * len(nodes) + 1) as pool:
+            for tick in range(ticks):
+                if self.abort.is_set():
                     break
-                angle = 2 * math.pi * (tick / max(1.0, rate * float(args.get("period_s", 30))) + k / len(nodes))
-                position = [round(radius * math.cos(angle), 3), round(altitude + 2 * k, 3), round(radius * math.sin(angle), 3)]
-                out = self._sub(client, sid, action_id, index, "mcp", "update_transform",
-                                {"node_id": node_id, "position": position, "rotation": [0, round(angle, 4), 0],
-                                 "scale": scale})
-                index += 1
-                failures += 0 if out.ok else 1
-                readings.append({"node_id": node_id, "metric": args.get("metric", "altitude_m"),
-                                 "value": position[1] + 0.01 * tick, "units": "m", "recorded_at": stamp})
-                if every and tick % every == 0 and args.get("format_id"):
-                    payload = json.dumps({"node": node_id, "tick": tick, "position": position}).encode("utf-8")
-                    out = self._sub(client, sid, action_id, index, "mcp", "ingest_device_payload",
-                                    {"petal_id": args["petal_id"], "node_id": node_id, "format_id": args["format_id"],
-                                     "files": [base64.b64encode(payload).decode("ascii")], "recorded_at": stamp,
-                                     "payload_id": new_ulid()})
+                late = self.clock.now() - (start + tick * period)
+                if late >= period:  # wall-clock schedule: a tick whose whole slot passed is skipped, never caught up
+                    skipped += 1
+                    self._skipped_tick(client, sid, action_id, tick, period, late)
+                    continue
+                self.clock.sleep_until(start + tick * period)
+                calls, readings = [], []
+                stamp = time.strftime("%Y-%m-%dT%H:%M:%S", time.gmtime()) + ".%03dZ" % (int(time.time() * 1000) % 1000)
+                for k, node_id in enumerate(nodes):
+                    if self.clock.now() >= flight_end:  # a hung call must not stretch the flight past its end
+                        break
+                    angle = 2 * math.pi * (tick / max(1.0, rate * float(args.get("period_s", 30))) + k / len(nodes))
+                    position = [round(radius * math.cos(angle), 3), round(altitude + 2 * k, 3), round(radius * math.sin(angle), 3)]
+                    calls.append(("mcp", "update_transform", {"node_id": node_id, "position": position,
+                                                              "rotation": [0, round(angle, 4), 0], "scale": scale}))
+                    readings.append({"node_id": node_id, "metric": args.get("metric", "altitude_m"),
+                                     "value": position[1] + 0.01 * tick, "units": "m", "recorded_at": stamp})
+                    if every and tick % every == 0 and args.get("format_id"):
+                        payload = json.dumps({"node": node_id, "tick": tick, "position": position}).encode("utf-8")
+                        calls.append(("mcp", "ingest_device_payload",
+                                      {"petal_id": args["petal_id"], "node_id": node_id, "format_id": args["format_id"],
+                                       "files": [base64.b64encode(payload).decode("ascii")], "recorded_at": stamp,
+                                       "payload_id": new_ulid()}))
+                if readings and self.clock.now() < flight_end:
+                    calls.append(("rest", "ingest_readings", {"petal_id": args["petal_id"], "readings": readings}))
+                futures = []
+                for via, op, call in calls:  # sub-action ids '<macro>.<n>' are assigned in call order, whatever finishes first
+                    futures.append(pool.submit(self._sub, client, sid, action_id, index, via, op, call))
                     index += 1
-                    failures += 0 if out.ok else 1
-            if readings and self.clock.now() < flight_end:
-                out = self._sub(client, sid, action_id, index, "rest", "ingest_readings",
-                                {"petal_id": args["petal_id"], "readings": readings})
-                index += 1
-                failures += 0 if out.ok else 1
+                for future in futures:
+                    failures += 0 if future.result().ok else 1
         return Outcome(status=200, ok=failures == 0, refused=failures > 0, code=None if not failures else "partial",
                        data={"ticks": ticks, "calls": index, "failed": failures, "skipped_ticks": skipped})
 
@@ -559,6 +571,12 @@ class Driver:
             else:
                 record["t0"] = default_t0
                 record["t0_basis"] = "step_last_fire"
+            unmet = self.unmet_needs(expect)
+            if unmet:  # its action never ran ok: not exercised (the failed action carries its own anomaly)
+                record.update(status="skipped_dependency_failed", needs_failed=unmet)
+                self.recorder.write("expectations", record)
+                instances.append(record)
+                continue
             try:
                 record["target"] = self.ctx.resolve(expect["target"])
                 record["value"] = self.ctx.resolve(expect.get("value"))

@@ -11,12 +11,14 @@ import uuid
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, os.path.dirname(HERE))
 import fe  # noqa: E402
+import reveal  # noqa: E402
 
 INPUT_WAIT_FRAMES = 5
 RUN_RELOAD_SECONDS = 2.0
 WIDGET_WAIT_S = 5.0  # default budget to poll for an enabled visible widget (args.wait_s overrides, 0 refuses at once)
 WIDGET_POLL_S = 0.1
 WIDGET_POLLED_REFUSALS = ("locator_not_found", "locator_index")  # index: fewer candidates than nth+1 rendered so far
+SCROLL_SETTLE_S = 0.35  # egui eases a wheel scroll over a few frames: read the ui-tree again only after it
 
 
 class Outcome(dict):
@@ -79,6 +81,9 @@ class PeerClient:
         self._stale_tokens = {}
         self._gui_token = None
         self._waited_ms = 0
+        self._scrolled = 0  # wheel inputs the current gui op sent to reveal a clipped widget
+        self._clipped = None  # why the last refusal's widget was present but unreachable (reveal.Reveal.note)
+        self._pixels_per_line = None  # calibrated physical px per wheel line (reveal.Reveal), kept across ops
         self._lock = threading.Lock()
 
     # -- discovery ---------------------------------------------------------------------------
@@ -241,18 +246,25 @@ class PeerClient:
         return fe.decode_object(raw)
 
     def gui(self, op, args):
-        """Locator-driven GUI op (fe.py click --name / type --into / key / scroll / wait-for); waited_ms = widget polling time."""
+        """Locator-driven GUI op (fe.py click --name / type --into / key / scroll / wait-for); waited_ms = widget polling time, scrolled = wheel inputs that revealed a clipped widget."""
         with self.gui_lock:
             self._waited_ms = 0
+            self._scrolled = 0
+            self._clipped = None
             try:
                 data = self._gui(op, args)
-                return Outcome(status=200, ok=True, refused=False, data=data, waited_ms=self._waited_ms)
+                return Outcome(status=200, ok=True, refused=False, data=data, waited_ms=self._waited_ms,
+                               scrolled=self._scrolled)
             except fe.Refused as refusal:
-                return Outcome(status=refusal.status, ok=False, refused=True, code=refusal.code,
-                               error=str(refusal.message)[:300], waited_ms=self._waited_ms)
+                message = str(refusal.message)
+                if self._clipped and refusal.code in WIDGET_POLLED_REFUSALS:
+                    message += " (present but not reachable: %s%s)" % (
+                        self._clipped.get("reason"), "; " + self._clipped["why_not"] if self._clipped.get("why_not") else "")
+                return Outcome(status=refusal.status, ok=False, refused=True, code=refusal.code, error=message[:300],
+                               waited_ms=self._waited_ms, scrolled=self._scrolled, clipped=self._clipped)
             except fe.NotRunning as error:
                 return Outcome(status=-1, ok=False, refused=False, code="not_running", error=str(error)[:300],
-                               waited_ms=self._waited_ms)
+                               waited_ms=self._waited_ms, scrolled=self._scrolled)
 
     @staticmethod
     def _widget_wait(args):
@@ -260,37 +272,68 @@ class PeerClient:
         return float(args.get("wait_s", WIDGET_WAIT_S))
 
     def _locate(self, args, input_only=False, wait_s=0.0):
-        """(x, y, evidence) of an enabled visible widget; only WIDGET_POLLED_REFUSALS are polled, every WIDGET_POLL_S up to wait_s."""
+        """(x, y, evidence) of an enabled visible widget.
+
+        Polls WIDGET_POLLED_REFUSALS every WIDGET_POLL_S up to wait_s; while the match exists but sits outside its
+        panel's clip, wheels that panel toward it in the same budget (reveal.py), so wait_s=0 never scrolls.
+        """
         started = time.monotonic()
         waited = False
+        sent_total = 0
+        scrolling = reveal.Reveal(self._pixels_per_line)
         try:
             while True:
                 try:
                     x, y, evidence = self._locate_once(args, input_only)
                 except fe.Refused as refusal:
                     remaining = started + wait_s - time.monotonic()
-                    if refusal.code not in WIDGET_POLLED_REFUSALS or remaining <= 0:
+                    polled = refusal.code in WIDGET_POLLED_REFUSALS
+                    diagnostics = getattr(refusal, "diagnostics", None) if polled else None
+                    wheel = scrolling.step(diagnostics, allow=remaining > 0) if diagnostics else None
+                    self._clipped = scrolling.note if diagnostics else None
+                    if not polled or remaining <= 0:
                         raise
                     waited = True
-                    time.sleep(min(WIDGET_POLL_S, remaining))
+                    sent = wheel is not None and self._wheel(scrolling, wheel)
+                    sent_total += 1 if sent else 0
+                    time.sleep(min(SCROLL_SETTLE_S if sent else WIDGET_POLL_S, remaining))
                     continue
+                if sent_total and not scrolling.settled(x, y) and started + wait_s > time.monotonic():
+                    waited = True  # the row may still be sliding: click only once two reads agree
+                    time.sleep(WIDGET_POLL_S)
+                    continue
+                self._clipped = None
                 if waited:
                     evidence["waited_ms"] = round((time.monotonic() - started) * 1000)
+                if sent_total:
+                    evidence["scrolled"] = sent_total
                 return x, y, evidence
         finally:
             if waited:
                 self._waited_ms += round((time.monotonic() - started) * 1000)
+            self._pixels_per_line = scrolling.pixels_per_line or self._pixels_per_line
+
+    def _wheel(self, scrolling, wheel):
+        """Send one reveal scroll (pointer move + wheel); False when the host refused it, so the next read judges the stall."""
+        try:
+            self.gui_input(scrolling.commands(wheel))
+        except fe.Refused:
+            return False
+        self._scrolled += 1
+        return True
 
     def _locate_once(self, args, input_only=False):
         evidence = {}
+        diagnostics = {}
         try:
             x, y = fe.locate(self.run(), args["name"], args.get("role"), args.get("nth"), None,
-                             input_only=input_only, evidence=evidence)
+                             input_only=input_only, evidence=evidence, diagnostics=diagnostics)
         except fe.Refused as refusal:
             # Duplicate affordances (sidebar "Open" + browser card) share one exact name and role: take the
             # first and record the count; genuinely different candidates stay a refusal.
             candidates = _ambiguous_candidates(refusal)
             if not candidates or len({(c.get("name", "").casefold(), c.get("role")) for c in candidates}) != 1:
+                refusal.diagnostics = diagnostics  # the clipped / unplaced matches, for the caller's reveal scroll
                 raise
             x, y = fe.locate(self.run(), args["name"], args.get("role"), 0, None,
                              input_only=input_only, evidence=evidence)

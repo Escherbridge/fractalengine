@@ -754,7 +754,22 @@ def locator_rectangle(bounds, facts, window):
     return {"x": left, "y": top, "w": right-left, "h": bottom-top}
 
 
-def locate(run, name, role=None, nth=None, verse=None, input_only=False, evidence=None):
+INPUT_ROLES = {"textinput", "multilinetextinput", "searchinput", "passwordinput"}
+
+
+def reach_entry(node, facts):
+    """Diagnostics record of an enabled match the locator could not reach (see locate's diagnostics)."""
+    return {"id": node["id"], "name": node["name"], "role": node["role"], "bounds": node.get("bounds"),
+            "hidden": bool(node.get("hidden")), "facts": facts}
+
+
+def locate(run, name, role=None, nth=None, verse=None, input_only=False, evidence=None, diagnostics=None):
+    """Center of the enabled visible widget named `name`.
+
+    `diagnostics` (optional dict, filled even when the locate refuses): window, pixels_per_point, the layout
+    `scrolls`, and the enabled matches that were not reachable, `clipped` (placed, but outside the clip/window or
+    hidden) and `unplaced` (no bounds), so a caller can scroll a panel instead of giving up.
+    """
     params = {"name":name, "interactive":1}
     if role:
         params["role"] = role
@@ -765,6 +780,9 @@ def locate(run, name, role=None, nth=None, verse=None, input_only=False, evidenc
         raise Refused(0, "invalid_response", "primary window dimensions must be numbers")
     controls = {control["id"]: control for control in tree.get("layout", {}).get("controls", [])}
     window_rect = {"x": 0, "y": 0, "w": width, "h": height}
+    if diagnostics is not None:
+        diagnostics.update(window=window_rect, pixels_per_point=tree.get("pixels_per_point"),
+                           scrolls=tree.get("layout", {}).get("scrolls", []), clipped=[], unplaced=[])
     candidates = tree_nodes(tree)
     exact = [node for node in candidates if node["name"].casefold() == name.casefold()]
     if exact:
@@ -773,8 +791,10 @@ def locate(run, name, role=None, nth=None, verse=None, input_only=False, evidenc
     for node in candidates:
         bounds = node.get("bounds")
         if not node.get("enabled") or node.get("hidden") or not bounds:
+            if diagnostics is not None and node.get("enabled") and (not input_only or node["role"] in INPUT_ROLES):
+                diagnostics["clipped" if bounds else "unplaced"].append(reach_entry(node, controls.get(node["id"])))
             continue
-        if input_only and node["role"] not in {"textinput","multilinetextinput","searchinput","passwordinput"}:
+        if input_only and node["role"] not in INPUT_ROLES:
             continue
         facts = controls.get(node["id"])
         visible = locator_rectangle(bounds, facts, window_rect)
@@ -782,6 +802,8 @@ def locate(run, name, role=None, nth=None, verse=None, input_only=False, evidenc
             nodes.append(dict(node, locator_rect=visible,
                               geometry_source="observed_hit_clip_window" if facts is not None
                               else "bounds_window_fallback_clip_unknown"))
+        elif diagnostics is not None:
+            diagnostics["clipped"].append(reach_entry(node, facts))
     if not nodes:
         raise Refused(0, "locator_not_found", "no enabled visible widget named " + name)
     if nth is None and len(nodes) != 1:

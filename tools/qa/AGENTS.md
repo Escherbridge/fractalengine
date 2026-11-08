@@ -586,7 +586,9 @@ primary window before choosing its center. Empty, negative or disallowed hits
 are refused. Exact names take priority before visibility filtering, so an
 invisible exact target cannot fall back to a similarly named visible action.
 Scrolling an off-clip menu item into view is a real prerequisite, even when
-AccessKit still reports its full bounds and hidden=false. Input results expose
+AccessKit still reports its full bounds and hidden=false (`locate(..., diagnostics=dict)` hands the clipped and
+rect-less matches plus the layout scroll areas to a caller that does the scrolling: `sim/reveal.py`, §sim off-clip
+rule). Input results expose
 the chosen rectangle and whether geometry came from observed hit/clip data or
 an explicit bounds/window fallback with clipping unknown.
 
@@ -1085,7 +1087,10 @@ driver -> `peers.ps1 Stop -OwnerRun` in `finally` (also on exceptions and the `-
 
 Scenarios: tracked in `tools/qa/sim/scenarios/` (`p2p-core`, `p2p-assets`, `city-lite`); a same-named file in
 `qa/sim/scenarios/` (gitignored) overrides one locally. Peers absent from a run (`--peers`, gate) skip their
-actions and drop out of expectations; `p2p-core` needs owner/editor/viewer/editor2 for full coverage.
+actions and drop out of expectations; `p2p-core` needs owner/editor/viewer/editor2 for full coverage. `p2p-core`
+splits the group hide (9b) from the SG -> SG2 rename (9b2) so an expectation that ends with its step never reads the
+scenario's own next write as a regression, and has no `Toggle Options section` click in step 10 (arming the Brush
+already shows its options; the toggle would hide them).
 
 ### DSL reference
 
@@ -1095,9 +1100,9 @@ actions and drop out of expectations; `p2p-core` needs owner/editor/viewer/edito
  steps: [{id, title, settle_s, probe: {...per-step override, 0 pauses a family}, prepare: [action], actions: [action],
           expect: [expect], checkpoints: [{peer|all, capture: scene|window, pose, expect_visual}]}]}
 action = {id?, peer, via: rest|mcp|gui|host|macro, op, args, sync: seq|barrier|+<s>, expect: ok|refused|any,
-          optional?, requires?: [peer], bind?: {name: result.path}}
+          optional?, requires?: [peer], needs?: [action id], bind?: {name: result.path}}
 expect = {probe, target, path?, peers: all|[names], predicate, value?, within_s?, after?: action id,
-          mode: eventually|always, hold_s?, meta?: {severity, atomic, optional, size_bytes}}
+          mode: eventually|always, hold_s?, needs?: [action id], meta?: {severity, atomic, optional, size_bytes}}
 ```
 
 - **References.** An action id binds `{id, ok, status, data, ...bind}`: `"$n2.id"` (typed) or `"${n2.id}"`
@@ -1147,13 +1152,38 @@ QA-0140/0148: the harness must not report its own timing or leftovers as a produ
   (fewer candidates than `nth`+1 rendered yet) are retried, nothing else (`client.py` `PeerClient._locate`). The event carries `waited_ms` (0 when the first poll found it) and the report
   prints the wait distribution. `key` waits only when it names a widget (`name`/`role`/`nth`); `scroll_until` keeps
   its own scroll-and-retry loop. An `"expect": "refused"` click on a disabled control now costs the full wait.
+- **Off-clip widgets (QA-0152 a).** A match that is enabled but outside its panel's clip (a sidebar row below the
+  Hierarchy panel, `+ Node` right after `Open petal`, QA-0146) is wheeled into view inside the same widget wait, never
+  refused as absent. `fe.locate(..., diagnostics=)` returns the clipped matches and the layout `scrolls`;
+  `reveal.py` picks the innermost scroll area that holds the widget and still has range, wheels its viewport centre by
+  the distance in lines (speed calibrated from the observed offset), and `PeerClient._locate` re-reads after
+  `SCROLL_SETTLE_S` and clicks only once two reads agree on the row. A stall rotates the pointer anchor (panel, the
+  widget's column, sidebar) and the planner stops after 3; `wait_s: 0` never scrolls; a match with no rect and no
+  scroll geometry is wheeled blind (sidebar, then right panel). The event carries `scrolled` (wheel inputs) and, when
+  the budget ran out, `clipped` `{name, reason, why_not}`: the analyzer files that as an S3 `unreachable` anomaly
+  (present, enabled, not reachable) apart from the S2 refusal of an absent widget. Disabled and modal-blocked matches
+  are never scrolled for.
+- **Verse-level navigation (13a, 13b).** A tree row's Options…/Rename…/Delete… are enabled only at the row's own
+  scope (`fe-ui/src/panels/tree_entry.rs` `scope_matches`; for a verse: verse open, no fractal, no petal, QA-0093),
+  and `Back` exists only inside a petal. The scenarios climb with `click_until` on the breadcrumb `Browse current
+  verse fractals` until `+ New Fractal` (a card that exists only at the verse level), then Options menu → Options… →
+  Access → `Revoke role grant for <did>` → `Confirm revoke`. Confirm is the very next action after Revoke (no sleep,
+  no `+offset`: the armed button reverts on its own) and hierarchy polling is paused (QA-0125) so a rebuilt tree
+  cannot disarm it. 13b then re-opens Swarm Petal. The verse replica stays open at that level, so 13a no longer
+  reproduces QA-0120's closed-replica trigger (the all-verses card `Options for verse …` would; not driven yet).
+- **`needs`.** `"needs": [action id]` on an action or an expectation skips it (`skipped_dependency_failed`, listed as
+  "Not exercised" in the report) unless every listed action ran ok. Refusal checks and deny-mode free play after a
+  revoke whose click never landed therefore raise no false S1 (`driver.py` `unmet_needs`; a barrier participant is
+  filtered out before the barrier is built).
 - **Unresolved refs.** A ref that is unbound, or resolves to null because the action that should produce it failed,
   fails that action or expectation (`error_unresolved` / `unresolved`) with an anomaly of kind `unresolved_ref`
   naming the ref; null is never substituted as a target (`scenario.py` `Context.lookup`, `driver.py` `execute`).
   `optional` actions and `meta.optional` expectations still skip quietly. A failed action's record carries `failure`.
 - **Wall-clock cadence.** `drone_flight` tick k fires at t0 + k/rate_hz; a tick whose whole slot has passed is skipped,
   never caught up, as a `skipped_tick` event (and one `skipped_tick` anomaly), and no call starts after
-  t0 + duration_s (`driver.py` `_drone_flight`).
+  t0 + duration_s (`driver.py` `_drone_flight`). A tick's writes (one `update_transform` per drone, the payloads and
+  the readings call) go out together on a thread pool, so one tick costs one round trip, not eight (QA-0152 e);
+  sub-action ids `<macro>.<n>` are still assigned in call order.
 - **Write failures.** A failed REST/MCP write is a harness/throughput anomaly, never a replication miss:
   `write_timeout` (socket timeout, HTTP 408/504, "timed out") or `write_refused` (a permitted write refused).
   Authorization denials and 5xx other than 503/504 stay S2 product findings. Failed sub-writes of a macro aggregate
@@ -1185,10 +1215,15 @@ the raw `events.jsonl`, `observations.jsonl`, `expectations.jsonl`, `steps.jsonl
 `fingerprint-final.json`. Severity hints: S1 = a forbidden write accepted, an `always` violation, a held state
 that regressed (resurrection), divergence still open at run end, final fingerprint mismatch, a peer that stopped
 answering; S2 = never converged, convergence beyond 2x budget, a permitted action refused, a resolved divergence
-episode > 15 s; S3 = in budget x2, atomic partial state; `harness` = the simulator could not run an action or
+episode > 15 s; S3 = in budget x2, atomic partial state, a GUI widget present and enabled but not reachable after
+scrolling (`kind: unreachable`); `harness` = the simulator could not run an action or
 resolve an expectation, or the write path timed out or fell behind (`kind`: see Wait-and-anchor rules). Under
 `--no-reactive` (the pre-QA-0119 CPU cap) read every latency with the CPU table: they are upper bounds under host
-contention. `repro` re-runs one step: `python tools/qa/sim/run.py <scenario> --steps <id>` (earlier steps that bind
+contention. A target that takes a new value at least every 15 s (>= 8 values: drone transforms, free-play rows, the
+queries over them) is a moving target: instead of majority-disagreement episodes it gets a per-value lag table (first
+time each peer showed each value vs the earliest peer, `analyze.py` `_moving_target`), S2 when a lag exceeds 15 s, and
+only a peer still different 15 s after the last write is the run-end S1 (QA-0152 f). Peers whose probe interval is
+longer than a value lasts share few values; the table says so. `repro` re-runs one step: `python tools/qa/sim/run.py <scenario> --steps <id>` (earlier steps that bind
 ids must be included in the range).
 
 ## Native Portal fixture client

@@ -243,6 +243,12 @@
             "type": "string"
           }
         },
+        "needs": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
         "bind": {
           "type": "object",
           "additionalProperties": {
@@ -333,6 +339,12 @@
         },
         "covers": {
           "type": "string"
+        },
+        "needs": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
         },
         "meta": {
           "type": "object"

@@ -1,6 +1,6 @@
 {
   "name": "city-lite",
-  "description": "Seed of the city simulation: three builders each place a 20-building district on a street grid at the same instant, then four vehicle-mesh drones fly at 2 Hz for 3 minutes (MCP update_transform + IoT readings + device-payload telemetry); every peer must agree on the scene and on query_timeseries.",
+  "description": "Seed of the city simulation: three builders each place a 20-building district (a 4 x 5 grid; no ground or road geometry is placed) at the same instant, then four vehicle-mesh drones fly at 2 Hz for 3 minutes (MCP update_transform + IoT readings + device-payload telemetry); every peer must agree on the scene and on query_timeseries.",
   "seed": 20261109,
   "fixture": "basic",
   "verse_name": "QA Basic",
@@ -68,7 +68,7 @@
         {"probe": "query", "target": "SELECT node_id, display_name, position FROM node WHERE petal_id = '${dt.id}' AND tombstone = NONE ORDER BY node_id", "path": "digest", "predicate": "agree", "within_s": 120}
       ],
       "checkpoints": [
-        {"peer": "all", "capture": "scene", "pose": {"orbit": {"focus": [0, 0, 0], "yaw_deg": 35, "pitch_deg": 40, "distance": 260}}, "expect_visual": "three districts of textured buildings on a street grid, identical on every peer"}
+        {"peer": "all", "capture": "scene", "pose": {"orbit": {"focus": [0, 0, 0], "yaw_deg": 35, "pitch_deg": 40, "distance": 260}}, "expect_visual": "three 4 x 5 districts of textured buildings floating in empty space (no ground or road asset is placed), identical on every peer"}
       ]
     },
     {
