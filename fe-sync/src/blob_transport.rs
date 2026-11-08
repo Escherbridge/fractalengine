@@ -98,6 +98,11 @@ impl IrohBlobTransport {
         Self::new(stack.blob_store().clone(), stack.endpoint().clone())
     }
 
+    /// This node's endpoint id (a provider list never names it).
+    pub fn local_id(&self) -> iroh::EndpointId {
+        self.endpoint.id()
+    }
+
     /// The [`ProviderRef`] for `addr` (its `EndpointAddr` JSON).
     pub fn provider_ref(addr: &iroh::EndpointAddr) -> Result<ProviderRef> {
         Ok(ProviderRef::new(

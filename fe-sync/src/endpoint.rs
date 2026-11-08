@@ -5,6 +5,8 @@
 //! in-memory peer address book, and graceful shutdown. See
 //! `fe-sync/src/AGENTS.md` §iroh-1.x.
 
+use std::net::{Ipv4Addr, Ipv6Addr, SocketAddr, SocketAddrV4, SocketAddrV6};
+use std::path::Path;
 use std::sync::{Arc, Once};
 use std::time::Duration;
 
@@ -12,6 +14,46 @@ use anyhow::Result;
 use iroh::address_lookup::MemoryLookup;
 
 use crate::relay_config::{RelayAccessToken, RelayConfig};
+
+/// File under the P2P data dir naming the UDP ports this node last bound (QA-0145).
+pub const ENDPOINT_PORTS_FILE: &str = "endpoint-ports.json";
+
+/// The UDP ports an endpoint bound, per address family; see `src/AGENTS.md` §stable-port.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct BoundPorts {
+    pub v4: Option<u16>,
+    pub v6: Option<u16>,
+}
+
+impl BoundPorts {
+    fn of(sockets: &[SocketAddr]) -> Self {
+        let port = |want_v4: bool| {
+            sockets
+                .iter()
+                .find(|socket| socket.is_ipv4() == want_v4 && socket.port() != 0)
+                .map(SocketAddr::port)
+        };
+        Self { v4: port(true), v6: port(false) }
+    }
+
+    fn load(p2p_dir: &Path) -> Option<Self> {
+        let text = std::fs::read_to_string(p2p_dir.join(ENDPOINT_PORTS_FILE)).ok()?;
+        serde_json::from_str(&text).ok()
+    }
+
+    fn store(self, p2p_dir: &Path) {
+        let written = serde_json::to_string(&self)
+            .map_err(anyhow::Error::from)
+            .and_then(|json| {
+                std::fs::create_dir_all(p2p_dir)?;
+                std::fs::write(p2p_dir.join(ENDPOINT_PORTS_FILE), json)?;
+                Ok(())
+            });
+        if let Err(error) = written {
+            tracing::warn!("could not record the bound P2P ports; the next start binds fresh ones: {error:#}");
+        }
+    }
+}
 
 /// Wraps an [`iroh::Endpoint`] with convenience accessors for the sync thread.
 pub struct SyncEndpoint {
@@ -105,6 +147,41 @@ impl SyncEndpoint {
         relay_config: &RelayConfig,
         token: Option<RelayAccessToken>,
     ) -> Result<Self> {
+        Self::bind(secret_key, relay_config, token, BoundPorts::default()).await
+    }
+
+    /// Like [`Self::new`], but re-binds the UDP ports recorded under `p2p_dir`
+    /// so a restarted node keeps its address (QA-0145, `src/AGENTS.md` §stable-port).
+    /// Taken ports fall back to fresh ones; the bound ports are recorded either way.
+    pub async fn new_with_stable_ports(
+        secret_key: iroh::SecretKey,
+        relay_config: &RelayConfig,
+        p2p_dir: &Path,
+    ) -> Result<Self> {
+        let token = RelayAccessToken::from_env();
+        let previous = BoundPorts::load(p2p_dir).unwrap_or_default();
+        let bound = if previous == BoundPorts::default() {
+            Self::bind(secret_key, relay_config, token, previous).await
+        } else {
+            match Self::bind(secret_key.clone(), relay_config, token.clone(), previous).await {
+                Ok(endpoint) => Ok(endpoint),
+                Err(error) => {
+                    tracing::warn!(?previous, "previous P2P ports are taken; binding fresh ones, so peers must re-learn this node's address: {error:#}");
+                    Self::bind(secret_key, relay_config, token, BoundPorts::default()).await
+                }
+            }
+        }?;
+        BoundPorts::of(&bound.endpoint.bound_sockets()).store(p2p_dir);
+        Ok(bound)
+    }
+
+    /// Bind on `ports` (`None` per family = a fresh port).
+    async fn bind(
+        secret_key: iroh::SecretKey,
+        relay_config: &RelayConfig,
+        token: Option<RelayAccessToken>,
+        ports: BoundPorts,
+    ) -> Result<Self> {
         let relay_mode = relay_config
             .to_relay_mode_with_token(token.as_ref())
             .map_err(|e| anyhow::anyhow!("resolving relay mode: {e}"))?;
@@ -112,11 +189,24 @@ impl SyncEndpoint {
             warn_default_relay_once();
         }
         let address_book = MemoryLookup::new();
-        let endpoint = iroh::Endpoint::builder(iroh::endpoint::presets::Minimal)
+        let mut builder = iroh::Endpoint::builder(iroh::endpoint::presets::Minimal)
             .secret_key(secret_key)
             .relay_mode(relay_mode)
             .transport_config(bbr_transport_config())
-            .address_lookup(address_book.clone())
+            .address_lookup(address_book.clone());
+        if let Some(port) = ports.v4 {
+            builder = builder
+                .bind_addr(SocketAddrV4::new(Ipv4Addr::UNSPECIFIED, port))
+                .map_err(|e| anyhow::anyhow!("IPv4 bind address: {e}"))?;
+        }
+        if let Some(port) = ports.v6 {
+            // Mirrors the default IPv6 socket, whose bind may fail.
+            let optional = iroh::endpoint::BindOpts::default().set_is_required(false);
+            builder = builder
+                .bind_addr_with_opts(SocketAddrV6::new(Ipv6Addr::UNSPECIFIED, port, 0, 0), optional)
+                .map_err(|e| anyhow::anyhow!("IPv6 bind address: {e}"))?;
+        }
+        let endpoint = builder
             .bind()
             .await
             .map_err(|e| anyhow::anyhow!("binding iroh endpoint: {e}"))?;
@@ -222,6 +312,29 @@ mod tests {
                 assert_eq!(addr.id, expected_id);
                 assert!(!ep.relay_enabled());
                 ep.shutdown().await;
+
+                // QA-0145: a restarted node re-binds the ports it recorded, so the
+                // address peers cached for its id stays live across the restart.
+                let p2p_dir = tempfile::tempdir().expect("temp p2p dir");
+                let first = SyncEndpoint::new_with_stable_ports(iroh::SecretKey::from_bytes(&[42u8; 32]), &RelayConfig::Disabled, p2p_dir.path())
+                    .await
+                    .expect("first stable bind");
+                let first_ports = BoundPorts::of(&first.inner().bound_sockets());
+                assert!(first_ports.v4.is_some(), "an IPv4 port is bound and recorded");
+                assert_eq!(BoundPorts::load(p2p_dir.path()), Some(first_ports));
+                first.shutdown().await;
+                let restarted = SyncEndpoint::new_with_stable_ports(iroh::SecretKey::from_bytes(&[42u8; 32]), &RelayConfig::Disabled, p2p_dir.path())
+                    .await
+                    .expect("restart bind");
+                assert_eq!(BoundPorts::of(&restarted.inner().bound_sockets()).v4, first_ports.v4, "the restart keeps its IPv4 port");
+
+                // A taken port never blocks the start: the next bind falls back to fresh ports.
+                let rival = SyncEndpoint::new_with_stable_ports(iroh::SecretKey::from_bytes(&[43u8; 32]), &RelayConfig::Disabled, p2p_dir.path())
+                    .await
+                    .expect("a taken port falls back to a fresh one");
+                assert_ne!(BoundPorts::of(&rival.inner().bound_sockets()).v4, first_ports.v4);
+                restarted.shutdown().await;
+                rival.shutdown().await;
             }
             Err(e) => {
                 // CI or sandboxed environments may not allow UDP binding.

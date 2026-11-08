@@ -636,6 +636,8 @@ pub fn spawn_sync_thread_with_transport(
             // this peer's gossip deliveries with (F9/A21), so the F23
             // forged-attribution gate authenticates sim envelopes verbatim.
             let local_node: iroh::EndpointId = secret_key.public();
+            // Resolved before the bind: the endpoint re-binds the ports recorded here (QA-0145).
+            let p2p_dir = p2p_dir.unwrap_or_else(p2p_data_dir);
 
             // Phase F.1: Create the iroh endpoint first. A virtual transport
             // (sim lab, F8/A19) skips the bind entirely — no real network, no
@@ -670,7 +672,7 @@ pub fn spawn_sync_thread_with_transport(
                     );
                     None
                 }
-                None => match SyncEndpoint::new(secret_key, &relay_config).await {
+                None => match SyncEndpoint::new_with_stable_ports(secret_key, &relay_config, &p2p_dir).await {
                 Ok(ep) => {
                     tracing::info!(
                         node_id = %ep.node_id(),
@@ -737,7 +739,6 @@ pub fn spawn_sync_thread_with_transport(
             // store migration or stack spawn failure) — the holder then
             // reports unavailable and replicators degrade to the in-memory
             // mock. See AGENTS.md §iroh-1.x and docs_engine.rs.
-            let p2p_dir = p2p_dir.unwrap_or_else(p2p_data_dir);
             let docs_stack: Option<Arc<DocsStack>> = match endpoint.as_ref() {
                 Some(ep) => match DocsStack::spawn(ep.inner().clone(), &p2p_dir).await {
                     Ok(stack) => Some(Arc::new(stack)),

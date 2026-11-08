@@ -2198,7 +2198,8 @@ refreshes it every 10 s from the roster via `Endpoint::remote_info`; on
 `OpenVerseReplica`/`JoinVerseReplica` the book is merged into the bootstrap set
 (explicit/env entries first). With `FE_SYNC_RELAY=disabled` there is no address
 lookup, so this is what lets a restarted peer re-dial a peer that kept its port.
-Both sides restarting at once still needs `FE_SYNC_BOOTSTRAP` (ports are random).
+Since QA-0145 every node re-binds its recorded ports (§stable-port), so both sides restarting
+at once also re-dial from their books; `FE_SYNC_BOOTSTRAP` is needed only when a recorded port was taken.
 
 ## §tileset-readvertise (QA-0101, 2026-11-07)
 
@@ -2283,3 +2284,37 @@ Critic fixes, 2026-11-07:
   `restore_only` re-judge, which admits a version only if its author held Editor when it was
   written. Replaying `node/` through the current role would admit rows written while the
   author was revoked.
+
+## §stable-port — a restarted node keeps its address (QA-0145, 2026-11-07)
+
+`SyncEndpoint::new_with_stable_ports` (the sync thread's only bind) re-binds the UDP ports recorded in
+`<p2p_dir>/endpoint-ports.json` (`{"v4":…,"v6":…}`) and records whatever it bound. A taken port falls
+back to fresh ports with a warn; tests and tools keep `SyncEndpoint::new` (fresh ports).
+Why: iroh 1.3 keeps a peer's selected path per endpoint id and sends a new connection's handshake ONLY
+to that path (`remote_state.rs::handle_msg_send_datagram`). When a peer restarts on a new port while
+the old connection is still open (30 s idle timeout), the dead path stays selected: closing a
+connection never re-selects while another one exists. Run 3's owner could not dial the restarted
+editor for minutes ("Failed to connect Timeout during connect" at iroh-blobs' 1 s pool timeout),
+so every content download from it failed. With the same port the cached path stays live.
+
+## §content-refetch — a failed docs download is not terminal (QA-0145, 2026-11-07)
+
+iroh-docs downloads an entry's content once (from the forwarder, or later after a neighbor's
+`ContentReady`) and never retries. The pump therefore keeps a re-fetch schedule per pending hash
+(`replicator.rs` `PendingRows`/`ContentRetry`): after 2 s, then 4, 8, 16, 30, 30 … s while the
+replica is open, it fetches the blob itself through `IrohBlobTransport` (15 s dial, BAO-verified,
+16 MiB cap) from the forwarder and the entry author, at most 4 at once and 4096 hashes per replica.
+A success emits the waiting rows exactly like `ContentReady`. Invariant: per (author, table, record)
+slot only the newest entry may still land: a newer `InsertRemote` drops the slot's older waiting
+entry, so a late fetch can never apply stale content over a newer row.
+
+## §isolated-write-sync — writes made with no gossip neighbor (QA-0145, 2026-11-07)
+
+A local write's gossip broadcast reaches only live neighbors. After the editor restart in the
+QA-0145 repro, the owner's hyparview held a stale pending `Neighbor` request for the editor and never
+answered its new `Join`, so the editor had no neighbor on the verse topic and every write reached
+no one (set reconciliation runs only on open/NeighborUp). The pump tracks `NeighborUp/Down`; an
+`InsertLocal` while the set is empty schedules one `Doc::start_sync` with every peer this replica
+has synced or exchanged entries with (`IsolatedWrites`): 1 s after the first write (a burst
+coalesces), at most every 5 s, skipped if a neighbor came back. It never runs while a neighbor
+is live, so it adds no traffic to a healthy swarm and cannot recreate the QA-0101 re-dial storm.

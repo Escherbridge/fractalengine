@@ -892,6 +892,7 @@ impl VerseReplicator for IrohDocsReplicator {
                 tx,
                 readiness,
                 Some(doc.clone()),
+                Some(Arc::new(crate::blob_transport::IrohBlobTransport::from_stack(stack))),
             ));
             *self.pump.lock().unwrap_or_else(|e| e.into_inner()) = Some(handle.abort_handle());
             Ok(rx)
@@ -1086,6 +1087,208 @@ struct PendingContent {
     content_hash: BlobHash,
     author_id: String,
     timestamp: u64,
+}
+
+impl PendingContent {
+    /// The (author, table, record) slot iroh-docs keeps one latest entry for.
+    fn slot(&self) -> (String, String, String) {
+        (self.author_id.clone(), self.table.clone(), self.record_id.clone())
+    }
+}
+
+/// First content re-fetch after a pending entry arrives (QA-0145).
+const CONTENT_RETRY_FIRST: std::time::Duration = std::time::Duration::from_secs(2);
+/// Longest wait between two content re-fetches.
+const CONTENT_RETRY_MAX: std::time::Duration = std::time::Duration::from_secs(30);
+/// Content re-fetches in flight per replica.
+const MAX_CONTENT_FETCHES: usize = 4;
+/// Pending hashes a replica re-fetches at once; more stay on iroh-docs alone.
+const MAX_CONTENT_RETRIES: usize = 4096;
+/// Largest row payload a content re-fetch accepts.
+const MAX_ROW_CONTENT_BYTES: u64 = 16 * 1024 * 1024;
+
+/// Re-fetch state of one pending content hash; see `src/AGENTS.md` §content-refetch.
+struct ContentRetry {
+    attempt: u32,
+    due: tokio::time::Instant,
+    providers: Vec<iroh::EndpointId>,
+    in_flight: bool,
+}
+
+impl ContentRetry {
+    fn new() -> Self {
+        Self {
+            attempt: 0,
+            due: tokio::time::Instant::now() + CONTENT_RETRY_FIRST,
+            providers: Vec::new(),
+            in_flight: false,
+        }
+    }
+
+    fn add_provider(&mut self, provider: iroh::EndpointId) {
+        if !self.providers.contains(&provider) {
+            self.providers.push(provider);
+        }
+    }
+
+    /// Exponential backoff (4, 8, 16, 30, 30 ... s); retries last while the replica is open.
+    fn failed(&mut self, hash: &iroh_blobs::Hash, error: &anyhow::Error) {
+        self.attempt = self.attempt.saturating_add(1);
+        self.in_flight = false;
+        let delay = CONTENT_RETRY_FIRST
+            .saturating_mul(1u32 << self.attempt.min(5))
+            .min(CONTENT_RETRY_MAX);
+        self.due = tokio::time::Instant::now() + delay;
+        if self.attempt == 3 {
+            tracing::warn!(hash = %hash, attempt = self.attempt, "replica entry content still unavailable from its providers; retrying: {error:#}");
+        } else {
+            tracing::debug!(hash = %hash, attempt = self.attempt, "replica entry content re-fetch failed: {error:#}");
+        }
+    }
+}
+
+/// Entries waiting for content, keyed by hash, plus their re-fetch schedule.
+#[derive(Default)]
+struct PendingRows {
+    by_hash: HashMap<iroh_blobs::Hash, Vec<PendingContent>>,
+    /// The waiting hash and timestamp of each slot's newest pending entry.
+    by_slot: HashMap<(String, String, String), (iroh_blobs::Hash, u64)>,
+    retries: HashMap<iroh_blobs::Hash, ContentRetry>,
+}
+
+impl PendingRows {
+    /// Drop the slot's older waiting entry: iroh-docs replaced it, so its content must never land after this one.
+    fn supersede(&mut self, newer: &PendingContent) {
+        let slot = newer.slot();
+        let Some(&(hash, timestamp)) = self.by_slot.get(&slot) else { return };
+        if timestamp >= newer.timestamp {
+            return;
+        }
+        self.by_slot.remove(&slot);
+        if let Some(waiting) = self.by_hash.get_mut(&hash) {
+            waiting.retain(|older| older.slot() != slot);
+            if waiting.is_empty() {
+                self.by_hash.remove(&hash);
+                self.retries.remove(&hash);
+            }
+        }
+    }
+
+    /// Park `meta` until its content lands; schedule a re-fetch from `providers` when `refetch`.
+    fn wait(&mut self, hash: iroh_blobs::Hash, meta: PendingContent, providers: &[iroh::EndpointId], refetch: bool) {
+        self.by_slot.insert(meta.slot(), (hash, meta.timestamp));
+        self.by_hash.entry(hash).or_default().push(meta);
+        if !refetch || (self.retries.len() >= MAX_CONTENT_RETRIES && !self.retries.contains_key(&hash)) {
+            return;
+        }
+        let retry = self.retries.entry(hash).or_insert_with(ContentRetry::new);
+        for provider in providers {
+            retry.add_provider(*provider);
+        }
+    }
+
+    /// Take every entry waiting on `hash` (its content is now local).
+    fn take(&mut self, hash: &iroh_blobs::Hash) -> Vec<PendingContent> {
+        self.retries.remove(hash);
+        let waiting = self.by_hash.remove(hash).unwrap_or_default();
+        for meta in &waiting {
+            if self.by_slot.get(&meta.slot()).is_some_and(|(slot_hash, _)| slot_hash == hash) {
+                self.by_slot.remove(&meta.slot());
+            }
+        }
+        waiting
+    }
+
+    /// The earliest due re-fetch not already running, while a fetch slot is free.
+    fn next_due(&self, running: usize) -> Option<tokio::time::Instant> {
+        if running >= MAX_CONTENT_FETCHES {
+            return None;
+        }
+        self.retries.values().filter(|retry| !retry.in_flight).map(|retry| retry.due).min()
+    }
+}
+
+/// Wait before syncing a local write that had no gossip neighbor (bursts coalesce).
+const ISOLATED_SYNC_DELAY: std::time::Duration = std::time::Duration::from_secs(1);
+/// Shortest gap between two such syncs of one replica.
+const ISOLATED_SYNC_INTERVAL: std::time::Duration = std::time::Duration::from_secs(5);
+/// Peers a replica remembers as direct-sync targets.
+const MAX_KNOWN_SYNC_PEERS: usize = 256;
+
+/// Direct sync for local writes made while no gossip neighbor is live; see `src/AGENTS.md` §isolated-write-sync.
+#[derive(Default)]
+struct IsolatedWrites {
+    neighbors: HashSet<iroh::EndpointId>,
+    known: HashSet<iroh::EndpointId>,
+    due: Option<tokio::time::Instant>,
+    last: Option<tokio::time::Instant>,
+}
+
+impl IsolatedWrites {
+    fn note_peer(&mut self, peer: iroh::EndpointId) {
+        if self.known.len() < MAX_KNOWN_SYNC_PEERS {
+            self.known.insert(peer);
+        }
+    }
+
+    /// A local write: its gossip broadcast reached no one when no neighbor is live.
+    fn local_write(&mut self) {
+        if !self.neighbors.is_empty() || self.due.is_some() {
+            return;
+        }
+        let earliest = tokio::time::Instant::now() + ISOLATED_SYNC_DELAY;
+        let throttled = self.last.map_or(earliest, |last| last + ISOLATED_SYNC_INTERVAL);
+        self.due = Some(earliest.max(throttled));
+    }
+
+    /// The peers to sync with now (none once a neighbor came up meanwhile).
+    fn take_due(&mut self) -> Vec<iroh::EndpointId> {
+        self.due = None;
+        self.last = Some(tokio::time::Instant::now());
+        if self.neighbors.is_empty() {
+            self.known.iter().copied().collect()
+        } else {
+            Vec::new()
+        }
+    }
+}
+
+/// Fetch `hash` from the first provider that serves it (BAO-verified, size-capped).
+async fn fetch_row_content(
+    fetcher: &crate::blob_transport::IrohBlobTransport,
+    hash: iroh_blobs::Hash,
+    providers: &[iroh::EndpointId],
+) -> anyhow::Result<Bytes> {
+    use fe_runtime::blob_transport::BlobTransport as _;
+    let mut last_error = anyhow::anyhow!("no provider known for the entry content");
+    for provider in providers {
+        let provider_ref =
+            crate::blob_transport::IrohBlobTransport::provider_ref(&iroh::EndpointAddr::new(*provider))?;
+        match fetcher.fetch(&provider_ref, *hash.as_bytes(), MAX_ROW_CONTENT_BYTES).await {
+            Ok(data) => return Ok(data),
+            Err(error) => last_error = error.context(format!("provider {}", provider.fmt_short())),
+        }
+    }
+    Err(last_error)
+}
+
+/// Emit the rows waiting on one content blob; `false` once the receiver is gone.
+async fn emit_waiting_rows(out: &mpsc::Sender<RowChange>, waiting: Vec<PendingContent>, data: &[u8]) -> bool {
+    for meta in waiting {
+        let change = RowChange {
+            table: meta.table,
+            record_id: meta.record_id,
+            content_hash: meta.content_hash,
+            author_id: meta.author_id,
+            timestamp: meta.timestamp,
+            is_tombstone: row_is_tombstone(data),
+            data: data.to_vec(),
+        };
+        if out.send(change).await.is_err() {
+            return false;
+        }
+    }
+    true
 }
 
 /// Map an iroh peer public key to the app's `did:key` identity form.
@@ -1285,21 +1488,84 @@ fn confirm_peer(readiness: &JoinReadiness, peer: iroh::EndpointId) {
 ///   `ContentReady` fires for their hash.
 /// - Empty entries (`Doc::del` markers) carry no content; they are emitted
 ///   immediately as tombstones.
+/// - A failed iroh-docs download is terminal, so `fetcher` re-fetches pending
+///   content from the forwarder and the author with backoff (QA-0145,
+///   `src/AGENTS.md` §content-refetch); a newer entry in the same slot drops the older one.
 async fn pump_live_events(
     mut stream: std::pin::Pin<Box<dyn Stream<Item = anyhow::Result<LiveEvent>> + Send>>,
     blobs: iroh_blobs::api::Store,
     out: mpsc::Sender<RowChange>,
     readiness: Arc<JoinReadiness>,
     resync: Option<DocHandle>,
+    fetcher: Option<Arc<crate::blob_transport::IrohBlobTransport>>,
 ) {
     readiness.alive.store(true, Ordering::Release);
     // QA-0101: when each peer was last re-dialed (fallback cooldown).
     let mut resync_attempts: HashMap<iroh::EndpointId, std::time::Instant> = HashMap::new();
     let _readiness_guard = JoinReadinessGuard(readiness.clone());
-    // Entries whose content hash has not finished downloading yet.
-    let mut pending: HashMap<iroh_blobs::Hash, Vec<PendingContent>> = HashMap::new();
+    let mut pending = PendingRows::default();
+    let mut fetches: tokio::task::JoinSet<(iroh_blobs::Hash, anyhow::Result<Bytes>)> =
+        tokio::task::JoinSet::new();
+    let mut isolated = IsolatedWrites::default();
 
-    while let Some(event) = stream.next().await {
+    loop {
+        let next_due = pending.next_due(fetches.len());
+        let isolated_due = isolated.due;
+        let event = tokio::select! {
+            event = stream.next() => match event {
+                Some(event) => event,
+                None => break,
+            },
+            _ = tokio::time::sleep_until(isolated_due.unwrap_or_else(tokio::time::Instant::now)), if isolated_due.is_some() => {
+                let peers = isolated.take_due();
+                if let (Some(doc), false) = (&resync, peers.is_empty()) {
+                    tracing::info!(peers = peers.len(), "local write made while no gossip neighbor is live; syncing it to known peers directly");
+                    let doc = doc.clone();
+                    tokio::spawn(async move {
+                        if let Err(error) = doc.start_sync(peers.into_iter().map(iroh::EndpointAddr::new).collect()).await {
+                            tracing::debug!("isolated-write sync request failed: {error}");
+                        }
+                    });
+                }
+                continue;
+            }
+            Some(joined) = fetches.join_next(), if !fetches.is_empty() => {
+                let Ok((hash, fetched)) = joined else { continue };
+                match fetched {
+                    Ok(data) => {
+                        let waiting = pending.take(&hash);
+                        if !waiting.is_empty() {
+                            tracing::info!(hash = %hash, rows = waiting.len(), "replica entry content re-fetched after its docs download failed");
+                            if !emit_waiting_rows(&out, waiting, &data).await {
+                                return;
+                            }
+                        }
+                    }
+                    Err(error) => {
+                        if let Some(retry) = pending.retries.get_mut(&hash) {
+                            retry.failed(&hash, &error);
+                        }
+                    }
+                }
+                continue;
+            }
+            _ = tokio::time::sleep_until(next_due.unwrap_or_else(tokio::time::Instant::now)), if next_due.is_some() => {
+                let Some(fetcher) = &fetcher else { continue };
+                let now = tokio::time::Instant::now();
+                for (hash, retry) in pending.retries.iter_mut() {
+                    if fetches.len() >= MAX_CONTENT_FETCHES {
+                        break;
+                    }
+                    if retry.in_flight || retry.due > now {
+                        continue;
+                    }
+                    retry.in_flight = true;
+                    let (fetcher, hash, providers) = (fetcher.clone(), *hash, retry.providers.clone());
+                    fetches.spawn(async move { (hash, fetch_row_content(&fetcher, hash, &providers).await) });
+                }
+                continue;
+            }
+        };
         let event = match event {
             Ok(event) => event,
             Err(e) => {
@@ -1312,6 +1578,7 @@ async fn pump_live_events(
             LiveEvent::InsertLocal { entry } => {
                 // Loop prevention at the source: our own write echoing back.
                 tracing::debug!(key = ?String::from_utf8_lossy(entry.key()), "local insert skipped");
+                isolated.local_write();
             }
             LiveEvent::InsertRemote {
                 entry,
@@ -1334,6 +1601,7 @@ async fn pump_live_events(
                 // read `entry.author()`) agrees with live delivery. `from`
                 // is retained only as tracing context.
                 confirm_peer(&readiness, from);
+                isolated.note_peer(from);
                 let content_hash: BlobHash = *entry.content_hash().as_bytes();
                 let meta = PendingContent {
                     table: table.to_string(),
@@ -1348,6 +1616,7 @@ async fn pump_live_events(
                     author = %meta.author_id,
                     "InsertRemote"
                 );
+                pending.supersede(&meta);
                 if entry.record().is_empty() {
                     // Deletion marker: no content to download.
                     let change = RowChange {
@@ -1396,14 +1665,23 @@ async fn pump_live_events(
                             ?status,
                             "replica entry content pending download"
                         );
-                        pending.entry(entry.content_hash()).or_default().push(meta);
+                        // The forwarder and the author both may hold the content; never ask ourselves.
+                        let author = iroh::EndpointId::from_bytes(entry.author().as_bytes()).ok();
+                        let own = fetcher.as_ref().map(|fetcher| fetcher.local_id());
+                        let providers: Vec<iroh::EndpointId> = [Some(from), author]
+                            .into_iter()
+                            .flatten()
+                            .filter(|provider| Some(*provider) != own)
+                            .collect();
+                        pending.wait(entry.content_hash(), meta, &providers, fetcher.is_some());
                     }
                 }
             }
             LiveEvent::ContentReady { hash } => {
-                let Some(waiting) = pending.remove(&hash) else {
+                let waiting = pending.take(&hash);
+                if waiting.is_empty() {
                     continue;
-                };
+                }
                 let data = match read_blob_bytes(&blobs, &hash).await {
                     Ok(data) => data,
                     Err(e) => {
@@ -1411,32 +1689,27 @@ async fn pump_live_events(
                         continue;
                     }
                 };
-                let data = data.to_vec();
-                for meta in waiting {
-                    let change = RowChange {
-                        table: meta.table,
-                        record_id: meta.record_id,
-                        content_hash: meta.content_hash,
-                        author_id: meta.author_id,
-                        timestamp: meta.timestamp,
-                        is_tombstone: row_is_tombstone(&data),
-                        data: data.clone(),
-                    };
-                    if out.send(change).await.is_err() {
-                        return;
-                    }
+                if !emit_waiting_rows(&out, waiting, &data).await {
+                    return;
                 }
             }
             LiveEvent::NeighborUp(peer) => {
+                isolated.neighbors.insert(peer);
+                isolated.note_peer(peer);
                 tracing::debug!(peer = %peer_did_key(&peer), "replica swarm neighbor up");
             }
             LiveEvent::NeighborDown(peer) => {
+                isolated.neighbors.remove(&peer);
                 readiness.successful_peers.lock().unwrap_or_else(|error| error.into_inner()).remove(&peer);
                 tracing::debug!(peer = %peer_did_key(&peer), "replica swarm neighbor down");
             }
             LiveEvent::SyncFinished(event) => match &event.result {
-                Ok(_) => confirm_peer(&readiness, event.peer),
+                Ok(_) => {
+                    isolated.note_peer(event.peer);
+                    confirm_peer(&readiness, event.peer);
+                }
                 Err(error) => {
+                    isolated.note_peer(event.peer);
                     // A close failure is the simultaneous-dial artifact: the other
                     // leg carried the sync, so it is not evidence against the peer.
                     if !error.contains("Failed to close") {
@@ -1452,9 +1725,9 @@ async fn pump_live_events(
             }
         }
     }
-    if !pending.is_empty() {
+    if !pending.by_hash.is_empty() {
         tracing::warn!(
-            count = pending.len(),
+            count = pending.by_hash.len(),
             "replica event stream ended with content still pending"
         );
     }
@@ -2005,6 +2278,35 @@ mod tests {
             "snapshot author must equal live author for the same entry"
         );
 
+        // QA-0145: Bob's iroh-docs download of a row's content fails (here Alice
+        // refuses it; in the field a restarted author is dialed on its dead old
+        // path) and iroh-docs never retries — the row must still arrive once
+        // Alice serves it.
+        let late = br#"{"verse_id":"verse-a2","name":"Served Late"}"#.to_vec();
+        let late_hash = iroh_blobs::Hash::new(&late);
+        stack_a.blob_access_gate().record_tileset_root("gate-verse", *late_hash.as_bytes());
+        alice.write_row("verse", "verse-late", &late).await.expect("alice writes the refused row");
+        let bob_doc = bob.live_doc().expect("bob's doc is live");
+        tokio::time::timeout(std::time::Duration::from_secs(20), async {
+            while bob_doc.get_one(iroh_docs::store::Query::key_exact(b"verse/verse-late")).await.ok().flatten().is_none() {
+                tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+            }
+        }).await.expect("the entry reaches bob");
+        tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+        assert!(
+            !matches!(stack_b.blob_store().blobs().status(late_hash).await, Ok(iroh_blobs::api::blobs::BlobStatus::Complete { .. })),
+            "bob's docs download of the refused content failed"
+        );
+        stack_a.blob_access_gate().set_verse_access(
+            "gate-verse",
+            crate::docs_engine::VerseAccessSnapshot { owner_did: None, open_to_all: true, viewer_dids: HashSet::new() },
+        );
+        let late_change = tokio::time::timeout(std::time::Duration::from_secs(20), bob_rx.recv())
+            .await
+            .expect("the row arrives once its author serves the content")
+            .expect("pump stays alive");
+        assert_eq!((late_change.record_id.as_str(), late_change.data.as_slice()), ("verse-late", late.as_slice()));
+
         let native_ns = hex::encode(fe_database::derive_namespace_id(&secret));
         tokio::time::timeout(std::time::Duration::from_secs(20), async {
             while !bob.joined_peer_ready(&native_ns, &alice_endpoint_did) {
@@ -2017,7 +2319,7 @@ mod tests {
             .chain(futures_lite::stream::pending());
         let (error_tx, _error_rx) = mpsc::channel(1);
         let error_pump = tokio::spawn(pump_live_events(
-            Box::pin(errors), stack_b.blob_store().clone(), error_tx, readiness.clone(), None,
+            Box::pin(errors), stack_b.blob_store().clone(), error_tx, readiness.clone(), None, None,
         ));
         tokio::time::timeout(std::time::Duration::from_secs(1), async {
             loop {
@@ -2028,6 +2330,28 @@ mod tests {
         assert!(readiness.alive.load(Ordering::Acquire), "error handling continues with no stale readiness");
         error_pump.abort();
         assert!(error_pump.await.unwrap_err().is_cancelled());
+
+        // QA-0145: a local write made while no gossip neighbor is live (a
+        // restarted node whose rejoin went unanswered) reached no one, so it is
+        // synced directly to the known peers: coalesced, throttled, and skipped
+        // once a neighbor is back.
+        let mut isolated = IsolatedWrites::default();
+        isolated.neighbors.insert(ep_a.id());
+        isolated.local_write();
+        assert!(isolated.due.is_none(), "a live neighbor carries the broadcast");
+        isolated.neighbors.clear();
+        isolated.note_peer(ep_a.id());
+        let before = tokio::time::Instant::now();
+        isolated.local_write();
+        let first_due = isolated.due.expect("an isolated write schedules a direct sync");
+        assert!(first_due >= before + ISOLATED_SYNC_DELAY, "a write burst coalesces into one sync");
+        isolated.local_write();
+        assert_eq!(isolated.due, Some(first_due), "later writes join the scheduled sync");
+        assert_eq!(isolated.take_due(), vec![ep_a.id()]);
+        isolated.local_write();
+        assert!(isolated.due.expect("rescheduled") >= isolated.last.expect("synced") + ISOLATED_SYNC_INTERVAL, "syncs are throttled");
+        isolated.neighbors.insert(ep_a.id());
+        assert!(isolated.take_due().is_empty(), "a neighbor that came back makes the sync moot");
 
         // Close must leave the swarm cleanly on both sides.
         alice.close().await.unwrap();
