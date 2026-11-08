@@ -8,7 +8,8 @@ use crate::{
     messages::SyncEvent,
     scene_asset_gate::SceneAssetGate,
 };
-use admission::{admit, admit_job};
+use crate::scene_asset_gate::ServeDecision;
+use admission::{admit, admit_job, is_busy};
 use fe_runtime::{
     blob_store::{BlobHash, BlobStoreHandle},
     blob_transport::ProviderRef,
@@ -55,6 +56,37 @@ impl Rearm {
 }
 
 type Unavailable = Arc<Mutex<HashMap<(String, BlobHash), Rearm>>>;
+
+/// The wake of each fetch job sleeping between prefetch attempts (QA-0143).
+type Wakes = Arc<Mutex<HashMap<(String, BlobHash), Arc<tokio::sync::Notify>>>>;
+
+/// A fetch job's registered wake; unregistered (only if still its own) when the job ends.
+struct WakeRegistration {
+    wakes: Wakes,
+    key: (String, BlobHash),
+    wake: Arc<tokio::sync::Notify>,
+}
+
+impl WakeRegistration {
+    fn new(wakes: &Wakes, verse: &str, hash: BlobHash) -> Self {
+        let key = (verse.to_string(), hash);
+        let wake = Arc::new(tokio::sync::Notify::new());
+        wakes
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .insert(key.clone(), wake.clone());
+        Self { wakes: wakes.clone(), key, wake }
+    }
+}
+
+impl Drop for WakeRegistration {
+    fn drop(&mut self) {
+        let mut wakes = self.wakes.lock().unwrap_or_else(|e| e.into_inner());
+        if wakes.get(&self.key).is_some_and(|wake| Arc::ptr_eq(wake, &self.wake)) {
+            wakes.remove(&self.key);
+        }
+    }
+}
 
 /// Record a failed fetch of an open Verse's blob for a later re-arm.
 fn note_unavailable(unavailable: &Unavailable, verse: &str, hash: BlobHash) {
@@ -213,6 +245,7 @@ pub(crate) struct SceneAssetJobs {
     prefetches: Arc<std::sync::atomic::AtomicUsize>,
     prefetch_backlog: std::collections::VecDeque<(String, BlobHash)>,
     unavailable: Unavailable,
+    wakes: Wakes,
 }
 
 impl SceneAssetJobs {
@@ -236,9 +269,9 @@ impl SceneAssetJobs {
                     .unwrap_or_else(|e| e.into_inner())
                     .get(&verse)
                     .cloned();
-                let Some(lease) = lease else { return false };
+                let Some(lease) = lease else { return ServeDecision::Deny };
                 if lease.stop.is_requested() {
-                    return false;
+                    return ServeDecision::Deny;
                 }
                 let result = admit(
                     &db,
@@ -249,7 +282,12 @@ impl SceneAssetJobs {
                     },
                 )
                 .await;
-                !lease.stop.is_requested() && result.is_ok()
+                match result {
+                    _ if lease.stop.is_requested() => ServeDecision::Deny,
+                    Ok(_) => ServeDecision::Admit,
+                    Err(error) if is_busy(&error) => ServeDecision::Unavailable,
+                    Err(_) => ServeDecision::Deny,
+                }
             })
         }));
         Self {
@@ -267,6 +305,7 @@ impl SceneAssetJobs {
             prefetches: Default::default(),
             prefetch_backlog: Default::default(),
             unavailable: Default::default(),
+            wakes: Default::default(),
         }
     }
 
@@ -396,6 +435,24 @@ impl SceneAssetJobs {
                 rearm.due = now;
             }
         }
+        for ((waiting, _), wake) in self.wakes.lock().unwrap_or_else(|e| e.into_inner()).iter() {
+            if waiting == verse {
+                wake.notify_one();
+            }
+        }
+    }
+
+    /// QA-0143: a fetch sleeping between attempts retries now — its row was
+    /// written again or someone asked for the blob — instead of after its back-off.
+    fn wake(&self, verse: &str, hash: BlobHash) {
+        if let Some(wake) = self
+            .wakes
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .get(&(verse.to_string(), hash))
+        {
+            wake.notify_one();
+        }
     }
 
     /// QA-0118: fetch a scene blob as soon as its replicated metadata row
@@ -407,6 +464,7 @@ impl SceneAssetJobs {
         if self.blobs.has_blob(&hash) {
             return;
         }
+        self.wake(verse, hash);
         if self.prefetches.load(std::sync::atomic::Ordering::Relaxed) >= PREFETCH_CAP {
             let waiting = (verse.to_string(), hash);
             if self.prefetch_backlog.len() < PREFETCH_BACKLOG_CAP
@@ -562,6 +620,9 @@ impl SceneAssetJobs {
         {
             let mut pending = self.pending.lock().unwrap_or_else(|e| e.into_inner());
             if let Some(owners) = pending.get_mut(&key) {
+                if let Job::Fetch { verse, hash, .. } = &key {
+                    self.wake(verse, *hash);
+                }
                 if let Some(request_id) = request_id {
                     if owners.len() >= 256 {
                         drop(pending);
@@ -609,6 +670,10 @@ impl SceneAssetJobs {
         let gate = self.gate.clone();
         let slots = self.slots.clone();
         let unavailable = self.unavailable.clone();
+        let wake = match &key {
+            Job::Fetch { verse, hash, .. } => Some(WakeRegistration::new(&self.wakes, verse, *hash)),
+            Job::PublishRow { .. } => None,
+        };
         self.jobs.spawn(async move {
             let _prefetch_slot = prefetch_slot;
             let deadline = Instant::now() + JOB_TIMEOUT;
@@ -652,7 +717,13 @@ impl SceneAssetJobs {
                                     attempt += 1;
                                     tracing::info!(verse, hash = %fe_runtime::blob_store::hash_to_hex(hash), attempt, ?delay,
                                         "scene asset prefetch failed: {error:#}; retrying");
-                                    tokio::time::sleep(delay).await;
+                                    match &wake {
+                                        Some(registration) => tokio::select! {
+                                            _ = tokio::time::sleep(delay) => {}
+                                            _ = registration.wake.notified() => {}
+                                        },
+                                        None => tokio::time::sleep(delay).await,
+                                    }
                                 }
                                 Err(error) => break Err(error),
                             }

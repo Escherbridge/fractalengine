@@ -7,6 +7,7 @@
 use fe_database::{repo, spawn_db_thread_shared, BlobStoreHandle, DbThread};
 use fe_runtime::blob_store::mock::MockBlobStore;
 use fe_runtime::messages::{DbCommand, DbResult};
+use fe_runtime::scene_asset::{SceneAssetTransferPurpose, SceneAssetTransferRequest};
 use std::path::Path;
 use std::sync::Arc;
 use std::time::Duration;
@@ -105,6 +106,50 @@ fn api_reader_reads_db_thread_writes_through_the_shared_handle() {
     assert_eq!(rows.len(), 1, "exactly the created verse: {rows:?}");
     assert_eq!(rows[0]["verse_id"], verse_id.as_str());
     assert_eq!(rows[0]["name"], "Shared Verse");
+
+    // QA-0143: a peer's Serve admission (its caller gives up after 2 s) is
+    // answered ahead of a queued write burst instead of waiting it out.
+    let burst = 40;
+    for n in 0..burst {
+        spawned
+            .cmd_tx
+            .send(DbCommand::CreateVerse {
+                name: format!("Burst {n}"),
+            })
+            .expect("send burst write");
+    }
+    let (reply, admission) = crossbeam::channel::bounded(1);
+    spawned
+        .cmd_tx
+        .send(DbCommand::InspectSceneAssetTransfer {
+            request: SceneAssetTransferRequest {
+                verse_id: verse_id.clone(),
+                hash: [7u8; 32],
+                node_id: None,
+                purpose: SceneAssetTransferPurpose::Serve {
+                    requester_did: "did:key:peer".into(),
+                },
+                deadline: std::time::Instant::now() + TIMEOUT,
+            },
+            reply,
+        })
+        .expect("send serve admission");
+    let answer = admission
+        .recv_timeout(TIMEOUT)
+        .expect("serve admission answered");
+    assert!(answer.is_err(), "no such asset: refused, but answered");
+    let created = |result: &DbResult| matches!(result, DbResult::VerseCreated { .. });
+    let ran_first = spawned.res_rx.try_iter().filter(created).count();
+    assert!(
+        ran_first < burst / 4,
+        "the admission jumped the queued burst ({ran_first} of {burst} writes ran first)"
+    );
+    let mut ran = ran_first;
+    while ran < burst {
+        if created(&spawned.res_rx.recv_timeout(TIMEOUT).expect("burst write result")) {
+            ran += 1;
+        }
+    }
 
     // Persist a schema-valid but inadmissible clock, then exercise the real restart handshake.
     let reader = spawned.db_thread.shared_db.clone();

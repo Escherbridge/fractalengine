@@ -65,6 +65,7 @@ pub type GuardedStatements = (Vec<String>, Vec<(String, serde_json::Value)>);
 pub mod api_token_store;
 pub mod atlas;
 pub mod canon_log;
+mod command_lane;
 pub mod handlers;
 pub mod invite;
 mod join_authority;
@@ -668,9 +669,11 @@ pub fn spawn_db_thread_shared(
             // loop, retried in-line (src/AGENTS.md §inbound-admissions).
             let mut admissions = handlers::inbound_admissions::InboundAdmissions::for_local_publisher(&local_did);
 
+            // QA-0143: FIFO except a peer's Serve admission (src/AGENTS.md §command-lane).
+            let mut lane = command_lane::CommandLane::default();
             #[allow(clippy::while_let_loop)]
             loop {
-                let cmd = rx.recv();
+                let cmd = lane.next(&rx);
                 let cmd_start = std::time::Instant::now();
                 let cmd_kind = cmd.as_ref().map(variant_name).unwrap_or_default();
                 match cmd {
@@ -2224,7 +2227,7 @@ pub fn spawn_db_thread_shared(
                 // QA-0138: the DB thread is one serial queue — name what holds it.
                 let elapsed = cmd_start.elapsed();
                 if elapsed >= SLOW_DB_COMMAND {
-                    tracing::warn!(kind = %cmd_kind, elapsed_ms = elapsed.as_millis() as u64, queued = rx.len(), "slow DB command");
+                    tracing::warn!(kind = %cmd_kind, elapsed_ms = elapsed.as_millis() as u64, queued = rx.len() + lane.len(), "slow DB command");
                 } else {
                     tracing::debug!(kind = %cmd_kind, elapsed_ms = elapsed.as_millis() as u64, "DB command processed");
                 }

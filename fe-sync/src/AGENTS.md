@@ -2254,6 +2254,24 @@ fe-database `handlers/AGENTS.md` scene-asset-transfer) and, under load, Serve ad
 timing out behind the saturated DB thread (QA-0138); the refusal log now names the gate
 (`gate="tileset"|"scene-asset"|"child-range"`).
 
+QA-0143 (fix:4, 2026-11-07): with three authors placing at once the owner refused both
+Editors for about 60 s at host CPU < 50 %. Not a role problem: each Serve admission waited
+behind 20-46 queued `ApplyReplicatedRow` on the owner's serial DB thread, timed out at 2 s
+(refusals exactly 2 s apart, since the blob filter decided requests one at a time) and was
+logged and aborted as "holds no role", so the fetchers slept through their 1-16 s retries and
+the 15 s re-arm. Four changes, each at its own layer:
+1. fe-database answers a Serve admission ahead of the queued backlog (`command_lane`,
+   fe-database `src/AGENTS.md` §command-lane).
+2. `SceneAssetGate::decide` returns `ServeDecision::{Admit, Deny, Unavailable}`; a busy or
+   timed-out admission (`admission::AdmissionBusy`, the 3 s gate timeout, a classification
+   write in flight) is `Unavailable`, logged at info as "deferred" and aborted `RateLimited`
+   (wire code 2), never as a role denial (`Permission`, code 1).
+3. The blob filter decides up to 8 requests concurrently (`CONCURRENT_DECISIONS`), so one
+   slow admission no longer holds every other peer's request.
+4. A prefetch sleeping between attempts is woken (`SceneAssetJobs::wake`, a per-job
+   `Notify`) when its row is written again, an owned fetch asks for the same blob, or
+   `rearm(verse)` fires: the retry follows the event instead of the back-off.
+
 ## §publication-lease (QA-0120, 2026-11-07)
 
 A write for a verse whose replica is closed (a revoke made from the verse list) used to wait

@@ -1422,6 +1422,25 @@ are ordered by the `(hlc, publisher)` scene clock in `scene_publication/inbound.
 The replica snapshot feeds every author's `node/` entry (oldest first) so a
 rejoining peer sees the register winner, not just the newest entry.
 
+## §command-lane (QA-0143, 2026-11-07)
+
+The DB thread is one serial queue, and under a multi-author placement burst it held 20-46
+`ApplyReplicatedRow` commands at 300-750 ms each. A remote peer's scene-asset request waits on
+`InspectSceneAssetTransfer { purpose: Serve }`, whose caller gives up after 2 s, so every such
+admission timed out behind the backlog and the provider refused verse Editors as if they held no
+role (run 4: refusals exactly 2 s apart on the owner, the other authors' GLBs 63-80 s late at
+host CPU < 50 %). `command_lane::CommandLane` keeps the queue FIFO except for that one class:
+it drains up to 128 commands into a local lookahead and hands a Serve admission out first.
+
+- **Why only Serve.** It is a bounded read that answers a remote request; handling it ahead of
+  queued writes is the same as the request having arrived a moment earlier (a queued revocation
+  races the same way without reordering). Fetch and Publish admissions depend on rows queued
+  BEFORE them (the prefetch is triggered by the row that is still being applied), so they stay FIFO.
+- **No starvation.** After a command jumps the queue the next one is the FIFO head, so writes
+  still get every other slot under a flood of requests.
+- **Backpressure kept.** The lookahead is bounded (128), so senders still see a full channel;
+  the slow-command log reports `queued` as channel + lookahead.
+
 ## §shared-handle (OF-2, 2026-10-13)
 
 **One SurrealKV open per process.** SurrealKV takes a file lock per open

@@ -8,6 +8,23 @@ use fe_runtime::{
 use std::time::{Duration, Instant};
 const ADMISSION_TIMEOUT: Duration = Duration::from_secs(2);
 
+/// The DB did not answer in time or its queue was full: retry soon, not a denial (QA-0143).
+#[derive(Debug)]
+pub(crate) struct AdmissionBusy(&'static str);
+
+impl std::fmt::Display for AdmissionBusy {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str(self.0)
+    }
+}
+
+impl std::error::Error for AdmissionBusy {}
+
+/// Whether `error` is a busy admission rather than a refusal.
+pub(crate) fn is_busy(error: &anyhow::Error) -> bool {
+    error.downcast_ref::<AdmissionBusy>().is_some()
+}
+
 pub(super) async fn admit(
     db: &Option<crossbeam::channel::Sender<DbCommand>>,
     verse: &str,
@@ -19,7 +36,7 @@ pub(super) async fn admit(
         .ok_or_else(|| anyhow::anyhow!("asset admission database unavailable"))?;
     let (reply, rx) = crossbeam::channel::bounded(1);
     let deadline = Instant::now() + ADMISSION_TIMEOUT;
-    db.try_send(DbCommand::InspectSceneAssetTransfer {
+    match db.try_send(DbCommand::InspectSceneAssetTransfer {
         request: SceneAssetTransferRequest {
             verse_id: verse.into(),
             hash,
@@ -28,8 +45,15 @@ pub(super) async fn admit(
             deadline,
         },
         reply,
-    })
-    .map_err(|error| anyhow::anyhow!("asset admission queue unavailable: {error}"))?;
+    }) {
+        Ok(()) => {}
+        Err(crossbeam::channel::TrySendError::Full(_)) => {
+            return Err(AdmissionBusy("asset admission queue full").into())
+        }
+        Err(crossbeam::channel::TrySendError::Disconnected(_)) => {
+            anyhow::bail!("asset admission queue closed")
+        }
+    }
     loop {
         match rx.try_recv() {
             Ok(result) => return result.map_err(anyhow::Error::msg),
@@ -38,7 +62,9 @@ pub(super) async fn admit(
             }
             Err(crossbeam::channel::TryRecvError::Empty) => {}
         }
-        anyhow::ensure!(Instant::now() < deadline, "asset admission timed out");
+        if Instant::now() >= deadline {
+            return Err(AdmissionBusy("asset admission timed out").into());
+        }
         tokio::time::sleep(Duration::from_millis(10)).await;
     }
 }

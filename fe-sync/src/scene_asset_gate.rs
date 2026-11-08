@@ -13,8 +13,19 @@ use std::{
 };
 
 pub(crate) type SceneBlobAuthorizer = Arc<
-    dyn Fn(String, String, BlobHash) -> Pin<Box<dyn Future<Output = bool> + Send>> + Send + Sync,
+    dyn Fn(String, String, BlobHash) -> Pin<Box<dyn Future<Output = ServeDecision> + Send>>
+        + Send
+        + Sync,
 >;
+
+/// A Serve admission's answer: a busy or slow admission is not a denial (QA-0143).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum ServeDecision {
+    Admit,
+    Deny,
+    /// The admission could not be decided now (DB busy, classification write in flight).
+    Unavailable,
+}
 
 #[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 struct Binding {
@@ -165,22 +176,30 @@ impl SceneAssetGate {
         Ok(())
     }
 
+    #[cfg(test)]
     pub(crate) async fn admits(&self, did: &str, hashes: &[BlobHash]) -> bool {
+        self.decide(did, hashes).await == ServeDecision::Admit
+    }
+
+    /// Whether `did` may read every hash in `hashes` now; see `ServeDecision`.
+    pub(crate) async fn decide(&self, did: &str, hashes: &[BlobHash]) -> ServeDecision {
         if hashes.len() > 64 {
-            return false;
+            return ServeDecision::Deny;
         }
         let contexts = {
             let pending = self.0.pending.lock().unwrap_or_else(|e| e.into_inner());
-            if self.0.failed.load(Ordering::Acquire)
-                || hashes
-                    .iter()
-                    .any(|hash| pending.contains_key(&hash_to_hex(hash)))
+            if self.0.failed.load(Ordering::Acquire) {
+                return ServeDecision::Deny;
+            }
+            if hashes
+                .iter()
+                .any(|hash| pending.contains_key(&hash_to_hex(hash)))
             {
-                return false;
+                return ServeDecision::Unavailable;
             }
             let state = self.0.class.lock().unwrap_or_else(|e| e.into_inner());
             if state.deny_unknown {
-                return false;
+                return ServeDecision::Deny;
             }
             hashes
                 .iter()
@@ -188,7 +207,7 @@ impl SceneAssetGate {
                 .collect::<Vec<_>>()
         };
         if contexts.is_empty() {
-            return true;
+            return ServeDecision::Admit;
         }
         let Some(authorize) = self
             .0
@@ -197,21 +216,25 @@ impl SceneAssetGate {
             .unwrap_or_else(|e| e.into_inner())
             .clone()
         else {
-            return false;
+            return ServeDecision::Deny;
         };
         for bindings in contexts {
-            let mut allowed = false;
+            let mut decision = ServeDecision::Deny;
             for binding in bindings {
-                if authorize(did.to_owned(), binding.verse_id, binding.asset_hash).await {
-                    allowed = true;
-                    break;
+                match authorize(did.to_owned(), binding.verse_id, binding.asset_hash).await {
+                    ServeDecision::Admit => {
+                        decision = ServeDecision::Admit;
+                        break;
+                    }
+                    ServeDecision::Unavailable => decision = ServeDecision::Unavailable,
+                    ServeDecision::Deny => {}
                 }
             }
-            if !allowed {
-                return false;
+            if decision != ServeDecision::Admit {
+                return decision;
             }
         }
-        true
+        ServeDecision::Admit
     }
 }
 

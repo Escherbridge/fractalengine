@@ -30,6 +30,7 @@ use iroh_blobs::provider::events::{
     AbortReason, ConnectMode, EventMask, EventSender, ObserveMode, ProviderMessage, RequestMode,
 };
 use iroh_blobs::store::fs::FsStore;
+use crate::scene_asset_gate::ServeDecision;
 use iroh_blobs::BlobsProtocol;
 use iroh_docs::protocol::Docs;
 use iroh_gossip::Gossip;
@@ -274,9 +275,14 @@ impl BlobAccessGate {
 
     pub(crate) fn scene_assets(&self)->crate::scene_asset_gate::SceneAssetGate {self.0.scene_assets.clone()}
 
-    async fn admits_current_scene(&self,connection_id:u64,hashes:&[[u8;32]])->bool {
-        let Some(did)=self.did_for_connection(connection_id) else {return false};
-        tokio::time::timeout(std::time::Duration::from_secs(3),self.0.scene_assets.admits(&did,hashes)).await.unwrap_or(false)
+    /// The scene-asset gate's answer; a slow admission is `Unavailable`, never a denial (QA-0143).
+    async fn current_scene_decision(&self, connection_id: u64, hashes: &[[u8; 32]]) -> ServeDecision {
+        let Some(did) = self.did_for_connection(connection_id) else {
+            return ServeDecision::Deny;
+        };
+        tokio::time::timeout(std::time::Duration::from_secs(3), self.0.scene_assets.decide(&did, hashes))
+            .await
+            .unwrap_or(ServeDecision::Unavailable)
     }
 
     /// Replace one verse's access snapshot (called after the fabric's role
@@ -511,16 +517,18 @@ impl BlobAccessGate {
             .cloned()
     }
 
-    /// Which gate refuses the requester on `connection_id` any of `hashes`
-    /// (`None`: both admit) — named in the refusal log (QA-0137).
-    async fn refusing_gate(&self, connection_id: u64, hashes: &[[u8; 32]]) -> Option<&'static str> {
+    /// Which gate refuses the requester on `connection_id` any of `hashes`, and
+    /// whether it denied or could not decide (`None`: both admit) — named in
+    /// the refusal log (QA-0137, QA-0143).
+    async fn refusing_gate(&self, connection_id: u64, hashes: &[[u8; 32]]) -> Option<Refusal> {
         if !self.admits_connection(connection_id, hashes.iter()) {
-            return Some("tileset");
+            return Some(Refusal::denied("tileset"));
         }
-        if !self.admits_current_scene(connection_id, hashes).await {
-            return Some("scene-asset");
+        match self.current_scene_decision(connection_id, hashes).await {
+            ServeDecision::Admit => None,
+            ServeDecision::Deny => Some(Refusal::denied("scene-asset")),
+            ServeDecision::Unavailable => Some(Refusal { gate: "scene-asset", busy: true }),
         }
-        None
     }
 
     /// Whether the requester on `connection_id` may read every hash in `hashes`.
@@ -536,15 +544,43 @@ impl BlobAccessGate {
     }
 }
 
+/// Why a blob-ALPN request was not served: which gate, and whether it could
+/// not decide in time (`busy`) rather than deny.
+#[derive(Clone, Copy, Debug)]
+struct Refusal {
+    gate: &'static str,
+    busy: bool,
+}
+
+impl Refusal {
+    fn denied(gate: &'static str) -> Self {
+        Self { gate, busy: false }
+    }
+}
+
+/// Requests whose admission is decided at once; more wait in the event channel.
+const CONCURRENT_DECISIONS: usize = 8;
+
 /// Answer one intercepted request and drain its update channel so the
 /// responder's progress sends never block on a reader we never consult.
+/// A busy admission aborts `RateLimited` (wire code 2: retry later), a
+/// denial `Permission` (QA-0143).
 macro_rules! answer_intercepted {
     ($msg:expr, $refused_by:expr, $connection_id:expr, $kind:literal) => {{
         let msg = $msg;
-        let refused_by: Option<&str> = $refused_by;
+        let refused_by: Option<Refusal> = $refused_by;
         let decision = match refused_by {
             None => Ok(()),
-            Some(gate) => {
+            Some(Refusal { gate, busy: true }) => {
+                tracing::info!(
+                    connection_id = $connection_id,
+                    kind = $kind,
+                    gate,
+                    "blob-ALPN request deferred — its admission could not be decided in time (not a denial; the requester retries)"
+                );
+                Err(AbortReason::RateLimited)
+            }
+            Some(Refusal { gate, busy: false }) => {
                 tracing::warn!(
                     connection_id = $connection_id,
                     kind = $kind,
@@ -580,6 +616,8 @@ fn spawn_blob_access_filter(gate: BlobAccessGate) -> EventSender {
         ..EventMask::DEFAULT
     };
     let (events, mut rx) = EventSender::channel(64, mask);
+    // QA-0143: one slow admission must not hold every other peer's request.
+    let deciding = Arc::new(tokio::sync::Semaphore::new(CONCURRENT_DECISIONS));
     tokio::spawn(async move {
         while let Some(msg) = rx.recv().await {
             match msg {
@@ -593,33 +631,48 @@ fn spawn_blob_access_filter(gate: BlobAccessGate) -> EventSender {
                     gate.note_closed(msg.inner.connection_id);
                 }
                 ProviderMessage::GetRequestReceived(msg) => {
-                    let hash: [u8; 32] = msg.inner.request.hash.into();
-                    let ranges = &msg.inner.request.ranges;
-                    let reaches_children = !ranges.is_empty() && !ranges.is_blob();
-                    let connection_id = msg.inner.connection_id;
-                    let refused_by = match gate.get_request_hashes(hash, reaches_children) {
-                        Some(hashes) => gate.refusing_gate(connection_id, &hashes).await,
-                        None => Some("child-range"),
-                    };
-                    answer_intercepted!(msg, refused_by, connection_id, "get");
+                    let Ok(permit) = deciding.clone().acquire_owned().await else { break };
+                    let gate = gate.clone();
+                    tokio::spawn(async move {
+                        let _permit = permit;
+                        let hash: [u8; 32] = msg.inner.request.hash.into();
+                        let ranges = &msg.inner.request.ranges;
+                        let reaches_children = !ranges.is_empty() && !ranges.is_blob();
+                        let connection_id = msg.inner.connection_id;
+                        let refused_by = match gate.get_request_hashes(hash, reaches_children) {
+                            Some(hashes) => gate.refusing_gate(connection_id, &hashes).await,
+                            None => Some(Refusal::denied("child-range")),
+                        };
+                        answer_intercepted!(msg, refused_by, connection_id, "get");
+                    });
                 }
                 ProviderMessage::GetManyRequestReceived(msg) => {
-                    let hashes: Vec<[u8; 32]> = msg
-                        .inner
-                        .request
-                        .hashes
-                        .iter()
-                        .map(|h| (*h).into())
-                        .collect();
-                    let connection_id = msg.inner.connection_id;
-                    let refused_by = gate.refusing_gate(connection_id, &hashes).await;
-                    answer_intercepted!(msg, refused_by, connection_id, "get_many");
+                    let Ok(permit) = deciding.clone().acquire_owned().await else { break };
+                    let gate = gate.clone();
+                    tokio::spawn(async move {
+                        let _permit = permit;
+                        let hashes: Vec<[u8; 32]> = msg
+                            .inner
+                            .request
+                            .hashes
+                            .iter()
+                            .map(|h| (*h).into())
+                            .collect();
+                        let connection_id = msg.inner.connection_id;
+                        let refused_by = gate.refusing_gate(connection_id, &hashes).await;
+                        answer_intercepted!(msg, refused_by, connection_id, "get_many");
+                    });
                 }
                 ProviderMessage::ObserveRequestReceived(msg) => {
-                    let hash: [u8; 32] = msg.inner.request.hash.into();
-                    let connection_id = msg.inner.connection_id;
-                    let refused_by = gate.refusing_gate(connection_id, &[hash]).await;
-                    answer_intercepted!(msg, refused_by, connection_id, "observe");
+                    let Ok(permit) = deciding.clone().acquire_owned().await else { break };
+                    let gate = gate.clone();
+                    tokio::spawn(async move {
+                        let _permit = permit;
+                        let hash: [u8; 32] = msg.inner.request.hash.into();
+                        let connection_id = msg.inner.connection_id;
+                        let refused_by = gate.refusing_gate(connection_id, &[hash]).await;
+                        answer_intercepted!(msg, refused_by, connection_id, "observe");
+                    });
                 }
                 _ => {}
             }
@@ -1219,6 +1272,7 @@ mod tests {
             asset_fingerprint: "controlled-admission-fixture".into(),
         };
         let allowed = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let stalled = Arc::new(std::sync::atomic::AtomicBool::new(false));
         let admission_stop = fe_runtime::service_lifecycle::StopSignal::default();
         let requester_did = crate::replicator::peer_did_key(&requester_ep.id());
         let (provider_db, provider_rx) = crossbeam::channel::bounded::<DbCommand>(16);
@@ -1227,12 +1281,21 @@ mod tests {
             let permit = permit.clone();
             let second_asset_id = second_asset_id.clone();
             let allowed = allowed.clone();
+            let stalled = stalled.clone();
             let stop = admission_stop.clone();
             let requester_did = requester_did.clone();
             tokio::spawn(async move {
+                let mut held_replies = Vec::new();
                 while !stop.is_requested() {
                     while let Ok(command) = rx.try_recv() {
                         if let DbCommand::InspectSceneAssetTransfer { request, reply } = command {
+                            // A DB stuck behind a write burst never answers in time.
+                            if stalled.load(std::sync::atomic::Ordering::Acquire)
+                                && matches!(request.purpose, SceneAssetTransferPurpose::Serve { .. })
+                            {
+                                held_replies.push(reply);
+                                continue;
+                            }
                             assert_eq!(request.verse_id, "scene-v");
                             assert_eq!(request.hash, permit.content_hash);
                             let mut selected = permit.clone();
@@ -1507,6 +1570,32 @@ mod tests {
             owner_roster.peers().is_err(),
             "a fresh subscription never resurrects the old roster"
         );
+        // QA-0143: an admission the DB cannot answer in time is "busy" (wire code 2,
+        // retry later), never a role denial (code 1) that sends the requester into back-off.
+        // (Placed after the reopen: that relearn is sensitive to a delay before it.)
+        allowed.store(false, std::sync::atomic::Ordering::Release);
+        let provider_gate = provider_stack.blob_access_gate().scene_assets();
+        assert_eq!(
+            provider_gate.decide(&requester_did, &[scene_hash]).await,
+            crate::scene_asset_gate::ServeDecision::Deny
+        );
+        let denied = requester_transport
+            .verify_provider_size(&provider_addr, scene_hash, glb.len() as u64)
+            .await
+            .expect_err("a requester without a role is refused");
+        assert!(format!("{denied:#}").contains("error 1"), "a denial is a permission abort: {denied:#}");
+        stalled.store(true, std::sync::atomic::Ordering::Release);
+        assert_eq!(
+            provider_gate.decide(&requester_did, &[scene_hash]).await,
+            crate::scene_asset_gate::ServeDecision::Unavailable
+        );
+        let busy = requester_transport
+            .verify_provider_size(&provider_addr, scene_hash, glb.len() as u64)
+            .await
+            .expect_err("an undecided admission serves nothing");
+        assert!(format!("{busy:#}").contains("error 2"), "a busy admission is a rate-limit abort: {busy:#}");
+        stalled.store(false, std::sync::atomic::Ordering::Release);
+        allowed.store(true, std::sync::atomic::Ordering::Release);
         receiver_jobs.opened_with_roster("scene-v", &[], Some(reopened_roster));
         receiver_jobs.fetch_owned("scene-v", scene_hash, Some("scene-new-generation".into()));
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(20);
