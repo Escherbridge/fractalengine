@@ -3,7 +3,7 @@ type: ProgressCheckpoint
 date: 2026-11-04
 status: in_progress
 title: Current completion state and next actions
-last_verified_utc: 2026-11-07T22:30:00.000000+00:00
+last_verified_utc: 2026-11-08T00:25:00.000000+00:00
 ---
 
 ## ORCHESTRATOR STEER (binding; maintained by the orchestrating session, do not edit or remove)
@@ -132,11 +132,28 @@ below 50 % for every latency sample, so no latency below is contention.
   QA-0124, QA-0125, QA-0131 to QA-0133 and QA-0136. They wait on the QA-0140 harness fix (QA-0117/QA-0136 need
   more peers than this host can run).
 
+Sim run 2 triage (2026-11-07, stages 47f447e9/47f4d85c, 3 peers; runs `qa/sim/runs/{p2p-core-20261107-164143,
+p2p-assets-20261107-165603,city-lite-20261107-165848}`; all peers stopped by exact identity). Host CPU stayed below
+50 % except the city-lite step-3 placement burst (100 %).
+
+- 279 analyzer anomalies + 8 vision findings collapse to 1 new S2 and 2 new S3. The harness still fires GUI clicks
+  once (QA-0140, now with items 11-15), so the step-15 "forbidden writes" are a legitimate editor's (the revoke click
+  never landed) and 6.e1/9b.e0 "regressions" are QA-0126's transient and the scenario's own rename.
+- Verified: QA-0118, QA-0123, QA-0124 (GUI half on the owner only), QA-0137, QA-0138 (1440 transforms + 360
+  readings, p95 245 ms), QA-0139 (rows on every peer).
+- New S2: QA-0142. Another peer's new fractal or petal never reaches the sidebar (fe-ui handles no replicated
+  fractal row), so non-owners cannot open it. This is the real cause of the step-1 navigation misses and blank frames,
+  not a harness wait.
+- New S3: QA-0143 (scene-asset gate turns its 3 s timeout into "holds no role"), QA-0144 (timeseries rows carry the
+  peer-local record id, which is the city-lite "S1 diverged at run end"). Evidence added to QA-0076, QA-0126, QA-0130
+  and QA-0141.
+- Still not exercised: QA-0100 GUI race, QA-0103, QA-0117, QA-0120 to QA-0122, QA-0125, QA-0131 to QA-0133, QA-0136.
+
 ## Next actions
 
-1. FIX:2: QA-0140 harness first (it gates every unexercised id), then QA-0137, QA-0118, QA-0123 (S1), QA-0138,
-   QA-0139 (S2). Re-run the three scenarios, then verify the pending list above. FIX:1 (QA-0120 to QA-0125,
-   QA-0103, QA-0117, QA-0118, QA-0119, QA-0128, QA-0129) has landed.
+1. FIX:2 (steer of 16:52): QA-0140 items 1-4, 6 and 11-15 (they gate every unexercised id), then QA-0142 (S2),
+   then QA-0143 and QA-0144. Re-run the three scenarios and verify the pending list above. The sim-run-1 fixes
+   (fe1e6b75, 11b44d4f, cfd7fce6, 47f447e9) have landed.
 2. Run FULL pass 78 (2/3) then pass 79; convergence needs zero new S1/S2 in two consecutive passes and all gold.
 3. Fix the S3 test debt (QA-0079, QA-0082, QA-0115, QA-0116), then the integrated sweep, CI Lint (QA-0078), tag
    and release.
