@@ -488,6 +488,22 @@ pub(crate) async fn publish_after_commit(
     }
 }
 
+/// Publish the transforms the DB lane deferred (QA-0161), each node's current committed state once.
+pub(crate) async fn publish_deferred(
+    db: &Db,
+    blobs: &BlobStoreHandle,
+    sender: Option<&ReplicationSender>,
+    actor: &str,
+    ids: Vec<String>,
+) {
+    let started = std::time::Instant::now();
+    let count = ids.len();
+    for id in ids {
+        publish_after_commit(db, blobs, sender, actor, &id).await;
+    }
+    tracing::debug!(count, elapsed_ms = started.elapsed().as_millis() as u64, "deferred scene publications sent");
+}
+
 /// Recover every row stamped by this exact committed delete, including direct waypoint cascades.
 pub(crate) async fn publish_tombstones_after_commit(
     db: &Db,

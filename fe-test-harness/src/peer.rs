@@ -969,6 +969,17 @@ impl TestPeer {
                                 tracing::warn!("NodePropertyDeleted send failed: {e:?}");
                             }
                         }
+                        Ok(DbCommand::ClearNodeProperties { node_id, keys }) => {
+                            for key in keys {
+                                if let Err(e) = db_result_tx.send(DbResult::NodePropertyDeleted {
+                                    node_id: node_id.clone(),
+                                    key,
+                                    correlation_id: None,
+                                }) {
+                                    tracing::warn!("NodePropertyDeleted send failed: {e:?}");
+                                }
+                            }
+                        }
                         Ok(DbCommand::DeleteNode { node_id }) => {
                             // Mirror the real handler: look up petal_id, delete the node +
                             // its cascade, echo NodeDeleted. Best-effort in the harness.

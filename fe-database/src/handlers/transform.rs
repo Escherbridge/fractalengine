@@ -16,7 +16,7 @@ pub(crate) async fn update_node_transform_granted(
     grant: &fe_runtime::node_history::NodeAccessGrant,
 ) -> anyhow::Result<()> {
     require_node_exists(db, node_id, "UpdateNodeTransform").await?;
-    super::node_history::authorized_node_scope(db, node_id, grant, actor).await?;
+    let scope = super::node_history::authorized_node_scope(db, node_id, grant, actor).await?;
     if position
         .iter()
         .chain(&rotation)
@@ -44,11 +44,11 @@ pub(crate) async fn update_node_transform_granted(
     };
     let rot: Vec<f64> = rotation.iter().map(|&v| v as f64).collect();
     let sc: Vec<f64> = scale.iter().map(|&v| v as f64).collect();
-    super::node_history::commit_mutation(db, entry,
+    super::node_history::commit_mutations_in_scope(db, entry,
         vec!["UPDATE node SET position = <geometry<point>> [$x, $z], elevation = $y, rotation = $rot, scale = $sc, edit_seq = edit_seq + 1 WHERE node_id = $node_id".into()],
         vec![("x".into(), serde_json::json!(position[0] as f64)), ("z".into(), serde_json::json!(position[2] as f64)), ("y".into(), serde_json::json!(position[1] as f64)),
             ("rot".into(), serde_json::json!(rot)), ("sc".into(), serde_json::json!(sc)), ("node_id".into(), serde_json::json!(node_id))],
-        actor, "full_transform", serde_json::json!({"position":position,"rotation":rotation,"scale":scale}), serde_json::json!({}), grant).await?;
+        actor, vec![("full_transform".into(), serde_json::json!({"position":position,"rotation":rotation,"scale":scale}), serde_json::json!({}))], scope).await?;
     Ok(())
 }
 

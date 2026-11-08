@@ -18,7 +18,7 @@ pub(crate) async fn set_entity_property_granted(
     grant: &fe_runtime::node_history::NodeAccessGrant,
 ) -> anyhow::Result<()> {
     require_node_exists(db, node_id, "SetNodeProperty").await?;
-    super::node_history::authorized_node_scope(db, node_id, grant, actor).await?;
+    let scope = super::node_history::authorized_node_scope(db, node_id, grant, actor).await?;
 
     let schema_versions = super::field_def::validate_property(db, node_id, key, value).await?;
     let (mut statements, mut bindings) = if key == super::node_view::VIEW_GROUPS_KEY {
@@ -41,16 +41,14 @@ pub(crate) async fn set_entity_property_granted(
         payload: serde_json::json!({"node_id":node_id,"key":key,"value":value}),
         sig: "00".repeat(64),
     };
-    super::node_history::commit_mutation(
+    super::node_history::commit_mutations_in_scope(
         db,
         entry,
         statements,
         bindings,
         actor,
-        "property_set",
-        data,
-        schema_versions,
-        grant,
+        vec![("property_set".into(), data, schema_versions)],
+        scope,
     )
     .await?;
     Ok(())
@@ -103,7 +101,7 @@ pub(crate) async fn delete_entity_property_granted(
     grant: &fe_runtime::node_history::NodeAccessGrant,
 ) -> anyhow::Result<()> {
     require_node_exists(db, node_id, "DeleteNodeProperty").await?;
-    super::node_history::authorized_node_scope(db, node_id, grant, actor).await?;
+    let scope = super::node_history::authorized_node_scope(db, node_id, grant, actor).await?;
 
     let data = serde_json::json!({"key":key});
     let entry = OpLogEntry {
@@ -114,10 +112,53 @@ pub(crate) async fn delete_entity_property_granted(
         payload: serde_json::json!({"node_id":node_id,"key":key}),
         sig: "00".repeat(64),
     };
-    super::node_history::commit_mutation(db, entry,
+    super::node_history::commit_mutations_in_scope(db, entry,
         vec!["UPDATE node SET properties = object::remove(properties ?? {}, $key) WHERE node_id = $node_id".into()],
         vec![("node_id".into(), serde_json::json!(node_id)), ("key".into(), serde_json::json!(key))],
-        actor, "property_deleted", data, serde_json::json!({}), grant).await?;
+        actor, vec![("property_deleted".into(), data, serde_json::json!({}))], scope).await?;
+    Ok(())
+}
+
+/// Delete several custom properties from a node as one atomic commit, so peers receive
+/// one row version instead of a partial bag per key (QA-0129).
+#[instrument(skip(db))]
+pub(crate) async fn delete_entity_properties_as(
+    db: &Db,
+    node_id: &str,
+    keys: &[String],
+    actor: &str,
+) -> anyhow::Result<()> {
+    anyhow::ensure!(
+        !keys.is_empty() && keys.len() <= fe_runtime::messages::MAX_CLEAR_PROPERTY_KEYS,
+        "ClearNodeProperties needs 1..=200 keys"
+    );
+    require_node_exists(db, node_id, "ClearNodeProperties").await?;
+    let grant = fe_runtime::node_history::NodeAccessGrant::Local;
+    let scope = super::node_history::authorized_node_scope(db, node_id, &grant, actor).await?;
+    let mut statements = Vec::with_capacity(keys.len());
+    let mut bindings = vec![("node_id".to_string(), serde_json::json!(node_id))];
+    let mut changes = Vec::with_capacity(keys.len());
+    for (index, key) in keys.iter().enumerate() {
+        statements.push(format!(
+            "UPDATE node SET properties = object::remove(properties ?? {{}}, $clear_key_{index}) WHERE node_id = $node_id"
+        ));
+        bindings.push((format!("clear_key_{index}"), serde_json::json!(key)));
+        changes.push((
+            "property_deleted".to_string(),
+            serde_json::json!({"key":key}),
+            serde_json::json!({}),
+        ));
+    }
+    let entry = OpLogEntry {
+        lamport_clock: 0,
+        hlc_timestamp: String::new(),
+        node_id: NodeId(node_id.to_string()),
+        op_type: OpType::PropertyDeleted,
+        payload: serde_json::json!({"node_id":node_id,"keys":keys}),
+        sig: "00".repeat(64),
+    };
+    super::node_history::commit_mutations_in_scope(db, entry, statements, bindings, actor, changes, scope)
+        .await?;
     Ok(())
 }
 

@@ -179,13 +179,21 @@ pub(crate) fn finish_clear(
     let Some(object) = properties.as_object() else {
         return;
     };
-    for key in object.keys().filter(|key| is_clearable_property(key)) {
+    let keys: Vec<String> = object
+        .keys()
+        .filter(|key| is_clearable_property(key))
+        .cloned()
+        .collect();
+    if keys.is_empty() {
+        return;
+    }
+    // One command = one commit and one replicated row version (QA-0129).
+    for chunk in keys.chunks(fe_runtime::messages::MAX_CLEAR_PROPERTY_KEYS) {
         if db_sender
             .0
-            .send(DbCommand::DeleteNodeProperty {
+            .send(DbCommand::ClearNodeProperties {
                 node_id: node_id.to_string(),
-                key: key.clone(),
-                correlation_id: None,
+                keys: chunk.to_vec(),
             })
             .is_err()
         {
@@ -265,13 +273,12 @@ mod tests {
         finish_clear(&sender, &mut ui_mgr, "other", &bag);
         assert!(rx.try_recv().is_err(), "a bag for a node without a pending clear deletes nothing");
         finish_clear(&sender, &mut ui_mgr, "n1", &bag);
-        let mut deleted: Vec<String> = rx
-            .try_iter()
-            .map(|command| match command {
-                DbCommand::DeleteNodeProperty { node_id, key, .. } if node_id == "n1" => key,
-                other => panic!("unexpected command {other:?}"),
-            })
-            .collect();
+        let commands: Vec<DbCommand> = rx.try_iter().collect();
+        let [DbCommand::ClearNodeProperties { node_id, keys }] = commands.as_slice() else {
+            panic!("QA-0129: Clear Properties must send ONE atomic command, got {commands:?}");
+        };
+        assert_eq!(node_id, "n1");
+        let mut deleted = keys.clone();
         deleted.sort();
         assert_eq!(deleted, [ANNOTATION_TITLE_KEY, "p_count", "qa_value"]);
         finish_clear(&sender, &mut ui_mgr, "n1", &bag);

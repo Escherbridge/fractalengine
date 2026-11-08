@@ -1460,6 +1460,20 @@ the transparent commands queued before it.
   still get every other slot under a flood of requests.
 - **Backpressure kept.** The lookahead is bounded (128), so senders still see a full channel;
   the slow-command log reports `queued` as channel + lookahead.
+- **Deferred transform publication (QA-0161, 2026-11-08).** Measured on the run-7 stage: an MCP
+  `update_transform` spent ~23 ms reaching the DB thread (HTTP + one reactive frame) and ~63-80 ms
+  in it, replying the moment the command ended; four writes sent together queued serially, so the
+  fourth answered after ~300 ms and the 0.5 s drone tick overran. A probe split the DB time into
+  ~32 ms commit (with `authorized_node_scope` run twice) and ~27 ms `publish_after_commit`
+  (re-read, fence transaction, blob, bridge). Now the transform write authorizes once
+  (`node_history::commit_mutations_in_scope`; the lane is serial, so the role cannot move between)
+  and `DeferredPublications` holds the publication: the arm commits, sends its `SceneChange` ack
+  and queues the node id; the loop publishes every queued node (each once, its current committed
+  state) when the lane idles, when the oldest waited 250 ms, or before any command outside
+  `runs_before_publication` (transforms, IoT readings, device payloads and a few plain reads).
+  Every other command, `Ping` and shutdown included, publishes first, so a replicated-row apply, a
+  role/ACL change, a Serve admission or a scene-clock read never sees a committed transform
+  without its publication. A burst of writes to one node publishes one row version.
 
 ## §shared-handle (OF-2, 2026-10-13)
 

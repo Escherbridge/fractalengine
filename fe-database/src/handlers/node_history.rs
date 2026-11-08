@@ -545,22 +545,71 @@ pub(crate) async fn commit_mutation(
     db: &Db,
     entry: OpLogEntry,
     statements: Vec<String>,
-    mut bindings: Vec<(String, Value)>,
+    bindings: Vec<(String, Value)>,
     actor: &str,
     op: &str,
     data: Value,
     schema_versions: Value,
     grant: &NodeAccessGrant,
 ) -> anyhow::Result<i64> {
+    let scope = authorized_node_scope(db, &entry.node_id.0, grant, actor).await?;
+    commit_mutations_in_scope(
+        db,
+        entry,
+        statements,
+        bindings,
+        actor,
+        vec![(op.to_owned(), data, schema_versions)],
+        scope,
+    )
+    .await
+}
+
+/// Commit journal changes to one node as ONE transaction and row version (QA-0129) for a
+/// caller that already ran [`authorized_node_scope`] in this DB command: the lane is
+/// serial, so the role cannot change between (QA-0161); the transaction fences the ancestry.
+pub(crate) async fn commit_mutations_in_scope(
+    db: &Db,
+    entry: OpLogEntry,
+    statements: Vec<String>,
+    mut bindings: Vec<(String, Value)>,
+    actor: &str,
+    changes: Vec<(String, Value, Value)>,
+    scope: String,
+) -> anyhow::Result<i64> {
+    anyhow::ensure!(!changes.is_empty(), "no journal change to commit");
     let node_id = entry.node_id.0.clone();
-    let before = snapshot(db, &node_id)
+    let mut state = snapshot(db, &node_id)
         .await?
         .ok_or_else(|| anyhow::anyhow!("node not found"))?;
-    let scope = authorized_node_scope(db, &node_id, grant, actor).await?;
-    let previous = latest(db, &node_id).await?;
-    let prepared = prepare_change(before, previous.as_ref(), &scope, op, data, schema_versions)?;
-    let version = prepared.version;
-    let facts = prepared.facts;
+    let mut previous = latest(db, &node_id).await?;
+    let mut facts = Vec::new();
+    let mut version = 0;
+    let atomic = changes.len() > 1;
+    for (op, data, schema_versions) in changes {
+        let prepared = prepare_change(state, previous.as_ref(), &scope, &op, data, schema_versions)?;
+        version = prepared.version;
+        state = prepared.after;
+        previous = prepared
+            .facts
+            .last()
+            .map(|(_, version, payload)| json!({"row_version": version, "payload": payload}));
+        facts.extend(prepared.facts);
+    }
+    if atomic {
+        // Tag the facts as one atomic save so playback never shows an intermediate state (§atomic-replay).
+        let save_id = ulid::Ulid::new().to_string();
+        let last = facts.len() - 1;
+        for (index, (op, _, payload)) in facts.iter_mut().enumerate() {
+            if op != "baseline" {
+                payload["atomic_save_id"] = json!(save_id);
+            }
+            if index == last {
+                payload["atomic_save_request_id"] = json!(save_id);
+                payload["editor_request_id"] = json!(save_id);
+            }
+        }
+    }
     let actor = actor.to_string();
     let (mut scope_statements, scope_bindings) = scope_fence(&scope, Some(&node_id))?;
     commit_operation_atomic_with(db, entry, move |hlc| {

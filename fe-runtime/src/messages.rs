@@ -127,6 +127,9 @@ pub struct IotReadingInput {
 /// separate guards = drift").
 pub const DEVICE_PAYLOAD_MAX_ASSETS: usize = 32;
 
+/// Keys one `DbCommand::ClearNodeProperties` may delete atomically (QA-0129).
+pub const MAX_CLEAR_PROPERTY_KEYS: usize = 200;
+
 /// One device payload to ingest: a format descriptor id plus the ordered list
 /// of already-stored asset ids that make up this payload's opaque bytes
 /// (R5: "allow for multiple records (a list of records)"). Defined here, like
@@ -876,6 +879,13 @@ pub enum DbCommand {
         node_id: String,
         key: String,
         correlation_id: Option<String>,
+    },
+    /// Delete several custom properties as one commit and one replicated row version
+    /// (Clear Properties, QA-0129); replies one `NodePropertyDeleted` per key. At most
+    /// [`MAX_CLEAR_PROPERTY_KEYS`] keys (one atomic history save reads at most 200 facts).
+    ClearNodeProperties {
+        node_id: String,
+        keys: Vec<String>,
     },
     /// Delete a node row and cascade to its child waypoint nodes.
     DeleteNode {

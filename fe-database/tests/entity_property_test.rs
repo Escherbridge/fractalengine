@@ -748,6 +748,27 @@ fn a_dimension_callout_node_round_trips_through_the_property_store() {
     let rotation=bevy::math::Quat::from_array(original.rotation).to_euler(bevy::math::EulerRot::XYZ);
     db.cmd_tx.send(DbCommand::CommitCheckedNodeMutation {node_id:node_id.clone(),mutation:fe_runtime::messages::NodeMutation::FullTransform {position:original.position.map(|v|v as f32),rotation:[rotation.0,rotation.1,rotation.2],scale:original.scale.map(|v|v as f32)},expected:NodeEditPrecondition {scope:scope.clone(),history_version:Some(saved.history_version),before:NodeEditBefore::Transform(NodeTransformValue::from_row(&saved.state).unwrap())},correlation_id:"checked-undo-one".into()}).unwrap();
     assert!(matches!(db.res_rx.recv_timeout(CMD_TIMEOUT).unwrap(),DbResult::NodeMutationCommitted {receipt,..} if receipt.history_version>saved.history_version && NodeTransformValue::from_row(&receipt.state).unwrap().matches(&original)));
+    // QA-0129: Clear Properties removes several keys as ONE commit with a continuous journal.
+    db.cmd_tx.send(DbCommand::ClearNodeProperties {node_id:node_id.clone(),keys:vec!["dimension.mode".into(),"precision".into()]}).unwrap();
+    let mut cleared: Vec<String> = (0..2).map(|_| match db.res_rx.recv_timeout(CMD_TIMEOUT).unwrap() {
+        DbResult::NodePropertyDeleted {node_id:id,key,correlation_id:None} if id==node_id => key,
+        other => panic!("clear reply: {other:?}"),
+    }).collect();
+    cleared.sort();
+    assert_eq!(cleared, ["dimension.mode", "precision"]);
+    let remaining = get_properties(&db, &node_id);
+    assert!(remaining.get("dimension.mode").is_none() && remaining.get("precision").is_none(), "{remaining}");
+    assert_eq!(remaining["node_kind"], serde_json::json!("dimension_callout"));
+    db.cmd_tx.send(DbCommand::ReadNodeHistory {node_id:node_id.clone(),after_version:0,limit:200,at_version:None,grant:fe_runtime::node_history::NodeAccessGrant::Local,correlation_id:Some("clear-history".into())}).unwrap();
+    match db.res_rx.recv_timeout(CMD_TIMEOUT).unwrap() {
+        DbResult::NodeHistoryLoaded { page, .. } => {
+            let page = serde_json::to_value(page).unwrap();
+            assert_eq!(page["current_state_verified"], true, "the multi-key clear keeps the journal continuous");
+            let ops: Vec<&str> = page["entries"].as_array().unwrap().iter().rev().take(2).map(|r| r["op"].as_str().unwrap_or("")).collect();
+            assert_eq!(ops, ["property_deleted", "property_deleted"]);
+        }
+        other => panic!("clear history: {other:?}"),
+    }
     assert!(
         hierarchy_contains_node(&db, &node_id),
         "the live node is present before delete"

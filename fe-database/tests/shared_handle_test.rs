@@ -17,6 +17,8 @@ const TIMEOUT: Duration = Duration::from_secs(20);
 struct Spawned {
     cmd_tx: crossbeam::channel::Sender<DbCommand>,
     res_rx: crossbeam::channel::Receiver<DbResult>,
+    repl_rx: crossbeam::channel::Receiver<fe_database::ReplicationEvent>,
+    blobs: Arc<MockBlobStore>,
     db_thread: DbThread,
 }
 
@@ -27,13 +29,15 @@ fn spawn_on(dir: &Path) -> Spawned {
 fn spawn_on_with_identity(dir: &Path, identity: Option<fe_identity::NodeKeypair>) -> Spawned {
     let (cmd_tx, cmd_rx) = crossbeam::channel::bounded::<DbCommand>(64);
     let (res_tx, res_rx) = crossbeam::channel::bounded::<DbResult>(64);
-    let blob_store: BlobStoreHandle = Arc::new(MockBlobStore::new());
+    let (repl_tx, repl_rx) = crossbeam::channel::bounded(256);
+    let blobs = Arc::new(MockBlobStore::new());
+    let blob_store: BlobStoreHandle = blobs.clone();
     let db_path = dir.join("fe.db").to_string_lossy().to_string();
     let db_thread = spawn_db_thread_shared(
         cmd_rx,
         res_tx,
         blob_store,
-        None,
+        Some(repl_tx),
         identity,
         None,
         None,
@@ -49,6 +53,8 @@ fn spawn_on_with_identity(dir: &Path, identity: Option<fe_identity::NodeKeypair>
     Spawned {
         cmd_tx,
         res_rx,
+        repl_rx,
+        blobs,
         db_thread,
     }
 }
@@ -172,6 +178,58 @@ fn api_reader_reads_db_thread_writes_through_the_shared_handle() {
         "the queued revoke ran before the admission: {before:?}"
     );
     assert_eq!(before.iter().filter(|result| loaded(result)).count(), burst, "reads ahead of the revoke stay FIFO");
+
+    // QA-0161: committed transforms publish when the lane idles; a command outside the hot
+    // path (here Ping) publishes them first, each node at its latest committed state.
+    let created = |command: DbCommand| {
+        spawned.cmd_tx.send(command).expect("send create");
+        match spawned.res_rx.recv_timeout(TIMEOUT).expect("create reply") {
+            DbResult::FractalCreated { id, .. }
+            | DbResult::PetalCreated { id, .. }
+            | DbResult::NodeCreated { id, .. } => id,
+            other => panic!("expected a created id, got {other:?}"),
+        }
+    };
+    let fractal_id = created(DbCommand::CreateFractal { verse_id: verse_id.clone(), name: "Lane".into() });
+    let petal_id = created(DbCommand::CreatePetal { fractal_id, name: "Lane".into() });
+    let nodes: Vec<String> = (0..2)
+        .map(|index| {
+            created(DbCommand::CreateNode {
+                petal_id: petal_id.clone(),
+                name: format!("Drone {index}"),
+                position: [index as f32, 0.0, 0.0],
+                correlation_id: None,
+            })
+        })
+        .collect();
+    while spawned.repl_rx.try_recv().is_ok() {}
+    for elevation in [1.0_f32, 2.0, 3.0] {
+        for node_id in &nodes {
+            spawned
+                .cmd_tx
+                .send(DbCommand::UpdateNodeTransform {
+                    node_id: node_id.clone(),
+                    position: [0.0, elevation, 0.0],
+                    rotation: [0.0; 3],
+                    scale: [1.0; 3],
+                })
+                .expect("send transform");
+        }
+    }
+    spawned.cmd_tx.send(DbCommand::Ping).expect("send barrier");
+    while !matches!(spawned.res_rx.recv_timeout(TIMEOUT).expect("barrier reply"), DbResult::Pong) {}
+    let published: Vec<_> = spawned.repl_rx.try_iter().filter(|event| event.table == "node").collect();
+    for node_id in &nodes {
+        let last = published
+            .iter()
+            .rfind(|event| &event.record_id == node_id)
+            .unwrap_or_else(|| panic!("{node_id} published before the barrier answered: {published:?}"));
+        let row: serde_json::Value = serde_json::from_slice(
+            &spawned.blobs.bytes_for(&last.content_hash).expect("published row bytes"),
+        )
+        .expect("published row json");
+        assert_eq!(row["elevation"].as_f64(), Some(3.0), "the latest committed state is published: {row}");
+    }
 
     // Persist a schema-valid but inadmissible clock, then exercise the real restart handshake.
     let reader = spawned.db_thread.shared_db.clone();

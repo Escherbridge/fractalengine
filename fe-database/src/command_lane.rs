@@ -5,6 +5,7 @@ use crossbeam::channel::{Receiver, RecvError};
 use fe_runtime::messages::DbCommand;
 use fe_runtime::scene_asset::SceneAssetTransferPurpose;
 use std::collections::VecDeque;
+use std::time::{Duration, Instant};
 
 /// Commands drained ahead of the one being handled, so a Serve admission queued
 /// behind a read burst is found (bounded: senders keep their backpressure).
@@ -52,6 +53,68 @@ impl CommandLane {
     pub(crate) fn len(&self) -> usize {
         self.queued.len()
     }
+
+    /// No command is waiting, here or in the channel.
+    pub(crate) fn is_idle(&self, rx: &Receiver<DbCommand>) -> bool {
+        self.queued.is_empty() && rx.is_empty()
+    }
+}
+
+/// Longest a committed transform waits for its scene publication (QA-0161).
+const PUBLICATION_DEFER_MAX: Duration = Duration::from_millis(250);
+
+/// Scene publications of committed transforms, run when the lane idles (QA-0161).
+#[derive(Default)]
+pub(crate) struct DeferredPublications {
+    nodes: Vec<String>,
+    oldest: Option<Instant>,
+}
+
+impl DeferredPublications {
+    /// Queue `node_id`'s publication; one publication per node covers every write before it.
+    pub(crate) fn defer(&mut self, node_id: String) {
+        self.oldest.get_or_insert_with(Instant::now);
+        if !self.nodes.contains(&node_id) {
+            self.nodes.push(node_id);
+        }
+    }
+
+    /// Publish now: the lane idles or the oldest waited its bound.
+    pub(crate) fn due(&self, lane_idle: bool) -> bool {
+        !self.nodes.is_empty()
+            && (lane_idle
+                || self
+                    .oldest
+                    .is_some_and(|oldest| oldest.elapsed() >= PUBLICATION_DEFER_MAX))
+    }
+
+    /// Publish before `next` runs (`None`: the channel closed, so publish before exit).
+    pub(crate) fn due_before(&self, next: Option<&DbCommand>) -> bool {
+        !self.nodes.is_empty() && next.is_none_or(|command| !runs_before_publication(command))
+    }
+
+    /// The queued node ids in first-write order, emptying the queue.
+    pub(crate) fn take(&mut self) -> Vec<String> {
+        self.oldest = None;
+        std::mem::take(&mut self.nodes)
+    }
+}
+
+/// Commands that may run while transform publications wait: the transform/ingest hot path
+/// and reads that never consult a scene clock. Every other command, and every variant
+/// added later, publishes first, so replication, role and asset commands see them.
+fn runs_before_publication(command: &DbCommand) -> bool {
+    matches!(
+        command,
+        DbCommand::UpdateNodeTransform { .. }
+            | DbCommand::InsertIotReadings { .. }
+            | DbCommand::InsertDevicePayloads { .. }
+            | DbCommand::GetNodeTransform { .. }
+            | DbCommand::GetNodeProperties { .. }
+            | DbCommand::LoadNodesByPetal { .. }
+            | DbCommand::LoadHierarchy
+            | DbCommand::ReadHierarchy
+    )
 }
 
 /// A remote peer waits on this read; it must not wait out a queued read burst.

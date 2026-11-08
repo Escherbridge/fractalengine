@@ -671,9 +671,17 @@ pub fn spawn_db_thread_shared(
 
             // QA-0143: FIFO except a peer's Serve admission (src/AGENTS.md §command-lane).
             let mut lane = command_lane::CommandLane::default();
+            // QA-0161: transform publications wait for an idle lane (src/AGENTS.md §command-lane).
+            let mut deferred = command_lane::DeferredPublications::default();
             #[allow(clippy::while_let_loop)]
             loop {
+                if deferred.due(lane.is_idle(&rx)) {
+                    handlers::scene_publication::publish_deferred(&db,&blob_store,repl_tx.as_ref(),&local_did,deferred.take()).await;
+                }
                 let cmd = lane.next(&rx);
+                if deferred.due_before(cmd.as_ref().ok()) {
+                    handlers::scene_publication::publish_deferred(&db,&blob_store,repl_tx.as_ref(),&local_did,deferred.take()).await;
+                }
                 let cmd_start = std::time::Instant::now();
                 let cmd_kind = cmd.as_ref().map(variant_name).unwrap_or_default();
                 match cmd {
@@ -905,7 +913,7 @@ pub fn spawn_db_thread_shared(
                     Ok(DbCommand::UpdateNodeTransform { node_id, position, rotation, scale }) => {
                         match handlers::transform::update_node_transform_as(&db, &node_id, position, rotation, scale, &local_did).await {
                             Ok(()) => {
-                                handlers::scene_publication::publish_after_commit(&db,&blob_store,repl_tx.as_ref(),&local_did,&node_id).await;
+                                deferred.defer(node_id.clone());
                                 if let Some(ref ect) = entity_change_tx {
                                     match handlers::crud::resolve_node_petal_id_handler(&db, &node_id).await {
                                         Ok(Some(petal_id)) => {
@@ -1280,6 +1288,33 @@ pub fn spawn_db_thread_shared(
                                 send_result(&tx, DbResult::NodePropertyDeleted { node_id, key , correlation_id });
                             }
                             Err(e) => send_result(&tx, handlers::correlated_failure(&correlation_id, format!("Delete node property failed: {e}"))),
+                        }
+                    }
+                    Ok(DbCommand::ClearNodeProperties { node_id, keys }) => {
+                        match handlers::entity_property::delete_entity_properties_as(&db, &node_id, &keys, &local_did).await {
+                            Ok(()) => {
+                                // One commit, one published row version: peers never see a partial bag (QA-0129).
+                                handlers::scene_publication::publish_after_commit(&db,&blob_store,repl_tx.as_ref(),&local_did,&node_id).await;
+                                let petal_id = match &entity_change_tx {
+                                    Some(_) => match handlers::crud::resolve_node_petal_id_handler(&db, &node_id).await {
+                                        Ok(petal_id) => petal_id,
+                                        Err(e) => { tracing::warn!(node_id, "omitting property scene change after petal lookup failure: {e}"); None }
+                                    },
+                                    None => None,
+                                };
+                                for key in keys {
+                                    if let (Some(ect), Some(petal_id)) = (&entity_change_tx, &petal_id) {
+                                        let _ = ect.send(fe_runtime::messages::SceneChange::PropertyChanged {
+                                            node_id: node_id.clone(),
+                                            petal_id: petal_id.clone(),
+                                            key: key.clone(),
+                                            value: serde_json::Value::Null,
+                                        });
+                                    }
+                                    send_result(&tx, DbResult::NodePropertyDeleted { node_id: node_id.clone(), key, correlation_id: None });
+                                }
+                            }
+                            Err(e) => send_result(&tx, DbResult::Error(format!("Clear node properties failed: {e}"))),
                         }
                     }
                     Ok(DbCommand::DeleteNode { node_id }) => {

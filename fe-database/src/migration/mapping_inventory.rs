@@ -71,6 +71,7 @@ const OTHER_DISPATCHED_MUTATION_KINDS: &[&str] = &[
     "RevokeApiToken",
     "SetNodeProperty",
     "DeleteNodeProperty",
+    "ClearNodeProperties",
     "DeleteNode",
     "TombstoneNode",
     "CascadeTombstoneNode",
