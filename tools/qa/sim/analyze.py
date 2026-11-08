@@ -274,6 +274,7 @@ class Analysis:
         self.moving_rows = []  # per-peer value lag of moving targets (divergence())
         # Periodic writers (drone_flight): their positions repeat every period_s, so a lap-later sighting is a new write.
         self.flights = [{"peer": e["peer"], "period_s": float((e.get("args_small") or {}).get("period_s") or 30.0),
+                         "rate_hz": float((e.get("args_small") or {}).get("rate_hz") or 2.0),
                          "t0": e["t_fire"], "t1": e["t_ack"]}
                         for e in self.events if e.get("op") == "drone_flight" and e.get("lane") != "macro" and e.get("status") == "done"]
 
@@ -740,6 +741,21 @@ class Analysis:
                 return flight
         return None
 
+    def _flight_lap_if_periodic(self, by_peer):
+        """The driving flight's lap when this target CAN repeat a value a lap later, else None.
+
+        A flight writes rate_hz * period_s ticks per lap, so a lap-periodic target takes at most that many values during it;
+        one that took more (drone node/transform rows carry the ever-growing rotation angle) never recurs, and a lag of a
+        whole lap on it is real lag. A flight shorter than one lap has no later lap either.
+        """
+        flight = self._driving_flight(by_peer)
+        if flight is None or not flight.get("period_s") or flight["t1"] - flight["t0"] < flight["period_s"]:
+            return None
+        inside = {digest for series in by_peer.values() for t, digest in zip(series.times, series.digests)
+                  if flight["t0"] <= t <= flight["t1"] + FLIGHT_TAIL_S}
+        per_lap = flight["rate_hz"] * flight["period_s"]
+        return flight["period_s"] if len(inside) <= per_lap + 2 else None  # + the values before and after the flight
+
     @staticmethod
     def _recurrence_gap(seen, digest):
         """Shortest gap between one peer's successive sightings of `digest` (it came back after another value), else None.
@@ -768,8 +784,8 @@ class Analysis:
         """
         seen = {peer: occurrences(series) for peer, series in by_peer.items()}
         period = self._lap_of(by_peer, seen)  # a periodic flight repeats its values every lap: a later lap is a new write
-        flight = self._driving_flight(by_peer)
-        flight_lap = flight["period_s"] if flight is not None and flight.get("period_s") else None
+        flight_lap = self._flight_lap_if_periodic(by_peer)
+        lap_dismissed = {peer: [] for peer in by_peer}  # lags read as whole laps: listed in the report, never silently dropped
         lag_pairs = {peer: [] for peer in by_peer}  # (lag behind the write's first sighting, time of this peer's sighting)
         for digest in {digest for per_peer in seen.values() for digest in per_peer}:
             sightings = [(t, peer) for peer, per_peer in seen.items() for t in per_peer.get(digest, [])]
@@ -781,13 +797,16 @@ class Analysis:
                         if lap is not None and t - lead > lap / 2:  # nearer the next lap's / the restored value's sighting: a new write, not a late one
                             continue
                         if flight_lap is not None and lap_multiple(t - lead, flight_lap):  # sparse probing saw the same position whole laps apart
+                            lap_dismissed[peer].append(t - lead)
                             continue
                         lag_pairs[peer].append((t - lead, t))
         for peer in sorted(by_peer):
             lags = lag_pairs[peer]
             values = [lag for lag, _t in lags]
             row = {"probe": probe, "target": target, "peer": peer, "values": len(seen[peer]), "shared": len(values),
-                   "lag_p50_s": pct(values, 50), "lag_p95_s": pct(values, 95), "lag_max_s": max(values) if values else None}
+                   "lag_p50_s": pct(values, 50), "lag_p95_s": pct(values, 95), "lag_max_s": max(values) if values else None,
+                   "lap_dismissed": len(lap_dismissed[peer]),
+                   "lap_dismissed_max_s": round(max(lap_dismissed[peer]), 1) if lap_dismissed[peer] else None}
             if period is not None:
                 row["recurrence_s"] = round(period, 1)
             self.moving_rows.append(row)
@@ -1088,12 +1107,16 @@ class Analysis:
             lines.append("None.")
         lines += ["", "## Moving-target lag (targets taking a new value every < %.0f s; first-seen lag vs the earliest peer per value)" % self.divergence_s, ""]
         if self.moving_rows:
-            lines += ["| probe | target | peer | values seen | shared | lag p50 s | lag p95 s | lag max s |", "|---|---|---|---|---|---|---|---|"]
-            lines += ["| %s | `%s` | %s | %d | %d | %s | %s | %s |" % (
+            lines += ["| probe | target | peer | values seen | shared | lag p50 s | lag p95 s | lag max s | whole-lap sightings (max s) |",
+                      "|---|---|---|---|---|---|---|---|---|"]
+            lines += ["| %s | `%s` | %s | %d | %d | %s | %s | %s | %s |" % (
                 r["probe"], short(r["target"], 30), r["peer"], r["values"], r["shared"], fmt(r["lag_p50_s"]), fmt(r["lag_p95_s"]),
-                fmt(r["lag_max_s"])) for r in self.moving_rows]
+                fmt(r["lag_max_s"]), "%d (%s)" % (r["lap_dismissed"], fmt(r["lap_dismissed_max_s"])) if r["lap_dismissed"] else "-")
+                for r in self.moving_rows]
             lines += ["", "Peers share few values when the probe interval is longer than a value lasts; no shared value means no lag figure, "
-                      "and only a divergence that outlasts the writes is judged (run-end episode)."]
+                      "and only a divergence that outlasts the writes is judged (run-end episode). Whole-lap sightings are pairs a whole "
+                      "number of flight laps apart on a target that took no more values than one lap holds: the same position a lap "
+                      "later, not lag; they are excluded from the lag columns and counted here."]
             periods = sorted({r["recurrence_s"] for r in self.moving_rows if r.get("recurrence_s")})
             if periods:
                 lines += ["", "Values recur about every %s s (a periodic flight): a sighting is matched to the NEAREST occurrence within one "
