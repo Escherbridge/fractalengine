@@ -2308,6 +2308,16 @@ A success emits the waiting rows exactly like `ContentReady`. Invariant: per (au
 slot only the newest entry may still land: a newer `InsertRemote` drops the slot's older waiting
 entry, so a late fetch can never apply stale content over a newer row.
 
+**Bounded by author, never refuse-on-full (QA-0150, 2026-11-07).** An Editor may write rows
+naming content no one can serve. The table therefore holds at most 512 re-fetches per entry
+author (`MAX_CONTENT_RETRIES_PER_AUTHOR`; an author at its cap evicts among its own) inside the
+4096 total; a full table evicts its most-failed, then oldest, idle entry for the new hash instead
+of refusing it (the pre-fix refusal meant that, once one author had filled it, a legitimate asset
+that failed once was never retried). Each hash gets 10 attempts (about 3.5 min); then its schedule
+is dropped and re-armed only when its row is written again (`InsertRemote` → `wait`). Dropped
+schedules never drop the waiting rows: `ContentReady` still lands them. Evictions are logged at the
+1st, 2nd, 4th, 8th ... occurrence so a flood cannot flood the log.
+
 ## §isolated-write-sync — writes made with no gossip neighbor (QA-0145, 2026-11-07)
 
 A local write's gossip broadcast reaches only live neighbors. After the editor restart in the
