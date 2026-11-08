@@ -51,6 +51,11 @@ Standing rule: **feature → track at start, retro + archive at completion.**
 
 ## Verification & quality gates
 
+**Tests run only when explicitly told (user directive 2026-11-07).** The default gate for any
+commit is `cargo check -p <touched crates>`; clippy and tests run only when the user or a steer names
+the batch (`conductor/test-batches.md`), and the full workspace sweep below runs once, at campaign end,
+on request. Keep every test inside a selectable batch so the named run is small.
+
 The practiced gate is a **single integrated sweep at the end of a change
 batch** — not per-task loops:
 

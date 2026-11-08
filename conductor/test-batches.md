@@ -7,7 +7,9 @@ timestamp: 2026-11-01T00:00:00Z
 
 # Usability-region test batches
 
-**Rule (user directive 2026-11-01):** gates run only the batch(es) whose source paths were
+**Rule (user directives 2026-11-01 and 2026-11-07):** tests run only when explicitly told (the user, or a
+steer/task naming the batch); the pre-commit gate is `cargo check -p <touched crates>`; when told, gates
+run only the batch(es) whose source paths were
 touched by a change. The full workspace suite (`cargo test --workspace`, plus
 `cargo test -p fe-terrain --features render`) runs exactly once, at campaign end.
 

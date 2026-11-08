@@ -237,6 +237,25 @@ is in pure functions in `fe-renderer/src/camera.rs` — no ECS dependencies, ful
 
 ---
 
+## Test execution policy (user directive 2026-11-07)
+
+Tests are expensive on this machine (one 6-core box shared by simulator runs, builds and several
+sessions), so they are run on purpose, never by habit:
+
+1. **Run tests only when explicitly told** — by the user, or by a steer/task that names the batch.
+   Never run tests automatically after a fix, and never as a pre-commit ritual. The pre-commit gate
+   is `cargo check -p <touched crates>`; clippy and tests belong to the explicitly requested sweep.
+2. **Every test must be selectable.** Tests live in the usability-region batches of
+   `conductor/test-batches.md` (each batch = a `cargo test -p <crate> -- <filter> ...` command).
+   New or extended tests land inside an existing batch, or register a new, small batch with its
+   exact filter, so a steer can say "run R8 only". Prefer one journey file ≈ one filter over
+   crate-wide runs; never add a test that no batch filter reaches (module paths are `::tests::`,
+   not `::mod` — the R1/R2 filters silently ran 0 tests until 5067e466).
+3. **The full workspace suite runs exactly once**, at campaign end, when the user says so
+   (`cargo test --workspace` plus `cargo test -p fe-terrain --features render`).
+4. Standing conventions still apply: no new test functions when a journey can be extended or an
+   obsolete test swapped; tests model real flows through public seams (skill `flow-tests`).
+
 ## What NOT to Do (Anti-Patterns Found and Fixed)
 
 1. **Do not write directly to NavigationManager fields from UI panels.**
