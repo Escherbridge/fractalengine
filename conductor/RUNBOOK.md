@@ -545,7 +545,7 @@ NO-GO (local Workstream G implementation is GO); `../gis-tile-etl` kept, never p
    build gate for its duration (flip `cargo_allowed` and post it; flip back after).
 8. **Screenshot pass** when free RAM > 4 GB (no cargo needed; the staged exe at `.qa/stage/current`
    suffices): follow `docs/images/MANIFEST.md` row by row — `tools\qa\launch.ps1 -Fixture <basic|terrain>`,
-   `tools\qae.py shot ...` per recipe, 1400 px wide, <= 450 KB each (oxipng) — then replace the
+   `tools\qa\fe.py shot ...` per recipe, 1400 px wide, <= 450 KB each (oxipng) — then replace the
    seven `<!-- screenshot: ... -->` markers with image tags and commit `docs(images): ...`. Post
    `building P2P-QA screenshots` on the bus while the app runs (it holds RAM, not the cargo lock).
 9. **Diagram pass** (next docs wave): redraw `docs/diagrams/01-system-overview.md`, `06-network-topology.md`,
