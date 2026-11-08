@@ -83,7 +83,9 @@ pub(crate) async fn load(
          (SELECT peer_did, scope, role FROM role WHERE scope IN $access_scopes ORDER BY scope, peer_did LIMIT 257) AS roles, \
          (SELECT jti, scope, max_role, label, sub, created_at, expires_at, revoked, client FROM api_token \
           WHERE revoked = false AND expires_at > $access_now \
-          AND (scope = $access_scope OR ($access_has_children AND string::starts_with(scope, $access_child))) ORDER BY jti LIMIT 51) AS tokens \
+          AND (scope = $access_scope OR ($access_has_children AND string::starts_with(scope, $access_child))) ORDER BY jti LIMIT 51) AS tokens, \
+         (SELECT VALUE peer_did FROM role_grant WHERE verse_id = $access_verse LIMIT 1025) AS grantees, \
+         (SELECT VALUE peer_did FROM verse_member WHERE verse_id = $access_verse AND status = 'active' LIMIT 1025) AS members \
          FROM verse WHERE verse_id = $access_verse TIMEOUT 5s",
         vec![("access_scopes".into(), json!(scopes)), ("access_now".into(), json!(chrono::Utc::now().to_rfc3339())),
              ("access_scope".into(), json!(target.scope)), ("access_child".into(), json!(format!("{}{}",target.scope,child_marker.unwrap_or("")))), ("access_has_children".into(), json!(child_marker.is_some())),
@@ -108,6 +110,20 @@ pub(crate) async fn load(
     let mut dids: BTreeSet<String> = peers.iter().cloned().collect();
     dids.insert(owner.to_owned());
     dids.insert(local_did.to_owned());
+    // QA-0162: a revoked grantee keeps its statement row and stays a member, so it stays listed for re-grant.
+    for list in ["grantees", "members"] {
+        let known = row[list]
+            .as_array()
+            .ok_or_else(|| anyhow::anyhow!("Invalid member snapshot"))?;
+        anyhow::ensure!(known.len() <= 1024, "Member inventory exceeds its limit");
+        dids.extend(
+            known
+                .iter()
+                .filter_map(Value::as_str)
+                .filter(|did| bounded_identity(did))
+                .map(str::to_owned),
+        );
+    }
     for role in role_rows {
         let did = role["peer_did"]
             .as_str()

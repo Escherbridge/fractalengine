@@ -292,6 +292,11 @@ fn a_non_owner_creating_a_petal_gets_no_implicit_owner_row() {
     assert!(assigned.roles.iter().any(|(did,role)|did==PEER&&role=="editor"));
     let revoked=access("access-revoke",Access::Revoke {peer_did:PEER.into()}).expect("checked revoke");
     assert!(revoked.roles.iter().any(|(did,role)|did==PEER&&role=="viewer"),"an owner revoke blocks the cell: the peer keeps only the verse default, never the revoked grant");
+    let reopened=access("access-reopen",Access::Load {peer_dids:vec![]}).expect("reopened Access tab");
+    assert!(reopened.roles.iter().any(|(did,role)|did==PEER&&role=="viewer"),"QA-0162: a revoked member absent from the peer registry stays listed so it can be re-granted");
+    let regranted=access("access-regrant",Access::Assign {peer_did:PEER.into(),role:"editor".into()}).expect("re-grant after revoke");
+    assert!(regranted.roles.iter().any(|(did,role)|did==PEER&&role=="editor"));
+    access("access-rerevoke",Access::Revoke {peer_did:PEER.into()}).expect("revoke again");
     let minted=access("access-token-mint",Access::MintToken {max_role:"viewer".into(),ttl_hours:1,client_did:None}).expect("scoped mint");
     assert!(minted.minted.is_some());assert!(!format!("{minted:?}").contains(&minted.minted.as_ref().unwrap().token),"Debug never reveals token");
     let token=minted.tokens.first().expect("readback token");
