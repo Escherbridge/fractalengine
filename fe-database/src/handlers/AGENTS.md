@@ -503,6 +503,17 @@ purpose: GLB/glTF MIME (`fe_runtime::scene_asset::SCENE_ASSET_MIMES`), bounded s
 anchor Petal inside the requested Verse, actual local role (Editor + upload/adoption proof
 to Publish, Viewer otherwise) and, for Serve, the authenticated requester's Viewer role.
 
+**Unplaced rows (critic of QA-0158, 2026-11-08).** Dropping the live-reference floor made
+an inbound row transferable on arrival alone, and inbound `asset` rows are insert-if-absent
+and never re-judged: a demoted Editor's upload that raced its revoke (admitted by a peer
+that had not learned the revoke yet) would be fetched and re-served indefinitely, against
+QA-0133. So a Fetch/Serve that names no node and whose row is not a local upload/adoption
+(`owner_did`/`publication_provenance`, which inbound apply strips) needs either a live node
+in the row's Petal or its replica author, recorded at apply in the local
+`asset_inbound_author` table (dev-reset listed, never replicated), to hold Editor at the
+anchor scope NOW; both are fenced in the admission transaction. A row stored before this
+table existed has no recorded author and needs the live reference, as before QA-0158.
+
 DQA020 adoption is an explicit new Owner action, not reconstruction of upload ownership.
 ReadSceneAssetAdoption prepares a reviewable candidate for an ownerless/unanchored local
 copy. All retained node references (including tombstones) must be bounded and in the one

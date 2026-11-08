@@ -459,6 +459,8 @@ class Host:
                                     timeout=300)
         if code != 0:
             raise RuntimeError("stop.ps1 %s failed: %s" % (name, (out + err)[-800:]))
+        if self.sampler:  # a stopped peer's PID may be reused: never charge another process's CPU to it
+            self.sampler.write_pids({peer: pid for peer, pid in self.pids().items() if peer != name})
         return {"peer": name, "stopped_pid": member["process_identity"]["pid"]}
 
     def stop(self):
@@ -625,11 +627,17 @@ def run(args):
         failure = error
         log("run failed: %s: %s" % (type(error).__name__, error))
     finally:
-        if prober:
-            prober.stop()
-        if sampler:
-            sampler.stop()
-        recorder.close()
+        # Each teardown step is isolated: a raising prober/sampler/recorder (disk full, a hung sampler,
+        # Ctrl+C mid-join) must never skip the exact-identity peer stop below.
+        for label, teardown in (("prober", prober and prober.stop), ("sampler", sampler and sampler.stop),
+                                ("recorder", recorder.close)):
+            if not teardown:
+                continue
+            try:
+                teardown()
+            except BaseException as error:  # noqa: BLE001
+                log("cleanup error (%s): %s: %s" % (label, type(error).__name__, error))
+                failure = failure or error
         if started or (host.owner_dir and not args.attach):
             try:
                 host.stop()

@@ -134,6 +134,14 @@ pub(crate) async fn inspect(
             }
             guards.push("IF array::len((SELECT VALUE node_id FROM node WHERE node_id=$transfer_node AND petal_id=$transfer_petal AND asset_id=$transfer_asset AND tombstone=NONE)) != 1 { THROW 'scene asset live reference changed'; }".into());
             bindings.push(("transfer_node".into(), json!(node_id)));
+        } else if !publishing && !locally_proven(&asset) {
+            match unplaced_transfer_fence(db, &scope, asset_id, petal_id).await? {
+                Some((more, bound)) => {
+                    guards.extend(more);
+                    bindings.extend(bound);
+                }
+                None => continue,
+            }
         }
         guards.push("IF (SELECT VALUE encoding::base64::encode(encoding::cbor::encode($this)) FROM asset WHERE asset_id=$transfer_asset) != [$transfer_fingerprint] { THROW 'scene asset metadata changed'; }".into());
         bindings.extend([
@@ -170,6 +178,45 @@ pub(crate) async fn inspect(
         });
     }
     anyhow::bail!("no current authorized scene asset reference")
+}
+
+/// A local upload or adoption: inbound rows never carry these fields (stripped on apply).
+fn locally_proven(asset: &Value) -> bool {
+    asset["owner_did"].as_str().is_some_and(|owner| !owner.is_empty())
+        || !asset["publication_provenance"].is_null()
+}
+
+/// Fences for an unplaced inbound row: a live node reference in its Petal, else its replica
+/// author's current Editor role; `None` admits neither (handlers/AGENTS.md "unplaced rows").
+async fn unplaced_transfer_fence(
+    db: &Db,
+    scope: &str,
+    asset_id: &str,
+    petal_id: &str,
+) -> anyhow::Result<Option<(Vec<String>, Vec<(String, Value)>)>> {
+    const LIVE: &str = "SELECT VALUE node_id FROM node WHERE asset_id=$transfer_asset AND petal_id=$transfer_petal AND tombstone=NONE LIMIT 1";
+    const AUTHOR: &str = "SELECT VALUE author FROM asset_inbound_author WHERE asset_id=$transfer_asset LIMIT 2";
+    let mut response = db
+        .query(format!("{LIVE} TIMEOUT 2s; {AUTHOR} TIMEOUT 2s"))
+        .bind(("transfer_asset", asset_id.to_owned()))
+        .bind(("transfer_petal", petal_id.to_owned()))
+        .await?
+        .check()?;
+    let live: Vec<Value> = response.take(0)?;
+    let authors: Vec<String> = response.take(1)?;
+    if !live.is_empty() {
+        return Ok(Some((vec![format!("IF array::len(({LIVE})) != 1 {{ THROW 'scene asset live reference changed'; }}")], Vec::new())));
+    }
+    let [author] = authors.as_slice() else { return Ok(None) };
+    let Ok(permission) =
+        super::entity::prepare_scope_permission(db, scope, author, fe_policy::RoleLevel::Editor).await
+    else {
+        return Ok(None);
+    };
+    let (mut guards, mut bindings) = permission.scoped_read_fence(2);
+    guards.push(format!("IF ({AUTHOR}) != [$transfer_author] {{ THROW 'scene asset author changed'; }}"));
+    bindings.push(("transfer_author".into(), json!(author)));
+    Ok(Some((guards, bindings)))
 }
 
 /// Local upload/adoption provenance is distinct from role authority.

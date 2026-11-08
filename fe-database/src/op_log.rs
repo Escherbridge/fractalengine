@@ -7161,6 +7161,37 @@ mod tests {
                 );
                 assert_eq!(rx.try_recv().unwrap().record_id, uploaded);
                 assert!(rx.try_recv().is_err());
+                // An INBOUND unplaced row is transferable only while its replica author holds
+                // Editor (or a live node references it): a demoted Editor's upload that raced its
+                // revoke is never fetched or re-served (critic of QA-0158; QA-0133).
+                let verse_scope = crate::build_scope("scene-v", None, None);
+                crate::rbac::assign_role(&legacy, "did:remote-ed", &verse_scope, "editor").await.unwrap();
+                let remote_digest = disk.add_blob(br#"{"asset":{"version":"2.0"},"nodes":[]}"#).unwrap();
+                let remote_row = serde_json::json!({
+                    "asset_id": "remote-unplaced", "name": "remote.gltf", "content_type": "model/gltf+json",
+                    "size_bytes": 38, "content_hash": crate::hash_to_hex(&remote_digest),
+                    "owner_did": "did:remote-ed", "petal_id": "scene-p", "created_at": "2026-11-08",
+                });
+                assert_eq!(
+                    crate::handlers::replicated_row::apply_replicated_row_handler(
+                        &legacy, "scene-v", "asset", "remote-unplaced", &serde_json::to_vec(&remote_row).unwrap(), "did:remote-ed", None,
+                    )
+                    .await
+                    .unwrap(),
+                    fe_runtime::messages::ReplicatedRowOutcome::Applied
+                );
+                let remote = |purpose| SceneAssetTransferRequest { hash: remote_digest, purpose, ..unplaced.clone() };
+                let third = || SceneAssetTransferPurpose::Serve { requester_did: "did:third-peer".into() };
+                let transferable = |purpose| {
+                    let (db, request) = (&legacy, remote(purpose));
+                    async move { crate::handlers::scene_asset_transfer::inspect(db, &request, "did:viewer").await.is_ok() }
+                };
+                assert!(transferable(SceneAssetTransferPurpose::Fetch).await, "an Editor's unplaced upload is fetched on arrival");
+                crate::rbac::revoke_role(&legacy, "did:remote-ed", &verse_scope).await.unwrap();
+                assert!(!transferable(SceneAssetTransferPurpose::Fetch).await, "a demoted author's unplaced upload is never fetched");
+                assert!(!transferable(third()).await, "nor re-served");
+                legacy.query("CREATE node SET node_id='remote-ref',petal_id='scene-p',asset_id='remote-unplaced',position=<geometry<point>> [0.0,0.0],rotation=[0.0,0.0,0.0],scale=[1.0,1.0,1.0],created_at='2026-11-08'").await.unwrap().check().unwrap();
+                assert!(transferable(third()).await, "a live placement keeps it Verse content");
             }
 
             // The 1025th candidate refuses before any node prefix is emitted.

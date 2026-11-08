@@ -332,6 +332,16 @@ define_table! {
 }
 
 define_table! {
+    /// Replica author of an inbound `asset` row (stripped of local upload proof): an unplaced
+    /// row stays transferable only while this author holds Editor; handlers/AGENTS.md
+    /// §scene-asset-transfer "unplaced rows". Local, never replicated.
+    table "asset_inbound_author" => AssetInboundAuthor (id: asset_id) {
+        asset_id: String => "TYPE string",
+        author: String => "TYPE string"
+    }
+}
+
+define_table! {
     /// Append-only per-node operation log — INSERT-only, immutable rows
     /// (row_version/HLC semantics: fe-database/src/AGENTS.md §node-log).
     table "node_log" => NodeLog (id: log_id) {
@@ -781,6 +791,9 @@ pub async fn apply_all(db: &crate::repo::Db) -> anyhow::Result<()> {
     Repo::<NodeLegacyWriter>::apply_schema(db).await?;
     db.query("DEFINE INDEX IF NOT EXISTS idx_node_legacy_writer ON TABLE node_legacy_writer FIELDS node_id UNIQUE")
         .await?.check()?;
+    Repo::<AssetInboundAuthor>::apply_schema(db).await?;
+    db.query("DEFINE INDEX IF NOT EXISTS idx_asset_inbound_author ON TABLE asset_inbound_author FIELDS asset_id UNIQUE")
+        .await?.check()?;
     db.query("DEFINE INDEX IF NOT EXISTS idx_node_log_version ON TABLE node_log FIELDS node_id, row_version UNIQUE")
         .await?.check()?;
     Repo::<IotReading>::apply_schema(db).await?;
@@ -1004,6 +1017,7 @@ pub const DEVELOPMENT_RESET_TABLE_NAMES: &[&str] = &[
     "node_log",
     "node_scene_clock",
     "node_legacy_writer",
+    "asset_inbound_author",
     "iot_reading",
     "device_format",
     "device_payload",
@@ -1319,6 +1333,8 @@ mod tests {
         assert!(DEVELOPMENT_RESET_TABLE_NAMES.contains(&NodeSceneClock::TABLE_NAME));
         assert!(!ALL_TABLE_NAMES.contains(&NodeLegacyWriter::TABLE_NAME));
         assert!(DEVELOPMENT_RESET_TABLE_NAMES.contains(&NodeLegacyWriter::TABLE_NAME));
+        assert!(!ALL_TABLE_NAMES.contains(&AssetInboundAuthor::TABLE_NAME));
+        assert!(DEVELOPMENT_RESET_TABLE_NAMES.contains(&AssetInboundAuthor::TABLE_NAME));
         assert!(NodeSceneClock::schema().contains("hlc ON TABLE node_scene_clock TYPE int ASSERT $value > 0"));
         assert!(!ALL_TABLE_NAMES.contains(&JoinDelegationRow::TABLE_NAME));
         assert!(DEVELOPMENT_RESET_TABLE_NAMES.contains(&JoinDelegationRow::TABLE_NAME));

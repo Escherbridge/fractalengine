@@ -17,6 +17,7 @@ from scenario import source_probe, target_key
 NODE_FIELDS = ("display_name", "position", "elevation", "rotation", "scale", "properties", "asset_id", "petal_id",
                "view", "edit_seq")
 POOL_WORKERS = 4
+OBSERVATION_INLINE_BYTES = 262144  # largest canonical value recorded inline (city-lite hierarchies run to ~60 KB)
 # fe-api rate-limits /query and the distributed timeseries query at 10 per second per DID (fe-api
 # limits.rs QUERY_RATE_PER_SEC), on the same DID the driver writes with. One prober round fires each
 # family's targets together, so a round stays under these bursts and leaves the rest for the driver
@@ -217,10 +218,13 @@ class Prober:
         self.store.update(name, probe, key, t, value)
         if previous.get((probe, key)) != dig:
             previous[(probe, key)] = dig
-            # Hierarchy views list whole petals (city-lite: 60+ rows), so they get a larger inline budget.
-            limit = 65536 if probe == "hierarchy" else 4096
-            self.recorder.write("observations", {"t": t, "peer": name, "probe": probe, "target": key,
-                                                 "digest": dig, "value_small": small(value, limit)})
+            # Logged on change only, so a generous inline budget costs per change, not per poll. A value the
+            # analyzer cannot read is never judged as absent: it is marked `oversize` (no silent truncation).
+            inline = small(value, OBSERVATION_INLINE_BYTES)
+            record = {"t": t, "peer": name, "probe": probe, "target": key, "digest": dig, "value_small": inline}
+            if inline is None and value is not None:
+                record["oversize"] = True
+            self.recorder.write("observations", record)
 
     def _round(self, name, client, previous, due, pool, counts, now):
         targets = self.resolved_targets()

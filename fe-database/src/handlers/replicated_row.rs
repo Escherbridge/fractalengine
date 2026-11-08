@@ -1528,8 +1528,11 @@ async fn apply_anchored_asset_row(
     guards.extend([
         "IF array::len((SELECT asset_id FROM asset WHERE asset_id=$inbound_scene_asset)) != 0 { THROW 'asset identity appeared'; }".into(),
         "CREATE asset CONTENT $inbound_scene_row".into(),
+        // Unplaced rows stay transferable only while this author holds Editor (§scene-asset-transfer).
+        "UPSERT asset_inbound_author SET asset_id=$inbound_scene_asset, author=$inbound_scene_author WHERE asset_id=$inbound_scene_asset".into(),
     ]);
     bindings.push(("inbound_scene_row".into(), row));
+    bindings.push(("inbound_scene_author".into(), serde_json::json!(author_did)));
     let script = format!(
         "BEGIN TRANSACTION; {}; COMMIT TRANSACTION;",
         guards.join(";\n")
