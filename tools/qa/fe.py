@@ -608,7 +608,7 @@ def command_click(run, args):
     if args.name:
         args.locator_evidence = {}
         args.x, args.y = locate(run, args.name, args.role, args.nth, args.verse,
-                                evidence=args.locator_evidence)
+                                evidence=args.locator_evidence, exact=getattr(args, "exact", False))
     elif args.x is None or args.y is None:
         raise Refused(0, "missing_coordinates", "click needs X Y or --name TEXT")
     click = {"kind": "pointer_click", "x": args.x, "y": args.y, "button": args.button}
@@ -636,7 +636,7 @@ def command_type(run, args):
     if args.into:
         args.locator_evidence = {}
         x, y = locate(run, args.into, args.role, args.nth, args.verse, input_only=True,
-                      evidence=args.locator_evidence)
+                      evidence=args.locator_evidence, exact=getattr(args, "exact", False))
         focus_args = argparse.Namespace(**vars(args))
         focus_args.capture = False
         run_input(run, focus_args, [{"kind":"pointer_click", "x":x, "y":y, "button":"left"}])
@@ -763,12 +763,14 @@ def reach_entry(node, facts):
             "hidden": bool(node.get("hidden")), "facts": facts}
 
 
-def locate(run, name, role=None, nth=None, verse=None, input_only=False, evidence=None, diagnostics=None):
+def locate(run, name, role=None, nth=None, verse=None, input_only=False, evidence=None, diagnostics=None, exact=False):
     """Center of the enabled visible widget named `name`.
 
     `diagnostics` (optional dict, filled even when the locate refuses): window, pixels_per_point, the layout
     `scrolls`, and the enabled matches that were not reachable, `clipped` (placed, but outside the clip/window or
     hidden) and `unplaced` (no bounds), so a caller can scroll a panel instead of giving up.
+    `exact` matches only a widget whose whole name equals `name` (case-insensitive); without it a name nothing matches
+    exactly falls back to the substring hits of the ui-tree filter ('Access' then finds 'Inspector tab: API Access').
     """
     params = {"name":name, "interactive":1}
     if role:
@@ -784,9 +786,9 @@ def locate(run, name, role=None, nth=None, verse=None, input_only=False, evidenc
         diagnostics.update(window=window_rect, pixels_per_point=tree.get("pixels_per_point"),
                            scrolls=tree.get("layout", {}).get("scrolls", []), clipped=[], unplaced=[])
     candidates = tree_nodes(tree)
-    exact = [node for node in candidates if node["name"].casefold() == name.casefold()]
-    if exact:
-        candidates = exact
+    named = [node for node in candidates if node["name"].casefold() == name.casefold()]
+    if named or exact:  # exact never falls back to substring matches: an absent exact widget is locator_not_found
+        candidates = named
     nodes = []
     for node in candidates:
         bounds = node.get("bounds")
@@ -805,7 +807,7 @@ def locate(run, name, role=None, nth=None, verse=None, input_only=False, evidenc
         elif diagnostics is not None:
             diagnostics["clipped"].append(reach_entry(node, facts))
     if not nodes:
-        raise Refused(0, "locator_not_found", "no enabled visible widget named " + name)
+        raise Refused(0, "locator_not_found", "no enabled visible widget named " + name + (" (exact name)" if exact else ""))
     if nth is None and len(nodes) != 1:
         raise Refused(0, "ambiguous_locator", "candidates: " + json.dumps([{k:n.get(k) for k in ("id","name","role","bounds")} for n in nodes]))
     index = nth if nth is not None else 0
@@ -1076,6 +1078,7 @@ def build_parser():
     click.add_argument("--name")
     click.add_argument("--role")
     click.add_argument("--nth", type=int)
+    click.add_argument("--exact", action="store_true", help="match only a widget whose whole name equals --name (no substring fallback)")
     click.add_argument("--button", choices=("left", "right", "middle"), default="left")
     click.add_argument("--modifier", action="append", choices=("ctrl", "shift", "alt", "cmd"),
                        help="hold a modifier through the pointer command; repeat to combine")
@@ -1096,6 +1099,7 @@ def build_parser():
     text.add_argument("--into", help="click this named input before entering text")
     text.add_argument("--role")
     text.add_argument("--nth", type=int)
+    text.add_argument("--exact", action="store_true", help="match only an input whose whole name equals --into (no substring fallback)")
 
     scroll = input_parser("scroll", "wheel lines (positive = up/zoom in), optionally at x y", command_scroll)
     scroll.add_argument("dy", type=float)

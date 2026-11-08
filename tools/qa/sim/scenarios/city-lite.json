@@ -68,7 +68,7 @@
         {"probe": "query", "target": "SELECT node_id, display_name, position FROM node WHERE petal_id = '${dt.id}' AND tombstone = NONE ORDER BY node_id", "path": "digest", "predicate": "agree", "within_s": 120}
       ],
       "checkpoints": [
-        {"peer": "all", "capture": "scene", "pose": {"orbit": {"focus": [0, 0, 0], "yaw_deg": 35, "pitch_deg": 40, "distance": 260}}, "expect_visual": "three 4 x 5 districts of textured buildings floating in empty space (no ground or road asset is placed), identical on every peer"}
+        {"peer": "all", "capture": "scene", "pose": {"orbit": {"focus": [6, 10, -3], "yaw_deg": 35, "pitch_deg": 40, "distance": 360}}, "expect_visual": "all three 4 x 5 districts (x -127..139, z -37..31, up to 48 m tall) fully in frame, none clipped at an edge, as textured buildings floating in empty space (no ground or road asset is placed), identical on every peer; the pose frames the districts' bounds (QA-0159 j)"}
       ]
     },
     {
@@ -98,7 +98,7 @@
         {"probe": "alive", "target": "peer", "path": "alive", "predicate": "equals", "value": true, "mode": "always"}
       ],
       "checkpoints": [
-        {"peer": "all", "capture": "scene", "pose": {"orbit": {"focus": [0, 20, 0], "yaw_deg": 35, "pitch_deg": 35, "distance": 200}}, "expect_visual": "four drones above the districts at the same positions on every peer"}
+        {"peer": "all", "capture": "scene", "pose": {"orbit": {"focus": [0, 20, 0], "yaw_deg": 35, "pitch_deg": 35, "distance": 200}}, "expect_visual": "four drones above the districts at the same positions on every peer; a drone is the generated vehicle (car) mesh by design, scaled x3 (QA-0159 j)"}
       ]
     }
   ]

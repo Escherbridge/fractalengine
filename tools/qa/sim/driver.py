@@ -17,6 +17,7 @@ from scenario import UnresolvedRef, source_probe, target_key
 
 BARRIER_LEAD_S = 0.5
 BARRIER_TIMEOUT_S = 120.0
+NEEDS_WAIT_S = 90.0  # longest a dependent waits for a same-step dependency still in flight before it counts as unmet
 LIVE_POLL_S = 0.25
 FINGERPRINT_NODE_CAP = 400
 
@@ -59,6 +60,52 @@ def outcome_extras(outcome):
     return extras
 
 
+class FireGate:
+    """Same-instant gate whose membership is decided at fire time (tools/qa/AGENTS.md §sim, Wait-and-anchor rules).
+
+    A participant either arrives (and waits for the others) or withdraws because its `needs` or refs turned out
+    unmet, so a withdrawal neither stalls nor breaks the rest. The last arrival fixes fire_at = now + lead
+    (no lead when it is the only one left).
+    """
+
+    def __init__(self, parties, clock, lead_s=BARRIER_LEAD_S):
+        self._clock = clock
+        self._lead_s = lead_s
+        self._parties = parties
+        self._arrived = 0
+        self._fire_at = None
+        self._broken = False
+        self._condition = threading.Condition()
+
+    def _open_if_complete(self):  # caller holds the lock
+        if self._fire_at is None and self._parties > 0 and self._arrived >= self._parties:
+            self._fire_at = self._clock.now() + (self._lead_s if self._parties > 1 else 0.0)
+            self._condition.notify_all()
+
+    def arrive(self, timeout):
+        """Block until every remaining participant has arrived; the shared fire instant (BrokenBarrierError on abort or timeout)."""
+        with self._condition:
+            self._arrived += 1
+            self._open_if_complete()
+            self._condition.wait_for(lambda: self._fire_at is not None or self._broken, timeout)
+            if self._fire_at is None:
+                self._broken = True
+                self._condition.notify_all()
+                raise threading.BrokenBarrierError()
+            return self._fire_at
+
+    def withdraw(self):
+        """Leave before arriving; the gate opens if everyone still in has already arrived."""
+        with self._condition:
+            self._parties -= 1
+            self._open_if_complete()
+
+    def abort(self):
+        with self._condition:
+            self._broken = True
+            self._condition.notify_all()
+
+
 def select_steps(steps, spec):
     """'0-3', '0,2,5', '13a' -> the chosen step dicts in scenario order (None = all)."""
     if not spec:
@@ -97,6 +144,7 @@ class Driver:
         self.log = log
         self.present = set(clients)
         self.abort = threading.Event()
+        self._settled = {}  # this step's action id -> Event set once that action has finished (any status), for fire-time `needs`
 
     # -- step loop -----------------------------------------------------------------------------
     def run(self):
@@ -114,6 +162,8 @@ class Driver:
         self.recorder.write("steps", {"step": sid, "event": "start", "t": t_start, "title": step["title"],
                                       "cadence": self.cadence.as_dict()})
         self.log("[step %s] %s" % (sid, step["title"]))
+        self._settled = {action["id"]: threading.Event() for group in ("prepare", "actions")
+                         for action in step.get(group, []) if action.get("id")}
         prepared = [self.execute(action, sid, "prepare", t_start) for action in step.get("prepare", [])]
         t_actions = self.clock.now()
         events = self.run_actions(step, sid, t_actions)
@@ -144,23 +194,24 @@ class Driver:
                 events.append(event)
 
         threads = []
-        live_barrier = [a for a in barrier if a["peer"] in self.present and not self.unmet_needs(a)
+        # Static facts only: an absent peer or absent required peer never joins. `needs` is decided at fire time, inside the gate.
+        live_barrier = [a for a in barrier if a["peer"] in self.present
                         and all(peer in self.present for peer in a.get("requires", []))]
         for action in barrier:
-            if action not in live_barrier:  # absent peer, absent required peer or unmet needs: skipped, never a half-filled barrier
+            if action not in live_barrier:  # skipped as a unit, never a half-filled barrier
                 keep(self.execute(action, sid, "barrier", t_step))
-        if len(live_barrier) >= 2:
-            fire_at = [None]
+        if live_barrier:
+            gate = FireGate(len(live_barrier), self.clock)
 
-            def set_fire():
-                fire_at[0] = self.clock.now() + BARRIER_LEAD_S
+            def fire_in_gate(participant):
+                try:
+                    keep(self.execute(participant, sid, "barrier", t_step, gate=gate))
+                except BaseException:  # a harness defect in one participant must not hold the others at the gate
+                    gate.withdraw()
+                    raise
 
-            gate = threading.Barrier(len(live_barrier), action=set_fire)
-            for action in live_barrier:
-                threads.append(threading.Thread(target=lambda a=action: keep(self.execute(
-                    a, sid, "barrier", t_step, gate=gate, fire_at=fire_at)), daemon=True))
-        elif live_barrier:
-            seq = live_barrier + seq  # a lone live barrier participant degrades to sequential
+            for action in live_barrier:  # a participant whose needs/refs fail withdraws; the others still fire together
+                threads.append(threading.Thread(target=lambda a=action: fire_in_gate(a), daemon=True))
         for action in offset:
             delay = float(action["sync"][1:])
             threads.append(threading.Thread(target=lambda a=action, d=delay: keep(self.execute(
@@ -176,6 +227,23 @@ class Driver:
     def unmet_needs(self, item):
         """Ids in item["needs"] whose action did not run ok (it failed, was skipped or has not run)."""
         return [dep for dep in item.get("needs", []) if self.ctx.try_resolve("$%s.ok" % dep) is not True]
+
+    def settle_needs(self, item):
+        """(unmet ids, seconds waited): `needs` judged when the dependent fires, after same-step dependencies still in flight have finished.
+
+        A revoked-writer action due at +25 s therefore runs once the revoke GUI sequence has actually completed (or is
+        skipped when it failed), however long that sequence took; a dependency that never finishes is unmet after NEEDS_WAIT_S.
+        """
+        started = time.monotonic()
+        deadline = started + NEEDS_WAIT_S
+        for dep in item.get("needs", []):
+            finished = self._settled.get(dep)
+            while finished is not None and not finished.is_set() and not self.abort.is_set():
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    break
+                finished.wait(min(remaining, LIVE_POLL_S))
+        return self.unmet_needs(item), time.monotonic() - started
 
     def recover_gui(self, sid, events):
         """Press Escape on each peer whose GUI sequence ended in a failure, so a menu or dialog it left open cannot cover the next step.
@@ -202,7 +270,16 @@ class Driver:
                         error=outcome.get("error"), verdict="as_expected", **outcome_extras(outcome))
 
     # -- one action ----------------------------------------------------------------------------
-    def execute(self, action, sid, lane, t_step, gate=None, fire_at=None, at=None, extra=None):
+    def execute(self, action, sid, lane, t_step, gate=None, at=None, extra=None):
+        """Run one action and log its event; whatever the outcome, dependents waiting on its id are released."""
+        try:
+            return self._execute(action, sid, lane, t_step, gate, at, extra)
+        finally:
+            finished = self._settled.get(action.get("id"))
+            if finished is not None:
+                finished.set()
+
+    def _execute(self, action, sid, lane, t_step, gate, at, extra):
         action_id = action.get("id") or "%s.%s.%s" % (sid, action["peer"], action["op"])
         base = {"step": sid, "lane": lane, "peer": action["peer"], "action_id": action_id, "via": action["via"],
                 "op": action["op"], "expect": action.get("expect", "ok"), "sync": action.get("sync", "seq"),
@@ -212,36 +289,40 @@ class Driver:
         absent = [peer for peer in action.get("requires", []) if peer not in self.present]
         if absent:  # e.g. the owner's half of an editor2 revoke: skipped as a unit, never a half-run GUI sequence
             return self._event(base, status="skipped_peer_absent", requires_absent=absent)
-        unmet = self.unmet_needs(action)
+        client = self.clients[action["peer"]]
+        if gate is None and at is not None:  # offset lane: sleep to the scheduled instant first, THEN judge needs
+            self.clock.sleep_until(at)
+            base["fire_at"] = at
+        unmet, waited = self.settle_needs(action)  # at fire time, so a dependency still running is awaited, not assumed failed
+        if waited >= 0.05:
+            base["needs_waited_ms"] = round(waited * 1000)
         if unmet:  # e.g. a write expected to be refused after a revoke whose click never landed: not exercised
+            if gate is not None:
+                gate.withdraw()
             return self._event(base, status="skipped_dependency_failed", needs_failed=unmet)
         try:
             args = self.ctx.resolve(action.get("args", {}), extra)
         except UnresolvedRef as missing:
             if gate is not None:
-                gate.abort()
+                gate.withdraw()
             return self._event(base, status="skipped_unresolved" if action.get("optional") else "error_unresolved",
                                error="unresolved $%s" % missing.ref, unresolved_ref=missing.ref,
                                unresolved_reason=missing.reason)
         base["args_digest"] = digest_of(args)
         base["args_small"] = small(_scrub(args), 2048)
-        client = self.clients[action["peer"]]
         if gate is not None:
             if action["via"] == "gui":
                 try:
                     client.prime_gui()
-                except Exception as error:  # noqa: BLE001 - the other participants must not wait out the barrier timeout
-                    gate.abort()
+                except Exception as error:  # noqa: BLE001 - leave the gate so the other participants still fire together
+                    gate.withdraw()
                     return self._event(base, status="error_barrier_broken", error="prime_gui: %s" % str(error)[:200])
             try:
-                gate.wait(BARRIER_TIMEOUT_S)
+                fire_at = gate.arrive(BARRIER_TIMEOUT_S)
             except threading.BrokenBarrierError:
                 return self._event(base, status="error_barrier_broken")
-            self.clock.sleep_until(fire_at[0])
-            base["fire_at"] = fire_at[0]
-        elif at is not None:
-            self.clock.sleep_until(at)
-            base["fire_at"] = at
+            self.clock.sleep_until(fire_at)
+            base["fire_at"] = fire_at
         t_fire = self.clock.now()
         try:
             outcome = self.dispatch(client, action, args, sid, action_id)
@@ -576,7 +657,7 @@ class Driver:
             else:
                 record["t0"] = default_t0
                 record["t0_basis"] = "step_last_fire"
-            unmet = self.unmet_needs(expect)
+            unmet = self.unmet_needs(expect)  # judged at registration, after the step's actions have all finished
             if unmet:  # its action never ran ok: not exercised (the failed action carries its own anomaly)
                 record.update(status="skipped_dependency_failed", needs_failed=unmet)
                 self.recorder.write("expectations", record)

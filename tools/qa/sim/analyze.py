@@ -18,6 +18,7 @@ import timeline_svg  # noqa: E402
 PEER_LOCAL_PROBES = {"role", "nav", "ui", "alive", "_tick", "_error"}
 DIVERGENCE_S = 15.0
 MOVING_MIN_VALUES = 8  # a target that took at least this many values, one per DIVERGENCE_S or faster, is moving
+FLIGHT_TAIL_S = 15.0  # replicas keep changing this long after a flight's last write
 PARTIAL_MIN_S = 0.0
 WRITE_REST_OPS = {"create_fractal", "create_petal", "create_node", "set_transform", "set_property", "delete_property",
                   "delete_node", "upsert_group", "delete_group", "upload_asset", "ingest_readings"}
@@ -157,6 +158,50 @@ def short(text, size=28):
     return text if len(text) <= size else text[: size - 1] + "…"
 
 
+def occurrences(series):
+    """{digest: [t, ...]}: every time the series changed TO that digest, one entry per recurrence."""
+    found = {}
+    previous = object()
+    for t, digest in zip(series.times, series.digests):
+        if digest is not None and digest != previous:
+            found.setdefault(digest, []).append(t)
+        previous = digest
+    return found
+
+
+def recurrence_period(by_peer_occurrences):
+    """One lap of a periodic target: the mean of the recurrence gaps within 10 % of the shortest (>= 2 of them), else None.
+
+    A gap is the time between a peer's successive sightings of the same value. Sparse probing misses laps, so longer
+    gaps are whole multiples of the period (30.8, 31.7, 61.3, 154.7 s on a 30 s flight): only the one-lap gaps count.
+    """
+    gaps = sorted(b - a for seen in by_peer_occurrences.values() for times in seen.values() for a, b in zip(times, times[1:]))
+    laps = [gap for gap in gaps if gap <= gaps[0] * 1.1] if gaps else []
+    return sum(laps) / len(laps) if len(laps) >= 2 else None
+
+
+def cluster_occurrences(entries, period):
+    """Group the (t, peer) sightings of ONE value into writes (QA-0159 e).
+
+    The earliest unassigned sighting leads a write; every other peer joins with its first sighting less than one
+    period later (the caller then keeps only lags up to half a period: past that the NEAREST occurrence is the next
+    lap's). A value that recurs every period is a new write each lap, never a late delivery of the first one.
+    """
+    remaining = sorted(entries)
+    writes = []
+    while remaining:
+        lead_t, lead_peer = remaining[0]
+        write, rest = {lead_peer: lead_t}, []
+        for t, peer in remaining[1:]:
+            if peer not in write and (period is None or t - lead_t < period):
+                write[peer] = t
+            else:
+                rest.append((t, peer))
+        writes.append(write)
+        remaining = rest
+    return writes
+
+
 class Series:
     """Change-logged observations for one (peer, source probe, target): value at any time by bisect."""
 
@@ -213,6 +258,10 @@ class Analysis:
         self.anomalies = []
         self.not_exercised = []  # expectations skipped because an action they need did not run ok
         self.moving_rows = []  # per-peer value lag of moving targets (divergence())
+        # Periodic writers (drone_flight): their positions repeat every period_s, so a lap-later sighting is a new write.
+        self.flights = [{"peer": e["peer"], "period_s": float((e.get("args_small") or {}).get("period_s") or 30.0),
+                         "t0": e["t_fire"], "t1": e["t_ack"]}
+                        for e in self.events if e.get("op") == "drone_flight" and e.get("lane") != "macro" and e.get("status") == "done"]
 
     def rel(self, t):
         return None if t is None else round(t - self.origin, 3)
@@ -278,11 +327,13 @@ class Analysis:
                              kind="no_anchor" if record.get("status") == "no_anchor" else None)
                 continue
             window = self.step_window.get(record["step"], {})
-            step_end = window.get("t", self.end)
-            # Regression/always checks stop at the step's end (+hold_s): later steps may legitimately change the row.
+            step_end = window.get("t", self.end)  # the step's end already includes its settle wait
+            # The window closes with the expectation's own step (QA-0159 d): a later step may legitimately write the
+            # same row, so a match after the close is "not met in window", never a late "held". Regression/always
+            # checks run to the step's end (+hold_s).
             horizon = step_end + record["hold_s"]
             if record["predicate"] == "agree":
-                rows.extend(self._agree_rows(record, horizon))
+                rows.extend(self._agree_rows(record, horizon, step_end))
             elif record["mode"] == "always":
                 rows.extend(self._always_rows(record, horizon))
             else:
@@ -322,14 +373,19 @@ class Analysis:
             series = self.series.get((peer, record["source"], record["target_key"]), Series())
             row = self._base_row(record, peer)
             pre_value, pre_digest = self._value(record, series, record["t0"])
-            matched = None
+            matched = late = None
             for t in self.eval_times(peer, series, record["t0"], self.end):
                 value, digest = self._value(record, series, t)
                 if self._holds(record, value):
-                    matched = (t, digest)
+                    if t <= step_end:
+                        matched = (t, digest)
+                    else:  # first held after the step closed: a later step's write, or a delivery too late to credit
+                        late = t
                     break
             matches[peer] = matched
             row["matched"] = matched is not None
+            row["late_match_rel"] = self.rel(late) if late is not None else None
+            row["window_end_rel"] = self.rel(step_end)
             row["matched_rel"] = self.rel(matched[0]) if matched else None
             row["latency_s"] = round(matched[0] - record["t0"], 3) if matched else None
             row["budget_ok"] = bool(matched and matched[0] - record["t0"] <= record["within_s"])
@@ -386,24 +442,28 @@ class Analysis:
                               "target": record.get("target_key")})
         return rows
 
-    def _agree_rows(self, record, horizon):
+    def _agree_rows(self, record, horizon, step_end):
         peers = record["peers"]
         all_series = {p: self.series.get((p, record["source"], record["target_key"]), Series()) for p in peers}
         times = sorted({t for s in all_series.values() for t in s.times if t >= record["t0"]} |
                        {t for p in peers for t in self.ticks.get(p, []) if t >= record["t0"]})
-        matched = None
+        matched = late = None
         for t in times:
             values = {}
             for peer, series in all_series.items():
                 value, _digest = self._value(record, series, t)
                 values[peer] = value
             if predicates.agree(values, record.get("path")):
-                matched = t
+                if t <= step_end:
+                    matched = t
+                else:  # agreement first reached after the step closed: not credited (QA-0159 d)
+                    late = t
                 break
         rows = []
         for peer in peers:
             row = self._base_row(record, peer)
             row.update(matched=matched is not None, matched_rel=self.rel(matched),
+                       late_match_rel=self.rel(late) if late is not None else None, window_end_rel=self.rel(step_end),
                        latency_s=round(matched - record["t0"], 3) if matched else None,
                        budget_ok=bool(matched and matched - record["t0"] <= record["within_s"]),
                        cpu_mean=self.cpu_mean(record["t0"], matched or record["t0"] + record["within_s"]))
@@ -422,14 +482,20 @@ class Analysis:
         if not row["matched"]:
             if row.get("anchor_failure"):
                 return  # not exercised: the anchor write failed and has its own anomaly; not a replication miss
-            self.anomaly(severity or "S2", record["step"], peers, "%s never held on %s (%s %s)" % (
-                record["exp_id"], "/".join(peers), record["probe"], record["predicate"]), evidence)
+            if row.get("late_match_rel") is not None:
+                evidence.update(first_held_rel_s=row["late_match_rel"], window_end_rel_s=row.get("window_end_rel"))
+                self.anomaly(severity or "S2", record["step"], peers, "%s not met in window on %s (%s %s): first held at +%.1fs, %.1fs after its step closed at +%.1fs" % (
+                    record["exp_id"], "/".join(peers), record["probe"], record["predicate"], row["late_match_rel"],
+                    row["late_match_rel"] - (row.get("window_end_rel") or 0.0), row.get("window_end_rel") or 0.0), evidence)
+            else:
+                self.anomaly(severity or "S2", record["step"], peers, "%s never held on %s (%s %s)" % (
+                    record["exp_id"], "/".join(peers), record["probe"], record["predicate"]), evidence)
         elif not row["budget_ok"]:
             self.anomaly(severity or ("S2" if row["latency_s"] > 2 * record["within_s"] else "S3"), record["step"], peers,
                          "%s held after %.1fs > budget %.0fs on %s" % (record["exp_id"], row["latency_s"],
                                                                        record["within_s"], "/".join(peers)), evidence)
-        if row.get("regressed_rel") is not None:
-            self.anomaly("S1", record["step"], peers, "%s held then regressed on %s at +%.1fs (flap/resurrection)" % (
+        if row.get("regressed_rel") is not None:  # meta.severity caps it: a declared S3 expectation never raises an S1
+            self.anomaly(severity or "S1", record["step"], peers, "%s held then regressed on %s at +%.1fs (flap/resurrection)" % (
                 record["exp_id"], "/".join(peers), row["regressed_rel"]), evidence)
         # Intermediate states are reported for every row but only judged where the scenario declares the
         # write atomic (meta.atomic, e.g. Clear Properties): sequential writes legitimately replay in order.
@@ -593,27 +659,58 @@ class Analysis:
         gaps = sorted(b - a for a, b in zip(changes, changes[1:]))
         return gaps[len(gaps) // 2] < self.divergence_s
 
+    def _lap_of(self, by_peer, seen):
+        """Lap length (s) of a target whose values recur, else None (a unique-valued target is judged by first-seen lag).
+
+        Evidence that THIS target recurs: a peer sees a value again (the shortest one-lap gaps agree), or a non-writer
+        sees a value a lap BEFORE the driving flight's own peer does, which a unique write cannot do (the writer sees
+        it first). With a flight driving the target its declared period_s is the lap; else the recurrence estimate.
+        """
+        recurring = recurrence_period(seen)
+        changes = [t for series in by_peer.values() for t in self._change_times(series)]
+        for flight in self.flights:
+            inside = [t for t in changes if flight["t0"] <= t <= flight["t1"] + FLIGHT_TAIL_S]
+            if changes and len(inside) * 2 >= len(changes):  # most of the target's changes happened during this flight
+                if recurring is not None or self._seen_before_writer(seen, flight):
+                    return flight["period_s"]
+                break
+        return recurring
+
+    @staticmethod
+    def _seen_before_writer(seen, flight):
+        """True when some peer saw a value clearly before the flight's own peer did (an earlier lap of the same position)."""
+        margin = min(5.0, flight["period_s"] / 4)  # probe response times jitter by about a second under load
+        for digest, times in seen.get(flight["peer"], {}).items():
+            others = [t for peer, per_peer in seen.items() if peer != flight["peer"] for t in per_peer.get(digest, [])]
+            if others and min(others) < times[0] - margin:
+                return True
+        return False
+
     def _moving_target(self, probe, target, by_peer, peers_alive):
         """Per-value lag of a moving target (first time each peer showed each value vs the earliest peer), plus the quiet-tail check.
 
         A moving target is never 'diverged from the majority' for minutes at a time, only behind; the one real
         divergence is a peer that stays different after the writes stop (tail episode, S1 at run end).
         """
-        first_seen = {peer: {} for peer in by_peer}
-        for peer, series in by_peer.items():
-            for t, digest in zip(series.times, series.digests):
-                if digest is not None:
-                    first_seen[peer].setdefault(digest, t)
-        earliest = {}
-        for seen in first_seen.values():
-            for digest, t in seen.items():
-                earliest[digest] = min(t, earliest.get(digest, t))
-        holders = collections.Counter(digest for seen in first_seen.values() for digest in seen)
-        for peer, seen in sorted(first_seen.items()):
-            lags = [(seen[digest] - earliest[digest], seen[digest]) for digest in seen if holders[digest] >= 2]
+        seen = {peer: occurrences(series) for peer, series in by_peer.items()}
+        period = self._lap_of(by_peer, seen)  # a periodic flight repeats its values every lap: a later lap is a new write
+        lag_pairs = {peer: [] for peer in by_peer}  # (lag behind the write's first sighting, time of this peer's sighting)
+        for digest in {digest for per_peer in seen.values() for digest in per_peer}:
+            sightings = [(t, peer) for peer, per_peer in seen.items() for t in per_peer.get(digest, [])]
+            for write in cluster_occurrences(sightings, period):
+                if len(write) >= 2:
+                    lead = min(write.values())
+                    for peer, t in write.items():
+                        if period is not None and t - lead > period / 2:  # nearer the next lap's sighting: a new write, not a late one
+                            continue
+                        lag_pairs[peer].append((t - lead, t))
+        for peer in sorted(by_peer):
+            lags = lag_pairs[peer]
             values = [lag for lag, _t in lags]
-            row = {"probe": probe, "target": target, "peer": peer, "values": len(seen), "shared": len(values),
+            row = {"probe": probe, "target": target, "peer": peer, "values": len(seen[peer]), "shared": len(values),
                    "lag_p50_s": pct(values, 50), "lag_p95_s": pct(values, 95), "lag_max_s": max(values) if values else None}
+            if period is not None:
+                row["recurrence_s"] = round(period, 1)
             self.moving_rows.append(row)
             if values and row["lag_max_s"] > self.divergence_s:
                 t_max = max(lags)[1]
@@ -753,6 +850,11 @@ class Analysis:
             self.anomaly("harness", "_run", [p.get("name") for p in self.meta.get("peers", [])],
                          "run aborted before completion: %s" % str(self.meta["failure"])[:200],
                          {"failure": self.meta["failure"], "steps_started": [s["step"] for s in self.steps if s.get("event") == "start"]})
+        oversize = sorted({(o["peer"], o["probe"], o["target"]) for o in self.observations if o.get("oversize")})
+        if oversize:  # recorded by digest only: an expectation on these reads MISSING, so say so (prober.py OBSERVATION_INLINE_BYTES)
+            self.anomaly("harness", "_run", sorted({peer for peer, _p, _t in oversize}),
+                         "%d observed value(s) exceeded the prober's inline budget; expectations on them could not be judged" % len(oversize),
+                         {"series": [{"peer": peer, "probe": probe, "target": target} for peer, probe, target in oversize]})
         rows = self.expectation_rows()
         frame = self.action_frame()
         self.action_anomalies()
@@ -848,6 +950,9 @@ class Analysis:
                 notes.append("partial states %d" % int(r["partial_states"]))
             if isinstance(r.get("anchor_failure"), str):
                 notes.append("not exercised: anchor %s" % r["anchor_failure"])
+            if pd.notna(r.get("late_match_rel")):
+                notes.append("not met in window: first held +%s s, after its step closed at +%s s" % (
+                    fmt(float(r["late_match_rel"]), 1), fmt(float(r["window_end_rel"]), 1)))
             if isinstance(r.get("covers"), str):
                 notes.append(r["covers"])
             lines.append("| %s | %s | %s | %s | `%s` | %s | %s | %s | %s | %s | %s | %s |" % (
@@ -901,6 +1006,11 @@ class Analysis:
                 fmt(r["lag_max_s"])) for r in self.moving_rows]
             lines += ["", "Peers share few values when the probe interval is longer than a value lasts; no shared value means no lag figure, "
                       "and only a divergence that outlasts the writes is judged (run-end episode)."]
+            periods = sorted({r["recurrence_s"] for r in self.moving_rows if r.get("recurrence_s")})
+            if periods:
+                lines += ["", "Values recur about every %s s (a periodic flight): a sighting is matched to the NEAREST occurrence within one "
+                          "period, so a lap later is a new write; a lag past half a period is nearer the next lap and is not reported (QA-0159 e)." % (
+                              "/".join("%g" % p for p in periods))]
         else:
             lines.append("None.")
         lines += ["", "## Restart catch-up", ""]

@@ -228,7 +228,7 @@
         {"peer": "editor", "via": "gui", "op": "click", "args": {"name": "Options menu for node N2"}},
         {"peer": "editor", "via": "gui", "op": "click", "args": {"name": "Options… node N2", "exact": true}},
         {"peer": "editor", "via": "gui", "op": "click", "args": {"name": "Clear node properties", "exact": true}},
-        {"peer": "editor", "via": "gui", "op": "click", "args": {"name": "Confirm Clear node properties", "exact": true}},
+        {"peer": "editor", "via": "gui", "op": "click", "args": {"name": "Confirm Clear node properties", "exact": true, "wait_s": 3}},
         {"peer": "editor", "via": "gui", "op": "click", "args": {"name": "Close window", "role": "button", "wait_s": 1}, "optional": true}
       ],
       "expect": [
@@ -355,7 +355,7 @@
         {"probe": "node", "target": "$panel.id", "path": "asset_id", "predicate": "equals", "value": "$up.id"}
       ],
       "checkpoints": [
-        {"peer": "all", "capture": "scene", "pose": {"orbit": {"focus": [0, 0, 4], "yaw_deg": 30, "pitch_deg": 25, "distance": 60}}, "expect_visual": "Swarm Panel building mesh rendered (not a placeholder card) on every peer WITHOUT re-opening the petal (QA-0124)"}
+        {"peer": "all", "capture": "scene", "pose": {"orbit": {"focus": [0, 16.5, 4], "yaw_deg": 30, "pitch_deg": 25, "distance": 65}}, "expect_visual": "the whole Swarm Panel tower (about 35 m tall) rendered as a building mesh (not a placeholder card) on every peer WITHOUT re-opening the petal (QA-0124); the pose frames its bounds, focus at the box centre, distance past radius/sin(fov/2) (QA-0159 h)"}
       ]
     },
     {
@@ -384,13 +384,13 @@
     {
       "id": "13a", "title": "Owner goes to the all-verses browser (verse replica closed), revokes the editor from the verse card, stays, then re-enters; the editor keeps writing", "settle_s": 40, "covers": ["QA-0120", "QA-0121", "QA-0122", "QA-0087", "QA-0132"],
       "probe": {"hierarchy_ms": 0},
-      "note": "QA-0120's trigger: 'Browse all verses' clears the active verse, which closes the owner's verse replica (navigation_manager handle_verse_replica_lifecycle); the revoke is then issued from the all-verses browser card ('Options for verse QA Basic', viewport.rs) and must reach the editor through the sync thread's publication lease, not the owner's next visit. Confirm revoke is the very next click (two-step confirm, 4 s). The editor's refused writes wait for it to read its own demotion (wait_role), so a write is judged refused only once the editor could know. Hierarchy polling is paused (QA-0125).",
+      "note": "QA-0120's trigger: 'Browse all verses' clears the active verse, which closes the owner's verse replica (navigation_manager handle_verse_replica_lifecycle); the revoke is then issued from the all-verses browser card ('Options for verse QA Basic', viewport.rs) and must reach the editor through the sync thread's publication lease, not the owner's next visit. Confirm is the very next click (two-step confirm, armed 4 s, so wait_s 3); its accessible name is 'Confirm Revoke role grant for <did>' (confirm_button prefixes the arm button's name), which an exact locator must spell out. The owner stays on the list until 'reenter' (+90 s, over 60 s after the revoke). The editor's refused writes wait for it to read its own demotion (wait_role), so a write is judged refused only once the editor could know; the never-accepted-elsewhere checks need that same gate, so they are never held vacuously. Hierarchy polling is paused (QA-0125).",
       "actions": [
         {"peer": "owner", "via": "gui", "op": "click_until", "args": {"click": {"name": "Browse all verses", "exact": true}, "until": "Join a verse from browser", "max": 3}},
         {"peer": "owner", "via": "gui", "op": "click", "args": {"name": "Options for verse QA Basic", "exact": true}},
         {"peer": "owner", "via": "gui", "op": "click", "args": {"name": "Access", "role": "button", "exact": true}},
         {"peer": "owner", "via": "gui", "op": "click", "args": {"name": "Revoke role grant for ${peers.editor.did}", "exact": true}},
-        {"id": "revoke", "peer": "owner", "via": "gui", "op": "click", "args": {"name": "Confirm revoke", "exact": true}},
+        {"id": "revoke", "peer": "owner", "via": "gui", "op": "click", "args": {"name": "Confirm Revoke role grant for ${peers.editor.did}", "exact": true, "wait_s": 3}},
         {"peer": "owner", "via": "gui", "op": "click", "args": {"name": "Close window", "role": "button", "wait_s": 1}, "optional": true},
         {"id": "editor_demoted", "peer": "editor", "via": "host", "op": "wait_role", "args": {"not_role": "editor", "timeout_s": 90}, "needs": ["revoke"], "covers": "QA-0120 the revoke issued with the owner's replica closed reaches the editor"},
         {"id": "rest_tf", "peer": "editor", "via": "rest", "op": "set_transform", "args": {"node_id": "$n1.id", "position": [9, 0, 9], "rotation": [0, 0, 0], "scale": [1, 1, 1]}, "sync": "+25", "expect": "refused", "needs": ["editor_demoted"], "covers": "QA-0121"},
@@ -401,9 +401,9 @@
       ],
       "expect": [
         {"probe": "role", "target": "$fixture.verse_id", "peers": ["editor"], "predicate": "not_equals", "value": "editor", "after": "revoke", "within_s": 30, "needs": ["revoke"], "covers": "QA-0120 the revoke issued from the all-verses card while the owner's verse replica is closed reaches the editor within 30 s (publication lease), not at the owner's next visit; QA-0132 demotion judged while that replica is closed"},
-        {"probe": "properties", "target": "$n1.id", "peers": ["owner", "viewer", "editor2"], "path": "revoked_rest", "predicate": "absent", "mode": "always", "after": "revoke", "hold_s": 40, "needs": ["revoke"], "covers": "QA-0122 REST write never accepted elsewhere"},
-        {"probe": "properties", "target": "$n1.id", "peers": ["owner", "viewer", "editor2"], "path": "revoked_mcp", "predicate": "absent", "mode": "always", "after": "revoke", "hold_s": 40, "needs": ["revoke"], "covers": "QA-0122 MCP write never accepted elsewhere"},
-        {"probe": "transform", "target": "$n1.id", "peers": ["owner", "viewer", "editor2"], "path": "position", "predicate": "not_equals", "value": [9, 0, 9], "mode": "always", "after": "revoke", "hold_s": 40, "needs": ["revoke"], "covers": "QA-0121 transform never accepted elsewhere"},
+        {"probe": "properties", "target": "$n1.id", "peers": ["owner", "viewer", "editor2"], "path": "revoked_rest", "predicate": "absent", "mode": "always", "after": "revoke", "hold_s": 40, "needs": ["revoke", "editor_demoted"], "covers": "QA-0122 REST write never accepted elsewhere"},
+        {"probe": "properties", "target": "$n1.id", "peers": ["owner", "viewer", "editor2"], "path": "revoked_mcp", "predicate": "absent", "mode": "always", "after": "revoke", "hold_s": 40, "needs": ["revoke", "editor_demoted"], "covers": "QA-0122 MCP write never accepted elsewhere"},
+        {"probe": "transform", "target": "$n1.id", "peers": ["owner", "viewer", "editor2"], "path": "position", "predicate": "not_equals", "value": [9, 0, 9], "mode": "always", "after": "revoke", "hold_s": 40, "needs": ["revoke", "editor_demoted"], "covers": "QA-0121 transform never accepted elsewhere"},
         {"probe": "properties", "target": "$n1.id", "path": "revoked_rest", "predicate": "absent", "after": "reenter", "within_s": 30, "needs": ["revoke"], "covers": "QA-0121/0122 rows that arrived before the revoke are dropped on every peer"},
         {"probe": "properties", "target": "$n1.id", "path": "revoked_mcp", "predicate": "absent", "after": "reenter", "within_s": 30, "needs": ["revoke"]},
         {"probe": "transform", "target": "$n1.id", "path": "position", "predicate": "equals", "value": [7, 0, -3.25], "after": "reenter", "within_s": 30, "needs": ["revoke"], "covers": "QA-0121 every peer back on the durable value"}
@@ -412,14 +412,14 @@
     {
       "id": "13b", "title": "Owner leaves the petal for the verse level, revokes editor2 there, walks back into Swarm Petal; editor2 writes property + transform after the revoke", "settle_s": 40, "covers": ["QA-0121", "QA-0122", "QA-0131", "QA-0132", "QA-0133"],
       "probe": {"hierarchy_ms": 0},
-      "note": "Revoking from inside a petal is impossible: verse Options… is disabled there (QA-0093, QA-0152 c), so the owner first climbs to the verse level (breadcrumb), revokes, then re-opens Swarm Petal. Confirm revoke is the very next action after Revoke (no sleep, no sync offset): the armed button reverts on its own. Hierarchy polling is paused (QA-0125).",
+      "note": "Revoking from inside a petal is impossible: verse Options… is disabled there (QA-0093, QA-0152 c), so the owner first climbs to the verse level (breadcrumb), revokes, then re-opens Swarm Petal. Confirm is the very next action after Revoke (no sleep, no sync offset; wait_s 3): the armed button reverts on its own after 4 s, and its accessible name is 'Confirm Revoke role grant for <did>'. Options/Access/Revoke/Confirm are exact-name locators so a substring fallback can never click the Inspector's 'API Access' tab. Hierarchy polling is paused (QA-0125).",
       "actions": [
-        {"peer": "owner", "via": "gui", "op": "click_until", "args": {"click": {"name": "Browse current verse fractals"}, "until": "+ New Fractal", "max": 3}, "requires": ["editor2"]},
-        {"peer": "owner", "via": "gui", "op": "click", "args": {"name": "Options menu for verse QA Basic"}, "requires": ["editor2"]},
-        {"peer": "owner", "via": "gui", "op": "click", "args": {"name": "Options… verse QA Basic"}, "requires": ["editor2"]},
-        {"peer": "owner", "via": "gui", "op": "click", "args": {"name": "Access", "role": "button"}, "requires": ["editor2"]},
-        {"peer": "owner", "via": "gui", "op": "click", "args": {"name": "Revoke role grant for ${peers.editor2.did}"}, "requires": ["editor2"]},
-        {"id": "revoke2", "peer": "owner", "via": "gui", "op": "click", "args": {"name": "Confirm revoke"}, "requires": ["editor2"]},
+        {"peer": "owner", "via": "gui", "op": "click_until", "args": {"click": {"name": "Browse current verse fractals", "exact": true}, "until": "+ New Fractal", "max": 3}, "requires": ["editor2"]},
+        {"peer": "owner", "via": "gui", "op": "click", "args": {"name": "Options menu for verse QA Basic", "exact": true}, "requires": ["editor2"]},
+        {"peer": "owner", "via": "gui", "op": "click", "args": {"name": "Options… verse QA Basic", "exact": true}, "requires": ["editor2"]},
+        {"peer": "owner", "via": "gui", "op": "click", "args": {"name": "Access", "role": "button", "exact": true}, "requires": ["editor2"]},
+        {"peer": "owner", "via": "gui", "op": "click", "args": {"name": "Revoke role grant for ${peers.editor2.did}", "exact": true}, "requires": ["editor2"]},
+        {"id": "revoke2", "peer": "owner", "via": "gui", "op": "click", "args": {"name": "Confirm Revoke role grant for ${peers.editor2.did}", "exact": true, "wait_s": 3}, "requires": ["editor2"]},
         {"peer": "owner", "via": "gui", "op": "click", "args": {"name": "Close window", "role": "button", "wait_s": 1}, "optional": true, "requires": ["editor2"]},
         {"peer": "owner", "via": "gui", "op": "click", "args": {"name": "Open fractal Swarm Fractal"}},
         {"peer": "owner", "via": "gui", "op": "click", "args": {"name": "Open petal Swarm Petal"}},
@@ -442,16 +442,16 @@
     {
       "id": "13c", "title": "Owner re-grants editor2 Editor at the verse level; rows editor2 wrote while revoked stay refused, its new writes land", "settle_s": 40, "covers": ["QA-0131", "QA-0132"],
       "probe": {"hierarchy_ms": 0},
-      "note": "QA-0131: the empowerment re-read after a re-grant must not re-admit rows written while the author was unauthorized (13b's race2_rest). The role combo option is the plain label 'editor'; Save role is a two-step confirm, so 'Confirm role change' is the very next click.",
+      "note": "QA-0131: the empowerment re-read after a re-grant must not re-admit rows written while the author was unauthorized (13b's race2_rest). The role combo option is the plain label 'editor'; Save role is a two-step confirm whose armed button is named 'Confirm Assign role editor to <did>' (the button text 'Confirm role change' is not its accessible name), so that is the very next click.",
       "actions": [
-        {"peer": "owner", "via": "gui", "op": "click_until", "args": {"click": {"name": "Browse current verse fractals"}, "until": "+ New Fractal", "max": 3}, "requires": ["editor2"]},
+        {"peer": "owner", "via": "gui", "op": "click_until", "args": {"click": {"name": "Browse current verse fractals", "exact": true}, "until": "+ New Fractal", "max": 3}, "requires": ["editor2"]},
         {"peer": "owner", "via": "gui", "op": "click", "args": {"name": "Options menu for verse QA Basic", "exact": true}, "requires": ["editor2"]},
         {"peer": "owner", "via": "gui", "op": "click", "args": {"name": "Options… verse QA Basic", "exact": true}, "requires": ["editor2"]},
         {"peer": "owner", "via": "gui", "op": "click", "args": {"name": "Access", "role": "button", "exact": true}, "requires": ["editor2"]},
         {"peer": "owner", "via": "gui", "op": "click", "args": {"name": "Role to assign for ${peers.editor2.did}", "exact": true}, "requires": ["editor2"]},
         {"peer": "owner", "via": "gui", "op": "click", "args": {"name": "editor", "exact": true}, "requires": ["editor2"]},
         {"peer": "owner", "via": "gui", "op": "click", "args": {"name": "Assign role editor to ${peers.editor2.did}", "exact": true}, "requires": ["editor2"]},
-        {"id": "regrant2", "peer": "owner", "via": "gui", "op": "click", "args": {"name": "Confirm role change", "exact": true}, "requires": ["editor2"]},
+        {"id": "regrant2", "peer": "owner", "via": "gui", "op": "click", "args": {"name": "Confirm Assign role editor to ${peers.editor2.did}", "exact": true, "wait_s": 3}, "requires": ["editor2"]},
         {"peer": "owner", "via": "gui", "op": "click", "args": {"name": "Close window", "role": "button", "wait_s": 1}, "optional": true, "requires": ["editor2"]},
         {"peer": "owner", "via": "gui", "op": "click", "args": {"name": "Open fractal Swarm Fractal"}},
         {"peer": "owner", "via": "gui", "op": "click", "args": {"name": "Open petal Swarm Petal"}},

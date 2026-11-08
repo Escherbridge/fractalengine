@@ -1110,8 +1110,10 @@ Scenarios: tracked in `tools/qa/sim/scenarios/` (`p2p-core`, `p2p-assets`, `city
 `qa/sim/scenarios/` (gitignored) overrides one locally. Peers absent from a run (`--peers`, gate) skip their
 actions and drop out of expectations; `p2p-core` needs owner/editor/viewer/editor2 for full coverage. `p2p-core`
 splits the group hide (9b) from the SG -> SG2 rename (9b2) so an expectation that ends with its step never reads the
-scenario's own next write as a regression, and has no `Toggle Options section` click in step 10 (arming the Brush
-already shows its options; the toggle would hide them).
+scenario's own next write as a regression, runs the GUI group leave (9c) BEFORE the rename (the per-group buttons keep
+the name captured when Groups opened, QA-0111, and polls between would drop the selection), clears properties through
+Node Options in step 8 (the tree-row menu has no Clear Properties), and has no `Toggle Options section` click in step
+10 (arming the Brush already shows its options; the toggle would hide them).
 
 ### DSL reference
 
@@ -1134,12 +1136,13 @@ expect = {probe, target, path?, peers: all|[names], predicate, value?, within_s?
   upsert_group|delete_group|upload_asset` (multipart; MCP caps at 11 MiB)`|query|ingest_readings|lookup_node`
   (query, not hierarchy)`|lookup_petal|lookup_group|request`. mcp: any tool name, args = tool arguments
   (`isError` = refused). gui: `click|type|key|scroll|scroll_until|click_until|click_at` (`viewport_frac`)`|wait_for`,
-  fe.py locators (`name`, `role`, `nth`). host: `restart` (peers.ps1 Restart, `no_bootstrap`)`|stop_peer`
+  fe.py locators (`name`, `role`, `nth`, `exact`: whole-name match only, see Wait-and-anchor rules). host: `restart` (peers.ps1 Restart, `no_bootstrap`)`|stop_peer`
   (stop.ps1 exact identity)`|sleep|wait_role|fingerprint`. macro: `place_grid|drone_flight|freeplay`; every
   sub-call is logged as `<macro id>.<n>`, and freeplay is seeded by scenario seed + step + peer (replayable).
 - **Sync.** `seq` actions run in declared order across peers; `barrier` actions (distinct peers) wait on a
-  `threading.Barrier` whose action sets `fire_at = now + 0.5 s`, then spin-sleep to it (GUI barrier actions
-  pre-resolve their view token); `+<s>` fires at step start + s. All three lanes start together; `prepare`
+  `FireGate` whose last arrival sets `fire_at = now + 0.5 s`, then spin-sleep to it (GUI barrier actions
+  pre-resolve their view token; a participant whose `needs` or refs fail withdraws and the rest still fire together);
+  `+<s>` fires at step start + s. All three lanes start together; `prepare`
   runs first, before any barrier. A step waits until every eventually-expectation holds live (+ `hold_s`) or
   `settle_s` passes, then takes its checkpoints (scene-mode by default: no re-pose in front of the user).
 - **Expectations.** Probes: `node` (`GET /nodes/{id}`: GeoJSON `position.coordinates` [x,z] + `elevation`; its
@@ -1180,7 +1183,20 @@ QA-0140/0148: the harness must not report its own timing or leftovers as a produ
   `args.wait_s` (default 5 s; `0` refuses at once) before `locator_not_found`; that refusal and `locator_index`
   (fewer candidates than `nth`+1 rendered yet) are retried, nothing else (`client.py` `PeerClient._locate`). The event carries `waited_ms` (0 when the first poll found it) and the report
   prints the wait distribution. `key` waits only when it names a widget (`name`/`role`/`nth`); `scroll_until` keeps
-  its own scroll-and-retry loop. An `"expect": "refused"` click on a disabled control now costs the full wait.
+  its own scroll-and-retry loop, but hands a present-but-clipped match to the reveal planner below (`_reveal_clipped`,
+  4 s) before its blind wheel: the blind wheel only scrolls content up, so a field already above the view was never
+  reached (QA-0159 f, run 5's `above_view after 0 wheel inputs`). An `"expect": "refused"` click on a disabled control
+  now costs the full wait.
+- **Exact names (QA-0159).** `fe.locate` prefers a widget whose whole name equals `name`, but with none it falls back to
+  the substring hits of the ui-tree filter, so `Access` finds `Inspector tab: API Access` when the dialog tab is not
+  open yet. `args.exact: true` (click, type, key, click_until, scroll_until) matches the whole name only: an absent
+  exact widget is `locator_not_found` (message ends `(exact name)`), so the wait polls for the real one and nothing
+  else is clicked. `click_until`: `args.exact` is for the `until` widget, `args.click.exact` for the click target.
+  The validator checks it is a boolean on those ops (`scenario.py` `_validate_exact`); `fe.py click|type --exact` is the
+  same switch. Spell the ACCESSIBLE name, not the visible text: `confirm_button` names the armed button `Confirm
+  <arm button's name>`, so the revoke confirm is `Confirm Revoke role grant for <did>` (button text `Confirm revoke`),
+  the role change `Confirm Assign role <role> to <did>`, the clear `Confirm Clear node properties`; locator evidence in
+  `events.jsonl` (`result_small.locator.name`) shows the real name.
 - **Off-clip widgets (QA-0152 a).** A match that is enabled but outside its panel's clip (a sidebar row below the
   Hierarchy panel, `+ Node` right after `Open petal`, QA-0146) is wheeled into view inside the same widget wait, never
   refused as absent. `fe.locate(..., diagnostics=)` returns the clipped matches and the layout `scrolls`;
@@ -1192,18 +1208,32 @@ QA-0140/0148: the harness must not report its own timing or leftovers as a produ
   the budget ran out, `clipped` `{name, reason, why_not}`: the analyzer files that as an S3 `unreachable` anomaly
   (present, enabled, not reachable) apart from the S2 refusal of an absent widget. Disabled and modal-blocked matches
   are never scrolled for.
-- **Verse-level navigation (13a, 13b).** A tree row's Options…/Rename…/Delete… are enabled only at the row's own
-  scope (`fe-ui/src/panels/tree_entry.rs` `scope_matches`; for a verse: verse open, no fractal, no petal, QA-0093),
-  and `Back` exists only inside a petal. The scenarios climb with `click_until` on the breadcrumb `Browse current
-  verse fractals` until `+ New Fractal` (a card that exists only at the verse level), then Options menu → Options… →
-  Access → `Revoke role grant for <did>` → `Confirm revoke`. Confirm is the very next action after Revoke (no sleep,
-  no `+offset`: the armed button reverts on its own) and hierarchy polling is paused (QA-0125) so a rebuilt tree
-  cannot disarm it. 13b then re-opens Swarm Petal. The verse replica stays open at that level, so 13a no longer
-  reproduces QA-0120's closed-replica trigger (the all-verses card `Options for verse …` would; not driven yet).
-- **`needs`.** `"needs": [action id]` on an action or an expectation skips it (`skipped_dependency_failed`, listed as
-  "Not exercised" in the report) unless every listed action ran ok. Refusal checks and deny-mode free play after a
-  revoke whose click never landed therefore raise no false S1 (`driver.py` `unmet_needs`; a barrier participant is
-  filtered out before the barrier is built).
+- **Revoke paths (13a, 13b, 13c).** A tree row's Options…/Rename…/Delete… are enabled only at the row's own scope
+  (`fe-ui/src/panels/tree_entry.rs` `scope_matches`; for a verse: verse open, no fractal, no petal, QA-0093), and
+  `Back` exists only inside a petal. **13a is QA-0120's closed-replica trigger:** the breadcrumb `Browse all verses`
+  (`click_until` until `Join a verse from browser`, which only the all-verses list has) clears the active verse, so
+  `handle_verse_replica_lifecycle` closes the owner's replica; the card button `Options for verse QA Basic`
+  (`viewport.rs` `browser_card`) opens Entity Settings directly (no Options… item), then `Access` → `Revoke role grant
+  for <did>` → `Confirm Revoke role grant for <did>` (`wait_s: 3`: the arm lasts 4.0 s, `widgets.rs` `confirm_button`),
+  all exact. The owner then stays on the list until `reenter` (`+90`, over 60 s) while the editor writes over REST and
+  MCP (refused at source once `editor_demoted` = `host wait_role not_role editor` read the demotion; every other peer
+  must never show those rows), and re-opens the verse with the card's `Open verse QA Basic`. **13b stays at the verse
+  level** (`Browse current verse fractals` until `+ New Fractal`, then Options menu → Options… → Access → Revoke →
+  Confirm) with write races at `+0`; **13c** re-grants editor2 there (QA-0131). Confirm is the very next action after
+  Revoke (no sleep, no `+offset`) and hierarchy polling is paused (QA-0125) so a rebuilt tree cannot disarm it.
+- **`needs` is judged when the dependent FIRES (QA-0159 c).** `"needs": [action id]` on an action or an expectation
+  skips it (`skipped_dependency_failed`, "Not exercised" in the report) unless every listed action ran ok. Actions
+  evaluate it at fire time, not at lane scheduling: an offset (`+<s>`) lane first sleeps to its instant and then calls
+  `settle_needs`, which WAITS for a same-step dependency still running (`NEEDS_WAIT_S` 90 s, then unmet) and records
+  `needs_waited_ms`; so a revoked-writer write due at `+25` runs once the revoke GUI sequence has completed, however
+  long that took (run 5/6 skipped all 7 because the revoke had not been bound yet and held its expectations
+  vacuously). A barrier participant decides at the gate: unmet needs, an unresolved ref or a failed view-token
+  prime make it `withdraw` from the `FireGate`, never stall or break the other participants (`driver.py`
+  `settle_needs`, `FireGate`, `_execute`); the validator therefore lets a barrier action need only earlier steps' or
+  `prepare` actions (a same-step dependency could wait on a lane that waits on the gate). Expectations are judged at
+  registration, after the step's actions have all settled. `requires` (absent peer) is still checked first and never
+  waits. Put `needs` on every expectation whose claim is vacuous unless the write happened (13a's never-accepted
+  checks need `editor_demoted`, the gate its writes need).
 - **Unresolved refs.** A ref that is unbound, or resolves to null because the action that should produce it failed,
   fails that action or expectation (`error_unresolved` / `unresolved`) with an anomaly of kind `unresolved_ref`
   naming the ref; null is never substituted as a target (`scenario.py` `Context.lookup`, `driver.py` `execute`).
@@ -1220,6 +1250,19 @@ QA-0140/0148: the harness must not report its own timing or leftovers as a produ
   Classified from event fields, so `run.py analyze` re-classifies old runs (`analyze.py` `write_failure_kind`).
 - **`after` on a write burst.** Anchoring on a macro means its completion, so an `agree` is judged once the writes
   stop (`expectations.jsonl` `t0_basis`); city-lite step 5 anchors its four `agree` expectations on `flight`.
+- **Step-scoped windows (QA-0159 d).** An expectation's window closes with its own step: `analyze.py` matches an
+  `eventually`/`agree` row only up to that step's `end` record in `steps.jsonl` (which already includes the settle
+  wait), so a later step's write can never satisfy it. A first match after the close reads "not met in window"
+  (`late_match_rel` and `window_end_rel` in `latency.csv`; the report row says when it first held) at the expectation's
+  own severity (S2 default), never "held after N s": run 5's 5.e1 "held" at +323 s was step 12's [7,0,-3.25] write, 6.e1
+  at +419 s a later step's, and city-lite step 2's blobs arrived with step 3's placement (QA-0158). `meta.severity`
+  also caps "held then regressed" (an S3 prediction's 0.5 s own-write transient used to be an S1).
+- **Periodic flights (QA-0159 e).** A `drone_flight` repeats its positions every `period_s`, so the same value seen a lap
+  later is a new write, not a late one. When a moving target recurs (a peer sees a value again, or a non-writer sees one
+  a lap BEFORE the flight's own peer, which a unique write cannot do) `analyze.py` `_lap_of` takes the lap from the
+  flight's recorded `args_small.period_s` (else the one-lap recurrence gaps); `cluster_occurrences` groups sightings per
+  lap and only lags up to half a period count, the rest are nearer the next lap. A unique-valued target (drone
+  `node`/`transform`, readings) keeps plain first-seen lag and its S2.
 - **ULID ids.** `ingest_device_payload.payload_id` is a fresh `new_ulid()` per call (`driver.py` `_drone_flight`).
   `drone_flight` takes `scale` (default `[1,1,1]`; each tick's `update_transform` carries it).
 - **GUI recovery.** After a step's actions, each peer whose LAST GUI action in the step failed (optional ones
@@ -1242,15 +1285,17 @@ QA-0140/0148: the harness must not report its own timing or leftovers as a produ
 `anomalies.json` (`[{id, severity_hint, kind?, scenario, step, peers, title, evidence, repro}]`, never truncated), plus
 the raw `events.jsonl`, `observations.jsonl`, `expectations.jsonl`, `steps.jsonl`, `host.csv`,
 `fingerprint-final.json`. Severity hints: S1 = a forbidden write accepted, an `always` violation, a held state
-that regressed (resurrection), divergence still open at run end, final fingerprint mismatch, a peer that stopped
-answering; S2 = never converged, convergence beyond 2x budget, a permitted action refused, a resolved divergence
+that regressed (resurrection; capped at the expectation's `meta.severity`), divergence still open at run end, final
+fingerprint mismatch, a peer that stopped answering; S2 = never converged or first held only after its step closed
+("not met in window"), convergence beyond 2x budget, a permitted action refused, a resolved divergence
 episode > 15 s; S3 = in budget x2, atomic partial state, a GUI widget present and enabled but not reachable after
 scrolling (`kind: unreachable`); `harness` = the simulator could not run an action or
 resolve an expectation, or the write path timed out or fell behind (`kind`: see Wait-and-anchor rules). Under
 `--no-reactive` (the pre-QA-0119 CPU cap) read every latency with the CPU table: they are upper bounds under host
 contention. A target that takes a new value at least every 15 s (>= 8 values: drone transforms, free-play rows, the
 queries over them) is a moving target: instead of majority-disagreement episodes it gets a per-value lag table (first
-time each peer showed each value vs the earliest peer, `analyze.py` `_moving_target`), S2 when a lag exceeds 15 s, and
+time each peer showed each value vs the earliest peer, `analyze.py` `_moving_target`; a recurring periodic target is
+matched per lap, see Periodic flights), S2 when a lag exceeds 15 s, and
 only a peer still different 15 s after the last write is the run-end S1 (QA-0152 f). Peers whose probe interval is
 longer than a value lasts share few values; the table says so. `repro` re-runs one step: `python tools/qa/sim/run.py <scenario> --steps <id>` (earlier steps that bind
 ids must be included in the range).

@@ -31,6 +31,7 @@ SAFE_ID = re.compile(r"^[A-Za-z][A-Za-z0-9_]{0,47}$")
 SYNC = re.compile(r"^(barrier|seq|\+\d+(\.\d+)?)$")
 WIDGET_WAIT_OPS = {"click", "type", "key", "click_until"}
 WIDGET_WAIT_MAX_S = 60
+EXACT_OPS = {"click", "type", "key", "click_until", "scroll_until"}  # gui ops that locate by accessible name
 WHOLE_REF = re.compile(r"^\$([A-Za-z][A-Za-z0-9_.\-]*)$")
 INLINE_REF = re.compile(r"\$\{([A-Za-z][A-Za-z0-9_.\-]*)\}")
 CAPTURES = ("scene", "window")
@@ -202,6 +203,7 @@ def validate(scenario):
             errors.append("%s: settle_s must be a number >= 0" % where)
         _validate_cadence(step.get("probe", {}), where + " probe", errors)
         barrier_peers = []
+        step_actions = set()  # ids of this step's `actions` declared so far (prepare finishes before any of them starts)
         for group in ("prepare", "actions"):
             for action in step.get(group, []):
                 _validate_action(action, "%s %s" % (where, group), names, defined, errors)
@@ -209,10 +211,17 @@ def validate(scenario):
                     continue
                 if group == "actions" and action.get("sync") == "barrier":
                     barrier_peers.append(action.get("peer"))
+                    needs = action.get("needs") if isinstance(action.get("needs"), list) else []
+                    same_step = sorted(dep for dep in needs if isinstance(dep, str) and dep in step_actions)
+                    if same_step:  # decided at the gate, which must not wait on a lane that may wait on the gate
+                        errors.append("%s action %s: a barrier action may only need actions of earlier steps or prepare, not %s"
+                                      % (where, action.get("id") or action.get("op"), ", ".join(same_step)))
                 if group == "prepare" and action.get("sync", "seq") != "seq":
                     errors.append("%s prepare: prepare actions are sequential (no sync)" % where)
                 if action.get("id"):
                     defined.add(action["id"])
+                    if group == "actions":
+                        step_actions.add(action["id"])
         if len(barrier_peers) != len(set(barrier_peers)):
             errors.append("%s: barrier actions need distinct peers (one firing thread per peer)" % where)
         if len(barrier_peers) == 1:
@@ -282,14 +291,28 @@ def _validate_action(action, where, names, defined, errors):
             errors.append("%s: args.wait_s applies to gui %s only" % (label, "|".join(sorted(WIDGET_WAIT_OPS))))
         elif isinstance(wait, bool) or not isinstance(wait, (int, float)) or not 0 <= wait <= WIDGET_WAIT_MAX_S:
             errors.append("%s: args.wait_s must be seconds within [0, %d]" % (label, WIDGET_WAIT_MAX_S))
+    if isinstance(action.get("args"), dict) and via == "gui":
+        _validate_exact(action["args"], action.get("op"), label, errors)
     for ref in refs_in(action.get("args", {})):
         root = ref.split(".")[0]
         if root not in NAMESPACES and root not in defined and root not in LOOP_VARS:
             errors.append("%s: $%s refers to no earlier action id" % (label, ref))
 
 
+def _validate_exact(args, op, label, errors):
+    """args.exact (bool): match whole accessible names only; click_until takes it for `until` and in args.click for the click target."""
+    spots = [("args", args)] + ([("args.click", args["click"])] if op == "click_until" and isinstance(args.get("click"), dict) else [])
+    for where, spot in spots:
+        if "exact" not in spot:
+            continue
+        if op not in EXACT_OPS:
+            errors.append("%s: %s.exact applies to gui %s only" % (label, where, "|".join(sorted(EXACT_OPS))))
+        elif not isinstance(spot["exact"], bool):
+            errors.append("%s: %s.exact must be true or false" % (label, where))
+
+
 def _validate_needs(needs, defined, where, errors):
-    """needs: ids of earlier actions that must have run ok, else the action or expectation is skipped (not exercised)."""
+    """needs: ids of earlier actions that must have run ok WHEN the action fires or the expectation is registered, else it is skipped (not exercised)."""
     if not isinstance(needs, list) or any(not isinstance(dep, str) or dep not in defined for dep in needs):
         errors.append("%s: needs must list ids of earlier actions" % where)
 

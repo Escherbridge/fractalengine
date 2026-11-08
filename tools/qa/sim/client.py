@@ -19,6 +19,8 @@ WIDGET_WAIT_S = 5.0  # default budget to poll for an enabled visible widget (arg
 WIDGET_POLL_S = 0.1
 WIDGET_POLLED_REFUSALS = ("locator_not_found", "locator_index")  # index: fewer candidates than nth+1 rendered so far
 SCROLL_SETTLE_S = 0.35  # egui eases a wheel scroll over a few frames: read the ui-tree again only after it
+SCROLL_UNTIL_REVEAL_S = 4.0  # reveal budget scroll_until spends on a present-but-clipped match before its blind wheel
+REVEALABLE = ("above_view", "below_view", "left_of_view", "right_of_view", "no_rect")  # reveal.assess reasons a wheel can fix
 
 
 class Outcome(dict):
@@ -322,12 +324,23 @@ class PeerClient:
         self._scrolled += 1
         return True
 
+    def _reveal_clipped(self, target):
+        """True when the last refusal named a present-but-clipped match and the reveal planner then wheeled it into reach."""
+        if (self._clipped or {}).get("reason") not in REVEALABLE:
+            return False
+        try:
+            self._locate(target, wait_s=SCROLL_UNTIL_REVEAL_S)
+        except fe.Refused:
+            return False
+        return True
+
     def _locate_once(self, args, input_only=False):
         evidence = {}
         diagnostics = {}
+        exact = {"exact": True} if args.get("exact") else {}  # exact names only (no substring fallback); passed only when asked
         try:
             x, y = fe.locate(self.run(), args["name"], args.get("role"), args.get("nth"), None,
-                             input_only=input_only, evidence=evidence, diagnostics=diagnostics)
+                             input_only=input_only, evidence=evidence, diagnostics=diagnostics, **exact)
         except fe.Refused as refusal:
             # Duplicate affordances (sidebar "Open" + browser card) share one exact name and role: take the
             # first and record the count; genuinely different candidates stay a refusal.
@@ -336,7 +349,7 @@ class PeerClient:
                 refusal.diagnostics = diagnostics  # the clipped / unplaced matches, for the caller's reveal scroll
                 raise
             x, y = fe.locate(self.run(), args["name"], args.get("role"), 0, None,
-                             input_only=input_only, evidence=evidence)
+                             input_only=input_only, evidence=evidence, **exact)
             evidence["duplicates"] = len(candidates)
         return x, y, evidence
 
@@ -361,7 +374,7 @@ class PeerClient:
             located = None
             if args.get("into"):
                 x, y, located = self._locate({"name": args["into"], "role": args.get("role"),
-                                              "nth": args.get("nth")}, input_only=True,
+                                              "nth": args.get("nth"), "exact": args.get("exact")}, input_only=True,
                                              wait_s=self._widget_wait(args))
                 self.gui_input([{"kind": "pointer_click", "x": x, "y": y, "button": "left"}])
                 if args.get("select_all", True):
@@ -383,12 +396,17 @@ class PeerClient:
             return {"outcome": self.gui_input(commands)}
         if op == "scroll_until":
             # Scroll at a window-relative point until a locator is visible (layouts differ per tile size).
+            target = {"name": args["until"], "role": args.get("role"), "exact": args.get("exact")}
             for attempt in range(int(args.get("max", 6)) + 1):
                 try:
-                    self._locate({"name": args["until"], "role": args.get("role")})
+                    self._locate(target)
                     return {"scrolls": attempt}
                 except fe.Refused as refusal:
-                    if refusal.code != "locator_not_found" or attempt == int(args.get("max", 6)):
+                    if refusal.code != "locator_not_found":
+                        raise
+                    if self._reveal_clipped(target):  # QA-0159 f: a present-but-clipped match is wheeled the right way, not blind
+                        return {"scrolls": attempt, "revealed": True}
+                    if attempt == int(args.get("max", 6)):
                         raise
                 tree = fe.probe(self.run(), "ui-tree", None, {"name": args["until"]})
                 window = tree.get("window") or {}
@@ -411,7 +429,8 @@ class PeerClient:
             # Repeat a click (e.g. Back) until a target locator is present; bounded by max.
             for attempt in range(int(args.get("max", 4)) + 1):
                 tree = fe.probe(self.run(), "ui-tree", None, {"name": args["until"], "interactive": 1})
-                if [n for n in fe.tree_nodes(tree) if not n.get("hidden") and n.get("enabled")]:
+                if [n for n in fe.tree_nodes(tree) if not n.get("hidden") and n.get("enabled")
+                        and (not args.get("exact") or n["name"].casefold() == str(args["until"]).casefold())]:
                     return {"clicks": attempt}
                 if attempt == int(args.get("max", 4)):
                     break
