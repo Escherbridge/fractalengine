@@ -2131,3 +2131,17 @@ retry, on a restart replay and on the empowerment re-read.
   answers `DbResult::HierarchyRead`, which only pending API waiters consume;
   `LoadHierarchy`/`HierarchyLoaded` stay the GUI's own reload.
 - `load_hierarchy_handler` warns once per missing scene blob until it lands (QA-0118).
+
+## §device-payload-files (QA-0161, 2026-11-08)
+
+`DbCommand::InsertDevicePayloads` carries `files: Vec<PayloadFile>`, blobs the API stored but did
+not register. `handlers::device_payload::insert_device_payloads_with_files` registers each as an
+`asset` anchored at the payload's petal (`create_asset_handler`, then `publish_uploaded_asset`,
+which publishes only a scene MIME, exactly as the separate `CreateAsset` did) and appends its id
+to `asset_ids` before `insert_device_payloads` validates and writes the payload. One payload is
+one DB command and one reply instead of one `CreateAsset` round trip per file first. With files
+the DB arm requires the anchor petal to resolve and the node to hold Editor there (the
+`CreateAsset` rule); a file-registering payload writes asset rows, so the lane treats it as a
+barrier for Serve admissions and publishes deferred transforms before it (§command-lane). As
+before, assets registered for a payload that is then rejected or is an idempotent retry stay
+unreferenced until asset GC reclaims them.

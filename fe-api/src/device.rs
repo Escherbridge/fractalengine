@@ -20,7 +20,7 @@ use crate::limits;
 use crate::rest::{covered_scope, db_round_trip, NOT_FOUND_OR_DENIED};
 use crate::server::ApiState;
 use crate::types::is_valid_ulid;
-use crate::upload::{ingest_blob_with_limit, GlbPayload, UploadOwner, MAX_ASSET_BYTES};
+use crate::upload::{store_payload_files, UploadOwner, MAX_ASSET_BYTES};
 
 /// Structured JSON error with a real HTTP status (iot.rs precedent — this
 /// surface uses real statuses throughout, not the house `{ok:false}` 200).
@@ -173,10 +173,11 @@ pub(crate) async fn declared_format_mime(
 /// `asset_ids`).
 ///
 /// 1. Resolves the declared format's MIME (404s/422s before any byte moves).
-/// 2. Stores each file through [`ingest_blob_with_limit`] (never runs
-///    `validate_glb` unless the MIME is `model/gltf-binary`) and creates its
-///    `asset` row with the descriptor MIME + this token's owner/anchor.
-/// 3. Sends `InsertDevicePayloads`; validation failures (foreign anchor,
+/// 2. Stores each file through [`store_payload_files`] (never runs
+///    `validate_glb` unless the MIME is `model/gltf-binary`).
+/// 3. Sends one `InsertDevicePayloads`, which registers each file's `asset`
+///    row (descriptor MIME + this token's owner/anchor) and the payload in the
+///    same DB command (QA-0161); validation failures (foreign anchor,
 ///    MIME mismatch per asset, bad timestamp, …) map to 422 — by this point
 ///    some asset rows may already exist (plan-accepted: GC reclaims orphans,
 ///    fe-api/AGENTS.md §asset-ingest).
@@ -273,28 +274,25 @@ pub async fn ingest_device_payload(
     };
 
     let owner = UploadOwner::new(&claims, &petal_id);
-    let mut asset_ids = Vec::with_capacity(files.len());
-    for bytes in files {
-        match ingest_blob_with_limit(
-            &state,
-            &owner,
-            "device-payload-file",
-            &mime,
-            GlbPayload::Bytes(bytes),
-            MAX_ASSET_BYTES,
-        )
-        .await
-        {
-            Ok(asset) => asset_ids.push(asset.asset_id),
-            Err(e) => {
-                return (
-                    e.status(),
-                    Json(serde_json::json!({ "ok": false, "error": e.message() })),
-                )
-                    .into_response()
-            }
+    let files = match store_payload_files(
+        &state,
+        &owner,
+        "device-payload-file",
+        &mime,
+        files,
+        MAX_ASSET_BYTES,
+    )
+    .await
+    {
+        Ok(files) => files,
+        Err(e) => {
+            return (
+                e.status(),
+                Json(serde_json::json!({ "ok": false, "error": e.message() })),
+            )
+                .into_response()
         }
-    }
+    };
 
     let correlation_id = ulid::Ulid::new().to_string();
     let cmd = DbCommand::InsertDevicePayloads {
@@ -311,10 +309,11 @@ pub async fn ingest_device_payload(
         payload: DevicePayloadInput {
             node_id,
             format_id,
-            asset_ids,
+            asset_ids: Vec::new(),
             recorded_at,
             payload_id,
         },
+        files,
         correlation_id: Some(correlation_id.clone()),
     };
     match db_round_trip(&state, cmd).await {

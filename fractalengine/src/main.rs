@@ -3,7 +3,7 @@ use std::sync::{Arc, Mutex};
 use bevy::prelude::IntoScheduleConfigs;
 use fe_identity::NodeIdentity;
 use fe_runtime::app::{
-    ApiCommandReceiver, ApiCommandSender, AppOptions, BevyHandles, LoggingOwnership,
+    ApiCommandSender, AppOptions, BevyHandles, LoggingOwnership,
     PendingApiRequests, TransformBroadcastSender,
 };
 use fe_runtime::channels::ChannelHandles;
@@ -493,6 +493,8 @@ fn main() {
     render_work.watch(sync_evt_rx.clone());
     render_work.watch(ch.net_evt_rx.clone());
     render_work.watch(lifecycle_rx.clone());
+    // QA-0161: the API command relay forwards to the DB thread off-frame (below).
+    let db_cmd_tx_for_api = ch.db_cmd_tx.clone();
     let mut app = fe_runtime::app::build_app_with_options(
         BevyHandles {
             net_cmd_tx: ch.net_cmd_tx,
@@ -559,7 +561,6 @@ fn main() {
     let (qa_tx, qa_rx) = fe_runtime::qa_debug::qa_bridge();
     let (portal_fixture_tx, portal_fixture_rx) = fe_runtime::qa_portal::fixture_bridge();
     let (invitation_transfer_tx,invitation_transfer_rx)=fe_runtime::qa_invitation::invitation_bridge();
-    render_work.watch(api_cmd_rx.clone());
     render_work.watch(screenshot_rx.clone());
     render_work.watch(vision_rx.clone());
     render_work.watch(input_rx.clone());
@@ -803,7 +804,15 @@ fn main() {
     app.insert_resource(SceneChangeReceiver(scene_change_rx_bevy));
 
     app.insert_resource(fe_runtime::app::RevocationBroadcastSender(revocation_tx));
-    app.insert_resource(ApiCommandReceiver(Arc::new(Mutex::new(api_cmd_rx))));
+    // QA-0161: API commands reach the DB thread without waiting for a Bevy frame; replies
+    // still return through the GUI's result dispatch (fe-runtime src/AGENTS.md §api-command-relay).
+    let pending_api = PendingApiRequests::default();
+    maintenance_services.push(fe_runtime::app::spawn_api_command_relay(
+        api_cmd_rx,
+        db_cmd_tx_for_api,
+        pending_api.clone(),
+    ));
+    app.insert_resource(pending_api);
     app.insert_resource(ApiCommandSender(api_cmd_tx));
     app.insert_resource(TransformBroadcastSender(transform_broadcast_tx.clone()));
 
@@ -851,7 +860,6 @@ fn main() {
     render_work.watch(inbound_rx.clone());
     app.insert_resource(fe_runtime::app::InboundTransformReceiver(inbound_rx));
 
-    app.init_resource::<PendingApiRequests>();
     app.add_systems(
         bevy::prelude::Update,
         (

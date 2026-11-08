@@ -8,7 +8,7 @@ use fe_sdk::source_class::{is_valid_format_id, SourceClass};
 
 use fe_runtime::messages::{
     DeviceFormatDto, DeviceFormatRejection, DevicePayloadDto, DevicePayloadIngestRejection,
-    DevicePayloadInput, DEVICE_PAYLOAD_MAX_ASSETS,
+    DevicePayloadInput, PayloadFile, DEVICE_PAYLOAD_MAX_ASSETS,
 };
 
 use crate::canon_log::observation::{payload_door_digest, HotPayload};
@@ -230,6 +230,42 @@ struct AssetRow {
     content_type: String,
     petal_id: Option<String>,
     row_json: serde_json::Value,
+}
+
+/// [`insert_device_payloads`] after registering `files` as assets anchored at `petal_id`,
+/// in this one call (QA-0161: the API stores the blobs and sends one DB command per
+/// payload); see src/AGENTS.md §device-payload-files. Each file is registered, and a
+/// scene-MIME one published, before the payload exactly as a separate `CreateAsset` was.
+#[allow(clippy::too_many_arguments)]
+pub async fn insert_device_payloads_with_files(
+    db: &Db,
+    petal_id: &str,
+    verse_id: Option<&str>,
+    source_did: &str,
+    source_class: SourceClass,
+    payload: &DevicePayloadInput,
+    files: &[PayloadFile],
+    blob_store: &BlobStoreHandle,
+    repl_tx: Option<&ReplicationSender>,
+    local_did: &str,
+) -> Result<(String, Vec<String>), DevicePayloadIngestError> {
+    let mut payload = payload.clone();
+    for file in files {
+        let registration = crate::handlers::crud::AssetRegistration {
+            name: file.name.clone(),
+            content_type: file.content_type.clone(),
+            size_bytes: file.size_bytes,
+            content_hash: file.content_hash.clone(),
+            owner_did: Some(file.owner_did.clone()),
+            petal_id: Some(petal_id.to_string()),
+        };
+        let asset_id = crate::handlers::crud::create_asset_handler(db, blob_store, &registration)
+            .await
+            .map_err(|e| DevicePayloadIngestError::Db(format!("Create asset failed: {e}")))?;
+        crate::handlers::scene_publication::publish_uploaded_asset(db, blob_store, repl_tx, local_did, &asset_id).await;
+        payload.asset_ids.push(asset_id);
+    }
+    insert_device_payloads(db, petal_id, verse_id, source_did, source_class, &payload, Some(blob_store), repl_tx).await
 }
 
 /// Ingest one device payload, mirroring `insert_readings_with_replication`:

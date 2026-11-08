@@ -410,6 +410,7 @@ pub fn run() -> Result<TestResult> {
             // A client retry id is a ULID (the door refuses anything else).
             payload_id: Some("01ARZ3NDEKTSV4RRFFQ69G5FAV".into()),
         },
+        files: Vec::new(),
         correlation_id: None,
     });
     let payload_id = match alice.wait_for(

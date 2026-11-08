@@ -2130,18 +2130,29 @@ pub fn spawn_db_thread_shared(
                             Err(e) => send_result(&tx, handlers::correlated_failure(&correlation_id, format!("ListDeviceFormats failed: {e}"))),
                         }
                     }
-                    Ok(DbCommand::InsertDevicePayloads { petal_id, verse_id, source_did, source_class, payload, correlation_id }) => {
-                        // AC-46: a replicated write needs the NODE's own role too.
-                        let refused = match replicated_petal_scope(&db, verse_id.as_deref(), &petal_id).await {
-                            Some(scope) => require_node_role(&db, &local_did, &scope, fe_policy::RoleLevel::Editor, "InsertDevicePayloads").await.err(),
-                            None => None,
+                    Ok(DbCommand::InsertDevicePayloads { petal_id, verse_id, source_did, source_class, payload, files, correlation_id }) => {
+                        // AC-46: a replicated write needs the NODE's own role too; files become
+                        // assets anchored at the petal, which (like CreateAsset) must resolve.
+                        let scope = if files.is_empty() {
+                            Ok(replicated_petal_scope(&db, verse_id.as_deref(), &petal_id).await)
+                        } else {
+                            match handlers::crud::resolve_petal_scope_handler(&db, &petal_id).await {
+                                Ok(Some(scope)) => Ok(Some(scope)),
+                                Ok(None) => Err(format!("InsertDevicePayloads refused: anchor petal {petal_id} is not known locally")),
+                                Err(e) => Err(format!("InsertDevicePayloads refused: anchor petal scope lookup failed: {e}")),
+                            }
+                        };
+                        let refused = match scope {
+                            Ok(Some(scope)) => require_node_role(&db, &local_did, &scope, fe_policy::RoleLevel::Editor, "InsertDevicePayloads").await.err(),
+                            Ok(None) => None,
+                            Err(refusal) => Some(refusal),
                         };
                         if let Some(refusal) = refused {
                             send_result(&tx, handlers::correlated_failure(&correlation_id, refusal));
                         } else {
-                            match handlers::device_payload::insert_device_payloads(
+                            match handlers::device_payload::insert_device_payloads_with_files(
                                 &db, &petal_id, verse_id.as_deref(), &source_did, source_class, &payload,
-                                Some(&blob_store), repl_tx.as_ref(),
+                                &files, &blob_store, repl_tx.as_ref(), &local_did,
                             ).await {
                                 Ok((payload_id, asset_ids)) => send_result(&tx, DbResult::DevicePayloadsInserted { petal_id, payload_id, asset_ids, correlation_id }),
                                 Err(e) => match e.rejection() {

@@ -130,6 +130,20 @@ pub const DEVICE_PAYLOAD_MAX_ASSETS: usize = 32;
 /// Keys one `DbCommand::ClearNodeProperties` may delete atomically (QA-0129).
 pub const MAX_CLEAR_PROPERTY_KEYS: usize = 200;
 
+/// A device-payload file already stored as a blob, registered as an asset by
+/// `DbCommand::InsertDevicePayloads` itself (QA-0161: one DB command per payload).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PayloadFile {
+    pub name: String,
+    /// The declared format's MIME.
+    pub content_type: String,
+    pub size_bytes: u64,
+    /// 64-hex BLAKE3 hash of the stored blob.
+    pub content_hash: String,
+    /// Upload owner key the asset row is attributed to.
+    pub owner_did: String,
+}
+
 /// One device payload to ingest: a format descriptor id plus the ordered list
 /// of already-stored asset ids that make up this payload's opaque bytes
 /// (R5: "allow for multiple records (a list of records)"). Defined here, like
@@ -1190,6 +1204,10 @@ pub enum DbCommand {
         /// `InsertIotReadings::source_class`.
         source_class: fe_sdk::source_class::SourceClass,
         payload: DevicePayloadInput,
+        /// Files the API stored as blobs but has not registered (QA-0161): each becomes an
+        /// asset anchored at `petal_id` in this same command, its id appended to
+        /// `payload.asset_ids` (fe-database `src/AGENTS.md` §device-payload-files).
+        files: Vec<PayloadFile>,
         correlation_id: Option<String>,
     },
     /// List `device_payload` rows for a petal, optionally filtered by node,

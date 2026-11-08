@@ -159,11 +159,14 @@ impl DeferredPublications {
 /// and reads that never consult a scene clock. Every other command, and every variant
 /// added later, publishes first, so replication, role and asset commands see them.
 fn runs_before_publication(command: &DbCommand) -> bool {
+    // A payload that registers its files writes asset rows: it publishes first (QA-0161).
+    if let DbCommand::InsertDevicePayloads { files, .. } = command {
+        return files.is_empty();
+    }
     matches!(
         command,
         DbCommand::UpdateNodeTransform { .. }
             | DbCommand::InsertIotReadings { .. }
-            | DbCommand::InsertDevicePayloads { .. }
             | DbCommand::GetNodeTransform { .. }
             | DbCommand::GetNodeProperties { .. }
             | DbCommand::LoadNodesByPetal { .. }
@@ -183,7 +186,7 @@ fn is_serve_admission(command: &DbCommand) -> bool {
 
 /// Commands a Serve admission may be answered ahead of: reads, and writes that cannot
 /// change a role, grant, membership, asset row, classification or node→asset reference
-/// (transforms, readings, device payloads). Every other command, and every variant added
+/// (transforms, readings, device payloads that register no files). Every other command, and every variant added
 /// later, is a barrier — the allowlist fails closed (QA-0154).
 fn is_transparent(command: &DbCommand) -> bool {
     matches!(
@@ -213,6 +216,5 @@ fn is_transparent(command: &DbCommand) -> bool {
             | DbCommand::GetPetalRenderDistance { .. }
             | DbCommand::UpdateNodeTransform { .. }
             | DbCommand::InsertIotReadings { .. }
-            | DbCommand::InsertDevicePayloads { .. }
-    )
+    ) || matches!(command, DbCommand::InsertDevicePayloads { files, .. } if files.is_empty())
 }

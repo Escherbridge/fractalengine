@@ -1342,10 +1342,10 @@ impl TestPeer {
                                 }
                             }
                         }
-                        Ok(DbCommand::InsertDevicePayloads { petal_id, verse_id, source_did, source_class, payload, correlation_id }) => {
-                            match fe_database::handlers::device_payload::insert_device_payloads(
+                        Ok(DbCommand::InsertDevicePayloads { petal_id, verse_id, source_did, source_class, payload, files, correlation_id }) => {
+                            match fe_database::handlers::device_payload::insert_device_payloads_with_files(
                                 &db, &petal_id, verse_id.as_deref(), &source_did, source_class, &payload,
-                                Some(&db_blob_store), Some(&db_repl_tx),
+                                &files, &db_blob_store, Some(&db_repl_tx), &db_local_did,
                             ).await {
                                 Ok((payload_id, asset_ids)) => {
                                     db_result_tx.send(DbResult::DevicePayloadsInserted { petal_id, payload_id, asset_ids, correlation_id }).ok();

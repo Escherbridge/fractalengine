@@ -95,17 +95,20 @@ fn serve_device_commands(h: &ApiHarness) {
                     source_did,
                     source_class,
                     payload,
+                    files,
                     correlation_id,
                 } => rt.block_on(async {
-                    match device_payload::insert_device_payloads(
+                    match device_payload::insert_device_payloads_with_files(
                         &db,
                         &petal_id,
                         verse_id.as_deref(),
                         &source_did,
                         source_class,
                         &payload,
-                        Some(&blob_store),
+                        &files,
+                        &blob_store,
                         None,
+                        "did:key:harness-db",
                     )
                     .await
                     {

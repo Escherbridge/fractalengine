@@ -289,8 +289,16 @@ pub struct RevocationBroadcastSender(pub tokio::sync::broadcast::Sender<String>)
 /// family, so it goes to the **oldest** pending request of any family — the
 /// failing command is the one that has been waiting longest, and a caller must
 /// never lose its error to a family mismatch.
-#[derive(Resource, Default)]
-pub struct PendingApiRequests {
+///
+/// **Shared (QA-0161).** A cheap handle over one queue set: the GUI binary's
+/// API relay thread files requests off-frame ([`spawn_api_command_relay`]) while
+/// Bevy delivers the replies; see src/AGENTS.md §api-command-relay.
+#[derive(Resource, Default, Clone)]
+pub struct PendingApiRequests(Arc<Mutex<PendingQueues>>);
+
+/// The request queues behind a [`PendingApiRequests`] handle.
+#[derive(Default)]
+struct PendingQueues {
     terrain_credentials: HashMap<String, PendingTerrainCredential>,
     by_kind: HashMap<ReplyKind, std::collections::VecDeque<PendingEntry>>,
     /// Requests whose command has no awaited reply family (legacy behaviour:
@@ -602,6 +610,57 @@ fn reply_kind_of_result(result: &DbResult) -> Option<ReplyKind> {
 }
 
 impl PendingApiRequests {
+    fn queues(&self) -> std::sync::MutexGuard<'_, PendingQueues> {
+        self.0.lock().unwrap_or_else(|error| error.into_inner())
+    }
+
+    /// Enqueue a DB request under the reply family `cmd` produces and return
+    /// its entry id (see [`PendingQueues::enqueue_for`]).
+    pub fn enqueue_for(
+        &mut self,
+        cmd: &DbCommand,
+        reply_tx: tokio::sync::oneshot::Sender<DbResult>,
+    ) -> u64 {
+        self.queues().enqueue_for(cmd, reply_tx)
+    }
+
+    /// Remove the entry `enqueue_for` returned `id` for (its command never
+    /// reached the DB thread), so it cannot consume a later reply.
+    pub fn cancel(&mut self, id: u64) {
+        self.queues().cancel(id)
+    }
+
+    /// Try to deliver a `DbResult` to the pending request that asked for it
+    /// (see [`PendingQueues::try_deliver`]). Returns true if delivered.
+    pub fn try_deliver(&mut self, result: DbResult) -> bool {
+        self.queues().try_deliver(result)
+    }
+
+    pub fn enqueue_hierarchy(
+        &mut self,
+        reply_tx: tokio::sync::oneshot::Sender<Vec<VerseHierarchyData>>,
+    ) {
+        self.queues().pending_hierarchy.push(reply_tx);
+    }
+
+    /// Expiry abandons the waiter; an already queued engine read retains its lease.
+    pub fn prune_terrain_credentials(&mut self) {
+        self.queues().prune_terrain_credentials()
+    }
+
+    pub fn deliver_hierarchy(&mut self, data: Vec<VerseHierarchyData>) {
+        for tx in self.queues().pending_hierarchy.drain(..) {
+            let _ = tx.send(data.clone());
+        }
+    }
+
+    /// Whether the terrain-credential read filed under `id` is still waiting.
+    fn terrain_read_pending(&self, id: u64) -> bool {
+        self.queues().terrain_credentials.values().any(|entry| entry.id == id)
+    }
+}
+
+impl PendingQueues {
     /// Enqueue a DB request under the reply family `cmd` produces and return
     /// its entry id (insertion order: routes untyped `Error` replies to the
     /// oldest waiter, and names the entry for [`Self::cancel`]).
@@ -844,26 +903,13 @@ impl PendingApiRequests {
         }
     }
 
-    pub fn enqueue_hierarchy(
-        &mut self,
-        reply_tx: tokio::sync::oneshot::Sender<Vec<VerseHierarchyData>>,
-    ) {
-        self.pending_hierarchy.push(reply_tx);
-    }
-
     /// Expiry abandons the waiter; an already queued engine read retains its lease.
-    pub fn prune_terrain_credentials(&mut self) {
+    fn prune_terrain_credentials(&mut self) {
         self.terrain_credentials.retain(|_, entry| {
             let keep = entry.request.active() && !entry.reply_tx.is_closed();
             if !keep { entry.request.cancel(); }
             keep
         });
-    }
-
-    pub fn deliver_hierarchy(&mut self, data: Vec<VerseHierarchyData>) {
-        for tx in self.pending_hierarchy.drain(..) {
-            let _ = tx.send(data.clone());
-        }
     }
 }
 
@@ -893,7 +939,8 @@ pub fn deliver_pending_api_results(
     }
 }
 
-/// Bevy system: drain API commands and forward to the DB command channel.
+/// Bevy system: drain API commands and forward to the DB command channel
+/// (hosts without the off-frame relay; see [`spawn_api_command_relay`]).
 pub fn drain_api_commands(
     api_rx: Option<Res<ApiCommandReceiver>>,
     db_tx: Res<DbCommandSender>,
@@ -906,51 +953,97 @@ pub fn drain_api_commands(
     // Drain up to 64 commands per frame to avoid stalling the main loop.
     for _ in 0..64 {
         match rx.try_recv() {
-            Ok(ApiCommand::DbRequest { cmd, reply_tx }) => {
-                if let DbCommand::ReadTerrainApiCredential { request } = &cmd {
-                    if !request.active() || reply_tx.is_closed() { request.cancel(); continue; }
-                    let entry_id = pending.enqueue_for(&cmd, reply_tx);
-                    if !pending.terrain_credentials.values().any(|entry| entry.id == entry_id) { continue; }
-                    if db_tx.0.try_send(cmd).is_err() { pending.cancel(entry_id); }
-                    continue;
+            Ok(command) => forward_api_command(command, &mut pending, |cmd, may_block| {
+                if may_block {
+                    db_tx.0.send(cmd).map_err(|error| error.to_string())
+                } else {
+                    db_tx.0.try_send(cmd).map_err(|error| error.to_string())
                 }
-                let entry_id = pending.enqueue_for(&cmd, reply_tx);
-                if let Err(e) = db_tx.0.send(cmd) {
-                    // Never answered: under pop-and-drop it would swallow the
-                    // family's next reply.
-                    pending.cancel(entry_id);
-                    tracing::warn!("API DB request dropped — DB command channel closed: {e}");
-                }
-            }
-            Ok(ApiCommand::GetHierarchy { reply_tx }) => {
-                pending.enqueue_hierarchy(reply_tx);
-                // QA-0125: an API read must not rebuild (and re-hydrate) the GUI tree.
-                if let Err(e) = db_tx.0.send(DbCommand::ReadHierarchy) {
-                    tracing::warn!(
-                        "API hierarchy request dropped — DB command channel closed: {e}"
-                    );
-                }
-            }
-            Ok(ApiCommand::SyncForward { .. }) => {
-                // Transform sync forwarding handled via broadcast channel
-            }
-            Ok(ApiCommand::TransformPersist {
-                node_id,
-                position,
-                rotation,
-                scale,
-            }) => {
-                // Fire-and-forget: send directly to DB without enqueuing a reply.
-                let _ = db_tx.0.send(DbCommand::UpdateNodeTransform {
-                    node_id,
-                    position,
-                    rotation,
-                    scale,
-                });
-            }
+            }),
             Err(_) => break,
         }
     }
+}
+
+/// File one API command's reply waiter, then hand its `DbCommand` to `send`
+/// (the waiter exists before the DB thread can answer). `send(cmd, may_block)`:
+/// a terrain-credential read must not wait on a full channel. A send that fails
+/// cancels the waiter: never answered, it would swallow the family's next reply.
+pub fn forward_api_command(
+    command: ApiCommand,
+    pending: &mut PendingApiRequests,
+    mut send: impl FnMut(DbCommand, bool) -> Result<(), String>,
+) {
+    match command {
+        ApiCommand::DbRequest { cmd, reply_tx } => {
+            if let DbCommand::ReadTerrainApiCredential { request } = &cmd {
+                if !request.active() || reply_tx.is_closed() {
+                    request.cancel();
+                    return;
+                }
+                let entry_id = pending.enqueue_for(&cmd, reply_tx);
+                if pending.terrain_read_pending(entry_id) && send(cmd, false).is_err() {
+                    pending.cancel(entry_id);
+                }
+                return;
+            }
+            let entry_id = pending.enqueue_for(&cmd, reply_tx);
+            if let Err(error) = send(cmd, true) {
+                pending.cancel(entry_id);
+                tracing::warn!("API DB request dropped — DB command channel closed: {error}");
+            }
+        }
+        ApiCommand::GetHierarchy { reply_tx } => {
+            pending.enqueue_hierarchy(reply_tx);
+            // QA-0125: an API read must not rebuild (and re-hydrate) the GUI tree.
+            if let Err(error) = send(DbCommand::ReadHierarchy, true) {
+                tracing::warn!("API hierarchy request dropped — DB command channel closed: {error}");
+            }
+        }
+        ApiCommand::SyncForward { .. } => {
+            // Transform sync forwarding handled via broadcast channel
+        }
+        ApiCommand::TransformPersist { node_id, position, rotation, scale } => {
+            // Fire-and-forget: send directly to DB without enqueuing a reply.
+            let _ = send(DbCommand::UpdateNodeTransform { node_id, position, rotation, scale }, true);
+        }
+    }
+}
+
+/// QA-0161: the GUI binary's API commands reach the DB thread on this thread, not in a
+/// Bevy frame (two frames per round trip cost ~100 ms each under load); replies still
+/// arrive through Bevy's result dispatch. A full DB channel blocks only this thread, and a
+/// stop request abandons the command in hand (its waiter is cancelled). See src/AGENTS.md
+/// §api-command-relay.
+pub fn spawn_api_command_relay(
+    api_rx: crossbeam::channel::Receiver<ApiCommand>,
+    db_tx: crossbeam::channel::Sender<DbCommand>,
+    mut pending: PendingApiRequests,
+) -> crate::service_lifecycle::OwnedService {
+    const POLL: std::time::Duration = std::time::Duration::from_millis(100);
+    crate::service_lifecycle::OwnedService::spawn("api-command-relay", move |stop| {
+        while !stop.is_requested() {
+            let command = match api_rx.recv_timeout(POLL) {
+                Ok(command) => command,
+                Err(crossbeam::channel::RecvTimeoutError::Timeout) => {
+                    pending.prune_terrain_credentials();
+                    continue;
+                }
+                Err(crossbeam::channel::RecvTimeoutError::Disconnected) => break,
+            };
+            forward_api_command(command, &mut pending, |mut cmd, may_block| loop {
+                if !may_block {
+                    return db_tx.try_send(cmd).map_err(|error| error.to_string());
+                }
+                match db_tx.send_timeout(cmd, POLL) {
+                    Ok(()) => return Ok(()),
+                    Err(crossbeam::channel::SendTimeoutError::Timeout(back)) if !stop.is_requested() => cmd = back,
+                    Err(crossbeam::channel::SendTimeoutError::Timeout(_)) => return Err("relay stopping".into()),
+                    Err(crossbeam::channel::SendTimeoutError::Disconnected(_)) => return Err("DB thread gone".into()),
+                }
+            });
+        }
+    })
 }
 
 #[cfg(test)]
@@ -1264,6 +1357,7 @@ mod tests {
                     recorded_at: None,
                     payload_id: None,
                 },
+                files: Vec::new(),
                 correlation_id: Some("api-payload".to_string()),
             },
             payload_tx,
@@ -1642,7 +1736,7 @@ mod tests {
             pending.enqueue_for(&DbCommand::ReadTerrainApiCredential { request: request.clone() }, tx);
             drop(rx);
             pending.prune_terrain_credentials();
-            assert!(pending.terrain_credentials.is_empty());
+            assert!(pending.queues().terrain_credentials.is_empty());
             assert!(!request.active());
             let mut other_engine_reads = Vec::new();
             for _ in 1..CAPTURE_LIMIT { other_engine_reads.push(limiter.acquire(deadline).await.unwrap()); }
@@ -1666,7 +1760,7 @@ mod tests {
             assert!(!request.active(), "full DB forwarding cancels read admission without blocking");
             assert!(reply_rx.try_recv().is_err());
             assert!(db_rx.try_recv().is_err());
-            assert!(app.world().resource::<PendingApiRequests>().terrain_credentials.is_empty());
+            assert!(app.world().resource::<PendingApiRequests>().queues().terrain_credentials.is_empty());
         });
     }
 
@@ -1874,6 +1968,24 @@ mod tests {
             matches!(live_rx.try_recv(), Ok(DbResult::Pong)),
             "the unsent request's entry must not consume the next reply"
         );
+
+        // QA-0161: the GUI binary's relay files the waiter and forwards with no Bevy frame;
+        // the GUI's result dispatch answers it through the same shared queues.
+        let (api_tx, api_rx) = crossbeam::channel::bounded(4);
+        let (db_tx, db_rx) = crossbeam::channel::bounded(4);
+        let shared = PendingApiRequests::default();
+        let relay = spawn_api_command_relay(api_rx, db_tx, shared.clone());
+        let (reply_tx, reply_rx) = tokio::sync::oneshot::channel();
+        api_tx.send(ApiCommand::DbRequest { cmd: DbCommand::Ping, reply_tx }).unwrap();
+        assert!(
+            matches!(db_rx.recv_timeout(std::time::Duration::from_secs(5)), Ok(DbCommand::Ping)),
+            "the relay forwards the command without any frame"
+        );
+        let mut gui_dispatch = shared.clone();
+        assert!(gui_dispatch.try_deliver(DbResult::Pong), "the relay filed the waiter before sending");
+        assert!(matches!(reply_rx.blocking_recv(), Ok(DbResult::Pong)));
+        relay.request_stop();
+        relay.into_join_handle().join().expect("the relay stops on request");
     }
 
     /// The hazard this replaced FIFO pairing for: an unsolicited
@@ -2166,7 +2278,7 @@ mod tests {
             };
             assert!(reply_kind_of_result(&native).is_none());
             assert!(!pending.try_deliver(native), "local native results never enter legacy API FIFO");
-            assert_eq!(pending.uncorrelated.len(), 1);
+            assert_eq!(pending.queues().uncorrelated.len(), 1);
             assert!(matches!(legacy_rx.try_recv(), Err(tokio::sync::oneshot::error::TryRecvError::Empty)),
                 "neither success nor failure may deliver or consume the unrelated waiter");
         }

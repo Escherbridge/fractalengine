@@ -894,20 +894,16 @@ pub(super) fn ingest_device_payload(call: ToolCall<'_>) -> ToolFuture<'_> {
         };
 
         let owner = crate::upload::UploadOwner::new(call.claims, &petal_id);
-        let mut asset_ids = Vec::with_capacity(decoded.len());
-        for bytes in decoded {
-            let asset = crate::upload::ingest_blob_with_limit(
-                call.state,
-                &owner,
-                "device-payload-file",
-                &mime,
-                GlbPayload::Bytes(bytes),
-                MCP_MAX_ASSET_BYTES,
-            )
-            .await
-            .map_err(|e| e.message())?;
-            asset_ids.push(asset.asset_id);
-        }
+        let files = crate::upload::store_payload_files(
+            call.state,
+            &owner,
+            "device-payload-file",
+            &mime,
+            decoded,
+            MCP_MAX_ASSET_BYTES,
+        )
+        .await
+        .map_err(|e| e.message())?;
 
         let correlation_id = ulid::Ulid::new().to_string();
         let cmd = DbCommand::InsertDevicePayloads {
@@ -923,10 +919,11 @@ pub(super) fn ingest_device_payload(call: ToolCall<'_>) -> ToolFuture<'_> {
             payload: DevicePayloadInput {
                 node_id,
                 format_id,
-                asset_ids,
+                asset_ids: Vec::new(),
                 recorded_at,
                 payload_id,
             },
+            files,
             correlation_id: Some(correlation_id.clone()),
         };
         match crate::rest::db_round_trip(call.state, cmd).await? {

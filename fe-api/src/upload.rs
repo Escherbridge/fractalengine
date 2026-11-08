@@ -466,6 +466,54 @@ pub async fn ingest_blob_with_limit(
     register_asset_as(state, owner, name.to_string(), content_type, stored).await
 }
 
+/// Store a device payload's files as blobs for `InsertDevicePayloads` to register in its
+/// own DB command (QA-0161: one DB round trip per payload, not one per file plus one).
+/// Same guards as [`ingest_blob_with_limit`]: name, blob-store presence, and the owner
+/// quota, checked once against the payload's total before any byte is stored.
+pub async fn store_payload_files(
+    state: &ApiState,
+    owner: &UploadOwner,
+    name: &str,
+    content_type: &str,
+    files: Vec<Vec<u8>>,
+    max_len: usize,
+) -> Result<Vec<fe_runtime::messages::PayloadFile>, UploadError> {
+    let name = name.trim();
+    if name.is_empty()
+        || name.chars().count() > MAX_ASSET_NAME_LEN
+        || name.chars().any(char::is_control)
+    {
+        return Err(UploadError::InvalidName);
+    }
+    let Some(store) = state.blob_store.clone() else {
+        return Err(UploadError::StoreNotConfigured);
+    };
+    let total = files.iter().map(|bytes| bytes.len() as u64).sum();
+    check_upload_quota(state, owner, total).await?;
+    let content_type_owned = content_type.to_string();
+    let stored = tokio::task::spawn_blocking(move || {
+        files
+            .into_iter()
+            .map(|bytes| store_blob(&store, GlbPayload::Bytes(bytes), &content_type_owned, max_len))
+            .collect::<Result<Vec<_>, _>>()
+    })
+    .await
+    .map_err(|e| {
+        tracing::error!("asset store task failed: {e}");
+        UploadError::StoreFailed
+    })??;
+    Ok(stored
+        .into_iter()
+        .map(|stored| fe_runtime::messages::PayloadFile {
+            name: name.to_string(),
+            content_type: content_type.to_string(),
+            size_bytes: stored.size_bytes,
+            content_hash: stored.content_hash,
+            owner_did: owner.owner_did.clone(),
+        })
+        .collect())
+}
+
 /// A node placed from an asset (MCP `place_asset`).
 #[derive(Debug, Clone, Serialize)]
 pub struct PlacedAsset {

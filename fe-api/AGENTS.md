@@ -1313,15 +1313,19 @@ functions for the same reason).
      a `gis::run_select` read, `pub(crate)` so MCP's `ingest_device_payload`
      (A5) reuses it directly) — unknown `format_id` is a 422 **before** any
      blob is stored.
-  2. Store each file through `upload::ingest_blob_with_limit` (new, beside
-     `ingest_glb_with_limit`): same name/quota/store-presence guards, but
-     `store_blob` only runs the FR-7 GLB header + KTX2 checks when
-     `content_type == GLB_CONTENT_TYPE` — a device payload's bytes are
-     opaque by design (R5: "bytes stored opaque") and are registered with
-     the **declared descriptor's MIME**, never sniffed from the multipart
-     part or the client's `Content-Type`. Each accepted file becomes its own
-     `asset` row (owner = token `sub`, anchor = this petal, same as a GLB
-     upload — §assets).
+  2. Store the files through `upload::store_payload_files`: the same
+     name/store-presence guards as `ingest_glb_with_limit`, one owner-quota
+     check against the payload's total, and `store_blob` runs the FR-7 GLB
+     header + KTX2 checks only when `content_type == GLB_CONTENT_TYPE` — a
+     device payload's bytes are opaque by design (R5: "bytes stored opaque")
+     and are registered with the **declared descriptor's MIME**, never sniffed
+     from the multipart part or the client's `Content-Type`. Each file is
+     carried unregistered (`PayloadFile`) in the payload's one DB command,
+     which makes it its own `asset` row (owner = token `sub`, anchor = this
+     petal, same as a GLB upload — §assets) before the payload row. QA-0161
+     (2026-11-08): a `CreateAsset` round trip per file plus the payload's own
+     cost two extra reply frames and lane slots per file, the drone flight's
+     payload ticks overran the 0.5 s slot (p50 753 ms).
   3. Send `DbCommand::InsertDevicePayloads` (Device `SourceClass`, fixed —
      SPEC-10 §7.1 rule 6 forbids inferring the class from `source_did`, not a
      sound fixed default for a single-route caller; MCP's `ingest_device_payload`

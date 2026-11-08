@@ -1157,3 +1157,24 @@ unmapped replies normally consume that FIFO. Success and unavailable native
 proof results remain available to their native owner through the normal UI result
 stream and never satisfy an API waiter. The existing router journey preserves a
 real legacy FIFO entry through both outcomes, then delivers its genuine reply.
+
+## api-command-relay
+
+QA-0161 (2026-11-08). The GUI binary's API requests used to reach the DB thread only when a Bevy
+frame ran `drain_api_commands`, and the reply came back through another frame. Measured on the
+city-lite flight (owner window, three GUI peers): an MCP `update_transform` waited 102 ms p50 and
+240 ms p90 between the HTTP call and its DB command starting, against 30 ms in the DB thread, and
+a device payload paid that twice per DB command. `spawn_api_command_relay` (an `OwnedService`, so
+terminal reset stops it) now owns the API command receiver: it files each request's reply waiter
+in the shared `PendingApiRequests` and forwards the `DbCommand` at once (`forward_api_command`,
+the same function the Bevy system uses on hosts without the relay). Replies still arrive through
+the GUI's result dispatch, which delivers to the same shared queues, so reply routing and the
+GUI's processing order are unchanged.
+
+- `PendingApiRequests` is a cloneable handle over one `Mutex`ed queue set; the lock is held only
+  for an enqueue, cancel or delivery, never across a send or an await.
+- The waiter is filed before the command is sent, so a fast reply always finds it; a failed send
+  cancels it (an unanswered waiter would swallow the family's next reply).
+- A full DB channel blocks only the relay (it used to block the Bevy main thread); a stop request
+  abandons the command in hand. A terrain-credential read still never waits on a full channel.
+- The API command queue no longer wakes the reactive render loop: Bevy does not drain it.
