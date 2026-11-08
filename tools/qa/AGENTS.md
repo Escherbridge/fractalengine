@@ -1313,6 +1313,12 @@ QA-0140/0148: the harness must not report its own timing or leftovers as a produ
   recurrence with that gap as its lap (`_recurrence_gap`): run 8's revoke re-judge put N2 back on editor2's [1,0,0]
   220 s after the viewer first showed it for 0.5 s on every peer within 1.1 s, which read as six S2 "lagged up to 220 s"
   rows (QA-0163 g). A value no peer saw twice keeps first-seen lag.
+  A target a flight drives can still look unique when its probe is sparse: the 10 s whole-petal `query` of a 30 s
+  flight saw each position digest once per peer, so neither recurrence test fired and the same position seen one or
+  two laps later read as "editor lagged up to 60.6 s" (city-lite 2026-11-08 04:03, while its node/transform lag stayed
+  under 1.3 s). During a flight a sighting whose distance from the first one is a whole number of `period_s` laps
+  (within 1.5 s or 5 %) is that later lap, never lag (`lap_multiple`). Drone node/transform values carry the
+  ever-growing rotation angle, so they never recur and the rule cannot hide their lag.
 - **ULID ids.** `ingest_device_payload.payload_id` is a fresh `new_ulid()` per call (`driver.py` `_drone_flight`).
   `drone_flight` takes `scale` (default `[1,1,1]`; each tick's `update_transform` carries it).
 - **GUI recovery.** After a step's actions, each peer whose LAST GUI action in the step failed (optional ones

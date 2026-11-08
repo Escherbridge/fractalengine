@@ -19,6 +19,7 @@ PEER_LOCAL_PROBES = {"role", "nav", "ui", "alive", "_tick", "_error"}
 DIVERGENCE_S = 15.0
 MOVING_MIN_VALUES = 8  # a target that took at least this many values, one per DIVERGENCE_S or faster, is moving
 FLIGHT_TAIL_S = 15.0  # replicas keep changing this long after a flight's last write
+LAP_MULTIPLE_TOLERANCE_S = 1.5  # a flight position holds one 0.5 s tick; probe responses jitter by about a second
 PARTIAL_MIN_S = 0.0
 WINDOW_SLACK_S = 0.05  # a step that closed this much short of an expectation's own within_s cut its window (QA-0163 c)
 SETTLED_TEXT_CHARS = 60
@@ -185,6 +186,12 @@ def recurrence_period(by_peer_occurrences):
     gaps = sorted(b - a for seen in by_peer_occurrences.values() for times in seen.values() for a, b in zip(times, times[1:]))
     laps = [gap for gap in gaps if gap <= gaps[0] * 1.1] if gaps else []
     return sum(laps) / len(laps) if len(laps) >= 2 else None
+
+
+def lap_multiple(lag, period):
+    """True when `lag` is a whole number (>= 1) of flight laps within the probe jitter: the same position a lap later."""
+    laps = round(lag / period)
+    return laps >= 1 and abs(lag - laps * period) <= max(LAP_MULTIPLE_TOLERANCE_S, 0.05 * period)
 
 
 def cluster_occurrences(entries, period):
@@ -719,14 +726,19 @@ class Analysis:
         it first). With a flight driving the target its declared period_s is the lap; else the recurrence estimate.
         """
         recurring = recurrence_period(seen)
+        flight = self._driving_flight(by_peer)
+        if flight is not None and (recurring is not None or self._seen_before_writer(seen, flight)):
+            return flight["period_s"]
+        return recurring
+
+    def _driving_flight(self, by_peer):
+        """The flight during which most of this target's changes happened, else None."""
         changes = [t for series in by_peer.values() for t in self._change_times(series)]
         for flight in self.flights:
             inside = [t for t in changes if flight["t0"] <= t <= flight["t1"] + FLIGHT_TAIL_S]
-            if changes and len(inside) * 2 >= len(changes):  # most of the target's changes happened during this flight
-                if recurring is not None or self._seen_before_writer(seen, flight):
-                    return flight["period_s"]
-                break
-        return recurring
+            if changes and len(inside) * 2 >= len(changes):
+                return flight
+        return None
 
     @staticmethod
     def _recurrence_gap(seen, digest):
@@ -756,6 +768,8 @@ class Analysis:
         """
         seen = {peer: occurrences(series) for peer, series in by_peer.items()}
         period = self._lap_of(by_peer, seen)  # a periodic flight repeats its values every lap: a later lap is a new write
+        flight = self._driving_flight(by_peer)
+        flight_lap = flight["period_s"] if flight is not None and flight.get("period_s") else None
         lag_pairs = {peer: [] for peer in by_peer}  # (lag behind the write's first sighting, time of this peer's sighting)
         for digest in {digest for per_peer in seen.values() for digest in per_peer}:
             sightings = [(t, peer) for peer, per_peer in seen.items() for t in per_peer.get(digest, [])]
@@ -765,6 +779,8 @@ class Analysis:
                     lead = min(write.values())
                     for peer, t in write.items():
                         if lap is not None and t - lead > lap / 2:  # nearer the next lap's / the restored value's sighting: a new write, not a late one
+                            continue
+                        if flight_lap is not None and lap_multiple(t - lead, flight_lap):  # sparse probing saw the same position whole laps apart
                             continue
                         lag_pairs[peer].append((t - lead, t))
         for peer in sorted(by_peer):
