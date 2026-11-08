@@ -1,168 +1,156 @@
 ---
 type: Review
 date: 2026-11-08
-title: Independent critic of the scripted P2P simulator, pass 2 (QA-0156/0157/0158 product fixes + QA-0159 scenario)
-reviewed_commits: [84fcb68a, 4257984b, 3510bc35, fce97bf8, 3acc5655, 9406322c, e7a65f50, 3de14e42]
-also_read: [929c79ca]
-fix_commits: [e4aebd15]
-previous_pass: fb8709f9 (PASS-WITH-FIXES (12), fixes 9cfbdd4f + c357bf03)
+title: Independent critic of the scripted P2P simulator, pass 3 (QA-0129/0161/0162/0164 product fixes + harness 8f25326b/4de932f2)
+reviewed_commits: [84fcb68a, 4257984b, 3510bc35, fce97bf8, 6c3de28c, 515eae67, 8f25326b, e4510e00, cb68c70e, 125636a6, 4c948f8e, e403d17b, 14ccc129, 95f13ad2, 8cb92d6d, 4de932f2]
+fix_commits: [589b39b0, f26aff49]
+previous_pass: 3bc40251 (pass 2, PASS-WITH-FIXES (4), fixes e4aebd15)
 ---
 
-# Critic: scripted P2P simulator, pass 2
+# Critic: scripted P2P simulator, pass 3
 
-VERDICT: PASS-WITH-FIXES (4)
+VERDICT: PASS-WITH-FIXES (3)
 
-This pass ran in a fresh context and tried to refute the claims. It re-read the four harness commits
-against the harness criteria, and it read the four new commits line by line against the product
-criteria. Those new commits are QA-0158 upload publication, QA-0157 unarmed table, QA-0156
-order-independent node merge, and the QA-0159 p2p-core scenario. A sibling lane committed 929c79ca
-while this pass ran (QA-0159 c/d/e/f: FireGate, step-scoped windows, periodic lag, exact locator). That
-commit was read, but only for barrier and exit-path safety.
+This pass ran in a fresh context and tried to refute the claims. The four original harness commits were
+reviewed in passes 1 and 2, so this pass re-checked them only where the new commits touch them. It read
+the twelve new commits line by line:
 
-One product defect was found and fixed. QA-0158 reopened the QA-0133 revoke race for unplaced uploads.
-Three harness defects were found and fixed: a teardown that could skip the peer stop, a stopped peer's
-reusable PID, and silently unjudgeable oversize observations. All four fixes are in e4aebd15. The fixed
-product finding is registered as QA-0160 (S3, fixed_source_live_pending).
+- product: 6c3de28c, 515eae67, e4510e00, cb68c70e, 125636a6, 4c948f8e, e403d17b, 14ccc129, 95f13ad2, 8cb92d6d
+- harness: 8f25326b, 4de932f2
 
-## Fixed: product (e4aebd15)
+It found three defects and fixed all three: two in the product and one in the harness. They are
+registered as QA-0166, QA-0167 and QA-0168. Product fixes and harness fixes are in separate commits, as
+the 02:45 steer requires.
 
-1. **QA-0160: QA-0158 made a demoted Editor's racing upload fetchable and re-servable for good.**
-   - QA-0158 dropped the live-node floor from `scene_asset_transfer::inspect`. Every sync job names no
-     node, so a Fetch or Serve needed only the anchored asset row plus Viewer.
-   - Inbound `asset` rows are insert-if-absent and never re-judged (`apply_anchored_asset_row`). Before
-     storing a row, that function strips the uploader's identity (`owner_did`).
-   - So consider an upload that raced its author's revoke. Any peer that had not yet learned the revoke
-     admitted the row, fetched the GLB on arrival, and kept re-serving it to third peers indefinitely.
-     QA-0133 promised that never happens.
-   - The fix:
-     - Inbound apply records the replica author, in the same CREATE transaction, in a local
-       `asset_inbound_author` table. The table is never replicated and is on the dev-reset list
-       (`schema.rs`).
-     - `inspect` covers a Fetch or Serve that names no node, for a row with no local upload/adoption
-       proof. It admits that row only through `unplaced_transfer_fence`: either a live node references the
-       row in its Petal, or the recorded author holds Editor at the anchor scope now. Both conditions are
-       fenced inside the admission transaction.
-   - Rows stored before this table existed have no recorded author. They need the live reference, as
-     they did before QA-0158.
-   - The extended journey `op_log::tests::a_failing_statement_rolls_back_the_op_log_row_too` checks the
-     sequence: fetched while the author is Editor, Fetch and Serve refused after the revoke, served again
-     once a live node places the row.
-   - **Mutation check:** with the fence disabled, the journey goes red at "a demoted author's unplaced
-     upload is never fetched".
-   - Rationale: `fe-database/src/handlers/AGENTS.md` §scene-asset-transfer "Unplaced rows".
+## Fixed: product (589b39b0)
 
-## Fixed: harness (e4aebd15)
+1. **QA-0166 (S2): a restore that another author had overtaken published nothing.**
+   - The bug: e4510e00 and e403d17b skip `set_bytes` when this author's own entry for the key already
+     holds the same bytes (`own_entry_holds` used `Doc::get_exact(own author)`).
+   - Why that breaks convergence:
+     - Verse, fractal and petal rows carry no version. `apply_static_row` MERGEs them in arrival order.
+     - The snapshot keeps `single_latest_per_key`.
+     - So: Alice sets a petal name, Bob overwrites it, and Alice sets her earlier bytes back. The skip
+       fires, every peer stays on Bob's name, and Alice shows her own name forever.
+   - The fix: the skip now requires the newest entry across all authors (tombstones included) to be ours
+     with the same hash.
+     ```rust
+     let latest = iroh_docs::store::Query::single_latest_per_key()
+         .key_exact(key.as_bytes())
+         .include_empty()
+         .build();
+     ... .is_some_and(|entry| entry.author() == author && entry.content_hash() == hash);
+     ```
+   - The drone case keeps its saving. The owner is the only writer of the mesh asset row and the node
+     rows, so the newest entry is still the owner's.
+   - Test and mutation: the real-transport journey `doc_replicator_replicates_row_over_real_transport`
+     now has Bob overtake the key, and Alice's identical restore must reach him. With the old
+     own-author query, the journey goes red at `fe-sync/src/replicator.rs:2601`.
+   - Rationale: `fe-sync/src/AGENTS.md` §unchanged-rewrite.
+2. **QA-0167 (S3): the QA-0162 Access-tab listing failed the whole tab past 1024 statement rows.**
+   - The bug: `entity_access::load` read raw `role_grant` rows, and a grantee has one row per (scope,
+     grantor), with revoked rows kept forever. The load capped those rows at 1024, although at most 256
+     DIDs are ever listed. A city with per-petal grants reaches that row count and loses its only re-grant
+     path, which was the QA-0162 bug again.
+   - The fix: grantees and members are now `GROUP BY peer_did LIMIT 257` and checked against `MAX_PEERS`.
+   - Test and mutation: the durable Access journey seeds 1100 revoked statements for one grantee and
+     requires exactly one listing. With the old ungrouped query, it goes red at
+     `role_propagation_durable_test.rs:307`.
 
-2. **A raising teardown could skip the exact-identity peer stop** (`run.py` `finally`).
-   `prober.stop()`, `sampler.stop()` (a `TimeoutExpired` on its second wait) and `recorder.close()` (its
-   flush raises on a full disk, which this host has hit before) ran unguarded ahead of `host.stop()`. Any
-   one of them raising leaked every peer. Each step is now isolated and logged, and the first error is
-   kept as the run failure. Dry run: a fake prober (OSError), sampler (KeyboardInterrupt) and recorder
-   (OSError) all raised, and `host.stop` still ran with the recorded owner directory. The run returned 1.
-3. **The host sampler kept sampling a stopped peer's PID** (`Host.stop_peer`). Between `stop_peer` and
-   `restart`, a reused PID would have charged another process's CPU to that peer in `host.csv`. The
-   stopped member is now dropped from the sampler's PID file. `restart` already rewrites the file.
-4. **Oversize observations were silently unjudgeable** (`prober.py`). Values over 4 KiB (64 KiB for
-   hierarchy) were recorded by digest only. The analyzer reads such a value as MISSING, so an expectation
-   on a large properties bag would report "never held", which looks like a product miss. Two changes:
-   - The inline budget is now 256 KiB for every probe. Observations are change-logged, so the budget
-     costs per change, not per poll.
-   - A value over the budget carries `oversize: true`, and the analyzer raises one harness anomaly that
-     lists every such series.
+## Fixed: harness (f26aff49)
 
-   The analyzer hunk was in the working tree when the sibling lane committed the whole file, so it
-   landed inside 929c79ca. It is verified on a scratch copy of run `p2p-assets-20261107-232544` with one
-   injected oversize observation, which produced exactly one harness anomaly naming that series.
+3. **QA-0168 (S3): the whole-lap rule hid real lag.**
+   - The bug: 4de932f2 dropped any lag pair a whole number of flight laps long (±1.5 s), and it did so on
+     every flight-driven target. Its own note says that drone node/transform values never recur, but the
+     code never checked that.
+   - Mutation: a copy of `city-lite-20261108-040352` with the editor's transform observations delayed by
+     30.2 s reported no lag at all (shared 0, no S2).
+   - The fix: `_flight_lap_if_periodic` applies the lap only to a target that can recur. That means the
+     target took at most `rate_hz * period_s` (+2) values during a flight of at least one lap.
+     - The whole-petal query takes 34-44 values against 60 per lap, so it keeps the dismissal.
+     - The node/transform rows take 160-290 values, so they lose it.
+   - Dismissed pairs are now counted per peer in a new report column, "whole-lap sightings (max s)", so
+     the rule never truncates silently.
+   - Dry run:
+     - The mutated copy now reports two S2 rows at p95 30.8 s.
+     - Re-analyzing copies of city-lite 040352, 020155 and 033443 and p2p-core 034236 gives the same
+       severities as before. The 040352 query keeps its 10 dismissed whole-lap pairs, and they are now
+       listed.
 
 ## Claims checked and upheld
 
-- **QA-0156: order-independent merge with a named tiebreak.**
-  - Complete snapshots are an (HLC, publisher) register.
-  - A markerless live row that arrives after a versioned one is `NotApplicable` (`inbound.rs`
-    "unversioned live row deferred"), so complete beats markerless in either order.
-  - Markerless versus markerless uses the legacy-writer precedence (owner first, then the larger DID).
-    The writer's own replica cannot diverge from it, for two reasons. Current publishers never send
-    markerless rows. And QA-0131 denies markerless rows from statement-derived Editors before dispatch.
-  - The owner flag is stable, because admission needs the verse row, so `verse_owner` is known at
-    apply.
-  - Two deleters' tombstone markers settle on the larger canonical JSON.
-- **Tombstones win and never resurrect.** The tombstone check precedes the precedence check, and a
-  live row over a local tombstone stays `SkippedTombstoned`.
-  - `reconcile_petal` keeps the blind merge but has no production caller.
-- **QA-0157: no table an honest hash is refused from.**
-  - `unarmed` is keyed only by hashes still in `by_hash`, which is bounded by the replica's own
-    entries.
-  - The sweep's work is bounded instead: a round-robin of 4096 hashes per 5 s, with one author verdict
-    per tick.
-  - Stale order entries are compacted once they exceed 2×live + budget.
-  - The journey proves a late-named Editor behind 12,305 Sybil hashes is armed in 4 sweeps.
-- **QA-0158: role checks on receipt.**
-  - Publishing an upload fences actual local Editor, the upload proof and exact metadata before it
-    enqueues.
-  - Receivers admit the row only on the author's current Editor role.
-  - Serve still requires the requester's current Viewer role.
-  - With fix 1, a Fetch or Serve of an unplaced row also follows the author's current role.
-- **No request-reachable panic in the new code.** Checked:
-  - `proven_asset_wire` indexes `assets[0]` only after its `len()==1` guard.
-  - `emit_uploaded_asset` indexes `rows[0]` after an `ensure!`.
-  - `marker_outranks` indexes object keys from the object itself.
-  - `LegacyAuthor` uses its derived `Ord`.
-- **Restart catch-up, event-driven blob fetch, reactive loop.** The new commits do not touch these
-  paths. The pass-1 findings hold: stable ports, content re-fetch and isolated-write sync for catch-up;
-  fetches on row arrival, NeighborUp, empowerment and rewrite; watched queues wake the reactive loop.
-  - QA-0158 adds an event-driven trigger: the asset row's arrival.
-- **One process clock.** `runtime.Clock` uses `perf_counter`, and `host.csv` is converted through one
-  wall/perf anchor pair.
-- **Barrier alignment is measured.** Barrier events carry `fire_at` and `fire_late_ms`.
-  - 929c79ca's `FireGate` opens only when every remaining participant has arrived, and an arrived
-    participant blocks until it opens.
-  - A post-arrival exception therefore cannot open a gate early.
-  - A double withdraw needs `_event` itself to raise after a withdraw, which means the recorder already
-    failed. Fix 2 now makes that failure a clean, peer-stopping exit.
-- **Probers cannot cause the refusals they measure.** GET probes are not rate-limited in fe-api. The
-  only limited family is `/query` plus the timeseries query (10/s per DID).
-  - The prober refuses a scenario over 6 query or 8 timeseries targets.
-  - The schema floors `query_ms` at 1000 ms, so the worst case is 6/s from the prober plus 2/s from
-    `lookup_node`, under 10/s.
-  - Rate-limited answers count as tick errors and are never recorded as state.
-- **Predicates belong to the scenario.** The analyzer evaluates the scenario's predicate, path, value,
-  `after`, `needs` and `meta.severity`. Built-in severities are defaults only.
-  - 929c79ca now also caps "held then regressed" by `meta.severity`.
-- **No silent truncation of anomalies.** Every anomaly is listed, and the fingerprint key cut says so.
-  With fix 4, oversize values are named too.
-- **Writes only under `.qa/` and `qa/`.** Run directories are under `qa/sim/runs`. Spools, stage and
-  pointer files are under `.qa/`.
-- **3de14e42 scenario.**
-  - It depends on harness args (`exact`, `wait_role`, `expect: any`, needs at fire time) that existed
-    only in the uncommitted tree when it landed. 929c79ca now carries them.
-  - `run.py validate` passes all four scenarios on the committed tree.
-  - 929c79ca also corrected the armed-confirm names (`Confirm Revoke role grant for <did>`), which the
-    3de14e42 names could never match.
+- **Order-independent merge with a named tiebreak.**
+  - Superseding (e4510e00) replaces a queued snapshot only with the same author's newer complete snapshot
+    of the same node in the same verse and petal. `SceneClock` orders by (HLC, publisher).
+  - The scan stops at:
+    - any non-apply command,
+    - a role, structural or asset row,
+    - another author's version, a tombstone or a markerless row.
+  - The older slot is kept, so a reading queued behind it still finds the node.
+  - Batching (125636a6) keeps one fenced transaction per row, in order.
+- **Tombstones win and never resurrect.**
+  - `live_snapshot_of` returns None for a tombstone, so a tombstone is never absorbed and never absorbs.
+  - A deferred publication publishes before `DeleteNode`, `TombstoneNode` and every other command
+    outside `runs_before_publication`, so a delete never races an unpublished transform.
+- **Role checks on receipt.**
+  - Every batched row still goes through `InboundAdmissions::apply` (role-at-write).
+  - Transform and property writes authorize once (515eae67). The second check ran on the same serial
+    lane, outside the transaction, so it fenced nothing the first did not. `scope_fence` still fences the
+    ancestry inside the transaction.
+  - A device payload that registers files requires the anchor petal and the node's Editor role (as
+    `CreateAsset` did), and it is a Serve barrier (QA-0154 holds).
+- **Restart catch-up without a stale window.**
+  - Deferred publications wait at most 250 ms and publish before shutdown (`due_before(None)`).
+  - `scene_publication::recover` republishes every node on open, so a crash inside the window is
+    repaired on the next open.
+  - The unchanged-rewrite skip keeps the entry in the replica, so set reconciliation still serves it.
+- **Event-driven blob fetch.** e403d17b skips a scene-asset publish job only when the published row is
+  ours and newest. With fix 1, that test is stricter.
+- **Reactive render loop.** cb68c70e moves API commands to an `OwnedService` relay, which no frame needs.
+  Replies return on `db_res_rx`, which `render_work` watches (`fractalengine/src/main.rs:492`). The
+  unwatched `api_cmd_rx` is no longer drained by Bevy. The `PendingApiRequests` lock is never held
+  across a send.
+- **No request-reachable panic.**
+  - In `commit_mutations_in_scope`, `facts.len() - 1` runs only when there are at least two changes, and
+    `prepare_change` always emits at least one fact.
+  - `take_one` guards emptiness.
+  - Superseding and batching index nothing.
+  - `ClearNodeProperties` is bounded to 1..=200 keys.
+- **Harness: one process clock and measured barriers.** Unchanged since pass 2.
+  - 8f25326b's `select_steps` raises before any peer starts (`run.py`: it runs ahead of
+    `resource_gate`), so it adds no exit path.
+- **Harness: the analyzer's predicates belong to the scenario.**
+  - The lap dismissal is an analyzer heuristic for one class of moving targets, not a predicate.
+  - With fix 3, it is evidence-gated and counted.
+- **Harness: writes stay under `.qa/` and `qa/`.** The dry runs used `qa/sim/critic3/`, which was
+  removed afterwards.
+- **4c948f8e timing logs** are debug level and log only tool names, phase durations and the request
+  path. No API route carries a secret in its path.
 
 ## Not fixed (residual, stated)
 
-- **A `peers.ps1 Start` killed by the harness's 1200 s timeout leaves its half-launched peers
-  unrecorded.** `TerminateProcess` skips the PowerShell `finally` rollback. This is unchanged from pass 1.
-  Peers can only be attributed by a launch journal. Scanning `.qa/run/*` by mtime could stop another
-  session's live peers, which the process-cleanup rule forbids. Every non-killed Start failure still
-  rolls back by exact identity, and a normal Start takes 1-2 min.
+- **Superseding versus role-at-write.**
+  - The case: a revoke lands between two versions c1 and c2 from one author. A receiver whose lane
+    supersedes c1 with c2 then rejects c2 and keeps the prior value. A receiver that applied c1 alone
+    keeps c1.
+  - This is the same divergence a late-syncing peer already has: iroh-docs keeps only the latest entry
+    per author and key, so a late peer never sees c1.
+  - Its resolution belongs to the QA-0165 semantics decision, which the 02:45 steer reserves for the
+    user. This pass did not touch it.
+- **A `peers.ps1 Start` killed by the 1200 s timeout leaves its half-launched peers unrecorded.**
+  - This is unchanged from passes 1 and 2.
+  - The 00:40 steer assigns the launch journal to the orchestrator's executor, not to the critic.
 
 ## Gate (this phase)
 
-- `cargo check -p fe-database -p fe-sync`: green.
-- `cargo +1.99.0 clippy -p fe-database --all-targets -D warnings`: green. fe-sync is untouched by this
-  pass.
-- Touched batches:
-  - R10 lib filter, plus `handlers::replicated_row`, `handlers::scene_asset_transfer` and
-    `handlers::scene_publication`: 170 passed, 10 ignored.
-  - The extended journey `op_log::tests::a_failing_statement_rolls_back_the_op_log_row_too`: passed,
-    and red under the mutation.
-  - `--test schema_idempotent` (30 passed) and `--test device_payload_test` (4 passed). The latter is the
-    inbound anchored-asset apply.
-- Python dry run:
-  - `run.py validate`: 4 scenarios OK.
-  - Fake-collaborator run of `run.run` with every teardown raising: the peers were still stopped and the
-    run returned 1.
-  - `Prober._emit` budget and oversize marking.
-  - Analyzer re-run on a scratch copy with an injected oversize observation.
+- `cargo check -j4 -p fe-sync -p fe-database --tests`: green.
+- `cargo +1.99.0 clippy -j4 -p fe-sync -p fe-database --all-targets -- -D warnings`: green.
+- Touched journeys, green with the fix and red with it reverted:
+  - fe-sync `replicator::tests::doc_replicator_replicates_row_over_real_transport`
+  - fe-database `--test role_propagation_durable_test a_non_owner_creating_a_petal_gets_no_implicit_owner_row`
+- Not run: every other batch, because no other region was touched.
+- Python:
+  - `run.py validate` passes all 4 scenarios.
+  - `py_compile analyze.py`.
+  - Analyzer dry runs on 4 real run copies plus the 30.2 s mutation.
 - No app was started, so there were no peers to stop.
