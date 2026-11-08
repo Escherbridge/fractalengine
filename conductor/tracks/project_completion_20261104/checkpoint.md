@@ -3,7 +3,7 @@ type: ProgressCheckpoint
 date: 2026-11-04
 status: in_progress
 title: Current completion state and next actions
-last_verified_utc: 2026-11-08T12:30:00.000000+00:00
+last_verified_utc: 2026-11-08T12:35:00.000000+00:00
 ---
 
 ## ORCHESTRATOR STEER (binding; maintained by the orchestrating session, do not edit or remove)
@@ -310,11 +310,32 @@ below 50 %), so no latency below is contention. No peer is running.
   peers than this host can run), QA-0125 (hierarchy polling paused) and QA-0104/0150/0151/0154/0155/0157. The pre-sim
   ids QA-0041/0044/0048/0049/0056/0075/0077 are outside the simulator's reach.
 
+Sim run 10 triage (2026-11-08, stage 1f01c930 from `.qa/stage/current`, firewall allow present, 4/3/3 peers; runs
+`qa/sim/runs/{p2p-core-20261108-050437,p2p-assets-20261108-051448,city-lite-20261108-051726}`). Every latency
+sample ran at host CPU < 80 % (p2p-core 195/216 below 50 %), so no latency below is contention. No peer is running.
+
+- 14 analyzer anomalies + 4 vision findings collapse to 0 new S1/S2 and 1 new harness S3, so run 10 is CLEAN, the
+  second clean run in a row. p2p-core 310/317 met, p50 0.38 s, p95 1.48 s; p2p-assets 30/30 for the sixth run (25 MB
+  in 0.2 s); the final fingerprints agree in all three runs.
+- False S1/S2: city-lite all_readings (1440 rows on every peer, 3 digests) is QA-0144. 5.e1/6.e1 (S3) are QA-0126:
+  every peer settled on editor2's X=3 and [1,0,0] within 0.8 s. The late matches are step 12's write and the 13b
+  re-judge (QA-0165). Vision: VIS-r10-01 is QA-0130 (viewer/editor2 log 'failed to load tileset') plus QA-0141 (the
+  editor never entered Petal B), VIS-r10-03 is QA-0149, VIS-r10-04 is QA-0169 (not landed yet). VIS-r10-02 is false:
+  9b-viewer.png shows the expected tree.
+- New S3 QA-0170 (harness): fe.py read tokens.json 1 ms before the app rewrote it and got PermissionError [Errno 13],
+  so the editor's 'Open petal Petal B' failed. The editor log shows the rewrite at 12:09:01.9653Z. SIM-p2p-core-009,
+  -010 and -011 follow from it. The fix is a short retry in `read_json_file`.
+- Verified: none newly. Still `fixed_source_live_pending` (21), not exercised: QA-0131/0133/0160, because editor2's
+  race writes fired 0.3 s after the Confirm and its own app refused them again; the path needs a write fired before
+  the Confirm. Also not exercised: QA-0156/0166, QA-0117/0136, QA-0125, QA-0104/0150/0151/0154/0155/0157, and the
+  pre-sim ids.
+
 ## Next actions
 
-1. Run 10 is the second consecutive clean run if it adds no new S1/S2. The 21 pending ids need a scenario path the
-   host can drive: a race write that leaves editor2 before its demotion, two authors writing one key, and N > 16.
-   Otherwise they need a focused live check. The user decides QA-0165.
+1. Runs 9 and 10 are two consecutive clean sim runs (0 new S1/S2). The 21 pending ids still need a scenario path
+   the host can drive: a write fired before the 13b Confirm that reaches the other peers after it, two authors
+   writing one non-transform key, and N > 16. Otherwise they need a focused live check. The harness S3s QA-0169 and
+   QA-0170 are small `tools/qa` fixes. The user decides QA-0165.
 2. Run FULL pass 78 (2/3) then pass 79; convergence needs zero new S1/S2 in two consecutive passes and all gold.
 3. Fix the S3 test debt (QA-0079, QA-0082, QA-0115, QA-0116), then the integrated sweep, CI Lint (QA-0078), tag
    and release.
