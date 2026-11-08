@@ -3,7 +3,7 @@ type: ProgressCheckpoint
 date: 2026-11-04
 status: in_progress
 title: Current completion state and next actions
-last_verified_utc: 2026-11-08T03:40:00.000000+00:00
+last_verified_utc: 2026-11-08T06:00:00.000000+00:00
 ---
 
 ## ORCHESTRATOR STEER (binding; maintained by the orchestrating session, do not edit or remove)
@@ -201,11 +201,34 @@ for the repro was stopped by exact identity). Host CPU stayed below 50 % except 
 - Still not exercised: QA-0103, QA-0117 (saturation), QA-0120 to QA-0122, QA-0125, QA-0131 to QA-0133, QA-0136 and
   QA-0145 (the restarted editor made no checked write).
 
+Sim run 5 triage (2026-11-07, stage e3feb257 launched from `.qa/stage/current` with the firewall allow rule, 4 peers;
+runs `qa/sim/runs/{p2p-core-20261107-222727,p2p-assets-20261107-223702,city-lite-20261107-223944}`). Host CPU stayed
+below 55 % for every latency sample, so no latency below is contention.
+
+- 45 analyzer anomalies + 6 vision findings collapse to 1 new S2 and 1 harness S3. Every S1 is false. p2p-assets is
+  clean (30/30 met, 0 anomalies, 25 MB in 0.2-3.4 s), and the final fingerprints agree in all three runs.
+- Verified: QA-0121 (13b's revoke replaced editor2's N2 row on all 4 peers in 1.0 s), QA-0122 (the two revoked
+  editors' 120 REST/MCP writes in step 15 were all refused), QA-0143 (3-author placement at once, blobs 0.2-3.1 s after
+  their rows, no role denials) and QA-0153. The QA-0100 GUI race is also verified: 3 Enter keys within 0.35 ms, all
+  peers agreed in 0.8 s and still agreed 60 s later.
+- False S1s: the 5.e1 "regression" is the owner's own write showing for 0.5 s (QA-0126). city-lite's "diverged at
+  run end" is QA-0144: 1364 rows on every peer, but the digests differ.
+- New S2: QA-0158. A REST/MCP upload_asset only registers the asset row locally
+  (`fe-database/src/handlers/crud.rs:363`). The row reaches other peers with its first placement, so city-lite's
+  blobs arrived at 63-67 s, exactly step 2's settle time.
+- New S3 harness item: QA-0159. It covers (a) the step-8 Clear Properties path, which goes through
+  Options… → Node Options; (b) 9c running after the 9b2 rename; (c) `needs` checked before the revoke fired, which
+  skipped all 7 revoked-writer actions; (d) analyzer windows that stay open across later steps; (e) periodic-flight lag
+  matching; (f) scroll-up; and (g) the compact Inspector tab menu. Vision: VIS-001 is QA-0130, VIS-004 is QA-0149, and
+  VIS-005 is QA-0152 (g).
+- Still not exercised: QA-0103, QA-0120 (13a still revokes at the verse level), QA-0131, QA-0132 (failure path),
+  QA-0145, QA-0102/0129 (step 8), QA-0117, QA-0125, QA-0133 and QA-0136.
+
 ## Next actions
 
-1. FIX:4: QA-0151 (S1), QA-0143 and QA-0150 (S2). Then QA-0152 (a) scroll-to-row, (b) 9b end, (c) a reachable
-   revoke path. These gate every unexercised id above. Add QA-0146's reveal of the active petal. Re-run all three
-   scenarios.
+1. FIX:5: QA-0158 (S2), and the steered QA-0154/0155/0157 and QA-0156 (S2). Harness: QA-0159 (c) first, then (a),
+   (b), (g) and 13a on the all-verses card path (steer 22:05). These gate QA-0103, QA-0120, QA-0131 and QA-0145.
+   Re-run all three scenarios.
 2. Run FULL pass 78 (2/3) then pass 79; convergence needs zero new S1/S2 in two consecutive passes and all gold.
 3. Fix the S3 test debt (QA-0079, QA-0082, QA-0115, QA-0116), then the integrated sweep, CI Lint (QA-0078), tag
    and release.
