@@ -53,14 +53,17 @@ Standing rule: **feature → track at start, retro + archive at completion.**
 
 **Tests run only when explicitly told (user directive 2026-11-07).** The default gate for any
 commit is `cargo check -p <touched crates>`; clippy and tests run only when the user or a steer names
-the batch (`conductor/test-batches.md`), and the full workspace sweep below runs once, at campaign end,
-on request. Keep every test inside a selectable batch so the named run is small.
+the batch (`conductor/test-batches.md`), through the chunked runner `tools\qa\test_batches.ps1
+-Batches <ids>`; the campaign-end sweep is `-Batches All`, once, on request. Never `cargo test
+--workspace` on this machine (2026-11-08: it filled the disk with 258 GB of test executables and
+PDBs and died of commit exhaustion). Keep every test inside a selectable batch so the named run is
+small.
 
 The practiced gate is a **single integrated sweep at the end of a change
 batch** — not per-task loops:
 
 ```bash
-cargo test --workspace
+toolsqa	est_batches.ps1 -Batches All      # chunked runner; never cargo test --workspace (2026-11-08)
 cargo clippy -- -D warnings
 cargo fmt --check
 ```
@@ -77,7 +80,7 @@ cargo fmt --check
 
 Per-change checklist (verified by the sweep + review, not re-run per fix):
 
-- [ ] All tests pass (`cargo test --workspace`)
+- [ ] All tests pass (`toolsqa	est_batches.ps1 -Batches <touched batches>`, when told)
 - [ ] `cargo fmt --check` and `cargo clippy -- -D warnings` pass
 - [ ] Terse one-line doc comments on public items; rationale in the
       directory-level `AGENTS.md`, not inline comment blocks
@@ -154,7 +157,7 @@ cargo build
 RUST_LOG=debug cargo run
 
 # End-of-batch sweep (run ONCE per change batch)
-cargo test --workspace
+toolsqa	est_batches.ps1 -Batches All      # chunked runner; never cargo test --workspace (2026-11-08)
 cargo clippy -- -D warnings
 cargo fmt --check
 ```
@@ -194,7 +197,7 @@ A track (or batch within it) is complete when:
 
 1. All code implemented to the track's spec
 2. New behavior covered by tests
-3. The end-of-batch sweep is green (`cargo test --workspace`, clippy
+3. The end-of-batch sweep is green (`toolsqa	est_batches.ps1 -Batches <ids>`, clippy
    `-D warnings`, `fmt --check`)
 4. Terse doc comments present; rationale captured in the directory
    `AGENTS.md` where non-obvious

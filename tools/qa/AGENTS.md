@@ -1600,3 +1600,28 @@ continue to require actual stage/manifest/hash/process ownership; missing binari
 never prove exit. No records are discarded and confirmed history does not retain
 dead runs/stages forever. The existing lifecycle journey uses real scratch stages
 for this regression rather than substituting a constant stage reader.
+
+## §test-batches
+
+`test_batches.ps1` runs the batches of `conductor/test-batches.md` one `cargo test` command at a time.
+It exists because the suite's cost on this machine is linking, not running: every test binary links
+bevy + surrealdb + iroh with full debuginfo (45-130 MB exe, up to 1 GB PDB), and `cargo test
+--workspace` links all of them at once. On 2026-11-08 that left 258 GB of executables and PDBs in
+`target/debug/deps` (1,191 exe / 1,182 pdb, most of them stale hashes cargo never garbage-collects),
+drove the disk to 1.4 GB free, and the build died of commit exhaustion: the system-managed pagefile
+could not grow, and the baseline commit on this box is ~80 GB (WSL VM 26 GB, VS Code + rust-analyzer
+23 GB). "Out of memory" on Windows is commit exhaustion, which a full disk causes; check
+`Get-PSDrive C` before blaming RAM.
+
+- Chunk = one fenced `cargo test` line under a `## R<n>`, `## Harness`, `## Misc batch` or `## Slow
+  sub-batches` heading; `-Batches All` is every batch except `Full`, which the runner refuses.
+- After each chunk the runner deletes the `.exe`/`.pdb` files in `target/debug/deps` written since
+  the chunk started (`-KeepArtifacts` keeps them); rlibs are untouched, so the next chunk re-links
+  but does not recompile.
+- Guards: `.omc/state/build-gate.json` must say `cargo_allowed: true`; each chunk needs
+  `-MinFreeGb` (60) free on the target drive; `-Jobs` defaults to 2 like `.cargo/config.toml`;
+  `RUST_MIN_STACK` is set to 64 MB when unset (surrealdb-core's type checker).
+- Output: one log per chunk under `.omc/logs/tests/<timestamp>/`, `summary.json`, a table, and
+  exit 1 when any chunk is not `ok` (`build_failed` = no `test result:` line at all).
+- Protocol: post `building <SESSION> tests <batches>` on the session bus before a run and close it
+  after; one build at a time on this machine (`.omc/state/bus/SESSION-PROTOCOL.md`).

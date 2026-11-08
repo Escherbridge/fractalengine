@@ -251,8 +251,12 @@ sessions), so they are run on purpose, never by habit:
    exact filter, so a steer can say "run R8 only". Prefer one journey file ≈ one filter over
    crate-wide runs; never add a test that no batch filter reaches (module paths are `::tests::`,
    not `::mod` — the R1/R2 filters silently ran 0 tests until 5067e466).
-3. **The full workspace suite runs exactly once**, at campaign end, when the user says so
-   (`cargo test --workspace` plus `cargo test -p fe-terrain --features render`).
+3. **The full suite runs exactly once**, at campaign end, when the user says so, and only through the
+   chunked runner `tools\qa\test_batches.ps1 -Batches All` (one `cargo test` command at a time, that
+   chunk's test executables and PDBs pruned after it, 60 GB free-disk floor). Never `cargo test
+   --workspace` on this machine: on 2026-11-08 it linked every test binary at once, left 258 GB of
+   executables and PDBs in `target/debug/deps`, filled the disk and died of commit exhaustion
+   (`tools/qa/AGENTS.md` §test-batches).
 4. Standing conventions still apply: no new test functions when a journey can be extended or an
    obsolete test swapped; tests model real flows through public seams (skill `flow-tests`).
 

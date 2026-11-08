@@ -7,11 +7,16 @@ timestamp: 2026-11-01T00:00:00Z
 
 # Usability-region test batches
 
-**Rule (user directives 2026-11-01 and 2026-11-07):** tests run only when explicitly told (the user, or a
-steer/task naming the batch); the pre-commit gate is `cargo check -p <touched crates>`; when told, gates
-run only the batch(es) whose source paths were
-touched by a change. The full workspace suite (`cargo test --workspace`, plus
-`cargo test -p fe-terrain --features render`) runs exactly once, at campaign end.
+**Rule (user directives 2026-11-01, 2026-11-07 and 2026-11-08):** tests run only when explicitly told (the user,
+or a steer/task naming the batch); the pre-commit gate is `cargo check -p <touched crates>`; when told, gates
+run only the batch(es) whose source paths were touched by a change, through the chunked runner
+`tools\qa\test_batches.ps1 -Batches R1,R8` (one `cargo test` command at a time, that chunk's test executables
+and PDBs pruned after it runs, a 60 GB free-disk floor and the build-gate check; `-ListOnly` prints the chunks;
+rationale in `tools/qa/AGENTS.md` §test-batches). **Never `cargo test --workspace` on this machine:** on
+2026-11-08 the sweep linked every test binary at once, left 258 GB of executables + PDBs in `target/debug/deps`
+(plus 207 GB of incremental caches), filled the disk to 1.4 GB free, and died of commit exhaustion once the
+system-managed pagefile could not grow. The campaign-end sweep is `-Batches All` (every batch except Full),
+run once, when the user says so.
 
 Inventory basis: `#[test]` + `#[tokio::test]` attributes across the workspace —
 **4242 total** (3619 `#[test]` across 451 files + 623 `#[tokio::test]` across 92 files; cross-checked
@@ -499,7 +504,10 @@ cargo test -p fractalengine-test-harness
 
 ## Full-suite command (campaign end only)
 
-```bash
-cargo test --workspace
-cargo test -p fe-terrain --features render
+Retired 2026-11-08: `cargo test --workspace` links every test binary at once and filled the disk (see the rule
+at the top). The campaign-end sweep is the same tests one chunk at a time, link outputs pruned after each:
+
+```powershell
+tools\qa\test_batches.ps1 -Batches All      # R1..R11 + Harness + Misc + Slow, sequential
+tools\qa\test_batches.ps1 -Batches R4       # `cargo test -p fe-terrain --features render` is R4's first chunk
 ```
