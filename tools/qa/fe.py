@@ -524,6 +524,32 @@ def command_portal_fixture(run, args):
     emit(receipt)
 
 
+def batch_view_change(run, verse, refusal):
+    """The view a scope-denied input batch left behind (QA-0163 b), or None when the denial is a plain one.
+
+    The host re-checks the token's scope every frame a batch runs, so a click that itself closes or switches the
+    verse (`Browse all verses`, opening ANOTHER verse) is denied `not_found_or_denied` once the view moved, AFTER the
+    click landed. `view_changed_verse` is the verse now on screen, or None when no verse is open any more (an
+    owner token covers nothing while the all-verses list shows).
+    """
+    if verse is None or refusal.code != "not_found_or_denied":
+        return None
+    try:
+        new_verse, _token, camera = resolve_token(run)
+    except Refused as lookup:
+        if lookup.code != "no_active_verse_covered":
+            return None  # cannot tell what is on screen: stay a plain refusal
+        return {"view_changed_verse": None, "active": None,
+                "warning": "the batch closed the verse (none is open now); the host denied the rest of the batch "
+                           "under the old verse's token (the click landed - re-shoot to see the result)"}
+    if new_verse == verse:
+        return None
+    return {"view_changed_verse": new_verse, "active": (camera or {}).get("active"),
+            "warning": "the batch moved the view to another verse; the host denied the rest "
+                       "of the batch under the old verse's token (expected for cross-verse "
+                       "navigation - re-shoot to see the result)"}
+
+
 def run_input(run, args, commands):
     verse, token, _camera = resolve_token(run, args.verse)
     body = {"commands": commands, "wait_frames": args.wait}
@@ -532,22 +558,12 @@ def run_input(run, args, commands):
     try:
         _status, _headers, raw = call(run, "POST", "/api/v1/debug/input", token, body, timeout=30.0)
     except Refused as refusal:
-        # The host re-checks scope every frame a job runs: a click that itself
-        # opens ANOTHER verse is denied once that verse is on screen, after the
-        # click landed. Say so instead of reporting a plain refusal.
-        if refusal.code != "not_found_or_denied" or args.verse:
+        # A click that closed or switched the verse is denied after it landed (batch_view_change): say so
+        # instead of reporting a plain refusal. An explicit --verse never recovers: it asked for that scope.
+        moved = None if args.verse else batch_view_change(run, verse, refusal)
+        if moved is None:
             raise
-        try:
-            new_verse, _token, camera = resolve_token(run)
-        except Refused:
-            raise refusal
-        if new_verse == verse:
-            raise refusal
-        emit({"token_verse": verse, "commands": commands, "view_changed_verse": new_verse,
-              "active": (camera or {}).get("active"),
-              "warning": "the batch moved the view to another verse; the host denied the rest "
-                         "of the batch under the old verse's token (expected for cross-verse "
-                         "navigation - re-shoot to see the result)"})
+        emit({"token_verse": verse, "commands": commands, **moved})
         return
     payload = decode_object(raw)
     result = {"token_verse": verse, "commands": commands}

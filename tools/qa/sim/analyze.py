@@ -20,6 +20,8 @@ DIVERGENCE_S = 15.0
 MOVING_MIN_VALUES = 8  # a target that took at least this many values, one per DIVERGENCE_S or faster, is moving
 FLIGHT_TAIL_S = 15.0  # replicas keep changing this long after a flight's last write
 PARTIAL_MIN_S = 0.0
+WINDOW_SLACK_S = 0.05  # a step that closed this much short of an expectation's own within_s cut its window (QA-0163 c)
+SETTLED_TEXT_CHARS = 60
 WRITE_REST_OPS = {"create_fractal", "create_petal", "create_node", "set_transform", "set_property", "delete_property",
                   "delete_node", "upsert_group", "delete_group", "upload_asset", "ingest_readings"}
 WRITE_MCP_PREFIXES = ("create_", "update_", "delete_", "set_", "place_", "upload_", "ingest_", "register_", "install_",
@@ -135,6 +137,11 @@ def load_jsonl(path):
     except OSError:
         pass
     return rows
+
+
+def truthy(value):
+    """bool of a DataFrame cell that may be None/NaN (a column mixing booleans and gaps)."""
+    return value is not None and not (isinstance(value, float) and math.isnan(value)) and bool(value)
 
 
 def pct(values, p):
@@ -346,6 +353,32 @@ class Analysis:
             return predicates.MISSING, digest
         return predicates.derive(record["probe"], value), digest
 
+    def _window_cut(self, record, step_end):
+        """True when the step closed before the expectation's own `within_s` window ran out (it was not judged for its full budget)."""
+        return step_end < record["t0"] + record["within_s"] - WINDOW_SLACK_S
+
+    def _settled_text(self, record, series, t):
+        """What the target read at `t` (the window's close), short: the selected path's value, 'absent', or None when never observed."""
+        value, _digest, known = series.at(t)
+        if not known:
+            return None
+        path = record.get("path")
+        found, inner = predicates.at_path(predicates.derive(record["probe"], value), path)
+        text = json.dumps(predicates.normalize(inner), sort_keys=True, separators=(",", ":"), default=str) if found else "absent"
+        if len(text) > SETTLED_TEXT_CHARS:
+            text = text[:SETTLED_TEXT_CHARS - 1] + "\u2026"
+        if not path:
+            return text
+        return "%s = %s" % (path, text) if found else "%s absent" % path
+
+    def _agree_settled_text(self, record, all_series, t):
+        """Per-peer digests of the selected value at `t`: which peers still differed when the window closed."""
+        parts = []
+        for peer, series in all_series.items():
+            value, _digest = self._value(record, series, t)
+            parts.append("%s=%s" % (peer, "-" if value is predicates.MISSING else predicates.digest(predicates.at_path(value, record.get("path"))[1])[:6]))
+        return "digests " + ", ".join(parts)
+
     def _holds(self, record, value):
         return value is not predicates.MISSING and predicates.evaluate(record["predicate"], value, record.get("value"),
                                                                        record.get("path"))
@@ -385,7 +418,10 @@ class Analysis:
             matches[peer] = matched
             row["matched"] = matched is not None
             row["late_match_rel"] = self.rel(late) if late is not None else None
+            row["late_match_step"] = self.step_at(late) if late is not None else None
             row["window_end_rel"] = self.rel(step_end)
+            row["window_cut"] = matched is None and self._window_cut(record, step_end)
+            row["settled"] = None if matched is not None else self._settled_text(record, series, step_end)
             row["matched_rel"] = self.rel(matched[0]) if matched else None
             row["latency_s"] = round(matched[0] - record["t0"], 3) if matched else None
             row["budget_ok"] = bool(matched and matched[0] - record["t0"] <= record["within_s"])
@@ -460,10 +496,13 @@ class Analysis:
                     late = t
                 break
         rows = []
+        settled = None if matched is not None else self._agree_settled_text(record, all_series, step_end)
         for peer in peers:
             row = self._base_row(record, peer)
             row.update(matched=matched is not None, matched_rel=self.rel(matched),
-                       late_match_rel=self.rel(late) if late is not None else None, window_end_rel=self.rel(step_end),
+                       late_match_rel=self.rel(late) if late is not None else None,
+                       late_match_step=self.step_at(late) if late is not None else None, window_end_rel=self.rel(step_end),
+                       window_cut=matched is None and self._window_cut(record, step_end), settled=settled,
                        latency_s=round(matched - record["t0"], 3) if matched else None,
                        budget_ok=bool(matched and matched - record["t0"] <= record["within_s"]),
                        cpu_mean=self.cpu_mean(record["t0"], matched or record["t0"] + record["within_s"]))
@@ -482,11 +521,24 @@ class Analysis:
         if not row["matched"]:
             if row.get("anchor_failure"):
                 return  # not exercised: the anchor write failed and has its own anomaly; not a replication miss
-            if row.get("late_match_rel") is not None:
-                evidence.update(first_held_rel_s=row["late_match_rel"], window_end_rel_s=row.get("window_end_rel"))
-                self.anomaly(severity or "S2", record["step"], peers, "%s not met in window on %s (%s %s): first held at +%.1fs, %.1fs after its step closed at +%.1fs" % (
-                    record["exp_id"], "/".join(peers), record["probe"], record["predicate"], row["late_match_rel"],
-                    row["late_match_rel"] - (row.get("window_end_rel") or 0.0), row.get("window_end_rel") or 0.0), evidence)
+            evidence.update(settled=row.get("settled"), window_end_rel_s=row.get("window_end_rel"))
+            late = row.get("late_match_rel")
+            if late is not None:
+                evidence.update(first_matched_rel_s=late, first_matched_step=row.get("late_match_step"))
+            if row.get("window_cut"):
+                # The step closed before the expectation's own budget: the harness, not the product, ended the wait.
+                anchored_s = (row.get("window_end_rel") or 0.0) - (row.get("t0_rel") or 0.0)
+                evidence.update(window_s=record["within_s"], anchored_for_s=round(anchored_s, 3))
+                self.anomaly("harness", record["step"], peers, "%s not met in window on %s (%s %s): its step closed %.1fs after the anchor, %.1fs short of its %.0fs window (not judged)%s" % (
+                    record["exp_id"], "/".join(peers), record["probe"], record["predicate"], anchored_s,
+                    record["within_s"] - anchored_s, record["within_s"],
+                    "; first matched +%.1fs" % late if late is not None else ""), evidence, kind="window_truncated")
+            elif late is not None:
+                # A match after the close is a later step's write or re-judge: named, never credited as this expectation's.
+                self.anomaly(severity or "S2", record["step"], peers, "%s not met in window on %s (%s %s): %s when its step closed at +%.1fs; it only matched at +%.1fs, during step %s (that step's write or re-judge, not this expectation's)" % (
+                    record["exp_id"], "/".join(peers), record["probe"], record["predicate"],
+                    "settled on %s" % row["settled"] if row.get("settled") is not None else "nothing was observed",
+                    row.get("window_end_rel") or 0.0, late, row.get("late_match_step")), evidence)
             else:
                 self.anomaly(severity or "S2", record["step"], peers, "%s never held on %s (%s %s)" % (
                     record["exp_id"], "/".join(peers), record["probe"], record["predicate"]), evidence)
@@ -677,6 +729,16 @@ class Analysis:
         return recurring
 
     @staticmethod
+    def _recurrence_gap(seen, digest):
+        """Shortest gap between one peer's successive sightings of `digest` (it came back after another value), else None.
+
+        An aperiodic target can restore an old value: run 8's revoke re-judge put N2 back on editor2's [1,0,0] 220 s after the
+        viewer first showed it for 0.5 s. That is a new write, not the first one arriving late.
+        """
+        gaps = [b - a for per_peer in seen.values() for a, b in zip(per_peer.get(digest, []), per_peer.get(digest, [])[1:])]
+        return min(gaps) if gaps else None
+
+    @staticmethod
     def _seen_before_writer(seen, flight):
         """True when some peer saw a value clearly before the flight's own peer did (an earlier lap of the same position)."""
         margin = min(5.0, flight["period_s"] / 4)  # probe response times jitter by about a second under load
@@ -697,11 +759,12 @@ class Analysis:
         lag_pairs = {peer: [] for peer in by_peer}  # (lag behind the write's first sighting, time of this peer's sighting)
         for digest in {digest for per_peer in seen.values() for digest in per_peer}:
             sightings = [(t, peer) for peer, per_peer in seen.items() for t in per_peer.get(digest, [])]
-            for write in cluster_occurrences(sightings, period):
+            lap = period if period is not None else self._recurrence_gap(seen, digest)  # a flight's lap, else how long this value took to come back
+            for write in cluster_occurrences(sightings, lap):
                 if len(write) >= 2:
                     lead = min(write.values())
                     for peer, t in write.items():
-                        if period is not None and t - lead > period / 2:  # nearer the next lap's sighting: a new write, not a late one
+                        if lap is not None and t - lead > lap / 2:  # nearer the next lap's / the restored value's sighting: a new write, not a late one
                             continue
                         lag_pairs[peer].append((t - lead, t))
         for peer in sorted(by_peer):
@@ -950,9 +1013,18 @@ class Analysis:
                 notes.append("partial states %d" % int(r["partial_states"]))
             if isinstance(r.get("anchor_failure"), str):
                 notes.append("not exercised: anchor %s" % r["anchor_failure"])
-            if pd.notna(r.get("late_match_rel")):
-                notes.append("not met in window: first held +%s s, after its step closed at +%s s" % (
-                    fmt(float(r["late_match_rel"]), 1), fmt(float(r["window_end_rel"]), 1)))
+            unmatched = not r["matched"] and r.get("mode") == "eventually" and not isinstance(r.get("anchor_failure"), str)
+            settled = r.get("settled") if isinstance(r.get("settled"), str) else None
+            if unmatched and truthy(r.get("window_cut")):
+                notes.append("not met in window: its step closed %s s after the anchor, %s s short of the %s s window (harness: not judged)" % (
+                    fmt(float(r["window_end_rel"]) - float(r["t0_rel"]), 1),
+                    fmt(float(r["within_s"]) - (float(r["window_end_rel"]) - float(r["t0_rel"])), 1), fmt(float(r["within_s"]), 0)))
+            elif unmatched and pd.notna(r.get("late_match_rel")):
+                notes.append("not met in window: %s at +%s s; matched only at +%s s, during step %s (a later step's write or re-judge, not credited)" % (
+                    "settled on %s" % settled if settled is not None else "nothing observed", fmt(float(r["window_end_rel"]), 1),
+                    fmt(float(r["late_match_rel"]), 1), r.get("late_match_step")))
+            elif unmatched and settled is not None:
+                notes.append("never held in window: settled on %s" % settled)
             if isinstance(r.get("covers"), str):
                 notes.append(r["covers"])
             lines.append("| %s | %s | %s | %s | `%s` | %s | %s | %s | %s | %s | %s | %s |" % (

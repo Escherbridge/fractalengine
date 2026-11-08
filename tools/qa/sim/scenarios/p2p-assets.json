@@ -74,7 +74,7 @@
         {"probe": "asset_blob", "target": "$upBoomBox.content_hash", "predicate": "present", "within_s": 90, "meta": {"optional": true, "size_bytes": "$assets.khronos.BoomBox.size"}}
       ],
       "checkpoints": [
-        {"peer": "all", "capture": "scene", "pose": {"orbit": {"focus": [0, 0, 20], "yaw_deg": 20, "pitch_deg": 20, "distance": 70}}, "expect_visual": "Avocado and BoomBox PBR models rendered with textures on every peer"}
+        {"peer": "all", "capture": "scene", "pose": {"orbit": {"focus": [0, 16, 11.2], "yaw_deg": 20, "pitch_deg": 20, "distance": 100}}, "expect_visual": "the whole petal in frame, nothing clipped at an edge: the three tier towers (roofs included) in the background and, in front of them, the Avocado (left) and the BoomBox (right) as small textured PBR models, identical on every peer; the pose frames the union of every placed asset's bounds (x -34.7..34.7, y -2.0..33.9, z -4.5..27.0), focus at its centre, every corner inside 70 % of the frame (QA-0163 f)"}
       ]
     },
     {
@@ -95,7 +95,7 @@
         {"probe": "nav", "target": "view", "peers": ["editor"], "path": "petal_id", "predicate": "equals", "value": "$ap.id", "within_s": 60, "covers": "the restarted editor reopens Asset Petal, not the fixture's Petal A, before the checkpoint"}
       ],
       "checkpoints": [
-        {"peer": "all", "capture": "scene", "pose": {"orbit": {"focus": [0, 0, -40], "yaw_deg": 30, "pitch_deg": 25, "distance": 70}}, "expect_visual": "the 25 MB noisy-facade building rendered on every peer, including the restarted editor"}
+        {"peer": "all", "capture": "scene", "pose": {"orbit": {"focus": [0, 16, -9], "yaw_deg": 30, "pitch_deg": 25, "distance": 150}}, "expect_visual": "the whole petal in frame, nothing clipped at an edge: the 25 MB noisy-facade tower at the back (z -40) rendered on every peer, including the restarted editor, with the three tier towers and the two Khronos models in front of it; the pose frames the union of every placed asset's bounds (x -34.7..34.7, y -2.0..33.9, z -44.5..27.0), focus at its centre, every corner inside 70 % of the frame (QA-0163 f)"}
       ]
     }
   ]

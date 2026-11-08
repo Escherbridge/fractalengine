@@ -312,7 +312,7 @@ def _validate_exact(args, op, label, errors):
 
 
 def _validate_needs(needs, defined, where, errors):
-    """needs: ids of earlier actions that must have run ok WHEN the action fires or the expectation is registered, else it is skipped (not exercised)."""
+    """needs: ids of earlier actions that must have run as expected (ok for expect ok, a refusal for expect refused, any answer for expect any) WHEN the action fires or the expectation is registered, else it is skipped (not exercised)."""
     if not isinstance(needs, list) or any(not isinstance(dep, str) or dep not in defined for dep in needs):
         errors.append("%s: needs must list ids of earlier actions" % where)
 

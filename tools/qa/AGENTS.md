@@ -192,9 +192,12 @@ values, and 3 when the app/run/token file is unavailable. Owner-only
 token files written by an unsandboxed app also require the drive client
 to run in that owner's execution context; do not weaken the token ACL.
 Bounded retries cover 409/429 refusals. A successful click that navigates
-to another owned verse is reported as `view_changed_verse`, because the
-host correctly denies the remaining old-scope batch. Capture again under
-the new verse's token before continuing.
+to another owned verse, or closes the verse (`Browse all verses`: no verse is open while the list shows,
+`view_changed_verse` null), is reported as `view_changed_verse` (`fe.batch_view_change`), because the host re-checks
+scope every frame and correctly denies the remaining old-scope batch; the simulator's `PeerClient.gui_input` applies
+the same rule and records `view_changed` on the event, so such a click is a landed click, not an S2 refusal
+(QA-0163 b). A denial that leaves the same verse on screen stays a refusal. Capture again under the new view's token
+before continuing.
 
 Input acknowledgements are truthful about late work (QA-0034/QA-0026): a
 batch whose every frame landed but whose settle/`capture_after` outlived the
@@ -1110,10 +1113,13 @@ Scenarios: tracked in `tools/qa/sim/scenarios/` (`p2p-core`, `p2p-assets`, `city
 `qa/sim/scenarios/` (gitignored) overrides one locally. Peers absent from a run (`--peers`, gate) skip their
 actions and drop out of expectations; `p2p-core` needs owner/editor/viewer/editor2 for full coverage. `p2p-core`
 splits the group hide (9b) from the SG -> SG2 rename (9b2) so an expectation that ends with its step never reads the
-scenario's own next write as a regression, runs the GUI group leave (9c) BEFORE the rename (the per-group buttons keep
-the name captured when Groups opened, QA-0111, and polls between would drop the selection), clears properties through
-Node Options in step 8 (the tree-row menu has no Clear Properties), and has no `Toggle Options section` click in step
-10 (arming the Brush already shows its options; the toggle would hide them).
+scenario's own next write as a regression, runs the GUI group leave (9c) right after 9a, BEFORE the hide and the
+rename (the per-group buttons keep the name captured when Groups opened, QA-0111, and hiding SG force-deselects its
+members, D-13, after which the Groups panel draws no selection controls: once SG was hidden 'Remove all selected SG'
+never existed, QA-0163 a; the file lists 9a, 9c, 9b, 9b2, and 9b then proves hiding SG no longer hides N1, QA-0103's
+second symptom), clears properties through Node Options in step 8 (the tree-row menu has no Clear Properties), and has
+no `Toggle Options section` click in step 10 (arming the Brush already shows its options; the toggle would hide them,
+so step 14 brings the Inspector back, see Wait-and-anchor rules).
 
 ### DSL reference
 
@@ -1222,7 +1228,9 @@ QA-0140/0148: the harness must not report its own timing or leftovers as a produ
   Confirm) with write races at `+0`; **13c** re-grants editor2 there (QA-0131). Confirm is the very next action after
   Revoke (no sleep, no `+offset`) and hierarchy polling is paused (QA-0125) so a rebuilt tree cannot disarm it.
 - **`needs` is judged when the dependent FIRES (QA-0159 c).** `"needs": [action id]` on an action or an expectation
-  skips it (`skipped_dependency_failed`, "Not exercised" in the report) unless every listed action ran ok. Actions
+  skips it (`skipped_dependency_failed`, "Not exercised" in the report) unless every listed action ran AS EXPECTED:
+  ok for `expect: ok`, a refusal for `expect: refused`, any answer for `expect: any` (the bound record's `met`; a
+  record without it falls back to `ok`, QA-0163 d). Actions
   evaluate it at fire time, not at lane scheduling: an offset (`+<s>`) lane first sleeps to its instant and then calls
   `settle_needs`, which WAITS for a same-step dependency still running (`NEEDS_WAIT_S` 90 s, then unmet) and records
   `needs_waited_ms`; so a revoked-writer write due at `+25` runs once the revoke GUI sequence has completed, however
@@ -1233,7 +1241,16 @@ QA-0140/0148: the harness must not report its own timing or leftovers as a produ
   `prepare` actions (a same-step dependency could wait on a lane that waits on the gate). Expectations are judged at
   registration, after the step's actions have all settled. `requires` (absent peer) is still checked first and never
   waits. Put `needs` on every expectation whose claim is vacuous unless the write happened (13a's never-accepted
-  checks need `editor_demoted`, the gate its writes need).
+  checks need `editor_demoted`, the gate its writes need). A race write is `expect: any`, so editor2's own app refusing
+  it (run 7: "operation refused; validate the value/schema and requested history coverage", the generic QA-0091 text,
+  not insufficient permissions) is a race outcome: 13b.e5 and 13c.e2 still run on `needs: [race2_rest]`. The race
+  writes fire the moment the owner's Confirm is acknowledged, which is after its commit; firing at the click's own
+  instant could land BEFORE the revoke and be a legitimately authorized row every peer keeps, which would turn the
+  "absent everywhere" claim into a false failure. A GUI chain whose later clicks cannot work once an earlier one
+  missed (13c's re-grant: `regrant_combo` -> `regrant_pick` -> `regrant_assign` -> `regrant2`) chains `needs`, so the
+  first miss is the one finding and the rest read "not exercised" instead of burning their waits and raising
+  consequential refusals; with QA-0162 (the Access tab drops a revoked member) the re-grant expectations stay
+  "not exercised", never a false S1.
 - **Unresolved refs.** A ref that is unbound, or resolves to null because the action that should produce it failed,
   fails that action or expectation (`error_unresolved` / `unresolved`) with an anomaly of kind `unresolved_ref`
   naming the ref; null is never substituted as a target (`scenario.py` `Context.lookup`, `driver.py` `execute`).
@@ -1256,13 +1273,46 @@ QA-0140/0148: the harness must not report its own timing or leftovers as a produ
   (`late_match_rel` and `window_end_rel` in `latency.csv`; the report row says when it first held) at the expectation's
   own severity (S2 default), never "held after N s": run 5's 5.e1 "held" at +323 s was step 12's [7,0,-3.25] write, 6.e1
   at +419 s a later step's, and city-lite step 2's blobs arrived with step 3's placement (QA-0158). `meta.severity`
-  also caps "held then regressed" (an S3 prediction's 0.5 s own-write transient used to be an S1).
+  also caps "held then regressed" (an S3 prediction's 0.5 s own-write transient used to be an S1). The row names what
+  the report can prove instead of claiming a late "held" (QA-0163 g): `settled on <path = value>` is what the peer read
+  when the window closed (latency.csv `settled`), and a later match says which step it fell in (`late_match_step`,
+  "a later step's write or re-judge, not credited": run 7's 5.e1 matched at +281 s inside step 12's own write, 6.e1 at
+  +449 s inside 13b's revoke re-judge). A window the STEP cut short (its close is less than `within_s` after the anchor)
+  is not a product finding at all: `kind: window_truncated`, severity `harness`, "not judged" (run 7 13a.e4-e6: the
+  `reenter` anchor fired at +90 s and the step closed 0.5 s later). A never-held row keeps its S2 and carries the
+  settled value in `evidence.settled` (9c.e0: the group id was still on N1).
+- **Windows stay open (QA-0163 c).** `Driver.wait_settle` closes a step when every eventually-expectation holds live,
+  or at the LATER of `settle_s` after the step's actions and every watched expectation's own `t0 + within_s`, so a
+  window is never cut shorter than the scenario declared it. A reading counts as held live only once its peer's prober
+  round has closed (the `_tick` is logged: `LiveStore.last_tick`), because the analyzer samples at ticks and change
+  times: a step that settled on a reading the log had no tick for yet closed before the analyzer could see the value
+  held (run 7: 3 of 4 peers' first tick after the anchor fell 0.04-0.84 s after the step closed). The cost is at
+  most one prober round of the slowest peer.
+- **Right sidebar (QA-0163 e).** The sidebar shows one section: arming the Brush in step 10 leaves Options showing and
+  hides the Inspector (`open_windows ['Options']` from +245 s to the recovery Escape in run 7), so step 14's Query tab
+  never existed. Step 14 opens the compact `Choose sidebar section` menu (optional; the wide layout has the rail) and
+  clicks the exact `Toggle Inspector section`: `RightSidebarState::toggle` requests the Inspector, or clears the
+  request when it already is, so it lands on the Inspector whichever section was showing.
+- **Checkpoint framing (QA-0163 f).** A scene capture is a fixed 1280x720 at 45 deg vertical FOV, orbit position =
+  focus + distance * (cos pitch sin yaw, sin pitch, cos pitch cos yaw) (`fe-renderer` `compute_orbit_transform`). A pose
+  frames the UNION of every asset placed by that step (GLB accessor min/max x node transform x placed scale; flight
+  envelope = ring radius + the vehicle's circumradius), focus at its centre. The app's own `frame_world_box` bound is
+  distance = radius / sin(fov / 2) x 1.1 (aspect-proof, about 120 for p2p-assets step 3 and 410 for city-lite step 5);
+  the scenarios use the smallest round distance at which every box corner projects inside 70 % of the frame
+  (p2p-assets 3: focus [0,16,11.2] distance 100; p2p-assets 4: focus [0,16,-9] distance 150; city-lite 5: focus
+  [7,24,0] distance 330; the old poses put corners at 1.30, 1.36-3.44 and 1.44 times the frame's half-extent, i.e.
+  outside it), so models stay legible. Re-derive a pose whenever a placement or scale changes: project the union box's
+  eight corners through the camera above and keep every |ndc| under 1 (under 0.75 to stay legible at 3:2 as well).
 - **Periodic flights (QA-0159 e).** A `drone_flight` repeats its positions every `period_s`, so the same value seen a lap
   later is a new write, not a late one. When a moving target recurs (a peer sees a value again, or a non-writer sees one
   a lap BEFORE the flight's own peer, which a unique write cannot do) `analyze.py` `_lap_of` takes the lap from the
   flight's recorded `args_small.period_s` (else the one-lap recurrence gaps); `cluster_occurrences` groups sightings per
   lap and only lags up to half a period count, the rest are nearer the next lap. A unique-valued target (drone
   `node`/`transform`, readings) keeps plain first-seen lag and its S2.
+  Without a flight, a value that visibly came back (one peer shows it twice with another value between) is paired per
+  recurrence with that gap as its lap (`_recurrence_gap`): run 8's revoke re-judge put N2 back on editor2's [1,0,0]
+  220 s after the viewer first showed it for 0.5 s on every peer within 1.1 s, which read as six S2 "lagged up to 220 s"
+  rows (QA-0163 g). A value no peer saw twice keeps first-seen lag.
 - **ULID ids.** `ingest_device_payload.payload_id` is a fresh `new_ulid()` per call (`driver.py` `_drone_flight`).
   `drone_flight` takes `scale` (default `[1,1,1]`; each tick's `update_transform` carries it).
 - **GUI recovery.** After a step's actions, each peer whose LAST GUI action in the step failed (optional ones
@@ -1286,11 +1336,12 @@ QA-0140/0148: the harness must not report its own timing or leftovers as a produ
 the raw `events.jsonl`, `observations.jsonl`, `expectations.jsonl`, `steps.jsonl`, `host.csv`,
 `fingerprint-final.json`. Severity hints: S1 = a forbidden write accepted, an `always` violation, a held state
 that regressed (resurrection; capped at the expectation's `meta.severity`), divergence still open at run end, final
-fingerprint mismatch, a peer that stopped answering; S2 = never converged or first held only after its step closed
-("not met in window"), convergence beyond 2x budget, a permitted action refused, a resolved divergence
+fingerprint mismatch, a peer that stopped answering; S2 = never converged or matched only after its step closed
+("not met in window", with the settled value), convergence beyond 2x budget, a permitted action refused, a resolved divergence
 episode > 15 s; S3 = in budget x2, atomic partial state, a GUI widget present and enabled but not reachable after
 scrolling (`kind: unreachable`); `harness` = the simulator could not run an action or
-resolve an expectation, or the write path timed out or fell behind (`kind`: see Wait-and-anchor rules). Under
+resolve an expectation, cut an expectation's window short (`kind: window_truncated`), or the write path timed out or
+fell behind (`kind`: see Wait-and-anchor rules). Under
 `--no-reactive` (the pre-QA-0119 CPU cap) read every latency with the CPU table: they are upper bounds under host
 contention. A target that takes a new value at least every 15 s (>= 8 values: drone transforms, free-play rows, the
 queries over them) is a moving target: instead of majority-disagreement episodes it gets a per-value lag table (first

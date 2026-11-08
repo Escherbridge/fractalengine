@@ -257,30 +257,33 @@
       ]
     },
     {
-      "id": "9b", "title": "Owner hides SG over REST; the registry change replicates", "settle_s": 20, "covers": ["QA-0123"],
-      "note": "Split from the rename (9b2): 'SG is hidden' ends with this step, so the scenario's own SG -> SG2 rename is never read as the hidden state regressing (QA-0152 b).",
+      "id": "9c", "title": "Owner removes N1 from the group in the GUI while it is still selected and visible (leave replicates)", "settle_s": 20, "covers": ["QA-0103"],
+      "probe": {"hierarchy_ms": 0},
+      "note": "Runs right after 9a, BEFORE 9b hides SG: hiding a group force-deselects its now-hidden members (D-13) and the Groups panel then draws no selection controls (editor_batch/ui.rs group_controls), so once SG is hidden 'Refresh selected objects' and 'Remove all selected SG' never exist (QA-0163 a, run 7). N1 is still selected and visible from 9a. The per-group buttons keep the name captured when Groups opened (QA-0111), so the rename (9b2) comes last too. The remove click carries an id and 9c.e0 needs it: a missed click reads 'not exercised', never a false QA-0103 failure.",
+      "actions": [
+        {"peer": "owner", "via": "gui", "op": "click", "args": {"name": "Refresh selected objects"}, "optional": true},
+        {"id": "leave_sg", "peer": "owner", "via": "gui", "op": "click", "args": {"name": "Remove all selected SG", "exact": true}}
+      ],
+      "expect": [
+        {"probe": "properties", "target": "$n1.id", "path": "view\\.groups", "predicate": "excludes", "value": "$sg.id", "needs": ["leave_sg"], "covers": "QA-0103 leaving a group replicates: view.groups drops the id on every peer"}
+      ],
+      "checkpoints": [
+        {"peer": "viewer", "capture": "window", "expect_visual": "QA-0103 remote in-memory membership: the sidebar tree no longer files N1 under SG (no 'SG 1/1 > N1'); N1 is listed as an ungrouped node"},
+        {"peer": "editor2", "capture": "window", "expect_visual": "QA-0103 remote in-memory membership: the sidebar tree no longer files N1 under SG"}
+      ]
+    },
+    {
+      "id": "9b", "title": "Owner hides SG over REST after N1 left it; the registry change replicates and N1 stays visible", "settle_s": 20, "covers": ["QA-0123", "QA-0103"],
+      "note": "Runs after 9c, so N1 is no longer a member: hiding SG must NOT hide it (QA-0103's second symptom, 'hiding the group still hides the node'). Split from the rename (9b2): 'SG is hidden' ends with this step, so the scenario's own SG -> SG2 rename is never read as the hidden state regressing (QA-0152 b).",
       "actions": [
         {"id": "hide", "peer": "owner", "via": "rest", "op": "upsert_group", "args": {"petal_id": "$sp.id", "group_id": "$sg.id", "visible": false}}
       ],
       "expect": [
         {"probe": "groups", "target": "$sp.id", "predicate": "includes", "value": [{"name": "SG", "visible": false}], "after": "hide", "within_s": 8},
         {"probe": "node", "target": "$n1.id", "predicate": "present", "mode": "always"}
-      ]
-    },
-    {
-      "id": "9c", "title": "Owner removes N1 from the group in the GUI before the rename (leave replicates)", "settle_s": 20, "covers": ["QA-0103"],
-      "probe": {"hierarchy_ms": 0},
-      "note": "Runs before the 9b2 rename: the per-group buttons keep the name captured when Groups opened (QA-0111), so after a rename 'Remove all selected SG2' never exists (QA-0159 b). N1 is still selected from 9a.",
-      "actions": [
-        {"peer": "owner", "via": "gui", "op": "click", "args": {"name": "Refresh selected objects"}, "optional": true},
-        {"peer": "owner", "via": "gui", "op": "click", "args": {"name": "Remove all selected SG", "exact": true}}
-      ],
-      "expect": [
-        {"probe": "properties", "target": "$n1.id", "path": "view\\.groups", "predicate": "excludes", "value": "$sg.id"}
       ],
       "checkpoints": [
-        {"peer": "viewer", "capture": "window", "expect_visual": "QA-0103 remote in-memory membership: the sidebar tree no longer files N1 under SG (no 'SG 1/1 > N1'); N1 is listed as an ungrouped node"},
-        {"peer": "editor2", "capture": "window", "expect_visual": "QA-0103 remote in-memory membership: the sidebar tree no longer files N1 under SG"}
+        {"peer": "viewer", "capture": "window", "expect_visual": "QA-0103: SG is hidden but N1 already left it, so N1 is still listed (ungrouped) in the viewer's sidebar tree and not hidden with the group"}
       ]
     },
     {
@@ -384,7 +387,7 @@
     {
       "id": "13a", "title": "Owner goes to the all-verses browser (verse replica closed), revokes the editor from the verse card, stays, then re-enters; the editor keeps writing", "settle_s": 40, "covers": ["QA-0120", "QA-0121", "QA-0122", "QA-0087", "QA-0132"],
       "probe": {"hierarchy_ms": 0},
-      "note": "QA-0120's trigger: 'Browse all verses' clears the active verse, which closes the owner's verse replica (navigation_manager handle_verse_replica_lifecycle); the revoke is then issued from the all-verses browser card ('Options for verse QA Basic', viewport.rs) and must reach the editor through the sync thread's publication lease, not the owner's next visit. Confirm is the very next click (two-step confirm, armed 4 s, so wait_s 3); its accessible name is 'Confirm Revoke role grant for <did>' (confirm_button prefixes the arm button's name), which an exact locator must spell out. The owner stays on the list until 'reenter' (+90 s, over 60 s after the revoke). The editor's refused writes wait for it to read its own demotion (wait_role), so a write is judged refused only once the editor could know; the never-accepted-elsewhere checks need that same gate, so they are never held vacuously. Hierarchy polling is paused (QA-0125).",
+      "note": "QA-0120's trigger: 'Browse all verses' clears the active verse, which closes the owner's verse replica (navigation_manager handle_verse_replica_lifecycle); the revoke is then issued from the all-verses browser card ('Options for verse QA Basic', viewport.rs) and must reach the editor through the sync thread's publication lease, not the owner's next visit. Confirm is the very next click (two-step confirm, armed 4 s, so wait_s 3); its accessible name is 'Confirm Revoke role grant for <did>' (confirm_button prefixes the arm button's name), which an exact locator must spell out. The click that closes the verse is denied by the host's per-frame scope re-check after it landed; the client treats that as landed (QA-0163 b). The owner stays on the list until 'reenter' (+90 s, over 60 s after the revoke); the step stays open for the 30 s windows anchored on it (QA-0163 c). The editor's refused writes wait for it to read its own demotion (wait_role), so a write is judged refused only once the editor could know; the never-accepted-elsewhere checks need that same gate, so they are never held vacuously. Hierarchy polling is paused (QA-0125).",
       "actions": [
         {"peer": "owner", "via": "gui", "op": "click_until", "args": {"click": {"name": "Browse all verses", "exact": true}, "until": "Join a verse from browser", "max": 3}},
         {"peer": "owner", "via": "gui", "op": "click", "args": {"name": "Options for verse QA Basic", "exact": true}},
@@ -412,7 +415,7 @@
     {
       "id": "13b", "title": "Owner leaves the petal for the verse level, revokes editor2 there, walks back into Swarm Petal; editor2 writes property + transform after the revoke", "settle_s": 40, "covers": ["QA-0121", "QA-0122", "QA-0131", "QA-0132", "QA-0133"],
       "probe": {"hierarchy_ms": 0},
-      "note": "Revoking from inside a petal is impossible: verse Options… is disabled there (QA-0093, QA-0152 c), so the owner first climbs to the verse level (breadcrumb), revokes, then re-opens Swarm Petal. Confirm is the very next action after Revoke (no sleep, no sync offset; wait_s 3): the armed button reverts on its own after 4 s, and its accessible name is 'Confirm Revoke role grant for <did>'. Options/Access/Revoke/Confirm are exact-name locators so a substring fallback can never click the Inspector's 'API Access' tab. Hierarchy polling is paused (QA-0125).",
+      "note": "Revoking from inside a petal is impossible: verse Options… is disabled there (QA-0093, QA-0152 c), so the owner first climbs to the verse level (breadcrumb), revokes, then re-opens Swarm Petal. Confirm is the very next action after Revoke (no sleep, no sync offset; wait_s 3): the armed button reverts on its own after 4 s, and its accessible name is 'Confirm Revoke role grant for <did>'. Options/Access/Revoke/Confirm are exact-name locators so a substring fallback can never click the Inspector's 'API Access' tab. Hierarchy polling is paused (QA-0125). The race writes fire the moment the Confirm click is acknowledged (after the owner's commit: one fired earlier could precede the revoke and be a legitimately authorized row every peer keeps); editor2's own app may already refuse them, and that refusal is a race outcome that still lets 13b.e5 and 13c.e2 run, because `needs` on an expect:any action means it ran (QA-0163 d).",
       "actions": [
         {"peer": "owner", "via": "gui", "op": "click_until", "args": {"click": {"name": "Browse current verse fractals", "exact": true}, "until": "+ New Fractal", "max": 3}, "requires": ["editor2"]},
         {"peer": "owner", "via": "gui", "op": "click", "args": {"name": "Options menu for verse QA Basic", "exact": true}, "requires": ["editor2"]},
@@ -442,16 +445,16 @@
     {
       "id": "13c", "title": "Owner re-grants editor2 Editor at the verse level; rows editor2 wrote while revoked stay refused, its new writes land", "settle_s": 40, "covers": ["QA-0131", "QA-0132"],
       "probe": {"hierarchy_ms": 0},
-      "note": "QA-0131: the empowerment re-read after a re-grant must not re-admit rows written while the author was unauthorized (13b's race2_rest). The role combo option is the plain label 'editor'; Save role is a two-step confirm whose armed button is named 'Confirm Assign role editor to <did>' (the button text 'Confirm role change' is not its accessible name), so that is the very next click.",
+      "note": "QA-0131: the empowerment re-read after a re-grant must not re-admit rows written while the author was unauthorized (13b's race2_rest). The role combo option is the plain label 'editor'; Save role is a two-step confirm whose armed button is named 'Confirm Assign role editor to <did>' (the button text 'Confirm role change' is not its accessible name), so that is the very next click. Each click of the chain needs the one before it: when the Access tab does not list the revoked member (QA-0162) the first click is the one finding and nothing after it is attempted, so the re-grant expectations read 'not exercised', never a false failure.",
       "actions": [
         {"peer": "owner", "via": "gui", "op": "click_until", "args": {"click": {"name": "Browse current verse fractals", "exact": true}, "until": "+ New Fractal", "max": 3}, "requires": ["editor2"]},
         {"peer": "owner", "via": "gui", "op": "click", "args": {"name": "Options menu for verse QA Basic", "exact": true}, "requires": ["editor2"]},
         {"peer": "owner", "via": "gui", "op": "click", "args": {"name": "Options… verse QA Basic", "exact": true}, "requires": ["editor2"]},
         {"peer": "owner", "via": "gui", "op": "click", "args": {"name": "Access", "role": "button", "exact": true}, "requires": ["editor2"]},
-        {"peer": "owner", "via": "gui", "op": "click", "args": {"name": "Role to assign for ${peers.editor2.did}", "exact": true}, "requires": ["editor2"]},
-        {"peer": "owner", "via": "gui", "op": "click", "args": {"name": "editor", "exact": true}, "requires": ["editor2"]},
-        {"peer": "owner", "via": "gui", "op": "click", "args": {"name": "Assign role editor to ${peers.editor2.did}", "exact": true}, "requires": ["editor2"]},
-        {"id": "regrant2", "peer": "owner", "via": "gui", "op": "click", "args": {"name": "Confirm Assign role editor to ${peers.editor2.did}", "exact": true, "wait_s": 3}, "requires": ["editor2"]},
+        {"id": "regrant_combo", "peer": "owner", "via": "gui", "op": "click", "args": {"name": "Role to assign for ${peers.editor2.did}", "exact": true}, "requires": ["editor2"]},
+        {"id": "regrant_pick", "peer": "owner", "via": "gui", "op": "click", "args": {"name": "editor", "exact": true}, "requires": ["editor2"], "needs": ["regrant_combo"]},
+        {"id": "regrant_assign", "peer": "owner", "via": "gui", "op": "click", "args": {"name": "Assign role editor to ${peers.editor2.did}", "exact": true}, "requires": ["editor2"], "needs": ["regrant_pick"]},
+        {"id": "regrant2", "peer": "owner", "via": "gui", "op": "click", "args": {"name": "Confirm Assign role editor to ${peers.editor2.did}", "exact": true, "wait_s": 3}, "requires": ["editor2"], "needs": ["regrant_assign"]},
         {"peer": "owner", "via": "gui", "op": "click", "args": {"name": "Close window", "role": "button", "wait_s": 1}, "optional": true, "requires": ["editor2"]},
         {"peer": "owner", "via": "gui", "op": "click", "args": {"name": "Open fractal Swarm Fractal"}},
         {"peer": "owner", "via": "gui", "op": "click", "args": {"name": "Open petal Swarm Petal"}},
@@ -467,11 +470,13 @@
     },
     {
       "id": "14", "title": "Same query on every peer (REST rows + GUI Query tab)", "settle_s": 20, "covers": ["S-P2P CP8", "QA-0127"],
-      "note": "At a tiled window the Inspector collapses its tabs into the 'Choose Inspector tab: <current>' menu (inspector.rs), so the Query tab exists only inside that popup: open it first (absent on a wide window, hence optional; QA-0159 g).",
+      "note": "At a tiled window the Inspector collapses its tabs into the 'Choose Inspector tab: <current>' menu (inspector.rs), so the Query tab exists only inside that popup: open it first (absent on a wide window, hence optional; QA-0159 g). Step 10 armed the Brush, so the right sidebar still shows its Options section (the 'Options' open window from +245 s to the recovery Escape in run 7) and the Inspector is hidden: 'Toggle Inspector section' (through the compact 'Choose sidebar section' menu when the layout is compact) always lands on the Inspector (right_sidebar.rs toggle: request it, or clear the request when it already is), idempotent whichever section was showing (QA-0163 e).",
       "probe": {"query_ms": 2000},
       "actions": [
         {"peer": "owner", "via": "gui", "op": "click", "args": {"name": "Open fractal Swarm Fractal"}, "optional": true},
         {"peer": "owner", "via": "gui", "op": "click", "args": {"name": "Open petal Swarm Petal"}, "optional": true},
+        {"peer": "owner", "via": "gui", "op": "click", "args": {"name": "Choose sidebar section", "wait_s": 1}, "optional": true},
+        {"peer": "owner", "via": "gui", "op": "click", "args": {"name": "Toggle Inspector section", "exact": true, "wait_s": 2}, "optional": true},
         {"peer": "owner", "via": "gui", "op": "click", "args": {"name": "Choose Inspector tab", "wait_s": 1}, "optional": true},
         {"peer": "owner", "via": "gui", "op": "click", "args": {"name": "Inspector tab: Query", "exact": true}, "optional": true},
         {"peer": "owner", "via": "gui", "op": "click", "args": {"name": "All nodes in this petal"}, "optional": true},

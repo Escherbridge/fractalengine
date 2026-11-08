@@ -47,7 +47,7 @@ def verdict_of(expect, outcome):
 
 
 def outcome_extras(outcome):
-    """Optional event fields an outcome may carry: the GUI widget wait, the wheel scrolls that revealed a clipped widget, why a refused widget was unreachable, a client-side timeout."""
+    """Optional event fields an outcome may carry: the GUI widget wait, the wheel scrolls that revealed a clipped widget, why a refused widget was unreachable, the view a landed click left behind, a client-side timeout."""
     extras = {}
     if outcome.get("waited_ms") is not None:
         extras["waited_ms"] = outcome["waited_ms"]
@@ -55,6 +55,8 @@ def outcome_extras(outcome):
         extras["scrolled"] = outcome["scrolled"]
     if outcome.get("clipped"):
         extras["clipped"] = outcome["clipped"]
+    if outcome.get("view_changed"):
+        extras["view_changed"] = outcome["view_changed"]
     if outcome.get("timed_out"):
         extras["timed_out"] = True
     return extras
@@ -225,8 +227,20 @@ class Driver:
         return events
 
     def unmet_needs(self, item):
-        """Ids in item["needs"] whose action did not run ok (it failed, was skipped or has not run)."""
-        return [dep for dep in item.get("needs", []) if self.ctx.try_resolve("$%s.ok" % dep) is not True]
+        """Ids in item["needs"] whose action did not run as expected (it failed, was skipped or has not run).
+
+        "As expected" is the action's own `expect`: ok for expect ok, a refusal for expect refused, any answer for
+        expect any, so a race write that editor2's app refuses still counts as a race outcome and the expectations
+        that need it are exercised (QA-0163 d). Bindings without `met` (older records, test stubs) fall back to `ok`.
+        """
+        unmet = []
+        for dep in item.get("needs", []):
+            met = self.ctx.try_resolve("$%s.met" % dep)
+            if met is None:
+                met = self.ctx.try_resolve("$%s.ok" % dep)
+            if met is not True:
+                unmet.append(dep)
+        return unmet
 
     def settle_needs(self, item):
         """(unmet ids, seconds waited): `needs` judged when the dependent fires, after same-step dependencies still in flight have finished.
@@ -333,8 +347,8 @@ class Driver:
         verdict = verdict_of(action.get("expect", "ok"), outcome)
         if action.get("optional") and verdict != "as_expected":
             verdict = "optional_" + verdict
-        record = {"id": extract_id(outcome.get("data")), "ok": outcome.ok, "status": outcome.get("status"),
-                  "data": outcome.get("data"),
+        record = {"id": extract_id(outcome.get("data")), "ok": outcome.ok, "met": verdict == "as_expected",
+                  "status": outcome.get("status"), "data": outcome.get("data"),
                   "failure": None if outcome.ok else "%s: %s" % (outcome.get("code"), str(outcome.get("error") or "")[:120])}
         if isinstance(outcome.get("data"), dict):
             for key, value in outcome["data"].items():  # $sp.fractal_id, $up.content_hash without explicit bind
@@ -683,13 +697,22 @@ class Driver:
         return instances
 
     def live_holds(self, record):
-        """Per-peer live verdict from the prober's latest observations taken after t0."""
+        """Per-peer live verdict from the prober's latest observations taken after t0.
+
+        A reading counts once its prober round has closed (the peer's `_tick` is logged): the analyzer samples at ticks
+        and change times, so a step that settled on a reading the log has no tick for yet closed before the analyzer
+        could see the value held (QA-0163 c: three of four peers' 13a.e4-e6 first tick fell 0.04-0.84 s after the step closed). A store that never
+        ticked (a test stub without a prober) counts every reading.
+        """
         if record.get("status") != "registered":
             return {}
+        last_tick = getattr(self.store, "last_tick", None)
         values = {}
         for peer in record["peers"]:
             latest = self.store.get(peer, record["source"], record["target_key"])
-            values[peer] = predicates.derive(record["probe"], latest[1]) if latest and latest[0] >= record["t0"] else predicates.MISSING
+            ticked = last_tick(peer) if last_tick else None
+            logged = bool(latest) and latest[0] >= record["t0"] and (ticked is None or ticked >= latest[0])
+            values[peer] = predicates.derive(record["probe"], latest[1]) if logged else predicates.MISSING
         if record["predicate"] == "agree":
             together = predicates.agree(values, record.get("path"))
             return {peer: together for peer in values}
@@ -697,9 +720,14 @@ class Driver:
             record["predicate"], value, record.get("value"), record.get("path")) for peer, value in values.items()}
 
     def wait_settle(self, step, instances, t_done):
-        """Wait until every eventually-expectation holds live (plus hold_s) or settle_s passes."""
+        """Wait until every eventually-expectation holds live (plus hold_s) or the step's budget runs out.
+
+        The budget is the longer of `settle_s` after the step's actions and every watched expectation's own `within_s`
+        after its anchor, so a window is never cut shorter than the scenario declared it (QA-0163 c: 13a's `reenter`
+        fires at +90 s, past settle_s, and its 30 s windows were judged 0.4 s later).
+        """
         watch = [r for r in instances if r.get("status") == "registered" and r["mode"] == "eventually"]
-        deadline = t_done + float(step["settle_s"])
+        deadline = max([t_done + float(step["settle_s"])] + [r["t0"] + r["within_s"] for r in watch])
         hold = max([r["hold_s"] for r in watch] + [0.0])
         all_met_at = None
         while not self.abort.is_set():

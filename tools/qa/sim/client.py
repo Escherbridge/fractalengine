@@ -85,6 +85,7 @@ class PeerClient:
         self._waited_ms = 0
         self._scrolled = 0  # wheel inputs the current gui op sent to reveal a clipped widget
         self._clipped = None  # why the last refusal's widget was present but unreachable (reveal.Reveal.note)
+        self._view_changed = None  # the view a gui op's input left behind when the host denied the rest of its batch (QA-0163 b)
         self._pixels_per_line = None  # calibrated physical px per wheel line (reveal.Reveal), kept across ops
         self._lock = threading.Lock()
 
@@ -230,21 +231,32 @@ class PeerClient:
     def prime_gui(self):
         """Resolve the view token before a barrier so the fire instant carries only the input request."""
         try:
-            _verse, token, _camera = fe.resolve_token(self.run())
-            self._gui_token = (time.monotonic(), token)
+            verse, token, _camera = fe.resolve_token(self.run())
+            self._gui_token = (time.monotonic(), token, verse)
         except (fe.Refused, fe.NotRunning):
             self._gui_token = None
 
     def gui_input(self, commands):
-        """Post one synthetic input batch with the token covering the active view (fe.py run_input semantics)."""
+        """Post one synthetic input batch with the token covering the active view (fe.py run_input semantics).
+
+        A click that itself closes or switches the verse is denied `not_found_or_denied` once the view moved, after it
+        landed: `fe.batch_view_change` says what is on screen now and that batch counts as landed (QA-0163 b).
+        """
         run = self.run()
         primed, self._gui_token = self._gui_token, None
         if primed and time.monotonic() - primed[0] < 5.0:
-            token = primed[1]
+            token, verse = primed[1], (primed[2] if len(primed) > 2 else None)
         else:
-            _verse, token, _camera = fe.resolve_token(run)
-        _status, _headers, raw = fe.call(run, "POST", "/api/v1/debug/input", token,
-                                         {"commands": commands, "wait_frames": INPUT_WAIT_FRAMES}, timeout=30.0)
+            verse, token, _camera = fe.resolve_token(run)
+        try:
+            _status, _headers, raw = fe.call(run, "POST", "/api/v1/debug/input", token,
+                                             {"commands": commands, "wait_frames": INPUT_WAIT_FRAMES}, timeout=30.0)
+        except fe.Refused as refusal:
+            moved = fe.batch_view_change(run, verse, refusal)
+            if moved is None:
+                raise
+            self._view_changed = {"verse": moved["view_changed_verse"]}
+            return moved
         return fe.decode_object(raw)
 
     def gui(self, op, args):
@@ -253,17 +265,19 @@ class PeerClient:
             self._waited_ms = 0
             self._scrolled = 0
             self._clipped = None
+            self._view_changed = None
             try:
                 data = self._gui(op, args)
                 return Outcome(status=200, ok=True, refused=False, data=data, waited_ms=self._waited_ms,
-                               scrolled=self._scrolled)
+                               scrolled=self._scrolled, view_changed=self._view_changed)
             except fe.Refused as refusal:
                 message = str(refusal.message)
                 if self._clipped and refusal.code in WIDGET_POLLED_REFUSALS:
                     message += " (present but not reachable: %s%s)" % (
                         self._clipped.get("reason"), "; " + self._clipped["why_not"] if self._clipped.get("why_not") else "")
                 return Outcome(status=refusal.status, ok=False, refused=True, code=refusal.code, error=message[:300],
-                               waited_ms=self._waited_ms, scrolled=self._scrolled, clipped=self._clipped)
+                               waited_ms=self._waited_ms, scrolled=self._scrolled, clipped=self._clipped,
+                               view_changed=self._view_changed)
             except fe.NotRunning as error:
                 return Outcome(status=-1, ok=False, refused=False, code="not_running", error=str(error)[:300],
                                waited_ms=self._waited_ms, scrolled=self._scrolled)

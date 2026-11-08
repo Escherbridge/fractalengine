@@ -98,7 +98,7 @@
         {"probe": "alive", "target": "peer", "path": "alive", "predicate": "equals", "value": true, "mode": "always"}
       ],
       "checkpoints": [
-        {"peer": "all", "capture": "scene", "pose": {"orbit": {"focus": [0, 20, 0], "yaw_deg": 35, "pitch_deg": 35, "distance": 200}}, "expect_visual": "four drones above the districts at the same positions on every peer; a drone is the generated vehicle (car) mesh by design, scaled x3 (QA-0159 j)"}
+        {"peer": "all", "capture": "scene", "pose": {"orbit": {"focus": [7, 24, 0], "yaw_deg": 35, "pitch_deg": 35, "distance": 330}}, "expect_visual": "all three 4 x 5 districts and the four drones' flight ring fully in frame, none clipped at an edge (the right district was cut off in run 7); four drones above the districts at the same positions on every peer; a drone is the generated vehicle (car) mesh by design, scaled x3 (QA-0159 j); the pose frames the union of the districts' and the flight envelope's bounds (x -125..138, y 0..48.5, z -47..47), focus at its centre, every corner inside 72 % of the frame (QA-0163 f)"}
       ]
     }
   ]
