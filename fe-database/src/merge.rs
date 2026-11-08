@@ -17,6 +17,18 @@ pub enum MergeApplied {
     AppliedKeptLocalTransform,
     /// The payload was not a node row (no `node_id`) — ignored.
     NotANode,
+    /// A markerless live row lost the legacy-writer precedence to the node's
+    /// recorded markerless author (QA-0156) — nothing changed.
+    SkippedLegacyPrecedence,
+}
+
+/// The author of a markerless (legacy, clockless) node row, ranked by the
+/// legacy-writer precedence: the verse owner first, then the larger DID
+/// (QA-0156; see AGENTS.md §lifecycle "legacy writer precedence").
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub struct LegacyAuthor<'a> {
+    pub is_owner: bool,
+    pub did: &'a str,
 }
 
 /// Transform columns that form one last-writer-wins register keyed by
@@ -112,6 +124,18 @@ async fn read_local_tombstoned(db: &Db, node_id: &str) -> anyhow::Result<(bool, 
 /// (a minimal remote tombstone for a node we never had carries only
 /// `node_id`/`petal_id`/`tombstone`).
 pub async fn apply_replicated_node(db: &Db, row_json: &[u8]) -> anyhow::Result<MergeApplied> {
+    apply_replicated_node_by(db, row_json, None).await
+}
+
+/// [`apply_replicated_node`] for a row whose author is known: a live row edits
+/// an existing node only when `author` ranks at or above the node's recorded
+/// markerless writer, so cross-author markerless rows converge to one winner in
+/// any arrival order (QA-0156). `None` keeps the blind merge (local reconcile).
+pub async fn apply_replicated_node_by(
+    db: &Db,
+    row_json: &[u8],
+    author: Option<LegacyAuthor<'_>>,
+) -> anyhow::Result<MergeApplied> {
     let mut incoming: serde_json::Value = serde_json::from_slice(row_json)
         .map_err(|e| anyhow::anyhow!("apply_replicated_node: bad row JSON: {e}"))?;
     let Some(node_id) = incoming.get("node_id").and_then(|v| v.as_str()) else {
@@ -142,6 +166,10 @@ pub async fn apply_replicated_node(db: &Db, row_json: &[u8]) -> anyhow::Result<M
                 .get("tombstone")
                 .cloned()
                 .unwrap_or_else(|| serde_json::json!({}));
+            // Two deleters' markers settle on the larger one, never the last to arrive (QA-0156).
+            if local_tombstoned && !marker_outranks(&marker, &read_local_tombstone(db, &node_id).await?) {
+                return Ok(MergeApplied::AppliedTombstone);
+            }
             db.query("UPDATE node SET tombstone = $ts WHERE node_id = $nid")
                 .bind(("ts", marker))
                 .bind(("nid", node_id.clone()))
@@ -160,6 +188,12 @@ pub async fn apply_replicated_node(db: &Db, row_json: &[u8]) -> anyhow::Result<M
 
     // Live row, local not tombstoned — field-merge if present, else create.
     if exists {
+        if let Some(author) = author {
+            if read_legacy_writer(db, &node_id).await?.is_some_and(|(is_owner, did)| author < LegacyAuthor { is_owner, did: &did }) {
+                tracing::debug!(node_id, author = author.did, "markerless row from a lower-ranked author than the node's legacy writer ignored (QA-0156)");
+                return Ok(MergeApplied::SkippedLegacyPrecedence);
+            }
+        }
         // QA-0100: the transform is an LWW register, never arrival-ordered. A row
         // without `edit_seq` is a legacy writer and keeps the blind merge.
         let mut kept_local_transform = false;
@@ -192,14 +226,80 @@ pub async fn apply_replicated_node(db: &Db, row_json: &[u8]) -> anyhow::Result<M
                 .check()
                 .map_err(|e| anyhow::anyhow!("merge position cast failed: {e}"))?;
         }
+        if let Some(author) = author {
+            record_legacy_writer(db, &node_id, author).await?;
+        }
         if kept_local_transform {
             return Ok(MergeApplied::AppliedKeptLocalTransform);
         }
     } else {
         create_core_node(db, &incoming, &node_id, position).await?;
         merge_remaining_fields(db, &incoming, &node_id).await?;
+        if let Some(author) = author {
+            record_legacy_writer(db, &node_id, author).await?;
+        }
     }
     Ok(MergeApplied::Applied)
+}
+
+/// Deterministic order on tombstone markers: their JSON text with object keys sorted.
+fn marker_outranks(incoming: &serde_json::Value, local: &serde_json::Value) -> bool {
+    fn canonical(value: &serde_json::Value) -> String {
+        match value {
+            serde_json::Value::Object(object) => {
+                let mut keys: Vec<&String> = object.keys().collect();
+                keys.sort();
+                let fields: Vec<String> = keys
+                    .into_iter()
+                    .map(|key| format!("{}:{}", serde_json::Value::from(key.as_str()), canonical(&object[key])))
+                    .collect();
+                format!("{{{}}}", fields.join(","))
+            }
+            serde_json::Value::Array(items) => format!("[{}]", items.iter().map(canonical).collect::<Vec<_>>().join(",")),
+            other => other.to_string(),
+        }
+    }
+    canonical(incoming) > canonical(local)
+}
+
+/// The local node's tombstone marker (`null` when absent).
+async fn read_local_tombstone(db: &Db, node_id: &str) -> anyhow::Result<serde_json::Value> {
+    let rows: Vec<serde_json::Value> = db
+        .query("SELECT VALUE tombstone FROM node WHERE node_id = $nid LIMIT 1")
+        .bind(("nid", node_id.to_string()))
+        .await?
+        .check()
+        .map_err(|e| anyhow::anyhow!("merge tombstone lookup failed: {e}"))?
+        .take(0)?;
+    Ok(rows.into_iter().next().unwrap_or(serde_json::Value::Null))
+}
+
+/// The node's recorded markerless writer `(is_owner, did)`, if any.
+async fn read_legacy_writer(db: &Db, node_id: &str) -> anyhow::Result<Option<(bool, String)>> {
+    let lookup = db
+        .query("SELECT is_owner, author FROM node_legacy_writer WHERE node_id = $nid LIMIT 1")
+        .bind(("nid", node_id.to_string()))
+        .await?
+        .check();
+    let rows: Vec<serde_json::Value> = match lookup {
+        Ok(mut response) => response.take(0)?,
+        Err(e) if e.to_string().contains("does not exist") => Vec::new(),
+        Err(e) => return Err(anyhow::anyhow!("legacy writer lookup failed: {e}")),
+    };
+    Ok(rows.first().and_then(|row| {
+        Some((row.get("is_owner")?.as_bool()?, row.get("author")?.as_str()?.to_string()))
+    }))
+}
+
+async fn record_legacy_writer(db: &Db, node_id: &str, author: LegacyAuthor<'_>) -> anyhow::Result<()> {
+    db.query("UPSERT node_legacy_writer SET node_id = $nid, author = $author, is_owner = $owner WHERE node_id = $nid")
+        .bind(("nid", node_id.to_string()))
+        .bind(("author", author.did.to_string()))
+        .bind(("owner", author.is_owner))
+        .await?
+        .check()
+        .map_err(|e| anyhow::anyhow!("legacy writer record failed: {e}"))?;
+    Ok(())
 }
 
 /// Extract + remove the `position` geometry column from a node payload.

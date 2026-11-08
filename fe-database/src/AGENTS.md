@@ -1286,6 +1286,19 @@ durable counterpart of `EntityStore::upsert`'s tombstone guard: an incoming
 incoming tombstone converges the local row to deleted. fe-sync's `reconcile_petal`
 drives this for inbound peer rows.
 
+**Order-independent node rows (QA-0156, 2026-11-07).** Two authors' concurrent writes
+to one node reach peers in different orders, so every inbound node field has a named
+tiebreak, never "last to arrive":
+- **Complete snapshots** (every current publisher, `_fe_scene` marker) are a whole-row
+  register ordered by (original HLC, publisher): scene_publication/AGENTS.md "Wire and ordering".
+- **Markerless (legacy, clockless) live rows** go through `merge::apply_replicated_node_by`
+  with the **legacy writer precedence**: the verse owner first, then the larger DID
+  (`LegacyAuthor`'s `Ord`). `node_legacy_writer` (local, never replicated, in the dev
+  reset list) records the node's highest-ranked markerless author; a lower-ranked one is
+  `SkippedLegacyPrecedence` (`NotApplicable`). One author's own rows keep iroh-docs'
+  per-slot order. Rows without a known author (`reconcile_petal`) keep the blind merge.
+- **Tombstone markers** from two deleters settle on the larger marker (sorted-key JSON).
+
 **Authorization (N-5).** For each lifecycle command the dispatch loop resolves
 the node/petal scope *first*, then builds the caller's `fe_policy::AuthContext`
 (`lifecycle_auth_context`), then calls `authorize_node_delete` /

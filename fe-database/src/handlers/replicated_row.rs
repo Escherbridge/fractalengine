@@ -22,7 +22,7 @@
 
 use fe_runtime::messages::{DeferralReason, NodeDto, ReplicatedRowOutcome, SceneChange};
 
-use crate::merge::{apply_replicated_node, MergeApplied};
+use crate::merge::{apply_replicated_node_by, LegacyAuthor, MergeApplied};
 use crate::replication_mode::ReplicationMode;
 use crate::repo::Db;
 
@@ -466,7 +466,7 @@ async fn apply_row_mode(
             }
             apply_static_row(db, table, record_id, row_bytes).await
         }
-        "node" => apply_node_row(db, record_id, row_bytes, entity_change_tx).await,
+        "node" => apply_node_row(db, verse_id, record_id, row_bytes, author_did, entity_change_tx).await,
         // R5 (CDL-SPEC10 A3): insert-if-absent, never overwrite, anchored
         // rows only — see `apply_anchored_asset_row`.
         "asset" => apply_anchored_asset_row(db, verse_id, record_id, row_bytes, author_did).await,
@@ -1845,13 +1845,15 @@ async fn row_exists(db: &Db, table: &str, id_field: &str, row_id: &str) -> anyho
 // ---------------------------------------------------------------------------
 
 /// Apply one replicated node row: tombstone dominance **and geometry-safe
-/// writes** via [`apply_replicated_node`] (N-4 / §geometry-inserts — see
+/// writes** via [`apply_replicated_node_by`] (N-4 / §geometry-inserts — see
 /// merge.rs), plus a petal-scoped `SceneChange` for live applies and
 /// tombstone applies (A4).
 async fn apply_node_row(
     db: &Db,
+    verse_id: &str,
     record_id: &str,
     row_bytes: &[u8],
+    author_did: &str,
     entity_change_tx: Option<&SceneChangeSender>,
 ) -> anyhow::Result<ReplicatedRowOutcome> {
     // An empty payload is the wire tombstone — the iroh-docs `del` marker's
@@ -1884,8 +1886,10 @@ async fn apply_node_row(
         .map(|s| s.to_string());
 
     let payload = serde_json::to_vec(&row)?;
-    let outcome = match apply_replicated_node(db, &payload).await? {
-        MergeApplied::NotANode => return Ok(ReplicatedRowOutcome::NotApplicable),
+    let owner = crate::role_grants::verse_owner(db, verse_id).await?;
+    let author = LegacyAuthor { is_owner: owner.as_deref() == Some(author_did), did: author_did };
+    let outcome = match apply_replicated_node_by(db, &payload, Some(author)).await? {
+        MergeApplied::NotANode | MergeApplied::SkippedLegacyPrecedence => return Ok(ReplicatedRowOutcome::NotApplicable),
         MergeApplied::SkippedTombstoned => ReplicatedRowOutcome::SkippedTombstoned,
         MergeApplied::AppliedTombstone => {
             // The empty-entry tombstone carries no petal — resolve the owning
@@ -3574,6 +3578,49 @@ mod tests {
             rows[0]["tombstone"].is_object(),
             "the tombstone must survive the stale live write"
         );
+
+        // QA-0156: two authors' concurrent writes to one node converge to one result on
+        // every peer whatever the arrival order: complete snapshots by (HLC, publisher),
+        // clockless markerless rows by the legacy-writer precedence, tombstone markers by value.
+        let (left, right) = (schema_db().await, schema_db().await);
+        for peer in [&left, &right] {
+            seed_verse_with_roles(peer, "v1", &[("did:key:peer-ed", "editor"), ("did:key:peer-ez", "editor")]).await;
+        }
+        let edit = |node: &str, author: &str, name: &str, hlc: Option<u64>| {
+            let mut row: serde_json::Value = serde_json::from_slice(&gated_node_row(node)).unwrap();
+            row["display_name"] = serde_json::json!(name);
+            row["properties"] = serde_json::json!({ "by": author });
+            if let Some(hlc) = hlc {
+                row["elevation"] = serde_json::json!(0.0);
+                row["interactive"] = serde_json::json!(true);
+                row["edit_seq"] = serde_json::json!(0);
+                row["_fe_scene"] = serde_json::json!({ "version": 1, "complete": true, "hlc": hlc.to_string(), "publisher": author });
+            }
+            (author.to_string(), serde_json::to_vec(&row).unwrap())
+        };
+        let gone = |by: &str| serde_json::to_vec(&serde_json::json!({
+            "node_id": "node-q156-gone", "petal_id": "petal-1", "tombstone": { "hlc": 7, "source_did": by },
+        })).unwrap();
+        let writes = [
+            ("node-q156-legacy", vec![edit("node-q156-legacy", "did:key:peer-ed", "ed", None), edit("node-q156-legacy", "did:key:peer-ez", "ez", None)]),
+            ("node-q156-complete", vec![edit("node-q156-complete", "did:key:peer-ez", "older", Some(2 << 16)), edit("node-q156-complete", "did:key:peer-ed", "newer", Some(3 << 16))]),
+            ("node-q156-gone", vec![edit("node-q156-gone", "did:key:peer-ed", "live", None), ("did:key:peer-ed".to_string(), gone("did:key:peer-ed")), ("did:key:peer-ez".to_string(), gone("did:key:peer-ez"))]),
+        ];
+        for (node, rows) in &writes {
+            for (peer, order) in [(&left, rows.clone()), (&right, rows.iter().rev().cloned().collect::<Vec<_>>())] {
+                for (author, row) in order {
+                    apply_replicated_row_handler(peer, "v1", "node", node, &row, &author, None).await.unwrap();
+                }
+            }
+            // A deleted node is judged on its marker only: a never-live replica has no name to compare.
+            let fields = if *node == "node-q156-gone" { "tombstone" } else { "display_name, properties, tombstone" };
+            let read = format!("SELECT {fields} FROM node WHERE node_id = '{node}'");
+            assert_eq!(select_json(&left, &read).await, select_json(&right, &read).await, "{node} converges in either arrival order");
+        }
+        for (node, name) in [("node-q156-complete", "newer"), ("node-q156-legacy", "ez")] {
+            let read = format!("SELECT VALUE display_name FROM node WHERE node_id = '{node}'");
+            assert_eq!(select_json(&left, &read).await, vec![serde_json::json!(name)], "the later clock and the higher-ranked legacy writer win");
+        }
     }
 
     #[tokio::test]

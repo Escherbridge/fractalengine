@@ -322,6 +322,16 @@ define_table! {
 }
 
 define_table! {
+    /// Highest-ranked author of a node's markerless (legacy) replicated rows; see
+    /// AGENTS.md §lifecycle "legacy writer precedence" (QA-0156). Local, never replicated.
+    table "node_legacy_writer" => NodeLegacyWriter (id: node_id) {
+        node_id: String => "TYPE string",
+        author: String => "TYPE string",
+        is_owner: bool => "TYPE bool"
+    }
+}
+
+define_table! {
     /// Append-only per-node operation log — INSERT-only, immutable rows
     /// (row_version/HLC semantics: fe-database/src/AGENTS.md §node-log).
     table "node_log" => NodeLog (id: log_id) {
@@ -768,6 +778,9 @@ pub async fn apply_all(db: &crate::repo::Db) -> anyhow::Result<()> {
     Repo::<NodeSceneClock>::apply_schema(db).await?;
     db.query("DEFINE INDEX IF NOT EXISTS idx_node_scene_clock ON TABLE node_scene_clock FIELDS node_id UNIQUE")
         .await?.check()?;
+    Repo::<NodeLegacyWriter>::apply_schema(db).await?;
+    db.query("DEFINE INDEX IF NOT EXISTS idx_node_legacy_writer ON TABLE node_legacy_writer FIELDS node_id UNIQUE")
+        .await?.check()?;
     db.query("DEFINE INDEX IF NOT EXISTS idx_node_log_version ON TABLE node_log FIELDS node_id, row_version UNIQUE")
         .await?.check()?;
     Repo::<IotReading>::apply_schema(db).await?;
@@ -990,6 +1003,7 @@ pub const DEVELOPMENT_RESET_TABLE_NAMES: &[&str] = &[
     "asset",
     "node_log",
     "node_scene_clock",
+    "node_legacy_writer",
     "iot_reading",
     "device_format",
     "device_payload",
@@ -1303,6 +1317,8 @@ mod tests {
         assert_eq!(ALL_TABLE_NAMES.len(), 17);
         assert!(!ALL_TABLE_NAMES.contains(&NodeSceneClock::TABLE_NAME));
         assert!(DEVELOPMENT_RESET_TABLE_NAMES.contains(&NodeSceneClock::TABLE_NAME));
+        assert!(!ALL_TABLE_NAMES.contains(&NodeLegacyWriter::TABLE_NAME));
+        assert!(DEVELOPMENT_RESET_TABLE_NAMES.contains(&NodeLegacyWriter::TABLE_NAME));
         assert!(NodeSceneClock::schema().contains("hlc ON TABLE node_scene_clock TYPE int ASSERT $value > 0"));
         assert!(!ALL_TABLE_NAMES.contains(&JoinDelegationRow::TABLE_NAME));
         assert!(DEVELOPMENT_RESET_TABLE_NAMES.contains(&JoinDelegationRow::TABLE_NAME));
