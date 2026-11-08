@@ -64,6 +64,53 @@ def unresolved_ref_in(text):
     return found.group(1) if found else None
 
 
+def firewall_line(state):
+    """'firewall: allow rule present|absent ...' as printed at run start and in report.md."""
+    word = {"present": "allow rule present", "absent": "allow rule absent", "blocked": "BLOCK rule present"}.get(
+        state.get("state"), "state unknown (%s)" % state.get("error"))
+    active = "/".join(state.get("active_profiles") or ["?"])
+    wanted = "block" if state.get("state") == "blocked" else "allow"
+    rule = next((r for r in state.get("rules", []) if str(r.get("action")).lower() == wanted), None)
+    if rule:
+        detail = " (rule '%s', %s %s, profile %s; active profile %s)" % (
+            rule.get("name"), rule.get("direction"), rule.get("action"), rule.get("profile"), active)
+    elif state.get("state") == "absent":
+        detail = " (active profile %s)" % active
+    else:
+        detail = ""
+    return "firewall: %s for %s%s" % (word, state.get("program"), detail)
+
+
+def launched_exe_cell(meta):
+    """Header cell: the exe path the peers were launched from, and the stage it mirrors (QA-0153)."""
+    if not meta.get("launch_exe"):
+        return "not recorded (run predates QA-0153)"
+    cell = "`%s`" % meta["launch_exe"]
+    if meta.get("stage_exe") and os.path.normcase(meta["stage_exe"]) != os.path.normcase(meta["launch_exe"]):
+        cell += " (copy of stage `%s`, `%s`)" % (meta.get("stage"), meta["stage_exe"])
+    if meta.get("launch_exe_mismatch"):
+        cell += "; **%s ran from another path**" % ", ".join(meta["launch_exe_mismatch"])
+    return cell
+
+
+def firewall_cell(meta):
+    state = meta.get("firewall")
+    return firewall_line(state) if isinstance(state, dict) else "not recorded (run predates QA-0153)"
+
+
+def firewall_note(meta):
+    """Blockquote under the header table; an absent allow rule is the confound readers must carry into every latency."""
+    state = meta.get("firewall")
+    if not isinstance(state, dict):
+        return "firewall: not recorded (this run predates QA-0153)."
+    line = firewall_line(state)
+    if state.get("state") == "absent":
+        line += ". Windows Firewall blocks inbound to a never-allowed exe path on the Public profile until a rule exists: connect timeouts and asset-fetch delays in this run carry that confound (QA-0153)."
+    elif state.get("state") == "blocked":
+        line += ". An inbound Block rule applies: peers cannot accept connections (QA-0153)."
+    return line
+
+
 # -- generic helpers (lifted from the run-1 analyzer) ------------------------------------------
 def load_json(path, default=None):
     try:
@@ -752,6 +799,8 @@ class Analysis:
                   "| run dir | `%s` |" % self.run_dir,
                   "| scenario file | `%s` |" % meta.get("scenario_path"),
                   "| stage | `%s` (matches source: %s) |" % (meta.get("stage"), meta.get("stage_matches_source")),
+                  "| launched exe | %s |" % launched_exe_cell(meta),
+                  "| firewall | %s |" % firewall_cell(meta),
                   "| peers | %s |" % ", ".join("%s (%s)" % (p["name"], p.get("role")) for p in meta.get("peers", [])),
                   "| steps | %s |" % ", ".join(meta.get("steps", [])),
                   "| duration | %s s |" % summary["duration_s"],
@@ -765,6 +814,7 @@ class Analysis:
         lines.append("")
         if meta.get("cpu_note"):
             lines += ["> " + meta["cpu_note"], ""]
+        lines += ["> " + firewall_note(meta), ""]
         lines += ["## Prober load (read rates next to the latencies they measure)", "",
                   "Latency resolution is one prober round (`rest_ms`); hierarchy polling is capped at 0.5 Hz (QA-0125).", "",
                   "| peer | ticks | req/s | node/s | hierarchy/s | ui/s | query/s | tick p50 s | tick p95 s | 5xx/429 |",

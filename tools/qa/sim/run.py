@@ -1,9 +1,11 @@
 """Run one simulation scenario end to end: stage check -> resource gate -> peers -> join -> drive + probe -> stop -> analyze; see tools/qa/AGENTS.md §sim."""
 import argparse
 import ctypes
+import hashlib
 import json
 import math
 import os
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -26,6 +28,9 @@ from runtime import Cadence, Clock, LiveStore, Recorder  # noqa: E402
 
 RUNS_ROOT = os.path.join(REPO_ROOT, "qa", "sim", "runs")
 STAGE_ROOT = os.path.join(REPO_ROOT, ".qa", "stage")
+CURRENT_STAGE = "current"  # the stable launch directory: a real copy of the stage a run uses, never a link (QA-0153)
+FILE_ATTRIBUTE_REPARSE_POINT = 0x400
+STAGE_COPY_MARGIN_GB = 2.0  # free space kept beyond the files a publish copies
 PEERS_POINTER = os.path.join(REPO_ROOT, ".qa", "peers-current")
 ASSET_MANIFESTS = {"generated": os.path.join(REPO_ROOT, ".qa", "assets", "generated", "manifest.json"),
                    "khronos": os.path.join(REPO_ROOT, ".qa", "assets", "khronos", "manifest.json")}
@@ -81,6 +86,8 @@ def died_at_spawn(code):
 def newest_stage():
     stages = []
     for name in os.listdir(STAGE_ROOT) if os.path.isdir(STAGE_ROOT) else []:
+        if name == CURRENT_STAGE:
+            continue  # the launch mirror, never the provenance
         manifest = os.path.join(STAGE_ROOT, name, "stage.json")
         if os.path.isfile(manifest) and os.path.isfile(os.path.join(STAGE_ROOT, name, "fractalengine.exe")):
             stages.append((os.path.getmtime(manifest), name))
@@ -119,6 +126,144 @@ def ensure_stage(args):
         raise SystemExit("stage.ps1 failed:\n" + (out + err)[-2000:])
     name, _manifest = newest_stage()
     return name, False
+
+
+def is_reparse_point(path):
+    """True for a junction or symlink: Windows reports a link's target as a process image path, and the QA scripts refuse links."""
+    try:
+        return bool(os.lstat(path).st_file_attributes & FILE_ATTRIBUTE_REPARSE_POINT)
+    except (OSError, AttributeError):
+        return False
+
+
+def stage_file_table(directory):
+    """{relative path: (size, mtime_ns)} of every file under a stage directory; a link anywhere inside is refused."""
+    table = {}
+    for root, dirs, files in os.walk(directory):
+        for name in dirs + files:
+            if is_reparse_point(os.path.join(root, name)):
+                raise SystemExit("stage %s contains a link (%s): QA stages are plain files" % (directory, name))
+        for name in files:
+            full = os.path.join(root, name)
+            info = os.stat(full)
+            table[os.path.relpath(full, directory)] = (info.st_size, info.st_mtime_ns)
+    return table
+
+
+def file_sha256(path):
+    digest = hashlib.sha256()
+    with open(path, "rb") as handle:
+        for block in iter(lambda: handle.read(1 << 20), b""):
+            digest.update(block)
+    return digest.hexdigest().upper()
+
+
+def publish_current(real_name):
+    """Mirror stage `real_name` into .qa/stage/current so every run launches peers from one exe path (QA-0153).
+
+    current is a real directory holding copies, not a junction: Windows Firewall matches the image path, which for a
+    link is the target, and the QA scripts refuse reparse points. The real stage stays untouched for provenance.
+    Returns the paths to record in run.json; a copy happens only when the stage differs from what current holds.
+    """
+    target = os.path.join(STAGE_ROOT, CURRENT_STAGE)
+    launch_exe = os.path.join(target, "fractalengine.exe")
+    paths = {"stage": real_name, "stage_dir": os.path.join(STAGE_ROOT, real_name),
+             "stage_exe": os.path.join(STAGE_ROOT, real_name, "fractalengine.exe"), "launch_stage": CURRENT_STAGE,
+             "launch_dir": target, "launch_exe": launch_exe, "published": {"unchanged": True}}
+    if real_name == CURRENT_STAGE:  # --stage current: use the mirror as it is
+        if not (os.path.isfile(launch_exe) and os.path.isfile(os.path.join(target, "stage.json"))) or is_reparse_point(target):
+            raise SystemExit("%s holds no stage (fractalengine.exe + stage.json) or is a link" % target)
+        return paths
+    source = paths["stage_dir"]
+    if not (os.path.isfile(paths["stage_exe"]) and os.path.isfile(os.path.join(source, "stage.json"))):
+        raise SystemExit("stage %s has no fractalengine.exe + stage.json under %s" % (real_name, STAGE_ROOT))
+    if is_reparse_point(source) or (os.path.lexists(target) and is_reparse_point(target)):
+        raise SystemExit("%s or %s is a link; remove the link (rmdir) so run.py can keep a real copy there" % (source, target))
+    wanted = stage_file_table(source)
+    present = stage_file_table(target) if os.path.isdir(target) else {}
+    changed = sorted((rel for rel, signature in wanted.items() if present.get(rel) != signature), key=lambda rel: (rel == "stage.json", rel))
+    stale = sorted(rel for rel in present if rel not in wanted)
+    if not changed and not stale:
+        return paths
+    if "stage.json" not in changed:  # the manifest is dropped first and written last whenever anything is copied
+        changed.append("stage.json")
+    need = sum(wanted[rel][0] for rel in changed)
+    free = shutil.disk_usage(STAGE_ROOT).free
+    if free < need + STAGE_COPY_MARGIN_GB * 1024 ** 3:
+        raise SystemExit("not enough free disk to mirror stage %s into %s: %.1f GB needed, %.1f GB free" % (
+            real_name, target, need / 1024 ** 3, free / 1024 ** 3))
+    log("publishing stage %s -> %s (%d changed file(s), %.0f MB, %d stale)" % (real_name, target, len(changed), need / 1024 ** 2, len(stale)))
+    started = time.time()
+    os.makedirs(target, exist_ok=True)
+    manifest = os.path.join(target, "stage.json")
+    try:
+        if os.path.exists(manifest):
+            os.remove(manifest)  # a half-mirrored directory is then no valid stage: the QA scripts refuse it and newest_stage() skips it
+        for rel in changed:  # stage.json sorts last
+            destination = os.path.join(target, rel)
+            os.makedirs(os.path.dirname(destination), exist_ok=True)
+            shutil.copy2(os.path.join(source, rel), destination)
+        for rel in stale:
+            os.remove(os.path.join(target, rel))
+    except OSError as error:
+        raise SystemExit("could not mirror stage %s into %s (%s). If a peer from an earlier run still runs from "
+                         ".qa/stage/current, stop it first (tools/qa/peers.ps1 -Action Stop, or stop.ps1 -Run)." % (real_name, target, error))
+    with open(manifest, encoding="utf-8-sig") as handle:
+        expected = json.load(handle).get("exe_sha256")
+    actual = file_sha256(launch_exe)
+    if expected and actual != str(expected).upper():
+        raise SystemExit("mirrored fractalengine.exe does not match its stage.json hash (%s != %s)" % (actual, expected))
+    paths["published"] = {"files": len(changed), "removed": len(stale), "bytes": need, "seconds": round(time.time() - started, 1)}
+    return paths
+
+
+def firewall_state(program):
+    """Read-only Windows Firewall lookup for the exact program path (QA-0153); never creates or edits a rule.
+
+    state: present (an enabled inbound Allow rule applies to an active profile) | blocked (an enabled inbound Block does)
+    | absent | unknown (the lookup failed; `error` says why).
+    """
+    program = os.path.normpath(program)
+    script = (
+        "$program = %s; try { "
+        "$rules = @(Get-NetFirewallApplicationFilter -ErrorAction Stop | Where-Object { $_.Program -ieq $program } | "
+        "Get-NetFirewallRule -ErrorAction Stop | ForEach-Object { [pscustomobject]@{ name = $_.DisplayName; "
+        "enabled = [string]$_.Enabled; direction = [string]$_.Direction; action = [string]$_.Action; profile = [string]$_.Profile } }); "
+        "$active = @(Get-NetConnectionProfile -ErrorAction SilentlyContinue | ForEach-Object { [string]$_.NetworkCategory }); "
+        "[pscustomobject]@{ rules = $rules; active_profiles = $active } | ConvertTo-Json -Compress -Depth 4 "
+        "} catch { [pscustomobject]@{ error = $_.Exception.Message } | ConvertTo-Json -Compress }" % ps_quote(program))
+    state = {"program": program, "state": "unknown", "rules": [], "active_profiles": [], "error": None,
+             "checked_at": time.strftime("%Y-%m-%dT%H:%M:%S%z")}
+    try:
+        code, out, err = powershell(script, timeout=120)
+        payload = json.loads(out.strip().splitlines()[-1]) if out.strip() else {}
+    except (OSError, ValueError, subprocess.SubprocessError) as error:
+        state["error"] = "%s: %s" % (type(error).__name__, str(error)[:200])
+        return state
+    if code != 0 or payload.get("error") or "rules" not in payload:
+        state["error"] = str(payload.get("error") or err.strip() or "firewall lookup returned nothing")[:300]
+        return state
+    rules = payload["rules"] or []
+    state["rules"] = [rules] if isinstance(rules, dict) else list(rules)
+    active = payload.get("active_profiles") or []
+    state["active_profiles"] = [active] if isinstance(active, str) else list(active)
+    live = [rule for rule in state["rules"] if str(rule.get("enabled")).lower() == "true"
+            and str(rule.get("direction")).lower() == "inbound" and _profile_applies(rule.get("profile"), state["active_profiles"])]
+    if any(str(rule.get("action")).lower() == "block" for rule in live):
+        state["state"] = "blocked"
+    elif any(str(rule.get("action")).lower() == "allow" for rule in live):
+        state["state"] = "present"
+    else:
+        state["state"] = "absent"
+    return state
+
+
+def _profile_applies(profile, active_profiles):
+    names = {part.strip().lower() for part in str(profile).split(",") if part.strip()}
+    if "any" in names or "all" in names:
+        return True
+    active = {str(item).lower().replace("domainauthenticated", "domain") for item in active_profiles}
+    return not active or bool(names & active)
 
 
 class MemoryStatus(ctypes.Structure):
@@ -397,15 +542,22 @@ def run(args):
     names = choose_peers(scenario, args, cap)
     log(gate_note + " -> peers " + ",".join(names))
     stage, allow_stale = (None, False) if args.attach else ensure_stage(args)
+    launch = publish_current(stage) if stage else None  # peers launch from .qa/stage/current; stage stays the provenance
+    firewall = None
+    if launch:
+        firewall = firewall_state(launch["launch_exe"])
+        log(analyze.firewall_line(firewall))
     stamp = time.strftime("%Y%m%d-%H%M%S")
     run_dir = os.path.join(RUNS_ROOT, "%s-%s" % (scenario["name"], stamp))
     os.makedirs(os.path.join(run_dir, "shots"), exist_ok=True)
-    host = Host(args, names, scenario["fixture"], stage, allow_stale)
+    host = Host(args, names, scenario["fixture"], launch["launch_stage"] if launch else None, allow_stale)
     clock = Clock()
     recorder = Recorder(run_dir)
     meta = {"schema": "fe-qa-sim-run-v1", "scenario_name": scenario["name"], "scenario_path": scenario["_path"],
             "seed": scenario["seed"], "steps": [str(s["id"]) for s in steps], "stage": stage,
             "stage_matches_source": not allow_stale, "gate": gate_note,
+            **({k: launch[k] for k in ("stage_dir", "stage_exe", "launch_stage", "launch_dir", "launch_exe", "published")} if launch else {}),
+            "firewall": firewall,
             "cpu_note": None if args.reactive else "--no-reactive (pre-QA-0119 CPU cap): latencies are upper bounds under host contention; read them with the CPU table.",
             "clock": {"perf0": clock.perf0, "wall0": clock.wall0}, "argv": sys.argv[1:]}
     prober = sampler = None
@@ -414,6 +566,11 @@ def run(args):
     try:
         if args.attach:
             host.attach()
+            attached_exe = host.record["members"][0]["process_identity"].get("exe_path")
+            meta["launch_exe"] = attached_exe
+            if attached_exe:
+                meta["firewall"] = firewall_state(attached_exe)
+                log(analyze.firewall_line(meta["firewall"]))
         else:
             host.start()
             started = True
@@ -423,7 +580,11 @@ def run(args):
                 host.join(run_dir)
         present = [m["name"] for m in host.record["members"]]
         meta["peers"] = [{"name": m["name"], "role": m.get("role"), "run_dir": m["run_dir"], "api_base": m.get("api_base"),
-                          "pid": m["process_identity"]["pid"]} for m in host.record["members"]]
+                          "pid": m["process_identity"]["pid"], "exe": m["process_identity"].get("exe_path")} for m in host.record["members"]]
+        wrong = [p["name"] for p in meta["peers"] if launch and p["exe"] and os.path.normcase(os.path.normpath(p["exe"])) != os.path.normcase(os.path.normpath(launch["launch_exe"]))]
+        if wrong:  # the firewall rule matches the image path: a peer running from elsewhere is not covered by it
+            log("WARNING: %s did not launch from %s; the firewall state above does not cover them" % (", ".join(wrong), launch["launch_exe"]))
+            meta["launch_exe_mismatch"] = wrong
         meta["owner_run"] = host.owner_dir
         cadence = Cadence({**scenario_mod.DEFAULT_CADENCE, **scenario.get("probe", {})})
         meta["cadence"] = cadence.as_dict()

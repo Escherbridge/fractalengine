@@ -1078,12 +1078,27 @@ python tools/qa/sim/run.py analyze qa/sim/runs/<scenario>-<ts>                  
 ```
 
 `run.py` order: stage when HEAD moved (refused while a non-rust-analyzer cargo runs; `--allow-stale-stage`
-reuses the newest stage with limited provenance) -> resource gate (RAM >= 0.9 GB free per peer; `--no-reactive` restores
-the pre-QA-0119 cap N <= floor((cores-4)/2.5), 3 on this host) -> `peers.ps1 Start -Count N -Names ...`
+reuses the newest stage with limited provenance) -> mirror it into `.qa/stage/current` and read the firewall state of
+that exe path (below) -> resource gate (RAM >= 0.9 GB free per peer; `--no-reactive` restores
+the pre-QA-0119 cap N <= floor((cores-4)/2.5), 3 on this host) -> `peers.ps1 Start -Count N -Names ... -Stage current`
 -> disjoint affinity masks + AboveNormal through `Get-QaOwnedProcess` (pid + creation ticks + exe) -> windows tiled
 by OS `SetWindowPos` on the identity-checked pid -> `peers_join.py` (real GUI invite flow) -> host sampler, probers,
 driver -> `peers.ps1 Stop -OwnerRun` in `finally` (also on exceptions and the `--max-uptime-s` watchdog) -> analyze.
 `--attach` drives the peers in `.qa/peers-current` and never starts or stops them. Run dirs: `qa/sim/runs/`.
+
+**Stable exe path and firewall (QA-0153).** Windows Firewall (Public profile) matches inbound rules by exe path, and
+every `stage.ps1` build lands in a new `.qa/stage/<sha>-<ts>/`, so each build prompted again and runs 1-4 executed with
+inbound blocked. `run.py` therefore launches peers from `.qa/stage/current/fractalengine.exe`: `publish_current`
+mirrors the stage it chose into `.qa/stage/current`, a real directory of copies (only files that differ; never a
+junction, because Windows reports a link's target as the image path and the QA scripts refuse reparse points), and
+passes `-Stage current` to `peers.ps1`. One allow rule for that path covers every future build. `run.json` records the
+provenance (`stage`, `stage_dir`, `stage_exe`), what ran (`launch_stage`, `launch_exe`, each peer's actual `exe`,
+`launch_exe_mismatch` if one differs) and `firewall`; the run log and the `report.md` header print
+`firewall: allow rule present|absent for <path>` from a read-only `Get-NetFirewallApplicationFilter` lookup
+(`firewall_state`; the simulator never creates a rule, and "absent" adds the inbound-blocked confound note to the
+report). Peers from an earlier run that still hold `current\fractalengine.exe` stop a mirror of a NEW build with a
+stop-them-first error (re-running the same build never touches the exe). `newest_stage()` ignores `current`;
+`--stage current` launches the mirror as it is.
 
 Scenarios: tracked in `tools/qa/sim/scenarios/` (`p2p-core`, `p2p-assets`, `city-lite`); a same-named file in
 `qa/sim/scenarios/` (gitignored) overrides one locally. Peers absent from a run (`--peers`, gate) skip their
