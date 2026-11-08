@@ -2326,15 +2326,28 @@ A success emits the waiting rows exactly like `ContentReady`. Invariant: per (au
 slot only the newest entry may still land: a newer `InsertRemote` drops the slot's older waiting
 entry, so a late fetch can never apply stale content over a newer row.
 
-**Bounded by author, never refuse-on-full (QA-0150, 2026-11-07).** An Editor may write rows
-naming content no one can serve. The table therefore holds at most 512 re-fetches per entry
-author (`MAX_CONTENT_RETRIES_PER_AUTHOR`; an author at its cap evicts among its own) inside the
-4096 total; a full table evicts its most-failed, then oldest, idle entry for the new hash instead
-of refusing it (the pre-fix refusal meant that, once one author had filled it, a legitimate asset
-that failed once was never retried). Each hash gets 10 attempts (about 3.5 min); then its schedule
-is dropped and re-armed only when its row is written again (`InsertRemote` → `wait`). Dropped
-schedules never drop the waiting rows: `ContentReady` still lands them. Evictions are logged at the
-1st, 2nd, 4th, 8th ... occurrence so a flood cannot flood the log.
+**Named members only, fair, never stopped (QA-0150, QA-0155, 2026-11-07).** An Editor may write
+rows naming content no one can serve, and anyone can mint author keys. So:
+
+- **Arming is gated.** Only an entry author the replica's verse NAMES (its owner or a DID the role
+  view admits: `BlobAccessGate::names_member`, which ignores `open_to_all`) arms a re-fetch
+  (`AuthorGate`, passed to the pump by `subscribe`). Any other row waits unarmed
+  (`PendingRows::unarmed`, at most 16384 hashes with their providers); a sweep every 5 s
+  (`arm_waiting`, never evicting) arms rows whose author was named after they arrived.
+- **Slots are per waiting author.** Each re-fetch records the admitted authors with a row
+  waiting on it (`ContentRetry::authors`), each charged one of its 512 slots
+  (`MAX_CONTENT_RETRIES_PER_AUTHOR`) inside the 4096 total. A member at its cap frees one of its
+  OWN slots; a re-fetch nobody holds any more is parked unarmed, never forgotten.
+- **Eviction never takes an unspent hash from another principal.** A full table makes room only
+  by evicting a spent entry; otherwise the new hash waits unarmed (the trade-off against QA-0150's
+  never-refuse: a refused new hash still lands on `ContentReady`, a rewrite or a later sweep, and
+  the table only fills with named members' unspent content).
+- **Attempts slow down, never stop.** After 10 fast attempts (about 3.5 min) a hash is "spent":
+  it retries every 5 min and becomes the eviction candidate. A provider not tried before (a new
+  forwarder, up to 16 per hash) resets it to fast attempts, and a rewritten row re-arms it fresh.
+
+Dropped or parked schedules never drop the waiting rows. Evictions are logged at the 1st, 2nd,
+4th, 8th ... occurrence so a flood cannot flood the log.
 
 ## §isolated-write-sync — writes made with no gossip neighbor (QA-0145, 2026-11-07)
 

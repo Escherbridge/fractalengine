@@ -108,48 +108,70 @@ fn api_reader_reads_db_thread_writes_through_the_shared_handle() {
     assert_eq!(rows[0]["name"], "Shared Verse");
 
     // QA-0143: a peer's Serve admission (its caller gives up after 2 s) is
-    // answered ahead of a queued write burst instead of waiting it out.
-    let burst = 40;
-    for n in 0..burst {
+    // answered ahead of a queued read burst instead of waiting it out.
+    let serve_admission = || {
+        let (reply, admission) = crossbeam::channel::bounded(1);
         spawned
             .cmd_tx
-            .send(DbCommand::CreateVerse {
-                name: format!("Burst {n}"),
-            })
-            .expect("send burst write");
-    }
-    let (reply, admission) = crossbeam::channel::bounded(1);
-    spawned
-        .cmd_tx
-        .send(DbCommand::InspectSceneAssetTransfer {
-            request: SceneAssetTransferRequest {
-                verse_id: verse_id.clone(),
-                hash: [7u8; 32],
-                node_id: None,
-                purpose: SceneAssetTransferPurpose::Serve {
-                    requester_did: "did:key:peer".into(),
+            .send(DbCommand::InspectSceneAssetTransfer {
+                request: SceneAssetTransferRequest {
+                    verse_id: verse_id.clone(),
+                    hash: [7u8; 32],
+                    node_id: None,
+                    purpose: SceneAssetTransferPurpose::Serve {
+                        requester_did: "did:key:peer".into(),
+                    },
+                    deadline: std::time::Instant::now() + TIMEOUT,
                 },
-                deadline: std::time::Instant::now() + TIMEOUT,
-            },
-            reply,
-        })
-        .expect("send serve admission");
-    let answer = admission
+                reply,
+            })
+            .expect("send serve admission");
+        admission
+    };
+    let burst = 40;
+    let send_reads = || {
+        for _ in 0..burst {
+            spawned.cmd_tx.send(DbCommand::LoadHierarchy).expect("send burst read");
+        }
+    };
+    let loaded = |result: &DbResult| matches!(result, DbResult::HierarchyLoaded { .. });
+    send_reads();
+    let answer = serve_admission()
         .recv_timeout(TIMEOUT)
         .expect("serve admission answered");
     assert!(answer.is_err(), "no such asset: refused, but answered");
-    let created = |result: &DbResult| matches!(result, DbResult::VerseCreated { .. });
-    let ran_first = spawned.res_rx.try_iter().filter(created).count();
+    let ran_first = spawned.res_rx.try_iter().filter(loaded).count();
     assert!(
         ran_first < burst / 4,
-        "the admission jumped the queued burst ({ran_first} of {burst} writes ran first)"
+        "the admission jumped the queued reads ({ran_first} of {burst} ran first)"
     );
     let mut ran = ran_first;
     while ran < burst {
-        if created(&spawned.res_rx.recv_timeout(TIMEOUT).expect("burst write result")) {
+        if loaded(&spawned.res_rx.recv_timeout(TIMEOUT).expect("burst read result")) {
             ran += 1;
         }
     }
+    // QA-0154: a revoke queued ahead is a barrier: the admission is judged after it,
+    // never on the role the requester held before the revocation.
+    send_reads();
+    spawned
+        .cmd_tx
+        .send(DbCommand::RevokeRole {
+            peer_did: "did:key:peer".into(),
+            scope: format!("VERSE#{verse_id}"),
+        })
+        .expect("send revoke");
+    let answer = serve_admission()
+        .recv_timeout(TIMEOUT)
+        .expect("serve admission answered");
+    assert!(answer.is_err(), "no such asset: refused, but answered");
+    let before: Vec<DbResult> = spawned.res_rx.try_iter().collect();
+    assert!(
+        before.iter().any(|result| matches!(result, DbResult::RoleRevoked { .. })
+            || matches!(result, DbResult::Error(message) if message.starts_with("Revoke role failed"))),
+        "the queued revoke ran before the admission: {before:?}"
+    );
+    assert_eq!(before.iter().filter(|result| loaded(result)).count(), burst, "reads ahead of the revoke stay FIFO");
 
     // Persist a schema-valid but inadmissible clock, then exercise the real restart handshake.
     let reader = spawned.db_thread.shared_db.clone();

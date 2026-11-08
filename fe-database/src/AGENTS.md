@@ -1430,12 +1430,19 @@ The DB thread is one serial queue, and under a multi-author placement burst it h
 admission timed out behind the backlog and the provider refused verse Editors as if they held no
 role (run 4: refusals exactly 2 s apart on the owner, the other authors' GLBs 63-80 s late at
 host CPU < 50 %). `command_lane::CommandLane` keeps the queue FIFO except for that one class:
-it drains up to 128 commands into a local lookahead and hands a Serve admission out first.
+it drains up to 128 commands into a local lookahead and hands a Serve admission out ahead of
+the transparent commands queued before it.
 
-- **Why only Serve.** It is a bounded read that answers a remote request; handling it ahead of
-  queued writes is the same as the request having arrived a moment earlier (a queued revocation
-  races the same way without reordering). Fetch and Publish admissions depend on rows queued
-  BEFORE them (the prefetch is triggered by the row that is still being applied), so they stay FIFO.
+- **Why only Serve.** It is a bounded read that answers a remote request. Fetch and Publish
+  admissions depend on rows queued BEFORE them (the prefetch is triggered by the row that is
+  still being applied), so they stay FIFO.
+- **Security barrier (QA-0154, 2026-11-07).** A Serve admission at lookahead index i is taken
+  early only when every command before it is *transparent* (`is_transparent`: reads, transforms,
+  readings, device payloads). A `RevokeRole`, a role/ACL or replicated-row apply, an asset or
+  node write, and any variant added later (the allowlist fails closed) is a barrier: the lane is
+  strict FIFO up to it, so a blob is never served on pre-revocation or pre-retire state. The cost:
+  an admission behind an `ApplyReplicatedRow` burst waits it out again; a timed-out admission is
+  `RateLimited` (busy, wire code 2), never a role denial, and the requester retries.
 - **No starvation.** After a command jumps the queue the next one is the FIFO head, so writes
   still get every other slot under a flood of requests.
 - **Backpressure kept.** The lookahead is bounded (128), so senders still see a full channel;

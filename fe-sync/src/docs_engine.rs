@@ -287,6 +287,18 @@ impl BlobAccessGate {
 
     /// Replace one verse's access snapshot (called after the fabric's role
     /// view settles).
+    /// Whether `did` is a NAMED member of `verse_id` (its owner or a DID the role
+    /// view admits), never merely anyone an open verse admits — the re-fetch
+    /// arming gate, which minted author DIDs must not pass (QA-0155).
+    pub(crate) fn names_member(&self, verse_id: &str, did: &str) -> bool {
+        self.0
+            .verse_access
+            .read()
+            .unwrap_or_else(|e| e.into_inner())
+            .get(verse_id)
+            .is_some_and(|snapshot| snapshot.owner_did.as_deref() == Some(did) || snapshot.viewer_dids.contains(did))
+    }
+
     pub fn set_verse_access(&self, verse_id: &str, snapshot: VerseAccessSnapshot) {
         self.0
             .verse_access

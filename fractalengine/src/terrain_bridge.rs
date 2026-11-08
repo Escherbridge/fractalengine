@@ -1437,6 +1437,19 @@ pub struct StreamedBundleResults(crossbeam::channel::Receiver<StreamedBundleOutc
 #[derive(Resource, Clone)]
 pub struct StreamedBundleResultSender(crossbeam::channel::Sender<StreamedBundleOutcome>);
 
+/// Wake the reactive render loop whenever a worker thread's result waits in one of
+/// this module's for-the-app-lifetime queues (each drained every frame); see
+/// src/AGENTS.md §render-loop. The meta-verdict queues are left to the idle tick:
+/// `discard_terminal_state` drops their drain, and a watched undrained queue never sleeps.
+pub fn watch_results(world: &World, work: &crate::render_wake::PendingWork) {
+    if let Some(results) = world.get_resource::<HexonAssembleResults>() {
+        work.watch(results.0.clone());
+    }
+    if let Some(results) = world.get_resource::<StreamedBundleResults>() {
+        work.watch(results.0.clone());
+    }
+}
+
 /// Builds the channel pair `main.rs` inserts as two resources (mirrors
 /// `HexonAssembleResults`/`HexonAssembleResultSender`).
 pub fn streamed_bundle_channel() -> (StreamedBundleResultSender, StreamedBundleResults) {

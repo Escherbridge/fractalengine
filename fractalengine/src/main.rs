@@ -491,6 +491,8 @@ fn main() {
     let render_work = render_wake::PendingWork::default();
     render_work.watch(ch.db_res_rx.clone());
     render_work.watch(sync_evt_rx.clone());
+    render_work.watch(ch.net_evt_rx.clone());
+    render_work.watch(lifecycle_rx.clone());
     let mut app = fe_runtime::app::build_app_with_options(
         BevyHandles {
             net_cmd_tx: ch.net_cmd_tx,
@@ -908,6 +910,8 @@ fn main() {
         app.insert_resource(streamed_tx);
         app.insert_resource(streamed_rx);
     }
+    // QA-0119: off-thread terrain results wake the reactive loop like every other bridge.
+    terrain_bridge::watch_results(app.world(), &render_work);
     app.add_systems(
         bevy::prelude::Update,
         (

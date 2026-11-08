@@ -893,6 +893,11 @@ impl VerseReplicator for IrohDocsReplicator {
                 readiness,
                 Some(doc.clone()),
                 Some(Arc::new(crate::blob_transport::IrohBlobTransport::from_stack(stack))),
+                Some(Arc::new({
+                    let gate = stack.blob_access_gate().clone();
+                    let verse_id = self.verse_id.clone();
+                    move |author: &str| gate.names_member(&verse_id, author)
+                })),
             ));
             *self.pump.lock().unwrap_or_else(|e| e.into_inner()) = Some(handle.abort_handle());
             Ok(rx)
@@ -1098,18 +1103,30 @@ impl PendingContent {
 
 /// First content re-fetch after a pending entry arrives (QA-0145).
 const CONTENT_RETRY_FIRST: std::time::Duration = std::time::Duration::from_secs(2);
-/// Longest wait between two content re-fetches.
+/// Longest wait between two fast content re-fetches.
 const CONTENT_RETRY_MAX: std::time::Duration = std::time::Duration::from_secs(30);
+/// Re-fetch interval once a hash has spent its fast attempts: slow, never stopped (QA-0155).
+const CONTENT_RETRY_SLOW: std::time::Duration = std::time::Duration::from_secs(300);
 /// Content re-fetches in flight per replica.
 const MAX_CONTENT_FETCHES: usize = 4;
-/// Pending hashes a replica re-fetches at once; more stay on iroh-docs alone.
+/// Re-fetches a replica keeps armed at once.
 const MAX_CONTENT_RETRIES: usize = 4096;
-/// Re-fetch slots one entry author may hold (QA-0150: one author cannot fill the table).
+/// Re-fetch slots one admitted author may hold (QA-0150).
 const MAX_CONTENT_RETRIES_PER_AUTHOR: usize = 512;
-/// Failed re-fetches before a hash waits for its row to be written again (about 3.5 min).
+/// Fast attempts (about 3.5 min) before a hash drops to the slow retry and becomes evictable.
 const MAX_CONTENT_ATTEMPTS: u32 = 10;
+/// Providers one re-fetch remembers.
+const MAX_CONTENT_PROVIDERS: usize = 16;
+/// Waiting hashes kept for a later arming (author not admitted yet, or no room).
+const MAX_UNARMED_HASHES: usize = 16384;
+/// How often waiting hashes are offered for arming again.
+const ARM_SWEEP_INTERVAL: std::time::Duration = std::time::Duration::from_secs(5);
 /// Largest row payload a content re-fetch accepts.
 const MAX_ROW_CONTENT_BYTES: u64 = 16 * 1024 * 1024;
+
+/// Whether an entry author is a named member of the replica's verse: only such an
+/// author arms a re-fetch, so minted author DIDs never take a slot (QA-0155).
+type AuthorGate = Arc<dyn Fn(&str) -> bool + Send + Sync>;
 
 /// Re-fetch state of one pending content hash; see `src/AGENTS.md` §content-refetch.
 struct ContentRetry {
@@ -1117,48 +1134,63 @@ struct ContentRetry {
     due: tokio::time::Instant,
     providers: Vec<iroh::EndpointId>,
     in_flight: bool,
-    /// The entry author whose row armed it (the per-author cap's key).
-    author: String,
+    /// Admitted authors with a row waiting on this hash; each holds one of its slots here.
+    authors: std::collections::BTreeSet<String>,
     armed: tokio::time::Instant,
 }
 
 impl ContentRetry {
-    fn new(author: String) -> Self {
+    fn new() -> Self {
         let now = tokio::time::Instant::now();
         Self {
             attempt: 0,
             due: now + CONTENT_RETRY_FIRST,
             providers: Vec::new(),
             in_flight: false,
-            author,
+            authors: Default::default(),
             armed: now,
         }
     }
 
-    fn add_provider(&mut self, provider: iroh::EndpointId) {
-        if !self.providers.contains(&provider) {
-            self.providers.push(provider);
+    /// Remember `providers`; one not tried before restarts the fast attempts (QA-0155).
+    fn add_providers(&mut self, providers: &[iroh::EndpointId]) {
+        let mut fresh = false;
+        for provider in providers {
+            if !self.providers.contains(provider) && self.providers.len() < MAX_CONTENT_PROVIDERS {
+                self.providers.push(*provider);
+                fresh = true;
+            }
+        }
+        if fresh && self.attempt > 0 {
+            self.attempt = 0;
+            self.due = self.due.min(tokio::time::Instant::now() + CONTENT_RETRY_FIRST);
         }
     }
 
-    /// Exponential backoff (4, 8, 16, 30, 30 ... s); `false` once the attempts are spent.
-    fn failed(&mut self, hash: &iroh_blobs::Hash, error: &anyhow::Error) -> bool {
+    /// The fast attempts ran out: the hash retries slowly and may be evicted.
+    fn spent(&self) -> bool {
+        self.attempt >= MAX_CONTENT_ATTEMPTS
+    }
+
+    /// Exponential backoff (4, 8, 16, 30, 30 ... s), then every 5 min once spent.
+    fn failed(&mut self, hash: &iroh_blobs::Hash, error: &anyhow::Error) {
         self.attempt = self.attempt.saturating_add(1);
         self.in_flight = false;
-        let delay = CONTENT_RETRY_FIRST
-            .saturating_mul(1u32 << self.attempt.min(5))
-            .min(CONTENT_RETRY_MAX);
+        let delay = if self.spent() {
+            CONTENT_RETRY_SLOW
+        } else {
+            CONTENT_RETRY_FIRST
+                .saturating_mul(1u32 << self.attempt.min(5))
+                .min(CONTENT_RETRY_MAX)
+        };
         self.due = tokio::time::Instant::now() + delay;
-        if self.attempt >= MAX_CONTENT_ATTEMPTS {
-            tracing::warn!(hash = %hash, attempts = self.attempt, author = %self.author, "replica entry content unavailable from its providers; re-fetch stops until the row is written again: {error:#}");
-            return false;
-        }
-        if self.attempt == 3 {
+        if self.attempt == MAX_CONTENT_ATTEMPTS {
+            tracing::warn!(hash = %hash, attempts = self.attempt, "replica entry content unavailable from its providers; retrying every 5 min until a new provider or a rewrite: {error:#}");
+        } else if self.attempt == 3 {
             tracing::warn!(hash = %hash, attempt = self.attempt, "replica entry content still unavailable from its providers; retrying: {error:#}");
         } else {
             tracing::debug!(hash = %hash, attempt = self.attempt, "replica entry content re-fetch failed: {error:#}");
         }
-        true
     }
 }
 
@@ -1169,9 +1201,11 @@ struct PendingRows {
     /// The waiting hash and timestamp of each slot's newest pending entry.
     by_slot: HashMap<(String, String, String), (iroh_blobs::Hash, u64)>,
     retries: HashMap<iroh_blobs::Hash, ContentRetry>,
-    /// Re-fetch slots held per entry author.
+    /// Re-fetch slots held per admitted author.
     per_author: HashMap<String, usize>,
-    /// Re-fetches dropped to make room (logged at 1, 2, 4, 8 ...).
+    /// Waiting hashes with no armed re-fetch (no admitted author yet, or no room), with their providers.
+    unarmed: HashMap<iroh_blobs::Hash, Vec<iroh::EndpointId>>,
+    /// Re-fetch slots freed for newer ones (logged at 1, 2, 4, 8 ...).
     evictions: u64,
 }
 
@@ -1184,81 +1218,189 @@ impl PendingRows {
             return;
         }
         self.by_slot.remove(&slot);
-        if let Some(waiting) = self.by_hash.get_mut(&hash) {
-            waiting.retain(|older| older.slot() != slot);
-            if waiting.is_empty() {
-                self.by_hash.remove(&hash);
-                self.remove_retry(&hash);
-            }
+        let Some(waiting) = self.by_hash.get_mut(&hash) else { return };
+        waiting.retain(|older| older.slot() != slot);
+        if waiting.is_empty() {
+            self.by_hash.remove(&hash);
+            self.remove_retry(&hash);
+            self.unarmed.remove(&hash);
+        } else if !waiting.iter().any(|other| other.author_id == slot.0) {
+            self.release(&hash, &slot.0);
         }
     }
 
-    /// Park `meta` until its content lands; schedule a re-fetch from `providers` when `refetch`.
-    /// A full table evicts its most-failed, then oldest, re-fetch instead of refusing a new
-    /// hash (QA-0150); an author at its own cap evicts only among its own.
-    fn wait(&mut self, hash: iroh_blobs::Hash, meta: PendingContent, providers: &[iroh::EndpointId], refetch: bool) {
+    /// Park `meta` until its content lands. With `refetch`, an `admitted` author arms a
+    /// re-fetch from `providers`; any other waits unarmed for a later arming (QA-0155).
+    fn wait(
+        &mut self,
+        hash: iroh_blobs::Hash,
+        meta: PendingContent,
+        providers: &[iroh::EndpointId],
+        refetch: bool,
+        admitted: bool,
+    ) {
         self.by_slot.insert(meta.slot(), (hash, meta.timestamp));
         let author = meta.author_id.clone();
         self.by_hash.entry(hash).or_default().push(meta);
-        if !refetch {
+        if refetch && !(admitted && self.arm(hash, &author, providers, true)) {
+            self.keep_unarmed(hash, providers);
+        }
+    }
+
+    /// Arm (or join) `hash`'s re-fetch for the admitted `author`; `false` when there is no room.
+    /// Room comes only from `author`'s own slots or from spent entries: another principal's
+    /// unspent re-fetch is never evicted for a new hash (QA-0155).
+    fn arm(&mut self, hash: iroh_blobs::Hash, author: &str, providers: &[iroh::EndpointId], may_evict: bool) -> bool {
+        let armed = self.retries.contains_key(&hash);
+        let holds = self.retries.get(&hash).is_some_and(|retry| retry.authors.contains(author));
+        let mut charge = !holds;
+        if charge
+            && self.per_author.get(author).copied().unwrap_or(0) >= MAX_CONTENT_RETRIES_PER_AUTHOR
+            && !(may_evict && self.evict_own(author, &hash))
+        {
+            if !armed {
+                return false;
+            }
+            charge = false; // armed for other authors already: it runs without this author's slot
+        }
+        if !armed && self.retries.len() >= MAX_CONTENT_RETRIES && !(may_evict && self.evict_spent()) {
+            return false;
+        }
+        let retry = self.retries.entry(hash).or_insert_with(ContentRetry::new);
+        if charge && retry.authors.insert(author.to_string()) {
+            *self.per_author.entry(author.to_string()).or_default() += 1;
+        }
+        if let Some(known) = self.unarmed.remove(&hash) {
+            retry.add_providers(&known);
+        }
+        retry.add_providers(providers);
+        true
+    }
+
+    /// Remember a waiting hash for a later arming (bounded; an armed hash needs nothing).
+    fn keep_unarmed(&mut self, hash: iroh_blobs::Hash, providers: &[iroh::EndpointId]) {
+        if self.retries.contains_key(&hash)
+            || (!self.unarmed.contains_key(&hash) && self.unarmed.len() >= MAX_UNARMED_HASHES)
+        {
             return;
         }
-        if !self.retries.contains_key(&hash) {
-            if self.per_author.get(&author).copied().unwrap_or(0) >= MAX_CONTENT_RETRIES_PER_AUTHOR {
-                self.evict(Some(&author));
-            } else if self.retries.len() >= MAX_CONTENT_RETRIES {
-                self.evict(None);
-            }
-            *self.per_author.entry(author.clone()).or_default() += 1;
-            self.retries.insert(hash, ContentRetry::new(author));
-        }
-        if let Some(retry) = self.retries.get_mut(&hash) {
-            for provider in providers {
-                retry.add_provider(*provider);
+        let known = self.unarmed.entry(hash).or_default();
+        for provider in providers {
+            if !known.contains(provider) && known.len() < MAX_CONTENT_PROVIDERS {
+                known.push(*provider);
             }
         }
     }
 
-    /// Drop the most-failed, then oldest, idle re-fetch (of `author` only, when given).
-    fn evict(&mut self, author: Option<&str>) {
+    /// Offer every unarmed hash to its admitted waiting authors, without evicting: an
+    /// author admitted after its row arrived, or room freed since (QA-0155).
+    fn arm_waiting(&mut self, admitted: &dyn Fn(&str) -> bool) {
+        let hashes: Vec<iroh_blobs::Hash> = self.unarmed.keys().copied().collect();
+        for hash in hashes {
+            let Some(waiting) = self.by_hash.get(&hash) else {
+                self.unarmed.remove(&hash);
+                continue;
+            };
+            let authors: std::collections::BTreeSet<String> = waiting
+                .iter()
+                .map(|meta| meta.author_id.clone())
+                .filter(|author| admitted(author))
+                .collect();
+            for author in authors {
+                self.arm(hash, &author, &[], false);
+            }
+        }
+    }
+
+    /// Free one of `author`'s own slots (never the one on `keep`): its spent, then
+    /// most-failed, then oldest idle re-fetch; `false` when it holds none.
+    fn evict_own(&mut self, author: &str, keep: &iroh_blobs::Hash) -> bool {
         let victim = self
             .retries
             .iter()
-            .filter(|(_, retry)| author.is_none_or(|author| retry.author == author))
-            .max_by_key(|(_, retry)| (!retry.in_flight, retry.attempt, std::cmp::Reverse(retry.armed)))
+            .filter(|(hash, retry)| *hash != keep && !retry.in_flight && retry.authors.contains(author))
+            .max_by_key(|(_, retry)| (retry.spent(), retry.attempt, std::cmp::Reverse(retry.armed)))
             .map(|(hash, _)| *hash);
-        let Some(victim) = victim else { return };
+        let Some(victim) = victim else { return false };
+        self.release(&victim, author);
+        self.note_eviction(&victim, "own cap");
+        true
+    }
+
+    /// Drop the most-failed, then oldest, idle spent re-fetch; `false` when none is spent.
+    fn evict_spent(&mut self) -> bool {
+        let victim = self
+            .retries
+            .iter()
+            .filter(|(_, retry)| retry.spent() && !retry.in_flight)
+            .max_by_key(|(_, retry)| (retry.attempt, std::cmp::Reverse(retry.armed)))
+            .map(|(hash, _)| *hash);
+        let Some(victim) = victim else { return false };
         if let Some(retry) = self.remove_retry(&victim) {
-            self.evictions += 1;
-            if self.evictions.is_power_of_two() {
-                tracing::warn!(hash = %victim, author = %retry.author, attempts = retry.attempt, evictions = self.evictions, own_cap = author.is_some(), "content re-fetch table full; dropped a pending re-fetch (its row still lands on ContentReady or when written again)");
+            self.park(victim, retry);
+        }
+        self.note_eviction(&victim, "table full");
+        true
+    }
+
+    fn note_eviction(&mut self, hash: &iroh_blobs::Hash, reason: &str) {
+        self.evictions += 1;
+        if self.evictions.is_power_of_two() {
+            tracing::warn!(hash = %hash, reason, evictions = self.evictions, "content re-fetch slot freed for a newer one (the row still lands on ContentReady, a rewrite or a later arming)");
+        }
+    }
+
+    /// `author` stops holding a slot in `hash`'s re-fetch; one nobody holds is parked unarmed.
+    fn release(&mut self, hash: &iroh_blobs::Hash, author: &str) {
+        let Some(retry) = self.retries.get_mut(hash) else { return };
+        if !retry.authors.remove(author) {
+            return;
+        }
+        let orphaned = retry.authors.is_empty();
+        self.uncharge(author);
+        if orphaned {
+            if let Some(retry) = self.retries.remove(hash) {
+                self.park(*hash, retry);
             }
         }
     }
 
-    /// Forget `hash`'s re-fetch schedule and release its author's slot.
-    fn remove_retry(&mut self, hash: &iroh_blobs::Hash) -> Option<ContentRetry> {
-        let retry = self.retries.remove(hash)?;
-        if let Some(count) = self.per_author.get_mut(&retry.author) {
+    /// Keep a dropped re-fetch's providers so its waiting rows can be armed again later.
+    fn park(&mut self, hash: iroh_blobs::Hash, retry: ContentRetry) {
+        if self.by_hash.contains_key(&hash) {
+            self.keep_unarmed(hash, &retry.providers);
+        }
+    }
+
+    fn uncharge(&mut self, author: &str) {
+        if let Some(count) = self.per_author.get_mut(author) {
             *count = count.saturating_sub(1);
             if *count == 0 {
-                self.per_author.remove(&retry.author);
+                self.per_author.remove(author);
             }
+        }
+    }
+
+    /// Forget `hash`'s re-fetch schedule and release every author's slot in it.
+    fn remove_retry(&mut self, hash: &iroh_blobs::Hash) -> Option<ContentRetry> {
+        let retry = self.retries.remove(hash)?;
+        for author in &retry.authors {
+            self.uncharge(author);
         }
         Some(retry)
     }
 
-    /// Record a failed re-fetch; a hash out of attempts waits for its row to be written again.
+    /// Record a failed re-fetch (it keeps retrying; see `ContentRetry::failed`).
     fn fetch_failed(&mut self, hash: &iroh_blobs::Hash, error: &anyhow::Error) {
-        let spent = self.retries.get_mut(hash).is_some_and(|retry| !retry.failed(hash, error));
-        if spent {
-            self.remove_retry(hash);
+        if let Some(retry) = self.retries.get_mut(hash) {
+            retry.failed(hash, error);
         }
     }
 
     /// Take every entry waiting on `hash` (its content is now local).
     fn take(&mut self, hash: &iroh_blobs::Hash) -> Vec<PendingContent> {
         self.remove_retry(hash);
+        self.unarmed.remove(hash);
         let waiting = self.by_hash.remove(hash).unwrap_or_default();
         for meta in &waiting {
             if self.by_slot.get(&meta.slot()).is_some_and(|(slot_hash, _)| slot_hash == hash) {
@@ -1560,6 +1702,7 @@ fn confirm_peer(readiness: &JoinReadiness, peer: iroh::EndpointId) {
 /// - A failed iroh-docs download is terminal, so `fetcher` re-fetches pending
 ///   content from the forwarder and the author with backoff (QA-0145,
 ///   `src/AGENTS.md` §content-refetch); a newer entry in the same slot drops the older one.
+///   Only an author `author_gate` names arms one (`None`: every author, QA-0155).
 async fn pump_live_events(
     mut stream: std::pin::Pin<Box<dyn Stream<Item = anyhow::Result<LiveEvent>> + Send>>,
     blobs: iroh_blobs::api::Store,
@@ -1567,6 +1710,7 @@ async fn pump_live_events(
     readiness: Arc<JoinReadiness>,
     resync: Option<DocHandle>,
     fetcher: Option<Arc<crate::blob_transport::IrohBlobTransport>>,
+    author_gate: Option<AuthorGate>,
 ) {
     readiness.alive.store(true, Ordering::Release);
     // QA-0101: when each peer was last re-dialed (fallback cooldown).
@@ -1576,15 +1720,24 @@ async fn pump_live_events(
     let mut fetches: tokio::task::JoinSet<(iroh_blobs::Hash, anyhow::Result<Bytes>)> =
         tokio::task::JoinSet::new();
     let mut isolated = IsolatedWrites::default();
+    let admitted = |author: &str| author_gate.as_ref().is_none_or(|gate| gate(author));
+    let mut last_arm_sweep = tokio::time::Instant::now();
 
     loop {
         let next_due = pending.next_due(fetches.len());
         let isolated_due = isolated.due;
+        let arm_sweep = (fetcher.is_some() && !pending.unarmed.is_empty()).then_some(last_arm_sweep + ARM_SWEEP_INTERVAL);
         let event = tokio::select! {
             event = stream.next() => match event {
                 Some(event) => event,
                 None => break,
             },
+            // QA-0155: a waiting row whose author was admitted later (or that found no room) arms now.
+            _ = tokio::time::sleep_until(arm_sweep.unwrap_or_else(tokio::time::Instant::now)), if arm_sweep.is_some() => {
+                last_arm_sweep = tokio::time::Instant::now();
+                pending.arm_waiting(&admitted);
+                continue;
+            }
             _ = tokio::time::sleep_until(isolated_due.unwrap_or_else(tokio::time::Instant::now)), if isolated_due.is_some() => {
                 let peers = isolated.take_due();
                 if let (Some(doc), false) = (&resync, peers.is_empty()) {
@@ -1738,7 +1891,8 @@ async fn pump_live_events(
                             .flatten()
                             .filter(|provider| Some(*provider) != own)
                             .collect();
-                        pending.wait(entry.content_hash(), meta, &providers, fetcher.is_some());
+                        let author_admitted = admitted(&meta.author_id);
+                        pending.wait(entry.content_hash(), meta, &providers, fetcher.is_some(), author_admitted);
                     }
                 }
             }
@@ -2362,6 +2516,12 @@ mod tests {
             !matches!(stack_b.blob_store().blobs().status(late_hash).await, Ok(iroh_blobs::api::blobs::BlobStatus::Complete { .. })),
             "bob's docs download of the refused content failed"
         );
+        // QA-0155: Alice is not yet a named member of Bob's verse, so her row waits unarmed;
+        // once Bob's role view names her, the arming sweep schedules the re-fetch.
+        stack_b.blob_access_gate().set_verse_access(
+            "verse-a2",
+            crate::docs_engine::VerseAccessSnapshot { owner_did: Some(alice_endpoint_did.clone()), open_to_all: false, viewer_dids: HashSet::new() },
+        );
         stack_a.blob_access_gate().set_verse_access(
             "gate-verse",
             crate::docs_engine::VerseAccessSnapshot { owner_did: None, open_to_all: true, viewer_dids: HashSet::new() },
@@ -2384,7 +2544,7 @@ mod tests {
             .chain(futures_lite::stream::pending());
         let (error_tx, _error_rx) = mpsc::channel(1);
         let error_pump = tokio::spawn(pump_live_events(
-            Box::pin(errors), stack_b.blob_store().clone(), error_tx, readiness.clone(), None, None,
+            Box::pin(errors), stack_b.blob_store().clone(), error_tx, readiness.clone(), None, None, None,
         ));
         tokio::time::timeout(std::time::Duration::from_secs(1), async {
             loop {
@@ -2418,10 +2578,9 @@ mod tests {
         isolated.neighbors.insert(ep_a.id());
         assert!(isolated.take_due().is_empty(), "a neighbor that came back makes the sync moot");
 
-        // QA-0150: an editor that publishes rows naming unfetchable content can fill
-        // only its own share of the re-fetch table; once the table is full a new hash
-        // evicts the most-failed entry instead of being refused, and a hash out of
-        // attempts re-arms when its row is written again.
+        // QA-0150 / QA-0155: only named verse members arm re-fetches; a member fills
+        // only its own share; a full table evicts nothing unspent for a new hash; a hash
+        // past its fast attempts keeps a slow retry, makes room, and a new provider revives it.
         let row = |author: &str, n: usize| {
             let content = format!("{author}-{n}");
             let hash = iroh_blobs::Hash::new(content.as_bytes());
@@ -2434,43 +2593,59 @@ mod tests {
             };
             (hash, meta)
         };
-        let provider = [ep_a.id()];
+        let (provider, second_provider) = ([ep_a.id()], [ep_b.id()]);
+        let unfetchable = anyhow::anyhow!("provider refused");
         let mut pending = PendingRows::default();
+        let (honest, honest_row) = row("did:honest", 0);
+        pending.wait(honest, honest_row, &provider, true, true);
+        for sybil in 0..100 {
+            for n in 0..64 {
+                let (hash, meta) = row(&format!("did:sybil-{sybil}"), n);
+                pending.wait(hash, meta, &provider, true, false);
+            }
+        }
+        assert_eq!(pending.retries.len(), 1, "100 minted authors never take a re-fetch slot");
+        assert!(pending.retries.contains_key(&honest), "Sybil authors cannot evict an honest pending hash");
+        let granted = row("did:sybil-0", 0).0;
+        pending.arm_waiting(&|author: &str| author == "did:sybil-0");
+        assert!(pending.retries.contains_key(&granted), "an author named after its rows arrived arms on the sweep");
         for n in 0..MAX_CONTENT_RETRIES_PER_AUTHOR + 64 {
             let (hash, meta) = row("did:flooder", n);
-            pending.wait(hash, meta, &provider, true);
+            pending.wait(hash, meta, &provider, true, true);
         }
-        assert_eq!(pending.retries.len(), MAX_CONTENT_RETRIES_PER_AUTHOR, "one author holds at most its own share");
+        assert_eq!(pending.per_author["did:flooder"], MAX_CONTENT_RETRIES_PER_AUTHOR, "one member holds at most its own share");
+        assert!(pending.retries.contains_key(&honest), "a member at its cap evicts only its own re-fetches");
         for author in 1..MAX_CONTENT_RETRIES / MAX_CONTENT_RETRIES_PER_AUTHOR {
             for n in 0..MAX_CONTENT_RETRIES_PER_AUTHOR {
                 let (hash, meta) = row(&format!("did:author-{author}"), n);
-                pending.wait(hash, meta, &provider, true);
+                pending.wait(hash, meta, &provider, true, true);
             }
         }
         assert_eq!(pending.retries.len(), MAX_CONTENT_RETRIES, "the table is full");
-        let stale = *pending.retries.iter().find(|(_, retry)| retry.author == "did:flooder").expect("flooder entry").0;
-        let unfetchable = anyhow::anyhow!("provider refused");
-        for _ in 0..3 {
+        let (legit, legit_row) = row("did:legit", 0);
+        pending.wait(legit, legit_row, &provider, true, true);
+        assert!(!pending.retries.contains_key(&legit) && pending.unarmed.contains_key(&legit), "no unspent re-fetch is evicted for a new hash; it waits for room");
+        let stale = *pending.retries.iter().find(|(_, retry)| retry.authors.contains("did:flooder")).expect("flooder entry").0;
+        for _ in 0..MAX_CONTENT_ATTEMPTS {
             pending.fetch_failed(&stale, &unfetchable);
         }
-        let (legit, legit_row) = row("did:legit", 0);
-        pending.wait(legit, legit_row, &provider, true);
-        assert!(pending.retries.contains_key(&legit), "a full table still schedules a new legitimate hash");
-        assert!(!pending.retries.contains_key(&stale), "the most-failed re-fetch made room");
-        assert_eq!(pending.retries.len(), MAX_CONTENT_RETRIES);
-        pending.fetch_failed(&legit, &unfetchable);
-        assert_eq!(pending.retries[&legit].attempt, 1, "a legitimate fetch that failed once is retried");
-        for _ in 1..MAX_CONTENT_ATTEMPTS {
+        assert!(pending.retries[&stale].spent(), "fast attempts are bounded");
+        assert!(pending.retries[&stale].due > tokio::time::Instant::now() + CONTENT_RETRY_MAX, "a spent hash keeps a slow retry");
+        pending.arm_waiting(&|_: &str| true);
+        assert!(!pending.retries.contains_key(&legit), "a sweep never evicts");
+        let rewritten = PendingContent { timestamp: 2, ..row("did:legit", 0).1 };
+        pending.supersede(&rewritten);
+        pending.wait(legit, rewritten, &provider, true, true);
+        assert!(pending.retries.contains_key(&legit) && !pending.retries.contains_key(&stale), "only a spent re-fetch makes room");
+        assert!(pending.unarmed.contains_key(&stale), "the evicted hash still waits for a later arming");
+        for _ in 0..MAX_CONTENT_ATTEMPTS {
             pending.fetch_failed(&legit, &unfetchable);
         }
-        assert!(!pending.retries.contains_key(&legit), "attempts are bounded");
-        assert_eq!(pending.by_hash[&legit].len(), 1, "the row still waits for ContentReady");
-        let (_, rewritten) = row("did:legit", 0);
-        let rewritten = PendingContent { timestamp: 2, ..rewritten };
-        pending.supersede(&rewritten);
-        pending.wait(legit, rewritten, &provider, true);
-        assert_eq!(pending.retries[&legit].attempt, 0, "writing the row again re-arms its re-fetch");
-        assert_eq!(pending.take(&legit).len(), 1, "only the newest entry of the slot lands");
+        let mirror = PendingContent { record_id: "mirror".into(), ..row("did:legit", 0).1 };
+        pending.wait(legit, mirror, &second_provider, true, true);
+        assert_eq!(pending.retries[&legit].attempt, 0, "a second provider revives a spent hash's fast attempts");
+        assert!(pending.retries[&legit].due <= tokio::time::Instant::now() + CONTENT_RETRY_FIRST);
+        assert_eq!(pending.take(&legit).len(), 2, "every row waiting on the content lands with it");
         assert!(!pending.per_author.contains_key("did:legit"), "taking the content releases its author's slot");
 
         // Close must leave the swarm cleanly on both sides.
