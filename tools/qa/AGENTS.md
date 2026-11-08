@@ -1124,8 +1124,8 @@ expect = {probe, target, path?, peers: all|[names], predicate, value?, within_s?
   (ui-state), `asset_blob` (target = content hash: `<run>/data/blobs/<h[:2]>/<h>` size, no HTTP), `alive`.
   Predicates: `equals|not_equals` (1e-3 float tolerance, -0.0 == 0), `includes|excludes` (substring, subset,
   list membership), `absent|present`, `count` (int or `{min,max}`), `agree` (all listed peers digest-equal at
-  one instant). `t0` = the step's last fire, or `after`'s fire. `always` checks every observation in
-  [t0, step end + hold_s].
+  one instant). `t0` = the step's last fire, or `after`'s fire (a macro's completion, see Wait-and-anchor rules).
+  `always` checks every observation in [t0, step end + hold_s].
 - **Probing does not perturb.** QA-0125: every `GET /hierarchy` rebuilds the GUI tree, so hierarchy polls are
   capped at 0.5 Hz (validator), per-node GETs carry the nodes under test, GUI typing steps set
   `"probe": {"hierarchy_ms": 0}`, and probers only poll targets of steps that have started. Observations are
@@ -1138,19 +1138,45 @@ Copy the closest scenario, keep ids short, bind every created id, express each c
 in the analyzer), give refusals `"expect": "refused"`, mark single logical writes whose intermediate states
 must not be visible `"meta": {"atomic": true}`, and run `run.py validate NAME` before any app launch.
 
+### Wait-and-anchor rules
+
+QA-0140: the harness must not report its own timing as a product fault.
+
+- **Widget wait.** gui `click|type|key|click_until` poll the ui-tree every 100 ms for an enabled, visible widget for
+  `args.wait_s` (default 5 s; `0` refuses at once) before `locator_not_found`; only that refusal is retried
+  (`client.py` `PeerClient._locate`). The event carries `waited_ms` (0 when the first poll found it) and the report
+  prints the wait distribution. `key` waits only when it names a widget (`name`/`role`/`nth`); `scroll_until` keeps
+  its own scroll-and-retry loop. An `"expect": "refused"` click on a disabled control now costs the full wait.
+- **Unresolved refs.** A ref that is unbound, or resolves to null because the action that should produce it failed,
+  fails that action or expectation (`error_unresolved` / `unresolved`) with an anomaly of kind `unresolved_ref`
+  naming the ref; null is never substituted as a target (`scenario.py` `Context.lookup`, `driver.py` `execute`).
+  `optional` actions and `meta.optional` expectations still skip quietly. A failed action's record carries `failure`.
+- **Wall-clock cadence.** `drone_flight` tick k fires at t0 + k/rate_hz; a tick whose whole slot has passed is skipped,
+  never caught up, as a `skipped_tick` event (and one `skipped_tick` anomaly), and no call starts after
+  t0 + duration_s (`driver.py` `_drone_flight`).
+- **Write failures.** A failed REST/MCP write is a harness/throughput anomaly, never a replication miss:
+  `write_timeout` (socket timeout, HTTP 408/504, "timed out") or `write_refused` (a permitted write refused).
+  Authorization denials and 5xx other than 503/504 stay S2 product findings. Failed sub-writes of a macro aggregate
+  per (macro, kind). An expectation whose `after` anchor is a failed write is "not exercised": no never-held anomaly.
+  Classified from event fields, so `run.py analyze` re-classifies old runs (`analyze.py` `write_failure_kind`).
+- **`after` on a write burst.** Anchoring on a macro means its completion, so an `agree` is judged once the writes
+  stop (`expectations.jsonl` `t0_basis`); city-lite step 5 anchors its four `agree` expectations on `flight`.
+- **ULID ids.** `ingest_device_payload.payload_id` is a fresh `new_ulid()` per call (`driver.py` `_drone_flight`).
+
 ### Reading the report
 
 `<run>/report.md` (tables), `latency.csv` (one row per expectation x peer), `convergence.csv`, `timeline.svg`
 (per step x peer: green fire->converged within budget, red past budget or never, action ticks, host CPU band),
-`anomalies.json` (`[{id, severity_hint, scenario, step, peers, title, evidence, repro}]`, never truncated), plus
+`anomalies.json` (`[{id, severity_hint, kind?, scenario, step, peers, title, evidence, repro}]`, never truncated), plus
 the raw `events.jsonl`, `observations.jsonl`, `expectations.jsonl`, `steps.jsonl`, `host.csv`,
 `fingerprint-final.json`. Severity hints: S1 = a forbidden write accepted, an `always` violation, a held state
 that regressed (resurrection), divergence still open at run end, final fingerprint mismatch, a peer that stopped
 answering; S2 = never converged, convergence beyond 2x budget, a permitted action refused, a resolved divergence
 episode > 15 s; S3 = in budget x2, atomic partial state; `harness` = the simulator could not run an action or
-resolve an expectation. Until QA-0119 lands, read every latency with the CPU table: they are upper bounds under
-host contention. `repro` re-runs one step: `python tools/qa/sim/run.py <scenario> --steps <id>` (earlier steps
-that bind ids must be included in the range).
+resolve an expectation, or the write path timed out or fell behind (`kind`: see Wait-and-anchor rules). Until
+QA-0119 lands, read every latency with the CPU table: they are upper bounds under host contention. `repro` re-runs
+one step: `python tools/qa/sim/run.py <scenario> --steps <id>` (earlier steps that bind ids must be included in the
+range).
 
 ## Native Portal fixture client
 

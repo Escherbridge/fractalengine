@@ -90,10 +90,10 @@
         {"id": "flight", "peer": "owner", "via": "macro", "op": "drone_flight", "args": {"petal_id": "$dt.id", "node_ids": ["$dr0.id", "$dr1.id", "$dr2.id", "$dr3.id"], "rate_hz": 2, "duration_s": 180, "radius": 40, "altitude": 30, "period_s": 30, "metric": "altitude_m", "format_id": "qa.fractalengine/drone-telemetry@1", "payload_every": 20}}
       ],
       "expect": [
-        {"probe": "transform", "target": "$dr0.id", "path": "position", "predicate": "agree", "within_s": 30},
-        {"probe": "transform", "target": "$dr3.id", "path": "position", "predicate": "agree", "within_s": 30},
-        {"probe": "timeseries", "target": {"petal_id": "$dt.id", "kind": "latest_per_anchor", "metric": "altitude_m"}, "path": "digest", "predicate": "agree", "within_s": 60},
-        {"probe": "timeseries", "target": {"petal_id": "$dt.id", "kind": "all_readings"}, "path": "digest", "predicate": "agree", "within_s": 60},
+        {"probe": "transform", "target": "$dr0.id", "path": "position", "predicate": "agree", "after": "flight", "within_s": 30},
+        {"probe": "transform", "target": "$dr3.id", "path": "position", "predicate": "agree", "after": "flight", "within_s": 30},
+        {"probe": "timeseries", "target": {"petal_id": "$dt.id", "kind": "latest_per_anchor", "metric": "altitude_m"}, "path": "digest", "predicate": "agree", "after": "flight", "within_s": 60},
+        {"probe": "timeseries", "target": {"petal_id": "$dt.id", "kind": "all_readings"}, "path": "digest", "predicate": "agree", "after": "flight", "within_s": 60},
         {"probe": "alive", "target": "peer", "path": "alive", "predicate": "equals", "value": true, "mode": "always"}
       ],
       "checkpoints": [

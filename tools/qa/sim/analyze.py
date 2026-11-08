@@ -5,6 +5,7 @@ import collections
 import json
 import math
 import os
+import re
 import sys
 
 import pandas as pd
@@ -17,6 +18,49 @@ import timeline_svg  # noqa: E402
 PEER_LOCAL_PROBES = {"role", "nav", "ui", "alive", "_tick", "_error"}
 DIVERGENCE_S = 15.0
 PARTIAL_MIN_S = 0.0
+WRITE_REST_OPS = {"create_fractal", "create_petal", "create_node", "set_transform", "set_property", "delete_property",
+                  "delete_node", "upsert_group", "delete_group", "upload_asset", "ingest_readings"}
+WRITE_MCP_PREFIXES = ("create_", "update_", "delete_", "set_", "place_", "upload_", "ingest_", "register_", "install_",
+                      "import_", "move_", "promote_", "commit_", "sim_start", "sim_stop", "sim_step", "sim_inject")
+TIMEOUT_TEXT = re.compile(r"timed out|timeout", re.I)
+DENIED_TEXT = re.compile(r"insufficient permission|forbidden|unauthori[sz]ed|not authori[sz]ed|permission denied|"
+                         r"access denied|not_found_or_denied", re.I)
+UNRESOLVED_TEXT = re.compile(r"unresolved \$(\S+)")
+
+
+def is_write_event(event):
+    """True for REST/MCP actions that mutate state; macro events aggregate their sub-actions, GUI input is no write."""
+    via, op = event.get("via"), str(event.get("op"))
+    if via == "rest":
+        if op == "request":
+            return str((event.get("args_small") or {}).get("method", "GET")).upper() != "GET"
+        return op in WRITE_REST_OPS
+    return via == "mcp" and op.startswith(WRITE_MCP_PREFIXES)
+
+
+def write_failure_kind(event):
+    """write_timeout | write_refused for a failed write that is a throughput or harness matter, else None.
+
+    A timeout proves nothing about the write, so it counts whatever the action expected. A refusal counts only for
+    a permitted write (expect ok); authorization denials and server faults (5xx but 503/504) stay product findings.
+    """
+    if event.get("optional") or event.get("status") != "done" or event.get("ok") is not False or not is_write_event(event):
+        return None
+    status = event.get("http_status")
+    text = "%s %s" % (event.get("code") or "", event.get("error") or "")
+    if event.get("timed_out") or event.get("verdict") == "timed_out" or status in (408, 504) or TIMEOUT_TEXT.search(text):
+        return "write_timeout"
+    if event.get("expect") != "ok" or event.get("code") == "not_running":
+        return None
+    if status in (401, 403) or DENIED_TEXT.search(text) or (isinstance(status, int) and 500 <= status < 600 and status != 503):
+        return None
+    return "write_refused"
+
+
+def unresolved_ref_in(text):
+    """The ref named by an 'unresolved $<ref>' error (runs recorded before the unresolved_ref field)."""
+    found = UNRESOLVED_TEXT.match(str(text or ""))
+    return found.group(1) if found else None
 
 
 # -- generic helpers (lifted from the run-1 analyzer) ------------------------------------------
@@ -117,6 +161,7 @@ class Analysis:
             if record.get("event") == "end":
                 self.step_window[record["step"]] = record
         self.host = self._load_host()
+        self.events_by_id = {e["action_id"]: e for e in self.events if e.get("status") == "done"}
         self.anomalies = []
 
     def rel(self, t):
@@ -143,12 +188,15 @@ class Analysis:
             return None
         return float(pd.to_numeric(window["cpu_total_pct"], errors="coerce").mean())
 
-    def anomaly(self, severity, step, peers, title, evidence):
-        self.anomalies.append({"id": "SIM-%s-%03d" % (self.scenario, len(self.anomalies) + 1),
-                               "severity_hint": severity, "scenario": self.scenario, "step": step,
-                               "peers": sorted(peers) if isinstance(peers, (list, set, tuple)) else peers,
-                               "title": title, "evidence": evidence,
-                               "repro": "python tools/qa/sim/run.py %s --steps %s" % (self.scenario, step)})
+    def anomaly(self, severity, step, peers, title, evidence, kind=None):
+        record = {"id": "SIM-%s-%03d" % (self.scenario, len(self.anomalies) + 1), "severity_hint": severity}
+        if kind:  # harness/throughput classes: unresolved_ref, write_timeout, write_refused, skipped_tick, no_anchor
+            record["kind"] = kind
+        record.update(scenario=self.scenario, step=step,
+                      peers=sorted(peers) if isinstance(peers, (list, set, tuple)) else peers,
+                      title=title, evidence=evidence,
+                      repro="python tools/qa/sim/run.py %s --steps %s" % (self.scenario, step))
+        self.anomalies.append(record)
 
     # -- expectations ----------------------------------------------------------------------------
     def eval_times(self, peer, series, start, stop):
@@ -164,9 +212,17 @@ class Analysis:
                     continue  # every listed peer is outside this run's peer subset
                 if (record.get("meta") or {}).get("optional") or (record.get("status") == "unresolved" and record.get("optional")):
                     continue  # e.g. a Khronos model that was not cached: declared optional by the scenario
+                if record.get("status") == "unresolved":
+                    ref = record.get("unresolved_ref") or unresolved_ref_in(record.get("error"))
+                    self.anomaly("harness", record["step"], record.get("peers", []),
+                                 "expectation %s not exercised: unresolved $%s" % (record["exp_id"], ref),
+                                 {"exp_id": record["exp_id"], "ref": ref, "reason": record.get("unresolved_reason"),
+                                  "probe": record.get("probe"), "error": record.get("error")}, kind="unresolved_ref")
+                    continue
                 self.anomaly("harness", record["step"], record.get("peers", []),
                              "expectation %s could not be registered (%s)" % (record["exp_id"], record.get("status")),
-                             {"error": record.get("error"), "probe": record.get("probe")})
+                             {"error": record.get("error"), "probe": record.get("probe")},
+                             kind="no_anchor" if record.get("status") == "no_anchor" else None)
                 continue
             window = self.step_window.get(record["step"], {})
             step_end = window.get("t", self.end)
@@ -190,11 +246,21 @@ class Analysis:
         return value is not predicates.MISSING and predicates.evaluate(record["predicate"], value, record.get("value"),
                                                                        record.get("path"))
 
+    def _anchor_failure(self, record):
+        """'<action id>: write_timeout|write_refused' when the expectation's `after` anchor is a failed write."""
+        anchor = self.events_by_id.get(record.get("after") or "")
+        kind = write_failure_kind(anchor) if anchor else None
+        return "%s: %s" % (anchor["action_id"], kind) if kind else None
+
     def _base_row(self, record, peer):
-        return {"exp_id": record["exp_id"], "step": record["step"], "peer": peer, "probe": record["probe"],
-                "target": short(record.get("target_key"), 40), "predicate": record["predicate"], "mode": record["mode"],
-                "path": record.get("path"), "covers": record.get("covers"), "within_s": record["within_s"],
-                "t0": record["t0"], "t0_rel": self.rel(record["t0"]), "severity": (record.get("meta") or {}).get("severity")}
+        row = {"exp_id": record["exp_id"], "step": record["step"], "peer": peer, "probe": record["probe"],
+               "target": short(record.get("target_key"), 40), "predicate": record["predicate"], "mode": record["mode"],
+               "path": record.get("path"), "covers": record.get("covers"), "within_s": record["within_s"],
+               "t0": record["t0"], "t0_rel": self.rel(record["t0"]), "severity": (record.get("meta") or {}).get("severity")}
+        failure = self._anchor_failure(record)
+        if failure:
+            row["anchor_failure"] = failure
+        return row
 
     def _eventually_rows(self, record, step_end, horizon):
         rows = []
@@ -301,6 +367,8 @@ class Analysis:
                     "within_s": record["within_s"], "latency_s": row.get("latency_s"), "covers": record.get("covers"),
                     "cpu_mean_pct": row.get("cpu_mean")}
         if not row["matched"]:
+            if row.get("anchor_failure"):
+                return  # not exercised: the anchor write failed and has its own anomaly; not a replication miss
             self.anomaly(severity or "S2", record["step"], peers, "%s never held on %s (%s %s)" % (
                 record["exp_id"], "/".join(peers), record["probe"], record["predicate"]), evidence)
         elif not row["budget_ok"]:
@@ -321,32 +389,77 @@ class Analysis:
         frame = pd.DataFrame(self.events)
         if not len(frame):
             return frame
-        for column in ("verdict", "status", "fire_late_ms", "lane", "t_fire", "t_ack", "ok", "code", "error"):
+        for column in ("verdict", "status", "fire_late_ms", "lane", "t_fire", "t_ack", "ok", "code", "error", "waited_ms"):
             if column not in frame:
                 frame[column] = None
         frame["rtt_ms"] = (frame["t_ack"] - frame["t_fire"]) * 1000.0
         return frame
 
-    def action_anomalies(self, frame):
-        if not len(frame):
-            return
-        for _i, event in frame.iterrows():
+    def action_anomalies(self):
+        """One anomaly per misbehaving action; failed macro sub-writes aggregate per (macro, kind)."""
+        bursts = collections.OrderedDict()  # (macro action id, kind) -> failed sub-action events
+        skipped = collections.OrderedDict()  # macro action id -> skipped_tick events
+        sub_calls = collections.Counter()
+        for event in self.events:
             verdict, status = event.get("verdict"), str(event.get("status"))
-            if verdict == "accepted_but_expected_refusal":
+            macro = event["action_id"].rsplit(".", 1)[0] if event.get("lane") == "macro" else None
+            if macro and status == "done":
+                sub_calls[macro] += 1
+            if status == "skipped_tick":
+                skipped.setdefault(macro, []).append(event)
+                continue
+            kind = write_failure_kind(event)
+            if kind and macro:
+                bursts.setdefault((macro, kind), []).append(event)
+            elif kind:
+                self.anomaly("harness", event["step"], [event["peer"]], "write %s: %s %s/%s" % (
+                    "timed out" if kind == "write_timeout" else "refused (%s)" % event.get("code"),
+                    event["action_id"], event["via"], event["op"]),
+                    {"action_id": event["action_id"], "http_status": event.get("http_status"), "code": event.get("code"),
+                     "error": event.get("error"), "args": event.get("args_small")}, kind=kind)
+            elif verdict == "accepted_but_expected_refusal":
                 self.anomaly("S1", event["step"], [event["peer"]], "write accepted that the role forbids: %s %s/%s" % (
                     event["action_id"], event["via"], event["op"]),
                     {"action_id": event["action_id"], "http_status": event.get("http_status"),
                      "token_source": event.get("token_source"), "args": event.get("args_small")})
             elif verdict == "refused_but_expected_ok":
+                if event.get("via") == "macro" and event.get("code") == "partial":
+                    continue  # the failed sub-calls carry their own anomalies
                 self.anomaly("S2", event["step"], [event["peer"]], "permitted action refused: %s %s/%s (%s)" % (
                     event["action_id"], event["via"], event["op"], event.get("code")),
                     {"action_id": event["action_id"], "error": event.get("error"), "args": event.get("args_small")})
             elif verdict == "peer_down":
                 self.anomaly("S1", event["step"], [event["peer"]], "peer did not answer during %s (crash?)" % event["action_id"],
                              {"action_id": event["action_id"], "error": event.get("error")})
+            elif verdict == "timed_out":
+                self.anomaly("S1", event["step"], [event["peer"]], "request timed out during %s (peer up but silent)" % event["action_id"],
+                             {"action_id": event["action_id"], "error": event.get("error")})
             elif status.startswith("error") or event.get("code") == "harness_error":
-                self.anomaly("harness", event["step"], [event["peer"]], "harness could not run %s: %s" % (
-                    event["action_id"], event.get("error") or status), {"action_id": event["action_id"], "status": status})
+                ref = event.get("unresolved_ref") or unresolved_ref_in(event.get("error"))
+                if ref:
+                    self.anomaly("harness", event["step"], [event["peer"]], "action %s not run: unresolved $%s" % (
+                        event["action_id"], ref), {"action_id": event["action_id"], "ref": ref,
+                                                   "reason": event.get("unresolved_reason"), "status": status},
+                        kind="unresolved_ref")
+                else:
+                    self.anomaly("harness", event["step"], [event["peer"]], "harness could not run %s: %s" % (
+                        event["action_id"], event.get("error") or status), {"action_id": event["action_id"], "status": status})
+        for (macro, kind), group in bursts.items():
+            reasons = collections.Counter("%s %s" % (e.get("code"), str(e.get("error") or "")[:80]) for e in group)
+            self.anomaly("harness", group[0]["step"], [group[0]["peer"]], "%s: %d of %d write call(s) %s" % (
+                macro, len(group), sub_calls[macro], "timed out" if kind == "write_timeout" else "were refused"),
+                {"macro": macro, "count": len(group), "of": sub_calls[macro],
+                 "ops": dict(collections.Counter(e["op"] for e in group)), "reasons": dict(reasons.most_common(5)),
+                 "first_rel_s": self.rel(group[0]["t_fire"]), "last_rel_s": self.rel(group[-1]["t_fire"]),
+                 "action_ids": [e["action_id"] for e in group]}, kind=kind)
+        for macro, group in skipped.items():
+            ticks = (self.events_by_id.get(macro, {}).get("result_small") or {}).get("ticks")
+            self.anomaly("harness", group[0]["step"], [group[0]["peer"]],
+                         "%s: %d%s tick(s) skipped, the write path fell behind the wall-clock schedule" % (
+                             macro, len(group), " of %d" % ticks if ticks else ""),
+                         {"macro": macro, "skipped": len(group), "ticks": ticks, "first_tick": group[0].get("tick"),
+                          "last_tick": group[-1].get("tick"), "max_late_ms": max(e.get("late_ms") or 0 for e in group)},
+                         kind="skipped_tick")
 
     def barrier_table(self, frame):
         if not len(frame):
@@ -523,7 +636,7 @@ class Analysis:
                          {"failure": self.meta["failure"], "steps_started": [s["step"] for s in self.steps if s.get("event") == "start"]})
         rows = self.expectation_rows()
         frame = self.action_frame()
-        self.action_anomalies(frame)
+        self.action_anomalies()
         episodes = self.divergence()
         conv = self.convergence(rows)
         barrier = self.barrier_table(frame)
@@ -551,6 +664,7 @@ class Analysis:
         host = self.host[self.host["peer"] == "_host"] if len(self.host) else self.host
         cpu_series = pd.to_numeric(host["cpu_total_pct"], errors="coerce") if len(host) else pd.Series(dtype=float)
         severities = collections.Counter(a["severity_hint"] for a in self.anomalies)
+        kinds = collections.Counter(a["kind"] for a in self.anomalies if a.get("kind"))
         summary = {"scenario": self.scenario, "run_dir": self.run_dir, "duration_s": round(self.end - self.origin, 1),
                    "expectations": int(len(rows)), "met": int(rows["matched"].sum()) if len(rows) else 0,
                    "in_budget": int(rows["budget_ok"].sum()) if len(rows) else 0,
@@ -558,7 +672,7 @@ class Analysis:
                    "latency_max_s": max(latencies) if latencies else None,
                    "cpu_mean_pct": None if not len(cpu_series) else round(float(cpu_series.mean()), 1),
                    "cpu_max_pct": None if not len(cpu_series) else round(float(cpu_series.max()), 1),
-                   "anomalies": len(self.anomalies), "by_severity": dict(severities),
+                   "anomalies": len(self.anomalies), "by_severity": dict(severities), "by_kind": dict(kinds),
                    "actions": int(len(frame)), "report": os.path.join(self.run_dir, "report.md")}
         lines = ["# Simulation report: %s" % self.scenario, ""]
         meta = self.meta
@@ -573,7 +687,10 @@ class Analysis:
                   "| host CPU mean / max | %s %% / %s %% |" % (fmt(summary["cpu_mean_pct"], 1), fmt(summary["cpu_max_pct"], 1)),
                   "| expectations met / in budget / total | %d / %d / %d |" % (summary["met"], summary["in_budget"], summary["expectations"]),
                   "| replication latency p50 / p95 / max | %s / %s / %s s |" % (fmt(summary["latency_p50_s"]), fmt(summary["latency_p95_s"]), fmt(summary["latency_max_s"])),
-                  "| anomalies | %d %s |" % (len(self.anomalies), json.dumps(dict(severities))), ""]
+                  "| anomalies | %d %s |" % (len(self.anomalies), json.dumps(dict(severities)))]
+        if kinds:
+            lines.append("| anomaly kinds | %s |" % json.dumps(dict(kinds)))
+        lines.append("")
         if meta.get("cpu_note"):
             lines += ["> " + meta["cpu_note"], ""]
         lines += ["## Prober load (read rates next to the latencies they measure)", "",
@@ -607,6 +724,8 @@ class Analysis:
                 notes.append("regressed +%s" % fmt(float(r["regressed_rel"]), 1))
             if pd.notna(r.get("partial_states")) and r.get("partial_states"):
                 notes.append("partial states %d" % int(r["partial_states"]))
+            if isinstance(r.get("anchor_failure"), str):
+                notes.append("not exercised: anchor %s" % r["anchor_failure"])
             if isinstance(r.get("covers"), str):
                 notes.append(r["covers"])
             lines.append("| %s | %s | %s | %s | `%s` | %s | %s | %s | %s | %s | %s | %s |" % (
@@ -623,8 +742,18 @@ class Analysis:
             skipped = frame[frame["status"].astype(str).str.startswith("skipped")]
             if len(skipped):
                 lines += ["", "Skipped actions: %d (%s)." % (len(skipped), ", ".join(sorted(set(skipped["status"]))))]
+            ran = frame[frame["status"] == "done"]
             lines += ["", "Action round-trip: p50 %s ms, p95 %s ms over %d actions." % (
-                fmt(pct(list(frame["rtt_ms"].dropna()), 50), 0), fmt(pct(list(frame["rtt_ms"].dropna()), 95), 0), len(frame))]
+                fmt(pct(list(ran["rtt_ms"].dropna()), 50), 0), fmt(pct(list(ran["rtt_ms"].dropna()), 95), 0), len(ran))]
+            gui = frame[frame["via"] == "gui"]
+            gui_waits = pd.to_numeric(gui["waited_ms"], errors="coerce")
+            if gui_waits.notna().any():
+                waits = [w for w in gui_waits.dropna() if w > 0]
+                lines += ["", "GUI widget waits: %d of %d GUI actions polled for their widget (p50 %s ms, p95 %s ms, max %s ms); "
+                          "%d still refused locator_not_found after waiting." % (
+                              len(waits), len(gui), fmt(pct(waits, 50), 0), fmt(pct(waits, 95), 0),
+                              fmt(max(waits) if waits else None, 0),
+                              int(((gui["code"] == "locator_not_found") & (gui_waits.fillna(0) > 0)).sum()))]
         lines += ["", "## Divergence episodes (peer vs majority > %.0f s)" % self.divergence_s, ""]
         if episodes:
             lines += ["| probe | target | peer | start +s | end +s | duration s |", "|---|---|---|---|---|---|"]
@@ -673,9 +802,10 @@ class Analysis:
             lines.append("No checkpoints.")
         lines += ["", "## Anomalies (%d, complete list; also anomalies.json)" % len(self.anomalies), ""]
         if self.anomalies:
-            lines += ["| id | severity | step | peers | title |", "|---|---|---|---|---|"]
-            lines += ["| %s | %s | %s | %s | %s |" % (a["id"], a["severity_hint"], a["step"], ",".join(a["peers"]) if isinstance(a["peers"], list) else a["peers"],
-                                                   a["title"].replace("|", "/")) for a in self.anomalies]
+            lines += ["| id | severity | kind | step | peers | title |", "|---|---|---|---|---|---|"]
+            lines += ["| %s | %s | %s | %s | %s | %s |" % (a["id"], a["severity_hint"], a.get("kind") or "", a["step"],
+                                                       ",".join(a["peers"]) if isinstance(a["peers"], list) else a["peers"],
+                                                       a["title"].replace("|", "/")) for a in self.anomalies]
         else:
             lines.append("None.")
         lines += ["", "Timeline: `timeline.svg`; raw: `events.jsonl`, `observations.jsonl`, `expectations.jsonl`, `host.csv`; "

@@ -14,6 +14,8 @@ import fe  # noqa: E402
 
 INPUT_WAIT_FRAMES = 5
 RUN_RELOAD_SECONDS = 2.0
+WIDGET_WAIT_S = 5.0  # default budget to poll for an enabled visible widget (args.wait_s overrides, 0 refuses at once)
+WIDGET_POLL_S = 0.1
 
 
 class Outcome(dict):
@@ -55,6 +57,12 @@ def _ambiguous_candidates(refusal):
         return None
 
 
+def _is_timeout(error):
+    """True when a transport failure was a socket timeout (peer up but silent), not a refused or reset connection."""
+    return (isinstance(error, TimeoutError) or isinstance(getattr(error, "reason", None), TimeoutError)
+            or "timed out" in str(error).lower())
+
+
 class PeerClient:
     """One peers.ps1 member: token selection, REST/MCP requests and synthetic GUI input."""
 
@@ -69,6 +77,7 @@ class PeerClient:
         self._run_loaded = 0.0
         self._stale_tokens = {}
         self._gui_token = None
+        self._waited_ms = 0
         self._lock = threading.Lock()
 
     # -- discovery ---------------------------------------------------------------------------
@@ -135,7 +144,8 @@ class PeerClient:
             except fe.Refused as refusal:
                 return Outcome(status=refusal.status, ok=False, refused=True, code=refusal.code, error=refusal.message)
             except (urllib.error.URLError, ConnectionError, TimeoutError, OSError) as error:
-                return Outcome(status=-1, ok=False, refused=False, code="not_running", error=str(error)[:300])
+                return Outcome(status=-1, ok=False, refused=False, code="not_running", error=str(error)[:300],
+                               timed_out=_is_timeout(error))
             if status == 429 and attempt + 1 < attempts:
                 time.sleep(0.5)
                 continue
@@ -230,17 +240,47 @@ class PeerClient:
         return fe.decode_object(raw)
 
     def gui(self, op, args):
-        """Locator-driven GUI op (fe.py click --name / type --into / key / scroll / wait-for)."""
+        """Locator-driven GUI op (fe.py click --name / type --into / key / scroll / wait-for); waited_ms = widget polling time."""
         with self.gui_lock:
+            self._waited_ms = 0
             try:
-                return Outcome(status=200, ok=True, refused=False, data=self._gui(op, args))
+                data = self._gui(op, args)
+                return Outcome(status=200, ok=True, refused=False, data=data, waited_ms=self._waited_ms)
             except fe.Refused as refusal:
                 return Outcome(status=refusal.status, ok=False, refused=True, code=refusal.code,
-                               error=str(refusal.message)[:300])
+                               error=str(refusal.message)[:300], waited_ms=self._waited_ms)
             except fe.NotRunning as error:
-                return Outcome(status=-1, ok=False, refused=False, code="not_running", error=str(error)[:300])
+                return Outcome(status=-1, ok=False, refused=False, code="not_running", error=str(error)[:300],
+                               waited_ms=self._waited_ms)
 
-    def _locate(self, args, input_only=False):
+    @staticmethod
+    def _widget_wait(args):
+        """Seconds an action polls for its widget: args.wait_s, else WIDGET_WAIT_S."""
+        return float(args.get("wait_s", WIDGET_WAIT_S))
+
+    def _locate(self, args, input_only=False, wait_s=0.0):
+        """(x, y, evidence) of an enabled visible widget; only locator_not_found is polled, every WIDGET_POLL_S up to wait_s."""
+        started = time.monotonic()
+        waited = False
+        try:
+            while True:
+                try:
+                    x, y, evidence = self._locate_once(args, input_only)
+                except fe.Refused as refusal:
+                    remaining = started + wait_s - time.monotonic()
+                    if refusal.code != "locator_not_found" or remaining <= 0:
+                        raise
+                    waited = True
+                    time.sleep(min(WIDGET_POLL_S, remaining))
+                    continue
+                if waited:
+                    evidence["waited_ms"] = round((time.monotonic() - started) * 1000)
+                return x, y, evidence
+        finally:
+            if waited:
+                self._waited_ms += round((time.monotonic() - started) * 1000)
+
+    def _locate_once(self, args, input_only=False):
         evidence = {}
         try:
             x, y = fe.locate(self.run(), args["name"], args.get("role"), args.get("nth"), None,
@@ -258,7 +298,7 @@ class PeerClient:
 
     def _gui(self, op, args):
         if op == "click":
-            x, y, evidence = self._locate(args)
+            x, y, evidence = self._locate(args, wait_s=self._widget_wait(args))
             click = {"kind": "pointer_click", "x": x, "y": y, "button": args.get("button", "left")}
             mods = [{"kind": "key_press", "key": fe.MODIFIER_KEYS[m]} for m in args.get("modifiers", [])]
             commands = mods + [click] + ((mods + [dict(click)]) if args.get("double") else [])
@@ -277,15 +317,20 @@ class PeerClient:
             located = None
             if args.get("into"):
                 x, y, located = self._locate({"name": args["into"], "role": args.get("role"),
-                                              "nth": args.get("nth")}, input_only=True)
+                                              "nth": args.get("nth")}, input_only=True,
+                                             wait_s=self._widget_wait(args))
                 self.gui_input([{"kind": "pointer_click", "x": x, "y": y, "button": "left"}])
                 if args.get("select_all", True):
                     self.gui_input([{"kind": "key_press", "key": k} for k in fe.parse_combo("ctrl+a")])
             return {"locator": located, "outcome": self.gui_input([{"kind": "text_entry", "text": str(args["text"])}])}
         if op == "key":
+            located = None
+            if args.get("name"):  # optional guard: hold the keys until this widget is enabled and visible
+                _x, _y, located = self._locate(args, wait_s=self._widget_wait(args))
             combos = args.get("combos") or [args["combo"]]
             commands = [{"kind": "key_press", "key": key} for combo in combos for key in fe.parse_combo(combo)]
-            return {"outcome": self.gui_input(commands)}
+            outcome = self.gui_input(commands)
+            return {"locator": located, "outcome": outcome} if located else {"outcome": outcome}
         if op == "scroll":
             commands = []
             if args.get("x") is not None:
@@ -326,7 +371,7 @@ class PeerClient:
                     return {"clicks": attempt}
                 if attempt == int(args.get("max", 4)):
                     break
-                x, y, _evidence = self._locate(args["click"])
+                x, y, _evidence = self._locate(args["click"], wait_s=self._widget_wait(args))
                 self.gui_input([{"kind": "pointer_click", "x": x, "y": y, "button": "left"}])
                 time.sleep(float(args.get("pause_s", 0.4)))
             raise fe.Refused(0, "click_until_exhausted", "%s never appeared" % args["until"])

@@ -81,7 +81,7 @@ def write(path, analysis, rows, conv, frame, width=1400):
                 if event.get("lane") in ("macro",):
                     continue
                 xf = _x(event["t_fire"], origin, span, width)
-                tick = "#e03131" if str(event.get("verdict", "")).startswith(("accepted_but", "refused_but")) else "#343a40"
+                tick = "#e03131" if str(event.get("verdict", "")).startswith(("accepted_but", "refused_but", "timed_out")) else "#343a40"
                 out.append('<line x1="%.1f" y1="%d" x2="%.1f" y2="%d" stroke="%s"><title>%s</title></line>' % (
                     xf, y + 1, xf, y + ROW_H - 1, tick, html.escape("%s %s/%s %s" % (event["action_id"], event["via"], event["op"], event.get("verdict")))))
     if not keys:

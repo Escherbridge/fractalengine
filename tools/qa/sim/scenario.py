@@ -29,6 +29,8 @@ NAMESPACES = {"fixture", "peers", "assets", "run"}
 LOOP_VARS = {"i", "tick"}
 SAFE_ID = re.compile(r"^[A-Za-z][A-Za-z0-9_]{0,47}$")
 SYNC = re.compile(r"^(barrier|seq|\+\d+(\.\d+)?)$")
+WIDGET_WAIT_OPS = {"click", "type", "key", "click_until"}
+WIDGET_WAIT_MAX_S = 60
 WHOLE_REF = re.compile(r"^\$([A-Za-z][A-Za-z0-9_.\-]*)$")
 INLINE_REF = re.compile(r"\$\{([A-Za-z][A-Za-z0-9_.\-]*)\}")
 CAPTURES = ("scene", "window")
@@ -96,7 +98,12 @@ SCHEMA = {
 
 
 class UnresolvedRef(Exception):
-    """A $-reference names a binding that does not exist (yet)."""
+    """A $-reference names a binding that does not exist, or one its producing action left null."""
+
+    def __init__(self, ref, reason=None):
+        super().__init__(ref)
+        self.ref = ref
+        self.reason = reason
 
 
 def find(name):
@@ -260,6 +267,12 @@ def _validate_action(action, where, names, defined, errors):
         errors.append("%s: args must be an object" % label)
     if not isinstance(action.get("bind", {}), dict):
         errors.append("%s: bind must map names to result paths" % label)
+    if isinstance(action.get("args"), dict) and "wait_s" in action["args"] and via == "gui":
+        wait = action["args"]["wait_s"]
+        if action.get("op") not in WIDGET_WAIT_OPS:
+            errors.append("%s: args.wait_s applies to gui %s only" % (label, "|".join(sorted(WIDGET_WAIT_OPS))))
+        elif isinstance(wait, bool) or not isinstance(wait, (int, float)) or not 0 <= wait <= WIDGET_WAIT_MAX_S:
+            errors.append("%s: args.wait_s must be seconds within [0, %d]" % (label, WIDGET_WAIT_MAX_S))
     for ref in refs_in(action.get("args", {})):
         root = ref.split(".")[0]
         if root not in NAMESPACES and root not in defined and root not in LOOP_VARS:
@@ -317,16 +330,26 @@ class Context:
         if extra:
             scope.update(extra)
         if parts[0] not in scope:
-            raise UnresolvedRef(ref)
-        value = scope[parts[0]]
+            raise UnresolvedRef(ref, "%s is not bound (its action did not run, or has not run yet)" % parts[0])
+        root = value = scope[parts[0]]
         for part in parts[1:]:
             if isinstance(value, dict) and part in value:
                 value = value[part]
             elif isinstance(value, list) and part.lstrip("-").isdigit() and -len(value) <= int(part) < len(value):
                 value = value[int(part)]
             else:
-                raise UnresolvedRef(ref)
+                raise UnresolvedRef(ref, "no field %r" % part)
+        if value is None:  # a failed action still binds its record: its null id must never become a target
+            raise UnresolvedRef(ref, self._null_reason(parts, root))
         return value
+
+    @staticmethod
+    def _null_reason(parts, root):
+        if isinstance(root, dict) and root.get("ok") is False:
+            return "action %s failed: %s" % (parts[0], root.get("failure") or "refused")
+        if isinstance(root, dict) and "ok" in root:
+            return "action %s returned no value there" % parts[0]
+        return "%s is null" % ".".join(parts)
 
     def resolve(self, value, extra=None):
         """Deep-substitute '$a.b' (typed) and '${a.b}' (inline text); raises UnresolvedRef."""

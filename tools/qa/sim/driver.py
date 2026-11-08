@@ -35,6 +35,25 @@ def surreal_string(text):
     return "'" + str(text).replace("\\", "\\\\").replace("'", "\\'") + "'"
 
 
+def verdict_of(expect, outcome):
+    """as_expected | accepted_but_expected_refusal | refused_but_expected_ok | peer_down | timed_out."""
+    if outcome.get("code") == "not_running":
+        return "timed_out" if outcome.get("timed_out") else "peer_down"
+    if expect == "any" or (expect == "ok") == outcome.ok:
+        return "as_expected"
+    return "accepted_but_expected_refusal" if outcome.ok else "refused_but_expected_ok"
+
+
+def outcome_extras(outcome):
+    """Optional event fields an outcome may carry: the GUI widget wait and a client-side timeout."""
+    extras = {}
+    if outcome.get("waited_ms") is not None:
+        extras["waited_ms"] = outcome["waited_ms"]
+    if outcome.get("timed_out"):
+        extras["timed_out"] = True
+    return extras
+
+
 def select_steps(steps, spec):
     """'0-3', '0,2,5', '13a' -> the chosen step dicts in scenario order (None = all)."""
     if not spec:
@@ -162,7 +181,8 @@ class Driver:
             if gate is not None:
                 gate.abort()
             return self._event(base, status="skipped_unresolved" if action.get("optional") else "error_unresolved",
-                               error="unresolved $%s" % missing)
+                               error="unresolved $%s" % missing.ref, unresolved_ref=missing.ref,
+                               unresolved_reason=missing.reason)
         base["args_digest"] = digest_of(args)
         base["args_small"] = small(_scrub(args), 2048)
         client = self.clients[action["peer"]]
@@ -185,17 +205,12 @@ class Driver:
             outcome = Outcome(status=-2, ok=False, refused=False, code="harness_error",
                               error="%s: %s" % (type(error).__name__, str(error)[:300]))
         t_ack = self.clock.now()
-        expect = action.get("expect", "ok")
-        if outcome.get("code") == "not_running":
-            verdict = "peer_down"
-        elif expect == "any" or (expect == "ok") == outcome.ok:
-            verdict = "as_expected"
-        else:
-            verdict = "accepted_but_expected_refusal" if outcome.ok else "refused_but_expected_ok"
+        verdict = verdict_of(action.get("expect", "ok"), outcome)
         if action.get("optional") and verdict != "as_expected":
             verdict = "optional_" + verdict
         record = {"id": extract_id(outcome.get("data")), "ok": outcome.ok, "status": outcome.get("status"),
-                  "data": outcome.get("data")}
+                  "data": outcome.get("data"),
+                  "failure": None if outcome.ok else "%s: %s" % (outcome.get("code"), str(outcome.get("error") or "")[:120])}
         if isinstance(outcome.get("data"), dict):
             for key, value in outcome["data"].items():  # $sp.fractal_id, $up.content_hash without explicit bind
                 record.setdefault(key, value)
@@ -208,7 +223,8 @@ class Driver:
                            error=outcome.get("error"), verdict=verdict, token_source=outcome.get("token_source"),
                            result_id=record["id"], result_digest=digest_of(outcome.get("data")),
                            result_small=small(_scrub(outcome.get("data")), 2048),
-                           fire_late_ms=round((t_fire - base["fire_at"]) * 1000, 3) if "fire_at" in base else None)
+                           fire_late_ms=round((t_fire - base["fire_at"]) * 1000, 3) if "fire_at" in base else None,
+                           **outcome_extras(outcome))
 
     def _event(self, base, **fields):
         event = dict(base)
@@ -366,14 +382,10 @@ class Driver:
         except Exception as error:  # noqa: BLE001
             outcome = Outcome(status=-2, ok=False, refused=False, code="harness_error", error=str(error)[:300])
         t_ack = self.clock.now()
-        verdict = "as_expected" if (expect == "any" or (expect == "ok") == outcome.ok) else (
-            "accepted_but_expected_refusal" if outcome.ok else "refused_but_expected_ok")
-        if outcome.get("code") == "not_running":
-            verdict = "peer_down"
         self._event(base, status="done", t_fire=t_fire, t_ack=t_ack, ok=outcome.ok, http_status=outcome.get("status"),
-                    code=outcome.get("code"), error=outcome.get("error"), verdict=verdict,
+                    code=outcome.get("code"), error=outcome.get("error"), verdict=verdict_of(expect, outcome),
                     token_source=outcome.get("token_source"), result_id=extract_id(outcome.get("data")),
-                    result_digest=digest_of(outcome.get("data")), result_small=None)
+                    result_digest=digest_of(outcome.get("data")), result_small=None, **outcome_extras(outcome))
         return outcome
 
     def _place_grid(self, client, args, sid, action_id):
@@ -395,21 +407,37 @@ class Driver:
         return Outcome(status=200, ok=failures == 0, refused=failures > 0, code=None if not failures else "partial",
                        data={"ids": ids, "placed": len(ids), "failed": failures})
 
+    def _skipped_tick(self, client, sid, action_id, tick, period, late):
+        """Log one skipped flight tick: its wall-clock slot had already passed while earlier calls ran."""
+        base = {"step": sid, "lane": "macro", "peer": client.name, "action_id": "%s.skip%d" % (action_id, tick),
+                "via": "macro", "op": "skipped_tick", "expect": "any", "sync": "macro", "optional": True,
+                "tick": tick, "scheduled_s": round(tick * period, 3), "late_ms": round(late * 1000, 1)}
+        self._event(base, status="skipped_tick")
+
     def _drone_flight(self, client, args, sid, action_id):
         nodes = list(args["node_ids"])
         rate = float(args.get("rate_hz", 2))
+        period = 1.0 / rate
         ticks = int(float(args.get("duration_s", 180)) * rate)
         radius, altitude = float(args.get("radius", 20)), float(args.get("altitude", 30))
         every = int(args.get("payload_every", 0) or 0)
         start = self.clock.now()
-        index = failures = 0
+        flight_end = start + ticks * period
+        index = failures = skipped = 0
         for tick in range(ticks):
             if self.abort.is_set():
                 break
-            self.clock.sleep_until(start + tick / rate)
+            late = self.clock.now() - (start + tick * period)
+            if late >= period:  # wall-clock schedule: a tick whose whole slot passed is skipped, never caught up
+                skipped += 1
+                self._skipped_tick(client, sid, action_id, tick, period, late)
+                continue
+            self.clock.sleep_until(start + tick * period)
             readings = []
             stamp = time.strftime("%Y-%m-%dT%H:%M:%S", time.gmtime()) + ".%03dZ" % (int(time.time() * 1000) % 1000)
             for k, node_id in enumerate(nodes):
+                if self.clock.now() >= flight_end:  # a hung call must not stretch the flight past its end
+                    break
                 angle = 2 * math.pi * (tick / max(1.0, rate * float(args.get("period_s", 30))) + k / len(nodes))
                 position = [round(radius * math.cos(angle), 3), round(altitude + 2 * k, 3), round(radius * math.sin(angle), 3)]
                 out = self._sub(client, sid, action_id, index, "mcp", "update_transform",
@@ -424,15 +452,16 @@ class Driver:
                     out = self._sub(client, sid, action_id, index, "mcp", "ingest_device_payload",
                                     {"petal_id": args["petal_id"], "node_id": node_id, "format_id": args["format_id"],
                                      "files": [base64.b64encode(payload).decode("ascii")], "recorded_at": stamp,
-                                     "payload_id": "%s-%s-%d" % (action_id, node_id[-6:], tick)})
+                                     "payload_id": new_ulid()})
                     index += 1
                     failures += 0 if out.ok else 1
-            out = self._sub(client, sid, action_id, index, "rest", "ingest_readings",
-                            {"petal_id": args["petal_id"], "readings": readings})
-            index += 1
-            failures += 0 if out.ok else 1
+            if readings and self.clock.now() < flight_end:
+                out = self._sub(client, sid, action_id, index, "rest", "ingest_readings",
+                                {"petal_id": args["petal_id"], "readings": readings})
+                index += 1
+                failures += 0 if out.ok else 1
         return Outcome(status=200, ok=failures == 0, refused=failures > 0, code=None if not failures else "partial",
-                       data={"ticks": ticks, "calls": index, "failed": failures})
+                       data={"ticks": ticks, "calls": index, "failed": failures, "skipped_ticks": skipped})
 
     def _freeplay(self, client, args, sid, action_id):
         """Seeded role-appropriate random actions; seed = scenario seed + step + peer, so a run is replayable."""
@@ -495,9 +524,13 @@ class Driver:
                       "optional": bool((expect.get("meta") or {}).get("optional"))}
             if expect.get("after"):
                 anchor = fired.get(expect["after"])
-                record["t0"] = anchor["t_fire"] if anchor else None
+                # A macro is a write burst whose state cannot settle while it runs: judge from its completion.
+                burst = bool(anchor) and anchor.get("via") == "macro"
+                record["t0"] = (anchor["t_ack"] if burst else anchor["t_fire"]) if anchor else None
+                record["t0_basis"] = ("completion" if burst else "fire") if anchor else None
             else:
                 record["t0"] = default_t0
+                record["t0_basis"] = "step_last_fire"
             try:
                 record["target"] = self.ctx.resolve(expect["target"])
                 record["value"] = self.ctx.resolve(expect.get("value"))
@@ -510,7 +543,9 @@ class Driver:
                     record["status"] = "registered" if record["t0"] is not None else "no_anchor"
             except UnresolvedRef as missing:
                 record["status"] = "unresolved"
-                record["error"] = "unresolved $%s" % missing
+                record["error"] = "unresolved $%s" % missing.ref
+                record["unresolved_ref"] = missing.ref
+                record["unresolved_reason"] = missing.reason
             self.recorder.write("expectations", record)
             instances.append(record)
         return instances
