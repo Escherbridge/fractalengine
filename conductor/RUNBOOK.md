@@ -543,7 +543,8 @@ NO-GO (local Workstream G implementation is GO); `../gis-tile-etl` kept, never p
    CI (`cargo +1.99.0 clippy --workspace --all-targets -- -D warnings` reproduces Lint).
 7. **city-sim** (`.omc/plans/city-sim.js`) only on the user's go-ahead; a simulator run closes the
    build gate for its duration (flip `cargo_allowed` and post it; flip back after).
-8. **Screenshot pass** when free RAM > 4 GB (no cargo needed; the staged exe at `.qa/stage/current`
+8. **Screenshot pass — DONE 2026-11-08 14:25 (`9a8168e2`, seven images; re-capture per docs/images/MANIFEST.md
+   Notes).** Original step: when free RAM > 4 GB (no cargo needed; the staged exe at `.qa/stage/current`
    suffices): follow `docs/images/MANIFEST.md` row by row — `tools\qa\launch.ps1 -Fixture <basic|terrain>`,
    `tools\qa\fe.py shot ...` per recipe, 1400 px wide, <= 450 KB each (oxipng) — then replace the
    seven `<!-- screenshot: ... -->` markers with image tags and commit `docs(images): ...`. Post
@@ -668,6 +669,11 @@ NO-GO (local Workstream G implementation is GO); `../gis-tile-etl` kept, never p
   + docs/diagrams.md (three-thread topology, mDNS, PERMISSIONS, 2 GB cache/LRU/tiers); portal Config tab
   reachability (guide.md:512) unverified; fe-api/AGENTS.md §mcp-dispatch "only SimControl";
   doneness-ledger.md:287 "no undo code"; scripts/package_release.py BLOBS paths.
+- Done (14:25): screenshot pass `9a8168e2` (seven images via launch.ps1 + fe.py on the staged exe, 2.1 MB,
+  fixture content checked image by image by the orchestrator; manifest notes record the recipe
+  corrections). Findings filed from it: QA-0173 silent hexon install failure (S3), QA-0174 GPX vs
+  1:100 terrain + focus-node units (S3), QA-0175 Pen points at Y = 0 (S3), QA-0176 scale label over
+  the Data window (S4), QA-0177 Genesis Verse without namespace_id (S4) — triage before any fix lane.
 - Reviewed: every fix lane by a critic pass (verdicts in the STEER channel and `.omc/state/bus/P2P-QA.md`);
   the runner itself is unreviewed (parse-validated with `-ListOnly`; no chunk has run).
 - In flight: EXT-PLATFORM / EXT-PORTAL / EXT-MARKET not yet started (no bus files at 11:35); the
