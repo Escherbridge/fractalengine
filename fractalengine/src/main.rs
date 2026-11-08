@@ -513,6 +513,10 @@ fn main() {
     );
 
     plugin_bridge::install(&mut app);
+    if let Some(results) = app.world().get_resource::<fe_plugin::PluginResultReceiver>() {
+        // drain_plugin_results empties it every frame (src/AGENTS.md §render-loop).
+        render_work.watch(results.0.lock().unwrap_or_else(|error| error.into_inner()).clone());
+    }
 
     // GUI-only plugins (removed from fe-runtime so the headless relay can skip them)
     app.add_plugins(bevy_egui::EguiPlugin::default());
@@ -801,6 +805,7 @@ fn main() {
     // ---- Entity Store (in-memory hot cache) ----
     app.insert_resource(SharedEntityStore(entity_store));
 
+    render_work.watch(scene_change_rx_bevy.clone());
     app.insert_resource(SceneChangeReceiver(scene_change_rx_bevy));
 
     app.insert_resource(fe_runtime::app::RevocationBroadcastSender(revocation_tx));
