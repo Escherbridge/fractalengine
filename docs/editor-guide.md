@@ -46,7 +46,7 @@ places is configurable — see [Pen defaults](#pen-defaults-options-panel).
 
 ## Editing curves in the viewport
 
-<!-- screenshot: pen-curve-handles — Close-up of a path being edited with the Pen tool: yellow anchor markers, cyan handle points joined to their anchors by stems, and one smoothly curved segment. -->
+![A path edited with the Pen tool: yellow anchor markers, cyan handle points on stems and a smooth Bezier curve](images/pen-curve-handles.png)
 
 While a path is being edited, its anchors show as yellow point markers, and
 any anchor that carries curve handles also shows cyan handle points connected
@@ -67,7 +67,7 @@ Dragging the anchor itself moves the anchor and its handles together.
 
 ## Corner settings (Options panel)
 
-<!-- screenshot: pen-options-corner-settings — Right sidebar Options panel with the Pen tool active: the Pen section (curve mode, New anchor, sensitivity) and the "Corner settings — point N" card for a selected point. -->
+![Options panel with the Pen section and the Corner settings card for the selected point](images/pen-options-corner-settings.png)
 
 With the Pen tool active, pick a path in the **Options** panel, then select a
 point — in the panel's point list, or by clicking its marker in the viewport.

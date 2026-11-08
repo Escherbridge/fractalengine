@@ -110,7 +110,7 @@ On first launch, FractalEngine will:
 4. Seed a starter Genesis Verse with a Genesis Fractal and Genesis Petal
 5. Open the editor window
 
-<!-- screenshot: first-launch-editor — The editor right after a first launch: the seeded Genesis Verse, Genesis Fractal and Genesis Petal in the hierarchy sidebar, an empty 3D viewport with the grid, and the top toolbar with the tool buttons. -->
+![The editor right after first launch: the seeded Genesis hierarchy, an empty grid viewport and the top toolbar](images/first-launch-editor.png)
 
 ### Build Variants
 

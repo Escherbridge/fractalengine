@@ -19,7 +19,7 @@ FractalEngine's data layer replicates peer-to-peer.
 > **Why this exists:** [PURPOSE.md](PURPOSE.md) — what FractalEngine is for,
 > what it is and is not, and what it must never be used for.
 
-<!-- screenshot: editor-populated-petal — Editor window with one populated petal open: hierarchy sidebar, 3D viewport with terrain, placed models and a drawn path, and the Inspector showing a selected node. -->
+![FractalEngine editor with a populated petal: hierarchy sidebar, terrain with placed models and a drawn path, and the Inspector for a selected node](docs/images/editor-populated-petal.png)
 
 ---
 
@@ -43,7 +43,7 @@ Pre-1.0, under active development. What that means concretely:
 - **Access and invitations** — a per-entry Access tab (verse, fractal or petal) lists effective roles, assigns and revokes them, and issues addressed invitations; an API tab mints scoped tokens
 - **BI egress** (the headline): GeoParquet/CSV export of nodes and IoT readings, signed share URLs, and an in-app "Copy for BI" card — verified end to end against DuckDB (see [docs/bi-egress.md](docs/bi-egress.md))
 
-<!-- screenshot: terrain-hexon-map-view — Viewport of a petal with an installed map: terrain mesh with satellite imagery, the scale-bar HUD, and the Maps section open on the Installed tab showing the active petal map. -->
+![Oblique view of the alpine demo terrain with the scale bar, and the Maps section showing the active petal map](docs/images/terrain-hexon-map-view.png)
 
 **In progress**
 
@@ -251,7 +251,7 @@ inbound path a live write takes, so a row denied before RBAC converged
 locally gets a second chance on every open. (A separate, legacy petal-level
 replicator remains mock-backed — it is not part of this path.)
 
-<!-- screenshot: access-tab-roles — A verse's Settings dialog on the Access tab: effective roles for several peers (viewer, editor, manager), the role picker with its confirm button, and the "Invite a peer to this scope" form. -->
+![Verse Settings dialog on the Access tab: an editor, the owner and a viewer with role pickers, and the invite form](docs/images/access-tab-roles.png)
 
 - **Policy at the data layer, not the wire.** Inbound replicated rows are
   admitted by the DB thread's deny-by-default RBAC gate (Editor+; the role
@@ -394,7 +394,7 @@ Verse                the top-level P2P namespace
 
 The `fe-api` crate provides an axum-based HTTP/WebSocket API on port 8765.
 
-<!-- screenshot: copy-for-bi-export-tab — The Data window on its Export tab: the "Copy for BI" card with the egress SQL, the /api/v1/query endpoint, the export.parquet and export.csv URLs and the DuckDB read_parquet snippet. -->
+![Data window Export tab with the Copy for BI card: SQL, query endpoint, parquet and CSV export URLs and the DuckDB snippet](docs/images/copy-for-bi-export-tab.png)
 
 ### REST Endpoints
 
