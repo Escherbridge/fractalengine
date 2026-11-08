@@ -63,7 +63,7 @@ The practiced gate is a **single integrated sweep at the end of a change
 batch** — not per-task loops:
 
 ```bash
-toolsqa	est_batches.ps1 -Batches All      # chunked runner; never cargo test --workspace (2026-11-08)
+tools\qa\test_batches.ps1 -Batches All      # chunked runner; never cargo test --workspace (2026-11-08)
 cargo clippy -- -D warnings
 cargo fmt --check
 ```
@@ -80,7 +80,7 @@ cargo fmt --check
 
 Per-change checklist (verified by the sweep + review, not re-run per fix):
 
-- [ ] All tests pass (`toolsqa	est_batches.ps1 -Batches <touched batches>`, when told)
+- [ ] All tests pass (`tools\qa\test_batches.ps1 -Batches <touched batches>`, when told)
 - [ ] `cargo fmt --check` and `cargo clippy -- -D warnings` pass
 - [ ] Terse one-line doc comments on public items; rationale in the
       directory-level `AGENTS.md`, not inline comment blocks
@@ -157,7 +157,7 @@ cargo build
 RUST_LOG=debug cargo run
 
 # End-of-batch sweep (run ONCE per change batch)
-toolsqa	est_batches.ps1 -Batches All      # chunked runner; never cargo test --workspace (2026-11-08)
+tools\qa\test_batches.ps1 -Batches All      # chunked runner; never cargo test --workspace (2026-11-08)
 cargo clippy -- -D warnings
 cargo fmt --check
 ```
@@ -197,7 +197,7 @@ A track (or batch within it) is complete when:
 
 1. All code implemented to the track's spec
 2. New behavior covered by tests
-3. The end-of-batch sweep is green (`toolsqa	est_batches.ps1 -Batches <ids>`, clippy
+3. The end-of-batch sweep is green (`tools\qa\test_batches.ps1 -Batches <ids>`, clippy
    `-D warnings`, `fmt --check`)
 4. Terse doc comments present; rationale captured in the directory
    `AGENTS.md` where non-obvious
