@@ -3,7 +3,7 @@ type: ProgressCheckpoint
 date: 2026-11-04
 status: in_progress
 title: Current completion state and next actions
-last_verified_utc: 2026-11-08T09:30:00.000000+00:00
+last_verified_utc: 2026-11-08T12:30:00.000000+00:00
 ---
 
 ## ORCHESTRATOR STEER (binding; maintained by the orchestrating session, do not edit or remove)
@@ -287,10 +287,34 @@ from before db489cfb, so the QA-0163 harness fixes were not live. Host CPU staye
 - Still not exercised: QA-0103, QA-0131, QA-0133 and QA-0160 (the revoked writes were refused locally), QA-0117,
   QA-0125, QA-0136. QA-0163 is judged on run 9.
 
+Sim run 9 triage (2026-11-08, stage d50f1601 from `.qa/stage/current`, firewall allow present, 4/3/3 peers; runs
+`qa/sim/runs/{p2p-core-20261108-043602,p2p-assets-20261108-044546,city-lite-20261108-044824}`; the first p2p-core
+attempt died at join with 0xC0000142 and was retried). Every latency sample ran at host CPU < 80 % (p2p-core 159/165
+below 50 %), so no latency below is contention. No peer is running.
+
+- 12 analyzer anomalies + 4 vision findings collapse to 0 new S1/S2 and 1 harness S3, so run 9 is CLEAN. Every S1/S2
+  is false. p2p-assets is clean for the fifth run (30/30 met, 0 anomalies, 25 MB in 0.3-1.9 s), and the final
+  fingerprints agree in all three runs.
+- Verified: QA-0103 (9c.e0 on all 4 peers in 0.6 s; the sidebar shows SG 0/0, N1 ungrouped), QA-0161 (0 of 360 ticks
+  skipped; ingest_device_payload p50 414 ms), QA-0164 (remote drone lag max 1.3 s, was 22 s; no channel-full), QA-0163
+  (harness items a-f held) and QA-0167 (the rewritten Access tab load drove the 13a revoke and the 13c re-grant).
+- False S1/S2: city-lite all_readings (1440 rows on every peer, 3 digests) is QA-0144. 5.e1/6.e1 (S3) are QA-0126:
+  the races settled on editor2's X=3 and the editor's [-5,0,0] on all 4 peers. Their late matches are step 12's write
+  and the 13a re-judge (QA-0165). The join abort is QA-0148 (a). Vision: V9-1 is QA-0130, V9-2 is QA-0149, and V9-4
+  is QA-0141.
+- New S3 QA-0169 (harness): step 10 leaves the Brush tool armed, so its hint sits over 14-owner.png (V9-3). The
+  catch-up table also reports 62 s for the restarted editor, but the real figure is about 10 s, because the table
+  counts the editor's own +75 s writes.
+- Still `fixed_source_live_pending` (21), not exercised: QA-0131, QA-0133 and QA-0160 (editor2's own app refused the
+  race writes again), QA-0156 and QA-0166 (no multi-author write to one key), QA-0117 and QA-0136 (they need more
+  peers than this host can run), QA-0125 (hierarchy polling paused) and QA-0104/0150/0151/0154/0155/0157. The pre-sim
+  ids QA-0041/0044/0048/0049/0056/0075/0077 are outside the simulator's reach.
+
 ## Next actions
 
-1. FIX:8: QA-0164 (coalesce and batch inbound row applies) and QA-0161 (payload write path). Then run 9 on db489cfb,
-   which verifies QA-0163 and exercises QA-0103, QA-0131, QA-0133 and QA-0160. The user decides QA-0165.
+1. Run 10 is the second consecutive clean run if it adds no new S1/S2. The 21 pending ids need a scenario path the
+   host can drive: a race write that leaves editor2 before its demotion, two authors writing one key, and N > 16.
+   Otherwise they need a focused live check. The user decides QA-0165.
 2. Run FULL pass 78 (2/3) then pass 79; convergence needs zero new S1/S2 in two consecutive passes and all gold.
 3. Fix the S3 test debt (QA-0079, QA-0082, QA-0115, QA-0116), then the integrated sweep, CI Lint (QA-0078), tag
    and release.
