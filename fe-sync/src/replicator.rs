@@ -1117,8 +1117,9 @@ const MAX_CONTENT_RETRIES_PER_AUTHOR: usize = 512;
 const MAX_CONTENT_ATTEMPTS: u32 = 10;
 /// Providers one re-fetch remembers.
 const MAX_CONTENT_PROVIDERS: usize = 16;
-/// Waiting hashes kept for a later arming (author not admitted yet, or no room).
-const MAX_UNARMED_HASHES: usize = 16384;
+/// Unarmed hashes one arming sweep examines (round-robin), so a flood of
+/// unnamed authors costs bounded work per sweep and never displaces a hash (QA-0157).
+const ARM_SWEEP_BUDGET: usize = 4096;
 /// How often waiting hashes are offered for arming again.
 const ARM_SWEEP_INTERVAL: std::time::Duration = std::time::Duration::from_secs(5);
 /// Largest row payload a content re-fetch accepts.
@@ -1203,8 +1204,12 @@ struct PendingRows {
     retries: HashMap<iroh_blobs::Hash, ContentRetry>,
     /// Re-fetch slots held per admitted author.
     per_author: HashMap<String, usize>,
-    /// Waiting hashes with no armed re-fetch (no admitted author yet, or no room), with their providers.
+    /// Waiting hashes with no armed re-fetch (no admitted author yet, or no room), with their
+    /// providers. Keyed only by hashes in `by_hash`, so it is bounded by the waiting rows
+    /// themselves and never refuses one (QA-0157).
     unarmed: HashMap<iroh_blobs::Hash, Vec<iroh::EndpointId>>,
+    /// Sweep order of `unarmed`; a hash that left it is skipped lazily.
+    unarmed_order: std::collections::VecDeque<iroh_blobs::Hash>,
     /// Re-fetch slots freed for newer ones (logged at 1, 2, 4, 8 ...).
     evictions: u64,
 }
@@ -1277,14 +1282,18 @@ impl PendingRows {
         true
     }
 
-    /// Remember a waiting hash for a later arming (bounded; an armed hash needs nothing).
+    /// Remember a waiting hash for a later arming (an armed or no-longer-waiting hash needs nothing).
     fn keep_unarmed(&mut self, hash: iroh_blobs::Hash, providers: &[iroh::EndpointId]) {
-        if self.retries.contains_key(&hash)
-            || (!self.unarmed.contains_key(&hash) && self.unarmed.len() >= MAX_UNARMED_HASHES)
-        {
+        if self.retries.contains_key(&hash) || !self.by_hash.contains_key(&hash) {
             return;
         }
-        let known = self.unarmed.entry(hash).or_default();
+        let known = match self.unarmed.entry(hash) {
+            std::collections::hash_map::Entry::Occupied(entry) => entry.into_mut(),
+            std::collections::hash_map::Entry::Vacant(entry) => {
+                self.unarmed_order.push_back(hash);
+                entry.insert(Vec::new())
+            }
+        };
         for provider in providers {
             if !known.contains(provider) && known.len() < MAX_CONTENT_PROVIDERS {
                 known.push(*provider);
@@ -1292,11 +1301,20 @@ impl PendingRows {
         }
     }
 
-    /// Offer every unarmed hash to its admitted waiting authors, without evicting: an
-    /// author admitted after its row arrived, or room freed since (QA-0155).
+    /// Offer the next `ARM_SWEEP_BUDGET` unarmed hashes (round-robin) to their admitted
+    /// waiting authors, without evicting: an author admitted after its row arrived, or room
+    /// freed since (QA-0155). Each author is judged once per sweep (QA-0157).
     fn arm_waiting(&mut self, admitted: &dyn Fn(&str) -> bool) {
-        let hashes: Vec<iroh_blobs::Hash> = self.unarmed.keys().copied().collect();
-        for hash in hashes {
+        if self.unarmed_order.len() > 2 * self.unarmed.len() + ARM_SWEEP_BUDGET {
+            let (unarmed, mut seen) = (&self.unarmed, std::collections::HashSet::new());
+            self.unarmed_order.retain(|hash| unarmed.contains_key(hash) && seen.insert(*hash));
+        }
+        let mut verdicts: HashMap<String, bool> = HashMap::new();
+        for _ in 0..self.unarmed_order.len().min(ARM_SWEEP_BUDGET) {
+            let Some(hash) = self.unarmed_order.pop_front() else { break };
+            if !self.unarmed.contains_key(&hash) {
+                continue;
+            }
             let Some(waiting) = self.by_hash.get(&hash) else {
                 self.unarmed.remove(&hash);
                 continue;
@@ -1304,10 +1322,13 @@ impl PendingRows {
             let authors: std::collections::BTreeSet<String> = waiting
                 .iter()
                 .map(|meta| meta.author_id.clone())
-                .filter(|author| admitted(author))
+                .filter(|author| *verdicts.entry(author.clone()).or_insert_with(|| admitted(author)))
                 .collect();
             for author in authors {
                 self.arm(hash, &author, &[], false);
+            }
+            if self.unarmed.contains_key(&hash) {
+                self.unarmed_order.push_back(hash);
             }
         }
     }
@@ -2647,6 +2668,27 @@ mod tests {
         assert!(pending.retries[&legit].due <= tokio::time::Instant::now() + CONTENT_RETRY_FIRST);
         assert_eq!(pending.take(&legit).len(), 2, "every row waiting on the content lands with it");
         assert!(!pending.per_author.contains_key("did:legit"), "taking the content releases its author's slot");
+
+        // QA-0157: Sybil authors fill no table an honest author's hash can be refused from.
+        // An editor whose role statement lands after its row waits unarmed behind more
+        // unnamed hashes than any former cap, and the bounded round-robin sweep still arms it.
+        let mut flooded = PendingRows::default();
+        for sybil in 0..3 * ARM_SWEEP_BUDGET + 17 {
+            let (hash, meta) = row(&format!("did:mint-{sybil}"), 0);
+            flooded.wait(hash, meta, &provider, true, false);
+        }
+        let (late, late_row) = row("did:late-editor", 0);
+        flooded.wait(late, late_row, &provider, true, false);
+        assert!(flooded.unarmed.contains_key(&late), "a hash whose author is not yet named is parked, never refused for room");
+        let named = |author: &str| author == "did:late-editor";
+        let sweeps = (1..=flooded.unarmed.len().div_ceil(ARM_SWEEP_BUDGET))
+            .find(|_| {
+                flooded.arm_waiting(&named);
+                flooded.retries.contains_key(&late)
+            })
+            .expect("the late-named author's content is re-fetched within one pass over the waiting hashes");
+        assert_eq!(sweeps, 4, "each sweep examines a bounded slice, round-robin");
+        assert_eq!(flooded.retries.len(), 1, "minted authors still arm nothing");
 
         // Close must leave the swarm cleanly on both sides.
         alice.close().await.unwrap();

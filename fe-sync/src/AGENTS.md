@@ -2332,8 +2332,15 @@ rows naming content no one can serve, and anyone can mint author keys. So:
 - **Arming is gated.** Only an entry author the replica's verse NAMES (its owner or a DID the role
   view admits: `BlobAccessGate::names_member`, which ignores `open_to_all`) arms a re-fetch
   (`AuthorGate`, passed to the pump by `subscribe`). Any other row waits unarmed
-  (`PendingRows::unarmed`, at most 16384 hashes with their providers); a sweep every 5 s
-  (`arm_waiting`, never evicting) arms rows whose author was named after they arrived.
+  (`PendingRows::unarmed`, the hash's providers); a sweep every 5 s (`arm_waiting`, never
+  evicting) arms rows whose author was named after they arrived.
+- **No table an honest hash can be refused from (QA-0157).** `unarmed` holds only hashes
+  that still have waiting rows in `by_hash`, so it is bounded by those rows and has no cap
+  of its own: a former 16384-hash refuse-on-full cap let minted authors fill it so an
+  editor whose role statement arrived after its row was never armed. The sweep instead
+  bounds its WORK: it walks `unarmed_order` round-robin, `ARM_SWEEP_BUDGET` (4096) hashes
+  per tick, judging each author once per tick, so a flood delays a late-named author by
+  `n / 4096 x 5 s` but cannot drop it.
 - **Slots are per waiting author.** Each re-fetch records the admitted authors with a row
   waiting on it (`ContentRetry::authors`), each charged one of its 512 slots
   (`MAX_CONTENT_RETRIES_PER_AUTHOR`) inside the 4096 total. A member at its cap frees one of its
