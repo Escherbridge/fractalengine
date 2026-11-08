@@ -429,6 +429,8 @@ async fn handle_tool_call(
         serde_json::json!({})
     };
 
+    // QA-0161: per-call phase timing (debug), so a write round trip can be split.
+    let started = std::time::Instant::now();
     let scope = match authorize(state, claims, spec, &args).await {
         Ok(scope) => scope,
         Err(reason) => {
@@ -445,7 +447,15 @@ async fn handle_tool_call(
         args: &args,
         scope: scope.as_deref(),
     };
-    match (spec.handler)(call).await {
+    let authorized = started.elapsed();
+    let outcome = (spec.handler)(call).await;
+    tracing::debug!(
+        tool = spec.name,
+        authorize_ms = authorized.as_secs_f64() * 1000.0,
+        handler_ms = (started.elapsed() - authorized).as_secs_f64() * 1000.0,
+        "MCP tool call timing"
+    );
+    match outcome {
         Ok(content) if spec.content_reply => tool_content_result(id, content),
         Ok(payload) => tool_result(id, payload),
         Err(msg) => tool_error(id, &msg),

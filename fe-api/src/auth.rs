@@ -27,7 +27,10 @@ pub async fn auth_middleware(
         return Err(StatusCode::UNAUTHORIZED);
     };
 
+    let started = std::time::Instant::now();
     let claims = authenticate(&state, token).await?;
+    // QA-0161: the durable credential read is a per-request DB read; debug timing splits it out.
+    tracing::debug!(authenticate_ms = started.elapsed().as_secs_f64() * 1000.0, path = %req.uri().path(), "API credential check timing");
 
     req.extensions_mut().insert(claims);
     Ok(next.run(req).await)
