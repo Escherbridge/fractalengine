@@ -33,7 +33,7 @@ pub(super) struct DescriptorCaches<'w, 's> {
     earthwork_binding: Option<Res<'w, fe_renderer::terrain_overlay::EarthworkTerrainBinding>>,
     height_field: Option<Res<'w, fe_renderer::terrain_height::TerrainHeightField>>,
     terminal: Option<Res<'w, fe_runtime::maintenance::TerminalMode>>,
-    committed_hierarchy_pending: Local<'s, bool>,
+    committed_hierarchy_pending: Local<'s, CommittedHierarchy>,
     undo: Option<ResMut<'w, crate::undo::UndoState>>,
     selection_sources: crate::editor_batch::RenderedSources<'w, 's>,
     primitive: ResMut<'w, super::PrimitiveDescriptorCache>,
@@ -108,23 +108,48 @@ fn forward_correlated_property_reply(
     correlated
 }
 
-fn request_committed_hierarchy(pending: &mut bool, nav: &mut NavigationManager) {
-    nav.suppress_initial_auto_navigation();
-    *pending = true;
+/// Coalesced authoritative `LoadHierarchy`: at most one in flight; see ../AGENTS.md §db-results "committed hierarchy".
+#[derive(Default)]
+pub(super) struct CommittedHierarchy {
+    pending: bool,
+    in_flight_since: Option<f64>,
 }
 
-fn flush_committed_hierarchy(sender: &fe_runtime::app::DbCommandSender, pending: &mut bool) {
-    if !*pending {
+/// A load that never answers (its reply was an `Error`) stops gating after this long.
+const HIERARCHY_IN_FLIGHT_TIMEOUT_S: f64 = 5.0;
+
+impl CommittedHierarchy {
+    /// Any `HierarchyLoaded` satisfies every request raised before it: the serial DB thread's
+    /// FIFO result channel means its snapshot was read after each triggering result was sent.
+    fn satisfied(&mut self) {
+        self.pending = false;
+        self.in_flight_since = None;
+    }
+}
+
+fn request_committed_hierarchy(state: &mut CommittedHierarchy, nav: &mut NavigationManager) {
+    nav.suppress_initial_auto_navigation();
+    state.pending = true;
+}
+
+fn flush_committed_hierarchy(sender: &fe_runtime::app::DbCommandSender, state: &mut CommittedHierarchy, now: f64) {
+    let in_flight = state
+        .in_flight_since
+        .is_some_and(|since| now - since < HIERARCHY_IN_FLIGHT_TIMEOUT_S);
+    if !state.pending || in_flight {
         return;
     }
     match sender
         .0
         .try_send(fe_runtime::messages::DbCommand::LoadHierarchy)
     {
-        Ok(()) => *pending = false,
+        Ok(()) => {
+            state.pending = false;
+            state.in_flight_since = Some(now);
+        }
         Err(crossbeam::channel::TrySendError::Full(_)) => {}
         Err(crossbeam::channel::TrySendError::Disconnected(_)) => {
-            *pending = false;
+            state.pending = false;
             bevy::log::warn!("DB channel closed while hydrating committed object");
         }
     }
@@ -579,6 +604,7 @@ pub(super) fn apply_db_results(
             // QA-0125: an API read answers its waiters only; the GUI tree is untouched.
             DbResult::HierarchyRead { verses } => pending_api.deliver_hierarchy(verses.clone()),
             DbResult::HierarchyLoaded { verses } => {
+                caches.committed_hierarchy_pending.satisfied();
                 // Phase 4: the persisted verse/fractal/petal eyes ride the tree.
                 crate::visibility::groups::hydrate_scope_hidden(&mut caches.visibility, verses);
                 let allow_initial_navigation = ui_mgr.join_flow.allow_initial_navigation(&nav);
@@ -1167,7 +1193,11 @@ pub(super) fn apply_db_results(
             bevy::log::warn!("db_sender channel closed — ResolveLocalRole re-fetch dropped: {e}");
         }
     }
-    flush_committed_hierarchy(&db_sender, &mut caches.committed_hierarchy_pending);
+    flush_committed_hierarchy(
+        &db_sender,
+        &mut caches.committed_hierarchy_pending,
+        caches.time.elapsed_secs_f64(),
+    );
     verse_mgr.synchronize_scene_navigation(&nav);
     while let Some(node) = verse_mgr.take_scene_refresh(&nav) {
         if !verse_mgr.queue_replica_read(&node, &nav, caches.time.elapsed_secs_f64()) {
@@ -1327,6 +1357,26 @@ mod tests {
     fn sender() -> (DbCommandSender, crossbeam::channel::Receiver<DbCommand>) {
         let (tx, rx) = crossbeam::channel::bounded(8);
         (DbCommandSender(tx), rx)
+    }
+
+    /// The `LoadHierarchy` answer a DB holding exactly `manager`'s tree would send.
+    fn hierarchy_snapshot(manager: &VerseManager) -> Vec<fe_runtime::messages::VerseHierarchyData> {
+        use fe_runtime::messages::{FractalHierarchyData, NodeHierarchyData, PetalHierarchyData, VerseHierarchyData};
+        manager.verses.iter().map(|verse| VerseHierarchyData {
+            id: verse.id.clone(), name: verse.name.clone(), namespace_id: verse.namespace_id.clone(),
+            timeseries: Default::default(), view_hidden: false,
+            fractals: verse.fractals.iter().map(|fractal| FractalHierarchyData {
+                id: fractal.id.clone(), name: fractal.name.clone(), view_hidden: false,
+                petals: fractal.petals.iter().map(|petal| PetalHierarchyData {
+                    id: petal.id.clone(), name: petal.name.clone(), view_hidden: false, render_distance: petal.render_distance,
+                    nodes: petal.nodes.iter().map(|node| NodeHierarchyData {
+                        id: node.id.clone(), name: node.name.clone(), petal_id: petal.id.clone(), position: node.position,
+                        rotation: node.transform.rotation.to_array(), scale: node.transform.scale.to_array(),
+                        has_asset: node.has_asset, webpage_url: node.webpage_url.clone(), asset_path: node.asset_path.clone(),
+                    }).collect(),
+                }).collect(),
+            }).collect(),
+        }).collect()
     }
 
     fn tree() -> VerseManager {
@@ -2798,14 +2848,26 @@ mod tests {
         );
         assert!(sent.iter().any(|command| matches!(command, DbCommand::GetPetalTerrain { petal_id, .. } if petal_id == "p1")));
         assert!(!sent.iter().any(|command| matches!(command, DbCommand::LoadHierarchy)), "rows already in the tree never reload it: {sent:?}");
-        // QA-0142: a peer creates a fractal and its petal; both rows land in one batch and must
-        // reach this tree (the sidebar's source) through exactly one coalesced reload.
+        // QA-0142: a peer creates a fractal and its petal. Their rows must reach this tree (the
+        // sidebar's source) through ONE reload, however many frames the burst spans.
+        let mut snapshot = hierarchy_snapshot(app.world().resource::<VerseManager>());
         for row in [replicated("fractal", "peer-fractal"), replicated("petal", "peer-petal")] {
             app.world_mut().write_message(row);
         }
         app.update();
         let sent: Vec<_> = db_commands.try_iter().collect();
         assert_eq!(sent.iter().filter(|command| matches!(command, DbCommand::LoadHierarchy)).count(), 1, "{sent:?}");
+        app.world_mut().write_message(replicated("petal", "peer-petal"));
+        app.update();
+        assert!(!db_commands.try_iter().any(|command| matches!(command, DbCommand::LoadHierarchy)), "a load in flight already covers the next frame's rows");
+        snapshot[0].fractals.push(fe_runtime::messages::FractalHierarchyData {
+            id: "peer-fractal".into(), name: "Peer Fractal".into(), view_hidden: false,
+            petals: vec![fe_runtime::messages::PetalHierarchyData { id: "peer-petal".into(), name: "Peer Petal".into(), view_hidden: false, render_distance: None, nodes: Vec::new() }],
+        });
+        app.world_mut().write_message(DbResult::HierarchyLoaded { verses: snapshot });
+        app.update();
+        assert!(app.world().resource::<VerseManager>().find_petal("peer-petal").is_some(), "the peer's petal is openable");
+        assert!(!db_commands.try_iter().any(|command| matches!(command, DbCommand::LoadHierarchy)), "the snapshot satisfies every earlier request");
         let mut unsupported = placed.clone();
         if let DbResult::GltfImported {
             materialization, ..
@@ -3494,26 +3556,13 @@ mod tests {
         assert!(app.world().resource::<VerseManager>().all_nodes().find(|node| node.id == "remote-birth").unwrap().asset_path.is_none());
         // QA-0124: the blob lands and a hierarchy load (not a replica read) is the
         // first to carry its path: the placeholder is respawned as the model.
-        let reload = {
-            use fe_runtime::messages::{FractalHierarchyData, NodeHierarchyData, PetalHierarchyData, VerseHierarchyData};
-            let manager = app.world().resource::<VerseManager>();
-            DbResult::HierarchyLoaded { verses: manager.verses.iter().map(|verse| VerseHierarchyData {
-                id: verse.id.clone(), name: verse.name.clone(), namespace_id: verse.namespace_id.clone(),
-                timeseries: Default::default(), view_hidden: false,
-                fractals: verse.fractals.iter().map(|fractal| FractalHierarchyData {
-                    id: fractal.id.clone(), name: fractal.name.clone(), view_hidden: false,
-                    petals: fractal.petals.iter().map(|petal| PetalHierarchyData {
-                        id: petal.id.clone(), name: petal.name.clone(), view_hidden: false, render_distance: petal.render_distance,
-                        nodes: petal.nodes.iter().map(|node| NodeHierarchyData {
-                            id: node.id.clone(), name: node.name.clone(), petal_id: petal.id.clone(), position: node.position,
-                            rotation: node.transform.rotation.to_array(), scale: node.transform.scale.to_array(),
-                            has_asset: node.has_asset, webpage_url: node.webpage_url.clone(),
-                            asset_path: if node.id == "remote-birth" { Some("models/replica.glb".into()) } else { node.asset_path.clone() },
-                        }).collect(),
-                    }).collect(),
-                }).collect(),
-            }).collect() }
-        };
+        let mut verses = hierarchy_snapshot(app.world().resource::<VerseManager>());
+        for node in verses.iter_mut().flat_map(|verse| &mut verse.fractals).flat_map(|fractal| &mut fractal.petals).flat_map(|petal| &mut petal.nodes) {
+            if node.id == "remote-birth" {
+                node.asset_path = Some("models/replica.glb".into());
+            }
+        }
+        let reload = DbResult::HierarchyLoaded { verses };
         app.world_mut().write_message(reload);
         app.update();
         let landed: Vec<_> = residents.iter(app.world()).filter(|(_, marker)| marker.node_id == "remote-birth").map(|(entity, _)| entity).collect();
