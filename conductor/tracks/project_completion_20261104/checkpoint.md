@@ -3,7 +3,7 @@ type: ProgressCheckpoint
 date: 2026-11-04
 status: in_progress
 title: Current completion state and next actions
-last_verified_utc: 2026-11-08T00:25:00.000000+00:00
+last_verified_utc: 2026-11-08T02:30:00.000000+00:00
 ---
 
 ## ORCHESTRATOR STEER (binding; maintained by the orchestrating session, do not edit or remove)
@@ -150,11 +150,28 @@ p2p-assets-20261107-165603,city-lite-20261107-165848}`; all peers stopped by exa
   and QA-0141.
 - Still not exercised: QA-0100 GUI race, QA-0103, QA-0117, QA-0120 to QA-0122, QA-0125, QA-0131 to QA-0133, QA-0136.
 
+Sim run 3 triage (2026-11-07, stage 6267e951, 3 peers, click harness unchanged; runs `qa/sim/runs/{p2p-core-20261107-175912,
+p2p-assets-20261107-174905,city-lite-20261107-175114}`; the first p2p-core attempt died at join with 0xC0000142 and was
+retried). Host CPU mean 5-28 %, so no latency below is contention.
+
+- 271 analyzer anomalies + 6 vision findings collapse to 1 new S1 and 4 new S3. p2p-assets is clean (29/29 met, 0
+  anomalies). The rest are QA-0140 again (N1 null, the revoke never landed, editor2 missing at N=3), QA-0144 (all three
+  peers hold 1440 readings with different digests) and a step-2 anchor on the upload (blobs land 1-18 s after placement).
+- Verified: QA-0142. Editor and viewer opened the owner-created Asset Fractal in 1.7 s, and city-lite's builders opened
+  City the same way.
+- New S1: QA-0145. After the relay-less restart (step 12) the editor receives every row, but its own writes never
+  reach owner or viewer. Their last contact is a failed docs sync at reconnect. The final fingerprints split on
+  Cube 1 and N2, and the editor's property writes are lost. Run 2 hit the same reconnect failure and recovered.
+- New S3: QA-0146 (after Back, another fractal's "Open fractal X" is refused, even for its creator), QA-0147 (MCP
+  place_asset times out on a placement that persisted), QA-0148 (harness items not in QA-0140: join retry, restart
+  re-navigation, map seeding, editor2 at N=3, stale QA-0119 banner, asset-less drones), QA-0149 (facade textures
+  alias at distance). Vision evidence added to QA-0130 (V-1), QA-0076 and QA-0141 (V-2).
+- Still not exercised: QA-0100 GUI race, QA-0103, QA-0117, QA-0120 to QA-0122, QA-0125, QA-0131 to QA-0133, QA-0136.
+
 ## Next actions
 
-1. FIX:2 (steer of 16:52): QA-0140 items 1-4, 6 and 11-15 (they gate every unexercised id), then QA-0142 (S2),
-   then QA-0143 and QA-0144. Re-run the three scenarios and verify the pending list above. The sim-run-1 fixes
-   (fe1e6b75, 11b44d4f, cfd7fce6, 47f447e9) have landed.
+1. FIX:3: QA-0145 (S1) first. The orchestrator's QA-0140 harness commit gates every unexercised id; QA-0148 follows it.
+   Then re-run the three scenarios. The S3s QA-0143, QA-0144, QA-0146, QA-0147 and QA-0149 are still open.
 2. Run FULL pass 78 (2/3) then pass 79; convergence needs zero new S1/S2 in two consecutive passes and all gold.
 3. Fix the S3 test debt (QA-0079, QA-0082, QA-0115, QA-0116), then the integrated sweep, CI Lint (QA-0078), tag
    and release.
