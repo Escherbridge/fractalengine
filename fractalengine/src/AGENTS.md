@@ -1525,8 +1525,11 @@ bootstrap: the GUI writes, and keeps rewriting, a token file the agent reads.
   `listening_tx` notification (`ApiConfig::listening_tx`, the ACTUAL bound
   address) and a verse-id channel. `qa_dev_token.rs` feeds that channel:
   the full id list on the first frame and again whenever the SET of
-  `VerseManager.verses` ids changes (create, join, delete) — allocation-free on
-  every other frame. The writer coalesces queued lists to the newest and
+  `VerseManager.verses` ids changes (create, join, delete), and again when the
+  resolved `LocalUserRole` VALUE changes — a joined verse can enter the tree
+  before its role statement replicates, and the writer resolves roles only at
+  write time, so without this the file kept the default-access role forever
+  (QA-0142 run). Allocation-free on every other frame. The writer coalesces queued lists to the newest and
   rewrites the whole file each time (fresh 8 h tokens for every verse).
 - **Never above the node's own role.** Each verse's token is minted at
   `role_manager::resolve_role(local_did, "VERSE#<id>")`: Owner for a verse
