@@ -216,7 +216,14 @@ now a thin dispatcher (`db_results/mod.rs`) over one `handle_*` function per
   carries no name/parent, `LoadHierarchy` applies no access filter, and the
   sidebar's "Open fractal/petal X" rows read only the tree. Known ids never
   reload, so steady petal churn (terrain, render distance) costs nothing and
-  the reload cannot loop. M-03 (polish_lane_20261031): `mod.rs` now threads
+  the reload cannot loop. **Committed hierarchy** (`CommittedHierarchy`):
+  every `request_committed_hierarchy` caller shares one coalesced reload with
+  at most one `LoadHierarchy` in flight (5 s bound, for a reply that came back
+  as `Error`). Any `HierarchyLoaded` — whoever asked for it — clears the
+  pending request: the DB thread is serial and its result channel FIFO, so a
+  snapshot received after a request was raised was read after the result that
+  raised it. A join burst therefore costs one or two loads, not one per frame.
+  M-03 (polish_lane_20261031): `mod.rs` now threads
   `correlation_id.as_deref()` into `handle_petal_terrain_loaded` (6th param)
   and dispatches the new `PetalTerrainSetFailed` to
   `handle_petal_terrain_set_failed` — both calls into W1-S3's contract
