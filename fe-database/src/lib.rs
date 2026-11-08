@@ -675,8 +675,11 @@ pub fn spawn_db_thread_shared(
             let mut deferred = command_lane::DeferredPublications::default();
             #[allow(clippy::while_let_loop)]
             loop {
-                if deferred.due(lane.is_idle(&rx)) {
-                    handlers::scene_publication::publish_deferred(&db,&blob_store,repl_tx.as_ref(),&local_did,deferred.take()).await;
+                // QA-0161: an idle lane publishes one waiting node at a time, so a write arriving
+                // meanwhile waits for one publication, not for all of them (src/AGENTS.md §command-lane).
+                while deferred.due(lane.is_idle(&rx)) {
+                    let nodes = if deferred.overdue() { deferred.take() } else { deferred.take_one() };
+                    handlers::scene_publication::publish_deferred(&db,&blob_store,repl_tx.as_ref(),&local_did,nodes).await;
                 }
                 let cmd = lane.next(&rx);
                 if deferred.due_before(cmd.as_ref().ok()) {

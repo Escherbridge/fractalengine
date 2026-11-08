@@ -1474,6 +1474,9 @@ the transparent commands queued before it.
   Every other command, `Ping` and shutdown included, publishes first, so a replicated-row apply, a
   role/ACL change, a Serve admission or a scene-clock read never sees a committed transform
   without its publication. A burst of writes to one node publishes one row version.
+  Since QA-0161 (2026-11-08) an idle lane publishes the waiting nodes one at a time and
+  re-checks for commands between them (all at once only past the 250 ms bound), so a drone
+  write that arrives during the previous tick's publications waits ~27 ms, not ~110 ms.
 - **Superseded inbound versions (QA-0164, 2026-11-08).** Receivers applied one
   `ApplyReplicatedRow` per inbound row version (a node row ~88 ms, a reading ~16 ms), so the
   2 Hz four-drone flight (8 node versions + 8 readings a second) kept the editor's lane above

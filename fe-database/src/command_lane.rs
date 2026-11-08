@@ -162,6 +162,25 @@ impl DeferredPublications {
                     .is_some_and(|oldest| oldest.elapsed() >= PUBLICATION_DEFER_MAX))
     }
 
+    /// The oldest waited its bound: everything waiting publishes now.
+    pub(crate) fn overdue(&self) -> bool {
+        self.oldest
+            .is_some_and(|oldest| oldest.elapsed() >= PUBLICATION_DEFER_MAX)
+    }
+
+    /// The first-written waiting node alone (QA-0161: an idle lane publishes one at a time,
+    /// so a command that arrives meanwhile waits for one publication, not all of them).
+    pub(crate) fn take_one(&mut self) -> Vec<String> {
+        if self.nodes.is_empty() {
+            return Vec::new();
+        }
+        let first = self.nodes.remove(0);
+        if self.nodes.is_empty() {
+            self.oldest = None;
+        }
+        vec![first]
+    }
+
     /// Publish before `next` runs (`None`: the channel closed, so publish before exit).
     pub(crate) fn due_before(&self, next: Option<&DbCommand>) -> bool {
         !self.nodes.is_empty() && next.is_none_or(|command| !runs_before_publication(command))
