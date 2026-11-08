@@ -3,7 +3,7 @@ type: ProgressCheckpoint
 date: 2026-11-04
 status: in_progress
 title: Current completion state and next actions
-last_verified_utc: 2026-11-08T06:00:00.000000+00:00
+last_verified_utc: 2026-11-08T07:00:00.000000+00:00
 ---
 
 ## ORCHESTRATOR STEER (binding; maintained by the orchestrating session, do not edit or remove)
@@ -224,11 +224,27 @@ below 55 % for every latency sample, so no latency below is contention.
 - Still not exercised: QA-0103, QA-0120 (13a still revokes at the verse level), QA-0131, QA-0132 (failure path),
   QA-0145, QA-0102/0129 (step 8), QA-0117, QA-0125, QA-0133 and QA-0136.
 
+Sim run 6 triage (2026-11-07, stage 3acc5655 from `.qa/stage/current`, firewall allow present, 4/3/3 peers; runs
+`qa/sim/runs/{p2p-core-20261107-231638,p2p-assets-20261107-232544,city-lite-20261107-232823}`; peers stopped by exact
+identity). Host CPU stayed below 50 % for 219 of 220 latency samples (the other at 50-80 %), so no latency below is contention.
+
+- 27 analyzer anomalies + 5 vision findings collapse to 0 new items. Every S1 and S2 is false: p2p-core 279/295 met,
+  p2p-assets 30/30 with 0 anomalies, city-lite 38/41, and the final fingerprints agree in all three runs.
+- Verified: QA-0158. Each builder's upload reached the other peers in 0.8-1.8 s (63-67 s in run 5).
+- Steer 22:55: the 265 s delivery and the +73.7 s flip did not recur. Both races settled in 0.6-0.7 s on the
+  documented winner (owner X=7, [5,0,0]) and held, and no divergence episode lasted more than 15 s (QA-0126 evidence).
+- False S1/S2 mapped to existing items: QA-0159 (a, b, c, e, f, g, i) still reproduces, because the harness has not
+  changed since run 5 (step 8 Clear Properties, 9c, the 7 skipped revoked writes, the query lap lag, the step-14
+  Query tab). city-lite all_readings: 1396 rows on every peer with 3 digests, which is QA-0144. Vision: remote
+  terrain dark is QA-0130 (re-rated S3, data agrees, the `failed to load tileset` log appears again), slivers are
+  QA-0141, noise facades are QA-0149, and "drones are cars" is QA-0159 (j).
+- Still not exercised: QA-0102/0129, QA-0103, QA-0120 (only the verse-level path ran, 1.4 s), QA-0131 to QA-0133,
+  QA-0145, QA-0117, QA-0125, QA-0136.
+
 ## Next actions
 
-1. FIX:5: QA-0158 (S2), and the steered QA-0154/0155/0157 and QA-0156 (S2). Harness: QA-0159 (c) first, then (a),
-   (b), (g) and 13a on the all-verses card path (steer 22:05). These gate QA-0103, QA-0120, QA-0131 and QA-0145.
-   Re-run all three scenarios.
+1. FIX:6: harness QA-0159 (c), (a), (b), (g), and 13a on the all-verses card path. These gate QA-0102/0129, QA-0103,
+   QA-0120, QA-0131 to QA-0133 and QA-0145. Then the steered QA-0156 and QA-0157 (S2). Re-run all three scenarios.
 2. Run FULL pass 78 (2/3) then pass 79; convergence needs zero new S1/S2 in two consecutive passes and all gold.
 3. Fix the S3 test debt (QA-0079, QA-0082, QA-0115, QA-0116), then the integrated sweep, CI Lint (QA-0078), tag
    and release.
