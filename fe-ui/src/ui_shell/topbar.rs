@@ -406,6 +406,32 @@ fn brand(ui: &mut egui::Ui, topbar: &mut TopbarState) {
     }
 }
 
+/// Whether the OS holds the primary mouse button; an OS window drag needs one
+/// (QA-0151, §window-chrome). Tests replace it with a fixed answer.
+#[derive(Resource, Clone, Copy)]
+pub struct PrimaryButtonProbe(pub fn() -> bool);
+
+/// The OS's physical state of the logical primary mouse button right now.
+pub fn os_primary_button_held() -> bool {
+    #[cfg(windows)]
+    {
+        use windows_sys::Win32::UI::Input::KeyboardAndMouse::{
+            GetAsyncKeyState, VK_LBUTTON, VK_RBUTTON,
+        };
+        use windows_sys::Win32::UI::WindowsAndMessaging::{GetSystemMetrics, SM_SWAPBUTTON};
+        // SAFETY: argument-only Win32 queries; no pointers cross the call.
+        let swapped = unsafe { GetSystemMetrics(SM_SWAPBUTTON) } != 0;
+        let primary = if swapped { VK_RBUTTON } else { VK_LBUTTON };
+        // SAFETY: as above. The sign bit is set while the button is down.
+        let state = unsafe { GetAsyncKeyState(i32::from(primary)) };
+        state < 0
+    }
+    #[cfg(not(windows))]
+    {
+        true
+    }
+}
+
 /// Bevy system: perform the bar's pending window request on the primary
 /// window and mirror its maximized state. Main-thread only (`NonSendMarker`):
 /// winit window queries must not run off the event-loop thread.
@@ -413,6 +439,7 @@ pub fn apply_window_chrome(
     mut topbar: ResMut<TopbarState>,
     mut windows: Query<(Entity, &mut Window), With<PrimaryWindow>>,
     close_requests: Option<ResMut<Messages<WindowCloseRequested>>>,
+    button_probe: Option<Res<PrimaryButtonProbe>>,
     _main_thread: NonSendMarker,
     mut commands: Commands,
 ) {
@@ -473,6 +500,16 @@ pub fn apply_window_chrome(
             let maximize = !topbar.maximized;
             window.set_maximized(maximize);
             topbar.maximized = maximize;
+        }
+        // QA-0151: the OS move/size loop ends only on a real button release, so a
+        // drag started without one (synthetic input, or a click released before
+        // this frame) captures the event loop and Bevy never updates again.
+        WindowChromeRequest::StartMove | WindowChromeRequest::StartResize(_)
+            if !button_probe
+                .as_deref()
+                .map_or_else(os_primary_button_held, |probe| (probe.0)()) =>
+        {
+            bevy::log::debug!(?request, "window drag skipped: the primary button is not held");
         }
         WindowChromeRequest::StartMove => window.start_drag_move(),
         WindowChromeRequest::StartResize(direction) => window.start_drag_resize(direction),
@@ -1271,6 +1308,27 @@ mod tests {
             requests,
             vec![WindowChromeRequest::StartResize(CompassOctant::North)]
         );
+        // QA-0151: the OS drag starts only while the OS holds the button; a press
+        // already released (or synthetic) would trap the event loop in the
+        // modal size loop. Apply the raised request through the real system.
+        let os_drag_after = |held: fn() -> bool| {
+            let mut app = App::new();
+            let mut topbar = TopbarState::default();
+            topbar.try_request_chrome(requests[0]).unwrap();
+            app.insert_resource(topbar)
+                .insert_resource(PrimaryButtonProbe(held))
+                .add_systems(Update, apply_window_chrome);
+            let window = app.world_mut().spawn((Window::default(), PrimaryWindow)).id();
+            app.update();
+            assert!(app.world().resource::<TopbarState>().chrome_request.is_none());
+            app.world_mut()
+                .get_mut::<Window>(window)
+                .unwrap()
+                .internal
+                .take_resize_request()
+        };
+        assert_eq!(os_drag_after(|| false), None, "a released press never starts an OS drag");
+        assert_eq!(os_drag_after(|| true), Some(CompassOctant::North));
         bar.topbar.maximized = true;
         assert!(
             bar.press_drag_release(egui::pos2(FREE_SPACE.x, 2.0))

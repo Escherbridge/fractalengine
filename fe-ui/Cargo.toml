@@ -32,6 +32,10 @@ rfd = { workspace = true }
 ron = "0.12"
 dirs = "5"
 
+# QA-0151: the OS button state gates window drags (ui_shell/AGENTS.md §window-chrome).
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.52", features = ["Win32_UI_Input_KeyboardAndMouse", "Win32_UI_WindowsAndMessaging"] }
+
 [dev-dependencies]
 tempfile = "3"
 fe-policy = { path = "../fe-policy" }

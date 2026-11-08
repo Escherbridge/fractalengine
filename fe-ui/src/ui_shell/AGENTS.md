@@ -325,6 +325,21 @@ adds a second `TopBottomPanel::top`.
   A pending request returns typed busy rather than being overwritten. UI-scale changes are separate and cannot
   cancel a queued window operation. `apply_window_chrome` reads the slot via
   `Deref` first so idle frames never flag `TopbarState` changed.
+- **An OS drag needs a held button (QA-0151, 2026-11-07).** `start_drag_move` /
+  `start_drag_resize` hand the window to Windows' modal move/size loop
+  (`WM_NCLBUTTONDOWN` → `DefWindowProc`), which returns only on a real button
+  release. Started without one — a QA input-bridge click in the 5 px band, or a
+  real click whose release arrived in the same frame batch as its press — the
+  main thread sat inside that loop: messages still pumped (window "responding",
+  `IsHungAppWindow` false), but winit never reached `about_to_wait`, so Bevy
+  never ran another `Update` (CPU 0, every bridge request 503/504; Esc or a
+  real click would have ended it). Live dbghelp stack of the hung owner:
+  `NtUserMessageCall ← DefWindowProc (uxtheme) ← winit public_window_callback
+  ← accesskit subclass ← dispatch_peeked_messages`. `apply_window_chrome` now
+  starts either drag only while `os_primary_button_held()` (Win32
+  `GetAsyncKeyState` on the logical primary button, `SM_SWAPBUTTON`-aware;
+  always true off Windows) and drops the request otherwise. Tests inject a
+  fixed answer through the `PrimaryButtonProbe` resource.
 - **Close.** X, Alt+F4/OS, and QA requests share `WindowCloseRequested`. The editor disables Bevy's
   automatic close handler and `receive_close_requests` opens one confirmation. Cancel preserves the window;
   confirmation lets the single chrome executor despawn it, and `exit_on_all_closed` raises `AppExit`.
