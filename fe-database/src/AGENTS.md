@@ -2148,6 +2148,8 @@ to `asset_ids` before `insert_device_payloads` validates and writes the payload.
 one DB command and one reply instead of one `CreateAsset` round trip per file first. With files
 the DB arm requires the anchor petal to resolve and the node to hold Editor there (the
 `CreateAsset` rule); a file-registering payload writes asset rows, so the lane treats it as a
-barrier for Serve admissions and publishes deferred transforms before it (§command-lane). As
+barrier for Serve admissions (§command-lane). It runs ahead of deferred transform publications
+unless a file has a scene MIME (`SCENE_ASSET_MIMES`): opaque payload files never touch scene
+publication, while a scene-MIME file is published like an upload and so publishes them first. As
 before, assets registered for a payload that is then rejected or is an idempotent retry stay
 unreferenced until asset GC reclaims them.

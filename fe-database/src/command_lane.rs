@@ -178,9 +178,12 @@ impl DeferredPublications {
 /// and reads that never consult a scene clock. Every other command, and every variant
 /// added later, publishes first, so replication, role and asset commands see them.
 fn runs_before_publication(command: &DbCommand) -> bool {
-    // A payload that registers its files writes asset rows: it publishes first (QA-0161).
+    // QA-0161: opaque payload files never touch scene publication; a scene-MIME file is
+    // published like an upload, so that payload publishes the waiting transforms first.
     if let DbCommand::InsertDevicePayloads { files, .. } = command {
-        return files.is_empty();
+        return !files.iter().any(|file| {
+            fe_runtime::scene_asset::SCENE_ASSET_MIMES.contains(&file.content_type.as_str())
+        });
     }
     matches!(
         command,
