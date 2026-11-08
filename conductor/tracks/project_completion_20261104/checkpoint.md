@@ -3,7 +3,7 @@ type: ProgressCheckpoint
 date: 2026-11-04
 status: in_progress
 title: Current completion state and next actions
-last_verified_utc: 2026-11-08T07:00:00.000000+00:00
+last_verified_utc: 2026-11-08T08:10:00.000000+00:00
 ---
 
 ## ORCHESTRATOR STEER (binding; maintained by the orchestrating session, do not edit or remove)
@@ -243,10 +243,30 @@ identity). Host CPU stayed below 50 % for 219 of 220 latency samples (the other 
 - Still not exercised: QA-0102/0129, QA-0103, QA-0120 (only the verse-level path ran, 1.4 s), QA-0131 to QA-0133,
   QA-0145, QA-0117, QA-0125, QA-0136.
 
+Sim run 7 triage (2026-11-08, stage 8dc2d739 from `.qa/stage/current`, firewall allow present, 4/3/3 peers; runs
+`qa/sim/runs/{p2p-core-20261108-004437,p2p-assets-20261108-003607,city-lite-20261108-003846}`; the first p2p-core attempt
+died at join with 0xC0000142 and was retried). Host CPU stayed below 50 % for every latency sample, so no latency below
+is contention. Triage repro evidence is in `qa/sim/triage7/`, and both repro peers were stopped by exact identity.
+
+- 34 analyzer anomalies + 7 vision findings collapse to 2 new S2s, 1 S2 raised from S3, and 1 harness S3. Every S1 is
+  false. p2p-assets is clean (30/30 met, 0 anomalies, 25 MB in 0.2-1.8 s), and the final fingerprints agree in all three runs.
+- Verified: QA-0120 (revoked from the all-verses card with the owner's replica closed; the owner log shows the
+  publication lease, and the editor was demoted in 2.0 s), QA-0132 (the closed-replica demotion path) and QA-0145 (the
+  relay-less restarted editor's REST and MCP writes reached all 4 peers in < 0.8 s). The harness items QA-0159 a-f held.
+- New S2: QA-0161. The owner's write round trip (MCP update_transform p50 331 ms, ingest_device_payload p50 771 ms)
+  overruns the 0.5 s flight slot, so 8 of 360 ticks were skipped. This was QA-0159 (i). QA-0162: after a revoke, the
+  reopened Access tab drops the member (the snapshot lists PeerRegistry DIDs + role rows only), so there is no GUI
+  re-grant. This blocked 13c and was confirmed live. Raised to S2: QA-0129 (Clear Properties partial bag 0.5 s on 3 peers).
+- False S1/S2: 5.e1/6.e1 "met after 198-290 s" are later steps' writes. Both races settled in 0.5-0.7 s on a
+  non-documented winner (QA-0126). 9c, 13a.e4-e6, 13a/13c clicks and VIS-2/3/4/6 are harness QA-0163. city-lite
+  all_readings (1408 rows, 3 digests) is QA-0144. VIS-1 is QA-0130, and VIS-5 is QA-0149.
+- Still not exercised: QA-0103 (9c's hide deselects N1), QA-0131 (blocked by QA-0162), QA-0133 and QA-0160 (the
+  race writes were refused locally), QA-0117, QA-0125, QA-0136.
+
 ## Next actions
 
-1. FIX:6: harness QA-0159 (c), (a), (b), (g), and 13a on the all-verses card path. These gate QA-0102/0129, QA-0103,
-   QA-0120, QA-0131 to QA-0133 and QA-0145. Then the steered QA-0156 and QA-0157 (S2). Re-run all three scenarios.
+1. FIX:7: QA-0162 and QA-0161, then QA-0129 (S2), plus the harness/scenario items in QA-0163 (a, b, c, d, e) that gate
+   QA-0103, QA-0131, QA-0133 and QA-0160. Re-run all three scenarios.
 2. Run FULL pass 78 (2/3) then pass 79; convergence needs zero new S1/S2 in two consecutive passes and all gold.
 3. Fix the S3 test debt (QA-0079, QA-0082, QA-0115, QA-0116), then the integrated sweep, CI Lint (QA-0078), tag
    and release.
