@@ -1,7 +1,9 @@
 """Per-peer probers at scenario cadences + a host CPU/RAM sampler; observations are logged on change; see tools/qa/AGENTS.md §sim."""
+import collections
 import concurrent.futures
 import json
 import os
+import re
 import subprocess
 import threading
 import time
@@ -15,6 +17,15 @@ from scenario import source_probe, target_key
 NODE_FIELDS = ("display_name", "position", "elevation", "rotation", "scale", "properties", "asset_id", "petal_id",
                "view", "edit_seq")
 POOL_WORKERS = 4
+# fe-api rate-limits /query and the distributed timeseries query at 10 per second per DID (fe-api
+# limits.rs QUERY_RATE_PER_SEC), on the same DID the driver writes with. One prober round fires each
+# family's targets together, so a round stays under these bursts and leaves the rest for the driver
+# (lookup_node polls /query at 2 Hz): a prober must never cause the refusals it would then measure.
+QUERY_BURST_BUDGET = 6
+TIMESERIES_BURST_BUDGET = 8
+# Refusals that say nothing about the state (rate limit, busy, timeout): counted as prober errors,
+# never recorded as an observation (an {"absent": true} here would fake a deletion or a divergence).
+TRANSIENT_TEXT = re.compile(r"rate limit|timed out|timeout|unavailable|try again|busy", re.I)
 
 HOST_SAMPLER_PS1 = r"""
 param([string]$Csv, [string]$PidFile, [int]$IntervalMs = 2000, [int]$ParentPid, [int]$MaxSeconds = 3600)
@@ -51,6 +62,14 @@ while (([DateTime]::UtcNow - $start).TotalSeconds -lt $MaxSeconds) {
     $lines | Add-Content -LiteralPath $Csv -Encoding ascii
 }
 """
+
+
+def is_transient(outcome):
+    """A refusal that reports load, not state: 5xx, 408, 429, or a rate-limit/busy/timeout envelope."""
+    status = outcome.get("status") or 0
+    if status >= 500 or status in (408, 429):
+        return True
+    return not outcome.ok and bool(TRANSIENT_TEXT.search("%s %s" % (outcome.get("code") or "", outcome.get("error") or "")))
 
 
 class HostSampler:
@@ -104,6 +123,18 @@ class Prober:
         self.stop_event = threading.Event()
         self.threads = []
         self.templates = self._collect_templates({**scenario, "steps": steps if steps is not None else scenario["steps"]})
+        self._check_rate_budget()
+
+    def _check_rate_budget(self):
+        """Refuse a scenario whose per-round query bursts could reach the API's per-DID rate limits."""
+        last = max([first for first, _probe, _target in self.templates] + [-1])
+        for index in range(-1, last + 1):
+            active = collections.Counter(probe for first, probe, _target in self.templates if first <= index)
+            for probe, budget in (("query", QUERY_BURST_BUDGET), ("timeseries", TIMESERIES_BURST_BUDGET)):
+                if active[probe] > budget:
+                    raise ValueError("scenario probes %d %s targets at once by step index %d; the prober budget is %d "
+                                     "per round (fe-api allows 10/s per DID, shared with the driver)" % (
+                                         active[probe], probe, index, budget))
 
     @staticmethod
     def _collect_templates(scenario):
@@ -201,39 +232,46 @@ class Prober:
             counts[kind] = counts.get(kind, 0) + 1
             return client.send("GET", path, None, token, timeout=8.0)
 
+        def stamped(call, *args):
+            """(outcome, t): t is when this response arrived, not when the round got to read it."""
+            outcome = call(*args)
+            return outcome, self.clock.now()
+
+        def submit(call, *args):
+            return pool.submit(stamped, call, *args)
+
         for target, key in targets.get("node", []):
-            jobs.append(("node", key, pool.submit(self._node, get, target)))
+            jobs.append(("node", key, submit(self._node, get, target)))
         for target, key in targets.get("transform", []):
-            jobs.append(("transform", key, pool.submit(get, "transform", "/api/v1/nodes/%s/transform" % target)))
+            jobs.append(("transform", key, submit(get, "transform", "/api/v1/nodes/%s/transform" % target)))
         for target, key in targets.get("groups", []):
-            jobs.append(("groups", key, pool.submit(get, "groups", "/api/v1/petals/%s/visibility-groups" % target)))
+            jobs.append(("groups", key, submit(get, "groups", "/api/v1/petals/%s/visibility-groups" % target)))
         for target, key in targets.get("get", []):
-            jobs.append(("get", key, pool.submit(get, "get", str(target))))
+            jobs.append(("get", key, submit(get, "get", str(target))))
         for target, key in targets.get("terrain", []):
-            jobs.append(("terrain", key, pool.submit(get, "terrain", "/api/v1/petals/%s/terrain" % target)))
+            jobs.append(("terrain", key, submit(get, "terrain", "/api/v1/petals/%s/terrain" % target)))
         if targets.get("hierarchy") and self._is_due(due, "hierarchy", "hierarchy_ms", now):
-            jobs.append(("hierarchy", None, pool.submit(get, "hierarchy", "/api/v1/hierarchy")))
+            jobs.append(("hierarchy", None, submit(get, "hierarchy", "/api/v1/hierarchy")))
         if (targets.get("nav") or targets.get("ui")) and self._is_due(due, "ui", "ui_ms", now):
             debug = client.debug_token()
             counts["ui"] = counts.get("ui", 0) + 1
-            jobs.append(("ui_state", None, pool.submit(client.send, "GET", "/api/v1/debug/ui-state", None, debug, 8.0)))
+            jobs.append(("ui_state", None, submit(client.send, "GET", "/api/v1/debug/ui-state", None, debug, 8.0)))
         if (targets.get("query") or targets.get("timeseries")) and self._is_due(due, "query", "query_ms", now):
             for target, key in targets.get("query", []):
                 counts["query"] = counts.get("query", 0) + 1
-                jobs.append(("query", key, pool.submit(client.send, "POST", "/api/v1/query", {"sql": target}, token, 15.0)))
+                jobs.append(("query", key, submit(client.send, "POST", "/api/v1/query", {"sql": target}, token, 15.0)))
             for target, key in targets.get("timeseries", []):
                 counts["timeseries"] = counts.get("timeseries", 0) + 1
-                jobs.append(("timeseries", key, pool.submit(client.mcp, "query_timeseries", target, 20.0)))
+                jobs.append(("timeseries", key, submit(client.mcp, "query_timeseries", target, 20.0)))
         errors = 0
         alive = None
         for kind, key, future in jobs:
-            outcome = future.result()
-            t = self.clock.now()
+            outcome, t = future.result()
             if outcome.get("code") == "not_running":
                 alive = False
                 continue
             alive = True if alive is None else alive
-            if outcome.get("status", 0) >= 500 or outcome.get("status", 0) == 429:
+            if is_transient(outcome):
                 errors += 1
                 continue
             if kind == "node":

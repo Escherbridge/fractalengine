@@ -1085,6 +1085,12 @@ the pre-QA-0119 cap N <= floor((cores-4)/2.5), 3 on this host) -> `peers.ps1 Sta
 by OS `SetWindowPos` on the identity-checked pid -> `peers_join.py` (real GUI invite flow) -> host sampler, probers,
 driver -> `peers.ps1 Stop -OwnerRun` in `finally` (also on exceptions and the `--max-uptime-s` watchdog) -> analyze.
 `--attach` drives the peers in `.qa/peers-current` and never starts or stops them. Run dirs: `qa/sim/runs/`.
+Every exit path stops what Start launched by exact identity: a Start that exits 0 with an unexpected record
+still hands its pointer to the cleanup, and `peers.ps1 Restart` records the new process before its identity
+check can throw. PowerShell output spools live in `.qa/tmp/`, so a run writes only under `.qa/` and `qa/`.
+A barrier action whose `requires` peer is absent is skipped before the barrier forms (never a half-filled
+barrier that waits out its 120 s timeout). A fingerprint compares at most 400 nodes per petal and says so: a
+larger petal adds an `X <petal>` key with the full count, and the run log names it.
 
 **Stable exe path and firewall (QA-0153).** Windows Firewall (Public profile) matches inbound rules by exe path, and
 every `stage.ps1` build lands in a new `.qa/stage/<sha>-<ts>/`, so each build prompted again and runs 1-4 executed with
@@ -1150,7 +1156,15 @@ expect = {probe, target, path?, peers: all|[names], predicate, value?, within_s?
   capped at 0.5 Hz (validator), per-node GETs carry the nodes under test, GUI typing steps set
   `"probe": {"hierarchy_ms": 0}`, and probers only poll targets of steps that have started. Observations are
   logged on change; each prober round logs a `_tick` with request counts so the report puts request rates
-  next to the latencies they measured.
+  next to the latencies they measured. Each observation is stamped when ITS response arrived (not when the
+  round read it), so a slow sibling request never inflates a latency.
+- **Probers stay under the API's rate limits (critic, 2026-11-07).** `/query` and the distributed timeseries
+  query allow 10 requests/s per DID (fe-api `limits.rs`), and the prober shares the driver's DID. A round fires a
+  family's targets together, so `Prober` refuses a scenario whose active `query` targets exceed 6 (the driver's
+  `lookup_node` polls `/query` at 2 Hz) or `timeseries` targets exceed 8 at any step. A refusal that reports load,
+  not state (5xx, 408, 429, or an envelope saying rate limit / busy / timeout / unavailable: `is_transient`) is a
+  prober error in the `_tick`, never an observation: before, a rate-limited `/query` answered `200 ok:false` and was
+  recorded as `{"absent": true}`, which can satisfy `absent`/`excludes` and fake a divergence.
 
 ### Adding a scenario
 

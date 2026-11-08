@@ -27,6 +27,7 @@ from prober import HostSampler, Prober  # noqa: E402
 from runtime import Cadence, Clock, LiveStore, Recorder  # noqa: E402
 
 RUNS_ROOT = os.path.join(REPO_ROOT, "qa", "sim", "runs")
+TMP_ROOT = os.path.join(REPO_ROOT, ".qa", "tmp")  # PowerShell output spools: the harness writes only under .qa/ and qa/
 STAGE_ROOT = os.path.join(REPO_ROOT, ".qa", "stage")
 CURRENT_STAGE = "current"  # the stable launch directory: a real copy of the stage a run uses, never a link (QA-0153)
 FILE_ATTRIBUTE_REPARSE_POINT = 0x400
@@ -53,7 +54,8 @@ def powershell(command, timeout=900, env=None):
     Output goes to temp files and we wait on process exit, not pipe EOF: peers.ps1/launch.ps1 start
     fractalengine.exe children that inherit the handles and would hold a pipe open for their lifetime.
     """
-    with tempfile.TemporaryFile() as out, tempfile.TemporaryFile() as err:
+    os.makedirs(TMP_ROOT, exist_ok=True)
+    with tempfile.TemporaryFile(dir=TMP_ROOT) as out, tempfile.TemporaryFile(dir=TMP_ROOT) as err:
         process = subprocess.Popen(["powershell", "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass",
                                     "-Command", command], stdin=subprocess.DEVNULL, stdout=out, stderr=err,
                                    cwd=REPO_ROOT, env=env, creationflags=CREATE_NO_WINDOW)
@@ -339,6 +341,10 @@ class Host:
         log("peers.ps1 Start %s" % extra)
         code, out, err = powershell(self.peers_cmd("Start", extra), timeout=1200)
         record = self._read_record()
+        if code == 0 and record is None:
+            # Start completed and wrote the pointer, but not the record expected: its peers are
+            # still this run's to stop, by the exact identities that record holds.
+            self.owner_dir = self._pointer_dir()
         if code != 0 or record is None:
             raise RuntimeError("peers.ps1 Start failed (%d): %s" % (code, (out + err)[-1500:]))
         self.record = record
@@ -359,6 +365,14 @@ class Host:
             return None
         self.owner_dir = owner_dir
         return record
+
+    @staticmethod
+    def _pointer_dir():
+        try:
+            with open(PEERS_POINTER, encoding="utf-8-sig") as handle:
+                return handle.read().strip() or None
+        except OSError:
+            return None
 
     def attach(self):
         with open(PEERS_POINTER, encoding="utf-8-sig") as handle:

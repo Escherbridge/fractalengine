@@ -213,12 +213,13 @@ if ($Action -eq 'Restart') {
         $null = @(& "$PSScriptRoot\launch.ps1" -ResumeRun $target.run_dir)
     } finally { $env:FE_SYNC_BOOTSTRAP = $priorBootstrap }
     $fresh = Get-PeerMember -Directory $target.run_dir
-    $did = Get-QaPairPublicDid -Directory $target.run_dir
-    if ($did -cne $target.public_did) { throw 'Restarted peer changed its issuer identity' }
+    # Record the new process before any check can throw, so Stop always reaches it by its exact identity.
     foreach ($key in @('process_identity','descendant_identities','stage','stage_manifest','api_base')) { $target.$key = $fresh.$key }
     $peers.revision = [int]$peers.revision + 1
     $peers | Add-Member -Force -NotePropertyName restarted_at -NotePropertyValue ([DateTime]::UtcNow.ToString('o'))
     Write-PeersRecord -Path $loaded.path -Record $peers
+    $did = Get-QaPairPublicDid -Directory $target.run_dir
+    if ($did -cne $target.public_did) { throw 'Restarted peer changed its issuer identity (recorded; stop it with -Action Stop)' }
     $target | ConvertTo-Json -Depth 10
     return
 }

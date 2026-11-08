@@ -817,7 +817,7 @@ class Analysis:
         lines += ["> " + firewall_note(meta), ""]
         lines += ["## Prober load (read rates next to the latencies they measure)", "",
                   "Latency resolution is one prober round (`rest_ms`); hierarchy polling is capped at 0.5 Hz (QA-0125).", "",
-                  "| peer | ticks | req/s | node/s | hierarchy/s | ui/s | query/s | tick p50 s | tick p95 s | 5xx/429 |",
+                  "| peer | ticks | req/s | node/s | hierarchy/s | ui/s | query/s | tick p50 s | tick p95 s | transient errors |",
                   "|---|---|---|---|---|---|---|---|---|---|"]
         for r in load:
             lines.append("| %s | %d | %s | %s | %s | %s | %s | %s | %s | %d |" % (
@@ -926,9 +926,10 @@ class Analysis:
             lines.append("Too few latency samples with host CPU coverage (%d)." % cpu.get("n", 0))
         lines += ["", "## Fingerprints", ""]
         for label, data in fingerprints.items():
-            lines.append("- `%s`: %s; diverged keys: %d %s" % (
-                label, ", ".join("%s=%s" % (p, (s or "-")[:12]) for p, s in data["sha256"].items()), len(data["diverged"]),
-                [d["key"] for d in data["diverged"]][:20]))
+            keys = [d["key"] for d in data["diverged"]]
+            lines.append("- `%s`: %s; diverged keys: %d %s%s" % (
+                label, ", ".join("%s=%s" % (p, (s or "-")[:12]) for p, s in data["sha256"].items()), len(keys), keys[:20],
+                " (first 20; all in anomalies.json and fingerprint-%s.json)" % label if len(keys) > 20 else ""))
         if not fingerprints:
             lines.append("No fingerprints recorded.")
         shots = [e for e in self.events if e.get("op") == "checkpoint"]

@@ -144,9 +144,10 @@ class Driver:
                 events.append(event)
 
         threads = []
-        live_barrier = [a for a in barrier if a["peer"] in self.present and not self.unmet_needs(a)]
+        live_barrier = [a for a in barrier if a["peer"] in self.present and not self.unmet_needs(a)
+                        and all(peer in self.present for peer in a.get("requires", []))]
         for action in barrier:
-            if action not in live_barrier:  # absent peer or unmet needs: logged as skipped, never a half-filled barrier
+            if action not in live_barrier:  # absent peer, absent required peer or unmet needs: skipped, never a half-filled barrier
                 keep(self.execute(action, sid, "barrier", t_step))
         if len(live_barrier) >= 2:
             fire_at = [None]
@@ -227,7 +228,11 @@ class Driver:
         client = self.clients[action["peer"]]
         if gate is not None:
             if action["via"] == "gui":
-                client.prime_gui()
+                try:
+                    client.prime_gui()
+                except Exception as error:  # noqa: BLE001 - the other participants must not wait out the barrier timeout
+                    gate.abort()
+                    return self._event(base, status="error_barrier_broken", error="prime_gui: %s" % str(error)[:200])
             try:
                 gate.wait(BARRIER_TIMEOUT_S)
             except threading.BrokenBarrierError:
@@ -677,7 +682,12 @@ class Driver:
                                                           key=lambda g: str(g.get("id"))) if groups.ok else None
                         terrain = client.rest("GET", "/api/v1/petals/%s/terrain" % petal["id"])
                         rows["T " + petal["id"]] = digest_of(terrain.get("data")) if terrain.ok else None
-                        for node in petal.get("nodes", [])[:FINGERPRINT_NODE_CAP]:
+                        nodes = petal.get("nodes", [])
+                        if len(nodes) > FINGERPRINT_NODE_CAP:  # never a silent cut: the key carries the full count
+                            rows["X " + petal["id"]] = {"nodes": len(nodes), "fingerprinted": FINGERPRINT_NODE_CAP}
+                            self.log("  ! fingerprint %s/%s: petal %s has %d nodes, only the first %d are compared"
+                                     % (label, name, petal["id"], len(nodes), FINGERPRINT_NODE_CAP))
+                        for node in nodes[:FINGERPRINT_NODE_CAP]:
                             detail = client.rest("GET", "/api/v1/nodes/%s" % node["id"])
                             data = detail.get("data") if detail.ok else None
                             fields = {k: data.get(k) for k in ("display_name", "position", "rotation", "scale",
