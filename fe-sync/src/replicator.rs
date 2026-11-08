@@ -123,6 +123,19 @@ pub trait VerseReplicator: Send + Sync {
         data: &[u8],
     ) -> ReplicatorFuture<'_, anyhow::Result<()>>;
 
+    /// Whether this node's own current entry for `table/record_id` already holds exactly
+    /// `content_hash` (a BLAKE3 of the row bytes), so republishing it changes nothing
+    /// (QA-0164, AGENTS.md §unchanged-rewrite). Replicas without a local store say no.
+    fn holds_own_entry(
+        &self,
+        table: &str,
+        record_id: &str,
+        content_hash: &BlobHash,
+    ) -> ReplicatorFuture<'_, bool> {
+        let _ = (table, record_id, content_hash);
+        Box::pin(async { false })
+    }
+
     /// Subscribe to incoming row changes from peers.
     ///
     /// Returns a receiver that yields `RowChange` events. Dropping the
@@ -761,6 +774,27 @@ impl IrohDocsReplicator {
             .map_err(|e| anyhow::anyhow!("start_sync: {e}"))
     }
 
+    /// This author's current entry for `key` holds `hash` and its blob is complete locally
+    /// (QA-0164, AGENTS.md §unchanged-rewrite). Local store reads only.
+    async fn own_entry_holds(&self, key: &str, hash: iroh_blobs::Hash) -> bool {
+        let (Some(doc), Some(author), Some(stack)) =
+            (self.live_doc(), self.live_author(), self.engine_holder.stack())
+        else {
+            return false;
+        };
+        let same_entry = doc
+            .get_exact(author, key.as_bytes(), false)
+            .await
+            .ok()
+            .flatten()
+            .is_some_and(|entry| entry.content_hash() == hash);
+        same_entry
+            && matches!(
+                stack.blob_store().blobs().status(hash).await,
+                Ok(iroh_blobs::api::blobs::BlobStatus::Complete { .. })
+            )
+    }
+
     async fn write_row_inner(
         &self,
         table: &str,
@@ -803,21 +837,7 @@ impl IrohDocsReplicator {
             tracing::debug!(ns = %doc.id().fmt_short(), key = %key, removed, "tombstone written");
         } else {
             // QA-0164: identical bytes are not a new version; see AGENTS.md §unchanged-rewrite.
-            let hash = iroh_blobs::Hash::new(data);
-            let same_entry = doc
-                .get_exact(author, key.as_bytes(), false)
-                .await
-                .ok()
-                .flatten()
-                .is_some_and(|entry| entry.content_hash() == hash);
-            let content_held = match (same_entry, self.engine_holder.stack()) {
-                (true, Some(stack)) => matches!(
-                    stack.blob_store().blobs().status(hash).await,
-                    Ok(iroh_blobs::api::blobs::BlobStatus::Complete { .. })
-                ),
-                _ => false,
-            };
-            if content_held {
+            if self.own_entry_holds(&key, iroh_blobs::Hash::new(data)).await {
                 tracing::debug!(ns = %doc.id().fmt_short(), key = %key, "unchanged row not rewritten");
                 return Ok(());
             }
@@ -877,6 +897,17 @@ impl VerseReplicator for IrohDocsReplicator {
         let record_id = record_id.to_string();
         let data = data.to_vec();
         Box::pin(async move { self.write_row_inner(&table, &record_id, &data).await })
+    }
+
+    fn holds_own_entry(
+        &self,
+        table: &str,
+        record_id: &str,
+        content_hash: &BlobHash,
+    ) -> ReplicatorFuture<'_, bool> {
+        let key = format!("{table}/{record_id}");
+        let hash = iroh_blobs::Hash::from_bytes(*content_hash);
+        Box::pin(async move { self.open_error().is_none() && self.own_entry_holds(&key, hash).await })
     }
 
     fn subscribe(&self) -> ReplicatorFuture<'_, anyhow::Result<mpsc::Receiver<RowChange>>> {

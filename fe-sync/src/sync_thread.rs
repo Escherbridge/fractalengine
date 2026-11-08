@@ -446,6 +446,18 @@ impl VerseReplicator for AnyReplicator {
         }
     }
 
+    fn holds_own_entry(
+        &self,
+        table: &str,
+        record_id: &str,
+        content_hash: &fe_runtime::blob_store::BlobHash,
+    ) -> ReplicatorFuture<'_, bool> {
+        match self {
+            Self::Iroh(r) => r.holds_own_entry(table, record_id, content_hash),
+            Self::Virtual(r) => r.holds_own_entry(table, record_id, content_hash),
+        }
+    }
+
     fn subscribe(
         &self,
     ) -> ReplicatorFuture<'_, anyhow::Result<tokio::sync::mpsc::Receiver<RowChange>>> {
@@ -1296,7 +1308,16 @@ pub fn spawn_sync_thread_with_transport(
                             }) => {
                                 if table=="asset" {
                                     match crate::scene_assets::is_scene_row(&blob_store,content_hash).await {
-                                        Ok(true)=>{scene_assets.publish_row(&verse_id,content_hash);continue;}
+                                        Ok(true)=>{
+                                            // QA-0164: a node publication re-sends its unchanged asset row, whose
+                                            // blob and row were published already (AGENTS.md §unchanged-rewrite).
+                                            let published=match replicas.get(&verse_id) {
+                                                Some(replica)=>replica.holds_own_entry(&table,&record_id,&content_hash).await,
+                                                None=>false,
+                                            };
+                                            if !published {scene_assets.publish_row(&verse_id,content_hash);}
+                                            continue;
+                                        }
                                         Ok(false)=>{},
                                         Err(error)=>{tracing::warn!(verse_id,"asset metadata publication deferred: {error:#}");continue;}
                                     }

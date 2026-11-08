@@ -2380,3 +2380,10 @@ finds it present) and re-requested its blob, which put 849 Serve admissions on t
 Skipping is safe: the replica already holds exactly that entry from us, so set reconciliation
 serves it to any peer that lacks it, and every repair path (re-emit on open, recovery) writes only
 when the entry is missing or different. Tombstones (`del`) are never skipped.
+
+The sync loop applies the same test one step earlier for a scene asset row: a `WriteRowEntry`
+for an `asset` row whose own entry already holds those bytes (`VerseReplicator::holds_own_entry`)
+skips the publish job entirely. That job reads and re-hashes the asset blob, re-tags its retention
+root and takes three `InspectSceneAssetTransfer { Publish }` admissions on the DB lane; the owner
+of the drone flight ran it about 280 times for the one unchanged drone mesh (840 admissions). The
+entry is written only when a publish job completed, so holding it proves the blob was published.
