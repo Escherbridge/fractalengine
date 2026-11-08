@@ -1,14 +1,14 @@
 ---
 type: runbook
 title: FractalEngine session runbook
-updated: 2026-10-13
-head: d4c0e19
+updated: 2026-11-08
+head: cf6f9750
 ---
 
 # FractalEngine — Runbook
 
-**Last updated:** 2026-10-13 · **Branch:** `main` · **Last commit:** see `git log -1`
-(written at `a6e1a4a` + this runbook commit) · Previous runbooks: `git log -- conductor/RUNBOOK.md`.
+**Last updated:** 2026-11-08 11:35 · **Branch:** `main` · **Last commit:** `cf6f9750 docs(conductor): P2P
+convergence campaign converged` (+ this hand-off commit) · Previous runbooks: `git log -- conductor/RUNBOOK.md`.
 
 Foundation under this file: `conductor/product.md`, `tech-stack.md`, `workflow.md`,
 `tracks.md`, and the work queue `conductor/doneness-ledger.md`.
@@ -111,6 +111,21 @@ trusting "pure efficiency" claims; push control; a board that silently drifts st
 
 ## 2. State
 
+- **2026-11-08 11:35 — P2P convergence campaign CONVERGED; extension sessions handed off; this
+  session = orchestrator / merge gate (supersedes every bullet below).** Since the 10-15 bullet: FF
+  campaign closed green 2026-10-25 (`6141914`, pushed `820a9d4`, CI green); open-core split + 11
+  tracks 2026-10-31; QA chain → scripted P2P simulator (`tools/qa/sim`, workflow
+  `.omc/plans/p2p-sim.js`) 2026-11-07/08: 10 runs, 4 critic passes (PASS-WITH-FIXES 12/4/3/5),
+  register `qa/findings.jsonl` 163 rows — 48 fixed_verified + 20 focused, 22 fixed_source_live_pending,
+  39 open S3/S4, **0 open S1/S2**. HEAD `cf6f9750`; **130 commits ahead of origin, unpushed
+  (user-gated)**. Build gate `.omc/state/build-gate.json` OPEN since 05:53. **Campaign-end workspace
+  sweep SKIPPED (user, 2026-11-08):** `cargo test --workspace` filled the disk (258 GB of link outputs)
+  and died of commit exhaustion; retired for the chunked runner `tools/qa/test_batches.ps1`.
+  Verified: ten simulator runs with fingerprints agreeing on every peer; critic verdicts in the
+  STEER channel of `conductor/tracks/project_completion_20261104/checkpoint.md` and
+  `.omc/state/bus/P2P-QA.md`. Not verified: no test batch has run since the last fix commits
+  (`61b947ca`, `d3b21945`) — `cargo check -p` gates only; the runner itself is parse-validated
+  (`-ListOnly`), no chunk has run.
 - ~~**2026-10-13 post-W0d, HEAD = `d4c0e19`** (W0–W0d complete; W1 PAS-P3+P4 launched, W0d final smoke & push complete, CI in flight on 53a4c4c)~~ — superseded (critic tick 4, AC-22(4)).
 - ~~**2026-10-14, W1 done / W2 (PAS-P5) running.** W1 PAS-P3+P4 landed `53a4c4c..069f8ea` (11 agents; S8b security review FIXED; final review FIXED; relay smoke PASS, AC-15). W2 (campaign PAS-P5) launched `01:40` and is in progress (S1 committed `db5883b`). **Last pushed `53a4c4c`; CI green run `38498925963`** (first fully completed run of the day's work — Lint incl. licenses/fuzz, Linux build+test+package incl. the 0.35 store-migration fixture test, Windows build+package; rolling `latest` republished with fractalengine/fe-relay archives + SHA256SUMS). Push freeze (AC-14) lifted at that run; **no further pushes until the campaign final sweep** (docs-only commits excepted). **Ledger refreshed 2026-10-13** (dated 10-10; now tracks committed and ratified rows) **and 2026-10-14** (critic tick 4 bookkeeping — IROH-STORE-GC + 2 role-propagation rows added, PAS-P1V status corrected, counts recomputed). Section §4 assumptions still the 2026-10-13 grill R1–R7; RUNBOOK §3 decisions frozen.~~ — superseded (critic tick 5, W2 close).
 - ~~**2026-10-14, W2 done / W2b fixups running.** W2 (PAS-P5) landed `4865a54..e7762d9` (S1→S1b→S2→S3→S4→S6→S5→S7a→S7b→S8 security review-and-fix `d21a957`→final review-and-fix `e7762d9`; every slice `gate_green`). Critic tick 5 ran at W2 close (`.omc/accountability/tick-20261014-0722.md`, verdict ON_TRACK): AC-23 accepts the P2P/FetchStrategy gap as a staged state (ledger row PAS-P5-P2P-POLICY); AC-24 schedules **W2b fixups** (F1-F6: streamed-meta worker-thread move + publisher pin, local hexon-install worker thread, `install_tileset` continuity/write/rename lock, registry bearer token, relay blob-dir derivation, registry nosniff) before W3; AC-25/26/27/28 are docs-only amendments (this commit). ~~W2b is running now~~ → **W2b DONE** `4306cb2`+`474ab9b`; **W3 DONE `38dd271..381264e`; W3b running** (`wf_a45fa136-1c5`).~~ — superseded (critic tick 8, W4 close).
@@ -170,6 +185,16 @@ trusting "pure efficiency" claims; push control; a board that silently drifts st
 | Critic tick 8 (W4 close / role-propagation pre-launch) | accountability critic | 11 directives AC-41..AC-51 (C11-C21): RP-4s + RP-9b dual review added, AC-42 durable local-statement re-emit, AC-43 three-valued confinement, AC-44 enrolment floor Deferred split, AC-45 C3 false-premise correction, AC-46 stale-API-token cap, AC-47 STREAMED-TERRAIN-PIN promoted to RP-4b, AC-48 gate-text + harness-manifest fix, AC-49 RP-0 (oversized-window test + typed rejection), AC-50 BLOB-HASH-CAPABILITY ledger row, AC-51 bookkeeping | ON_TRACK |
 
 ## 3. Decisions
+
+**2026-11-08 (user + orchestrator): test execution and hand-off.**
+- Campaign-end workspace sweep skipped; tests run only when told and only through the chunked runner
+  `tools/qa/test_batches.ps1 -Batches <ids>`; `cargo test --workspace` is retired (root `AGENTS.md`
+  "Test execution policy" item 3, `conductor/test-batches.md`, `tools/qa/AGENTS.md` §test-batches).
+  *Reversal: cheap* — `-Batches All` is the same suite, one chunk at a time.
+- The extension program (D-X1..D-X8, 2026-11-07) is handed off to sessions EXT-PLATFORM / EXT-PORTAL /
+  EXT-MARKET; this session stays merge gate and reviewer. Worktrees share `target/`
+  (`.omc/worktrees/.cargo/config.toml`); protocol rule 12 (disk hygiene) added. *Reversal: cheap* —
+  delete that config to split target dirs again (one dependency build per worktree, ~45 GB each).
 
 **From the 2026-10-31 grill (user): open-core alignment.** The full rule is in [open-core.md](./open-core.md).
 - Hosted operations, the foundry pipeline and the marketplaces are built outside this repo, on its public seams. This repo stays the complete Apache-2.0 open core.
@@ -316,6 +341,23 @@ NO-GO (local Workstream G implementation is GO); `../gis-tile-etl` kept, never p
 
 ## 4. Assumptions (highest reversal cost first — confirm the top line before building on it)
 
+**Added 2026-11-08 (unasked; the user was handing off):**
+- The user starts the EXT sessions by pasting the one-line bootstraps (not headless `claude -p` runs
+  launched by this session) · default taken: pass-offs refreshed, bootstraps printed, nothing launched
+  · to reverse: launch three headless sessions in the three trees (cheap; three concurrent agents on a
+  6-core box compete with every build).
+- Pruning regenerable build artifacts (`target/debug/deps/*.exe|*.pdb`, incremental dirs idle 7+ days)
+  counts as the capacity-freeing the user authorised · default taken: pruned 365 GB without asking ·
+  to reverse: n/a (one relink per test binary, minutes).
+- Dev-profile debuginfo stays at the default (full PDBs) · default taken: unchanged, because any
+  profile change rebuilds every artifact (~1 h) and doubles disk until a clean · to reverse:
+  `[profile.dev] debug = "line-tables-only"` at the next planned `cargo clean`.
+- The system-managed pagefile (98 GB on C:) is left alone · default taken: reported, not changed ·
+  to reverse: the user sets a fixed size (reboot).
+- The ~95 stale `qa-*` worktrees under `.omc/worktrees` (4.8 GB, no target dirs, many detached HEADs)
+  stay · default taken: untouched · to reverse: `git worktree remove` each after checking its HEAD is
+  reachable from a branch (a detached one may hold unreferenced commits).
+
 **Added 2026-10-13 (unasked in the grill):**
 - Campaign shape: W0 housekeeping first (history purge + SHA remap, fixture CI generation,
   `imported/` fallback retirement with blob backfill, ledger/register bookkeeping), then §7 steps
@@ -417,9 +459,14 @@ NO-GO (local Workstream G implementation is GO); `../gis-tile-etl` kept, never p
 ## 5. Environment & gotchas
 
 - **Build doctrine (house rule):** never edit source/Cargo.toml/Cargo.lock while cargo runs (a
-  mid-build manifest edit once stacked 236 GB and zeroed the disk); one builder at a time; sweeps
-  use `CARGO_PROFILE_DEV_DEBUG=0 RUST_MIN_STACK=134217728 -j4`; prune `target/debug/incremental`
-  + `*.pdb` between workflows (`target/` reached 150 GB). `du` on `target/` takes minutes.
+  mid-build manifest edit once stacked 236 GB and zeroed the disk); one builder at a time (bus
+  `building` entries); `.cargo/config.toml` already pins `jobs = 2` + rust-lld; tests only through
+  `tools/qa/test_batches.ps1` (one chunk at a time, link outputs pruned, 60 GB floor) — **never
+  `cargo test --workspace`** (2026-11-08: 258 GB of exe+pdb in `target/debug/deps` + 207 GB
+  incremental filled the disk; the "out of memory" was commit exhaustion once the pagefile could not
+  grow). Prune `target\debug\deps\*.exe|*.pdb` and incremental dirs idle 7+ days when free disk
+  < 60 GB; no casual `cargo clean` (full rebuild ≈ 1 h). `du` on `target/` takes minutes — measure
+  per subdir with `Get-ChildItem -Recurse -File | Measure-Object Length -Sum`.
 - **House doctrine from reviews:** a scoped-table list is a denylist (denormalized copies live one
   table over); shared cores + separate guards = drift; a writer of a shared JSON column must
   satisfy the STRICTEST reader; "pure efficiency" changes that remove redundancy need a
@@ -440,10 +487,28 @@ NO-GO (local Workstream G implementation is GO); `../gis-tile-etl` kept, never p
   GUI keys in the OS keystore; relay e2e seeds live only inside script runs. Never in files.
 - **Other actors:** something else pushes from this clone (§0c.5). `fe-hermes`/`fe-pi` siblings
   are pruned worktree stubs. A concurrent hermes-agent session has shared this tree before.
-- **C: drive** 1.9 TB, ~85% full mostly from non-project data; ~290 GB free at writing.
+- **C: drive** 1.86 TB; 358 GB free at writing (2026-11-08 11:10, after the prune — it was 1.4 GB).
+  `target/` ≈ 250 GB (99 GB incremental, 144 GB rlib/rmeta). The pagefile is system-managed and has
+  grown to **98 GB on C:** (peak use 42 GB); baseline commit ≈ 80-98 GB (vmmemWSL 26 GB, VS Code
+  12 GB, rust-analyzer 11 GB) — a fixed pagefile size is the user's call. D: is a 3.7 GB volume.
+- **Shared target dir:** machine-local `.omc/worktrees/.cargo/config.toml` points every worktree under
+  `.omc/worktrees` at the main `target/`; cargo's lock serializes builds; workspace crates still get
+  per-worktree artifacts (path-dependency hash). rust-analyzer on a worktree takes the same lock.
+- **Session bus:** `.omc/state/bus/` (README, SESSION-PROTOCOL 12 rules, one file per session,
+  `passoff-EXT-*.md`); this session's monitor: `.omc/plans/bus-monitor.{ps1,md}` on an hourly cron
+  (crons expire after 7 days — recreate on resume).
 
 ## 6. Key files
 
+- `conductor/tracks/project_completion_20261104/checkpoint.md` — ORCHESTRATOR STEER (binding, newest
+  first) + STATUS: the P2P campaign's decisions, retractions and the items reserved for the user.
+- `qa/findings.jsonl` (gitignored, local source of truth) — the QA register, 163 rows;
+  `tools/qa/AGENTS.md` §sim + `.omc/plans/p2p-sim.js` — the simulator workflow (resume args `max`,
+  `startAt`, `previous`; the `BASE` preamble is a cache key — never edit it mid-campaign).
+- `tools/qa/test_batches.ps1` + `conductor/test-batches.md` — the only way tests run now.
+- `.omc/state/bus/SESSION-PROTOCOL.md`, `passoff-EXT-*.md`, `.omc/state/build-gate.json` — the
+  extension program's coordination; tracks `conductor/tracks/extension_platform_20261107/` and
+  `conductor/tracks/portal_surface_20261107/` (public), marketplace tracks in the private repo.
 - `conductor/doneness-ledger.md` — per-track doneness + classified work queue (source for §7).
 - `conductor/tracks/p2p_asset_streaming_20260718/plan.md` + `evidence.md` — PAS-P3..P5 (next).
 - `conductor/tracks/canonical_data_log_20260808/` — CDL Wave 4 / SPEC-10 (local only).
@@ -455,24 +520,29 @@ NO-GO (local Workstream G implementation is GO); `../gis-tile-etl` kept, never p
 
 ## 7. Continuation plan
 
-1. **Run §0** (context retrieval → aggressive grill loop). Record answers into §3/§4 as you go.
-2. **CI check:** if the last pushed run is red (likely suspects: the new fuzz step or cargo-deny),
-   fix it first; `cargo +1.99.0 clippy` reproduces Lint.
-3. **Large-phases campaign** (sequential workflows, compile+clippy gates, tests at the end):
-   PAS-P3+P4 → PAS-P5 → CDL Wave 4 → CDL SPEC-10. Each workflow: plan from the ledger rows +
-   track plan.md, executors, a reviewer that fixes, a small docs/README pass, local commit.
-   `TaskStop` the previous workflow before each launch; prune caches between them.
-4. **Role propagation** (replicate the role table with Manager+ admission) → fix the
-   distributed-query settlement race → only then reconsider responder filtering.
-   Security review mandatory (auth path).
-5. **Implement the 2026-10-12 decisions:** `client` token claim; dimension-callout nodes; GPX
-   hide cascades to stamps; `petal.render_distance`; query contracts (WKB ENU, f64, EPSG:4326,
-   elevated timeout + 32 cap); self-hosted relay default + the relay-assisted acceptance test
-   against a self-hosted iroh-relay 1.3; deny.toml licences + CI `licenses` on.
-6. **Final sweep** (full tests + harness + e2e) → push on green → watch CI → report as an artifact.
-7. Then: ratify the remaining backlog via grill loops; pending tracks (hexon_unification,
-   map_scale_authority, road_builder_ux, crate_consolidation_r2) each need their own go;
-   v1 gate = public OSS release readiness (`oss_release_20260717`).
+0. **Run §0** (grill loop) when the user is present; when resuming autonomously, read §4's top
+   lines and start at step 1.
+1. **Orchestrate, don't build.** On each bus-monitor tick (or a SendMessage from an EXT session):
+   read the `.omc/state/bus/*.md` deltas; answer `question`/`blocker` entries with dated
+   `steer`/`decision` lines on `P2P-QA.md` (and in the track's checkpoint.md STEER when the plan
+   changes); relay to the user anything reserved for them (OD-7, OD-11, OD-E1..E10 defaults,
+   QA-0165, pushes). Recreate the hourly cron if `CronList` is empty (`.omc/plans/bus-monitor.md`).
+2. **Merge gate.** On `ready-to-merge <branch> <sha> <scope>`: in that worktree run `/code-review
+   high` (plus `/security-review` when the scope touches auth, capabilities, IPC, packaging or
+   signing), record the verdict on the bus and in the track checkpoint, merge into `main` only on
+   PASS / PASS-WITH-FIXES with the fixes committed. Never push.
+3. **Machine hygiene** when a tick flags DISK/RESOURCE: prune `target\debug\deps\*.exe|*.pdb` and
+   incremental dirs idle 7+ days only while PROCS shows no cargo/rustc; keep `.qa\stage` to two
+   stages; kill only exact PIDs you own.
+4. **When the user asks for tests:** post `building P2P-QA tests <ids>` on the bus, then
+   `tools\qa\test_batches.ps1 -Batches <ids>` (or `All`); never `cargo test --workspace`.
+5. **When the user decides QA-0165:** role-at-write (recommended) → open the per-key `(HLC, author)`
+   clock track for verse/fractal/petal rows and non-transform node fields (QA-0156/0165/0166 share
+   that root); current-role → document the re-judge semantics instead.
+6. **When the user says push:** the 130 local commits go after whatever sweep they ask for; watch
+   CI (`cargo +1.99.0 clippy --workspace --all-targets -- -D warnings` reproduces Lint).
+7. **city-sim** (`.omc/plans/city-sim.js`) only on the user's go-ahead; a simulator run closes the
+   build gate for its duration (flip `cargo_allowed` and post it; flip back after).
 
 ## 8. Session log
 
@@ -569,15 +639,36 @@ NO-GO (local Workstream G implementation is GO); `../gis-tile-etl` kept, never p
 - Blocked: nothing; remaining decisions are the ledger's NEEDS_RATIFICATION rows.
 - Next: §0 grill loop, then the large-phases campaign.
 
+### 2026-10-25 — FF campaign close
+- Done: W5+W5s+W6+refine+R6 all GREEN: sweep 4008/0/19, harness 18/18, relay acceptance PASS,
+  clippy/fmt/feature-matrix clean. HEAD `6141914`, ~133 commits ahead of origin, push + in-app verify
+  user-gated. Review verdicts in the accountability log ticks 9-11 and
+  `conductor/tracks/role_propagation_20261013/review-refine-*.md`. Next: user push decision → watch
+  CI → backlog ratification (§7 step 7 of that day). (Moved here 2026-11-08 from below §9.)
+
+### 2026-11-08 11:35 — P2P convergence CONVERGED → hand-off to the extension sessions
+- Done: p2p-sim runs 1-10 (`wf_d829c814-c4a`; triage / fix / critic lanes; critic passes 1-4
+  PASS-WITH-FIXES 12/4/3/5); register 163 rows with 0 open S1/S2 (STEER 2026-11-08 05:55 in
+  `conductor/tracks/project_completion_20261104/checkpoint.md`); gate opened 05:53; disk emergency
+  fixed 11:00-11:20 (1.4 → 358 GB free: 258 GB of link outputs + 107 GB of stale incremental deleted);
+  chunked runner `tools/qa/test_batches.ps1`; test-policy docs; protocol rule 12; shared worktree
+  target dir; pass-offs refreshed; hourly bus-monitor cron.
+- Reviewed: every fix lane by a critic pass (verdicts in the STEER channel and `.omc/state/bus/P2P-QA.md`);
+  the runner itself is unreviewed (parse-validated with `-ListOnly`; no chunk has run).
+- In flight: EXT-PLATFORM / EXT-PORTAL / EXT-MARKET not yet started (no bus files at 11:35); the
+  bus-monitor cron (hourly; expires in 7 days — recreate on resume).
+- Blocked (user): campaign-end sweep (skipped), push of 130 commits, QA-0165 semantics, pagefile
+  size, city-sim go-ahead, OD-7 / OD-11 / OD-E defaults.
+- Next: `/handoff resume` in a fresh orchestrator session → §7 step 1.
+
 ## 9. Recommended invocations
 
-- **`Workflow` with the reusable `completeness-batch-workflow` script** (sequential batches, plan →
-  executors → review-and-fix, compile-only gates) — trigger: "large phases, ratified, sequential,
-  no tests until code complete".
-- **`/security-review`** (or a security review-and-fix agent) on role propagation — trigger:
-  "touches inbound admission / RBAC".
-- **`Artifact`** for every end-of-campaign report — trigger: "user rule: reports as artifacts,
-  status + decisions on top, teach depth, diagrams".
-- **`/handoff rolling`** at each workflow boundary — trigger: "multi-hour campaign; keep §8 live".
-
-- **2026-10-25 (FF campaign close).** W5+W5s+W6+refine+R6 all GREEN: sweep 4008/0/19, harness 18/18, relay acceptance PASS, clippy/fmt/feature-matrix clean. HEAD `6141914`, ~133 commits ahead of origin, push + in-app verify user-gated. Review verdicts in the accountability log ticks 9-11 and conductor/tracks/role_propagation_20261013/review-refine-*.md. Next: user push decision -> watch CI -> backlog ratification (RUNBOOK §7 step 7).
+- **`Agent` (haiku) with `.omc/plans/bus-monitor.md`** on every cron tick — trigger: "long-horizon
+  orchestration of three sessions; facts first, then act" (fact script `.omc/plans/bus-monitor.ps1`).
+- **`/code-review high` in the branch's worktree, `/security-review` for auth / capabilities / IPC /
+  packaging / signing** on every `ready-to-merge` — trigger: "protocol rule 5: adversarial review
+  before merge".
+- **`tools\qa\test_batches.ps1 -Batches <ids>`** — trigger: "the user or a steer names a batch";
+  never `cargo test --workspace`.
+- **`/handoff rolling`** at each merge or user decision — trigger: "orchestrator session that
+  outlives its context window".
