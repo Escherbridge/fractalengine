@@ -16,6 +16,7 @@ INPUT_WAIT_FRAMES = 5
 RUN_RELOAD_SECONDS = 2.0
 WIDGET_WAIT_S = 5.0  # default budget to poll for an enabled visible widget (args.wait_s overrides, 0 refuses at once)
 WIDGET_POLL_S = 0.1
+WIDGET_POLLED_REFUSALS = ("locator_not_found", "locator_index")  # index: fewer candidates than nth+1 rendered so far
 
 
 class Outcome(dict):
@@ -259,7 +260,7 @@ class PeerClient:
         return float(args.get("wait_s", WIDGET_WAIT_S))
 
     def _locate(self, args, input_only=False, wait_s=0.0):
-        """(x, y, evidence) of an enabled visible widget; only locator_not_found is polled, every WIDGET_POLL_S up to wait_s."""
+        """(x, y, evidence) of an enabled visible widget; only WIDGET_POLLED_REFUSALS are polled, every WIDGET_POLL_S up to wait_s."""
         started = time.monotonic()
         waited = False
         try:
@@ -268,7 +269,7 @@ class PeerClient:
                     x, y, evidence = self._locate_once(args, input_only)
                 except fe.Refused as refusal:
                     remaining = started + wait_s - time.monotonic()
-                    if refusal.code != "locator_not_found" or remaining <= 0:
+                    if refusal.code not in WIDGET_POLLED_REFUSALS or remaining <= 0:
                         raise
                     waited = True
                     time.sleep(min(WIDGET_POLL_S, remaining))

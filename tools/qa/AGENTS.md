@@ -1076,8 +1076,8 @@ python tools/qa/sim/run.py analyze qa/sim/runs/<scenario>-<ts>                  
 ```
 
 `run.py` order: stage when HEAD moved (refused while a non-rust-analyzer cargo runs; `--allow-stale-stage`
-reuses the newest stage with limited provenance) -> resource gate (until QA-0119 lands N <= floor((cores-4)/2.5),
-3 on this host; RAM >= 0.9 GB per peer; `--reactive` drops the CPU cap) -> `peers.ps1 Start -Count N -Names ...`
+reuses the newest stage with limited provenance) -> resource gate (RAM >= 0.9 GB free per peer; `--no-reactive` restores
+the pre-QA-0119 cap N <= floor((cores-4)/2.5), 3 on this host) -> `peers.ps1 Start -Count N -Names ...`
 -> disjoint affinity masks + AboveNormal through `Get-QaOwnedProcess` (pid + creation ticks + exe) -> windows tiled
 by OS `SetWindowPos` on the identity-checked pid -> `peers_join.py` (real GUI invite flow) -> host sampler, probers,
 driver -> `peers.ps1 Stop -OwnerRun` in `finally` (also on exceptions and the `--max-uptime-s` watchdog) -> analyze.
@@ -1095,7 +1095,7 @@ actions and drop out of expectations; `p2p-core` needs owner/editor/viewer/edito
  steps: [{id, title, settle_s, probe: {...per-step override, 0 pauses a family}, prepare: [action], actions: [action],
           expect: [expect], checkpoints: [{peer|all, capture: scene|window, pose, expect_visual}]}]}
 action = {id?, peer, via: rest|mcp|gui|host|macro, op, args, sync: seq|barrier|+<s>, expect: ok|refused|any,
-          optional?, bind?: {name: result.path}}
+          optional?, requires?: [peer], bind?: {name: result.path}}
 expect = {probe, target, path?, peers: all|[names], predicate, value?, within_s?, after?: action id,
           mode: eventually|always, hold_s?, meta?: {severity, atomic, optional, size_bytes}}
 ```
@@ -1140,11 +1140,11 @@ must not be visible `"meta": {"atomic": true}`, and run `run.py validate NAME` b
 
 ### Wait-and-anchor rules
 
-QA-0140: the harness must not report its own timing as a product fault.
+QA-0140/0148: the harness must not report its own timing or leftovers as a product fault.
 
 - **Widget wait.** gui `click|type|key|click_until` poll the ui-tree every 100 ms for an enabled, visible widget for
-  `args.wait_s` (default 5 s; `0` refuses at once) before `locator_not_found`; only that refusal is retried
-  (`client.py` `PeerClient._locate`). The event carries `waited_ms` (0 when the first poll found it) and the report
+  `args.wait_s` (default 5 s; `0` refuses at once) before `locator_not_found`; that refusal and `locator_index`
+  (fewer candidates than `nth`+1 rendered yet) are retried, nothing else (`client.py` `PeerClient._locate`). The event carries `waited_ms` (0 when the first poll found it) and the report
   prints the wait distribution. `key` waits only when it names a widget (`name`/`role`/`nth`); `scroll_until` keeps
   its own scroll-and-retry loop. An `"expect": "refused"` click on a disabled control now costs the full wait.
 - **Unresolved refs.** A ref that is unbound, or resolves to null because the action that should produce it failed,
@@ -1162,6 +1162,17 @@ QA-0140: the harness must not report its own timing as a product fault.
 - **`after` on a write burst.** Anchoring on a macro means its completion, so an `agree` is judged once the writes
   stop (`expectations.jsonl` `t0_basis`); city-lite step 5 anchors its four `agree` expectations on `flight`.
 - **ULID ids.** `ingest_device_payload.payload_id` is a fresh `new_ulid()` per call (`driver.py` `_drone_flight`).
+  `drone_flight` takes `scale` (default `[1,1,1]`; each tick's `update_transform` carries it).
+- **GUI recovery.** After a step's actions, each peer with a failed GUI action (optional ones included) gets one
+  Escape so a menu or dialog left open cannot cover the next step: a `recovery` event, op `escape`
+  (`driver.py` `recover_gui`).
+- **`requires`.** `"requires": [peer, ...]` skips an action as a unit (`skipped_peer_absent`, `requires_absent`) when a
+  listed peer is not in the run, e.g. the owner's half of the editor2 revoke at N=3; barriers cannot use it.
+- **Join retry.** `Host.join` retries `peers_join.py` once, only after a crash exit (NTSTATUS 0xC0000000+: it died
+  before any GUI work; the flow itself is not idempotent). Every attempt's exit/stdout/stderr stays in
+  `<run>/join-attempt-N.log`.
+- **Reactive by default.** `run.py` assumes QA-0119 (verified): no CPU peer cap, so `p2p-core` gets all four peers when
+  RAM allows, and no stale banner. `--no-reactive` restores the old cap and banner.
 
 ### Reading the report
 
@@ -1173,10 +1184,10 @@ the raw `events.jsonl`, `observations.jsonl`, `expectations.jsonl`, `steps.jsonl
 that regressed (resurrection), divergence still open at run end, final fingerprint mismatch, a peer that stopped
 answering; S2 = never converged, convergence beyond 2x budget, a permitted action refused, a resolved divergence
 episode > 15 s; S3 = in budget x2, atomic partial state; `harness` = the simulator could not run an action or
-resolve an expectation, or the write path timed out or fell behind (`kind`: see Wait-and-anchor rules). Until
-QA-0119 lands, read every latency with the CPU table: they are upper bounds under host contention. `repro` re-runs
-one step: `python tools/qa/sim/run.py <scenario> --steps <id>` (earlier steps that bind ids must be included in the
-range).
+resolve an expectation, or the write path timed out or fell behind (`kind`: see Wait-and-anchor rules). Under
+`--no-reactive` (the pre-QA-0119 CPU cap) read every latency with the CPU table: they are upper bounds under host
+contention. `repro` re-runs one step: `python tools/qa/sim/run.py <scenario> --steps <id>` (earlier steps that bind
+ids must be included in the range).
 
 ## Native Portal fixture client
 

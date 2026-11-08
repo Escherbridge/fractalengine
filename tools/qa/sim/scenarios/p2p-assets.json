@@ -83,12 +83,16 @@
         {"id": "up25m", "peer": "owner", "via": "rest", "op": "upload_asset", "args": {"petal_id": "$ap.id", "path": "$assets.generated.tier_25mb.path"}, "bind": {"content_hash": "data.content_hash"}},
         {"id": "p25m", "peer": "owner", "via": "mcp", "op": "place_asset", "args": {"petal_id": "$ap.id", "asset_id": "$up25m.id", "name": "Tier 25MB", "position": [0, 0, -40]}},
         {"id": "editor_restart", "peer": "editor", "via": "host", "op": "restart", "args": {"no_bootstrap": false}, "sync": "+6"},
-        {"peer": "editor", "via": "gui", "op": "click", "args": {"name": "Open verse QA Basic"}, "sync": "+60", "optional": true}
+        {"peer": "editor", "via": "gui", "op": "click", "args": {"name": "Open verse QA Basic"}, "sync": "+60", "optional": true},
+        {"peer": "editor", "via": "gui", "op": "click_until", "args": {"click": {"name": "Back", "role": "button"}, "until": "Open fractal Asset Fractal", "max": 3}, "sync": "+64"},
+        {"peer": "editor", "via": "gui", "op": "click", "args": {"name": "Open fractal Asset Fractal"}, "sync": "+70"},
+        {"peer": "editor", "via": "gui", "op": "click", "args": {"name": "Open petal Asset Petal"}, "sync": "+74"}
       ],
       "expect": [
         {"probe": "asset_blob", "target": "$up25m.content_hash", "peers": ["editor"], "predicate": "present", "after": "editor_restart", "within_s": 240, "meta": {"size_bytes": "$assets.generated.tier_25mb.size"}, "covers": "transfer resumes after the receiver restarts"},
         {"probe": "asset_blob", "target": "$up25m.content_hash", "path": "size", "predicate": "equals", "value": "$assets.generated.tier_25mb.size", "after": "p25m", "within_s": 300, "meta": {"size_bytes": "$assets.generated.tier_25mb.size"}},
-        {"probe": "asset_blob", "target": "$up25m.content_hash", "peers": ["viewer"], "predicate": "present", "after": "p25m", "within_s": 180, "meta": {"size_bytes": "$assets.generated.tier_25mb.size"}}
+        {"probe": "asset_blob", "target": "$up25m.content_hash", "peers": ["viewer"], "predicate": "present", "after": "p25m", "within_s": 180, "meta": {"size_bytes": "$assets.generated.tier_25mb.size"}},
+        {"probe": "nav", "target": "view", "peers": ["editor"], "path": "petal_id", "predicate": "equals", "value": "$ap.id", "within_s": 60, "covers": "the restarted editor reopens Asset Petal, not the fixture's Petal A, before the checkpoint"}
       ],
       "checkpoints": [
         {"peer": "all", "capture": "scene", "pose": {"orbit": {"focus": [0, 0, -40], "yaw_deg": 30, "pitch_deg": 25, "distance": 70}}, "expect_visual": "the 25 MB noisy-facade building rendered on every peer, including the restarted editor"}

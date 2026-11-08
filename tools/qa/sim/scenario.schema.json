@@ -237,6 +237,12 @@
         "optional": {
           "type": "boolean"
         },
+        "requires": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
         "bind": {
           "type": "object",
           "additionalProperties": {

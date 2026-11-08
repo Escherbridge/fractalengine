@@ -1,6 +1,6 @@
 {
   "name": "city-lite",
-  "description": "Seed of the city simulation: three builders each place a 20-building district on a street grid at the same instant, then four drones fly at 2 Hz for 3 minutes (MCP update_transform + IoT readings + device-payload telemetry); every peer must agree on the scene and on query_timeseries.",
+  "description": "Seed of the city simulation: three builders each place a 20-building district on a street grid at the same instant, then four vehicle-mesh drones fly at 2 Hz for 3 minutes (MCP update_transform + IoT readings + device-payload telemetry); every peer must agree on the scene and on query_timeseries.",
   "seed": 20261109,
   "fixture": "basic",
   "verse_name": "QA Basic",
@@ -72,12 +72,13 @@
       ]
     },
     {
-      "id": "4", "title": "Owner adds four drones", "settle_s": 30,
+      "id": "4", "title": "Owner uploads a vehicle mesh and adds four drones", "settle_s": 30,
       "actions": [
-        {"id": "dr0", "peer": "owner", "via": "rest", "op": "create_node", "args": {"fractal_id": "$city.id", "petal_id": "$dt.id", "name": "Drone 0", "position": [20, 30, 0]}},
-        {"id": "dr1", "peer": "owner", "via": "rest", "op": "create_node", "args": {"fractal_id": "$city.id", "petal_id": "$dt.id", "name": "Drone 1", "position": [0, 32, 20]}},
-        {"id": "dr2", "peer": "owner", "via": "rest", "op": "create_node", "args": {"fractal_id": "$city.id", "petal_id": "$dt.id", "name": "Drone 2", "position": [-20, 34, 0]}},
-        {"id": "dr3", "peer": "owner", "via": "rest", "op": "create_node", "args": {"fractal_id": "$city.id", "petal_id": "$dt.id", "name": "Drone 3", "position": [0, 36, -20]}}
+        {"id": "dm", "peer": "owner", "via": "rest", "op": "upload_asset", "args": {"petal_id": "$dt.id", "path": "$assets.generated.vehicle_0.path"}},
+        {"id": "dr0", "peer": "owner", "via": "mcp", "op": "place_asset", "args": {"petal_id": "$dt.id", "asset_id": "$dm.id", "name": "Drone 0", "position": [20, 30, 0], "scale": [3, 3, 3]}},
+        {"id": "dr1", "peer": "owner", "via": "mcp", "op": "place_asset", "args": {"petal_id": "$dt.id", "asset_id": "$dm.id", "name": "Drone 1", "position": [0, 32, 20], "scale": [3, 3, 3]}},
+        {"id": "dr2", "peer": "owner", "via": "mcp", "op": "place_asset", "args": {"petal_id": "$dt.id", "asset_id": "$dm.id", "name": "Drone 2", "position": [-20, 34, 0], "scale": [3, 3, 3]}},
+        {"id": "dr3", "peer": "owner", "via": "mcp", "op": "place_asset", "args": {"petal_id": "$dt.id", "asset_id": "$dm.id", "name": "Drone 3", "position": [0, 36, -20], "scale": [3, 3, 3]}}
       ],
       "expect": [
         {"probe": "node", "target": "$dr0.id", "predicate": "present"},
@@ -87,7 +88,7 @@
     {
       "id": "5", "title": "Four drones fly at 2 Hz for 3 minutes (update_transform + readings + device payloads)", "settle_s": 60,
       "actions": [
-        {"id": "flight", "peer": "owner", "via": "macro", "op": "drone_flight", "args": {"petal_id": "$dt.id", "node_ids": ["$dr0.id", "$dr1.id", "$dr2.id", "$dr3.id"], "rate_hz": 2, "duration_s": 180, "radius": 40, "altitude": 30, "period_s": 30, "metric": "altitude_m", "format_id": "qa.fractalengine/drone-telemetry@1", "payload_every": 20}}
+        {"id": "flight", "peer": "owner", "via": "macro", "op": "drone_flight", "args": {"petal_id": "$dt.id", "node_ids": ["$dr0.id", "$dr1.id", "$dr2.id", "$dr3.id"], "rate_hz": 2, "duration_s": 180, "radius": 40, "altitude": 30, "period_s": 30, "metric": "altitude_m", "scale": [3, 3, 3], "format_id": "qa.fractalengine/drone-telemetry@1", "payload_every": 20}}
       ],
       "expect": [
         {"probe": "transform", "target": "$dr0.id", "path": "position", "predicate": "agree", "after": "flight", "within_s": 30},

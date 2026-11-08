@@ -79,6 +79,7 @@ SCHEMA = {
                        "via": {"enum": list(VIAS)}, "op": {"type": "string"}, "args": {"type": "object"},
                        "sync": {"type": "string", "pattern": SYNC.pattern},
                        "expect": {"enum": ["ok", "refused", "any"]}, "optional": {"type": "boolean"},
+                       "requires": {"type": "array", "items": {"type": "string"}},
                        "bind": {"type": "object", "additionalProperties": {"type": "string"}},
                        "covers": {"type": "string"}, "note": {"type": "string"}}},
         "expect": {"type": "object", "required": ["probe", "target", "predicate"], "additionalProperties": False,
@@ -267,6 +268,11 @@ def _validate_action(action, where, names, defined, errors):
         errors.append("%s: args must be an object" % label)
     if not isinstance(action.get("bind", {}), dict):
         errors.append("%s: bind must map names to result paths" % label)
+    requires = action.get("requires", [])
+    if not isinstance(requires, list) or any(peer not in names for peer in requires):
+        errors.append("%s: requires must list scenario peer names" % label)
+    elif requires and action.get("sync") == "barrier":
+        errors.append("%s: requires cannot combine with sync barrier (a skipped participant would stall it)" % label)
     if isinstance(action.get("args"), dict) and "wait_s" in action["args"] and via == "gui":
         wait = action["args"]["wait_s"]
         if action.get("op") not in WIDGET_WAIT_OPS:

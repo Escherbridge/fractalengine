@@ -32,6 +32,8 @@ ASSET_MANIFESTS = {"generated": os.path.join(REPO_ROOT, ".qa", "assets", "genera
 # Disjoint 3-logical-core masks per peer (checkpoint steer, QA-0119); the rest stays for the harness and desktop.
 AFFINITY_MASKS = [0x007, 0x038, 0x1C0, 0xE00]
 RAM_PER_PEER_GB = 0.9
+JOIN_ATTEMPTS = 2
+JOIN_RETRY_PAUSE_S = 5.0
 VERSE_NAMES = {"basic": "QA Basic", "terrain": "QA Terrain"}
 CREATE_NO_WINDOW = getattr(subprocess, "CREATE_NO_WINDOW", 0)
 
@@ -63,6 +65,16 @@ def powershell(command, timeout=900, env=None):
 
 def ps_quote(text):
     return "'" + str(text).replace("'", "''") + "'"
+
+
+def exit_label(code):
+    """'3221225794 (0xC0000142)' for a Windows crash status, else the plain number."""
+    return "%d (0x%08X)" % (code, code & 0xFFFFFFFF) if code < 0 or code >= 0x80000000 else str(code)
+
+
+def died_at_spawn(code):
+    """True for a crash status (NTSTATUS 0xC0000000+ or a signal): the helper died before any GUI work, so a retry is clean."""
+    return code < 0 or code >= 0xC0000000
 
 
 # -- stage + resource gate ------------------------------------------------------------------------
@@ -128,8 +140,9 @@ def resource_gate(requested, reactive):
     cpu_cap = 8 if reactive else max(2, math.floor((cores - 4) / 2.5))
     ram_cap = math.floor(free_ram_gb() / RAM_PER_PEER_GB)
     cap = min(cpu_cap, ram_cap)
-    note = ("resource gate: %d logical cores -> CPU cap %s, %.1f GB free -> RAM cap %d; QA-0119 reactive rendering %s"
-            % (cores, "off" if reactive else cpu_cap, free_ram_gb(), ram_cap, "assumed landed" if reactive else "not landed"))
+    note = ("resource gate: %d logical cores -> CPU cap %s, %.1f GB free -> RAM cap %d%s"
+            % (cores, "off" if reactive else cpu_cap, free_ram_gb(), ram_cap,
+               "" if reactive else " (--no-reactive: pre-QA-0119 CPU cap)"))
     return cap, note
 
 
@@ -245,15 +258,28 @@ class Host:
         except OSError as error:
             log("tiling skipped: %s" % error)
 
-    def join(self):
+    def join(self, log_dir=None):
+        """Run the GUI invite flow; each attempt's exit, stdout and stderr stay in <log_dir>/join-attempt-N.log.
+
+        Only a helper that died before doing GUI work (crash status) is retried: peers_join.py is not idempotent.
+        """
         verse_name = VERSE_NAMES[self.fixture]
-        log("joining peers to %s through the GUI invite flow" % verse_name)
-        done = subprocess.run([sys.executable, os.path.join(QA, "peers_join.py"), "--verse-name", verse_name],
-                              capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=900,
-                              stdin=subprocess.DEVNULL, cwd=REPO_ROOT, env=dict(os.environ, MSYS_NO_PATHCONV="1"))
-        log("join: exit %d %s" % (done.returncode, done.stdout.strip()[-600:]))
-        if done.returncode != 0:
-            raise RuntimeError("peers_join.py failed: " + (done.stdout + done.stderr)[-1500:])
+        for attempt in range(1, JOIN_ATTEMPTS + 1):
+            log("joining peers to %s through the GUI invite flow (attempt %d/%d)" % (verse_name, attempt, JOIN_ATTEMPTS))
+            done = subprocess.run([sys.executable, os.path.join(QA, "peers_join.py"), "--verse-name", verse_name],
+                                  capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=900,
+                                  stdin=subprocess.DEVNULL, cwd=REPO_ROOT, env=dict(os.environ, MSYS_NO_PATHCONV="1"))
+            log("join: exit %s %s" % (exit_label(done.returncode), done.stdout.strip()[-600:]))
+            if log_dir:
+                with open(os.path.join(log_dir, "join-attempt-%d.log" % attempt), "w", encoding="utf-8") as handle:
+                    handle.write("exit %s\n--- stdout\n%s\n--- stderr\n%s\n" % (exit_label(done.returncode), done.stdout, done.stderr))
+            if done.returncode == 0:
+                return
+            if attempt == JOIN_ATTEMPTS or not died_at_spawn(done.returncode):
+                raise RuntimeError("peers_join.py failed (exit %s, attempt %d/%d): %s" % (
+                    exit_label(done.returncode), attempt, JOIN_ATTEMPTS, (done.stdout + done.stderr)[-1500:]))
+            log("join: the helper died before any GUI work; retrying once in %.0f s" % JOIN_RETRY_PAUSE_S)
+            time.sleep(JOIN_RETRY_PAUSE_S)
 
     def restart(self, name, no_bootstrap):
         extra = "-Peer %s -OwnerRun %s%s" % (name, ps_quote(self.owner_dir), " -NoBootstrap" if no_bootstrap else "")
@@ -380,7 +406,7 @@ def run(args):
     meta = {"schema": "fe-qa-sim-run-v1", "scenario_name": scenario["name"], "scenario_path": scenario["_path"],
             "seed": scenario["seed"], "steps": [str(s["id"]) for s in steps], "stage": stage,
             "stage_matches_source": not allow_stale, "gate": gate_note,
-            "cpu_note": None if args.reactive else "Peers render continuously until QA-0119 lands: latencies are upper bounds under host contention; read them with the CPU table.",
+            "cpu_note": None if args.reactive else "--no-reactive (pre-QA-0119 CPU cap): latencies are upper bounds under host contention; read them with the CPU table.",
             "clock": {"perf0": clock.perf0, "wall0": clock.wall0}, "argv": sys.argv[1:]}
     prober = sampler = None
     started = False
@@ -394,7 +420,7 @@ def run(args):
             host.pin()
             host.tile()
             if not args.skip_join:
-                host.join()
+                host.join(run_dir)
         present = [m["name"] for m in host.record["members"]]
         meta["peers"] = [{"name": m["name"], "role": m.get("role"), "run_dir": m["run_dir"], "api_base": m.get("api_base"),
                           "pid": m["process_identity"]["pid"]} for m in host.record["members"]]
@@ -456,7 +482,8 @@ def build_parser():
     parser.add_argument("--stage", help="explicit .qa/stage directory name")
     parser.add_argument("--allow-stale-stage", action="store_true", help="reuse the newest stage even if HEAD moved")
     parser.add_argument("--base-port", type=int, default=8882)
-    parser.add_argument("--reactive", action="store_true", help="QA-0119 landed: drop the CPU peer cap")
+    parser.add_argument("--reactive", action=argparse.BooleanOptionalAction, default=True,
+                        help="QA-0119 is verified: no CPU peer cap (default); --no-reactive restores the pre-QA-0119 cap and banner")
     parser.add_argument("--no-tile", action="store_true")
     parser.add_argument("--no-affinity", action="store_true")
     parser.add_argument("--skip-join", action="store_true", help="peers stay unjoined (harness smoke only)")

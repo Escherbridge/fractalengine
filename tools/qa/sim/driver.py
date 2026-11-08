@@ -109,10 +109,10 @@ class Driver:
         self.recorder.write("steps", {"step": sid, "event": "start", "t": t_start, "title": step["title"],
                                       "cadence": self.cadence.as_dict()})
         self.log("[step %s] %s" % (sid, step["title"]))
-        for action in step.get("prepare", []):
-            self.execute(action, sid, "prepare", t_start)
+        prepared = [self.execute(action, sid, "prepare", t_start) for action in step.get("prepare", [])]
         t_actions = self.clock.now()
         events = self.run_actions(step, sid, t_actions)
+        self.recover_gui(sid, prepared + events)
         t_done = self.clock.now()
         instances = self.register_expectations(step, sid, events, t_actions)
         settled_at, unmet = self.wait_settle(step, instances, t_done)
@@ -167,6 +167,25 @@ class Driver:
             thread.join()
         return events
 
+    def recover_gui(self, sid, events):
+        """Press Escape on each peer whose GUI sequence failed, so a menu or dialog it left open cannot cover the next step."""
+        failed = []
+        for event in events:
+            verdict = str(event.get("verdict") or "").removeprefix("optional_")
+            if (event.get("via") == "gui" and event.get("status") == "done" and event.get("ok") is False
+                    and verdict == "refused_but_expected_ok" and event["peer"] in self.present and event["peer"] not in failed):
+                failed.append(event["peer"])
+        for peer in failed:
+            base = {"step": sid, "lane": "recovery", "peer": peer, "action_id": "%s.recover.%s" % (sid, peer),
+                    "via": "gui", "op": "escape", "expect": "any", "sync": "recovery", "optional": True}
+            t_fire = self.clock.now()
+            try:
+                outcome = self.clients[peer].gui("key", {"combo": "Escape"})
+            except Exception as error:  # noqa: BLE001 - a harness defect is recorded, the run continues
+                outcome = Outcome(status=-2, ok=False, refused=False, code="harness_error", error=str(error)[:300])
+            self._event(base, status="done", t_fire=t_fire, t_ack=self.clock.now(), ok=outcome.ok, code=outcome.get("code"),
+                        error=outcome.get("error"), verdict="as_expected", **outcome_extras(outcome))
+
     # -- one action ----------------------------------------------------------------------------
     def execute(self, action, sid, lane, t_step, gate=None, fire_at=None, at=None, extra=None):
         action_id = action.get("id") or "%s.%s.%s" % (sid, action["peer"], action["op"])
@@ -175,6 +194,9 @@ class Driver:
                 "optional": bool(action.get("optional"))}
         if action["peer"] not in self.present:
             return self._event(base, status="skipped_peer_absent")
+        absent = [peer for peer in action.get("requires", []) if peer not in self.present]
+        if absent:  # e.g. the owner's half of an editor2 revoke: skipped as a unit, never a half-run GUI sequence
+            return self._event(base, status="skipped_peer_absent", requires_absent=absent)
         try:
             args = self.ctx.resolve(action.get("args", {}), extra)
         except UnresolvedRef as missing:
@@ -420,6 +442,7 @@ class Driver:
         period = 1.0 / rate
         ticks = int(float(args.get("duration_s", 180)) * rate)
         radius, altitude = float(args.get("radius", 20)), float(args.get("altitude", 30))
+        scale = [float(value) for value in args.get("scale", [1, 1, 1])]
         every = int(args.get("payload_every", 0) or 0)
         start = self.clock.now()
         flight_end = start + ticks * period
@@ -442,7 +465,7 @@ class Driver:
                 position = [round(radius * math.cos(angle), 3), round(altitude + 2 * k, 3), round(radius * math.sin(angle), 3)]
                 out = self._sub(client, sid, action_id, index, "mcp", "update_transform",
                                 {"node_id": node_id, "position": position, "rotation": [0, round(angle, 4), 0],
-                                 "scale": [1, 1, 1]})
+                                 "scale": scale})
                 index += 1
                 failures += 0 if out.ok else 1
                 readings.append({"node_id": node_id, "metric": args.get("metric", "altitude_m"),

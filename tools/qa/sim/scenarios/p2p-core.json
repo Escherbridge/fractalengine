@@ -389,12 +389,12 @@
     {
       "id": "13b", "title": "Owner revokes editor2 FROM INSIDE the verse; editor2 writes property + transform after the revoke", "settle_s": 40, "covers": ["QA-0121", "QA-0122"],
       "actions": [
-        {"peer": "owner", "via": "gui", "op": "click", "args": {"name": "Options menu for verse QA Basic"}, "optional": true},
-        {"peer": "owner", "via": "gui", "op": "click", "args": {"name": "Options… verse QA Basic"}, "optional": true},
-        {"peer": "owner", "via": "gui", "op": "click", "args": {"name": "Access", "role": "button"}, "optional": true},
-        {"peer": "owner", "via": "gui", "op": "click", "args": {"name": "Revoke role grant for ${peers.editor2.did}"}, "optional": true},
-        {"id": "revoke2", "peer": "owner", "via": "gui", "op": "click", "args": {"name": "Confirm revoke"}, "optional": true},
-        {"peer": "owner", "via": "gui", "op": "click", "args": {"name": "Close window", "role": "button"}, "optional": true},
+        {"peer": "owner", "via": "gui", "op": "click", "args": {"name": "Options menu for verse QA Basic"}, "optional": true, "requires": ["editor2"]},
+        {"peer": "owner", "via": "gui", "op": "click", "args": {"name": "Options… verse QA Basic"}, "optional": true, "requires": ["editor2"]},
+        {"peer": "owner", "via": "gui", "op": "click", "args": {"name": "Access", "role": "button"}, "optional": true, "requires": ["editor2"]},
+        {"peer": "owner", "via": "gui", "op": "click", "args": {"name": "Revoke role grant for ${peers.editor2.did}"}, "optional": true, "requires": ["editor2"]},
+        {"id": "revoke2", "peer": "owner", "via": "gui", "op": "click", "args": {"name": "Confirm revoke"}, "optional": true, "requires": ["editor2"]},
+        {"peer": "owner", "via": "gui", "op": "click", "args": {"name": "Close window", "role": "button"}, "optional": true, "requires": ["editor2"]},
         {"peer": "editor2", "via": "rest", "op": "set_property", "args": {"node_id": "$n2.id", "key": "revoked2_rest", "value": 1}, "sync": "+15", "expect": "refused"},
         {"peer": "editor2", "via": "mcp", "op": "set_property", "args": {"node_id": "$n2.id", "key": "revoked2_mcp", "value": 1}, "sync": "+16", "expect": "refused"},
         {"peer": "editor2", "via": "rest", "op": "set_transform", "args": {"node_id": "$n2.id", "position": [9, 0, 9], "rotation": [0, 0, 0], "scale": [1, 1, 1]}, "sync": "+17", "expect": "refused"}
