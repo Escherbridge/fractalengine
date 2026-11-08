@@ -262,7 +262,9 @@ pub async fn insert_device_payloads_with_files(
         let asset_id = crate::handlers::crud::create_asset_handler(db, blob_store, &registration)
             .await
             .map_err(|e| DevicePayloadIngestError::Db(format!("Create asset failed: {e}")))?;
-        crate::handlers::scene_publication::publish_uploaded_asset(db, blob_store, repl_tx, local_did, &asset_id).await;
+        if fe_runtime::scene_asset::SCENE_ASSET_MIMES.contains(&file.content_type.as_str()) {
+            crate::handlers::scene_publication::publish_uploaded_asset(db, blob_store, repl_tx, local_did, &asset_id).await;
+        }
         payload.asset_ids.push(asset_id);
     }
     insert_device_payloads(db, petal_id, verse_id, source_did, source_class, &payload, Some(blob_store), repl_tx).await
