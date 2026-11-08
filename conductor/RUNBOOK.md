@@ -543,6 +543,14 @@ NO-GO (local Workstream G implementation is GO); `../gis-tile-etl` kept, never p
    CI (`cargo +1.99.0 clippy --workspace --all-targets -- -D warnings` reproduces Lint).
 7. **city-sim** (`.omc/plans/city-sim.js`) only on the user's go-ahead; a simulator run closes the
    build gate for its duration (flip `cargo_allowed` and post it; flip back after).
+8. **Screenshot pass** when free RAM > 4 GB (no cargo needed; the staged exe at `.qa/stage/current`
+   suffices): follow `docs/images/MANIFEST.md` row by row — `tools\qa\launch.ps1 -Fixture <basic|terrain>`,
+   `tools\qae.py shot ...` per recipe, 1400 px wide, <= 450 KB each (oxipng) — then replace the
+   seven `<!-- screenshot: ... -->` markers with image tags and commit `docs(images): ...`. Post
+   `building P2P-QA screenshots` on the bus while the app runs (it holds RAM, not the cargo lock).
+9. **Diagram pass** (next docs wave): redraw `docs/diagrams/01-system-overview.md`, `06-network-topology.md`,
+   `09-sync-and-caching.md` and the index `docs/diagrams.md` to the seven-thread topology, no mDNS,
+   no PERMISSIONS clause, no 2 GB cache tiers (critic findings 2026-11-08).
 
 ## 8. Session log
 
@@ -653,6 +661,13 @@ NO-GO (local Workstream G implementation is GO); `../gis-tile-etl` kept, never p
   fixed 11:00-11:20 (1.4 → 358 GB free: 258 GB of link outputs + 107 GB of stale incremental deleted);
   chunked runner `tools/qa/test_batches.ps1`; test-policy docs; protocol rule 12; shared worktree
   target dir; pass-offs refreshed; hourly bus-monitor cron.
+- Done (12:58): docs refresh `46772bec` (README, guide, editor guide, CONTRIBUTING, security checklist,
+  quickstarts; 7 screenshot markers + `docs/images/MANIFEST.md` recipes) and `da0c620d` (AGENTS.md
+  backend-wry row, fe-api MCP counts 49/36, fe-database sync-knob metadata); writer (sonnet) then
+  critic (sonnet) PASS-WITH-FIXES (12); text only, no cargo. Stale and NOT fixed: docs/diagrams 01/06/09
+  + docs/diagrams.md (three-thread topology, mDNS, PERMISSIONS, 2 GB cache/LRU/tiers); portal Config tab
+  reachability (guide.md:512) unverified; fe-api/AGENTS.md §mcp-dispatch "only SimControl";
+  doneness-ledger.md:287 "no undo code"; scripts/package_release.py BLOBS paths.
 - Reviewed: every fix lane by a critic pass (verdicts in the STEER channel and `.omc/state/bus/P2P-QA.md`);
   the runner itself is unreviewed (parse-validated with `-ListOnly`; no chunk has run).
 - In flight: EXT-PLATFORM / EXT-PORTAL / EXT-MARKET not yet started (no bus files at 11:35); the
