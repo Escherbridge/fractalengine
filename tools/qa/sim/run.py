@@ -554,6 +554,8 @@ def namespaces(host, run_dir):
 def run(args):
     scenario = scenario_mod.load(args.scenario)
     steps = select_steps(scenario["steps"], args.steps)
+    if args.steps:
+        log("steps %s (with the earlier steps their refs need)" % ",".join(str(s["id"]) for s in steps))
     cap, gate_note = resource_gate(len(scenario["peers"]), args.reactive)
     names = choose_peers(scenario, args, cap)
     log(gate_note + " -> peers " + ",".join(names))

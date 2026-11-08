@@ -5,6 +5,7 @@ import json
 import math
 import os
 import random
+import re
 import threading
 import time
 import urllib.parse
@@ -20,6 +21,7 @@ BARRIER_TIMEOUT_S = 120.0
 NEEDS_WAIT_S = 90.0  # longest a dependent waits for a same-step dependency still in flight before it counts as unmet
 LIVE_POLL_S = 0.25
 FINGERPRINT_NODE_CAP = 400
+REF_NAME = re.compile(r"\$\{?([A-Za-z_][A-Za-z0-9_]*)")
 
 
 def digest_of(value):
@@ -125,6 +127,26 @@ def select_steps(steps, spec):
             chosen.add(item)
         else:
             raise ValueError("unknown step id %r" % item)
+    # A chosen step's '$ref'/needs on an action of an unchosen earlier step pulls that step in (transitively), so
+    # '--steps 5' runs the steps that create its targets instead of firing at unresolved refs.
+    producer = {}
+    for step in steps:
+        for action in step.get("prepare", []) + step.get("actions", []):
+            if action.get("id"):
+                producer.setdefault(str(action["id"]), str(step["id"]))
+    pending = list(chosen)
+    while pending:
+        wanted = pending.pop()
+        step = next(s for s in steps if str(s["id"]) == wanted)
+        text = json.dumps([step.get("prepare", []), step.get("actions", []), step.get("expect", [])])
+        names = set(REF_NAME.findall(text))
+        for action in step.get("prepare", []) + step.get("actions", []) + step.get("expect", []):
+            names.update(dep for dep in action.get("needs", []) if isinstance(dep, str))
+        for name in names:
+            source = producer.get(name)
+            if source and source not in chosen and ids.index(source) < ids.index(str(step["id"])):
+                chosen.add(source)
+                pending.append(source)
     return [s for s in steps if str(s["id"]) in chosen]
 
 
