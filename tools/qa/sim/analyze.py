@@ -846,16 +846,27 @@ class Analysis:
         return current
 
     def restart_catchup(self, frame, rows):
+        """Per restart: when the restarted peer met every expectation anchored on the restart itself (`after: <restart id>`).
+
+        Expectations anchored on the peer's own later writes measure those writes, not the catch-up (QA-0169). The
+        catch-up runs from the peer's first answered probe after the restart fired ("back up"): peers.ps1 Restart
+        acknowledges only after its post-launch work, by which time the peer has often caught up already.
+        """
         out = []
         if not len(frame):
             return out
         restarts = frame[(frame["op"] == "restart") & (frame["status"] == "done")]
         for _i, event in restarts.iterrows():
-            peer_rows = rows[(rows["peer"] == event["peer"]) & (rows["step"] == event["step"])] if len(rows) else rows
+            anchored = {r["exp_id"] for r in self.expectations if r.get("after") == event["action_id"]}
+            peer_rows = rows[(rows["peer"] == event["peer"]) & rows["exp_id"].isin(anchored)] if len(rows) else rows
             matched = peer_rows[peer_rows["matched"] == True]["matched_rel"] if len(peer_rows) else []  # noqa: E712
             caught = max(matched) if len(matched) and len(matched) == len(peer_rows) else None
+            alive = self.series.get((event["peer"], "alive", "peer"), Series())
+            back = next((t for t, value in zip(alive.times, alive.values)
+                         if t >= event["t_fire"] and isinstance(value, dict) and value.get("alive")), event["t_ack"])
             out.append({"step": event["step"], "peer": event["peer"], "restart_ack_rel": self.rel(event["t_ack"]),
-                        "caught_up_rel": caught, "catchup_s": round(caught - self.rel(event["t_ack"]), 3) if caught is not None else None,
+                        "back_up_rel": self.rel(back), "caught_up_rel": caught,
+                        "catchup_s": round(caught - self.rel(back), 3) if caught is not None else None,
                         "expectations": len(peer_rows)})
         return out
 
@@ -1126,9 +1137,12 @@ class Analysis:
             lines.append("None.")
         lines += ["", "## Restart catch-up", ""]
         if restarts:
-            lines += ["| step | peer | restart ack +s | caught up +s | catch-up s | expectations |", "|---|---|---|---|---|---|"]
-            lines += ["| %s | %s | %s | %s | %s | %d |" % (r["step"], r["peer"], r["restart_ack_rel"], fmt(r["caught_up_rel"]),
-                                                         fmt(r["catchup_s"]), r["expectations"]) for r in restarts]
+            lines += ["Catch-up runs from the restarted peer's first answered probe (back up) to the last expectation anchored on "
+                      "the restart itself.", "",
+                      "| step | peer | restart ack +s | back up +s | caught up +s | catch-up s | expectations |",
+                      "|---|---|---|---|---|---|---|"]
+            lines += ["| %s | %s | %s | %s | %s | %s | %d |" % (r["step"], r["peer"], r["restart_ack_rel"], fmt(r["back_up_rel"]),
+                                                              fmt(r["caught_up_rel"]), fmt(r["catchup_s"]), r["expectations"]) for r in restarts]
         else:
             lines.append("No restarts in this run.")
         lines += ["", "## Asset arrival vs size", ""]

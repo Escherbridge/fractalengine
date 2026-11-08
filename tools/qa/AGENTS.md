@@ -1336,6 +1336,15 @@ QA-0140/0148: the harness must not report its own timing or leftovers as a produ
   `<run>/join-attempt-N.log`.
 - **Reactive by default.** `run.py` assumes QA-0119 (verified): no CPU peer cap, so `p2p-core` gets all four peers when
   RAM allows, and no stale banner. `--no-reactive` restores the old cap and banner.
+- **Reading tokens.json (QA-0170, critic pass 4).** The prober reads each peer's `tokens.json` several times per round
+  (`role_in`, `verse_token`, `debug_token`), and the app replaces it atomically after every role change.
+  `fe.read_json_file` therefore opens with delete sharing (`open_shared_text`): Python's `open()` withholds
+  `FILE_SHARE_DELETE`, so the app's rename over a file the harness held failed with a sharing violation, and
+  fe-api's dev-token writer does not retry, which would leave a stale role (and the role probe on it) until the next
+  verse-set change. A read that lands inside the swap (PermissionError) or sees a torn file is retried for up to 1 s;
+  run 10's editor lost an 'Open petal Petal B' click to exactly that.
+- **Leaving tools armed (QA-0169).** Step 10 arms the Brush; step 11's prepare presses `s` (Select) on the owner
+  first, so the Brush hint never overlays a later capture (it covered the step-14 Query checkpoint in runs 9-10).
 
 ### Reading the report
 
@@ -1356,7 +1365,9 @@ contention. A target that takes a new value at least every 15 s (>= 8 values: dr
 queries over them) is a moving target: instead of majority-disagreement episodes it gets a per-value lag table (first
 time each peer showed each value vs the earliest peer, `analyze.py` `_moving_target`; a recurring periodic target is
 matched per lap, see Periodic flights), S2 when a lag exceeds 15 s, and
-only a peer still different 15 s after the last write is the run-end S1 (QA-0152 f). Peers whose probe interval is
+only a peer still different 15 s after the last write is the run-end S1 (QA-0152 f). "Restart catch-up" times only
+the expectations anchored on the restart action itself (`after: <restart id>`): expectations on the restarted
+peer's own later writes measure those writes, and counting them read a 2-10 s catch-up as 61 s (QA-0169). Peers whose probe interval is
 longer than a value lasts share few values; the table says so. `repro` re-runs one step: `python tools/qa/sim/run.py <scenario> --steps <id>` (earlier steps that bind
 ids must be included in the range).
 

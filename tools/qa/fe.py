@@ -96,10 +96,49 @@ HTTP_OPENER = urllib.request.build_opener(urllib.request.ProxyHandler({}), Refus
 # Run discovery
 # --------------------------------------------------------------------------
 
+READ_RETRY_SECONDS = 1.0  # the app atomically replaces tokens.json; a read inside the swap is refused (QA-0170)
+
+
+def open_shared_text(path):
+    """Text handle that also grants delete sharing on Windows, so a read never blocks the app's atomic replace.
+
+    Python's open() withholds FILE_SHARE_DELETE: the app's rename over a file we hold then fails with a sharing
+    violation and fe-api's dev-token writer keeps the stale tokens.json until the next verse-set change.
+    """
+    if os.name != "nt":
+        return open(path, "r", encoding="utf-8-sig")
+    import ctypes
+    import msvcrt
+    from ctypes import wintypes
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    kernel32.CreateFileW.restype = wintypes.HANDLE
+    kernel32.CreateFileW.argtypes = [wintypes.LPCWSTR, wintypes.DWORD, wintypes.DWORD, wintypes.LPVOID,
+                                     wintypes.DWORD, wintypes.DWORD, wintypes.HANDLE]
+    # GENERIC_READ, FILE_SHARE_READ | WRITE | DELETE, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL
+    handle = kernel32.CreateFileW(os.path.abspath(path), 0x80000000, 0x7, None, 3, 0x80, None)
+    if handle in (None, wintypes.HANDLE(-1).value):
+        error = ctypes.get_last_error()
+        raise OSError(None, ctypes.FormatError(error), path, error)
+    try:
+        descriptor = msvcrt.open_osfhandle(handle, os.O_RDONLY)
+    except OSError:
+        kernel32.CloseHandle(wintypes.HANDLE(handle))
+        raise
+    return open(descriptor, "r", encoding="utf-8-sig")
+
+
 def read_json_file(path):
+    """JSON object at `path`, retried briefly while the writer swaps the file in (PermissionError or a torn read)."""
     # launch.ps1 writes current.json with PowerShell 5.1's UTF-8 BOM.
-    with open(path, "r", encoding="utf-8-sig") as handle:
-        return require_object(json.load(handle), path)
+    deadline = time.monotonic() + READ_RETRY_SECONDS
+    while True:
+        try:
+            with open_shared_text(path) as handle:
+                return require_object(json.load(handle), path)
+        except (PermissionError, ValueError):
+            if time.monotonic() >= deadline:
+                raise
+            time.sleep(0.02)
 
 
 def require_object(value, source="API response"):

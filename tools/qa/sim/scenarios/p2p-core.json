@@ -335,6 +335,7 @@
     {
       "id": "11", "title": "Peers sit in Swarm Petal BEFORE an asset arrives; editor uploads a 1 MB GLB and places it", "settle_s": 90, "covers": ["QA-0124", "QA-0118"],
       "prepare": [
+        {"peer": "owner", "via": "gui", "op": "key", "args": {"combo": "s"}, "covers": "QA-0169: step 10 left the Brush armed; Select clears its viewport hint"},
         {"peer": "owner", "via": "gui", "op": "click", "args": {"name": "Back", "role": "button"}},
         {"peer": "owner", "via": "gui", "op": "click", "args": {"name": "Open fractal Swarm Fractal"}},
         {"peer": "owner", "via": "gui", "op": "click", "args": {"name": "Open petal Swarm Petal"}},
@@ -470,7 +471,7 @@
     },
     {
       "id": "14", "title": "Same query on every peer (REST rows + GUI Query tab)", "settle_s": 20, "covers": ["S-P2P CP8", "QA-0127"],
-      "note": "At a tiled window the Inspector collapses its tabs into the 'Choose Inspector tab: <current>' menu (inspector.rs), so the Query tab exists only inside that popup: open it first (absent on a wide window, hence optional; QA-0159 g). Step 10 armed the Brush, so the right sidebar still shows its Options section (the 'Options' open window from +245 s to the recovery Escape in run 7) and the Inspector is hidden: 'Toggle Inspector section' (through the compact 'Choose sidebar section' menu when the layout is compact) always lands on the Inspector (right_sidebar.rs toggle: request it, or clear the request when it already is), idempotent whichever section was showing (QA-0163 e).",
+      "note": "At a tiled window the Inspector collapses its tabs into the 'Choose Inspector tab: <current>' menu (inspector.rs), so the Query tab exists only inside that popup: open it first (absent on a wide window, hence optional; QA-0159 g). Step 10 arms the Brush and step 11 returns the owner to Select (QA-0169), which clears the Options request; before that the sidebar still showed Options here (the 'Options' open window from +245 s to the recovery Escape in run 7) with the Inspector hidden. Either way 'Toggle Inspector section' (through the compact 'Choose sidebar section' menu when the layout is compact) always lands on the Inspector (right_sidebar.rs toggle: request it, or clear the request when it already is), idempotent whichever section was showing (QA-0163 e).",
       "probe": {"query_ms": 2000},
       "actions": [
         {"peer": "owner", "via": "gui", "op": "click", "args": {"name": "Open fractal Swarm Fractal"}, "optional": true},

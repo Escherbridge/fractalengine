@@ -839,8 +839,8 @@ def _scrub(value):
     if isinstance(value, dict):
         return {k: ("<%d chars>" % len(v) if isinstance(v, str) and (len(v) > 512 or "token" in k.lower()) else _scrub(v))
                 for k, v in value.items()}
-    if isinstance(value, list):
-        return [_scrub(v) for v in value[:64]]
+    if isinstance(value, list):  # the logged copy keeps 64 items and says how many it dropped; args_digest covers all
+        return [_scrub(v) for v in value[:64]] + (["<%d more>" % (len(value) - 64)] if len(value) > 64 else [])
     if isinstance(value, str) and len(value) > 512:
         return "<%d chars>" % len(value)
     return value
