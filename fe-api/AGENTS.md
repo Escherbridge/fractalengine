@@ -70,7 +70,7 @@ when a route lands.
 | Agent camera read-back (§camera-state) | `GET /api/v1/debug/camera` — live pose/active hierarchy/projection; same opt-in as screenshot; Owner; 10/s per DID |
 | Agent input injection (§agent-input-surface) | `POST /api/v1/debug/input` — synthetic pointer/keyboard/scroll, optional `capture_after` PNG (which must also clear the screenshot gate); OFF unless `FE_API_INPUT_ALLOW=1` (mutates state, unlike the two rows above); Owner; 5/s per DID; scope-confined to the ACTIVE verse; refused 409 while a posed capture holds the camera |
 | Agent token bootstrap (§qa-dev-token) | Not a route: the GUI writes loopback-only API tokens (Owner where the node owns the verse) for every local verse to `FE_API_DEV_TOKEN_OUT` once the API listens; unset = off |
-| MCP | `POST /mcp` (`mcp::mcp_handler`) — 39-row `ToolSpec` table: 32 always advertised, `screenshot`/`get_camera` only on a GUI host (either capture bridge wired), `inject_input` only when its own input bridge is wired, the 5 `sim_*` only on a sim lab host (§mcp-dispatch); 16 MiB body cap + 8-way concurrency limit (§asset-ingest) |
+| MCP | `POST /mcp` (`mcp::mcp_handler`) — 49-row `ToolSpec` table: 36 always advertised, `screenshot`/`get_camera` only on a GUI host (either capture bridge wired), `inject_input` only when its own input bridge is wired, the 5 QA-debug tools (`ui_tree`, `ui_state`, `ui_logs`, `dialog_answers`, `window`) only when the QA-debug seam is wired (GUI host), the 5 `sim_*` only on a sim lab host (§mcp-dispatch; the table's `requires` column and the length assert in `mcp/mod.rs` are the source of truth); 16 MiB body cap + 8-way concurrency limit (§asset-ingest) |
 
 ## §existence-oracle (REST/WS denial unification, 2026-10-10)
 

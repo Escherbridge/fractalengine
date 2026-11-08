@@ -64,9 +64,10 @@ fe-webview provides the browser overlay for PetalPortal (displaying node webpage
 
 | Backend | Description | Default |
 |---------|-------------|---------|
-| `backend-tauri` | Tauri-powered webview with IPC | **Yes** |
-| `backend-wry` | Raw wry FFI | Deprecated |
-| `backend-servo` | Servo browser (feature-gated) | No |
+| `backend-tauri` | Tauri-powered webview with IPC (wry + WebView2 underneath) | **Yes** |
+| `backend-servo` | Servo browser (feature-gated; takes priority if both are enabled) | No |
+
+The former `backend-wry` feature (raw wry FFI) no longer exists in `fe-webview/Cargo.toml` (checked 2026-11-08).
 
 Since 2026-06-30, Tauri is the default backend for robust IPC and custom protocol support.
 

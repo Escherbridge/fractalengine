@@ -53,4 +53,7 @@ tempfile = "3"
 fe-terrain = { path = "../fe-terrain" }
 
 [package.metadata.env]
-SURREAL_SYNC_DATA = "true"
+# Documentation only (cargo ignores this table). The SurrealKV fsync knob the binaries actually read
+# and default to `every` is SURREAL_DATASTORE_SYNC_DATA (fractalengine/src/main.rs, fractalengine-relay/src/main.rs);
+# the old SURREAL_SYNC_DATA="true" entry named a variable nothing reads (fractalengine/src/AGENTS.md §durability).
+SURREAL_DATASTORE_SYNC_DATA = "every"
