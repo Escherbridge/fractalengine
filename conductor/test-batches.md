@@ -24,6 +24,8 @@ crates map 1:1 onto a region (fe-terrain, fe-sync, fe-policy, fe-identity, fe-ca
 Cargo note used throughout: the default libtest harness accepts **multiple FILTER substrings** after
 `--`, OR'd together (`cargo test -p X -- foo:: bar::` runs anything whose fully-qualified test name
 contains `foo::` OR `bar::`). `--test <stem>` runs exactly one `tests/<stem>.rs` integration binary.
+A `dir/mod.rs` file's tests are named `dir::tests::…` — a `dir::mod` filter matches nothing (it silently
+dropped 62 R1/R2 tests until 2026-11-07, QA-0142).
 
 ---
 
@@ -45,7 +47,7 @@ Sidebar tree, verse/fractal/petal/node CRUD, NavigationManager, visibility group
 **Total ≈ 262**
 
 ```bash
-cargo test -p fe-ui --lib -- navigation_manager:: verse_manager::mod verse_manager::spawn verse_manager::residency_ledger verse_manager::primitive verse_manager::node_index verse_manager::lifecycle_events verse_manager::db_results::mod verse_manager::db_results::query verse_manager::db_results::tokens visibility:: atlas::petal_wizard atlas::visibility_control dialogs::create_entity
+cargo test -p fe-ui --lib -- navigation_manager:: verse_manager::tests:: verse_manager::spawn verse_manager::residency_ledger verse_manager::primitive verse_manager::node_index verse_manager::lifecycle_events verse_manager::db_results::tests:: verse_manager::db_results::query verse_manager::db_results::tokens visibility:: atlas::petal_wizard atlas::visibility_control dialogs::create_entity
 cargo test -p fe-database --lib -- verse:: handlers::crud:: handlers::node_view:: handlers::visibility_groups::
 cargo test -p fe-database --test node_lifecycle_test --test node_view_test --test node_data_write_readback_test --test visibility_groups_test
 cargo test -p fe-api --test visibility_groups_api_test
@@ -70,7 +72,7 @@ Selection, gimbal, transforms, snapping, viewport camera, GLTF asset import, rig
 **Total ≈ 331**
 
 ```bash
-cargo test -p fe-ui --lib -- node_manager::mod node_manager::context_pick node_manager::viewport_pick node_manager::selection node_manager::shortcuts node_manager::sidebar_sync node_manager::inspector_sync node_manager::transform_broadcast node_manager::dispatch node_manager::router node_manager::pointer node_manager::measure gimbal:: geometry:: actions::transform actions::node:: actions::node_props actions::dimension_callout actions::asset dialogs::gltf_import dialogs::context_menu dialogs::node_options panels::annotation_card
+cargo test -p fe-ui --lib -- node_manager::tests:: node_manager::context_pick node_manager::viewport_pick node_manager::selection node_manager::shortcuts node_manager::sidebar_sync node_manager::inspector_sync node_manager::transform_broadcast node_manager::dispatch node_manager::router node_manager::pointer node_manager::measure gimbal:: geometry:: actions::transform actions::node:: actions::node_props actions::dimension_callout actions::asset dialogs::gltf_import dialogs::context_menu dialogs::node_options panels::annotation_card
 cargo test -p fe-renderer
 cargo test -p fractalengine --bin fractalengine -- asset_bridge::
 ```
