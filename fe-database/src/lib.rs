@@ -684,7 +684,7 @@ pub fn spawn_db_thread_shared(
                 }
                 let cmd_start = std::time::Instant::now();
                 // QA-0164: an inbound apply names its table, so the slow log says which rows cost.
-                let cmd_kind = match &cmd {
+                let mut cmd_kind = match &cmd {
                     Ok(DbCommand::ApplyReplicatedRow { table, .. }) => format!("ApplyReplicatedRow:{table}"),
                     other => other.as_ref().map(variant_name).unwrap_or_default(),
                 };
@@ -2219,18 +2219,29 @@ pub fn spawn_db_thread_shared(
                     // admission on the author's role (fe-policy, Editor+);
                     // RP-3: `InboundAdmissions` queues a Deferred content row and
                     // retries every row the apply unblocked — one echo per row settled.
+                    // QA-0164: the inbound rows queued right behind this one apply as one batch
+                    // (bounded), each judged as before; the batch echoes once, so a node's current
+                    // projection is re-read once per batch (src/AGENTS.md §command-lane).
                     Ok(DbCommand::ApplyReplicatedRow { verse_id, table, record_id, row_bytes, author_did }) => {
-                        handlers::scene_publication::echo_applied(&db,&blob_store,&local_did,&tx,admissions
-                                .apply(
-                                    &db,
-                                    &verse_id,
-                                    &table,
-                                    &record_id,
-                                    &row_bytes,
-                                    &author_did,
-                                    entity_change_tx.as_ref(),
-                                )
-                                .await).await;
+                        let mut rows = vec![(verse_id, table, record_id, row_bytes, author_did)];
+                        while rows.len() < command_lane::INBOUND_BATCH_MAX {
+                            let Some(DbCommand::ApplyReplicatedRow { verse_id, table, record_id, row_bytes, author_did }) = lane.next_inbound_row(&rx) else {
+                                break;
+                            };
+                            rows.push((verse_id, table, record_id, row_bytes, author_did));
+                        }
+                        if rows.len() > 1 {
+                            cmd_kind = format!("{cmd_kind}+{}", rows.len() - 1);
+                        }
+                        let mut reports = Vec::new();
+                        for (verse_id, table, record_id, row_bytes, author_did) in rows {
+                            reports.extend(
+                                admissions
+                                    .apply(&db, &verse_id, &table, &record_id, &row_bytes, &author_did, entity_change_tx.as_ref())
+                                    .await,
+                            );
+                        }
+                        handlers::scene_publication::echo_applied(&db, &blob_store, &local_did, &tx, reports).await;
                     }
                     Ok(DbCommand::RejudgeReplicatedNodes { verse_id, nodes, restore_only }) => {
                         use handlers::scene_publication::Rejudged;

@@ -13,6 +13,9 @@ use std::time::{Duration, Instant};
 /// behind a read burst is found (bounded: senders keep their backpressure).
 const LOOKAHEAD: usize = 128;
 
+/// Most inbound row applies handled as one DB command (QA-0164); bounds how long a batch holds the lane.
+pub(crate) const INBOUND_BATCH_MAX: usize = 64;
+
 /// FIFO intake with one priority class (QA-0143) behind a security barrier (QA-0154).
 #[derive(Default)]
 pub(crate) struct CommandLane {
@@ -26,16 +29,7 @@ pub(crate) struct CommandLane {
 impl CommandLane {
     /// The next command to handle, blocking while none is queued.
     pub(crate) fn next(&mut self, rx: &Receiver<DbCommand>) -> Result<DbCommand, RecvError> {
-        while self.queued.len() < LOOKAHEAD {
-            match rx.try_recv() {
-                Ok(command) => {
-                    if let Some(command) = self.supersede(command) {
-                        self.queued.push_back(command);
-                    }
-                }
-                Err(_) => break,
-            }
-        }
+        self.fill(rx);
         if !std::mem::take(&mut self.jumped) {
             // QA-0154: a Serve admission never overtakes a command that could change what
             // it judges (a revoke, a role/ACL or replicated-row apply, an asset write ...).
@@ -54,6 +48,31 @@ impl CommandLane {
         match self.queued.pop_front() {
             Some(command) => Ok(command),
             None => rx.recv(),
+        }
+    }
+
+    /// QA-0164: the next command if it is an inbound row apply queued right behind the one
+    /// being handled, so a run of them applies as one batch; never blocks.
+    pub(crate) fn next_inbound_row(&mut self, rx: &Receiver<DbCommand>) -> Option<DbCommand> {
+        self.fill(rx);
+        if matches!(self.queued.front(), Some(DbCommand::ApplyReplicatedRow { .. })) {
+            self.queued.pop_front()
+        } else {
+            None
+        }
+    }
+
+    /// Drain the channel into the bounded lookahead, superseding as each command lands.
+    fn fill(&mut self, rx: &Receiver<DbCommand>) {
+        while self.queued.len() < LOOKAHEAD {
+            match rx.try_recv() {
+                Ok(command) => {
+                    if let Some(command) = self.supersede(command) {
+                        self.queued.push_back(command);
+                    }
+                }
+                Err(_) => break,
+            }
         }
     }
 

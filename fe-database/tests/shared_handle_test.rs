@@ -233,7 +233,8 @@ fn api_reader_reads_db_thread_writes_through_the_shared_handle() {
 
     // QA-0164: a peer's newer complete snapshot queued behind its older one takes that slot:
     // one apply per run of versions, a reading queued between still finds the node, and a
-    // role row is a barrier. Busy lane, so all of it queues together.
+    // role row is a barrier. Busy lane, so all of it queues together; the queued rows apply
+    // as one batch per run (the Ping splits them), each batch refreshing the node once.
     let template: serde_json::Value = serde_json::from_slice(
         &spawned.blobs.bytes_for(&published.iter().rfind(|event| event.record_id == nodes[0]).unwrap().content_hash).unwrap(),
     )
@@ -253,34 +254,35 @@ fn api_reader_reads_db_thread_writes_through_the_shared_handle() {
         "value": 1.0, "units": "m", "recorded_at": "2026-11-08T00:00:00Z", "recorded_at_ms": 0,
         "hlc_timestamp": 0, "source_did": author, "payload_id": null,
     });
-    let inbound_rows = [
-        ("node", inbound, version(1)),
-        ("iot_reading", "lane-reading", serde_json::to_vec(&reading).unwrap()),
-        ("node", inbound, version(2)),
-        ("node", inbound, version(3)),
-        ("role", "lane-barrier", b"{}".to_vec()),
-        ("node", inbound, version(4)),
-        ("node", inbound, version(5)),
+    let row = |table: &str, record_id: &str, row_bytes: Vec<u8>| DbCommand::ApplyReplicatedRow {
+        verse_id: verse_id.clone(),
+        table: table.into(),
+        record_id: record_id.into(),
+        row_bytes,
+        author_did: author.clone(),
+    };
+    let inbound_commands = [
+        row("node", inbound, version(1)),
+        row("iot_reading", "lane-reading", serde_json::to_vec(&reading).unwrap()),
+        row("node", inbound, version(2)),
+        row("node", inbound, version(3)),
+        row("role", "lane-barrier", b"{}".to_vec()),
+        DbCommand::Ping,
+        row("node", inbound, version(4)),
+        row("node", inbound, version(5)),
+        DbCommand::Ping,
     ];
     send_reads();
-    for (table, record_id, row_bytes) in inbound_rows {
-        spawned
-            .cmd_tx
-            .send(DbCommand::ApplyReplicatedRow {
-                verse_id: verse_id.clone(),
-                table: table.into(),
-                record_id: record_id.into(),
-                row_bytes,
-                author_did: author.clone(),
-            })
-            .expect("send inbound row");
+    for command in inbound_commands {
+        spawned.cmd_tx.send(command).expect("send inbound row");
     }
-    spawned.cmd_tx.send(DbCommand::Ping).expect("send barrier");
     let mut echoes = Vec::new();
     let mut elevations = Vec::new();
+    let mut pongs = 0;
     loop {
         match spawned.res_rx.recv_timeout(TIMEOUT).expect("inbound results") {
-            DbResult::Pong => break,
+            DbResult::Pong if pongs == 1 => break,
+            DbResult::Pong => pongs += 1,
             DbResult::ReplicatedRowApplied { table, outcome, .. } => echoes.push((table, outcome)),
             DbResult::ReplicatedNodeCurrent { current } if current.state.node_id == inbound => {
                 elevations.push(current.state.elevation)

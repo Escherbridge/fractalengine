@@ -1488,7 +1488,13 @@ the transparent commands queued before it.
   is the replica's own model: iroh-docs keeps only the latest entry per key and author, so a peer
   that syncs late never sees the intermediate versions either, and applying the latest complete
   snapshot converges to the same row. A backlog therefore collapses to one apply per drone, and
-  `ApplyReplicatedRow:<table>` in the slow-command log names the table. The sender side stops
+  `ApplyReplicatedRow:<table>` in the slow-command log names the table. The inbound rows queued
+  right behind the one being handled apply in the same command (at most 64, `+N` in the log):
+  each is judged exactly as before (`InboundAdmissions::apply`, role-at-write per row), and the
+  batch echoes once, so a node's current projection is re-read once per batch instead of once
+  per version. The rows are not merged into one SurrealDB transaction: each complete-snapshot
+  apply is a fenced transaction whose guards read what the previous row committed, so the batch
+  amortizes the intake and the projection, not the commits. The sender side stops
   rewriting unchanged rows (fe-sync `src/AGENTS.md` section "unchanged-rewrite").
 
 ## §shared-handle (OF-2, 2026-10-13)
