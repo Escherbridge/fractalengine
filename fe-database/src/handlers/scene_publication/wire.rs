@@ -52,6 +52,18 @@ impl SceneClock {
     }
 }
 
+/// A live complete snapshot `author` published, as its clock and petal; `None` for a
+/// tombstone, a partial (markerless) row or another publisher's marker (QA-0164 lane).
+pub(crate) fn live_snapshot_of(bytes: &[u8], author: &str) -> Option<(SceneClock, String)> {
+    let row: Value = serde_json::from_slice(bytes).ok()?;
+    if row.get("tombstone").is_some_and(|value| !value.is_null()) {
+        return None;
+    }
+    let clock = SceneClock::from_marker(&row).ok()??;
+    let petal = row.get("petal_id")?.as_str()?.to_owned();
+    (clock.publisher == author).then_some((clock, petal))
+}
+
 /// Normalize only nullable node columns; property JSON is kept recursively intact.
 pub(crate) fn normalize_optional_columns(row: &mut Value) {
     if let Some(object) = row.as_object_mut() {

@@ -683,7 +683,11 @@ pub fn spawn_db_thread_shared(
                     handlers::scene_publication::publish_deferred(&db,&blob_store,repl_tx.as_ref(),&local_did,deferred.take()).await;
                 }
                 let cmd_start = std::time::Instant::now();
-                let cmd_kind = cmd.as_ref().map(variant_name).unwrap_or_default();
+                // QA-0164: an inbound apply names its table, so the slow log says which rows cost.
+                let cmd_kind = match &cmd {
+                    Ok(DbCommand::ApplyReplicatedRow { table, .. }) => format!("ApplyReplicatedRow:{table}"),
+                    other => other.as_ref().map(variant_name).unwrap_or_default(),
+                };
                 match cmd {
                     Ok(DbCommand::PluginRead {admission,request,reply}) => {
                         let result=handlers::plugin_host::read(&db,&admission,request,&local_did).await.map_err(|error|error.to_string());
@@ -2271,6 +2275,10 @@ pub fn spawn_db_thread_shared(
                     tracing::warn!(kind = %cmd_kind, elapsed_ms = elapsed.as_millis() as u64, queued = rx.len() + lane.len(), "slow DB command");
                 } else {
                     tracing::debug!(kind = %cmd_kind, elapsed_ms = elapsed.as_millis() as u64, "DB command processed");
+                }
+                let superseded = lane.take_superseded();
+                if superseded > 0 {
+                    tracing::debug!(superseded, queued = rx.len() + lane.len(), "queued inbound node versions superseded by newer ones");
                 }
             }
             tracing::info!("Database thread shutting down");

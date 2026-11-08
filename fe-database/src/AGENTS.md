@@ -1474,6 +1474,22 @@ the transparent commands queued before it.
   Every other command, `Ping` and shutdown included, publishes first, so a replicated-row apply, a
   role/ACL change, a Serve admission or a scene-clock read never sees a committed transform
   without its publication. A burst of writes to one node publishes one row version.
+- **Superseded inbound versions (QA-0164, 2026-11-08).** Receivers applied one
+  `ApplyReplicatedRow` per inbound row version (a node row ~88 ms, a reading ~16 ms), so the
+  2 Hz four-drone flight (8 node versions + 8 readings a second) kept the editor's lane above
+  100 % busy and the remote drone lag grew linearly to ~22 s with the DB channel full. While a
+  command is drained into the lookahead, a peer's live complete node snapshot (`_fe_scene`
+  marker, publisher = author, no tombstone) replaces the bytes of the same author's older queued
+  snapshot of the same node, if one is reachable scanning back across only other node, reading
+  and payload applies: it keeps the OLDER slot (so a reading or payload queued after the first
+  version still finds the node) and the newer bytes. Any other command, a role/verse/fractal/
+  petal/asset row, another author's version of the node, a tombstone, a partial (markerless)
+  row, an older clock or a petal change stops the scan, and the version queues as before. This
+  is the replica's own model: iroh-docs keeps only the latest entry per key and author, so a peer
+  that syncs late never sees the intermediate versions either, and applying the latest complete
+  snapshot converges to the same row. A backlog therefore collapses to one apply per drone, and
+  `ApplyReplicatedRow:<table>` in the slow-command log names the table. The sender side stops
+  rewriting unchanged rows (fe-sync `src/AGENTS.md` section "unchanged-rewrite").
 
 ## §shared-handle (OF-2, 2026-10-13)
 

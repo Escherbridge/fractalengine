@@ -231,6 +231,71 @@ fn api_reader_reads_db_thread_writes_through_the_shared_handle() {
         assert_eq!(row["elevation"].as_f64(), Some(3.0), "the latest committed state is published: {row}");
     }
 
+    // QA-0164: a peer's newer complete snapshot queued behind its older one takes that slot:
+    // one apply per run of versions, a reading queued between still finds the node, and a
+    // role row is a barrier. Busy lane, so all of it queues together.
+    let template: serde_json::Value = serde_json::from_slice(
+        &spawned.blobs.bytes_for(&published.iter().rfind(|event| event.record_id == nodes[0]).unwrap().content_hash).unwrap(),
+    )
+    .unwrap();
+    let base_clock: u64 = template["_fe_scene"]["hlc"].as_str().unwrap().parse().unwrap();
+    let author = template["_fe_scene"]["publisher"].as_str().unwrap().to_owned();
+    let inbound = "lane-inbound-node";
+    let version = |n: u64| {
+        let mut row = template.clone();
+        row["node_id"] = serde_json::json!(inbound);
+        row["elevation"] = serde_json::json!(n as f64);
+        row["_fe_scene"]["hlc"] = serde_json::json!((base_clock + n).to_string());
+        serde_json::to_vec(&row).unwrap()
+    };
+    let reading = serde_json::json!({
+        "reading_id": "lane-reading", "node_id": inbound, "petal_id": petal_id, "metric": "altitude_m",
+        "value": 1.0, "units": "m", "recorded_at": "2026-11-08T00:00:00Z", "recorded_at_ms": 0,
+        "hlc_timestamp": 0, "source_did": author, "payload_id": null,
+    });
+    let inbound_rows = [
+        ("node", inbound, version(1)),
+        ("iot_reading", "lane-reading", serde_json::to_vec(&reading).unwrap()),
+        ("node", inbound, version(2)),
+        ("node", inbound, version(3)),
+        ("role", "lane-barrier", b"{}".to_vec()),
+        ("node", inbound, version(4)),
+        ("node", inbound, version(5)),
+    ];
+    send_reads();
+    for (table, record_id, row_bytes) in inbound_rows {
+        spawned
+            .cmd_tx
+            .send(DbCommand::ApplyReplicatedRow {
+                verse_id: verse_id.clone(),
+                table: table.into(),
+                record_id: record_id.into(),
+                row_bytes,
+                author_did: author.clone(),
+            })
+            .expect("send inbound row");
+    }
+    spawned.cmd_tx.send(DbCommand::Ping).expect("send barrier");
+    let mut echoes = Vec::new();
+    let mut elevations = Vec::new();
+    loop {
+        match spawned.res_rx.recv_timeout(TIMEOUT).expect("inbound results") {
+            DbResult::Pong => break,
+            DbResult::ReplicatedRowApplied { table, outcome, .. } => echoes.push((table, outcome)),
+            DbResult::ReplicatedNodeCurrent { current } if current.state.node_id == inbound => {
+                elevations.push(current.state.elevation)
+            }
+            _ => {}
+        }
+    }
+    let tables: Vec<&str> = echoes.iter().map(|(table, _)| table.as_str()).collect();
+    assert_eq!(tables, ["node", "iot_reading", "role", "node"], "versions 1-3 and 4-5 each apply once, in the first version's slot: {echoes:?}");
+    assert!(
+        echoes.iter().filter(|(table, _)| table != "role").all(|(_, outcome)| *outcome == fe_runtime::messages::ReplicatedRowOutcome::Applied),
+        "the node and the reading queued after its first version apply: {echoes:?}"
+    );
+    assert_eq!(elevations, vec![3.0, 5.0], "each slot applies its newest version");
+
     // Persist a schema-valid but inadmissible clock, then exercise the real restart handshake.
     let reader = spawned.db_thread.shared_db.clone();
     std::thread::spawn(move || {

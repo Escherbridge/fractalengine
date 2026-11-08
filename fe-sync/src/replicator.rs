@@ -802,6 +802,25 @@ impl IrohDocsReplicator {
                 .map_err(|e| anyhow::anyhow!("del {key}: {e}"))?;
             tracing::debug!(ns = %doc.id().fmt_short(), key = %key, removed, "tombstone written");
         } else {
+            // QA-0164: identical bytes are not a new version; see AGENTS.md §unchanged-rewrite.
+            let hash = iroh_blobs::Hash::new(data);
+            let same_entry = doc
+                .get_exact(author, key.as_bytes(), false)
+                .await
+                .ok()
+                .flatten()
+                .is_some_and(|entry| entry.content_hash() == hash);
+            let content_held = match (same_entry, self.engine_holder.stack()) {
+                (true, Some(stack)) => matches!(
+                    stack.blob_store().blobs().status(hash).await,
+                    Ok(iroh_blobs::api::blobs::BlobStatus::Complete { .. })
+                ),
+                _ => false,
+            };
+            if content_held {
+                tracing::debug!(ns = %doc.id().fmt_short(), key = %key, "unchanged row not rewritten");
+                return Ok(());
+            }
             doc.set_bytes(author, key.as_bytes().to_vec(), data.to_vec())
                 .await
                 .map_err(|e| anyhow::anyhow!("set_bytes {key}: {e}"))?;
@@ -2517,6 +2536,16 @@ mod tests {
             snap_row.author_id, alice_endpoint_did,
             "snapshot author must equal live author for the same entry"
         );
+
+        // QA-0164: an identical rewrite is not a new version, so Bob's next event is the real change.
+        alice.write_row("verse", "verse-a2", &payload).await.expect("identical rewrite");
+        let renamed = br#"{"verse_id":"verse-a2","name":"Renamed Verse"}"#.to_vec();
+        alice.write_row("verse", "verse-a2", &renamed).await.expect("alice renames");
+        let next = tokio::time::timeout(std::time::Duration::from_secs(20), bob_rx.recv())
+            .await
+            .expect("the rename arrives")
+            .expect("pump stays alive");
+        assert_eq!(next.data, renamed, "the identical rewrite published nothing");
 
         // QA-0145: Bob's iroh-docs download of a row's content fails (here Alice
         // refuses it; in the field a restarted author is dialed on its dead old

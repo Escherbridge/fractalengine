@@ -1,6 +1,8 @@
 //! The DB thread's command intake: FIFO, except that a peer's Serve admission
-//! is answered ahead of queued reads; see src/AGENTS.md §command-lane.
+//! is answered ahead of queued reads and a peer's newer node snapshot replaces
+//! its queued older one; see src/AGENTS.md §command-lane.
 
+use crate::handlers::scene_publication::wire::live_snapshot_of;
 use crossbeam::channel::{Receiver, RecvError};
 use fe_runtime::messages::DbCommand;
 use fe_runtime::scene_asset::SceneAssetTransferPurpose;
@@ -17,6 +19,8 @@ pub(crate) struct CommandLane {
     queued: VecDeque<DbCommand>,
     /// The last command jumped the queue, so the next one is FIFO (no starvation).
     jumped: bool,
+    /// Inbound node versions absorbed by [`CommandLane::supersede`], for the slow-command log.
+    superseded: usize,
 }
 
 impl CommandLane {
@@ -24,7 +28,11 @@ impl CommandLane {
     pub(crate) fn next(&mut self, rx: &Receiver<DbCommand>) -> Result<DbCommand, RecvError> {
         while self.queued.len() < LOOKAHEAD {
             match rx.try_recv() {
-                Ok(command) => self.queued.push_back(command),
+                Ok(command) => {
+                    if let Some(command) = self.supersede(command) {
+                        self.queued.push_back(command);
+                    }
+                }
                 Err(_) => break,
             }
         }
@@ -47,6 +55,53 @@ impl CommandLane {
             Some(command) => Ok(command),
             None => rx.recv(),
         }
+    }
+
+    /// QA-0164: a peer's newer complete snapshot of a node replaces its queued older one in
+    /// place (the older version's slot, so it still precedes dependents queued after it);
+    /// `None` when absorbed. See src/AGENTS.md §command-lane "Superseded inbound versions".
+    fn supersede(&mut self, command: DbCommand) -> Option<DbCommand> {
+        let DbCommand::ApplyReplicatedRow { verse_id, table, record_id, row_bytes, author_did } = &command else {
+            return Some(command);
+        };
+        if table != "node" {
+            return Some(command);
+        }
+        let Some((clock, petal)) = live_snapshot_of(row_bytes, author_did) else {
+            return Some(command);
+        };
+        for queued in self.queued.iter_mut().rev() {
+            let DbCommand::ApplyReplicatedRow {
+                verse_id: queued_verse,
+                table: queued_table,
+                record_id: queued_record,
+                row_bytes: queued_bytes,
+                author_did: queued_author,
+            } = queued
+            else {
+                break;
+            };
+            if queued_table.as_str() == "node" && *queued_record == *record_id && *queued_verse == *verse_id {
+                let older = (*queued_author == *author_did)
+                    .then(|| live_snapshot_of(queued_bytes, queued_author))
+                    .flatten();
+                if older.is_some_and(|(older_clock, older_petal)| older_clock < clock && older_petal == petal) {
+                    *queued_bytes = row_bytes.clone();
+                    self.superseded += 1;
+                    return None;
+                }
+                break;
+            }
+            if !matches!(queued_table.as_str(), "node" | "iot_reading" | "device_payload") {
+                break;
+            }
+        }
+        Some(command)
+    }
+
+    /// Inbound node versions absorbed by a newer queued one since the last call.
+    pub(crate) fn take_superseded(&mut self) -> usize {
+        std::mem::take(&mut self.superseded)
     }
 
     /// Commands drained from the channel but not yet handled.

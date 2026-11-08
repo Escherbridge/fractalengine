@@ -2366,3 +2366,17 @@ no one (set reconciliation runs only on open/NeighborUp). The pump tracks `Neigh
 has synced or exchanged entries with (`IsolatedWrites`): 1 s after the first write (a burst
 coalesces), at most every 5 s, skipped if a neighbor came back. It never runs while a neighbor
 is live, so it adds no traffic to a healthy swarm and cannot recreate the QA-0101 re-dial storm.
+
+## §unchanged-rewrite — identical bytes are not a new version (QA-0164, 2026-11-08)
+
+`IrohDocsReplicator::write_row_inner` skips `set_bytes` when this author's current entry for the
+key already holds the same content hash (`Doc::get_exact`, a local store read) and the blob is
+complete locally (a migrated entry whose content is missing is rewritten). Every iroh-docs
+`set` mints a newer entry even for identical bytes, and the live pump of every peer delivers it as
+a fresh `InsertRemote`. The scene publisher re-enqueues a node's asset row as a dependency on each
+publication, so during the city-lite drone flight the owner rewrote the drone mesh's unchanged
+asset row with every transform: each receiver re-applied it 266 times (142 ms each, insert-if-absent
+finds it present) and re-requested its blob, which put 849 Serve admissions on the owner's DB lane.
+Skipping is safe: the replica already holds exactly that entry from us, so set reconciliation
+serves it to any peer that lacks it, and every repair path (re-emit on open, recovery) writes only
+when the entry is missing or different. Tombstones (`del`) are never skipped.
