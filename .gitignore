@@ -67,4 +67,5 @@ fe-sync/tests/fixtures/p2p_store_v035_gen/target/
 # Python bytecode from the QA client modules
 /tools/qa/__pycache__/
 /tools/qa/**/__pycache__/
-qa/
+# root-only: the register and run dirs live in /qa; tools/qa is tracked source (an unanchored qa/ silently ignored new harness files)
+/qa/
