@@ -491,9 +491,17 @@ reference, plus the authenticated connection requester's current Viewer authorit
 no upload/adoption proof: it re-shares content-addressed bytes of a row that is already
 current Verse content and originates no metadata identity, so a peer that fetched an
 Editor's asset seeds it to a third peer. Only hashes the native gate classified (own
-proven publish or an admitted fetch) consult Serve at all. Metadata, live reference, ancestry and role guards execute in one transaction.
-One hash probes at most 17 metadata identities (16 permitted), and each identity probes
-257 live references (256 permitted); ambiguous/oversize inputs never produce a prefix.
+proven publish or an admitted fetch) consult Serve at all. Metadata, ancestry and role guards execute in one transaction.
+One hash probes at most 17 metadata identities (16 permitted); ambiguous/oversize inputs never produce a prefix.
+
+QA-0158: the anchored asset row is the Verse content, not its first placement. A live
+node reference is required (and fenced) only when the request names one; the sync jobs
+name none, so the permit's `node_id` is `None` and stays stable across the before/after
+re-admissions. An API upload (`CreateAsset` with an anchor Petal) therefore publishes,
+is fetched on row arrival and is re-served before any node uses it. What still gates every
+purpose: GLB/glTF MIME (`fe_runtime::scene_asset::SCENE_ASSET_MIMES`), bounded size, an
+anchor Petal inside the requested Verse, actual local role (Editor + upload/adoption proof
+to Publish, Viewer otherwise) and, for Serve, the authenticated requester's Viewer role.
 
 DQA020 adoption is an explicit new Owner action, not reconstruction of upload ownership.
 ReadSceneAssetAdoption prepares a reviewable candidate for an ownerless/unanchored local

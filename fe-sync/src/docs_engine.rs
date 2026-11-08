@@ -1276,7 +1276,7 @@ mod tests {
         let permit = SceneAssetTransferPermit {
             verse_id: "scene-v".into(),
             petal_id: "scene-p".into(),
-            node_id: "scene-n".into(),
+            node_id: None,
             asset_id: asset_id.clone(),
             content_hash: scene_hash,
             content_type: "model/gltf-binary".into(),
@@ -1314,7 +1314,7 @@ mod tests {
                             if let SceneAssetTransferPurpose::Publish { asset_id, petal_id } = &request.purpose {
                                 if asset_id == &second_asset_id && petal_id == "scene-p2" {
                                     selected.asset_id=second_asset_id.clone(); selected.petal_id="scene-p2".into();
-                                    selected.node_id="scene-n2".into(); selected.asset_fingerprint="second-exact-fixture".into();
+                                    selected.asset_fingerprint="second-exact-fixture".into();
                                 }
                             }
                             let valid = match &request.purpose {

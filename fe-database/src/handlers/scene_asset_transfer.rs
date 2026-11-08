@@ -71,7 +71,7 @@ pub(crate) async fn inspect(
         };
         let Some(content_type) = asset["content_type"]
             .as_str()
-            .filter(|mime| matches!(*mime, "model/gltf-binary" | "model/gltf+json"))
+            .filter(|mime| fe_runtime::scene_asset::SCENE_ASSET_MIMES.contains(mime))
         else {
             continue;
         };
@@ -123,24 +123,22 @@ pub(crate) async fn inspect(
             guards.extend(more);
             bindings.extend(bound);
         }
-        let mut response = db.query("SELECT node_id,petal_id,asset_id FROM node WHERE asset_id=$transfer_asset AND petal_id=$transfer_petal AND tombstone=NONE AND ($transfer_node=NONE OR node_id=$transfer_node) ORDER BY node_id LIMIT 257 TIMEOUT 2s")
-            .bind(("transfer_asset",asset_id.to_owned())).bind(("transfer_petal",petal_id.to_owned())).bind(("transfer_node",request.node_id.clone())).await?.check()?;
-        let nodes: Vec<Value> = response.take(0)?;
-        anyhow::ensure!(
-            nodes.len() <= 256,
-            "asset has more than 256 live references"
-        );
-        let Some(node_id) = nodes.first().and_then(|row| row["node_id"].as_str()) else {
-            continue;
-        };
-        guards.extend([
-            "IF (SELECT VALUE encoding::base64::encode(encoding::cbor::encode($this)) FROM asset WHERE asset_id=$transfer_asset) != [$transfer_fingerprint] { THROW 'scene asset metadata changed'; }".into(),
-            "IF array::len((SELECT VALUE node_id FROM node WHERE node_id=$transfer_node AND petal_id=$transfer_petal AND asset_id=$transfer_asset AND tombstone=NONE)) != 1 { THROW 'scene asset live reference changed'; }".into(),
-        ]);
+        // QA-0158: the anchored metadata row is the Verse content; a live node reference
+        // is required only when the request names one (handlers/AGENTS.md §scene-asset-transfer).
+        if let Some(node_id) = &request.node_id {
+            let mut response = db.query("SELECT VALUE node_id FROM node WHERE node_id=$transfer_node AND asset_id=$transfer_asset AND petal_id=$transfer_petal AND tombstone=NONE LIMIT 2 TIMEOUT 2s")
+                .bind(("transfer_asset",asset_id.to_owned())).bind(("transfer_petal",petal_id.to_owned())).bind(("transfer_node",node_id.clone())).await?.check()?;
+            let nodes: Vec<Value> = response.take(0)?;
+            if nodes.len() != 1 {
+                continue;
+            }
+            guards.push("IF array::len((SELECT VALUE node_id FROM node WHERE node_id=$transfer_node AND petal_id=$transfer_petal AND asset_id=$transfer_asset AND tombstone=NONE)) != 1 { THROW 'scene asset live reference changed'; }".into());
+            bindings.push(("transfer_node".into(), json!(node_id)));
+        }
+        guards.push("IF (SELECT VALUE encoding::base64::encode(encoding::cbor::encode($this)) FROM asset WHERE asset_id=$transfer_asset) != [$transfer_fingerprint] { THROW 'scene asset metadata changed'; }".into());
         bindings.extend([
             ("transfer_asset".into(), json!(asset_id)),
             ("transfer_petal".into(), json!(petal_id)),
-            ("transfer_node".into(), json!(node_id)),
             ("transfer_fingerprint".into(), json!(fingerprint)),
         ]);
         let script = format!(
@@ -163,7 +161,7 @@ pub(crate) async fn inspect(
         return Ok(SceneAssetTransferPermit {
             verse_id: request.verse_id.clone(),
             petal_id: petal_id.into(),
-            node_id: node_id.into(),
+            node_id: request.node_id.clone(),
             asset_id: asset_id.into(),
             content_hash: request.hash,
             content_type: content_type.into(),

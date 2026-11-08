@@ -7080,6 +7080,87 @@ mod tests {
                         .is_ok(),
                     "a fetched copy re-serves to another Verse Viewer"
                 );
+                // QA-0158: an anchored API upload is Verse content before any placement. It
+                // publishes at registration and is fetched/served with no live node reference.
+                while rx.try_recv().is_ok() {}
+                let upload_bytes = br#"{"asset":{"version":"2.0"},"scenes":[]}"#;
+                let upload_digest = disk.add_blob(upload_bytes).unwrap();
+                let uploaded = crate::handlers::crud::create_asset_handler(
+                    &legacy,
+                    &disk,
+                    &crate::handlers::crud::AssetRegistration {
+                        name: "unplaced.gltf".into(),
+                        content_type: "model/gltf+json".into(),
+                        size_bytes: upload_bytes.len() as u64,
+                        content_hash: crate::hash_to_hex(&upload_digest),
+                        owner_did: Some("did:api-client".into()),
+                        petal_id: Some("scene-p".into()),
+                    },
+                )
+                .await
+                .unwrap();
+                scene::publish_uploaded_asset(&legacy, &disk, Some(&tx), "did:qa", &uploaded).await;
+                let published = rx.try_recv().expect("registration publishes the unplaced upload");
+                assert_eq!((published.table.as_str(), published.record_id.as_str()), ("asset", uploaded.as_str()));
+                let wire: serde_json::Value = serde_json::from_slice(
+                    &std::fs::read(disk.get_blob_path(&published.content_hash).unwrap()).unwrap(),
+                )
+                .unwrap();
+                assert_eq!(wire[fe_runtime::scene_asset::SCENE_ASSET_ROW_MARKER], 1, "routes through the byte publisher");
+                assert!(wire.get("owner_did").is_none());
+                let unplaced = SceneAssetTransferRequest {
+                    hash: upload_digest,
+                    node_id: None,
+                    purpose: SceneAssetTransferPurpose::Publish {
+                        asset_id: uploaded.clone(),
+                        petal_id: "scene-p".into(),
+                    },
+                    ..request.clone()
+                };
+                let permit = crate::handlers::scene_asset_transfer::inspect(&legacy, &unplaced, "did:qa")
+                    .await
+                    .unwrap();
+                assert_eq!((permit.asset_id.as_str(), permit.node_id), (uploaded.as_str(), None));
+                assert!(
+                    crate::handlers::scene_asset_transfer::inspect(&legacy, &unplaced, "did:viewer")
+                        .await
+                        .is_err(),
+                    "a Viewer never originates an upload's publication"
+                );
+                for purpose in [
+                    SceneAssetTransferPurpose::Fetch,
+                    SceneAssetTransferPurpose::Serve { requester_did: "did:third-peer".into() },
+                ] {
+                    assert!(
+                        crate::handlers::scene_asset_transfer::inspect(
+                            &legacy,
+                            &SceneAssetTransferRequest { purpose, ..unplaced.clone() },
+                            "did:viewer"
+                        )
+                        .await
+                        .is_ok(),
+                        "an unplaced upload is fetched and re-served on its anchored metadata"
+                    );
+                }
+                assert!(
+                    crate::handlers::scene_asset_transfer::inspect(
+                        &legacy,
+                        &SceneAssetTransferRequest { node_id: Some(node_id.clone()), ..unplaced.clone() },
+                        "did:qa"
+                    )
+                    .await
+                    .is_err(),
+                    "a named live reference must actually reference the asset"
+                );
+                // Replica open republishes it (it is no node's dependency), and only it.
+                assert_eq!(
+                    scene::recover_uploaded_assets(&legacy, &disk, &tx, "did:qa", "scene-v")
+                        .await
+                        .unwrap(),
+                    (1, 0)
+                );
+                assert_eq!(rx.try_recv().unwrap().record_id, uploaded);
+                assert!(rx.try_recv().is_err());
             }
 
             // The 1025th candidate refuses before any node prefix is emitted.

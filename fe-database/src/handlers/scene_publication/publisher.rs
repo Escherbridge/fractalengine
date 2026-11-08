@@ -19,6 +19,8 @@ pub(crate) struct RecoveryReport {
     pub enqueued: usize,
     pub deferred: usize,
     pub dependency_deferred: usize,
+    /// Proven scene uploads no node references yet (QA-0158).
+    pub uploads_enqueued: usize,
 }
 
 #[derive(Debug)]
@@ -206,6 +208,46 @@ pub(crate) fn publication_asset_metadata_fence() -> String {
     format!("IF (SELECT VALUE encoding::base64::encode(encoding::cbor::encode($this)) FROM (SELECT {PUBLICATION_ASSET_COLUMNS} FROM asset WHERE asset_id=$scene_asset)) != $scene_asset_fingerprints {{ THROW 'scene asset changed'; }}")
 }
 
+/// One `petal`-anchored, upload/adoption-proven asset as marked scene wire bytes plus its
+/// metadata fence; `None` when unproven. The flag reports an unreplicated Portal model row.
+async fn proven_asset_wire(
+    db: &Db,
+    id: &str,
+    petal: &Value,
+    scope: &str,
+    guards: &mut Vec<String>,
+    bindings: &mut Vec<(String, Value)>,
+) -> anyhow::Result<(Option<Vec<u8>>, bool)> {
+    let (assets, fingerprints, models) = capture_publication_asset_metadata(db, id).await?;
+    if !(assets.len() == 1
+        && assets[0]["petal_id"] == *petal
+        && super::super::scene_asset_transfer::publication_proof(db,&assets[0],scope,guards,bindings).await?
+        && assets[0]["content_hash"]
+            .as_str()
+            .is_some_and(|hash| crate::hash_from_hex(hash).is_ok()))
+    {
+        return Ok((None, !models.is_empty()));
+    }
+    let mut asset = assets[0].clone();
+    if let Some(object) = asset.as_object_mut() {
+        object.remove("owner_did");
+        object.remove("publication_provenance");
+        object.retain(|_, value| !value.is_null());
+    }
+    asset[fe_runtime::scene_asset::SCENE_ASSET_ROW_MARKER] = json!(1);
+    let bytes = serde_json::to_vec(&asset)?;
+    anyhow::ensure!(
+        bytes.len() <= 32 * 1024,
+        "scene asset metadata exceeds 32 KiB"
+    );
+    guards.push(publication_asset_metadata_fence());
+    bindings.extend([
+        ("scene_asset".into(), json!(id)),
+        ("scene_asset_fingerprints".into(), json!(fingerprints)),
+    ]);
+    Ok((Some(bytes), !models.is_empty()))
+}
+
 async fn dependencies(
     db: &Db,
     row: &Value,
@@ -216,36 +258,13 @@ async fn dependencies(
     let mut dependencies = Vec::new();
     let mut deferred = 0;
     if let Some(id) = row["asset_id"].as_str() {
-        let (assets, fingerprints, models) = capture_publication_asset_metadata(db, id).await?;
-        if assets.len() == 1
-            && assets[0]["petal_id"] == row["petal_id"]
-            && super::super::scene_asset_transfer::publication_proof(db,&assets[0],scope,guards,bindings).await?
-            && assets[0]["content_hash"]
-                .as_str()
-                .is_some_and(|hash| crate::hash_from_hex(hash).is_ok())
-        {
-            let mut asset = assets[0].clone();
-            if let Some(object) = asset.as_object_mut() {
-                object.remove("owner_did");
-                object.remove("publication_provenance");
-                object.retain(|_, value| !value.is_null());
-            }
-            asset[fe_runtime::scene_asset::SCENE_ASSET_ROW_MARKER]=json!(1);
-            let bytes = serde_json::to_vec(&asset)?;
-            anyhow::ensure!(
-                bytes.len() <= 32 * 1024,
-                "scene asset metadata exceeds 32 KiB"
-            );
-            dependencies.push(("asset".into(), id.into(), bytes));
-            guards.push(publication_asset_metadata_fence());
-            bindings.extend([
-                ("scene_asset".into(), json!(id)),
-                ("scene_asset_fingerprints".into(), json!(fingerprints)),
-            ]);
-        } else {
-            deferred += 1;
+        let (wire, modelled) =
+            proven_asset_wire(db, id, &row["petal_id"], scope, guards, bindings).await?;
+        match wire {
+            Some(bytes) => dependencies.push(("asset".into(), id.into(), bytes)),
+            None => deferred += 1,
         }
-        if !models.is_empty() {
+        if modelled {
             deferred += 1;
         }
     }
@@ -266,23 +285,7 @@ impl PreparedSceneRow {
         blobs: &BlobStoreHandle,
         sender: &ReplicationSender,
     ) -> anyhow::Result<usize> {
-        let script = format!(
-            "BEGIN TRANSACTION; {}; COMMIT TRANSACTION;",
-            self.statements.join(";\n")
-        );
-        let mut query = db.query(script);
-        for binding in self.bindings {
-            query = query.bind(binding);
-        }
-        let mut response = query
-            .await
-            .map_err(|error| super::diagnostics::Transaction::Publication.request_failed(error))?;
-        let errors = response.take_errors();
-        if !errors.is_empty() {
-            return Err(
-                super::diagnostics::Transaction::Publication.failed(errors, &self.guard_labels)
-            );
-        }
+        run_fences(db, &self.statements, self.bindings, &self.guard_labels).await?;
         for (table, id, bytes) in self.dependencies {
             enqueue(
                 blobs,
@@ -337,6 +340,134 @@ fn enqueue(
             "scene replication bridge disconnected; committed source remains recoverable"
         ),
     }
+}
+
+/// Execute publication fences in one transaction; nothing is enqueued unless all hold.
+async fn run_fences(
+    db: &Db,
+    statements: &[String],
+    bindings: Vec<(String, Value)>,
+    guard_labels: &[&'static str],
+) -> anyhow::Result<()> {
+    let script = format!(
+        "BEGIN TRANSACTION; {}; COMMIT TRANSACTION;",
+        statements.join(";\n")
+    );
+    let mut query = db.query(script);
+    for binding in bindings {
+        query = query.bind(binding);
+    }
+    let mut response = query
+        .await
+        .map_err(|error| super::diagnostics::Transaction::Publication.request_failed(error))?;
+    let errors = response.take_errors();
+    if !errors.is_empty() {
+        return Err(super::diagnostics::Transaction::Publication.failed(errors, guard_labels));
+    }
+    Ok(())
+}
+
+/// QA-0158: an anchored scene upload is Verse content at registration, not at first placement.
+pub(crate) async fn publish_uploaded_asset(
+    db: &Db,
+    blobs: &BlobStoreHandle,
+    sender: Option<&ReplicationSender>,
+    actor: &str,
+    asset_id: &str,
+) {
+    let Some(sender) = sender else { return };
+    match emit_uploaded_asset(db, blobs, sender, actor, asset_id).await {
+        Ok(true) => tracing::info!(asset_id, "uploaded scene asset metadata enqueued for publication"),
+        Ok(false) => tracing::debug!(asset_id, "non-scene upload: published by the device payload that references it"),
+        Err(error) => tracing::warn!(asset_id, "uploaded scene asset publication deferred: {error:#}"),
+    }
+}
+
+/// Fence actual Editor authority, upload/adoption proof and exact metadata, then enqueue
+/// the marked row; `Ok(false)` for a non-scene MIME (see AGENTS.md §uploaded-assets).
+async fn emit_uploaded_asset(
+    db: &Db,
+    blobs: &BlobStoreHandle,
+    sender: &ReplicationSender,
+    actor: &str,
+    asset_id: &str,
+) -> anyhow::Result<bool> {
+    let mut response = db
+        .query("SELECT petal_id, content_type FROM asset WHERE asset_id=$scene_asset LIMIT 2 TIMEOUT 5s")
+        .bind(("scene_asset", asset_id.to_owned()))
+        .await?
+        .check()?;
+    let rows: Vec<Value> = response.take(0)?;
+    anyhow::ensure!(rows.len() == 1, "uploaded asset missing or ambiguous");
+    if !rows[0]["content_type"]
+        .as_str()
+        .is_some_and(|mime| fe_runtime::scene_asset::SCENE_ASSET_MIMES.contains(&mime))
+    {
+        return Ok(false);
+    }
+    let petal = rows[0]["petal_id"]
+        .as_str()
+        .ok_or_else(|| anyhow::anyhow!("uploaded asset has no anchor Petal; it never replicates"))?
+        .to_owned();
+    let scope = super::super::crud::resolve_petal_scope_handler(db, &petal)
+        .await?
+        .ok_or_else(|| anyhow::anyhow!("uploaded asset anchor ancestry missing"))?;
+    let verse = crate::parse_scope(&scope)?.verse_id;
+    let (mut statements, mut bindings) = super::super::entity::prepare_scope_permission(
+        db,
+        &scope,
+        actor,
+        fe_policy::RoleLevel::Editor,
+    )
+    .await?
+    .into_parts();
+    let mut guard_labels = vec!["authority_ancestry"; statements.len()];
+    let (wire, _) =
+        proven_asset_wire(db, asset_id, &json!(petal), &scope, &mut statements, &mut bindings)
+            .await?;
+    let wire = wire.ok_or_else(|| {
+        anyhow::anyhow!("uploaded asset lacks local upload/adoption proof or a valid digest")
+    })?;
+    guard_labels.resize(statements.len(), "asset_metadata");
+    run_fences(db, &statements, bindings, &guard_labels).await?;
+    enqueue(blobs, sender, &verse, &petal, "asset", asset_id, &wire)?;
+    Ok(true)
+}
+
+/// Replica-open republication of proven scene uploads no node references yet; returns
+/// `(enqueued, deferred)`. Referenced assets travel as their nodes' dependencies.
+pub(crate) async fn recover_uploaded_assets(
+    db: &Db,
+    blobs: &BlobStoreHandle,
+    sender: &ReplicationSender,
+    actor: &str,
+    verse: &str,
+) -> anyhow::Result<(usize, usize)> {
+    let mut response = db.query("SELECT asset_id FROM asset WHERE petal_id IN (SELECT VALUE petal_id FROM petal WHERE fractal_id IN (SELECT VALUE fractal_id FROM fractal WHERE verse_id=$scene_verse)) AND content_type IN $scene_mimes AND (owner_did != NONE OR publication_provenance != NONE) AND asset_id NOT IN (SELECT VALUE asset_id FROM node WHERE asset_id != NONE) ORDER BY asset_id LIMIT 1025 TIMEOUT 5s")
+        .bind(("scene_verse", verse.to_owned()))
+        .bind(("scene_mimes", fe_runtime::scene_asset::SCENE_ASSET_MIMES.map(String::from).to_vec()))
+        .await?
+        .check()?;
+    let rows: Vec<Value> = response.take(0)?;
+    anyhow::ensure!(
+        rows.len() <= RECOVERY_LIMIT,
+        "upload recovery exceeds 1024 unplaced assets; no prefix published"
+    );
+    let (mut enqueued, mut deferred) = (0, 0);
+    for row in rows {
+        let id = row["asset_id"]
+            .as_str()
+            .ok_or_else(|| anyhow::anyhow!("invalid stored asset identity"))?;
+        match emit_uploaded_asset(db, blobs, sender, actor, id).await {
+            Ok(true) => enqueued += 1,
+            Ok(false) => deferred += 1,
+            Err(error) => {
+                deferred += 1;
+                tracing::debug!(asset_id = id, "upload recovery row deferred: {error:#}");
+            }
+        }
+    }
+    Ok((enqueued, deferred))
 }
 
 /// Commit success stays success when publication fails; the durable source is retried on open.
@@ -470,6 +601,16 @@ pub(crate) async fn recover(
         })?;
         report.enqueued += 1;
         report.dependency_deferred += dependencies;
+    }
+    match recover_uploaded_assets(db, blobs, sender, actor, verse).await {
+        Ok((enqueued, deferred)) => {
+            report.uploads_enqueued = enqueued;
+            report.dependency_deferred += deferred;
+        }
+        Err(error) => {
+            report.dependency_deferred += 1;
+            tracing::warn!(verse, "unplaced scene upload recovery refused: {error:#}");
+        }
     }
     Ok(report)
 }

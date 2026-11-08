@@ -394,9 +394,12 @@ anchor-petal scope → AC-46 cap where replicated → reach/quota by owner key.
 The upload doors' AC-46 cap runs on the DB thread at `CreateAsset` (TC-7,
 refine R2): a stale token's bytes may already be in the blob store when the
 registration is refused — an unregistered blob that no asset row reaches.
-`owner_did` stays local: the device-payload emission strips it from outbound
-asset rows and peers strip it inbound (fe-database `handlers/device_payload.rs`
-`outbound_asset_row_bytes`, `replicated_row.rs`). Rotation caveat: a re-minted
+`owner_did` stays local: the device-payload emission and the scene publisher
+strip it from outbound asset rows and peers strip it inbound (fe-database
+`handlers/device_payload.rs` `outbound_asset_row_bytes`, `replicated_row.rs`).
+An anchored GLB/glTF upload is published at registration, before any placement
+(QA-0158, fe-database `handlers/scene_publication/AGENTS.md` §uploaded-assets);
+peers read it as an ownerless row, so their tokens reach it through its anchor. Rotation caveat: a re-minted
 client cannot read its predecessor's *unplaced* uploads (placed ones keep
 reference reach) — re-mint with the same client DID (GUI "Client DID" field,
 CLI `--client`) for continuity. Tests (`tests/asset_ownership_test.rs`):

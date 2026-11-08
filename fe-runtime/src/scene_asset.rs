@@ -5,6 +5,8 @@ use std::time::Instant;
 
 pub const MAX_SCENE_ASSET_BYTES: u64 = 256 * 1024 * 1024;
 pub const SCENE_ASSET_ROW_MARKER: &str = "_fe_scene_asset";
+/// The MIME types a scene asset row may declare (transfer, publication and upload share it).
+pub const SCENE_ASSET_MIMES: [&str; 2] = ["model/gltf-binary", "model/gltf+json"];
 
 /// The DB resolves all identities and authority; a request is never an authority token.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -28,7 +30,9 @@ pub struct SceneAssetTransferRequest {
 pub struct SceneAssetTransferPermit {
     pub verse_id: String,
     pub petal_id: String,
-    pub node_id: String,
+    /// The live reference the request named; `None` for an anchored asset admitted on its
+    /// own metadata (QA-0158: an upload is Verse content before its first placement).
+    pub node_id: Option<String>,
     pub asset_id: String,
     pub content_hash: BlobHash,
     pub content_type: String,

@@ -802,8 +802,14 @@ pub fn spawn_db_thread_shared(
                         if let Some(refusal) = refused {
                             send_result(&tx, handlers::correlated_failure(&correlation_id, refusal));
                         } else {
+                            let anchored = petal_id.is_some();
                             let registration = handlers::crud::AssetRegistration { name, content_type, size_bytes, content_hash, owner_did, petal_id };
-                            send_result(&tx, handlers::crud::create_asset_reply(&db, &blob_store, registration, correlation_id).await);
+                            let reply = handlers::crud::create_asset_reply(&db, &blob_store, registration, correlation_id).await;
+                            // QA-0158: publish before replying, so the row precedes any placement the caller makes next.
+                            if let (true, DbResult::AssetCreated { asset_id, .. }) = (anchored, &reply) {
+                                handlers::scene_publication::publish_uploaded_asset(&db, &blob_store, repl_tx.as_ref(), &local_did, asset_id).await;
+                            }
+                            send_result(&tx, reply);
                         }
                     }
                     // Fire-and-forget maintenance (src/AGENTS.md §handlers asset_gc): a
@@ -2203,8 +2209,8 @@ pub fn spawn_db_thread_shared(
                             Err(error) => tracing::warn!(verse_id, "local Verse catalog recovery refused or failed: {error:#}"),
                         }
                         match handlers::scene_publication::recover(&db,&blob_store,repl_tx.as_ref(),&local_did,&verse_id).await {
-                            Ok(report) if report.deferred==0 && report.dependency_deferred==0 => tracing::info!(verse_id,examined=report.examined,enqueued=report.enqueued,"stored scene recovery enqueued; peer delivery is not certified"),
-                            Ok(report) => tracing::warn!(verse_id,examined=report.examined,enqueued=report.enqueued,deferred=report.deferred,dependency_deferred=report.dependency_deferred,"stored scene recovery incomplete; dependencies or locally unproven rows remain deferred"),
+                            Ok(report) if report.deferred==0 && report.dependency_deferred==0 => tracing::info!(verse_id,examined=report.examined,enqueued=report.enqueued,uploads_enqueued=report.uploads_enqueued,"stored scene recovery enqueued; peer delivery is not certified"),
+                            Ok(report) => tracing::warn!(verse_id,examined=report.examined,enqueued=report.enqueued,uploads_enqueued=report.uploads_enqueued,deferred=report.deferred,dependency_deferred=report.dependency_deferred,"stored scene recovery incomplete; dependencies or locally unproven rows remain deferred"),
                             Err(error) => tracing::warn!(verse_id,"stored scene recovery refused or incomplete: {error:#}"),
                         }
                     }

@@ -140,6 +140,22 @@ model/schema replication and legacy asset anchoring need their own authorized pr
 this slice does not imply imported-object rendering is complete until live two-peer evidence
 establishes those dependencies. Dependency gaps remain explicit even when a node row enqueues.
 
+## uploaded-assets
+
+QA-0158: `DbCommand::CreateAsset` (REST/MCP `upload_asset`, always Petal-anchored) calls
+`publish_uploaded_asset` after the row commits and BEFORE the reply, so the asset row's
+replication event precedes any placement the caller makes next. It reuses the dependency
+path's `proven_asset_wire` (upload/adoption proof, `owner_did`/provenance stripped,
+`_fe_scene_asset` marker, metadata fence) under a freshly captured Editor authority fence,
+so the sync byte publisher retains the GLB before the metadata reaches the replica and
+receivers prefetch on arrival. Non-scene MIME uploads are not published here: their only
+consumer is a device payload, whose door publishes the referenced asset rows first.
+Replica open republishes proven scene uploads that no node references
+(`recover_uploaded_assets`, probe 1025 / cap 1024, counted as `uploads_enqueued`; refusals
+fold into `dependency_deferred` and never block node recovery). Referenced assets keep
+travelling as their nodes' dependencies. A placement later re-emits identical row bytes
+(same content hash), which inbound insert-if-absent treats as a no-op.
+
 ## Verification ownership
 
 Extend the existing real-store op_log journey and existing schema inventory checks; do not

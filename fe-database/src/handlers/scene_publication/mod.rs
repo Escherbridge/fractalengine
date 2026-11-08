@@ -18,7 +18,11 @@ pub(crate) use publisher::prepare;
 pub(crate) use publisher::{
     capture_publication_asset_metadata, publication_asset_metadata_fence, PUBLICATION_ASSET_COLUMNS,
 };
-pub(crate) use publisher::{publish_after_commit, publish_tombstones_after_commit, recover};
+pub(crate) use publisher::{
+    publish_after_commit, publish_tombstones_after_commit, publish_uploaded_asset, recover,
+};
+#[cfg(test)]
+pub(crate) use publisher::recover_uploaded_assets;
 
 use crate::repo::Db;
 use serde_json::Value;
