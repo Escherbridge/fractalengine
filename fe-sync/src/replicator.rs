@@ -774,20 +774,26 @@ impl IrohDocsReplicator {
             .map_err(|e| anyhow::anyhow!("start_sync: {e}"))
     }
 
-    /// This author's current entry for `key` holds `hash` and its blob is complete locally
-    /// (QA-0164, AGENTS.md §unchanged-rewrite). Local store reads only.
+    /// The newest entry for `key` across every author is this author's, holds `hash`, and its
+    /// blob is complete locally (QA-0164, AGENTS.md §unchanged-rewrite). Local store reads only.
     async fn own_entry_holds(&self, key: &str, hash: iroh_blobs::Hash) -> bool {
         let (Some(doc), Some(author), Some(stack)) =
             (self.live_doc(), self.live_author(), self.engine_holder.stack())
         else {
             return false;
         };
+        // Another author's newer entry (or tombstone) wins the key, so our identical bytes must be
+        // re-set to win it back: a static row merges in arrival order and a snapshot keeps the newest.
+        let latest = iroh_docs::store::Query::single_latest_per_key()
+            .key_exact(key.as_bytes())
+            .include_empty()
+            .build();
         let same_entry = doc
-            .get_exact(author, key.as_bytes(), false)
+            .get_one(latest)
             .await
             .ok()
             .flatten()
-            .is_some_and(|entry| entry.content_hash() == hash);
+            .is_some_and(|entry| entry.author() == author && entry.content_hash() == hash);
         same_entry
             && matches!(
                 stack.blob_store().blobs().status(hash).await,
@@ -2577,6 +2583,24 @@ mod tests {
             .expect("the rename arrives")
             .expect("pump stays alive");
         assert_eq!(next.data, renamed, "the identical rewrite published nothing");
+        // ...unless another author's newer entry holds the key: then the same bytes must win it back.
+        let bobs = br#"{"verse_id":"verse-a2","name":"Bob's Name"}"#.to_vec();
+        bob.write_row("verse", "verse-a2", &bobs).await.expect("bob renames");
+        let alice_doc = alice.live_doc().expect("alice's doc is live");
+        let newest = || iroh_docs::store::Query::single_latest_per_key().key_exact(b"verse/verse-a2").build();
+        tokio::time::timeout(std::time::Duration::from_secs(20), async {
+            while !alice_doc.get_one(newest()).await.ok().flatten()
+                .is_some_and(|entry| entry.content_hash() == iroh_blobs::Hash::new(&bobs))
+            {
+                tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+            }
+        }).await.expect("bob's rename reaches alice");
+        alice.write_row("verse", "verse-a2", &renamed).await.expect("alice restores her name");
+        let restored = tokio::time::timeout(std::time::Duration::from_secs(20), bob_rx.recv())
+            .await
+            .expect("alice's restore arrives")
+            .expect("pump stays alive");
+        assert_eq!(restored.data, renamed, "a rewrite another author overtook is a new version");
 
         // QA-0145: Bob's iroh-docs download of a row's content fails (here Alice
         // refuses it; in the field a restarted author is dialed on its dead old

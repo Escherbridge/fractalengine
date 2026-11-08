@@ -84,8 +84,8 @@ pub(crate) async fn load(
          (SELECT jti, scope, max_role, label, sub, created_at, expires_at, revoked, client FROM api_token \
           WHERE revoked = false AND expires_at > $access_now \
           AND (scope = $access_scope OR ($access_has_children AND string::starts_with(scope, $access_child))) ORDER BY jti LIMIT 51) AS tokens, \
-         (SELECT VALUE peer_did FROM role_grant WHERE verse_id = $access_verse LIMIT 1025) AS grantees, \
-         (SELECT VALUE peer_did FROM verse_member WHERE verse_id = $access_verse AND status = 'active' LIMIT 1025) AS members \
+         (SELECT peer_did FROM role_grant WHERE verse_id = $access_verse GROUP BY peer_did LIMIT 257) AS grantees, \
+         (SELECT peer_did FROM verse_member WHERE verse_id = $access_verse AND status = 'active' GROUP BY peer_did LIMIT 257) AS members \
          FROM verse WHERE verse_id = $access_verse TIMEOUT 5s",
         vec![("access_scopes".into(), json!(scopes)), ("access_now".into(), json!(chrono::Utc::now().to_rfc3339())),
              ("access_scope".into(), json!(target.scope)), ("access_child".into(), json!(format!("{}{}",target.scope,child_marker.unwrap_or("")))), ("access_has_children".into(), json!(child_marker.is_some())),
@@ -111,15 +111,16 @@ pub(crate) async fn load(
     dids.insert(owner.to_owned());
     dids.insert(local_did.to_owned());
     // QA-0162: a revoked grantee keeps its statement row and stays a member, so it stays listed for re-grant.
+    // Grouped per DID: a grantee holds one statement per (scope, grantor), so raw rows outgrow the DID cap.
     for list in ["grantees", "members"] {
         let known = row[list]
             .as_array()
             .ok_or_else(|| anyhow::anyhow!("Invalid member snapshot"))?;
-        anyhow::ensure!(known.len() <= 1024, "Member inventory exceeds its limit");
+        anyhow::ensure!(known.len() <= MAX_PEERS, "Member inventory exceeds its limit");
         dids.extend(
             known
                 .iter()
-                .filter_map(Value::as_str)
+                .filter_map(|entry| entry["peer_did"].as_str())
                 .filter(|did| bounded_identity(did))
                 .map(str::to_owned),
         );

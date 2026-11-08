@@ -297,6 +297,15 @@ fn a_non_owner_creating_a_petal_gets_no_implicit_owner_row() {
     let regranted=access("access-regrant",Access::Assign {peer_did:PEER.into(),role:"editor".into()}).expect("re-grant after revoke");
     assert!(regranted.roles.iter().any(|(did,role)|did==PEER&&role=="editor"));
     access("access-rerevoke",Access::Revoke {peer_did:PEER.into()}).expect("revoke again");
+    // A grantee holds one statement per (scope, grantor): 1100 revoked ones must not overflow the listing.
+    let statements:Vec<serde_json::Value>=(0..1100).map(|i|{
+        let scope=format!("VERSE#{}-FRACTAL#{}-PETAL#ghost-{i}",owned_parts.verse_id,owned_parts.fractal_id.as_deref().unwrap());
+        serde_json::json!({"statement_key":format!("{scope}/{PEER}/{}",local_did()),"verse_id":owned_parts.verse_id,"scope":scope,
+            "peer_did":PEER,"grantor_did":local_did(),"role":"editor","revoked":true,"hlc":"1","updated_at":"2026-11-08T00:00:00Z"})
+    }).collect();
+    rt.block_on(async {db.query("INSERT INTO role_grant $statements").bind(("statements",statements)).await.expect("seed statements").check().expect("seeded statements")});
+    let crowded=access("access-many-statements",Access::Load {peer_dids:vec![]}).expect("a grantee's many statements list it once");
+    assert_eq!(crowded.roles.iter().filter(|(did,_)|did==PEER).count(),1);
     let minted=access("access-token-mint",Access::MintToken {max_role:"viewer".into(),ttl_hours:1,client_did:None}).expect("scoped mint");
     assert!(minted.minted.is_some());assert!(!format!("{minted:?}").contains(&minted.minted.as_ref().unwrap().token),"Debug never reveals token");
     let token=minted.tokens.first().expect("readback token");

@@ -2369,9 +2369,14 @@ is live, so it adds no traffic to a healthy swarm and cannot recreate the QA-010
 
 ## §unchanged-rewrite — identical bytes are not a new version (QA-0164, 2026-11-08)
 
-`IrohDocsReplicator::write_row_inner` skips `set_bytes` when this author's current entry for the
-key already holds the same content hash (`Doc::get_exact`, a local store read) and the blob is
-complete locally (a migrated entry whose content is missing is rewritten). Every iroh-docs
+`IrohDocsReplicator::write_row_inner` skips `set_bytes` when the newest entry for the key across
+every author (`Query::single_latest_per_key`, a local store read) is this author's, holds the same
+content hash, and the blob is complete locally (a migrated entry whose content is missing is
+rewritten). The newest-across-authors test is load-bearing (critic pass 3): verse/fractal/petal rows
+carry no version and merge in arrival order, and a snapshot keeps the newest entry per key, so
+when Bob overwrote Alice's petal name and Alice set it back to her earlier bytes, a skip keyed on
+her own entry alone left every peer on Bob's name while Alice showed hers. Bytes another author
+has since overtaken are therefore a new version and are re-set. Every iroh-docs
 `set` mints a newer entry even for identical bytes, and the live pump of every peer delivers it as
 a fresh `InsertRemote`. The scene publisher re-enqueues a node's asset row as a dependency on each
 publication, so during the city-lite drone flight the owner rewrote the drone mesh's unchanged
