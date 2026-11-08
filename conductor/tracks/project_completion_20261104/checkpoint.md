@@ -3,7 +3,7 @@ type: ProgressCheckpoint
 date: 2026-11-04
 status: in_progress
 title: Current completion state and next actions
-last_verified_utc: 2026-11-08T08:10:00.000000+00:00
+last_verified_utc: 2026-11-08T09:30:00.000000+00:00
 ---
 
 ## ORCHESTRATOR STEER (binding; maintained by the orchestrating session, do not edit or remove)
@@ -264,10 +264,31 @@ is contention. Triage repro evidence is in `qa/sim/triage7/`, and both repro pee
 - Still not exercised: QA-0103 (9c's hide deselects N1), QA-0131 (blocked by QA-0162), QA-0133 and QA-0160 (the
   race writes were refused locally), QA-0117, QA-0125, QA-0136.
 
+Sim run 8 triage (2026-11-08, stage 515eae67 from `.qa/stage/current`, firewall allow present, 4/3/3 peers; runs
+`qa/sim/runs/{p2p-core-20261108-014838,p2p-assets-20261108-015912,city-lite-20261108-020155}`). Run 8 used the scenario
+from before db489cfb, so the QA-0163 harness fixes were not live. Host CPU stayed below 50 % for every latency sample.
+
+- 32 analyzer anomalies + 4 vision findings collapse to 1 new S2, 1 reopened S2 and 1 new S3. Every S1 is false.
+  p2p-assets is clean for the fourth run (30/30 met, 0 anomalies). p2p-core met 299/311, all in budget (p50 0.37 s,
+  p95 1.33 s). The final fingerprints agree in all three runs.
+- Verified: QA-0129 (step 8 Clear Properties: no partial bag on any peer, 0.37-0.70 s) and QA-0162 (13c re-grant
+  through the reopened Access tab; editor2 was an editor again 0.9 s after Confirm, and its write landed in < 0.7 s).
+- Reopened S2: QA-0161. update_transform p50 dropped from 331 to 253 ms, but ingest_device_payload p50 is still 753 ms,
+  and 5 of 360 flight ticks were skipped. New S2: QA-0164. Receivers apply one inbound row per DB command, so the
+  remote drone lag grows linearly to 22 s over the flight (run 7: 13 s). It drains about 22 s after the flight. The
+  editor logs `DB command channel full` and ApplyReplicatedRow calls of 252-694 ms. New S3: QA-0165. A revoke re-judge
+  reverts the demoted member's earlier authorized edits (N2 [-5,0,0] -> [1,0,0] -> [5,0,0]). This is documented
+  current-role semantics, and the product needs a decision.
+- False S1/S2: city-lite all_readings is QA-0144 (1420 rows on every peer, 3 digests). 9c, the 13a click_until,
+  VIS-02/03/04, the 5.e1/6.e1 late matches and the 220 s N2 lag (a re-judge restoring a value the viewer had shown
+  for 0.5 s) are QA-0163. The races settled fast on the editor's values (QA-0126). VIS-01 is QA-0130.
+- Still not exercised: QA-0103, QA-0131, QA-0133 and QA-0160 (the revoked writes were refused locally), QA-0117,
+  QA-0125, QA-0136. QA-0163 is judged on run 9.
+
 ## Next actions
 
-1. FIX:7: QA-0162 and QA-0161, then QA-0129 (S2), plus the harness/scenario items in QA-0163 (a, b, c, d, e) that gate
-   QA-0103, QA-0131, QA-0133 and QA-0160. Re-run all three scenarios.
+1. FIX:8: QA-0164 (coalesce and batch inbound row applies) and QA-0161 (payload write path). Then run 9 on db489cfb,
+   which verifies QA-0163 and exercises QA-0103, QA-0131, QA-0133 and QA-0160. The user decides QA-0165.
 2. Run FULL pass 78 (2/3) then pass 79; convergence needs zero new S1/S2 in two consecutive passes and all gold.
 3. Fix the S3 test debt (QA-0079, QA-0082, QA-0115, QA-0116), then the integrated sweep, CI Lint (QA-0078), tag
    and release.
