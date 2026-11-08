@@ -1090,6 +1090,10 @@ pub(super) fn apply_db_results(
                 outcome: fe_runtime::messages::ReplicatedRowOutcome::Applied,
                 ..
             } if table.as_str() == "petal" => {
+                // QA-0142: a peer's new petal has no tree entry (the sidebar's source) — hydrate it.
+                if verse_mgr.find_petal(record_id).is_none() {
+                    request_committed_hierarchy(&mut caches.committed_hierarchy_pending, &mut nav);
+                }
                 if let Err(e) =
                     db_sender
                         .0
@@ -1120,6 +1124,22 @@ pub(super) fn apply_db_results(
                         &mut caches.visibility,
                         record_id.clone(),
                     );
+                }
+            }
+            // QA-0142: likewise a peer's new fractal; a known id never reloads, so this cannot loop.
+            DbResult::ReplicatedRowApplied {
+                table,
+                record_id,
+                outcome: fe_runtime::messages::ReplicatedRowOutcome::Applied,
+                ..
+            } if table.as_str() == "fractal" => {
+                let known = verse_mgr
+                    .verses
+                    .iter()
+                    .flat_map(|verse| &verse.fractals)
+                    .any(|fractal| fractal.id == *record_id);
+                if !known {
+                    request_committed_hierarchy(&mut caches.committed_hierarchy_pending, &mut nav);
                 }
             }
             // A peer's grant/revocation can change this node's own role (re-resolved after the loop).
@@ -2766,7 +2786,7 @@ mod tests {
             record_id: record_id.into(),
             outcome: fe_runtime::messages::ReplicatedRowOutcome::Applied,
         };
-        for row in [replicated("role", "r1"), replicated("role", "r2"), replicated("petal", "p1")] {
+        for row in [replicated("role", "r1"), replicated("role", "r2"), replicated("petal", "p1"), replicated("fractal", "f1")] {
             app.world_mut().write_message(row);
         }
         app.update();
@@ -2777,6 +2797,15 @@ mod tests {
             "one role re-resolve per batch: {sent:?}"
         );
         assert!(sent.iter().any(|command| matches!(command, DbCommand::GetPetalTerrain { petal_id, .. } if petal_id == "p1")));
+        assert!(!sent.iter().any(|command| matches!(command, DbCommand::LoadHierarchy)), "rows already in the tree never reload it: {sent:?}");
+        // QA-0142: a peer creates a fractal and its petal; both rows land in one batch and must
+        // reach this tree (the sidebar's source) through exactly one coalesced reload.
+        for row in [replicated("fractal", "peer-fractal"), replicated("petal", "peer-petal")] {
+            app.world_mut().write_message(row);
+        }
+        app.update();
+        let sent: Vec<_> = db_commands.try_iter().collect();
+        assert_eq!(sent.iter().filter(|command| matches!(command, DbCommand::LoadHierarchy)).count(), 1, "{sent:?}");
         let mut unsupported = placed.clone();
         if let DbResult::GltfImported {
             materialization, ..

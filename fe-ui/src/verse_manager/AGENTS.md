@@ -210,7 +210,13 @@ now a thin dispatcher (`db_results/mod.rs`) over one `handle_*` function per
   spawner through `ResidencyBudget::render_distance_for`). `mod.rs`'s own
   `ReplicatedRowApplied { table: "petal", outcome: Applied, .. }` arm
   re-requests `GetPetalRenderDistance` so a peer's change lands without a
-  full hierarchy reload. M-03 (polish_lane_20261031): `mod.rs` now threads
+  full hierarchy reload. QA-0142: a replicated `fractal` or `petal` row whose
+  id is NOT yet in the tree (a peer created it) requests one coalesced
+  authoritative `LoadHierarchy` via `request_committed_hierarchy` — the echo
+  carries no name/parent, `LoadHierarchy` applies no access filter, and the
+  sidebar's "Open fractal/petal X" rows read only the tree. Known ids never
+  reload, so steady petal churn (terrain, render distance) costs nothing and
+  the reload cannot loop. M-03 (polish_lane_20261031): `mod.rs` now threads
   `correlation_id.as_deref()` into `handle_petal_terrain_loaded` (6th param)
   and dispatches the new `PetalTerrainSetFailed` to
   `handle_petal_terrain_set_failed` — both calls into W1-S3's contract
