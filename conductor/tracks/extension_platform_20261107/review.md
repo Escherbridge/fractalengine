@@ -156,3 +156,100 @@ No build, parser or test run (directive 2026-11-08).
 - G3-C17 KEPT sandbox determinism — nodes sorted by id, properties through `BTreeMap`, created ids `sbx-NNNNNN`, `ManualClock`, WASI randomness seeded per activation, and the lock file has no serde_json `preserve_order` (no indexmap dependency).
 - G3-C18 KEPT leak discipline — the forbidden-term grep over every E12, E12X and E12D file and every G3 edit found no hits.
 - G3-C19 KEPT product fit — the tools serve `conductor/product.md`: device adapters feed the existing readings door, the sandbox runs the real host path, and no new SQL path appears.
+
+## G5 — P5 first-party migrations (2026-11-08, slice G5, over E14a `9deef453`, E14b `a2eb5db5`, E15 `2f33a747`, E16 `80a1f514`, E17 `4bbca7f3`, E18 `4453c4c6`)
+
+Scope: `fe-sim/{model/**,src/{fleet,sensors,lib,session}.rs,src/AGENTS.md}`, `docs/simulation-lab.md`,
+`extensions/{fleet-sim,bi-push}/**`, `fe-api/tests/iot_ingest_test.rs`, `fe-hexon/src/{remote.rs,AGENTS.md}`,
+`fe-ui/src/extensions/builtin/**`, `fe-ui/src/panels/egress_card.rs`, `fe-terrain/src/extension.rs`, read against spec
+R30-R34, plan P5.1-P5.6, bindings.md (§6 `petal.map`, §8.4, §12), the 20:45 store-client deltas and the 23:00 CSV
+steer, and the real code each slice calls (fe-plugin tick/WIT, fe-database plugin flush and readings door, fe-sdk
+manifest v2, the guest SDK, fe-hexon `registry_source.rs`, fe-hexon-registry routes). No build or test run
+(directive 2026-11-08); the refine pass reruns R4 (fe-sim, fe-api iot journeys, fe-terrain), R11 (fe-hexon with
+`remote`), the fe-ui batch, J8, and `cargo test --manifest-path extensions/bi-push/Cargo.toml`.
+
+**Phase verdict: PASS WITH FIXES (R31 and R32 ACs are not reachable yet: C5, C11).** 29 verdict lines: 13 FIXED, 7 KEPT, 6 HANDED-OFF, 3 DEFERRED.
+
+### ADVOCATE (wiring, honesty, what the next turn needs)
+
+- G5-A1 FIXED `fe-ui/src/panels/egress_card.rs` — the card still made five literal `copy_row` calls, so E17's descriptors were dead code; it now loops `snippet_rows` (same labels, so the accessible names are unchanged; bound snippets join with BND-10c). Compiles once `extensions/mod.rs` declares `builtin` (slice NEEDS).
+- G5-A2 FIXED `fe-sim/src/session.rs` — the hosted plan was taken after the whole hierarchy setup although AGENTS said "before any peer acts"; it is now fixed and checked right after the clock exists, before a peer spawns, and the journey gains a refusal table (reversed, off-cadence, out-of-range sensor, NaN) that also proves the session really uses its source.
+- G5-A3 FIXED `fe-sim/src/AGENTS.md` §extension-host, `docs/simulation-lab.md` — both said the lab runs the package and that `fe-ext run --lab` is its entry point; neither exists (`tools/fe-ext` refuses `--lab`), and lab movers are ignored. Now stated as seam-only.
+- G5-A4 FIXED `extensions/bi-push/{tests/journey.rs (deleted), Cargo.toml, src/payload.rs}` — G3-C12: the crate-local journey and its `fe-ext` dev-dependency (host stack in the example's own target dir; the sandbox leg silently skipped without `dist/`) are folded into the payload unit test; the sandbox leg belongs to J8 (slice NEEDS).
+- G5-A5 FIXED `fe-hexon/src/AGENTS.md` §registry-source-remote — it claimed the Hexon Manager uses the source (it cannot, C11) and omitted that the in-repo registry advertises no protocol (C12); both now stated.
+- G5-A6 KEPT `fe-sim/model` (E14a) — serde-only and pure, re-exported so scenario code and batch filters are unchanged; an implicit workspace member through fe-sim's path dependency; fleet-sim's standalone build inherits `[workspace.package]` from the root (unverified until the refine build).
+- G5-A7 KEPT `fe-terrain/src/extension.rs` (E18) — the v2 id `org.fractalengine.terrain` is what bindings.md §10 asks; by reading, the manifest passes the Rust validator (commands declared, lowercase role floors, no tick), and main.rs's registry test still sees three contributions.
+- G5-A8 KEPT `fe-ui/src/extensions/builtin/copy_for_bi.rs` — the descriptor test pins id → builder → order against the `egress_strings` builders with explicit formats, so a miswired descriptor fails it.
+
+### CRITIC (defects, contract drift, tests that cannot fail)
+
+- G5-C1 HIGH FIXED `extensions/bi-push/src/payload.rs` — steer 23:00 CSV formula injection: text and header cells starting with `= + - @ TAB CR` now get a `'` prefix and are always quoted; JSON numbers (negatives included) are untouched. The payload test gains crafted cells (`=HYPERLINK`, `@SUM`, `+1`, TAB, CR, the string `"-2"` beside the number `-3.5`).
+- G5-C2 MEDIUM FIXED `extensions/bi-push/src/payload.rs` test — E17's CSV expectations assumed insertion-ordered keys, but the guest's serde_json has no `preserve_order`, so a row's keys iterate sorted; both CSV assertions would have failed once built (the journey's only passed if the host-stack dev-dependency happened to enable `preserve_order`).
+- G5-C3 MEDIUM FIXED `extensions/bi-push/src/lib.rs` — a refused or failed push was dropped and waited for the next data change, so a quiet petal left the sink stale indefinitely (R33 says "on an interval"); a generation counter now makes each tick send the newest unacknowledged snapshot, and a 2xx marks it delivered.
+- G5-C4 MEDIUM FIXED `fe-api/tests/iot_ingest_test.rs` — E15's "adapter" leg posted through the REST door too (only `sub` differed), so it could not fail on any adapter-path divergence. It now lands through `insert_readings_with_provenance` with the flush's epoch-ms rendering and the package stamp, one frame has a sub-second time, and both doors are checked against the frames' own values; `#[allow(dead_code)]` on the `#[path]` module.
+- G5-C5 HIGH HANDED-OFF orchestrator / E4 owner — no staged reading reaches the DB: `DbCommand::PluginCommit` (fe-runtime `messages.rs:592`) carries ops only, the DB arm (fe-database `lib.rs:700`) calls `commit`, `plugin_host::flush` (the readings door) is `pub(crate)` and never called, and no `TickSink` exists outside the sandbox. R31's AC and J3 cannot pass until the readings field and the arm calling `flush` land.
+- G5-C6 MEDIUM HANDED-OFF E4/E10W owner (`fe-database/src/handlers/plugin_host.rs:794`) — `flush` lands readings with `insert_readings_with_replication` (unstamped); R24 stamp-and-stop needs `insert_readings_with_provenance(.., admission.package(), ..)`.
+- G5-C7 MEDIUM FIXED `fe-sim/src/session.rs` `execute` — a debug-only `debug_assert_eq!(value, evaluate(..))` would panic mid-run on a hosted package whose wasm `sin` differs from the native one by an ULP; removed (the source's value is authoritative), and `check_plan` now refuses non-finite values, off-cadence or out-of-window ticks and over-cap plans at start.
+- G5-C8 MEDIUM FIXED `extensions/fleet-sim/src/lib.rs` — R30's "claimed in its own batch" was not implemented (G3-C13 deferred it to E14b): the claim and the fleet's readings and transforms shared one window, so a lost claim race still wrote data. The claim tick now stages only `fleet.driver` (plus the kv clock origin) and driving starts when the claim reads back; a passive instance drops its stale kv clock. J8's fixture outcomes are unchanged (the origin is the claim tick).
+- G5-C9 MEDIUM FIXED `fe-hexon/src/remote.rs` — `download` buffered the whole body before verification, so a registry could stream without bound; it now streams under the listed `size` (else `PACKAGE_MAX_BYTES`), per the store-client deltas ("`size_bytes` caps the download").
+- G5-C10 LOW FIXED `fe-hexon/src/remote.rs` — the uri check accepted `+` (build metadata) and ids starting with `.` or `-`; it now applies the contract's id grammar (`^[A-Za-z0-9][A-Za-z0-9_.-]{0,127}$`, not ending `.json`) and versions without build metadata.
+- G5-C11 HIGH HANDED-OFF G4 / E13 owner (`fe-hexon/src/registry_source.rs`) — R32 cannot be met with the trait as shaped: `verify_fetched` admits only `HexonType::Plugin`, so the Hexon Manager's tileset hexons would be refused and `hexon_manager.rs`/`terrain_bridge.rs` stay on `RemoteRegistryClient`; it needs a type-dispatching verify or a tileset sibling source.
+- G5-C12 MEDIUM HANDED-OFF registry owner (`fe-hexon-registry/src/routes.rs:125`) — `/health` advertises no protocol version and search omits `content_hash`, so every protocol-v1 client (fe-plugin `registry_client.rs` and `remote_source`) refuses the first-party registry; E16's test pins that refusal until the registry advertises v1.
+- G5-C13 HIGH HANDED-OFF BND-3 (`fe-sdk/src/manifest_v2.rs`) — `ExtensionManifest` is `deny_unknown_fields` with no `provides`, so bi-push's manifest (bindings.md §8.4) fails `fe-ext validate|pack` as `schema` and cannot ship until BND-3; for the same reason E18 must not add `provides: [petal.map]` yet, since `terrain_manifest()` would panic at Startup.
+- G5-C14 MEDIUM HANDED-OFF E8 / E13 owner — R34's AC "each terrain contribution triggers its existing action" is unmet: nothing drains `ExtensionSlotState::take_commands` for `org.fractalengine.terrain` and maps `terrain-config`/`gpx-import`/`terrain-toggle` to the existing UI actions, and no panel draws the slots yet (G1-A7); a fractalengine-binary system sees both crates.
+- G5-C15 DEFERRED E14b lab hosting — the wasm-hosting `FleetSource`, `fe-ext run --lab` and lab movers are unbuilt, so R30's AC (same fingerprint on two lab runs) holds only trivially through the model source. Trigger: the turn that owns `tools/fe-ext` plus an adapter crate (fe-sim must not depend on fe-plugin).
+- G5-C16 DEFERRED R30 "live driver" — there is no lease: a host that dies without `on-deactivate` keeps `fleet.driver` and the fleet is orphaned. Trigger: P6 ext-fleet demotion and kill rows; likely a driver heartbeat property with takeover after N cadences.
+- G5-C17 DEFERRED E15 transports — the device adapter has no `websocket-dial` endpoint (plan "WS dial/accept"), and fe-plugin `net/` is undeclared (G1-A8), so a dial cannot be hosted. Trigger: `net/` declared.
+- G5-C18 KEPT E16 credentials — fe-hexon-registry gates `/api/v1/*` with a token when configured, so the operator token goes to the configured base only, never to a url a catalogue document names; the contract's anonymous downloads govern catalogue documents, not this source.
+- G5-C19 KEPT `iot_ingest_test.rs` `#[path]` include — the device-adapter's own mapping unit test now also runs in the fe-api R4 batch; harmless, and it keeps the decode the parity journey relies on honest.
+- G5-C20 KEPT leak discipline — the forbidden-term grep over the added lines of all six upstream commits and every G5 edit found no hits, and no catalogue-operations wording.
+- G5-C21 KEPT product fit — P5 still serves `conductor/product.md`: simulated fleets and device adapters feed the existing readings door, BI egress stays the core pull API plus an optional push connector, and terrain stays native and first-party.
+
+## G4 — P4 Extensions UI (2026-11-09, slice G4, over E13 `470e6681`; read beside E11 `370e82dc` and E16 `80a1f514`)
+
+Scope: ADVOCATE then CRITIC with `/security-review` depth (consent, registry sources, index signatures) over
+`fe-ui/src/extensions/{panel,details,permissions,browse}.rs`, `fe-hexon/src/registry_source.rs` and
+`docs/extensions/extensions-ui.md`, read against spec R28/R29/R32, plan P4.1-P4.4 and J9, the 2026-11-08 steers
+(20:45 (c) registry contract v1 deltas, 22:00 kill-list override) and the P2P-QA relay of the static-index contract,
+plus the real code each call lands in (fe-hexon `package.rs`/`publisher.rs`/`remote.rs`, fe-format `integrity.rs`/
+`signature.rs`, fe-plugin `trust_roots.rs`/`lifecycle.rs`, fe-ui `accessibility.rs`/`consent.rs`). No build, test or
+GUI run (directive 2026-11-08).
+
+**Phase verdict: PASS WITH FIXES (nothing is reachable in the app until A9-A11 land).** 31 verdict lines: 17 FIXED, 7 KEPT, 6 HANDED-OFF, 1 DEFERRED.
+
+### ADVOCATE (wiring, ergonomics, what the next slices need)
+
+- G4-A1 FIXED `fe-ui/src/extensions/panel.rs` — no op ever asked for the first snapshot, so the list sat on "No extensions installed" and Browse had no sources; the first draw now queues `Refresh` (answered by `Rows` + `Browse(Sources)`), making R28's loading state real.
+- G4-A2 FIXED `browse.rs` — the idle state said "Choose Refresh to list this source" (copy explaining the layout); a selected source now lists itself once and the line is gone (UI-UX guidance).
+- G4-A3 FIXED `panel.rs` J9 — plan J9 asserts "the visible state by accessible name" but the journey asserted only queued ops; it now reads the accesskit tree each frame (name + enabled) and adds rollback retry, failed re-verify, one review at a time, and revoke then re-consent.
+- G4-A4 FIXED `browse.rs` — static-index listings state no size (it lives in the detail document): a size of 0 is omitted instead of "0 B"; cached and expired lists each get one short line.
+- G4-A5 FIXED `registry_source.rs` — `valid_package_id` / `valid_version` are public so `remote.rs` (G5 is adding its own `is_registry_id`) can share one contract grammar.
+- G4-A6 FIXED `panel.rs` header — it pointed at a nonexistent `AGENTS.md` section; it now points at the design doc, which holds the bridge contract.
+- G4-A7 KEPT `RegistryEntry` and `SourceTrust` shapes — unchanged on purpose: E16's `entry_from_summary` and `remote_registry_test.rs` build them by struct literal.
+- G4-A8 KEPT `write_canonical` — a third copy of the canonical-JSON writer (fe-format's is `pub(crate)`, fe-plugin's private), same rule; trigger: a fourth caller, then promote fe-format's to `pub`.
+- G4-A9 HANDED-OFF integration wave — wiring: `fe-hexon/src/lib.rs` lacks `pub mod registry_source` (E13 and E16 code never compiles), `fe-ui/src/extensions/mod.rs` lacks `browse/consent/details/panel/permissions`, `ExtensionsPanelPlugin` is not added and no surface calls `panel::draw` / `consent::render`.
+- G4-A10 HANDED-OFF integration wave — the `ExtensionOp` drain in `fractalengine/src/plugin_bridge.rs` (shared write E7 -> E13) and the source construction (per-endpoint pinned index keys, an anonymous http `BytesFetcher`, `remote_source`) do not exist; their obligations are now written in `extensions-ui.md` §Operations seam and §Consent cannot be bypassed.
+- G4-A11 HANDED-OFF next turn — the host side of P4.3 in `fe-plugin/src/lifecycle.rs` (stage beside the running instance, activate then retire, roll back) is not written; the UI flow is ready for it.
+- G4-A12 HANDED-OFF orchestrator (`conductor/test-batches.md`) — no batch filter reaches fe-ui `extensions::` (J9, the consent and slot journeys); add `cargo test -p fe-ui --lib -- extensions::` to R11.
+
+### CRITIC (defects, security)
+
+- G4-C1 HIGH FIXED `registry_source.rs` `StaticIndexSource` — built from spec R29's text, not the registry contract v1 the orchestrator relayed for this public stub (P2P-QA 2026-11-07 16:39, steer 2026-11-08 20:45 (c)); now `config.json` -> `index.json` -> `packages/{id}.json` -> attestation / download, mapped onto the unchanged `RegistryEntry`.
+- G4-C2 HIGH FIXED index signature — it re-serialized the typed struct, so a signer omitting `name` or adding any field never verified and unread fields were unsigned, with no domain separation from the kill list's rule; now ed25519 over `fractalengine/catalog-index/v1` LF + canonical JSON of the received document minus `signature`, floats refused (hex as the kill list; base64 also accepted).
+- G4-C3 HIGH FIXED index key scope — keys came from an "index-signing trust root" lookup; `index_signer` is now the endpoint's pinned set and a key that is also a package trust root is refused `IndexKeyMisused` (steer: never a package or revocation signer).
+- G4-C4 MEDIUM FIXED rollback — any validly signed older index replaced the cache; a live index older than the cached copy is now ignored, and a passed `expires_at` marks the list stale without blocking installs.
+- G4-C5 MEDIUM FIXED protocol check — the static index had none, so R29's "protocol-mismatched registry refused" held only for protocol v1; `config.json` `registry_protocol` must be 1 (no header required) and the registry journey asserts it.
+- G4-C6 MEDIUM FIXED header and download — `header` fetched any caller-supplied `header_url` unverified; it now returns `plugin/extension.json` only after `verify_sealed_header`, the committed-member check and `content_hash` equality; detail documents are pinned by `detail_hash`, yanked versions refused, `size_bytes` caps the read, relative urls cannot climb.
+- G4-C7 MEDIUM FIXED `panel.rs` — a second `ConsentNeeded` replaced the open dialog, orphaning the first staged build, and the panel stayed clickable mid-review; the panel is now busy while a dialog is open and a competing request is answered `DiscardStaged`.
+- G4-C8 MEDIUM FIXED `panel.rs` — a fresh install whose request carried a matching `consented_digest` was dropped silently (`ConsentState::request` returned false, nothing queued); a fresh install now always prompts, so only a running version's consent may skip the dialog.
+- G4-C9 MEDIUM FIXED `panel.rs` — `Failed` during an update left the stage `Verifying` forever, so Update stayed disabled for that installation; a failed re-verify now clears it.
+- G4-C10 MEDIUM FIXED `details.rs`, `permissions.rs` — Uninstall, Revoke consent and their confirm steps ignored the in-flight state the design text promised, so an Uninstall could race an update or a consent; every state-changing button now checks `busy()`.
+- G4-C11 MEDIUM FIXED `details.rs` — a Needs-consent row disabled every binding button while Permissions said "Enable a binding": after Revoke consent an extension could never be allowed again; Enable now asks the bridge, which answers `ConsentNeeded` (R19 `consent-missing`).
+- G4-C12 MEDIUM HANDED-OFF G2 / E11 (`consent.rs`) — `ConsentOrigin::InstallOffer` and `ConsentDecision::Approved.accept_in_verse` carry the verse display name, which the bridge would use to record the per-verse acceptance; names are not unique, so carry the verse id and render the name.
+- G4-C13 KEPT UI consent path — Enable waits for the drawn list, `request` resets it per request, approval echoes the pending request's digest, a kill-listed build moves only through the typed id; the host invariants (digest pinning, re-check at activation) are the drain's obligations (A10), verified when it lands.
+- G4-C14 HANDED-OFF G5 / next turn — `ProtocolV1Source::header` is always `HeaderUnavailable` (protocol-v1 consent renders only after download), and the Hexon Manager cannot use the trait until `verify_fetched` dispatches on hexon type (R32; G5 note in `fe-hexon/src/AGENTS.md`).
+- G4-C15 KEPT `LocalSource` — reads every package whole at list time and checks containment lexically (a symlink can point out); an operator-owned folder; trigger: a shared or untrusted folder source.
+- G4-C16 KEPT blocking I/O — every source blocks, like E16's `remote_source`; the drain must call them from a worker (in A10's contract).
+- G4-C17 DEFERRED GUI QA through the agent input surface (R28 AC) and the batch rerun — no build (directive 2026-11-08) and no mounted panel (A9); trigger: integration wave + refine pass: install from file -> consent -> enable -> disable -> update with a delta -> uninstall by the names in `extensions-ui.md`, then `cargo test -p fe-hexon -- registry_source` and the fe-ui `extensions::` filter.
+- G4-C18 KEPT leak discipline — the forbidden-term grep over every E13 file and every line G4 added found no hits; `catalog-index` appears only as the contract's signing-domain constant.
+- G4-C19 KEPT product fit — P4 serves `conductor/product.md`: an operator installs from a file or a signed static folder with no hosted dependency, and no business logic entered the public tree.

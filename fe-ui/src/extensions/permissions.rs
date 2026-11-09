@@ -10,9 +10,10 @@ use crate::theme;
 /// Draw the consent record and grants of one installation.
 pub fn draw(ui: &mut egui::Ui, state: &mut ExtensionsPanelState, row: &InstalledRow) {
     let Some(consent) = &row.consent else {
-        ui.label(egui::RichText::new("No consent on record. Enable a binding to review what this extension asks for.").color(theme::TEXT_MUTED));
+        ui.label(egui::RichText::new("No consent on record. Enable a binding to review its permissions.").color(theme::TEXT_MUTED));
         return;
     };
+    let idle = !state.busy();
     ui.label(egui::RichText::new(format!("Allowed by {} on {}", consent.consented_by, consent.consented_at)).small().color(theme::TEXT_MUTED));
     for section in &consent.sections {
         section_title(ui, &section.title);
@@ -28,13 +29,21 @@ pub fn draw(ui: &mut egui::Ui, state: &mut ExtensionsPanelState, row: &Installed
     ui.horizontal(|ui| {
         if confirming {
             ui.label(egui::RichText::new("Stops every binding until you allow it again.").small());
-            if ui.button("Revoke").button_named(ui, format!("Confirm revoke consent for {}", row.package_id)).clicked() {
+            if ui
+                .add_enabled(idle, egui::Button::new("Revoke"))
+                .button_named(ui, format!("Confirm revoke consent for {}", row.package_id))
+                .clicked()
+            {
                 state.accept_confirm();
             }
             if ui.button("Keep").button_named(ui, format!("Keep consent for {}", row.package_id)).clicked() {
                 state.cancel_confirm();
             }
-        } else if ui.button("Revoke consent").button_named(ui, format!("Revoke consent for {}", row.package_id)).clicked() {
+        } else if ui
+            .add_enabled(idle, egui::Button::new("Revoke consent"))
+            .button_named(ui, format!("Revoke consent for {}", row.package_id))
+            .clicked()
+        {
             state.ask_confirm(PendingConfirm::Revoke(row.installation_id.clone()));
         }
     });

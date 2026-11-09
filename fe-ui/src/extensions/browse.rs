@@ -56,8 +56,10 @@ pub struct BrowseState {
     pub entries: Vec<RegistryEntry>,
     /// Items the source could not vouch for.
     pub refused: Vec<Refusal>,
-    /// True when the listing came from the offline cache.
+    /// True when the listing came from the last verified cached index.
     pub from_cache: bool,
+    /// True when the index has expired (still installable).
+    pub stale: bool,
 }
 
 impl BrowseState {
@@ -75,6 +77,7 @@ impl BrowseState {
                     self.entries = listing.entries;
                     self.refused = listing.refused;
                     self.from_cache = listing.from_cache;
+                    self.stale = listing.stale;
                     self.status = BrowseStatus::Ready;
                 }
             }
@@ -128,7 +131,9 @@ pub fn draw(ui: &mut egui::Ui, state: &mut ExtensionsPanelState) {
             refresh = true;
         }
     });
-    if refresh {
+    // A selected source lists itself once; Refresh and Enter re-list it.
+    let first_listing = state.browse.status == BrowseStatus::Idle && state.working.is_none();
+    if refresh || first_listing {
         if let Some(source_id) = state.browse.selected.clone() {
             state.browse.status = BrowseStatus::Loading;
             let query = state.browse.query.clone();
@@ -137,10 +142,7 @@ pub fn draw(ui: &mut egui::Ui, state: &mut ExtensionsPanelState) {
     }
     ui.add_space(8.0);
     match state.browse.status.clone() {
-        BrowseStatus::Idle => {
-            ui.label(egui::RichText::new("Choose Refresh to list this source").color(theme::TEXT_MUTED));
-        }
-        BrowseStatus::Loading => {}
+        BrowseStatus::Idle | BrowseStatus::Loading => {}
         BrowseStatus::Failed(reason) => {
             ui.label(egui::RichText::new(reason).color(theme::STATUS_OFFLINE));
         }
@@ -150,12 +152,16 @@ pub fn draw(ui: &mut egui::Ui, state: &mut ExtensionsPanelState) {
 
 fn draw_entries(ui: &mut egui::Ui, state: &mut ExtensionsPanelState) {
     if state.browse.from_cache {
-        ui.label(egui::RichText::new("Offline: showing the last verified list").small().color(theme::TEXT_MUTED));
+        ui.label(egui::RichText::new("Showing the last verified list").small().color(theme::TEXT_MUTED));
+    }
+    if state.browse.stale {
+        ui.label(egui::RichText::new("This list has expired and may be out of date").small().color(theme::TEXT_MUTED));
     }
     if state.browse.entries.is_empty() {
         ui.label(egui::RichText::new("No extensions match").color(theme::TEXT_MUTED));
     }
     let Some(source_id) = state.browse.selected.clone() else { return };
+    let busy = state.busy();
     let mut install: Option<RegistryEntry> = None;
     for entry in &state.browse.entries {
         let installed = state.rows.iter().any(|row| row.package_id == entry.package_id && row.version == entry.version);
@@ -165,14 +171,16 @@ fn draw_entries(ui: &mut egui::Ui, state: &mut ExtensionsPanelState) {
             ui.label(egui::RichText::new(format!("{title} {}", entry.version)).strong());
             let label = if installed { "Installed" } else if newer { "Install this version" } else { "Install" };
             if ui
-                .add_enabled(!installed && state.working.is_none(), egui::Button::new(label))
+                .add_enabled(!installed && !busy, egui::Button::new(label))
                 .button_named(ui, format!("Install {} {}", entry.package_id, entry.version))
                 .clicked()
             {
                 install = Some(entry.clone());
             }
         });
-        ui.label(egui::RichText::new(format!("{} · {}", entry.package_id, human_size(entry.size))).small().color(theme::TEXT_MUTED));
+        // A static index states sizes in the detail document, so a listed size of 0 means "not stated".
+        let meta = if entry.size > 0 { format!("{} · {}", entry.package_id, human_size(entry.size)) } else { entry.package_id.clone() };
+        ui.label(egui::RichText::new(meta).small().color(theme::TEXT_MUTED));
         ui.separator();
     }
     for refusal in &state.browse.refused {

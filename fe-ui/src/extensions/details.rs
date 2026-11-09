@@ -54,8 +54,10 @@ pub(super) fn on_update_offer(state: &mut ExtensionsPanelState, consent: &mut Co
     let installation_id = request.installation_id.clone();
     let digest = request.capability_digest.clone();
     if consent.request(request) {
+        state.reviewing = Some(installation_id.clone());
         state.updates.insert(installation_id, UpdateStage::AwaitingConsent);
     } else {
+        // The bridge re-checks that this digest is the consent on record before it activates (R19 consent-missing).
         state.queue(ExtensionOp::ActivateUpdate { installation_id, capability_digest: digest }, "Updating");
     }
 }
@@ -106,7 +108,8 @@ fn overview(ui: &mut egui::Ui, state: &mut ExtensionsPanelState, row: &Installed
     if row.bindings.is_empty() {
         ui.label(egui::RichText::new("No bindings use this extension").small().color(theme::TEXT_MUTED));
     }
-    let can_toggle = matches!(row.status, RowStatus::Enabled | RowStatus::Disabled) && state.working.is_none();
+    // Needs consent: Enable asks the bridge, which answers with the consent dialog (R19 consent-missing), never runs it.
+    let can_toggle = matches!(row.status, RowStatus::Enabled | RowStatus::Disabled | RowStatus::NeedsConsent) && !state.busy();
     for binding in &row.bindings {
         ui.horizontal(|ui| {
             ui.label(&binding.label);
@@ -144,7 +147,7 @@ fn update_block(ui: &mut egui::Ui, state: &mut ExtensionsPanelState, row: &Insta
         ui.label(egui::RichText::new(stage.label()).small().color(theme::TEXT_SECTION));
     }
     let Some(newer) = &row.update_available else { return };
-    let busy = stage.as_ref().is_some_and(UpdateStage::in_flight) || state.working.is_some();
+    let busy = stage.as_ref().is_some_and(UpdateStage::in_flight) || state.busy();
     if ui.add_enabled(!busy, egui::Button::new(format!("Update to {newer}"))).button_named(ui, format!("Update {} to {newer}", row.package_id)).clicked() {
         begin_update(state, &row.installation_id);
     }
@@ -153,16 +156,25 @@ fn update_block(ui: &mut egui::Ui, state: &mut ExtensionsPanelState, row: &Insta
 
 fn uninstall_row(ui: &mut egui::Ui, state: &mut ExtensionsPanelState, row: &InstalledRow) {
     let confirming = matches!(state.pending_confirm(), Some(PendingConfirm::Uninstall(id)) if *id == row.installation_id);
+    let idle = !state.busy();
     ui.horizontal(|ui| {
         if confirming {
             ui.label(egui::RichText::new(format!("Remove {} and stop all its bindings?", row.name)).small());
-            if ui.button("Uninstall").button_named(ui, format!("Confirm uninstall {}", row.package_id)).clicked() {
+            if ui
+                .add_enabled(idle, egui::Button::new("Uninstall"))
+                .button_named(ui, format!("Confirm uninstall {}", row.package_id))
+                .clicked()
+            {
                 state.accept_confirm();
             }
             if ui.button("Keep").button_named(ui, format!("Keep {}", row.package_id)).clicked() {
                 state.cancel_confirm();
             }
-        } else if ui.button("Uninstall").button_named(ui, format!("Uninstall {}", row.package_id)).clicked() {
+        } else if ui
+            .add_enabled(idle, egui::Button::new("Uninstall"))
+            .button_named(ui, format!("Uninstall {}", row.package_id))
+            .clicked()
+        {
             state.ask_confirm(PendingConfirm::Uninstall(row.installation_id.clone()));
         }
     });

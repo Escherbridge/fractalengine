@@ -1,5 +1,5 @@
 //! Extensions panel: Installed list, view routing and the queued `ExtensionOp` seam to the bridge.
-//! Design: `docs/extensions/extensions-ui.md`; wiring notes: `fe-ui/src/extensions/AGENTS.md` section panel.
+//! Design, bridge contract and consent rules: `docs/extensions/extensions-ui.md`.
 
 use std::collections::HashMap;
 
@@ -224,12 +224,28 @@ pub struct ExtensionsPanelState {
     pub(super) confirm: Option<PendingConfirm>,
     pub(super) ops: Vec<ExtensionOp>,
     pub(super) updates: HashMap<String, UpdateStage>,
+    /// Installation whose consent dialog is open; one review at a time.
+    pub(super) reviewing: Option<String>,
+    requested_rows: bool,
 }
 
 impl ExtensionsPanelState {
     /// Queued operations for the bridge to execute.
     pub fn take_ops(&mut self) -> Vec<ExtensionOp> {
         std::mem::take(&mut self.ops)
+    }
+
+    /// True while the bridge works or a consent dialog is open: state-changing buttons are disabled.
+    pub fn busy(&self) -> bool {
+        self.working.is_some() || self.reviewing.is_some()
+    }
+
+    /// Ask for the first snapshot (rows and Browse sources) the first time the panel draws.
+    fn ensure_loaded(&mut self) {
+        if !self.requested_rows {
+            self.requested_rows = true;
+            self.queue(ExtensionOp::Refresh, "Loading extensions");
+        }
     }
 
     pub(super) fn queue(&mut self, op: ExtensionOp, working: &str) {
@@ -305,13 +321,26 @@ impl ExtensionsPanelState {
             }
             ExtensionEvent::Failed { message } => {
                 self.working = None;
+                // A failed re-verify must not leave the update stuck in flight (Update would stay disabled).
+                self.updates.retain(|_, stage| *stage != UpdateStage::Verifying);
                 self.error = Some(message);
             }
-            ExtensionEvent::ConsentNeeded { request, is_update } => {
+            ExtensionEvent::ConsentNeeded { mut request, is_update } => {
                 self.working = None;
+                if consent.pending().is_some_and(|open| open.installation_id != request.installation_id) {
+                    // One review at a time: the newer staged build is dropped, never left staged unseen.
+                    self.updates.remove(&request.installation_id);
+                    self.queue(ExtensionOp::DiscardStaged { installation_id: request.installation_id }, "Discarding");
+                    self.error = Some("Finish the open review first".into());
+                    return;
+                }
                 if is_update {
                     details::on_update_offer(self, consent, request);
                 } else {
+                    // A fresh install always prompts: only a running version's consent may skip the dialog.
+                    request.consented_digest = None;
+                    request.previous_sections.clear();
+                    self.reviewing = Some(request.installation_id.clone());
                     consent.request(request);
                 }
             }
@@ -325,6 +354,7 @@ impl ExtensionsPanelState {
 
     /// Turn the consent dialog's answer into the matching op.
     pub fn route_consent(&mut self, decision: ConsentDecision) {
+        self.reviewing = None;
         match decision {
             ConsentDecision::Approved { installation_id, capability_digest, accept_in_verse } => {
                 self.updates.remove(&installation_id);
@@ -366,6 +396,7 @@ fn route_consent_decisions(mut panel: ResMut<ExtensionsPanelState>, mut consent:
 
 /// Draw the panel body into `ui`.
 pub fn draw(ui: &mut egui::Ui, state: &mut ExtensionsPanelState) {
+    state.ensure_loaded();
     tab_strip(ui, state);
     ui.add_space(6.0);
     if let Some(message) = state.error.clone() {
@@ -405,7 +436,7 @@ fn draw_installed(ui: &mut egui::Ui, state: &mut ExtensionsPanelState) {
     ui.horizontal(|ui| {
         ui.add(egui::TextEdit::singleline(&mut state.install_path).hint_text("Path to a .hexon file"))
             .named(ui, "Package file path");
-        let ready = !state.install_path.trim().is_empty() && state.working.is_none();
+        let ready = !state.install_path.trim().is_empty() && !state.busy();
         if ui.add_enabled(ready, egui::Button::new("Install from file")).button_named(ui, "Install from file").clicked() {
             state.request_install_from_file();
         }
@@ -453,20 +484,41 @@ fn status_color(status: &RowStatus) -> egui::Color32 {
 mod tests {
     use super::*;
 
-    fn frame(state: &mut ExtensionsPanelState) {
+    /// Draw one frame; returns every accessible name with whether its control is enabled.
+    fn frame(state: &mut ExtensionsPanelState) -> Vec<(String, bool)> {
         let ctx = egui::Context::default();
-        let _ = ctx.run(egui::RawInput::default(), |ctx| {
+        ctx.enable_accesskit();
+        let output = ctx.run(egui::RawInput::default(), |ctx| {
             egui::CentralPanel::default().show(ctx, |ui| draw(ui, state));
         });
+        output
+            .platform_output
+            .accesskit_update
+            .map(|update| {
+                update
+                    .nodes
+                    .iter()
+                    .filter_map(|(_, node)| node.label().map(|label| (label.to_string(), !node.is_disabled())))
+                    .collect()
+            })
+            .unwrap_or_default()
+    }
+
+    fn enabled(names: &[(String, bool)], name: &str) -> bool {
+        names.iter().any(|(shown, on)| shown == name && *on)
+    }
+
+    fn disabled(names: &[(String, bool)], name: &str) -> bool {
+        names.iter().any(|(shown, on)| shown == name && !*on)
     }
 
     fn section(title: &str, lines: &[&str]) -> ConsentSection {
         ConsentSection { title: title.into(), lines: lines.iter().map(|line| line.to_string()).collect() }
     }
 
-    fn request(digest: &str, consented: Option<&str>, egress: &[&str]) -> ConsentRequest {
+    fn request(installation: &str, digest: &str, consented: Option<&str>, egress: &[&str]) -> ConsentRequest {
         ConsentRequest {
-            installation_id: "inst-1".into(),
+            installation_id: installation.into(),
             package_id: "org.example.fleet-sim".into(),
             name: "Fleet Sim".into(),
             version: "1.1.0".into(),
@@ -484,41 +536,66 @@ mod tests {
             package_id: "org.example.fleet-sim".into(),
             name: "Fleet Sim".into(),
             version: version.into(),
-            status,
             update_available: update.map(str::to_owned),
             bindings: vec![BindingRow { binding_id: "b1".into(), label: "Fleet in Harbour".into(), enabled: false }],
+            consent: (status != RowStatus::NeedsConsent).then(|| ConsentSummary {
+                consented_at: "2026-11-08 10:00".into(),
+                consented_by: "local owner".into(),
+                capability_digest: "d1".into(),
+                sections: vec![section("Egress", &[])],
+            }),
+            status,
             ..InstalledRow::default()
         }
     }
 
-    /// J9 (fake bridge): install from file, consent, enable, disable, update with and without a capability delta, rollback, uninstall.
+    /// J9 (fake bridge): load, install from file, consent, enable, disable, update with and without a capability
+    /// delta, rollback, failed re-verify, one review at a time, revoke then re-consent, uninstall; by accessible name.
     #[test]
     fn extensions_panel_journey() {
+        const ENABLE: &str = "Enable Fleet in Harbour for org.example.fleet-sim";
+        const UPDATE: &str = "Update org.example.fleet-sim to 1.1.0";
         let mut state = ExtensionsPanelState::default();
         let mut consent = ConsentState::default();
-        frame(&mut state);
 
-        // Install from file: nothing queued until a path is typed; then consent opens on the bridge's answer.
+        // First draw asks the bridge for rows and sources; Install stays disabled until a path is typed.
+        let names = frame(&mut state);
+        assert_eq!(state.take_ops(), vec![ExtensionOp::Refresh]);
+        assert!(disabled(&names, "Install from file"));
+        state.apply_event(ExtensionEvent::Rows(Vec::new()), &mut consent);
         state.request_install_from_file();
         assert!(state.take_ops().is_empty());
         state.install_path = "C:/pkgs/fleet-sim.hexon".into();
+        assert!(enabled(&frame(&mut state), "Install from file"));
         state.request_install_from_file();
         assert_eq!(state.take_ops(), vec![ExtensionOp::InstallFromFile { path: "C:/pkgs/fleet-sim.hexon".into() }]);
-        state.apply_event(ExtensionEvent::ConsentNeeded { request: request("d1", None, &[]), is_update: false }, &mut consent);
-        assert!(consent.pending().is_some());
+
+        // A fresh install always prompts, even if the bridge reports a matching consent; the panel is busy meanwhile.
+        state.apply_event(ExtensionEvent::ConsentNeeded { request: request("inst-1", "d1", Some("d1"), &[]), is_update: false }, &mut consent);
+        assert!(consent.pending().is_some_and(|pending| pending.consented_digest.is_none()));
+        assert!(disabled(&frame(&mut state), "Install from file"));
+
+        // One review at a time: a second staged build is discarded, never left staged unseen.
+        state.apply_event(ExtensionEvent::ConsentNeeded { request: request("inst-2", "d9", None, &[]), is_update: false }, &mut consent);
+        assert_eq!(state.take_ops(), vec![ExtensionOp::DiscardStaged { installation_id: "inst-2".into() }]);
+        assert_eq!(consent.pending().map(|pending| pending.installation_id.as_str()), Some("inst-1"));
 
         // Approving consent queues exactly the digest shown.
         state.route_consent(ConsentDecision::Approved { installation_id: "inst-1".into(), capability_digest: "d1".into(), accept_in_verse: None });
+        consent = ConsentState::default(); // the dialog closed on its answer
         assert_eq!(
             state.take_ops(),
             vec![ExtensionOp::Consent { installation_id: "inst-1".into(), capability_digest: "d1".into(), accept_in_verse: None }]
         );
         state.apply_event(ExtensionEvent::Rows(vec![row("1.0.0", RowStatus::Disabled, Some("1.1.0"))]), &mut ConsentState::default());
-        frame(&mut state);
+        assert!(enabled(&frame(&mut state), "Open org.example.fleet-sim"));
 
-        // Enable then disable a binding.
+        // Enable then disable a binding; the row's controls are named and disabled while the bridge works.
         state.open_details("inst-1");
+        let names = frame(&mut state);
+        assert!(enabled(&names, ENABLE) && enabled(&names, UPDATE) && enabled(&names, "Uninstall org.example.fleet-sim"));
         state.request_toggle("inst-1", "b1", true);
+        assert!(disabled(&frame(&mut state), ENABLE));
         state.request_toggle("inst-1", "b1", false);
         assert_eq!(
             state.take_ops(),
@@ -527,34 +604,59 @@ mod tests {
                 ExtensionOp::Disable { installation_id: "inst-1".into(), binding_id: "b1".into() },
             ]
         );
-        frame(&mut state);
+        state.apply_event(ExtensionEvent::Rows(vec![row("1.0.0", RowStatus::Disabled, Some("1.1.0"))]), &mut consent);
 
-        // Update with a delta: re-prompt, previous version stays until the new one is active.
+        // Update with a delta: re-prompt; the previous version stays until the new one is active; a failed start rolls back.
         details::begin_update(&mut state, "inst-1");
         assert_eq!(state.take_ops(), vec![ExtensionOp::Update { installation_id: "inst-1".into() }]);
-        let mut update_consent = ConsentState::default();
-        state.apply_event(ExtensionEvent::ConsentNeeded { request: request("d2", Some("d1"), &["https://api.example"]), is_update: true }, &mut update_consent);
-        assert!(update_consent.pending().is_some_and(|pending| !pending.delta().is_empty()));
-        state.apply_event(ExtensionEvent::UpdateStage { installation_id: "inst-1".into(), stage: UpdateStage::RolledBack { reason: "start failed".into() } }, &mut update_consent);
+        state.apply_event(ExtensionEvent::ConsentNeeded { request: request("inst-1", "d2", Some("d1"), &["https://api.example"]), is_update: true }, &mut consent);
+        assert!(consent.pending().is_some_and(|pending| !pending.delta().is_empty()));
+        assert!(disabled(&frame(&mut state), UPDATE));
+        state.route_consent(ConsentDecision::Approved { installation_id: "inst-1".into(), capability_digest: "d2".into(), accept_in_verse: None });
+        consent = ConsentState::default();
+        assert_eq!(
+            state.take_ops(),
+            vec![ExtensionOp::Consent { installation_id: "inst-1".into(), capability_digest: "d2".into(), accept_in_verse: None }]
+        );
+        state.apply_event(ExtensionEvent::UpdateStage { installation_id: "inst-1".into(), stage: UpdateStage::Activating { version: "1.1.0".into() } }, &mut consent);
+        state.apply_event(ExtensionEvent::UpdateStage { installation_id: "inst-1".into(), stage: UpdateStage::RolledBack { reason: "start failed".into() } }, &mut consent);
         assert_eq!(state.rows[0].version, "1.0.0");
-        assert!(matches!(state.updates.get("inst-1"), Some(UpdateStage::RolledBack { .. })));
-        frame(&mut state);
+        assert!(state.error.as_deref().is_some_and(|error| error.contains("previous version kept")));
+        assert!(enabled(&frame(&mut state), UPDATE), "a rolled-back update can be retried");
+
+        // A failed re-verify does not leave the update stuck in flight.
+        details::begin_update(&mut state, "inst-1");
+        state.apply_event(ExtensionEvent::Failed { message: "package-invalid (bad-signature)".into() }, &mut consent);
+        assert_eq!(state.error.as_deref(), Some("package-invalid (bad-signature)"));
+        state.take_ops();
+        assert!(enabled(&frame(&mut state), UPDATE));
 
         // Update without a delta: no prompt, activation queued directly.
-        let mut quiet_consent = ConsentState::default();
-        state.apply_event(ExtensionEvent::ConsentNeeded { request: request("d1", Some("d1"), &[]), is_update: true }, &mut quiet_consent);
-        assert!(quiet_consent.pending().is_none());
+        details::begin_update(&mut state, "inst-1");
+        state.take_ops();
+        state.apply_event(ExtensionEvent::ConsentNeeded { request: request("inst-1", "d1", Some("d1"), &[]), is_update: true }, &mut consent);
+        assert!(consent.pending().is_none());
         assert_eq!(state.take_ops(), vec![ExtensionOp::ActivateUpdate { installation_id: "inst-1".into(), capability_digest: "d1".into() }]);
+        state.apply_event(ExtensionEvent::Rows(vec![row("1.0.0", RowStatus::Disabled, None)]), &mut consent);
+
+        // Revoke consent (two clicks), then Enable on the Needs-consent row asks the bridge for a fresh review.
+        state.view = PanelView::Details { installation_id: "inst-1".into(), tab: DetailsTab::Permissions };
+        state.ask_confirm(PendingConfirm::Revoke("inst-1".into()));
+        assert!(enabled(&frame(&mut state), "Confirm revoke consent for org.example.fleet-sim"));
+        state.accept_confirm();
+        assert_eq!(state.take_ops(), vec![ExtensionOp::RevokeConsent { installation_id: "inst-1".into() }]);
+        state.apply_event(ExtensionEvent::Rows(vec![row("1.0.0", RowStatus::NeedsConsent, None)]), &mut consent);
+        state.open_details("inst-1");
+        assert!(enabled(&frame(&mut state), ENABLE));
 
         // Uninstall needs the second click and returns to the list.
         state.ask_confirm(PendingConfirm::Uninstall("inst-1".into()));
+        assert!(enabled(&frame(&mut state), "Confirm uninstall org.example.fleet-sim"));
         assert!(state.take_ops().is_empty());
         state.accept_confirm();
         assert_eq!(state.view, PanelView::Installed);
         assert_eq!(state.take_ops(), vec![ExtensionOp::Uninstall { installation_id: "inst-1".into() }]);
         state.apply_event(ExtensionEvent::Rows(Vec::new()), &mut consent);
-        state.apply_event(ExtensionEvent::Failed { message: "package-invalid (bad-signature)".into() }, &mut consent);
-        assert_eq!(state.error.as_deref(), Some("package-invalid (bad-signature)"));
-        frame(&mut state);
+        assert!(!frame(&mut state).iter().any(|(name, _)| name == "Open org.example.fleet-sim"));
     }
 }
