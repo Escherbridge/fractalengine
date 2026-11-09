@@ -1583,3 +1583,6 @@ and no `PluginManager` is built in the binary; the request/decision wiring lands
 `extension_overlay_system` / `extensions_window_system` / `reclaim_slots_from_surfaces` after `gardener_ui_system`; the slot
 surfaces reach the lent state through the egui context (`extensions/AGENTS.md` section host-handle). `UiAction::ToggleTerrainVisibility`
 (actions/mod.rs) flips the stored `terrain` layer's `visible` via `gis::set_layer`, advising when the petal has no terrain document.
+At compact topbar width the extension toolbar actions move into the Tools menu with the built-in tools, so third-party buttons
+never push the right-hand cluster off the bar. The egress card draws its compiled-in Copy-for-BI rows itself, first and
+unconditionally (R33), then the bound `egress.snippet` rows (`extensions/AGENTS.md` section bound-slots).

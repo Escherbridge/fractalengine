@@ -1,7 +1,7 @@
 //! Bindings view of the Extensions panel (bindings.md section 9, BND-9): the hook points at the active petal grouped by
-//! family, each with its winning scope, this host's state and one offer, plus the Manager+ edit form generated from the
-//! provider's `config_schema` (the `args_schema` subset). Pure state and egui; the bridge fills the snapshot and executes
-//! the queued ops. See `docs/extensions/bindings.md` section 9 and `docs/extensions/extensions-ui.md`.
+//! family, each with its winning scope, this host's state and at most one offer, plus the Manager+ edit form generated
+//! from the provider's `config_schema` (the `args_schema` subset). Pure state and egui; the bridge fills the snapshot
+//! and executes the queued ops. See `fe-ui/src/extensions/AGENTS.md` §bindings-view.
 
 use bevy_egui::egui;
 use fe_runtime::extension_binding::{
@@ -38,7 +38,7 @@ pub struct BindingPointRow {
     pub key: String,
     /// Display label of the scope the winning row sits at; empty when nothing is bound.
     pub scope_label: String,
-    /// Where the winning row sits (clear writes `inherit` here); `None` when nothing is bound.
+    /// Where the winning row sits (Remove writes `inherit` here); `None` when nothing is bound.
     pub target: Option<ScopeTarget>,
     /// `Inherit` = nothing bound, the built-in serves.
     pub mode: BindingMode,
@@ -61,17 +61,49 @@ pub struct ProviderOption {
     pub config_schema: Option<Value>,
 }
 
-/// Everything the view shows (a snapshot; fe-ui never reaches the host).
+/// Everything the view shows (a snapshot; fe-ui never reaches the host). The bridge attaches a point's `offer` only
+/// when bindings.md section 5.2 allows it (Install and Update need a source with a fitting build).
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct BindingsSnapshot {
     pub verse_id: String,
     /// Display name of the active petal.
     pub petal_label: String,
-    /// The local DID holds Manager+ at the petal: Edit and Clear show.
+    /// The local DID holds Manager+ at the petal: the edit form opens.
     pub can_manage: bool,
+    /// The local DID is the verse Owner: the kill-list Override offer shows (bindings.md section 5.7).
+    pub local_is_owner: bool,
+    /// Scopes the local DID may write at (Manager+ by subtree authority), nearest first; the form offers no other.
     pub scopes: Vec<ScopeOption>,
     pub points: Vec<BindingPointRow>,
     pub providers: Vec<ProviderOption>,
+}
+
+impl BindingsSnapshot {
+    /// The edit form is available: Manager+ with at least one writable scope.
+    pub fn manages(&self) -> bool {
+        self.can_manage && !self.scopes.is_empty()
+    }
+
+    /// True when the local DID may write a row at `target`.
+    pub fn writes_at(&self, target: &ScopeTarget) -> bool {
+        self.manages() && self.scopes.iter().any(|scope| scope.target == *target)
+    }
+
+    /// The one offer point `index` shows to this DID: Edit binding needs Manager+, Override needs the verse Owner.
+    pub fn visible_offer(&self, index: usize) -> Option<BindingOffer> {
+        let row = self.points.get(index)?;
+        let Some(BindingResolution::Unresolved { offer: Some(offer), .. }) = &row.resolution else { return None };
+        match offer {
+            BindingOffer::EditBinding if !self.manages() => None,
+            BindingOffer::Override if !self.local_is_owner => None,
+            offer => Some(*offer),
+        }
+    }
+
+    /// Manifest name of an installed provider of `package_id`, else the id.
+    fn package_label<'a>(&'a self, package_id: &'a str) -> &'a str {
+        self.providers.iter().find(|p| p.package_id == package_id).map_or(package_id, |p| p.name.as_str())
+    }
 }
 
 /// Kind of one generated form field.
@@ -109,7 +141,8 @@ struct FormField {
 pub struct EditForm {
     hook: String,
     key: String,
-    scope_index: usize,
+    /// The chosen scope, by target: a refreshed snapshot can never move the write to another scope.
+    scope: Option<ScopeTarget>,
     mode: BindingMode,
     /// Index into `BindingsSnapshot::providers`.
     provider: Option<usize>,
@@ -130,19 +163,28 @@ pub struct BindingsViewState {
 }
 
 impl BindingsViewState {
-    /// Replace the snapshot; an open form whose point vanished is closed.
+    /// Replace the snapshot; an open form closes when its point vanished or the local DID no longer manages here.
     pub fn apply(&mut self, snapshot: BindingsSnapshot) {
         if let Some(form) = &self.edit {
-            if !snapshot.points.iter().any(|row| row.hook == form.hook && row.key == form.key) {
+            let point_gone = !snapshot.points.iter().any(|row| row.hook == form.hook && row.key == form.key);
+            if point_gone || !snapshot.manages() {
                 self.edit = None;
             }
         }
         self.snapshot = Some(snapshot);
     }
 
-    /// Open the form for point `index`, seeded from its current binding; defaults to writing at the nearest scope.
+    /// Drop the snapshot and any open form; the next draw asks again (the active petal changed).
+    pub fn invalidate(&mut self) {
+        *self = Self::default();
+    }
+
+    /// Open the form for point `index` (Manager+ only), seeded from its current binding, writing at the nearest scope.
     pub fn start_edit(&mut self, index: usize) {
         let Some(snapshot) = &self.snapshot else { return };
+        if !snapshot.manages() {
+            return;
+        }
         let Some(row) = snapshot.points.get(index) else { return };
         let provider = row
             .package_id
@@ -153,7 +195,7 @@ impl BindingsViewState {
         self.edit = Some(EditForm {
             hook: row.hook.clone(),
             key: row.key.clone(),
-            scope_index: 0,
+            scope: snapshot.scopes.first().map(|scope| scope.target.clone()),
             mode: if row.mode == BindingMode::Inherit { BindingMode::Extension } else { row.mode },
             provider,
             version_req: row.version_req.clone().unwrap_or_default(),
@@ -182,12 +224,15 @@ impl BindingsViewState {
     /// Build the write op for the open form, or the message to show; nothing is queued here.
     pub fn build_save(&mut self) -> Option<ExtensionOp> {
         let snapshot = self.snapshot.as_ref()?;
+        if !snapshot.manages() {
+            self.edit = None;
+            return None;
+        }
         let form = self.edit.as_mut()?;
-        let Some(scope) = snapshot.scopes.get(form.scope_index) else {
+        let Some(target) = form.scope.clone().filter(|target| snapshot.writes_at(target)) else {
             form.error = Some("Choose where to apply the binding".into());
             return None;
         };
-        let target = scope.target.clone();
         let (package_id, version_req, config) = match form.mode {
             BindingMode::Extension => {
                 let Some(provider) = form.provider.and_then(|i| snapshot.providers.get(i)) else {
@@ -236,31 +281,37 @@ impl ExtensionsPanelState {
         }
     }
 
-    /// Clear point `index` at the scope its winning row sits at.
+    /// Write `inherit` for point `index` where its winning row sits, when the local DID manages that scope.
     pub fn request_binding_clear(&mut self, index: usize) {
-        let Some(row) = self.bindings.snapshot.as_ref().and_then(|s| s.points.get(index)) else { return };
-        let Some(target) = row.target.clone() else { return };
-        let op = ExtensionOp::ClearBinding { target, hook: row.hook.clone(), key: row.key.clone() };
+        let op = {
+            let Some(snapshot) = &self.bindings.snapshot else { return };
+            let Some(row) = snapshot.points.get(index) else { return };
+            let writable = |target: &&ScopeTarget| row.mode != BindingMode::Inherit && snapshot.writes_at(target);
+            let Some(target) = row.target.as_ref().filter(writable) else { return };
+            ExtensionOp::ClearBinding { target: target.clone(), hook: row.hook.clone(), key: row.key.clone() }
+        };
+        self.bindings.edit = None;
         self.queue(op, "Clearing binding");
     }
 
-    /// Run the one offer of point `index`: edit opens the form, every other offer goes to the bridge (which shows consent).
+    /// Run the one offer of point `index`: Edit binding opens the form, every other offer goes to the bridge (consent).
     pub fn request_binding_offer(&mut self, index: usize) {
-        let Some(snapshot) = &self.bindings.snapshot else { return };
-        let Some(row) = snapshot.points.get(index) else { return };
-        let Some(BindingResolution::Unresolved { package_id, offer: Some(offer), .. }) = &row.resolution else { return };
-        let (offer, can_manage) = (*offer, snapshot.can_manage);
-        let op = ExtensionOp::TakeBindingOffer {
-            offer,
-            verse_id: snapshot.verse_id.clone(),
-            hook: row.hook.clone(),
-            key: row.key.clone(),
-            package_id: package_id.clone(),
+        let (offer, op) = {
+            let Some(snapshot) = &self.bindings.snapshot else { return };
+            let Some(offer) = snapshot.visible_offer(index) else { return };
+            let row = &snapshot.points[index];
+            let Some(BindingResolution::Unresolved { package_id, .. }) = &row.resolution else { return };
+            let op = ExtensionOp::TakeBindingOffer {
+                offer,
+                verse_id: snapshot.verse_id.clone(),
+                hook: row.hook.clone(),
+                key: row.key.clone(),
+                package_id: package_id.clone(),
+            };
+            (offer, op)
         };
         if offer == BindingOffer::EditBinding {
-            if can_manage {
-                self.bindings.start_edit(index);
-            }
+            self.bindings.start_edit(index);
             return;
         }
         self.queue(op, offer_working(offer));
@@ -288,22 +339,9 @@ pub fn binding_name(hook: &str, key: &str) -> String {
     if key.is_empty() { format!("binding:{hook}") } else { format!("binding:{hook}:{key}") }
 }
 
-/// Accessible name of a point's one action: the state name plus `:action`.
-pub fn action_name(hook: &str, key: &str, action: &str) -> String {
-    format!("{}:{action}", binding_name(hook, key))
-}
-
-/// Short action slug used in accessible names.
-pub fn offer_slug(offer: BindingOffer) -> &'static str {
-    match offer {
-        BindingOffer::Install => "install",
-        BindingOffer::Update => "update",
-        BindingOffer::Override => "override",
-        BindingOffer::EditBinding => "edit",
-        BindingOffer::ReviewPermissions => "review",
-        BindingOffer::AllowInVerse => "allow",
-        BindingOffer::Enable => "enable",
-    }
+/// Accessible name of a control on a point: the state name plus `:<suffix>` (`action` for its one offer).
+pub fn action_name(hook: &str, key: &str, suffix: &str) -> String {
+    format!("{}:{suffix}", binding_name(hook, key))
 }
 
 fn offer_label(offer: BindingOffer) -> &'static str {
@@ -348,22 +386,25 @@ pub enum Tone {
     Muted,
 }
 
-/// State text and tone for one point.
+/// A DID shortened for a status line (`did:key:…a1b2c3`).
+fn short_did(did: &str) -> String {
+    let chars: Vec<char> = did.chars().collect();
+    if chars.len() <= 16 {
+        return did.to_owned();
+    }
+    let head: String = chars[..8].iter().collect();
+    let tail: String = chars[chars.len() - 6..].iter().collect();
+    format!("{head}\u{2026}{tail}")
+}
+
+/// State text and tone for one point; the package and scope are on the detail line below it.
 pub fn point_state(row: &BindingPointRow) -> (String, Tone) {
     match &row.resolution {
         None => ("Not reported".into(), Tone::Muted),
-        Some(BindingResolution::Resolved { package_id, .. }) => (format!("Served by {package_id}"), Tone::Ok),
-        Some(BindingResolution::Builtin { .. }) => {
-            if row.mode == BindingMode::Builtin && !row.scope_label.is_empty() {
-                (format!("Built-in, set at {}", row.scope_label), Tone::Muted)
-            } else {
-                ("Built-in".into(), Tone::Muted)
-            }
-        }
-        Some(BindingResolution::Elsewhere { .. }) => ("Runs on another peer; built-in here".into(), Tone::Muted),
-        Some(BindingResolution::Unresolved { package_id, reason, .. }) => {
-            (format!("{package_id} is not running: {}. Built-in in use", reason_text(*reason)), Tone::Warn)
-        }
+        Some(BindingResolution::Resolved { .. }) => ("Running".into(), Tone::Ok),
+        Some(BindingResolution::Builtin { .. }) => ("Built-in".into(), Tone::Muted),
+        Some(BindingResolution::Elsewhere { runs_on }) => (format!("Runs on {}, built-in here", short_did(runs_on)), Tone::Muted),
+        Some(BindingResolution::Unresolved { reason, .. }) => (format!("Not running: {}", reason_text(*reason)), Tone::Warn),
     }
 }
 
@@ -429,6 +470,10 @@ fn level_slug(level: BindingScopeLevel) -> &'static str {
         BindingScopeLevel::Fractal => "fractal",
         BindingScopeLevel::Petal => "petal",
     }
+}
+
+fn point_title(hook: &str, key: &str) -> String {
+    if key.is_empty() { hook.to_owned() } else { format!("{hook} \u{00B7} {key}") }
 }
 
 // ---------------------------------------------------------------------------
@@ -592,8 +637,17 @@ pub fn draw(ui: &mut egui::Ui, state: &mut ExtensionsPanelState) {
     }
     let busy = state.busy();
     let Some(snapshot) = state.bindings.snapshot.take() else {
-        let text = if state.working.is_some() { "Loading bindings" } else { "No active petal" };
-        ui.label(egui::RichText::new(text).color(theme::TEXT_MUTED));
+        if state.working.is_some() {
+            ui.label(egui::RichText::new("Loading bindings").color(theme::TEXT_MUTED));
+            return;
+        }
+        // A failed load (its message is on the error line above) keeps a retry, never a dead end.
+        ui.horizontal(|ui| {
+            ui.label(egui::RichText::new("Bindings are not loaded").color(theme::TEXT_MUTED));
+            if ui.add_enabled(!busy, egui::Button::new("Refresh")).button_named(ui, "Refresh bindings").clicked() {
+                state.request_bindings_refresh();
+            }
+        });
         return;
     };
     let mut form = state.bindings.edit.take();
@@ -611,7 +665,7 @@ pub fn draw(ui: &mut egui::Ui, state: &mut ExtensionsPanelState) {
         ui.add_space(6.0);
     }
     if snapshot.points.is_empty() {
-        ui.label(egui::RichText::new("No extension hooks at this petal").color(theme::TEXT_MUTED));
+        ui.label(egui::RichText::new("No bindings at this petal").color(theme::TEXT_MUTED));
     }
     for (title, indices) in grouped_points(&snapshot.points) {
         ui.label(egui::RichText::new(title).small().color(theme::TEXT_SECTION));
@@ -635,60 +689,62 @@ pub fn draw(ui: &mut egui::Ui, state: &mut ExtensionsPanelState) {
     }
 }
 
+/// One point: title and state, the binding's scope and package, then at most the offer and (Manager+) Edit.
 fn draw_row(ui: &mut egui::Ui, snapshot: &BindingsSnapshot, index: usize, busy: bool, acts: &mut Vec<Act>) {
     let row = &snapshot.points[index];
-    let name = binding_name(&row.hook, &row.key);
     let (state_text, tone) = point_state(row);
-    let title = if row.key.is_empty() { row.hook.clone() } else { format!("{} · {}", row.hook, row.key) };
     ui.horizontal_wrapped(|ui| {
-        ui.label(egui::RichText::new(title).strong());
-        ui.label(egui::RichText::new(state_text).color(tone_color(tone))).named(ui, &name);
+        ui.label(egui::RichText::new(point_title(&row.hook, &row.key)).strong());
+        ui.label(egui::RichText::new(state_text).color(tone_color(tone))).named(ui, binding_name(&row.hook, &row.key));
     });
     if row.mode != BindingMode::Inherit && !row.scope_label.is_empty() {
         let mut detail = format!("Set at {}", row.scope_label);
         if let Some(package) = &row.package_id {
-            detail.push_str(&format!(" · {package}"));
+            detail.push_str(&format!(" \u{00B7} {}", snapshot.package_label(package)));
             if let Some(range) = &row.version_req {
                 detail.push_str(&format!(" {range}"));
             }
         }
         ui.label(egui::RichText::new(detail).small().color(theme::TEXT_MUTED));
     }
-    ui.horizontal(|ui| {
-        if let Some(BindingResolution::Unresolved { offer: Some(offer), .. }) = &row.resolution {
-            let allowed = *offer != BindingOffer::EditBinding || snapshot.can_manage;
-            if allowed
-                && ui
-                    .add_enabled(!busy, egui::Button::new(offer_label(*offer)))
-                    .button_named(ui, action_name(&row.hook, &row.key, offer_slug(*offer)))
+    let offer = snapshot.visible_offer(index);
+    let edit = snapshot.manages() && offer != Some(BindingOffer::EditBinding);
+    if offer.is_some() || edit {
+        ui.horizontal(|ui| {
+            if let Some(offer) = offer {
+                if ui
+                    .add_enabled(!busy, egui::Button::new(offer_label(offer)))
+                    .button_named(ui, action_name(&row.hook, &row.key, "action"))
                     .clicked()
-            {
-                acts.push(Act::Offer(index));
+                {
+                    acts.push(Act::Offer(index));
+                }
             }
-        }
-        if snapshot.can_manage {
-            if ui.add_enabled(!busy, egui::Button::new("Edit")).button_named(ui, action_name(&row.hook, &row.key, "edit-form")).clicked() {
+            if edit
+                && ui.add_enabled(!busy, egui::Button::new("Edit")).button_named(ui, action_name(&row.hook, &row.key, "edit")).clicked()
+            {
                 acts.push(Act::Edit(index));
             }
-            if row.mode != BindingMode::Inherit
-                && row.target.is_some()
-                && ui.add_enabled(!busy, egui::Button::new("Clear")).button_named(ui, action_name(&row.hook, &row.key, "clear")).clicked()
-            {
-                acts.push(Act::Clear(index));
-            }
-        }
-    });
+        });
+    }
     ui.add_space(4.0);
 }
 
 fn draw_form(ui: &mut egui::Ui, snapshot: &BindingsSnapshot, form: &mut EditForm, busy: bool, acts: &mut Vec<Act>) {
     let base = binding_name(&form.hook, &form.key);
+    // Remove is offered only where the winning row sits at a scope the local DID manages.
+    let removable = snapshot.points.iter().position(|row| {
+        row.hook == form.hook
+            && row.key == form.key
+            && row.mode != BindingMode::Inherit
+            && row.target.as_ref().is_some_and(|target| snapshot.writes_at(target))
+    });
     ui.group(|ui| {
-        ui.label(egui::RichText::new(format!("Bind {}", if form.key.is_empty() { form.hook.clone() } else { format!("{} · {}", form.hook, form.key) })).strong());
+        ui.label(egui::RichText::new(format!("Bind {}", point_title(&form.hook, &form.key))).strong());
         ui.horizontal(|ui| {
             ui.label("Apply at");
-            for (i, option) in snapshot.scopes.iter().enumerate() {
-                ui.selectable_value(&mut form.scope_index, i, &option.label)
+            for option in &snapshot.scopes {
+                ui.selectable_value(&mut form.scope, Some(option.target.clone()), &option.label)
                     .button_named(ui, format!("{base}:scope:{}", level_slug(option.level)));
             }
         });
@@ -697,29 +753,7 @@ fn draw_form(ui: &mut egui::Ui, snapshot: &BindingsSnapshot, form: &mut EditForm
             ui.selectable_value(&mut form.mode, BindingMode::Builtin, "Built-in").button_named(ui, format!("{base}:mode:builtin"));
         });
         if form.mode == BindingMode::Extension {
-            let selected = form
-                .provider
-                .and_then(|i| snapshot.providers.get(i))
-                .map(|p| format!("{} {}", p.name, p.version))
-                .unwrap_or_else(|| "Choose an extension".into());
-            let current = form.provider;
-            egui::ComboBox::from_id_salt(format!("{base}:provider"))
-                .selected_text(selected)
-                .show_ui(ui, |ui| {
-                    for (i, option) in snapshot.providers.iter().enumerate().filter(|(_, p)| p.hook == form.hook) {
-                        let label = format!("{} {}", option.name, option.version);
-                        if ui.selectable_label(current == Some(i), label).clicked() {
-                            acts.push(Act::Provider(i));
-                        }
-                    }
-                })
-                .response
-                .named(ui, format!("{base}:provider"));
-            ui.add(egui::TextEdit::singleline(&mut form.version_req).hint_text("Version range (optional)"))
-                .named(ui, format!("{base}:version"));
-            for field in form.fields.iter_mut() {
-                draw_field(ui, &base, field);
-            }
+            draw_provider_fields(ui, snapshot, form, &base, acts);
         }
         if let Some(message) = &form.error {
             ui.label(egui::RichText::new(message).color(theme::STATUS_OFFLINE));
@@ -731,8 +765,47 @@ fn draw_form(ui: &mut egui::Ui, snapshot: &BindingsSnapshot, form: &mut EditForm
             if ui.button("Cancel").button_named(ui, format!("{base}:cancel")).clicked() {
                 acts.push(Act::Cancel);
             }
+            if let Some(index) = removable {
+                let label = format!("Remove binding at {}", snapshot.points[index].scope_label);
+                if ui.add_enabled(!busy, egui::Button::new(label)).button_named(ui, format!("{base}:clear")).clicked() {
+                    acts.push(Act::Clear(index));
+                }
+            }
         });
     });
+}
+
+/// Provider picker, version range and the generated settings; an empty catalogue says so instead of an empty list.
+fn draw_provider_fields(ui: &mut egui::Ui, snapshot: &BindingsSnapshot, form: &mut EditForm, base: &str, acts: &mut Vec<Act>) {
+    let offered: Vec<(usize, &ProviderOption)> =
+        snapshot.providers.iter().enumerate().filter(|(_, option)| option.hook == form.hook).collect();
+    if offered.is_empty() {
+        ui.label(egui::RichText::new(format!("No installed extension provides {}", form.hook)).color(theme::TEXT_MUTED));
+        return;
+    }
+    let selected = form
+        .provider
+        .and_then(|i| snapshot.providers.get(i))
+        .map(|p| format!("{} {}", p.name, p.version))
+        .unwrap_or_else(|| "Choose an extension".into());
+    let current = form.provider;
+    egui::ComboBox::from_id_salt(format!("{base}:provider"))
+        .selected_text(selected)
+        .show_ui(ui, |ui| {
+            for (i, option) in &offered {
+                let label = format!("{} {}", option.name, option.version);
+                if ui.selectable_label(current == Some(*i), label).clicked() {
+                    acts.push(Act::Provider(*i));
+                }
+            }
+        })
+        .response
+        .named(ui, format!("{base}:provider"));
+    ui.add(egui::TextEdit::singleline(&mut form.version_req).hint_text("Version range (optional)"))
+        .named(ui, format!("{base}:version"));
+    for field in form.fields.iter_mut() {
+        draw_field(ui, base, field);
+    }
 }
 
 fn draw_field(ui: &mut egui::Ui, base: &str, field: &mut FormField) {

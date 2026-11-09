@@ -7,7 +7,7 @@ use bevy_egui::egui;
 use crate::accessibility::ResponseExt;
 
 use crate::actions::UiManager;
-use crate::extensions::builtin::SnippetInputs;
+use crate::extensions::builtin::{snippet_rows, SnippetInputs};
 use crate::gis::egress_strings::{self as es, EgressSource, ExportFormat};
 use crate::gis::GisPanelState;
 use crate::node_manager::NodeManager;
@@ -74,10 +74,14 @@ pub(crate) fn egress_section(
     };
 
     let base = gis_state.egress.base_url_buf.clone();
-    // The compiled-in connector descriptors (R33) render first, then bound package answers (BND-10c).
+    // The compiled-in connector descriptors (R33) always render first; bound package answers follow, each named
+    // `binding:egress.snippet:<key>` and labelled with its package (BND-10c).
     let inputs = SnippetInputs { base: &base, petal_id, sql: &sql };
-    for row in crate::extensions::bound_snippet_rows(ui.ctx(), &inputs) {
+    for row in snippet_rows(&inputs, &[]) {
         copy_row(ui, ui_mgr, &row.label, &row.text);
+    }
+    for (name, row) in crate::extensions::bound_snippet_rows(ui.ctx(), &inputs) {
+        ui.scope(|ui| copy_row(ui, ui_mgr, &row.label, &row.text)).response.named(ui, name);
     }
 
     ui.add_space(6.0);

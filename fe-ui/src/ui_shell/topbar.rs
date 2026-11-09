@@ -813,6 +813,7 @@ pub fn render_topbar(
                 if compact {
                     ui.menu_button("Tools", |ui| {
                         tool_buttons(ui, tool, right, role);
+                        crate::extensions::draw_topbar_controls(ui);
                         if node_mgr.selected_entity().is_some()
                             && ui.button("Deselect").observed(ui).clicked()
                         {
@@ -834,8 +835,10 @@ pub fn render_topbar(
                     },
                 );
 
-                // Toolbar actions contributed by unbound extensions.
-                crate::extensions::draw_topbar_controls(ui);
+                // Toolbar actions of running extensions; compact width lists them in the Tools menu instead.
+                if !compact {
+                    crate::extensions::draw_topbar_controls(ui);
+                }
                 ui.separator();
 
                 if !compact

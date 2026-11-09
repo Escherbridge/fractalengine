@@ -40,6 +40,24 @@ struct HostInner {
     registry: UiExtensionRegistry,
     slots: ExtensionSlotState,
     bound: BoundSlotsState,
+    /// Packages the installed list reports not running here, or removed since; none of their contributions draw.
+    stopped: HashSet<String>,
+    /// `ExtensionsPanelState::rows_generation` that `stopped` was copied from.
+    rows_generation: u64,
+}
+
+impl HostInner {
+    /// Toolbar, sidebar, overlay and dashboard: the package runs here and the contribution is not `ui.panel` content.
+    fn in_plain_slot(&self, contribution: &UiContribution) -> bool {
+        !self.stopped.contains(&contribution.plugin_id) && !self.bound.is_panel_content(contribution)
+    }
+
+    /// Inspector and context menu need a node, so `ui.panel` content draws in place, only while its binding resolves here.
+    fn in_node_slot(&self, contribution: &UiContribution) -> bool {
+        !self.stopped.contains(&contribution.plugin_id)
+            && (!self.bound.is_panel_content(contribution)
+                || self.bound.panel_bound(&contribution.plugin_id, self.active_petal.as_deref()))
+    }
 }
 
 /// Shared handle to the lent slot state; surfaces reach it through the egui context, so no draw signature grows.
@@ -80,11 +98,6 @@ impl Plugin for ExtensionSlotsPlugin {
     }
 }
 
-/// Packages whose bound panel draws at the active petal; their contributions render in that panel only.
-fn bound_packages(bound: &BoundSlotsState, active_petal: Option<&str>) -> HashSet<String> {
-    bound.panels_for(active_petal).iter().map(|panel| panel.package_id.clone()).collect()
-}
-
 /// Lends the registry, slot state and bound cache to this pass's surfaces; pairs with [`reclaim_slots_from_surfaces`].
 pub(crate) fn lend_slots_to_surfaces(
     mut egui_ctx: EguiContexts,
@@ -92,6 +105,7 @@ pub(crate) fn lend_slots_to_surfaces(
     mut registry: ResMut<crate::plugin::UiExtensions>,
     mut slots: ResMut<ExtensionSlotState>,
     mut bound: ResMut<BoundSlotsState>,
+    mut panel: Option<ResMut<ExtensionsPanelState>>,
     nav: Res<crate::navigation_manager::NavigationManager>,
 ) {
     let mut inner = host.lock();
@@ -101,7 +115,19 @@ pub(crate) fn lend_slots_to_surfaces(
         std::mem::swap(bound.bypass_change_detection(), &mut inner.bound);
         inner.lent = true;
     }
-    inner.active_petal = nav.active_petal_id.clone();
+    if inner.active_petal != nav.active_petal_id {
+        inner.active_petal = nav.active_petal_id.clone();
+        // Installed rows and bindings describe the petal they were read in; the next draw asks again.
+        if let Some(panel) = panel.as_deref_mut() {
+            panel.on_scope_changed();
+        }
+    }
+    if let Some(panel) = panel.as_deref() {
+        if panel.rows_generation() != inner.rows_generation {
+            inner.rows_generation = panel.rows_generation();
+            inner.stopped = panel.stopped_packages().clone();
+        }
+    }
     drop(inner);
     if let Ok(ctx) = egui_ctx.ctx_mut() {
         host.publish(ctx);
@@ -124,15 +150,14 @@ pub(crate) fn reclaim_slots_from_surfaces(
     }
 }
 
-/// Topbar: toolbar actions of unbound packages.
+/// Topbar (or the compact Tools menu): toolbar actions of running packages, `ui.panel` content excluded.
 pub fn draw_topbar_controls(ui: &mut egui::Ui) {
     let Some(host) = ExtensionSlotHost::from_ctx(ui.ctx()) else { return };
     let mut guard = host.lock();
-    let HostInner { registry, slots, bound, active_petal, .. } = &mut *guard;
-    let skip = bound_packages(bound, active_petal.as_deref());
+    let inner = &mut *guard;
     let items: Vec<&UiContribution> =
-        registry.toolbar_actions.iter().filter(|c| !skip.contains(&c.plugin_id)).collect();
-    draw_command_slot(ui, &items, slots);
+        inner.registry.toolbar_actions.iter().filter(|c| inner.in_plain_slot(c)).collect();
+    draw_command_slot(ui, &items, &mut inner.slots);
 }
 
 /// Topbar toggle for the Extensions window.
@@ -150,34 +175,43 @@ pub fn topbar_toggle(ui: &mut egui::Ui) {
     }
 }
 
-/// Left sidebar: sidebar tools of unbound packages, then the bound panels of the active petal.
+/// Left sidebar: sidebar tools of running packages, then the bound panels of the active petal.
 pub fn draw_sidebar_slot(ui: &mut egui::Ui) {
     let Some(host) = ExtensionSlotHost::from_ctx(ui.ctx()) else { return };
     let mut guard = host.lock();
-    let HostInner { registry, slots, bound, active_petal, .. } = &mut *guard;
-    let skip = bound_packages(bound, active_petal.as_deref());
-    let tools: Vec<&UiContribution> = registry
+    let inner = &mut *guard;
+    let tools: Vec<&UiContribution> = inner
+        .registry
         .sidebar_tools
         .iter()
-        .filter(|c| c.command.is_some() && !skip.contains(&c.plugin_id))
+        .filter(|c| c.command.is_some() && inner.in_plain_slot(c))
         .collect();
-    if tools.is_empty() && skip.is_empty() {
+    let has_panels = !inner.bound.panels_for(inner.active_petal.as_deref()).is_empty();
+    if tools.is_empty() && !has_panels {
         return;
     }
     ui.add_space(8.0);
     if !tools.is_empty() {
         egui::CollapsingHeader::new(egui::RichText::new("Extensions").strong().color(theme::TEXT_SECTION))
             .default_open(false)
-            .show(ui, |ui| draw_command_slot(ui, &tools, slots));
+            .show(ui, |ui| draw_command_slot(ui, &tools, &mut inner.slots));
     }
-    bound_slots::draw_bound_panels(ui, registry, bound, slots, active_petal.as_deref());
+    bound_slots::draw_bound_panels(
+        ui,
+        &inner.registry,
+        &inner.bound,
+        &mut inner.slots,
+        inner.active_petal.as_deref(),
+        &inner.stopped,
+    );
 }
 
 /// Inspector: read-only rows for the selected node's declared property keys.
 pub fn draw_inspector_slot(ui: &mut egui::Ui, node_properties: &serde_json::Value) {
     let Some(host) = ExtensionSlotHost::from_ctx(ui.ctx()) else { return };
     let guard = host.lock();
-    let items: Vec<&UiContribution> = guard.registry.inspector_panels.iter().collect();
+    let items: Vec<&UiContribution> =
+        guard.registry.inspector_panels.iter().filter(|c| guard.in_node_slot(c)).collect();
     if items.is_empty() {
         return;
     }
@@ -189,44 +223,51 @@ pub fn draw_inspector_slot(ui: &mut egui::Ui, node_properties: &serde_json::Valu
 pub fn draw_context_slot(ui: &mut egui::Ui, node_id: &str, node_name: &str) -> bool {
     let Some(host) = ExtensionSlotHost::from_ctx(ui.ctx()) else { return false };
     let mut guard = host.lock();
-    let HostInner { registry, slots, .. } = &mut *guard;
-    let items: Vec<&UiContribution> = registry.context_items.iter().collect();
-    if items.iter().all(|c| c.command.is_none()) {
-        return false;
-    }
+    let inner = &mut *guard;
     let node = |key: &str| match key {
         "id" => Some(serde_json::Value::String(node_id.to_owned())),
         "name" => Some(serde_json::Value::String(node_name.to_owned())),
         _ => None,
     };
+    let items: Vec<&UiContribution> = inner
+        .registry
+        .context_items
+        .iter()
+        .filter(|c| c.command.is_some() && inner.in_node_slot(c) && slots::when_matches(c.when.as_ref(), &node))
+        .collect();
+    if items.is_empty() {
+        return false;
+    }
     ui.separator();
-    let before = slots.pending_commands.len();
-    draw_context_menu_items(ui, &items, &node, slots);
-    slots.pending_commands.len() > before
+    let before = inner.slots.pending_commands.len();
+    draw_context_menu_items(ui, &items, &node, &mut inner.slots);
+    inner.slots.pending_commands.len() > before
 }
 
-/// Copy-for-BI rows: built-ins first, then bound package answers; requests stale answers for the binary to fetch.
-pub fn bound_snippet_rows(ctx: &egui::Context, inputs: &SnippetInputs) -> Vec<SnippetRow> {
-    let Some(host) = ExtensionSlotHost::from_ctx(ctx) else {
-        return builtin::snippet_rows(inputs, &[]);
-    };
+/// Bound `egress.snippet` rows as `(state name, row)`, drawn after the card's built-in rows; queues calls for stale answers.
+pub fn bound_snippet_rows(ctx: &egui::Context, inputs: &SnippetInputs) -> Vec<(String, SnippetRow)> {
+    let Some(host) = ExtensionSlotHost::from_ctx(ctx) else { return Vec::new() };
     let now = ctx.input(|input| input.time);
     let mut guard = host.lock();
-    guard.bound.request_stale(now, &SnippetCallArgs::from_inputs(inputs));
-    guard.bound.rows(inputs)
+    let inner = &mut *guard;
+    if !inner.bound.has_snippet_targets() {
+        return Vec::new();
+    }
+    let args = SnippetCallArgs::from_inputs(inputs);
+    inner.bound.request_stale(now, &args, &inner.stopped);
+    inner.bound.bound_rows(&args, &inner.stopped)
 }
 
-/// Viewport overlay and dashboard widgets of unbound packages: a read-only stack in the viewport's top-left corner.
+/// Viewport overlay and dashboard widgets of running packages: a read-only stack in the viewport's top-left corner.
 pub(crate) fn extension_overlay_system(mut egui_ctx: EguiContexts, host: Res<ExtensionSlotHost>) {
     let Ok(ctx) = egui_ctx.ctx_mut() else { return };
-    let mut guard = host.lock();
-    let HostInner { registry, slots, bound, active_petal, .. } = &mut *guard;
-    let skip = bound_packages(bound, active_petal.as_deref());
-    let items: Vec<&UiContribution> = registry
+    let guard = host.lock();
+    let items: Vec<&UiContribution> = guard
+        .registry
         .overlays
         .iter()
-        .chain(registry.dashboard_widgets.iter())
-        .filter(|c| c.stream.is_some() && !skip.contains(&c.plugin_id))
+        .chain(guard.registry.dashboard_widgets.iter())
+        .filter(|c| c.stream.is_some() && guard.in_plain_slot(c))
         .collect();
     if items.is_empty() {
         return;
@@ -241,7 +282,7 @@ pub(crate) fn extension_overlay_system(mut egui_ctx: EguiContexts, host: Res<Ext
                 .fill(theme::BG_PANEL.gamma_multiply(0.85))
                 .corner_radius(4.0)
                 .inner_margin(egui::Margin::same(6))
-                .show(ui, |ui| draw_stream_slot(ui, &items, slots));
+                .show(ui, |ui| draw_stream_slot(ui, &items, &guard.slots));
         });
 }
 

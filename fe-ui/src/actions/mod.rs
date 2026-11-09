@@ -1490,27 +1490,26 @@ pub(crate) fn process_ui_actions(
                 );
             }
             UiAction::ToggleTerrainVisibility => {
-                // Flip the stored "terrain" layer's `visible` (absent layer counts as visible).
-                match (nav.active_petal_id.clone(), petal_map.terrain_json.as_ref()) {
-                    (Some(petal_id), Some(doc)) => {
-                        let visible_now = doc
-                            .get("layers")
-                            .and_then(|layers| layers.as_array())
-                            .and_then(|layers| {
-                                layers.iter().find(|l| l.get("name").and_then(|n| n.as_str()) == Some("terrain"))
-                            })
-                            .and_then(|layer| layer.get("visible"))
-                            .and_then(|v| v.as_bool())
-                            .unwrap_or(true);
-                        gis::set_layer(
-                            &db_sender,
-                            &mut petal_map,
-                            petal_id,
-                            "terrain".to_owned(),
-                            Some(!visible_now),
-                            None,
-                        );
-                    }
+                // The stored "terrain" layer's `visible` (absent layer counts as visible), read before the write borrows the map.
+                let visible_now = petal_map.terrain_json.as_ref().map(|doc| {
+                    doc.get("layers")
+                        .and_then(|layers| layers.as_array())
+                        .and_then(|layers| {
+                            layers.iter().find(|l| l.get("name").and_then(|n| n.as_str()) == Some("terrain"))
+                        })
+                        .and_then(|layer| layer.get("visible"))
+                        .and_then(|v| v.as_bool())
+                        .unwrap_or(true)
+                });
+                match (nav.active_petal_id.clone(), visible_now) {
+                    (Some(petal_id), Some(visible)) => gis::set_layer(
+                        &db_sender,
+                        &mut petal_map,
+                        petal_id,
+                        "terrain".to_owned(),
+                        Some(!visible),
+                        None,
+                    ),
                     _ => ui_mgr.show_advisory("No terrain map on this petal to show or hide", now_secs),
                 }
             }

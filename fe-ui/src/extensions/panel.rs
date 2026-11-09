@@ -1,7 +1,7 @@
 //! Extensions panel: Installed list, view routing and the queued `ExtensionOp` seam to the bridge.
 //! Design, bridge contract and consent rules: `docs/extensions/extensions-ui.md`.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use bevy::prelude::*;
 use bevy_egui::egui;
@@ -253,6 +253,12 @@ pub struct ExtensionsPanelState {
     /// Installation whose consent dialog is open; one review at a time.
     pub(super) reviewing: Option<String>,
     requested_rows: bool,
+    /// Packages reported installed but not running here, plus those removed since (their contributions never draw).
+    stopped: HashSet<String>,
+    /// Packages that left the installed list; they stay stopped until they reappear.
+    retired: HashSet<String>,
+    /// Bumped on every `Rows` snapshot so the slot host copies `stopped` only when it changed.
+    rows_generation: u64,
 }
 
 impl ExtensionsPanelState {
@@ -264,6 +270,22 @@ impl ExtensionsPanelState {
     /// True while the bridge works or a consent dialog is open: state-changing buttons are disabled.
     pub fn busy(&self) -> bool {
         self.working.is_some() || self.reviewing.is_some()
+    }
+
+    /// Packages whose UI contributions must not draw: not Enabled in the last snapshot, or uninstalled since.
+    pub fn stopped_packages(&self) -> &HashSet<String> {
+        &self.stopped
+    }
+
+    /// Counter of `Rows` snapshots applied so far.
+    pub fn rows_generation(&self) -> u64 {
+        self.rows_generation
+    }
+
+    /// The active petal changed: rows and bindings describe the old one, so the next draw asks the bridge again.
+    pub fn on_scope_changed(&mut self) {
+        self.requested_rows = false;
+        self.bindings.invalidate();
     }
 
     /// Ask for the first snapshot (rows and Browse sources) the first time the panel draws.
@@ -336,6 +358,18 @@ impl ExtensionsPanelState {
         match event {
             ExtensionEvent::Rows(rows) => {
                 self.working = None;
+                let listed = |package_id: &str| rows.iter().any(|row| row.package_id == package_id);
+                for gone in self.rows.iter().filter(|old| !listed(&old.package_id)) {
+                    self.retired.insert(gone.package_id.clone());
+                }
+                self.retired.retain(|package_id| !listed(package_id));
+                self.stopped = rows
+                    .iter()
+                    .filter(|row| row.status != RowStatus::Enabled)
+                    .map(|row| row.package_id.clone())
+                    .chain(self.retired.iter().cloned())
+                    .collect();
+                self.rows_generation += 1;
                 self.rows = rows;
                 let rows = &self.rows;
                 self.updates.retain(|id, _| rows.iter().any(|row| row.installation_id == *id));
@@ -391,6 +425,13 @@ impl ExtensionsPanelState {
                 self.queue(ExtensionOp::Consent { installation_id, capability_digest, accept_in_verse }, "Enabling");
             }
             ConsentDecision::KillListOverride { installation_id, verse_id, package_id, content_hash, confirm } => {
+                if confirm != package_id {
+                    // Only the exact typed package id confirms an override; the staged build is dropped, nothing is sent.
+                    self.updates.remove(&installation_id);
+                    self.queue(ExtensionOp::DiscardStaged { installation_id }, "Discarding");
+                    self.error = Some("confirmation-mismatch: type the package id exactly to override the kill list".into());
+                    return;
+                }
                 self.queue(
                     ExtensionOp::KillListOverride { installation_id, verse_id, package_id, content_hash, confirm },
                     "Applying override",
@@ -641,7 +682,11 @@ mod tests {
                 ExtensionOp::Disable { installation_id: "inst-1".into(), binding_id: "b1".into() },
             ]
         );
+        // Only an Enabled package's contributions draw: a disabled one is stopped as soon as its row says so.
+        state.apply_event(ExtensionEvent::Rows(vec![row("1.0.0", RowStatus::Enabled, Some("1.1.0"))]), &mut consent);
+        assert!(!state.stopped_packages().contains("org.example.fleet-sim"));
         state.apply_event(ExtensionEvent::Rows(vec![row("1.0.0", RowStatus::Disabled, Some("1.1.0"))]), &mut consent);
+        assert!(state.stopped_packages().contains("org.example.fleet-sim"));
 
         // Update with a delta: re-prompt; the previous version stays until the new one is active; a failed start rolls back.
         details::begin_update(&mut state, "inst-1");
@@ -695,16 +740,18 @@ mod tests {
         assert_eq!(state.take_ops(), vec![ExtensionOp::Uninstall { installation_id: "inst-1".into() }]);
         state.apply_event(ExtensionEvent::Rows(Vec::new()), &mut consent);
         assert!(!frame(&mut state).iter().any(|(name, _)| name == "Open org.example.fleet-sim"));
+        assert!(state.stopped_packages().contains("org.example.fleet-sim"), "an uninstalled package's contributions never draw again");
 
-        // Bindings view: points by accessible name, one offer each, the Manager edit form, and the kill-list override route.
+        // Bindings view (bindings.md section 9): a state row per point, `:action` for its one offer, Manager+ edit, Owner override.
         use super::super::bindings::{BindingPointRow, BindingsSnapshot, ProviderOption, ScopeOption, ScopeTarget};
         use fe_runtime::extension_binding::{BindingMode, BindingOffer, BindingResolution, BindingScopeLevel, UnresolvedReason};
         let petal = ScopeTarget { verse_id: "v1".into(), fractal_id: Some("f1".into()), petal_id: Some("p1".into()) };
+        let fractal = ScopeTarget { petal_id: None, ..petal.clone() };
         let point = |hook: &str, key: &str, resolution| BindingPointRow {
             hook: hook.into(),
             key: key.into(),
             scope_label: "Fractal North".into(),
-            target: Some(ScopeTarget { petal_id: None, ..petal.clone() }),
+            target: Some(fractal.clone()),
             mode: BindingMode::Extension,
             package_id: Some("org.example.city-map".into()),
             version_req: None,
@@ -717,7 +764,11 @@ mod tests {
             verse_id: "v1".into(),
             petal_label: "Petal Quay".into(),
             can_manage: true,
-            scopes: vec![ScopeOption { level: BindingScopeLevel::Petal, label: "Petal Quay".into(), target: petal.clone() }],
+            local_is_owner: true,
+            scopes: vec![
+                ScopeOption { level: BindingScopeLevel::Petal, label: "Petal Quay".into(), target: petal.clone() },
+                ScopeOption { level: BindingScopeLevel::Fractal, label: "Fractal North".into(), target: fractal.clone() },
+            ],
             points: vec![
                 point("petal.map", "", unresolved(UnresolvedReason::Revoked)),
                 point("ingest.decode", "acme-v2", unresolved(UnresolvedReason::NotInstalled)),
@@ -734,10 +785,16 @@ mod tests {
         state.view = PanelView::Bindings;
         state.request_bindings_refresh();
         assert_eq!(state.take_ops(), vec![ExtensionOp::RefreshBindings]);
-        state.apply_event(ExtensionEvent::Bindings(snapshot), &mut consent);
+        // A failed load keeps a retry, never a dead end.
+        state.apply_event(ExtensionEvent::Failed { message: "binding host unavailable".into() }, &mut consent);
+        assert!(enabled(&frame(&mut state), "Refresh bindings"));
+        state.request_bindings_refresh();
+        state.take_ops();
+        state.apply_event(ExtensionEvent::Bindings(snapshot.clone()), &mut consent);
         let names = frame(&mut state);
-        assert!(enabled(&names, "binding:petal.map:override") && enabled(&names, "binding:ingest.decode:acme-v2:install"));
-        assert!(names.iter().any(|(name, _)| name == "binding:api.routes:fleet") && !names.iter().any(|(name, _)| name == "binding:api.routes:fleet:install"));
+        assert!(enabled(&names, "binding:petal.map:action") && enabled(&names, "binding:ingest.decode:acme-v2:action"));
+        assert!(names.iter().any(|(name, _)| name == "binding:api.routes:fleet") && !names.iter().any(|(name, _)| name == "binding:api.routes:fleet:action"));
+        assert!(enabled(&names, "binding:petal.map:edit"));
         state.request_binding_offer(0);
         assert_eq!(
             state.take_ops(),
@@ -750,25 +807,49 @@ mod tests {
             }]
         );
         state.working = None;
-        // The override confirmation routes to the audited op; a Manager's edit is validated before it is queued.
-        state.route_consent(ConsentDecision::KillListOverride {
+        // Only the exact typed package id sends the audited override; anything else only discards the staged build.
+        let override_decision = |confirm: &str| ConsentDecision::KillListOverride {
             installation_id: "inst-1".into(),
             verse_id: "v1".into(),
             package_id: "org.example.city-map".into(),
             content_hash: "h1".into(),
-            confirm: "org.example.city-map".into(),
-        });
+            confirm: confirm.into(),
+        };
+        state.route_consent(override_decision("org.example.city"));
+        assert_eq!(state.take_ops(), vec![ExtensionOp::DiscardStaged { installation_id: "inst-1".into() }]);
+        assert!(state.error.as_deref().is_some_and(|error| error.starts_with("confirmation-mismatch")));
+        state.working = None;
+        state.route_consent(override_decision("org.example.city-map"));
         assert!(matches!(state.take_ops().as_slice(), [ExtensionOp::KillListOverride { verse_id, confirm, .. }] if verse_id == "v1" && confirm == "org.example.city-map"));
         state.working = None;
+        // A Manager's edit is validated before it is queued; Remove writes `inherit` where the winning row sits.
         state.bindings.start_edit(0);
         assert!(enabled(&frame(&mut state), "binding:petal.map:save"));
         state.request_binding_save();
         assert!(state.take_ops().is_empty(), "a required setting is missing, so nothing is written");
-        state.bindings.edit = None;
+        assert!(enabled(&frame(&mut state), "binding:petal.map:clear"));
         state.request_binding_clear(0);
-        assert_eq!(
-            state.take_ops(),
-            vec![ExtensionOp::ClearBinding { target: ScopeTarget { petal_id: None, ..petal }, hook: "petal.map".into(), key: String::new() }]
-        );
+        assert_eq!(state.take_ops(), vec![ExtensionOp::ClearBinding { target: fractal.clone(), hook: "petal.map".into(), key: String::new() }]);
+        assert!(state.bindings.edit.is_none());
+        state.working = None;
+
+        // A non-Manager who is not the Owner sees states only: no edit, no override, and no write can be queued.
+        let viewer = BindingsSnapshot { can_manage: false, local_is_owner: false, scopes: Vec::new(), ..snapshot };
+        state.bindings.start_edit(0);
+        state.apply_event(ExtensionEvent::Bindings(viewer), &mut consent);
+        assert!(state.bindings.edit.is_none(), "an open form closes when the local DID stops managing here");
+        let names = frame(&mut state);
+        assert!(!names.iter().any(|(name, _)| name == "binding:petal.map:action" || name == "binding:petal.map:edit"));
+        assert!(enabled(&names, "binding:ingest.decode:acme-v2:action"), "Install is a local-DID offer, not a Manager one");
+        state.bindings.start_edit(0);
+        state.request_binding_offer(0);
+        state.request_binding_clear(0);
+        state.request_binding_save();
+        assert!(state.bindings.edit.is_none() && state.take_ops().is_empty());
+
+        // Another petal: the rows and bindings are asked again on the next draw instead of acting on the old petal's.
+        state.on_scope_changed();
+        frame(&mut state);
+        assert_eq!(state.take_ops(), vec![ExtensionOp::Refresh, ExtensionOp::RefreshBindings]);
     }
 }
