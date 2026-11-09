@@ -1,0 +1,23 @@
+{
+  "petal_id": "p1",
+  "start_ms": 1000000,
+  "ticks": 12,
+  "nodes": [
+    { "id": "probe-a", "name": "probe-a" },
+    { "id": "truck-1", "name": "truck-1" },
+    { "id": "route-1", "name": "route-1", "properties": { "gpx_points": [[0, 0, 0], [100, 0, 0], [100, 0, 100]] } }
+  ],
+  "fleet": {
+    "anchors": ["probe-a", "truck-1"],
+    "sensors": [
+      { "anchor": "probe-a", "metric": "temperature_c", "units": "C", "cadence_ms": 500, "model": { "type": "sine", "baseline": 20.0, "amplitude": 4.0, "period_ms": 60000 } },
+      { "anchor": "truck-1", "metric": "altitude_m", "units": "m", "cadence_ms": 1000, "model": { "type": "random_walk", "start": 100.0, "step": 0.5, "seed": 7 } }
+    ],
+    "movers": [
+      { "node": "truck-1", "route": "route-1", "speed_mps": 10.0, "loop": false }
+    ],
+    "mover_tick_ms": 500,
+    "start_ms": 1000000,
+    "duration_ms": 20000
+  }
+}

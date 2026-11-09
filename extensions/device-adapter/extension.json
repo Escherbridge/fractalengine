@@ -1,0 +1,100 @@
+{
+  "manifest_version": 2,
+  "id": "org.example.device-adapter",
+  "version": "0.1.0",
+  "name": "Device adapter",
+  "description": "Turns HTTP, websocket and MQTT device frames into readings and transforms; actuates through MQTT.",
+  "kind": "device-adapter",
+  "contract": "fractalengine:plugin@2.0.0",
+  "binding": "petal",
+  "scene": {
+    "read": true,
+    "write": ["set_transform", "set_property"],
+    "property_scope": ["device.*"]
+  },
+  "readings": {
+    "source_class": ["device", "simulation"],
+    "metrics": ["*"]
+  },
+  "tick": { "cadence_ms": 1000, "max_ops": 64, "max_readings": 1000, "fuel": 500000 },
+  "ingress": [
+    {
+      "id": "telemetry",
+      "transport": "http-server",
+      "methods": ["POST"],
+      "content_types": ["application/json"],
+      "max_body_bytes": 65536,
+      "rate_hz": 10,
+      "role_floor": "editor",
+      "forward_headers": ["x-device-id"]
+    },
+    {
+      "id": "live",
+      "transport": "websocket-accept",
+      "max_frame_bytes": 16384,
+      "rate_hz": 20,
+      "max_connections": 16,
+      "role_floor": "editor"
+    },
+    {
+      "id": "site-broker",
+      "transport": "mqtt",
+      "broker": "mqtts://mqtt.example.org:8883",
+      "topics": ["site-a/+/telemetry"],
+      "qos": "at-least-once",
+      "max_payload_bytes": 16384,
+      "rate_hz": 50,
+      "auth": { "scheme": "mqtt-password", "credential": "site-a-broker" }
+    }
+  ],
+  "egress": [
+    {
+      "id": "actuate",
+      "transport": "mqtt",
+      "broker": "mqtts://mqtt.example.org:8883",
+      "topics": ["site-a/+/command"],
+      "qos": "at-least-once",
+      "retain": false,
+      "max_payload_bytes": 1024,
+      "rate_hz": 2,
+      "auth": { "scheme": "mqtt-password", "credential": "site-a-broker" }
+    }
+  ],
+  "bus": {
+    "expose": {
+      "commands": [
+        {
+          "id": "actuate",
+          "description": "Send one command frame to the device anchored at node_id.",
+          "role_floor": "editor",
+          "rate_hz": 2,
+          "args_schema": {
+            "type": "object",
+            "properties": {
+              "node_id": { "type": "string", "maxLength": 128 },
+              "action": { "enum": ["on", "off", "reset"] }
+            },
+            "required": ["node_id", "action"],
+            "additionalProperties": false
+          }
+        },
+        {
+          "id": "reset",
+          "description": "Reset the device anchored at node_id (the context-menu entry sends exactly {node_id}).",
+          "role_floor": "editor",
+          "rate_hz": 1,
+          "args_schema": {
+            "type": "object",
+            "properties": { "node_id": { "type": "string", "maxLength": 128 } },
+            "required": ["node_id"],
+            "additionalProperties": false
+          }
+        }
+      ]
+    }
+  },
+  "ui": [
+    { "id": "device", "slot": "InspectorSection", "label": "Device", "properties": ["device.id", "device.last_seen"] },
+    { "id": "reset", "slot": "ContextMenu", "label": "Reset device", "command": "reset", "when": { "property": "device.id" } }
+  ]
+}

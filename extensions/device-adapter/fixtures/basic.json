@@ -1,0 +1,35 @@
+{
+  "petal_id": "p1",
+  "start_ms": 2000000,
+  "ticks": 4,
+  "source_class": "device",
+  "nodes": [
+    { "id": "sensor-1", "name": "Sensor 1", "properties": { "device.id": "dev-1" } },
+    { "id": "plain-1", "name": "Plain node" }
+  ],
+  "ingress": [
+    {
+      "at_tick": 1, "endpoint": "telemetry", "transport": "http", "method": "POST",
+      "headers": [["x-device-id", "dev-1"]], "content_type": "application/json",
+      "body": "{\"readings\":[{\"metric\":\"temperature_c\",\"value\":21.5,\"units\":\"C\"},{\"metric\":\"humidity_pct\",\"value\":40,\"units\":\"%\"}]}"
+    },
+    {
+      "at_tick": 2, "endpoint": "live", "transport": "websocket", "connection": 1,
+      "body": "{\"device_id\":\"dev-1\",\"readings\":[{\"metric\":\"battery_v\",\"value\":3.7,\"units\":\"V\"}],\"position\":[12.5,0,-4],\"heading_deg\":90}"
+    },
+    {
+      "at_tick": 2, "endpoint": "site-broker", "transport": "mqtt", "topic": "site-a/dev-1/telemetry",
+      "body": "{\"readings\":[{\"metric\":\"temperature_c\",\"value\":22.0,\"units\":\"C\"}]}"
+    },
+    {
+      "at_tick": 3, "endpoint": "telemetry", "transport": "http", "method": "POST",
+      "headers": [["x-device-id", "dev-1"]], "content_type": "application/json",
+      "body": "{\"readings\":[{\"metric\":\"temperature_c\",\"value\":\"hot\",\"units\":\"C\"}]}"
+    },
+    {
+      "at_tick": 3, "endpoint": "telemetry", "transport": "http", "method": "POST",
+      "headers": [["x-device-id", "ghost"]], "content_type": "application/json",
+      "body": "{\"position\":[1,1,1]}"
+    }
+  ]
+}
