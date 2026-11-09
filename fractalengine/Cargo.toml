@@ -78,5 +78,6 @@ winit = { version = "0.30", default-features = false }
 
 [features]
 default = []
-# Plugin host (thread 7): compiled in but inert unless FE_PLUGIN_HOST_ALLOW=1 (src/AGENTS.md §plugin-host).
+# Third-party package admission: needs this feature AND FE_PLUGIN_HOST_ALLOW=1; the host thread
+# itself always runs, inert (src/AGENTS.md §plugin-host).
 plugin-host = []

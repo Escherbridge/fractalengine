@@ -5,10 +5,13 @@ pub mod capability;
 pub mod context;
 pub mod host_env;
 pub mod lifecycle;
+pub mod package;
 pub mod registry;
+pub mod registry_client;
 pub mod scene_host;
 pub mod rhai;
 pub mod transaction;
+pub mod trust_roots;
 pub mod wasm;
 
 use bevy::prelude::*;
@@ -193,22 +196,26 @@ pub struct PluginHostService(pub std::sync::Mutex<Option<fe_runtime::service_lif
 // Bevy plugin
 // ---------------------------------------------------------------------------
 
-/// Runtime opt-in env var for the plugin host (deny-by-default, mirrors `FE_API_SCREENSHOT_ALLOW`).
+/// Runtime opt-in env var for package admission (deny-by-default, mirrors `FE_API_SCREENSHOT_ALLOW`; src/AGENTS.md §admission-gate).
 pub const PLUGIN_HOST_ENV: &str = "FE_PLUGIN_HOST_ALLOW";
 
-/// Whether an env value opts the host in: exactly `"1"`; unset, empty or garbage stay off.
+/// Whether an env value opts admission in: exactly `"1"`; unset, empty or garbage stay off.
 pub fn plugin_host_allowed(value: Option<&str>) -> bool {
     value == Some("1")
 }
 
-/// Read [`PLUGIN_HOST_ENV`] once at startup; a loud WARN fires when the host is switched on.
+/// Read [`PLUGIN_HOST_ENV`] once at startup; a loud WARN fires when admission is switched on.
 pub fn plugin_host_allowed_from_env() -> bool {
     let allowed = plugin_host_allowed(std::env::var(PLUGIN_HOST_ENV).ok().as_deref());
     if allowed {
-        tracing::warn!("{PLUGIN_HOST_ENV}=1: plugin host ENABLED (WASM/Rhai sandbox is un-audited; see SECURITY.md)");
+        tracing::warn!("{PLUGIN_HOST_ENV}=1: plugin package admission ENABLED (WASM sandbox is un-audited; see SECURITY.md)");
     }
     allowed
 }
+
+/// Bevy resource: whether third-party packages may be admitted (binary feature + env, decided once at startup).
+#[derive(Resource, Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct PackageAdmission(pub bool);
 
 /// Bevy plugin that initializes the plugin host infrastructure.
 ///

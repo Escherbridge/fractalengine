@@ -89,9 +89,10 @@ merely restate them will be deduplicated against this list.
   capability as able to write to it.
 - **The plugin sandbox is young.** Rhai and WebAssembly plugins run with
   operation limits, fuel metering, and capability manifests, but the
-  sandbox has not had an external audit. The host is off by default and
-  opt-in; once enabled it runs plugin code, so only install plugins you
-  trust.
+  sandbox has not had an external audit. Third-party package admission is
+  off by default and opt-in (the `plugin-host` build feature plus
+  `FE_PLUGIN_HOST_ALLOW=1`); once enabled the host runs plugin code, so only
+  install plugins you trust.
 
 ## Scope
 

@@ -512,11 +512,13 @@ fn main() {
         },
     );
 
-    // Plugin host: Cargo feature `plugin-host` AND FE_PLUGIN_HOST_ALLOW=1; otherwise no thread, no registry (src/AGENTS.md §plugin-host).
-    if cfg!(feature = "plugin-host") && fe_plugin::plugin_host_allowed_from_env() {
-        plugin_bridge::install(&mut app);
-        app.add_systems(bevy::prelude::Startup, register_first_party_extension_ui);
-    }
+    // The host thread always runs and stays inert; admitting third-party packages needs the
+    // `plugin-host` feature AND FE_PLUGIN_HOST_ALLOW=1 (src/AGENTS.md §plugin-host).
+    app.insert_resource(fe_plugin::PackageAdmission(
+        cfg!(feature = "plugin-host") && fe_plugin::plugin_host_allowed_from_env(),
+    ));
+    plugin_bridge::install(&mut app);
+    app.add_systems(bevy::prelude::Startup, register_first_party_extension_ui);
     if let Some(results) = app.world().get_resource::<fe_plugin::PluginResultReceiver>() {
         // drain_plugin_results empties it every frame (src/AGENTS.md §render-loop).
         render_work.watch(results.0.lock().unwrap_or_else(|error| error.into_inner()).clone());
@@ -1010,7 +1012,7 @@ struct SceneChangeReceiver(crossbeam::channel::Receiver<fe_runtime::messages::Sc
 #[derive(bevy::prelude::Resource, Clone)]
 struct SharedEntityStore(Arc<fe_entity_store::EntityStore>);
 
-/// Startup system: the first-party terrain extension contributes its UI slots (host-gated, AC-2).
+/// Startup system: the first-party terrain extension contributes its UI slots (compiled in, never a package; AC-2).
 fn register_first_party_extension_ui(mut extensions: bevy::prelude::ResMut<fe_ui::plugin::UiExtensions>) {
     fe_terrain::extension::register_terrain_ui(&mut extensions.0);
 }

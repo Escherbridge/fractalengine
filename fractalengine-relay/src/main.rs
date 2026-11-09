@@ -306,9 +306,11 @@ fn main() -> anyhow::Result<()> {
         },
     );
 
-    // Plugin host: feature `plugin-host` + FE_PLUGIN_HOST_ALLOW=1, both required; no scene backend on the relay.
+    // Plugin host (feature `plugin-host`, default OFF): the thread runs inert; admitting packages also
+    // needs FE_PLUGIN_HOST_ALLOW=1. No scene backend on the relay (fractalengine/src/AGENTS.md §plugin-host).
     #[cfg(feature = "plugin-host")]
-    if fe_plugin::plugin_host_allowed_from_env() {
+    {
+        app.insert_resource(fe_plugin::PackageAdmission(fe_plugin::plugin_host_allowed_from_env()));
         app.add_plugins(fe_plugin::PluginHostPlugin);
     }
 

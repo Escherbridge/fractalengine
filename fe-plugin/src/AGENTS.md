@@ -39,7 +39,11 @@ uninstall_plugin  → call on_uninstall  → remove from registry + delete files
 Notes:
 
 - Install verification is ed25519 publisher signatures (see §signed-packages);
-  the old optional BLAKE3 `expected_hash` check is gone.
+  the old optional BLAKE3 `expected_hash` check is gone. The capability manifest is parsed from the
+  signed `manifest_bytes`, never passed beside them, and install records `{content_hash, manifest}`.
+- `activate_with_bytes` runs only that record: bytes whose hash differs answer `PayloadMismatch`,
+  a plugin with no record answers `NotVerified`, and the token is minted from the signed manifest.
+  Install and activation both need admission (§admission-gate); deactivate and uninstall never do.
 - `activate_plugin` only validates registry state
   (`Installed`/`Deactivated`/`Degraded(_)` → activatable) and then returns
   `NotImplemented`; the real path is `activate_with_bytes`, because the Wasm
@@ -212,16 +216,40 @@ empty spans remain empty strings for the existing legitimate ABI semantics.
 
 `PluginHostService` retains the plugin runtime join. Host maintenance first revokes `PluginContexts` leases, then requests stop and joins the runtime while DB/results continue draining. Revocation is not rollback of an already-admitted commit; the final serial DB barrier remains necessary.
 
+## §admission-gate
+
+Package admission is opt-in (plugin_host_revival OD-4, retargeted by docs/extensions/governance.md
+§Host switch): the host thread always runs, and the binary's `plugin-host` Cargo feature plus
+`FE_PLUGIN_HOST_ALLOW=1` decide `PackageAdmission` once at startup (`fractalengine/src/AGENTS.md`
+§plugin-host). `PluginManager` defaults to admission off; `with_admission(true)` is the only way on.
+Off, `install_plugin`, `install_from_registry` and `activate_with_bytes` answer `LifecycleError::HostOff`
+before touching any bytes. This is the security boundary while the sandbox is un-audited (SECURITY.md).
+
+## §network-deny
+
+OD-1 closes deny-by-default with no grant path. `CapabilityManifest::from_json` refuses any
+`network_scope` other than `"none"` and any `external_http: true`, and `validate_access` denies
+`HttpRequest` whatever the token says, so a manifest smuggled past the parser is still denied at use.
+Manifest v2 replaces both fields with declared `ingress[]`/`egress[]` (docs/extensions/manifest-v2.md).
+
 ## §signed-packages
 
 `package.rs` + `trust_roots.rs` implement seam S-PLUGIN; `lifecycle.rs::install_plugin` is the call site.
 
 - **Signed message** = `manifest_bytes || blake3(payload)` (32 raw digest bytes). A package carries a
-  list of `{key_id, signature(hex)}`; install succeeds when at least one entry verifies against a
-  trust root, so a second party can counter-sign without a format change. Whether a particular signer
-  is required is trust-root policy, not format.
+  list of `{key_id, signature(hex)}` (at most 16). It is accepted when at least one entry verifies
+  against a trust root AND no trust-root entry fails: a failing trusted entry is tampering, never
+  outvoted (docs/extensions/package-format.md §Signatures). Entries from unknown keys are ignored, so
+  a second party can counter-sign without a format change.
+- **Identity is signed.** The signed manifest must carry `"id"` equal to the installing package id
+  (`IdMismatch` otherwise). The signature does not cover the id separately; the manifest's `id` is the
+  binding, the same rule manifest v2 states (`id` = `package_id`). Without it a mirror could serve a
+  revoked, validly signed build under a new id (P2P-QA steer 2026-11-08 20:10).
+- **Verification is strict**: `verify_strict` everywhere, and a weak (small-order) public key never
+  loads as a trust root, since such a key accepts forged signatures.
 - **Errors are typed** (`PackageError`): `Unsigned`, `UntrustedKey` (no entry names a trust root),
-  `InvalidSignature` (a trusted key's signature fails: tampering, never dev-admitted), `Revoked`.
+  `InvalidSignature` (a trusted key's signature fails or is malformed: never dev-admitted), `IdMismatch`,
+  `TooManySignatures`, `Revoked`.
 - **Dev flag**: `UnsignedPolicy::AllowDev` exists only under `cfg(debug_assertions)`, so a release
   build cannot construct it; every use logs `tracing::warn!`. It admits unsigned and untrusted-key
   packages only.
@@ -232,5 +260,31 @@ empty spans remain empty strings for the existing legitimate ABI semantics.
   `signature` is ed25519 (hex) over the canonical JSON (keys sorted, compact) of
   `{"entries":...,"issued_at":...}` (`RevocationList::signed_bytes`). Only a trust root with
   `revocation = true` may sign; the host is a consumer, never a publisher. `content_hash` is the hex blake3
-  of the payload (`package::payload_hash`). Fetching (OD-8 pull + cache) belongs to the registry-install slice;
-  this module verifies and answers `RevocationSet::is_revoked`, consulted at install and `activate_with_bytes`.
+  of the payload (`package::payload_hash`).
+- **Matching is by hash under ANY package id** (governance.md §Kill switch layers): `RevocationSet::is_revoked(hash)`
+  ignores the entry's `package_id`, so a renamed copy of a revoked build stays revoked. Hashes compare
+  lowercase. `RevocationSet::extend` unions the lists of several revocation-capable roots.
+- **Not built yet: the OD-8 pull.** Nothing fetches `revocation_url` today (`TrustRoots::revocation_sources`
+  has no caller). The puller must keep the newest `issued_at` per signer and refuse an older list, or a
+  replayed old list silently un-revokes; it lands with the kill switch (extension_platform E10).
+
+## §registry-install
+
+`registry_client.rs` (S4) fetches over registry protocol v1 and hands the bytes to `install_plugin`.
+
+- **Protocol first.** `/health` must answer `X-Hexon-Registry-Protocol: 1` (or `protocol_version: 1`
+  in the body, read under a 64 KiB cap), and the download response must carry the header too.
+- **Identity triangle.** `fetch_package(uri)` refuses a package whose `signatures.json` `package_id`
+  differs from the requested uri's id (`{id}` or `{id}@{version}`, the registry's `split_uri`);
+  `install_plugin` then requires the signed manifest's `id` to equal that same id.
+- **Bounded.** Connect timeout 10 s, request timeout 120 s, archive ≤ 64 MiB, JSON members ≤ 1 MiB.
+- **Licensed packages are refused** (`EntitlementUnavailable`) until hexon_entitlements_20261031 S1
+  ships `fe_format::entitlement`. Then enable fe-format's `entitlement` feature and, for
+  `LicenseType::Paid`, call `verifier.verify(token, package_id, content_hash)` and
+  `open_paid_entry(content_key, payload)` before the hash check: one call site, no new verifier code.
+- **Interim v1 layout**: `plugin/manifest.json` (CapabilityManifest 1.0 + `id`), `plugin/payload.wasm`
+  (core module), `plugin/signatures.json` (`{package_id, content_hash, signatures}`), read with
+  `HexonArchive::read_member` and no sealed-hexon check. docs/extensions/package-format.md supersedes it
+  (sealed `HexonType::Plugin`, `plugin/extension.json`, `plugin/component.wasm`, counter-signatures,
+  `content_hash` over the sealed manifest) when extension_platform E9/E13 land; this client then moves to
+  fe-hexon as the protocol-v1 `RegistrySource`.

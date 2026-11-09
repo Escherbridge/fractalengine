@@ -33,10 +33,26 @@ pub struct PluginInstallRequest {
 }
 
 impl PluginInstallRequest {
-    /// True when the manifest asks for network access the v1 host cannot grant.
+    /// True when the manifest asks for network access the v1 host cannot grant (mirrors fe-plugin `CapabilityManifest::from_json`).
     pub fn requests_network(&self) -> bool {
-        let scope = self.network_scope.trim();
-        (!scope.is_empty() && scope != "none") || self.external_http
+        self.network_scope != "none" || self.external_http
+    }
+
+    /// The rows the modal lists, as enforced: v1 grants ALL on an empty verse/petal/property scope, nothing on empty capabilities.
+    pub fn consent_rows(&self) -> [(&'static str, Vec<String>); 4] {
+        fn listed(items: &[String], when_empty: &str) -> Vec<String> {
+            if items.is_empty() {
+                vec![when_empty.to_string()]
+            } else {
+                items.to_vec()
+            }
+        }
+        [
+            ("Verses", listed(&self.verse_scope, "All verses")),
+            ("Petals", listed(&self.petal_scope, "All petals")),
+            ("Properties", listed(&self.property_scope, "All properties")),
+            ("Capabilities", listed(&self.capabilities, "None")),
+        ]
     }
 }
 
@@ -123,10 +139,9 @@ pub fn render(ctx: &egui::Context, state: &mut PluginInstallState) {
                     .color(theme::TEXT_MUTED),
             );
             ui.add_space(8.0);
-            scope_row(ui, "Verses", &request.verse_scope);
-            scope_row(ui, "Petals", &request.petal_scope);
-            scope_row(ui, "Properties", &request.property_scope);
-            scope_row(ui, "Capabilities", &request.capabilities);
+            for (label, lines) in request.consent_rows() {
+                scope_row(ui, label, &lines);
+            }
             network_row(ui, &request);
             listed = true;
             ui.add_space(12.0);
@@ -153,14 +168,10 @@ pub fn render(ctx: &egui::Context, state: &mut PluginInstallState) {
     }
 }
 
-fn scope_row(ui: &mut egui::Ui, label: &str, items: &[String]) {
+fn scope_row(ui: &mut egui::Ui, label: &str, lines: &[String]) {
     ui.label(egui::RichText::new(label).strong().color(theme::TEXT_SECTION));
-    if items.is_empty() {
-        ui.label(egui::RichText::new("None").small().color(theme::TEXT_MUTED));
-    } else {
-        for item in items {
-            ui.label(egui::RichText::new(item).monospace().small());
-        }
+    for line in lines {
+        ui.label(egui::RichText::new(line).monospace().small());
     }
     ui.add_space(4.0);
 }
@@ -208,6 +219,11 @@ mod tests {
     fn install_dialog_renders_capability_list_before_confirm_enabled() {
         let mut state = PluginInstallState::default();
         state.request_install(request("none"));
+        // Empty scopes are shown as the v1 host enforces them: wildcard scopes, no capabilities.
+        let rows = state.pending().unwrap().consent_rows();
+        assert_eq!(rows[0].1, ["All verses"]);
+        assert_eq!(rows[2].1, ["All properties"]);
+        assert_eq!(rows[3].1, ["storage.read"]);
         assert!(!state.confirm_enabled(), "no frame drawn yet");
         frame(&mut state);
         assert!(state.confirm_enabled(), "list was drawn");

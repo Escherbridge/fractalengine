@@ -2035,14 +2035,22 @@ EntityStore (analytics queries, the QA-0087 transform rollback to WS clients) la
 unwatched, each waiting at most one idle tick: the tileset meta verdicts (on purpose, see
 `terrain_bridge::watch_results`), the one-shot API listener address and the F12 save toast (the window is focused).
 
-## §plugin-host (plugin_host_revival_20261031 S1)
+## §plugin-host (plugin_host_revival_20261031 S1, revised by S6)
 
-The plugin host (thread 7, `plugin_bridge::install`) is OFF by default and needs BOTH the Cargo
-feature `plugin-host` and `FE_PLUGIN_HOST_ALLOW=1` (`fe_plugin::plugin_host_allowed_from_env`, exactly `1`,
-loud WARN when on; same deny-by-default idiom as `FE_API_SCREENSHOT_ALLOW`). Gate lives in `main.rs`
-beside the `plugin_bridge::install` call; `cfg!` (not `#[cfg]`) keeps the path type-checked in every build.
-When on, `register_first_party_extension_ui` (Startup) calls `fe_terrain::extension::register_terrain_ui`
-into `fe_ui::plugin::UiExtensions` — the call is made here because fe-ui deliberately has no fe-terrain
-dependency. When off there is no `PluginRegistry`/`PluginHostService` resource, so anything that assumes the
-service exists must tolerate `None` (see `terminal_reset`). `fractalengine-relay` mirrors the gate with its
-own `plugin-host` feature and a bare `PluginHostPlugin` (no scene backend).
+The opt-in gates package ADMISSION, not the thread (docs/extensions/governance.md §Host switch, R16).
+The host thread (thread 7, `plugin_bridge::install`) always runs, as it has since `2cc05f27`; with no
+admitted package it executes no third-party code. `terminal_reset` takes ownership of
+`PluginHostService` and requires it, which is why S6 restored the unconditional install: S1's thread gate
+made a default-build reset quiesce half the app and then fail.
+
+- **Admission switch.** `fe_plugin::PackageAdmission(bool)` is inserted once in `main.rs`: true only
+  with the Cargo feature `plugin-host` AND `FE_PLUGIN_HOST_ALLOW=1` (`plugin_host_allowed_from_env`,
+  exactly `1`, loud WARN when on; the `FE_API_SCREENSHOT_ALLOW` deny-by-default idiom). `cfg!` (not
+  `#[cfg]`) keeps the path type-checked in every build. Whoever builds the `PluginManager` (P1.7
+  `plugin_bridge`) passes it to `with_admission`; off, install and activation answer `HostOff`.
+- **First-party UI.** `register_first_party_extension_ui` (Startup, unconditional) calls
+  `fe_terrain::extension::register_terrain_ui` into `fe_ui::plugin::UiExtensions`. Terrain is compiled
+  in, never an admitted package, so the switch does not gate it. The call lives here because fe-ui has
+  no fe-terrain dependency.
+- **Relay.** `fractalengine-relay`'s own `plugin-host` feature (default off) adds a bare
+  `PluginHostPlugin` (no scene backend) and the same `PackageAdmission` from the env var.

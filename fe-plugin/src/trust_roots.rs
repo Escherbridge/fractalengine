@@ -3,7 +3,7 @@
 use std::collections::{HashMap, HashSet};
 use std::path::Path;
 
-use ed25519_dalek::{Signature, Verifier, VerifyingKey};
+use ed25519_dalek::{Signature, VerifyingKey};
 use serde::{Deserialize, Serialize};
 
 /// Supported revocation-list wire version.
@@ -25,7 +25,7 @@ pub enum TrustRootsError {
     Io(String),
     #[error("trust roots parse: {0}")]
     Parse(String),
-    #[error("trust root '{0}': public key must be 32 bytes of hex")]
+    #[error("trust root '{0}': public key must be 32 bytes of hex encoding a full-order ed25519 point")]
     BadKey(String),
     #[error("duplicate trust root key id '{0}'")]
     Duplicate(String),
@@ -75,8 +75,11 @@ impl TrustRoots {
                 .ok()
                 .and_then(|b| b.try_into().ok())
                 .ok_or_else(|| TrustRootsError::BadKey(entry.key_id.clone()))?;
+            // A weak (small-order) key would accept forged signatures; refuse it at load.
             let verifying_key = VerifyingKey::from_bytes(&bytes)
-                .map_err(|_| TrustRootsError::BadKey(entry.key_id.clone()))?;
+                .ok()
+                .filter(|key| !key.is_weak())
+                .ok_or_else(|| TrustRootsError::BadKey(entry.key_id.clone()))?;
             if roots.keys.contains_key(&entry.key_id) {
                 return Err(TrustRootsError::Duplicate(entry.key_id));
             }
@@ -133,7 +136,7 @@ impl TrustRoots {
             .and_then(|b| Signature::from_slice(&b).ok())
             .ok_or(RevocationError::BadSignature)?;
         key.verifying_key
-            .verify(&list.signed_bytes(), &signature)
+            .verify_strict(&list.signed_bytes(), &signature)
             .map_err(|_| RevocationError::BadSignature)?;
         Ok(RevocationSet::from_entries(&list.entries))
     }
@@ -200,25 +203,30 @@ fn write_canonical(value: &serde_json::Value, out: &mut String) {
     }
 }
 
-/// Verified revoked pairs, queried at install and activation.
+/// Revoked content hashes from verified lists, queried at install and activation.
 #[derive(Debug, Clone, Default)]
 pub struct RevocationSet {
-    pairs: HashSet<(String, String)>,
+    hashes: HashSet<String>,
 }
 
 impl RevocationSet {
     pub fn from_entries(entries: &[RevocationEntry]) -> Self {
         Self {
-            pairs: entries
+            hashes: entries
                 .iter()
-                .map(|e| (e.package_id.clone(), e.content_hash.clone()))
+                .map(|e| e.content_hash.to_ascii_lowercase())
                 .collect(),
         }
     }
 
-    pub fn is_revoked(&self, package_id: &str, content_hash: &str) -> bool {
-        self.pairs
-            .contains(&(package_id.to_string(), content_hash.to_string()))
+    /// Union another verified list in (one list per revocation-capable root).
+    pub fn extend(&mut self, other: RevocationSet) {
+        self.hashes.extend(other.hashes);
+    }
+
+    /// True when any accepted entry names this content hash, whatever package id it names (renamed copies stay revoked).
+    pub fn is_revoked(&self, content_hash: &str) -> bool {
+        self.hashes.contains(&content_hash.to_ascii_lowercase())
     }
 }
 
@@ -252,7 +260,14 @@ mod tests {
             signature: String::new(),
         };
         list.signature = hex::encode(revoker.sign(&list.signed_bytes()).to_bytes());
-        assert!(roots.verify_revocation_list(&list).unwrap().is_revoked("p", "h"));
+        let revoked = roots.verify_revocation_list(&list).unwrap();
+        assert!(revoked.is_revoked("h"), "the listed build is revoked");
+        assert!(revoked.is_revoked("H"), "hash case never dodges the list");
+        assert!(!revoked.is_revoked("other"));
+
+        // An edited list no longer verifies against the revoker's signature.
+        list.entries[0].content_hash = "x".into();
+        assert_eq!(roots.verify_revocation_list(&list).unwrap_err(), RevocationError::BadSignature);
 
         // A publisher-only key can never revoke.
         list.signer_key_id = "pub".into();
@@ -261,5 +276,10 @@ mod tests {
             roots.verify_revocation_list(&list).unwrap_err(),
             RevocationError::NotRevocationCapable("pub".into())
         );
+
+        // A weak (small-order) key never loads as a trust root.
+        let identity_point = format!("01{}", "00".repeat(31));
+        let weak = format!("[[publisher]]\nkey_id = \"weak\"\npublic_key = \"{identity_point}\"\n");
+        assert!(matches!(TrustRoots::from_toml_str(&weak), Err(TrustRootsError::BadKey(_))));
     }
 }

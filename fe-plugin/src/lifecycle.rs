@@ -7,7 +7,7 @@ use crossbeam::channel::Sender;
 
 use crate::capability::{CapabilityManifest, CapabilityToken};
 use crate::package::{payload_hash, verify_package, PackageError, SignatureEntry, UnsignedPolicy};
-use crate::registry_client::{EntitlementContext, RegistryClient, RegistryInstallError};
+use crate::registry_client::{RegistryClient, RegistryInstallError};
 use crate::trust_roots::{RevocationSet, TrustRoots};
 use crate::registry::{PluginRegistry, PluginState, PluginTier};
 use crate::wasm::aot::AotCache;
@@ -30,6 +30,12 @@ pub struct InstalledPlugin {
     pub store: wasmtime::Store<PluginStoreData>,
     /// The instantiated module.
     pub instance: wasmtime::Instance,
+}
+
+/// What install verified; activation runs only these bytes under this manifest.
+struct VerifiedInstall {
+    content_hash: String,
+    manifest: CapabilityManifest,
 }
 
 // ---------------------------------------------------------------------------
@@ -55,6 +61,9 @@ pub struct PluginManager {
     trust_roots: TrustRoots,
     unsigned_policy: UnsignedPolicy,
     revocations: RevocationSet,
+    /// Package admission switch (src/AGENTS.md §admission-gate); off refuses install and activation.
+    admission: bool,
+    verified: std::collections::HashMap<String, VerifiedInstall>,
 }
 
 impl PluginManager {
@@ -76,6 +85,8 @@ impl PluginManager {
             trust_roots: TrustRoots::default(),
             unsigned_policy: UnsignedPolicy::default(),
             revocations: RevocationSet::default(),
+            admission: false,
+            verified: std::collections::HashMap::new(),
         })
     }
 
@@ -86,21 +97,48 @@ impl PluginManager {
         self
     }
 
+    /// Switch package admission on or off; pass [`crate::PackageAdmission`]'s value (default off).
+    pub fn with_admission(mut self, enabled: bool) -> Self {
+        self.admission = enabled;
+        self
+    }
+
     /// Replace the verified revocation set consulted at install and activation.
     pub fn set_revocations(&mut self, revocations: RevocationSet) {
         self.revocations = revocations;
     }
 
-    /// Install a Wasm plugin: verify publisher signature, check revocation, AOT compile, register as `Installed`.
+    fn require_admission(&self) -> Result<(), LifecycleError> {
+        if self.admission {
+            Ok(())
+        } else {
+            Err(LifecycleError::HostOff)
+        }
+    }
+
+    fn refuse_if_revoked(&self, plugin_id: &str, content_hash: &str) -> Result<(), LifecycleError> {
+        if self.revocations.is_revoked(content_hash) {
+            return Err(PackageError::Revoked {
+                package_id: plugin_id.to_string(),
+                content_hash: content_hash.to_string(),
+            }
+            .into());
+        }
+        Ok(())
+    }
+
+    /// Install a Wasm plugin: verify publisher signature and signed id, check revocation, AOT compile, register as `Installed`.
+    ///
+    /// The capability manifest is parsed from `manifest_bytes` (the signed bytes), never supplied separately.
     pub fn install_plugin(
         &mut self,
         plugin_id: &str,
         wasm_bytes: &[u8],
         manifest_bytes: &[u8],
         signatures: &[SignatureEntry],
-        _manifest: &CapabilityManifest,
     ) -> Result<(), LifecycleError> {
-        // Step 1: ed25519 over manifest_bytes || blake3(payload) against the trust roots
+        self.require_admission()?;
+        // Step 1: signed id + ed25519 over manifest_bytes || blake3(payload) against the trust roots
         let actual_hash = payload_hash(wasm_bytes);
         let verified = verify_package(
             plugin_id,
@@ -110,13 +148,11 @@ impl PluginManager {
             &self.trust_roots,
             self.unsigned_policy,
         )?;
-        if self.revocations.is_revoked(plugin_id, &actual_hash) {
-            return Err(PackageError::Revoked {
-                package_id: plugin_id.to_string(),
-                content_hash: actual_hash,
-            }
-            .into());
-        }
+        self.refuse_if_revoked(plugin_id, &actual_hash)?;
+        let manifest = std::str::from_utf8(manifest_bytes)
+            .map_err(|e| e.to_string())
+            .and_then(|text| CapabilityManifest::from_json(text).map_err(|e| e.to_string()))
+            .map_err(LifecycleError::Manifest)?;
         tracing::info!(plugin = %plugin_id, hash = %actual_hash, ?verified, "Plugin signature verified");
 
         // Step 2: AOT compile and cache
@@ -147,9 +183,15 @@ impl PluginManager {
             .map_err(|e| LifecycleError::RegistryError(e.to_string()))?;
         }
 
-        // Store the plugin for later activation
-        // We need to store the raw bytes for later instantiation
-        let _ = plugin; // Used for verification above
+        // Activation is bound to exactly what was verified here.
+        let _ = plugin;
+        self.verified.insert(
+            plugin_id.to_string(),
+            VerifiedInstall {
+                content_hash: actual_hash,
+                manifest,
+            },
+        );
 
         tracing::info!(plugin = %plugin_id, "Plugin installed successfully");
         Ok(())
@@ -160,19 +202,15 @@ impl PluginManager {
         &mut self,
         client: &RegistryClient,
         uri: &str,
-        entitlement: Option<EntitlementContext<'_>>,
     ) -> Result<String, LifecycleError> {
-        let package = client.fetch_package(uri, entitlement).await?;
-        let manifest_text = std::str::from_utf8(&package.manifest_bytes)
-            .map_err(|e| LifecycleError::Registry(RegistryInstallError::Malformed(e.to_string())))?;
-        let manifest = CapabilityManifest::from_json(manifest_text)
-            .map_err(|e| LifecycleError::Registry(RegistryInstallError::Malformed(e.to_string())))?;
+        self.require_admission()?;
+        // fetch_package binds the requested uri to the served id; install_plugin binds that id to the signed manifest.
+        let package = client.fetch_package(uri).await?;
         self.install_plugin(
             &package.package_id,
             &package.payload,
             &package.manifest_bytes,
             &package.signatures,
-            &manifest,
         )?;
         Ok(package.package_id)
     }
@@ -183,17 +221,15 @@ impl PluginManager {
         self
     }
 
-    /// Activate a plugin with the provided Wasm bytes.
-    ///
-    /// This is the primary activation method when bytes are available.
+    /// Activate an installed plugin; `wasm_bytes` must be the verified payload and the token comes from its signed manifest.
     pub async fn activate_with_bytes(
         &mut self,
         plugin_id: &str,
         wasm_bytes: &[u8],
         petal_id: &str,
-        capabilities: &CapabilityManifest,
         fuel_budget: FuelBudget,
     ) -> Result<(), LifecycleError> {
+        self.require_admission()?;
         {
             let registry = self
                 .registry
@@ -213,13 +249,14 @@ impl PluginManager {
             }
         }
         let content_hash = payload_hash(wasm_bytes);
-        if self.revocations.is_revoked(plugin_id, &content_hash) {
-            return Err(PackageError::Revoked {
-                package_id: plugin_id.to_string(),
-                content_hash,
+        let capabilities = match self.verified.get(plugin_id) {
+            None => return Err(LifecycleError::NotVerified(plugin_id.into())),
+            Some(record) if record.content_hash != content_hash => {
+                return Err(LifecycleError::PayloadMismatch(plugin_id.into()))
             }
-            .into());
-        }
+            Some(record) => record.manifest.clone(),
+        };
+        self.refuse_if_revoked(plugin_id, &content_hash)?;
         // Load or compile from AOT cache
         let compiled = self
             .aot_cache
@@ -237,7 +274,7 @@ impl PluginManager {
         };
 
         // Create plugin context
-        let token = CapabilityToken::mint(plugin_id, capabilities);
+        let token = CapabilityToken::mint(plugin_id, &capabilities);
         let ctx = self
             .contexts
             .bind(
@@ -374,6 +411,7 @@ impl PluginManager {
             reg.unregister(plugin_id)
                 .map_err(|e| LifecycleError::RegistryError(e.to_string()))?;
         }
+        self.verified.remove(plugin_id);
 
         // Evict from AOT cache
         self.aot_cache
@@ -431,6 +469,18 @@ pub enum LifecycleError {
     #[error("Invalid state for plugin '{plugin_id}': {state}")]
     InvalidState { plugin_id: String, state: String },
 
+    #[error("plugin package admission is off (enable the plugin-host feature and FE_PLUGIN_HOST_ALLOW=1)")]
+    HostOff,
+
+    #[error("Plugin '{0}' was not installed through package verification")]
+    NotVerified(String),
+
+    #[error("Plugin '{0}': activation bytes differ from the verified payload")]
+    PayloadMismatch(String),
+
+    #[error("Signed capability manifest is invalid: {0}")]
+    Manifest(String),
+
     #[error("Package verification failed: {0}")]
     Package(#[from] PackageError),
 
@@ -458,10 +508,14 @@ mod tests {
     use super::*;
     use crate::registry::PluginRegistry;
 
-    const MANIFEST_BYTES: &[u8] = br#"{"id":"test-plugin"}"#;
+    const MANIFEST_BYTES: &[u8] = br#"{"id":"test-plugin","property_scope":["*"]}"#;
 
     fn publisher() -> ed25519_dalek::SigningKey {
         ed25519_dalek::SigningKey::from_bytes(&[9u8; 32])
+    }
+
+    fn manifest_for(id: &str) -> Vec<u8> {
+        format!(r#"{{"id":"{id}"}}"#).into_bytes()
     }
 
     fn trust_roots_for(key: &ed25519_dalek::SigningKey) -> TrustRoots {
@@ -472,9 +526,9 @@ mod tests {
         .unwrap()
     }
 
-    fn sign(key: &ed25519_dalek::SigningKey, key_id: &str, bytes: &[u8]) -> SignatureEntry {
+    fn sign(key: &ed25519_dalek::SigningKey, key_id: &str, manifest: &[u8], bytes: &[u8]) -> SignatureEntry {
         use ed25519_dalek::Signer;
-        let message = crate::package::signed_message(MANIFEST_BYTES, bytes);
+        let message = crate::package::signed_message(manifest, bytes);
         SignatureEntry {
             key_id: key_id.into(),
             signature: hex::encode(key.sign(&message).to_bytes()),
@@ -489,67 +543,103 @@ mod tests {
 
         let manager = PluginManager::new(engine, tmp.path().join("plugins"), registry, tx)
             .unwrap()
-            .with_trust(trust_roots_for(&publisher()), UnsignedPolicy::Refuse);
+            .with_trust(trust_roots_for(&publisher()), UnsignedPolicy::Refuse)
+            .with_admission(true);
 
         (manager, tmp)
     }
 
-    /// Installs an unsigned module through the dev flag so lifecycle tests need no signing.
-    fn install_dev(manager: &mut PluginManager, id: &str, bytes: &[u8]) {
-        manager.unsigned_policy = UnsignedPolicy::AllowDev;
-        let manifest = CapabilityManifest::from_json("{}").unwrap();
+    /// Installs a module signed by the trusted publisher under a manifest naming `id`.
+    fn install_signed(manager: &mut PluginManager, id: &str, bytes: &[u8]) {
+        let manifest = manifest_for(id);
         manager
-            .install_plugin(id, bytes, MANIFEST_BYTES, &[], &manifest)
+            .install_plugin(id, bytes, &manifest, &[sign(&publisher(), "pub", &manifest, bytes)])
             .unwrap();
     }
 
-    #[test]
-    fn install_plugin_signature_journey() {
+    /// Journey (AC-4 table + identity binding): every refusal is typed, then the valid package installs and activation is pinned to it.
+    #[tokio::test]
+    async fn install_plugin_signature_journey() {
         let (mut manager, _tmp) = make_test_manager();
         let bytes = wat::parse_str(r#"(module)"#).unwrap();
-        let manifest = CapabilityManifest::from_json(r#"{"property_scope": ["*"]}"#).unwrap();
-
-        // Unsigned is refused by default.
-        let err = manager
-            .install_plugin("test-plugin", &bytes, MANIFEST_BYTES, &[], &manifest)
-            .unwrap_err();
-        assert!(matches!(err, LifecycleError::Package(PackageError::Unsigned(_))));
-
-        // Unlisted key is refused with a typed error.
         let stranger = ed25519_dalek::SigningKey::from_bytes(&[1u8; 32]);
-        let err = manager
-            .install_plugin("test-plugin", &bytes, MANIFEST_BYTES, &[sign(&stranger, "stranger", &bytes)], &manifest)
-            .unwrap_err();
-        assert!(matches!(err, LifecycleError::Package(PackageError::UntrustedKey { .. })));
+        let valid = sign(&publisher(), "pub", MANIFEST_BYTES, &bytes);
 
-        // A trusted key signing different payload bytes fails verification.
+        // Admission off: nothing is even verified.
+        manager.admission = false;
         let err = manager
-            .install_plugin("test-plugin", &bytes, MANIFEST_BYTES, &[sign(&publisher(), "pub", b"other")], &manifest)
+            .install_plugin("test-plugin", &bytes, MANIFEST_BYTES, &[valid.clone()])
             .unwrap_err();
-        assert!(matches!(err, LifecycleError::Package(PackageError::InvalidSignature { .. })));
+        assert!(matches!(err, LifecycleError::HostOff));
+        manager.admission = true;
+
+        let refusals: [(&str, Vec<SignatureEntry>, fn(&LifecycleError) -> bool); 5] = [
+            // Unsigned is refused by default.
+            ("test-plugin", vec![], |e| matches!(e, LifecycleError::Package(PackageError::Unsigned(_)))),
+            // Unlisted key is refused with a typed error.
+            ("test-plugin", vec![sign(&stranger, "stranger", MANIFEST_BYTES, &bytes)], |e| {
+                matches!(e, LifecycleError::Package(PackageError::UntrustedKey { .. }))
+            }),
+            // A trusted key signing different payload bytes fails verification.
+            ("test-plugin", vec![sign(&publisher(), "pub", MANIFEST_BYTES, b"other")], |e| {
+                matches!(e, LifecycleError::Package(PackageError::InvalidSignature { .. }))
+            }),
+            // A failing trusted entry is tampering even beside a valid one.
+            ("test-plugin", vec![valid.clone(), SignatureEntry { key_id: "pub".into(), signature: "00".into() }], |e| {
+                matches!(e, LifecycleError::Package(PackageError::InvalidSignature { .. }))
+            }),
+            // A validly signed package served under another id: the signed manifest names test-plugin.
+            ("renamed-plugin", vec![valid.clone()], |e| {
+                matches!(e, LifecycleError::Package(PackageError::IdMismatch { .. }))
+            }),
+        ];
+        for (id, signatures, refused) in refusals {
+            let err = manager.install_plugin(id, &bytes, MANIFEST_BYTES, &signatures).unwrap_err();
+            assert!(refused(&err), "{id} {signatures:?}: {err}");
+        }
+
+        // The dev flag admits an unsigned package, in debug builds only (it does not exist in release).
+        #[cfg(debug_assertions)]
+        {
+            manager.unsigned_policy = UnsignedPolicy::AllowDev;
+            manager
+                .install_plugin("dev-plugin", &bytes, &manifest_for("dev-plugin"), &[])
+                .unwrap();
+            manager.unsigned_policy = UnsignedPolicy::Refuse;
+        }
 
         // Counter-signature list: an untrusted entry beside a valid trusted one is accepted.
-        let signatures = [sign(&stranger, "stranger", &bytes), sign(&publisher(), "pub", &bytes)];
+        let signatures = [sign(&stranger, "stranger", MANIFEST_BYTES, &bytes), valid];
         manager
-            .install_plugin("test-plugin", &bytes, MANIFEST_BYTES, &signatures, &manifest)
+            .install_plugin("test-plugin", &bytes, MANIFEST_BYTES, &signatures)
             .unwrap();
-        let reg = manager.registry.lock().unwrap();
-        assert_eq!(reg.get_state("test-plugin"), Some(&PluginState::Installed));
+        assert_eq!(
+            manager.registry.lock().unwrap().get_state("test-plugin"),
+            Some(&PluginState::Installed)
+        );
+
+        // Activation runs only the verified bytes.
+        let other = wat::parse_str(r#"(module (func (export "on_activate")))"#).unwrap();
+        let err = manager
+            .activate_with_bytes("test-plugin", &other, "petal", FuelBudget::default())
+            .await
+            .unwrap_err();
+        assert!(matches!(err, LifecycleError::PayloadMismatch(_)), "{err}");
     }
 
     #[test]
-    fn install_plugin_refuses_revoked_pair() {
+    fn install_plugin_refuses_revoked_hash_under_any_id() {
         let (mut manager, _tmp) = make_test_manager();
         let bytes = wat::parse_str(r#"(module)"#).unwrap();
-        let manifest = CapabilityManifest::from_json("{}").unwrap();
+        // The list names the build under a different package id; the hash alone revokes it.
         manager.set_revocations(RevocationSet::from_entries(&[crate::trust_roots::RevocationEntry {
-            package_id: "test-plugin".into(),
+            package_id: "original-name".into(),
             content_hash: payload_hash(&bytes),
             reason: "withdrawn".into(),
             revoked_at: "2026-11-08T00:00:00Z".into(),
         }]));
         let err = manager
-            .install_plugin("test-plugin", &bytes, MANIFEST_BYTES, &[sign(&publisher(), "pub", &bytes)], &manifest)
+            .install_plugin("test-plugin", &bytes, MANIFEST_BYTES, &[sign(&publisher(), "pub", MANIFEST_BYTES, &bytes)])
             .unwrap_err();
         assert!(matches!(err, LifecycleError::Package(PackageError::Revoked { .. })));
     }
@@ -561,7 +651,7 @@ mod tests {
         // Install first
         let wat = r#"(module)"#;
         let bytes = wat::parse_str(wat).unwrap();
-        install_dev(&mut manager, "deact-test", &bytes);
+        install_signed(&mut manager, "deact-test", &bytes);
 
         // Deactivate (should fail since it's Installed, not Active)
         let result = manager.deactivate_plugin("deact-test").await;
@@ -574,7 +664,7 @@ mod tests {
 
         let wat = r#"(module)"#;
         let bytes = wat::parse_str(wat).unwrap();
-        install_dev(&mut manager, "uninstall-test", &bytes);
+        install_signed(&mut manager, "uninstall-test", &bytes);
 
         manager
             .uninstall_plugin("uninstall-test", &bytes)

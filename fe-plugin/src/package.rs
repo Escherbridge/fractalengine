@@ -1,9 +1,12 @@
 //! Publisher-signed plugin package verification (rationale: src/AGENTS.md §signed-packages).
 
-use ed25519_dalek::{Signature, Verifier};
+use ed25519_dalek::Signature;
 use serde::{Deserialize, Serialize};
 
 use crate::trust_roots::TrustRoots;
+
+/// Ceiling on `{key_id, signature}` entries, bounding verification work (package-format.md §Signatures).
+pub const MAX_SIGNATURE_ENTRIES: usize = 16;
 
 /// One `{key_id, signature}` entry; `signature` is hex of the 64-byte ed25519 signature.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -52,8 +55,13 @@ pub enum PackageError {
         package_id: String,
         content_hash: String,
     },
-    #[error("malformed signature entry for key '{0}'")]
-    MalformedSignature(String),
+    #[error("package '{package_id}': the signed manifest names id {manifest_id:?}")]
+    IdMismatch {
+        package_id: String,
+        manifest_id: Option<String>,
+    },
+    #[error("package '{package_id}' carries {count} signature entries, over the limit")]
+    TooManySignatures { package_id: String, count: usize },
 }
 
 /// How a package was admitted.
@@ -78,7 +86,13 @@ pub fn signed_message(manifest_bytes: &[u8], payload: &[u8]) -> Vec<u8> {
     message
 }
 
-/// Accepts the package when at least one entry verifies against a trust root.
+/// The `id` the signed manifest names; the only authenticated source of a package id.
+pub fn manifest_package_id(manifest_bytes: &[u8]) -> Option<String> {
+    let manifest: serde_json::Value = serde_json::from_slice(manifest_bytes).ok()?;
+    manifest.get("id")?.as_str().map(str::to_string)
+}
+
+/// Accepts the package when its signed manifest names `package_id`, no trust-root entry fails and at least one verifies.
 pub fn verify_package(
     package_id: &str,
     manifest_bytes: &[u8],
@@ -87,6 +101,19 @@ pub fn verify_package(
     trust_roots: &TrustRoots,
     policy: UnsignedPolicy,
 ) -> Result<Verified, PackageError> {
+    let manifest_id = manifest_package_id(manifest_bytes);
+    if manifest_id.as_deref() != Some(package_id) {
+        return Err(PackageError::IdMismatch {
+            package_id: package_id.to_string(),
+            manifest_id,
+        });
+    }
+    if signatures.len() > MAX_SIGNATURE_ENTRIES {
+        return Err(PackageError::TooManySignatures {
+            package_id: package_id.to_string(),
+            count: signatures.len(),
+        });
+    }
     if signatures.is_empty() {
         return if policy.admits_unverified(package_id, "unsigned") {
             Ok(Verified::DevUnverified)
@@ -95,26 +122,27 @@ pub fn verify_package(
         };
     }
     let message = signed_message(manifest_bytes, payload);
-    let mut failed_trusted_key: Option<String> = None;
+    let mut verified_by: Option<&str> = None;
     for entry in signatures {
         let Some(key) = trust_roots.get(&entry.key_id) else {
             continue;
         };
-        let signature = hex::decode(&entry.signature)
+        let valid = hex::decode(&entry.signature)
             .ok()
             .and_then(|bytes| Signature::from_slice(&bytes).ok())
-            .ok_or_else(|| PackageError::MalformedSignature(entry.key_id.clone()))?;
-        if key.verifying_key.verify(&message, &signature).is_ok() {
-            return Ok(Verified::Signed {
+            .is_some_and(|signature| key.verifying_key.verify_strict(&message, &signature).is_ok());
+        if !valid {
+            // A failing trusted entry is tampering; another valid entry never outvotes it.
+            return Err(PackageError::InvalidSignature {
+                package_id: package_id.to_string(),
                 key_id: entry.key_id.clone(),
             });
         }
-        failed_trusted_key.get_or_insert_with(|| entry.key_id.clone());
+        verified_by.get_or_insert(entry.key_id.as_str());
     }
-    match failed_trusted_key {
-        Some(key_id) => Err(PackageError::InvalidSignature {
-            package_id: package_id.to_string(),
-            key_id,
+    match verified_by {
+        Some(key_id) => Ok(Verified::Signed {
+            key_id: key_id.to_string(),
         }),
         None if policy.admits_unverified(package_id, "untrusted key") => Ok(Verified::DevUnverified),
         None => Err(PackageError::UntrustedKey {

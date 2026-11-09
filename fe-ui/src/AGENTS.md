@@ -1557,8 +1557,8 @@ and native_accessibility/AGENTS.md for the separately audited painter contract.
 
 `plugin::UiExtensions` wraps `fe_sdk::UiExtensionRegistry` as a Bevy resource, always initialised (empty) by
 `GardenerConsolePlugin`. fe-ui never registers extensions itself (no fe-terrain dependency); the binary
-fills it at Startup when the plugin host is enabled (`fractalengine/src/AGENTS.md` §plugin-host). Panels that
-render contributions should read `UiExtensions.0.get_by_slot(..)`; none do yet (consent UX is S3).
+fills it at Startup with the first-party terrain contributions, unconditionally (`fractalengine/src/AGENTS.md`
+§plugin-host). Panels that render contributions should read `UiExtensions.0.get_by_slot(..)`; none do yet.
 
 ## §plugin-consent (plugin_host_revival_20261031 S3)
 
@@ -1567,7 +1567,12 @@ render contributions should read `UiExtensions.0.get_by_slot(..)`; none do yet (
 has no fe-plugin dependency) and later drains `take_decision()` -> `Approved(id)` / `Declined(id)`.
 Install is enabled only once the verse/petal/property/capability/network list has been drawn for a full
 frame (`manifest_rendered`), and never when the manifest asks for network access v1 cannot grant
-(`requests_network`; mirrors OD-1 in `fe-plugin`). Empty scope lists render "None" (fail closed).
-The window is drawn by `plugin::plugin_install_dialog_system`, a standalone `EguiPrimaryContextPass`
-system after `gardener_ui_system`, so `gardener_console`'s signature is untouched. Wiring the request
-from the registry/package flow is S4's job.
+(`requests_network`: anything but `network_scope == "none"` or any `external_http`, exactly fe-plugin's OD-1 parse rule).
+Rows come from `PluginInstallRequest::consent_rows`, which shows each list as the v1 host ENFORCES it: an empty
+verse/petal/property scope is a wildcard in `fe_plugin::capability::validate_access`, so it renders "All verses" /
+"All petals" / "All properties"; empty capabilities render "None" (`has_capability` fails closed). Rendering an
+empty scope as "None" understated the grant (S6 finding). The window is drawn by
+`plugin::plugin_install_dialog_system`, a standalone `EguiPrimaryContextPass` system after `gardener_ui_system`,
+so `gardener_console`'s signature is untouched. Nothing requests installs yet: fe-ui has no fe-plugin dependency
+and no `PluginManager` is built in the binary; the request/decision wiring lands with extension_platform P2.4
+(consent v2 at `fe-ui/src/extensions/consent.rs`) and P1.7.
