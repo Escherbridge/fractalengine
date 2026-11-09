@@ -1,7 +1,7 @@
 ---
 type: review
 track: extension_platform_20261107
-title: Review gates G0-G6 — verdict lines
+title: Review gates G0-G6, turn-2 gates R-* and R-X — verdict lines
 resource: ./metadata.json
 ---
 
@@ -346,3 +346,100 @@ files no slice owns (C2, C3) and block every binary; P6 has no runs (C11). 24 ve
 - G6-C15 KEPT security steers at HEAD — 20:10: `RevocationSet::is_revoked` matches the hash under any id, and `PackageFacts::hashes` adds component and plaintext digests at precondition 5, kill-switch arrival and store install; 20:20: fe-api strips before any guest sees a header (`extensions.rs:579`), net strips and refuses again, and V16 now refuses in Rust (C4); 23:00: `bi-push` neutralises `= + - @ TAB CR` text cells (`payload.rs:92`).
 - G6-C16 KEPT stale hand-offs closed at HEAD — G3-C1 (`.gitignore` admits `tools/fe-ext`, 17 files tracked), G4-A9's fe-hexon half (`registry_source` declared, `bf9eedb6`), G3-C4/G3-C11 (G2-C1/A1), G3-C12 (G5-A4), G4-C12 (G2-A6), G2-C10 (C7).
 - G6-C17 KEPT leak discipline — the forbidden-term grep over every added line of `2330691c..HEAD` and every G6 edit found no hits.
+
+## Turn 2 — review gates R-NET … R-TOOL, folded, and the final cross-track gate R-X (2026-11-09)
+
+Swarm turn 2 (`wf_3db960d5-6b1`) ended with nine opus review gates over this track and two over the portal track
+(`portal_surface_20261107`, folded into its `review-p5.md`). Each gate wrote one verdict line per finding to
+`review-turn2/<gate>.md`; those files stay the record of every line, and this section folds them: the counts, what
+each gate closed, and the state of every HANDED-OFF and DEFERRED line after R-X.
+
+R-X ran last, read-mostly and fix-only, over both public trees at `d7bd9f18` (ext-platform) and `4323367a` (ext-portal),
+plus D-EXT, D-BATCH, D-BATCH-POR and M-SPEC. Its scope: the cross-track seams (`Caller.role_ceiling`, B10f against
+B2/B8, A-10/A-11, kill-list matching in both admission paths, OD-E1 wording), the scene-hook door parity the 02:45 steer
+assigned to it, the hand-offs the gates addressed to it, the leak scan and a read-only `git merge-tree`. Nothing was
+built, run or tested (code-first directive); every R-X edit was written against the signatures at those HEADs.
+
+**Phase verdict: PASS WITH FIXES — code-complete as drafts, NOT buildable and NOT merge-ready yet.** Three build breaks
+sit in files no turn-2 slice owns (R-X-19, R-X-20), and one High portal hole needs both trees (R-X-33). 37 R-X verdict
+lines: 11 FIXED, 13 KEPT, 12 HANDED-OFF, 1 DEFERRED.
+
+### Gate fold (turn 2)
+
+| Gate | Over | Lines | FIXED | KEPT | HANDED-OFF | DEFERRED | Record |
+|---|---|---|---|---|---|---|---|
+| R-NET (security) | N1, N3, N4, N5, F-DEVADAPT, B6, I-PLUGIN | 31 | 12 | 14 | 3 | 2 | `review-turn2/R-NET.md` |
+| R-BND (security) | B0, B1, B2, B8, F-E4, I-DB | 30 | 7 | 18 | 5 | 0 | `review-turn2/R-BND.md` |
+| R-LIFE (security) | F-TICK, F-BUS, B4, B10b, B10d, I-PLUGIN | 25 | 7 | 15 | 0 | 3 | `review-turn2/R-LIFE.md` |
+| R-HOOKS | B3, B5, B10a, B10e, F-E18, F-BIPUSH, I-BIN2 | 35 | 14 | 13 | 6 | 2 | `review-turn2/R-HOOKS.md` |
+| R-GOV (security) | F-TRUST, F-GOV, F-OPS, B7, I-BIN | 31 | 13 | 13 | 3 | 2 | `review-turn2/R-GOV.md` |
+| R-REG (security) | F-REG, F-OPS | 32 | 15 | 13 | 4 | 0 | `review-turn2/R-REG.md` |
+| R-API (security) | I-API (+ B10a door parity) | 30 | 11 | 13 | 5 | 1 | `review-turn2/R-API.md` |
+| R-UI | I-UI, B9, B10c | 36 | 20 | 8 | 5 | 3 | `review-turn2/R-UI.md` |
+| R-TOOL | I-WS, I-FEXT, F-LAB, I-SIM, B11, F-SMALL | 35 | 16 | 12 | 7 | 0 | `review-turn2/R-TOOL.md` |
+| **this track** | | **285** | **115** | **119** | **38** | **13** | |
+
+Highlights the gates closed (each line is in its file):
+
+- **Security steers.** 01:50 (1) credential slots scoped per package (R-NET-01); 01:50 (2) one global-unicast allow-list for net egress and dial-outs (R-NET-11), and for the registry sources (R-X-14); 01:50 (3) a publisher or root change on update is a fresh consent (R-GOV-14); 02:25 decode cap before any read (R-LIFE-20, binary half R-X-16); 02:45 (1) over-cap scene-hook input refuses (R-HOOKS-15); 02:45 (2) MCP and WS doors ask the scene gate (R-API-18, R-API-19).
+- **Kill list and override.** Strict-UTC `issued_at` ordering, so an offset-form replay can no longer un-revoke (R-GOV-01); overrides bound to the recording identity (R-GOV-09, R-GOV-13) and to the Owner's own host in the resolver (R-BND-09).
+- **Registry supply chain.** UNC/absolute locations refused (R-REG-02), anonymous Extensions sources by construction (R-REG-03), requested uri bound to id and version (R-REG-11), a persisted rollback floor for indexes (R-REG-12), bounded and timed-out downloads (R-REG-15, R-REG-16), one zip reader for verify and read (R-REG-18), protocol header skew (R-REG-22).
+- **Runtime.** Eager binding instances held to the per-installation cap (R-LIFE-17), idle rate buckets pruned (R-LIFE-12), an update cannot swap another package into a seat (R-LIFE-09), portal host sources judged like streams (R-LIFE-14).
+- **API and UI.** Absent hosts answer the uniform not-found (R-API-04), body and frame limits on every new route and on `/ws` (R-API-09, R-API-24, R-NET-17), MCP binding tools inside the one scope gate (R-API-12); binding edits re-checked for Manager+ at every step and the Override offer shown only on the Owner's host (R-UI-08..R-UI-11).
+
+### R-X — seams
+
+- R-X-01 KEPT `Caller.role_ceiling` end to end. fe-plugin `bus/broker.rs` `open_portal_client` → `open_client_capped` always sets `Some(ceiling)` on a portal `Caller` (Viewer when absent), and `role_of` caps the DID's role by it; a delegated API token reaches the bus with `role_ceiling: Some(max_role)` and is local only at Owner (`is_local`; `plugin_bridge.rs` bus caller). The portal broker computes `ceiling = min(bus role view, fe-ui resolved local role, viewer token)` (`portal_host/broker.rs` `ceiling`) and the bridge closes a client reported above the viewer cap (R-POR-IPC-11).
+- R-X-02 KEPT the portal tree's calls into this tree's bus match it by name, arity and type: `open_portal_client`, `client_{subscribe,unsubscribe,publish,call_command,set_property}`, `take_client_events`, `set_client_paused`, `close_client`, `install_portal_writes`, `local_did`; `PortalGrants`/`PortalStream`/`AuditEntry` fields; `BusRefusal` variants; `PortalWriteSink::commit(&PortalWrite, crossbeam Sender<PluginResult>)`. Its one-op write builds the pinned `DbCommand::PluginCommit { admission, ops, readings: Vec::new(), reply }` with `PluginAdmission::new(..)?.with_package(..).with_scene_writes(..)?.bind_scope(..)?`, all present here.
+- R-X-03 KEPT the portal resolver against this tree's governance: `GovernanceSource for ExtensionGovernance` uses `is_revoked_any`, `is_overridden`, `trust().tier_for`, `evaluate`, `GovernanceGates::role`, `record_consent(ConsentRecord)` (the six fields), `kill_list_override(actor, &Value)`, `audit_sink`, `local_did` and `DbCommand::LoadExtensionGovernance { reply }`, every one present with that shape. Consequence: the portal tree's binary compiles only on the merged tree (merge order, R-X-10).
+- R-X-04 HANDED-OFF B10f against B2/B8: `portal.open` can never resolve. The resolver applies the extension rows 3-14 to a web bundle: with no `BuildFacts` it answers `not-installed`, with facts `not-provided` (a bundle has no `provides`), so B8's effective view never shows `Resolved` and B10f's Open never appears. It fails closed (state line, no Open), and `show_offer` has no caller yet (R-POR-11). Owner: the post-merge integration (turn 3): a `portal.open` branch in `resolver.rs` after rows 1-2 that reads the portal's Admitted records (fed into `LocalFacts` by the binary from the portal resolver) and never offers Install or Update for a bundle.
+- R-X-05 KEPT A-11: the schema's `web-bundle` branch forbids every §1.8 key plus `provides`, and the Rust validator refuses `web-bundle` as `reserved-kind` (V3). The `$ref` from `portal` to the portal track's `manifest-v1.schema.json` is still the contract change G0-A3 recorded; trigger: the merge puts both schemas in one tree, then add it.
+- R-X-06 KEPT A-10: `fe-ui/src/extensions/consent.rs` renders the `portal` section (`ConsentRequest.portal`, `portal_sections`) and consent is recorded against the portal capability digest; the portal's Admit drain records through governance `record_consent` (`portal_host/mod.rs` `consent`, I-POR-BIN `627ac021`).
+- R-X-07 KEPT kill-list matching by hash under any id in both admission paths. Extensions: `RevocationSet` keys digests only; `PackageFacts::hashes` (content, component, plaintext) feeds `check_activation`, `build_facts`/`local_facts` (`is_revoked_any`) and the stop set of `accept_revocation_list`; resolver row 6 reads that verdict. Portal: `GovernanceView::kill_listed(&[digests])` takes no id; archive digest before any parse, then content hash and every member digest; bind-time re-check (R-POR-IPC-02); export double check (R-POR-13). Override keyed `(verse, content_hash)`, Owner's own host, audited, recorder-bound. The retired 1.0 core path checks `content_hash` only (it has no component digest; R-LIFE-25).
+- R-X-08 KEPT OD-E1 wording (stop after in-flight writes; rows stay; no withdrawal): `governance.md` §Provenance and §OD-E1, spec R24 and the OD table, plan J7/J10, `bindings.md` §5.7, this tree's `conductor/open-core.md` S-PLUGIN row, portal `admission.md` §5 step 3 and `ipc-v1.md` §6.1. Spec R22's "re-judge withdraws its rows on peers" is the P2P demotion re-judge, not revocation (G6-A5). The portal tree's open-core row is the pre-amendment text and is not edited there, so the merge takes this tree's row. HANDED-OFF: portal `spec.md:236` still says "the same revocation withdraws them" (no turn-2 owner; orchestrator).
+
+### R-X — leak scan and merge-tree
+
+- R-X-09 KEPT leak discipline: zero hits for the eleven denylisted terms on every added line of `ffd76c4f..HEAD` in both public trees (96 commits / 278 files here, 33 / 121 in ext-portal), on added file paths, and on every R-X edit.
+- R-X-10 KEPT read-only `git merge-tree --write-tree` (no ref, index or worktree touched). This branch over `main`: clean. The portal branch over `main`: clean. The portal branch over (main + this branch): **9 conflicts, every one a union of both sides**:
+  - `fractalengine/src/main.rs` (one line each: `blob_store_for_extensions` and `blob_store_for_portal`; keep both);
+  - `tools/qa/sim/scenario.py` (two hunks: the op set and the probe kinds; keep both lists) and `scenario.schema.json` (regenerate with `python tools/qa/sim/scenario.py schema` after scenario.py, never hand-merge);
+  - `conductor/test-batches.md` (R9 fe-api line: keep both `--test` sets on one line);
+  - five directory docs appended at the same end of file: `fe-api/AGENTS.md`, `fe-api/src/AGENTS.md`, `fe-format/src/AGENTS.md`, `fe-runtime/src/AGENTS.md`, `fe-ui/src/AGENTS.md` (keep both sections).
+
+  Auto-merged code spot-checked in the merged tree: `fe-api/src/{server,lib,upload}.rs` (both hosts on `ApiConfig`, portal routes and the killswitch mount inside the router, import hooks and the `pub(crate)` quota both kept), `fe-ui/src/{actions/mod.rs,panels/inspector.rs}`, `fractalengine/src/AGENTS.md`, the sim `driver/prober/run.py` and `role_propagation_inbound_test.rs` (separate blocks). **Merge order: this branch into `main` first, then the portal branch rebased onto it** (the portal binary needs this tree's bus, governance and `PluginCommit`; R-X-02, R-X-03), then refine L3 (`Cargo.lock` regenerated from the merged manifests, `cargo deny`). R-X's own test-batches rows are placed away from the other tree's edits, so they add no conflict.
+
+### R-X — scene-hook door parity (steer 2026-11-09 02:45)
+
+- R-X-11 KEPT REST create, transform and property (`rest.rs` `scene_gate_verdict`; 409 `refused`, 413 `input-too-large`), MCP `create_node`/`place_asset`/`update_transform`/`set_property`/`commit_node_mutation` (R-API-18) and `/ws` `entity_command` plus every `transform_update` (R-API-19) all ask the one gate before the write, transforms before the optimistic broadcast.
+- R-X-12 FIXED `fe-api/src/ws.rs` `WS_SCENE_CALLER` is now `SceneCallerKind::Ws` (R-HOOKS-16 added the kind; R-API-20); `fe-api/AGENTS.md` §scene-gate-doors updated. The hook input is JSON, so the bus WIT `caller-kind` is not involved.
+- R-X-13 HANDED-OFF (turn 3) the remaining doors write ungated: in the GUI only the gimbal commit asks the gate, while `fe-ui/src/actions/{node,node_props,asset,dimension_callout,path,terrain_proposal}.rs`, `dialogs/create_entity.rs`, `panels/inspector.rs` and `fractalengine/src/gpx_bridge.rs` send node writes directly; on the API, `node_history.rs` (mutations, objects), the waypoint and GPX cores, `endpoint.rs` promote, `format.rs` and `gpx.rs`. bindings.md §6 already places the gate "in front of `DbCommandSender`": one send-side gate there is the fix, and none of these files had a turn-2 owner. Scene hooks are authoring aids, not access control (bindings.md §6), so this is a policy gap, not an escalation.
+
+### R-X — hand-offs addressed to R-X, and build breaks
+
+- R-X-14 FIXED steer 01:50 (2), R-NET-28, R-GOV-27: `fractalengine/src/extension_host/sources.rs` `is_internal` is now `!fe_plugin::net::is_public_unicast(ip)`, the one allow-list predicate, so 2002::/16, Teredo, 64:ff9b:1::/48, 100::/64 and the documentation ranges are refused; resolve-once and the pinned connect were already there (R-REG-01), and `allow_local` (the base itself is internal: loopback fixtures) is kept. `fe-plugin/src/net/AGENTS.md` §addresses names the reuse.
+- R-X-15 KEPT R-NET-30: the other outbound clients (`registry_client.rs`, `lifecycle.rs` `fetch_revocation_list`, `revocation_pull.rs`) only dial operator-configured URLs, https or loopback http (R-GOV-07), and the signature, not the transport, decides. Trigger: any URL a remote document or guest can name goes through `is_public_unicast` plus a pinned resolve, as `AnonymousHttpFetcher` does.
+- R-X-16 FIXED (build break) `fractalengine/src/plugin_bridge.rs` `DecodePort`: it still implemented the removed `payload_files` and built `DecodeFile` without `content_hash`. It now implements `declared_files` (asset rows, no blob read) and `read_bounded` (`take(limit)`), so fe-plugin's `read_within_cap` owns the cap-before-read order and the length-plus-BLAKE3 check (steer 02:25, R-LIFE-20).
+- R-X-17 FIXED R-BND-13 `plugin_bridge.rs` `published_petals`: when the petal's own terrain column decided (`implicit_terrain`), no outer row is the winner, so `native_terrain` can no longer turn the effective view and `need_at` into an outer row's terrain config (OQ-B6). The runtime map was already guarded by `column_wins` (R-HOOKS-25).
+- R-X-18 FIXED R-HOOKS-02 `plugin_bridge.rs` `InstanceStager` runs `ExtensionComponent::check_provides(&manifest)` right after `compile`: a manifest with `provides` and no `hooks` export refuses activation `package-invalid` (`missing-export`). `tools/fe-ext/src/validate.rs` has no turn-2 owner: NEEDS the same call.
+- R-X-19 HANDED-OFF (build break, orchestrator at refine L1) R-HOOKS-03: `InstanceHandle::call_hook`, which `LiveInstances::call` uses, does not exist, and `ComponentHost::instantiate` keeps no raw instance for `HooksGuest`. NEEDS `fe-plugin/src/wasm/component/{instance.rs,mod.rs}`: bind `HooksGuest::bind_if_exported` at instantiate; `ExtensionInstance::{with_hooks, call_hook}` and `InstanceHandle::call_hook(&HookRequest, Option<&DecodeStamp>) -> Result<HookReply, HookCallError>` per fe-plugin `src/AGENTS.md` §hook-calls. Until then every bound hook (petal.map, ingest.decode, egress.snippet, blob.*) is inert.
+- R-X-20 HANDED-OFF (build breaks, orchestrator) `tools/fe-ext/src/sandbox.rs:217` `TransactionReceipt` lacks `reading_count` (R-TOOL-04); `fe-api/src/qa_portal.rs` `portal_killswitch` is mounted but not written (R-POR-18; portal tree and the merged tree).
+- R-X-21 FIXED R-TOOL-34 `fractalengine/Cargo.toml` `[dev-dependencies] zip = "2"` (deflate only, fe-format's line), so `security_harness` can re-zip a sealed plugin.
+- R-X-22 FIXED R-TOOL-29 `docs/extensions/bindings.md` §8.1 peer C: installed-then-denied reads `policy-denied`; not installed reads `not-installed` with no action (§5.2 row 3 first; Install needs both policies, §5.5).
+- R-X-23 FIXED `bindings.md` §6 scene hooks: over-cap input is a refusal (`input-too-large`, REST 413), not a fail-open fault (steer 02:45 (1)).
+- R-X-24 FIXED `fe-hexon/src/AGENTS.md` §registry-source-remote contradicted R-REG on three points (it said the in-repo registry advertises no protocol, listings carry no `content_hash`, and extension sources send the operator token); rewritten to the anonymous `remote_extension_source`, the optional-but-stamped header, requested-uri binding and the zip 2 manifest read.
+- R-X-25 FIXED PHR #14: `fe-api/src/server.rs` `builtin_extension_handles` pointed at a `§extension-routes` that never existed; it now points at fe-sdk `src/AGENTS.md` §live-consumers.
+- R-X-26 FIXED test selection (G6-A4 residue; root AGENTS.md test rule 2): no batch reached fe-ui `extensions::` (J9, consent, bindings view, bound slots), the binary's `extension_host::`/`plugin_bridge::` journeys (governance, revocation pull, petal.map) or the portal tree's `portal_host::` (broker, resolver; R-POR-IPC-23). Rows added: R11 `cargo test -p fe-ui --lib -- extensions::` and `cargo test -p fractalengine --bin fractalengine -- extension_host:: plugin_bridge::`; portal R6 `... -- portal_host::`; lookup rows in both trees.
+- R-X-27 HANDED-OFF (turn 3, needs a bus steer: pinned seam) R-GOV-28: `DbCommand::SetExtensionPolicy` carries no actor, so a remote Manager's REST policy write is audited as the local DID. Add `actor_did` across `messages.rs`, the `lib.rs` arm, `extension_policy.rs`, fe-api `extensions.rs` and `plugin_bridge.rs`.
+- R-X-28 HANDED-OFF (turn 3, R-BND owner) R-TOOL-30: `resolver.rs` `gated_offer` can offer Install for a kill-listed registry build, a dead control. `RegistryBuild` gains `revoked: bool`, set by the binary with `is_revoked_any` over the listed `content_hash`.
+- R-X-29 HANDED-OFF (needs a steer) R-BND-17: decoded readings cannot be host-stamped with `payload_id` and `source_class: decoder`; `PluginCommit.readings` is the pinned `Vec<StagedReading>`. A stamp carrier on `PluginCommit` (one flush per decode call) or a dedicated command.
+- R-X-30 HANDED-OFF (turn 3) R-BND-10: resolver row 10 reads `role_at` with no `default_access` fallback, so a DID relying on the verse `viewer` default resolves `role-denied` (fail closed). A default-access field on `LocalFacts`, set by the binary.
+- R-X-31 HANDED-OFF (turn 3) R-HOOKS-30, R-HOOKS-33, R-UI-03, R-UI-04: the `asset.import` seam is unwired (an `ApiConfig` field touches every literal: relay, harness, tests, `main.rs`); other packages' slot commands never drain to the bus; manifest `ui` entries are never registered; slot commands carry no args. All fail closed.
+- R-X-32 HANDED-OFF (user decision) R-GOV-29 / R-TOOL-24: REST `administer` answers `not-available` for install, consent, bind, enable, update, unbind and uninstall, which all three ext sim scenarios drive, so no ext sim run can pass. Serve them for the local DID with consent taken from the request's capability digest, or narrow governance.md §Local identity and move the scenarios to the GUI path.
+- R-X-33 HANDED-OFF (High, lands with the merge, before `ready-to-merge` is accepted) R-POR-IPC-20: a runtime Disable all does not reach portals. `administer`'s `DisableAll`/`EnableAll` (here) must call the portal resolver view's `set_host_disabled`, a type only the portal tree has; `Bus::feed_admission` has no caller in either tree.
+- R-X-34 HANDED-OFF docs with no turn-2 owner: `docs/extensions/manifest-v2.md` §auth (slots per package, `get(package_id, slot)`, no fallback) and its loopback paragraph (global-unicast allow-list) (R-NET-29); `extensions-ui.md` §Registry sources and the Bindings view names (R-REG docs list, R-UI-16); `fe-hexon-registry/AGENTS.md` §routes; `package-format.md` §Registry wire (header optional); `tools/qa/AGENTS.md` §sim (R-TOOL-35); portal `spec.md:236` (R-X-08).
+- R-X-35 DEFERRED (user, plan §10 Q11) OD-7 against the extension update rule: a portal admission is an exact pair, so a same-publisher build with the same capabilities drops to the static sandbox until re-admitted, while an extension keeps consent across builds with an equal capability digest. admission.md §6 row 1 already expects governance to carry the record over; the cheapest alignment carries an Admitted record to the new hash when the publisher and the capability digest are equal (R20 still re-prompts on any digest change).
+- R-X-36 KEPT M-SPEC, read-only from here: the private-side spec's checkout-identity and ungated-catalogue-GET changes agree with R-REG-03 and R-REG-22 (anonymous downloads; `config.json` is the protocol authority). No edit there.
+- R-X-37 KEPT D-EXT and D-BATCH against the gate fixes: R24/J7/J10 read stamp-and-stop, `bindings.md` matches R-HOOKS-10 (`petal.activate` keyed) and R-LIFE-17 (cap per installation); the drift found is fixed in R-X-22, R-X-23, R-X-24 and R-X-26.
+
+**User questions to relay (none blocks turn 2's commit):** R-X-32 (REST lifecycle verbs vs consent in the GUI only), R-X-35 (OD-7), R-REG-19 (tileset trust anchor: the operator's registry vs trust roots), R-NET-31 (LAN targets per installation).

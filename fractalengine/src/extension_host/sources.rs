@@ -1,7 +1,7 @@
 //! Extension registry sources the operator configured: local folders, static signed indexes, protocol-v1 registries.
 //! Every fetcher is anonymous; index keys are pinned per endpoint (docs/extensions/extensions-ui.md §Registry sources).
 
-use std::net::{IpAddr, Ipv4Addr, SocketAddr};
+use std::net::{IpAddr, SocketAddr};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
@@ -214,38 +214,10 @@ fn endpoint_trust(shared: &SourceTrust, pins: Vec<(String, VerifyingKey)>) -> So
     }
 }
 
-/// True for loopback, private, link-local, CGNAT, unspecified, "this network", multicast and reserved addresses,
-/// including IPv4 carried in IPv4-mapped, IPv4-compatible and NAT64 (`64:ff9b::/96`) IPv6 addresses.
+/// Not a globally routable unicast address: the one predicate extension egress and dial-outs use
+/// (`fe_plugin::net::is_public_unicast`, an allow-list; steer 2026-11-09 01:50 item 2).
 fn is_internal(ip: IpAddr) -> bool {
-    match ip {
-        IpAddr::V4(v4) => {
-            let [first, second, third, _] = v4.octets();
-            v4.is_loopback()
-                || v4.is_private()
-                || v4.is_link_local()
-                || v4.is_unspecified()
-                || v4.is_broadcast()
-                || v4.is_multicast()
-                || first == 0
-                || first >= 240
-                || (first == 100 && (second & 0xC0) == 64)
-                || (first == 192 && second == 0 && third == 0)
-                || (first == 198 && (second & 0xFE) == 18)
-        }
-        IpAddr::V6(v6) => {
-            let segments = v6.segments();
-            let nat64 = segments[..6] == [0x64, 0xff9b, 0, 0, 0, 0];
-            let embedded = Ipv4Addr::from((u32::from(segments[6]) << 16) | u32::from(segments[7]));
-            v6.is_loopback()
-                || v6.is_unspecified()
-                || v6.is_multicast()
-                || (segments[0] & 0xfe00) == 0xfc00
-                || (segments[0] & 0xffc0) == 0xfe80
-                || (segments[0] & 0xffc0) == 0xfec0
-                || (nat64 && is_internal(IpAddr::V4(embedded)))
-                || v6.to_ipv4().is_some_and(|v4| is_internal(IpAddr::V4(v4)))
-        }
-    }
+    !fe_plugin::net::is_public_unicast(ip)
 }
 
 /// Anonymous http(s) reader: no credentials, no cookies, no proxy, no redirects; every target address is

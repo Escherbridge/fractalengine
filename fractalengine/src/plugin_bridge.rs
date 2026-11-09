@@ -1101,6 +1101,10 @@ impl InstanceStager {
                 "{plugin_id}: the component digest differs from the sealed build"
             ));
         }
+        // A manifest that `provides` hooks needs the `hooks` export (bindings.md §7.3; R-HOOKS-02).
+        component
+            .check_provides(&manifest)
+            .map_err(|error| format!("{} ({error})", error.code()))?;
         // The factory reads this while staging below: the admission is stamped with exactly this build.
         self.verified.record(plugin_id, identity);
         let key = InstanceKey::new(petal.petal_id.clone(), facts.package_id.clone());
@@ -1503,8 +1507,8 @@ impl BindingLauncher for BridgeLauncher<'_> {
 // Accepted-payload decode (BND-10b)
 // ---------------------------------------------------------------------------
 
-/// Reads accepted payload files: declared sizes are summed against the cap BEFORE any byte is read, every read is
-/// bounded by its declared size, and bytes must hash to the asset's BLAKE3 (steer 02:25).
+/// Describes and reads accepted payload files for `decode::read_within_cap`, which sums the declared sizes against
+/// the cap BEFORE any read and checks each file's length and BLAKE3 (steer 02:25; fe-plugin `src/AGENTS.md`).
 #[derive(Clone)]
 struct PayloadReader {
     api: ExtensionApiSlot,
@@ -1512,14 +1516,9 @@ struct PayloadReader {
 }
 
 impl PayloadReader {
-    fn read(&self, asset_ids: &[String]) -> Result<Vec<(DecodeFile, Vec<u8>)>, String> {
+    /// Each asset's stored row (size, type, BLAKE3) in `asset_ids` order; reads no blob byte.
+    fn declared(&self, asset_ids: &[String]) -> Result<Vec<DecodeFile>, String> {
         let api = self.api.get().map_err(|error| error.to_string())?.clone();
-        let store = self
-            .blobs
-            .0
-            .get()
-            .ok_or("the blob store is not bound")?
-            .clone();
         let mut vars = HashMap::new();
         vars.insert("ids".to_string(), json!(asset_ids));
         let sql = fe_api::query_guard::with_statement_timeout(
@@ -1528,7 +1527,6 @@ impl PayloadReader {
         let rows =
             db_rows_within(&api, sql, vars, DB_REPLY_TIMEOUT).map_err(|error| error.to_string())?;
         let mut declared = Vec::with_capacity(asset_ids.len());
-        let mut total = 0u64;
         for asset_id in asset_ids {
             let row = rows
                 .iter()
@@ -1538,52 +1536,48 @@ impl PayloadReader {
                 .get("size_bytes")
                 .and_then(Value::as_u64)
                 .ok_or_else(|| format!("asset {asset_id} has no size"))?;
-            let digest = row
+            let content_hash = row
                 .get("content_hash")
                 .and_then(Value::as_str)
                 .map(str::to_ascii_lowercase)
                 .ok_or_else(|| format!("asset {asset_id} has no content hash"))?;
-            let hash = fe_runtime::blob_store::hash_from_hex(&digest)
-                .map_err(|error| error.to_string())?;
             let content_type = row
                 .get("content_type")
                 .and_then(Value::as_str)
                 .unwrap_or("application/octet-stream")
                 .to_string();
-            total = total.saturating_add(size);
-            if total > MAX_DECODE_BODY_BYTES as u64 {
-                return Err(format!(
-                    "payload exceeds the {MAX_DECODE_BODY_BYTES}-byte decode cap"
-                ));
-            }
-            declared.push((asset_id.clone(), content_type, size, digest, hash));
+            declared.push(DecodeFile {
+                asset_id: asset_id.clone(),
+                content_type,
+                size,
+                content_hash,
+            });
         }
-        let mut files = Vec::with_capacity(declared.len());
-        for (asset_id, content_type, size, digest, hash) in declared {
-            let path = store
-                .get_blob_path(&hash)
-                .ok_or_else(|| format!("the blob of {asset_id} is not on this peer"))?;
-            let file =
-                std::fs::File::open(&path).map_err(|error| format!("{asset_id}: {error}"))?;
-            let mut bytes = Vec::with_capacity(size as usize);
-            file.take(size.saturating_add(1))
-                .read_to_end(&mut bytes)
-                .map_err(|error| format!("{asset_id}: {error}"))?;
-            if bytes.len() as u64 != size || fe_format::integrity::digest_hex(&bytes) != digest {
-                return Err(format!(
-                    "the blob of {asset_id} does not match its declared size and hash"
-                ));
-            }
-            files.push((
-                DecodeFile {
-                    asset_id,
-                    content_type,
-                    size,
-                },
-                bytes,
-            ));
-        }
-        Ok(files)
+        Ok(declared)
+    }
+
+    /// At most `limit` bytes of the file's local blob; the caller compares length and hash.
+    fn read_bounded(&self, file: &DecodeFile, limit: u64) -> Result<Vec<u8>, String> {
+        let store = self
+            .blobs
+            .0
+            .get()
+            .ok_or("the blob store is not bound")?
+            .clone();
+        let hash = fe_runtime::blob_store::hash_from_hex(&file.content_hash)
+            .map_err(|error| error.to_string())?;
+        let path = store
+            .get_blob_path(&hash)
+            .ok_or_else(|| format!("the blob of {} is not on this peer", file.asset_id))?;
+        let handle = std::fs::File::open(&path)
+            .map_err(|error| format!("{}: {error}", file.asset_id))?;
+        let capacity = limit.min(MAX_DECODE_BODY_BYTES as u64 + 1);
+        let mut bytes = Vec::with_capacity(usize::try_from(capacity).unwrap_or(0));
+        handle
+            .take(limit)
+            .read_to_end(&mut bytes)
+            .map_err(|error| format!("{}: {error}", file.asset_id))?;
+        Ok(bytes)
     }
 }
 
@@ -1594,11 +1588,12 @@ struct DecodePort<'a> {
 }
 
 impl DecodeHost for DecodePort<'_> {
-    fn payload_files(
-        &mut self,
-        asset_ids: &[String],
-    ) -> Result<Vec<(DecodeFile, Vec<u8>)>, String> {
-        self.reader.read(asset_ids)
+    fn declared_files(&mut self, asset_ids: &[String]) -> Result<Vec<DecodeFile>, String> {
+        self.reader.declared(asset_ids)
+    }
+
+    fn read_bounded(&mut self, file: &DecodeFile, limit: u64) -> Result<Vec<u8>, String> {
+        self.reader.read_bounded(file, limit)
     }
 
     fn call_decode(
@@ -2513,12 +2508,16 @@ impl BindingWorker {
                     .resolutions_at(&petal.petal_id)
                     .into_iter()
                     .map(|(point, resolved)| {
-                        let winner: Option<BindingRecord> =
+                        // OQ-B6: the petal's own terrain column decided, so no outer row wins here (R-BND-13).
+                        let winner: Option<BindingRecord> = if resolved.detail.implicit_terrain {
+                            None
+                        } else {
                             resolution_scopes(&petal.verse_id, &petal.fractal_id, &petal.petal_id)
                                 .iter()
                                 .find_map(|scope| {
                                     effective_binding(&rows, &roles, scope, &point).cloned()
-                                });
+                                })
+                        };
                         let manifest = match &resolved.resolution {
                             BindingResolution::Resolved { package_id, .. } => self
                                 .catalog

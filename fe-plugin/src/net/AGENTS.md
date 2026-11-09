@@ -179,8 +179,8 @@ instance increments `egress_refused`.
 ## §addresses — global unicast only, or the declared loopback (P2P-QA steer 2026-11-09 01:50, SSRF)
 
 Consent shows the declared host. Without this rule, a public-looking name could still resolve to
-`169.254.169.254`, a LAN admin page or the host's own API. One predicate, `is_public_unicast` (exported, so
-`fractalengine/src/extension_host/sources.rs` can reuse it), is an **allow-list**:
+`169.254.169.254`, a LAN admin page or the host's own API. One predicate, `is_public_unicast` (exported; the
+registry sources' `fractalengine/src/extension_host/sources.rs` `is_internal` is its negation, R-X), is an **allow-list**:
 
 - **IPv4:** every address except 0/8, 10/8, 100.64/10, 127/8, 169.254/16, 172.16/12, 192.0.0/24, 192.0.2/24,
   192.88.99/24, 192.168/16, 198.18/15, 198.51.100/24, 203.0.113/24 and 224/3 (multicast, reserved, broadcast).

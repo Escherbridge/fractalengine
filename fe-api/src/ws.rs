@@ -14,8 +14,8 @@ use fe_runtime::scene_hook_gate::{SceneAugment, SceneCallerKind, SceneHookInput}
 use crate::mcp::scene_gate::{gate_scene_write, scope_petal_id, stage_scene_augment};
 use crate::server::{ApiHosts, ApiState};
 
-/// The `scene.*` caller kind for `/ws` writes: the WIT `caller-kind` has no `ws`, and `/ws` is the REST token surface.
-const WS_SCENE_CALLER: SceneCallerKind = SceneCallerKind::Rest;
+/// The `scene.*` caller kind for `/ws` writes (hook input `caller.kind: "ws"`; steer 2026-11-09 02:45).
+const WS_SCENE_CALLER: SceneCallerKind = SceneCallerKind::Ws;
 
 // ---------------------------------------------------------------------------
 // Client → Server messages

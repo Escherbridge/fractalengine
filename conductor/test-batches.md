@@ -363,6 +363,8 @@ cargo test -p fe-plugin -- net::tests:: bindings::resolver::tests:: tick::tests:
 cargo test -p fe-hexon --features remote -- registry_source::tests::
 cargo test -p fe-runtime --lib -- extension_binding::tests:: scene_hook_gate::tests::
 cargo test -p fe-ui --lib -- atlas::dashboard atlas::model_editor atlas::search_bar atlas::tag_panel atlas::room_editor actions::hexon
+cargo test -p fe-ui --lib -- extensions::
+cargo test -p fractalengine --bin fractalengine -- extension_host:: plugin_bridge::
 ```
 
 ---
@@ -467,6 +469,7 @@ cargo test -p fe-ui --lib -- plugin::
 | `fractalengine/src/{asset_bridge}.rs` | R2 |
 | `fractalengine/src/gpx_bridge.rs` | R5 |
 | `fractalengine/src/terrain_bridge.rs` | R4 |
+| `fractalengine/src/{plugin_bridge.rs,extension_host/**}` | R11 |
 | `fractalengine/src/{screenshot_bridge,vision_bridge}.rs` | R9 |
 | `fractalengine/src/{panic_log,window_chrome}.rs` | R6 |
 | `fractalengine/tests/security_harness.rs` | R9 |

@@ -409,7 +409,8 @@ No hook call ever runs on the DB thread or the render loop.
     - Never for `PluginCommit` (`fe-database/src/lib.rs:699`), so hooks cannot recurse.
   - **They are authoring aids, not access control.** A peer without the extension writes freely,
     and its rows are judged by role alone.
-  - **Faults fail open** (OQ-B4).
+  - **Faults fail open** (OQ-B4). Input over the 64 KiB call cap is not a fault: the caller sized it, so a
+    bound write is refused (`input-too-large`, REST 413; steer 2026-11-09 02:45).
   - **A refusal** answers REST 409 `refused` with the guest's reason. The GUI rolls back the
     optimistic transform the way `transform_failed` does.
   - **Augment ops** are staged in the instance's window and flush with its next tick as one
@@ -545,7 +546,7 @@ Fractal F's Manager writes, at `VERSE#V-FRACTAL#F`: `hook: "petal.map"`, `mode: 
 |---|---|
 | P1 (no stored terrain), peer A (1.2.3 installed, consented, accepted) | `resolved`. `petal.map` runs with `{petal_id: P1, stored_terrain: null, …}`. The returned config passes the strictest reader and becomes P1's terrain on A. The Map column reads "City Map · fractal". |
 | P1, peer B (not installed; the policies admit it; B's source has 1.2.3) | `builtin` (no map), state "City Map: not installed", action **Install**. Consent plus "Allow in <verse>" is one confirm, then `resolved`. |
-| P1, peer C (its local `extensions.toml` denies the package) | `policy-denied`, "Blocked by this device's extension policy", no action. |
+| P1, peer C (1.2.3 installed, then its local `extensions.toml` denies the package) | `policy-denied`, "Blocked by this device's extension policy", no action. Not installed, the same peer reads `not-installed` with no action: §5.2 row 3 comes first, and the Install offer needs both policies to admit the package (§5.5). |
 | P2 (its petal Manager set a stored terrain) | The stored column wins on every peer (implicit petal-scope `builtin`) until a Manager chooses "Use the fractal's map". |
 | P1 on A, provider faults | The built-in serves P1 on A; `hooks.faults.petal.map` counts. |
 

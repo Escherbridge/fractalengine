@@ -653,7 +653,7 @@ mod absent_hosts {
     }
 }
 
-/// Extension handles whose routes the engine mounts (fe-api/AGENTS.md §extension-routes).
+/// First-party extension handles whose routes the engine mounts (fe-sdk/src/AGENTS.md §live-consumers).
 fn builtin_extension_handles() -> Vec<fe_sdk::ApiExtensionHandle> {
     vec![fe_terrain::api_ext::terrain_api_routes()]
 }

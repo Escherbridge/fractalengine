@@ -32,6 +32,8 @@ tempfile = "3"
 # own test module).
 fe-hexon-registry = { path = "../fe-hexon-registry" }
 axum = { workspace = true }
+# security_harness re-zips a sealed plugin (fe-format's zip 2 line).
+zip = { version = "2", default-features = false, features = ["deflate"] }
 
 [dependencies]
 # PAS-P5 S7a: `terrain_bridge::verify_install_meta` parses `fe_format::HeaderDoc`

@@ -2390,16 +2390,16 @@ authz and before its write (R-API door parity, steer 2026-11-09 02:45):
 | REST `POST .../nodes`, `POST /api/v1/nodes`, `PATCH .../transform`, `PATCH .../properties` | create / transform / property | `Rest` | 409 `refused` |
 | MCP `create_node`, `place_asset` | create | `Mcp` | tool error "Refused by <package>: <reason>" |
 | MCP `update_transform`, `set_property`, `commit_node_mutation` (`full_transform` / `property_set`) | transform / property | `Mcp` | same |
-| `/ws` `entity_command` `create_node` / `set_node_property` | create / property | `Rest` | `entity_command_result.error` |
-| `/ws` `transform_update` | transform | `Rest` | `error {code: "refused", message: "node <id>: ..."}` |
+| `/ws` `entity_command` `create_node` / `set_node_property` | create / property | `Ws` | `entity_command_result.error` |
+| `/ws` `transform_update` | transform | `Ws` | `error {code: "refused", message: "node <id>: ..."}` |
 
 `mcp/scene_gate.rs` holds the MCP/WS wrapper: any verdict other than `Proceed` keeps the write unsent (so a new
 refusal kind, such as R-HOOKS' over-cap `input-too-large`, fails closed here without an edit), and an allowed
 augment stages only after its write was sent (`stage_created` with the new node id for a create). A transform is
 gated BEFORE the optimistic broadcast, so a refused move is never previewed. `/ws` gates each `transform_update`
 (REST parity, not the GUI's commit-only rule) and stages that node's latest augment after the debounced
-`TransformPersist` is sent; a superseded proposal's augment is dropped with it. `/ws` reports caller kind `Rest`
-because the WIT `caller-kind` has no `ws` (`ws.rs` `WS_SCENE_CALLER`, one line to change if the contract adds
-one). Doors still outside the gate (HANDED-OFF in review-turn2/R-API.md): REST
+`TransformPersist` is sent; a superseded proposal's augment is dropped with it. `/ws` reports caller kind `Ws`
+(hook input `caller.kind: "ws"`, `ws.rs` `WS_SCENE_CALLER`; R-X). The scene hook input is JSON, so the bus WIT
+`caller-kind`, which has no `ws`, is not involved. Doors still outside the gate (HANDED-OFF in review-turn2/R-API.md): REST
 `POST /nodes/{id}/mutations` and `POST /petals/{p}/objects` (`node_history.rs`), waypoint create/move, GPX import
 and `promote_instance` on both REST and MCP; one shared-core gate inside those cores is the fix.

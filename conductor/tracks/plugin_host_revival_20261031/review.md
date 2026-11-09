@@ -59,3 +59,21 @@ Verdicts: **FIXED** (fixed here), **NEEDS** (fix belongs to a file no PHR slice 
 - **AC-6** holds for unlicensed packages; the licensed half waits on hexon_entitlements S1.
 - **AC-7** holds, pending the build sweep.
 - **AC-8** holds via E0.
+
+## Turn 2 status of S6's open items (R-X, 2026-11-09)
+
+The extension-platform swarm (turns 1 and 2) took over S6's NEEDS and DEFERRED lines. R-X, the final cross-track gate of
+turn 2, re-checked each at ext-platform `d7bd9f18` plus R-X's own edits. Nothing was built or run. The full verdict lines
+are in `conductor/tracks/extension_platform_20261107/review.md` (§Turn 2) and its `review-turn2/` files.
+
+| # | S6 verdict | Status after turn 2 |
+|---|---|---|
+| 14 | NEEDS `fe-api/AGENTS.md` §extension-routes | **FIXED** by R-X-25: the pointer in `fe-api/src/server.rs` (`builtin_extension_handles`) now names fe-sdk `src/AGENTS.md` §live-consumers, which documents the first-party route handles. |
+| 15 | DEFERRED: a replayed older revocation list un-revokes | **CLOSED.** `revocation_pull.rs` pulls, keeps the newest list per signer and seeds that high-water mark from its cache before the first pull (R-GOV-06); `issued_at` compares as a strict UTC instant, so an offset-form replay cannot sort newer (R-GOV-01). |
+| 16 | DEFERRED: no `EntitlementVerifier` | **Still DEFERRED** to hexon_entitlements S1. The governance row-6 seam exists (`EntitlementCheck`), and `NoEntitlementVerifier` refuses every licensed build (R-GOV-25), so AC-6's licensed half still waits. |
+| 17 | DEFERRED: no `PluginManager`, consent modal unwired | **CLOSED for install and activation.** `plugin_bridge.rs` builds the manager `with_admission(PackageAdmission)` under fail-closed gates; the Extensions panel, consent v2 and the ops drain install, consent, enable, update and uninstall (R-GOV-14..R-GOV-25); `InstanceStager` activates sealed v2 builds and now checks the `hooks` export (R-X-18). Open: bound hooks cannot be called until `InstanceHandle::call_hook` exists (R-X-19, a build break). |
+| 18 | DEFERRED: AOT cache deserializes `.cwasm` with no provenance | **Still DEFERRED** (scope flag). R-LIFE-25 narrowed it: 2.0 components compile in memory, and only the retired 1.0 core path reads the cache. Trigger: the 1.0 path re-enabled for third parties, or `compile_cached` gaining a caller. |
+| 19 | DEFERRED: contract drift (v1 layout, `[[publisher]]`, env name) | **CLOSED** in turn 1 (E9, E10, E13 retargeted to the sealed format; governance.md names `FE_PLUGIN_HOST_ALLOW`). |
+
+**Acceptance criteria after turn 2.** AC-1 to AC-5, AC-7 and AC-8 hold as S6 left them, now over the v2 path. AC-6's
+licensed half still waits on #16. AC-7 ("pending the build sweep") is unchanged: nothing in turn 2 compiled.
