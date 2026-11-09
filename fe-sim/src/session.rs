@@ -15,15 +15,13 @@ use fe_sync::messages::SyncCommand;
 use serde::Serialize;
 
 use crate::clock::{SimClock, SCENARIO_RUN_LOCK};
-use crate::fleet::{plan_fleet, rfc3339_from_ms, FleetConfig, ScheduledReading};
+use crate::fleet::{plan_fleet, rfc3339_from_ms, FleetConfig, ScheduledReading, MAX_PLANNED_READINGS};
 use crate::net::SimNet;
 use crate::peer::SimPeer;
 use crate::scenario::{
     apply_event, merge_actions, raw_query, Action, CanonicalReading, HlcSourceGuard, QueryRecord,
     Run, ScenarioOutcome, ScenarioScript, ScriptedEvent, DB_REPLY_BUDGET, SETTLE_POLL,
 };
-use crate::sensors::evaluate;
-
 /// The lab's `SimClock` as the plugin scheduler's injected clock source (R30/R4).
 ///
 /// An adapter crate implements `fe_plugin::tick::Clock` over [`LabClock::now_ms`], so the lab hosts the
@@ -53,14 +51,38 @@ impl FleetSource for ModelFleetSource {
     }
 }
 
-/// Refuse a hosted plan the driver could not apply deterministically.
+/// Refuse a hosted plan the driver could not apply deterministically (see `src/AGENTS.md` §extension-host).
 fn check_plan(fleet: &FleetConfig, plan: &[ScheduledReading]) -> Result<()> {
+    anyhow::ensure!(
+        plan.len() as u64 <= MAX_PLANNED_READINGS,
+        "fleet source: {} readings exceeds the cap of {MAX_PLANNED_READINGS}",
+        plan.len()
+    );
     for reading in plan {
+        let Some(sensor) = fleet.sensors.get(reading.sensor) else {
+            anyhow::bail!(
+                "fleet source: reading names sensor {} but the fleet has {}",
+                reading.sensor,
+                fleet.sensors.len()
+            );
+        };
+        let due = reading
+            .tick
+            .checked_mul(sensor.cadence_ms)
+            .filter(|offset| reading.tick >= 1 && *offset <= fleet.duration_ms)
+            .map(|offset| fleet.start_ms + offset);
         anyhow::ensure!(
-            reading.sensor < fleet.sensors.len(),
-            "fleet source: reading names sensor {} but the fleet has {}",
+            due == Some(reading.at_ms),
+            "fleet source: sensor {} tick {} at {} is off its cadence or outside the fleet window",
             reading.sensor,
-            fleet.sensors.len()
+            reading.tick,
+            reading.at_ms
+        );
+        anyhow::ensure!(
+            reading.value.is_finite(),
+            "fleet source: sensor {} tick {} has a non-finite value",
+            reading.sensor,
+            reading.tick
         );
     }
     anyhow::ensure!(
@@ -185,6 +207,10 @@ impl ScenarioSession {
         // Snapshots the process HLC before installing (restored on drop —
         // DEC-C13; AGENTS.md §hlc-sim).
         let hlc_guard = HlcSourceGuard::install(clock.clone());
+
+        // The schedule is fixed before a single peer spawns, so a bad hosted package fails the start cheaply.
+        let plan = source.plan(&script.fleet, LabClock(clock.clone()))?;
+        check_plan(&script.fleet, &plan)?;
 
         let net = SimNet::new(clock.clone());
 
@@ -427,8 +453,6 @@ impl ScenarioSession {
             })?;
         }
 
-        let plan = source.plan(&script.fleet, LabClock(run.clock.clone()))?;
-        check_plan(&script.fleet, &plan)?;
         let actions = merge_actions(&script, &plan);
         Ok(Self {
             readings_planned: plan.len(),
@@ -553,14 +577,9 @@ impl ScenarioSession {
                 }
                 let mut batch: Vec<IotReadingInput> = Vec::with_capacity(readings.len());
                 for reading in readings {
+                    // The source's own value (a hosted package's wasm maths may differ from the native
+                    // model by an ULP); `check_plan` vetted index, cadence and finiteness at start.
                     let sensor = &script.fleet.sensors[reading.sensor];
-                    // Values were precomputed by the pure planner; this
-                    // re-evaluation is an internal parity check that the
-                    // fired value is exactly the model's.
-                    debug_assert_eq!(
-                        reading.value,
-                        evaluate(&sensor.model, reading.tick, reading.at_ms)
-                    );
                     batch.push(IotReadingInput {
                         node_id: anchor_node_ids
                             .get(&sensor.anchor)
@@ -791,6 +810,7 @@ fn shutdown(run: Run) {
 mod tests {
     use super::*;
     use crate::scenario::{default_script, offline_degraded_script, run_scenario};
+    use crate::sensors::evaluate;
 
     /// The anti-drift proof: driving the default script through the
     /// interactive surface — uneven step chunks with a status snapshot
@@ -850,6 +870,34 @@ mod tests {
             one_shot.canonical_fingerprint(),
             "an extension-hosted fleet under the SimClock matches the model planner"
         );
+
+        // A hosted plan the driver could not replay is refused at start, before any peer spawns.
+        let good = plan_fleet(&default_script().fleet);
+        let sensors = default_script().fleet.sensors.len();
+        let refusals: [(&str, fn(&mut Vec<ScheduledReading>, usize)); 4] = [
+            ("ordered", |plan: &mut Vec<ScheduledReading>, _: usize| plan.reverse()),
+            ("off its cadence", |plan: &mut Vec<ScheduledReading>, _: usize| plan[0].at_ms += 1),
+            ("names sensor", |plan: &mut Vec<ScheduledReading>, sensors: usize| plan[0].sensor = sensors),
+            ("non-finite", |plan: &mut Vec<ScheduledReading>, _: usize| plan[0].value = f64::NAN),
+        ];
+        let dir_d = tempfile::tempdir().expect("refusal tempdir");
+        for (why, corrupt) in refusals {
+            let mut plan = good.clone();
+            corrupt(&mut plan, sensors);
+            match ScenarioSession::start_with_source(default_script(), dir_d.path(), &mut FixedSource(plan)) {
+                Ok(_) => panic!("a plan that is {why} must be refused"),
+                Err(error) => assert!(error.to_string().contains(why), "{why}: {error}"),
+            }
+        }
+    }
+
+    /// Hands the session a ready-made plan (the refusal rows).
+    struct FixedSource(Vec<ScheduledReading>);
+
+    impl FleetSource for FixedSource {
+        fn plan(&mut self, _fleet: &FleetConfig, _clock: LabClock) -> Result<Vec<ScheduledReading>> {
+            Ok(std::mem::take(&mut self.0))
+        }
     }
 
     /// Emulates the fleet-sim package: per sensor, every due tick, value from the shared model.

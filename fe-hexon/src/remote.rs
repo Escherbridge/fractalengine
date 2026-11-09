@@ -8,7 +8,9 @@ use reqwest::StatusCode;
 use serde::Deserialize;
 
 use crate::partial::{FetchSource, PartialFetchError, PartialHexonFetch};
-use crate::registry_source::{ProtocolV1Source, ProtocolV1Transport, RegistryEntry, SourceTrust};
+use crate::registry_source::{
+    valid_package_id, valid_version, ProtocolV1Source, ProtocolV1Transport, RegistryEntry, SourceTrust, PACKAGE_MAX_BYTES,
+};
 
 /// Response cap for `/meta`: every header member at its JSON cap, plus the manifest.
 const MAX_HEADER_RESPONSE_BYTES: u64 = 8 * limits::MAX_JSON_ENTRY_BYTES;
@@ -272,16 +274,36 @@ impl RemoteRegistryClient {
         }
         Ok(body)
     }
+
+    /// [`Self::download`] that stops reading past `cap` bytes, so a registry cannot stream an unbounded body.
+    pub async fn download_capped(&self, uri: &str, cap: u64) -> Result<Vec<u8>> {
+        let resp = self
+            .get(format!("{}/api/v1/hexons/{uri}/download", self.base_url))
+            .send()
+            .await
+            .context("registry download request failed")?;
+        let status = resp.status();
+        if !status.is_success() {
+            return Err(anyhow!("registry download failed: {status}"));
+        }
+        self.get_capped_response(resp, cap).await
+    }
 }
 
-/// A registry uri is `hexon_id[@version]`; anything that could re-target the request is refused.
+/// A registry uri is `id[@version]` in the contract v1 grammar; anything that could re-target the request is refused.
 fn is_plain_registry_uri(uri: &str) -> bool {
-    !uri.is_empty()
-        && uri.len() <= 256
-        && !uri.contains("..")
-        && uri
-            .chars()
-            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.' | '@' | '+'))
+    match uri.split_once('@') {
+        Some((id, version)) => valid_package_id(id) && valid_version(version),
+        None => valid_package_id(uri),
+    }
+}
+
+/// Bytes a download may read: the listed `size` when the registry gave one, never past the package cap.
+fn download_cap(entry: &RegistryEntry) -> u64 {
+    match entry.size {
+        0 => PACKAGE_MAX_BYTES,
+        listed => listed.min(PACKAGE_MAX_BYTES),
+    }
 }
 
 /// Synchronous [`ProtocolV1Transport`] over [`RemoteRegistryClient`]; call from a worker thread, never from async code.
@@ -322,7 +344,7 @@ impl ProtocolV1Transport for RemoteProtocolV1Transport {
             .map_err(|e| e.to_string())?;
         Ok(hits
             .into_iter()
-            .filter(|hit| is_plain_registry_uri(&hit.hexon_id) && is_plain_registry_uri(&hit.version))
+            .filter(|hit| valid_package_id(&hit.hexon_id) && valid_version(&hit.version))
             .map(entry_from_summary)
             .collect())
     }
@@ -331,11 +353,14 @@ impl ProtocolV1Transport for RemoteProtocolV1Transport {
         if !is_plain_registry_uri(&entry.url) {
             return Err(format!("refusing registry uri {:?}", entry.url));
         }
-        self.runtime.block_on(self.client.download(&entry.url)).map_err(|e| e.to_string())
+        self.runtime
+            .block_on(self.client.download_capped(&entry.url, download_cap(entry)))
+            .map_err(|e| e.to_string())
     }
 }
 
-/// The Hexon Manager's remote source: protocol v1 over `base_url`, every download re-verified locally.
+/// A protocol-v1 registry as a [`RegistrySource`](crate::registry_source::RegistrySource): every download re-verified
+/// locally as a plugin package (tileset hexons are not admitted yet; see `src/AGENTS.md` §registry-source-remote).
 pub fn remote_source(
     label: impl Into<String>,
     base_url: impl Into<String>,

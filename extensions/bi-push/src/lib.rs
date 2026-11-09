@@ -18,16 +18,20 @@ const MAX_BODY_BYTES: usize = 1_048_576;
 /// The kv key a host may seed with the binding's `format` config.
 const FORMAT_KEY: &str = "bi-push/format";
 
-/// A rendered body waiting for the sink.
-struct Pending {
+/// The newest rendered snapshot; `generation` grows by one per snapshot.
+struct Latest {
+    generation: u64,
     content_type: &'static str,
     body: Vec<u8>,
 }
 
 thread_local! {
     static SUBSCRIPTION: Cell<Option<u64>> = const { Cell::new(None) };
-    static PENDING: RefCell<Option<Pending>> = const { RefCell::new(None) };
-    static IN_FLIGHT: Cell<Option<u64>> = const { Cell::new(None) };
+    static LATEST: RefCell<Option<Latest>> = const { RefCell::new(None) };
+    /// Newest generation the sink acknowledged with a 2xx.
+    static DELIVERED: Cell<u64> = const { Cell::new(0) };
+    /// The request in flight and the generation it carries.
+    static IN_FLIGHT: Cell<Option<(u64, u64)>> = const { Cell::new(None) };
 }
 
 fn warn(message: &str) {
@@ -58,17 +62,28 @@ fn queue(snapshot: &Snapshot) {
         warn(&format!("snapshot body of {} bytes exceeds the sink limit; dropped", body.len()));
         return;
     }
-    PENDING.with(|slot| *slot.borrow_mut() = Some(Pending { content_type: format.content_type(), body }));
+    LATEST.with(|slot| {
+        let generation = slot.borrow().as_ref().map_or(1, |latest| latest.generation + 1);
+        *slot.borrow_mut() = Some(Latest { generation, content_type: format.content_type(), body });
+    });
 }
 
-/// Put a body back unless a newer snapshot already replaced it.
-fn requeue(pending: Pending) {
-    PENDING.with(|slot| {
-        let mut slot = slot.borrow_mut();
-        if slot.is_none() {
-            *slot = Some(pending);
-        }
-    });
+/// The newest snapshot as a request, unless the sink already acknowledged it.
+fn undelivered() -> Option<(u64, OutgoingRequest)> {
+    let delivered = DELIVERED.with(Cell::get);
+    LATEST.with(|slot| {
+        slot.borrow().as_ref().filter(|latest| latest.generation > delivered).map(|latest| {
+            let request = OutgoingRequest {
+                method: HttpMethod::Post,
+                path: String::new(),
+                query: Vec::new(),
+                headers: Vec::new(),
+                content_type: Some(latest.content_type.to_string()),
+                body: latest.body.clone(),
+            };
+            (latest.generation, request)
+        })
+    })
 }
 
 struct BiPush;
@@ -92,7 +107,7 @@ impl Extension for BiPush {
         }
     }
 
-    /// Send the pending body when no request is in flight; a failed push is retried by the next snapshot.
+    /// Every tick (the push interval) sends the newest snapshot the sink has not acknowledged, one request at a time.
     fn on_tick(_info: TickInfo) {
         if SUBSCRIPTION.with(Cell::get).is_none() {
             if let Err(error) = subscribe() {
@@ -102,32 +117,30 @@ impl Extension for BiPush {
         if IN_FLIGHT.with(Cell::get).is_some() {
             return;
         }
-        let Some(pending) = PENDING.with(|slot| slot.borrow_mut().take()) else { return };
-        let request = OutgoingRequest {
-            method: HttpMethod::Post,
-            path: String::new(),
-            query: Vec::new(),
-            headers: Vec::new(),
-            content_type: Some(pending.content_type.to_string()),
-            body: pending.body.clone(),
-        };
+        let Some((generation, request)) = undelivered() else { return };
         match egress::http_request(SINK, &request) {
-            Ok(id) => IN_FLIGHT.with(|slot| slot.set(Some(id))),
-            Err(error) => {
-                warn(&format!("push refused: {error:?}"));
-                requeue(pending);
-            }
+            Ok(id) => IN_FLIGHT.with(|slot| slot.set(Some((id, generation)))),
+            Err(error) => warn(&format!("push refused: {error:?}; retried next tick")),
         }
     }
 
+    /// A 2xx marks its generation delivered; anything else leaves it for the next tick.
     fn on_egress_result(request: u64, outcome: Result<IncomingResponse, HostError>) {
-        if IN_FLIGHT.with(Cell::get) == Some(request) {
-            IN_FLIGHT.with(|slot| slot.set(None));
-        }
+        let carried = match IN_FLIGHT.with(Cell::get) {
+            Some((id, generation)) if id == request => {
+                IN_FLIGHT.with(|slot| slot.set(None));
+                Some(generation)
+            }
+            _ => None,
+        };
         match outcome {
-            Ok(response) if (200..300).contains(&response.status) => {}
-            Ok(response) => warn(&format!("sink answered {}; the next snapshot retries", response.status)),
-            Err(error) => warn(&format!("push failed: {error:?}; the next snapshot retries")),
+            Ok(response) if (200..300).contains(&response.status) => {
+                if let Some(generation) = carried {
+                    DELIVERED.with(|slot| slot.set(slot.get().max(generation)));
+                }
+            }
+            Ok(response) => warn(&format!("sink answered {}; retried next tick", response.status)),
+            Err(error) => warn(&format!("push failed: {error:?}; retried next tick")),
         }
     }
 }

@@ -321,16 +321,25 @@ uses `ModelFleetSource` (`plan_fleet`); `start_with_source` takes any other sour
 `extensions/fleet-sim` package a live host runs. Everything else (SimNet, faults, `/api/v1/sim/*`, the HLC override)
 is unchanged, and the SimClock still never enters a production process (§hlc-sim).
 
-- **Clock.** The source receives a `LabClock` over the session's `SimClock` (at `fleet.start_ms`, before any action).
-  An adapter (the `fe-ext run --lab` leg, which owns the fe-plugin dependency; fe-sim has none) implements
-  `fe_plugin::tick::Clock` over `LabClock::now_ms` and steps the package tick by tick.
-- **Contract.** The returned plan holds `ScheduledReading`s ordered by `(at_ms, sensor)`, sensor indices into
-  `fleet.sensors`, values from `evaluate(model, tick, at_ms)` exactly like `plan_readings`. `check_plan` refuses an
-  out-of-range sensor or an unordered plan before any peer acts, so a bad package fails the start, not a barrier.
+- **Status (G5, 2026-11-08): the seam exists, the hosting does not.** No source other than `ModelFleetSource` exists
+  outside tests. The adapter that would host the wasm package (it owns the fe-plugin dependency; fe-sim has none)
+  and its entry point `fe-ext run --lab` are not built: `tools/fe-ext` refuses `--lab` today. Movers are not driven
+  in the lab at all (a `ScheduledReading` plan carries sensors only), so a v2 document's movers are ignored there.
+- **Clock.** The source receives a `LabClock` over the session's `SimClock` at `fleet.start_ms`, before any peer
+  spawns. The adapter implements `fe_plugin::tick::Clock` over `LabClock::now_ms` and steps the package tick by tick.
+- **Contract.** The plan is fixed at start: `ScheduledReading`s ordered by `(at_ms, sensor)`, sensor indices into
+  `fleet.sensors`, tick `k >= 1` firing at `start_ms + k * cadence_ms` inside the fleet window, finite values, at most
+  `MAX_PLANNED_READINGS`. `check_plan` refuses anything else before the first peer spawns, so a bad package fails the
+  start, not a barrier.
+- **Values are the source's.** The session writes the value the source planned; it does not re-evaluate the native
+  model. A hosted package computes `evaluate` in wasm, whose `sin` can differ from the native one by an ULP, so a
+  hosted run's fingerprint matches another hosted run (R30's AC), not necessarily the model run. That is why the
+  former debug-only `evaluate` parity assertion in `execute` was removed: it would have panicked mid-run.
 - **Class.** Rows ingest through the same F5 seam as ever with `SourceClass::Simulation`; the package's manifest
   declares `source_class: simulation` and the host stamps it (never inferred).
-- **Pinned by** `session.rs::stepped_session_matches_one_shot_run_exactly` (a package-shaped source reproduces the
-  model planner's fingerprint) and the unchanged `scenario.rs::sim_fleet_writes_real_iot_reading_rows_on_cadence`.
+- **Pinned by** `session.rs::stepped_session_matches_one_shot_run_exactly`: a package-shaped source reproduces the
+  model planner's fingerprint, and a reversed, off-cadence, out-of-range or non-finite plan is refused at start with
+  its own reason (the refusal rows prove the session really uses the source).
 
 ## §honest-limits (recorded, not hidden)
 

@@ -93,15 +93,27 @@ fn set_text(node_id: &str, key: &str, text: &str) {
     }
 }
 
-/// Advance one fleet to this tick: claim it, emit due sensor readings, move the movers, publish positions.
+/// Advance one fleet to this tick: claim it, or (once the claim reads back as ours) emit due sensor readings,
+/// move the movers and publish positions.
 fn drive(fleet: &Fleet, ids_by_name: &BTreeMap<&str, &str>, me: &str, info: &TickInfo) {
     if matches!(fleet.status, Some(Status::Stopped | Status::Finished)) {
         return;
     }
     match fleet.driver.as_deref() {
-        Some(owner) if owner != me => return,
+        Some(owner) if owner != me => {
+            // Passive: a clock kept from a lost claim must not replay a burst if this instance takes over later.
+            let _ = kv::delete(&state_key(&fleet.node_id));
+            return;
+        }
         Some(_) => {}
-        None => set_text(&fleet.node_id, "fleet.driver", me),
+        None => {
+            // R30: the claim travels without this fleet's data; driving starts on the tick that reads it back.
+            set_text(&fleet.node_id, "fleet.driver", me);
+            if load_clock(&fleet.node_id).is_none() {
+                save_clock(&fleet.node_id, &Clock { origin_ms: info.now_ms, last_elapsed_ms: 0 });
+            }
+            return;
+        }
     }
     if fleet.status.is_none() {
         set_text(&fleet.node_id, "fleet.status", "running");

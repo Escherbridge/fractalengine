@@ -55,7 +55,8 @@ pub fn render(snapshot: &Snapshot, format: Format) -> Vec<u8> {
     }
 }
 
-/// RFC 4180 CSV: header is the union of row keys in first-seen order; null is empty, nested values are compact JSON.
+/// RFC 4180 CSV: header is the union of row keys in first-seen order (keys sorted within a row: serde_json's
+/// default map); null is empty, nested values are compact JSON, text cells are formula-neutralised.
 fn render_csv(rows: &[Value]) -> String {
     let mut columns: Vec<&str> = Vec::new();
     for row in rows.iter().filter_map(Value::as_object) {
@@ -65,47 +66,78 @@ fn render_csv(rows: &[Value]) -> String {
             }
         }
     }
-    let mut out = columns.iter().map(|column| csv_field(column)).collect::<Vec<_>>().join(",");
+    let mut out = columns.iter().map(|column| text_field(column)).collect::<Vec<_>>().join(",");
     out.push_str("\r\n");
     let empty = Map::new();
     for row in rows {
         let object = row.as_object().unwrap_or(&empty);
-        let line = columns.iter().map(|column| csv_field(&cell(object.get(*column)))).collect::<Vec<_>>().join(",");
+        let line = columns.iter().map(|column| cell_field(object.get(*column))).collect::<Vec<_>>().join(",");
         out.push_str(&line);
         out.push_str("\r\n");
     }
     out
 }
 
-/// One cell's text.
-fn cell(value: Option<&Value>) -> String {
+/// One cell: strings go through [`text_field`]; numbers (negatives included), booleans and nested JSON stay as is.
+fn cell_field(value: Option<&Value>) -> String {
     match value {
         None | Some(Value::Null) => String::new(),
-        Some(Value::String(text)) => text.clone(),
-        Some(other) => other.to_string(),
+        Some(Value::String(text)) => text_field(text),
+        Some(other) => csv_field(&other.to_string()),
+    }
+}
+
+/// OWASP CSV injection: text starting with `= + - @ TAB CR` gets a leading `'` and is always quoted.
+fn text_field(text: &str) -> String {
+    if text.starts_with(['=', '+', '-', '@', '\t', '\r']) {
+        quoted(&format!("'{text}"))
+    } else {
+        csv_field(text)
     }
 }
 
 /// Quote a field when it holds a comma, quote or line break.
 fn csv_field(text: &str) -> String {
     if text.contains([',', '"', '\r', '\n']) {
-        format!("\"{}\"", text.replace('"', "\"\""))
+        quoted(text)
     } else {
         text.to_string()
     }
+}
+
+fn quoted(text: &str) -> String {
+    format!("\"{}\"", text.replace('"', "\"\""))
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
+    /// A `host/query` snapshot reaches the sink as the REST JSON shape, or as CSV that quotes, unions columns,
+    /// blanks nulls and never hands a spreadsheet an editor-written formula; a non-query payload is refused.
     #[test]
-    fn csv_quotes_unions_columns_and_blanks_nulls() {
-        let snapshot = parse_snapshot(
-            r#"{"data":[{"node_id":"a","metric":"t,c","value":1.5},{"node_id":"b","units":"C\"x","value":null}],"row_count":2,"truncated":false}"#,
-        )
-        .unwrap();
+    fn snapshot_renders_rest_json_and_injection_safe_csv() {
+        let raw = r#"{"data":[
+            {"node_id":"a","metric":"t,c","value":1.5},
+            {"node_id":"b","units":"C\"x","value":null},
+            {"node_id":"=HYPERLINK(\"http://x\")","metric":"@SUM(A1)","units":"-2","value":-3.5},
+            {"node_id":"\tc","metric":"+1","units":"\rd","value":2}
+        ],"row_count":4,"truncated":false}"#;
+        let snapshot = parse_snapshot(raw).unwrap();
+
+        let body: Value = serde_json::from_slice(&render(&snapshot, Format::Json)).unwrap();
+        assert_eq!(body, serde_json::from_str::<Value>(raw).unwrap(), "JSON keeps the /api/v1/query shape and rows");
+
         let csv = String::from_utf8(render(&snapshot, Format::Csv)).unwrap();
-        assert_eq!(csv, "node_id,metric,value,units\r\na,\"t,c\",1.5,\r\nb,,,\"C\"\"x\"\r\n");
+        assert_eq!(
+            csv,
+            "metric,node_id,value,units\r\n\
+             \"t,c\",a,1.5,\r\n\
+             ,b,,\"C\"\"x\"\r\n\
+             \"'@SUM(A1)\",\"'=HYPERLINK(\"\"http://x\"\")\",-3.5,\"'-2\"\r\n\
+             \"'+1\",\"'\tc\",2,\"'\rd\"\r\n"
+        );
+
+        assert!(parse_snapshot(r#"{"nodes":[]}"#).is_err(), "a payload that is not a query result is never pushed");
     }
 }
