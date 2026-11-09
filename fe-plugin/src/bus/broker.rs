@@ -394,9 +394,23 @@ impl Bus {
         }
     }
 
-    /// `local` is recomputed from the DID; callers never assert it.
+    /// `local` is recomputed from the DID and the ceiling; callers never assert it.
     fn normalized(&self, caller: &Caller) -> Caller {
-        Caller { local: caller.did == *self.local_did, ..caller.clone() }
+        Caller { local: self.is_local(&caller.did, caller.role_ceiling), ..caller.clone() }
+    }
+
+    /// The local DID with no ceiling below Owner (a delegated token of this node is not local).
+    fn is_local(&self, did: &str, ceiling: Option<RoleLevel>) -> bool {
+        did == &*self.local_did && ceiling.is_none_or(|ceiling| ceiling.is_at_least(RoleLevel::Owner))
+    }
+
+    /// The caller's role at a petal, capped by its token ceiling.
+    fn role_of(&self, caller: &Caller, petal_id: &str) -> RoleLevel {
+        let role = self.sources.roles.role_at(&caller.did, petal_id);
+        match caller.role_ceiling {
+            Some(ceiling) if !ceiling.is_at_least(role) => ceiling,
+            _ => role,
+        }
     }
 
     // ---- registration ------------------------------------------------------------------------
@@ -621,7 +635,7 @@ impl Bus {
                 .get(key)
                 .map(|instance| instance.spec.identity_did.clone())
                 .ok_or_else(|| HostError::Revoked("instance is not active".into()))?;
-            let caller = Caller { did: identity, kind: CallerKind::Extension, package_id: Some(key.package_id.clone()), local: true };
+            let caller = Caller { did: identity, kind: CallerKind::Extension, package_id: Some(key.package_id.clone()), local: true, role_ceiling: None };
             match self.admit_call(&mut state, &caller, &key.petal_id, package_id, command_id, &args, now) {
                 Ok((target_key, installation_id)) => {
                     let id = state.next_id();
@@ -714,7 +728,7 @@ impl Bus {
             return Err(BusRefusal::NotFound);
         }
         // 4. the caller's role at the petal, read now
-        if !self.sources.roles.role_at(&caller.did, petal_id).is_at_least(role_level(command.role_floor)) {
+        if !self.role_of(caller, petal_id).is_at_least(role_level(command.role_floor)) {
             return Err(hide(BusRefusal::CapabilityDenied(format!("{address} needs role {:?}", command.role_floor))));
         }
         // 5. an extension caller lists the target and is not calling itself
@@ -766,11 +780,17 @@ impl Bus {
 
     /// Open a client; `local` follows the DID.
     pub fn open_client(&self, did: &str, kind: CallerKind, grants: ClientGrants) -> ClientHandle {
+        self.open_client_capped(did, kind, None, grants)
+    }
+
+    /// Open a client for a delegated API token: its `max_role` caps the DID's role.
+    pub fn open_client_capped(&self, did: &str, kind: CallerKind, role_ceiling: Option<RoleLevel>, grants: ClientGrants) -> ClientHandle {
         let package_id = match &grants {
             ClientGrants::Portal { package_id, .. } => Some(package_id.clone()),
             _ => None,
         };
-        let caller = Caller { did: did.to_string(), kind, package_id, local: did == &*self.local_did };
+        let local = self.is_local(did, role_ceiling);
+        let caller = Caller { did: did.to_string(), kind, package_id, local, role_ceiling };
         let notify = Arc::new(Notify::new());
         let mut state = self.lock();
         let id = state.next_id();
@@ -1303,7 +1323,7 @@ impl Bus {
                     }
                 }
                 let role_floor = role_level(stream.role_floor.unwrap_or(RoleFloor::Viewer));
-                if !self.sources.roles.role_at(&caller.did, petal_id).is_at_least(role_floor) {
+                if !self.role_of(caller, petal_id).is_at_least(role_floor) {
                     return Err(not_granted());
                 }
                 verse_id = producer.spec.verse_id.clone();

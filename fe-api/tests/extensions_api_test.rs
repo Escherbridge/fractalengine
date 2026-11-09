@@ -146,7 +146,7 @@ fn op(verb: AdminVerb, installation: Option<&str>, params: Value) -> AdminOp {
 
 #[tokio::test]
 async fn extensions_api_journey() {
-    let host = FakeHost::new(4);
+    let host = FakeHost::new(5);
     let (local, remote) = (claims(LOCAL), claims(REMOTE));
 
     // R11: the local DID reads status, counters and audit; limit is clamped.
@@ -168,6 +168,11 @@ async fn extensions_api_journey() {
         assert!(seen.admin.is_empty());
         assert_eq!(seen.denied, vec![(REMOTE.to_string(), "install".to_string())]);
     }
+    // G1: fe-identity mints every token with the node DID as `sub`; an editor token is a delegate, never the local identity.
+    let delegate = ApiClaims { max_role: "editor".into(), ..claims(LOCAL) };
+    let delegated = administer(host.as_ref(), &delegate, op(AdminVerb::Uninstall, Some("inst-1"), json!({}))).unwrap_err();
+    assert_eq!(delegated, ExtError::not_found());
+    assert!(host.seen.lock().unwrap().admin.is_empty(), "a delegated token never reaches the host's lifecycle");
     // Local administration runs; a precondition refusal maps to its suggested status.
     assert_eq!(administer(host.as_ref(), &local, op(AdminVerb::Consent, Some("inst-1"), json!({"digest": "good"}))).unwrap()["done"], "consent");
     let stale = administer(host.as_ref(), &local, op(AdminVerb::Consent, Some("inst-1"), json!({"digest": "old"}))).unwrap_err();

@@ -194,3 +194,13 @@ flat params + 1). `fleet_setup` binds the shipped fleet-sim manifest to petal `p
 (`component_instantiates_ticks_and_stages_through_the_shared_window`) and the component block of
 `mod.rs::fuel_exhaustion_marks_degraded`. Both run in batch R11 (`cargo test -p fe-plugin`);
 `cargo test -p fe-plugin -- wasm::` selects just this directory.
+
+## §read-budget (G1)
+
+Fuel meters guest instructions, not host time. `scene.get-node`, `scene.query-nodes` and a route-cache
+miss are each a synchronous DB round trip on the plugin worker (`DbSceneBackend`, up to 15 s), so a guest
+looping on them inside one hook could hold the one worker, and the DB lane, for minutes and starve every
+other instance's ticks. `InstanceState::take_read` caps them at `MAX_SCENE_READS_PER_HOOK` (64) per hook
+call; `ExtensionInstance::call` resets the count on every guest entry. Over budget is `budget-exceeded`,
+which the guest can handle (read less per tick, or subscribe to `host/node-changes` instead).
+`query-nodes` results are not row-capped here; the DB read path's own limit applies (DEFERRED, G1 review).

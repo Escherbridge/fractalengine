@@ -243,7 +243,7 @@ fn bus_journey_queries_streams_commands_and_audit() {
     assert_eq!(audit.count(AuditAction::Denial), denials + 1);
 
     // 8. A call is one audit entry, written when its outcome is known.
-    let ui = Caller { did: LOCAL.into(), kind: CallerKind::Ui, package_id: None, local: true };
+    let ui = Caller { did: LOCAL.into(), kind: CallerKind::Ui, package_id: None, local: true, role_ceiling: None };
     let calls = audit.count(AuditAction::CommandCall);
     let mut ticket = bus.call_command(&ui, PETAL, FLEET, "start", &json!({})).unwrap();
     assert_eq!(audit.count(AuditAction::CommandCall), calls, "not yet answered");
@@ -253,7 +253,7 @@ fn bus_journey_queries_streams_commands_and_audit() {
 
     // 6. A full command queue answers rate-limited (ui and local REST are separate caller keys).
     clock.set(clock.now_ms() + 2_000);
-    let rest = Caller { did: LOCAL.into(), kind: CallerKind::Rest, package_id: None, local: true };
+    let rest = Caller { did: LOCAL.into(), kind: CallerKind::Rest, package_id: None, local: true, role_ceiling: None };
     let mut queued = Vec::new();
     for caller in std::iter::repeat_n(&ui, 10).chain(std::iter::repeat_n(&rest, 6)) {
         queued.push(bus.call_command(caller, PETAL, FLEET, "ping", &json!({})).unwrap());
@@ -275,9 +275,13 @@ fn bus_journey_queries_streams_commands_and_audit() {
     assert_eq!(deliver(&bus, &bi).results, vec![(first, Ok(r#"{"started":1}"#.to_string()))]);
 
     // Remote callers: an `external: false` command and an absent package get the same not-found, each one denial.
-    let remote = Caller { did: "did:key:z6MkRemoteEditor".into(), kind: CallerKind::Rest, package_id: None, local: true };
+    let remote = Caller { did: "did:key:z6MkRemoteEditor".into(), kind: CallerKind::Rest, package_id: None, local: true, role_ceiling: None };
     let denials = audit.count(AuditAction::Denial);
     assert_eq!(bus.call_command(&remote, PETAL, FLEET, "start", &json!({})).unwrap_err(), BusRefusal::NotFound);
     assert_eq!(bus.call_command(&remote, PETAL, "org.example.absent", "start", &json!({})).unwrap_err(), BusRefusal::NotFound);
     assert_eq!(audit.count(AuditAction::Denial), denials + 2);
+
+    // G1: a delegated token of this node carries the local DID under a viewer ceiling; it is not local (same not-found).
+    let delegated = Caller { role_ceiling: Some(fe_policy::RoleLevel::Viewer), ..rest.clone() };
+    assert_eq!(bus.call_command(&delegated, PETAL, FLEET, "start", &json!({})).unwrap_err(), BusRefusal::NotFound);
 }

@@ -74,12 +74,14 @@ impl InstanceState {
 impl scene::Host for InstanceState {
     fn get_node(&mut self, id: NodeId) -> Result<Option<types::NodeSnapshot>, HostError> {
         self.require_scene_read()?;
+        self.take_read()?;
         let node = self.context.get_node(&id).map_err(context_error)?;
         Ok(node.as_ref().map(wit_node))
     }
 
     fn query_nodes(&mut self, query: Json) -> Result<Vec<types::NodeSnapshot>, HostError> {
         self.require_scene_read()?;
+        self.take_read()?;
         let query = NodeQuery::parse(&query).map_err(invalid)?;
         let nodes = self
             .context

@@ -113,3 +113,14 @@ subscriptions stay dirty and run once on resume.
   little above 5 s) and the client API for the `/ws` `bus_subscribe` target; `BusRefusal::http_status` and
   `CommandError::http_status` give the codes.
 - **E10** injects the op-log `AuditSink`, calls `feed_admission` and `revalidate` on policy or role change.
+
+## §delegated-callers (G1 security fix)
+
+fe-identity mints every API token with the NODE's DID as `sub` (`mint_api_token`), so "the caller's DID
+is the local DID" is true for every viewer or editor token the operator hands to an agent or client.
+`Caller.role_ceiling` carries the token's `max_role`: `local` is recomputed as "local DID AND no ceiling
+below Owner", and every role check on a caller (`role_of`: commands, client streams) caps the DID's role
+by the ceiling. A delegated token is therefore remote: the uniform not-found, `external: true` plus the
+verse policy, and its own rate key (fe-api keys its gate by `sub#jti`). Guests and the UI pass `None`.
+`Bus::open_client_capped` is the client form. Subscriptions keep only the identity DID, so revalidation
+re-reads the DID's role; a token's ceiling cannot change during its life, so nothing escalates.

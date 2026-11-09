@@ -278,8 +278,11 @@ pub struct Caller {
     pub kind: CallerKind,
     /// The calling package for kind `extension` or `portal`.
     pub package_id: Option<String>,
-    /// True when `did` is the host's local DID.
+    /// True when `did` is the host's local DID and no ceiling below Owner applies.
     pub local: bool,
+    /// A delegated API token's `max_role`: caps the DID's role, and below Owner the caller is not local
+    /// (every node-minted token carries the node DID; src/bus/AGENTS.md §delegated-callers).
+    pub role_ceiling: Option<fe_policy::RoleLevel>,
 }
 
 /// The rate-limit key of a caller (bus.md §4 check 6).

@@ -2038,7 +2038,7 @@ unwatched, each waiting at most one idle tick: the tileset meta verdicts (on pur
 ## §plugin-host (plugin_host_revival_20261031 S1, revised by S6)
 
 The opt-in gates package ADMISSION, not the thread (docs/extensions/governance.md §Host switch, R16).
-The host thread (thread 7, `plugin_bridge::install`) always runs, as it has since `2cc05f27`; with no
+The host thread (thread 7, `plugin_bridge::install_with`, given the node DID and the API channel by `main.rs`) always runs, as it has since `2cc05f27`; with no
 admitted package it executes no third-party code. `terminal_reset` takes ownership of
 `PluginHostService` and requires it, which is why S6 restored the unconditional install: S1's thread gate
 made a default-build reset quiesce half the app and then fail.

@@ -23,6 +23,8 @@ pub const DEFAULT_TICK_FUEL: u64 = 1_000_000;
 pub const FLUSH_TIMEOUT_MS: u64 = 10_000;
 /// Real time `stop` waits for a final flush to answer.
 const FINAL_FLUSH_WAIT: Duration = Duration::from_millis(1_000);
+/// Bus work units (call results, commands, event batches) one instance runs per worker turn.
+pub const BUS_CALLS_PER_POLL: usize = 8;
 
 /// The scheduler's time source: the wall clock in production, a `SimClock` adapter in the lab.
 pub trait Clock: Send + Sync {
@@ -478,11 +480,31 @@ pub enum TickHostEventKind {
     Stopped(DeactivateReason),
 }
 
+/// An instance's seat on the integration bus: registered with its scheduler, dispatched while it runs,
+/// unregistered when it stops or degrades (src/AGENTS.md §bus-seat).
+struct BusSeat {
+    bus: crate::bus::Bus,
+    key: crate::bus::InstanceKey,
+    hooks: Box<dyn crate::bus::BusHooks + Send>,
+}
+
 #[derive(Default)]
 struct TickHostInner {
     entries: HashMap<String, TickScheduler>,
     counters: HashMap<String, Arc<Mutex<TickCounters>>>,
+    seats: HashMap<String, BusSeat>,
     events: Vec<TickHostEvent>,
+}
+
+/// The bus `ended` reason a stop shows subscribers.
+fn end_reason(reason: DeactivateReason) -> crate::bus::EndReason {
+    use crate::bus::EndReason;
+    match reason {
+        DeactivateReason::Revoked => EndReason::Revoked,
+        DeactivateReason::PolicyDenied => EndReason::PolicyDenied,
+        DeactivateReason::RoleLost => EndReason::RoleLost,
+        _ => EndReason::InstanceStopped,
+    }
 }
 
 /// Every scheduled instance on the plugin worker; polled from `plugin_thread_loop`, never a Bevy system.
@@ -527,6 +549,26 @@ impl TickHost {
         Ok(())
     }
 
+    /// [`add`](Self::add) plus the instance's bus surface: `register_instance` first, then the scheduler.
+    pub fn add_on_bus(
+        &self,
+        plugin_id: &str,
+        scheduler: TickScheduler,
+        bus: crate::bus::Bus,
+        spec: crate::bus::InstanceSpec,
+        hooks: Box<dyn crate::bus::BusHooks + Send>,
+    ) -> Result<(), String> {
+        let mut inner = self.inner.lock().map_err(|_| "tick host lock poisoned")?;
+        if inner.entries.contains_key(plugin_id) {
+            return Err("plugin instance is already scheduled".into());
+        }
+        let key = bus.register_instance(spec).map_err(|error| error.to_string())?;
+        inner.counters.insert(plugin_id.to_string(), scheduler.counters_handle());
+        inner.entries.insert(plugin_id.to_string(), scheduler);
+        inner.seats.insert(plugin_id.to_string(), BusSeat { bus, key, hooks });
+        Ok(())
+    }
+
     /// Counters for status reads; kept after the instance stops until `forget`.
     pub fn counters(&self, plugin_id: &str) -> Option<TickCounters> {
         let handle = self.inner.lock().ok()?.counters.get(plugin_id)?.clone();
@@ -537,6 +579,9 @@ impl TickHost {
     /// Drop a stopped instance's counters (uninstall).
     pub fn forget(&self, plugin_id: &str) {
         if let Ok(mut inner) = self.inner.lock() {
+            if let Some(seat) = inner.seats.remove(plugin_id) {
+                seat.bus.unregister_instance(&seat.key, crate::bus::EndReason::InstanceStopped);
+            }
             inner.entries.remove(plugin_id);
             inner.counters.remove(plugin_id);
         }
@@ -556,7 +601,8 @@ impl TickHost {
         }
     }
 
-    /// Poll every scheduler once; a faulted instance is unbound and reported.
+    /// Poll every scheduler once, then run each running instance's bus work; a faulted instance leaves
+    /// the bus, is unbound and reported.
     pub fn poll(&self) {
         let Ok(mut inner) = self.inner.lock() else { return };
         let mut degraded = Vec::new();
@@ -566,16 +612,30 @@ impl TickHost {
             }
         }
         for (plugin_id, reason) in degraded {
+            if let Some(seat) = inner.seats.remove(&plugin_id) {
+                seat.bus.unregister_instance(&seat.key, crate::bus::EndReason::InstanceStopped);
+            }
             if let Err(error) = self.contexts.unbind(&plugin_id) {
                 tracing::warn!(plugin = %plugin_id, %error, "unbinding a degraded instance failed");
             }
             inner.events.push(TickHostEvent { plugin_id, kind: TickHostEventKind::Degraded(reason) });
         }
+        // Priority inside `dispatch`: call results, then commands, then one event batch.
+        let TickHostInner { entries, seats, .. } = &mut *inner;
+        for (plugin_id, seat) in seats.iter_mut() {
+            if entries.get(plugin_id).is_some_and(|scheduler| scheduler.next_due_ms().is_some()) {
+                seat.bus.dispatch(&seat.key, seat.hooks.as_mut(), BUS_CALLS_PER_POLL);
+            }
+        }
     }
 
-    /// Stop one instance (final flush unless the lease is gone), then revoke its context.
+    /// Stop one instance: leave the bus first (queued calls answer `not-available`, no new work), then
+    /// run the final flush unless the lease is gone (OD-E1: drain in-flight writes), then revoke its context.
     pub fn stop(&self, plugin_id: &str, reason: DeactivateReason) {
         let Ok(mut inner) = self.inner.lock() else { return };
+        if let Some(seat) = inner.seats.remove(plugin_id) {
+            seat.bus.unregister_instance(&seat.key, end_reason(reason));
+        }
         let known = inner.entries.get_mut(plugin_id).map(|scheduler| scheduler.stop(reason)).is_some();
         if known {
             if let Err(error) = self.contexts.unbind(plugin_id) {
@@ -629,6 +689,17 @@ mod tests {
                 .map_err(|error| TickFault::Trap(error.to_string()))
         }
         fn on_deactivate(&mut self, _reason: DeactivateReason) {}
+    }
+
+    /// Bus hooks that answer nothing; J1 checks the seat lifecycle, the bus journey checks delivery.
+    struct NoHooks;
+
+    impl crate::bus::BusHooks for NoHooks {
+        fn on_events(&mut self, _events: Vec<crate::bus::BusEvent>) {}
+        fn on_command(&mut self, _command: &str, _args: &str, _caller: &crate::bus::Caller) -> Result<String, crate::bus::CommandError> {
+            Ok("{}".into())
+        }
+        fn on_call_result(&mut self, _call: u64, _outcome: Result<String, crate::bus::HostError>) {}
     }
 
     /// Answers each flush `delay_ms` of manual time after it was submitted.
@@ -731,5 +802,26 @@ mod tests {
         assert_eq!(fuel.submitted.lock().unwrap().len(), 1, "only tick 1 flushed");
         assert!(fuel.window.lock().unwrap().is_empty());
         assert_eq!(fuel.scheduler.next_due_ms(), None);
+
+        // G1: a seated instance joins the bus with its scheduler and leaves it when stopped; counters outlive it.
+        const LOCAL: &str = "did:key:z6MkLocalHost";
+        let fleet = include_str!("../../fe-sdk/schema/examples/fleet-sim.extension.json");
+        let manifest = fe_sdk::manifest_v2::parse_and_validate(fleet.as_bytes()).unwrap().manifest;
+        let spec = crate::bus::InstanceSpec {
+            installation_id: "inst-1".into(),
+            content_hash: "ab".repeat(32),
+            verse_id: "v1".into(),
+            petal_id: "p1".into(),
+            identity_did: LOCAL.into(),
+            manifest: Arc::new(manifest),
+        };
+        let key = spec.key();
+        let bus = crate::bus::Bus::new(Arc::new(ManualClock::default()), crate::bus::BusSources::fail_closed(), LOCAL);
+        let host = TickHost::new(Arc::new(ManualClock::default()), PluginContexts::default());
+        host.add_on_bus("inst-1", rig(0, None, 200_000).scheduler, bus.clone(), spec, Box::new(NoHooks)).unwrap();
+        assert!(bus.counters(&key).is_some(), "registered with its scheduler");
+        host.stop("inst-1", DeactivateReason::Disabled);
+        assert!(bus.counters(&key).is_none(), "a stopped instance leaves the bus");
+        assert!(bus.counters_for_installation("inst-1").is_some(), "its counters stay until uninstall");
     }
 }

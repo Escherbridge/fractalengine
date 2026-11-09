@@ -346,3 +346,19 @@ the binding (verse and petal), never from the manifest; `strict_scopes = true` m
 `PluginState` gains `Disabled(reason)` (operator, policy, role loss; only `enable` leaves it, landing in
 `Deactivated`) and `Revoked(reason)` (terminal: `activate`, `enable` and `disable` refuse; only `unregister`).
 `degrade` moves Active to `Degraded` and leaves other states alone.
+
+## §bus-seat (G1, P1 gate)
+
+`TickHost::add_on_bus(plugin_id, scheduler, bus, spec, hooks)` is the activation seam that joins an
+instance to the integration bus: `Bus::register_instance(spec)` runs first (a refusal leaves nothing
+scheduled), then the scheduler is added and the instance's `BusHooks` (for a 2.0 component, the same
+`InstanceHandle` the scheduler ticks) is kept as its seat. Each worker turn runs `bus.poll()` and then
+`ticks.poll()`, so `dispatch` (at most `BUS_CALLS_PER_POLL` units: call results, commands, one event
+batch) delivers what the broker settled in the same turn, and only while the scheduler is `Running`.
+
+Stop order is the OD-E1 rule: the seat leaves the bus FIRST (queued calls answer `not-available`,
+subscribers see `ended` with `revoked`/`policy-denied`/`role-lost`/`instance-stopped`), then the
+scheduler runs `on-deactivate` and its one final flush unless the lease is gone. A degraded instance
+leaves the bus in the same `poll` that degrades it. Counters stay readable by installation until
+uninstall calls `Bus::forget` (E10's lifecycle). An extension without a `tick` block has no scheduler
+and so no seat yet; the activation path that instantiates components (E10) decides how those are hosted.

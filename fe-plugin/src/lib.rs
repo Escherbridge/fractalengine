@@ -308,9 +308,10 @@ async fn plugin_thread_loop(cmd_rx: Receiver<PluginCommand>, result_tx: Sender<P
                 break;
             }
         }
-        ticks.poll();
-        // One broker turn: settle runs/snapshots, start due runs, expire calls. Per-instance `dispatch` waits on E1's BusHooks.
+        // One broker turn first (settle runs/snapshots, start due runs, expire calls), so the ticks'
+        // per-instance `dispatch` (TickHost seats) delivers what settled this turn.
         bus.poll();
+        ticks.poll();
     }
     ticks.stop_all(tick::DeactivateReason::HostStopping);
 }

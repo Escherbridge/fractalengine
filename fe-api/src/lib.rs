@@ -17,6 +17,7 @@ pub mod device;
 pub mod endpoint;
 pub mod entity_store_bridge;
 pub mod export;
+pub mod extensions;
 pub mod format;
 pub mod gis;
 pub mod gpx;

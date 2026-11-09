@@ -517,7 +517,15 @@ fn main() {
     app.insert_resource(fe_plugin::PackageAdmission(
         cfg!(feature = "plugin-host") && fe_plugin::plugin_host_allowed_from_env(),
     ));
-    plugin_bridge::install(&mut app);
+    // The bus judges callers against the node DID and feeds `host/node-changes`; the API channel is bound below.
+    plugin_bridge::install_with(
+        &mut app,
+        plugin_bridge::ExtensionBridgeConfig {
+            local_did: node_kp.to_did_key(),
+            api_cmd_tx: None,
+            scene_changes: Some(entity_change_tx.subscribe()),
+        },
+    );
     app.add_systems(bevy::prelude::Startup, register_first_party_extension_ui);
     if let Some(results) = app.world().get_resource::<fe_plugin::PluginResultReceiver>() {
         // drain_plugin_results empties it every frame (src/AGENTS.md §render-loop).
@@ -559,6 +567,10 @@ fn main() {
     // ---- API Gateway thread ----
     // Channel: API thread sends ApiCommand -> tx, Bevy drains from rx.
     let (api_cmd_tx, api_cmd_rx) = crossbeam::channel::bounded(256);
+    // The bus `host/query` and snapshot sources ride the same API channel (plugin_bridge §bus sources).
+    if let Some(slot) = app.world().get_resource::<plugin_bridge::ExtensionApiSlot>() {
+        slot.bind(api_cmd_tx.clone());
+    }
     // Agent screenshot bridge: API thread -> Bevy capture (fe-api/AGENTS.md
     // §screenshot; the endpoint is on unless FE_API_SCREENSHOT_ALLOW=0).
     let (screenshot_tx, screenshot_rx) = fe_runtime::screenshot::screenshot_bridge();

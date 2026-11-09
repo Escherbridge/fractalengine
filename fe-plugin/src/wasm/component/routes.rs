@@ -98,6 +98,7 @@ impl InstanceState {
             return Err(denied("routes"));
         }
         fe_sdk::storage::validate_node_id(route).map_err(|error| invalid(error.to_string()))?;
+        self.take_read()?;
         let node = match &self.geometry_reader {
             Some(reader) => self.read_route_node(reader, route)?,
             None => self.context.get_node(route).map_err(context_error)?,

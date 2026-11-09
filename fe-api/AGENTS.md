@@ -2315,3 +2315,22 @@ GET /api/v1/debug/nodes/{node_id}/scene-asset-publication is metadata-only QA re
 API admission and host-to-DB forwarding each use bounded try_send. The host retains a single exact nonce/deadline/navigation owner and never blocks waiting in its frame. The dedicated typed DB result/failure cannot consume native review/adoption or unrelated API ownership. API return checks both bridge echo and DTO nonce/node/op shape, scope, whole response bound, deadline and current credential expiry/generation/revocation again. Responses are no-store and failures use fixed safe text, never SQL/cause/raw-row data. DB's final fenced transaction is the point-in-time stored authority/state linearization point; later credential checks do not promise continuous role ownership.
 
 No operation_id requires native NONE owner/anchor/provenance and zero complete asset adoption ops; after adoption it refuses. A supplied operation_id requires exactly one persisted matching intention and stored provenance/metadata agreement; no fallback receipt is synthesized. The versioned DTO exposes only approved typed fields/digests. bytes_verified_by_this_read=false; actual downloads/BLAKE3/SHA256 remain separate. The node-bound endpoint cannot independently prove the pre-placement zero-reference instant. Standard credential admission retains its existing bounded durable reader; the audit itself goes through the already running DB owner and never opens another store.
+
+## §extensions
+
+`src/extensions.rs` holds the HTTP-facing rules of the extension surface (bus.md §4/§8, governance.md
+§Local identity); the binary implements `ExtensionHost` over `fe_plugin::Bus` (fractalengine
+`plugin_bridge.rs`). Every route runs `gate` first (a non-local caller's per-subject rate, never audited).
+
+- **Local identity = node DID under an Owner token.** Every token this node mints carries the node DID as
+  `sub`, so `is_local` also requires `max_role` Owner (the operator-gate rule); a delegated token is keyed
+  `sub#jti` at the gate and reaches the bus with `ApiCaller.role_ceiling`, which caps its role and makes it
+  remote there (fe-plugin `src/bus/AGENTS.md` §delegated-callers).
+- **Ingress answers** are guest bytes on the API origin: a status outside 200-599 becomes 502, and every
+  answer carries `x-content-type-options: nosniff` and `content-security-policy: sandbox`. Credential
+  headers are stripped before the host sees the request (`is_credential_header`), a second layer under the
+  net broker's own strip.
+- **Not mounted yet.** `routes(host)` is not merged by `build_router`: `ApiConfig` has no extension-host
+  field (adding one touches every `ApiConfig` literal: both binaries and two test harnesses), and MCP
+  `list_extensions`/`extension_command` and the `/ws` target are not registered. Until then the module is
+  reachable only through its core functions (J6, `tests/extensions_api_test.rs`).

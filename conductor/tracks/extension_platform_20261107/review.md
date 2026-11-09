@@ -71,3 +71,41 @@ fe-database `iot_reading.rs`/`op_log.rs`). No build or parser run (D-X2, directi
 - G0-C26 DEFERRED E5 / P6 — `host/query` re-runs are charged to the local DID's `QUERY_RATE_PER_SEC`, shared with REST (the portal relies on that), so many subscriptions could push local REST `/api/v1/query` into 429. Trigger: P6's host-wide measurement; the fix would be a per-installation sub-budget inside the shared cap.
 - G0-C27 KEPT product fit — P0 still serves `conductor/product.md`: device adapters feed the existing readings door (an IoT reading becomes a spatial row) and BI connectors push guarded `host/query` rows out (BI egress, not lock-in).
 - G0-C28 KEPT leak discipline — the forbidden-term grep over every E0 file and every line G0 added found no hits, and no catalogue-operations wording.
+
+## G1 — P1 runtime (2026-11-08, slice G1, over E1 `a9cebb5a`, E2, E3 `e56e438b`, E4 `1be2ad07`, E5 `40cc7c16`/`721ba6bc`, E6 `552e621c`, E7 `1a933278`, E8 `96880f4a`)
+
+Scope: ADVOCATE then CRITIC with `/code-review high` and `/security-review` depth over the component
+host (`fe-plugin/src/wasm/**`), host imports, the tick scheduler, the bus broker, the extensions API, the
+bridge and the slot host, read against spec R4-R15, bus.md, governance.md §Local identity and the
+2026-11-08 20:20 / 22:30 steers. No build, clippy or test run (directive 2026-11-08); the refine pass
+reruns R11 (fe-plugin bus/tick/wasm), R9 (`fe-api/tests/extensions_api_test.rs`) and the fe-ui slot journey.
+
+**Phase verdict: PASS WITH FIXES.** 22 verdict lines: 9 FIXED, 7 KEPT, 5 HANDED-OFF, 1 DEFERRED.
+
+### ADVOCATE (wiring, reuse, what the next slices need)
+
+- G1-A1 FIXED `fe-plugin/src/tick.rs`, `wasm/component/bus_bridge.rs` — steer 22:30: `TickHost::add_on_bus` registers the instance with the bus before scheduling it, `poll` dispatches each running instance (`BUS_CALLS_PER_POLL`), and stop/degrade/forget unregister (bus first, then the final flush: OD-E1's drain order); `BusHooks for InstanceHandle` seats the same handle the scheduler ticks; J1 extended.
+- G1-A2 FIXED `fe-plugin/src/lib.rs` — `bus.poll()` now runs before `ticks.poll()`, so what the broker settles in a turn is dispatched in that turn.
+- G1-A3 FIXED `fractalengine/src/main.rs`, `plugin_bridge.rs` — E7 built `install_with` but `main.rs` still called `install()` (empty local DID, unbound API slot, no scene feed, so every bus source answered not-available); main now passes the node DID and the scene broadcast and binds the API slot when the channel exists; the dead `install` is gone.
+- G1-A4 FIXED `fe-api/src/lib.rs` — `pub mod extensions` was missing: E6's module never compiled and `plugin_bridge.rs`'s `use fe_api::extensions::…` could not resolve (binary build break).
+- G1-A5 FIXED `fe-ui/src/lib.rs` — `pub mod extensions` was missing, so E8's slot host and its slot journey never compiled.
+- G1-A6 HANDED-OFF orchestrator / E10 turn — the extension routes are not mounted: `ApiConfig` needs an extension-host field (literals in both binaries' `main.rs` and `fe-api/tests/{api_harness_smoke,token_lifecycle_test}.rs`), `build_router` must merge `extensions::routes` inside the auth layer, and MCP `list_extensions`/`extension_command` and the `/ws` target are unregistered; `api_extension_host` is dead until then.
+- G1-A7 HANDED-OFF E8 owner / E13 — `ExtensionSlotsPlugin` is not added and no panel (toolbar, sidebar, inspector, context menu) calls a slot draw function, so declared contributions do not render yet.
+- G1-A8 HANDED-OFF next swarm turn — `fe-plugin/src/net/` holds ~2.6k lines from E5 (the 22:30 steer's "no code" is stale) but stays undeclared: it needs tokio-tungstenite, tokio-rustls, futures-util and webpki roots in `fe-plugin/Cargo.toml` + `deny.toml`, and a `NetHooks` bridge over the component.
+- G1-A9 KEPT `plugin_bridge.rs` `host/query` — guarded SQL (`prepare_scoped_sql` on the instance petal) over the API channel's RawQuery is the same gateway REST's query fallback uses; a read, so the write-path RawQuery tripwire does not apply.
+- G1-A10 KEPT — no production path instantiates a component yet (only `fe-ext run --sandbox` and tests), so `add_on_bus` has no production caller; activation belongs to E10's lifecycle.
+
+### CRITIC (defects, security)
+
+- G1-C1 HIGH FIXED `fe-api/src/extensions.rs`, `fe-plugin/src/bus/{mod,broker}.rs`, `plugin_bridge.rs` — fe-identity mints EVERY API token with the node DID as `sub`, so `is_local = sub == local_did` made any viewer/editor token the local identity (R12 administration), and the bus judged every REST/MCP caller as the local Owner (role floors and the `external` gate bypassed) as soon as the DID is wired. Local is now node DID AND an Owner token; `ApiCaller`/`Caller.role_ceiling` cap the role in `role_of`; a delegated token is remote with a per-token gate key; J4 and J6 rows.
+- G1-C2 MEDIUM FIXED `wasm/component/{state,imports,routes,instance}.rs` — scene and route reads had no per-hook bound; each is a DB round trip (up to 15 s) the fuel meter never sees, so one guest could hold the plugin worker and the DB lane; `MAX_SCENE_READS_PER_HOOK` = 64, reset on every guest entry; journey row.
+- G1-C3 MEDIUM FIXED `fe-api/src/extensions.rs` `answer_response` — guest status and bytes are served on the API origin: a status outside 200-599 is now 502, and every answer carries `nosniff` and `content-security-policy: sandbox`.
+- G1-C4 KEPT steer 20:20 verified — fe-api's core strips authorization, proxy-authorization, cookie, set-cookie, x-api-key and every `x-fe-*` before the host sees an ingress request (J6 row); `net/ingress.rs` strips again and `net/egress.rs` refuses them; fe-api authenticates only through the Authorization header, so no query-string token can reach a guest.
+- G1-C5 KEPT WASI policy — closed import list (monotonic clock excluded, sockets off, no preopens or env, frozen wall clock, seeded randomness); `add_to_linker_sync` links more than the list, but `admit` refuses any other import before instantiation.
+- G1-C6 DEFERRED `scene.query-nodes` — host-side results are not row-capped (only the DB read path's limit); trigger: E10 activation hosting real petals, cap with the REST row cap.
+- G1-C7 KEPT `TickHost::poll` holds its lock while hooks run (already true of `on-tick`, now also `dispatch`), so `TickHost::counters` waits up to one fuel-bounded hook; trigger: status latency, then read the counters handles outside the lock.
+- G1-C8 HANDED-OFF E4 owner / E10W — a flush that deletes a node and stages readings on it passes the readings door before the commit, then the insert refuses: `unknown-outcome` with the scene batch landed, bending R6's whole-flush rule; check anchors against the batch's own deletes.
+- G1-C9 KEPT — every delegated token of this node shares the bus caller key `Remote(node DID)` for command rates (the fe-api gate is per token); trigger: agents rate-limiting each other.
+- G1-C10 HANDED-OFF E10 — a manifest without a `tick` block gets no `TickScheduler`, hence no bus seat: pure bus/ingress extensions have no host path yet; E10 must also call `Bus::forget` and `TickHost::forget` at uninstall.
+- G1-C11 FIXED `fe-api/src/extensions.rs` gate — the remote rate gate keyed delegated tokens by the node DID, which `admit_remote` always admits; it now keys them `sub#jti`.
+- G1-C12 KEPT product fit and leak discipline — P1 still serves `conductor/product.md` (readings through the door, guarded `host/query` for BI egress, one flush per tick holds in `TickScheduler::flush`); the forbidden-term grep over every line G1 added found no hits.

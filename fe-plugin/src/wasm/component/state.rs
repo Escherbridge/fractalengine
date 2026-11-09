@@ -1,6 +1,6 @@
 //! Per-instance host state behind every 2.0 import; see src/wasm/AGENTS.md §instance-state.
 
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
 use fe_sdk::manifest_v2::HOST_FUEL_CEILING;
@@ -18,6 +18,9 @@ use super::routes::RouteCache;
 use super::wasi::{build_wasi_ctx, GuestLog};
 use super::ComponentError;
 
+/// Scene and route reads one hook call may make: each is a DB round trip the fuel meter never sees
+/// (src/wasm/AGENTS.md §read-budget).
+pub const MAX_SCENE_READS_PER_HOOK: u32 = 64;
 /// Linear-memory ceiling for each memory of an instance (today's pooled cap, OD-E4 measures).
 pub const INSTANCE_MEMORY_BYTES: usize = 16 * 1024 * 1024;
 /// Core instances a component may create (main module, WASI adapter, shims).
@@ -135,6 +138,8 @@ pub struct InstanceState {
     pub(crate) routes: RouteCache,
     pub(crate) geometry_reader: Option<Arc<Mutex<dyn NodeReader>>>,
     pub(crate) log: Arc<Mutex<GuestLog>>,
+    /// Scene/route reads in the current hook call (reset on every guest entry).
+    pub(crate) reads_this_hook: AtomicU32,
     wasi: wasmtime_wasi::WasiCtx,
     table: wasmtime::component::ResourceTable,
     pub(crate) limits: wasmtime::StoreLimits,
@@ -167,6 +172,7 @@ impl InstanceState {
             routes: RouteCache::default(),
             geometry_reader: setup.geometry_reader,
             log,
+            reads_this_hook: AtomicU32::new(0),
             wasi,
             table: wasmtime::component::ResourceTable::new(),
             limits,
@@ -186,6 +192,21 @@ impl InstanceState {
     /// Freeze the clock for the next hook call.
     pub(crate) fn freeze_clock(&self, now_ms: u64) {
         self.now_ms.store(now_ms, Ordering::Release);
+    }
+
+    /// Count one scene or route read against [`MAX_SCENE_READS_PER_HOOK`].
+    pub(crate) fn take_read(&self) -> Result<(), HostError> {
+        if self.reads_this_hook.fetch_add(1, Ordering::Relaxed) >= MAX_SCENE_READS_PER_HOOK {
+            return Err(HostError::BudgetExceeded(format!(
+                "at most {MAX_SCENE_READS_PER_HOOK} scene reads per hook call"
+            )));
+        }
+        Ok(())
+    }
+
+    /// Start a hook call's read budget afresh.
+    pub(crate) fn reset_hook_budgets(&self) {
+        self.reads_this_hook.store(0, Ordering::Relaxed);
     }
 
     /// Refuse every effect once the host revoked this instance's lease.

@@ -445,7 +445,14 @@ impl BusExtensionHost {
             ApiCallerKind::Rest => CallerKind::Rest,
             ApiCallerKind::Mcp => CallerKind::Mcp,
         };
-        Caller { did: caller.did.clone(), kind, package_id: None, local: caller.did == self.bus.local_did() }
+        // The bus recomputes `local`; the token's max_role caps the node DID's Owner role (G1 security fix).
+        Caller {
+            did: caller.did.clone(),
+            kind,
+            package_id: None,
+            local: caller.did == self.bus.local_did() && caller.role_ceiling.is_at_least(RoleLevel::Owner),
+            role_ceiling: Some(caller.role_ceiling),
+        }
     }
 }
 
@@ -567,8 +574,8 @@ impl ExtensionHost for BusExtensionHost {
     }
 
     fn open_client(&self, caller: &ApiCaller) -> (u64, Arc<tokio::sync::Notify>) {
-        let kind = self.bus_caller(caller).kind;
-        let handle = self.bus.open_client(&caller.did, kind, ClientGrants::Api);
+        let bus_caller = self.bus_caller(caller);
+        let handle = self.bus.open_client_capped(&caller.did, bus_caller.kind, bus_caller.role_ceiling, ClientGrants::Api);
         (handle.id, handle.notify)
     }
 
@@ -599,10 +606,6 @@ impl ExtensionHost for BusExtensionHost {
 pub(crate) fn api_extension_host(app: &App) -> Option<Arc<dyn ExtensionHost>> {
     let bus = app.world().get_resource::<fe_plugin::BusHandle>()?;
     Some(Arc::new(BusExtensionHost::new(bus.0.clone())))
-}
-
-pub(crate) fn install(app: &mut App) {
-    install_with(app, ExtensionBridgeConfig::default());
 }
 
 /// Build the scene factory and the integration bus (real sources, local DID, feeds), then add the plugin host.

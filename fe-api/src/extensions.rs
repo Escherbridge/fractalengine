@@ -59,11 +59,13 @@ pub enum ApiCallerKind {
     Mcp,
 }
 
-/// The authenticated caller; `did` is the token's `sub`.
+/// The authenticated caller; `did` is the token's `sub`, `role_ceiling` its `max_role`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ApiCaller {
     pub did: String,
     pub kind: ApiCallerKind,
+    /// Every node-minted token carries the node DID, so the host caps the DID's role by this (AGENTS.md §extensions).
+    pub role_ceiling: fe_policy::RoleLevel,
 }
 
 /// Why the broker refused an external call (mirrors `fe_plugin::bus::BusRefusal`).
@@ -340,17 +342,27 @@ impl From<IngressRefusal> for ExtError {
 
 /// The caller as the host sees it.
 pub fn caller_of(claims: &ApiClaims, kind: ApiCallerKind) -> ApiCaller {
-    ApiCaller { did: claims.sub.clone(), kind }
+    ApiCaller { did: claims.sub.clone(), kind, role_ceiling: fe_policy::RoleLevel::from(claims.max_role.as_str()) }
 }
 
-/// True when the token's subject is the host's local DID.
+/// The local identity (R12): the host's DID under an Owner token. fe-identity mints EVERY token with the
+/// node DID as `sub`, so the DID alone would make each delegated viewer or editor token "local".
 pub fn is_local(host: &dyn ExtensionHost, claims: &ApiClaims) -> bool {
-    claims.sub == host.local_did()
+    claims.sub == host.local_did() && crate::auth::require_role_level(claims, fe_policy::RoleLevel::Owner).is_ok()
+}
+
+/// The per-caller key of the remote rate gate: a delegated token of this node is limited per token (`jti`).
+fn rate_subject(host: &dyn ExtensionHost, claims: &ApiClaims) -> String {
+    if claims.sub == host.local_did() {
+        format!("{}#{}", claims.sub, claims.jti)
+    } else {
+        claims.sub.clone()
+    }
 }
 
 /// Every extension route runs this FIRST: a remote DID's per-DID request rate, before any lookup (not audited).
 pub fn gate(host: &dyn ExtensionHost, claims: &ApiClaims) -> Result<(), ExtError> {
-    if is_local(host, claims) || host.admit_remote(&claims.sub) {
+    if is_local(host, claims) || host.admit_remote(&rate_subject(host, claims)) {
         Ok(())
     } else {
         Err(ExtError::rate_limited("extension request rate limit"))
@@ -878,14 +890,19 @@ fn percent_decode(text: &str) -> String {
     String::from_utf8_lossy(&out).into_owned()
 }
 
-/// A guest's answer as an HTTP response; an invalid status is a 502.
+/// A guest's answer as an HTTP response; a status outside 200-599 is a 502. Guest bytes share the API
+/// origin, so they are never sniffed or run as an active document.
 fn answer_response(answer: IngressAnswer) -> Response {
-    let status = StatusCode::from_u16(answer.status).unwrap_or(StatusCode::BAD_GATEWAY);
+    let status = StatusCode::from_u16(answer.status)
+        .ok()
+        .filter(|status| (200..=599).contains(&status.as_u16()))
+        .unwrap_or(StatusCode::BAD_GATEWAY);
     let mut response = (status, answer.body).into_response();
+    let headers = response.headers_mut();
     if let Some(content_type) = answer.content_type.as_deref().and_then(|v| HeaderValue::from_str(v).ok()) {
-        response
-            .headers_mut()
-            .insert(HeaderName::from_static("content-type"), content_type);
+        headers.insert(HeaderName::from_static("content-type"), content_type);
     }
+    headers.insert(HeaderName::from_static("x-content-type-options"), HeaderValue::from_static("nosniff"));
+    headers.insert(HeaderName::from_static("content-security-policy"), HeaderValue::from_static("sandbox"));
     response
 }

@@ -137,6 +137,7 @@ impl ExtensionInstance {
         }
         let now = now_ms.unwrap_or_else(|| self.clock.now_ms());
         self.store.data().freeze_clock(now);
+        self.store.data().reset_hook_budgets();
         self.stats.hook_calls += 1;
         let bindings = &self.bindings;
         let store = &mut self.store;
@@ -515,6 +516,11 @@ mod tests {
         assert_eq!((snap.nearest.x, snap.deviation_m, snap.progress), (5.0, 3.0, 0.5));
         let seen = scene::Host::get_node(state, "r1".into()).unwrap().unwrap();
         assert_eq!(seen.properties, "{}", "gpx_points is outside property_scope fleet.*");
+        // G1: scene reads are a per-hook budget; each is a DB round trip the fuel meter never sees.
+        let budget = super::super::state::MAX_SCENE_READS_PER_HOOK;
+        state.reads_this_hook.store(budget, std::sync::atomic::Ordering::Relaxed);
+        assert!(matches!(scene::Host::get_node(state, "r1".into()), Err(HostError::BudgetExceeded(_))));
+        state.reset_hook_budgets();
 
         // Scope, metric and budget refusals change nothing; create ordinals restart per window.
         let out_of_scope = wit_txn::Host::stage_set_property(state, "r1".into(), "other".into(), "1".into());

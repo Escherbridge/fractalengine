@@ -7,7 +7,7 @@ use crate::bus::{self, Bus, BusHooks};
 use super::bindings::exports::fractalengine::plugin::bus_hooks as wit_hooks;
 use super::bindings::fractalengine::plugin::types::{self as wit, Binding};
 use super::broker::ExtensionBroker;
-use super::instance::ExtensionInstance;
+use super::instance::{ExtensionInstance, InstanceHandle};
 
 /// The bus key of a binding (one package bound to one petal, OD-E3).
 pub fn instance_key(binding: &Binding) -> bus::InstanceKey {
@@ -131,6 +131,29 @@ impl BusHooks for ExtensionInstance {
     fn on_call_result(&mut self, call: u64, outcome: Result<String, bus::HostError>) {
         if let Err(fault) = ExtensionInstance::on_call_result(self, call, outcome.map_err(wit_host_error)) {
             tracing::warn!(installation = %self.binding().installation_id, %fault, "bus on-call-result faulted");
+        }
+    }
+}
+
+/// The handle the scheduler ticks is the one `TickHost::add_on_bus` seats on the bus; a poisoned
+/// lock answers commands `failed` and drops deliveries.
+impl BusHooks for InstanceHandle {
+    fn on_events(&mut self, events: Vec<bus::BusEvent>) {
+        match self.lock() {
+            Ok(mut instance) => BusHooks::on_events(&mut *instance, events),
+            Err(error) => tracing::warn!(%error, "bus on-events dropped"),
+        }
+    }
+
+    fn on_command(&mut self, command: &str, args: &str, caller: &bus::Caller) -> Result<String, bus::CommandError> {
+        let mut instance = self.lock().map_err(bus::CommandError::Failed)?;
+        BusHooks::on_command(&mut *instance, command, args, caller)
+    }
+
+    fn on_call_result(&mut self, call: u64, outcome: Result<String, bus::HostError>) {
+        match self.lock() {
+            Ok(mut instance) => BusHooks::on_call_result(&mut *instance, call, outcome),
+            Err(error) => tracing::warn!(%error, "bus on-call-result dropped"),
         }
     }
 }
