@@ -767,7 +767,7 @@ pub(crate) async fn flush(
     ops: &[PendingOp],
     readings: &[StagedReading],
     local_did: &str,
-    mut sinks: FlushSinks<'_>,
+    sinks: FlushSinks<'_>,
 ) -> Result<TransactionReceipt, PluginRefusal> {
     admission.require_active().map_err(PluginRefusal::Revoked)?;
     fe_sdk::plugin_host::validate_commit(ops, readings).map_err(PluginRefusal::InvalidInput)?;
