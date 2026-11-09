@@ -111,6 +111,26 @@ trusting "pure efficiency" claims; push control; a board that silently drifts st
 
 ## 2. State
 
+- **2026-11-09 ~04:45 — TURN 2 COMPLETE; REFINE PASS (cargo) RUNNING on ext-platform.** `wf_3db960d5-6b1`
+  ended 63 done / 7 partial / 0 held-failed (140 agents, 23.5M tokens, 3.2 h). R-X verdict PASS-WITH-FIXES,
+  **not buildable / not merge-ready yet** (records `799229cb` ext-platform — also carries R-X's uncommitted
+  code fixes in sources.rs/ws.rs/plugin_bridge.rs/server.rs/fractalengine Cargo.toml — and `be9c34ea`
+  portal; steers `2a235050`/`4f2ce406`). Build gate OPEN since 03:40 (97/128 GB, 6.2 GB free). **Refine
+  workflow `wf_23330300-063` (task `woyg8fq2a`)**: serial `cargo check -p` bottom-up over 18 crates + 4
+  standalone manifests (order = `.omc/plans/turn2-plan.md` §11), each step fixes its own crate and commits,
+  stops at the first red/upstream/gate-closed. Known breaks: `InstanceHandle::call_hook`/HooksGuest (R-X-19,
+  fe-plugin), tools/fe-ext sandbox.rs `reading_count` (R-TOOL-04); portal killswitch handler stubbed
+  `e47e6143` (503 until `FixtureOp::PortalKillSwitch` exists). **Then:** clippy on touched crates → user names
+  test batches (`tools\qa\test_batches.ps1`) → `/code-review high` + `/security-review` → merge
+  ext-platform into main → rebase portal (9 union conflicts expected: main.rs, scenario.py, test-batches R9,
+  five AGENTS.md) → portal refine (fe-format→fe-runtime→fe-sync→fe-api→fe-webview→fe-ui→fractalengine) →
+  merge → user push decision. **HIGH with the merge:** administer DisableAll/EnableAll must call the portal
+  resolver's `set_host_disabled` (R-POR-IPC-20/R-X-33). **Turn 3 candidates:** one scene gate at
+  DbCommandSender (R-X-13: GUI + node_history/waypoint/promote/format/gpx bypass it), portal.open branch
+  reading Admitted records (R-X-04), killswitch native op, 46 HANDED-OFF + 18 DEFERRED review items.
+  **User decisions pending:** REST vs GUI extension administration (blocks the 3 ext sim scenarios),
+  LAN targets per installation (R-NET-31), tileset trust roots (R-REG-19), WS transform judging (R-API),
+  portal Admitted carry-over (OD-7/R-X-35), binding demotion, rollback default, 64-cap for eager hooks.
 - **2026-11-09 ~01:15 — SWARM TURN 2 RUNNING.** Workflow `wf_3db960d5-6b1` (task `wljzr2law`), 70 slices:
   13 integration (one owner per central file), 17 bindings B0–B11 (+B10a–f), 4 net, 12 feature remainders,
   8 portal, 1 private spec, 3 docs, 12 opus review gates ending in the cross-track gate R-X; width 5,
