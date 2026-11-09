@@ -37,171 +37,41 @@ impl PathTracker {
     ///
     /// Computes `cumulative_distances` and `total_distance`.
     pub fn new(route_points: Vec<[f64; 3]>) -> Self {
-        let mut cumulative_distances = Vec::with_capacity(route_points.len());
-        cumulative_distances.push(0.0);
-
-        let mut total = 0.0;
-        for pair in route_points.windows(2) {
-            let dist = euclidean_distance_3d(&pair[0], &pair[1]);
-            total += dist;
-            cumulative_distances.push(total);
-        }
-
+        let (cumulative_distances, total_distance) =
+            fe_sdk::path_geometry::cumulative_distances_f64(&route_points);
         Self {
             route_points,
             cumulative_distances,
-            total_distance: total,
+            total_distance,
         }
     }
 
-    /// Snap a world-space position to the route.
-    ///
-    /// Finds the nearest point on any line segment of the route and returns
-    /// a [`SnapResult`] with the projected position, segment index, progress,
-    /// remaining distance, and deviation.
+    /// Snap a world-space position to the route (delegates to `fe_sdk::path_geometry`).
     pub fn snap_to_route(&self, position: [f64; 3]) -> SnapResult {
-        if self.route_points.is_empty() {
-            return SnapResult {
-                nearest_point: position,
-                segment_index: 0,
-                route_progress: 0.0,
-                distance_remaining_m: 0.0,
-                deviation_m: 0.0,
-            };
-        }
-
-        if self.route_points.len() == 1 {
-            let p = self.route_points[0];
-            return SnapResult {
-                nearest_point: p,
-                segment_index: 0,
-                route_progress: 0.0,
-                distance_remaining_m: self.total_distance,
-                deviation_m: euclidean_distance_3d(&position, &p),
-            };
-        }
-
-        let mut best_dist_sq = f64::MAX;
-        let mut best_proj = position;
-        let mut best_seg_idx: usize = 0;
-
-        for i in 0..self.route_points.len() - 1 {
-            let a = &self.route_points[i];
-            let b = &self.route_points[i + 1];
-            let (proj, dist_sq) = nearest_point_on_segment(position, *a, *b);
-
-            if dist_sq < best_dist_sq {
-                best_dist_sq = dist_sq;
-                best_proj = proj;
-                best_seg_idx = i;
-            }
-        }
-
-        let deviation_m = best_dist_sq.sqrt();
-
-        // Route progress: cumulative distance at segment start + fraction along segment
-        let seg_start_dist = self.cumulative_distances[best_seg_idx];
-        let seg_len = euclidean_distance_3d(
-            &self.route_points[best_seg_idx],
-            &self.route_points[best_seg_idx + 1],
+        let snap = fe_sdk::path_geometry::snap_to_polyline(
+            &self.route_points,
+            &self.cumulative_distances,
+            self.total_distance,
+            position,
         );
-        let seg_fraction = if seg_len > 1e-9 {
-            euclidean_distance_3d(&self.route_points[best_seg_idx], &best_proj) / seg_len
-        } else {
-            0.0
-        };
-        let progress_dist = seg_start_dist + seg_fraction * seg_len;
-        let route_progress = if self.total_distance > 1e-9 {
-            progress_dist / self.total_distance
-        } else {
-            0.0
-        };
-        let distance_remaining_m = self.total_distance - progress_dist;
-
         SnapResult {
-            nearest_point: best_proj,
-            segment_index: best_seg_idx,
-            route_progress: route_progress.clamp(0.0, 1.0),
-            distance_remaining_m: distance_remaining_m.max(0.0),
-            deviation_m,
+            nearest_point: snap.nearest_point,
+            segment_index: snap.segment_index,
+            route_progress: snap.route_progress,
+            distance_remaining_m: snap.distance_remaining_m,
+            deviation_m: snap.deviation_m,
         }
     }
 
     /// Get the interpolated position at a given route progress (0.0–1.0).
     pub fn position_at_progress(&self, progress: f64) -> [f64; 3] {
-        if self.route_points.is_empty() {
-            return [0.0, 0.0, 0.0];
-        }
-        if self.route_points.len() == 1 {
-            return self.route_points[0];
-        }
-
-        let target_dist = progress.clamp(0.0, 1.0) * self.total_distance;
-
-        // Find the segment containing target_dist.
-        // We want the last cumulative distance <= target_dist.
-        let mut seg_idx = self
-            .cumulative_distances
-            .iter()
-            .position(|&d| d > target_dist)
-            .unwrap_or(self.route_points.len() - 1)
-            .saturating_sub(1);
-
-        // Clamp to valid segment range
-        seg_idx = seg_idx.min(self.route_points.len() - 2);
-
-        let seg_start = self.cumulative_distances[seg_idx];
-        let seg_end = self.cumulative_distances[seg_idx + 1];
-        let seg_len = seg_end - seg_start;
-        let t = if seg_len > 1e-9 {
-            (target_dist - seg_start) / seg_len
-        } else {
-            0.0
-        };
-
-        let a = &self.route_points[seg_idx];
-        let b = &self.route_points[seg_idx + 1];
-        [
-            a[0] + (b[0] - a[0]) * t,
-            a[1] + (b[1] - a[1]) * t,
-            a[2] + (b[2] - a[2]) * t,
-        ]
+        fe_sdk::path_geometry::position_at_progress_f64(
+            &self.route_points,
+            &self.cumulative_distances,
+            self.total_distance,
+            progress,
+        )
     }
-}
-
-/// Euclidean distance squared between two 3D points.
-fn euclidean_distance_sq_3d(a: &[f64; 3], b: &[f64; 3]) -> f64 {
-    let dx = b[0] - a[0];
-    let dy = b[1] - a[1];
-    let dz = b[2] - a[2];
-    dx * dx + dy * dy + dz * dz
-}
-
-/// Euclidean distance between two 3D points.
-fn euclidean_distance_3d(a: &[f64; 3], b: &[f64; 3]) -> f64 {
-    euclidean_distance_sq_3d(a, b).sqrt()
-}
-
-/// Find the nearest point on the line segment AB to point P.
-///
-/// Returns (nearest_point, distance_squared).
-fn nearest_point_on_segment(p: [f64; 3], a: [f64; 3], b: [f64; 3]) -> ([f64; 3], f64) {
-    let ab = [b[0] - a[0], b[1] - a[1], b[2] - a[2]];
-    let ap = [p[0] - a[0], p[1] - a[1], p[2] - a[2]];
-
-    let ab_dot_ab = ab[0] * ab[0] + ab[1] * ab[1] + ab[2] * ab[2];
-    let ab_dot_ap = ab[0] * ap[0] + ab[1] * ap[1] + ab[2] * ap[2];
-
-    // Clamp t to [0, 1] to stay on the segment
-    let t = if ab_dot_ab > 1e-12 {
-        (ab_dot_ap / ab_dot_ab).clamp(0.0, 1.0)
-    } else {
-        0.0
-    };
-
-    let nearest = [a[0] + ab[0] * t, a[1] + ab[1] * t, a[2] + ab[2] * t];
-
-    (nearest, euclidean_distance_sq_3d(&p, &nearest))
 }
 
 #[cfg(test)]

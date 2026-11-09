@@ -182,6 +182,7 @@ Canonical serialization: Base32 (52 chars) or hex with `0x` prefix. Tag literals
 | `theme` | UI themes, colors, fonts | `entries.json`, `assets/` |
 | `bundle` | Mixed collection | `entries.json`, `assets/` |
 | `observation_batch` | Columnar observation batch (SPEC-10 §3.1): readings + payload refs | `observations/readings.parquet`, `observations/payload_refs.parquet` |
+| `plugin` | Sealed third-party extension: manifest v2 header plus a Wasm component (see `docs/extensions/package-format.md`) | `plugin/extension.json` (header), `plugin/component.wasm` (body) |
 
 ### Platform Targeting (amp-compatible)
 
