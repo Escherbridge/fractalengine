@@ -284,6 +284,8 @@ pub fn render(ctx: &egui::Context, state: &mut ConsentState) {
     let mut override_text = std::mem::take(&mut state.override_text);
 
     crate::ui_shell::layout_policy::bounded_window(ctx, title(&request))
+        // Above the Extensions window: a click there must never bury an open review (R-UI-28).
+        .order(egui::Order::Foreground)
         .open(&mut still_open)
         .collapsible(false)
         .resizable(false)

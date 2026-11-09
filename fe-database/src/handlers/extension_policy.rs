@@ -1059,6 +1059,9 @@ pub struct KillListOverrideRequest {
 pub struct KillListOverride {
     pub verse_id: String,
     pub content_hash: String,
+    /// The Owner identity that recorded it; hydration keeps only the host's current DID (a rotated key never carries over).
+    #[serde(default)]
+    pub actor_did: String,
 }
 
 /// Why an override was refused.
@@ -1086,6 +1089,10 @@ pub async fn record_kill_list_override(
     if !is_package_id(&request.package_id) || !is_digest(&request.content_hash) {
         return Err(OverrideError::Invalid("package_id or content_hash is malformed".into()));
     }
+    // An empty node DID would match a verse whose `created_by` is empty: no identity, no override.
+    if local_did.is_empty() {
+        return Err(OverrideError::NotOwner);
+    }
     let mut entry = AuditEntry::verse(AuditAction::KillListOverride, local_did, &request.verse_id, AuditOutcome::Ok, None);
     entry.package_id = Some(request.package_id.clone());
     entry.content_hash = Some(request.content_hash.clone());
@@ -1104,14 +1111,20 @@ pub async fn record_kill_list_override(
         return Err(refusal);
     }
     append_audit(db, &entry).await?;
-    Ok(KillListOverride { verse_id: request.verse_id.clone(), content_hash: request.content_hash.clone() })
+    Ok(KillListOverride {
+        verse_id: request.verse_id.clone(),
+        content_hash: request.content_hash.clone(),
+        actor_did: local_did.to_string(),
+    })
 }
 
-/// Every override recorded on this host (startup: hydrate `fe_plugin::lifecycle::Governance`).
+/// Every override recorded on this host, with the identity that recorded it (startup hydration filters by it).
 pub async fn load_kill_list_overrides(db: &Db) -> anyhow::Result<Vec<KillListOverride>> {
     Ok(ok_entries(db, &[AuditAction::KillListOverride])
         .await?
         .into_iter()
-        .filter_map(|entry| Some(KillListOverride { verse_id: entry.verse_id?, content_hash: entry.content_hash? }))
+        .filter_map(|entry| {
+            Some(KillListOverride { verse_id: entry.verse_id?, content_hash: entry.content_hash?, actor_did: entry.actor_did })
+        })
         .collect())
 }

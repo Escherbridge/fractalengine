@@ -70,7 +70,7 @@ use fe_plugin::{
     NodeQuery, NodeReader, NodeSnapshot, PluginCommand, TransactionReceipt, TransactionSink,
 };
 use fe_runtime::extension_binding::{
-    resolution_scopes, BindingMode, BindingPoint, BindingRecord, BindingResolution,
+    resolution_scopes, BindingMode, BindingPoint, BindingRecord, BindingResolution, BindingScopeLevel,
 };
 use fe_runtime::messages::{
     BindingRefusal, DbCommand, DbResult, ReplicatedRowOutcome, StoredBinding, VerseBindings,
@@ -88,6 +88,7 @@ use fe_sdk::manifest_v2::{parse_and_validate, ExtensionManifest, Ingress, RoleFl
 use fe_sdk::plugin_host::{PendingOp, PluginLease, StagedReading};
 use fe_sdk::source_class::SourceClass;
 use fe_terrain::extension::TERRAIN_EXTENSION_ID;
+use fe_ui::extensions::bindings::{BindingPointRow, BindingsSnapshot, ScopeOption, ScopeTarget};
 use fe_ui::extensions::panel::{AuditLine, ExtensionEvent, ExtensionsPanelState};
 use fe_ui::extensions::{BoundPanel, BoundSlotsState, ConsentState, SnippetRequest, SnippetTarget};
 use fe_ui::navigation_manager::NavigationManager;
@@ -1304,7 +1305,8 @@ impl InstalledCatalog {
             component_digest: Some(package.component_digest.clone()),
             plaintext_digest: None,
             capability_digest: validated.capability_digest.clone(),
-            trust: tier.unwrap_or(TrustTier::DevUnsigned),
+            // Untrusted builds are refused by `check` anyway; never let the facts read as first-party.
+            trust: tier.unwrap_or(TrustTier::Publisher),
             writes: PackageFacts::manifest_writes(&validated.manifest),
             licensed,
             manifest: Some(Arc::new(validated.manifest.clone())),
@@ -2223,12 +2225,13 @@ impl BindingWorker {
             .rev()
             .filter_map(|row| serde_json::from_value::<PolicyEntry>(row).ok())
         {
+            // Acceptance is this identity's word only (R12): a rotated key's "Allow in <verse>" never carries over.
+            if entry.outcome != PolicyOutcome::Ok || entry.actor_did != self.local_did {
+                continue;
+            }
             let (Some(installation), Some(verse_id)) = (entry.installation, entry.verse_id) else {
                 continue;
             };
-            if entry.outcome != PolicyOutcome::Ok {
-                continue;
-            }
             match entry.action {
                 PolicyAction::Bind => {
                     accepted.insert((installation, verse_id));
@@ -2627,6 +2630,40 @@ struct BridgeOpsPorts {
     owners: VerseOwners,
     index: InstallationIndex,
     signals: BindingSignals,
+    /// This host's last resolution per petal (the Bindings view's states and offers).
+    view: BindingView,
+}
+
+impl BridgeOpsPorts {
+    /// One durable audit entry as the local DID; waits for the DB so the caller can refuse when it is not recorded.
+    fn append_audit_blocking(&self, entry: PolicyEntry) -> Result<(), String> {
+        let entry = serde_json::to_value(&entry).map_err(|error| error.to_string())?;
+        let (reply, receiver) = crossbeam::channel::bounded(1);
+        self.db
+            .send_timeout(DbCommand::AppendExtensionAudit { entry, reply }, DB_SEND_TIMEOUT)
+            .map_err(|_| "the database is not accepting commands".to_string())?;
+        receiver
+            .recv_timeout(DB_REPLY_TIMEOUT)
+            .map_err(|_| "the database did not answer; the change may or may not be recorded".to_string())??;
+        Ok(())
+    }
+
+    fn local_entry(&self, action: PolicyAction, target: String) -> PolicyEntry {
+        PolicyEntry {
+            action,
+            installation: None,
+            package_id: None,
+            content_hash: None,
+            actor_did: self.governance.local_did().to_string(),
+            target,
+            outcome: PolicyOutcome::Ok,
+            reason: None,
+            args_digest: None,
+            verse_id: None,
+            capability_digest: None,
+            at: rfc3339_utc(now_ms()),
+        }
+    }
 }
 
 impl OpsPorts for BridgeOpsPorts {
@@ -2635,11 +2672,12 @@ impl OpsPorts for BridgeOpsPorts {
     }
 
     fn trust_tier(&self, trusted_by: Option<&str>) -> TrustTier {
-        // No vouching root reads as the weakest tier; verification already refused untrusted signers.
+        // No vouching root reads as `Publisher`, which `first-party-only` refuses; `DevUnsigned` would be admitted
+        // there and only `tier_for(None)` under the debug dev flag may produce it.
         self.governance
             .trust()
             .tier_for(trusted_by)
-            .unwrap_or(TrustTier::DevUnsigned)
+            .unwrap_or(TrustTier::Publisher)
     }
 
     fn is_verse_owner(&self, verse_id: &str) -> bool {
@@ -2704,6 +2742,185 @@ impl OpsPorts for BridgeOpsPorts {
             .kill_list_override(self.governance.local_did(), &params)
             .map_err(|refusal| format!("{}: {}", refusal.code, refusal.message))?;
         self.signals.dirty(verse_id, Trigger::KillList);
+        Ok(())
+    }
+
+    fn persist_acceptance(
+        &self,
+        installation_id: &str,
+        verse_id: &str,
+        package_id: &str,
+    ) -> Result<(), String> {
+        // fe-database `acceptance_entry` shape: `bind` with the verse, read back by `hydrate_acceptances`.
+        let mut entry = self.local_entry(PolicyAction::Bind, format!("{installation_id}@{verse_id}"));
+        entry.installation = Some(installation_id.to_string());
+        entry.package_id = Some(package_id.to_string());
+        entry.verse_id = Some(verse_id.to_string());
+        self.append_audit_blocking(entry)?;
+        self.signals.dirty(verse_id, Trigger::Lifecycle);
+        Ok(())
+    }
+
+    fn audit_change(&self, action: PolicyAction, installation_id: &str) {
+        let mut entry = self.local_entry(action, installation_id.to_string());
+        entry.installation = Some(installation_id.to_string());
+        entry.package_id = Some(installation_id.to_string());
+        self.governance.append_audit(entry);
+        self.signals
+            .send(BindingSignal::AllDirty(Trigger::Lifecycle));
+    }
+
+    fn bindings_snapshot(&self, scope: &ActiveScope) -> Result<BindingsSnapshot, String> {
+        let petal = self
+            .stager
+            .petals
+            .get(&scope.petal_id)
+            .filter(|petal| petal.verse_id == scope.verse_id)
+            .ok_or("the open petal is not in the loaded hierarchy yet")?;
+        let plane = load_binding_snapshot(&self.db, &petal.verse_id)?;
+        let rows = stored_rows(&plane);
+        let roles = plane.roles.clone().unwrap_or_default();
+        let local_did = self.governance.local_did();
+        let local_is_owner = self.owners.is_owner(&petal.verse_id);
+        let chain = resolution_scopes(&petal.verse_id, &petal.fractal_id, &petal.petal_id);
+        let named = |kind: &str, name: &str| if name.is_empty() { kind.to_string() } else { format!("{kind} {name}") };
+        let targets = [
+            (
+                BindingScopeLevel::Petal,
+                named("Petal", &scope.petal_name),
+                ScopeTarget {
+                    verse_id: petal.verse_id.clone(),
+                    fractal_id: Some(petal.fractal_id.clone()),
+                    petal_id: Some(petal.petal_id.clone()),
+                },
+            ),
+            (
+                BindingScopeLevel::Fractal,
+                named("Fractal", &scope.fractal_name),
+                ScopeTarget {
+                    verse_id: petal.verse_id.clone(),
+                    fractal_id: Some(petal.fractal_id.clone()),
+                    petal_id: None,
+                },
+            ),
+            (
+                BindingScopeLevel::Verse,
+                named("Verse", &scope.verse_name),
+                ScopeTarget {
+                    verse_id: petal.verse_id.clone(),
+                    fractal_id: None,
+                    petal_id: None,
+                },
+            ),
+        ];
+        // Manager+ by subtree authority on the judged role plane (an Owner pin cuts it); without a plane only the
+        // verse Owner is offered a scope. The DB plane judges every write again.
+        let manages = |scope_string: &str| match &plane.roles {
+            Some(roles) => roles
+                .authority(local_did, scope_string)
+                .is_at_least(RoleLevel::Manager),
+            None => local_is_owner,
+        };
+        let scopes: Vec<ScopeOption> = chain
+            .iter()
+            .zip(targets.iter())
+            .filter(|(scope_string, _)| manages(scope_string))
+            .map(|(_, (level, label, target))| ScopeOption {
+                level: *level,
+                label: label.clone(),
+                target: target.clone(),
+            })
+            .collect();
+        let at_scope = |scope_string: &str| {
+            chain
+                .iter()
+                .zip(targets.iter())
+                .find(|(candidate, _)| candidate.as_str() == scope_string)
+                .map(|(_, (_, label, target))| (label.clone(), target.clone()))
+        };
+        // Every point the resolver published here, plus every point with a stored row on the chain (a fresh write
+        // shows before the worker re-resolves; its state then reads from the next refresh).
+        let published = self.view.points_at(&petal.petal_id).unwrap_or_default();
+        let mut points: BTreeSet<BindingPoint> = published
+            .iter()
+            .map(|point| BindingPoint::new(point.hook.clone(), point.key.clone()))
+            .collect();
+        points.extend(
+            rows.iter()
+                .filter(|row| chain.contains(&row.record.scope))
+                .map(|row| row.record.point()),
+        );
+        let point_rows = points
+            .into_iter()
+            .map(|point| {
+                let resolution = published
+                    .iter()
+                    .find(|candidate| candidate.hook == point.hook && candidate.key == point.key)
+                    .and_then(|candidate| candidate.resolution.clone());
+                let winner = chain
+                    .iter()
+                    .find_map(|scope_string| effective_binding(&rows, &roles, scope_string, &point).cloned());
+                match winner {
+                    Some(record) => {
+                        let (scope_label, target) = at_scope(&record.scope).unzip();
+                        BindingPointRow {
+                            hook: point.hook,
+                            key: point.key,
+                            scope_label: scope_label.unwrap_or_default(),
+                            target,
+                            mode: record.mode,
+                            package_id: record.package_id,
+                            version_req: record.version_req,
+                            config: record.config,
+                            runs_on: record.runs_on,
+                            resolution,
+                        }
+                    }
+                    None => BindingPointRow {
+                        hook: point.hook,
+                        key: point.key,
+                        scope_label: String::new(),
+                        target: None,
+                        mode: BindingMode::Inherit,
+                        package_id: None,
+                        version_req: None,
+                        config: json!({}),
+                        runs_on: None,
+                        resolution,
+                    },
+                }
+            })
+            .collect();
+        Ok(BindingsSnapshot {
+            verse_id: petal.verse_id.clone(),
+            petal_label: named("Petal", &scope.petal_name),
+            can_manage: manages(&chain[0]),
+            local_is_owner,
+            scopes,
+            points: point_rows,
+            providers: Vec::new(),
+        })
+    }
+
+    fn write_binding(&self, template: BindingRecord) -> Result<(), String> {
+        let verse_id = fe_database::parse_scope(&template.scope)
+            .map(|parts| parts.verse_id)
+            .map_err(|error| format!("invalid-input: {error}"))?;
+        let (reply, receiver) = crossbeam::channel::bounded(1);
+        // `caller_did: None` is the GUI: the DB plane judges the local DID (the row's author) at the scope.
+        let command = DbCommand::PutBinding {
+            caller_did: None,
+            binding: template,
+            reply,
+        };
+        self.db
+            .send_timeout(command, DB_SEND_TIMEOUT)
+            .map_err(|_| "the database is not accepting commands".to_string())?;
+        receiver
+            .recv_timeout(DB_REPLY_TIMEOUT)
+            .map_err(|_| "the database did not answer; the binding may or may not be written".to_string())?
+            .map_err(|refusal: BindingRefusal| format!("{}: {}", refusal.code, refusal.message))?;
+        self.signals.dirty(&verse_id, Trigger::BindingRow);
         Ok(())
     }
 
@@ -4032,7 +4249,7 @@ pub(crate) fn install_with(app: &mut App, config: ExtensionBridgeConfig) {
         live,
         petals,
         db: db.clone(),
-        view,
+        view: view.clone(),
         index: index.clone(),
         reader: PayloadReader { api: slot, blobs },
         owners: owners.clone(),
@@ -4058,6 +4275,7 @@ pub(crate) fn install_with(app: &mut App, config: ExtensionBridgeConfig) {
         owners,
         index,
         signals,
+        view,
     };
     let ops_trust = source_trust(&governance, allow_dev);
     let worker_trust = source_trust(&governance, allow_dev);

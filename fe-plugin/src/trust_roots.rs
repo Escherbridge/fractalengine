@@ -74,6 +74,32 @@ pub enum RevocationError {
     BadSignature,
     #[error("revocation list from '{signer}' issued at {issued_at} is older than the accepted {accepted}")]
     Stale { signer: String, issued_at: String, accepted: String },
+    #[error("revocation list issued_at '{0}' is not RFC 3339 UTC (YYYY-MM-DDTHH:MM:SS[.fraction]Z)")]
+    BadIssuedAt(String),
+}
+
+/// A revocation list's `issued_at` by value: `([year, month, day, hour, minute, second], nanos)`.
+pub type IssuedInstant = ([u32; 6], u32);
+
+/// Strict RFC 3339 UTC (`Z` only, up to 9 fraction digits) parsed for ordering; offsets and other shapes are `None`.
+pub fn issued_at_instant(text: &str) -> Option<IssuedInstant> {
+    let body = text.strip_suffix('Z')?;
+    let (main, fraction) = body.split_once('.').unwrap_or((body, ""));
+    let bytes = main.as_bytes();
+    if bytes.len() != 19 || bytes[4] != b'-' || bytes[7] != b'-' || bytes[10] != b'T' || bytes[13] != b':' || bytes[16] != b':' {
+        return None;
+    }
+    let field = |from: usize, to: usize| {
+        main.get(from..to)
+            .filter(|digits| digits.bytes().all(|b| b.is_ascii_digit()))
+            .and_then(|digits| digits.parse::<u32>().ok())
+    };
+    let stamp = [field(0, 4)?, field(5, 7)?, field(8, 10)?, field(11, 13)?, field(14, 16)?, field(17, 19)?];
+    if (body.contains('.') && fraction.is_empty()) || fraction.len() > 9 || !fraction.bytes().all(|b| b.is_ascii_digit()) {
+        return None;
+    }
+    let nanos = format!("{fraction:0<9}").parse::<u32>().ok()?;
+    Some((stamp, nanos))
 }
 
 #[derive(Deserialize)]
@@ -173,9 +199,13 @@ impl TrustRoots {
         newest: &mut HashMap<String, String>,
     ) -> Result<RevocationSet, RevocationError> {
         let set = self.verify_revocation_list(list)?;
-        // Only a verified list may move the high-water mark; RFC 3339 UTC text of one format orders lexically.
+        // Compared by value, never as text: an offset form (`+05:00`) or a fraction would order wrongly and
+        // could pass an older list as newer. Only a verified list may move the high-water mark.
+        let issued = issued_at_instant(&list.issued_at)
+            .ok_or_else(|| RevocationError::BadIssuedAt(list.issued_at.clone()))?;
         if let Some(accepted) = newest.get(&list.signer_key_id) {
-            if list.issued_at.as_str() < accepted.as_str() {
+            // Only parsed marks are ever stored here; a foreign unparseable one never blocks a newer revocation.
+            if issued_at_instant(accepted).is_some_and(|mark| issued < mark) {
                 return Err(RevocationError::Stale {
                     signer: list.signer_key_id.clone(),
                     issued_at: list.issued_at.clone(),
@@ -426,5 +456,16 @@ mod tests {
             .verify_revocation_list_fresh(&signed("2026-11-09T00:00:00Z", "x"), &mut newest)
             .unwrap();
         assert_eq!(newest["rev"], "2026-11-09T00:00:00Z");
+
+        // Ordering is by value: a fraction that sorts below `Z` as text is still newer; an offset form whose text
+        // sorts above the mark (an older instant) never reaches the comparison.
+        roots
+            .verify_revocation_list_fresh(&signed("2026-11-09T00:00:00.5Z", "y"), &mut newest)
+            .expect("half a second later is newer");
+        let offset = roots
+            .verify_revocation_list_fresh(&signed("2026-11-09T23:00:00+05:00", "y"), &mut newest)
+            .unwrap_err();
+        assert!(matches!(offset, RevocationError::BadIssuedAt(_)));
+        assert_eq!(newest["rev"], "2026-11-09T00:00:00.5Z");
     }
 }

@@ -19,7 +19,7 @@ use fe_database::handlers::extension_policy::{
 use fe_database::RoleLevel;
 use fe_plugin::bus::{AuditAction as BusAction, AuditEntry as BusEntry, AuditSink};
 use fe_plugin::lifecycle::{ConsentRecord as ManagerConsent, GovernanceGates, PackageFacts, TrustTier};
-use fe_plugin::trust_roots::{RevocationList, RevocationSet, TrustRoots};
+use fe_plugin::trust_roots::{issued_at_instant, IssuedInstant, RevocationList, RevocationSet, TrustRoots};
 use fe_runtime::messages::{DbCommand, DbResult, ReplicatedRowOutcome};
 use fe_sdk::manifest_v2::ExtensionKind;
 use fe_ui::verse_manager::VerseManager;
@@ -278,7 +278,7 @@ struct PolicyMirror {
 /// Accepted revocation lists, newest per signer, and their union.
 #[derive(Default)]
 struct KillList {
-    per_signer: HashMap<String, (([u32; 6], u32), RevocationSet)>,
+    per_signer: HashMap<String, (IssuedInstant, RevocationSet)>,
     effective: RevocationSet,
 }
 
@@ -384,27 +384,6 @@ fn wait_blocking<T>(receiver: &Receiver<T>, timeout: Duration) -> Option<T> {
         }
         _ => wait(),
     }
-}
-
-/// `issued_at` by value: strict RFC 3339 UTC `([year, month, day, hour, minute, second], nanos)`.
-fn issued_instant(text: &str) -> Option<([u32; 6], u32)> {
-    let body = text.strip_suffix('Z')?;
-    let (main, fraction) = body.split_once('.').unwrap_or((body, ""));
-    let bytes = main.as_bytes();
-    if bytes.len() != 19 || bytes[4] != b'-' || bytes[7] != b'-' || bytes[10] != b'T' || bytes[13] != b':' || bytes[16] != b':' {
-        return None;
-    }
-    let field = |from: usize, to: usize| {
-        main.get(from..to)
-            .filter(|digits| digits.bytes().all(|b| b.is_ascii_digit()))
-            .and_then(|digits| digits.parse::<u32>().ok())
-    };
-    let stamp = [field(0, 4)?, field(5, 7)?, field(8, 10)?, field(11, 13)?, field(14, 16)?, field(17, 19)?];
-    if fraction.len() > 9 || !fraction.bytes().all(|b| b.is_ascii_digit()) {
-        return None;
-    }
-    let nanos = format!("{fraction:0<9}").parse::<u32>().ok()?;
-    Some((stamp, nanos))
 }
 
 /// Keep the newer row by the DB's last-writer-wins key `(written_at, author_did)`; true when `row` was stored.
@@ -785,6 +764,13 @@ impl ExtensionGovernance {
         for verse_id in &verses {
             self.feed_external(verse_id);
         }
+        // Like consents: an override recorded under another identity (a rotated node key) never carries over.
+        let (overrides, foreign): (Vec<KillListOverride>, Vec<KillListOverride>) = overrides
+            .into_iter()
+            .partition(|record| !self.0.local_did.is_empty() && record.actor_did == self.0.local_did);
+        if !foreign.is_empty() {
+            tracing::warn!(ignored = foreign.len(), "kill-list overrides by another identity ignored");
+        }
         {
             let mut set = write_guard(&self.0.overrides);
             for record in &overrides {
@@ -866,8 +852,11 @@ impl ExtensionGovernance {
             .ok_or_else(|| refusal("not-available", "the database did not answer; the override may or may not be recorded"))?;
         let recorded: KillListOverride = serde_json::from_value(answer.map_err(|message| db_refusal(&message))?)
             .map_err(|error| refusal("not-available", format!("recorded override: {error}")))?;
-        // Only the pair the Owner asked for gains the override, and only on this host.
-        if recorded.verse_id != request.verse_id || !recorded.content_hash.eq_ignore_ascii_case(&request.content_hash) {
+        // Only the pair the Owner asked for gains the override, only as this host's identity, only on this host.
+        if recorded.verse_id != request.verse_id
+            || !recorded.content_hash.eq_ignore_ascii_case(&request.content_hash)
+            || recorded.actor_did != self.0.local_did
+        {
             return Err(refusal("not-available", "the database recorded a different override"));
         }
         write_guard(&self.0.overrides).insert((recorded.verse_id.clone(), recorded.content_hash.to_ascii_lowercase()));
@@ -896,7 +885,7 @@ impl ExtensionGovernance {
     /// plugin manager stop what it names (an Owner override keeps its verse). Each stop is audited once.
     pub(crate) fn accept_revocation_list(&self, list: &RevocationList) -> Result<Vec<String>, String> {
         let verified = self.0.trust.roots().verify_revocation_list(list).map_err(|error| error.to_string())?;
-        let issued = issued_instant(&list.issued_at)
+        let issued = issued_at_instant(&list.issued_at)
             .ok_or_else(|| format!("revocation list issued_at '{}' is not RFC 3339 UTC", list.issued_at))?;
         {
             let mut kill = write_guard(&self.0.kill_list);
@@ -1416,7 +1405,11 @@ mod tests {
         load.send(Ok(json!({
             "policies": [policy_row(VERSE, 10, allow_vendor)],
             "consents": [consent("inst-local", LOCAL), consent("inst-old-key", "did:key:zRotated")],
-            "overrides": [{"verse_id": VERSE, "content_hash": "f".repeat(64)}],
+            "overrides": [
+                {"verse_id": VERSE, "content_hash": "f".repeat(64), "actor_did": LOCAL},
+                {"verse_id": VERSE, "content_hash": "7".repeat(64), "actor_did": "did:key:zRotated"},
+                {"verse_id": VERSE, "content_hash": "8".repeat(64)},
+            ],
         })))
         .unwrap();
         let manager = Arc::new(RecordingManager::default());
@@ -1433,6 +1426,8 @@ mod tests {
         assert!(external.external_access_allowed(VERSE));
         assert!(!external.external_access_allowed(OTHER_VERSE));
         assert!(governance.is_overridden(VERSE, &"F".repeat(64)));
+        assert!(!governance.is_overridden(VERSE, &"7".repeat(64)), "an override by a rotated key never carries over");
+        assert!(!governance.is_overridden(VERSE, &"8".repeat(64)), "an override with no recorded Owner is ignored");
         assert_eq!(
             manager.ops(),
             [format!("override {VERSE} {}", "f".repeat(64)), "consent inst-local".to_string()],
@@ -1494,7 +1489,7 @@ mod tests {
             _ => None,
         });
         assert_eq!(request["confirm"], "org.vendor.tool");
-        reply.send(Ok(json!({"verse_id": VERSE, "content_hash": hash}))).unwrap();
+        reply.send(Ok(json!({"verse_id": VERSE, "content_hash": hash, "actor_did": LOCAL}))).unwrap();
         assert_eq!(worker.join().unwrap().unwrap()["verse_id"], VERSE);
         assert!(governance.is_overridden(VERSE, &hash));
         assert!(!governance.is_overridden(OTHER_VERSE, &hash), "the override never reaches another verse");
