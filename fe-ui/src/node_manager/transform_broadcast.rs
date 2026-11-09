@@ -1,9 +1,43 @@
 //! Commit gimbal transforms locally and apply inbound API transforms.
 
+use std::time::Instant;
+
 use bevy::prelude::*;
+use fe_runtime::scene_hook_gate::{
+    SceneAugment, SceneCaller, SceneGateTicket, SceneHookGate, SceneHookInput, SceneVerdict,
+};
 
 use super::NodeManager;
 use crate::plugin::SpawnedNodeMarker;
+
+/// One committed single-node gimbal transform.
+pub(super) struct CommittedTransform {
+    entity: Entity,
+    node_id: String,
+    petal_id: String,
+    before: Transform,
+    after: Transform,
+}
+
+impl CommittedTransform {
+    /// The `scene.transform` input; rotation as stored (Euler XYZ radians).
+    fn gate_input(&self) -> SceneHookInput {
+        let (x, y, z) = self.after.rotation.to_euler(EulerRot::XYZ);
+        SceneHookInput::Transform {
+            petal_id: self.petal_id.clone(),
+            node_id: self.node_id.clone(),
+            position: self.after.translation.to_array(),
+            rotation: [x, y, z],
+            scale: self.after.scale.to_array(),
+        }
+    }
+}
+
+/// A commit held while the `scene.transform` gate answers (at most its 250 ms deadline).
+pub(super) struct GatedTransform {
+    commit: CommittedTransform,
+    ticket: SceneGateTicket,
+}
 
 /// FR-4 (path_interaction_20260716): bake the whole-path gimbal into one point.
 /// Express the raw world point relative to the `centroid` baseline, then apply
@@ -23,11 +57,32 @@ pub(super) fn broadcast_transform(
     mut undo: ResMut<crate::undo::UndoState>,
     nav: Res<crate::navigation_manager::NavigationManager>,
     clock: Res<crate::notice::NoticeClock>,
+    scene_gate: Option<Res<SceneHookGate>>,
+    mut gated: Local<Option<GatedTransform>>,
 ) {
     for (entity, restore) in manager.take_cancelled_restores() {
         if let Ok((mut transform, _)) = transform_query.get_mut(entity) {
             restore.apply(&mut transform);
         }
+    }
+    // A gated commit settles before any newer commit is read; the gate's deadline bounds the wait.
+    if let Some(mut held) = gated.take() {
+        let Some(verdict) = held.ticket.poll(Instant::now()) else {
+            *gated = Some(held);
+            return;
+        };
+        settle_transform(
+            verdict,
+            &held.commit,
+            &mut manager,
+            &mut transform_query,
+            &mut verse_mgr,
+            &mut ui_mgr,
+            &mut undo,
+            &nav,
+            &db_sender.0,
+            clock.elapsed_secs_f64(),
+        );
     }
     if manager.selection_count() > 1 {
         return;
@@ -87,24 +142,106 @@ pub(super) fn broadcast_transform(
         );
         return;
     };
-    match undo.transform(
-        &nav,
-        &node_id,
-        &petal_id,
+    let commit = CommittedTransform {
+        entity,
+        node_id,
+        petal_id,
         before,
         after,
-        verse_mgr.committed_versions.get(&node_id).copied(),
-        &db_sender.0,
+    };
+    let unchanged =
+        crate::undo::transform_value(&before).matches(&crate::undo::transform_value(&after));
+    // scene.transform (bindings.md §6): only a real move asks the bound extension.
+    let mut ticket = match scene_gate.as_deref() {
+        Some(gate) if !unchanged => gate.begin(commit.gate_input(), SceneCaller::ui()),
+        _ => SceneGateTicket::proceed(),
+    };
+    match ticket.poll(Instant::now()) {
+        Some(verdict) => settle_transform(
+            verdict,
+            &commit,
+            &mut manager,
+            &mut transform_query,
+            &mut verse_mgr,
+            &mut ui_mgr,
+            &mut undo,
+            &nav,
+            &db_sender.0,
+            clock.elapsed_secs_f64(),
+        ),
+        None => *gated = Some(GatedTransform { commit, ticket }),
+    }
+}
+
+/// Apply a settled gate verdict: submit the commit, or roll back a refused one like `transform_failed`.
+fn settle_transform(
+    verdict: SceneVerdict,
+    commit: &CommittedTransform,
+    manager: &mut NodeManager,
+    transform_query: &mut Query<(&mut Transform, &SpawnedNodeMarker)>,
+    verse_mgr: &mut crate::verse_manager::VerseManager,
+    ui_mgr: &mut crate::actions::UiManager,
+    undo: &mut crate::undo::UndoState,
+    nav: &crate::navigation_manager::NavigationManager,
+    db: &crossbeam::channel::Sender<fe_runtime::messages::DbCommand>,
+    now_secs: f64,
+) {
+    let augment = match verdict {
+        SceneVerdict::Proceed { augment } => augment,
+        refused @ SceneVerdict::Refused { .. } => {
+            rollback_transform(commit, transform_query, verse_mgr);
+            // A drag released while this one was gated started from the refused pose: drop it too.
+            if let Some(sel) = manager
+                .selected
+                .as_mut()
+                .filter(|sel| sel.entity == commit.entity && sel.drag_committed)
+            {
+                sel.drag_committed = false;
+                manager.pending_transform_before = None;
+            }
+            if let Some(message) = refused.refusal_message() {
+                ui_mgr.show_advisory(message, now_secs);
+            }
+            return;
+        }
+    };
+    match undo.transform(
+        nav,
+        &commit.node_id,
+        &commit.petal_id,
+        commit.before,
+        commit.after,
+        verse_mgr.committed_versions.get(&commit.node_id).copied(),
+        db,
     ) {
-        Ok(true) => ui_mgr.show_toast("Saving transform...", clock.elapsed_secs_f64()),
+        Ok(true) => {
+            stage_augment(augment);
+            ui_mgr.show_toast("Saving transform...", now_secs);
+        }
         Ok(false) => {}
         Err(error) => {
-            verse_mgr.update_node_transform(&node_id, before);
-            if let Ok((mut target, _)) = transform_query.get_mut(entity) {
-                *target = before;
-            }
-            ui_mgr.show_advisory(error, clock.elapsed_secs_f64());
+            rollback_transform(commit, transform_query, verse_mgr);
+            ui_mgr.show_advisory(error, now_secs);
         }
+    }
+}
+
+/// Restore the pre-drag pose in the tree and on the entity.
+fn rollback_transform(
+    commit: &CommittedTransform,
+    transform_query: &mut Query<(&mut Transform, &SpawnedNodeMarker)>,
+    verse_mgr: &mut crate::verse_manager::VerseManager,
+) {
+    verse_mgr.update_node_transform(&commit.node_id, commit.before);
+    if let Ok((mut target, _)) = transform_query.get_mut(commit.entity) {
+        *target = commit.before;
+    }
+}
+
+/// Stage an allowed augment once the transform is queued; it never blocks or fails the edit.
+fn stage_augment(augment: Option<SceneAugment>) {
+    if let Some(Err(error)) = augment.map(SceneAugment::stage) {
+        bevy::log::warn!(%error, "scene.transform augment was not staged");
     }
 }
 
