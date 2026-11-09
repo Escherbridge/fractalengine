@@ -474,6 +474,11 @@ async fn apply_row_mode(
         // (the admission gate already enforced the Manager+ floor and the
         // verse match) — see `apply_device_format_row`.
         "device_format" => apply_device_format_row(db, record_id, row_bytes).await,
+        // Governance (spec R18): role-at-write, bounded clock, newest `(written_at, author)` wins.
+        super::extension_policy::POLICY_TABLE => {
+            super::extension_policy::apply_replicated_policy_row(db, verse_id, record_id, row_bytes, author_did)
+                .await
+        }
         // Revocation dominates; the unsigned `del` marker is NotApplicable (§device-enrolment).
         crate::canon_log::device_enrolment::DEVICE_ENROLMENT_TABLE => {
             crate::canon_log::device_enrolment::apply_replicated_enrolment(db, record_id, row_bytes)
@@ -578,6 +583,7 @@ fn is_applied_table(table: &str) -> bool {
     matches!(
         table,
         "verse" | "fractal" | "petal" | "node" | "asset" | "device_format"
+            | super::extension_policy::POLICY_TABLE
     ) || ReplicationMode::for_table(table) == ReplicationMode::Timeseries
 }
 
@@ -823,6 +829,16 @@ async fn confine(
         "asset" => confine_asset(db, verse_id, &row).await,
         "device_payload" => confine_device_payload(db, verse_id, &row).await,
         "device_format" => confine_device_format(verse_id, &row),
+        // The extension policy row: the strictest reader's shape rules, then Manager+ at the verse.
+        super::extension_policy::POLICY_TABLE => {
+            match super::extension_policy::confine_inbound(verse_id, record_id, row_bytes) {
+                Ok(()) => Ok(Confined::Gate {
+                    scopes: vec![crate::scope::build_scope(verse_id, None, None)],
+                    floor: Floor::ManageVerse,
+                }),
+                Err(reason) => deny(reason),
+            }
+        }
         "iot_reading" => confine_reading(db, verse_id, &row).await,
         other => deny(format!("no confinement rule for table '{other}'")),
     }

@@ -337,6 +337,7 @@ impl PluginPackage {
 
 #[derive(Deserialize)]
 struct CountersignatureDoc {
+    schema_version: u32,
     content_hash: String,
     entries: Vec<CountersignatureEntry>,
 }
@@ -377,8 +378,8 @@ pub fn verify_plugin_package(
     trust: &PluginTrust<'_>,
 ) -> Result<PluginPackage, PluginPackageError> {
     use fe_format::integrity::{
-        content_hash, digest_hex, MANIFEST_PATH, MEMBERS_DOC_PATH, PLUGIN_COMPONENT_PATH,
-        PLUGIN_COUNTERSIGNATURES_PATH, PLUGIN_EXTENSION_PATH,
+        content_hash, digest_hex, ENTRIES_PATH, MANIFEST_PATH, MEMBERS_DOC_PATH,
+        PLUGIN_COMPONENT_PATH, PLUGIN_COUNTERSIGNATURES_PATH, PLUGIN_EXTENSION_PATH,
     };
     use fe_format::limits::{check_entry_count, MAX_ARCHIVE_UNCOMPRESSED_BYTES, MAX_JSON_ENTRY_BYTES};
 
@@ -415,6 +416,7 @@ pub fn verify_plugin_package(
     // Closed member set (a sealed package already refused uncommitted extras above).
     let allowed = [
         MANIFEST_PATH,
+        ENTRIES_PATH,
         MEMBERS_DOC_PATH,
         PLUGIN_EXTENSION_PATH,
         PLUGIN_COMPONENT_PATH,
@@ -449,6 +451,46 @@ pub fn verify_plugin_package(
         PLUGIN_COUNTERSIGNATURES_MAX_BYTES,
         &mut budget,
     )?;
+    // `HexonArchiveIndex::open` (registry protocol v1) needs it; a plugin catalogues no assets.
+    let entries = read_plugin_member(&mut archive, ENTRIES_PATH, MAX_JSON_ENTRY_BYTES, &mut budget)?
+        .ok_or_else(|| invalid(format!("missing-member {ENTRIES_PATH}")))?;
+    if serde_json::from_slice::<serde_json::Value>(&entries).ok() != Some(serde_json::json!({"entries": []})) {
+        return Err(invalid("entries-not-empty"));
+    }
+
+    // The bytes returned are the ones read here (zip 0.6), so they are re-checked against the root
+    // `verify_archive` (zip 2) already verified: one source of truth, no parser differential.
+    if !unsigned {
+        let committed: Vec<String> = manifest
+            .integrity
+            .as_ref()
+            .map(|root| root.header.keys().cloned().collect())
+            .unwrap_or_default();
+        let mut header_members = std::collections::BTreeMap::new();
+        for path in committed {
+            let bytes = match path.as_str() {
+                PLUGIN_EXTENSION_PATH => extension_json.clone(),
+                ENTRIES_PATH => entries.clone(),
+                "license.json" if license_json.is_some() => license_json.clone().unwrap_or_default(),
+                _ => read_plugin_member(&mut archive, &path, MAX_JSON_ENTRY_BYTES, &mut budget)?
+                    .ok_or_else(|| invalid(format!("missing-member {path}")))?,
+            };
+            header_members.insert(path, bytes);
+        }
+        let policy = fe_format::IntegrityPolicy::RequireSealed { pin: None };
+        match fe_format::verify_sealed_header(&manifest_raw, &header_members, &policy)
+            .map_err(integrity_refusal)?
+        {
+            fe_format::SealCheck::Sealed(coverage) => {
+                for (path, bytes) in [(PLUGIN_EXTENSION_PATH, &extension_json), (PLUGIN_COMPONENT_PATH, &component)] {
+                    coverage.check_member(path, bytes).map_err(integrity_refusal)?;
+                }
+            }
+            fe_format::SealCheck::Unsealed => {
+                return Err(PluginPackageError::UntrustedSigner("unsigned".into()))
+            }
+        }
+    }
 
     // Identity: the extension manifest must name the signed id and version.
     let extension: serde_json::Value = serde_json::from_slice(&extension_json)
@@ -479,6 +521,9 @@ pub fn verify_plugin_package(
     if let Some(raw) = countersignatures {
         let doc: CountersignatureDoc = serde_json::from_slice(&raw)
             .map_err(|_| invalid("countersignatures-malformed"))?;
+        if doc.schema_version != 1 {
+            return Err(invalid("countersignatures-malformed"));
+        }
         if doc.content_hash != content_hash {
             return Err(invalid("countersignature-mismatch"));
         }
@@ -489,8 +534,10 @@ pub fn verify_plugin_package(
             if !(trust.is_trust_root)(&entry.key_id) {
                 continue;
             }
+            // fe-format's verifier: canonical `signing_bytes` (`"signature": ""`), as `fe-ext countersign`
+            // signs; fe-hexon's `signature::verify_manifest` checks raw bytes and refuses every one (G3-C4).
             let verified =
-                signature::verify_manifest(&manifest_raw, &entry.signature, &entry.key_id)
+                fe_format::verify_manifest(&manifest_raw, &entry.signature, &entry.key_id)
                     .unwrap_or(false);
             if !verified {
                 return Err(invalid("countersignature-mismatch"));
@@ -529,6 +576,9 @@ pub enum PluginInstallError {
     Refused(#[from] PluginPackageError),
     #[error("package store: {0}")]
     Store(#[from] std::io::Error),
+    /// An accepted kill list names the build's `content_hash` or `component_digest` (under any id).
+    #[error("revoked ({hash})")]
+    Revoked { hash: String },
 }
 
 /// Directory store of verified sealed plugin packages: `{root}/{package_id}/{content_hash}.hexon`.
@@ -572,14 +622,19 @@ impl PluginPackageStore {
             .join(format!("{content_hash}.hexon")))
     }
 
-    /// Verify, then store; a refusal leaves the store untouched. Idempotent per `(id, content_hash)`.
+    /// Verify, refuse a kill-listed build, then store; a refusal leaves the store untouched. Idempotent
+    /// per `(id, content_hash)`. `is_revoked` is the caller's effective list (minus any audited Owner override).
     pub fn install(
         &self,
         sealed: &[u8],
         expected_id: Option<&str>,
         trust: &PluginTrust<'_>,
+        is_revoked: &dyn Fn(&str) -> bool,
     ) -> Result<PluginPackage, PluginInstallError> {
         let package = verify_plugin_package(sealed, expected_id, trust)?;
+        if let Some(hash) = package.revocation_keys().into_iter().find(|hash| is_revoked(hash)) {
+            return Err(PluginInstallError::Revoked { hash: hash.to_string() });
+        }
         let path = self.path_for(&package.package_id, &package.content_hash)?;
         if !path.exists() {
             if let Some(dir) = path.parent() {
@@ -1290,9 +1345,10 @@ mod tests {
                 invalid("id-mismatch"),
             ),
         ];
+        let never_revoked = |_: &str| false;
         for (label, bytes, expected_id, trust, expected) in rows {
             let err = store
-                .install(&bytes, expected_id, trust)
+                .install(&bytes, expected_id, trust, &never_revoked)
                 .expect_err(label);
             assert!(
                 matches!(&err, PluginInstallError::Refused(got) if *got == expected),
@@ -1301,7 +1357,45 @@ mod tests {
             assert!(store.list().unwrap().is_empty(), "{label}: store must stay empty");
         }
 
-        let installed = store.install(&sealed, Some("org.example.fleet-sim"), &trust).unwrap();
+        // Revocation matches by hash under any id: the content hash listed under another package id,
+        // and the same component re-sealed under a new id with its component digest listed.
+        let listed_hash = verify_plugin_package(&sealed, None, &trust).unwrap().content_hash;
+        let resealed = crate::publisher::PluginHexonBuilder::new(
+            &br#"{"id":"org.example.renamed","version":"1.0.0","name":"Fleet","contract":"fractalengine:plugin@2.0.0"}"#[..],
+            &component[..],
+        )
+        .build(&publisher)
+        .unwrap();
+        let component_digest = fe_format::integrity::digest_hex(&component);
+        for (label, bytes, listed) in [
+            ("content hash listed under another id", &sealed, listed_hash),
+            ("component re-sealed under a new id", &resealed, component_digest),
+        ] {
+            let kill_list = |hash: &str| hash == listed;
+            let err = store.install(bytes, None, &trust, &kill_list).expect_err(label);
+            assert!(matches!(err, PluginInstallError::Revoked { .. }), "{label}: got {err:?}");
+            assert!(store.list().unwrap().is_empty(), "{label}: store must stay empty");
+        }
+
+        // A trust-root counter-signature over the canonical signing bytes vouches for an outsider's build.
+        let outsider_sealed = pack(&outsider, &component);
+        let outsider_manifest = {
+            let mut archive = zip::ZipArchive::new(Cursor::new(&outsider_sealed[..])).unwrap();
+            let mut body = Vec::new();
+            archive.by_name("manifest.json").unwrap().read_to_end(&mut body).unwrap();
+            body
+        };
+        let good_countersig = serde_json::to_vec(&serde_json::json!({
+            "schema_version": 1,
+            "content_hash": fe_format::integrity::content_hash(&outsider_manifest).unwrap(),
+            "entries": [{"key_id": reviewer_did, "signature": fe_format::sign_manifest(&outsider_manifest, &reviewer).unwrap()}],
+        }))
+        .unwrap();
+        let vouched = rezip(&outsider_sealed, &keep, Some(("plugin/countersignatures.json", good_countersig)));
+        let vouched = verify_plugin_package(&vouched, None, &with_reviewer).expect("counter-signed build verifies");
+        assert_eq!(vouched.trusted_by.as_deref(), Some(reviewer_did.as_str()));
+
+        let installed = store.install(&sealed, Some("org.example.fleet-sim"), &trust, &never_revoked).unwrap();
         assert_eq!(installed.trusted_by.as_deref(), Some(publisher_did.as_str()));
         assert_eq!(installed.component_digest, fe_format::integrity::digest_hex(&component));
         assert_eq!(

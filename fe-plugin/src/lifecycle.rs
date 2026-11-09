@@ -546,6 +546,12 @@ impl PluginManager {
         fuel_budget: FuelBudget,
     ) -> Result<(), LifecycleError> {
         let package = self.check_activation(request)?;
+        // Row 5 judged these facts' hashes and the revocation check below is skipped, so the bytes run must be
+        // the build the facts describe (its component digest, or a 1.0 payload hash).
+        let payload = payload_hash(wasm_bytes);
+        if !package.hashes().any(|hash| hash.eq_ignore_ascii_case(&payload)) {
+            return Err(LifecycleError::PayloadMismatch(plugin_id.into()));
+        }
         {
             // An operator's Enable after a local, policy or role stop lands here; Revoked stays terminal.
             let mut registry = self
@@ -1454,6 +1460,14 @@ mod tests {
             .unwrap();
         assert_eq!(manager.governance().running_in("verse-1"), vec!["test-plugin".to_string()]);
         let state = |manager: &PluginManager, id: &str| manager.registry.lock().unwrap().get_state(id).cloned();
+        // The bytes run must be the build R19 judged: facts naming another build are refused (G2).
+        let elsewhere = PackageCheck::Verified(facts("test-plugin", &"0".repeat(64)));
+        assert!(matches!(
+            manager
+                .activate_governed(&request(LOCAL, "inst-1", "verse-1", &elsewhere), "test-plugin", &bytes, FuelBudget::default())
+                .await,
+            Err(LifecycleError::PayloadMismatch(_))
+        ));
 
         // (c) Policy removal stops only that verse's instance; a later Enable re-runs R19 and restarts it.
         gates.set(false, true, false);

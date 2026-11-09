@@ -253,3 +253,53 @@ GUI run (directive 2026-11-08).
 - G4-C17 DEFERRED GUI QA through the agent input surface (R28 AC) and the batch rerun — no build (directive 2026-11-08) and no mounted panel (A9); trigger: integration wave + refine pass: install from file -> consent -> enable -> disable -> update with a delta -> uninstall by the names in `extensions-ui.md`, then `cargo test -p fe-hexon -- registry_source` and the fe-ui `extensions::` filter.
 - G4-C18 KEPT leak discipline — the forbidden-term grep over every E13 file and every line G4 added found no hits; `catalog-index` appears only as the contract's signing-domain constant.
 - G4-C19 KEPT product fit — P4 serves `conductor/product.md`: an operator installs from a file or a signed static folder with no hosted dependency, and no business logic entered the public tree.
+
+## G2 — P2 governance (2026-11-09, slice G2, over E9 `e8b3c9cf`, E10 `8bcb2169`, E10W `0478d30e`, E11 `370e82dc`; plus hand-offs G3-C4, G3-C11, G4-C12)
+
+Scope: ADVOCATE then CRITIC with `/code-review high` and `/security-review` depth (signing, trust roots, policy,
+provenance, revocation) over `fe-format/src/{manifest,integrity}.rs`, `fe-hexon/src/{package,publisher}.rs`,
+`fe-database/src/handlers/extension_policy.rs`, `fe-plugin/src/lifecycle.rs`, the E10 routes in `fe-api/src/extensions.rs`,
+E10W's provenance edits (`iot_reading.rs`, `replicated_row.rs`, `schema.rs`, the `op_log.rs` J7 block) and
+`fe-ui/src/extensions/consent.rs`, read against spec R16-R24, `docs/extensions/{package-format,governance,bindings}.md`, the
+20:10 and 22:00 steers and the real code each call lands in (fe-format `signature.rs`, fe-plugin `trust_roots.rs`, fe-runtime
+`plugin_host.rs`, fe-database `plugin_host.rs`/`node_history.rs`, fe-hexon `registry_source.rs`/`remote.rs`, the zip 0.6.6 and
+2.4.2 readers). No build or test run (directive 2026-11-08); the refine pass reruns R11 (`fe-hexon -- package`,
+`fe-plugin -- lifecycle`), R9 (`fe-api/tests/extensions_api_test.rs`), fe-database role_propagation_inbound, replicated_row and
+the op_log J7 block, and the fe-ui `extensions::consent` journeys.
+
+**Phase verdict: PASS WITH FIXES (E10's DB plane compiles only once G2-A7 lands; R24 stamps nothing until G2-C4 lands).**
+28 verdict lines: 13 FIXED, 9 KEPT, 5 HANDED-OFF, 1 DEFERRED.
+
+### ADVOCATE (contract fidelity, wiring, what the next slices need)
+
+- G2-A1 FIXED `fe-hexon/src/publisher.rs` (G0-C1, G3-C11) — `PluginHexonBuilder` now writes `entries.json` = `{"entries":[]}` (`PLUGIN_ENTRIES_JSON`), so `HexonArchiveIndex::open` and the registry header route accept a plugin package; `fe-ext pack` inherits it.
+- G2-A2 FIXED `fe-hexon/src/package.rs` — the closed member set admits `entries.json` and the verifier requires it, exactly empty (`missing-member entries.json`, `entries-not-empty`), matching package-format.md §Members.
+- G2-A3 FIXED `fe-hexon/src/package.rs` — `PluginPackageStore::install` takes the caller's effective kill list and refuses `Revoked { hash }` on `content_hash` or `component_digest` before writing (OD-E1: refuse at install; the Owner override is the caller's predicate); J5 gains package-format.md's two revocation rows.
+- G2-A4 FIXED `fe-database/src/handlers/replicated_row.rs`, `fe-database/src/schema.rs` — E10's policy row was unreachable: inbound rows fell to `NotApplicable`, so E10's own deferred-then-applied journey could not pass. The table is now routed (`is_applied_table`, `confine` -> `confine_inbound` then `Floor::ManageVerse`, `apply_row_mode` -> `apply_replicated_policy_row`), `apply_all` calls `apply_schema`, and the dev reset lists it.
+- G2-A5 FIXED `fe-database/tests/role_propagation_inbound_test.rs` — `evaluate` (precondition 7) had no test reaching it; the promotion journey now evaluates the stored allow-list row: in range admitted, out of range `NotAllowListed`, a `?@localhost` egress URL `Ceiling("egress")`, a local digest deny `DenyListed`.
+- G2-A6 FIXED `fe-ui/src/extensions/consent.rs` (G4-C12) — `InstallOffer` and `KillListOverrideOffer` carry `verse_id` (names repeat); `Approved.accept_in_verse` is that id; `KillListOverride` carries `installation_id`, `verse_id` and `content_hash`, the shape of fe-database `KillListOverrideRequest`.
+- G2-A7 HANDED-OFF orchestrator (`fe-database/src/handlers/mod.rs`) — `pub mod extension_policy;` is missing, so E10's DB plane, its journey and the A4 wiring never compile (the G1-A4 class).
+- G2-A8 HANDED-OFF integration wave (`fractalengine/src/plugin_bridge.rs`) — no `GovernanceGates` impl (`FailClosedGates` refuses row 7 for every activation: fail closed), no `ExtensionHost::{verse_policy, set_verse_policy}` or `KillListOverride` handling, consents and overrides not hydrated from `load_consents` / `load_kill_list_overrides`, routes unmounted (G1-A6).
+- G2-A9 KEPT `verify_plugin_package` is the format half: manifest v2 validation (the V-rows, G0-C15's 2.x minor) and the component import/export checks belong to the install route and fe-plugin `admit`.
+
+### CRITIC (defects, security)
+
+- G2-C1 HIGH FIXED `fe-hexon/src/package.rs` (G3-C4) — counter-signatures were checked with fe-hexon's raw-bytes `signature::verify_manifest`, so every conforming counter-signature failed `countersignature-mismatch` and no reviewer root could ever vouch; now `fe_format::verify_manifest` over `signing_bytes`; J5 row: an outsider's build counter-signed by a reviewer root is trusted by the reviewer.
+- G2-C2 MEDIUM FIXED `fe-plugin/src/lifecycle.rs` `activate_governed` — R19 judged caller-supplied `PackageFacts`, then ran `plugin_id`'s bytes with the revocation check skipped, so facts naming a clean build could start a revoked payload; the payload hash must now be one of the facts' hashes (`PayloadMismatch`); `kill_switch_journey` row.
+- G2-C3 MEDIUM FIXED `fe-database/src/handlers/extension_policy.rs` `url_reach` — the authority ended only at `/`, so `https://evil.example?@localhost/` (or a backslash before the `@`) read as loopback and passed a `loopback` egress/ingress ceiling while the client connects to evil.example; it now ends at `/`, backslash, `?` or `#` (A5 row).
+- G2-C4 MEDIUM HANDED-OFF E4 owner (`fe-database/src/handlers/plugin_host.rs`) — R24 stamps nothing in production: `flush` calls the unstamped `insert_readings_with_replication` and no journal fact carries `payload.ext`, so E10W's J7 op_log rows fail; pass `admission.package()` to `insert_readings_with_provenance` and stamp the journal fact. `fe-database/src/AGENTS.md` now says it is owed.
+- G2-C5 MEDIUM FIXED `fe-hexon/src/package.rs` — the seal was checked by `verify_archive` (zip 2) but the returned members came from a second reader (zip 0.6); the verifier now re-runs `verify_sealed_header` and `check_member` over exactly the `extension.json`, `entries.json` and component bytes it returns, so a ZIP-parser differential cannot hand the host an uncommitted component.
+- G2-C6 MEDIUM HANDED-OFF S2 owner / orchestrator (`fe-plugin/src/trust_roots.rs`) — the trust-root `role` (`release`, `publisher`, `dev`) that governance.md names as E10's additive field is silently ignored: no build can be `TrustTier::Release`, so the default `first-party-only` verse refuses every package, and `dev` roots are not gated on the dev flag. Parse `role` (unknown value = load error), expose it per key, load `dev` roots only with the dev flag.
+- G2-C7 LOW FIXED `fe-api/src/extensions.rs` — the verse-policy routes ran `gate` in the route and again in the pub fn, charging a remote token two rate units per request; the routes gate once, before the scope lookup, then call ungated bodies.
+- G2-C8 LOW FIXED `fe-ui/src/extensions/consent.rs` — `request` dropped a kill-listed build whose digest was already consented (a revocation after consent), so the Owner override was unreachable; kill-listed requests always open; journey row.
+- G2-C9 LOW FIXED `fe-hexon/src/package.rs` — `countersignatures.json` `schema_version` was ignored; anything but 1 is now `countersignatures-malformed` (fe-ext writes 1).
+- G2-C10 LOW HANDED-OFF E13 owner (`fe-ui/src/extensions/panel.rs`) — route A6's `KillListOverride { installation_id, verse_id, package_id, content_hash, confirm }` into `ExtensionOp::KillListOverride` with `verse_id` and `content_hash`; the old pattern does not compile against A6 (both modules stay undeclared until G4-A9).
+- G2-C11 KEPT steer 20:10 — (1) a revoked hash under any id: `RevocationSet`, `PackageFacts::hashes` (content, component, plaintext) at row 5 and at kill-switch arrival, and now the store install; (2) signed id = asked id: `verify_plugin_package` `expected_id` plus `extension.id`, E16 binds the id it built the uri from, `verify_fetched` checks the listed `content_hash`. No regression in E9, E10 or E16.
+- G2-C12 KEPT revocation signer scope — only `revocation = true` roots verify a list (S2; the forged-list journey row), newest list per signer, an older list `Stale`, the same instant unioned (fail closed), `issued_at` compared by value.
+- G2-C13 KEPT policy row admission — current Manager+ at the verse (`Floor::ManageVerse` defers), attested author = row author, 5-minute clock bound, role-at-write at the row's HLC, newest `(written_at, author, bytes)` wins; the local write is log-first with one audit op.
+- G2-C14 KEPT guests cannot forge provenance — the stamp comes only from the host's `PluginAdmission::package` (`PackageIdentity::new` grammar) and a `StagedReading` has no ext field; a remote peer may stamp any pair on its own rows, but authorship stays attested by `source_did` and the stamp is a filter key, never trust (governance.md §Provenance).
+- G2-C15 KEPT precondition order and override — not-local before host-off (G0-C10), consent pinned to `(package_id, capability_digest)`, the Owner override keyed `(verse_id, content_hash)`, host-local, `verse.created_by` = local DID with the typed id, refusals audited.
+- G2-C16 KEPT fe-format's counter-signature exemption is type-agnostic: any sealed hexon may carry an uncommitted `plugin/countersignatures.json` under the JSON cap, which no non-plugin reader interprets. Trigger: a second uncommitted member.
+- G2-C17 DEFERRED web bundles (`kind: web-bundle`) fail `verify_plugin_package` (no component, no `contract`) although D-X5 shares the verifier; trigger: the portal track's bundle-verifier slice, which adds the `web/` member branch.
+- G2-C18 KEPT leak discipline — the forbidden-term grep over every line G2 added found no hits.
+- G2-C19 KEPT product fit — P2 serves `conductor/product.md`: per-verse policy plus local ceilings with no hosted dependency, and stamp-and-stop keeps every reading a row.

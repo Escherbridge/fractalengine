@@ -412,6 +412,49 @@ async fn promotion_flows() {
         let stored = extension_policy::get_policy(&db, VERSE).await.expect("read policy").expect("policy row");
         assert_eq!((stored.author_did.as_str(), stored.policy.mode), (MANAGER, extension_policy::PolicyMode::AllowList));
 
+        // Precondition 7 over the stored row: the allow range admits 0.1.x only, a local digest deny matches
+        // under any id, and a URL whose authority ends at `?` is not loopback (G2: `?@localhost` disguise).
+        fn build<'a>(
+            version: &'a str,
+            component_digest: &'a str,
+            manifest: &'a fe_sdk::manifest_v2::ExtensionManifest,
+        ) -> extension_policy::PolicyFacts<'a> {
+            extension_policy::PolicyFacts {
+                package_id: "org.example.fleet-sim",
+                version,
+                content_hash: "ab12ab12ab12ab12ab12ab12ab12ab12ab12ab12ab12ab12ab12ab12ab12ab12",
+                component_digest: Some(component_digest),
+                plaintext_digest: None,
+                trust: extension_policy::TrustTier::Publisher,
+                kind: fe_sdk::manifest_v2::ExtensionKind::BiConnector,
+                manifest: Some(manifest),
+            }
+        }
+        let mut bi_push: serde_json::Value =
+            serde_json::from_slice(include_bytes!("../../fe-sdk/schema/examples/bi-push.extension.json")).expect("example");
+        bi_push["egress"][0]["url"] = serde_json::json!("https://evil.example?@localhost/ingest/");
+        let disguised: fe_sdk::manifest_v2::ExtensionManifest = serde_json::from_value(bi_push.clone()).expect("manifest");
+        bi_push["egress"][0]["url"] = serde_json::json!("http://localhost:9000/ingest/");
+        let loopback: fe_sdk::manifest_v2::ExtensionManifest = serde_json::from_value(bi_push).expect("manifest");
+        let digest = "c".repeat(64);
+        let host_policy = extension_policy::LocalPolicy {
+            deny: Vec::new(),
+            ceilings: extension_policy::Ceilings {
+                egress: Some(extension_policy::NetCeiling::Loopback),
+                ..Default::default()
+            },
+        };
+        let deny_digest = extension_policy::LocalPolicy { deny: vec![digest.clone()], ..host_policy.clone() };
+        let verse_policy = Some(&stored.policy);
+        assert!(extension_policy::evaluate(verse_policy, &host_policy, &build("0.1.3", &digest, &loopback)).is_ok());
+        for (facts, local, reason) in [
+            (build("0.2.0", &digest, &loopback), &host_policy, extension_policy::DenialReason::NotAllowListed),
+            (build("0.1.3", &digest, &disguised), &host_policy, extension_policy::DenialReason::Ceiling("egress")),
+            (build("0.1.3", &digest, &loopback), &deny_digest, extension_policy::DenialReason::DenyListed(digest.clone())),
+        ] {
+            assert_eq!(extension_policy::evaluate(verse_policy, local, &facts).unwrap_err().reason, reason);
+        }
+
         // The local write path: the node (here the owner) writes as itself, log-first, one audit op per
         // action; a node below Manager is refused and that refusal is audited too.
         let local = extension_policy::ExtensionPolicy {

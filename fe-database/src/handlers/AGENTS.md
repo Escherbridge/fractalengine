@@ -606,5 +606,8 @@ R18/R21/R23; slice E10). Three things live here, and nothing else in fe-database
   requires the typed confirmation (`confirm` = `package_id`) and local DID = `verse.created_by`, keyed
   `(verse_id, content_hash)`.
 
-`SCHEMA_STATEMENTS`/`apply_schema` define the table; `schema::apply_all` must call it and the reset
-inventory must list `extension_policy` (the development reset refuses unknown tables).
+`SCHEMA_STATEMENTS`/`apply_schema` define the table; `schema::apply_all` calls it and
+`DEVELOPMENT_RESET_TABLE_NAMES` lists `extension_policy` (the development reset refuses unknown tables).
+`replicated_row` routes the table: `is_applied_table`, `confine` (`confine_inbound`, then
+`Floor::ManageVerse`) and `apply_row_mode` (`apply_replicated_policy_row`). The module itself is declared
+in `handlers/mod.rs` (G2 hand-off: until that line lands none of this compiles).

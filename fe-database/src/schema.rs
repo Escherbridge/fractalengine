@@ -1001,6 +1001,8 @@ pub async fn apply_all(db: &crate::repo::Db) -> anyhow::Result<()> {
         .await?.check().map_err(|e| anyhow::anyhow!("idx_observation_batch_op_id: {e}"))?;
     db.query("DEFINE INDEX IF NOT EXISTS idx_observation_window_member_sealed ON TABLE observation_window_member FIELDS sealed_op_id")
         .await?.check().map_err(|e| anyhow::anyhow!("idx_observation_window_member_sealed: {e}"))?;
+    // Extension governance: the replicated per-verse policy row (handlers/AGENTS.md §extension-policy).
+    crate::handlers::extension_policy::apply_schema(db).await?;
 
     Ok(())
 }
@@ -1046,6 +1048,7 @@ pub const DEVELOPMENT_RESET_TABLE_NAMES: &[&str] = &[
     "observation_catalog_conflict",
     "observation_hydration",
     "api_token",
+    "extension_policy",
 ];
 
 /// All table names, for admin operations like dump / clear.

@@ -24,7 +24,9 @@ pub enum ConsentOrigin {
     Direct,
     /// A binding offered the install ("Allow in <verse>" acceptance line, bindings.md section 5.5).
     InstallOffer {
-        /// Verse the extension is accepted in once consent is given.
+        /// Verse the extension is accepted in once consent is given (the id the host records; names repeat).
+        verse_id: String,
+        /// That verse's display name.
         verse_name: String,
         /// Scope level the binding comes from, e.g. `petal Harbour`.
         binding_scope: String,
@@ -36,7 +38,9 @@ pub enum ConsentOrigin {
 pub struct KillListOverrideOffer {
     /// Reason carried by the accepted revocation entry.
     pub reason: String,
-    /// Verse the override would apply to.
+    /// Verse the override would apply to (the host keys the override `(verse_id, content_hash)`).
+    pub verse_id: String,
+    /// That verse's display name.
     pub verse_name: String,
 }
 
@@ -124,14 +128,21 @@ impl ConsentRequest {
 /// The user's answer, drained by the host that owns installation and the audit trail.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ConsentDecision {
-    /// Consent given to exactly this digest; `accept_in_verse` is set for an install offer.
+    /// Consent given to exactly this digest; `accept_in_verse` is the offer's verse id for an install offer.
     Approved {
         installation_id: String,
         capability_digest: String,
         accept_in_verse: Option<String>,
     },
-    /// The verse Owner confirmed the kill-list override by typing the package id.
-    KillListOverride { package_id: String, confirm: String },
+    /// The verse Owner confirmed the kill-list override by typing the package id; carries what the host's
+    /// `KillListOverrideRequest` needs (`{verse_id, package_id, content_hash, confirm}`).
+    KillListOverride {
+        installation_id: String,
+        verse_id: String,
+        package_id: String,
+        content_hash: String,
+        confirm: String,
+    },
     /// Cancelled or closed; the running version, if any, keeps running.
     Declined { installation_id: String },
 }
@@ -146,9 +157,10 @@ pub struct ConsentState {
 }
 
 impl ConsentState {
-    /// Open the modal; an update whose digest is already consented to opens nothing and returns false.
+    /// Open the modal; an update whose digest is already consented to opens nothing and returns false,
+    /// unless the build is kill-listed: the Owner's override path must stay reachable after a revocation.
     pub fn request(&mut self, request: ConsentRequest) -> bool {
-        if request.already_consented() {
+        if request.already_consented() && request.kill_list.is_none() {
             return false;
         }
         self.pending = Some(request);
@@ -186,7 +198,7 @@ impl ConsentState {
     fn approve(&mut self) {
         if let Some(request) = self.pending.take() {
             let accept_in_verse = match &request.origin {
-                ConsentOrigin::InstallOffer { verse_name, .. } => Some(verse_name.clone()),
+                ConsentOrigin::InstallOffer { verse_id, .. } => Some(verse_id.clone()),
                 ConsentOrigin::Direct => None,
             };
             self.decision = Some(ConsentDecision::Approved {
@@ -200,8 +212,12 @@ impl ConsentState {
 
     fn override_kill_list(&mut self) {
         if let Some(request) = self.pending.take() {
+            let verse_id = request.kill_list.map(|offer| offer.verse_id).unwrap_or_default();
             self.decision = Some(ConsentDecision::KillListOverride {
+                installation_id: request.installation_id,
+                verse_id,
                 package_id: request.package_id,
+                content_hash: request.content_hash,
                 confirm: std::mem::take(&mut self.override_text),
             });
         }
@@ -444,8 +460,15 @@ mod tests {
     fn kill_listed_build_needs_typed_confirmation() {
         let mut state = ConsentState::default();
         let mut revoked = request("d1", &[]);
-        revoked.kill_list = Some(KillListOverrideOffer { reason: "key leaked".into(), verse_name: "Harbour".into() });
-        state.request(revoked);
+        revoked.content_hash = "ab".repeat(32);
+        revoked.kill_list = Some(KillListOverrideOffer {
+            reason: "key leaked".into(),
+            verse_id: "verse-harbour".into(),
+            verse_name: "Harbour".into(),
+        });
+        // Revoked after consent: the same digest still opens, or the override would be unreachable (G2).
+        revoked.consented_digest = Some("d1".into());
+        assert!(state.request(revoked));
         frame(&mut state);
         assert!(!state.confirm_enabled(), "consent cannot clear a kill-list entry");
         assert!(!state.override_enabled());
@@ -457,7 +480,10 @@ mod tests {
         assert_eq!(
             state.take_decision(),
             Some(ConsentDecision::KillListOverride {
+                installation_id: "inst-1".into(),
+                verse_id: "verse-harbour".into(),
                 package_id: "org.example.fleet-sim".into(),
+                content_hash: "ab".repeat(32),
                 confirm: "org.example.fleet-sim".into()
             })
         );

@@ -475,6 +475,11 @@ pub async fn get_verse_policy(
     verse_id: &str,
 ) -> Result<Value, ExtError> {
     gate(host, claims)?;
+    read_verse_policy(host, verse_authorized, verse_id).await
+}
+
+/// [`get_verse_policy`] after the rate gate (the route gates once, before its scope lookup).
+async fn read_verse_policy(host: &dyn ExtensionHost, verse_authorized: bool, verse_id: &str) -> Result<Value, ExtError> {
     if !verse_authorized {
         return Err(ExtError::not_found());
     }
@@ -492,6 +497,17 @@ pub async fn put_verse_policy(
     policy: Value,
 ) -> Result<Value, ExtError> {
     gate(host, claims)?;
+    write_verse_policy(host, claims, verse_authorized, verse_id, policy).await
+}
+
+/// [`put_verse_policy`] after the rate gate.
+async fn write_verse_policy(
+    host: &dyn ExtensionHost,
+    claims: &ApiClaims,
+    verse_authorized: bool,
+    verse_id: &str,
+    policy: Value,
+) -> Result<Value, ExtError> {
     if !verse_authorized {
         return Err(ExtError::not_found());
     }
@@ -816,8 +832,9 @@ async fn get_policy_route(
     if let Err(e) = gate(host.0.as_ref(), &claims) {
         return error_response(e);
     }
+    // Gated once above (a remote token is charged one rate unit per request, before any lookup).
     let authorized = verse_authorized(&state, &claims, &verse_id).await;
-    respond(get_verse_policy(host.0.as_ref(), &claims, authorized, &verse_id).await)
+    respond(read_verse_policy(host.0.as_ref(), authorized, &verse_id).await)
 }
 
 async fn put_policy_route(
@@ -835,7 +852,7 @@ async fn put_policy_route(
         Err(e) => return error_response(e),
     };
     let authorized = verse_authorized(&state, &claims, &verse_id).await;
-    respond(put_verse_policy(host.0.as_ref(), &claims, authorized, &verse_id, policy).await)
+    respond(write_verse_policy(host.0.as_ref(), &claims, authorized, &verse_id, policy).await)
 }
 
 async fn delete_uninstall(

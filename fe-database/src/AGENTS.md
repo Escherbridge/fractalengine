@@ -233,8 +233,10 @@ membership — gated on a known verse — never fires on that path; its fixed
 
 **R24 extension provenance (extension_platform_20261107 E10W, OD-E1 stamp-and-stop).**
 `insert_readings_with_provenance` is the door body; `insert_readings_with_replication`
-delegates to it with `None`. The PluginCommit flush passes the admission's
-host-minted `fe_runtime::plugin_host::PackageIdentity`, so every reading an extension
+delegates to it with `None`. The PluginCommit flush is to pass the admission's
+host-minted `fe_runtime::plugin_host::PackageIdentity` (OWED: `handlers/plugin_host.rs::flush`
+still calls the unstamped door and no journal fact carries `payload.ext` yet, so the J7 op_log
+rows fail until it lands; review.md G2-C4), so every reading an extension
 writes carries `ext_package_id` + `ext_content_hash` (additive `option<string>`
 columns, omitted when unstamped: the `payload_id` precedent). The guest never names
 either value. The pair replicates with the row; `replicated_row::confine_reading`

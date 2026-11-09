@@ -356,6 +356,9 @@ impl HexonBuilder {
     }
 }
 
+/// The `entries.json` every plugin package carries (docs/extensions/package-format.md §Members).
+pub const PLUGIN_ENTRIES_JSON: &[u8] = br#"{"entries":[]}"#;
+
 /// Builds a sealed `HexonType::Plugin` package (see `fe-format/src/AGENTS.md` §plugin-package).
 pub struct PluginHexonBuilder {
     extension_json: Vec<u8>,
@@ -437,6 +440,11 @@ impl PluginHexonBuilder {
             (
                 fe_format::integrity::MANIFEST_PATH,
                 serde_json::to_vec_pretty(&manifest).map_err(anyhow::Error::from)?,
+            ),
+            // Empty catalogue: `HexonArchiveIndex::open` (registry header + download routes) requires it.
+            (
+                fe_format::integrity::ENTRIES_PATH,
+                PLUGIN_ENTRIES_JSON.to_vec(),
             ),
             (
                 fe_format::integrity::PLUGIN_EXTENSION_PATH,

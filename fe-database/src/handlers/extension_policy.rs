@@ -380,9 +380,11 @@ fn egress_reach(egress: &Egress) -> NetCeiling {
 
 /// Loopback when the URL's host is 127.0.0.1, [::1] or localhost (manifest v2's loopback rule).
 fn url_reach(url: &str) -> NetCeiling {
+    // The authority ends at the first `/ \ ? #` (WHATWG, as the network client parses it): splitting on `/`
+    // alone read `https://evil.example?@localhost/` as loopback, past a `loopback` ceiling (G2).
     let authority = url
         .split_once("://")
-        .map_or("", |(_, rest)| rest.split('/').next().unwrap_or(""));
+        .map_or("", |(_, rest)| rest.split(['/', '\\', '?', '#']).next().unwrap_or(""));
     let hostport = authority.rsplit('@').next().unwrap_or(authority);
     let host = if hostport.starts_with('[') {
         hostport.split_inclusive(']').next().unwrap_or(hostport)
