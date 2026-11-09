@@ -6,11 +6,13 @@ use std::collections::HashMap;
 use bevy::prelude::*;
 use bevy_egui::egui;
 
+use super::bindings::{self, BindingsSnapshot, BindingsViewState, ScopeTarget};
 use super::browse::{self, BrowseEvent, BrowseState};
 use super::consent::{ConsentDecision, ConsentRequest, ConsentSection, ConsentState};
 use super::details::{self, UpdateStage};
 use crate::accessibility::ResponseExt;
 use crate::theme;
+use fe_runtime::extension_binding::{BindingMode, BindingOffer};
 
 /// Whether the package signer is a configured trust root.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -158,6 +160,24 @@ pub enum ExtensionOp {
     RevokeConsent { installation_id: String },
     /// Remove the installation.
     Uninstall { installation_id: String },
+    /// Ask the bridge for a fresh `ExtensionEvent::Bindings` snapshot of the active petal.
+    RefreshBindings,
+    /// Write one binding row at `target` (Manager+ is judged by the DB plane); the bridge answers with a fresh snapshot.
+    SetBinding {
+        target: ScopeTarget,
+        hook: String,
+        key: String,
+        mode: BindingMode,
+        package_id: Option<String>,
+        version_req: Option<String>,
+        config: serde_json::Value,
+        runs_on: Option<String>,
+    },
+    /// Write `inherit` for one point at `target`.
+    ClearBinding { target: ScopeTarget, hook: String, key: String },
+    /// The one action offered beside an unresolved binding (never `EditBinding`, which opens the form in fe-ui). The bridge
+    /// answers with `ConsentNeeded` (install, review, override) or a fresh snapshot (allow, enable, update).
+    TakeBindingOffer { offer: BindingOffer, verse_id: String, hook: String, key: String, package_id: String },
 }
 
 /// What the bridge reports back.
@@ -173,6 +193,8 @@ pub enum ExtensionEvent {
     UpdateStage { installation_id: String, stage: UpdateStage },
     /// A registry listing or failure.
     Browse(BrowseEvent),
+    /// Bindings of the active petal with this host's state.
+    Bindings(BindingsSnapshot),
 }
 
 /// Which view is showing.
@@ -183,6 +205,8 @@ pub enum PanelView {
     Installed,
     /// Registry Browse.
     Browse,
+    /// Hook points at the active petal.
+    Bindings,
     /// One installation.
     Details { installation_id: String, tab: DetailsTab },
 }
@@ -215,6 +239,8 @@ pub struct ExtensionsPanelState {
     pub view: PanelView,
     /// Browse view state.
     pub browse: BrowseState,
+    /// Bindings view state.
+    pub bindings: BindingsViewState,
     /// Text of the install-from-file field.
     pub install_path: String,
     /// What the bridge is working on, when something is in flight.
@@ -349,6 +375,10 @@ impl ExtensionsPanelState {
                 self.working = None;
                 self.browse.apply(event);
             }
+            ExtensionEvent::Bindings(snapshot) => {
+                self.working = None;
+                self.bindings.apply(snapshot);
+            }
         }
     }
 
@@ -419,6 +449,7 @@ pub fn draw(ui: &mut egui::Ui, state: &mut ExtensionsPanelState) {
     match state.view.clone() {
         PanelView::Installed => draw_installed(ui, state),
         PanelView::Browse => browse::draw(ui, state),
+        PanelView::Bindings => bindings::draw(ui, state),
         PanelView::Details { installation_id, tab } => details::draw(ui, state, &installation_id, tab),
     }
 }
@@ -431,6 +462,9 @@ fn tab_strip(ui: &mut egui::Ui, state: &mut ExtensionsPanelState) {
         }
         if ui.selectable_label(state.view == PanelView::Browse, "Browse").button_named(ui, "Browse extensions").clicked() {
             state.view = PanelView::Browse;
+        }
+        if ui.selectable_label(state.view == PanelView::Bindings, "Bindings").button_named(ui, "Extension bindings").clicked() {
+            state.view = PanelView::Bindings;
         }
     });
 }
@@ -661,5 +695,80 @@ mod tests {
         assert_eq!(state.take_ops(), vec![ExtensionOp::Uninstall { installation_id: "inst-1".into() }]);
         state.apply_event(ExtensionEvent::Rows(Vec::new()), &mut consent);
         assert!(!frame(&mut state).iter().any(|(name, _)| name == "Open org.example.fleet-sim"));
+
+        // Bindings view: points by accessible name, one offer each, the Manager edit form, and the kill-list override route.
+        use super::super::bindings::{BindingPointRow, BindingsSnapshot, ProviderOption, ScopeOption, ScopeTarget};
+        use fe_runtime::extension_binding::{BindingMode, BindingOffer, BindingResolution, BindingScopeLevel, UnresolvedReason};
+        let petal = ScopeTarget { verse_id: "v1".into(), fractal_id: Some("f1".into()), petal_id: Some("p1".into()) };
+        let point = |hook: &str, key: &str, resolution| BindingPointRow {
+            hook: hook.into(),
+            key: key.into(),
+            scope_label: "Fractal North".into(),
+            target: Some(ScopeTarget { petal_id: None, ..petal.clone() }),
+            mode: BindingMode::Extension,
+            package_id: Some("org.example.city-map".into()),
+            version_req: None,
+            config: serde_json::json!({}),
+            runs_on: None,
+            resolution: Some(resolution),
+        };
+        let unresolved = |reason: UnresolvedReason| BindingResolution::unresolved("org.example.city-map", "FRACTAL", reason);
+        let snapshot = BindingsSnapshot {
+            verse_id: "v1".into(),
+            petal_label: "Petal Quay".into(),
+            can_manage: true,
+            scopes: vec![ScopeOption { level: BindingScopeLevel::Petal, label: "Petal Quay".into(), target: petal.clone() }],
+            points: vec![
+                point("petal.map", "", unresolved(UnresolvedReason::Revoked)),
+                point("ingest.decode", "acme-v2", unresolved(UnresolvedReason::NotInstalled)),
+                point("api.routes", "fleet", BindingResolution::Resolved { package_id: "org.example.city-map".into(), scope: "FRACTAL".into() }),
+            ],
+            providers: vec![ProviderOption {
+                hook: "petal.map".into(),
+                package_id: "org.example.city-map".into(),
+                name: "City Map".into(),
+                version: "1.2.0".into(),
+                config_schema: Some(serde_json::json!({"type":"object","required":["district"],"properties":{"district":{"type":"string"}}})),
+            }],
+        };
+        state.view = PanelView::Bindings;
+        state.request_bindings_refresh();
+        assert_eq!(state.take_ops(), vec![ExtensionOp::RefreshBindings]);
+        state.apply_event(ExtensionEvent::Bindings(snapshot), &mut consent);
+        let names = frame(&mut state);
+        assert!(enabled(&names, "binding:petal.map:override") && enabled(&names, "binding:ingest.decode:acme-v2:install"));
+        assert!(names.iter().any(|(name, _)| name == "binding:api.routes:fleet") && !names.iter().any(|(name, _)| name == "binding:api.routes:fleet:install"));
+        state.request_binding_offer(0);
+        assert_eq!(
+            state.take_ops(),
+            vec![ExtensionOp::TakeBindingOffer {
+                offer: BindingOffer::Override,
+                verse_id: "v1".into(),
+                hook: "petal.map".into(),
+                key: String::new(),
+                package_id: "org.example.city-map".into(),
+            }]
+        );
+        state.working = None;
+        // The override confirmation routes to the audited op; a Manager's edit is validated before it is queued.
+        state.route_consent(ConsentDecision::KillListOverride {
+            installation_id: "inst-1".into(),
+            verse_id: "v1".into(),
+            package_id: "org.example.city-map".into(),
+            content_hash: "h1".into(),
+            confirm: "org.example.city-map".into(),
+        });
+        assert!(matches!(state.take_ops().as_slice(), [ExtensionOp::KillListOverride { verse_id, confirm, .. }] if verse_id == "v1" && confirm == "org.example.city-map"));
+        state.working = None;
+        state.bindings.start_edit(0);
+        assert!(enabled(&frame(&mut state), "binding:petal.map:save"));
+        state.request_binding_save();
+        assert!(state.take_ops().is_empty(), "a required setting is missing, so nothing is written");
+        state.bindings.edit = None;
+        state.request_binding_clear(0);
+        assert_eq!(
+            state.take_ops(),
+            vec![ExtensionOp::ClearBinding { target: ScopeTarget { petal_id: None, ..petal }, hook: "petal.map".into(), key: String::new() }]
+        );
     }
 }
