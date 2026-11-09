@@ -285,7 +285,7 @@ impl FleetSource for HostedFleetSource {
     }
 }
 
-fn lab_node(id: &str, name: &str, properties: HashMap<String, fe_sdk::node::PropertyValue>) -> NodeSnapshot {
+fn lab_node(id: &str, name: &str, properties: HashMap<String, fe_sdk::PropertyValue>) -> NodeSnapshot {
     NodeSnapshot {
         node_id: id.to_string(),
         petal_id: LAB_PETAL.to_string(),

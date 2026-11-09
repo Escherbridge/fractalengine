@@ -190,6 +190,7 @@ impl StagedCommitSink for SandboxSink {
             }
         }
         let now = self.clock.now_ms();
+        let recorded_count = flush.readings.len();
         let mut recorded = Vec::with_capacity(flush.readings.len());
         for reading in &flush.readings {
             if !nodes.get(&reading.node_id).is_some_and(|node| node.petal_id == petal_id) {
@@ -214,7 +215,7 @@ impl StagedCommitSink for SandboxSink {
             .lock()
             .map_err(|_| "sandbox readings lock poisoned".to_string())?
             .extend(recorded);
-        Ok(TransactionReceipt { op_count: flush.ops.len(), created_node_ids })
+        Ok(TransactionReceipt { op_count: flush.ops.len(), created_node_ids, reading_count: recorded_count })
     }
 }
 
