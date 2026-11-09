@@ -36,8 +36,9 @@ pub const KNOWN_HOOKS: &[&str] = &[
     "sync.tileset-source",
 ];
 
-/// Keyed hooks: the only ones whose `provides` entry may carry `keys` (the rest are keyless).
-const KEYED_HOOKS: [&str; 9] = [
+/// Keyed hooks: the only ones whose `provides` entry may carry `keys` (catalogue key column; the rest are keyless).
+pub const KEYED_HOOKS: [&str; 10] = [
+    "petal.activate",
     "api.routes",
     "ingest.decode",
     "ui.panel",
@@ -1830,6 +1831,7 @@ mod tests {
             ("stretch hook", with(FLEET, |m| m["provides"] = serde_json::json!([{"hook":"asset.export"}])), Some(Refusal::UnknownHook)),
             ("hook without its capability", with(FLEET, |m| m["provides"] = serde_json::json!([{"hook":"api.routes","uses":["start"]}])), Some(Refusal::HookCapabilityMissing)),
             ("keys on a keyless hook", with(FLEET, |m| m["provides"] = serde_json::json!([{"hook":"petal.map","keys":["a"]}])), Some(Refusal::HookCapabilityMissing)),
+            ("keys on the name-keyed lifecycle hook", with(FLEET, |m| m["provides"] = serde_json::json!([{"hook":"petal.activate","keys":["main"]}])), None),
             ("empty hook keys", with(FLEET, |m| m["provides"] = serde_json::json!([{"hook":"asset.import","keys":[]}])), Some(Refusal::EmptyScope)),
             ("duplicate hook", with(FLEET, |m| m["provides"] = serde_json::json!([{"hook":"petal.map"},{"hook":"petal.map"}])), Some(Refusal::DuplicateId)),
             ("config schema outside the subset", with(FLEET, |m| m["provides"] = serde_json::json!([{"hook":"petal.map","config_schema":{"oneOf":[]}}])), Some(Refusal::Schema)),

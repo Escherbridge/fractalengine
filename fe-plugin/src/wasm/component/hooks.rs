@@ -3,12 +3,14 @@
 use std::collections::BTreeMap;
 use std::time::{Duration, Instant};
 
+use fe_runtime::extension_binding::{hook_spec, HookCallKind};
+use fe_sdk::manifest_v2::{ExtensionManifest, KNOWN_HOOKS};
 use wasmtime::component::Instance;
 use wasmtime::Store;
 
 use super::instance::{outside_async, HookFault};
 use super::state::InstanceState;
-use super::ComponentError;
+use super::{ComponentError, ExtensionComponent};
 
 #[allow(dead_code, unused_imports, clippy::all)]
 mod world {
@@ -27,6 +29,10 @@ pub const MAX_HOOK_JSON_BYTES: usize = 64 * 1024;
 
 const KIB: usize = 1024;
 const MIB: usize = 1024 * KIB;
+/// Bound for a call whose catalogue row has no deadline: service `configure` calls.
+const SERVICE_CALL_DEADLINE_MS: u64 = 5_000;
+/// Bound for an after-commit call whose catalogue row has no deadline (`blob.mirror`).
+const AFTER_COMMIT_DEADLINE_MS: u64 = 30_000;
 
 /// Per-hook caps of bindings.md §6: the deadline and the byte bodies each way.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -39,17 +45,21 @@ pub struct HookLimits {
     pub max_body_out: usize,
 }
 
-/// The §6 limits of a catalogue hook; `None` for any id this host does not serve.
+/// The §6 limits of a hook a manifest may provide (`KNOWN_HOOKS`, the B0 catalogue's deadline);
+/// `None` for any other id, so this table can never serve a hook the validator refuses.
 pub fn hook_limits(hook: &str) -> Option<HookLimits> {
-    let (millis, body_in, body_out) = match hook {
-        "petal.activate" | "petal.map" | "api.routes" | "ui.panel" | "egress.connector" => (5_000, 0, 0),
-        "scene.create" | "scene.transform" | "scene.property" => (250, 0, 0),
-        "ingest.decode" => (5_000, MIB, 0),
-        "egress.snippet" => (1_000, 0, 0),
-        "asset.import" => (30_000, 16 * MIB, 16 * MIB),
-        "blob.mirror" => (30_000, 8 * MIB, 0),
-        "blob.source" | "sync.tileset-source" => (30_000, 0, 16 * MIB),
-        _ => return None,
+    let spec = hook_spec(hook).filter(|_| KNOWN_HOOKS.contains(&hook))?;
+    let (body_in, body_out) = match hook {
+        "ingest.decode" => (MIB, 0),
+        "asset.import" => (16 * MIB, 16 * MIB),
+        "blob.mirror" => (8 * MIB, 0),
+        "blob.source" | "sync.tileset-source" => (0, 16 * MIB),
+        _ => (0, 0),
+    };
+    let millis = match spec.deadline_ms {
+        Some(millis) => u64::from(millis),
+        None if spec.call == HookCallKind::AfterCommit => AFTER_COMMIT_DEADLINE_MS,
+        None => SERVICE_CALL_DEADLINE_MS,
     };
     Some(HookLimits {
         deadline: Duration::from_millis(millis),
@@ -185,6 +195,20 @@ pub fn component_exports_hooks(ty: &wasmtime::component::types::Component, engin
     ty.get_export(engine, HOOKS_EXPORT).is_some()
 }
 
+impl ExtensionComponent {
+    /// True when this admitted component carries the `hooks` export.
+    pub fn exports_hooks(&self) -> bool {
+        let component = self.pre.instance_pre().component();
+        component_exports_hooks(&component.component_type(), component.engine())
+    }
+
+    /// The install and activation check: `missing-export hooks` when `manifest` declares `provides`
+    /// and this component cannot answer a hook call.
+    pub fn check_provides(&self, manifest: &ExtensionManifest) -> Result<(), ComponentError> {
+        check_hooks_export(!manifest.provides.is_empty(), self.exports_hooks())
+    }
+}
+
 /// The bound `hooks` export of one instance, with its own fuel refill and counters.
 pub struct HooksGuest {
     bindings: world::ExtensionWithHooks,
@@ -198,6 +222,19 @@ impl HooksGuest {
         let bindings = world::ExtensionWithHooks::new(&mut *store, instance)
             .map_err(|error| ComponentError::PackageInvalid(format!("missing-export {HOOKS_EXPORT}: {error:#}")))?;
         Ok(Self { bindings, fuel, stats: HookStats::default() })
+    }
+
+    /// [`bind`](Self::bind) when `component` exports `hooks`; `None` for a plain 2.0 component.
+    pub fn bind_if_exported(
+        component: &ExtensionComponent,
+        store: &mut Store<InstanceState>,
+        instance: &Instance,
+        fuel: u64,
+    ) -> Result<Option<Self>, ComponentError> {
+        if !component.exports_hooks() {
+            return Ok(None);
+        }
+        Self::bind(store, instance, fuel).map(Some)
     }
 
     /// Counters for the status route.

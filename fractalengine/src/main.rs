@@ -480,6 +480,7 @@ fn main() {
     // content-addressed store.
     let blob_store_for_api = blob_store.clone();
     let blob_store_for_assets = blob_store.clone();
+    let blob_store_for_extensions = blob_store.clone();
 
     // S4 startup-seeding clone: `sync_cmd_tx` moves into `SyncCommandSenderRes`
     // just below, so the startup-publish loop (after `tileset_registry`
@@ -527,6 +528,10 @@ fn main() {
             scene_changes: Some(entity_change_tx.subscribe()),
         },
     );
+    // ingest.decode reads accepted payload files from the same content-addressed store.
+    if let Some(slot) = app.world().get_resource::<plugin_bridge::ExtensionBlobSlot>() {
+        slot.bind(blob_store_for_extensions);
+    }
     app.add_systems(bevy::prelude::Startup, register_first_party_extension_ui);
     // The terrain package's slot commands run as editor actions (src/AGENTS.md section extension-host).
     app.add_plugins(extension_host::terrain_commands::TerrainCommandsPlugin);

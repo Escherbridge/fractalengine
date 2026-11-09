@@ -158,7 +158,7 @@ pub fn bridge_petal_terrain(
     bindings: Option<Res<crate::plugin_bridge::ExtensionBindings>>,
     tilesets: Option<Res<SharedTilesetRegistry>>,
     mut map_state: Option<ResMut<fe_ui::terrain_map::PetalMapState>>,
-    mut resolver: Local<crate::extension_host::petal_map::PetalMapResolver>,
+    mut bound: Local<BoundPetalMap>,
 ) {
     // Leaving the petal forgets the dedupe key, so re-entry always rebuilds.
     if applied
@@ -166,6 +166,13 @@ pub fn bridge_petal_terrain(
         .is_some_and(|(petal, _)| nav.active_petal_id.as_deref() != Some(petal.as_str()))
     {
         *applied = None;
+    }
+    if bound
+        .echo
+        .as_ref()
+        .is_some_and(|echo| nav.active_petal_id.as_deref() != Some(echo.petal_id.as_str()))
+    {
+        bound.forget_echo();
     }
     for result in db_results.read() {
         // Correlated (API-initiated) sets apply too — see fe-runtime §api-reply-correlation.
@@ -195,92 +202,235 @@ pub fn bridge_petal_terrain(
             let mut config = terrain.as_ref().and_then(terrain_config_from_petal_json);
             // A bound `petal.map` decides before the stored column (bindings.md section 6); presentation only.
             if let Some(bindings) = bindings.as_deref() {
-                let installed: Vec<String> = tilesets
-                    .as_deref()
-                    .map(|shared| {
-                        shared.0.list_tilesets().into_iter().map(|info| info.tileset_id).collect()
-                    })
-                    .unwrap_or_default();
-                let outcome = consult_petal_map(&mut resolver, bindings, petal_id, terrain.as_ref(), &installed);
-                match outcome.decision {
-                    crate::extension_host::petal_map::MapDecision::Assign(bound) => config = Some(*bound),
-                    crate::extension_host::petal_map::MapDecision::NoMap => config = None,
-                    crate::extension_host::petal_map::MapDecision::UseStored => {}
-                }
+                let installed = installed_tileset_ids(tilesets.as_deref());
+                let need = bindings.petal_map_need(petal_id);
+                bound.echo = Some(MapEcho {
+                    petal_id: petal_id.clone(),
+                    terrain: terrain.clone(),
+                    fingerprint,
+                });
+                bound.need = Some(need.clone());
+                bound.need_checked = Some(std::time::Instant::now());
+                let query = crate::extension_host::petal_map::MapQuery {
+                    petal_id,
+                    stored_terrain: terrain.as_ref(),
+                    installed_tilesets: &installed,
+                    now_ms: unix_now_ms(),
+                };
+                let mut caller = BindingsMapCaller { bindings, petal_id };
+                let outcome = bound.resolver.decide(need, &query, &mut caller);
+                config = effective_map_config(outcome.decision, terrain.as_ref());
                 if let Some(state) = map_state.as_deref_mut() {
                     state.bound_source = outcome.source;
                 }
             }
-            volume_binding.petal_id = Some(petal_id.clone());
-            volume_binding.raw_fingerprint = fingerprint;
-            volume_binding.input_scale_valid = config.as_ref().is_some_and(|config| {
-                fe_renderer::terrain_overlay::EarthworkTerrainBinding::valid_scale(
-                    config.world_scale,
-                    config.scale_bounds,
-                )
-            });
-            volume_binding.config_fingerprint = config
-                .as_ref()
-                .and_then(|config| serde_json::to_vec(config).ok())
-                .map(|bytes| {
-                    fe_renderer::terrain_overlay::EarthworkTerrainBinding::fingerprint_config(
-                        &bytes,
-                    )
-                });
-            assignments.write(TerrainAssignmentMsg(PetalTerrainAssignment {
-                petal_id: petal_id.clone(),
-                raw_source_fingerprint: volume_binding.raw_fingerprint,
-                config,
-            }));
-            // view_mode is an additive JSON field TerrainConfig drops — forward raw.
-            view_modes.write(TerrainViewModeMsg(view_mode_from_terrain_json(
+            emit_terrain_assignment(
+                petal_id,
                 terrain.as_ref(),
-            )));
+                fingerprint,
+                config,
+                &mut assignments,
+                &mut view_modes,
+                &mut volume_binding,
+            );
         }
+    }
+
+    // Follow-ups for the active petal: a settled extension call, or a changed binding answer.
+    let Some(bindings) = bindings.as_deref() else { return };
+    let recheck_due = bound
+        .need_checked
+        .map_or(true, |at| at.elapsed() >= PETAL_MAP_NEED_RECHECK);
+    if !bound.resolver.is_awaiting() && !recheck_due {
+        return;
+    }
+    let Some(echo) = bound.echo.clone() else { return };
+    let installed = installed_tileset_ids(tilesets.as_deref());
+    let query = crate::extension_host::petal_map::MapQuery {
+        petal_id: &echo.petal_id,
+        stored_terrain: echo.terrain.as_ref(),
+        installed_tilesets: &installed,
+        now_ms: unix_now_ms(),
+    };
+    // The built-in already serves while a call is in flight: only a returned map is applied.
+    if let Some(outcome) = bound.resolver.poll(&query) {
+        if let Some(state) = map_state.as_deref_mut() {
+            state.bound_source = outcome.source.clone();
+        }
+        if let crate::extension_host::petal_map::MapDecision::Assign(config) = outcome.decision {
+            emit_terrain_assignment(
+                &echo.petal_id,
+                echo.terrain.as_ref(),
+                echo.fingerprint,
+                Some(*config),
+                &mut assignments,
+                &mut view_modes,
+                &mut volume_binding,
+            );
+        }
+        return;
+    }
+    if !recheck_due {
+        return;
+    }
+    // A binding row, install or role change moved this petal's answer: decide again on the same column.
+    bound.need_checked = Some(std::time::Instant::now());
+    let need = bindings.petal_map_need(&echo.petal_id);
+    if bound.need.as_ref() == Some(&need) {
+        return;
+    }
+    bound.need = Some(need.clone());
+    let mut caller = BindingsMapCaller {
+        bindings,
+        petal_id: &echo.petal_id,
+    };
+    let outcome = bound.resolver.decide(need, &query, &mut caller);
+    if let Some(state) = map_state.as_deref_mut() {
+        state.bound_source = outcome.source;
+    }
+    emit_terrain_assignment(
+        &echo.petal_id,
+        echo.terrain.as_ref(),
+        echo.fingerprint,
+        effective_map_config(outcome.decision, echo.terrain.as_ref()),
+        &mut assignments,
+        &mut view_modes,
+        &mut volume_binding,
+    );
+}
+
+/// How often the active petal's `petal.map` need is re-read for a binding change (a cache read, no call).
+const PETAL_MAP_NEED_RECHECK: std::time::Duration = std::time::Duration::from_millis(500);
+
+/// The active petal's last applied stored-terrain echo.
+#[derive(Clone)]
+pub struct MapEcho {
+    petal_id: String,
+    terrain: Option<serde_json::Value>,
+    fingerprint: Option<[u8; 32]>,
+}
+
+/// `petal.map` state kept across frames: the resolver, the last echo and the need it was decided with.
+#[derive(Default)]
+pub struct BoundPetalMap {
+    resolver: crate::extension_host::petal_map::PetalMapResolver,
+    echo: Option<MapEcho>,
+    need: Option<fe_plugin::bindings::activation::Need>,
+    need_checked: Option<std::time::Instant>,
+}
+
+impl BoundPetalMap {
+    /// The active petal changed: drop its echo, need and any in-flight call.
+    fn forget_echo(&mut self) {
+        if let Some(echo) = self.echo.take() {
+            self.resolver.invalidate(&echo.petal_id);
+        }
+        self.need = None;
+        self.need_checked = None;
     }
 }
 
-/// One `petal.map` decision for `petal_id` from the binding plane's answer and the stored column.
-fn consult_petal_map(
-    resolver: &mut crate::extension_host::petal_map::PetalMapResolver,
-    bindings: &crate::plugin_bridge::ExtensionBindings,
-    petal_id: &str,
-    stored_terrain: Option<&serde_json::Value>,
-    installed_tilesets: &[String],
-) -> crate::extension_host::petal_map::MapOutcome {
-    let now_ms = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map_or(0, |elapsed| elapsed.as_millis() as u64);
-    let mut caller = BindingsMapCaller { bindings, petal_id };
-    resolver.decide(
-        bindings.petal_map_need(petal_id),
-        &crate::extension_host::petal_map::MapQuery { petal_id, stored_terrain, installed_tilesets, now_ms },
-        &mut caller,
-    )
+/// Ids of the tilesets installed on this peer (the `petal.map` input).
+fn installed_tileset_ids(tilesets: Option<&SharedTilesetRegistry>) -> Vec<String> {
+    tilesets
+        .map(|shared| {
+            shared
+                .0
+                .list_tilesets()
+                .into_iter()
+                .map(|info| info.tileset_id)
+                .collect()
+        })
+        .unwrap_or_default()
 }
 
-/// Calls the bound instance's `petal.map` through the binding worker, waiting at most the hook deadline.
+fn unix_now_ms() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |elapsed| elapsed.as_millis() as u64)
+}
+
+/// The config one `petal.map` decision puts on screen; `UseStored` re-reads the column strictly.
+fn effective_map_config(
+    decision: crate::extension_host::petal_map::MapDecision,
+    stored: Option<&serde_json::Value>,
+) -> Option<fe_terrain::config::TerrainConfig> {
+    use crate::extension_host::petal_map::MapDecision;
+    match decision {
+        MapDecision::Assign(config) => Some(*config),
+        MapDecision::NoMap => None,
+        MapDecision::UseStored => stored.and_then(terrain_config_from_petal_json),
+    }
+}
+
+/// Send one assignment for `petal_id` with the earthwork binding and the raw view mode beside it.
+fn emit_terrain_assignment(
+    petal_id: &str,
+    terrain: Option<&serde_json::Value>,
+    fingerprint: Option<[u8; 32]>,
+    config: Option<fe_terrain::config::TerrainConfig>,
+    assignments: &mut MessageWriter<TerrainAssignmentMsg>,
+    view_modes: &mut MessageWriter<TerrainViewModeMsg>,
+    volume_binding: &mut fe_renderer::terrain_overlay::EarthworkTerrainBinding,
+) {
+    volume_binding.petal_id = Some(petal_id.to_string());
+    volume_binding.raw_fingerprint = fingerprint;
+    volume_binding.input_scale_valid = config.as_ref().is_some_and(|config| {
+        fe_renderer::terrain_overlay::EarthworkTerrainBinding::valid_scale(
+            config.world_scale,
+            config.scale_bounds,
+        )
+    });
+    volume_binding.config_fingerprint = config
+        .as_ref()
+        .and_then(|config| serde_json::to_vec(config).ok())
+        .map(|bytes| {
+            fe_renderer::terrain_overlay::EarthworkTerrainBinding::fingerprint_config(&bytes)
+        });
+    assignments.write(TerrainAssignmentMsg(PetalTerrainAssignment {
+        petal_id: petal_id.to_string(),
+        raw_source_fingerprint: volume_binding.raw_fingerprint,
+        config,
+    }));
+    // view_mode is an additive JSON field TerrainConfig drops — forward raw.
+    view_modes.write(TerrainViewModeMsg(view_mode_from_terrain_json(terrain)));
+}
+
+/// Starts the bound instance's `petal.map` on the binding worker; the frame polls the answer.
 struct BindingsMapCaller<'a> {
     bindings: &'a crate::plugin_bridge::ExtensionBindings,
     petal_id: &'a str,
 }
 
 impl crate::extension_host::petal_map::MapHookCaller for BindingsMapCaller<'_> {
-    fn call_map(
+    fn start_map(
         &mut self,
         _target: &fe_plugin::bindings::activation::CallTarget,
         input: &serde_json::Value,
-    ) -> Result<String, String> {
+    ) -> Box<dyn crate::extension_host::petal_map::MapAnswer> {
         let point = fe_runtime::extension_binding::BindingPoint::new("petal.map", "");
-        let answer = self
-            .bindings
-            .call_hook(self.petal_id, point, input.clone())
-            .recv_timeout(std::time::Duration::from_millis(250))
-            .map_err(|_| "petal.map missed its 250 ms deadline".to_string())?;
-        match answer {
-            crate::plugin_bridge::HookAnswer::Output { output, .. } => Ok(output),
-            crate::plugin_bridge::HookAnswer::Builtin => Err("no instance serves petal.map here".into()),
-            crate::plugin_bridge::HookAnswer::Failed(reason) => Err(reason),
+        Box::new(WorkerMapAnswer(self.bindings.call_hook(
+            self.petal_id,
+            point,
+            input.clone(),
+        )))
+    }
+}
+
+/// The binding worker's reply channel for one `petal.map` call.
+struct WorkerMapAnswer(crossbeam::channel::Receiver<crate::plugin_bridge::HookAnswer>);
+
+impl crate::extension_host::petal_map::MapAnswer for WorkerMapAnswer {
+    fn try_answer(&mut self) -> Option<Result<String, String>> {
+        use crate::plugin_bridge::HookAnswer;
+        match self.0.try_recv() {
+            Ok(HookAnswer::Output { output, .. }) => Some(Ok(output)),
+            Ok(HookAnswer::Builtin) => Some(Err("no instance serves petal.map here".into())),
+            Ok(HookAnswer::Failed(reason)) => Some(Err(reason)),
+            Err(crossbeam::channel::TryRecvError::Empty) => None,
+            Err(crossbeam::channel::TryRecvError::Disconnected) => {
+                Some(Err("the binding worker dropped the call".into()))
+            }
         }
     }
 }

@@ -188,7 +188,7 @@ fn settle_transform(
 ) {
     let augment = match verdict {
         SceneVerdict::Proceed { augment } => augment,
-        refused @ SceneVerdict::Refused { .. } => {
+        refused @ (SceneVerdict::Refused { .. } | SceneVerdict::InputTooLarge { .. }) => {
             rollback_transform(commit, transform_query, verse_mgr);
             // A drag released while this one was gated started from the refused pose: drop it too.
             if let Some(sel) = manager

@@ -106,11 +106,12 @@ impl Output {
 /// A hook implementation.
 pub type HookFn = fn(&Call) -> Result<Output, Failure>;
 
-/// Dispatch by hook id to the first matching handler; an id the extension did not register is refused.
+/// Dispatch by hook id to the first matching handler. An id the extension did not register is
+/// `Failed`, never `Refused`: a missing handler must not block a `scene.*` write (the built-in serves).
 pub fn route(call: &Call, handlers: &[(&str, HookFn)]) -> Result<Output, Failure> {
     match handlers.iter().find(|(hook, _)| *hook == call.hook) {
         Some((_, handler)) => handler(call),
-        None => Err(Failure::Refused(format!("hook {} is not served by this extension", call.hook))),
+        None => Err(Failure::Failed(format!("hook {} has no handler in this extension", call.hook))),
     }
 }
 
@@ -144,7 +145,7 @@ mod tests {
         assert_eq!(route(&configure, &handlers).unwrap(), Output::empty());
         let served = route(&call("petal.map", "{}").unwrap(), &handlers).unwrap();
         assert_eq!(served.render().unwrap().0, r#"{"terrain":null}"#);
-        assert!(matches!(route(&call("scene.create", "{}").unwrap(), &handlers), Err(Failure::Refused(_))));
+        assert!(matches!(route(&call("scene.create", "{}").unwrap(), &handlers), Err(Failure::Failed(_))));
         assert!(matches!(call("petal.map", "{oops"), Err(Failure::InvalidInput(_))));
         assert!(Output::json(Value::String("x".repeat(MAX_HOOK_JSON_BYTES))).render().is_err());
 

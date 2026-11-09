@@ -118,7 +118,7 @@ mod tests {
 
         assert_eq!(registry.total(), 3);
 
-        // The manifest the contributions come from must pass the v2 validator (V1..V15).
+        // The manifest the contributions come from must pass the v2 validator (V1..V18, provides included).
         let validated = parse_and_validate(TERRAIN_MANIFEST_V2_JSON.as_bytes()).expect("terrain manifest is valid v2");
         assert_eq!(validated.manifest.id, TERRAIN_EXTENSION_ID);
 

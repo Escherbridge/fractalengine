@@ -123,7 +123,8 @@ pub(crate) async fn scene_gate_verdict(
     }
 }
 
-/// REST form of [`scene_gate_verdict`]: a refusal is `409 refused` with the guest's reason.
+/// REST form of [`scene_gate_verdict`]: a refusal is `409 refused` with the guest's reason; a bound
+/// write whose hook input is over the cap is `413 input-too-large`.
 async fn scene_gate_rest(
     claims: &ApiClaims,
     input: impl FnOnce() -> SceneHookInput,
@@ -138,6 +139,20 @@ async fn scene_gate_rest(
                 "error": "refused",
                 "package_id": package_id,
                 "reason": reason,
+            })),
+        )
+            .into_response()),
+        SceneVerdict::InputTooLarge {
+            package_id,
+            limit_bytes,
+        } => Err((
+            StatusCode::PAYLOAD_TOO_LARGE,
+            Json(serde_json::json!({
+                "ok": false,
+                "data": null,
+                "error": "input-too-large",
+                "package_id": package_id,
+                "limit_bytes": limit_bytes,
             })),
         )
             .into_response()),

@@ -2061,7 +2061,33 @@ made a default-build reset quiesce half the app and then fail.
   `fe_hexon::remote::remote_source` (whole archive, 64 MiB cap, verified locally). Trust is the operator-chosen
   registry: any valid seal, never unsigned; a plugin package is refused here (Extensions panel only).
 - **Map bindings.** `bridge_petal_terrain` asks `ExtensionBindings::petal_map_need`, decides with
-  `extension_host::petal_map::PetalMapResolver` (hook waits at most 250 ms; cached 5 s) and records
-  `PetalMapState::bound_source`. It reacts to petal-terrain echoes only; a binding change alone does not re-run it.
+  `extension_host::petal_map::PetalMapResolver` and records `PetalMapState::bound_source`; see
+  §extension-host for the off-frame call, the 5 s deadline and the binding-change re-check.
 - **Relay.** `fractalengine-relay`'s own `plugin-host` feature (default off) adds a bare
   `PluginHostPlugin` (no scene backend) and the same `PackageAdmission` from the env var.
+
+## §extension-host (extension_platform_20261107, turn-2 review R-HOOKS)
+
+Binary-side leaves of the extension host (`extension_host/`); `plugin_bridge::install_with` wires them.
+
+- **`petal.map` never blocks the frame.** `PetalMapResolver::decide` starts the guest call on the binding
+  worker (`MapHookCaller::start_map`) and answers with the built-in meanwhile (`MapOutcome::awaiting`);
+  `bridge_petal_terrain` polls `PetalMapResolver::poll` each frame and applies a returned map when it lands.
+  The deadline is the catalogue's 5 s (`MAP_DEADLINE_MS`), not a frame budget: the old 250 ms
+  `recv_timeout` stalled the render loop and timed out every lazily started instance. While a call is in
+  flight the reactive loop's 250 ms idle wake bounds how late the answer is seen.
+- **Binding changes re-decide without a DB echo.** Every 500 ms (`PETAL_MAP_NEED_RECHECK`) the bridge re-reads
+  `ExtensionBindings::petal_map_need` for the active petal (a cache read) and decides again on the last stored
+  column when the answer moved (install, binding row, role change).
+- **OQ-B6 holds even on a stale snapshot.** A non-null stored column beats any binding whose scope is not this
+  petal (`column_wins`), checked against the live echo rather than the resolver's `stored_terrain_petals`.
+- **Extension output is presentation only.** It passes `terrain_config_from_petal_json` and may name only
+  tilesets installed on this peer (else it is a fault and the built-in serves), so a guest can never make the
+  peer fetch a tileset; it travels as `TerrainAssignmentMsg` and is never written to the petal row.
+- **Terrain slot commands.** `TerrainCommandsPlugin` takes only `org.fractalengine.terrain`'s commands after a
+  read-only scan, so other packages' queued presses cost nothing per frame (their bus dispatch is the
+  bridge's job).
+- **Reset joins the extension workers.** `terminal_reset::freeze_editor` stops `ExtensionBindingService`
+  and `RevocationPullService` beside `PluginHostService`; an absent or empty slot means nothing to stop.
+- **Payload bytes.** `main.rs` binds `ExtensionBlobSlot` to the shared blob store right after
+  `install_with`, so `ingest.decode` reads accepted payload files from the same content-addressed store.

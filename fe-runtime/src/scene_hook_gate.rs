@@ -1,10 +1,11 @@
 //! Send-side gate for the `scene.create` / `scene.transform` / `scene.property` binding hooks
 //! (docs/extensions/bindings.md §6); rationale in `fe-runtime/src/AGENTS.md` §scene-hook-gate.
 //!
-//! Issuers (GUI commit, REST) ask the gate before they send a node write; the DB thread,
+//! Issuers (GUI commit, REST, MCP, WS) ask the gate before they send a node write; the DB thread,
 //! `ApplyReplicatedRow` and `PluginCommit` never pass through it. Faults and timeouts fail open and
-//! are counted (OQ-B4); only `property_scope` keys reach the guest; augments stage in the instance
-//! window through the binary's [`SceneHookBackend`].
+//! are counted (OQ-B4); a bound write whose hook input the caller sized over the cap is refused
+//! (steer 2026-11-09 02:45); only `property_scope` keys reach the guest; augments stage in the
+//! instance window through the binary's [`SceneHookBackend`].
 
 use std::collections::BTreeMap;
 use std::sync::{Arc, Mutex, OnceLock};
@@ -52,12 +53,14 @@ impl SceneHook {
     }
 }
 
-/// Where a gated write came from (the WIT `caller-kind` subset that issues node writes).
+/// Where a gated write came from: the door that issued it (hook input `caller.kind`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SceneCallerKind {
     Ui,
     Rest,
     Mcp,
+    /// The `/ws` entity commands.
+    Ws,
 }
 
 impl SceneCallerKind {
@@ -66,6 +69,7 @@ impl SceneCallerKind {
             Self::Ui => "ui",
             Self::Rest => "rest",
             Self::Mcp => "mcp",
+            Self::Ws => "ws",
         }
     }
 }
@@ -268,14 +272,16 @@ pub struct SceneGateCounters {
     pub faults: u64,
     /// No answer within the deadline: the write proceeded (OQ-B4).
     pub timeouts: u64,
-    /// Writes that never reached the guest (key outside `property_scope`, input over the cap).
+    /// Writes that never reached the guest because their key is outside `property_scope`.
     pub skipped: u64,
+    /// Writes refused because the caller-sized hook input exceeded [`MAX_HOOK_INPUT_BYTES`].
+    pub too_large: u64,
     pub augments_staged: u64,
     pub augments_dropped: u64,
 }
 
 impl SceneGateCounters {
-    fn rows(&self) -> [(&'static str, u64); 9] {
+    fn rows(&self) -> [(&'static str, u64); 10] {
         [
             ("calls", self.calls),
             ("allowed", self.allowed),
@@ -284,6 +290,7 @@ impl SceneGateCounters {
             ("faults", self.faults),
             ("timeouts", self.timeouts),
             ("skipped", self.skipped),
+            ("too_large", self.too_large),
             ("augments_staged", self.augments_staged),
             ("augments_dropped", self.augments_dropped),
         ]
@@ -338,9 +345,13 @@ impl SceneHookGate {
             }
         }
         let input_json = input.to_json(caller.to_json(backend.local_did()));
+        // The caller sized this input (names, values): over the cap it is refused, never waved through.
         if input_json.to_string().len() > MAX_HOOK_INPUT_BYTES {
-            self.count(&binding.package_id, hook, |c| c.skipped += 1);
-            return SceneGateTicket::proceed();
+            self.count(&binding.package_id, hook, |c| c.too_large += 1);
+            return SceneGateTicket(TicketState::Ready(SceneVerdict::InputTooLarge {
+                package_id: binding.package_id,
+                limit_bytes: MAX_HOOK_INPUT_BYTES,
+            }));
         }
         let call = SceneHookCall {
             hook,
@@ -414,11 +425,22 @@ pub enum SceneVerdict {
     Proceed { augment: Option<SceneAugment> },
     /// The bound extension refused: do not send the write.
     Refused { package_id: String, reason: String },
+    /// A bound write whose hook input is over `limit_bytes`: do not send it (REST answers 413).
+    InputTooLarge { package_id: String, limit_bytes: usize },
 }
 
 impl SceneVerdict {
     fn proceed() -> Self {
         Self::Proceed { augment: None }
+    }
+
+    /// The client-facing refusal code (`refused`, `input-too-large`); `None` when the write proceeds.
+    pub fn refusal_code(&self) -> Option<&'static str> {
+        match self {
+            Self::Refused { .. } => Some("refused"),
+            Self::InputTooLarge { .. } => Some("input-too-large"),
+            Self::Proceed { .. } => None,
+        }
     }
 
     /// One line for an advisory or an error body; `None` when the write proceeds.
@@ -427,6 +449,12 @@ impl SceneVerdict {
             Self::Refused { package_id, reason } => {
                 Some(format!("Refused by {package_id}: {reason}"))
             }
+            Self::InputTooLarge {
+                package_id,
+                limit_bytes,
+            } => Some(format!(
+                "Refused by {package_id}: input-too-large (the hook input exceeds {limit_bytes} bytes)"
+            )),
             Self::Proceed { .. } => None,
         }
     }
@@ -930,6 +958,29 @@ mod tests {
             1
         );
 
+        // A caller-sized input over the cap is refused when bound (never waved through), without a call;
+        // the same oversized value under an out-of-scope key still passes untouched.
+        let oversized = |key: &str| SceneHookInput::Property {
+            petal_id: "p1".into(),
+            node_id: "n1".into(),
+            key: key.into(),
+            value: json!("x".repeat(MAX_HOOK_INPUT_BYTES)),
+        };
+        let too_large = settle_now(&gate, oversized("zone"));
+        assert!(matches!(
+            &too_large,
+            SceneVerdict::InputTooLarge { package_id, limit_bytes: MAX_HOOK_INPUT_BYTES }
+                if package_id == "org.example.zoning"
+        ));
+        assert_eq!(too_large.refusal_code(), Some("input-too-large"));
+        assert!(matches!(
+            settle_now(&gate, oversized("owner")),
+            SceneVerdict::Proceed { augment: None }
+        ));
+        assert!(backend.calls.lock().unwrap().is_empty());
+        let counters = gate.counters("org.example.zoning", SceneHook::Property);
+        assert_eq!((counters.too_large, counters.skipped), (1, 2));
+
         // The transform call carries the §6 shape with a local UI caller.
         assert!(matches!(
             settle_now(&gate, transform("p1")),
@@ -953,7 +1004,7 @@ mod tests {
         let (gate, backend) = gate_with(None, true);
         let mut ticket = gate.begin(
             property("zone"),
-            SceneCaller::api(SceneCallerKind::Rest, "did:key:remote"),
+            SceneCaller::api(SceneCallerKind::Ws, "did:key:remote"),
         );
         let past_deadline =
             Instant::now() + SceneHook::Property.deadline() + Duration::from_millis(1);
@@ -974,7 +1025,7 @@ mod tests {
         );
         assert_eq!(
             backend.calls.lock().unwrap()[0].input["caller"],
-            json!({"did": "did:key:remote", "kind": "rest", "local": false})
+            json!({"did": "did:key:remote", "kind": "ws", "local": false})
         );
 
         // An allowed transform stages only in-scope augment keys, on the written node.

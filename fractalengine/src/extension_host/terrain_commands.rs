@@ -29,29 +29,36 @@ impl Plugin for TerrainCommandsPlugin {
     }
 }
 
-/// Drains slot commands, acts on the terrain package's, and re-queues every other package's untouched.
+/// Takes the terrain package's slot commands and acts on them; every other package's stay queued, untouched.
 pub fn dispatch_terrain_commands(
     slots: Option<ResMut<ExtensionSlotState>>,
     sidebar: Option<ResMut<RightSidebarState>>,
     ui: Option<ResMut<UiManager>>,
     nav: Option<Res<NavigationManager>>,
+    clock: Option<Res<fe_ui::notice::NoticeClock>>,
     mut stats: ResMut<TerrainCommandStats>,
 ) {
     let (Some(mut slots), Some(mut sidebar), Some(mut ui)) = (slots, sidebar, ui) else {
         return;
     };
-    if slots.pending_commands.is_empty() {
+    // A read-only scan first: another package's queued commands never cost a take, a re-queue or a change mark.
+    if !slots
+        .pending_commands
+        .iter()
+        .any(|request| request.plugin_id == TERRAIN_EXTENSION_ID)
+    {
         return;
     }
-    let mut foreign: Vec<ExtensionCommandRequest> = Vec::new();
-    for request in slots.take_commands() {
-        if request.plugin_id != TERRAIN_EXTENSION_ID {
-            foreign.push(request);
-            continue;
-        }
+    let (terrain, foreign): (Vec<ExtensionCommandRequest>, Vec<ExtensionCommandRequest>) = slots
+        .take_commands()
+        .into_iter()
+        .partition(|request| request.plugin_id == TERRAIN_EXTENSION_ID);
+    slots.pending_commands = foreign;
+    let now_secs = clock.map_or(0.0, |clock| clock.elapsed_secs_f64());
+    for request in terrain {
         match request.command.as_str() {
             CMD_CONFIG => sidebar.reveal(RightSidebarSection::TerrainTools),
-            CMD_GPX_IMPORT => import_gpx(&mut ui, nav.as_deref()),
+            CMD_GPX_IMPORT => import_gpx(&mut ui, nav.as_deref(), now_secs),
             CMD_TOGGLE => ui.push_action(UiAction::ToggleTerrainVisibility),
             other => {
                 stats.ignored_unknown += 1;
@@ -59,12 +66,10 @@ pub fn dispatch_terrain_commands(
             }
         }
     }
-    // Other packages' commands stay queued for their own dispatcher.
-    slots.pending_commands.extend(foreign);
 }
 
 /// Opens the GPX file dialog for the active petal and queues the import.
-fn import_gpx(ui: &mut UiManager, nav: Option<&NavigationManager>) {
+fn import_gpx(ui: &mut UiManager, nav: Option<&NavigationManager>, now_secs: f64) {
     let Some(petal_id) = nav.and_then(|n| n.active_petal_id.clone()) else {
         warn!("gpx-import ignored: no active petal");
         return;
@@ -79,6 +84,6 @@ fn import_gpx(ui: &mut UiManager, nav: Option<&NavigationManager>) {
     match chosen {
         Ok(Some(path)) => ui.push_action(UiAction::GpxImportFile { petal_id, path }),
         Ok(None) => {}
-        Err(error) => ui.show_error(error.to_string(), 0.0),
+        Err(error) => ui.show_error(error.to_string(), now_secs),
     }
 }

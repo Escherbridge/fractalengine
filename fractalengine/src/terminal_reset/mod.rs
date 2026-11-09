@@ -284,7 +284,30 @@ fn freeze_editor(world: &mut World, supervisor: &mut Supervisor) -> Result<(), &
         plugin.request_stop();
         supervisor.services.push(plugin);
     }
+    // The extension host's own workers (binding worker, revocation pull) join with the rest; an absent or
+    // already-taken one (no plugin manager, no revocation URL) has nothing to stop.
+    let extension_services = [
+        world
+            .get_resource::<crate::plugin_bridge::ExtensionBindingService>()
+            .and_then(|service| take_owned(&service.0)),
+        world
+            .get_resource::<crate::extension_host::revocation_pull::RevocationPullService>()
+            .and_then(|service| take_owned(&service.0)),
+    ];
+    for service in extension_services.into_iter().flatten() {
+        service.request_stop();
+        supervisor.services.push(service);
+    }
     Ok(())
+}
+
+/// Take a service out of its resource slot, even from a poisoned lock.
+fn take_owned(
+    slot: &std::sync::Mutex<Option<fe_runtime::service_lifecycle::OwnedService>>,
+) -> Option<fe_runtime::service_lifecycle::OwnedService> {
+    slot.lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .take()
 }
 
 impl Supervisor {
