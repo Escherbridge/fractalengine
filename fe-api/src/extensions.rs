@@ -10,7 +10,8 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use axum::body::Body;
-use axum::extract::{Path, Query, Request, State};
+use axum::extract::ws::{CloseFrame, Message, WebSocket, WebSocketUpgrade};
+use axum::extract::{FromRequest, Path, Query, Request, State};
 use axum::http::{HeaderName, HeaderValue, StatusCode};
 use axum::response::{IntoResponse, Response};
 use axum::routing::{any, get, post};
@@ -170,6 +171,8 @@ pub struct IngressCall {
     pub package_id: String,
     pub endpoint: String,
     pub caller_did: String,
+    /// The token's `max_role`: the host caps the DID's role by this (a delegated token of this node stays remote, G1).
+    pub role_ceiling: fe_policy::RoleLevel,
     pub method: String,
     pub sub_path: String,
     pub query: Vec<(String, String)>,
@@ -194,6 +197,38 @@ pub struct IngressAnswer {
     pub status: u16,
     pub content_type: Option<String>,
     pub body: Vec<u8>,
+}
+
+/// A websocket upgrade on an accept-mode ingress endpoint, after bearer auth. Carries no headers at all.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct WsAcceptCall {
+    pub petal_id: String,
+    pub package_id: String,
+    pub endpoint: String,
+    pub caller_did: String,
+    /// The token's `max_role` (see [`IngressCall::role_ceiling`]).
+    pub role_ceiling: fe_policy::RoleLevel,
+}
+
+/// One websocket data frame, either direction.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum WsData {
+    Text(String),
+    Binary(Vec<u8>),
+}
+
+/// What the connection's writer sends: a frame, or a close the host ordered (1008 demotion, 1001 stop).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum WsOut {
+    Frame(WsData),
+    Close { code: u16, reason: String },
+}
+
+/// An accepted websocket: feed inbound frames to `websocket_frame`, write `outbound`, then `websocket_closed`.
+#[derive(Debug)]
+pub struct WsHostSession {
+    pub connection: u64,
+    pub outbound: tokio::sync::mpsc::Receiver<WsOut>,
 }
 
 /// What the binary provides: the plugin host behind the extension routes.
@@ -223,6 +258,14 @@ pub trait ExtensionHost: Send + Sync {
     ) -> Result<CommandReply, HostRefusal>;
     /// Route one request to the accept-mode ingress mount.
     fn ingress(&self, call: IngressCall) -> Result<oneshot::Receiver<Option<IngressAnswer>>, IngressRefusal>;
+    /// Admit a websocket on an accept-mode endpoint (role floor, `max_connections` -> `TooManyRequests`).
+    fn open_websocket(&self, _call: WsAcceptCall) -> Result<WsHostSession, IngressRefusal> {
+        Err(IngressRefusal::NotFound)
+    }
+    /// One inbound frame; the host drops and counts over-size or over-rate frames (never an error to the client).
+    fn websocket_frame(&self, _connection: u64, _frame: WsData) {}
+    /// The connection ended (client close, error or a host close already sent).
+    fn websocket_closed(&self, _connection: u64) {}
     /// Open an extension-stream client for a REST/WS/MCP connection.
     fn open_client(&self, caller: &ApiCaller) -> (u64, Arc<Notify>);
     /// Subscribe a client at a petal to `<package_id>/<stream>`.
@@ -583,6 +626,7 @@ pub async fn ingress(
         package_id: parts.package_id,
         endpoint: parts.endpoint,
         caller_did: claims.sub.clone(),
+        role_ceiling: fe_policy::RoleLevel::from(claims.max_role.as_str()),
         method: parts.method.to_ascii_uppercase(),
         sub_path: parts.sub_path,
         query: parts.query,
@@ -597,6 +641,59 @@ pub async fn ingress(
         Ok(Err(_)) => Err(ExtError::new(502, "failed", "the instance stopped before answering")),
         Err(_) => Err(ExtError::new(504, "unknown-outcome", "the endpoint did not answer in time")),
     }
+}
+
+/// Admit a websocket upgrade on an extension's accept endpoint: the same gate and petal scope as HTTP ingress,
+/// and no request header (credentials included) ever reaches the host.
+pub fn open_ingress_websocket(
+    host: &dyn ExtensionHost,
+    claims: &ApiClaims,
+    petal_authorized: bool,
+    petal_id: &str,
+    package_id: &str,
+    endpoint: &str,
+) -> Result<WsHostSession, ExtError> {
+    gate(host, claims)?;
+    if !petal_authorized {
+        return Err(ExtError::not_found());
+    }
+    host.open_websocket(WsAcceptCall {
+        petal_id: petal_id.to_string(),
+        package_id: package_id.to_string(),
+        endpoint: endpoint.to_string(),
+        caller_did: claims.sub.clone(),
+        role_ceiling: fe_policy::RoleLevel::from(claims.max_role.as_str()),
+    })
+    .map_err(ExtError::from)
+}
+
+/// Pump one accepted socket: client frames to the host, the host's outbound frames to the client, until either ends.
+async fn run_ingress_socket(host: Arc<dyn ExtensionHost>, mut socket: WebSocket, mut session: WsHostSession) {
+    let connection = session.connection;
+    loop {
+        tokio::select! {
+            outbound = session.outbound.recv() => match outbound {
+                Some(WsOut::Frame(WsData::Text(text))) => {
+                    if socket.send(Message::Text(text.into())).await.is_err() { break; }
+                }
+                Some(WsOut::Frame(WsData::Binary(bytes))) => {
+                    if socket.send(Message::Binary(bytes.into())).await.is_err() { break; }
+                }
+                Some(WsOut::Close { code, reason }) => {
+                    let _ = socket.send(Message::Close(Some(CloseFrame { code, reason: reason.into() }))).await;
+                    break;
+                }
+                None => break,
+            },
+            inbound = socket.recv() => match inbound {
+                Some(Ok(Message::Text(text))) => host.websocket_frame(connection, WsData::Text(text.as_str().to_string())),
+                Some(Ok(Message::Binary(bytes))) => host.websocket_frame(connection, WsData::Binary(bytes.to_vec())),
+                Some(Ok(Message::Ping(_) | Message::Pong(_))) => {}
+                Some(Ok(Message::Close(_))) | Some(Err(_)) | None => break,
+            },
+        }
+    }
+    host.websocket_closed(connection);
 }
 
 /// MCP `extension_command {petal_id, package_id, command, args}`; the caller resolves `petal_authorized`.
@@ -941,6 +1038,31 @@ async fn mount_ingress(
 ) -> Response {
     if let Err(e) = gate(host.0.as_ref(), &claims) {
         return error_response(e);
+    }
+    let wants_upgrade = request
+        .headers()
+        .get(axum::http::header::UPGRADE)
+        .and_then(|v| v.to_str().ok())
+        .is_some_and(|v| v.eq_ignore_ascii_case("websocket"));
+    if wants_upgrade {
+        let authorized = authorized_petal_scope(&state, &claims, &petal_id).await.is_some();
+        let session =
+            match open_ingress_websocket(host.0.as_ref(), &claims, authorized, &petal_id, &package_id, &endpoint) {
+                Ok(session) => session,
+                Err(e) => return error_response(e),
+            };
+        let connection = session.connection;
+        let upgrade = match WebSocketUpgrade::from_request(request, &()).await {
+            Ok(upgrade) => upgrade,
+            Err(rejection) => {
+                host.0.websocket_closed(connection);
+                return rejection.into_response();
+            }
+        };
+        let pump_host = host.0.clone();
+        return upgrade
+            .max_message_size(MAX_INGRESS_BODY_BYTES)
+            .on_upgrade(move |socket| run_ingress_socket(pump_host, socket, session));
     }
     let (head, body) = request.into_parts();
     let content_type = head

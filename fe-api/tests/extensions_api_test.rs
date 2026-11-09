@@ -11,7 +11,8 @@ use fe_api::extensions::{
     administer, caller_of, command, extension_audit, extension_command_tool, extension_status,
     get_verse_policy, ingress, list_extensions, put_verse_policy, AdminOp, AdminRefusal, AdminReply,
     AdminVerb, ApiCaller, ApiCallerKind, CommandFailure, CommandReply, ExtError, ExtensionHost,
-    ExtensionStreams, HostRefusal, IngressAnswer, IngressCall, IngressRefusal, IngressRequestParts,
+    ExtensionStreams, HostRefusal, IngressAnswer, IngressCall, IngressRefusal, IngressRequestParts, WsAcceptCall,
+    WsData, WsHostSession, WsOut, open_ingress_websocket,
 };
 use fe_database::handlers::extension_policy::{evaluate, ExtensionPolicy, LocalPolicy, PolicyFacts, TrustTier};
 use fe_identity::api_token::ApiClaims;
@@ -51,7 +52,16 @@ struct Seen {
     /// Stored verse policies, as the binary's host keeps them in fe-database.
     policies: HashMap<String, Value>,
     policy_writers: Vec<String>,
+    /// Websocket accepts the stand-in saw, the frames it kept, the over-cap frames it dropped, closes reported.
+    ws_accepts: Vec<WsAcceptCall>,
+    ws_kept: Vec<WsData>,
+    ws_dropped: u32,
+    ws_closed: Vec<u64>,
 }
+
+/// The stand-in endpoint's `max_frame_bytes` and `max_connections`.
+const WS_FRAME_CAP: usize = 8;
+const WS_CONNECTION_CAP: usize = 1;
 
 /// Row 7 as the binary's policy gate runs it: fe-database's real `evaluate` over the stored verse policy.
 fn policy_gate(stored: Option<&Value>, params: &Value) -> Result<(), AdminRefusal> {
@@ -145,6 +155,31 @@ impl ExtensionHost for FakeHost {
         let _ = tx.send(Some(IngressAnswer { status: 202, content_type: None, body: b"ok".to_vec() }));
         Ok(rx)
     }
+    fn open_websocket(&self, call: WsAcceptCall) -> Result<WsHostSession, IngressRefusal> {
+        let mut seen = self.seen.lock().unwrap();
+        if seen.ws_accepts.len() - seen.ws_closed.len() >= WS_CONNECTION_CAP {
+            return Err(IngressRefusal::TooManyRequests);
+        }
+        seen.ws_accepts.push(call);
+        let (tx, outbound) = tokio::sync::mpsc::channel(4);
+        let _ = tx.try_send(WsOut::Frame(WsData::Text("hello".into())));
+        Ok(WsHostSession { connection: seen.ws_accepts.len() as u64, outbound })
+    }
+    fn websocket_frame(&self, _connection: u64, frame: WsData) {
+        let mut seen = self.seen.lock().unwrap();
+        let len = match &frame {
+            WsData::Text(text) => text.len(),
+            WsData::Binary(bytes) => bytes.len(),
+        };
+        if len > WS_FRAME_CAP {
+            seen.ws_dropped += 1;
+        } else {
+            seen.ws_kept.push(frame);
+        }
+    }
+    fn websocket_closed(&self, connection: u64) {
+        self.seen.lock().unwrap().ws_closed.push(connection);
+    }
     fn open_client(&self, _caller: &ApiCaller) -> (u64, Arc<Notify>) {
         (7, Arc::new(Notify::new()))
     }
@@ -207,7 +242,7 @@ fn op(verb: AdminVerb, installation: Option<&str>, params: Value) -> AdminOp {
 
 #[tokio::test]
 async fn extensions_api_journey() {
-    let host = FakeHost::new(5);
+    let host = FakeHost::new(6);
     let (local, remote) = (claims(LOCAL), claims(REMOTE));
 
     // R11: the local DID reads status, counters and audit; limit is clamped.
@@ -269,6 +304,29 @@ async fn extensions_api_journey() {
     }
     let too_big = ingress(host.as_ref(), &local, true, parts(vec![], vec![0; 1024 * 1024 + 1])).await.unwrap_err();
     assert_eq!(too_big.status, 413);
+
+    // Websocket accept: the same gate and petal scope; the host sees the caller and ceiling, never a header.
+    let editor_token = ApiClaims { max_role: "editor".into(), ..claims(LOCAL) };
+    let mut session = open_ingress_websocket(host.as_ref(), &editor_token, true, PETAL, PACKAGE, "stream").unwrap();
+    {
+        let seen = host.seen.lock().unwrap();
+        let accept = seen.ws_accepts.last().unwrap();
+        assert_eq!(accept.caller_did, LOCAL);
+        assert_eq!(accept.role_ceiling, fe_policy::RoleLevel::from("editor"), "a delegated token stays capped, never Owner");
+    }
+    assert_eq!(session.outbound.recv().await, Some(WsOut::Frame(WsData::Text("hello".into()))));
+    // max_connections: the next upgrade is a 429; an out-of-scope petal is the uniform 404.
+    assert_eq!(open_ingress_websocket(host.as_ref(), &local, true, PETAL, PACKAGE, "stream").unwrap_err().status, 429);
+    assert_eq!(open_ingress_websocket(host.as_ref(), &local, false, PETAL, PACKAGE, "stream").unwrap_err(), ExtError::not_found());
+    // An over-cap frame is dropped and counted while a small one is kept; closing frees the slot.
+    host.websocket_frame(1, WsData::Text("x".repeat(WS_FRAME_CAP + 1)));
+    host.websocket_frame(1, WsData::Text("ok".into()));
+    host.websocket_closed(1);
+    {
+        let seen = host.seen.lock().unwrap();
+        assert_eq!((seen.ws_dropped, seen.ws_kept.len()), (1, 1));
+    }
+    assert!(open_ingress_websocket(host.as_ref(), &local, true, PETAL, PACKAGE, "stream").is_ok());
 
     // Remote request gate: budget left 2 after the earlier remote calls, then 429 before any lookup (no existence oracle).
     let (first, second, third) = (
