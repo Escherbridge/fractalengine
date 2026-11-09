@@ -6,8 +6,31 @@ use std::path::Path;
 use ed25519_dalek::{Signature, VerifyingKey};
 use serde::{Deserialize, Serialize};
 
+use crate::lifecycle::TrustTier;
+
 /// Supported revocation-list wire version.
 pub const REVOCATION_SCHEMA_VERSION: u32 = 1;
+
+/// A trust root's declared role (governance.md Trust roots); absent in the file means `Publisher`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum TrustRole {
+    Release,
+    #[default]
+    Publisher,
+    Dev,
+}
+
+impl TrustRole {
+    /// The tier a package verified by a root of this role is trusted at.
+    pub fn tier(self) -> TrustTier {
+        match self {
+            Self::Release => TrustTier::Release,
+            Self::Publisher => TrustTier::Publisher,
+            Self::Dev => TrustTier::Dev,
+        }
+    }
+}
 
 /// One trusted publisher key.
 #[derive(Debug, Clone)]
@@ -17,6 +40,14 @@ pub struct TrustedKey {
     pub may_revoke: bool,
     /// Where a host pulls this key's revocation list from (transport is the caller's).
     pub revocation_url: Option<String>,
+    pub role: TrustRole,
+}
+
+impl TrustedKey {
+    /// The trust tier of packages this key verifies.
+    pub fn tier(&self) -> TrustTier {
+        self.role.tier()
+    }
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -41,6 +72,8 @@ pub enum RevocationError {
     NotRevocationCapable(String),
     #[error("revocation list signature does not verify")]
     BadSignature,
+    #[error("revocation list from '{signer}' issued at {issued_at} is older than the accepted {accepted}")]
+    Stale { signer: String, issued_at: String, accepted: String },
 }
 
 #[derive(Deserialize)]
@@ -56,6 +89,9 @@ struct TrustFileEntry {
     #[serde(default)]
     revocation: bool,
     revocation_url: Option<String>,
+    /// Absent = publisher; an unknown value fails the whole file (parse error).
+    #[serde(default)]
+    role: TrustRole,
 }
 
 /// Configured allow-list of publisher keys, keyed by key id.
@@ -67,6 +103,12 @@ pub struct TrustRoots {
 impl TrustRoots {
     /// Parse `[[publisher]]` tables: `key_id`, `public_key` (hex), `revocation` (default false), `revocation_url`.
     pub fn from_toml_str(text: &str) -> Result<Self, TrustRootsError> {
+        Self::from_toml_str_with(text, false)
+    }
+
+    /// As [`Self::from_toml_str`]; `dev` roots load only when `dev_flag` is set AND this is a debug build.
+    pub fn from_toml_str_with(text: &str, dev_flag: bool) -> Result<Self, TrustRootsError> {
+        let allow_dev = cfg!(debug_assertions) && dev_flag;
         let file: TrustFile =
             toml::from_str(text).map_err(|e| TrustRootsError::Parse(e.to_string()))?;
         let mut roots = Self::default();
@@ -83,12 +125,16 @@ impl TrustRoots {
             if roots.keys.contains_key(&entry.key_id) {
                 return Err(TrustRootsError::Duplicate(entry.key_id));
             }
+            if entry.role == TrustRole::Dev && !allow_dev {
+                continue; // dev roots never load in release builds or without the flag
+            }
             roots.keys.insert(
                 entry.key_id,
                 TrustedKey {
                     verifying_key,
                     may_revoke: entry.revocation,
                     revocation_url: entry.revocation_url,
+                    role: entry.role,
                 },
             );
         }
@@ -97,9 +143,14 @@ impl TrustRoots {
 
     /// Load the trust-roots file at startup; a missing file is an error, not an empty allow-list.
     pub fn load(path: impl AsRef<Path>) -> Result<Self, TrustRootsError> {
+        Self::load_with(path, false)
+    }
+
+    /// [`Self::load`] with the debug-only dev flag.
+    pub fn load_with(path: impl AsRef<Path>, dev_flag: bool) -> Result<Self, TrustRootsError> {
         let text = std::fs::read_to_string(path.as_ref())
             .map_err(|e| TrustRootsError::Io(e.to_string()))?;
-        Self::from_toml_str(&text)
+        Self::from_toml_str_with(&text, dev_flag)
     }
 
     pub fn get(&self, key_id: &str) -> Option<&TrustedKey> {
@@ -113,6 +164,27 @@ impl TrustRoots {
             .filter(|(_, k)| k.may_revoke)
             .filter_map(|(id, k)| k.revocation_url.as_deref().map(|u| (id.as_str(), u)))
             .collect()
+    }
+
+    /// Verify a list, then refuse it when older than the newest accepted for its signer; `newest` is that per-signer memory.
+    pub fn verify_revocation_list_fresh(
+        &self,
+        list: &RevocationList,
+        newest: &mut HashMap<String, String>,
+    ) -> Result<RevocationSet, RevocationError> {
+        let set = self.verify_revocation_list(list)?;
+        // Only a verified list may move the high-water mark; RFC 3339 UTC text of one format orders lexically.
+        if let Some(accepted) = newest.get(&list.signer_key_id) {
+            if list.issued_at.as_str() < accepted.as_str() {
+                return Err(RevocationError::Stale {
+                    signer: list.signer_key_id.clone(),
+                    issued_at: list.issued_at.clone(),
+                    accepted: accepted.clone(),
+                });
+            }
+        }
+        newest.insert(list.signer_key_id.clone(), list.issued_at.clone());
+        Ok(set)
     }
 
     /// Verify a revocation list against the revocation-capable roots and return its entries as a set.
@@ -228,6 +300,11 @@ impl RevocationSet {
     pub fn is_revoked(&self, content_hash: &str) -> bool {
         self.hashes.contains(&content_hash.to_ascii_lowercase())
     }
+
+    /// True when any of these digests (content_hash, component_digest, plaintext_digest) is listed, under any package id.
+    pub fn is_revoked_any(&self, digests: &[&str]) -> bool {
+        digests.iter().any(|digest| self.is_revoked(digest))
+    }
 }
 
 #[cfg(test)]
@@ -281,5 +358,73 @@ mod tests {
         let identity_point = format!("01{}", "00".repeat(31));
         let weak = format!("[[publisher]]\nkey_id = \"weak\"\npublic_key = \"{identity_point}\"\n");
         assert!(matches!(TrustRoots::from_toml_str(&weak), Err(TrustRootsError::BadKey(_))));
+    }
+
+    fn key_hex(seed: u8) -> String {
+        hex::encode(SigningKey::from_bytes(&[seed; 32]).verifying_key().to_bytes())
+    }
+
+    #[test]
+    fn roles_map_to_tiers_and_dev_roots_need_the_debug_flag() {
+        let toml = format!(
+            "[[publisher]]\nkey_id = \"a\"\npublic_key = \"{}\"\nrole = \"release\"\n\n[[publisher]]\nkey_id = \"b\"\npublic_key = \"{}\"\n\n[[publisher]]\nkey_id = \"c\"\npublic_key = \"{}\"\nrole = \"dev\"\n",
+            key_hex(5),
+            key_hex(6),
+            key_hex(7)
+        );
+        let roots = TrustRoots::from_toml_str(&toml).unwrap();
+        assert_eq!(roots.get("a").unwrap().tier(), TrustTier::Release);
+        assert_eq!(roots.get("b").unwrap().tier(), TrustTier::Publisher, "absent role = publisher");
+        assert!(roots.get("c").is_none(), "dev root stays out without the flag");
+        let with_flag = TrustRoots::from_toml_str_with(&toml, true).unwrap();
+        assert_eq!(with_flag.get("c").is_some(), cfg!(debug_assertions), "flag counts in debug builds only");
+        if cfg!(debug_assertions) {
+            assert_eq!(with_flag.get("c").unwrap().tier(), TrustTier::Dev);
+        }
+        let unknown = format!("[[publisher]]\nkey_id = \"x\"\npublic_key = \"{}\"\nrole = \"root\"\n", key_hex(8));
+        assert!(matches!(TrustRoots::from_toml_str(&unknown), Err(TrustRootsError::Parse(_))));
+    }
+
+    #[test]
+    fn any_digest_revokes_and_stale_lists_are_refused() {
+        let revoker = SigningKey::from_bytes(&[9u8; 32]);
+        let toml = format!(
+            "[[publisher]]\nkey_id = \"rev\"\npublic_key = \"{}\"\nrevocation = true\n",
+            hex::encode(revoker.verifying_key().to_bytes())
+        );
+        let roots = TrustRoots::from_toml_str(&toml).unwrap();
+        let signed = |issued_at: &str, hash: &str| {
+            let mut list = RevocationList {
+                schema_version: 1,
+                issued_at: issued_at.into(),
+                entries: vec![RevocationEntry {
+                    package_id: "p".into(),
+                    content_hash: hash.into(),
+                    reason: "r".into(),
+                    revoked_at: issued_at.into(),
+                }],
+                signer_key_id: "rev".into(),
+                signature: String::new(),
+            };
+            list.signature = hex::encode(revoker.sign(&list.signed_bytes()).to_bytes());
+            list
+        };
+        let mut newest = HashMap::new();
+        let set = roots
+            .verify_revocation_list_fresh(&signed("2026-11-08T00:00:00Z", "comp"), &mut newest)
+            .unwrap();
+        assert!(set.is_revoked_any(&["manifest-hash", "COMP"]), "component digest alone revokes the build");
+        assert!(!set.is_revoked_any(&["manifest-hash", "other"]));
+        assert!(!set.is_revoked_any(&[]));
+
+        // Replaying an older (pre-revocation) list is refused; a newer one is accepted.
+        let err = roots
+            .verify_revocation_list_fresh(&signed("2026-11-01T00:00:00Z", "x"), &mut newest)
+            .unwrap_err();
+        assert!(matches!(err, RevocationError::Stale { .. }));
+        roots
+            .verify_revocation_list_fresh(&signed("2026-11-09T00:00:00Z", "x"), &mut newest)
+            .unwrap();
+        assert_eq!(newest["rev"], "2026-11-09T00:00:00Z");
     }
 }
