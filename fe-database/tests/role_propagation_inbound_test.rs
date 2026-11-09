@@ -314,6 +314,28 @@ async fn an_owner_role_statement_replicated_in_lets_the_editors_deferred_node_ro
     );
     assert!(node_exists(&db, "node-early").await, "the node is durable");
     assert!(queue.is_empty());
+
+    // QA-0131 for repository nodes: a portal repository row stamped after the editor's revocation never applies.
+    let revocation = revoke(OWNER, EDITOR, &verse_scope(), 1 << 17);
+    deliver(&db, &mut queue, &revocation).await;
+    let mut repository: serde_json::Value =
+        serde_json::from_slice(&complete_node_row("node-repo", PETAL_A, EDITOR, 1 << 18)).expect("node");
+    repository["kind"] = serde_json::json!("repository");
+    let reports = queue
+        .apply(
+            &db,
+            VERSE,
+            "node",
+            "node-repo",
+            &serde_json::to_vec(&repository).expect("node json"),
+            EDITOR,
+            None,
+        )
+        .await;
+    assert!(
+        !applied(&reports, "node-repo") && !node_exists(&db, "node-repo").await,
+        "a repository row written while revoked stays absent: {reports:?}"
+    );
 }
 
 #[derive(Debug, Clone, Copy)]

@@ -69,6 +69,7 @@ pub(crate) async fn inspect(
         let Some(petal_id) = asset["petal_id"].as_str().filter(|id| !id.is_empty()) else {
             continue;
         };
+        // The shared MIME list admits portal bundles too; their bytes get the bundle check, not the glTF one.
         let Some(content_type) = asset["content_type"]
             .as_str()
             .filter(|mime| fe_runtime::scene_asset::SCENE_ASSET_MIMES.contains(mime))
