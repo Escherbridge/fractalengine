@@ -179,6 +179,96 @@ pub fn verify_fetched(bytes: Vec<u8>, entry: &RegistryEntry, trust: &SourceTrust
     Ok(FetchedPackage { bytes, package })
 }
 
+/// A verified non-plugin hexon (tileset, terrain, ...): sealed bytes plus the identity its manifest vouched for.
+#[derive(Debug, Clone)]
+pub struct VerifiedContent {
+    /// The `.hexon` bytes, ready for the install path.
+    pub bytes: Vec<u8>,
+    /// Manifest `hexon_id`, equal to the requested id.
+    pub hexon_id: String,
+    /// Manifest version, equal to the listed one.
+    pub version: String,
+    /// Manifest `hexon_type` as its serde name (e.g. `terrain_tileset`).
+    pub hexon_type: String,
+    /// BLAKE3 of the manifest with the signature blanked, equal to the listed hash.
+    pub content_hash: String,
+    /// Sealing publisher (a trust root); `None` for a dev-unsigned archive.
+    pub publisher_did: Option<String>,
+}
+
+/// Verified bytes of either hexon family; plugins keep their full package verdict.
+#[derive(Debug, Clone)]
+pub enum FetchedHexon {
+    Plugin(FetchedPackage),
+    Content(VerifiedContent),
+}
+
+/// Raw `manifest.json` of a `.hexon` zip, read under the JSON entry cap.
+fn read_manifest_raw(bytes: &[u8]) -> Result<Vec<u8>, RegistryError> {
+    use std::io::Read as _;
+    let invalid = |reason: String| RegistryError::PackageInvalid(reason);
+    let mut archive =
+        zip::ZipArchive::new(std::io::Cursor::new(bytes)).map_err(|e| invalid(format!("invalid ZIP archive: {e}")))?;
+    let cap = fe_format::limits::MAX_JSON_ENTRY_BYTES;
+    let member = archive
+        .by_name(fe_format::integrity::MANIFEST_PATH)
+        .map_err(|_| invalid("missing-member manifest.json".into()))?;
+    let mut raw = Vec::new();
+    member.take(cap + 1).read_to_end(&mut raw).map_err(|e| invalid(format!("manifest.json: {e}")))?;
+    if raw.len() as u64 > cap {
+        return Err(RegistryError::TooLarge { what: "manifest.json".into(), max: cap });
+    }
+    Ok(raw)
+}
+
+/// Verify sealed bytes of any hexon type: plugins through [`verify_fetched`], content hexons by seal, id, version and listed hash.
+pub fn verify_fetched_hexon(bytes: Vec<u8>, entry: &RegistryEntry, trust: &SourceTrust) -> Result<FetchedHexon, RegistryError> {
+    if bytes.len() as u64 > PACKAGE_MAX_BYTES {
+        return Err(RegistryError::TooLarge { what: "package".into(), max: PACKAGE_MAX_BYTES });
+    }
+    let manifest_raw = read_manifest_raw(&bytes)?;
+    let manifest: fe_format::HexonManifest =
+        serde_json::from_slice(&manifest_raw).map_err(|e| RegistryError::PackageInvalid(format!("manifest.json: {e}")))?;
+    if matches!(manifest.hexon_type, fe_format::HexonType::Plugin) {
+        return verify_fetched(bytes, entry, trust).map(FetchedHexon::Plugin);
+    }
+    // The id check comes first: a mirror cannot serve a revoked build under a new id.
+    if manifest.hexon_id != entry.package_id {
+        return Err(RegistryError::PackageInvalid("id-mismatch".into()));
+    }
+    let publisher_did = match fe_format::verify_archive(&bytes, &fe_format::IntegrityPolicy::VerifyIfSealed) {
+        Ok(fe_format::IntegrityStatus::Sealed { publisher_did }) => {
+            if !(trust.is_trust_root)(&publisher_did) {
+                return Err(RegistryError::PackageUntrusted(format!("publisher {publisher_did} is not a trust root")));
+            }
+            Some(publisher_did)
+        }
+        Ok(fe_format::IntegrityStatus::Unsealed) if trust.allow_unsigned_dev => None,
+        Ok(fe_format::IntegrityStatus::Unsealed) => return Err(RegistryError::PackageUntrusted("unsigned".into())),
+        Err(error) => return Err(RegistryError::PackageInvalid(error.to_string())),
+    };
+    if manifest.version != entry.version {
+        return Err(RegistryError::VersionMismatch { listed: entry.version.clone(), served: manifest.version });
+    }
+    let content_hash =
+        fe_format::integrity::content_hash(&manifest_raw).map_err(|e| RegistryError::PackageInvalid(format!("{e:#}")))?;
+    if !content_hash.eq_ignore_ascii_case(&entry.content_hash) {
+        return Err(RegistryError::ContentHashMismatch { listed: entry.content_hash.clone(), served: content_hash });
+    }
+    let hexon_type = serde_json::to_value(&manifest.hexon_type)
+        .ok()
+        .and_then(|value| value.as_str().map(str::to_owned))
+        .unwrap_or_default();
+    Ok(FetchedHexon::Content(VerifiedContent {
+        bytes,
+        hexon_id: manifest.hexon_id,
+        version: manifest.version,
+        hexon_type,
+        content_hash,
+        publisher_did,
+    }))
+}
+
 fn entry_for(package: &PluginPackage, url: String, size: u64) -> RegistryEntry {
     let name = serde_json::from_slice::<serde_json::Value>(&package.extension_json)
         .ok()
@@ -777,6 +867,10 @@ pub trait ProtocolV1Transport: Send + Sync {
     fn search(&self, query: Option<&str>) -> Result<Vec<RegistryEntry>, String>;
     /// Download sealed bytes for an entry.
     fn download(&self, entry: &RegistryEntry) -> Result<Vec<u8>, String>;
+    /// The attestation document (`package_id`, `version`, `content_hash`, `manifest_b64`, `header_members_b64`) for an entry; `None` when the registry has none.
+    fn attestation(&self, _entry: &RegistryEntry) -> Result<Option<Vec<u8>>, String> {
+        Ok(None)
+    }
 }
 
 /// A protocol-v1 registry endpoint the operator configured.
@@ -814,15 +908,38 @@ impl RegistrySource for ProtocolV1Source {
         Ok(Listing { entries, ..Listing::default() })
     }
 
-    fn header(&self, _entry: &RegistryEntry) -> Result<Vec<u8>, RegistryError> {
+    fn header(&self, entry: &RegistryEntry) -> Result<Vec<u8>, RegistryError> {
         self.check_protocol()?;
-        Err(RegistryError::HeaderUnavailable)
+        let Some(bytes) = self.transport.attestation(entry).map_err(RegistryError::Transport)? else {
+            return Err(RegistryError::HeaderUnavailable);
+        };
+        if bytes.len() as u64 > HEADER_MAX_BYTES {
+            return Err(RegistryError::TooLarge { what: "attestation".into(), max: HEADER_MAX_BYTES });
+        }
+        let attestation: Attestation =
+            serde_json::from_slice(&bytes).map_err(|e| RegistryError::PackageInvalid(format!("attestation: {e}")))?;
+        if attestation.package_id != entry.package_id
+            || attestation.version != entry.version
+            || !attestation.content_hash.eq_ignore_ascii_case(&entry.content_hash)
+        {
+            return Err(RegistryError::PackageInvalid("attestation: names another build".into()));
+        }
+        verified_header(&attestation, &entry.content_hash)
     }
 
     fn fetch(&self, entry: &RegistryEntry) -> Result<FetchedPackage, RegistryError> {
         self.check_protocol()?;
         let bytes = self.transport.download(entry).map_err(RegistryError::Transport)?;
         verify_fetched(bytes, entry, &self.trust)
+    }
+}
+
+impl ProtocolV1Source {
+    /// Download and verify any hexon type (plugin or content such as a tileset), dispatching on the manifest's type.
+    pub fn fetch_hexon(&self, entry: &RegistryEntry) -> Result<FetchedHexon, RegistryError> {
+        self.check_protocol()?;
+        let bytes = self.transport.download(entry).map_err(RegistryError::Transport)?;
+        verify_fetched_hexon(bytes, entry, &self.trust)
     }
 }
 

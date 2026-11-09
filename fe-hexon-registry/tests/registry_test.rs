@@ -59,6 +59,18 @@ async fn health_reports_indexed_count() {
     let data = json_data(&body);
     assert_eq!(data["status"], "ok");
     assert_eq!(data["indexed"], 3);
+    assert_eq!(data["protocol_version"], 1);
+
+    // Store-client contract v1: public config.json names the protocol; search carries each content_hash.
+    let (status, body) = get(&router, "/config.json").await;
+    assert_eq!(status, StatusCode::OK);
+    let config: serde_json::Value = serde_json::from_slice(&body).unwrap();
+    assert_eq!(config["registry_protocol"], 1);
+    let (_, body) = get(&router, "/api/v1/hexons/search").await;
+    for hit in json_data(&body).as_array().unwrap() {
+        let hash = hit["content_hash"].as_str().unwrap();
+        assert_eq!(hash.len(), 64, "blake3 hex expected, got {hash:?}");
+    }
 }
 
 #[tokio::test]

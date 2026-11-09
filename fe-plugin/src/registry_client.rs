@@ -41,6 +41,8 @@ pub enum RegistryInstallError {
     EntitlementUnavailable(String),
     #[error("payload hash {actual} does not match the declared content hash {declared}")]
     ContentHashMismatch { declared: String, actual: String },
+    #[error("manifest hash {actual:?} does not match the registry's listed content hash {listed}")]
+    ListedHashMismatch { listed: String, actual: Option<String> },
 }
 
 /// The `plugin/signatures.json` document.
@@ -60,6 +62,8 @@ pub struct FetchedPackage {
     pub payload: Vec<u8>,
     pub signatures: Vec<SignatureEntry>,
     pub content_hash: String,
+    /// Store-client contract v1 `content_hash`: BLAKE3 of the archive's `manifest.json` with the signature blanked; `None` when the archive has no manifest.
+    pub manifest_hash: Option<String>,
 }
 
 /// Reads protocol v1 registries (`fe-hexon-registry` or any conforming store).
@@ -167,6 +171,18 @@ impl RegistryClient {
         }
         Ok(package)
     }
+
+    /// [`Self::fetch_package`] that also requires the archive's manifest hash to equal the `content_hash` the registry listed (fail closed).
+    pub async fn fetch_package_listed(&self, uri: &str, listed_content_hash: &str) -> Result<FetchedPackage, RegistryInstallError> {
+        let package = self.fetch_package(uri).await?;
+        match package.manifest_hash.as_deref() {
+            Some(actual) if actual.eq_ignore_ascii_case(listed_content_hash) => Ok(package),
+            other => Err(RegistryInstallError::ListedHashMismatch {
+                listed: listed_content_hash.to_string(),
+                actual: other.map(str::to_string),
+            }),
+        }
+    }
 }
 
 /// Reads a response body, refusing it past `cap` bytes.
@@ -219,6 +235,12 @@ pub fn unwrap_package(archive_bytes: &[u8]) -> Result<FetchedPackage, RegistryIn
         return Err(RegistryInstallError::EntitlementUnavailable(doc.package_id));
     }
 
+    let manifest_hash = HexonArchive::read_member(archive_bytes, fe_format::integrity::MANIFEST_PATH, MAX_JSON_BYTES)
+        .map_err(|e| RegistryInstallError::Malformed(format!("manifest.json: {e}")))?
+        .map(|raw| fe_format::integrity::content_hash(&raw))
+        .transpose()
+        .map_err(|e| RegistryInstallError::Malformed(format!("manifest.json: {e:#}")))?;
+
     let payload = read_required(archive_bytes, PAYLOAD_MEMBER, MAX_PACKAGE_BYTES)?;
     let actual = payload_hash(&payload);
     if actual != doc.content_hash {
@@ -230,6 +252,7 @@ pub fn unwrap_package(archive_bytes: &[u8]) -> Result<FetchedPackage, RegistryIn
         payload,
         signatures: doc.signatures,
         content_hash: doc.content_hash,
+        manifest_hash,
     })
 }
 

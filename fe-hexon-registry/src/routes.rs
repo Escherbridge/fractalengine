@@ -22,6 +22,11 @@ use crate::limits;
 /// Max accepted publish body (1 GiB — tilesets are large).
 const MAX_PUBLISH_BYTES: usize = 1 << 30;
 
+/// Registry protocol version advertised by `/health` and `/config.json`.
+pub const REGISTRY_PROTOCOL: u64 = 1;
+/// Header carrying [`REGISTRY_PROTOCOL`] on `/health`.
+const PROTOCOL_HEADER: &str = "x-hexon-registry-protocol";
+
 /// Response envelope matching fe-api's `ApiResponse` shape.
 #[derive(Debug, Serialize)]
 pub struct ApiResponse<T: Serialize> {
@@ -94,6 +99,7 @@ pub fn build_router(state: Arc<RegistryState>) -> Router {
 
     Router::new()
         .route("/health", get(health))
+        .route("/config.json", get(config_doc))
         .nest("/api/v1", api)
         .layer(TraceLayer::new_for_http())
         .with_state(state)
@@ -124,9 +130,20 @@ fn json_err(status: StatusCode, msg: impl Into<String>) -> Response {
 
 async fn health(State(state): State<Arc<RegistryState>>) -> Response {
     let count = state.index.read().await.len();
-    Json(ApiResponse::success(
-        serde_json::json!({ "status": "ok", "indexed": count }),
-    ))
+    let body = Json(ApiResponse::success(serde_json::json!({
+        "status": "ok",
+        "indexed": count,
+        "protocol_version": REGISTRY_PROTOCOL,
+    })));
+    ([(PROTOCOL_HEADER, REGISTRY_PROTOCOL.to_string())], body).into_response()
+}
+
+/// GET /config.json — public store-client contract v1 config; `registry_protocol` is what clients check.
+async fn config_doc() -> Response {
+    Json(serde_json::json!({
+        "schema_version": 1,
+        "registry_protocol": REGISTRY_PROTOCOL,
+    }))
     .into_response()
 }
 

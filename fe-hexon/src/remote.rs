@@ -256,11 +256,45 @@ impl RemoteRegistryClient {
         }
         let body = self.get_capped_response(resp, MAX_HEALTH_BYTES).await?;
         let doc: serde_json::Value = serde_json::from_slice(&body).unwrap_or_default();
-        Ok(doc
+        let advertised = doc
             .pointer("/data/protocol_version")
             .or_else(|| doc.get("protocol_version"))
             .and_then(|v| v.as_u64())
-            .map(|v| v.to_string()))
+            .map(|v| v.to_string());
+        if advertised.is_some() {
+            return Ok(advertised);
+        }
+        // Store-client contract v1: `config.json` `registry_protocol` is the authority; the header is never required.
+        let config = self
+            .get(format!("{}/config.json", self.base_url))
+            .send()
+            .await
+            .context("registry config request failed")?;
+        if !config.status().is_success() {
+            return Ok(None);
+        }
+        let body = self.get_capped_response(config, MAX_HEALTH_BYTES).await?;
+        let doc: serde_json::Value = serde_json::from_slice(&body).unwrap_or_default();
+        Ok(doc.get("registry_protocol").and_then(|v| v.as_u64()).map(|v| v.to_string()))
+    }
+
+    /// Attestation document for `uri`: the manifest and header members from `/meta`, base64-encoded, so consent renders before download.
+    pub async fn attestation(&self, entry: &RegistryEntry) -> Result<Vec<u8>, PartialFetchError> {
+        use base64::Engine as _;
+        let engine = base64::engine::general_purpose::STANDARD;
+        let doc = self.fetch_header(&entry.url).await?;
+        let content_hash = fe_format::integrity::content_hash(doc.manifest.as_bytes())
+            .map_err(|e| PartialFetchError::Transport(format!("manifest: {e:#}")))?;
+        let members: std::collections::BTreeMap<&String, String> =
+            doc.header_members.iter().map(|(path, text)| (path, engine.encode(text.as_bytes()))).collect();
+        let attestation = serde_json::json!({
+            "package_id": entry.package_id,
+            "version": entry.version,
+            "content_hash": content_hash,
+            "manifest_b64": engine.encode(doc.manifest.as_bytes()),
+            "header_members_b64": members,
+        });
+        serde_json::to_vec(&attestation).map_err(|e| PartialFetchError::Transport(e.to_string()))
     }
 
     /// Read a response body under `cap` bytes.
@@ -357,10 +391,21 @@ impl ProtocolV1Transport for RemoteProtocolV1Transport {
             .block_on(self.client.download_capped(&entry.url, download_cap(entry)))
             .map_err(|e| e.to_string())
     }
+
+    fn attestation(&self, entry: &RegistryEntry) -> Result<Option<Vec<u8>>, String> {
+        if !is_plain_registry_uri(&entry.url) {
+            return Err(format!("refusing registry uri {:?}", entry.url));
+        }
+        match self.runtime.block_on(self.client.attestation(entry)) {
+            Ok(bytes) => Ok(Some(bytes)),
+            Err(PartialFetchError::NotFound) => Ok(None),
+            Err(other) => Err(other.to_string()),
+        }
+    }
 }
 
 /// A protocol-v1 registry as a [`RegistrySource`](crate::registry_source::RegistrySource): every download re-verified
-/// locally as a plugin package (tileset hexons are not admitted yet; see `src/AGENTS.md` §registry-source-remote).
+/// locally; `fetch_hexon` also admits content hexons such as tilesets (see `src/AGENTS.md` §registry-source-remote).
 pub fn remote_source(
     label: impl Into<String>,
     base_url: impl Into<String>,
