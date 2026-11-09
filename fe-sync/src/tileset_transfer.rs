@@ -6,9 +6,10 @@ use std::fmt;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard};
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use bytes::Bytes;
+use fe_runtime::bevy_blob_reader::{BlobFallbackSlot, TilesetChildRequest};
 use fe_runtime::blob_store::{hash_from_hex, hash_to_hex};
 use fe_runtime::blob_transport::{
     content_hash, decode_hash_seq, hash_seq_root, BlobTransport, Hash32, ProviderRef,
@@ -50,6 +51,8 @@ pub const MAX_STREAMED_CACHE_BYTES: u64 = 2 * 1024 * 1024 * 1024;
 pub const LAST_USED_FILE: &str = "last-used";
 /// Most install downloads awaiting confirmation at once (past it the oldest marks are dropped).
 pub const MAX_REQUESTED_DOWNLOADS: usize = 4096;
+/// Longest wait for a `sync.tileset-source` answer: the hook's 30 s deadline plus queueing grace.
+pub const CHILD_SOURCE_WAIT: Duration = Duration::from_secs(35);
 
 /// Whether `id` is safe as a path component and tag suffix (the shared `safe_id` guard).
 pub fn is_safe_tileset_id(id: &str) -> bool {
@@ -509,6 +512,8 @@ pub struct TilesetTransfer {
     transport: Arc<dyn BlobTransport>,
     /// See [`ContentObserver`]; `None` outside a real P2P stack.
     content_observer: Option<ContentObserver>,
+    /// Extension source for a child every provider missed; empty = peers only.
+    child_source: BlobFallbackSlot,
     download_root: PathBuf,
     limits: TransferLimits,
     catalog: Mutex<BTreeMap<String, CatalogEntry>>,
@@ -628,6 +633,7 @@ impl TilesetTransfer {
         Self {
             transport,
             content_observer: None,
+            child_source: BlobFallbackSlot::default(),
             download_root: download_root.into(),
             limits: TransferLimits::default(),
             catalog: Mutex::new(BTreeMap::new()),
@@ -690,6 +696,13 @@ impl TilesetTransfer {
         if let Some(observer) = &self.content_observer {
             observer(content);
         }
+    }
+
+    /// The same service asking `source` for an index or bundle child only after every provider missed
+    /// (bindings.md §6 `sync.tileset-source`); its bytes pass the same per-child hash check as a peer's.
+    pub fn with_child_source(mut self, source: BlobFallbackSlot) -> Self {
+        self.child_source = source;
+        self
     }
 
     /// The same service under explicit size caps (tests use small ones).
@@ -1104,6 +1117,7 @@ impl TilesetTransfer {
             Arc::clone(&ledger),
             seq,
             self.limits.max_chunk_bytes,
+            self.child_source.clone(),
         )
         .await
         .map_err(|error| TransferError::Chunk { seq, error })?;
@@ -1171,10 +1185,11 @@ impl TilesetTransfer {
                 let Some(seq) = missing.next() else { break };
                 let transport = Arc::clone(&self.transport);
                 let ledger = Arc::clone(&ledger);
+                let child_source = self.child_source.clone();
                 in_flight.spawn(async move {
                     (
                         seq,
-                        store_chunk(transport, ledger, seq, max_chunk_bytes).await,
+                        store_chunk(transport, ledger, seq, max_chunk_bytes, child_source).await,
                     )
                 });
             }
@@ -1472,6 +1487,13 @@ impl TilesetTransfer {
             }
             tracing::warn!(provider = %provider.as_str(), %last, "Tileset index unavailable");
         }
+        // Child 0 after every provider missed; the slot returns only bytes hashing to it within the cap.
+        if let Some(bytes) = source_child(&self.child_source, ledger, expected, max_index_bytes).await {
+            let path = ledger.index_path();
+            let to_write = bytes.clone();
+            blocking(move || write_atomic(&path, &to_write)).await?;
+            return Ok(bytes);
+        }
         Err(TransferError::BadIndex(last))
     }
 
@@ -1513,12 +1535,13 @@ fn read_ledger(dir: &Path, tileset_id: &str) -> Result<Ledger, String> {
     Ledger::from_file(file, dir.to_path_buf())
 }
 
-/// Store bundle `seq`: reuse a verifying file, else local blob, else providers in order.
+/// Store bundle `seq`: reuse a verifying file, else local blob, else providers in order, else the child source.
 async fn store_chunk(
     transport: Arc<dyn BlobTransport>,
     ledger: Arc<Ledger>,
     seq: u32,
     max_chunk_bytes: usize,
+    child_source: BlobFallbackSlot,
 ) -> Result<StoredChunk, ChunkError> {
     let expected = ledger.chunk_hashes[seq as usize];
     let path = ledger.chunk_path(seq);
@@ -1557,7 +1580,45 @@ async fn store_chunk(
         }
         tracing::warn!(provider = %provider.as_str(), seq, error = %last, "Bundle fetch failed");
     }
+    if let Some(bytes) = source_child(&child_source, &ledger, expected, max_chunk_bytes).await {
+        // The slot verified it already; the bundle still takes the peers' own check before it lands.
+        match verify_chunk(&bytes, expected, max_chunk_bytes) {
+            Ok(()) => return write_chunk(path, seq, bytes).await,
+            Err(e) => last = e,
+        }
+    }
     Err(last)
+}
+
+/// `sync.tileset-source` for one HashSeq child every provider missed: verified bytes, or `None` (peers only,
+/// nothing bound, refused bytes, or past [`CHILD_SOURCE_WAIT`]).
+async fn source_child(
+    child_source: &BlobFallbackSlot,
+    ledger: &Ledger,
+    child_hash: Hash32,
+    max_bytes: usize,
+) -> Option<Bytes> {
+    if !child_source.is_installed() {
+        return None;
+    }
+    let request = TilesetChildRequest {
+        tileset_id: ledger.tileset_id.clone(),
+        root: ledger.root,
+        child_hash,
+        size: None,
+        max_bytes: max_bytes as u64,
+    };
+    match tokio::time::timeout(CHILD_SOURCE_WAIT, child_source.source_tileset_child(request)).await {
+        Ok(answer) => answer,
+        Err(_) => {
+            tracing::warn!(
+                tileset_id = %ledger.tileset_id,
+                child = %hash_to_hex(&child_hash),
+                "Tileset child source missed its deadline"
+            );
+            None
+        }
+    }
 }
 
 /// Size cap + BLAKE3 check of one bundle against its HashSeq child.

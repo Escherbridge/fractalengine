@@ -16,6 +16,7 @@ use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::sync::Arc;
 
+use fe_runtime::bevy_blob_reader::BlobFallbackSlot;
 use fe_runtime::blob_store::{hash_from_hex, hash_to_hex, BlobStoreHandle};
 use fe_runtime::blob_transport::{BlobTransport, Hash32, ProviderRef};
 use fe_runtime::messages::DbCommand;
@@ -616,6 +617,35 @@ pub fn spawn_sync_thread_with_transport(
     p2p_dir: Option<PathBuf>,
     virtual_transport: Option<Arc<dyn VirtualTransportFactory>>,
 ) -> std::thread::JoinHandle<()> {
+    spawn_sync_thread_with_sources(
+        secret_key,
+        blob_store,
+        cmd_rx,
+        evt_tx,
+        local_did,
+        db_cmd_tx,
+        p2p_dir,
+        virtual_transport,
+        BlobFallbackSlot::default(),
+    )
+}
+
+/// [`spawn_sync_thread_with_transport`] plus `blob_fallback`, the extension
+/// byte source asked only after every peer missed (bindings.md §6
+/// `sync.tileset-source`); an empty slot is peers only. It never changes the
+/// transport, the relays or which peers are asked (AGENTS.md §tileset-transfer).
+#[allow(clippy::too_many_arguments)]
+pub fn spawn_sync_thread_with_sources(
+    secret_key: iroh::SecretKey,
+    blob_store: BlobStoreHandle,
+    cmd_rx: SyncCommandReceiver,
+    evt_tx: SyncEventSender,
+    local_did: String,
+    db_cmd_tx: Option<crossbeam::channel::Sender<DbCommand>>,
+    p2p_dir: Option<PathBuf>,
+    virtual_transport: Option<Arc<dyn VirtualTransportFactory>>,
+    blob_fallback: BlobFallbackSlot,
+) -> std::thread::JoinHandle<()> {
     std::thread::spawn(move || {
         let rt = tokio::runtime::Builder::new_current_thread()
             .enable_all()
@@ -807,7 +837,8 @@ pub fn spawn_sync_thread_with_transport(
                 let gate = stack.blob_access_gate().clone();
                 Arc::new(
                     TilesetTransfer::for_p2p_dir(transport, &p2p_dir)
-                        .with_content_observer(Arc::new(move |content| gate.track_content(content))),
+                        .with_content_observer(Arc::new(move |content| gate.track_content(content)))
+                        .with_child_source(blob_fallback.clone()),
                 )
             });
             if let Some(transfer) = tileset_transfer.clone() {
@@ -4961,7 +4992,10 @@ mod tests {
     /// S8b mandatory finding #1 (automated review of S3 `e5d8928`): an
     /// authenticated ad for root A followed by a RELAYED ad naming the same
     /// provider with root B must not poison the entry — `root_for` still
-    /// answers A and a real download fetches A's bytes, never B's.
+    /// answers A and a real download fetches A's bytes, never B's. BND-10d:
+    /// the root pins an extension source's bytes too — a bound
+    /// `sync.tileset-source` is asked only for the child the peer missed, and
+    /// only bytes hashing to that child land.
     #[test]
     fn a_relayed_ad_cannot_replace_an_authenticated_root() {
         let alice_id = iroh::SecretKey::from_bytes(&[121u8; 32]).public();
@@ -5037,6 +5071,73 @@ mod tests {
             assert_eq!(
                 std::fs::read(&complete.bundle_paths[0]).unwrap(),
                 b"genuine bundle"
+            );
+
+            /// A bound source answering per child hash, recording every ask.
+            #[derive(Default)]
+            struct ChildAnswers {
+                answers: std::sync::Mutex<HashMap<Hash32, &'static [u8]>>,
+                asked: std::sync::Mutex<Vec<Hash32>>,
+            }
+            impl fe_runtime::bevy_blob_reader::BlobFallback for ChildAnswers {
+                fn source_blob(
+                    &self,
+                    _request: fe_runtime::bevy_blob_reader::BlobSourceRequest,
+                ) -> fe_runtime::bevy_blob_reader::FallbackFuture<'_> {
+                    Box::pin(async { None })
+                }
+                fn source_tileset_child(
+                    &self,
+                    request: fe_runtime::bevy_blob_reader::TilesetChildRequest,
+                ) -> fe_runtime::bevy_blob_reader::FallbackFuture<'_> {
+                    self.asked.lock().unwrap().push(request.child_hash);
+                    let answer = self
+                        .answers
+                        .lock()
+                        .unwrap()
+                        .get(&request.child_hash)
+                        .copied()
+                        .map(bytes::Bytes::from_static);
+                    Box::pin(async move { answer })
+                }
+            }
+
+            // Alice now withholds the bundle: carol's peer pass misses, then her source is asked.
+            let bundle = fe_runtime::blob_transport::content_hash(b"genuine bundle");
+            alice.withhold(bundle);
+            let source = Arc::new(ChildAnswers::default());
+            source.answers.lock().unwrap().insert(bundle, b"poisoned bundle");
+            let slot = BlobFallbackSlot::default();
+            slot.install(source.clone());
+            let carol_dir = tempfile::TempDir::new().unwrap();
+            let carol = TilesetTransfer::new(Arc::new(network.transport("carol")), carol_dir.path())
+                .with_child_source(slot);
+            let forged = carol
+                .start_download(&providers, "valley", root, None)
+                .await
+                .expect("the download runs");
+            assert!(forged.complete.is_none(), "forged source bytes never complete a download");
+            assert!(
+                matches!(
+                    forged.failed.as_slice(),
+                    [(0, crate::tileset_transfer::ChunkError::Unavailable(_))]
+                ),
+                "the peers' miss stands: {:?}",
+                forged.failed
+            );
+            assert!(!carol.download_dir("valley").unwrap().join("0.bundle").exists());
+
+            source.answers.lock().unwrap().insert(bundle, b"genuine bundle");
+            let sourced = carol.download("valley", None).await.unwrap();
+            let complete = sourced.complete.expect("the source completes the download");
+            assert_eq!(
+                std::fs::read(&complete.bundle_paths[0]).unwrap(),
+                b"genuine bundle"
+            );
+            assert_eq!(
+                *source.asked.lock().unwrap(),
+                vec![bundle, bundle],
+                "only the missed bundle child is asked; the index came from the peer"
             );
         });
     }
