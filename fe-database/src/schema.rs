@@ -375,7 +375,14 @@ define_table! {
         /// any. Additive (`option<string>`, no DEFAULT) so an old peer's
         /// SCHEMAFULL row coercion is unaffected by its absence.
         #[serde(default, skip_serializing_if = "Option::is_none")]
-        payload_id: Option<String> => "TYPE option<string>"
+        payload_id: Option<String> => "TYPE option<string>",
+        /// R24 host-stamped extension provenance, both or neither: the sealed
+        /// package a PluginCommit flush wrote this reading under. Additive like
+        /// `payload_id`; see AGENTS.md §iot-readings.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        ext_package_id: Option<String> => "TYPE option<string>",
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        ext_content_hash: Option<String> => "TYPE option<string>"
     }
 }
 

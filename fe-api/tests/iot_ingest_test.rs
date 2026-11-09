@@ -374,6 +374,7 @@ async fn guarded_query_reads_iot_rows_scope_filtered() {
     seed_petal(&db, &pb).await;
     seed_node(&db, &pa, "sensor-a", 0.0, 0.0).await;
     seed_node(&db, &pb, "sensor-b", 0.0, 0.0).await;
+    let writer = db.clone();
     let state = test_state(db);
 
     for (petal, sensor, val) in [(&pa, "sensor-a", 1.0), (&pb, "sensor-b", 2.0)] {
@@ -413,6 +414,48 @@ async fn guarded_query_reads_iot_rows_scope_filtered() {
     assert_eq!(rows.len(), 1, "petal-B reading must be scope-filtered out");
     assert_eq!(rows[0]["petal_id"], pa.as_str());
     assert_eq!(rows[0]["value"].as_f64(), Some(1.0));
+
+    // R24 stamp-and-stop (OD-E1): the PluginCommit arm's door call stamps an extension's reading
+    // with the host-minted package identity, and revocation hides nothing, so the guard returns both.
+    let package = fe_runtime::plugin_host::PackageIdentity::new(
+        "org.example.fleet-sim".into(),
+        "ab".repeat(32),
+    )
+    .unwrap();
+    let landed = fe_database::handlers::iot_reading::insert_readings_with_provenance(
+        &writer,
+        &pa,
+        Some("v1"),
+        "did:key:z6MkHost",
+        fe_sdk::source_class::SourceClass::Simulation,
+        Some(&package),
+        &[reading("sensor-a", "temperature_c", 3.0, None)],
+        None,
+        None,
+    )
+    .await
+    .expect("an extension reading passes the same door");
+    assert_eq!(landed, 1);
+    let rows = query_guard::run_guarded_query(
+        db,
+        &guarded,
+        &std::collections::HashMap::new(),
+        limits::QUERY_ROW_CAP,
+    )
+    .await
+    .expect("guarded query runs");
+    assert_eq!(rows.len(), 2, "a stamped reading is never excluded");
+    let (stamped, door): (Vec<_>, Vec<_>) = rows
+        .iter()
+        .partition(|row| row.get("ext_package_id").is_some_and(|id| !id.is_null()));
+    assert_eq!(stamped.len(), 1);
+    assert_eq!(stamped[0]["value"].as_f64(), Some(3.0));
+    assert_eq!(stamped[0]["ext_package_id"], "org.example.fleet-sim");
+    assert_eq!(stamped[0]["ext_content_hash"], serde_json::json!("ab".repeat(32)));
+    assert!(
+        door[0].get("ext_content_hash").is_none_or(serde_json::Value::is_null),
+        "a REST-door reading carries no extension provenance"
+    );
 }
 
 // ---------------------------------------------------------------------------

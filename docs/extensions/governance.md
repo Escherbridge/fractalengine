@@ -2,7 +2,7 @@
 type: reference
 title: Extension governance contract
 track: extension_platform_20261107
-status: draft (P0.5; built in P2.2 / slice E10; D1 finalizes after OD-E1)
+status: draft (P0.5; built in P2.2 / slice E10 and P2.3 / slice E10W; OD-E1 decided 2026-11-08, D2 applies the S-PLUGIN row)
 ---
 
 # Extension governance
@@ -190,10 +190,20 @@ reason beside its state. The portal track maps these states to its own (`Admitte
 
 | Layer | Who | Scope | Running instances | Latency |
 |---|---|---|---|---|
-| (a) Disable | local DID | one installation or one binding | stop (`disabled`); one final flush | next tick |
-| (b) Disable all / `FE_EXT_DISABLE_ALL=1` | local DID / operator | the whole host | stop (`disabled`) | next tick |
-| (c) Policy removal | verse Manager+ | that verse, every peer | stop (`policy-denied`); no final flush | one tick after the row arrives |
-| (d) Revocation list | a `revocation = true` root | every host trusting that root | stop (`revoked`); lease revoked; no final flush | one OD-8 pull interval |
+| (a) Disable | local DID | one installation or one binding | stop (`disabled`); drain; one final flush | next tick |
+| (b) Disable all / `FE_EXT_DISABLE_ALL=1` | local DID / operator | the whole host | stop (`disabled`); drain; one final flush | next tick |
+| (c) Policy removal | verse Manager+ | that verse, every peer | stop (`policy-denied`); drain; no final flush | one tick after the row arrives |
+| (d) Revocation list | a `revocation = true` root | every host trusting that root | stop (`revoked`); drain; no final flush; then the lease is revoked | one OD-8 pull interval |
+
+**Stop order (every layer, OD-E1).** 1. The instance leaves the bus: queued calls answer
+`not-available`, subscriptions end with the layer's reason, no new command or subscription is
+accepted. 2. No further tick runs. 3. **Drain:** the one commit already in flight (one per instance,
+R4) is awaited, bounded by the host's final-flush wait, while the lease is still live, so it lands
+whole with its true receipt. A commit with no answer by then is counted `unknown` and is never
+retried; once the lease is revoked in step 5 a commit still queued is refused at the DB's use
+check, so nothing lands partially. 4. Staged writes get one final flush for (a) and (b); for (c)
+and (d) they are discarded. 5. The lease is revoked and the context unbound. Rows already written
+stay (§Provenance).
 
 **Revocation list** (plugin_host_revival §4, a public wire contract, `schema_version: 1`):
 `{schema_version, issued_at, entries: [{package_id, content_hash, reason, revoked_at}],
@@ -204,9 +214,9 @@ package id (its `content_hash` against a package's `content_hash`, `component_di
 copy of a revoked build is still revoked. The list signs `entries` and `issued_at` only;
 `schema_version` is checked before verification and `signer_key_id` selects the root, so neither
 needs signing. When a
-host accepts a list matching an installed package, it refuses activation AND revokes the lease of
-every running instance within one poll. A commit already admitted completes with its true receipt:
-revocation is not rollback.
+host accepts a list matching an installed package, it refuses activation AND stops every running
+instance within one poll, in the stop order above: the in-flight commit drains, then the lease is
+revoked. Revocation is stop, not rollback and not withdrawal: what the build wrote stays (OD-E1).
 
 ### Kill-list override
 
@@ -263,32 +273,54 @@ denials included (R21 AC). Stream events and query re-runs are not audited ([bus
   while a `denial` entry records the refusal. Its materializer touches no scene row and is a no-op
   on replay.
 
-## Provenance (R24, waits for OD-E1)
+## Provenance (R24: stamp and stop, OD-E1 decided 2026-11-08)
+
+User decision 2026-11-08: a revoked build stops after its in-flight writes complete, and the rows it
+wrote stay. R24 is therefore stamp-and-stop: no withdrawal, no re-judge, no readings exclusion.
 
 Every scene version and reading written through the extension path carries a host-stamped
-`{package_id, content_hash}`. The PluginCommit handler stamps it from the host-minted admission
-(slice E4 adds the package identity to `PluginAdmission`; stamping lands with E10W). No WIT call
-can set or strip it.
+`{package_id, content_hash}`: the verified package's identity, minted into the `PluginAdmission`
+at activation (`fe_runtime::plugin_host::PackageIdentity`) and copied onto rows by the DB handler.
+The guest never names either value, so no WIT call can set or strip it.
 
-- **Scene versions:** in the versioned snapshot, beside the version's write clock.
-- **Readings:** additive optional `iot_reading` fields `ext_package_id`, `ext_content_hash`,
-  omitted when absent (the `payload_id` precedent).
-- **Withdrawal:** a host that accepts a revocation list re-judges the affected verses (one batch
-  per verse, §rejudge-on-demotion discipline). Versions with revoked provenance are inadmissible:
-  the newest admissible version is restored, or the node is removed. Readings with revoked
-  provenance are excluded at the scope-substitution seam and on the distributed partial path.
-- **Reversible:** removing the trust root restores visibility; nothing is physically deleted (OD-E9).
+| Row | Where the stamp lives | Replicates |
+|---|---|---|
+| Scene version | the journal fact, `node_log.payload.ext = {package_id, content_hash}`, beside the fact's `hlc_timestamp` (its write clock); the op-log `PluginTransaction` intention carries the same pair as `payload.package` | no: `node_log` and `op_log` are local |
+| Reading | additive `option<string>` columns `ext_package_id`, `ext_content_hash` on `iot_reading`, omitted when unstamped (the `payload_id` precedent) | yes, with the row |
+
+- **Why scene provenance stays local.** The spec put it in the replicated `_fe_scene` marker so
+  that peers could re-judge withdrawn versions. With no withdrawal, no peer reads it. And the
+  marker is strict (exactly four keys): an added key would make every peer deny extension-written
+  snapshots. The authoring host's journal is the audit record (OD-E7: audit is local).
+- **Revocation is stop, not withdrawal.** A host that accepts a list naming an installed build
+  stops its instances in the [stop order](#kill-switch-layers-r23). Nothing is re-judged, restored,
+  removed or hidden, on any peer. Readings stay visible at the scope-substitution seam, in
+  `/api/v1/query` and in the distributed partials.
+- **Filtering.** The stamp is a filter key, not a visibility switch. Readings filter by
+  `ext_package_id` / `ext_content_hash` in a guarded query on any upgraded peer; scene versions
+  filter through the authoring host's journal. A user who wants a revoked build's rows gone
+  deletes them like any rows, under their own role.
+- **Inbound shape.** A peer denies a replicated reading that carries only one of the two columns,
+  or a pair `PackageIdentity::new` would refuse (strictest reader). A stamp from a peer is that
+  author's attestation, judged role-at-write like the rest of the row.
+- **Upgrade.** An older peer's SCHEMAFULL `iot_reading` lacks the `ext_*` columns, so it fails to
+  create a stamped reading (logged, not applied). Peers upgrade together, as with `payload_id`.
+- **Not yet covered.** The window-membership door digest (fe-database `canon_log` §observation)
+  does not include the stamp; adding it is a canonical-log contract change, deferred.
 - **Portal writes** (portal_surface_20261107 `ipc-v1.md` A-13): an admitted web bundle has an
   installation but no instance, so its `act set_property` rides the same `DbCommand::PluginCommit`
   seam as a one-op commit outside any tick, under the bundle's own host-minted admission (same DB
   re-checks, provenance `{package_id, content_hash}` of the bundle). It never enters an extension
   instance's window, and the portal's `set_property` budget (2/s) bounds its DB-thread cost.
 
-## OD-E1: proposed S-PLUGIN amendment (not applied)
+## OD-E1: decided, stop and keep (S-PLUGIN amendment)
 
-Handed to the orchestrator for ratification with the user; slice D1 applies it to
-`conductor/open-core.md` only if OD-E1 is ratified. It also records D-X1's package shape, which
-changes the row's "manifest + payload hash" wording regardless of OD-E1.
+User decision 2026-11-08: the kill switch does NOT withdraw rows. A revoked build is refused
+activation and its running instances stop after their in-flight writes complete; the rows they
+wrote stay, stamped for audit and filtering. Slice D2 applies the amended row below to
+`conductor/open-core.md` as a versioned seam change. Slice D1 (the withdrawal variant) does not run.
+The row also records D-X1's package shape and the two identity rules from the 2026-11-08 20:10
+security steer, which stand regardless of OD-E1.
 
 **Current row** (`conductor/open-core.md`):
 
@@ -297,7 +329,7 @@ changes the row's "manifest + payload hash" wording regardless of OD-E1.
 > `(package_id, content_hash)` for withdrawn or malicious packages, accepted only from trust roots
 > marked for revocation; it never revokes a licence.
 
-**Proposed row (S-PLUGIN v2):**
+**Amended row (S-PLUGIN v2):**
 
 > Publisher-signed plugin packages (a sealed `.hexon` of type `plugin`: ed25519 over the canonical
 > manifest, which commits every member and the package id; optional counter-signatures over the
@@ -305,18 +337,14 @@ changes the row's "manifest + payload hash" wording regardless of OD-E1.
 > signed revocation list. The list is a package-level kill switch whose entries
 > `(package_id, content_hash)` match by hash under any package id, for withdrawn or malicious
 > packages, accepted only from trust roots marked for revocation; it never revokes a licence. A
-> host that accepts a list naming an
-> installed pair refuses activation, stops running instances, and withdraws what they wrote: scene
-> versions and readings written through the extension path carry host-stamped provenance
-> `(package_id, content_hash)`, and versions with revoked provenance are inadmissible on re-judge
-> (the newest admissible version is restored or the node removed; readings are excluded from
-> reads). Withdrawal is reversible: removing the trust root restores them; nothing is physically
-> deleted.
+> host that accepts a list naming an installed build refuses its activation (unless the verse
+> Owner recorded an audited override for that verse on the Owner's own host) and stops its running
+> instances after their in-flight writes complete. Rows they wrote stay, carrying host-stamped
+> provenance `(package_id, content_hash)` for audit and filtering.
 
-If OD-E1 is refused, keep the current row with the package-shape wording AND the two identity rules
-updated (the signed id with install-id equality, and hash matching under any id). Those two are the
-2026-11-08 20:10 security steer, not part of OD-E1, so they stand either way; only the withdrawal
-sentences drop, and R24 shrinks to stop-and-refuse.
+What changed from the proposal: the withdrawal sentences (re-judge, restore or remove, readings
+excluded from reads, reversible on trust-root removal) are gone; the drain, the stamp and the
+Owner override are in. In this track R24 shrinks to stamp-and-stop: §Provenance above, slice E10W.
 
 ## Journeys
 
@@ -326,6 +354,14 @@ sentences drop, and R24 shrinks to stop-and-refuse.
   a remote DID's install on a host-off host answers the uniform not-found (not `host-off`); its
   11th call inside one second answers 429 and adds no audit entry; a verse `deny` naming a build's
   `component_digest` refuses that build re-sealed under a new id with `policy-denied`.
-- **J7** (P2.3, the op_log re-judge block): seed an extension-provenance version over a manual
-  baseline; accept a revocation list (baseline restored, the extension-created node removed, a
-  manual property edit survives); remove the trust root (the withdrawn versions return).
+- **J7 stamp-and-stop** (P2.3, OD-E1):
+  - `fe-database/src/op_log.rs` plugin block: a sealed-package batch writes a journal fact whose
+    `payload.ext` is the admission's pair, beside a positive write clock. After the lease is
+    revoked, the next commit is refused with no op-log row, and the row and its stamped fact stay.
+  - `fe-api/tests/iot_ingest_test.rs::guarded_query_reads_iot_rows_scope_filtered`: a stamped
+    extension reading reads back through the guarded query beside an unstamped REST-door reading.
+    Nothing is excluded.
+  - `replicated_row` timeseries journey: a stamped reading joins the union with its stamp; a
+    half stamp is denied.
+  - `fe-plugin/src/tick.rs` J1: a `revoked` stop with a flush in flight settles that flush
+    before the lease goes and submits nothing new.

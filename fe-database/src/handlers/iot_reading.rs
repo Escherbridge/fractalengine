@@ -1,6 +1,7 @@
 //! IoT sensor-reading write path (append-only) — see `src/AGENTS.md` §iot-readings.
 
 use fe_query::{Filter, InsertBuilder, QueryBuilder, QueryValue};
+use fe_runtime::plugin_host::PackageIdentity;
 use fe_sdk::source_class::SourceClass;
 
 use crate::canon_log::observation::{reading_door_digest, HotReading};
@@ -116,6 +117,34 @@ pub async fn insert_readings_with_replication(
     blob_store: Option<&BlobStoreHandle>,
     repl_tx: Option<&ReplicationSender>,
 ) -> Result<usize, IotIngestError> {
+    insert_readings_with_provenance(
+        db,
+        petal_id,
+        verse_id,
+        source_did,
+        source_class,
+        None,
+        readings,
+        blob_store,
+        repl_tx,
+    )
+    .await
+}
+
+/// [`insert_readings_with_replication`] that stamps every row with an extension's host-minted
+/// `{package_id, content_hash}` (R24); `None` writes unstamped rows — see `src/AGENTS.md` §iot-readings.
+#[allow(clippy::too_many_arguments)]
+pub async fn insert_readings_with_provenance(
+    db: &Db,
+    petal_id: &str,
+    verse_id: Option<&str>,
+    source_did: &str,
+    source_class: SourceClass,
+    provenance: Option<&PackageIdentity>,
+    readings: &[IotReadingInput],
+    blob_store: Option<&BlobStoreHandle>,
+    repl_tx: Option<&ReplicationSender>,
+) -> Result<usize, IotIngestError> {
     if readings.is_empty() {
         return Ok(0);
     }
@@ -183,8 +212,8 @@ pub async fn insert_readings_with_replication(
         };
         let (hlc_packed, _hlc_str) = next_hlc_timestamp();
         let reading_id = ulid::Ulid::new().to_string();
-        // `strip_json_nulls`: `payload_id` is `option<string>`, which rejects an
-        // explicit JSON null — an unlinked reading must OMIT the field (NONE).
+        // `strip_json_nulls`: `payload_id` and the `ext_*` pair are `option<string>`, which
+        // rejects an explicit JSON null — an unlinked or unstamped reading OMITS them (NONE).
         let row = crate::repo::strip_json_nulls(serde_json::json!({
             "reading_id": reading_id.clone(),
             "node_id": r.node_id,
@@ -197,6 +226,8 @@ pub async fn insert_readings_with_replication(
             "hlc_timestamp": hlc_packed as i64,
             "source_did": source_did,
             "payload_id": r.payload_id,
+            "ext_package_id": provenance.map(PackageIdentity::package_id),
+            "ext_content_hash": provenance.map(PackageIdentity::content_hash),
         }));
         // The door's commitment to exactly what it accepted (`canon_log/AGENTS.md`
         // §observation, door digest); recorded only when membership is.

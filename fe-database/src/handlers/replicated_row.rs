@@ -1105,7 +1105,8 @@ fn confine_device_format(verse_id: &str, row: &serde_json::Value) -> anyhow::Res
 }
 
 /// `iot_reading`: its petal is here, its anchor node is a node of that petal,
-/// and an R5 `payload_id` link names a payload of the same petal.
+/// an R5 `payload_id` link names a payload of the same petal, and an R24
+/// extension stamp is a whole, well-formed `{package_id, content_hash}`.
 async fn confine_reading(
     db: &Db,
     verse_id: &str,
@@ -1132,6 +1133,19 @@ async fn confine_reading(
                 ))
             }
         }
+    }
+    // R24 host-stamped provenance: both columns or neither, in the stamping host's own shape.
+    match (present(row, "ext_package_id"), present(row, "ext_content_hash")) {
+        (None, None) => {}
+        (Some(package_id), Some(content_hash)) => {
+            let stamp = package_id.as_str().zip(content_hash.as_str()).map(|(id, hash)| {
+                fe_runtime::plugin_host::PackageIdentity::new(id.to_owned(), hash.to_owned())
+            });
+            if !matches!(stamp, Some(Ok(_))) {
+                return deny("iot_reading extension provenance is malformed");
+            }
+        }
+        _ => return deny("iot_reading extension provenance names only one of its two fields"),
     }
     Ok(Confined::Gate {
         scopes: vec![scope],
@@ -3858,6 +3872,47 @@ mod tests {
         }
 
         assert_eq!(reading_count(&db).await, 3, "exactly the union of facts");
+
+        // R24: an extension-stamped fact joins the union with its stamp; a half stamp is denied.
+        let mut stamped: serde_json::Value =
+            serde_json::from_slice(&reading_row("reading-4", "node-a", 4.0)).unwrap();
+        stamped["ext_package_id"] = serde_json::json!("org.example.fleet-sim");
+        stamped["ext_content_hash"] = serde_json::json!("ab".repeat(32));
+        let outcome = apply_replicated_row_handler(
+            &db,
+            "v1",
+            "iot_reading",
+            "reading-4",
+            &serde_json::to_vec(&stamped).unwrap(),
+            "did:key:carol",
+            None,
+        )
+        .await
+        .unwrap();
+        assert_eq!(outcome, ReplicatedRowOutcome::Applied);
+        let rows = select_json(
+            &db,
+            "SELECT * FROM iot_reading WHERE reading_id = 'reading-4'",
+        )
+        .await;
+        assert_eq!(rows[0]["ext_package_id"], "org.example.fleet-sim");
+        assert_eq!(rows[0]["ext_content_hash"], serde_json::json!("ab".repeat(32)));
+
+        stamped["reading_id"] = serde_json::json!("reading-5");
+        stamped.as_object_mut().unwrap().remove("ext_content_hash");
+        let outcome = apply_replicated_row_handler(
+            &db,
+            "v1",
+            "iot_reading",
+            "reading-5",
+            &serde_json::to_vec(&stamped).unwrap(),
+            "did:key:carol",
+            None,
+        )
+        .await
+        .unwrap();
+        assert_eq!(outcome, ReplicatedRowOutcome::Denied);
+        assert_eq!(reading_count(&db).await, 4, "a half-stamped reading never lands");
     }
 
     /// A12: readings are never tombstoned — the empty iroh-docs `del` entry is

@@ -231,6 +231,23 @@ signature is unchanged (it always passes `verse_id: None`, so window
 membership — gated on a known verse — never fires on that path; its fixed
 `SourceClass::Device` default is therefore never actually read).
 
+**R24 extension provenance (extension_platform_20261107 E10W, OD-E1 stamp-and-stop).**
+`insert_readings_with_provenance` is the door body; `insert_readings_with_replication`
+delegates to it with `None`. The PluginCommit flush passes the admission's
+host-minted `fe_runtime::plugin_host::PackageIdentity`, so every reading an extension
+writes carries `ext_package_id` + `ext_content_hash` (additive `option<string>`
+columns, omitted when unstamped: the `payload_id` precedent). The guest never names
+either value. The pair replicates with the row; `replicated_row::confine_reading`
+denies a half stamp or one `PackageIdentity::new` would refuse (strictest reader).
+Revocation never touches these rows: no exclusion at the scope-substitution seam or
+in ts partials, so the stamp is a filter key, not a visibility switch. Limits: an
+older peer's SCHEMAFULL table lacks the columns and fails the create of a stamped
+row (peers upgrade together, as with `payload_id`); the window-membership door digest
+does not cover the stamp yet (a canonical-log contract change, deferred). Scene
+versions carry the same pair in the local journal fact (`node_log.payload.ext`),
+never in the replicated `_fe_scene` marker (docs/extensions/governance.md
+Provenance section).
+
 **Typed rejection across the DB-thread seam (F24).** The dispatch loop's
 `InsertIotReadings` arm maps a validation failure (`IotIngestError::{
 UnknownAnchor, InvalidTimestamp, EmptyMetric}`) into
