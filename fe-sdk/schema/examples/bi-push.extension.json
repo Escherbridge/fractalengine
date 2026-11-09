@@ -1,0 +1,34 @@
+{
+  "manifest_version": 2,
+  "id": "org.example.bi-push",
+  "version": "0.1.0",
+  "name": "BI push connector",
+  "description": "Pushes the petal's latest readings as JSON to one declared HTTPS endpoint whenever they change.",
+  "kind": "bi-connector",
+  "contract": "fractalengine:plugin@2.0.0",
+  "binding": "petal",
+  "tick": { "cadence_ms": 5000, "fuel": 1000000 },
+  "egress": [
+    {
+      "id": "sink",
+      "transport": "http",
+      "url": "https://bi.example.org/ingest/",
+      "methods": ["POST"],
+      "max_request_bytes": 1048576,
+      "max_response_bytes": 4096,
+      "timeout_ms": 10000,
+      "rate_hz": 1,
+      "auth": { "scheme": "bearer", "credential": "bi-sink" }
+    }
+  ],
+  "bus": {
+    "consume": [
+      {
+        "source": "host/query",
+        "id": "latest",
+        "sql": "SELECT node_id, metric, value, units, recorded_at, recorded_at_ms FROM iot_reading ORDER BY recorded_at_ms DESC LIMIT 500",
+        "min_interval_ms": 5000
+      }
+    ]
+  }
+}

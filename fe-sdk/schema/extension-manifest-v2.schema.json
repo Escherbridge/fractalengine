@@ -1,0 +1,517 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://fractalengine.dev/schema/extension-manifest-v2.schema.json",
+  "title": "FractalEngine extension manifest v2 (plugin/extension.json)",
+  "$comment": "STRUCTURE ONLY. Policy rules with distinct refusal reasons (empty-scope, insecure-endpoint, cadence-below-floor, cadence-required, source-class-mismatch, undeclared-command, undeclared-stream, unknown-source, reserved-kind, scope-conflict, duplicate-id, over-host-ceiling) are semantic and normative in docs/extensions/manifest-v2.md section 'Validation'. One validator (fe-sdk manifest_v2, slice E2) runs schema then semantics for both fe-ext validate and REST install. Unknown fields are refused everywhere: a field this host cannot enforce must never be silently ignored.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["manifest_version", "id", "version", "name", "kind", "contract", "binding"],
+  "properties": {
+    "manifest_version": { "const": 2 },
+    "id": {
+      "description": "package_id: reverse-DNS, lowercase, at least two labels. Must equal the sealed hexon's signed hexon_id and the id the install names (id-mismatch otherwise).",
+      "type": "string",
+      "maxLength": 128,
+      "pattern": "^[a-z][a-z0-9-]*(\\.[a-z][a-z0-9-]*)+$"
+    },
+    "version": {
+      "description": "Semantic version of this build; equals the hexon manifest version.",
+      "type": "string",
+      "maxLength": 64,
+      "pattern": "^(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)(-[0-9A-Za-z.-]+)?(\\+[0-9A-Za-z.-]+)?$"
+    },
+    "name": { "type": "string", "minLength": 1, "maxLength": 80 },
+    "description": { "type": "string", "maxLength": 1000 },
+    "kind": {
+      "description": "Content type inside the Plugin family. web-bundle is reserved for portal_surface_20261107 (refused by the extension host with reserved-kind).",
+      "enum": ["simulation", "device-adapter", "bi-connector", "general", "web-bundle"]
+    },
+    "contract": {
+      "description": "The WIT package the component targets.",
+      "type": "string",
+      "pattern": "^fractalengine:plugin@[0-9]+\\.[0-9]+\\.[0-9]+$"
+    },
+    "binding": {
+      "description": "One petal per activation (OD-E3).",
+      "const": "petal"
+    },
+    "scene": { "$ref": "#/$defs/scene" },
+    "readings": { "$ref": "#/$defs/readings" },
+    "routes": {
+      "description": "Grants the routes interface over route nodes in the bound petal.",
+      "type": "boolean"
+    },
+    "tick": { "$ref": "#/$defs/tick" },
+    "kv": { "$ref": "#/$defs/kv" },
+    "ingress": {
+      "type": "array",
+      "maxItems": 16,
+      "items": { "$ref": "#/$defs/ingressEndpoint" }
+    },
+    "egress": {
+      "type": "array",
+      "maxItems": 16,
+      "items": { "$ref": "#/$defs/egressEndpoint" }
+    },
+    "bus": { "$ref": "#/$defs/bus" },
+    "ui": {
+      "type": "array",
+      "maxItems": 32,
+      "items": { "$ref": "#/$defs/uiContribution" }
+    },
+    "portal": {
+      "$comment": "Reserved: owned and specified by portal_surface_20261107 (D-X5); only meaningful with kind web-bundle.",
+      "type": "object"
+    }
+  },
+  "$defs": {
+    "localId": {
+      "type": "string",
+      "pattern": "^[a-z][a-z0-9-]{0,31}$"
+    },
+    "packageId": {
+      "type": "string",
+      "maxLength": 128,
+      "pattern": "^[a-z][a-z0-9-]*(\\.[a-z][a-z0-9-]*)+$"
+    },
+    "role": {
+      "enum": ["viewer", "editor", "manager", "owner"]
+    },
+    "rateHz": {
+      "type": "number",
+      "exclusiveMinimum": 0,
+      "maximum": 100
+    },
+    "propertyPattern": {
+      "description": "An exact key, a prefix ending in '*', or '*' alone.",
+      "type": "string",
+      "pattern": "^(\\*|[A-Za-z0-9_.:-]{1,255}\\*?)$"
+    },
+    "endpointUrl": {
+      "description": "Absolute URL. Non-TLS schemes are allowed by structure only for loopback hosts (semantic rule insecure-endpoint).",
+      "type": "string",
+      "maxLength": 2048,
+      "pattern": "^(https|http|wss|ws|mqtts|mqtt)://[^\\s/?#*]+(/[^\\s#]*)?$"
+    },
+    "auth": {
+      "description": "A host-side credential slot. The value lives in the host's local credential store; it never enters the manifest, the replicated store or the guest.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["scheme", "credential"],
+      "properties": {
+        "scheme": { "enum": ["bearer", "basic", "header", "mqtt-password"] },
+        "credential": { "type": "string", "pattern": "^[a-z][a-z0-9-]{0,63}$" },
+        "header": {
+          "description": "Header name; required when scheme is header.",
+          "type": "string",
+          "pattern": "^[A-Za-z][A-Za-z0-9-]{0,63}$"
+        }
+      }
+    },
+    "scene": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "read": {
+          "description": "Grants scene.get-node / scene.query-nodes and host/node-changes in the bound petal.",
+          "type": "boolean"
+        },
+        "write": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": { "enum": ["create_node", "set_transform", "set_property", "delete_node"] }
+        },
+        "property_scope": {
+          "description": "Property keys readable in snapshots and writable by set_property. An empty list is refused (empty-scope); '*' must be explicit.",
+          "type": "array",
+          "uniqueItems": true,
+          "maxItems": 64,
+          "items": { "$ref": "#/$defs/propertyPattern" }
+        }
+      }
+    },
+    "sourceClass": {
+      "description": "fe-sdk SourceClass names an extension may write as (manual and decoder are not extension classes).",
+      "enum": ["simulation", "device", "connector"]
+    },
+    "readings": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["source_class", "metrics"],
+      "properties": {
+        "source_class": {
+          "description": "One class, or the set the operator picks ONE from at bind time (never inferred).",
+          "oneOf": [
+            { "$ref": "#/$defs/sourceClass" },
+            {
+              "type": "array",
+              "uniqueItems": true,
+              "minItems": 1,
+              "items": { "$ref": "#/$defs/sourceClass" }
+            }
+          ]
+        },
+        "metrics": {
+          "type": "array",
+          "uniqueItems": true,
+          "maxItems": 128,
+          "items": { "type": "string", "pattern": "^(\\*|[A-Za-z0-9_.:-]{1,128})$" }
+        }
+      }
+    },
+    "tick": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["cadence_ms"],
+      "properties": {
+        "cadence_ms": { "type": "integer", "minimum": 1, "maximum": 3600000 },
+        "max_ops": { "type": "integer", "minimum": 0, "maximum": 64 },
+        "max_readings": { "type": "integer", "minimum": 0, "maximum": 1000 },
+        "fuel": {
+          "description": "Fuel per hook call (on-tick and every other hook). The host's ceiling applies (over-host-ceiling).",
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 1000000000
+        }
+      }
+    },
+    "kv": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["max_bytes"],
+      "properties": {
+        "max_bytes": { "type": "integer", "minimum": 1, "maximum": 1048576 }
+      }
+    },
+    "ingressEndpoint": {
+      "type": "object",
+      "required": ["id", "transport"],
+      "properties": {
+        "transport": { "enum": ["http-server", "websocket-accept", "websocket-dial", "mqtt"] }
+      },
+      "oneOf": [
+        { "$ref": "#/$defs/ingressHttpServer" },
+        { "$ref": "#/$defs/ingressWebsocketAccept" },
+        { "$ref": "#/$defs/ingressWebsocketDial" },
+        { "$ref": "#/$defs/ingressMqtt" }
+      ]
+    },
+    "ingressHttpServer": {
+      "description": "Mounted at /api/v1/petals/{petal_id}/extensions/{package_id}/ingress/{id} behind bearer auth.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "transport", "methods", "max_body_bytes", "rate_hz"],
+      "properties": {
+        "id": { "$ref": "#/$defs/localId" },
+        "transport": { "const": "http-server" },
+        "methods": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": { "enum": ["GET", "POST", "PUT"] }
+        },
+        "content_types": {
+          "type": "array",
+          "uniqueItems": true,
+          "maxItems": 8,
+          "items": { "type": "string", "maxLength": 128 }
+        },
+        "max_body_bytes": { "type": "integer", "minimum": 1, "maximum": 1048576 },
+        "rate_hz": { "$ref": "#/$defs/rateHz" },
+        "role_floor": { "$ref": "#/$defs/role" },
+        "sub_paths": { "type": "boolean" },
+        "forward_headers": {
+          "type": "array",
+          "uniqueItems": true,
+          "maxItems": 8,
+          "items": { "type": "string", "pattern": "^[a-z][a-z0-9-]{0,63}$" }
+        }
+      }
+    },
+    "ingressWebsocketAccept": {
+      "description": "Upgrades on the same mount as http-server.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "transport", "max_frame_bytes", "rate_hz", "max_connections"],
+      "properties": {
+        "id": { "$ref": "#/$defs/localId" },
+        "transport": { "const": "websocket-accept" },
+        "max_frame_bytes": { "type": "integer", "minimum": 1, "maximum": 1048576 },
+        "rate_hz": { "$ref": "#/$defs/rateHz" },
+        "max_connections": { "type": "integer", "minimum": 1, "maximum": 256 },
+        "role_floor": { "$ref": "#/$defs/role" }
+      }
+    },
+    "ingressWebsocketDial": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "transport", "url", "max_frame_bytes", "rate_hz"],
+      "properties": {
+        "id": { "$ref": "#/$defs/localId" },
+        "transport": { "const": "websocket-dial" },
+        "url": { "$ref": "#/$defs/endpointUrl" },
+        "max_frame_bytes": { "type": "integer", "minimum": 1, "maximum": 1048576 },
+        "rate_hz": { "$ref": "#/$defs/rateHz" },
+        "auth": { "$ref": "#/$defs/auth" },
+        "reconnect_ms": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["min", "max"],
+          "properties": {
+            "min": { "type": "integer", "minimum": 250, "maximum": 600000 },
+            "max": { "type": "integer", "minimum": 250, "maximum": 600000 }
+          }
+        }
+      }
+    },
+    "ingressMqtt": {
+      "description": "The host is an MQTT client of the declared broker, subscribed to the declared topic filters.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "transport", "broker", "topics", "max_payload_bytes", "rate_hz"],
+      "properties": {
+        "id": { "$ref": "#/$defs/localId" },
+        "transport": { "const": "mqtt" },
+        "broker": { "$ref": "#/$defs/endpointUrl" },
+        "topics": {
+          "type": "array",
+          "uniqueItems": true,
+          "maxItems": 16,
+          "items": { "type": "string", "minLength": 1, "maxLength": 256 }
+        },
+        "qos": { "enum": ["at-most-once", "at-least-once"] },
+        "max_payload_bytes": { "type": "integer", "minimum": 1, "maximum": 1048576 },
+        "rate_hz": { "$ref": "#/$defs/rateHz" },
+        "auth": { "$ref": "#/$defs/auth" }
+      }
+    },
+    "egressEndpoint": {
+      "type": "object",
+      "required": ["id", "transport"],
+      "properties": {
+        "transport": { "enum": ["http", "mqtt"] }
+      },
+      "oneOf": [
+        { "$ref": "#/$defs/egressHttp" },
+        { "$ref": "#/$defs/egressMqtt" }
+      ]
+    },
+    "egressHttp": {
+      "description": "Requests go to url + a relative path only; https unless the host is loopback.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "transport", "url", "methods", "rate_hz"],
+      "properties": {
+        "id": { "$ref": "#/$defs/localId" },
+        "transport": { "const": "http" },
+        "url": { "$ref": "#/$defs/endpointUrl" },
+        "methods": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": { "enum": ["GET", "POST", "PUT", "PATCH", "DELETE"] }
+        },
+        "max_request_bytes": { "type": "integer", "minimum": 0, "maximum": 8388608 },
+        "max_response_bytes": { "type": "integer", "minimum": 0, "maximum": 8388608 },
+        "timeout_ms": { "type": "integer", "minimum": 100, "maximum": 30000 },
+        "rate_hz": { "$ref": "#/$defs/rateHz" },
+        "auth": { "$ref": "#/$defs/auth" }
+      }
+    },
+    "egressMqtt": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "transport", "broker", "topics", "max_payload_bytes", "rate_hz"],
+      "properties": {
+        "id": { "$ref": "#/$defs/localId" },
+        "transport": { "const": "mqtt" },
+        "broker": { "$ref": "#/$defs/endpointUrl" },
+        "topics": {
+          "description": "Topic filters a publish topic must match (MQTT + and # semantics).",
+          "type": "array",
+          "uniqueItems": true,
+          "maxItems": 16,
+          "items": { "type": "string", "minLength": 1, "maxLength": 256 }
+        },
+        "qos": { "enum": ["at-most-once", "at-least-once"] },
+        "retain": { "type": "boolean" },
+        "max_payload_bytes": { "type": "integer", "minimum": 1, "maximum": 1048576 },
+        "rate_hz": { "$ref": "#/$defs/rateHz" },
+        "auth": { "$ref": "#/$defs/auth" }
+      }
+    },
+    "bus": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "expose": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "streams": {
+              "type": "array",
+              "maxItems": 16,
+              "items": { "$ref": "#/$defs/exposedStream" }
+            },
+            "commands": {
+              "type": "array",
+              "maxItems": 32,
+              "items": { "$ref": "#/$defs/exposedCommand" }
+            }
+          }
+        },
+        "consume": {
+          "type": "array",
+          "maxItems": 16,
+          "items": { "$ref": "#/$defs/consumeEntry" }
+        },
+        "call": {
+          "description": "Foreign commands this extension may call, as <package_id>/<command>.",
+          "type": "array",
+          "uniqueItems": true,
+          "maxItems": 16,
+          "items": { "type": "string", "maxLength": 161, "pattern": "^[a-z][a-z0-9-]*(\\.[a-z][a-z0-9-]*)+/[a-z][a-z0-9-]{0,31}$" }
+        }
+      }
+    },
+    "exposedStream": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "max_rate_hz", "max_event_bytes"],
+      "properties": {
+        "id": { "$ref": "#/$defs/localId" },
+        "description": { "type": "string", "maxLength": 200 },
+        "max_rate_hz": { "type": "number", "exclusiveMinimum": 0, "maximum": 50 },
+        "max_event_bytes": { "type": "integer", "minimum": 1, "maximum": 65536 },
+        "role_floor": { "$ref": "#/$defs/role" },
+        "external": {
+          "description": "Reachable by non-local DIDs (REST, WS, MCP). Default false: this host only.",
+          "type": "boolean"
+        },
+        "consumers": {
+          "description": "Restrict to these consumer packages. Absent = any consented consumer.",
+          "type": "array",
+          "uniqueItems": true,
+          "maxItems": 32,
+          "items": { "$ref": "#/$defs/packageId" }
+        }
+      }
+    },
+    "exposedCommand": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "role_floor", "rate_hz"],
+      "properties": {
+        "id": { "$ref": "#/$defs/localId" },
+        "description": { "type": "string", "maxLength": 200 },
+        "role_floor": { "$ref": "#/$defs/role" },
+        "rate_hz": { "type": "number", "exclusiveMinimum": 0, "maximum": 10 },
+        "external": {
+          "description": "Reachable by non-local DIDs (REST, WS, MCP). Default false: this host only.",
+          "type": "boolean"
+        },
+        "args_schema": {
+          "description": "A JSON Schema in the subset listed in docs/extensions/bus.md; absent = args must be {}.",
+          "type": "object"
+        }
+      }
+    },
+    "consumeEntry": {
+      "type": "object",
+      "required": ["source"],
+      "properties": {
+        "source": { "type": "string", "maxLength": 161, "pattern": "^[a-z][a-z0-9.-]*/[a-z][a-z0-9-]{0,31}$" }
+      },
+      "oneOf": [
+        { "$ref": "#/$defs/consumeQuery" },
+        { "$ref": "#/$defs/consumeReadings" },
+        { "$ref": "#/$defs/consumePlain" }
+      ]
+    },
+    "consumeQuery": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["source", "id", "sql"],
+      "properties": {
+        "source": { "const": "host/query" },
+        "id": { "$ref": "#/$defs/localId" },
+        "sql": {
+          "description": "One SELECT shown verbatim at consent, or '*' for any guarded SELECT inside the binding scope.",
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 8192
+        },
+        "min_interval_ms": { "type": "integer", "minimum": 1000, "maximum": 3600000 }
+      }
+    },
+    "consumeReadings": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["source"],
+      "properties": {
+        "source": { "const": "host/readings" },
+        "metrics": {
+          "type": "array",
+          "uniqueItems": true,
+          "maxItems": 128,
+          "items": { "type": "string", "pattern": "^(\\*|[A-Za-z0-9_.:-]{1,128})$" }
+        }
+      }
+    },
+    "consumePlain": {
+      "description": "host/node-changes, host/admission, or a foreign <package_id>/<stream>.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["source"],
+      "properties": {
+        "source": {
+          "type": "string",
+          "not": { "enum": ["host/query", "host/readings"] }
+        }
+      }
+    },
+    "uiContribution": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "slot", "label"],
+      "properties": {
+        "id": { "$ref": "#/$defs/localId" },
+        "slot": {
+          "enum": ["InspectorSection", "SidebarTool", "ViewportOverlay", "ToolbarAction", "ContextMenu", "DashboardWidget"]
+        },
+        "label": { "type": "string", "minLength": 1, "maxLength": 48 },
+        "icon": { "type": "string", "pattern": "^[a-z][a-z0-9-]{0,31}$" },
+        "command": {
+          "description": "ToolbarAction, SidebarTool, ContextMenu: an exposed command id of this package.",
+          "$ref": "#/$defs/localId"
+        },
+        "properties": {
+          "description": "InspectorSection: property keys shown as rows (inside scene.property_scope).",
+          "type": "array",
+          "uniqueItems": true,
+          "minItems": 1,
+          "maxItems": 16,
+          "items": { "type": "string", "pattern": "^[A-Za-z0-9_.:-]{1,255}$" }
+        },
+        "stream": {
+          "description": "DashboardWidget, ViewportOverlay: an exposed stream id of this package.",
+          "$ref": "#/$defs/localId"
+        },
+        "field": {
+          "description": "JSON Pointer into the stream event whose latest value is shown.",
+          "type": "string",
+          "maxLength": 128,
+          "pattern": "^(/[^/]*)*$"
+        },
+        "when": {
+          "description": "ContextMenu filter on the clicked node.",
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["property"],
+          "properties": {
+            "property": { "type": "string", "pattern": "^[A-Za-z0-9_.:-]{1,255}$" },
+            "equals": {}
+          }
+        }
+      }
+    }
+  }
+}

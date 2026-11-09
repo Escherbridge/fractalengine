@@ -1,0 +1,536 @@
+// UNSTABLE - not yet bound. No host binds this world until extension_platform P1.1 (E1)
+// lands component-model bindgen; every later edit needs a matching host change.
+//
+// fractalengine:plugin@2.0.0 - the ONE third-party extension contract (D-X1, spec R2).
+// Manifest: fe-sdk/schema/extension-manifest-v2.schema.json + docs/extensions/manifest-v2.md.
+// Bus semantics: docs/extensions/bus.md. Package: docs/extensions/package-format.md.
+// Design notes (async completions, handles, WASI policy, the 1.0 file): fe-plugin/wit/AGENTS.md.
+//
+// Rules every interface obeys:
+// - The guest holds no socket, file handle, clock source or SQL string. Every effect is
+//   host-brokered, declared in the manifest, consented and capability-checked at call time.
+// - Writes are STAGED into one per-instance window and flushed once per tick as ONE
+//   DbCommand::PluginCommit (spec R5). Nothing in this file writes to the store directly.
+// - Calls never block the plugin worker: network and cross-extension work is queued and
+//   completes later through an exported hook (egress-hooks, bus-hooks.on-call-result).
+// - A refused call returns host-error and changes nothing; it never traps.
+
+package fractalengine:plugin@2.0.0;
+
+/// Shared value types.
+interface types {
+    /// A node ULID.
+    type node-id = string;
+    /// UTF-8 JSON text. Every json value is parsed and size-checked by the host.
+    type json = string;
+    /// A websocket connection accepted or dialled for a declared ingress endpoint.
+    type connection-id = u64;
+
+    /// World-space vector (metres in a petal's local frame).
+    record vec3 {
+        x: f64,
+        y: f64,
+        z: f64,
+    }
+
+    /// Unit quaternion `[x, y, z, w]`, the fe-sdk NodeSnapshot convention.
+    record quat {
+        x: f64,
+        y: f64,
+        z: f64,
+        w: f64,
+    }
+
+    /// Why a host call was refused or did not complete.
+    variant host-error {
+        /// The manifest does not declare this capability, or consent does not cover it.
+        capability-denied(string),
+        /// The verse or local extension policy forbids it (a ceiling or a deny entry).
+        policy-denied(string),
+        /// An argument failed host-boundary validation (size, shape, scope, unknown id).
+        invalid-input(string),
+        /// The window, fuel, size or queue budget for this call is spent.
+        budget-exceeded(string),
+        /// A declared rate is exceeded; retry on a later call.
+        rate-limited(string),
+        /// The installation, binding or lease is no longer admitted.
+        revoked(string),
+        /// The host does not provide this surface in this process (e.g. a headless host).
+        not-available(string),
+        /// The store or a network peer failed; the call had no effect.
+        backend(string),
+        /// The outcome is unknown (transport timeout). Never retried automatically.
+        unknown-outcome(string),
+    }
+
+    /// One live node in the bound petal; properties are filtered to the declared property scope.
+    record node-snapshot {
+        node-id: node-id,
+        petal-id: string,
+        name: string,
+        position: vec3,
+        rotation: quat,
+        scale: vec3,
+        /// JSON object of the in-scope properties only.
+        properties: json,
+    }
+
+    /// The host-minted binding of one instance (one installation bound to one petal, OD-E3).
+    record binding {
+        /// Host-local installation id (stable across restarts, never replicated).
+        installation-id: string,
+        /// The package id from the manifest (`id`).
+        package-id: string,
+        /// blake3 hex of the canonical signed manifest bytes (docs/extensions/package-format.md).
+        content-hash: string,
+        verse-id: string,
+        fractal-id: string,
+        petal-id: string,
+        /// The host's local DID: the identity every write of this instance is authored as.
+        identity-did: string,
+        /// The readings source class chosen at bind time from the manifest's allowed set.
+        source-class: option<string>,
+    }
+
+    /// Where a bus command call came from (spec R14).
+    enum caller-kind {
+        ui,
+        rest,
+        mcp,
+        extension,
+        portal,
+    }
+
+    /// The authenticated caller of a command; the role floor was already checked by the host.
+    record caller {
+        /// The caller's DID (an extension or portal caller is the host's local DID).
+        did: string,
+        kind: caller-kind,
+        /// The calling package for kind `extension` or `portal`.
+        package-id: option<string>,
+        /// True when `did` is the host's local DID.
+        local: bool,
+    }
+
+    /// One websocket frame.
+    variant ws-frame {
+        text(string),
+        binary(list<u8>),
+    }
+}
+
+/// Instance context: who this instance is and what time the host says it is.
+interface context {
+    use types.{binding};
+
+    /// The binding this instance runs under.
+    current-binding: func() -> binding;
+    /// The injected clock, frozen for the duration of the current hook call (epoch ms).
+    /// The wall clock in every production process; the SimClock only inside the fe-sim lab.
+    now-ms: func() -> u64;
+}
+
+/// Read access to the bound petal. Requires manifest `scene.read`.
+interface scene {
+    use types.{node-id, json, node-snapshot, host-error};
+
+    /// One live node of the bound petal, or none.
+    get-node: func(id: node-id) -> result<option<node-snapshot>, host-error>;
+    /// A bounded page of the bound petal, in node-id order. `query` is fe-sdk NodeQuery JSON:
+    /// {"name"?: string, "property"?: {"key": string, "value": any}, "limit"?: 1..200}.
+    query-nodes: func(query: json) -> result<list<node-snapshot>, host-error>;
+}
+
+/// Staged scene writes. Each call stages into the instance's window; the window flushes once,
+/// at the end of the next on-tick, as part of ONE DbCommand::PluginCommit (atomic with readings).
+interface txn {
+    use types.{node-id, json, vec3, quat, host-error};
+
+    /// A partial transform; absent fields keep the node's current value at commit.
+    record transform-patch {
+        position: option<vec3>,
+        rotation: option<quat>,
+        scale: option<vec3>,
+    }
+
+    /// What the current window holds and how much room is left.
+    record window-info {
+        ops: u32,
+        max-ops: u32,
+        readings: u32,
+        max-readings: u32,
+        bytes: u32,
+        max-bytes: u32,
+    }
+
+    /// The authoritative result of a committed flush.
+    record commit-receipt {
+        /// The tick whose flush this receipt answers.
+        tick: u64,
+        ops: u32,
+        readings: u32,
+        /// Node ids created by this flush, in stage-create-node ordinal order.
+        created-node-ids: list<node-id>,
+    }
+
+    /// The outcome of the previous flush, reported in the next tick-info.
+    variant commit-outcome {
+        /// Nothing was staged, so nothing was flushed.
+        none,
+        committed(commit-receipt),
+        /// Refused whole: nothing from that flush landed.
+        refused(host-error),
+        /// Transport timeout: the flush may or may not have landed. Never retried.
+        unknown,
+    }
+
+    /// Stage a property replacement. Key must be inside `scene.property_scope`; requires write `set_property`.
+    stage-set-property: func(node: node-id, key: string, value: json) -> result<_, host-error>;
+    /// Stage a transform patch. Requires write `set_transform`.
+    stage-set-transform: func(node: node-id, patch: transform-patch) -> result<_, host-error>;
+    /// Stage a data-node creation in the bound petal. Returns its ordinal within this window;
+    /// the id arrives in commit-receipt.created-node-ids. Requires write `create_node`.
+    stage-create-node: func(name: string) -> result<u32, host-error>;
+    /// Stage a lifecycle delete of a plain node. Requires write `delete_node`.
+    stage-delete-node: func(node: node-id) -> result<_, host-error>;
+    /// Current window counts and limits.
+    window: func() -> window-info;
+    /// Drop everything staged in the current window (ops and readings).
+    discard: func();
+}
+
+/// Staged readings, flushed with the tick's txn window (spec R6).
+/// source_class comes from the binding, source_did is the host's local DID; neither is guest input.
+interface readings {
+    use types.{node-id, host-error};
+
+    /// A sensor time. Absent = the flushing tick's now-ms (deterministic in the lab).
+    variant timestamp {
+        rfc3339(string),
+        epoch-ms(s64),
+    }
+
+    /// One reading, validated exactly as the REST readings door validates it.
+    record reading {
+        /// Anchor node; must be a node of the bound petal at flush time.
+        anchor: node-id,
+        /// Must be listed in `readings.metrics` (or `*` declared).
+        metric: string,
+        /// Finite.
+        value: f64,
+        units: string,
+        recorded-at: option<timestamp>,
+    }
+
+    /// Stage a batch. Shape is checked now; anchors are checked at flush, where one unknown
+    /// anchor refuses the whole flush. Over the window's max-readings: budget-exceeded, nothing staged.
+    stage: func(batch: list<reading>) -> result<_, host-error>;
+}
+
+/// Read-only route sampling over a route node in the bound petal (spec R7).
+/// ONE shared implementation (fe-sdk path_geometry); results are cached until the route node changes.
+/// Requires manifest `routes: true`.
+interface routes {
+    use types.{node-id, vec3, host-error};
+
+    record route-info {
+        /// Arc length of the flattened route in metres.
+        length-m: f64,
+        point-count: u32,
+    }
+
+    record route-sample {
+        position: vec3,
+        /// Unit direction of travel at that progress; zero on a degenerate segment.
+        tangent: vec3,
+        /// Arc length from the start to `position`.
+        distance-m: f64,
+        segment-index: u32,
+    }
+
+    /// PathTracker snap semantics (the same numbers REST tracking derives).
+    record snap-result {
+        nearest: vec3,
+        segment-index: u32,
+        /// 0.0..=1.0 along the route.
+        progress: f64,
+        distance-remaining-m: f64,
+        deviation-m: f64,
+    }
+
+    info: func(route: node-id) -> result<route-info, host-error>;
+    /// `progress` is clamped to 0.0..=1.0.
+    sample: func(route: node-id, progress: f64) -> result<route-sample, host-error>;
+    snap: func(route: node-id, position: vec3) -> result<snap-result, host-error>;
+}
+
+/// Outbound traffic on declared websocket endpoints (both directions of a websocket are one
+/// declared ingress endpoint, so sending on it lives here, not in egress).
+interface ingress {
+    use types.{connection-id, ws-frame, host-error};
+
+    /// Send one frame. Accept mode: name the connection. Dial mode: connection is none.
+    send: func(endpoint: string, connection: option<connection-id>, frame: ws-frame) -> result<_, host-error>;
+    /// Close an accepted connection, or the dialled one (the host redials per the manifest backoff).
+    close: func(endpoint: string, connection: option<connection-id>, code: u16, reason: string) -> result<_, host-error>;
+}
+
+/// Declared outbound requests (spec R9). Queued; results arrive through egress-hooks.
+interface egress {
+    use types.{host-error};
+
+    type request-id = u64;
+
+    enum http-method {
+        get,
+        post,
+        put,
+        patch,
+        delete,
+    }
+
+    record outgoing-request {
+        method: http-method,
+        /// Relative to the endpoint's declared base url; may not leave it ("..", scheme, authority refused).
+        path: string,
+        query: list<tuple<string, string>>,
+        /// Hop-by-hop and auth headers are refused; the host adds declared credentials itself.
+        headers: list<tuple<string, string>>,
+        content-type: option<string>,
+        body: list<u8>,
+    }
+
+    record incoming-response {
+        status: u16,
+        content-type: option<string>,
+        headers: list<tuple<string, string>>,
+        /// Truncated responses are refused as budget-exceeded, never silently cut.
+        body: list<u8>,
+    }
+
+    enum mqtt-qos {
+        at-most-once,
+        at-least-once,
+    }
+
+    /// Queue a request to a declared https (or loopback) endpoint.
+    http-request: func(endpoint: string, request: outgoing-request) -> result<request-id, host-error>;
+    /// Queue a publish; `topic` must match one of the endpoint's declared topic filters.
+    mqtt-publish: func(endpoint: string, topic: string, payload: list<u8>, qos: mqtt-qos, retain: bool) -> result<_, host-error>;
+}
+
+/// The integration bus (D-X6): subscribe to host and extension streams, publish declared
+/// streams, call declared commands. Semantics: docs/extensions/bus.md.
+interface bus {
+    use types.{json, host-error};
+
+    type subscription-id = u64;
+    type call-id = u64;
+
+    /// Subscribe to a source declared under `bus.consume`: `host/query`, `host/readings`,
+    /// `host/node-changes`, `host/admission` or `<package_id>/<stream>`. `params` is the
+    /// per-source JSON in bus.md (`{}` when none). Events arrive through bus-hooks.on-events.
+    subscribe: func(source: string, params: json) -> result<subscription-id, host-error>;
+    unsubscribe: func(subscription: subscription-id);
+    /// host/query only: request one re-run (coalesced, same pacing floor as change triggers).
+    refresh: func(subscription: subscription-id) -> result<_, host-error>;
+    /// Publish one event on an exposed stream (`name` is the stream id, not the full address).
+    publish: func(name: string, event: json) -> result<_, host-error>;
+    /// Call `<package_id>/<command>` declared under `bus.call`, at this instance's binding petal.
+    /// Queued; the result arrives through bus-hooks.on-call-result.
+    call: func(target: string, args: json) -> result<call-id, host-error>;
+}
+
+/// Per-instance key/value state: host-local, never replicated, never on the DB thread.
+/// Requires manifest `kv`.
+interface kv {
+    use types.{json, host-error};
+
+    get: func(key: string) -> result<option<json>, host-error>;
+    set: func(key: string, value: json) -> result<_, host-error>;
+    delete: func(key: string) -> result<_, host-error>;
+    /// Keys with `prefix`, sorted, at most `limit` (1..=1000).
+    list-keys: func(prefix: string, limit: u32) -> result<list<string>, host-error>;
+}
+
+/// Rate-limited structured logging (tracing, tagged with the installation).
+interface log {
+    enum level {
+        debug,
+        info,
+        warn,
+        error,
+    }
+
+    write: func(level: level, message: string);
+}
+
+/// Guest lifecycle. Every hook runs on the plugin worker with its own fuel refill.
+interface lifecycle {
+    use types.{binding};
+    use txn.{commit-outcome};
+
+    /// Why an instance stops.
+    enum deactivate-reason {
+        disabled,
+        unbound,
+        updating,
+        host-stopping,
+        /// The installing identity lost the role the binding needs.
+        role-lost,
+        policy-denied,
+        revoked,
+        degraded,
+    }
+
+    /// One scheduled tick (spec R4).
+    record tick-info {
+        /// Sequence number of ticks run by this instance (1-based).
+        tick: u64,
+        /// The injected clock at this call (epoch ms).
+        now-ms: u64,
+        /// The instant this tick was due.
+        scheduled-at-ms: u64,
+        /// True elapsed ms since the previous run tick's now-ms (0 on the first tick).
+        delta-ms: u32,
+        /// Due instants skipped since the previous run tick (overrun or a slow flush).
+        skipped: u32,
+        /// Outcome of the previous flush.
+        last-commit: commit-outcome,
+    }
+
+    /// First activation of this binding (the instance's kv is empty). An error refuses activation.
+    on-install: func(binding: binding) -> result<_, string>;
+    /// Every activation, including after restarts and updates. An error refuses activation.
+    on-activate: func(binding: binding) -> result<_, string>;
+    /// The instance stops. Writes staged here get one final flush unless the reason is
+    /// role-lost, policy-denied, revoked or degraded (the lease is already gone).
+    on-deactivate: func(reason: deactivate-reason);
+    /// The binding is removed or the package uninstalled; one final flush follows (for cleanup).
+    on-uninstall: func(binding: binding);
+    /// Called on the declared cadence; the window flushes when this returns.
+    on-tick: func(info: tick-info);
+}
+
+/// Inbound traffic on declared endpoints (spec R8).
+interface ingress-hooks {
+    use types.{connection-id};
+
+    enum transport {
+        http,
+        websocket,
+        mqtt,
+    }
+
+    /// One inbound request, frame or message, at most the endpoint's declared size.
+    record ingress-frame {
+        /// The manifest endpoint id.
+        endpoint: string,
+        transport: transport,
+        /// websocket only.
+        connection: option<connection-id>,
+        /// http and websocket-accept: the bearer token's DID (role floor already checked).
+        caller-did: option<string>,
+        /// http only, uppercase.
+        method: option<string>,
+        /// http only: the sub-path after the endpoint mount ("" at the mount).
+        path: option<string>,
+        /// http only.
+        query: list<tuple<string, string>>,
+        /// http only: the endpoint's declared `forward_headers`, lowercase names.
+        headers: list<tuple<string, string>>,
+        /// mqtt only.
+        topic: option<string>,
+        /// http: the request content type; websocket: text/plain for text frames.
+        content-type: option<string>,
+        body: list<u8>,
+        received-at-ms: u64,
+    }
+
+    /// http: the response (none = 202 with no body). websocket: one frame on the same
+    /// connection (text when content-type starts with text/ or is application/json). mqtt: ignored.
+    record ingress-reply {
+        status: u16,
+        content-type: option<string>,
+        body: list<u8>,
+    }
+
+    enum connection-event {
+        opened,
+        closed,
+    }
+
+    on-ingress: func(frame: ingress-frame) -> option<ingress-reply>;
+    /// websocket only: a connection opened or closed (dial mode: on every (re)connect and drop).
+    on-connection: func(endpoint: string, connection: connection-id, event: connection-event);
+}
+
+/// Completions of queued egress requests.
+interface egress-hooks {
+    use types.{host-error};
+    use egress.{request-id, incoming-response};
+
+    on-egress-result: func(request: request-id, outcome: result<incoming-response, host-error>);
+}
+
+/// Bus deliveries and command handling (docs/extensions/bus.md).
+interface bus-hooks {
+    use types.{json, caller, host-error};
+    use bus.{subscription-id, call-id};
+
+    enum delivery-kind {
+        /// A full state image (host/query results; host/node-changes on subscribe or resync).
+        snapshot,
+        /// An incremental change.
+        delta,
+        /// Deltas were lost; a snapshot follows.
+        resync-required,
+        /// The subscription is over; `data` carries {"reason": "..."}.
+        ended,
+    }
+
+    record bus-event {
+        subscription: subscription-id,
+        /// The source address as subscribed (e.g. "host/query", "org.example.fleet-sim/positions").
+        source: string,
+        /// Strictly increasing per subscription; a gap means drops.
+        seq: u64,
+        kind: delivery-kind,
+        /// Events dropped on this subscription since the previous delivery.
+        dropped-before: u32,
+        at-ms: u64,
+        data: json,
+    }
+
+    /// Guest-reported command failure; host-level refusals never reach the guest.
+    variant command-error {
+        invalid-input(string),
+        refused(string),
+        failed(string),
+    }
+
+    /// A batch of deliveries, in seq order per subscription (at most 64 events, 256 KiB).
+    on-events: func(events: list<bus-event>);
+    /// A declared command; `args` already passed the declared args_schema. Result <= 64 KiB.
+    on-command: func(command: string, args: json, caller: caller) -> result<json, command-error>;
+    on-call-result: func(call: call-id, outcome: result<json, host-error>);
+}
+
+/// The world every third-party extension component targets.
+world extension {
+    import context;
+    import scene;
+    import txn;
+    import readings;
+    import routes;
+    import ingress;
+    import egress;
+    import bus;
+    import kv;
+    import log;
+
+    export lifecycle;
+    export ingress-hooks;
+    export egress-hooks;
+    export bus-hooks;
+}

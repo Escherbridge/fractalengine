@@ -1,0 +1,217 @@
+---
+type: reference
+title: Extension manifest v2
+track: extension_platform_20261107
+status: draft (P0.2; validated by fe-sdk manifest_v2 in P1.2)
+---
+
+# Extension manifest v2 (`plugin/extension.json`)
+
+The manifest is the whole capability surface of an extension. The host grants nothing it does
+not declare, the consent dialog renders exactly what it declares, and the verse policy caps it.
+
+- **Where it lives.** `plugin/extension.json`, a header member of the sealed plugin hexon
+  ([package-format.md](package-format.md)), so consent can render before the component is fetched.
+- **Structure.** [`fe-sdk/schema/extension-manifest-v2.schema.json`](../../fe-sdk/schema/extension-manifest-v2.schema.json)
+  (JSON Schema 2020-12). Unknown fields are refused everywhere.
+- **Policy.** The [validation table](#validation) below is normative. Schema and table run in
+  ONE validator (fe-sdk `manifest_v2`, slice E2) that `fe-ext validate` and REST install share,
+  so they cannot disagree (spec R3).
+- **Worked examples.** [`fleet-sim`](../../fe-sdk/schema/examples/fleet-sim.extension.json) (simulation),
+  [`device-adapter`](../../fe-sdk/schema/examples/device-adapter.extension.json) (ingress, egress,
+  commands), [`bi-push`](../../fe-sdk/schema/examples/bi-push.extension.json) (a `host/query` consumer).
+- **Contract it binds to.** [`fe-plugin/wit/fractal-plugin-2.wit`](../../fe-plugin/wit/fractal-plugin-2.wit).
+
+## Grant rules
+
+1. **Absent grants nothing.** A missing section, field or list is no access.
+2. **An empty list is refused**, not silently empty (`empty-scope`). Omit the field instead.
+3. **`*` must be written out** wherever a wildcard is allowed (property scope, metrics, ad-hoc query SQL).
+4. **Patterns** in `property_scope`: an exact key (`fleet.status`), a prefix ending in `*`
+   (`fleet.*`), or `*` alone. Nothing else is a pattern.
+5. **Everything is per binding.** An instance is one installation bound to one petal (OD-E3);
+   every grant is confined to that petal.
+
+## Field reference
+
+### Identity
+
+| Field | Required | Meaning |
+|---|---|---|
+| `manifest_version` | yes | `2`. |
+| `id` | yes | The `package_id`: reverse-DNS, lowercase, two or more labels (`org.example.fleet-sim`). Equals the sealed hexon's signed `hexon_id` and the id the install names, else `package-invalid` (`id-mismatch`); revocation matches by hash whatever id an entry names ([package-format.md](package-format.md#identity)). The label `host` is never a package id (it has no dot), which keeps `host/*` bus addresses reserved. |
+| `version` | yes | SemVer; equals the hexon manifest `version`. |
+| `name`, `description` | `name` yes | Display text (80 / 1 000 chars). |
+| `kind` | yes | `simulation`, `device-adapter`, `bi-connector` or `general`. `web-bundle` is reserved for `portal_surface_20261107`, which owns the `portal` section; the extension host refuses it (`reserved-kind`). |
+| `contract` | yes | `fractalengine:plugin@2.0.0`. Any other major is `unsupported-contract`. |
+| `binding` | yes | `petal` (the only value in 2.0). |
+
+### `scene`
+
+| Field | Grants |
+|---|---|
+| `read: true` | `scene.get-node`, `scene.query-nodes` and the `host/node-changes` bus source, all in the bound petal. Snapshot `properties` carry only keys inside `property_scope`. |
+| `write: [...]` | Any of `create_node`, `set_transform`, `set_property`, `delete_node`, staged through `txn`. |
+| `property_scope: [...]` | Keys readable in snapshots and writable by `set_property`. Required when `write` contains `set_property` or a UI contribution shows properties. |
+
+### `readings`
+
+| Field | Meaning |
+|---|---|
+| `source_class` | `simulation`, `device` or `connector`, or a list of them. With a list, the operator picks exactly ONE at bind time (never inferred, never defaulted); the consent dialog shows the pick. Rows carry it as the door's `source_class`. |
+| `metrics` | Metric names `readings.stage` accepts, or `["*"]`. |
+
+`source_did` is always the host's local DID. `manual` and `decoder` are not extension classes.
+
+### `routes`
+
+`true` grants `routes.info`, `routes.sample` and `routes.snap` over any route node of the bound
+petal. Geometry reads do not need the route's properties in `property_scope`; the results are
+derived numbers, never the raw property.
+
+### `tick` — the cadence budget (spec R4, OD-E4)
+
+| Field | Default | Host ceiling | Meaning |
+|---|---|---|---|
+| `cadence_ms` | — (required in the block) | floor 100 | `on-tick` period. No block = no ticks and no flushes. |
+| `max_ops` | 64 if `scene.write`, else 0 | 64 | Scene ops per flush. |
+| `max_readings` | 1 000 if `readings`, else 0 | 1 000 | Readings per flush. |
+| `fuel` | 1 000 000 | 20 000 000 | Fuel for each hook call (every hook gets its own refill). |
+
+A writing extension MUST declare `tick` (`cadence-required`): every write is staged and only a
+tick flushes it (R5). Host ceilings are host configuration; a local policy may lower them, never raise them.
+
+### `kv`
+
+`{ "max_bytes": n }` (≤ 1 MiB) grants the `kv` interface: host-local per-installation state,
+never replicated and never on the DB thread.
+
+### `ingress` — endpoints that receive traffic (spec R8)
+
+Every endpoint has an `id` (`[a-z][a-z0-9-]{0,31}`, unique across `ingress` and `egress`) and a
+`transport`. Frames reach `ingress-hooks.on-ingress`.
+
+| `transport` | Required | Optional (default) | Behaviour |
+|---|---|---|---|
+| `http-server` | `methods`, `max_body_bytes` (≤ 1 MiB), `rate_hz` (per caller DID) | `content_types` (any), `role_floor` (`editor`), `sub_paths` (false), `forward_headers` (none) | Mounted at `/api/v1/petals/{petal_id}/extensions/{package_id}/ingress/{id}` on the existing API server, behind its bearer auth. The caller's role at the bound petal must meet `role_floor`. |
+| `websocket-accept` | `max_frame_bytes`, `rate_hz` (frames/s per connection), `max_connections` (≤ 256) | `role_floor` (`editor`) | Upgrades on the same mount. |
+| `websocket-dial` | `url` (`wss://`, or `ws://` to loopback), `max_frame_bytes`, `rate_hz` | `auth`, `reconnect_ms` (`{min:1000,max:60000}`) | The host dials and redials with jittered backoff. |
+| `mqtt` | `broker` (`mqtts://`, or `mqtt://` to loopback), `topics` (filters), `max_payload_bytes`, `rate_hz` | `qos` (`at-most-once`), `auth` | The host is an MQTT client subscribed to `topics`. |
+
+Over-size → 413 (http) or the frame is dropped and counted (websocket, mqtt). Over-rate → 429 or
+dropped and counted. An undeclared or disabled endpoint answers the uniform not-found.
+
+### `egress` — declared outbound requests (spec R9)
+
+| `transport` | Required | Optional (default) | Behaviour |
+|---|---|---|---|
+| `http` | `url` (base; `https://`, or `http://` to loopback), `methods`, `rate_hz` (≤ 10) | `max_request_bytes` (1 MiB), `max_response_bytes` (1 MiB, ≤ 8 MiB), `timeout_ms` (10 000, ≤ 30 000), `auth` | `egress.http-request(id, {path, ...})` goes to `url` + `path`; a path that leaves the base is `invalid-input`. Redirects are followed only within the same origin and base path. |
+| `mqtt` | `broker`, `topics` (publish filters), `max_payload_bytes`, `rate_hz` | `qos` (`at-most-once`), `retain` (false) | `egress.mqtt-publish` topics must match a declared filter. |
+
+**Loopback** means exactly `127.0.0.1`, `[::1]` or `localhost`. Hosts are exact names (no
+wildcards). The host connects only to the declared host and port.
+
+### `auth` — host-side credentials
+
+`{ "scheme": "bearer" | "basic" | "header" | "mqtt-password", "credential": "<slot>", "header"? }`
+names a slot in the host's local credential store. The operator fills the slot locally; the value
+never enters the manifest, the package, the replicated store or the guest. An endpoint whose slot
+is empty stays down and reports `credential-missing` in status.
+
+### `bus` — the integration bus (D-X6; semantics in [bus.md](bus.md))
+
+| Field | Meaning |
+|---|---|
+| `expose.streams[]` | `{id, max_rate_hz (≤ 50), max_event_bytes (≤ 64 KiB), role_floor (viewer), external (false), consumers?, description?}`. Published as `<package_id>/<id>`. |
+| `expose.commands[]` | `{id, role_floor, rate_hz (≤ 10), external (false), args_schema?, description?}`. Answered through `on-command`. |
+| `consume[]` | Sources this extension may subscribe to: `{source: "host/node-changes"}`, `{source: "host/readings", metrics?}`, `{source: "host/query", id, sql, min_interval_ms (1000)}`, `{source: "host/admission"}`, or `{source: "<package_id>/<stream>"}`. |
+| `call[]` | Foreign commands this extension may call, as `<package_id>/<command>`. |
+
+`external: false` (the default) keeps a stream or command reachable only from this host: the UI,
+the local DID over REST/WS/MCP, other extensions and portals. Only `external: true` lets a remote
+DID reach it, still behind `role_floor`. That default stops a remote token holder from driving
+the host's identity through a command (the confused-deputy path R12 closes for administration).
+
+`host/query` with `sql: "*"` grants any guarded SELECT inside the binding scope; the consent
+dialog says so in plain words. A named query (`sql` = one SELECT) is shown verbatim at consent and
+must pass the static query guard at validate time (`invalid-query`).
+
+### `ui` — declarative contributions (spec R10, OD-E8)
+
+| Slot | Shape | Renders |
+|---|---|---|
+| `ToolbarAction`, `SidebarTool` | `command` | A button that calls the command with `{}`. |
+| `ContextMenu` | `command`, `when?` | An entry on nodes matching `when` (`{property}` present, or `{property, equals}`); calls with `{"node_id": "<clicked>"}`. |
+| `InspectorSection` | `properties` | Read-only key/value rows of the selected node (keys inside `property_scope`). |
+| `DashboardWidget`, `ViewportOverlay` | `stream`, `field?` | The label and the latest value at JSON Pointer `field` of an exposed stream. |
+
+Accessible names are `ext:<package_id>/<id>`. A contribution with neither `command`, `properties`
+nor `stream` is listed in the Extensions details pane, never rendered as a dead control.
+
+## Validation
+
+Every row is refused with its own reason; the first failing row in table order is reported.
+`fe-ext validate` exits non-zero with the same reason REST install answers.
+
+| # | Rule | Reason |
+|---|---|---|
+| V1 | The JSON Schema fails (unknown field, type, pattern, bound), or an `args_schema` leaves the subset in bus.md or exceeds 4 KiB | `schema` |
+| V2 | `contract` is not `fractalengine:plugin@2.x.y` | `unsupported-contract` |
+| V3 | `kind` is `web-bundle`, or a `portal` section appears with any other kind | `reserved-kind` |
+| V4 | A scope list is present and empty: `scene.write`, `scene.property_scope`, `readings.metrics`, an endpoint's `methods`, `topics`, `content_types` or `forward_headers`, a stream's `consumers`, a consume entry's `metrics`, `bus.call` | `empty-scope` |
+| V5 | An `http`, `ws` or `mqtt` URL to a non-loopback host, or any endpoint URL with userinfo, a query or a fragment | `insecure-endpoint` |
+| V6 | `tick.cadence_ms` below the host floor (100) | `cadence-below-floor` |
+| V7 | `scene.write` or `readings` declared without `tick` | `cadence-required` |
+| V8 | `source_class` outside the kind's set: `simulation` → exactly `simulation`; `device-adapter` → within {`device`, `connector`, `simulation`}; `bi-connector` → `connector`; `general` → any | `source-class-mismatch` |
+| V9 | A UI `command` that `bus.expose.commands` does not declare | `undeclared-command` |
+| V10 | A UI `stream`, or a `consume` of this package's own `<id>/<stream>`, that `bus.expose.streams` does not declare | `undeclared-stream` |
+| V11 | A `consume` source `host/<x>` outside {`query`, `readings`, `node-changes`, `admission`}, or the same source consumed twice (named queries count by `id`) | `unknown-source` |
+| V12 | A named `host/query` SQL that fails the static guard (`fe_query::sql_guard`, query mode) | `invalid-query` |
+| V13 | Scope conflicts: `InspectorSection` keys outside `property_scope`; `InspectorSection` or `host/node-changes` without `scene.read`; `set_property` without `property_scope`; `auth.scheme: header` without `header` | `scope-conflict` |
+| V14 | Duplicate `id` across `ingress` + `egress`, within streams, commands, `ui`, or named queries | `duplicate-id` |
+| V15 | A number above the host ceiling (`fuel`, sizes, rates, connections, timeouts) | `over-host-ceiling` |
+
+### Journey J2 (P1.3 swaps `capability.rs::parse_manifest_defaults` and `::validate_property_access_allowed` into this table)
+
+Start from the fleet-sim example and change one thing per row:
+
+| Row | Change | Expect |
+|---|---|---|
+| valid | none | accepted; capability digest printed |
+| empty scope | `scene.property_scope: []` | `empty-scope` |
+| non-https egress | add egress `{"id":"sink","transport":"http","url":"http://bi.example.org/","methods":["POST"],"rate_hz":1}` | `insecure-endpoint` |
+| loopback http | same with `http://127.0.0.1:9000/` | accepted |
+| sub-floor cadence | `tick.cadence_ms: 50` | `cadence-below-floor` |
+| simulation as device | `readings.source_class: "device"` | `source-class-mismatch` |
+| undeclared UI command | first `ui` entry `command: "launch"` | `undeclared-command` |
+| undeclared consumed stream | `bus.consume` += `{"source":"org.example.fleet-sim/tracks"}` | `undeclared-stream` |
+
+## Capability digest
+
+Consent covers one exact digest (spec R20, [governance.md](governance.md#consent)).
+
+```
+capability_digest = lowercase_hex(blake3(canonical_json(projection(manifest))))
+```
+
+- `canonical_json` is fe-format's canonicalizer (sorted keys, no whitespace), the one manifest
+  signatures use.
+- `projection` removes presentation-only members and keeps everything that grants: `version`,
+  `name`, `description`, the whole `tick` block, every `description` under `bus.expose`, and
+  `label` and `icon` in each `ui` entry are removed. Every other member stays, including future
+  ones, so a new grant can never slip past consent.
+- Arrays keep manifest order: reordering a list re-prompts. Authors keep lists stable.
+
+An update with the same digest does not prompt; any other digest re-prompts and the old version
+keeps running until consent is given.
+
+## From the 1.0 `CapabilityManifest`
+
+| 1.0 (`fe-plugin/src/capability.rs`) | 2.0 |
+|---|---|
+| `verse_scope`, `petal_scope` patterns | `binding: "petal"`; the operator binds; no pattern lists |
+| `property_scope` (empty = wildcard) | `scene.property_scope` (empty refused; `*` explicit) |
+| `capabilities: ["storage.read"]` | `scene.read: true` |
+| `capabilities: ["storage.write"]` | `scene.write: ["set_property"]` |
+| `capabilities: ["query.select"]` (raw SQL) | `bus.consume: [{"source":"host/query", ...}]` through the REST guard (OD-E10) |
+| `network_scope`, `external_http` (never enforced) | `ingress[]` and `egress[]` declarations |
