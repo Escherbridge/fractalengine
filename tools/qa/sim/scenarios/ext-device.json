@@ -1,0 +1,84 @@
+{
+  "name": "ext-device",
+  "description": "Extension platform device journey (spec R35): a device adapter with HTTP and MQTT ingress from virtual devices, parity with the REST ingest door, then disable and enable. Virtual devices post to the petal ingress mount and publish to the loopback MQTT broker the driver ops start (tools/qa/sim/AGENTS.md section extension).",
+  "seed": 20261109,
+  "fixture": "basic",
+  "verse_name": "QA Basic",
+  "assets": "generated",
+  "peers": [
+    {"name": "owner", "role": "owner"},
+    {"name": "editor", "role": "editor"},
+    {"name": "viewer", "role": "viewer"}
+  ],
+  "probe": {"rest_ms": 500, "hierarchy_ms": 2000, "ui_ms": 1000, "query_ms": 2000, "host_ms": 2000},
+  "steps": [
+    {
+      "id": "0", "title": "Preflight: every peer in the shared verse", "settle_s": 15,
+      "actions": [
+        {"peer": "editor", "via": "gui", "op": "click", "args": {"name": "Close window", "role": "button"}, "optional": true},
+        {"peer": "editor", "via": "gui", "op": "click", "args": {"name": "Open verse QA Basic"}, "optional": true},
+        {"peer": "viewer", "via": "gui", "op": "click", "args": {"name": "Close window", "role": "button"}, "optional": true},
+        {"peer": "viewer", "via": "gui", "op": "click", "args": {"name": "Open verse QA Basic"}, "optional": true}
+      ],
+      "expect": [
+        {"probe": "role", "target": "$fixture.verse_id", "peers": ["editor"], "predicate": "equals", "value": "editor"}
+      ]
+    },
+    {
+      "id": "1", "title": "Policy, install, consent and bind the device adapter on the owner", "settle_s": 30, "covers": ["R8", "R18"],
+      "actions": [
+        {"id": "pkg", "peer": "owner", "via": "rest", "op": "request", "args": {"method": "GET", "path": "/api/v1/extensions/catalog/device-adapter"}},
+        {"id": "policy", "peer": "owner", "via": "rest", "op": "set_extension_policy", "args": {"verse_id": "$fixture.verse_id", "mode": "allow-list", "allow": [{"package_id": "org.example.device-adapter", "content_hash": "$pkg.content_hash"}]}, "needs": ["pkg"]},
+        {"id": "inst", "peer": "owner", "via": "rest", "op": "install_extension", "args": {"package": "device-adapter", "verse_id": "$fixture.verse_id"}, "needs": ["policy"], "bind": {"installation": "installation"}},
+        {"id": "consent", "peer": "owner", "via": "rest", "op": "consent_extension", "args": {"installation": "$inst.installation", "grants": "manifest"}, "needs": ["inst"]},
+        {"id": "bound", "peer": "owner", "via": "rest", "op": "bind_extension", "args": {"installation": "$inst.installation", "petal_id": "$fixture.petal_a_id", "config": {"devices": 3}}, "needs": ["consent"]},
+        {"id": "site_broker", "peer": "owner", "via": "rest", "op": "mqtt_publish", "args": {"broker": "loopback", "topic": "fe-sim/ready", "payload": "{}", "start_broker": true}, "needs": ["bound"]}
+      ],
+      "expect": [
+        {"probe": "extension", "target": "$inst.installation", "path": "state", "peers": ["owner"], "predicate": "equals", "value": "active", "within_s": 30}
+      ]
+    },
+    {
+      "id": "2", "title": "Virtual devices post over HTTP and publish over MQTT; readings arrive on every peer", "settle_s": 60, "covers": ["R5", "R6", "R8"],
+      "note": "Three devices report once per second for 30 s. HTTP goes through the petal-scoped ingress mount (docs/extensions/bus.md section 8) as the owner (Editor floor met); MQTT goes through the loopback broker the host subscribed to. The viewer is below the ingress role floor.",
+      "actions": [
+        {"id": "http_dev", "peer": "owner", "via": "rest", "op": "ingress_post", "args": {"installation": "$inst.installation", "petal_id": "$fixture.petal_a_id", "endpoint": "telemetry", "devices": ["dev-a", "dev-b"], "metric": "temp_c", "count": 30, "period_s": 1}, "sync": "barrier"},
+        {"id": "mqtt_dev", "peer": "owner", "via": "rest", "op": "mqtt_publish", "args": {"broker": "loopback", "topic": "fe-sim/dev-c/telemetry", "devices": ["dev-c"], "metric": "temp_c", "count": 30, "period_s": 1}, "sync": "barrier"},
+        {"id": "viewer_post", "peer": "viewer", "via": "rest", "op": "ingress_post", "args": {"installation": "$inst.installation", "petal_id": "$fixture.petal_a_id", "endpoint": "telemetry", "devices": ["dev-x"], "metric": "temp_c", "count": 1, "period_s": 1}, "expect": "refused", "covers": "R8 role_floor editor"}
+      ],
+      "expect": [
+        {"probe": "extension", "target": "$inst.installation", "path": "counters.ingress_frames", "peers": ["owner"], "predicate": "equals", "value": 90, "within_s": 60, "after": "http_dev", "covers": "R8 every frame counted once"},
+        {"probe": "query", "target": "device_readings", "path": "rows", "peers": "all", "predicate": "agree", "within_s": 60, "after": "http_dev", "covers": "readings replicate"},
+        {"probe": "query", "target": "device_readings", "path": "count_by_device.dev-x", "peers": "all", "predicate": "absent", "mode": "always", "hold_s": 10, "after": "viewer_post"}
+      ]
+    },
+    {
+      "id": "3", "title": "Parity: the same frames through the REST ingest door give the same readings", "settle_s": 40, "covers": ["R6"],
+      "note": "ingest_readings is the existing REST door (insert_readings_with_replication). The adapter rows for a device must equal the door rows for the same frames, compared by the derived parity digest.",
+      "actions": [
+        {"id": "door", "peer": "owner", "via": "rest", "op": "ingest_readings", "args": {"petal_id": "$fixture.petal_a_id", "device": "dev-door", "metric": "temp_c", "frames_from": "http_dev", "count": 30}},
+        {"id": "adapter_twin", "peer": "owner", "via": "rest", "op": "ingress_post", "args": {"installation": "$inst.installation", "petal_id": "$fixture.petal_a_id", "endpoint": "telemetry", "devices": ["dev-twin"], "metric": "temp_c", "count": 30, "period_s": 0, "frames_from": "http_dev"}, "needs": ["door"]}
+      ],
+      "expect": [
+        {"probe": "query", "target": "device_readings", "path": "parity.dev-door~dev-twin", "peers": ["owner"], "predicate": "equals", "value": true, "within_s": 40, "after": "adapter_twin"},
+        {"probe": "query", "target": "device_readings", "path": "parity.dev-door~dev-twin", "peers": "all", "predicate": "agree", "within_s": 60, "after": "adapter_twin"}
+      ]
+    },
+    {
+      "id": "4", "title": "Disable then enable the installation: ingress stops while disabled and resumes after", "settle_s": 60, "covers": ["R23"],
+      "actions": [
+        {"id": "disable", "peer": "owner", "via": "rest", "op": "request", "args": {"method": "POST", "path": "/api/v1/extensions/${inst.installation}/disable"}},
+        {"id": "post_disabled", "peer": "owner", "via": "rest", "op": "ingress_post", "args": {"installation": "$inst.installation", "petal_id": "$fixture.petal_a_id", "endpoint": "telemetry", "devices": ["dev-off"], "metric": "temp_c", "count": 3, "period_s": 1}, "expect": "refused", "needs": ["disable"], "sync": "+3"},
+        {"id": "enable", "peer": "owner", "via": "rest", "op": "request", "args": {"method": "POST", "path": "/api/v1/extensions/${inst.installation}/enable"}, "needs": ["post_disabled"], "sync": "+5"},
+        {"id": "post_enabled", "peer": "owner", "via": "rest", "op": "ingress_post", "args": {"installation": "$inst.installation", "petal_id": "$fixture.petal_a_id", "endpoint": "telemetry", "devices": ["dev-on"], "metric": "temp_c", "count": 3, "period_s": 1}, "needs": ["enable"]}
+      ],
+      "expect": [
+        {"probe": "extension", "target": "$inst.installation", "path": "state", "peers": ["owner"], "predicate": "equals", "value": "disabled", "within_s": 20, "after": "disable"},
+        {"probe": "query", "target": "device_readings", "path": "count_by_device.dev-off", "peers": "all", "predicate": "absent", "mode": "always", "hold_s": 10, "after": "post_disabled", "covers": "no row lands while disabled"},
+        {"probe": "extension", "target": "$inst.installation", "path": "state", "peers": ["owner"], "predicate": "equals", "value": "active", "within_s": 30, "after": "enable"},
+        {"probe": "query", "target": "device_readings", "path": "count_by_device.dev-on", "peers": "all", "predicate": "equals", "value": 3, "within_s": 40, "after": "post_enabled"},
+        {"probe": "alive", "target": "all", "predicate": "present", "mode": "always", "hold_s": 10}
+      ]
+    }
+  ]
+}
