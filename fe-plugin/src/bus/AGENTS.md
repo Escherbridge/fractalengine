@@ -2,7 +2,7 @@
 type: reference
 title: fe-plugin/src/bus — integration bus broker (D-X6)
 track: extension_platform_20261107
-slice: E5 (P1.5)
+slice: E5 (P1.5); F-BUS (turn 2, portal clients)
 ---
 
 # fe-plugin/src/bus — integration bus broker
@@ -13,13 +13,13 @@ UI widgets, WS connections and portal IPC are *clients* of the same broker.
 
 | File | Owns |
 |---|---|
-| `mod.rs` | Vocabulary: `HostError` (WIT `host-error`), `BusRefusal` (what external callers see), `InstanceKey`, `Source` addresses, `Caller`/`CallerKind`, `BusEvent`, `EndReason`, `CommandError`/`CommandOutcome`, the bus.md §6 limits, `canonical_json`/`json_digest`. |
-| `broker.rs` | `Bus`: registration, guest imports, external calls, clients, host feeds, the worker turn, status. |
+| `mod.rs` | Vocabulary: `HostError` (WIT `host-error`), `BusRefusal` (what external callers see), `InstanceKey`, `Source` addresses, `Caller`/`CallerKind`, `BusEvent`, `EndReason`, `CommandError`/`CommandOutcome`, the bus.md §6 limits, REST's row/body caps, the portal budgets, `portal_key_allowed`/`is_node_id`/`is_content_hash`, `canonical_json`/`json_digest`. |
+| `broker.rs` | `Bus`: registration, guest imports, external calls, clients (portal clients too: `PortalGrants`, `client_publish`, `client_call_command`, `client_set_property` with `WriteTicket`/`WriteOutcome`), host feeds, the worker turn, status. |
 | `query.rs` | `QueryState`: the OD-3 pacing state machine for one `host/query` subscription. |
-| `sources.rs` | Injected services (`QuerySource`, `SceneSnapshotSource`, `RoleSource`, `BusPolicy`, `AuditSink`) and feed payloads (`ReadingEvent`, `AdmissionEvent`). |
-| `rate.rs` | `TokenBucket` on the injected clock. |
+| `sources.rs` | Injected services (`QuerySource`, `SceneSnapshotSource`, `RoleSource`, `BusPolicy`, `AuditSink`, and the separately installed `PortalWriteSink`) and payloads (`ReadingEvent`, `AdmissionEvent`, `PortalWrite`). |
+| `rate.rs` | `TokenBucket` on the injected clock (`with_burst` for the portal write budget). |
 | `schema.rs` | `validate_args`: the `args_schema` subset of bus.md §4. |
-| `tests.rs` | Journey J4 (bus.md §10). |
+| `tests.rs` | Journey J4 (bus.md §10), extended with the portal-client leg (§portal-clients, §portal-writes, §row-caps). |
 
 ## §sources — nothing in here knows SQL, the DB or axum
 
@@ -99,9 +99,10 @@ subscribe (`not-available`), never left silently stale.
 `open_client(did, kind, grants)` returns a `ClientHandle` whose `notify` fires when events queue; the
 owner then calls `take_client_events`. `ClientGrants::Ui` may take extension streams and `host/admission`
 (all packages); `Api` (a REST/WS connection) extension streams only, as bus.md §8 says; `Portal` exactly its
-bundle's declared consume entries at its mount petal, `host/query` by named query only. A producer's
-`consumers` list restricts *package* consumers (instances and portals). A paused client's query
-subscriptions stay dirty and run once on resume.
+bundle's declared consume entries at its mount petal (host sources and extension streams alike; until F-BUS
+the stream branch checked only the consume list, so a portal could subscribe to a declared hook at another
+petal), `host/query` by named query only. A producer's `consumers` list restricts *package* consumers
+(instances and portals). A paused client's query subscriptions stay dirty and run once on resume.
 
 ## Seams for other slices
 
@@ -113,6 +114,17 @@ subscriptions stay dirty and run once on resume.
   little above 5 s) and the client API for the `/ws` `bus_subscribe` target; `BusRefusal::http_status` and
   `CommandError::http_status` give the codes.
 - **E10** injects the op-log `AuditSink`, calls `feed_admission` and `revalidate` on policy or role change.
+- **P-BROKER** (portal tree, `fractalengine/src/portal_host/broker.rs`): `open_portal_client(installing_did,
+  role_ceiling, PortalGrants)` at mount; then `client_subscribe`, `take_client_events`, `set_client_paused`,
+  `client_call_command` (invoke), `client_publish` (emit) and `client_set_property` (act; poll
+  `WriteTicket::reply` once per frame); `close_client` at unmount. Never build a `Caller` literal for a
+  portal: `call_command` refuses kind `portal`. `WriteOutcome` maps to ipc-v1.md §7 codes as: `Committed` →
+  `{node_id, key}`; `RoleDenied` and `Refused(revoked)` → `role_denied`; `Refused(invalid-input)` →
+  `not_found` (a node outside the petal); `Refused(unknown-outcome)` → `unknown_outcome`; the rest → `backend`.
+- **I-BIN / I-POR-BIN** (binary): implement `PortalWriteSink` over `DbCommand::PluginCommit` and call
+  `install_portal_writes` once (§portal-writes); feed `AdmissionEvent { kind: WebBundle, .. }` for bundles as
+  well, so a revoked bundle stops on the bus in the same call (§portal-clients). `AuditAction::PropertyWrite`
+  needs a mapping in the op-log audit sink.
 
 ## §delegated-callers (G1 security fix)
 
@@ -124,3 +136,89 @@ by the ceiling. A delegated token is therefore remote: the uniform not-found, `e
 verse policy, and its own rate key (fe-api keys its gate by `sub#jti`). Guests and the UI pass `None`.
 `Bus::open_client_capped` is the client form. Subscriptions keep only the identity DID, so revalidation
 re-reads the DID's role; a token's ceiling cannot change during its life, so nothing escalates.
+
+## §portal-clients (F-BUS, P-S2; steers 2026-11-08 20:45 and 23:40)
+
+A mounted bundle is a client, not an instance (A-14): no tick, no fuel, no `register_instance`.
+`Bus::open_portal_client(installing_did, role_ceiling, PortalGrants)` takes everything from the host-minted
+mount binding (ipc-v1.md §6.5): package id, `content_hash`, the web-bundle installation, verse, mount petal,
+declared consume entries, streams, invoke targets and `set_property` key patterns. Nothing comes from page
+data, and every portal operation derives its identity from the client, never from a `Caller` literal
+(`call_command` refuses kind `portal`).
+
+- **Identity and ceiling.** A portal caller is local when its DID is the local DID, whatever its ceiling.
+  The binding is minted in-process, so §delegated-callers' "a ceiling below Owner makes it remote" (which
+  exists because every API token carries the node DID) does not apply. The ceiling still caps every role
+  check (`role_of`): stream floors, command floors (check 4) and the write floor. A portal client opened
+  without a ceiling is capped at Viewer (fail closed). The binary computes the ceiling: the installing
+  identity's role at the bundle's scope, never above the viewer's token.
+- **emit** (`client_publish`): a declared stream and a local caller; size within its `max_event_bytes`
+  (≤ 64 KiB); rate within `max_rate_hz` capped at 10 Hz, keyed by `(petal, package, stream)` so a reload cannot
+  reset it. Fan-out shares `fan_out_stream` with guest publishes, with `from_portal = true`. Each subscription
+  records whether its producer is an instance or a portal, and each producer kind feeds only its own
+  subscriptions, so a bundle that declares an extension's package id never injects events into that
+  extension's subscribers; `lookup_producer` prefers an active instance at the same address. Portal streams
+  are local only (no `external`) and readable from Viewer. When no live portal client declares a stream any
+  more (close or stop), its subscribers get `ended {producer-inactive}`.
+- **invoke** (`client_call_command`): the target must be a declared `commands.invoke` entry (the portal's
+  check 5), then checks 1-8 run with the client's caller; the rate key is `Portal(package)`.
+- **Stop on admission.** `feed_admission` with `kind: web-bundle` and a non-`admitted` state stops every
+  portal client whose package id OR content hash matches (hash under any id, steer 20:45), within the event's
+  verse when it names one. Its subscriptions end with the mapped reason (`revoked`, `consent-revoked`,
+  `role-lost`, `policy-denied`, `instance-stopped`), its streams' subscribers end `producer-inactive`, and new
+  subscribe, emit, invoke and write calls answer `not-available`. Writes already sent still settle and their
+  rows stay (OD-E1, no withdrawal). The portal host still closes its client on revoke (R-POR-IPC); this is the
+  bus-side backstop.
+
+## §portal-writes (A-13)
+
+`client_set_property(client, node_id, key, value)` is the one-op portal write: ONE `PendingOp::SetProperty`
+committed as ONE `DbCommand::PluginCommit` with no readings, outside any tick, with no tick budget.
+`admit_write` runs under the lock, in ipc-v1.md §6.1 order:
+
+1. a local binding, else the uniform not-found;
+2. a declared, non-reserved key (`node_kind`, `portal` and `portal.*` are refused whatever the patterns say;
+   patterns are exact or `prefix.*`, keys `[a-z0-9_]+(.[a-z0-9_]+)*`), else `capability-denied`, audited;
+3. a valid provenance pair on the binding and an installed write path, else `not-available`;
+4. the node-id shape and at most 16 KiB of value JSON, else `invalid-input`;
+5. the shared budgets: the caller key's command bucket (10/s, shared with invoke), the package's write bucket
+   (2/s, burst 5: twenty calls in one second land at most seven), and the installing identity's write bucket
+   across every bundle (4/s, burst 8: half the ~8 writes/s DB-thread ceiling, so several bundles together
+   still cannot starve the editor), else `rate-limited`;
+6. the role at write time, capped by the ceiling, at least Editor. Below it the ticket resolves `RoleDenied`
+   at once and nothing reaches the DB.
+
+The DB is never called under the broker lock. An admitted write becomes a `PendingWrite` holding the reply
+channel, and the sink is called once the lock is released. `settle_writes` runs on every `poll`, and right
+after the sink returns for a synchronous sink. It answers the ticket and audits it once as `property-write`,
+with the outcome (`ok`, `role-denied` or the `PluginRefusal` kind), the key in the target
+(`<package>/set_property/<node>/<key>`), the value's digest and the installation. No reply within
+`PORTAL_WRITE_TIMEOUT_MS` (5 s) is `unknown-outcome`, never retried.
+
+**The sink contract** (`PortalWriteSink::commit`, implemented by the binary): mint a `PluginAdmission` for
+`write.petal_id` with `capabilities = [CAP_STORAGE_WRITE]`, `property_scope = [key]` (exactly the key the bus
+matched), `with_package(PackageIdentity::new(package_id, content_hash))` (the host-stamped provenance, R24) and
+`with_scene_writes([SceneWrite::SetProperty])`; bind its scope; send
+`DbCommand::PluginCommit { admission, ops: vec![write.op], readings: vec![], reply }` without blocking. The DB
+re-checks the local DID's role (Editor floor), the capability and the stored ancestry at use
+(`fe-database/src/handlers/plugin_host.rs` `commit`). That is where "judged by the installing identity's role
+at write time" is final; the bus check adds only the ceiling the DB does not know.
+
+## §row-caps (G1-C6)
+
+`scene.query-nodes` is row-capped host-side already. `NodeQuery::validate` bounds `limit` to 1..=200
+(`fe_sdk::plugin_host::MAX_NODE_QUERY_ROWS`, below REST's 10 000), and `PluginContext::query_nodes` refuses a
+reader that returns more than `limit` rows or a page over 64 KiB (`../context.rs`). The G1-C6 premise ("not
+row-capped") is stale for that path. Two bus paths trusted their source to cap, and the bus now caps both
+itself: a `host/node-changes` snapshot carries at most `REST_ROW_CAP` (10 000) nodes, and the last part then
+says `"truncated": true`; a `host/query` snapshot is cut at 10 000 rows, and at REST's 8 MiB body for non-guests
+(guests keep the 1 MiB event cap), with `truncated: true`.
+
+## §bindings (bus.md §12)
+
+The bus has no binding concept and needs none. A binding-started instance registers through the same
+`register_instance` as a locally bound one: one instance per `(petal, package)`, and a second registration at
+the same key is refused, so the activation layer reuses the running instance. Hook-point calls never touch
+the broker (no subscription, publish or command slot; status counts them under `hooks.*`). Bound API routes
+reach commands through fe-api's `admit_remote` and `call_command`, so their auth, floors, rates and the
+host-side credential-header strip are those of the extension routes.

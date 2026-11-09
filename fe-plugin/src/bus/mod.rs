@@ -15,12 +15,13 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 pub use broker::{
-    Bus, BusCounters, BusHooks, ClientGrants, ClientHandle, CommandTicket, GuestWork, InstanceSpec,
+    Bus, BusCounters, BusHooks, ClientGrants, ClientHandle, CommandTicket, GuestWork, InstanceSpec, PortalGrants,
+    PortalStream, WriteOutcome, WriteTicket,
 };
 pub use sources::{
     AdmissionEvent, AdmissionKind, AdmissionReason, AdmissionState, AuditAction, AuditEntry,
-    AuditSink, BusPolicy, BusSources, PreparedQuery, QueryRequest, QueryRows, QuerySource,
-    ReadingEvent, ReadingOrigin, ReadingRow, RoleSource, SceneSnapshotSource,
+    AuditSink, BusPolicy, BusSources, PortalWrite, PortalWriteSink, PreparedQuery, QueryRequest, QueryRows,
+    QuerySource, ReadingEvent, ReadingOrigin, ReadingRow, RoleSource, SceneSnapshotSource,
 };
 
 /// Subscriptions one instance may hold.
@@ -67,6 +68,28 @@ pub const NODE_DELTA_CHANGES: usize = 256;
 pub const READINGS_PER_EVENT: usize = 1_000;
 /// Anchors a `host/readings` filter may name.
 pub const MAX_ANCHOR_FILTER: usize = 256;
+/// REST's row cap (`fe_api::limits::QUERY_ROW_CAP`): `host/query` rows and `host/node-changes` snapshot nodes.
+pub const REST_ROW_CAP: usize = 10_000;
+/// REST's `/api/v1/query` body cap (`fe_api::limits::QUERY_MAX_RESPONSE_BYTES`) for a non-guest snapshot.
+pub const REST_RESPONSE_BYTES: usize = 8 * 1024 * 1024;
+/// Host ceiling for a portal stream's `max_rate_hz` (portal ipc-v1.md §8).
+pub const PORTAL_STREAM_RATE_HZ: f64 = 10.0;
+/// Portal `set_property` writes per second per bundle package (ipc-v1.md §8).
+pub const PORTAL_WRITE_RATE_HZ: f64 = 2.0;
+/// Burst of the per-package portal write bucket.
+pub const PORTAL_WRITE_BURST: u32 = 5;
+/// Portal writes per second per installing identity across every bundle (half the ~8/s DB-thread ceiling).
+pub const PORTAL_WRITE_IDENTITY_RATE_HZ: f64 = 4.0;
+/// Burst of the per-identity portal write bucket.
+pub const PORTAL_WRITE_IDENTITY_BURST: u32 = 8;
+/// A portal write the DB has not answered by then is `unknown-outcome` (never retried).
+pub const PORTAL_WRITE_TIMEOUT_MS: u64 = 5_000;
+/// Largest node id a portal write may name.
+pub const MAX_NODE_ID_BYTES: usize = 128;
+/// Largest property key a portal write may name.
+pub const MAX_PROPERTY_KEY_BYTES: usize = 128;
+/// The role a portal write needs at the petal, after the caller's ceiling.
+pub const PORTAL_WRITE_FLOOR: fe_policy::RoleLevel = fe_policy::RoleLevel::Editor;
 
 /// Why a host call was refused or did not complete (WIT `types.host-error`).
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
@@ -253,6 +276,38 @@ pub fn is_local_id(id: &str) -> bool {
     is_label(id, 32)
 }
 
+/// Host-reserved property keys no portal may write: `node_kind` and everything under `portal` (portal README §5.1).
+pub fn is_reserved_property_key(key: &str) -> bool {
+    key == "node_kind" || key == "portal" || key.starts_with("portal.")
+}
+
+/// A key in the portal grammar `[a-z0-9_]+(\.[a-z0-9_]+)*`, not reserved, matched by an exact pattern or a
+/// `prefix.*` pattern (which needs at least one more segment).
+pub fn portal_key_allowed(patterns: &[String], key: &str) -> bool {
+    let grammar = key.len() <= MAX_PROPERTY_KEY_BYTES
+        && key.split('.').all(|segment| {
+            !segment.is_empty() && segment.bytes().all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == b'_')
+        });
+    grammar
+        && !is_reserved_property_key(key)
+        && patterns.iter().any(|pattern| match pattern.strip_suffix(".*") {
+            Some(base) => key.strip_prefix(base).is_some_and(|rest| rest.len() > 1 && rest.starts_with('.')),
+            None => pattern == key,
+        })
+}
+
+/// A node id a write may name: 1..=128 of `[A-Za-z0-9_-]`; petal membership is proven by the DB at use.
+pub fn is_node_id(node_id: &str) -> bool {
+    !node_id.is_empty()
+        && node_id.len() <= MAX_NODE_ID_BYTES
+        && node_id.bytes().all(|c| c.is_ascii_alphanumeric() || c == b'-' || c == b'_')
+}
+
+/// A provenance `content_hash`: 64 lowercase hex characters (package-format.md).
+pub fn is_content_hash(hash: &str) -> bool {
+    hash.len() == 64 && hash.bytes().all(|c| c.is_ascii_digit() || (b'a'..=b'f').contains(&c))
+}
+
 fn is_label(label: &str, max: usize) -> bool {
     let mut chars = label.chars();
     label.len() <= max
@@ -278,10 +333,11 @@ pub struct Caller {
     pub kind: CallerKind,
     /// The calling package for kind `extension` or `portal`.
     pub package_id: Option<String>,
-    /// True when `did` is the host's local DID and no ceiling below Owner applies.
+    /// True when `did` is the host's local DID and no ceiling below Owner applies; a portal client (host-minted
+    /// binding) is local by DID alone and its ceiling only caps its role (bus/AGENTS.md §portal-clients).
     pub local: bool,
-    /// A delegated API token's `max_role`: caps the DID's role, and below Owner the caller is not local
-    /// (every node-minted token carries the node DID; src/bus/AGENTS.md §delegated-callers).
+    /// Caps the DID's role: a delegated API token's `max_role` (below Owner the caller is not local,
+    /// §delegated-callers), or a portal's installing-identity role at the bundle scope (§portal-clients).
     pub role_ceiling: Option<fe_policy::RoleLevel>,
 }
 

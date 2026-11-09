@@ -1,12 +1,14 @@
 //! Journey J4 (docs/extensions/bus.md §10) through the public `Bus` seam with fake host sources.
 
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 
 use crossbeam::channel::Sender;
 use fe_policy::RoleLevel;
 use fe_runtime::messages::SceneChange;
-use fe_sdk::manifest_v2::ExtensionManifest;
+use fe_runtime::plugin_host::{PluginReply, PluginResult};
+use fe_sdk::manifest_v2::{ConsumeEntry, ExtensionManifest};
+use fe_sdk::plugin_host::{PendingOp, TransactionReceipt};
 use serde_json::{json, Value};
 
 use super::*;
@@ -15,6 +17,58 @@ use crate::tick::{Clock, ManualClock};
 const LOCAL: &str = "did:key:z6MkLocalHost";
 const PETAL: &str = "01JPETAL";
 const FLEET: &str = "org.example.fleet-sim";
+const CONSOLE: &str = "org.example.console";
+
+/// A petal holding one node more than REST's row cap; each node carries an in-scope and an out-of-scope key.
+struct OversizedPetal;
+
+impl SceneSnapshotSource for OversizedPetal {
+    fn snapshot(&self, petal_id: &str, reply: Sender<Result<Vec<Value>, HostError>>) {
+        let nodes = (0..=REST_ROW_CAP)
+            .map(|i| json!({ "node_id": format!("n{i}"), "petal_id": petal_id, "properties": { "fleet.speed": i, "secret": "hidden" } }))
+            .collect();
+        let _ = reply.send(Ok(nodes));
+    }
+}
+
+/// The write path stand-in: records each write and commits it, or holds the reply while `hold` is set.
+#[derive(Default)]
+struct Writes {
+    seen: Mutex<Vec<PortalWrite>>,
+    held: Mutex<Vec<Sender<PluginResult>>>,
+    hold: AtomicBool,
+}
+
+impl PortalWriteSink for Writes {
+    fn commit(&self, write: &PortalWrite, reply: Sender<PluginResult>) {
+        self.seen.lock().unwrap().push(write.clone());
+        if self.hold.load(Ordering::SeqCst) {
+            self.held.lock().unwrap().push(reply);
+        } else {
+            let _ = reply.send(Ok(committed()));
+        }
+    }
+}
+
+fn committed() -> PluginReply {
+    PluginReply::Committed(serde_json::from_value::<TransactionReceipt>(json!({ "op_count": 1, "created_node_ids": [] })).unwrap())
+}
+
+/// The console bundle's host-minted binding at `PETAL` (ipc-v1.md §6.5).
+fn console_grants() -> PortalGrants {
+    PortalGrants {
+        package_id: CONSOLE.into(),
+        content_hash: "cd".repeat(32),
+        installation_id: Some("inst-console".into()),
+        verse_id: "01JVERSE".into(),
+        petal_id: PETAL.into(),
+        consume: serde_json::from_value::<Vec<ConsumeEntry>>(json!([{ "source": "host/node-changes" }, { "source": format!("{FLEET}/positions") }])).unwrap(),
+        property_scope: Some(vec!["fleet.*".into()]),
+        streams: vec![PortalStream { id: "selection".into(), max_rate_hz: 4.0, max_event_bytes: 2048, consumers: None }],
+        invoke: vec![format!("{FLEET}/start")],
+        set_property_keys: vec!["fleet.*".into(), "console.note".into()],
+    }
+}
 
 /// The guarded core stand-in: FROM target = the word after FROM; every run returns `rows`.
 struct FakeQuery {
@@ -74,6 +128,10 @@ impl Audit {
     fn count(&self, action: AuditAction) -> usize {
         self.0.lock().unwrap().iter().filter(|entry| entry.action == action).count()
     }
+
+    fn outcomes(&self, action: AuditAction) -> Vec<String> {
+        self.0.lock().unwrap().iter().filter(|entry| entry.action == action).map(|entry| entry.outcome.clone()).collect()
+    }
 }
 
 /// Records deliveries and answers `start` with `{"started":1}`, anything else with `{}`.
@@ -132,7 +190,8 @@ fn bi_manifest() -> Value {
             "consume": [
                 { "source": "host/query", "id": "latest", "sql": "SELECT * FROM iot_reading", "min_interval_ms": 1000 },
                 { "source": "host/query", "id": "petals", "sql": "SELECT * FROM petal" },
-                { "source": "org.example.fleet-sim/positions" }
+                { "source": "org.example.fleet-sim/positions" },
+                { "source": "org.example.console/selection" }
             ],
             "call": ["org.example.fleet-sim/start", "org.example.absent/ping"]
         }
@@ -169,7 +228,8 @@ fn advance(clock: &ManualClock, bus: &Bus, ms: u64) {
     }
 }
 
-/// J4: guarded query parity and change-triggered pacing, stream ceilings, command floors and queues, audit.
+/// J4: guarded query parity and change-triggered pacing, stream ceilings, command floors and queues, audit; then a
+/// mounted portal's capped snapshot, emit, invoke, one-op writes and revocation (bus/AGENTS.md §portal-clients).
 #[test]
 fn bus_journey_queries_streams_commands_and_audit() {
     let clock = ManualClock::default();
@@ -182,7 +242,7 @@ fn bus_journey_queries_streams_commands_and_audit() {
     let audit = Arc::new(Audit::default());
     let sources = BusSources {
         query: Some(query.clone()),
-        scene: None,
+        scene: Some(Arc::new(OversizedPetal)),
         roles: Arc::new(Roles),
         policy: Arc::new(OpenPolicy),
         audit: audit.clone(),
@@ -284,4 +344,96 @@ fn bus_journey_queries_streams_commands_and_audit() {
     // G1: a delegated token of this node carries the local DID under a viewer ceiling; it is not local (same not-found).
     let delegated = Caller { role_ceiling: Some(fe_policy::RoleLevel::Viewer), ..rest.clone() };
     assert_eq!(bus.call_command(&delegated, PETAL, FLEET, "start", &json!({})).unwrap_err(), BusRefusal::NotFound);
+
+    // ---- A mounted portal bundle (portal ipc-v1.md §5-§6, A-13) -----------------------------------------------
+
+    // Its stream has no producer until the bundle mounts; mounted, the consuming extension may subscribe.
+    let selection = format!("{CONSOLE}/selection");
+    assert!(matches!(bus.subscribe(&bi, &selection, "{}"), Err(HostError::NotAvailable(_))));
+    let console = bus.open_portal_client(LOCAL, RoleLevel::Editor, console_grants());
+    let consumed = bus.subscribe(&bi, &selection, "{}").unwrap();
+
+    // A portal consumes its declared hooks at its mount petal only.
+    let elsewhere = bus.client_subscribe(console.id, "01JOTHERPETAL", &format!("{FLEET}/positions"), &json!({}));
+    assert!(matches!(elsewhere, Err(BusRefusal::CapabilityDenied(_))));
+
+    // G1-C6: a node snapshot stops at REST's row cap and says so; properties are cut to the bundle's scope.
+    bus.client_subscribe(console.id, PETAL, "host/node-changes", &json!({})).unwrap();
+    bus.poll();
+    let parts = bus.take_client_events(console.id, 64);
+    assert!(parts.iter().all(|event| event.kind == DeliveryKind::Snapshot));
+    let parts: Vec<Value> = parts.iter().map(|event| serde_json::from_str(&event.data).unwrap()).collect();
+    let nodes: usize = parts.iter().map(|part| part["nodes"].as_array().unwrap().len()).sum();
+    assert_eq!(nodes, REST_ROW_CAP);
+    assert_eq!((parts.last().unwrap()["last"].clone(), parts.last().unwrap()["truncated"].clone()), (json!(true), json!(true)));
+    assert_eq!(parts[0]["nodes"][0]["properties"], json!({ "fleet.speed": 0 }));
+
+    // emit: a declared stream under its own ceiling (4/s) reaches the consuming extension; an undeclared one is a denial.
+    let emitted: Vec<_> = (0..6).map(|i| bus.client_publish(console.id, "selection", &json!({ "node_id": format!("n{i}") }))).collect();
+    assert_eq!(emitted.iter().filter(|outcome| outcome.is_ok()).count(), 4);
+    assert!(matches!(emitted[5], Err(BusRefusal::RateLimited(_))));
+    let denials = audit.count(AuditAction::Denial);
+    assert!(matches!(bus.client_publish(console.id, "undeclared", &json!({})), Err(BusRefusal::CapabilityDenied(_))));
+    assert_eq!(audit.count(AuditAction::Denial), denials + 1);
+    let received = deliver(&bus, &bi).events;
+    assert_eq!(received.iter().filter(|event| event.subscription == consumed && event.kind == DeliveryKind::Delta).count(), 4);
+
+    // invoke: declared targets only, judged as the binding (never a Caller literal), its ceiling capping the role.
+    let mut invoked = bus.client_call_command(console.id, FLEET, "start", &json!({})).unwrap();
+    assert_eq!(bus.dispatch(&fleet, &mut Guest::default(), 8), 1);
+    assert_eq!(invoked.reply.try_recv().unwrap(), CommandOutcome::Ok(r#"{"started":1}"#.into()));
+    assert!(matches!(bus.client_call_command(console.id, FLEET, "ping", &json!({})), Err(BusRefusal::CapabilityDenied(_))));
+    let literal = Caller { did: LOCAL.into(), kind: CallerKind::Portal, package_id: Some(CONSOLE.into()), local: true, role_ceiling: None };
+    assert!(matches!(bus.call_command(&literal, PETAL, FLEET, "start", &json!({})), Err(BusRefusal::InvalidInput(_))));
+    let viewer = bus.open_portal_client(LOCAL, RoleLevel::Viewer, console_grants());
+    assert!(matches!(bus.client_call_command(viewer.id, FLEET, "start", &json!({})), Err(BusRefusal::CapabilityDenied(_))));
+
+    // set_property: one op on the write path with the binding's provenance, after the host has a write path.
+    assert!(matches!(bus.client_set_property(console.id, "n1", "fleet.speed", &json!(3)), Err(BusRefusal::NotAvailable(_))));
+    let writes = Arc::new(Writes::default());
+    assert!(bus.install_portal_writes(writes.clone()));
+    let mut written = bus.client_set_property(console.id, "n1", "fleet.speed", &json!(3)).unwrap();
+    assert!(matches!(written.reply.try_recv().unwrap(), WriteOutcome::Committed(_)));
+    let sent = writes.seen.lock().unwrap()[0].clone();
+    assert_eq!((sent.package_id.as_str(), sent.content_hash.as_str(), sent.petal_id.as_str()), (CONSOLE, "cd".repeat(32).as_str(), PETAL));
+    assert_eq!(sent.op, PendingOp::SetProperty { node_id: "n1".into(), key: "fleet.speed".into(), value: json!(3) });
+
+    // Reserved and undeclared keys never reach the DB; a viewer-capped binding is role-denied before it.
+    for key in ["portal.bundle_asset", "node_kind", "secret"] {
+        assert!(matches!(bus.client_set_property(console.id, "n1", key, &json!(1)), Err(BusRefusal::CapabilityDenied(_))));
+    }
+    let mut denied = bus.client_set_property(viewer.id, "n1", "fleet.speed", &json!(4)).unwrap();
+    assert!(matches!(denied.reply.try_recv().unwrap(), WriteOutcome::RoleDenied(_)));
+    assert_eq!(writes.seen.lock().unwrap().len(), 1, "nothing but the one accepted write reached the write path");
+    assert_eq!(audit.outcomes(AuditAction::PropertyWrite), ["ok", "role-denied"]);
+
+    // The package budget holds across clients and instants: twenty calls at once, exactly the burst lands.
+    clock.set(clock.now_ms() + 3_000);
+    let accepted = (0..20).filter(|_| bus.client_set_property(console.id, "n1", "fleet.speed", &json!(5)).is_ok()).count();
+    assert_eq!(accepted, PORTAL_WRITE_BURST as usize);
+
+    // OD-E1: revoking the bundle by hash under another id stops its clients and its stream at once; a write already
+    // in flight still settles and its row stays.
+    clock.set(clock.now_ms() + 3_000);
+    writes.hold.store(true, Ordering::SeqCst);
+    let mut in_flight = bus.client_set_property(console.id, "n2", "console.note", &json!("hi")).unwrap();
+    bus.feed_admission(&AdmissionEvent {
+        package_id: "org.example.renamed".into(),
+        content_hash: "cd".repeat(32),
+        kind: AdmissionKind::WebBundle,
+        reason: AdmissionReason::RevocationList,
+        verse_id: None,
+    });
+    let ended = bus.take_client_events(console.id, 64);
+    assert_eq!(ended.last().map(|event| (event.kind, event.data.to_string())), Some((DeliveryKind::Ended, r#"{"reason":"revoked"}"#.into())));
+    let producer_gone = deliver(&bus, &bi).events;
+    assert!(producer_gone.iter().any(|event| event.subscription == consumed && event.kind == DeliveryKind::Ended && event.data.contains("producer-inactive")));
+    assert!(matches!(bus.client_set_property(console.id, "n2", "console.note", &json!("again")), Err(BusRefusal::NotAvailable(_))));
+    assert!(matches!(bus.client_publish(console.id, "selection", &json!({})), Err(BusRefusal::NotAvailable(_))));
+    for reply in writes.held.lock().unwrap().drain(..) {
+        let _ = reply.send(Ok(committed()));
+    }
+    bus.poll();
+    assert!(matches!(in_flight.reply.try_recv().unwrap(), WriteOutcome::Committed(_)));
+    assert_eq!(audit.outcomes(AuditAction::PropertyWrite).last().map(String::as_str), Some("ok"));
 }

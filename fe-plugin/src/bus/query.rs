@@ -7,7 +7,7 @@ use serde_json::{Map, Value};
 
 use super::canonical_json;
 use super::sources::{PreparedQuery, QueryRequest, QueryRows};
-use super::HostError;
+use super::{HostError, REST_RESPONSE_BYTES, REST_ROW_CAP};
 
 /// One query subscription's pacing: dirty flag, one run in flight, floor since the last start, last hash.
 pub(super) struct QueryState {
@@ -15,7 +15,7 @@ pub(super) struct QueryState {
     pub(super) prepared: PreparedQuery,
     tables: HashSet<String>,
     min_interval_ms: u64,
-    /// Guests get at most 1 MiB per snapshot; external clients only REST's caps.
+    /// Guests get at most 1 MiB per snapshot; everyone else REST's caps (`None`).
     event_cap: Option<usize>,
     dirty: bool,
     launching: bool,
@@ -114,7 +114,8 @@ impl QueryState {
     }
 }
 
-/// `{"data": rows, "row_count": n, "truncated": bool}`, rows cut at the boundary that keeps it under `cap`.
+/// `{"data": rows, "row_count": n, "truncated": bool}`, rows cut at REST's row cap and at the boundary that keeps
+/// it under `cap` (guests) or REST's body cap (everyone else); the source's own caps are not trusted.
 fn snapshot_data(rows: &[Value], truncated: bool, cap: Option<usize>) -> String {
     let render = |kept: &[Value], cut: bool| {
         let mut data = Map::new();
@@ -123,8 +124,10 @@ fn snapshot_data(rows: &[Value], truncated: bool, cap: Option<usize>) -> String 
         data.insert("truncated".into(), Value::Bool(cut));
         Value::Object(data).to_string()
     };
+    let truncated = truncated || rows.len() > REST_ROW_CAP;
+    let rows = &rows[..rows.len().min(REST_ROW_CAP)];
+    let cap = cap.unwrap_or(REST_RESPONSE_BYTES).min(REST_RESPONSE_BYTES);
     let full = render(rows, truncated);
-    let Some(cap) = cap else { return full };
     if full.len() <= cap {
         return full;
     }

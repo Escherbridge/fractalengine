@@ -69,6 +69,32 @@ pub trait AuditSink: Send + Sync {
     fn record(&self, entry: AuditEntry);
 }
 
+/// One portal `set_property` (portal ipc-v1.md §6.1, A-13): exactly one op, judged as `identity_did` at write time.
+#[derive(Debug, Clone, PartialEq)]
+pub struct PortalWrite {
+    /// The broker's id for this write (audit correlation).
+    pub write: u64,
+    /// The installing identity (the host's local DID); the DB re-checks its role at use.
+    pub identity_did: String,
+    /// Host-stamped provenance `{package_id, content_hash}` from the mount binding, never from page data.
+    pub package_id: String,
+    pub content_hash: String,
+    /// The web-bundle installation (A-14), when governance has one.
+    pub installation_id: Option<String>,
+    pub verse_id: String,
+    /// The repository node's petal: the admission is bound to exactly this petal.
+    pub petal_id: String,
+    /// Exactly one `PendingOp::SetProperty` on a key the bus already matched against the declared patterns.
+    pub op: fe_sdk::plugin_host::PendingOp,
+}
+
+/// The extension write path for portal writes, injected by the binary (bus/AGENTS.md §portal-writes).
+pub trait PortalWriteSink: Send + Sync {
+    /// Commit `write.op` as ONE `DbCommand::PluginCommit` (no readings, no tick) under a host-minted admission
+    /// carrying `with_package({package_id, content_hash})`; never block the caller, answer `reply` exactly once.
+    fn commit(&self, write: &PortalWrite, reply: Sender<fe_runtime::plugin_host::PluginResult>);
+}
+
 /// What an audit entry records.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "kebab-case")]
@@ -80,6 +106,8 @@ pub enum AuditAction {
     CommandCall,
     /// A capability or policy refusal.
     Denial,
+    /// A portal `set_property` that reached the role check or the DB, with its outcome (ipc-v1.md §9).
+    PropertyWrite,
 }
 
 /// One audit row (bus.md §7).

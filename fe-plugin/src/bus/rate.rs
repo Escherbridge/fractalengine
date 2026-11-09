@@ -17,6 +17,14 @@ impl TokenBucket {
         Self { rate_per_ms: rate / 1_000.0, capacity, tokens: capacity, last_ms: now_ms }
     }
 
+    /// A full bucket of `burst` tokens refilling at `rate_hz` (the portal write budget: 2/s, burst 5).
+    pub fn with_burst(rate_hz: f64, burst: u32, now_ms: u64) -> Self {
+        let mut bucket = Self::new(rate_hz, now_ms);
+        bucket.capacity = f64::from(burst.max(1));
+        bucket.tokens = bucket.capacity;
+        bucket
+    }
+
     /// Take one token if one is available at `now_ms`.
     pub fn try_take(&mut self, now_ms: u64) -> bool {
         self.refill(now_ms);

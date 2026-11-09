@@ -1,14 +1,16 @@
 //! The broker behind [`Bus`]: registrations, subscriptions, fan-out, commands and query pacing; see bus/AGENTS.md §broker.
 
 use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
-use std::sync::{Arc, Mutex, MutexGuard};
+use std::sync::{Arc, Mutex, MutexGuard, OnceLock};
 
-use crossbeam::channel::{Receiver, TryRecvError};
+use crossbeam::channel::{Receiver, Sender, TryRecvError};
 use fe_policy::RoleLevel;
 use fe_runtime::messages::SceneChange;
+use fe_runtime::plugin_host::{PluginRefusal, PluginReply, PluginResult};
 use fe_sdk::manifest_v2::{
     metric_allowed, scope_allows, ConsumeEntry, ExposedCommand, ExposedStream, ExtensionManifest, RoleFloor,
 };
+use fe_sdk::plugin_host::{PendingOp, TransactionReceipt};
 use serde::Serialize;
 use serde_json::{json, Map, Value};
 use tokio::sync::{oneshot, Notify};
@@ -16,15 +18,20 @@ use tokio::sync::{oneshot, Notify};
 use super::query::QueryState;
 use super::rate::TokenBucket;
 use super::schema::validate_args;
-use super::sources::{AdmissionEvent, AuditAction, AuditEntry, BusSources, QueryRequest, ReadingEvent};
+use super::sources::{
+    AdmissionEvent, AdmissionKind, AdmissionReason, AuditAction, AuditEntry, BusSources, PortalWrite,
+    PortalWriteSink, QueryRequest, ReadingEvent,
+};
 use super::{
-    json_digest, parse_command_address, role_level, BusEvent, BusRefusal, Caller, CallerKey, CallerKind,
-    CommandError, CommandOutcome, DeliveryKind, EndReason, HostError, InstanceKey, Source, ADMISSION_QUEUE,
-    CALLER_COMMAND_RATE_HZ, COMMAND_QUEUE_PER_INSTANCE, COMMAND_REPLY_TIMEOUT_MS, EXTERNAL_QUEUE,
-    GUEST_BATCH_BYTES, GUEST_BATCH_EVENTS, GUEST_QUERY_EVENT_BYTES, GUEST_QUEUE, MAX_ANCHOR_FILTER,
-    MAX_COMMAND_ARGS_BYTES, MAX_COMMAND_RATE_HZ, MAX_COMMAND_RESULT_BYTES, MAX_STREAM_EVENT_BYTES,
-    MAX_STREAM_RATE_HZ, MAX_SUBSCRIPTIONS_PER_CLIENT, MAX_SUBSCRIPTIONS_PER_INSTANCE, NODE_DELTA_CHANGES,
-    NODE_SNAPSHOT_PART, QUERY_MIN_INTERVAL_FLOOR_MS, READINGS_PER_EVENT, REMOTE_REQUEST_RATE_HZ,
+    is_content_hash, is_node_id, is_package_id, json_digest, parse_command_address, portal_key_allowed, role_level,
+    BusEvent, BusRefusal, Caller, CallerKey, CallerKind, CommandError, CommandOutcome, DeliveryKind, EndReason,
+    HostError, InstanceKey, Source, ADMISSION_QUEUE, CALLER_COMMAND_RATE_HZ, COMMAND_QUEUE_PER_INSTANCE,
+    COMMAND_REPLY_TIMEOUT_MS, EXTERNAL_QUEUE, GUEST_BATCH_BYTES, GUEST_BATCH_EVENTS, GUEST_QUERY_EVENT_BYTES,
+    GUEST_QUEUE, MAX_ANCHOR_FILTER, MAX_COMMAND_ARGS_BYTES, MAX_COMMAND_RATE_HZ, MAX_COMMAND_RESULT_BYTES,
+    MAX_STREAM_EVENT_BYTES, MAX_STREAM_RATE_HZ, MAX_SUBSCRIPTIONS_PER_CLIENT, MAX_SUBSCRIPTIONS_PER_INSTANCE,
+    NODE_DELTA_CHANGES, NODE_SNAPSHOT_PART, PORTAL_STREAM_RATE_HZ, PORTAL_WRITE_BURST, PORTAL_WRITE_FLOOR,
+    PORTAL_WRITE_IDENTITY_BURST, PORTAL_WRITE_IDENTITY_RATE_HZ, PORTAL_WRITE_RATE_HZ, PORTAL_WRITE_TIMEOUT_MS,
+    QUERY_MIN_INTERVAL_FLOOR_MS, READINGS_PER_EVENT, REMOTE_REQUEST_RATE_HZ, REST_ROW_CAP,
 };
 use crate::tick::Clock;
 
@@ -74,14 +81,71 @@ pub enum ClientGrants {
     Ui,
     /// A REST/WS/MCP connection: extension streams only (host streams keep their own routes).
     Api,
-    /// A mounted portal bundle: its manifest's declarations, already intersected with consent.
-    Portal {
-        package_id: String,
-        verse_id: String,
-        petal_id: String,
-        consume: Vec<ConsumeEntry>,
-        property_scope: Option<Vec<String>>,
-    },
+    /// A mounted portal bundle; open it with [`Bus::open_portal_client`].
+    Portal(Box<PortalGrants>),
+}
+
+/// A mounted bundle's bus grants: its manifest's declarations intersected with consent, minted by the host at
+/// mount from the admission record (portal ipc-v1.md §6.5); nothing in here ever comes from page data.
+#[derive(Debug, Clone, PartialEq)]
+pub struct PortalGrants {
+    pub package_id: String,
+    /// The admitted bundle's `content_hash`: the provenance every write is stamped with (R24).
+    pub content_hash: String,
+    /// The web-bundle installation (A-14); audit rows carry it.
+    pub installation_id: Option<String>,
+    pub verse_id: String,
+    /// The repository node's petal: the one scope of every subscription, publish, call and write.
+    pub petal_id: String,
+    /// Declared `subscriptions` and `hooks` as consume entries (`host/query` entries carry the named SQL).
+    pub consume: Vec<ConsumeEntry>,
+    /// Keys a `host/node-changes` snapshot shows.
+    pub property_scope: Option<Vec<String>>,
+    /// Declared `streams` the bundle may `emit` on.
+    pub streams: Vec<PortalStream>,
+    /// Declared `commands.invoke` targets as `<package_id>/<command>`.
+    pub invoke: Vec<String>,
+    /// Declared `commands.set_property.keys` patterns (exact or `prefix.*`).
+    pub set_property_keys: Vec<String>,
+}
+
+/// One declared bundle stream (`streams[]` of the bundle manifest).
+#[derive(Debug, Clone, PartialEq)]
+pub struct PortalStream {
+    pub id: String,
+    pub max_rate_hz: f64,
+    pub max_event_bytes: u64,
+    /// Restrict to these consumer packages.
+    pub consumers: Option<Vec<String>>,
+}
+
+/// An admitted portal write; the outcome arrives on `reply` within `PORTAL_WRITE_TIMEOUT_MS` plus a broker turn.
+#[derive(Debug)]
+pub struct WriteTicket {
+    pub write: u64,
+    pub reply: oneshot::Receiver<WriteOutcome>,
+}
+
+/// What a portal write finally answered; audited once as `property-write`.
+#[derive(Debug, Clone)]
+pub enum WriteOutcome {
+    /// The one op committed with its provenance.
+    Committed(TransactionReceipt),
+    /// The role at the petal, capped by the client's ceiling, is below Editor: nothing reached the DB.
+    RoleDenied(String),
+    /// The DB refused or could not confirm it (`revoked` = role floor or ancestry at use); never retried.
+    Refused(PluginRefusal),
+}
+
+impl WriteOutcome {
+    /// The audit outcome text.
+    pub fn code(&self) -> &'static str {
+        match self {
+            Self::Committed(_) => "ok",
+            Self::RoleDenied(_) => "role-denied",
+            Self::Refused(refusal) => refusal.kind(),
+        }
+    }
 }
 
 /// An open client; await `notify` for new events, then `Bus::take_client_events`.
@@ -145,7 +209,8 @@ enum Detail {
     NodeChanges { property_scope: Option<Vec<String>>, snapshot: SnapshotState, ready: bool, pending: Vec<Value> },
     Readings { metrics: Option<Vec<String>>, anchors: Option<HashSet<String>> },
     Admission { visible: Option<HashSet<String>> },
-    Stream { producer: InstanceKey, stream_id: String, role_floor: RoleLevel, external_required: bool, verse_id: String },
+    /// `from_portal`: the producer at `(petal, package)` is a portal client, never an instance of the same address.
+    Stream { producer: InstanceKey, stream_id: String, role_floor: RoleLevel, external_required: bool, verse_id: String, from_portal: bool },
 }
 
 struct Subscription {
@@ -251,7 +316,7 @@ impl Subscription {
     fn counter_owner(&self) -> Option<InstanceKey> {
         match (&self.subscriber, &self.detail) {
             (Subscriber::Instance(key), _) => Some(key.clone()),
-            (Subscriber::Client(_), Detail::Stream { producer, .. }) => Some(producer.clone()),
+            (Subscriber::Client(_), Detail::Stream { producer, from_portal: false, .. }) => Some(producer.clone()),
             (Subscriber::Client(_), _) => None,
         }
     }
@@ -271,6 +336,39 @@ struct ClientState {
     grants: ClientGrants,
     notify: Arc<Notify>,
     paused: bool,
+    /// A portal whose bundle left `admitted`: no new subscriptions, publishes, calls or writes.
+    stopped: Option<EndReason>,
+}
+
+/// A portal write sent to the write path, answered and audited once by `settle_writes`.
+struct PendingWrite {
+    reply: Receiver<PluginResult>,
+    answer: oneshot::Sender<WriteOutcome>,
+    /// The `property-write` entry; its outcome and time are filled in when the write settles.
+    audit: AuditEntry,
+    deadline_ms: u64,
+}
+
+/// An admitted write: answered without the DB (role below the floor), or to send outside the lock.
+enum WriteAdmission {
+    Settled(WriteTicket),
+    Send { ticket: WriteTicket, write: Box<PortalWrite>, reply: Sender<PluginResult>, sink: Arc<dyn PortalWriteSink> },
+}
+
+/// A stream producer at `(petal, package)` as a subscription needs it.
+struct ProducerStream {
+    external: bool,
+    role_floor: RoleLevel,
+    consumers: Option<Vec<String>>,
+    verse_id: String,
+    from_portal: bool,
+}
+
+/// An active instance's exposed stream wins over a portal's declared one at the same address.
+enum ProducerLookup {
+    Missing,
+    Undeclared,
+    Found(ProducerStream),
 }
 
 enum CallReply {
@@ -299,6 +397,13 @@ struct BrokerState {
     remote_gate: HashMap<String, TokenBucket>,
     caller_buckets: HashMap<CallerKey, TokenBucket>,
     command_buckets: HashMap<(String, CallerKey), TokenBucket>,
+    /// Portal publish ceilings per `(petal, package)` and stream, so a reopened client cannot reset them.
+    portal_stream_buckets: HashMap<(InstanceKey, String), TokenBucket>,
+    /// Portal write budget per bundle package (2/s, burst 5).
+    write_buckets: HashMap<String, TokenBucket>,
+    /// Portal write budget per installing identity across every bundle.
+    identity_write_buckets: HashMap<String, TokenBucket>,
+    writes: HashMap<u64, PendingWrite>,
     feeds: HashSet<String>,
     last_prune_ms: u64,
 }
@@ -315,6 +420,10 @@ impl BrokerState {
             remote_gate: HashMap::new(),
             caller_buckets: HashMap::new(),
             command_buckets: HashMap::new(),
+            portal_stream_buckets: HashMap::new(),
+            write_buckets: HashMap::new(),
+            identity_write_buckets: HashMap::new(),
+            writes: HashMap::new(),
             // bus.md §2.3 change-feed table: node and iot_reading are always fed.
             feeds: ["node", "iot_reading"].into_iter().map(String::from).collect(),
             last_prune_ms: 0,
@@ -356,7 +465,7 @@ enum PlanKind {
     NodeChanges { property_scope: Option<Vec<String>> },
     Readings { metrics: Option<Vec<String>>, anchors: Option<HashSet<String>> },
     Admission { visible: Option<HashSet<String>> },
-    Stream { producer: InstanceKey, stream_id: String, role_floor: RoleLevel, external_required: bool, verse_id: String },
+    Stream { producer: InstanceKey, stream_id: String, role_floor: RoleLevel, external_required: bool, verse_id: String, from_portal: bool },
 }
 
 /// The integration bus on one host: cheap to clone, shared by the plugin worker, fe-api and the bridge.
@@ -366,18 +475,31 @@ pub struct Bus {
     clock: Arc<dyn Clock>,
     sources: BusSources,
     local_did: Arc<str>,
+    /// The portal write path, installed once by the binary (absent: portal writes are `not-available`).
+    portal_writes: Arc<OnceLock<Arc<dyn PortalWriteSink>>>,
 }
 
 impl Bus {
     /// `local_did` is the host identity every instance writes as; callers with any other DID are remote.
     pub fn new(clock: Arc<dyn Clock>, sources: BusSources, local_did: impl Into<String>) -> Self {
         let local_did: String = local_did.into();
-        Self { inner: Arc::new(Mutex::new(BrokerState::new())), clock, sources, local_did: Arc::from(local_did) }
+        Self {
+            inner: Arc::new(Mutex::new(BrokerState::new())),
+            clock,
+            sources,
+            local_did: Arc::from(local_did),
+            portal_writes: Arc::new(OnceLock::new()),
+        }
     }
 
     /// The host's local DID.
     pub fn local_did(&self) -> &str {
         &self.local_did
+    }
+
+    /// Install the portal write path (the binary's `PluginCommit` sender) on every clone; `false` if one is set.
+    pub fn install_portal_writes(&self, sink: Arc<dyn PortalWriteSink>) -> bool {
+        self.portal_writes.set(sink).is_ok()
     }
 
     fn lock(&self) -> MutexGuard<'_, BrokerState> {
@@ -480,7 +602,7 @@ impl Bus {
                 }
             }
             for sub in subs.values_mut() {
-                let produced_here = matches!(&sub.detail, Detail::Stream { producer, .. } if producer == key);
+                let produced_here = matches!(&sub.detail, Detail::Stream { producer, from_portal: false, .. } if producer == key);
                 if produced_here && !sub.closed {
                     sub.end(EndReason::ProducerInactive, now);
                     notify_client(clients, &sub.subscriber);
@@ -593,28 +715,7 @@ impl Bus {
             return Err(HostError::RateLimited(format!("stream {stream_id} is over max_rate_hz")));
         }
         instance.counters.published += 1;
-        let data: Arc<str> = Arc::from(event);
-        let mut producer_drops = 0u64;
-        for sub in subs.values_mut() {
-            let matches = matches!(&sub.detail, Detail::Stream { producer, stream_id: id, .. } if producer == key && id == stream_id);
-            if !matches || sub.closed {
-                continue;
-            }
-            let displaced = sub.push(DeliveryKind::Delta, data.clone(), now);
-            match &sub.subscriber {
-                Subscriber::Instance(consumer) => {
-                    if let Some(consumer) = instances.get_mut(consumer) {
-                        consumer.counters.dropped_queue += displaced;
-                    }
-                }
-                Subscriber::Client(client) => {
-                    producer_drops += displaced;
-                    if let Some(client) = clients.get(client) {
-                        client.notify.notify_one();
-                    }
-                }
-            }
-        }
+        let producer_drops = fan_out_stream(subs, instances, clients, key, false, stream_id, Arc::from(event), now);
         if let Some(producer) = instances.get_mut(key) {
             producer.counters.dropped_queue += producer_drops;
         }
@@ -672,8 +773,11 @@ impl Bus {
     /// Call `<package_id>/<command>` at `petal_id` (bus.md §4 checks 1-8); remote callers see only the uniform not-found.
     pub fn call_command(&self, caller: &Caller, petal_id: &str, package_id: &str, command_id: &str, args: &Value) -> Result<CommandTicket, BusRefusal> {
         let caller = self.normalized(caller);
-        if caller.kind == CallerKind::Extension {
-            return Err(BusRefusal::InvalidInput("extension callers use the bus.call import".into()));
+        match caller.kind {
+            CallerKind::Extension => return Err(BusRefusal::InvalidInput("extension callers use the bus.call import".into())),
+            // A portal's identity and ceiling come from its host-minted binding, never from a Caller literal.
+            CallerKind::Portal => return Err(BusRefusal::InvalidInput("portal callers use Bus::client_call_command".into())),
+            CallerKind::Ui | CallerKind::Rest | CallerKind::Mcp => {}
         }
         let now = self.now();
         let mut effects = Effects::default();
@@ -785,17 +889,238 @@ impl Bus {
 
     /// Open a client for a delegated API token: its `max_role` caps the DID's role.
     pub fn open_client_capped(&self, did: &str, kind: CallerKind, role_ceiling: Option<RoleLevel>, grants: ClientGrants) -> ClientHandle {
-        let package_id = match &grants {
-            ClientGrants::Portal { package_id, .. } => Some(package_id.clone()),
-            _ => None,
+        let caller = match &grants {
+            // A host-minted portal binding is local by DID; its ceiling (Viewer when absent: fail closed) caps the
+            // role only (bus/AGENTS.md §portal-clients).
+            ClientGrants::Portal(portal) => Caller {
+                did: did.to_string(),
+                kind: CallerKind::Portal,
+                package_id: Some(portal.package_id.clone()),
+                local: did == &*self.local_did,
+                role_ceiling: Some(role_ceiling.unwrap_or(RoleLevel::Viewer)),
+            },
+            _ => Caller { did: did.to_string(), kind, package_id: None, local: self.is_local(did, role_ceiling), role_ceiling },
         };
-        let local = self.is_local(did, role_ceiling);
-        let caller = Caller { did: did.to_string(), kind, package_id, local, role_ceiling };
         let notify = Arc::new(Notify::new());
         let mut state = self.lock();
         let id = state.next_id();
-        state.clients.insert(id, ClientState { caller, grants, notify: notify.clone(), paused: false });
+        state.clients.insert(id, ClientState { caller, grants, notify: notify.clone(), paused: false, stopped: None });
         ClientHandle { id, notify }
+    }
+
+    /// Open a mounted bundle's client: `installing_did` admitted it; `role_ceiling` is that identity's role at the
+    /// bundle's scope, never above the viewer's token (steer 2026-11-08 23:40).
+    pub fn open_portal_client(&self, installing_did: &str, role_ceiling: RoleLevel, grants: PortalGrants) -> ClientHandle {
+        self.open_client_capped(installing_did, CallerKind::Portal, Some(role_ceiling), ClientGrants::Portal(Box::new(grants)))
+    }
+
+    /// A portal's `invoke`: a declared `commands.invoke` target at the mount petal, judged as the client's binding
+    /// (installing DID, kind `portal`, its ceiling), then bus.md §4 checks 1-8.
+    pub fn client_call_command(&self, client: u64, package_id: &str, command_id: &str, args: &Value) -> Result<CommandTicket, BusRefusal> {
+        let now = self.now();
+        let address = format!("{package_id}/{command_id}");
+        let mut effects = Effects::default();
+        let result = {
+            let mut state = self.lock();
+            match portal_client(&state, client) {
+                Err(refusal) => Err(refusal),
+                Ok((caller, grants)) => {
+                    let petal_id = grants.petal_id.clone();
+                    let admitted = if grants.invoke.iter().any(|target| *target == address) {
+                        self.admit_call(&mut state, &caller, &petal_id, package_id, command_id, args, now)
+                    } else if caller.local {
+                        Err(BusRefusal::CapabilityDenied(format!("{address} is not declared under commands.invoke")))
+                    } else {
+                        Err(BusRefusal::NotFound)
+                    };
+                    match admitted {
+                        Ok((target, installation_id)) => {
+                            let (reply, receiver) = oneshot::channel();
+                            let id = state.next_id();
+                            let call = pending_call(target, installation_id, command_id, args, caller, now, CallReply::External(reply));
+                            enqueue_call(&mut state, id, call);
+                            Ok(CommandTicket { call: id, reply: receiver })
+                        }
+                        Err(refusal) => {
+                            note_refusal(&mut state, &caller, &petal_id, package_id, command_id, &refusal, now, &mut effects);
+                            Err(refusal)
+                        }
+                    }
+                }
+            }
+        };
+        self.finish(effects);
+        result
+    }
+
+    /// A portal's `emit`: publish on `<bundle package_id>/<stream_id>` at its mount petal; a declared stream, within
+    /// its size and its rate (≤ 10/s, keyed per `(petal, package, stream)` so a reopened client cannot reset it).
+    pub fn client_publish(&self, client: u64, stream_id: &str, event: &Value) -> Result<(), BusRefusal> {
+        let now = self.now();
+        let mut effects = Effects::default();
+        let result = self.client_publish_locked(client, stream_id, &event.to_string(), now, &mut effects);
+        self.finish(effects);
+        result
+    }
+
+    fn client_publish_locked(&self, client: u64, stream_id: &str, event: &str, now: u64, effects: &mut Effects) -> Result<(), BusRefusal> {
+        let mut state = self.lock();
+        let (caller, grants) = portal_client(&state, client)?;
+        let target = format!("{}/{stream_id}", grants.package_id);
+        let Some(stream) = grants.streams.iter().find(|stream| stream.id == stream_id).filter(|_| caller.local) else {
+            let refusal = if caller.local { BusRefusal::CapabilityDenied(format!("stream {stream_id} is not declared")) } else { BusRefusal::NotFound };
+            effects.audits.push(audit_entry(AuditAction::Denial, &caller.did, Some(CallerKind::Portal), grants.installation_id.clone(), target, None, refusal.code(), now));
+            return Err(refusal);
+        };
+        let cap = usize::try_from(stream.max_event_bytes).unwrap_or(usize::MAX).min(MAX_STREAM_EVENT_BYTES);
+        if event.len() > cap {
+            return Err(BusRefusal::InvalidInput(format!("event is {} bytes; max_event_bytes is {cap}", event.len())));
+        }
+        let producer = InstanceKey::new(grants.petal_id.clone(), grants.package_id.clone());
+        let rate = stream.max_rate_hz.min(PORTAL_STREAM_RATE_HZ);
+        let allowed = state
+            .portal_stream_buckets
+            .entry((producer.clone(), stream_id.to_string()))
+            .or_insert_with(|| TokenBucket::new(rate, now))
+            .try_take(now);
+        if !allowed {
+            return Err(BusRefusal::RateLimited(format!("stream {stream_id} is over max_rate_hz")));
+        }
+        let BrokerState { subs, instances, clients, .. } = &mut *state;
+        fan_out_stream(subs, instances, clients, &producer, true, stream_id, Arc::from(event), now);
+        Ok(())
+    }
+
+    /// A portal's `act set_property` (ipc-v1.md §6.1, A-13): ONE op on the extension write path outside any tick,
+    /// provenance stamped from the binding, the installing identity's role at write time capped by the ceiling, and
+    /// the caller's shared budgets; audited once with its outcome (bus/AGENTS.md §portal-writes).
+    pub fn client_set_property(&self, client: u64, node_id: &str, key: &str, value: &Value) -> Result<WriteTicket, BusRefusal> {
+        let now = self.now();
+        let mut effects = Effects::default();
+        let admitted = self.admit_write(client, node_id, key, value, now, &mut effects);
+        self.finish(effects);
+        match admitted? {
+            WriteAdmission::Settled(ticket) => Ok(ticket),
+            WriteAdmission::Send { ticket, write, reply, sink } => {
+                sink.commit(&write, reply);
+                // A synchronous write path answers in the same call.
+                self.settle_writes();
+                Ok(ticket)
+            }
+        }
+    }
+
+    /// Checks in ipc-v1.md §6.1 order under the lock: binding, declared key, shape, budgets, role; never the DB.
+    fn admit_write(&self, client: u64, node_id: &str, key: &str, value: &Value, now: u64, effects: &mut Effects) -> Result<WriteAdmission, BusRefusal> {
+        let mut state = self.lock();
+        let (caller, grants) = portal_client(&state, client)?;
+        let target = format!("{}/set_property/{node_id}/{key}", grants.package_id);
+        let deny = |refusal: BusRefusal, effects: &mut Effects| {
+            effects.audits.push(audit_entry(AuditAction::Denial, &caller.did, Some(CallerKind::Portal), grants.installation_id.clone(), target.clone(), None, refusal.code(), now));
+            refusal
+        };
+        // Writes are the host identity's (the DB writes as the local DID): a binding for any other DID never writes.
+        if !caller.local {
+            return Err(deny(BusRefusal::NotFound, effects));
+        }
+        // 1. a declared, non-reserved key; nothing reaches the DB otherwise
+        if !portal_key_allowed(&grants.set_property_keys, key) {
+            return Err(deny(BusRefusal::CapabilityDenied(format!("{key} is not a declared set_property key")), effects));
+        }
+        // Provenance is stamped from the binding; a binding without a valid one never writes (R24).
+        if !is_package_id(&grants.package_id) || !is_content_hash(&grants.content_hash) {
+            return Err(BusRefusal::NotAvailable("the mount binding carries no valid provenance".into()));
+        }
+        let Some(sink) = self.portal_writes.get().cloned() else {
+            return Err(BusRefusal::NotAvailable("portal writes are not served by this host".into()));
+        };
+        // 2-3. shape and size (petal membership is the DB's to prove at use)
+        if !is_node_id(node_id) {
+            return Err(BusRefusal::InvalidInput("node_id is not a node id".into()));
+        }
+        if value.to_string().len() > MAX_COMMAND_ARGS_BYTES {
+            return Err(BusRefusal::InvalidInput("value is over 16 KiB".into()));
+        }
+        // Shared budgets: the caller key's command budget (shared with invoke), the package's write budget and the
+        // installing identity's write budget across every bundle.
+        let caller_ok = state
+            .caller_buckets
+            .entry(caller.key())
+            .or_insert_with(|| TokenBucket::new(CALLER_COMMAND_RATE_HZ, now))
+            .try_take(now);
+        let package_ok = caller_ok
+            && state
+                .write_buckets
+                .entry(grants.package_id.clone())
+                .or_insert_with(|| TokenBucket::with_burst(PORTAL_WRITE_RATE_HZ, PORTAL_WRITE_BURST, now))
+                .try_take(now);
+        let identity_ok = package_ok
+            && state
+                .identity_write_buckets
+                .entry(caller.did.clone())
+                .or_insert_with(|| TokenBucket::with_burst(PORTAL_WRITE_IDENTITY_RATE_HZ, PORTAL_WRITE_IDENTITY_BURST, now))
+                .try_take(now);
+        if !identity_ok {
+            return Err(BusRefusal::RateLimited("set_property budget".into()));
+        }
+        // 4. the role at write time, capped by the binding's ceiling; the DB re-checks the role and ancestry at use.
+        let id = state.next_id();
+        let (answer, receiver) = oneshot::channel();
+        let ticket = WriteTicket { write: id, reply: receiver };
+        let audit = audit_entry(AuditAction::PropertyWrite, &caller.did, Some(CallerKind::Portal), grants.installation_id.clone(), target.clone(), Some(json_digest(value)), "pending", now);
+        let role = self.role_of(&caller, &grants.petal_id);
+        if !role.is_at_least(PORTAL_WRITE_FLOOR) {
+            let outcome = WriteOutcome::RoleDenied(format!("role {role} at the petal is below editor"));
+            effects.audits.push(AuditEntry { outcome: outcome.code().to_string(), ..audit });
+            let _ = answer.send(outcome);
+            return Ok(WriteAdmission::Settled(ticket));
+        }
+        let (reply, pending) = crossbeam::channel::bounded(1);
+        state.writes.insert(id, PendingWrite { reply: pending, answer, audit, deadline_ms: now + PORTAL_WRITE_TIMEOUT_MS });
+        let write = PortalWrite {
+            write: id,
+            identity_did: caller.did.clone(),
+            package_id: grants.package_id.clone(),
+            content_hash: grants.content_hash.clone(),
+            installation_id: grants.installation_id.clone(),
+            verse_id: grants.verse_id.clone(),
+            petal_id: grants.petal_id.clone(),
+            op: PendingOp::SetProperty { node_id: node_id.to_string(), key: key.to_string(), value: value.clone() },
+        };
+        Ok(WriteAdmission::Send { ticket, write: Box::new(write), reply, sink })
+    }
+
+    /// Answer and audit portal writes the write path settled, dropped or left past their deadline.
+    fn settle_writes(&self) {
+        let now = self.now();
+        let mut effects = Effects::default();
+        {
+            let mut state = self.lock();
+            let settled: Vec<(u64, WriteOutcome)> = state
+                .writes
+                .iter()
+                .filter_map(|(id, write)| {
+                    let outcome = match write.reply.try_recv() {
+                        Ok(result) => write_outcome(result),
+                        Err(TryRecvError::Disconnected) => {
+                            WriteOutcome::Refused(PluginRefusal::UnknownOutcome("the write path dropped the reply".into()))
+                        }
+                        Err(TryRecvError::Empty) if write.deadline_ms <= now => {
+                            WriteOutcome::Refused(PluginRefusal::UnknownOutcome("no reply within 5 s".into()))
+                        }
+                        Err(TryRecvError::Empty) => return None,
+                    };
+                    Some((*id, outcome))
+                })
+                .collect();
+            for (id, outcome) in settled {
+                if let Some(write) = state.writes.remove(&id) {
+                    effects.audits.push(AuditEntry { outcome: outcome.code().to_string(), at_ms: now, ..write.audit });
+                    let _ = write.answer.send(outcome);
+                }
+            }
+        }
+        self.finish(effects);
     }
 
     /// Subscribe a client at `petal_id`; refusals for remote callers are the uniform not-found.
@@ -870,13 +1195,14 @@ impl Bus {
         events
     }
 
-    /// Close a client and drop all its subscriptions.
+    /// Close a client and drop all its subscriptions; a portal's in-flight writes still settle (OD-E1), and
+    /// subscribers of streams no live portal client still declares get `ended {producer-inactive}`.
     pub fn close_client(&self, client: u64) {
         let now = self.now();
         let mut effects = Effects::default();
         {
             let mut state = self.lock();
-            state.clients.remove(&client);
+            let closed = state.clients.remove(&client);
             let owned: Vec<u64> = state.subs.values().filter(|sub| sub.owned_by_client(client)).map(|sub| sub.id).collect();
             for id in owned {
                 if let Some(sub) = state.subs.remove(&id) {
@@ -884,6 +1210,10 @@ impl Bus {
                         effects.audits.push(audit_entry(AuditAction::Unsubscribe, &sub.identity_did, Some(sub.caller_kind), None, sub.address.to_string(), None, EndReason::Unsubscribed.as_str(), now));
                     }
                 }
+            }
+            if closed.is_some_and(|closed| matches!(closed.grants, ClientGrants::Portal(_))) {
+                let BrokerState { subs, clients, .. } = &mut *state;
+                end_orphaned_portal_streams(subs, clients, now);
             }
         }
         self.finish(effects);
@@ -1007,23 +1337,33 @@ impl Bus {
         }
     }
 
-    /// An admission change on this host (spec R23); visibility per bus.md §2.4.
+    /// An admission change on this host (spec R23); visibility per bus.md §2.4. A web bundle leaving `admitted`
+    /// stops its portal clients in the same call (bus/AGENTS.md §portal-clients).
     pub fn feed_admission(&self, event: &AdmissionEvent) {
         let now = self.now();
         let data: Arc<str> = Arc::from(event.to_json().to_string());
-        let mut state = self.lock();
-        let BrokerState { subs, instances, clients, .. } = &mut *state;
-        for sub in subs.values_mut() {
-            let visible = match &sub.detail {
-                Detail::Admission { visible } => visible.as_ref().is_none_or(|packages| packages.contains(&event.package_id)),
-                _ => false,
-            };
-            if visible && !sub.closed {
-                let displaced = sub.push(DeliveryKind::Delta, data.clone(), now);
-                bump(instances, sub.counter_owner().as_ref(), |counters| counters.dropped_queue += displaced);
-                notify_client(clients, &sub.subscriber);
+        let mut effects = Effects::default();
+        {
+            let mut state = self.lock();
+            let BrokerState { subs, instances, clients, .. } = &mut *state;
+            for sub in subs.values_mut() {
+                let visible = match &sub.detail {
+                    Detail::Admission { visible } => visible.as_ref().is_none_or(|packages| packages.contains(&event.package_id)),
+                    _ => false,
+                };
+                if visible && !sub.closed {
+                    let displaced = sub.push(DeliveryKind::Delta, data.clone(), now);
+                    bump(instances, sub.counter_owner().as_ref(), |counters| counters.dropped_queue += displaced);
+                    notify_client(clients, &sub.subscriber);
+                }
+            }
+            if event.kind == AdmissionKind::WebBundle {
+                if let Some(reason) = portal_end_reason(event.reason) {
+                    stop_portal_clients(subs, clients, event, reason, now, &mut effects);
+                }
             }
         }
+        self.finish(effects);
     }
 
     /// A write to `table` in `petal_id` from a feed the binary enabled (e.g. `device_payload`).
@@ -1088,12 +1428,13 @@ impl Bus {
 
     // ---- the worker ------------------------------------------------------------------------------
 
-    /// One broker turn on the plugin worker: settle runs and snapshots, start due runs, expire calls.
+    /// One broker turn on the plugin worker: settle runs and snapshots, start due runs, expire calls, settle writes.
     pub fn poll(&self) {
         self.settle();
         self.launch();
         self.settle();
         self.expire_calls();
+        self.settle_writes();
     }
 
     /// Hand at most `max_calls` units of work to one instance's hooks; returns how many ran.
@@ -1249,25 +1590,24 @@ impl Bus {
             Source::Stream { package_id, stream_id } => {
                 consumed(consume, address)?;
                 let producer_key = InstanceKey::new(key.petal_id.clone(), package_id.clone());
-                let producer = state
-                    .instances
-                    .get(&producer_key)
-                    .ok_or_else(|| HostError::NotAvailable(format!("{address}: producer-inactive")))?;
-                let stream = exposed_stream(&producer.spec.manifest, stream_id)
-                    .ok_or_else(|| HostError::NotAvailable(format!("{address} is not exposed by the producer")))?;
-                if stream.consumers.as_ref().is_some_and(|consumers| !consumers.contains(&key.package_id)) {
+                let producer = match lookup_producer(state, &producer_key, stream_id) {
+                    ProducerLookup::Missing => return Err(HostError::NotAvailable(format!("{address}: producer-inactive"))),
+                    ProducerLookup::Undeclared => return Err(HostError::NotAvailable(format!("{address} is not exposed by the producer"))),
+                    ProducerLookup::Found(producer) => producer,
+                };
+                if producer.consumers.as_ref().is_some_and(|consumers| !consumers.contains(&key.package_id)) {
                     return Err(HostError::CapabilityDenied(format!("{address} is restricted to other consumers")));
                 }
-                let role_floor = role_level(stream.role_floor.unwrap_or(RoleFloor::Viewer));
-                if !self.sources.roles.role_at(&instance.spec.identity_did, &key.petal_id).is_at_least(role_floor) {
+                if !self.sources.roles.role_at(&instance.spec.identity_did, &key.petal_id).is_at_least(producer.role_floor) {
                     return Err(HostError::CapabilityDenied(format!("{address} is above the installing identity's role")));
                 }
                 PlanKind::Stream {
                     producer: producer_key,
                     stream_id: stream_id.clone(),
-                    role_floor,
+                    role_floor: producer.role_floor,
                     external_required: false,
-                    verse_id: producer.spec.verse_id.clone(),
+                    verse_id: producer.verse_id,
+                    from_portal: producer.from_portal,
                 }
             }
         };
@@ -1289,6 +1629,9 @@ impl Bus {
         let caller = &client_state.caller;
         let remote = !caller.local;
         let hide = |local: BusRefusal| if remote { BusRefusal::NotFound } else { local };
+        if let Some(reason) = client_state.stopped {
+            return Err(hide(BusRefusal::NotAvailable(format!("the client stopped: {}", reason.as_str()))));
+        }
         if state.live_subscriptions(&Subscriber::Client(client)) >= MAX_SUBSCRIPTIONS_PER_CLIENT {
             return Err(BusRefusal::LimitReached(format!("at most {MAX_SUBSCRIPTIONS_PER_CLIENT} subscriptions per connection")));
         }
@@ -1303,40 +1646,42 @@ impl Bus {
         let mut verse_id = String::new();
         let kind = match (&source, &client_state.grants) {
             (Source::Stream { package_id, stream_id }, grants) => {
-                if let ClientGrants::Portal { consume, .. } = grants {
-                    if !consume.iter().any(|entry| entry.source == address) {
+                // A portal consumes declared hooks at its mount petal only.
+                if let ClientGrants::Portal(portal) = grants {
+                    if portal.petal_id != petal_id || !portal.consume.iter().any(|entry| entry.source == address) {
                         return Err(not_granted());
                     }
                 }
                 let producer_key = InstanceKey::new(petal_id, package_id.clone());
-                let producer = state
-                    .instances
-                    .get(&producer_key)
-                    .ok_or_else(|| hide(BusRefusal::NotAvailable(format!("{address}: producer-inactive"))))?;
-                let stream = exposed_stream(&producer.spec.manifest, stream_id).ok_or_else(not_granted)?;
-                if remote && !(stream.external == Some(true) && self.sources.policy.external_access_allowed(&producer.spec.verse_id)) {
+                let producer = match lookup_producer(state, &producer_key, stream_id) {
+                    ProducerLookup::Missing => return Err(hide(BusRefusal::NotAvailable(format!("{address}: producer-inactive")))),
+                    ProducerLookup::Undeclared => return Err(not_granted()),
+                    ProducerLookup::Found(producer) => producer,
+                };
+                if remote && !(producer.external && self.sources.policy.external_access_allowed(&producer.verse_id)) {
                     return Err(BusRefusal::NotFound);
                 }
-                if let (ClientGrants::Portal { package_id: portal, .. }, Some(consumers)) = (grants, &stream.consumers) {
-                    if !consumers.contains(portal) {
+                if let (ClientGrants::Portal(portal), Some(consumers)) = (grants, &producer.consumers) {
+                    if !consumers.contains(&portal.package_id) {
                         return Err(not_granted());
                     }
                 }
-                let role_floor = role_level(stream.role_floor.unwrap_or(RoleFloor::Viewer));
-                if !self.role_of(caller, petal_id).is_at_least(role_floor) {
+                if !self.role_of(caller, petal_id).is_at_least(producer.role_floor) {
                     return Err(not_granted());
                 }
-                verse_id = producer.spec.verse_id.clone();
+                verse_id = producer.verse_id.clone();
                 PlanKind::Stream {
                     producer: producer_key,
                     stream_id: stream_id.clone(),
-                    role_floor,
+                    role_floor: producer.role_floor,
                     external_required: remote,
                     verse_id: verse_id.clone(),
+                    from_portal: producer.from_portal,
                 }
             }
             (Source::Admission, ClientGrants::Ui) => PlanKind::Admission { visible: None },
-            (_, ClientGrants::Portal { petal_id: mount, verse_id: mount_verse, consume, property_scope, .. }) => {
+            (_, ClientGrants::Portal(portal)) => {
+                let PortalGrants { petal_id: mount, verse_id: mount_verse, consume, property_scope, .. } = &**portal;
                 if mount != petal_id {
                     return Err(not_granted());
                 }
@@ -1374,7 +1719,11 @@ impl Bus {
             identity_did: caller.did.clone(),
             caller_kind: caller.kind,
             guest: false,
-            installation_id: None,
+            // A portal's subscribe audit carries its web-bundle installation (A-14).
+            installation_id: match &client_state.grants {
+                ClientGrants::Portal(portal) => portal.installation_id.clone(),
+                _ => None,
+            },
             kind,
         })
     }
@@ -1406,12 +1755,13 @@ impl Bus {
             }
             PlanKind::Readings { metrics, anchors } => Detail::Readings { metrics: metrics.clone(), anchors: anchors.clone() },
             PlanKind::Admission { visible } => Detail::Admission { visible: visible.clone() },
-            PlanKind::Stream { producer, stream_id, role_floor, external_required, verse_id } => Detail::Stream {
+            PlanKind::Stream { producer, stream_id, role_floor, external_required, verse_id, from_portal } => Detail::Stream {
                 producer: producer.clone(),
                 stream_id: stream_id.clone(),
                 role_floor: *role_floor,
                 external_required: *external_required,
                 verse_id: verse_id.clone(),
+                from_portal: *from_portal,
             },
         })
     }
@@ -1607,7 +1957,18 @@ impl Bus {
         let mut effects = Effects::default();
         {
             let mut state = self.lock();
-            let BrokerState { calls, instances, remote_gate, caller_buckets, command_buckets, last_prune_ms, .. } = &mut *state;
+            let BrokerState {
+                calls,
+                instances,
+                remote_gate,
+                caller_buckets,
+                command_buckets,
+                portal_stream_buckets,
+                write_buckets,
+                identity_write_buckets,
+                last_prune_ms,
+                ..
+            } = &mut *state;
             let expired: Vec<u64> = calls.iter().filter(|(_, call)| call.deadline_ms <= now).map(|(id, _)| *id).collect();
             for id in expired {
                 if let Some(call) = calls.remove(&id) {
@@ -1623,6 +1984,9 @@ impl Bus {
                 remote_gate.retain(|_, bucket| !bucket.is_idle(now, BUCKET_IDLE_MS));
                 caller_buckets.retain(|_, bucket| !bucket.is_idle(now, BUCKET_IDLE_MS));
                 command_buckets.retain(|_, bucket| !bucket.is_idle(now, BUCKET_IDLE_MS));
+                portal_stream_buckets.retain(|_, bucket| !bucket.is_idle(now, BUCKET_IDLE_MS));
+                write_buckets.retain(|_, bucket| !bucket.is_idle(now, BUCKET_IDLE_MS));
+                identity_write_buckets.retain(|_, bucket| !bucket.is_idle(now, BUCKET_IDLE_MS));
             }
         }
         self.finish(effects);
@@ -1745,9 +2109,11 @@ fn refusal_for(error: HostError, remote: bool) -> BusRefusal {
     }
 }
 
-/// Snapshot parts of at most 500 nodes, each node's `properties` cut to the property scope.
+/// Snapshot parts of at most 500 nodes, each node's `properties` cut to the property scope; at most REST's row cap
+/// of nodes in all (the source is not trusted to cap), the last part then carrying `"truncated": true`.
 fn snapshot_part_texts(nodes: Vec<Value>, scope: Option<&[String]>) -> Vec<String> {
-    let nodes: Vec<Value> = nodes.into_iter().map(|node| project_properties(node, scope)).collect();
+    let truncated = nodes.len() > REST_ROW_CAP;
+    let nodes: Vec<Value> = nodes.into_iter().take(REST_ROW_CAP).map(|node| project_properties(node, scope)).collect();
     if nodes.is_empty() {
         return vec![json!({ "part": 0, "last": true, "nodes": [] }).to_string()];
     }
@@ -1755,7 +2121,14 @@ fn snapshot_part_texts(nodes: Vec<Value>, scope: Option<&[String]>) -> Vec<Strin
     nodes
         .chunks(NODE_SNAPSHOT_PART)
         .enumerate()
-        .map(|(index, chunk)| json!({ "part": index, "last": index + 1 == parts, "nodes": chunk }).to_string())
+        .map(|(index, chunk)| {
+            let last = index + 1 == parts;
+            let mut part = json!({ "part": index, "last": last, "nodes": chunk });
+            if last && truncated {
+                part["truncated"] = Value::Bool(true);
+            }
+            part.to_string()
+        })
         .collect()
 }
 
@@ -1770,6 +2143,189 @@ fn project_properties(mut node: Value, scope: Option<&[String]>) -> Value {
         object.insert("properties".into(), Value::Object(kept));
     }
     node
+}
+
+/// Queue one published event on every open subscription to `(producer, stream_id)` of the same producer kind;
+/// returns the events displaced on external clients' queues (counted on an instance producer).
+#[allow(clippy::too_many_arguments)]
+fn fan_out_stream(
+    subs: &mut BTreeMap<u64, Subscription>,
+    instances: &mut HashMap<InstanceKey, InstanceState>,
+    clients: &HashMap<u64, ClientState>,
+    producer: &InstanceKey,
+    portal: bool,
+    stream_id: &str,
+    data: Arc<str>,
+    now: u64,
+) -> u64 {
+    let mut client_drops = 0u64;
+    for sub in subs.values_mut() {
+        let matches = matches!(
+            &sub.detail,
+            Detail::Stream { producer: from, stream_id: id, from_portal, .. } if from == producer && id == stream_id && *from_portal == portal
+        );
+        if !matches || sub.closed {
+            continue;
+        }
+        let displaced = sub.push(DeliveryKind::Delta, data.clone(), now);
+        match &sub.subscriber {
+            Subscriber::Instance(consumer) => {
+                if let Some(consumer) = instances.get_mut(consumer) {
+                    consumer.counters.dropped_queue += displaced;
+                }
+            }
+            Subscriber::Client(client) => {
+                client_drops += displaced;
+                if let Some(client) = clients.get(client) {
+                    client.notify.notify_one();
+                }
+            }
+        }
+    }
+    client_drops
+}
+
+/// A live portal client's caller and grants (cloned); a foreign DID's binding sees only the uniform not-found.
+fn portal_client(state: &BrokerState, client: u64) -> Result<(Caller, PortalGrants), BusRefusal> {
+    let client_state = state.clients.get(&client).ok_or(BusRefusal::NotFound)?;
+    let caller = &client_state.caller;
+    let hide = |local: BusRefusal| if caller.local { local } else { BusRefusal::NotFound };
+    let ClientGrants::Portal(grants) = &client_state.grants else {
+        return Err(hide(BusRefusal::CapabilityDenied("only a mounted portal client may do this".into())));
+    };
+    if let Some(reason) = client_state.stopped {
+        return Err(hide(BusRefusal::NotAvailable(format!("the portal client stopped: {}", reason.as_str()))));
+    }
+    Ok((caller.clone(), (**grants).clone()))
+}
+
+/// The producer of `<package>/<stream_id>` at a petal: an active instance first, else a live local portal client.
+fn lookup_producer(state: &BrokerState, producer: &InstanceKey, stream_id: &str) -> ProducerLookup {
+    if let Some(instance) = state.instances.get(producer) {
+        return match exposed_stream(&instance.spec.manifest, stream_id) {
+            Some(stream) => ProducerLookup::Found(ProducerStream {
+                external: stream.external == Some(true),
+                role_floor: role_level(stream.role_floor.unwrap_or(RoleFloor::Viewer)),
+                consumers: stream.consumers.clone(),
+                verse_id: instance.spec.verse_id.clone(),
+                from_portal: false,
+            }),
+            None => ProducerLookup::Undeclared,
+        };
+    }
+    match portal_stream(&state.clients, producer, stream_id) {
+        // Portal streams are local-only (no `external`) and readable from Viewer.
+        Some((grants, stream)) => ProducerLookup::Found(ProducerStream {
+            external: false,
+            role_floor: RoleLevel::Viewer,
+            consumers: stream.consumers.clone(),
+            verse_id: grants.verse_id.clone(),
+            from_portal: true,
+        }),
+        None if !portal_producers(&state.clients, producer).is_empty() => ProducerLookup::Undeclared,
+        None => ProducerLookup::Missing,
+    }
+}
+
+/// Live, local portal clients mounted at `producer`'s petal with its package, lowest client id first.
+fn portal_producers<'a>(clients: &'a HashMap<u64, ClientState>, producer: &InstanceKey) -> Vec<(u64, &'a PortalGrants)> {
+    let mut found: Vec<(u64, &'a PortalGrants)> = clients
+        .iter()
+        .filter(|(_, client)| client.stopped.is_none() && client.caller.local)
+        .filter_map(|(id, client)| match &client.grants {
+            ClientGrants::Portal(grants) if grants.petal_id == producer.petal_id && grants.package_id == producer.package_id => {
+                Some((*id, &**grants))
+            }
+            _ => None,
+        })
+        .collect();
+    found.sort_by_key(|(id, _)| *id);
+    found
+}
+
+/// The declaring portal of a stream at `producer`, if a live one still declares it.
+fn portal_stream<'a>(clients: &'a HashMap<u64, ClientState>, producer: &InstanceKey, stream_id: &str) -> Option<(&'a PortalGrants, &'a PortalStream)> {
+    portal_producers(clients, producer)
+        .into_iter()
+        .find_map(|(_, grants)| grants.streams.iter().find(|stream| stream.id == stream_id).map(|stream| (grants, stream)))
+}
+
+/// End portal-produced stream subscriptions whose producer no live portal client declares any more.
+fn end_orphaned_portal_streams(subs: &mut BTreeMap<u64, Subscription>, clients: &HashMap<u64, ClientState>, now: u64) {
+    for sub in subs.values_mut() {
+        let orphaned = match &sub.detail {
+            Detail::Stream { producer, stream_id, from_portal: true, .. } => portal_stream(clients, producer, stream_id).is_none(),
+            _ => false,
+        };
+        if orphaned && !sub.closed {
+            sub.end(EndReason::ProducerInactive, now);
+            notify_client(clients, &sub.subscriber);
+        }
+    }
+}
+
+/// The `ended` reason a web bundle's admission change gives its portal clients; `None` while it stays admitted.
+fn portal_end_reason(reason: AdmissionReason) -> Option<EndReason> {
+    match reason {
+        AdmissionReason::Consented | AdmissionReason::Restored => None,
+        AdmissionReason::RevocationList => Some(EndReason::Revoked),
+        AdmissionReason::ConsentRevoked => Some(EndReason::ConsentRevoked),
+        AdmissionReason::RoleLost => Some(EndReason::RoleLost),
+        AdmissionReason::PolicyRemoved | AdmissionReason::Ceiling => Some(EndReason::PolicyDenied),
+        AdmissionReason::LocalDisable | AdmissionReason::DisableAll | AdmissionReason::Uninstalled => Some(EndReason::InstanceStopped),
+    }
+}
+
+/// Stop every portal client of the bundle (by package id, or by content hash under any id) in the event's verse:
+/// no new subscriptions, publishes, calls or writes; its subscriptions and its streams' subscribers end now, while
+/// writes already sent still settle and their rows stay (OD-E1).
+fn stop_portal_clients(
+    subs: &mut BTreeMap<u64, Subscription>,
+    clients: &mut HashMap<u64, ClientState>,
+    event: &AdmissionEvent,
+    reason: EndReason,
+    now: u64,
+    effects: &mut Effects,
+) {
+    let stopping: Vec<u64> = clients
+        .iter()
+        .filter(|(_, client)| client.stopped.is_none())
+        .filter(|(_, client)| match &client.grants {
+            ClientGrants::Portal(grants) => {
+                let same_bundle = grants.package_id == event.package_id
+                    || (!event.content_hash.is_empty() && grants.content_hash == event.content_hash);
+                same_bundle && event.verse_id.as_ref().is_none_or(|verse| *verse == grants.verse_id)
+            }
+            _ => false,
+        })
+        .map(|(id, _)| *id)
+        .collect();
+    if stopping.is_empty() {
+        return;
+    }
+    for id in &stopping {
+        if let Some(client) = clients.get_mut(id) {
+            client.stopped = Some(reason);
+        }
+    }
+    for sub in subs.values_mut() {
+        let owned = matches!(&sub.subscriber, Subscriber::Client(client) if stopping.contains(client));
+        if owned && !sub.closed {
+            sub.end(reason, now);
+            effects.audits.push(audit_entry(AuditAction::Unsubscribe, &sub.identity_did, Some(sub.caller_kind), None, sub.address.to_string(), None, reason.as_str(), now));
+            notify_client(clients, &sub.subscriber);
+        }
+    }
+    end_orphaned_portal_streams(subs, clients, now);
+}
+
+/// The write path's reply as the portal sees it; only a commit receipt counts as written.
+fn write_outcome(result: PluginResult) -> WriteOutcome {
+    match result {
+        Ok(PluginReply::Committed(receipt)) => WriteOutcome::Committed(receipt),
+        Ok(_) => WriteOutcome::Refused(PluginRefusal::UnknownOutcome("the write path answered without a commit receipt".into())),
+        Err(refusal) => WriteOutcome::Refused(refusal),
+    }
 }
 
 fn pending_call(target: InstanceKey, installation_id: String, command_id: &str, args: &Value, caller: Caller, now: u64, reply: CallReply) -> PendingCall {
