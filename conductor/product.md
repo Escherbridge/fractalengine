@@ -112,7 +112,8 @@ rare (see "Not yet" below).
 - Deny-by-default RBAC (`fe-policy`) with per-grantor role propagation
 
 **Built but not wired**
-- Rhai + WASM plugin system (`fe-plugin` / `fe-sdk`). No binary loads it.
+- Rhai + WASM plugin host (`fe-plugin` / `fe-sdk`) runs in the host binary behind an opt-in admission gate
+  (signed packages, trust roots, revocation list). No package can be installed in-app yet.
   → [plugin_host_revival_20261031](./tracks/plugin_host_revival_20261031/)
 - `fe-network` libp2p thread: spawned, but it carries no traffic (all real
   P2P runs through `fe-sync`)
