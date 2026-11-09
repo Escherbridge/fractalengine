@@ -1,11 +1,13 @@
 //! fe-plugin — plugin host: [`PluginHostPlugin`] spawns the plugin runtime thread (thread 7).
-//! Thread/channel architecture: src/AGENTS.md §architecture.
+//! Thread/channel architecture and the module map: src/AGENTS.md §architecture.
 
+pub mod bindings;
 pub mod bus;
 pub mod capability;
 pub mod context;
 pub mod host_env;
 pub mod lifecycle;
+pub mod net;
 pub mod package;
 pub mod registry;
 pub mod registry_client;
@@ -308,11 +310,11 @@ async fn plugin_thread_loop(cmd_rx: Receiver<PluginCommand>, result_tx: Sender<P
                 break;
             }
         }
-        // One broker turn first (settle runs/snapshots, start due runs, expire calls), so the ticks'
-        // per-instance `dispatch` (TickHost seats) delivers what settled this turn.
+        // Bus turn first, then each seat's bus and network dispatch inside `ticks.poll` (src/AGENTS.md §bus-seat).
         bus.poll();
         ticks.poll();
     }
+    // Every seat leaves the bus and the network broker (dial-outs stop) before its final flush (OD-E1).
     ticks.stop_all(tick::DeactivateReason::HostStopping);
 }
 

@@ -4,23 +4,28 @@
 pub mod bindings;
 pub mod broker;
 pub mod bus_bridge;
+pub mod hooks;
 mod imports;
 pub mod instance;
 pub mod kv;
+pub mod net_bridge;
 pub mod routes;
 pub mod state;
 pub mod wasi;
 #[cfg(test)]
 pub(crate) mod test_guest;
 
+use fe_sdk::manifest_v2::ExtensionManifest;
 use wasmtime::component::{Component, HasSelf, Linker};
 
 use self::bindings::ExtensionPre;
 pub use self::bindings::fractalengine::plugin::types::{Binding, Caller, CallerKind, HostError};
 pub use self::broker::{ExtensionBroker, NoBroker};
 pub use self::bus_bridge::BusBroker;
+pub use self::hooks::{HookCallError, HookReply, HookRequest, HooksGuest};
 pub use self::instance::{window_for_token, ExtensionInstance, HookFault, InstanceHandle, InstanceStats, InstanceStore};
 pub use self::kv::{KvBackend, KvSlot, MemoryKv};
+pub use self::net_bridge::{HostBroker, NetBroker};
 pub use self::state::{InstanceSetup, InstanceState};
 use crate::trust_roots::RevocationSet;
 use crate::wasm::aot::AotCache;
@@ -95,12 +100,24 @@ fn check_binary(bytes: &[u8]) -> Result<(), ComponentError> {
 pub struct ExtensionComponent {
     pre: ExtensionPre<InstanceState>,
     digest: String,
+    /// Carries the optional `hooks` export (world `extension-with-hooks`).
+    exports_hooks: bool,
 }
 
 impl ExtensionComponent {
     /// blake3 hex of the component bytes (package-format.md `component_digest`).
     pub fn digest(&self) -> &str {
         &self.digest
+    }
+
+    /// Whether the component exports `fractalengine:plugin/hooks@2.0.0`.
+    pub fn exports_hooks(&self) -> bool {
+        self.exports_hooks
+    }
+
+    /// `missing-export` when the manifest declares `provides` and the component has no `hooks` export (bindings.md §7.3).
+    pub fn check_provides(&self, manifest: &ExtensionManifest) -> Result<(), ComponentError> {
+        hooks::check_hooks_export(!manifest.provides.is_empty(), self.exports_hooks)
     }
 }
 
@@ -147,10 +164,13 @@ impl ComponentHost {
         revocations: &RevocationSet,
     ) -> Result<ExtensionComponent, ComponentError> {
         let digest = AotCache::hash_bytes(bytes);
-        for (label, hash) in [("content_hash", content_hash), ("component_digest", digest.as_str())] {
-            if revocations.is_revoked(hash) {
-                return Err(ComponentError::Revoked(format!("{label} {hash} is revoked")));
-            }
+        if revocations.is_revoked_any(&[content_hash, &digest]) {
+            let (label, hash) = if revocations.is_revoked(content_hash) {
+                ("content_hash", content_hash)
+            } else {
+                ("component_digest", digest.as_str())
+            };
+            return Err(ComponentError::Revoked(format!("{label} {hash} is revoked")));
         }
         self.compile(bytes)
     }
@@ -185,7 +205,8 @@ impl ComponentHost {
             .map_err(|error| ComponentError::PackageInvalid(format!("unlinkable {error:#}")))?;
         let pre = ExtensionPre::new(linked)
             .map_err(|error| ComponentError::PackageInvalid(format!("export-mismatch {error:#}")))?;
-        Ok(ExtensionComponent { pre, digest })
+        let exports_hooks = hooks::component_exports_hooks(&ty, &self.engine);
+        Ok(ExtensionComponent { pre, digest, exports_hooks })
     }
 
     /// Instantiate one binding of an admitted component. Fuel and clock are set before any
@@ -203,8 +224,18 @@ impl ComponentHost {
         store.set_fuel(hook_fuel).map_err(host_error)?;
         store.data().freeze_clock(clock.now_ms());
         let pre = &component.pre;
-        let bindings = instance::outside_async(|| pre.instantiate(&mut store))
-            .map_err(|error| ComponentError::Activation(format!("instantiate failed: {error:#}")))?;
-        Ok(ExtensionInstance::new(store, bindings, clock, hook_fuel))
+        // Through the raw instance, so the optional `hooks` export binds to the same instance as the world.
+        let (raw, bindings) = instance::outside_async(|| {
+            let raw = pre.instance_pre().instantiate(&mut store)?;
+            let bindings = bindings::Extension::new(&mut store, &raw)?;
+            Ok::<_, wasmtime::Error>((raw, bindings))
+        })
+        .map_err(|error| ComponentError::Activation(format!("instantiate failed: {error:#}")))?;
+        let hooks_guest = if component.exports_hooks {
+            Some(hooks::HooksGuest::bind(&mut store, &raw, hook_fuel)?)
+        } else {
+            None
+        };
+        Ok(ExtensionInstance::new(store, bindings, clock, hook_fuel).with_hooks(hooks_guest))
     }
 }

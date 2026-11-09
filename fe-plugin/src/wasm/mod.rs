@@ -333,6 +333,67 @@ mod tests {
         // Fuel should be back to per_tick amount
         let current = store.get_fuel().unwrap();
         assert_eq!(current, 500);
+
+        // J1 (E3): the same refill drives a 2.0 component through the scheduler. The store is drained before each
+        // due instant, so a tick runs only because `TickScheduler` refuels it with the token's budget first; what
+        // `on-tick` stages lands in the shared window and leaves as one flush per tick.
+        use crate::tick::{FlushReply, ManualClock, TickEvent, TickInstance, TickScheduler, TickSink};
+        use crate::transaction::StagedFlush;
+        use fe_sdk::plugin_host::{PendingOp, TransactionReceipt};
+        use std::sync::{Arc, Mutex};
+
+        /// Records every flush and commits it at once.
+        struct RecordingSink(Arc<Mutex<Vec<StagedFlush>>>);
+        impl TickSink for RecordingSink {
+            fn submit(&mut self, _tick: u64, flush: StagedFlush, reply: crossbeam::channel::Sender<FlushReply>) {
+                let receipt = TransactionReceipt {
+                    op_count: flush.ops.len(),
+                    created_node_ids: Vec::new(),
+                    reading_count: flush.readings.len(),
+                };
+                self.0.lock().unwrap().push(flush);
+                let _ = reply.send(FlushReply::Committed(receipt));
+            }
+        }
+
+        let host = component::ComponentHost::new().unwrap();
+        let mover = host
+            .compile(&component::test_guest::component(component::test_guest::STAGE_ONE_TRANSFORM))
+            .unwrap();
+        let mock = Arc::new(Mutex::new(fe_plugin_test::mock_host::MockHostEnv::new()));
+        let clock = ManualClock::default();
+        let setup = component::test_guest::fleet_setup(&mock, &clock);
+        let tick_budget = *setup.context.capabilities().tick_budget().expect("the fleet manifest declares a tick block");
+        let window = setup.window.clone();
+        let mut handle = component::InstanceHandle::new(host.instantiate(&mover, setup).unwrap());
+        let flushes = Arc::new(Mutex::new(Vec::new()));
+        let mut scheduler = TickScheduler::new(
+            tick_budget,
+            Arc::new(clock.clone()),
+            window.clone(),
+            Box::new(handle.clone()),
+            Box::new(RecordingSink(flushes.clone())),
+        );
+        for tick in 1..=2u64 {
+            TickInstance::refuel(&mut handle, 0).unwrap();
+            clock.set(tick * tick_budget.cadence_ms);
+            assert_eq!(scheduler.poll(), Some(TickEvent::Ran { tick, flushed: true }), "tick {tick} ran on the refill");
+        }
+        assert_eq!(scheduler.poll(), None, "nothing is due; the poll only settles tick 2's answer");
+        let positions: Vec<_> = flushes
+            .lock()
+            .unwrap()
+            .iter()
+            .flat_map(|flush| flush.ops.iter())
+            .map(|op| match op {
+                PendingOp::SetTransform { node_id, position, .. } if node_id == "n1" => *position,
+                other => panic!("unexpected staged op {other:?}"),
+            })
+            .collect();
+        assert_eq!(positions, vec![Some([1.0, 0.0, 0.0]), Some([2.0, 0.0, 0.0])], "one flush per tick, in tick order");
+        assert!(window.lock().unwrap().is_empty(), "each flush took the whole window");
+        let counters = scheduler.counters_handle().lock().unwrap().clone();
+        assert_eq!((counters.ticks_run, counters.flushes, counters.commits), (2, 2, 2));
     }
 
     #[test]

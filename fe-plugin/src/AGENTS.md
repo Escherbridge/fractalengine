@@ -16,7 +16,8 @@ enums:
 Bevy ECS  <--crossbeam-->  Plugin Thread (Tokio)
   |                            |
   | drain_plugin_results()     | FractalExtension callbacks
-  |                            | RhaiEngine sandboxed scripts
+  | apply_tick_events()        | RhaiEngine sandboxed scripts
+  |                            | worker turn: command -> bus.poll -> ticks.poll
 ```
 
 Native plugins implement `FractalExtension` directly. Rhai scripts are wrapped
@@ -24,16 +25,31 @@ by `rhai::RhaiEngine`, which bridges host API calls back through the command
 channel. `drain_plugin_results` processes at most 64 results per frame to avoid
 stalling the main loop, and flips a plugin to `Degraded` on a `PluginResult::Error`.
 
+**One worker turn** (`plugin_thread_loop`): wait on the command channel no longer than the next tick deadline, run
+the command, then `Bus::poll` (settle runs and snapshots, expire calls), then `TickHost::poll`, which ticks every
+due scheduler and then runs each running seat's bus and network dispatch (§bus-seat). The worker never builds a
+broker: the binary pre-inserts the `TickHost` and `BusHandle` and builds the one `Net` (§bus-seat); the lab
+pre-inserts a `TickHost` on its `SimClock`. Exit stops every seat `host-stopping` (OD-E1 order).
+
+**Module map.** Third-party guests are 2.0 components only (`wasm/component`, src/wasm/AGENTS.md); the 1.0 core
+ABI is retired, so `WasmEngine` links no imports. The integration bus is `bus/` (src/bus/AGENTS.md), the extension
+network client is `net/` (src/net/AGENTS.md), and scoped bindings are `bindings/` (src/bindings/AGENTS.md).
+Governance and the instance lifecycle are `lifecycle.rs` (§governance, §update), time is `tick.rs`
+(§tick-scheduler, §bus-seat) and the write window is `transaction.rs` (§write-window).
+
 ## §lifecycle
+
+This is the 1.0 core-module path, kept for first-party fixtures and the signed-package journey. 2.0 components start,
+update and uninstall through §update under the R19 gate (§governance).
 
 `lifecycle.rs::PluginManager` wraps a `WasmEngine`, `AotCache`, and
 `PluginRegistry` behind the four lifecycle ops. State flow:
 
 ```text
-install_plugin  → verify signature → AOT compile → register in registry (Installed)
-activate_plugin → load from AOT   → instantiate  → call on_activate → Active
-deactivate_plugin → call on_deactivate → registry Deactivated
-uninstall_plugin  → call on_uninstall  → remove from registry + delete files
+install_plugin      → verify signature → AOT compile → register in registry (Installed)
+activate_with_bytes → load from AOT   → instantiate  → call on_activate → Active
+deactivate_plugin   → call on_deactivate → registry Deactivated
+uninstall_plugin    → call on_uninstall  → remove from registry + delete files
 ```
 
 Notes:
@@ -44,10 +60,8 @@ Notes:
 - `activate_with_bytes` runs only that record: bytes whose hash differs answer `PayloadMismatch`,
   a plugin with no record answers `NotVerified`, and the token is minted from the signed manifest.
   Install and activation both need admission (§admission-gate); deactivate and uninstall never do.
-- `activate_plugin` only validates registry state
-  (`Installed`/`Deactivated`/`Degraded(_)` → activatable) and then returns
-  `NotImplemented`; the real path is `activate_with_bytes`, because the Wasm
-  bytes must come from plugin package storage.
+- There is no `activate_plugin`: activation is `activate_with_bytes`, because the
+  Wasm bytes must come from plugin package storage.
 - `deactivate`/`uninstall` call the plugin's `on_deactivate`/`on_uninstall`
   exports best-effort (errors ignored) — teardown must always complete.
 - `uninstall_plugin` takes the original `wasm_bytes` because AOT-cache
@@ -109,9 +123,11 @@ Gating differs by runtime by necessity:
   a missing grant means the function is **never registered**. Calling it then
   raises a clean Rhai "function not found" error, never a panic. (Defense in
   depth: `HostEnv` re-checks the grant anyway.)
-- **WASM**: the `Linker` is shared across plugins, so gating is *call-time*
-  against the store's capability token. A denied/failed call logs via `tracing`
-  and returns a sentinel (`-1` / no-op), never a trap.
+- **WASM**: the 1.0 core imports this section first described are retired with
+  the core ABI. A 2.0 component reaches the scene and `kv` through the component
+  host's imports and guarded SQL through the bus `host/query` call, each gated at
+  call time against the instance token (src/wasm/AGENTS.md, src/bus/AGENTS.md); a
+  denial is a typed `host-error`, never a trap.
 
 All host-fn failures surface to the script as typed errors *and* to `tracing`
 (`rhai/storage_api.rs::to_script_error`, and the `tracing::warn!` calls in the
@@ -127,22 +143,19 @@ live in `fe-sdk` (`CAP_STORAGE_READ`, `CAP_STORAGE_WRITE`, `CAP_QUERY_SELECT`).
 
 ## WIT
 
-`wit/hexon-plugin.wit` gains a `query-api` interface **alongside** `node-api`
-(additive to `@1.0.0`). Values cross the boundary as JSON strings so no new
-record types are forced on existing `node-api` consumers. The world imports it
-(`import query-api;`); guests that don't use it are unaffected.
+The 1.0 `query-api` (`wit/hexon-plugin.wit`) is retired with the 1.0 core ABI;
+see §wit-resolution for the running contract.
 
 ## §wit-resolution (OD-2)
 
 Two WIT files exist; parse one at a time (`fe-plugin/wit/AGENTS.md`).
 `hexon-plugin.wit` (`fractalengine:plugin@1.0.0`) carries a SUPERSEDED header and
-stays only for first-party core-ABI test fixtures. `fractal-plugin-2.wit`
-(`fractalengine:plugin@2.0.0`, D-X1) is the third-party contract. Neither is the
-running ABI: the WASM host still registers core-ABI `func_wrap` imports with `-1`
-denial sentinels (`wasm/host_imports.rs`), and no component-model bindgen exists.
-Until extension_platform P1.1 lands bindgen, make no third-party publishing claim
-that rests on the WIT. Any WIT edit needs a matching `host_imports.rs` change or an
-UNSTABLE marker.
+stays only for first-party test fixtures. `fractal-plugin-2.wit`
+(`fractalengine:plugin@2.0.0`, D-X1) is the running third-party ABI: the component
+host binds it with `wasmtime::component::bindgen!` (world `extension`, plus the
+optional `hooks` export of world `extension-with-hooks`; src/wasm/AGENTS.md). A core
+module is refused as `unsupported-contract`. Any WIT edit needs the matching host
+import or export change in `wasm/component/` in the same commit.
 
 ## §capability-policy (auth_policy_pattern_20260710)
 
@@ -157,7 +170,13 @@ and its log now come from the one engine every entry point shares. The
 design (spec: they were already the right shape).
 
 
-## Scene host
+## §scene-host
+
+**One admitted context per `(petal, package)`.** `PluginContexts::stage_instance(key, ..)` refuses while another
+instance id holds that `InstanceKey`, and `admit` re-checks, so a local bind and a binding-started instance of one
+package never both run at a petal (bindings.md §5.1); an update re-stages under the same id. Staging builds a context
+with a live lease but leaves it unadmitted: `TickHost::launch`/`update` `admit` it once the guest activated, or
+`discard` it on any refusal (§update). `instance_at(key)` names the admitted holder.
 
 PluginContext holds injected NodeReader and TransactionSink services from the
 shared SDK contracts. Empty contexts fail closed. Reads enforce the bound petal,
@@ -270,10 +289,17 @@ Manifest v2 replaces both fields with declared `ingress[]`/`egress[]` (docs/exte
   of the payload (`package::payload_hash`).
 - **Matching is by hash under ANY package id** (governance.md §Kill switch layers): `RevocationSet::is_revoked(hash)`
   ignores the entry's `package_id`, so a renamed copy of a revoked build stays revoked. Hashes compare
-  lowercase. `RevocationSet::extend` unions the lists of several revocation-capable roots.
-- **Not built yet: the OD-8 pull.** Nothing fetches `revocation_url` today (`TrustRoots::revocation_sources`
-  has no caller). The puller must keep the newest `issued_at` per signer and refuse an older list, or a
-  replayed old list silently un-revokes; it lands with the kill switch (extension_platform E10).
+  lowercase. `is_revoked_any` over `PackageFacts::hashes()` (`content_hash`, `component_digest`,
+  `plaintext_digest`) is the check every sealed 2.0 build goes through (R19 row 5 at every activation, kill-list
+  arrival, `ComponentHost::compile_unrevoked`), so a kill list naming any one of them refuses it.
+  `RevocationSet::extend` unions the lists of several revocation-capable roots.
+- **Trust-root roles.** `[[publisher]] role = "release" | "publisher" | "dev"` (absent = `publisher`; an unknown
+  value is a parse error); `TrustedKey::tier()` is the `TrustTier` R19 and the consent dialog show. `dev` roots load
+  only through `from_toml_str_with(text, true)` in a debug build, so a release binary never trusts one.
+- **Freshness (OD-8).** The intake is `PluginManager::accept_revocation_list` (§governance): it keeps the newest
+  `issued_at` per signer (compared as parsed RFC 3339 UTC values) and refuses an older list, since a replayed old
+  list would silently un-revoke. `TrustRoots::verify_revocation_list_fresh` is a stateless helper for callers
+  without a manager and has no production caller.
 
 ## §registry-install
 
@@ -285,6 +311,11 @@ Manifest v2 replaces both fields with declared `ingress[]`/`egress[]` (docs/exte
   differs from the requested uri's id (`{id}` or `{id}@{version}`, the registry's `split_uri`);
   `install_plugin` then requires the signed manifest's `id` to equal that same id.
 - **Bounded.** Connect timeout 10 s, request timeout 120 s, archive ≤ 64 MiB, JSON members ≤ 1 MiB.
+- **Listed hash (store-client v1).** `FetchedPackage::manifest_hash` is `fe_format::integrity::content_hash` of the
+  archive's manifest member (`MANIFEST_PATH`), the value the registry lists as `content_hash`.
+  `fetch_package_listed(uri, listed_content_hash)` refuses a package whose manifest hash differs from the listed
+  one, or that has none (fail closed). Any caller holding a listed hash must use it; the interim 1.0
+  `install_from_registry` still calls bare `fetch_package` and relies on the payload-hash check alone.
 - **Licensed packages are refused** (`EntitlementUnavailable`) until hexon_entitlements_20261031 S1
   ships `fe_format::entitlement`. Then enable fe-format's `entitlement` feature and, for
   `LicenseType::Paid`, call `verifier.verify(token, package_id, content_hash)` and
@@ -301,9 +332,10 @@ Manifest v2 replaces both fields with declared `ingress[]`/`egress[]` (docs/exte
 The consent modal lives in fe-ui (`fe-ui/src/AGENTS.md` §plugin-consent). fe-plugin supplies the data it
 shows: `CapabilityManifest` carries the verse, petal and property scope, the named capabilities and the
 network posture. `validate_access` enforces an empty scope as a wildcard, and the modal must render that as
-"All". Nothing requests an install yet (review.md #17), because neither binary builds a `PluginManager`.
+"All". The 2.0 consent dialog (capability digest, publisher and trust tier) is driven by the binary's ops drain,
+which builds the `PluginManager` (`fractalengine/src/plugin_bridge.rs`, `extension_host/ops_drain.rs`).
 
-## §tick-scheduler (extension_platform P1.3, R4/R5)
+## §tick-scheduler (also §tick; extension_platform P1.3, R4/R5)
 
 `tick.rs` owns time. The plugin worker (`plugin_thread_loop`) waits on its command channel no longer than
 `TickHost::next_wait` (earliest deadline, capped at 100 ms), then calls `TickHost::poll`; ticking is never a Bevy
@@ -317,19 +349,43 @@ only Bevy side: it maps `Degraded`/`Stopped` events onto `PluginRegistry`.
   queue). A flush silent for `FLUSH_TIMEOUT_MS` is reported `unknown` in the next `tick-info` and never retried.
 - **Injected `Clock`.** `WallClock` in production; `ManualClock` in the journey; fe-sim hosts its `SimClock` behind the
   same trait by pre-inserting a `TickHost` before `PluginHostPlugin` (build reuses an existing one).
-- **Fuel.** `TickInstance::refuel(budget.fuel)` runs before every hook (each hook gets its own refill). A fault
+- **Fuel.** `TickInstance::refuel(budget.fuel)` runs before every `on-tick`; every other hook refills its own
+  `hook_fuel` on entry, so no hook inherits another's leftover. The J1 row in `wasm/mod.rs::fuel_budget_refill`
+  drains a component's store to zero before each due instant: a tick runs only on the scheduler's refill. A fault
   (`FuelExhausted` or a trap) discards the window unflushed, stops ticking, unbinds the context (the lease is gone, so
   no final flush) and reports `Degraded`.
-- **`StagedWindow`** (`transaction.rs`) is the per-instance write window the guest imports stage into, shared with
-  the scheduler as `SharedWindow`. Limits come from the effective `TickBudget`; the window holds ops and readings and
-  flushes as ONE `StagedFlush`. `PluginContext::authorize_op` / `authorize_reading` check the token at stage time and
-  `commit_staged` re-checks at flush through `StagedCommitSink` (ops + readings atomic); with no readings and no staged
-  sink it falls back to the legacy `TransactionSink`.
-- **Deactivation.** `TickScheduler::stop(reason)` runs `on-deactivate`, then one final flush unless the reason is
-  `RoleLost`, `PolicyDenied`, `Revoked` or `Degraded` (lease already gone). `TickHost::stop` then unbinds the context.
-- **Seams for others.** E1 implements `TickInstance` over the component store and stages through the shared window;
-  E4 implements `StagedCommitSink` over `PluginCommit`; E7 builds the `TickScheduler` with a `ContextTickSink` and
-  `TickHost::add`. `ContextTickSink` commits on a short-lived thread so the worker never blocks on the DB.
+- **Write window.** Each instance stages into one `SharedWindow` the scheduler flushes (§write-window).
+- **Deactivation (OD-E1 order).** `TickScheduler::stop(reason)` first waits (bounded, `FINAL_FLUSH_WAIT`) for the
+  commit already in flight, so an admitted commit lands whole with its true receipt; then `on-deactivate`; then one
+  final flush unless the reason is `RoleLost`, `PolicyDenied`, `Revoked` or `Degraded` (`lease_gone`: staged writes
+  are discarded). `TickHost::stop` leaves the seat before this and unbinds the context after it, so the lease is
+  revoked only once the drain is done. Rows already written stay (no withdrawal).
+- **No-tick instances.** A manifest without a `tick` block gets `TickScheduler::for_budget(None)` (or
+  `without_ticks`): it never ticks and has no deadline, but seats, stops and drains like any other (§bus-seat).
+- **Seams for others.** The component host implements `TickInstance` on `InstanceHandle`; fe-database implements
+  `StagedCommitSink` over `PluginCommit`; the binary builds each scheduler with a `ContextTickSink` and starts it
+  through `TickHost::launch`/`update` (§update). `ContextTickSink` commits on a short-lived thread so the worker
+  never blocks on the DB. Status reads go through per-instance counter handles kept outside the host lock, so a
+  status read never waits on a running hook.
+
+## §write-window
+
+`StagedWindow` (`transaction.rs`) is the per-instance write window, shared by the guest's `txn`/`readings` imports
+and the scheduler as `SharedWindow` (`window_for_token` sizes it from the token's effective `TickBudget`; no `tick`
+block means zero limits).
+
+- **Stage time.** `stage_op`/`stage_reading` run the SDK validators and the byte cap (`MAX_WINDOW_BYTES`) and change
+  nothing on refusal; the host import authorizes the op or reading against the token first
+  (`PluginContext::authorize_op`/`authorize_reading`: scene write kind, property scope, declared metric).
+- **Flush.** A due tick takes the whole window as ONE `StagedFlush` (ops + readings). `commit_staged` re-checks the
+  token and commits through `StagedCommitSink` atomically (fe-database `PluginCommit`); with no readings and no staged
+  sink it falls back to the legacy `TransactionSink`. A flush whose readings anchor on a node the same batch deletes
+  is refused whole, never half-applied (R6, G1-C8).
+- **Discard.** `txn.discard`, any hook fault and a `lease_gone` stop drop the window unflushed.
+- **Provenance.** The flush's DB admission carries the verified build's `{package_id, content_hash}`
+  (`PluginAdmission::with_package`, stamped by the binary's scene factory) and the bind-time source class; the guest
+  sets neither. Readings staged during an `ingest.decode` call must also carry that call's `DecodeStamp`
+  (`payload_id`, source class `decoder`); the per-call stamp lives on the instance's hook path (§hook-calls).
 
 ### Manifest v2 to token
 
@@ -349,16 +405,98 @@ the binding (verse and petal), never from the manifest; `strict_scopes = true` m
 
 ## §bus-seat (G1, P1 gate)
 
-`TickHost::add_on_bus(plugin_id, scheduler, bus, spec, hooks)` is the activation seam that joins an
-instance to the integration bus: `Bus::register_instance(spec)` runs first (a refusal leaves nothing
-scheduled), then the scheduler is added and the instance's `BusHooks` (for a 2.0 component, the same
-`InstanceHandle` the scheduler ticks) is kept as its seat. Each worker turn runs `bus.poll()` and then
-`ticks.poll()`, so `dispatch` (at most `BUS_CALLS_PER_POLL` units: call results, commands, one event
-batch) delivers what the broker settled in the same turn, and only while the scheduler is `Running`.
+An `InstanceSeat { bus, spec, bus_hooks, net: Option<NetSeat> }` joins an instance to the integration bus and, when
+given, the network broker. For a 2.0 component both hook objects are clones of the same `InstanceHandle` the
+scheduler ticks (`BusHooks` in `wasm/component/bus_bridge.rs`, `NetHooks` in `net_bridge.rs`), and its broker is a
+`HostBroker` (bus + net imports). `TickHost::launch`/`update`/`add_seated` join the seat before anything runs:
+`Bus::register_instance` first, then `Net::register_instance` (mount endpoints, start dial-outs); a refused mount
+leaves the bus again and schedules nothing. `add_on_bus` is the bus-only shorthand.
 
-Stop order is the OD-E1 rule: the seat leaves the bus FIRST (queued calls answer `not-available`,
-subscribers see `ended` with `revoked`/`policy-denied`/`role-lost`/`instance-stopped`), then the
-scheduler runs `on-deactivate` and its one final flush unless the lease is gone. A degraded instance
-leaves the bus in the same `poll` that degrades it. Counters stay readable by installation until
-uninstall calls `Bus::forget` (E10's lifecycle). An extension without a `tick` block has no scheduler
-and so no seat yet; the activation path that instantiates components (E10) decides how those are hosted.
+**Dispatch.** Each worker turn runs `bus.poll()`, then `ticks.poll()`: after the schedulers tick, every running seat
+gets `Bus::dispatch` (at most `BUS_CALLS_PER_POLL` units: call results, commands, one event batch) and then
+`Net::dispatch` (at most `NET_CALLS_PER_POLL`: ingress frames, connection events, egress results). So what the
+broker settled in a turn is delivered in that turn, and only while the scheduler is `Running`. A guest that faults
+in a bus or network hook is degraded in the next `poll` even if it never ticks.
+
+**One `Net` per host, owned by the binary.** The binary builds it (`extension_host/net_sources.rs`) on its own
+small runtime, with the operator's credential store, and puts it in every seat; fe-api's ingress mounts and the
+dial-out tasks reach the same broker. The worker never builds a second `Net`: two brokers would split mounts from
+dispatch. A host without one (the lab) seats with `net: None`, and egress or ingress imports answer
+`not-available`.
+
+**Stop order (OD-E1).** The seat leaves FIRST: the bus answers queued calls `not-available` and ends subscriptions
+with `revoked`/`policy-denied`/`role-lost`/`instance-stopped`; the network broker unmounts, stops dial-outs and
+closes accepted sockets (1001). Then the scheduler drains the in-flight commit, runs `on-deactivate` and its final
+flush unless the lease is gone (§tick-scheduler). A degraded instance leaves both brokers in the `poll` that degrades
+it.
+
+**No-tick seats.** A manifest without a `tick` block seats through `TickScheduler::for_budget(None)`, so pure
+bus or ingress extensions are hosted like any other (G1-C10). **Uninstall:** `TickHost::uninstall` stops `unbound`,
+runs `on-uninstall` with one final flush on the live lease, then forgets; `forget` does the same without
+`on-uninstall`. Both call `Bus::forget` and `Net::forget`, so no counters outlive the installation.
+
+## §update (P4.3, start and uninstall)
+
+The 2.0 instance path in `lifecycle.rs`. A `StagedInstance` is built by the binary (component instantiated, context
+staged with `stage_instance`, scheduler and seat assembled) and nothing has run yet.
+
+- **Start.** `start_instance` (the operator's local bind or Enable) and `start_binding_instance` (the binding
+  activator, id `binding_instance_id(installation, petal)`) run R19 (§governance), then `bind_staged`: the staged
+  component digest, context and seat must be exactly the build and scope R19 judged, or `launch-mismatch`. Then
+  `TickHost::launch`: join the seat, `on-install` on a first activation, `on-activate`, admit the context, schedule.
+  Any refusal leaves the seat and discards the context, so a refused build holds no lease. A binding instance also
+  needs local acceptance in its verse and no local Disable (rows 12-13, never satisfied by a replicated row).
+- **Update.** `update_instance` runs R19 for the NEW build (consent must cover its capability digest), then
+  `TickHost::update`: (1) the running build leaves the shared key, drains its in-flight commit, runs
+  `on-deactivate(updating)` and its final flush on its still-live lease; (2) the new build starts on its staged
+  context under the same key; (3) only then is the old lease revoked and the new context admitted. If the new build
+  refuses, it is discarded and the old one rejoins its seat, runs `on-activate` again and resumes ticking
+  (`RolledBack`); if even that fails nothing runs (`PreviousStopped`, the registry hears `stopped`). Two builds are
+  never admitted at once.
+- **Publisher change.** A build whose publisher or signing root differs from the installed one is a NEW install with
+  fresh consent, never an update (steer 2026-11-09 01:50). `ConsentRecord` holds no publisher, so the caller (the ops
+  drain) must route that case to install before reaching `update_instance`.
+- **Local Disable holds.** `disable_instance(installation_id)` stops every instance of the installation and keeps it
+  disabled (bindings cannot restart it) until `start_instance` (the operator's Enable) or `enable_installation`.
+- **Uninstall.** `uninstall_instance(id)` covers every instance ever started for the installation: `TickHost::uninstall`
+  (§bus-seat), then the registry entry goes. Consents, acceptances and the package store are the caller's.
+
+## §governance (R19, R23, OD-E1)
+
+Contract: docs/extensions/governance.md. `lifecycle.rs::Governance` holds this host's local records (consents,
+kill-list overrides, acceptances, local Disable, the revocation intake); the binary hydrates them from fe-database at
+startup and writes every change through the audit trail. None of it is replicated.
+
+- **R19 activation preconditions, in order** (`Precondition::ORDER`, first failure wins, stable codes): host-off,
+  not-local-identity, package-invalid, untrusted-signer, revoked, entitlement-required, policy-denied, role-denied,
+  consent-missing. `check_activation` judges a non-local actor on not-local-identity before host-off, so a remote
+  caller learns nothing about this host's switches. Row 5 is `is_revoked_any` over the build's digests, unless the
+  verse Owner recorded a kill-list override for that verse and build on this host.
+- **Gates.** Rows 6-8 go through `GovernanceGates` (entitlement, verse + local policy, role at the petal: Editor+ for
+  a writing build, Viewer+ otherwise). `FailClosedGates` is the default and refuses rows 7-8 and licensed builds, so a
+  host that never wired real gates runs nothing third-party; the binary installs its own (`with_gates`).
+- **Kill-list override.** Refuse by default; an explicit, audited verse-Owner override is scoped to that verse and
+  that build, on the Owner's own host only. Every other peer keeps it revoked and its bindings unresolved. There is
+  no withdraw action (user decision 2026-11-08 22:00).
+- **R23 kill switches.** (a) local Disable per installation or per instance; (b) Disable all (`FE_EXT_DISABLE_ALL=1`
+  or `disable_all`), after which activation answers host-off until `enable_all`; (c) a verse policy change re-judges
+  every instance in that verse (`reevaluate_verse_policy`, stop `policy-denied`); (d) a kill list arriving through
+  `accept_revocation_list`: verified against revocation-capable roots only, the newest `issued_at` kept per signer, an
+  older list refused as `Stale`, the same instant unioned (fail closed), then every running build it names stops
+  `revoked` unless overridden in its verse. Nothing restarts by itself after any switch.
+- **Stop semantics (OD-E1, no withdrawal).** Every stop goes through `stop_instance` -> `TickHost::stop`: the seat
+  leaves, the in-flight commit settles, then the lease is revoked. Rows the instance wrote stay, with their
+  `{package_id, content_hash}` provenance kept for audit and filtering; nothing is withdrawn or re-judged.
+
+## §hook-calls (bindings.md §6-7)
+
+A component that declares `provides` must export `fractalengine:plugin/hooks@2.0.0`: `ComponentHost` records the
+export at admission (`ExtensionComponent::exports_hooks`) and `check_provides(manifest)` answers `missing-export`
+otherwise; callers holding the manifest run it right after `compile`. `instantiate` creates the raw instance once,
+binds the world and, when exported, the `HooksGuest` on that same instance (`wasm/component/hooks.rs`; per-hook
+caps and deadlines are `hook_limits`, from bindings.md §6). `ExtensionInstance` keeps it (`with_hooks`) and serves
+`call_hook(request, stamp)`, also on `InstanceHandle`: refuse while degraded, run `HooksGuest::call` with its own
+fuel refill and frozen clock, degrade on `HookCallError::Fault` exactly like a tick fault, and apply the
+`DecodeStamp` (if any) to every reading staged until the call returns. A guest refusal leaves the built-in serving.
+Host-initiated calls (`configure`, `ingest.decode`, `blob.*`, `egress.*`, `petal.map`) come from the binary's
+binding worker, never the DB thread or the render loop.

@@ -23,7 +23,7 @@ allow = [
     "BSL-1.0",             # clipboard-win, error-code (Boost Software License, not BUSL)
     "CC0-1.0",             # constant_time_eq 0.1, hexf-parse, tiny-keccak
     "MIT-0",               # encase, encase_derive, encase_derive_impl
-    "CDLA-Permissive-2.0", # webpki-roots, webpki-root-certs (Mozilla CA bundle data)
+    "CDLA-Permissive-2.0", # webpki-roots, webpki-root-certs (Mozilla CA bundle data; fe-plugin net dial-outs use webpki-roots 1)
     # The other two (OFL-1.1, Ubuntu-font-1.0) are FONT licences and are scoped
     # to the one crate that embeds fonts -- see `exceptions` below.
 ]
@@ -80,7 +80,9 @@ ignore = [
     # reappears is a LIVE sandbox risk (the host executes untrusted WASM) and is not ignorable.
     # Transitive: the patch release re-resolves other crates (graph change).
     { id = "RUSTSEC-2026-0258", reason = "h2 0.4.14 (via hyper/reqwest): 0.4.16 re-resolves socket2/windows-sys — graph change" },
-    { id = "RUSTSEC-2026-0285", reason = "rustls 0.23.40 (via iroh/reqwest): 0.23.45 bumps aws-lc-rs/aws-lc-sys — graph change" },
+    # fe-plugin's extension network client (tokio-rustls, ring provider) now also reaches rustls, dialling hosts an
+    # extension manifest names: re-triage this id against that client path at the L1 lockfile refresh.
+    { id = "RUSTSEC-2026-0285", reason = "rustls 0.23.40 (via iroh/reqwest, and fe-plugin net dial-outs): 0.23.45 bumps aws-lc-rs/aws-lc-sys — graph change" },
     { id = "RUSTSEC-2026-0257", reason = "webbrowser 1.2.1 (via bevy_egui; Unix BROWSER env only): 1.2.2 changes its dependency set — graph change" },
     # Transitive: fixed only in a new minor/major the upstream crate has not adopted.
     { id = "RUSTSEC-2026-0194", reason = "quick-xml 0.39 (via tauri plist, parses bundled Info.plist only): fixed in 0.41 only" },
