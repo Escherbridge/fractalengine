@@ -728,6 +728,76 @@ pub(super) fn install_tileset(call: ToolCall<'_>) -> ToolFuture<'_> {
     })
 }
 
+// ---------------------------------------------------------------------------
+// Extension platform + bindings (AGENTS.md §extensions, §bindings). Authz of the role floor and petal scope ran in
+// the dispatcher; the cores in `extensions.rs` / `bindings.rs` own the host gates and the uniform not-found.
+// ---------------------------------------------------------------------------
+
+/// The wired extension host; absent means the tool was never advertised.
+fn extension_host<'a>(call: &ToolCall<'a>) -> Result<&'a dyn crate::extensions::ExtensionHost, String> {
+    call.hosts
+        .extension
+        .as_deref()
+        .ok_or_else(|| "extensions are not available on this host".to_string())
+}
+
+/// The wired binding host.
+fn binding_host<'a>(call: &ToolCall<'a>) -> Result<&'a dyn crate::bindings::BindingHost, String> {
+    call.hosts
+        .binding
+        .as_deref()
+        .ok_or_else(|| "bindings are not available on this host".to_string())
+}
+
+pub(super) fn list_extensions(call: ToolCall<'_>) -> ToolFuture<'_> {
+    Box::pin(async move {
+        let host = extension_host(&call)?;
+        crate::extensions::list_extensions(host, call.claims).map_err(|e| e.message)
+    })
+}
+
+pub(super) fn extension_command(call: ToolCall<'_>) -> ToolFuture<'_> {
+    Box::pin(async move {
+        let host = extension_host(&call)?;
+        // The dispatcher resolved the petal scope and checked token containment: it is authorized.
+        crate::extensions::extension_command_tool(host, call.claims, call.scope.is_some(), call.args)
+            .await
+            .map_err(|e| e.message)
+    })
+}
+
+/// Parse the tool arguments into a binding request type; a malformed shape is a plain argument error.
+fn binding_args<T: serde::de::DeserializeOwned>(args: &Value) -> Result<T, String> {
+    serde_json::from_value(args.clone()).map_err(|e| format!("invalid binding arguments: {e}"))
+}
+
+pub(super) fn list_bindings(call: ToolCall<'_>) -> ToolFuture<'_> {
+    Box::pin(async move {
+        let host = binding_host(&call)?;
+        let target: crate::bindings::BindingTarget = binding_args(call.args)?;
+        let scope = crate::bindings::authorized_target_scope(call.state, call.claims, &target).await;
+        crate::bindings::list_bindings(host, call.claims, scope).await.map_err(|e| e.message)
+    })
+}
+
+pub(super) fn set_binding(call: ToolCall<'_>) -> ToolFuture<'_> {
+    Box::pin(async move {
+        let host = binding_host(&call)?;
+        let request: crate::bindings::SetBindingRequest = binding_args(call.args)?;
+        let scope = crate::bindings::authorized_target_scope(call.state, call.claims, &request.target).await;
+        crate::bindings::set_binding(host, call.claims, scope, request).await.map_err(|e| e.message)
+    })
+}
+
+pub(super) fn clear_binding(call: ToolCall<'_>) -> ToolFuture<'_> {
+    Box::pin(async move {
+        let host = binding_host(&call)?;
+        let request: crate::bindings::ClearBindingRequest = binding_args(call.args)?;
+        let scope = crate::bindings::authorized_target_scope(call.state, call.claims, &request.target).await;
+        crate::bindings::clear_binding(host, call.claims, scope, request).await.map_err(|e| e.message)
+    })
+}
+
 pub(super) fn get_gis_nodes(call: ToolCall<'_>) -> ToolFuture<'_> {
     Box::pin(async move {
         let petal_id = scoped_petal(&call)?;
@@ -1494,6 +1564,59 @@ pub(super) mod schema {
             },
             "required": ["petal_id", "data_base64"]
         })
+    }
+
+    pub fn list_extensions() -> Value {
+        json!({ "type": "object", "properties": {} })
+    }
+
+    pub fn extension_command() -> Value {
+        json!({
+            "type": "object",
+            "properties": {
+                "petal_id": { "type": "string" },
+                "package_id": { "type": "string", "description": "The extension package id" },
+                "command": { "type": "string", "description": "A command id the package exposes" },
+                "args": { "type": "object", "description": "Command arguments (default {})" }
+            },
+            "required": ["petal_id", "package_id", "command"]
+        })
+    }
+
+    /// The scope ids every binding tool addresses by.
+    fn binding_target_properties() -> Value {
+        json!({
+            "verse_id": { "type": "string" },
+            "fractal_id": { "type": "string", "description": "With verse_id: bind at this fractal" },
+            "petal_id": { "type": "string", "description": "With verse_id (and fractal_id): bind at this petal" }
+        })
+    }
+
+    pub fn list_bindings() -> Value {
+        json!({ "type": "object", "properties": binding_target_properties(), "required": ["verse_id"] })
+    }
+
+    pub fn set_binding() -> Value {
+        let mut properties = binding_target_properties();
+        if let Some(map) = properties.as_object_mut() {
+            map.insert("hook".into(), json!({ "type": "string", "description": "Hook point id, e.g. petal.map" }));
+            map.insert("key".into(), json!({ "type": "string", "description": "Point key within the hook (default empty)" }));
+            map.insert("mode".into(), json!({ "type": "string", "description": "extension, builtin or inherit (inherit clears)" }));
+            map.insert("package_id".into(), json!({ "type": "string" }));
+            map.insert("version_req".into(), json!({ "type": "string" }));
+            map.insert("config".into(), json!({ "type": "object" }));
+            map.insert("runs_on".into(), json!({ "type": "string", "description": "DID of the peer that runs it" }));
+        }
+        json!({ "type": "object", "properties": properties, "required": ["verse_id", "hook", "mode"] })
+    }
+
+    pub fn clear_binding() -> Value {
+        let mut properties = binding_target_properties();
+        if let Some(map) = properties.as_object_mut() {
+            map.insert("hook".into(), json!({ "type": "string" }));
+            map.insert("key".into(), json!({ "type": "string" }));
+        }
+        json!({ "type": "object", "properties": properties, "required": ["verse_id", "hook"] })
     }
 
     pub fn get_gis_nodes() -> Value {

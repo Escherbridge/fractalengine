@@ -6,7 +6,7 @@ use axum::{
     http::{HeaderValue, Method, StatusCode},
     response::IntoResponse,
     routing::{delete, get, patch, post},
-    Json, Router,
+    Extension, Json, Router,
 };
 use tower_http::{
     cors::{AllowOrigin, CorsLayer},
@@ -86,8 +86,21 @@ pub struct ApiState {
     pub input: crate::input::InputSurface,
 }
 
-/// Build the complete axum [`Router`] (route inventory: fe-api/AGENTS.md §routes).
+/// Optional host seams the binary provides (fe-api/AGENTS.md §extensions); kept out of [`ApiState`] so no
+/// state constructor changes. Reaches `/mcp` and `/ws` as an axum `Extension`.
+#[derive(Clone, Default)]
+pub struct ApiHosts {
+    pub extension: Option<Arc<dyn crate::extensions::ExtensionHost>>,
+    pub binding: Option<Arc<dyn crate::bindings::BindingHost>>,
+}
+
+/// Build the complete axum [`Router`] with no extension or binding host (route inventory: fe-api/AGENTS.md §routes).
 pub fn build_router(state: Arc<ApiState>) -> Router {
+    build_router_with_hosts(state, ApiHosts::default())
+}
+
+/// [`build_router`] plus the plugin-host routes when the hosts are provided.
+pub fn build_router_with_hosts(state: Arc<ApiState>, hosts: ApiHosts) -> Router {
     let cors = if state.cors_origins.iter().any(|o| o == "*") {
         CorsLayer::new()
             .allow_origin(AllowOrigin::any())
@@ -95,6 +108,7 @@ pub fn build_router(state: Arc<ApiState>) -> Router {
                 Method::GET,
                 Method::POST,
                 Method::PATCH,
+                Method::PUT,
                 Method::DELETE,
                 Method::OPTIONS,
             ])
@@ -111,6 +125,7 @@ pub fn build_router(state: Arc<ApiState>) -> Router {
                 Method::GET,
                 Method::POST,
                 Method::PATCH,
+                Method::PUT,
                 Method::DELETE,
                 Method::OPTIONS,
             ])
@@ -134,7 +149,7 @@ pub fn build_router(state: Arc<ApiState>) -> Router {
         );
 
     // Authenticated routes — Bearer JWT required.
-    let authenticated = Router::new()
+    let mut authenticated = Router::new()
         // Global
         .route("/api/v1/hierarchy", get(crate::rest::get_hierarchy))
         .route("/api/v1/verses", post(crate::rest::create_verse))
@@ -484,16 +499,27 @@ pub fn build_router(state: Arc<ApiState>) -> Router {
                 )),
         )
         // First-party extension routes mount inside the auth layer below.
-        .merge(mount_extension_handles(&builtin_extension_handles()))
-        .layer(axum::middleware::from_fn_with_state(
-            state.clone(),
-            crate::auth::auth_middleware,
-        ));
+        .merge(mount_extension_handles(&builtin_extension_handles()));
+    // Plugin-host routes mount inside the auth layer; absent hosts mount nothing (AGENTS.md §extensions).
+    if let Some(host) = hosts.extension.clone() {
+        authenticated = authenticated.merge(crate::extensions::routes(host));
+    }
+    if let Some(host) = hosts.binding.clone() {
+        authenticated = authenticated.merge(crate::bindings::routes(host));
+    }
+    if let (Some(binding_host), Some(extension_host)) = (hosts.binding.clone(), hosts.extension.clone()) {
+        authenticated = authenticated.merge(crate::bound_routes::router(binding_host, extension_host));
+    }
+    let authenticated = authenticated.layer(axum::middleware::from_fn_with_state(
+        state.clone(),
+        crate::auth::auth_middleware,
+    ));
 
     public
         .merge(authenticated)
         .layer(cors)
         .layer(TraceLayer::new_for_http())
+        .layer(Extension(hosts))
         .with_state(state)
 }
 

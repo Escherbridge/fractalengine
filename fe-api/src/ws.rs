@@ -3,13 +3,14 @@ use std::sync::Arc;
 
 use axum::extract::ws::{Message, WebSocket, WebSocketUpgrade};
 use axum::extract::State;
+use axum::Extension;
 use axum::response::IntoResponse;
 use tokio::sync::broadcast;
 
 use fe_identity::api_token::ApiClaims;
 use fe_runtime::messages::{ApiCommand, DbCommand, DbResult, SceneChange, TransformUpdate};
 
-use crate::server::ApiState;
+use crate::server::{ApiHosts, ApiState};
 
 // ---------------------------------------------------------------------------
 // Client → Server messages
@@ -48,6 +49,15 @@ pub enum WsClientMsg {
         request_id: String,
         command: crate::types::EntityCommand,
     },
+    /// Subscribe to an extension stream `<package_id>/<stream>` in a petal (docs/extensions/bus.md §WS).
+    BusSubscribe {
+        petal_id: String,
+        source: String,
+        #[serde(default)]
+        params: serde_json::Value,
+    },
+    /// End one extension-stream subscription by the `sub` the server returned.
+    BusUnsubscribe { sub: u64 },
     /// Latency probe.
     Ping { timestamp_ms: u64 },
 }
@@ -113,6 +123,8 @@ pub enum WsServerMsg {
         #[serde(skip_serializing_if = "Option::is_none")]
         error: Option<String>,
     },
+    /// Extension-stream subscription confirmed (`sub` ids later `bus_event` frames).
+    BusSubscribed { sub: u64, source: String },
     /// Error message.
     Error { code: String, message: String },
 }
@@ -124,15 +136,16 @@ pub enum WsServerMsg {
 pub async fn ws_handler(
     ws: WebSocketUpgrade,
     State(state): State<Arc<ApiState>>,
+    Extension(hosts): Extension<ApiHosts>,
 ) -> impl IntoResponse {
-    ws.on_upgrade(move |socket| handle_socket(socket, state))
+    ws.on_upgrade(move |socket| handle_socket(socket, state, hosts))
 }
 
 // ---------------------------------------------------------------------------
 // Socket lifecycle
 // ---------------------------------------------------------------------------
 
-async fn handle_socket(mut socket: WebSocket, state: Arc<ApiState>) {
+async fn handle_socket(mut socket: WebSocket, state: Arc<ApiState>, hosts: ApiHosts) {
     // 1. Send auth_required
     send_msg(&mut socket, &WsServerMsg::AuthRequired {}).await;
 
@@ -204,6 +217,8 @@ async fn handle_socket(mut socket: WebSocket, state: Arc<ApiState>) {
     let mut transform_rx = state.transform_broadcast_tx.subscribe();
     let mut entity_change_rx = state.entity_change_tx.subscribe();
     let mut scene_version: u64 = 0;
+    // Extension-stream subscriptions, opened on the first `bus_subscribe`; closes its host client on drop.
+    let mut bus_streams: Option<crate::extensions::ExtensionStreams> = None;
 
     // Debounce map: last transform update per node, flushed to DB every 200ms.
     type TransformTriple = ([f32; 3], [f32; 3], [f32; 3]); // (position, rotation, scale)
@@ -213,7 +228,27 @@ async fn handle_socket(mut socket: WebSocket, state: Arc<ApiState>) {
     debounce_interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
 
     loop {
+        let bus_wake = bus_streams.as_ref().map(|streams| streams.notify());
         tokio::select! {
+            // Queued extension-stream events
+            _ = wait_for_bus(bus_wake) => {
+                if !credential_still_current(&mut socket, &state, &claims).await {
+                    break;
+                }
+                if let Some(streams) = bus_streams.as_ref() {
+                    loop {
+                        let batch = streams.drain(BUS_EVENT_BATCH);
+                        let drained = batch.len();
+                        for envelope in batch {
+                            send_bus_event(&mut socket, &envelope).await;
+                        }
+                        if drained < BUS_EVENT_BATCH {
+                            break;
+                        }
+                    }
+                }
+            }
+
             // Incoming client message
             msg = recv_msg(&mut socket) => {
                 if !credential_still_current(&mut socket, &state, &claims).await {
@@ -240,6 +275,34 @@ async fn handle_socket(mut socket: WebSocket, state: Arc<ApiState>) {
                         subscribed_petals.remove(&petal_id);
                         let resp = WsServerMsg::Unsubscribed { channel, petal_id };
                         send_protected(&mut socket, &state, &claims, &resp).await;
+                    }
+                    Some(WsClientMsg::BusSubscribe { petal_id, source, params }) => {
+                        // Same denial text as every other unknown/out-of-scope target (§existence-oracle).
+                        let authorized = crate::rest::authorized_petal_scope(&state, &claims, &petal_id)
+                            .await
+                            .is_some();
+                        let outcome = match (&hosts.extension, authorized) {
+                            (Some(host), true) => {
+                                let streams = bus_streams.get_or_insert_with(|| {
+                                    crate::extensions::ExtensionStreams::open(host.clone(), claims.clone())
+                                });
+                                streams.subscribe(true, &petal_id, &source, &params)
+                            }
+                            _ => Err(crate::extensions::ExtError::not_found()),
+                        };
+                        let resp = match outcome {
+                            Ok(sub) => WsServerMsg::BusSubscribed { sub, source },
+                            Err(e) => WsServerMsg::Error {
+                                code: if e.status == 404 { "not_found".into() } else { e.code.replace('-', "_") },
+                                message: e.message,
+                            },
+                        };
+                        send_protected(&mut socket, &state, &claims, &resp).await;
+                    }
+                    Some(WsClientMsg::BusUnsubscribe { sub }) => {
+                        if let Some(streams) = bus_streams.as_mut() {
+                            streams.unsubscribe(sub);
+                        }
                     }
                     Some(WsClientMsg::Ping { timestamp_ms }) => {
                         let now = unix_now_ms();
@@ -470,6 +533,28 @@ async fn handle_socket(mut socket: WebSocket, state: Arc<ApiState>) {
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
+
+/// Most extension-stream events written per wake before the queue is polled again.
+const BUS_EVENT_BATCH: usize = 64;
+
+/// Resolves when the connection's extension streams have queued events; never resolves without a subscription.
+async fn wait_for_bus(notify: Option<Arc<tokio::sync::Notify>>) {
+    match notify {
+        Some(notify) => notify.notified().await,
+        None => std::future::pending::<()>().await,
+    }
+}
+
+/// Send one host envelope (a JSON object text) as `{"type":"bus_event", ...envelope}`; non-objects are dropped.
+async fn send_bus_event(socket: &mut WebSocket, envelope: &str) {
+    let Ok(serde_json::Value::Object(mut frame)) = serde_json::from_str::<serde_json::Value>(envelope) else {
+        return;
+    };
+    frame.insert("type".into(), serde_json::Value::String("bus_event".into()));
+    if let Ok(text) = serde_json::to_string(&frame) {
+        let _ = socket.send(Message::Text(text.into())).await;
+    }
+}
 
 async fn credential_still_current(socket: &mut WebSocket, state: &ApiState, claims: &ApiClaims) -> bool {
     if crate::auth::require_current_credential(state, claims).await.is_ok() { return true; }

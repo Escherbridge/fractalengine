@@ -2340,7 +2340,30 @@ No operation_id requires native NONE owner/anchor/provenance and zero complete a
   local-identity path; the Owner and confirmation checks live in fe-database
   (`handlers/AGENTS.md` §extension-policy). Precondition refusals map to governance.md's suggested statuses
   in `From<AdminRefusal>`; `not-local-identity` is the uniform not-found.
-- **Not mounted yet.** `routes(host)` is not merged by `build_router`: `ApiConfig` has no extension-host
-  field (adding one touches every `ApiConfig` literal: both binaries and two test harnesses), and MCP
-  `list_extensions`/`extension_command` and the `/ws` target are not registered. Until then the module is
-  reachable only through its core functions (J6, `tests/extensions_api_test.rs`).
+- **Mounting (I-API).** `ApiConfig.extension_host` / `binding_host` (`Option<Arc<dyn ..>>`; `None` in the relay
+  and both harness tests) become `server::ApiHosts`, which `build_router_with_hosts` merges INSIDE the auth layer:
+  `extensions::routes`, `bindings::routes`, and `bound_routes::router` (needs both hosts). `build_router(state)`
+  is the same with no hosts, so every existing caller is unchanged. `ApiHosts` is NOT in `ApiState` (many
+  constructors) but an axum `Extension` over the whole router, which is how `/mcp` and `/ws` reach it.
+  `Method::PUT` joined the CORS list for `PUT /api/v1/bindings`.
+- **MCP.** `list_extensions`, `extension_command` (PetalArg: the dispatcher's petal scope is the
+  `petal_authorized` input), `list_bindings`, `set_binding`, `clear_binding` carry `ToolSeam::Extensions` /
+  `Bindings`: `tool_available(spec, state, hosts)` hides them (and answers "unknown tool") when the host is
+  absent. The binding tools use `ScopeRule::None`: the handler resolves `authorized_target_scope` itself and the
+  core returns the uniform not-found; `set_binding`/`clear_binding` floor at Manager in the dispatcher and again
+  in the core.
+- **WS.** `bus_subscribe {petal_id, source, params?}` -> `bus_subscribed {sub, source}`; `bus_unsubscribe {sub}`;
+  events arrive as `{"type":"bus_event", ...envelope}` (bus.md WS row). The `ExtensionStreams` client opens on
+  the first subscribe and closes (host client + subscriptions) when the socket ends. A missing host, an
+  unauthorized petal, an unknown petal and a `host/` source all return the same `not_found` error text as
+  `subscribe` (`NOT_FOUND_OR_DENIED`).
+
+## §bindings
+
+`src/bindings.rs` is the REST/MCP face of the scoped binding plane (docs/extensions/bindings.md §9); the binary
+implements `BindingHost` (writes through `DbCommand::PutBinding`, reads through `ListBindings` and its
+resolution cache). Role rules: reads Viewer+, writes Manager+ at the token ceiling, the DB plane re-judges the
+DID. Only the local DID (Owner token + node DID) sees `resolution` in `bindings/effective`. `bound_routes.rs`
+serves `/api/v1/petals/{petal}/apis/{key}/{endpoint}` through the winning `api.routes` binding: unresolved is a
+503 without an offer, no binding is the uniform not-found. Known gap: the MCP binding tools resolve the target
+scope before the core's rate `gate` (the core keeps the remote-rate check first for its own DB reads).

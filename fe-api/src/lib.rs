@@ -8,6 +8,8 @@
 
 pub mod assets;
 pub mod auth;
+pub mod bindings;
+pub mod bound_routes;
 pub mod bridge_client;
 pub mod canonical_ws;
 pub mod crs;
@@ -22,6 +24,7 @@ pub mod format;
 pub mod gis;
 pub mod gpx;
 pub mod hexon;
+pub mod import_hooks;
 pub mod input;
 pub mod iot;
 pub mod limits;
@@ -119,6 +122,11 @@ pub struct ApiConfig {
     /// Told the bound address once the listener is up — the GUI's opt-in
     /// dev-token writer waits on it (AGENTS.md §qa-dev-token); `None` elsewhere.
     pub listening_tx: Option<crossbeam::channel::Sender<std::net::SocketAddr>>,
+    /// Plugin host behind `/api/v1/extensions*`, MCP `list_extensions`/`extension_command` and the `/ws`
+    /// bus frames; `None` (relay, harness tests) mounts nothing and hides the tools (AGENTS.md §extensions).
+    pub extension_host: Option<Arc<dyn extensions::ExtensionHost>>,
+    /// Binding plane behind `/api/v1/bindings`, the `apis/{key}` alias and MCP binding tools; `None` mounts nothing.
+    pub binding_host: Option<Arc<dyn bindings::BindingHost>>,
 }
 
 /// Read `FE_API_UPLOAD_QUOTA_BYTES` once at startup; unset or unparseable
@@ -237,7 +245,10 @@ async fn run_server(config: ApiConfig, stop: fe_runtime::service_lifecycle::Stop
     }
     tokio::spawn(auth::listen_for_revocations(state.clone(), config.revocation_rx));
 
-    let router = server::build_router(state);
+    let router = server::build_router_with_hosts(
+        state,
+        server::ApiHosts { extension: config.extension_host, binding: config.binding_host },
+    );
 
     let listener = tokio::net::TcpListener::bind(&config.bind_addr)
         .await

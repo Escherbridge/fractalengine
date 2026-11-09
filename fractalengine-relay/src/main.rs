@@ -491,6 +491,8 @@ fn main() -> anyhow::Result<()> {
         input: fe_api::input::InputSurface::disabled(),
         // Dev-token emission is GUI-only (fe-api/AGENTS.md §qa-dev-token).
         listening_tx: None,
+        extension_host: None,
+        binding_host: None,
     });
 
     app.insert_resource(RevocationBroadcastSender(revocation_tx));

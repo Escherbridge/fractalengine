@@ -46,8 +46,10 @@ use fractalengine_test_harness::api::ApiHarness;
 /// plus 5 sim = 37. agent_vision_20261031 added `get_camera` (shares
 /// `ToolSeam::Screenshot` with `screenshot`), for 38; its folded-in
 /// `agent_input_surface_20261031` added `inject_input` (its own
-/// `ToolSeam::Input`), for 39 total.
-const EXPECTED_TOOLS: [&str; 49] = [
+/// `ToolSeam::Input`), for 39 total; the extension platform adds 5 host-gated
+/// tools (`list_extensions`, `extension_command`, `list_bindings`,
+/// `set_binding`, `clear_binding`) beyond the original table.
+const EXPECTED_TOOLS: [&str; 54] = [
     "get_hierarchy",
     "create_verse",
     "create_fractal",
@@ -104,6 +106,12 @@ const EXPECTED_TOOLS: [&str; 49] = [
     "window",
     "ui_state",
     "ui_logs",
+    // Extension platform: hosts wired by the GUI binary only (ToolSeam::Extensions / Bindings, §extensions)
+    "list_extensions",
+    "extension_command",
+    "list_bindings",
+    "set_binding",
+    "clear_binding",
     "inject_input",
 ];
 
@@ -896,7 +904,12 @@ async fn rpc(
         method: method.into(),
         params,
     };
-    let resp = mcp_handler(State(state.clone()), Extension(c.clone()), Json(req))
+    let resp = mcp_handler(
+        State(state.clone()),
+        Extension(fe_api::server::ApiHosts::default()),
+        Extension(c.clone()),
+        Json(req),
+    )
         .await
         .into_response();
     let bytes = axum::body::to_bytes(resp.into_body(), usize::MAX)
@@ -1017,6 +1030,11 @@ async fn tools_list_inventory() {
                         | "window"
                         | "ui_state"
                         | "ui_logs"
+                        | "list_extensions"
+                        | "extension_command"
+                        | "list_bindings"
+                        | "set_binding"
+                        | "clear_binding"
                 )
         })
         .collect();
@@ -1032,7 +1050,8 @@ async fn tools_list_inventory() {
     // ...and does not reveal them on call either: an owner gets the
     // unknown-tool answer, byte-identical to a name that never existed.
     let owner = h.mint_token("VERSE#v1", "owner");
-    for name in ["sim_start", "nonexistent_tool"] {
+    // Plugin-host tools are likewise hidden when the binary wires no extension/binding host.
+    for name in ["sim_start", "list_extensions", "set_binding", "nonexistent_tool"] {
         let (_, body) = h
             .post_json(
                 "/mcp",
@@ -1067,6 +1086,11 @@ async fn tools_list_inventory() {
                         | "window"
                         | "ui_state"
                         | "ui_logs"
+                        | "list_extensions"
+                        | "extension_command"
+                        | "list_bindings"
+                        | "set_binding"
+                        | "clear_binding"
                 )
         })
         .collect();
@@ -2110,7 +2134,7 @@ async fn every_tool_rejects_a_sub_min_role_token() {
     let home = seed_chain(&model, "home");
     // An unwired seam's tool does not exist (answers "unknown tool"), so it
     // has no role floor to probe.
-    for spec in tool_specs().iter().filter(|t| tool_available(t, &state)) {
+    for spec in tool_specs().iter().filter(|t| tool_available(t, &state, &fe_api::server::ApiHosts::default())) {
         // Args point at a resource the token's scope DOES cover, so the only
         // reason to deny is the role floor.
         let c = claims(&home.verse_scope(), role_below(spec.min_role));
@@ -3017,7 +3041,7 @@ async fn mcp_structured_fuzz_never_panics_or_leaks_to_channel() {
     const N: u64 = 25;
     let mut unreached: Vec<&str> = Vec::new();
 
-    for spec in tool_specs().iter().filter(|t| tool_available(t, &state)) {
+    for spec in tool_specs().iter().filter(|t| tool_available(t, &state, &fe_api::server::ApiHosts::default())) {
         // Fresh chain + registered asset per tool: one tool's delete_node
         // (or cascade) can never tombstone another tool's fixture.
         let home = seed_chain(&model, spec.name);

@@ -464,6 +464,8 @@ fn owned_api_config(
     h: &ApiHarness,
     revocation_rx: tokio::sync::broadcast::Receiver<String>,
     listening_tx: crossbeam::channel::Sender<std::net::SocketAddr>,
+    extension_host: None,
+    binding_host: None,
 ) -> fe_api::ApiConfig {
     fe_api::ApiConfig {
         bind_addr: "127.0.0.1:0".into(),
