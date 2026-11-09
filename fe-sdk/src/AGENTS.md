@@ -300,3 +300,11 @@ the DB handler. `validate_commit(ops, readings)` is the one call for a whole `Pl
 f64 snap/interpolation formerly private to fe-terrain `iot/path_tracker.rs`; that file should delegate
 so the sim, the IoT tracker and the WIT `routes` interface share one implementation. The f32
 renderer helpers stay separate on purpose (their accumulation order is a stamp-placement contract).
+
+## §live-consumers (plugin_host_revival S7)
+
+`ApiExtensionHandle` and `UiExtensionRegistry` have live consumers. `fe-api/src/server.rs` mounts
+`fe_terrain::api_ext::terrain_api_routes()` in `build_router`. `fe_ui::plugin::UiExtensions` wraps the
+`UiExtensionRegistry`, and `register_first_party_extension_ui` (fractalengine `main.rs`) fills it at Startup.
+No third-party package contributes to either registry yet (fractalengine/src/AGENTS.md §plugin-host), so
+a change to either shape breaks first-party consumers at once.

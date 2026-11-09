@@ -109,9 +109,10 @@ Order: signing and release first, then agent QA, then the operator seams.
 
   **Fable review gates F0–F3 are embedded.** F0 is the design and threat-model review, before any code. Sequenced after
   relay_operability — [./tracks/peer_networking_support_20261031/](./tracks/peer_networking_support_20261031/)
-- [ ] **plugin_host_revival** (P2) — **S-PLUGIN**: wires the dormant `fe-plugin` host in behind an opt-in flag,
-  adds publisher-signed packages and a signed revocation list, upgrades wasmtime, and enforces or removes the
-  unenforced `network_scope` — [./tracks/plugin_host_revival_20261031/](./tracks/plugin_host_revival_20261031/)
+- [ ] **plugin_host_revival** (P2) — **S-PLUGIN**: the `fe-plugin` host is live behind an opt-in admission gate,
+  with publisher-signed packages, a signed revocation list, wasmtime 49 and `network_scope` denied at parse and
+  use. Code landed 2026-11-08 (S0–S6, `c519111f`..`5ed08447`). Open: the workspace sweep and the user's in-app
+  consent check; no package can be installed in-app until P1.7 — [./tracks/plugin_host_revival_20261031/](./tracks/plugin_host_revival_20261031/)
 
 ---
 

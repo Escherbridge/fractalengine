@@ -2052,5 +2052,8 @@ made a default-build reset quiesce half the app and then fail.
   `fe_terrain::extension::register_terrain_ui` into `fe_ui::plugin::UiExtensions`. Terrain is compiled
   in, never an admitted package, so the switch does not gate it. The call lives here because fe-ui has
   no fe-terrain dependency.
+- **Status.** Nothing installs in-app yet: neither binary constructs a `PluginManager`, so no package reaches
+  `install_plugin` (review.md #17, DEFERRED to extension_platform P1.7 and P2.4). Until then the switch
+  only chooses `PackageAdmission`.
 - **Relay.** `fractalengine-relay`'s own `plugin-host` feature (default off) adds a bare
   `PluginHostPlugin` (no scene backend) and the same `PackageAdmission` from the env var.

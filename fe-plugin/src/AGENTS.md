@@ -132,10 +132,17 @@ live in `fe-sdk` (`CAP_STORAGE_READ`, `CAP_STORAGE_WRITE`, `CAP_QUERY_SELECT`).
 record types are forced on existing `node-api` consumers. The world imports it
 (`import query-api;`); guests that don't use it are unaffected.
 
-The WIT is the **aspirational contract**, not the wired ABI: the running WASM
-host registers core-ABI `func_wrap` imports with `-1` denial sentinels
-(`wasm/host_imports.rs`), and no component-model bindgen exists yet. Keep the
-two in sync by name/shape; wiring bindgen is future work.
+## §wit-resolution (OD-2)
+
+Two WIT files exist; parse one at a time (`fe-plugin/wit/AGENTS.md`).
+`hexon-plugin.wit` (`fractalengine:plugin@1.0.0`) carries a SUPERSEDED header and
+stays only for first-party core-ABI test fixtures. `fractal-plugin-2.wit`
+(`fractalengine:plugin@2.0.0`, D-X1) is the third-party contract. Neither is the
+running ABI: the WASM host still registers core-ABI `func_wrap` imports with `-1`
+denial sentinels (`wasm/host_imports.rs`), and no component-model bindgen exists.
+Until extension_platform P1.1 lands bindgen, make no third-party publishing claim
+that rests on the WIT. Any WIT edit needs a matching `host_imports.rs` change or an
+UNSTABLE marker.
 
 ## §capability-policy (auth_policy_pattern_20260710)
 
@@ -288,3 +295,10 @@ Manifest v2 replaces both fields with declared `ingress[]`/`egress[]` (docs/exte
   (sealed `HexonType::Plugin`, `plugin/extension.json`, `plugin/component.wasm`, counter-signatures,
   `content_hash` over the sealed manifest) when extension_platform E9/E13 land; this client then moves to
   fe-hexon as the protocol-v1 `RegistrySource`.
+
+## §consent-ux
+
+The consent modal lives in fe-ui (`fe-ui/src/AGENTS.md` §plugin-consent). fe-plugin supplies the data it
+shows: `CapabilityManifest` carries the verse, petal and property scope, the named capabilities and the
+network posture. `validate_access` enforces an empty scope as a wildcard, and the modal must render that as
+"All". Nothing requests an install yet (review.md #17), because neither binary builds a `PluginManager`.
