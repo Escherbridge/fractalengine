@@ -13,6 +13,10 @@ fe-sdk = { path = "../fe-sdk" }
 fe-policy = { path = "../fe-policy" }
 rhai = "1.24"
 wasmtime = { version = "49.0.2", features = ["async"] }
+# WASI 0.2 for wasm32-wasip2 guests, linked under the closed policy in src/wasm/AGENTS.md §wasi-policy.
+# Same release as wasmtime; p2 only (no p1 / wiggle).
+wasmtime-wasi = { version = "49.0.2", default-features = false, features = ["p2"] }
+bytes = { workspace = true }
 blake3 = { workspace = true }
 anyhow = { workspace = true }
 crossbeam = { workspace = true }
@@ -37,3 +41,6 @@ fe-plugin-test = { path = "../fe-plugin-test" }
 tokio = { workspace = true }
 tempfile = "3"
 wat = "1"
+# Test guests: a hand-written core module + the 2.0 WIT, encoded as a component (src/wasm/AGENTS.md §test-guests).
+wit-component = "0.244"
+wit-parser = "0.244"

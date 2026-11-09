@@ -131,6 +131,41 @@ impl AotCache {
         Ok(module)
     }
 
+    /// [`get_or_compile`](Self::get_or_compile) for a component (2.0 guests); same file naming.
+    pub fn get_or_compile_component(
+        &self,
+        engine: &wasmtime::Engine,
+        component_bytes: &[u8],
+    ) -> Result<Vec<u8>, crate::wasm::WasmError> {
+        let hash = Self::hash_bytes(component_bytes);
+        let path = self.cache_path(&hash);
+        if path.exists() {
+            return std::fs::read(&path).map_err(|e| {
+                crate::wasm::WasmError::AotCacheError(format!("Failed to read cached file {:?}: {}", path, e))
+            });
+        }
+        let compiled = wasmtime::component::Component::new(engine, component_bytes)?
+            .serialize()
+            .map_err(|e| crate::wasm::WasmError::PrecompileError(e.to_string()))?;
+        std::fs::write(&path, &compiled).map_err(|e| {
+            crate::wasm::WasmError::AotCacheError(format!("Failed to write cache file {:?}: {}", path, e))
+        })?;
+        tracing::info!(hash, bytes = compiled.len(), "AOT compiled component cached");
+        Ok(compiled)
+    }
+
+    /// Load a component from [`get_or_compile_component`](Self::get_or_compile_component) output.
+    pub fn load_compiled_component(
+        &self,
+        engine: &wasmtime::Engine,
+        compiled_bytes: &[u8],
+    ) -> Result<wasmtime::component::Component, crate::wasm::WasmError> {
+        // SAFETY: the bytes come from Component::serialize in this cache, on the same engine
+        // configuration; deserialize re-checks the engine compatibility header.
+        let component = unsafe { wasmtime::component::Component::deserialize(engine, compiled_bytes) }?;
+        Ok(component)
+    }
+
     /// Remove a cached entry by its source Wasm bytes hash.
     ///
     /// Returns `Ok(true)` if a file was removed, `Ok(false)` if not found.

@@ -1,17 +1,13 @@
-//! Wasmtime embedding engine for FractalEngine plugins.
+//! Wasmtime embedding for FractalEngine plugins; see src/wasm/AGENTS.md.
 //!
-//! Provides a [`WasmEngine`] that wraps wasmtime with pooling allocation,
-//! fuel metering, and host imports matching the Rhai API surface.
-//!
-//! # Sub-modules
-//!
-//! - [`host_imports`] — Host functions registered into the Wasmtime [`Linker`](wasmtime::Linker).
-//! - [`fuel`] — [`FuelBudget`] for per-call fuel accounting.
-//! - [`aot`] — [`AotCache`] for ahead-of-time precompilation with BLAKE3 hashing.
+//! - [`component`] — the 2.0 component host (world `extension`), the only third-party ABI.
+//! - [`WasmEngine`] — the core-module engine, now import-free: the 1.0 `fe` core ABI is retired.
+//! - [`fuel`] — [`FuelBudget`](fuel::FuelBudget) for core stores.
+//! - [`aot`] — [`AotCache`](aot::AotCache), BLAKE3-keyed precompilation for modules and components.
 
 pub mod aot;
+pub mod component;
 pub mod fuel;
-pub mod host_imports;
 
 use crate::context::PluginContext;
 
@@ -37,19 +33,15 @@ pub struct WasmPlugin {
 // WasmEngine — the wasmtime host environment
 // ---------------------------------------------------------------------------
 
-/// The Wasmtime embedding engine.
+/// The core-module engine: pooled, fuel-metered, and linking NO host imports.
 ///
-/// Wraps a [`wasmtime::Engine`] configured with:
-/// - [`wasmtime::InstanceAllocationStrategy::Pooling`] for fast instantiation.
-/// - Fuel metering enabled for per-call resource accounting.
-/// - Async support for host function interop.
-///
-/// The engine also owns a [`wasmtime::Linker`] pre-populated with all
-/// host import functions that mirror the Rhai API surface.
+/// The 1.0 `fe` core ABI is retired (spec R2): a core module that imports anything fails to
+/// instantiate, and [`component::ComponentHost::compile`] refuses core modules as
+/// `unsupported-contract`. Third-party guests run only through [`component`].
 pub struct WasmEngine {
     /// The global wasmtime compilation + runtime environment.
     engine: wasmtime::Engine,
-    /// Pre-configured linker with all host imports registered.
+    /// An empty linker: nothing is importable by a core module.
     linker: wasmtime::Linker<PluginStoreData>,
 }
 
@@ -73,11 +65,7 @@ impl WasmEngine {
         ));
 
         let engine = wasmtime::Engine::new(&config)?;
-
-        // Build the linker with host imports
-        let mut linker: wasmtime::Linker<PluginStoreData> = wasmtime::Linker::new(&engine);
-        host_imports::register_host_imports(&mut linker)?;
-
+        let linker: wasmtime::Linker<PluginStoreData> = wasmtime::Linker::new(&engine);
         Ok(Self { engine, linker })
     }
 
@@ -395,6 +383,45 @@ mod tests {
             WasmEngine::is_degraded(&store),
             "Plugin should be marked degraded"
         );
+
+        // The same for a 2.0 component driven through the scheduler seam: an on-tick that never
+        // returns exhausts its fuel, the staged window is discarded unflushed, and the instance
+        // refuses every later hook.
+        use crate::tick::{CommitOutcome, ManualClock, TickFault, TickInfo, TickInstance};
+        let host = component::ComponentHost::new().unwrap();
+        let burner = host
+            .compile(&component::test_guest::component(component::test_guest::BURN_FOREVER))
+            .unwrap();
+        let mock = std::sync::Arc::new(std::sync::Mutex::new(fe_plugin_test::mock_host::MockHostEnv::new()));
+        let setup = component::test_guest::fleet_setup(&mock, &ManualClock::default());
+        let window = setup.window.clone();
+        window
+            .lock()
+            .unwrap()
+            .stage_op(crate::transaction::PendingOp::SetTransform {
+                node_id: "n1".into(),
+                position: Some([1.0, 0.0, 0.0]),
+                rotation: None,
+                scale: None,
+            })
+            .unwrap();
+        let mut handle = component::InstanceHandle::new(host.instantiate(&burner, setup).unwrap());
+        TickInstance::refuel(&mut handle, 10_000).unwrap();
+        let info = TickInfo {
+            tick: 1,
+            now_ms: 500,
+            scheduled_at_ms: 500,
+            delta_ms: 0,
+            skipped: 0,
+            last_commit: CommitOutcome::None,
+        };
+        assert_eq!(TickInstance::on_tick(&mut handle, &info), Err(TickFault::FuelExhausted));
+        assert!(window.lock().unwrap().is_empty(), "the faulted tick's window is discarded");
+        assert_eq!(handle.lock().unwrap().stats().fuel_exhaustions, 1);
+        assert!(matches!(
+            handle.lock().unwrap().on_activate(),
+            Err(component::HookFault::Degraded(_))
+        ));
     }
 
     #[test]
