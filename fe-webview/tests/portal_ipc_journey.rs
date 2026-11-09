@@ -1,0 +1,628 @@
+//! Portal IPC journey (spec R8-R11) over the real mount table, gate, page-API serving and bridge; only the broker edge is faked.
+
+use std::collections::BTreeSet;
+use std::io::Write as _;
+use std::path::PathBuf;
+use std::sync::{mpsc, Arc, Mutex};
+use std::time::{Duration, Instant};
+
+use ed25519_dalek::SigningKey;
+use fe_webview::ipc::BundleState;
+use fe_webview::portal_bundle::ipc::{serve, PAGE_API_PATH};
+use fe_webview::portal_bundle::origin::admitted_label;
+use fe_webview::portal_bundle::{
+    prepare, AdmissionVerdict, Attempt, BindRequest, BrokerClient, BrokerEvent, BundleIdentity, BundleResolver,
+    BundleSource, Decision, DeliveryKind, Ingress, IpcError, MountMode, NavigationGate, PendingReply, PortalBridge,
+    PortalBroker, PortalIntent, PortalMounts, UiIntent,
+};
+use http::StatusCode;
+use serde_json::{json, Value};
+
+const PACKAGE: &str = "org.example.flow-dashboard";
+const PETAL: &str = "01JPETAL000000000000000000";
+const NODE_A: &str = "01JNODEA000000000000000000";
+const BROKER_CLIENT: u64 = 7;
+const GRANTED: &[&str] = &[
+    "subscribe:node",
+    "subscribe:readings",
+    "subscribe:query/hourly_flow",
+    "subscribe:org.example.fleet-sim/positions",
+    "act:set_property",
+    "invoke:org.example.fleet-sim/start",
+    "emit:selection",
+    "intent:focus_node",
+];
+
+// ---------------------------------------------------------------------------
+// A sealed bundle declaring every capability class (README §5)
+// ---------------------------------------------------------------------------
+
+struct Fixture {
+    path: PathBuf,
+}
+
+impl Drop for Fixture {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_file(&self.path);
+    }
+}
+
+fn sealed_bundle(key: &SigningKey) -> Fixture {
+    let portal = json!({
+        "schema": "fe-portal-bundle/1", "entry": "web/index.html", "title": "Flow dashboard",
+        "csp": { "connect": [], "img": [], "font": [], "media": [], "frame": [], "wasm": false, "inline_styles": false },
+        "navigation": [],
+        "subscriptions": {
+            "node": true, "readings": true,
+            "queries": [{ "name": "hourly_flow", "sql": "SELECT metric FROM iot_reading WHERE metric = $metric",
+                          "params": { "metric": "string" } }]
+        },
+        "commands": { "set_property": { "keys": ["fleet.*"] },
+                      "invoke": [{ "package": "org.example.fleet-sim", "command": "start" }] },
+        "hooks": [{ "source": "org.example.fleet-sim/positions" }],
+        "streams": [{ "id": "selection", "max_rate_hz": 4, "max_event_bytes": 2048 }],
+        "ui_intents": ["focus_node"]
+    });
+    let extension = json!({ "manifest_version": 2, "id": PACKAGE, "version": "1.0.0", "kind": "web-bundle", "portal": portal });
+    let manifest = json!({
+        "schema_version": "1.0.0", "hexon_id": PACKAGE, "hexon_type": "plugin",
+        "publisher_did": "did:key:z6Mkunsealed", "version": "1.0.0", "name": "Flow dashboard",
+        "created_at": "2026-11-08T00:00:00Z", "updated_at": "2026-11-08T00:00:00Z"
+    });
+    let mut zip = zip::ZipWriter::new(std::io::Cursor::new(Vec::new()));
+    let options = zip::write::SimpleFileOptions::default();
+    let members: [(&str, Vec<u8>); 4] = [
+        ("manifest.json", serde_json::to_vec(&manifest).unwrap()),
+        ("entries.json", br#"{"entries":[]}"#.to_vec()),
+        ("plugin/extension.json", serde_json::to_vec(&extension).unwrap()),
+        ("web/index.html", b"<!doctype html><title>Flow</title><script src=\"/__fe/portal-v1.js\"></script>".to_vec()),
+    ];
+    for (name, bytes) in members {
+        zip.start_file(name, options).unwrap();
+        zip.write_all(&bytes).unwrap();
+    }
+    let sealed = fe_format::seal(&zip.finish().unwrap().into_inner(), key).unwrap();
+    let path = std::env::temp_dir().join(format!("fe-portal-ipc-{}.hexon", ulid::Ulid::new()));
+    std::fs::write(&path, sealed).unwrap();
+    Fixture { path }
+}
+
+struct Resolver {
+    path: PathBuf,
+    admit: Option<String>,
+}
+
+impl BundleResolver for Resolver {
+    fn resolve(&self, _node_id: &str) -> Result<BundleSource, BundleState> {
+        Ok(BundleSource { asset_id: "asset-1".into(), blob_path: Some(self.path.clone()), revoked: None })
+    }
+    fn verdict(&self, _identity: &BundleIdentity) -> AdmissionVerdict {
+        match &self.admit {
+            Some(publisher_did) => AdmissionVerdict::Admitted { publisher_did: publisher_did.clone() },
+            None => AdmissionVerdict::Unadmitted { can_admit: true },
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// The faked edge: a broker that records what the bridge asked of it
+// ---------------------------------------------------------------------------
+
+#[derive(Default)]
+struct FakeState {
+    log: Vec<String>,
+    audits: Vec<String>,
+    events: Vec<BrokerEvent>,
+    next_sub: u64,
+    write_outcome: Option<Result<Value, IpcError>>,
+}
+
+struct FakeBroker {
+    granted: BTreeSet<String>,
+    state: Mutex<FakeState>,
+}
+
+impl FakeBroker {
+    fn log(&self) -> Vec<String> {
+        self.state.lock().unwrap().log.clone()
+    }
+    fn audits(&self) -> Vec<String> {
+        self.state.lock().unwrap().audits.clone()
+    }
+    fn push(&self, subscription: u64, kind: DeliveryKind, data: Value) {
+        self.state.lock().unwrap().events.push(BrokerEvent { subscription, kind, dropped_before: 0, data });
+    }
+    fn set_write_outcome(&self, outcome: Result<Value, IpcError>) {
+        self.state.lock().unwrap().write_outcome = Some(outcome);
+    }
+    fn record(&self, line: String) {
+        self.state.lock().unwrap().log.push(line);
+    }
+}
+
+fn answered(outcome: Result<Value, IpcError>) -> PendingReply {
+    let (sender, receiver) = mpsc::channel();
+    sender.send(outcome).unwrap();
+    receiver
+}
+
+impl PortalBroker for FakeBroker {
+    fn open(&self, request: &BindRequest<'_>) -> Result<BrokerClient, IpcError> {
+        self.record(format!("open {} {}", request.package_id, request.repository_node_id));
+        Ok(BrokerClient {
+            client: BROKER_CLIENT,
+            installing_did: "did:key:z6Mklocal".into(),
+            petal_id: PETAL.into(),
+            granted: self.granted.clone(),
+        })
+    }
+    fn close(&self, client: u64) {
+        self.record(format!("close {client}"));
+    }
+    fn set_paused(&self, _client: u64, paused: bool) {
+        self.record(format!("paused {paused}"));
+    }
+    fn subscribe(&self, _client: u64, address: &str, params: &Value) -> Result<u64, IpcError> {
+        let mut state = self.state.lock().unwrap();
+        state.next_sub += 1;
+        state.log.push(format!("subscribe {address} {params}"));
+        Ok(state.next_sub)
+    }
+    fn unsubscribe(&self, _client: u64, subscription: u64) {
+        self.record(format!("unsubscribe {subscription}"));
+    }
+    fn take_events(&self, _client: u64, max: usize) -> Vec<BrokerEvent> {
+        let mut state = self.state.lock().unwrap();
+        let take = state.events.len().min(max);
+        state.events.drain(..take).collect()
+    }
+    fn invoke(&self, _client: u64, package_id: &str, command_id: &str, _args: &Value) -> Result<PendingReply, IpcError> {
+        self.record(format!("invoke {package_id}/{command_id}"));
+        Ok(answered(Ok(json!({ "started": 1 }))))
+    }
+    fn emit(&self, _client: u64, stream_id: &str, _data: &Value) -> Result<(), IpcError> {
+        self.record(format!("emit {stream_id}"));
+        Ok(())
+    }
+    fn set_property(&self, _client: u64, node_id: &str, key: &str, _value: &Value) -> Result<PendingReply, IpcError> {
+        self.record(format!("set_property {node_id} {key}"));
+        let outcome = self.state.lock().unwrap().write_outcome.clone().unwrap_or(Ok(Value::Null));
+        Ok(answered(outcome))
+    }
+    fn audit_refusal(&self, _client: u64, operation: &str, target: &str, code: &str) {
+        self.state.lock().unwrap().audits.push(format!("{operation} {target} {code}"));
+    }
+}
+
+// ---------------------------------------------------------------------------
+// One admitted, visible, entered document, driven frame by frame
+// ---------------------------------------------------------------------------
+
+fn main_frame(raw_url: &str) -> Attempt<'_> {
+    Attempt { raw_url, is_redirect: false, is_main_frame: true }
+}
+
+fn envelope(token: &str, id: u32, kind: &str, fields: Value) -> String {
+    let mut body = fields;
+    body["t"] = json!(kind);
+    let text = body.to_string();
+    format!(r#"{{"v":1,"n":"{token}","id":{id},{}"#, &text[1..])
+}
+
+struct Page {
+    bundle: Fixture,
+    publisher: String,
+    mounts: PortalMounts,
+    gate: NavigationGate,
+    bridge: PortalBridge,
+    broker: Arc<FakeBroker>,
+    dyn_broker: Arc<dyn PortalBroker>,
+    sender: String,
+    label: String,
+    token: String,
+    next_id: u32,
+    now: Instant,
+    received: Vec<Value>,
+    intents: Vec<PortalIntent>,
+}
+
+impl Page {
+    fn open() -> Self {
+        let key = SigningKey::from_bytes(&[9u8; 32]);
+        let publisher = fe_format::verifying_key_to_did(&key.verifying_key());
+        let bundle = sealed_bundle(&key);
+        let resolver = Resolver { path: bundle.path.clone(), admit: Some(publisher.clone()) };
+        let mount = prepare(&resolver, "node-repo", u64::MAX).expect("admitted mount");
+        assert_eq!(mount.mode, MountMode::Admitted);
+        let mounts = PortalMounts::new();
+        let mount = mounts.install(mount);
+        let gate = NavigationGate::new(mounts.clone());
+        gate.expect_entry(mount.entry_url.clone());
+        assert_eq!(gate.decide(&main_frame(&mount.entry_url)), Decision::AllowEnter);
+        let broker = Arc::new(FakeBroker {
+            granted: GRANTED.iter().map(|capability| (*capability).to_owned()).collect(),
+            state: Mutex::new(FakeState::default()),
+        });
+        let dyn_broker: Arc<dyn PortalBroker> = broker.clone();
+        let bridge = PortalBridge::new();
+        bridge.set_visible(true);
+        let mut page = Page {
+            bundle,
+            publisher,
+            mounts,
+            gate,
+            bridge,
+            broker,
+            dyn_broker,
+            sender: mount.entry_url.clone(),
+            label: mount.label.to_string(),
+            token: String::new(),
+            next_id: 1,
+            now: Instant::now(),
+            received: Vec::new(),
+            intents: Vec::new(),
+        };
+        page.pump();
+        page.fetch_token();
+        page
+    }
+
+    /// GET `/__fe/portal-v1.js` the way the document does, and read the token literal it carries.
+    fn fetch_token(&mut self) {
+        let response = self.get_page_api(&self.label.clone());
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(response.headers()["content-type"], "text/javascript; charset=utf-8");
+        assert!(response.headers().contains_key("content-security-policy"));
+        let script = String::from_utf8(response.body().clone()).unwrap();
+        let marker = "const DOCUMENT_TOKEN = \"";
+        let start = script.find(marker).expect("token literal") + marker.len();
+        self.token = script[start..start + 32].to_owned();
+        assert!(self.token.bytes().all(|c| c.is_ascii_digit() || (b'a'..=b'f').contains(&c)), "{}", self.token);
+    }
+
+    fn get_page_api(&self, label: &str) -> http::Response<Vec<u8>> {
+        let request = http::Request::builder()
+            .uri(format!("fe-portal://{label}.localhost{PAGE_API_PATH}"))
+            .body(Vec::new())
+            .unwrap();
+        serve(&self.mounts, &self.bridge, &request)
+    }
+
+    fn post_from(&self, source: &str, body: &str) -> Ingress {
+        self.bridge.ingress(&self.mounts, source, body, self.now)
+    }
+
+    /// Post a well-formed envelope from the document; returns its id.
+    fn send(&mut self, kind: &str, fields: Value) -> u32 {
+        let id = self.next_id;
+        self.next_id += 1;
+        let body = envelope(&self.token, id, kind, fields);
+        assert_eq!(self.post_from(&self.sender.clone(), &body), Ingress::Accepted, "{body}");
+        id
+    }
+
+    fn pump(&mut self) {
+        let intents = self.bridge.pump(&self.mounts, Some(&self.dyn_broker), self.now);
+        self.intents.extend(intents);
+        for text in self.bridge.take_outbox(&self.mounts) {
+            let message: Value = serde_json::from_str(&text).unwrap();
+            assert_eq!((message["v"].clone(), message["n"].clone()), (json!(1), json!(self.token)), "{text}");
+            self.received.push(message);
+        }
+    }
+
+    fn advance(&mut self, millis: u64) {
+        self.now += Duration::from_millis(millis);
+    }
+
+    fn reload(&mut self) {
+        assert_eq!(self.gate.decide(&main_frame(&self.sender.clone())), Decision::AllowSame);
+    }
+
+    fn reply(&self, id: u32) -> Option<&Value> {
+        self.received.iter().find(|message| message["re"] == json!(id))
+    }
+
+    fn ok(&self, id: u32) -> Value {
+        let reply = self.reply(id).unwrap_or_else(|| panic!("no reply to {id}: {:?}", self.received));
+        assert_eq!(reply["ok"], json!(true), "{reply}");
+        reply["data"].clone()
+    }
+
+    fn error(&self, id: u32) -> String {
+        let reply = self.reply(id).unwrap_or_else(|| panic!("no reply to {id}"));
+        assert_eq!(reply["ok"], json!(false), "{reply}");
+        reply["error"]["code"].as_str().unwrap().to_owned()
+    }
+
+    fn deliveries(&self, sub: u64) -> Vec<&Value> {
+        self.received.iter().filter(|message| message["sub"] == json!(sub)).collect()
+    }
+
+    fn subscribe(&mut self, stream: &str, params: Value) -> u32 {
+        self.send("subscribe", json!({ "stream": stream, "params": params }))
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Journeys
+// ---------------------------------------------------------------------------
+
+/// R8: only an Admitted, visible, current document is heard; everything else is dropped with no reply.
+#[test]
+fn sender_gate_drops_every_unauthorized_post_without_a_reply() {
+    let mut page = Page::open();
+    assert_eq!(page.broker.log(), vec![format!("open {PACKAGE} node-repo")], "the mount binds once");
+
+    // Control: the admitted, visible, current document gets a reply.
+    let hello = page.send("hello", json!({}));
+    page.pump();
+    let data = page.ok(hello);
+    assert_eq!(data["api"], "fe.portal.v1");
+    assert_eq!(data["context"]["petal_id"], PETAL);
+    assert_eq!(data["context"]["package_id"], PACKAGE);
+    assert_eq!(data["context"]["publisher_did"], json!(page.publisher));
+    let capabilities: Vec<&str> = data["capabilities"].as_array().unwrap().iter().filter_map(Value::as_str).collect();
+    assert!(capabilities.contains(&"act:set_property") && capabilities.contains(&"intent:focus_node"));
+
+    // Checks 1-2: well-formed posts from the wrong sender or document. Mutation check: without check 1 these go red.
+    let subscribe = envelope(&page.token, 99, "subscribe", json!({ "stream": "node", "params": {} }));
+    let foreign = admitted_label("did:key:other", PACKAGE).document_url("web/index.html").unwrap();
+    let reordered = format!(r#"{{"n":"{}","v":1,"id":99,"t":"hello"}}"#, page.token);
+    let stale_token = envelope(&"f".repeat(32), 99, "hello", json!({}));
+    let http_spelling = page.sender.replacen("https://", "http://", 1);
+    let long_sender = format!("{}?{}", page.sender, "x".repeat(9_000));
+    for (row, source, body) in [
+        ("external site", "https://example.com/", subscribe.as_str()),
+        ("foreign bundle origin", foreign.as_str(), subscribe.as_str()),
+        ("http spelling of the bundle origin", http_spelling.as_str(), subscribe.as_str()),
+        ("sender URL past the P-2 cap", long_sender.as_str(), subscribe.as_str()),
+        ("another document's token", page.sender.as_str(), stale_token.as_str()),
+        ("token not leading the envelope", page.sender.as_str(), reordered.as_str()),
+        ("not a string message", page.sender.as_str(), ""),
+    ] {
+        let before = page.bridge.stats().total.dropped_origin;
+        assert_eq!(page.post_from(source, body), Ingress::Dropped, "{row}");
+        assert_eq!(page.bridge.stats().total.dropped_origin, before + 1, "{row}");
+    }
+    page.bridge.set_visible(false);
+    assert_eq!(page.post_from(&page.sender.clone(), &subscribe), Ingress::Dropped, "hidden portal");
+    page.bridge.set_visible(true);
+    let heard = page.received.len();
+    page.pump();
+    assert_eq!(page.received.len(), heard, "no dropped post is ever answered");
+
+    // Check 3 on the authorized document: typed replies, never silence.
+    let missing_type = format!(r#"{{"v":1,"n":"{}","id":40}}"#, page.token);
+    assert_eq!(page.post_from(&page.sender.clone(), &missing_type), Ingress::Replied);
+    let oversized = envelope(&page.token, 41, "emit", json!({ "stream": "selection", "data": "x".repeat(70_000) }));
+    assert_eq!(page.post_from(&page.sender.clone(), &oversized), Ingress::Replied);
+    let unknown_key = envelope(&page.token, 42, "hello", json!({ "extra": 1 }));
+    assert_eq!(page.post_from(&page.sender.clone(), &unknown_key), Ingress::Accepted);
+    let wrong_type = envelope(&page.token, 43, "unsubscribe", json!({ "sub": "one" }));
+    assert_eq!(page.post_from(&page.sender.clone(), &wrong_type), Ingress::Accepted);
+    page.pump();
+    for id in [40, 41, 42, 43] {
+        assert_eq!(page.error(id), "invalid", "id {id}");
+    }
+    page.advance(2_000);
+    let burst: Vec<Ingress> = (0..60)
+        .map(|index| page.post_from(&page.sender.clone(), &envelope(&page.token, 100 + index, "hello", json!({}))))
+        .collect();
+    assert_eq!(burst.iter().filter(|outcome| **outcome == Ingress::Accepted).count(), 50, "burst of 50");
+    page.pump();
+    let limited = (100..160).filter(|id| page.reply(*id).is_some_and(|reply| reply["ok"] == json!(false))).count();
+    assert_eq!(limited, 10);
+    assert_eq!(page.error(159), "rate_limited");
+
+    // A reload starts a new document: the old token is dead and the page API mints a new one.
+    let old_token = page.token.clone();
+    page.reload();
+    page.pump();
+    let stale = envelope(&old_token, 200, "hello", json!({}));
+    assert_eq!(page.post_from(&page.sender.clone(), &stale), Ingress::Dropped, "stale document");
+    page.fetch_token();
+    assert_ne!(page.token, old_token);
+    let refill_attempt = envelope(&page.token, 201, "hello", json!({}));
+    assert_eq!(
+        page.post_from(&page.sender.clone(), &refill_attempt),
+        Ingress::Replied,
+        "budgets are per mount: a reload never refills them"
+    );
+    page.advance(1_000);
+    let fresh = page.send("hello", json!({}));
+    page.pump();
+    assert_eq!(page.ok(fresh)["api"], "fe.portal.v1");
+
+    // The same bytes unadmitted: a static origin, no page API, and its posts are dropped.
+    let resolver = Resolver { path: page.bundle.path.clone(), admit: None };
+    let static_mount = prepare(&resolver, "node-repo", u64::MAX).expect("static mount");
+    assert_eq!(static_mount.mode, MountMode::Static);
+    let static_label = static_mount.label.to_string();
+    let static_sender = static_mount.entry_url.clone();
+    page.mounts.install(static_mount);
+    assert_eq!(page.get_page_api(&static_label).status(), StatusCode::NOT_FOUND, "window.fe never exists");
+    let before = page.bridge.stats().total.dropped_origin;
+    assert_eq!(page.post_from(&static_sender, &envelope(&page.token, 300, "hello", json!({}))), Ingress::Dropped);
+    assert_eq!(page.bridge.stats().total.dropped_origin, before + 1);
+    page.pump();
+    assert!(page.broker.log().contains(&format!("close {BROKER_CLIENT}")), "unmounting the admitted build closes its client");
+}
+
+/// R9-R11: subscriptions stream without polling, actions are judged at use, bus traffic is declared-only.
+#[test]
+fn subscriptions_actions_and_bus_route_through_the_broker() {
+    let mut page = Page::open();
+
+    // R9: node changes — snapshot first, then deltas paced to 4 Hz with the last state winning.
+    let node = page.subscribe("node", json!({}));
+    page.pump();
+    let node_sub = page.ok(node)["sub"].as_u64().unwrap();
+    assert!(page.broker.log().contains(&"subscribe host/node-changes {}".to_owned()));
+    page.broker.push(1, DeliveryKind::Snapshot, json!({ "part": 0, "last": true, "nodes": [{ "node_id": NODE_A }] }));
+    page.pump();
+    for step in 0..100 {
+        let change = json!({ "op": "node_transform", "node_id": NODE_A, "petal_id": PETAL,
+                             "position": [step, 0, 0], "rotation": [0, 0, 0], "scale": [1, 1, 1] });
+        page.broker.push(1, DeliveryKind::Delta, json!({ "changes": [change] }));
+        page.pump();
+        page.advance(10);
+    }
+    page.advance(250);
+    page.pump();
+    let deliveries = page.deliveries(node_sub);
+    assert_eq!(deliveries[0]["kind"], "snapshot");
+    let deltas: Vec<&&Value> = deliveries.iter().filter(|delivery| delivery["kind"] == "delta").collect();
+    assert!(deltas.len() <= 5, "100 changes in 1 s → at most 5 deliveries, got {}", deltas.len());
+    let last = deltas.last().unwrap()["data"]["changes"].as_array().unwrap().last().unwrap().clone();
+    assert_eq!(last["position"][0], json!(99), "the last delivery equals the final state");
+    let seqs: Vec<u64> = deliveries.iter().map(|delivery| delivery["seq"].as_u64().unwrap()).collect();
+    assert_eq!(seqs, (0..seqs.len() as u64).collect::<Vec<_>>(), "seq starts at 0 and steps by 1");
+
+    // Idle for 60 s: no subscribe, call or write reaches the broker (no timer polling, QA-0125).
+    let traffic = page.broker.log().len();
+    for _ in 0..240 {
+        page.advance(250);
+        page.pump();
+    }
+    assert_eq!(page.broker.log().len(), traffic);
+
+    // Out of scope answers REST's not_found: another petal, or a node the petal's snapshot lacks.
+    let other_petal = page.subscribe("node", json!({ "petal_id": "01JOTHERPETAL0000000000000" }));
+    let missing = page.subscribe("node", json!({ "node_id": "01JMISSING0000000000000000" }));
+    page.pump();
+    assert_eq!(page.error(other_petal), "not_found");
+    assert!(page.reply(missing).is_none(), "scope is proven by the snapshot before the reply");
+    page.broker.push(2, DeliveryKind::Snapshot, json!({ "part": 0, "last": true, "nodes": [{ "node_id": NODE_A }] }));
+    page.pump();
+    assert_eq!(page.error(missing), "not_found");
+    assert!(page.broker.log().contains(&"unsubscribe 2".to_owned()));
+
+    // Readings and named queries: parameters map onto the bus; only declared queries with typed args.
+    let readings = page.subscribe("readings", json!({ "node_id": NODE_A }));
+    page.pump();
+    let readings_sub = page.ok(readings)["sub"].as_u64().unwrap();
+    assert_eq!(page.deliveries(readings_sub)[0]["data"], json!({ "readings": [] }), "an empty snapshot first");
+    assert!(page.broker.log().contains(&format!(r#"subscribe host/readings {{"anchors":["{NODE_A}"]}}"#)));
+    for (params, expected) in [
+        (json!({ "name": "adhoc" }), Some("capability_denied")),
+        (json!({ "name": "hourly_flow", "args": { "metric": 3 } }), Some("invalid")),
+        (json!({ "name": "hourly_flow", "args": {} }), Some("invalid")),
+        (json!({ "name": "hourly_flow", "args": { "metric": "flow" } }), None),
+    ] {
+        let id = page.subscribe("query", params.clone());
+        page.pump();
+        match expected {
+            Some(code) => assert_eq!(page.error(id), code, "{params}"),
+            None => assert!(page.ok(id)["sub"].is_u64(), "{params}"),
+        }
+    }
+    assert!(page
+        .broker
+        .log()
+        .contains(&r#"subscribe host/query {"query":"hourly_flow","vars":{"metric":"flow"}}"#.to_owned()));
+
+    // R11: a declared hook's events reach the page, coalesced into one delta.
+    let hook = page.subscribe("org.example.fleet-sim/positions", json!({}));
+    page.pump();
+    let hook_sub = page.ok(hook)["sub"].as_u64().unwrap();
+    let hook_broker_sub = page.broker.log().iter().filter(|line| line.starts_with("subscribe ")).count() as u64;
+    page.broker.push(hook_broker_sub, DeliveryKind::Delta, json!({ "count": 4 }));
+    page.pump();
+    assert_eq!(page.deliveries(hook_sub)[0]["data"], json!({ "events": [{ "count": 4 }] }));
+    let undeclared_hook = page.subscribe("org.example.other/feed", json!({}));
+    page.pump();
+    assert_eq!(page.error(undeclared_hook), "capability_denied");
+
+    // Sixteen live subscriptions, then too_many_subscriptions.
+    while page.bridge.stats().total.live_subscriptions < 16 {
+        let id = page.subscribe("org.example.fleet-sim/positions", json!({}));
+        page.pump();
+        assert!(page.ok(id)["sub"].is_u64());
+    }
+    let seventeenth = page.subscribe("readings", json!({}));
+    page.pump();
+    assert_eq!(page.error(seventeenth), "too_many_subscriptions");
+
+    // R10: set_property judged at use; undeclared and reserved keys never reach the write path.
+    page.advance(3_000);
+    for (key, expected) in [
+        ("fleet.speed", None),
+        ("console.note", Some("capability_denied")),
+        ("portal.bundle_asset", Some("capability_denied")),
+        ("node_kind", Some("capability_denied")),
+    ] {
+        let id = page.send("act", json!({ "op": "set_property", "node_id": NODE_A, "key": key, "value": 4 }));
+        page.pump();
+        match expected {
+            Some(code) => assert_eq!(page.error(id), code, "{key}"),
+            None => assert_eq!(page.ok(id), json!({ "node_id": NODE_A, "key": key })),
+        }
+        let wrote = page.broker.log().contains(&format!("set_property {NODE_A} {key}"));
+        assert_eq!(wrote, expected.is_none(), "{key}: only a declared key reaches the write path");
+    }
+    assert!(page.broker.audits().contains(&"act set_property:console.note capability_denied".to_owned()));
+    page.broker.set_write_outcome(Err(IpcError::RoleDenied));
+    page.advance(3_000);
+    let demoted = page.send("act", json!({ "op": "set_property", "node_id": NODE_A, "key": "fleet.speed", "value": 5 }));
+    page.pump();
+    assert_eq!(page.error(demoted), "role_denied", "a demoted identity is refused at write time");
+    page.broker.set_write_outcome(Ok(Value::Null));
+    page.advance(3_000);
+    let mut accepted = 0;
+    for _ in 0..20 {
+        let id = page.send("act", json!({ "op": "set_property", "node_id": NODE_A, "key": "fleet.speed", "value": 6 }));
+        page.pump();
+        if page.reply(id).is_some_and(|reply| reply["ok"] == json!(true)) {
+            accepted += 1;
+        } else {
+            assert_eq!(page.error(id), "rate_limited");
+        }
+        page.advance(50);
+    }
+    assert!((5..=7).contains(&accepted), "20 calls in 1 s → burst 5 plus refill, got {accepted}");
+
+    // R11: declared emit/invoke reach the broker; undeclared ones are refused before it.
+    for (kind, fields, expected) in [
+        ("emit", json!({ "stream": "selection", "data": { "node": NODE_A } }), Ok(json!({}))),
+        ("emit", json!({ "stream": "undeclared", "data": {} }), Err("capability_denied")),
+        ("invoke", json!({ "package": "org.example.fleet-sim", "command": "start", "args": {} }),
+         Ok(json!({ "result": { "started": 1 } }))),
+        ("invoke", json!({ "package": "org.example.fleet-sim", "command": "stop", "args": {} }), Err("capability_denied")),
+        ("intent", json!({ "intent": "focus_node", "node_id": NODE_A }), Ok(json!({}))),
+        ("intent", json!({ "intent": "select_node", "node_id": NODE_A }), Err("capability_denied")),
+    ] {
+        let id = page.send(kind, fields.clone());
+        page.pump();
+        match expected {
+            Ok(data) => assert_eq!(page.ok(id), data, "{kind} {fields}"),
+            Err(code) => assert_eq!(page.error(id), code, "{kind} {fields}"),
+        }
+    }
+    let log = page.broker.log();
+    assert!(log.contains(&"emit selection".to_owned()) && !log.contains(&"emit undeclared".to_owned()));
+    assert!(log.contains(&"invoke org.example.fleet-sim/start".to_owned()));
+    assert!(!log.contains(&"invoke org.example.fleet-sim/stop".to_owned()));
+    assert_eq!(
+        page.intents,
+        vec![PortalIntent {
+            intent: UiIntent::FocusNode,
+            node_id: NODE_A.into(),
+            petal_id: PETAL.into(),
+            package_id: PACKAGE.into()
+        }]
+    );
+    let stats = page.bridge.stats();
+    assert!(stats.total.refused_capability >= 6 && stats.total.refused_role >= 3 && stats.total.rate_limited >= 13);
+
+    // A reload ends every subscription at the broker; unmounting closes the client.
+    let unsubscribed = |log: &[String]| log.iter().filter(|line| line.starts_with("unsubscribe ")).count();
+    let before = unsubscribed(&page.broker.log());
+    page.reload();
+    page.pump();
+    assert_eq!(unsubscribed(&page.broker.log()), before + 16);
+    assert_eq!(page.bridge.stats().total.live_subscriptions, 0);
+    page.mounts.unmount();
+    page.pump();
+    assert_eq!(page.broker.log().last(), Some(&format!("close {BROKER_CLIENT}")));
+}

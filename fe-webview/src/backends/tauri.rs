@@ -8,7 +8,9 @@ use url::Url;
 use wry::{PageLoadEvent, WebView, WebViewBuilder};
 
 use crate::backend::{BackendEvent, WebViewBackend, WindowGeometry};
-use crate::portal_bundle::{self, BundleParts, BundleWebview, Decision, NavigationGate, PortalMounts};
+use crate::portal_bundle::{
+    self, BridgeWebview, BundleParts, BundleWebview, Decision, NavigationGate, PortalBridge, PortalMounts,
+};
 
 use super::win32_popup::webview_fill_rect;
 #[cfg(not(target_os = "windows"))]
@@ -30,8 +32,10 @@ pub struct TauriBackend {
     mounts: PortalMounts,
     /// Bundle navigation guard state, consulted first by both navigation layers.
     gate: Rc<NavigationGate>,
-    /// Windows with `ICoreWebView2_22` (spike P-1); otherwise bundles are Blocked.
+    /// Windows with `ICoreWebView2_22` (spike P-1) and a registered IPC handler; otherwise bundles are Blocked.
     bundles_supported: bool,
+    /// `fe.portal.v1` bridge, shared with the native message handler and the protocol workers.
+    bridge: PortalBridge,
     #[cfg(target_os = "windows")]
     popup_hwnd: isize,
     #[cfg(target_os = "windows")]
@@ -120,14 +124,25 @@ impl WebViewBackend for TauriBackend {
         let fixture_session = Rc::new(Cell::new(false));
         let guard_unusable = Rc::new(Cell::new(false));
         let load_guard_unusable = guard_unusable.clone();
-        #[cfg(target_os = "windows")]
-        let fixture_surface = super::fixture_surface::Surface::default();
         let mounts = PortalMounts::new();
         let gate = Rc::new(NavigationGate::new(mounts.clone()));
         let nav_gate = gate.clone();
         let download_gate = gate.clone();
         let protocol_mounts = mounts.clone();
         let protocol_workers = portal_bundle::protocol::ProtocolWorkers::start();
+        let bridge = PortalBridge::new();
+        let protocol_bridge = bridge.clone();
+        // The fixed `ipc-stats` QA operation reads host counters only, never page state (protocol.md §9).
+        #[cfg(target_os = "windows")]
+        let fixture_surface = {
+            let mut surface = super::fixture_surface::Surface::default();
+            let stats_bridge = bridge.clone();
+            surface.bind_portal(
+                mounts.clone(),
+                std::sync::Arc::new(move || stats_bridge.stats().to_json()),
+            );
+            surface
+        };
 
         // --- build wry WebView -------------------------------------------
 
@@ -147,13 +162,15 @@ impl WebViewBackend for TauriBackend {
                     }
                 }
             })
-            // Registered once: requests resolve against the shared mount table, off the main thread.
+            // Registered once: requests resolve against the shared mount table, off the main thread;
+            // `ipc::serve` adds the page API for Admitted mounts.
             .with_asynchronous_custom_protocol(
                 portal_bundle::SCHEME.to_owned(),
                 move |_webview_id, request, responder| {
                     let mounts = protocol_mounts.clone();
+                    let bridge = protocol_bridge.clone();
                     protocol_workers.submit(Box::new(move || {
-                        responder.respond(portal_bundle::protocol::serve(&mounts, &request));
+                        responder.respond(portal_bundle::ipc::serve(&mounts, &bridge, &request));
                     }));
                 },
             )
@@ -226,6 +243,7 @@ impl WebViewBackend for TauriBackend {
 
         // Spike P-1: without ICoreWebView2_22 wry falls back to a filter that misses worker
         // requests, which would then dial loopback; bundles stay Blocked on such runtimes.
+        // P-2: without the native IPC handler an Admitted bundle would render bridgeless, so Block too.
         #[cfg(target_os = "windows")]
         let bundles_supported = {
             use windows::core::Interface;
@@ -234,6 +252,12 @@ impl WebViewBackend for TauriBackend {
                 .webview()
                 .cast::<webview2_com::Microsoft::Web::WebView2::Win32::ICoreWebView2_22>()
                 .is_ok()
+        } && match install_ipc_handler(&webview, mounts.clone(), bridge.clone()) {
+            Ok(()) => true,
+            Err(error) => {
+                tracing::error!("TauriBackend: {error:#}; portal bundles are disabled");
+                false
+            }
         };
 
         #[cfg(not(target_os = "windows"))]
@@ -260,6 +284,7 @@ impl WebViewBackend for TauriBackend {
             mounts,
             gate,
             bundles_supported,
+            bridge,
             #[cfg(target_os = "windows")]
             popup_hwnd,
             #[cfg(target_os = "windows")]
@@ -329,11 +354,14 @@ impl WebViewBackend for TauriBackend {
                 .map_err(|e| anyhow::anyhow!("TauriBackend: set_visible(true) failed: {e}"))?;
             self.visible = true;
         }
+        self.bridge.set_visible(true);
         Ok(())
     }
 
     fn hide(&mut self) -> anyhow::Result<()> {
         self.ensure_usable()?;
+        // IPC check 2 fails from here on, before the surface goes.
+        self.bridge.set_visible(false);
         #[cfg(target_os = "windows")]
         self.fixture_surface.clock.bump();
         if self.visible {
@@ -370,6 +398,8 @@ impl WebViewBackend for TauriBackend {
         self.fixture_surface.clock.bump();
         // No byte of a bundle is served once its webview is gone; unmount also bumps the generation.
         self.mounts.unmount();
+        // The broker client closes now, not on some later frame that may never run.
+        self.bridge.shutdown();
         if self.alive {
             self.alive = false;
             #[cfg(target_os = "windows")]
@@ -381,6 +411,7 @@ impl WebViewBackend for TauriBackend {
         if self.guard_unusable.get() {
             self.current_url = None;
             self.visible = false;
+            self.bridge.set_visible(false);
             #[cfg(target_os = "windows")]
             win32::hide(self.popup_hwnd);
             return std::mem::take(&mut *self.events.borrow_mut())
@@ -515,6 +546,67 @@ impl BundleWebview for TauriBackend {
     fn bundle_hide(&mut self) -> anyhow::Result<()> {
         WebViewBackend::hide(self)
     }
+}
+
+impl BridgeWebview for TauriBackend {
+    fn portal_bridge(&self) -> Option<&PortalBridge> {
+        Some(&self.bridge)
+    }
+
+    /// Host → page (OD-2): `PostWebMessageAsJson` to the top-level document; the caller already ran the send-time gate.
+    fn post_page_message(&self, json: &str) -> anyhow::Result<()> {
+        anyhow::ensure!(self.is_alive(), "the portal webview is gone");
+        #[cfg(target_os = "windows")]
+        {
+            use wry::WebViewExtWindows;
+            // SAFETY: called on the UI thread that owns the webview; the HSTRING outlives the call.
+            unsafe {
+                self.webview
+                    .webview()
+                    .PostWebMessageAsJson(&windows::core::HSTRING::from(json))
+            }
+            .map_err(|error| anyhow::anyhow!("PostWebMessageAsJson failed: {error}"))
+        }
+        #[cfg(not(target_os = "windows"))]
+        {
+            let _ = json;
+            anyhow::bail!("host-to-page delivery is Windows-only in wave 1 (OD-10)")
+        }
+    }
+}
+
+/// Page → host (P-2): a native `WebMessageReceived` handler; wry's `with_ipc_handler` is never registered (SP-9).
+#[cfg(target_os = "windows")]
+fn install_ipc_handler(webview: &WebView, mounts: PortalMounts, bridge: PortalBridge) -> anyhow::Result<()> {
+    use webview2_com::WebMessageReceivedEventHandler;
+    use windows::core::PWSTR;
+    use wry::WebViewExtWindows;
+
+    let native = webview.webview();
+    let handler = WebMessageReceivedEventHandler::create(Box::new(move |_, args| {
+        let Some(args) = args else { return Ok(()) };
+        let mut source = PWSTR::null();
+        // SAFETY: WebView2 fills `source` with a CoTaskMem string; take_pwstr frees it.
+        if unsafe { args.Source(&mut source) }.is_err() {
+            bridge.ingress(&mounts, "", "", std::time::Instant::now());
+            return Ok(());
+        }
+        let source = webview2_com::take_pwstr(source);
+        let mut raw_body = PWSTR::null();
+        // A non-string message (postMessage of an object) is never the page API's shape: judge it as empty.
+        // SAFETY: as above.
+        let body = if unsafe { args.TryGetWebMessageAsString(&mut raw_body) }.is_ok() {
+            webview2_com::take_pwstr(raw_body)
+        } else {
+            String::new()
+        };
+        bridge.ingress(&mounts, &source, &body, std::time::Instant::now());
+        Ok(())
+    }));
+    let mut token = 0i64;
+    // SAFETY: registered on the UI thread that owns the webview; the handler lives as long as it does.
+    unsafe { native.add_WebMessageReceived(&handler, &mut token) }
+        .map_err(|error| anyhow::anyhow!("portal IPC handler registration failed: {error}"))
 }
 
 impl Drop for TauriBackend {

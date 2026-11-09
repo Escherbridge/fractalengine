@@ -3,7 +3,7 @@ use std::sync::Arc;
 use crate::backend::{BackendEvent, WebViewBackend, WindowGeometry};
 use crate::backends::ActiveBackend;
 use crate::ipc::{BrowserCommand, BrowserEvent, BundleState};
-use crate::portal_bundle::{BundleHost, BundleResolver, BundleWebview};
+use crate::portal_bundle::{BridgeWebview, BundleHost, BundleResolver, BundleWebview, PortalBroker, PortalIntent};
 use crate::security;
 use bevy::prelude::IntoScheduleConfigs;
 
@@ -25,16 +25,23 @@ pub const TRUST_BAR_JS: &str = r#"
 #[derive(bevy::prelude::Resource, Clone)]
 pub struct PortalBundleResolver(pub Arc<dyn BundleResolver>);
 
+/// Binary-injected integration-bus client for Admitted bundles; without it every bridge call but `hello` is `unavailable`.
+#[derive(bevy::prelude::Resource, Clone)]
+pub struct PortalBrokerRes(pub Arc<dyn PortalBroker>);
+
 pub struct WebViewPlugin;
 
 impl bevy::prelude::Plugin for WebViewPlugin {
     fn build(&self, app: &mut bevy::prelude::App) {
         app.add_message::<BrowserCommand>();
         app.add_message::<BrowserEvent>();
+        app.add_message::<PortalIntent>();
         app.init_resource::<PortalPanelRect>();
         app.add_systems(bevy::prelude::Update, init_backend);
         app.add_systems(bevy::prelude::Update, dispatch_commands);
         app.add_systems(bevy::prelude::Update, drain_backend_events);
+        // After the frame's mounts settle, so a new mount binds before its first post can arrive.
+        app.add_systems(bevy::prelude::Update, pump_portal_ipc.after(drain_backend_events));
         app.add_systems(bevy::prelude::PostUpdate, sync_portal_position.run_if(fe_runtime::maintenance::editor_running));
     }
 }
@@ -431,6 +438,30 @@ fn drain_backend_events(
     if let Some(host) = bundles.as_mut() {
         for event in host.poll(&mut *backend) {
             events.write(event);
+        }
+    }
+}
+
+/// Per frame: route the bridge's accepted posts, collect broker results, then post what passes the send-time gate.
+fn pump_portal_ipc(
+    backend_res: Option<bevy::ecs::system::NonSend<WebViewBackendRes>>,
+    broker: Option<bevy::prelude::Res<PortalBrokerRes>>,
+    mut intents: bevy::prelude::MessageWriter<PortalIntent>,
+) {
+    let Some(res) = backend_res else { return };
+    let (Some(backend), Some(host)) = (res.backend.as_ref(), res.bundles.as_ref()) else {
+        return;
+    };
+    let Some(bridge) = backend.portal_bridge() else { return };
+    let mounts = host.mounts();
+    let broker = broker.as_ref().map(|broker| &broker.0);
+    for intent in bridge.pump(mounts, broker, std::time::Instant::now()) {
+        intents.write(intent);
+    }
+    for envelope in bridge.take_outbox(mounts) {
+        if let Err(error) = backend.post_page_message(&envelope) {
+            bevy::log::warn!("Portal: IPC delivery failed: {error:#}");
+            break;
         }
     }
 }

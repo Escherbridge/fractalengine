@@ -1,11 +1,17 @@
-//! Signed web bundles in the Petal Portal: origins, mounts, `fe-portal` protocol, CSP and navigation; see `AGENTS.md` here.
+//! Signed web bundles in the Petal Portal: origins, mounts, `fe-portal` protocol, CSP, navigation and the IPC bridge; see `AGENTS.md` here.
 
 pub mod csp;
+pub mod ipc;
+pub mod limits;
 pub mod mount;
 pub mod navigation;
 pub mod origin;
 pub mod protocol;
 
+pub use ipc::{
+    BindRequest, BridgeWebview, BrokerClient, BrokerEvent, DeliveryKind, Ingress, IpcCounters, IpcError, IpcStats,
+    PendingReply, PortalBridge, PortalBroker, PortalIntent, UiIntent,
+};
 pub use mount::{
     bundle_max_bytes, prepare, AdmissionVerdict, BundleHost, BundleIdentity, BundleParts, BundleResolver,
     BundleSource, BundleWebview, Mount, MountMode, PortalMounts,
@@ -16,9 +22,16 @@ pub use origin::{Label, LabelKind, SCHEME};
 /// The external-browser fallback has no embedded surface: every Open reports Unavailable.
 impl BundleWebview for crate::backends::stub::StubBackend {}
 
+/// No embedded surface, so no bridge.
+impl BridgeWebview for crate::backends::stub::StubBackend {}
+
 /// The unfinished Servo backend renders no bundles.
 #[cfg(feature = "backend-servo")]
 impl BundleWebview for crate::backends::servo::ServoBackend {}
+
+/// The unfinished Servo backend has no bridge.
+#[cfg(feature = "backend-servo")]
+impl BridgeWebview for crate::backends::servo::ServoBackend {}
 
 /// Real fixture archives for in-crate tests (the integration journey keeps its own builder).
 #[cfg(test)]
