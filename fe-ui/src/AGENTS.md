@@ -1559,3 +1559,15 @@ and native_accessibility/AGENTS.md for the separately audited painter contract.
 `GardenerConsolePlugin`. fe-ui never registers extensions itself (no fe-terrain dependency); the binary
 fills it at Startup when the plugin host is enabled (`fractalengine/src/AGENTS.md` §plugin-host). Panels that
 render contributions should read `UiExtensions.0.get_by_slot(..)`; none do yet (consent UX is S3).
+
+## §plugin-consent (plugin_host_revival_20261031 S3)
+
+`panels/plugin_install_panel.rs` is the capability-consent modal. The installing host calls
+`PluginInstallState::request_install(PluginInstallRequest)` (a plain copy of the manifest fields; fe-ui
+has no fe-plugin dependency) and later drains `take_decision()` -> `Approved(id)` / `Declined(id)`.
+Install is enabled only once the verse/petal/property/capability/network list has been drawn for a full
+frame (`manifest_rendered`), and never when the manifest asks for network access v1 cannot grant
+(`requests_network`; mirrors OD-1 in `fe-plugin`). Empty scope lists render "None" (fail closed).
+The window is drawn by `plugin::plugin_install_dialog_system`, a standalone `EguiPrimaryContextPass`
+system after `gardener_ui_system`, so `gardener_console`'s signature is untouched. Wiring the request
+from the registry/package flow is S4's job.

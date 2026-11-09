@@ -894,6 +894,7 @@ impl Plugin for GardenerConsolePlugin {
             crate::ui_shell::right_sidebar::update_residency_readout,
         );
         app.init_resource::<UiExtensions>();
+        app.init_resource::<crate::panels::plugin_install_panel::PluginInstallState>();
         app.init_resource::<SidebarState>();
         app.init_resource::<crate::native_accessibility::navigation_ui::NavigationReads>();
         app.init_resource::<ToolState>();
@@ -1045,6 +1046,7 @@ impl Plugin for GardenerConsolePlugin {
             ).run_if(fe_runtime::maintenance::editor_running),
         );
         app.add_systems(EguiPrimaryContextPass, gardener_ui_system.in_set(GardenerUiSet::GeometryReady));
+        app.add_systems(EguiPrimaryContextPass, plugin_install_dialog_system.after(gardener_ui_system));
         // The title bar's window request (move/resize/min/max/close) applies
         // the same frame it was raised — ui_shell/AGENTS.md §window-chrome.
         app.add_systems(
@@ -1437,6 +1439,18 @@ fn apply_camera_focus(
                 5.0_f32.clamp(controller.min_distance, controller.max_distance);
         }
     }
+}
+
+/// Draws the plugin install consent modal while a request is pending.
+fn plugin_install_dialog_system(
+    mut ctx: EguiContexts,
+    mut state: ResMut<crate::panels::plugin_install_panel::PluginInstallState>,
+) {
+    if state.pending().is_none() {
+        return;
+    }
+    let Ok(ectx) = ctx.ctx_mut() else { return };
+    crate::panels::plugin_install_panel::render(ectx, &mut state);
 }
 
 /// Projects the cursor position onto the Y=0 world plane each frame.
