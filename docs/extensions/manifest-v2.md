@@ -21,6 +21,8 @@ not declare, the consent dialog renders exactly what it declares, and the verse 
   [`device-adapter`](../../fe-sdk/schema/examples/device-adapter.extension.json) (ingress, egress,
   commands), [`bi-push`](../../fe-sdk/schema/examples/bi-push.extension.json) (a `host/query` consumer).
 - **Contract it binds to.** [`fe-plugin/wit/fractal-plugin-2.wit`](../../fe-plugin/wit/fractal-plugin-2.wit).
+- **Where it can serve.** [`provides`](#provides--hook-points-bindingsmd) names the hook points a
+  scoped binding may select this extension for ([bindings.md](bindings.md)).
 
 ## Grant rules
 
@@ -34,7 +36,9 @@ not declare, the consent dialog renders exactly what it declares, and the verse 
 4. **Patterns** in `property_scope`: an exact key (`fleet.status`), a prefix ending in `*`
    (`fleet.*`), or `*` alone. Nothing else is a pattern.
 5. **Everything is per binding.** An instance is one installation bound to one petal (OD-E3);
-   every grant is confined to that petal.
+   every grant is confined to that petal. Scoped bindings ([bindings.md](bindings.md)) only choose
+   which installed extension serves a hook point at a verse, fractal or petal; each covered petal
+   still gets its own instance, so no grant ever reaches past one petal.
 
 ## Field reference
 
@@ -167,6 +171,34 @@ admits only the fields in its row (plus `id`, `slot`, `label`, `icon`); any othe
 never silently ignored. The command a slot calls must accept the args that slot sends (`{}`, or
 `{"node_id": "<ULID>"}` for `ContextMenu`), else `scope-conflict` (V13).
 
+### `provides` — hook points ([bindings.md](bindings.md))
+
+`provides[]` lists the hook points this extension can serve when a scoped binding selects it.
+
+- **Absent:** the extension serves no hook point. Only a local bind runs it (governance §Consent).
+- **When a binding takes effect.** A binding naming this package takes effect on a peer only if
+  all four hold ([bindings.md](bindings.md) §5, §7.1):
+  - the installed build provides the binding's hook, and its key;
+  - the hook's needs are declared here;
+  - consent covers this digest;
+  - the peer has accepted the installation for the verse.
+
+| Field | Required | Meaning |
+|---|---|---|
+| `hook` | yes | A catalogue id, `<family>.<point>` ([bindings.md](bindings.md) §6): `petal.activate`, `petal.map`, `api.routes`, `scene.create`, `scene.transform`, `scene.property`, `ingest.decode`, `ui.panel`, `egress.connector`, `egress.snippet`, `asset.import`, `blob.mirror`, `blob.source` or `sync.tileset-source` in 2.0. Any other id, or a stretch hook this host does not serve, is `unknown-hook` (V17). |
+| `keys` | no | Keyed hooks only. The binding keys served: an exact key (a device format id, a lowercase MIME type, a name), a prefix ending in `*`, or `*`. Absent means any key. It is a scope list (Grant rule 2), so an empty one is `empty-scope` (V4). |
+| `uses` | per hook | The ids of this manifest's entries the hook runs through (`api.routes` and the egress-backed hooks need at least one). It is a declaration list. <ul><li>`api.routes`: `http-server` or `websocket-accept` ingress ids.</li><li>`ui.panel`: `ui` ids.</li><li>`egress.connector`, `blob.mirror`, `blob.source`, `sync.tileset-source`: `egress` ids, plus named `host/query` ids for `egress.connector`.</li></ul> |
+| `config_schema` | no | JSON Schema for the binding's `config`, in the `args_schema` subset of [bus.md](bus.md#4-commands). It must be ≤ 4 KiB; outside the subset it is `schema` (V1). Absent: the binding's `config` must be `{}`. Each resolving peer validates the binding's config against its own installed build. |
+
+- **Providing a hook grants nothing by itself.** Every hook call runs under this manifest's
+  grants, in the instance's own petal. `provides` stays in the capability digest (every member
+  that grants does), so adding or changing a hook re-prompts.
+- **Web bundles.** A `kind: web-bundle` package is bound to `portal.open` without `provides`; the
+  portal contract owns its manifest.
+- **The hooks export.** A component whose manifest declares `provides` must export the hook-call
+  interface that [bindings.md](bindings.md) §7.3 proposes, once the WIT carries it. Otherwise the
+  install is refused `missing-export` ([package-format.md](package-format.md#component-checks-at-install)).
+
 ## Validation
 
 Every row is refused with its own reason; the first failing row in table order is reported.
@@ -177,7 +209,7 @@ Every row is refused with its own reason; the first failing row in table order i
 | V1 | The JSON Schema fails (unknown field, type, pattern, bound, an endpoint URL scheme that does not match its transport, a UI field its slot does not render), or an `args_schema` leaves the subset in bus.md or exceeds 4 KiB | `schema` |
 | V2 | `contract` is not `fractalengine:plugin@2.x.y`, or names a 2.x minor newer than the host binds | `unsupported-contract` |
 | V3 | `kind` is `web-bundle`, or a `portal` section appears with any other kind | `reserved-kind` |
-| V4 | A scope list is present and empty: `scene.write`, `scene.property_scope`, `readings.metrics`, an endpoint's `methods`, `topics`, `content_types` or `forward_headers`, a stream's `consumers`, a consume entry's `metrics`, `bus.call` | `empty-scope` |
+| V4 | A scope list is present and empty: `scene.write`, `scene.property_scope`, `readings.metrics`, an endpoint's `methods`, `topics`, `content_types` or `forward_headers`, a stream's `consumers`, a consume entry's `metrics`, `bus.call`, a `provides` entry's `keys` | `empty-scope` |
 | V5 | An `http`, `ws` or `mqtt` URL to a non-loopback host, or any endpoint URL with userinfo, a query or a fragment | `insecure-endpoint` |
 | V6 | `tick.cadence_ms` below the host floor (100) | `cadence-below-floor` |
 | V7 | `scene.write` or `readings` declared without `tick` | `cadence-required` |
@@ -187,9 +219,11 @@ Every row is refused with its own reason; the first failing row in table order i
 | V11 | A `consume` source `host/<x>` outside {`query`, `readings`, `node-changes`, `admission`}, or the same source consumed twice (named queries count by `id`) | `unknown-source` |
 | V12 | A named `host/query` SQL that fails the static guard (`fe_query::sql_guard`, query mode) | `invalid-query` |
 | V13 | Scope conflicts: `InspectorSection` keys outside `property_scope`; `InspectorSection` or `host/node-changes` without `scene.read`; `set_property` without `property_scope`; `auth.scheme: header` without `header`; a UI `command` whose `args_schema` refuses the args its slot sends (`{}`; `ContextMenu`: `{"node_id": "<ULID>"}`) | `scope-conflict` |
-| V14 | Duplicate `id` across `ingress` + `egress`, within streams, commands, `ui`, or named queries | `duplicate-id` |
+| V14 | Duplicate `id` across `ingress` + `egress`, within streams, commands, `ui`, or named queries; or the same `hook` twice in `provides` | `duplicate-id` |
 | V15 | A number above the host ceiling (`fuel`, sizes, rates, connections, timeouts) | `over-host-ceiling` |
 | V16 | An `http-server` endpoint's `forward_headers` names a credential header: `authorization`, `proxy-authorization`, `cookie`, `set-cookie`, `x-api-key`, or any host-authenticating header (`x-fe-join-lease`, any `x-fe-*`); the list is the `not` rule on `forward_headers` items in the schema | `credential-header` |
+| V17 | A `provides[].hook` outside the hook catalogue of the contract the manifest names, or a stretch hook this host does not serve ([bindings.md](bindings.md) §6) | `unknown-hook` |
+| V18 | A provided hook whose needs are not declared ([bindings.md](bindings.md) §6 "Needs"): <ul><li>`keys` on a keyless hook;</li><li>a `uses` id that names no entry of the kind the hook needs;</li><li>`api.routes`, `ui.panel` or an egress-backed hook with no `uses`;</li><li>`ingest.decode` without `readings` and `tick`;</li><li>`scene.*` without `scene.read`;</li><li>`asset.import` without `keys`;</li><li>`egress.connector` without a `host/query` or `host/readings` consume.</li></ul> | `hook-capability-missing` |
 
 ### Journey J2 (P1.3 swaps `capability.rs::parse_manifest_defaults` and `::validate_property_access_allowed` into this table)
 
@@ -205,6 +239,8 @@ Start from the fleet-sim example and change one thing per row:
 | simulation as device | `readings.source_class: "device"` | `source-class-mismatch` |
 | undeclared UI command | first `ui` entry `command: "launch"` | `undeclared-command` |
 | undeclared consumed stream | `bus.consume` += `{"source":"org.example.fleet-sim/tracks"}` | `undeclared-stream` |
+| unknown hook | `provides: [{"hook":"petal.teleport"}]` | `unknown-hook` |
+| hook without its capability | `provides: [{"hook":"api.routes","uses":["start"]}]` (`start` names a command and a UI entry, not an ingress endpoint) | `hook-capability-missing` |
 
 ## Capability digest
 

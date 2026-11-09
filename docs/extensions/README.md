@@ -27,6 +27,7 @@ Reference contracts (normative; the guides above explain them, they do not repla
 | Integration bus | [bus.md](bus.md) | Streams, commands, hooks, delivery and limits |
 | Package format | [package-format.md](package-format.md) | Sealed members, identity, signatures |
 | Governance | [governance.md](governance.md) | Consent, trust roots, policy, kill switches, audit |
+| Scoped bindings | [bindings.md](bindings.md) | Which installed extension serves a hook point at a verse, fractal or petal, resolved per peer |
 
 ## Kinds
 

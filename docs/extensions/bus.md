@@ -407,3 +407,36 @@ With a fake query source, a fake scene feed and a fake readings feed:
 - **Rates (2026-11-08, G0):** remote DIDs are rate-limited before any lookup (§4 check 0), so a
   flood of denied calls cannot become a flood of audit appends on the DB thread (spec §4.10); the
   local DID's command budget is split per caller so an extension cannot starve the UI.
+
+## 12. Scoped bindings and hooks
+
+Two terms share a word.
+- **Bus hooks** are the guest exports the broker delivers into: `bus-hooks`, `ingress-hooks`,
+  `egress-hooks`, and the proposed `hooks.on-hook`.
+- **A hook point** is a built-in seam an extension can serve: a petal's map, a petal's extra API
+  routes, a device format's decoder ([bindings.md](bindings.md) §6).
+
+How they meet:
+
+- **Bindings choose; the broker routes.**
+  - A binding is a replicated row at a verse, fractal or petal. It selects WHICH installed
+    extension serves a hook point at that scope, nearest scope first.
+  - Each peer resolves it for itself ([bindings.md](bindings.md) §5) into one instance per
+    covered petal. Its broker routes that hook point's calls to the instance it resolved.
+  - Peers may resolve the same binding differently: installed or not, policy, kill list. The bus
+    never forwards a hook call to another peer.
+- **Addressing is unchanged.**
+  - An instance is still `(petal_id, package_id)` (§1). A fractal or verse binding starts one
+    instance per covered petal; it never makes one instance see a wider scope.
+  - A binding-started instance has exactly the streams, commands, subscriptions and limits of a
+    locally bound one. It is the same instance as a local bind of that package at that petal.
+- **Hook-point calls are not bus traffic.**
+  - They publish nothing, hold no subscription and take no command slot.
+  - They share the instance's worker, its per-call fuel refill and its fault counting.
+  - Extension status counts them under `hooks.*`, not `bus.*`.
+- **Admission events still describe packages.** `host/admission` (§2.4) is unchanged. A binding's
+  per-peer state is reported through the bindings surfaces ([bindings.md](bindings.md) §9), not
+  on the bus; a `host/bindings` source is open question OQ-B8.
+- **External access.** A bound API route (`/api/v1/petals/{petal_id}/apis/{key}/…`) is an alias of
+  the package's ingress mount (§8; [manifest-v2.md](manifest-v2.md#ingress--endpoints-that-receive-traffic-spec-r8)).
+  It has the same auth, floors and rates, and the same host-side credential-header strip.
