@@ -7,7 +7,8 @@ use std::path::Path;
 use std::sync::Arc;
 
 use fe_format::{AssetEntry, EntryKind, HexonArchive, HexonManifest, HexonType, License};
-use fe_hexon::remote::RemoteRegistryClient;
+use fe_hexon::registry_source::{RegistryError, RegistrySource, SourceTrust};
+use fe_hexon::remote::{remote_source, RemoteRegistryClient};
 use fe_hexon_registry::{build_router, scan_dir, RegistryState};
 
 const ALPINE_V12_BLOB: &[u8] = b"alpine tile data v1.2.0 (newer)";
@@ -177,6 +178,22 @@ async fn search_download_verify_roundtrip() {
 
     // Missing package surfaces a registry error.
     assert!(client.manifest("no-such-hexon").await.is_err());
+
+    // Through the RegistrySource trait: a registry that does not advertise protocol v1 is refused
+    // before any listing or download, and the refusal is the distinct typed one (fail closed).
+    let base = format!("http://{addr}");
+    let refusal = tokio::task::spawn_blocking(move || {
+        let trust = SourceTrust {
+            is_trust_root: Arc::new(|_| false),
+            index_signer: Arc::new(|_| None),
+            allow_unsigned_dev: false,
+        };
+        let source = remote_source("test registry", base, None, trust).unwrap();
+        source.list(Some("alpine"))
+    })
+    .await
+    .unwrap();
+    assert_eq!(refusal.unwrap_err(), RegistryError::ProtocolMismatch { found: None });
 }
 
 #[tokio::test]

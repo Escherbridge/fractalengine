@@ -227,3 +227,10 @@ transport crate (plan §3.5, assumption A1).
   stacks; chunks 0 and 2 never reach the fetcher's store), and the reseed
   test above. fe-sync and iroh are dev-dependencies only, for the loopback
   and seeding tests.
+
+## §registry-source-remote (EXT E16, feature `remote`)
+
+- The hosted-registry client sits behind `registry_source::RegistrySource`: `remote::remote_source(label, base_url, token, trust)` builds a `ProtocolV1Source` over `RemoteProtocolV1Transport` (sync facade on a private current-thread runtime; call from a worker thread only, never inside async code). The Hexon Manager and Browse use this source instead of calling `RemoteRegistryClient` directly; the async client stays for the partial-fetch path.
+- Protocol probe: `X-Hexon-Registry-Protocol` header, else `/health` body `protocol_version`. A registry advertising neither is refused with `ProtocolMismatch` before any list/download (fail closed).
+- Every download goes through `verify_fetched`: seal and trust roots, expected package id (so a mirror cannot serve a revoked package under a new id), listed version, listed `content_hash` (BLAKE3 of the manifest with the signature blanked). `entry.url` is only a registry uri (`id[@version]`, plain characters); anything else is refused, and credentials are only the operator's registry token, never sent to a url a catalogue doc names.
+- Open: the registry's search summary does not yet carry `content_hash`, so listed hashes are empty and `fetch` fails closed with `ContentHashMismatch` until the registry serves it (see findings in the E16 return).
