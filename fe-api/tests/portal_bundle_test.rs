@@ -288,6 +288,13 @@ async fn bundle_upload_lists_members_and_keeps_the_raw_blob_an_attachment() {
         summary_admission(&h, &local, &asset_id).await,
         Some(json!({ "state": "revoked", "reason": "revocation_list" }))
     );
+    // A kill-listed build is not exported to render elsewhere (static-export.md §2): 409 revoked, no bytes.
+    let listed = seed_repository(&h, &petal, &asset_id, None).await;
+    let (status, _, got) =
+        fetch(&h, &viewer, &format!("/api/v1/nodes/{listed}/portal/export.zip")).await;
+    assert_eq!(status, StatusCode::CONFLICT);
+    let refused: Value = serde_json::from_slice(&got).expect("refusal json");
+    assert_eq!(refused["error"], "revoked", "{refused}");
     for (row, token) in [
         ("a node-level token: every accepted token's sub is this node", viewer.clone()),
         ("another API client", h.mint_client_token(&scope, "viewer", &fe_identity::new_client_did())),
@@ -407,4 +414,112 @@ async fn repository_node_lists_by_kind_and_carries_the_bundle_reference() {
     assert_eq!(rows.len(), 1, "{listed}");
     assert_eq!(rows[0]["node_id"], node.as_str());
     assert_eq!(rows[0]["properties"]["portal.bundle_asset"], asset_id.as_str());
+}
+
+/// Seed a repository node over `asset_id`, with optional `portal.feeds`.
+async fn seed_repository(h: &ApiHarness, petal: &str, asset_id: &str, feeds: Option<Value>) -> String {
+    let mut properties = json!({ "node_kind": "repository", "portal.bundle_asset": asset_id });
+    if let Some(feeds) = feeds {
+        properties["portal.feeds"] = feeds;
+    }
+    h.seed_node(petal, "Pump docs", [0.0, 0.0, 0.0], Some(properties))
+        .await
+        .expect("repository node")
+}
+
+/// Static export (static-export.md, R17): a viewer downloads the web members at the archive root plus
+/// `fe-portal.json` and `__fe/feeds.json`; only reachable https share feeds survive; no page API ships;
+/// nodes that are not exportable repositories answer the uniform 404.
+#[tokio::test]
+async fn static_export_ships_members_and_reachable_feeds_without_a_page_api() {
+    use base64::engine::general_purpose::URL_SAFE_NO_PAD;
+    use base64::Engine as _;
+
+    let h = ApiHarness::spawn().await.expect("spawn harness");
+    serve_create_asset(&h);
+    let (petal, editor, viewer, _) = seed_petal_with_tokens(&h).await;
+    let outsider_verse = h.seed_verse("Other Verse").await.expect("verse");
+    let outsider = h.mint_token(&fe_database::build_scope(&outsider_verse, None, None), "viewer");
+
+    // A distinct build, so a process-wide kill list set by another journey never names it.
+    let bytes = unsealed_bundle(
+        &[
+            ("web/index.html", b"<!doctype html><title>dash</title>"),
+            ("web/js/app.js", b"fetch('x')"),
+        ],
+        &extension_json(None),
+    );
+    let (status, body) = upload_bundle(&h, &editor, &petal, &bytes).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let asset_id = body["data"]["asset_id"].as_str().expect("asset_id").to_string();
+
+    let token = format!("{}.c2ln", URL_SAFE_NO_PAD.encode(br#"{"exp":1900000000}"#));
+    let node = seed_repository(
+        &h,
+        &petal,
+        &asset_id,
+        Some(json!({
+            "flow": format!("https://relay.example.net/api/v1/shared/{token}"),
+            "local": format!("http://127.0.0.1:8765/api/v1/shared/{token}"),
+            "Bad Name": format!("https://relay.example.net/api/v1/shared/{token}"),
+        })),
+    )
+    .await;
+
+    let (status, headers, got) =
+        fetch(&h, &viewer, &format!("/api/v1/nodes/{node}/portal/export.zip")).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(headers.get("content-type").unwrap(), "application/zip");
+    assert_eq!(headers.get("x-content-type-options").unwrap(), "nosniff");
+    assert_eq!(
+        headers.get("content-disposition").unwrap(),
+        "attachment; filename=\"org.example.pump-docs-1.0.0.zip\""
+    );
+
+    let mut archive = zip::ZipArchive::new(std::io::Cursor::new(got)).expect("export is a zip");
+    let mut names: Vec<String> = archive.file_names().map(str::to_string).collect();
+    names.sort();
+    assert_eq!(
+        names,
+        ["__fe/feeds.json", "fe-portal.json", "index.html", "js/app.js"],
+        "web/ prefix stripped, no __fe/portal-v1.js"
+    );
+    let mut read = |name: &str| -> Value {
+        let mut text = String::new();
+        std::io::Read::read_to_string(&mut archive.by_name(name).expect("member"), &mut text).expect("utf8");
+        serde_json::from_str(&text).unwrap_or(Value::String(text))
+    };
+    let descriptor = read("fe-portal.json");
+    assert_eq!(descriptor["schema"], "fe-portal-export/1");
+    assert_eq!(descriptor["entry"], "index.html");
+    assert_eq!(descriptor["publisher_did"], Value::Null, "unsealed build");
+    assert_eq!(descriptor["feeds_dropped"], json!(["Bad Name", "local"]));
+    let csp = descriptor["csp"].as_str().expect("csp");
+    assert!(
+        csp.contains("connect-src 'self' https://relay.example.net/api/v1/shared/;"),
+        "{csp}"
+    );
+    let feeds = read("__fe/feeds.json");
+    assert_eq!(
+        feeds,
+        json!({ "v": 1, "feeds": { "flow": {
+            "url": format!("https://relay.example.net/api/v1/shared/{token}"),
+            "expires_at": "2030-03-17T17:46:40Z",
+        } } })
+    );
+
+    // Denials collapse to the uniform 404: a plain node, an unknown id, a foreign scope.
+    let plain = h
+        .seed_node(&petal, "Plain", [0.0, 0.0, 0.0], None)
+        .await
+        .expect("plain node");
+    let unknown = ulid::Ulid::new().to_string();
+    for (row, token, id) in [
+        ("not a repository node", &viewer, plain.as_str()),
+        ("unknown node", &viewer, unknown.as_str()),
+        ("foreign scope", &outsider, node.as_str()),
+    ] {
+        let (status, _, _) = fetch(&h, token, &format!("/api/v1/nodes/{id}/portal/export.zip")).await;
+        assert_eq!(status, StatusCode::NOT_FOUND, "{row}");
+    }
 }

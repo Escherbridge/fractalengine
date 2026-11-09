@@ -677,6 +677,397 @@ pub async fn get_portal_bundle(
     Json(ApiResponse::success(Value::Object(fields))).into_response()
 }
 
+// ---------------------------------------------------------------------------
+// GET /api/v1/nodes/{node_id}/portal/export.zip (static-export.md, R17)
+// ---------------------------------------------------------------------------
+
+/// `fe-portal.json` schema tag (static-export.md §3).
+const EXPORT_SCHEMA: &str = "fe-portal-export/1";
+/// Prefix every bundle member carries inside the archive; stripped in the export.
+const WEB_PREFIX: &str = "web/";
+/// Feeds kept per export, in name order (matches the in-app static mount).
+const MAX_EXPORT_FEEDS: usize = 16;
+/// Longest feed name (README §9.3: `[a-z][a-z0-9_]{0,47}`).
+const MAX_FEED_NAME_BYTES: usize = 48;
+/// Longest share token kept.
+const MAX_FEED_TOKEN_BYTES: usize = 4096;
+/// Longest CSP source expression accepted.
+const MAX_CSP_SOURCE_BYTES: usize = 255;
+
+/// The feeds an export carries, after static-export.md §4.2.
+#[derive(Debug, Default, PartialEq, Eq)]
+struct ExportFeeds {
+    /// name -> `{url, expires_at}`, the `__fe/feeds.json` `feeds` object.
+    kept: serde_json::Map<String, Value>,
+    /// `<origin>/api/v1/shared/` of each kept feed (the CSP `connect-src` additions).
+    sources: Vec<String>,
+    /// Names left out (loopback, non-https, malformed or over the cap).
+    dropped: Vec<String>,
+}
+
+fn is_feed_name(name: &str) -> bool {
+    let mut chars = name.chars();
+    name.len() <= MAX_FEED_NAME_BYTES
+        && chars.next().is_some_and(|c| c.is_ascii_lowercase())
+        && chars.all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '_')
+}
+
+/// One CSP host-source: `http(s)://` + lowercase host chars + an optional `[a-z0-9/_-]` path.
+fn is_csp_source(source: &str) -> bool {
+    let Some(rest) = source
+        .strip_prefix("https://")
+        .or_else(|| source.strip_prefix("http://"))
+    else {
+        return false;
+    };
+    let (host, path) = rest.split_at(rest.find('/').unwrap_or(rest.len()));
+    !host.is_empty()
+        && source.len() <= MAX_CSP_SOURCE_BYTES
+        && host.bytes().all(|c| {
+            c.is_ascii_lowercase() || c.is_ascii_digit() || matches!(c, b'.' | b'-' | b':' | b'[' | b']')
+        })
+        && path
+            .bytes()
+            .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || matches!(c, b'/' | b'_' | b'-'))
+}
+
+/// `(origin, token)` of exactly `https://<origin>/api/v1/shared/<token>` on a reachable origin, else `None`.
+fn reachable_share_url(raw: &str) -> Option<(&str, &str)> {
+    let (origin, token) = raw.split_once(SHARE_ROUTE_PREFIX)?;
+    let token_ok = !token.is_empty()
+        && token.len() <= MAX_FEED_TOKEN_BYTES
+        && token
+            .bytes()
+            .all(|c| c.is_ascii_alphanumeric() || matches!(c, b'-' | b'_' | b'.'));
+    (origin.starts_with("https://") && token_ok && is_csp_source(origin) && origin_allowed(origin))
+        .then_some((origin, token))
+}
+
+/// RFC 3339 `exp` of a share token's payload segment, or `null` when unreadable.
+fn share_token_expiry(token: &str) -> Value {
+    use base64::engine::general_purpose::URL_SAFE_NO_PAD;
+    use base64::Engine as _;
+    token
+        .split_once('.')
+        .and_then(|(payload, _)| URL_SAFE_NO_PAD.decode(payload).ok())
+        .and_then(|bytes| serde_json::from_slice::<Value>(&bytes).ok())
+        .and_then(|claims| claims.get("exp").and_then(Value::as_i64))
+        .and_then(|exp| chrono::DateTime::from_timestamp(exp, 0))
+        .map_or(Value::Null, |at| {
+            json!(at.to_rfc3339_opts(chrono::SecondsFormat::Secs, true))
+        })
+}
+
+/// Apply static-export.md §4.2 to the node's `portal.feeds` value (name -> share URL).
+fn admit_export_feeds(declared: Option<&Value>) -> ExportFeeds {
+    let mut out = ExportFeeds::default();
+    let Some(map) = declared.and_then(Value::as_object) else {
+        return out;
+    };
+    let mut names: Vec<&String> = map.keys().collect();
+    names.sort();
+    let mut sources = std::collections::BTreeSet::new();
+    for name in names {
+        let kept = map[name]
+            .as_str()
+            .and_then(reachable_share_url)
+            .filter(|_| is_feed_name(name) && out.kept.len() < MAX_EXPORT_FEEDS);
+        let Some((origin, token)) = kept else {
+            out.dropped.push(name.clone());
+            continue;
+        };
+        out.kept.insert(
+            name.clone(),
+            json!({
+                "url": format!("{origin}{SHARE_ROUTE_PREFIX}{token}"),
+                "expires_at": share_token_expiry(token),
+            }),
+        );
+        sources.insert(format!("{origin}{SHARE_ROUTE_PREFIX}"));
+    }
+    out.sources = sources.into_iter().collect();
+    out
+}
+
+/// The policy a static mount of this bundle gets (protocol.md §5): `connect-src` is `'self'` plus the manifest's origins and the kept feed origins.
+fn static_csp(
+    csp: &fe_format::portal_bundle::PortalCsp,
+    feed_sources: &[String],
+) -> Result<String, String> {
+    fn with(base: &str, lists: &[&[String]]) -> Result<String, String> {
+        let mut out = base.to_owned();
+        for source in lists.iter().flat_map(|list| list.iter()) {
+            if !is_csp_source(source) {
+                return Err(source.clone());
+            }
+            out.push(' ');
+            out.push_str(source);
+        }
+        Ok(out)
+    }
+    let flag = |base: &str, on: bool, keyword: &str| {
+        if on {
+            format!("{base} {keyword}")
+        } else {
+            base.to_owned()
+        }
+    };
+    let frame = if csp.frame.is_empty() {
+        "frame-src 'none'".to_owned()
+    } else {
+        with("frame-src", &[csp.frame.as_slice()])?
+    };
+    Ok([
+        "default-src 'none'".to_owned(),
+        flag("script-src 'self'", csp.wasm, "'wasm-unsafe-eval'"),
+        flag("style-src 'self'", csp.inline_styles, "'unsafe-inline'"),
+        with("img-src 'self' data: blob:", &[csp.img.as_slice()])?,
+        with("font-src 'self'", &[csp.font.as_slice()])?,
+        with("media-src 'self'", &[csp.media.as_slice()])?,
+        with("connect-src 'self'", &[csp.connect.as_slice(), feed_sources])?,
+        frame,
+        "worker-src 'self'".to_owned(),
+        "form-action 'none'".to_owned(),
+        "base-uri 'none'".to_owned(),
+        "object-src 'none'".to_owned(),
+        "frame-ancestors 'none'".to_owned(),
+    ]
+    .join("; "))
+}
+
+/// A revoked or kill-listed build is not exported to render elsewhere (admission.md §4); governance matches by hash under any id.
+fn revoked_on_this_peer(query: &AdmissionQuery<'_>) -> bool {
+    LOCAL_ADMISSION
+        .get()
+        .and_then(|source| source.admission(query))
+        .is_some_and(|view| view.state == "revoked")
+}
+
+/// Why an export could not be built.
+enum ExportFailure {
+    Stored(StoredBundleError),
+    Revoked,
+    UnsafeCsp(String),
+    Zip,
+}
+
+/// Download name `<package_id>-<version>.zip`, limited to header-safe characters.
+fn export_file_name(package_id: &str, version: &str) -> String {
+    let safe: String = format!("{package_id}-{version}")
+        .chars()
+        .map(|c| {
+            if c.is_ascii_alphanumeric() || matches!(c, '.' | '-' | '_') {
+                c
+            } else {
+                '_'
+            }
+        })
+        .collect();
+    format!("{safe}.zip")
+}
+
+/// Inspect, re-check revocation with the full build facts, and write the export archive (static-export.md §3).
+fn build_export(
+    store: &BlobStoreHandle,
+    blob_hash_hex: &str,
+    feeds: &ExportFeeds,
+) -> Result<(Vec<u8>, String), ExportFailure> {
+    let inspected = inspect_stored(store, blob_hash_hex).map_err(ExportFailure::Stored)?;
+    let query = AdmissionQuery {
+        package_id: &inspected.validated.package_id,
+        content_hash: &inspected.content_hash,
+        archive_digest: blob_hash_hex,
+        sealed_by: inspected.sealed_by.as_deref(),
+        capability_digest: &inspected.validated.capability_digest,
+    };
+    if revoked_on_this_peer(&query) {
+        return Err(ExportFailure::Revoked);
+    }
+    let portal = &inspected.validated.portal;
+    let csp = static_csp(&portal.csp, &feeds.sources).map_err(ExportFailure::UnsafeCsp)?;
+    let hash = hash_from_hex(blob_hash_hex)
+        .map_err(|_| ExportFailure::Stored(StoredBundleError::CorruptRecord))?;
+    let path = store
+        .get_blob_path(&hash)
+        .ok_or(ExportFailure::Stored(StoredBundleError::BlobMissing))?;
+    // Reads verify the seal member by member (VerifyIfSealed); a tampered member is a refusal, never exported.
+    let index =
+        HexonArchiveIndex::open(&path).map_err(|_| ExportFailure::Stored(StoredBundleError::Io))?;
+
+    let entry = portal.entry.strip_prefix(WEB_PREFIX).unwrap_or(&portal.entry);
+    let descriptor = json!({
+        "schema": EXPORT_SCHEMA,
+        "package_id": inspected.validated.package_id,
+        "version": inspected.validated.version,
+        "content_hash": inspected.content_hash,
+        "publisher_did": inspected.sealed_by,
+        "title": portal.title,
+        "entry": entry,
+        "csp": csp,
+        "feeds_dropped": feeds.dropped,
+        "exported_at": chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true),
+    });
+    let feeds_doc = json!({ "v": 1, "feeds": feeds.kept });
+
+    let options = zip::write::SimpleFileOptions::default()
+        .compression_method(zip::CompressionMethod::Deflated);
+    let mut writer = zip::ZipWriter::new(std::io::Cursor::new(Vec::new()));
+    let mut put = |name: &str, bytes: &[u8]| -> Result<(), ExportFailure> {
+        use std::io::Write as _;
+        writer
+            .start_file(name, options)
+            .map_err(|_| ExportFailure::Zip)?;
+        writer.write_all(bytes).map_err(|_| ExportFailure::Zip)
+    };
+    put("fe-portal.json", descriptor.to_string().as_bytes())?;
+    put("__fe/feeds.json", feeds_doc.to_string().as_bytes())?;
+    let mut members: Vec<&String> = inspected
+        .validated
+        .web_members
+        .iter()
+        .map(|(member, _mime)| member)
+        .filter(|member| !member.ends_with('/'))
+        .collect();
+    members.sort();
+    for member in members {
+        let Some(relative) = member.strip_prefix(WEB_PREFIX) else {
+            continue;
+        };
+        match index.read_member(member) {
+            Ok(Some(bytes)) => put(relative, &bytes)?,
+            Ok(None) => {}
+            Err(e) => {
+                return Err(ExportFailure::Stored(StoredBundleError::Refused(
+                    member_read_refusal(member, &e),
+                )))
+            }
+        }
+    }
+    let bytes = writer.finish().map_err(|_| ExportFailure::Zip)?.into_inner();
+    Ok((
+        bytes,
+        export_file_name(&inspected.validated.package_id, &inspected.validated.version),
+    ))
+}
+
+/// GET /api/v1/nodes/{node_id}/portal/export.zip — Viewer+ with reach; a repository node's bundle as a static directory.
+pub async fn export_portal_bundle(
+    State(state): State<Arc<ApiState>>,
+    Extension(claims): Extension<ApiClaims>,
+    Path(node_id): Path<String>,
+) -> Response {
+    if require_role(&claims, "viewer").is_err() {
+        return error_json(StatusCode::FORBIDDEN, "insufficient permissions");
+    }
+    if !is_valid_ulid(&node_id) {
+        return error_json(StatusCode::BAD_REQUEST, "invalid node_id");
+    }
+    // One uniform 404 for unknown, unreachable and not-a-repository nodes (no existence oracle).
+    let denied = || error_json(StatusCode::NOT_FOUND, crate::rest::NOT_FOUND_OR_DENIED);
+    let Some(scope) = crate::rest::authorized_node_scope(&state, &claims, &node_id).await else {
+        return denied();
+    };
+    let Ok(read) = crate::rest::get_properties_core(&state, &node_id, &scope).await else {
+        return denied();
+    };
+    let properties = &read.properties;
+    if properties.get("node_kind").and_then(Value::as_str) != Some("repository") {
+        return denied();
+    }
+    let Some(asset_id) = properties
+        .get("portal.bundle_asset")
+        .and_then(Value::as_str)
+        .filter(|id| is_valid_ulid(id))
+        .map(str::to_string)
+    else {
+        return denied();
+    };
+    let Some(store) = state.blob_store.clone() else {
+        return error_json(StatusCode::SERVICE_UNAVAILABLE, "blob store not configured");
+    };
+    if crate::assets::asset_reach(&state, &claims, std::slice::from_ref(&asset_id)).await
+        != crate::assets::AssetReach::Covered
+    {
+        return denied();
+    }
+    let Some(rows) = crate::gis::run_select(
+        &state,
+        "SELECT content_type, content_hash FROM asset WHERE asset_id = $aid LIMIT 1",
+        vec![("aid".to_string(), json!(asset_id))],
+    )
+    .await
+    else {
+        return error_json(StatusCode::BAD_GATEWAY, "asset metadata query failed");
+    };
+    let text = |row: &Value, key: &str| row.get(key).and_then(Value::as_str).map(str::to_string);
+    let Some(row) = rows.first() else {
+        return denied();
+    };
+    if text(row, "content_type").as_deref() != Some(PORTAL_BUNDLE_MIME) {
+        return denied();
+    }
+    let Some(blob_hash) = text(row, "content_hash") else {
+        return error_json(StatusCode::INTERNAL_SERVER_ERROR, "corrupt asset record");
+    };
+
+    // Revocation precedes bytes: the stored archive digest alone is a kill-list key (admission.md §2).
+    let archive_only = AdmissionQuery {
+        package_id: "",
+        content_hash: "",
+        archive_digest: &blob_hash,
+        sealed_by: None,
+        capability_digest: "",
+    };
+    let revoked = || {
+        (
+            StatusCode::CONFLICT,
+            Json(json!({ "ok": false, "error": "revoked" })),
+        )
+            .into_response()
+    };
+    if revoked_on_this_peer(&archive_only) {
+        return revoked();
+    }
+
+    let feeds = admit_export_feeds(properties.get("portal.feeds"));
+    let hash_for_task = blob_hash.clone();
+    let built =
+        tokio::task::spawn_blocking(move || build_export(&store, &hash_for_task, &feeds)).await;
+    match built {
+        Ok(Ok((bytes, file_name))) => (
+            [
+                ("content-type", "application/zip".to_string()),
+                (
+                    "content-disposition",
+                    format!("attachment; filename=\"{file_name}\""),
+                ),
+                ("x-content-type-options", "nosniff".to_string()),
+            ],
+            bytes,
+        )
+            .into_response(),
+        Ok(Err(ExportFailure::Revoked)) => revoked(),
+        Ok(Err(ExportFailure::Stored(StoredBundleError::BlobMissing))) => (
+            StatusCode::CONFLICT,
+            Json(json!({ "ok": false, "error": "bundle_bytes_absent" })),
+        )
+            .into_response(),
+        Ok(Err(ExportFailure::Stored(err))) => stored_error_response(&asset_id, &err),
+        Ok(Err(ExportFailure::UnsafeCsp(source))) => refusal_response(&refusal(
+            RefusalClass::ManifestMalformed,
+            format!("csp source {source} cannot appear in a header"),
+        )),
+        Ok(Err(ExportFailure::Zip)) => {
+            tracing::error!(asset_id, "export archive write failed");
+            error_json(StatusCode::INTERNAL_SERVER_ERROR, "export failed")
+        }
+        Err(e) => {
+            tracing::error!("bundle export task failed: {e}");
+            error_json(StatusCode::INTERNAL_SERVER_ERROR, "export failed")
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
