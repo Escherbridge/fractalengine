@@ -2,7 +2,7 @@
 //! preconditions and R23 kill-switch arrival (src/AGENTS.md §governance), and the 2.0 instance
 //! start / update / uninstall path (src/AGENTS.md §update).
 
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeSet, HashMap, HashSet};
 use std::path::PathBuf;
 use std::sync::Arc;
 
@@ -221,11 +221,43 @@ pub struct ConsentRecord {
     pub at: String,
 }
 
+/// How an instance came to run; both kinds share the one instance per `(petal, package)` (bindings.md §5.1).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum InstanceOrigin {
+    /// The operator's per-petal local bind (Enable); implies acceptance in its verse (bindings.md §5.3).
+    LocalBind,
+    /// Started by the binding activator under [`binding_instance_id`].
+    Binding,
+}
+
+/// The tick, context and seat id of a binding-started instance: one per `(installation, petal)`.
+pub fn binding_instance_id(installation_id: &str, petal_id: &str) -> String {
+    format!("{installation_id}@{petal_id}")
+}
+
 /// Where a governed instance runs and which build it is (kill-switch arrival matches against this).
 #[derive(Debug, Clone)]
 struct RunningBuild {
+    installation_id: String,
     verse_id: String,
+    petal_id: String,
+    origin: InstanceOrigin,
     package: PackageFacts,
+}
+
+/// A governed instance as the binding activator sees it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RunningInstance {
+    pub plugin_id: String,
+    pub installation_id: String,
+    pub package_id: String,
+    pub version: String,
+    pub content_hash: String,
+    pub verse_id: String,
+    pub petal_id: String,
+    pub origin: InstanceOrigin,
+    /// A fault degraded it; nothing restarts it until the operator's Enable.
+    pub degraded: bool,
 }
 
 /// `issued_at` as a sortable value: `[year, month, day, hour, minute, second]` plus nanoseconds.
@@ -325,12 +357,17 @@ impl RevocationIntake {
     }
 }
 
-/// Host-local governance state: Disable all, consents, Owner kill-list overrides, running builds.
+/// Host-local governance state: Disable all, consents, acceptances, local disables, Owner kill-list overrides,
+/// running builds.
 pub struct Governance {
     local_did: String,
     disable_all: bool,
     gates: Arc<dyn GovernanceGates>,
     consents: HashMap<String, ConsentRecord>,
+    /// `(installation_id, verse_id)`: "Allow in <verse>" on this host (bindings.md §5.3); never replicated.
+    accepted: HashSet<(String, String)>,
+    /// Kill layer a: an installation id (every petal) or one instance id, until the operator's Enable.
+    disabled: HashSet<String>,
     /// `(verse_id, content_hash)`: the verse Owner's override on this host (bindings.md §5.7).
     overrides: HashSet<(String, String)>,
     intake: RevocationIntake,
@@ -344,6 +381,8 @@ impl Default for Governance {
             disable_all: false,
             gates: Arc::new(FailClosedGates),
             consents: HashMap::new(),
+            accepted: HashSet::new(),
+            disabled: HashSet::new(),
             overrides: HashSet::new(),
             intake: RevocationIntake::default(),
             running: HashMap::new(),
@@ -384,6 +423,47 @@ impl Governance {
 
     fn overridden(&self, verse_id: &str, content_hash: &str) -> bool {
         self.overrides.contains(&(verse_id.to_string(), content_hash.to_ascii_lowercase()))
+    }
+
+    /// Whether the Owner's override for `(verse_id, content_hash)` exists on this host (resolver `kill_override`).
+    pub fn is_overridden(&self, verse_id: &str, content_hash: &str) -> bool {
+        self.overridden(verse_id, content_hash)
+    }
+
+    /// Record "Allow in <verse>" (fe-database `record_acceptance` audited it; hydrated from `load_acceptances`).
+    pub fn accept_in_verse(&mut self, installation_id: &str, verse_id: &str) {
+        self.accepted.insert((installation_id.to_string(), verse_id.to_string()));
+    }
+
+    /// Withdraw an acceptance; the binding activator then stops its instances in that verse `unbound`.
+    pub fn withdraw_acceptance(&mut self, installation_id: &str, verse_id: &str) -> bool {
+        self.accepted.remove(&(installation_id.to_string(), verse_id.to_string()))
+    }
+
+    /// Accepted in the verse explicitly, or implied by a running local bind of it there (bindings.md §5.3).
+    pub fn is_accepted(&self, installation_id: &str, verse_id: &str) -> bool {
+        self.accepted.contains(&(installation_id.to_string(), verse_id.to_string()))
+            || self.running.values().any(|build| {
+                build.origin == InstanceOrigin::LocalBind
+                    && build.installation_id == installation_id
+                    && build.verse_id == verse_id
+            })
+    }
+
+    /// Every `(installation_id, verse_id)` accepted now, explicit or implied (resolver `LocalFacts::accepted`).
+    pub fn acceptances(&self) -> BTreeSet<(String, String)> {
+        let implied = self
+            .running
+            .values()
+            .filter(|build| build.origin == InstanceOrigin::LocalBind)
+            .map(|build| (build.installation_id.clone(), build.verse_id.clone()));
+        self.accepted.iter().cloned().chain(implied).collect()
+    }
+
+    /// Kill layer a for one instance: the installation is disabled, or this petal's binding instance is.
+    pub fn is_locally_disabled(&self, installation_id: &str, petal_id: Option<&str>) -> bool {
+        self.disabled.contains(installation_id)
+            || petal_id.is_some_and(|petal| self.disabled.contains(&binding_instance_id(installation_id, petal)))
     }
 
     /// Plugin ids of governed instances running in `verse_id`.
@@ -518,6 +598,8 @@ pub struct PluginManager {
     governance: Governance,
     /// The worker's scheduler; a stop leaves the bus first and drains the in-flight commit (OD-E1).
     ticks: Option<TickHost>,
+    /// Every instance id ever started per installation, so uninstall forgets stopped binding instances too.
+    instance_ids: HashMap<String, BTreeSet<String>>,
 }
 
 impl PluginManager {
@@ -543,6 +625,7 @@ impl PluginManager {
             verified: std::collections::HashMap::new(),
             governance: Governance { disable_all: ext_disable_all_from_env(), ..Governance::default() },
             ticks: None,
+            instance_ids: HashMap::new(),
         })
     }
 
@@ -638,10 +721,8 @@ impl PluginManager {
         }
         // Row 5 already decided revocation, including the Owner's per-verse override.
         self.activate_checked(plugin_id, wasm_bytes, request.petal_id, fuel_budget, false).await?;
-        self.governance.running.insert(
-            plugin_id.to_string(),
-            RunningBuild { verse_id: request.verse_id.to_string(), package: package.clone() },
-        );
+        let package = package.clone();
+        self.track_running(plugin_id, request, package, InstanceOrigin::LocalBind);
         Ok(())
     }
 
@@ -723,9 +804,82 @@ impl PluginManager {
         self.governance.disable_all = false;
     }
 
-    /// R23 (a): local Disable of one instance; false when it was not running.
+    /// R23 (a): local Disable. An installation id disables it at every petal (its binding instances stop too and
+    /// bindings cannot restart it); a binding instance id disables that petal only. False when nothing ran.
     pub fn disable_instance(&mut self, plugin_id: &str) -> bool {
-        self.stop_instance(plugin_id, DeactivateReason::Disabled)
+        self.governance.disabled.insert(plugin_id.to_string());
+        let mut ids = self.instance_ids.get(plugin_id).cloned().unwrap_or_default();
+        ids.insert(plugin_id.to_string());
+        let mut stopped = false;
+        for id in ids {
+            stopped |= self.stop_instance(&id, DeactivateReason::Disabled);
+        }
+        stopped
+    }
+
+    /// Withdraw "Allow in <verse>" (bindings.md §5.3): unless a local bind there still implies it, every binding
+    /// instance of the installation in that verse stops `unbound` after its in-flight writes. Returns those ids.
+    pub fn withdraw_acceptance(&mut self, installation_id: &str, verse_id: &str) -> Vec<String> {
+        self.governance.withdraw_acceptance(installation_id, verse_id);
+        if self.governance.is_accepted(installation_id, verse_id) {
+            return Vec::new();
+        }
+        let mut ids: Vec<String> = self
+            .governance
+            .running
+            .iter()
+            .filter(|(_, build)| {
+                build.origin == InstanceOrigin::Binding && build.installation_id == installation_id && build.verse_id == verse_id
+            })
+            .map(|(plugin_id, _)| plugin_id.clone())
+            .collect();
+        ids.sort();
+        ids.retain(|plugin_id| self.stop_instance(plugin_id, DeactivateReason::Unbound));
+        ids
+    }
+
+    /// Clear kill layer a for an installation and all its instance ids; nothing restarts by itself.
+    pub fn enable_installation(&mut self, installation_id: &str) {
+        let ids = self.instance_ids.get(installation_id).cloned().unwrap_or_default();
+        self.governance.disabled.remove(installation_id);
+        for id in ids {
+            self.governance.disabled.remove(&id);
+        }
+    }
+
+    /// Governed instances still scheduled (a stopped one is gone), sorted by instance id.
+    pub fn running_instances(&self) -> Vec<RunningInstance> {
+        let mut instances: Vec<RunningInstance> = self
+            .governance
+            .running
+            .iter()
+            .filter_map(|(plugin_id, build)| {
+                let state = self.ticks.as_ref().and_then(|ticks| ticks.counters(plugin_id)).map(|counters| counters.state);
+                if state == Some(TickState::Stopped) {
+                    return None;
+                }
+                Some(RunningInstance {
+                    plugin_id: plugin_id.clone(),
+                    installation_id: build.installation_id.clone(),
+                    package_id: build.package.package_id.clone(),
+                    version: build.package.version.clone(),
+                    content_hash: build.package.content_hash.clone(),
+                    verse_id: build.verse_id.clone(),
+                    petal_id: build.petal_id.clone(),
+                    origin: build.origin,
+                    degraded: matches!(state, Some(TickState::Degraded(_))),
+                })
+            })
+            .collect();
+        instances.sort_by(|left, right| left.plugin_id.cmp(&right.plugin_id));
+        instances
+    }
+
+    /// The governed instance serving `(petal_id, package_id)`, if one is scheduled.
+    pub fn instance_at(&self, petal_id: &str, package_id: &str) -> Option<RunningInstance> {
+        self.running_instances()
+            .into_iter()
+            .find(|instance| instance.petal_id == petal_id && instance.package_id == package_id)
     }
 
     /// R23 (c) / R18: a verse policy row changed (local write or replicated arrival); every governed
@@ -744,9 +898,9 @@ impl PluginManager {
         denied
     }
 
-    /// Stop one instance for a kill-switch reason: the `TickHost` leaves the bus first and drains the
-    /// in-flight commit; a 1.0 core instance has its lease revoked. Returns whether anything was running.
-    fn stop_instance(&mut self, plugin_id: &str, reason: DeactivateReason) -> bool {
+    /// Stop one instance for a kill-switch or unbinding reason: the `TickHost` leaves the bus first and drains
+    /// the in-flight commit (OD-E1); a 1.0 core instance has its lease revoked. Returns whether anything ran.
+    pub fn stop_instance(&mut self, plugin_id: &str, reason: DeactivateReason) -> bool {
         let tracked = self.governance.running.remove(plugin_id).is_some();
         let loaded = self.installed.remove(plugin_id).is_some();
         let scheduled = self
@@ -782,22 +936,77 @@ impl PluginManager {
         true
     }
 
-    /// R19, then start a 2.0 instance on the worker's `TickHost`; the build is tracked so kill switches find it.
+    /// R19, then start a 2.0 instance (the operator's local bind or Enable) on the worker's `TickHost`; it clears
+    /// kill layer a for the installation, and the build is tracked so kill switches find it.
     pub fn start_instance(&mut self, request: &ActivationRequest<'_>, staged: StagedInstance) -> Result<(), LifecycleError> {
         let (ticks, package) = self.admit_staged(request, &staged)?;
         ticks.launch(&staged.plugin_id, staged.launch).map_err(LifecycleError::HostError)?;
-        self.mark_running(&staged.plugin_id, request.verse_id, package);
+        self.governance.disabled.remove(request.installation_id);
+        self.governance.disabled.remove(&staged.plugin_id);
+        self.track_running(&staged.plugin_id, request, package, InstanceOrigin::LocalBind);
+        Ok(())
+    }
+
+    /// R19, then local acceptance and kill layer a (bindings.md §5.2 rows 12-13): the cheap check before a
+    /// binding-started build is staged. [`start_binding_instance`](Self::start_binding_instance) re-runs it.
+    pub fn check_binding_start(&self, request: &ActivationRequest<'_>) -> Result<(), LifecycleError> {
+        self.check_activation(request)?;
+        self.check_binding_local(request)
+    }
+
+    /// Rows 12-13; never satisfied by a replicated row, only by this host's own records (R12).
+    fn check_binding_local(&self, request: &ActivationRequest<'_>) -> Result<(), LifecycleError> {
+        if !self.governance.is_accepted(request.installation_id, request.verse_id) {
+            return Err(LifecycleError::NotAccepted(format!(
+                "{} is not allowed in verse {} on this host",
+                request.installation_id, request.verse_id
+            )));
+        }
+        if self.governance.is_locally_disabled(request.installation_id, Some(request.petal_id)) {
+            return Err(LifecycleError::InstallationDisabled(request.installation_id.to_string()));
+        }
+        Ok(())
+    }
+
+    /// Start an instance a binding resolved (bindings.md §5.6): R19, acceptance and kill layer a, under the
+    /// [`binding_instance_id`] of its installation and petal; any refusal discards the staged context.
+    pub fn start_binding_instance(&mut self, request: &ActivationRequest<'_>, staged: StagedInstance) -> Result<(), LifecycleError> {
+        let (ticks, package) = self.admit_staged(request, &staged)?;
+        let expected = binding_instance_id(request.installation_id, request.petal_id);
+        let refused = if staged.plugin_id != expected {
+            Err(LifecycleError::LaunchMismatch(format!("{}: a binding instance is keyed {expected}", staged.plugin_id)))
+        } else {
+            self.check_binding_local(request)
+        };
+        if let Err(error) = refused {
+            ticks.contexts().discard(&staged.launch.context);
+            return Err(error);
+        }
+        ticks.launch(&staged.plugin_id, staged.launch).map_err(LifecycleError::HostError)?;
+        self.track_running(&staged.plugin_id, request, package, InstanceOrigin::Binding);
         Ok(())
     }
 
     /// P4.3: R19 for the new build (consent covers ITS capability digest), then `TickHost::update`; on a refusal the
-    /// previous build is re-activated and keeps running (src/AGENTS.md §update).
+    /// previous build is re-activated and keeps running (src/AGENTS.md §update). A binding instance re-checks
+    /// acceptance and kill layer a, and stays a binding instance.
     pub fn update_instance(&mut self, request: &ActivationRequest<'_>, staged: StagedInstance) -> Result<(), LifecycleError> {
         let (ticks, package) = self.admit_staged(request, &staged)?;
+        let origin = self
+            .governance
+            .running
+            .get(&staged.plugin_id)
+            .map_or(InstanceOrigin::LocalBind, |build| build.origin);
+        if origin == InstanceOrigin::Binding {
+            if let Err(error) = self.check_binding_local(request) {
+                ticks.contexts().discard(&staged.launch.context);
+                return Err(error);
+            }
+        }
         let StagedInstance { plugin_id, launch, .. } = staged;
         match ticks.update(&plugin_id, launch) {
             Ok(()) => {
-                self.mark_running(&plugin_id, request.verse_id, package);
+                self.track_running(&plugin_id, request, package, origin);
                 Ok(())
             }
             Err(UpdateFailure::NotRunning(detail)) => Err(LifecycleError::NotRunning(detail)),
@@ -815,15 +1024,21 @@ impl PluginManager {
     }
 
     /// Uninstall a 2.0 instance (G1-C10): stop `unbound`, `on-uninstall` with one final flush, then forget its tick,
-    /// bus and network counters. Consent records and the package store are the caller's.
+    /// bus and network counters. An installation id covers every instance ever started for it (binding instances
+    /// at other petals, running or stopped). Consent records, acceptances and the package store are the caller's.
     pub fn uninstall_instance(&mut self, plugin_id: &str) {
-        self.governance.running.remove(plugin_id);
-        if let Some(ticks) = &self.ticks {
-            ticks.uninstall(plugin_id);
-        }
-        if let Ok(mut registry) = self.registry.lock() {
-            if registry.unregister(plugin_id).is_err() {
-                tracing::debug!(plugin = %plugin_id, "uninstalled instance had no registry entry");
+        let mut ids = self.instance_ids.remove(plugin_id).unwrap_or_default();
+        ids.insert(plugin_id.to_string());
+        for id in &ids {
+            self.governance.running.remove(id);
+            self.governance.disabled.remove(id);
+            if let Some(ticks) = &self.ticks {
+                ticks.uninstall(id);
+            }
+            if let Ok(mut registry) = self.registry.lock() {
+                if registry.unregister(id).is_err() {
+                    tracing::debug!(plugin = %id, "uninstalled instance had no registry entry");
+                }
             }
         }
     }
@@ -850,11 +1065,26 @@ impl PluginManager {
         admitted
     }
 
-    /// Track a started build for the kill switches and move its registry entry to `Active`.
-    fn mark_running(&mut self, plugin_id: &str, verse_id: &str, package: PackageFacts) {
-        self.governance
-            .running
-            .insert(plugin_id.to_string(), RunningBuild { verse_id: verse_id.to_string(), package });
+    /// Track a started build for the kill switches; a local bind's registry entry moves to `Active` (binding
+    /// instances have no registry entry).
+    fn track_running(&mut self, plugin_id: &str, request: &ActivationRequest<'_>, package: PackageFacts, origin: InstanceOrigin) {
+        self.governance.running.insert(
+            plugin_id.to_string(),
+            RunningBuild {
+                installation_id: request.installation_id.to_string(),
+                verse_id: request.verse_id.to_string(),
+                petal_id: request.petal_id.to_string(),
+                origin,
+                package,
+            },
+        );
+        self.instance_ids
+            .entry(request.installation_id.to_string())
+            .or_default()
+            .insert(plugin_id.to_string());
+        if origin == InstanceOrigin::Binding {
+            return;
+        }
         if let Ok(mut registry) = self.registry.lock() {
             if matches!(registry.get_state(plugin_id), Some(PluginState::Disabled(_))) {
                 let _ = registry.enable(plugin_id);
@@ -1319,6 +1549,14 @@ pub enum LifecycleError {
 
     #[error("update failed and the previous version stopped: {0}")]
     UpdateAborted(String),
+
+    /// bindings.md §5.2 row 12: no local acceptance for the installation in that verse.
+    #[error("not-accepted: {0}")]
+    NotAccepted(String),
+
+    /// bindings.md §5.2 row 13: kill layer a holds until the operator's Enable.
+    #[error("disabled: {0} is disabled on this host")]
+    InstallationDisabled(String),
 }
 
 #[cfg(test)]
