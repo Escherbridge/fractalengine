@@ -35,6 +35,14 @@ pub struct UrlEditorSaved {
     pub value: String,
 }
 
+/// A local, user-issued Open of a bound portal bundle (bindings.md §6, D-X5). Only the Open action writes
+/// this; a replicated binding row has no path to it, so a row never mounts a bundle.
+#[derive(Debug, Clone, Message)]
+pub struct OpenBoundBundle {
+    /// Repository node holding the admitted bundle.
+    pub node_id: String,
+}
+
 /// Which URL field the editor is targeting.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum UrlField {
@@ -232,6 +240,21 @@ pub fn petal_portal_activation_system(
     }
 }
 
+/// Update — mounts a bound bundle on a local Open; the built-in node `webpage_url` portal closes first.
+pub fn bound_bundle_open_system(
+    mut opens: MessageReader<OpenBoundBundle>,
+    mut portal: ResMut<ActivePortal>,
+    mut visible_tabs: ResMut<VisibleTabs>,
+    mut browser_commands: MessageWriter<BrowserCommand>,
+) {
+    // Last Open in the frame wins; one mount at a time.
+    let Some(open) = opens.read().last() else {
+        return;
+    };
+    clear_portal(&mut portal, &mut visible_tabs, &mut browser_commands);
+    browser_commands.write(BrowserCommand::OpenBundle { node_id: open.node_id.clone() });
+}
+
 /// Update — closes the portal on explicit deselection (`SelectionCleared` event)
 /// or when ESC is pressed.
 pub fn petal_portal_deactivation_system(
@@ -340,6 +363,7 @@ impl Plugin for PetalPortalPlugin {
 
         app.add_message::<SelectionCleared>();
         app.add_message::<UrlEditorSaved>();
+        app.add_message::<OpenBoundBundle>();
 
         // NOTE: The guard/flush systems (tab_switch_guard_system +
         // flush_browser_commands_system) were removed to fix a feedback loop
@@ -353,6 +377,7 @@ impl Plugin for PetalPortalPlugin {
                 petal_portal_deactivation_system,
                 portal_cleanup_system,
                 url_editor_commit_system,
+                bound_bundle_open_system,
             ),
         );
 
