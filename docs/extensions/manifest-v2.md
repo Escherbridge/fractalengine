@@ -98,7 +98,7 @@ Every endpoint has an `id` (`[a-z][a-z0-9-]{0,31}`, unique across `ingress` and 
 
 | `transport` | Required | Optional (default) | Behaviour |
 |---|---|---|---|
-| `http-server` | `methods`, `max_body_bytes` (≤ 1 MiB), `rate_hz` (per caller DID) | `content_types` (any), `role_floor` (`editor`), `sub_paths` (false), `forward_headers` (none) | Mounted at `/api/v1/petals/{petal_id}/extensions/{package_id}/ingress/{id}` on the existing API server, behind its bearer auth. The caller's role at the bound petal must meet `role_floor`. |
+| `http-server` | `methods`, `max_body_bytes` (≤ 1 MiB), `rate_hz` (per caller DID) | `content_types` (any), `role_floor` (`editor`), `sub_paths` (false), `forward_headers` (none; the host strips credential headers before any request reaches a guest, whatever the manifest says — a host-side denylist is the control, the schema rule is a second layer) | Mounted at `/api/v1/petals/{petal_id}/extensions/{package_id}/ingress/{id}` on the existing API server, behind its bearer auth. The caller's role at the bound petal must meet `role_floor`. |
 | `websocket-accept` | `max_frame_bytes`, `rate_hz` (frames/s per connection), `max_connections` (≤ 256) | `role_floor` (`editor`) | Upgrades on the same mount. |
 | `websocket-dial` | `url` (`wss://`, or `ws://` to loopback), `max_frame_bytes`, `rate_hz` | `auth`, `reconnect_ms` (`{min:1000,max:60000}`) | The host dials and redials with jittered backoff. |
 | `mqtt` | `broker` (`mqtts://`, or `mqtt://` to loopback), `topics` (filters), `max_payload_bytes`, `rate_hz` | `qos` (`at-most-once`), `auth` | The host is an MQTT client subscribed to `topics`. |
@@ -189,6 +189,7 @@ Every row is refused with its own reason; the first failing row in table order i
 | V13 | Scope conflicts: `InspectorSection` keys outside `property_scope`; `InspectorSection` or `host/node-changes` without `scene.read`; `set_property` without `property_scope`; `auth.scheme: header` without `header`; a UI `command` whose `args_schema` refuses the args its slot sends (`{}`; `ContextMenu`: `{"node_id": "<ULID>"}`) | `scope-conflict` |
 | V14 | Duplicate `id` across `ingress` + `egress`, within streams, commands, `ui`, or named queries | `duplicate-id` |
 | V15 | A number above the host ceiling (`fuel`, sizes, rates, connections, timeouts) | `over-host-ceiling` |
+| V16 | An `http-server` endpoint's `forward_headers` names a credential header: `authorization`, `proxy-authorization`, `cookie`, `set-cookie`, `x-api-key`, or any host-authenticating header (`x-fe-join-lease`, any `x-fe-*`); the list is the `not` rule on `forward_headers` items in the schema | `credential-header` |
 
 ### Journey J2 (P1.3 swaps `capability.rs::parse_manifest_defaults` and `::validate_property_access_allowed` into this table)
 
