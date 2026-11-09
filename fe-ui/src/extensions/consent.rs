@@ -79,6 +79,42 @@ pub struct ConsentRequest {
     pub kill_list: Option<KillListOverrideOffer>,
     /// How the dialog was opened.
     pub origin: ConsentOrigin,
+    /// Web bundle only: its `portal` section, rendered through [`portal_sections`] (A-10); `capability_digest`
+    /// is then the portal digest (README section 7.2), which is what consent is recorded against.
+    pub portal: Option<serde_json::Value>,
+}
+
+/// Render a web bundle's `portal` manifest section as consent sections (portal A-10): one section per capability
+/// key, `schema`/`entry`/`title` skipped (they are not capabilities, README section 7.1), a `false` or empty value
+/// shown as "None" so nothing the bundle lacks is hidden. Keys sort so the delta against an update is stable.
+pub fn portal_sections(portal: &serde_json::Value) -> Vec<ConsentSection> {
+    fn lines(value: &serde_json::Value) -> Vec<String> {
+        match value {
+            serde_json::Value::Array(items) => items.iter().map(lines_one).collect(),
+            serde_json::Value::Object(map) => map
+                .iter()
+                .flat_map(|(key, inner)| match inner {
+                    serde_json::Value::Array(items) => items.iter().map(|item| format!("{key}: {}", lines_one(item))).collect(),
+                    serde_json::Value::Bool(false) => Vec::new(),
+                    other => vec![format!("{key}: {}", lines_one(other))],
+                })
+                .collect(),
+            serde_json::Value::Bool(false) | serde_json::Value::Null => Vec::new(),
+            other => vec![lines_one(other)],
+        }
+    }
+    fn lines_one(value: &serde_json::Value) -> String {
+        match value {
+            serde_json::Value::String(text) => text.clone(),
+            other => other.to_string(),
+        }
+    }
+    let Some(map) = portal.as_object() else { return Vec::new() };
+    let mut keys: Vec<&String> = map.keys().filter(|key| !matches!(key.as_str(), "schema" | "entry" | "title")).collect();
+    keys.sort();
+    keys.into_iter()
+        .map(|key| ConsentSection { title: format!("Portal {key}"), lines: lines(&map[key]) })
+        .collect()
 }
 
 /// Grant lines that appear or disappear between two versions of one package.
@@ -275,6 +311,12 @@ pub fn render(ctx: &egui::Context, state: &mut ConsentState) {
                 for section in &request.sections {
                     section_block(ui, section);
                 }
+                if let Some(portal) = &request.portal {
+                    for section in &portal_sections(portal) {
+                        section_block(ui, section);
+                    }
+                    verdict_row(ui, "Capability digest", &request.capability_digest);
+                }
                 verdict_row(ui, "Signer", request.signer.as_deref().unwrap_or("Unsigned package"));
                 verdict_row(ui, "Policy", &request.policy_verdict);
                 verdict_row(ui, "Licence", &request.licence);
@@ -453,6 +495,53 @@ mod tests {
 
         state.decline();
         assert_eq!(state.take_decision(), Some(ConsentDecision::Declined { installation_id: "inst-1".into() }));
+
+        // Install offer for a web bundle: the portal section is listed and approval carries the verse id.
+        let mut offered = request("portal-digest", &[]);
+        offered.portal = Some(serde_json::json!({
+            "schema": "fe-portal-bundle/1",
+            "entry": "index.html",
+            "csp": { "connect": ["https://feeds.example.org"], "img": [] },
+            "storage": false
+        }));
+        offered.origin = ConsentOrigin::InstallOffer {
+            verse_id: "verse-harbour".into(),
+            verse_name: "Harbour".into(),
+            binding_scope: "petal Quay".into(),
+        };
+        let portal = portal_sections(offered.portal.as_ref().unwrap());
+        assert_eq!(portal.iter().map(|s| s.title.as_str()).collect::<Vec<_>>(), ["Portal csp", "Portal storage"]);
+        assert_eq!(portal[0].lines, ["connect: https://feeds.example.org"]);
+        assert!(portal[1].lines.is_empty(), "a false capability renders as None");
+        let unresolved = super::super::install_offer::UnresolvedBinding {
+            verse_id: "verse-harbour".into(),
+            verse_name: "Harbour".into(),
+            binding_scope: "petal Quay".into(),
+            hook: "portal.open".into(),
+            package_id: "org.example.fleet-sim".into(),
+            version_req: "^1".into(),
+            reason: super::super::install_offer::UnresolvedReason::NotInstalled,
+            policy_admits: true,
+            registry_has_build: false,
+            local_is_owner: false,
+        };
+        assert_eq!(unresolved.action(), None, "no registry build: state shows without a dead control");
+        let unresolved = super::super::install_offer::UnresolvedBinding { registry_has_build: true, ..unresolved };
+        assert_eq!(unresolved.action(), Some(super::super::install_offer::OfferAction::Install));
+        let mut dismissals = super::super::install_offer::OfferDismissals::default();
+        dismissals.dismiss(&unresolved);
+        assert_eq!(dismissals.visible_action(&unresolved), None, "dismissed for this binding version");
+        assert!(state.request(unresolved.consent_request(offered, None)));
+        frame(&mut state);
+        state.approve();
+        assert_eq!(
+            state.take_decision(),
+            Some(ConsentDecision::Approved {
+                installation_id: "inst-1".into(),
+                capability_digest: "portal-digest".into(),
+                accept_in_verse: Some("verse-harbour".into())
+            })
+        );
     }
 
     /// Journey: a kill-listed build never enables; only the exact typed package id enables the Owner override.

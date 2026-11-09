@@ -943,6 +943,103 @@ pub async fn load_consents(db: &Db) -> anyhow::Result<HashMap<String, ConsentRec
 }
 
 // ---------------------------------------------------------------------------
+// Local acceptance and the install offer (bindings.md §5.3, §5.5)
+// ---------------------------------------------------------------------------
+
+/// This host's record that one installation may run in one verse; local, never replicated (R12).
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub struct AcceptanceRecord {
+    pub installation_id: String,
+    pub verse_id: String,
+    /// The readings class picked when the manifest lists several (governance Consent "Bind").
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source_class: Option<String>,
+}
+
+const SOURCE_CLASS_PREFIX: &str = "source_class=";
+
+fn acceptance_entry(action: AuditAction, actor_did: &str, record: &AcceptanceRecord, package_id: Option<&str>) -> AuditEntry {
+    let mut entry = AuditEntry::verse(action, actor_did, &record.verse_id, AuditOutcome::Ok, None);
+    entry.installation = Some(record.installation_id.clone());
+    entry.package_id = package_id.map(str::to_string);
+    entry.target = format!("{}@{}", record.installation_id, record.verse_id);
+    entry.reason = record.source_class.as_ref().map(|class| format!("{SOURCE_CLASS_PREFIX}{class}"));
+    entry
+}
+
+/// Record "Allow in <verse>" for one installation (one `bind` audit op with `verse_id`).
+pub async fn record_acceptance(db: &Db, actor_did: &str, record: &AcceptanceRecord, package_id: &str) -> anyhow::Result<u64> {
+    if record.installation_id.is_empty() || record.verse_id.is_empty() {
+        anyhow::bail!("invalid-input: acceptance needs an installation and a verse");
+    }
+    append_audit(db, &acceptance_entry(AuditAction::Bind, actor_did, record, Some(package_id))).await
+}
+
+/// Withdraw an acceptance (one `unbind` op); instances of the installation in that verse deactivate `unbound`.
+pub async fn revoke_acceptance(db: &Db, actor_did: &str, record: &AcceptanceRecord) -> anyhow::Result<u64> {
+    append_audit(db, &acceptance_entry(AuditAction::Unbind, actor_did, record, None)).await
+}
+
+/// Every acceptance in force: the latest `bind` per (installation, verse) not followed by an `unbind`.
+pub async fn load_acceptances(db: &Db) -> anyhow::Result<Vec<AcceptanceRecord>> {
+    let mut accepted: HashMap<(String, String), AcceptanceRecord> = HashMap::new();
+    for entry in ok_entries(db, &[AuditAction::Bind, AuditAction::Unbind]).await? {
+        let (Some(installation_id), Some(verse_id)) = (entry.installation.clone(), entry.verse_id.clone()) else {
+            continue; // a per-petal bind without a verse is not an acceptance
+        };
+        let key = (installation_id.clone(), verse_id.clone());
+        if entry.action == AuditAction::Unbind {
+            accepted.remove(&key);
+            continue;
+        }
+        let source_class = entry.reason.as_deref().and_then(|reason| reason.strip_prefix(SOURCE_CLASS_PREFIX)).map(str::to_string);
+        accepted.insert(key, AcceptanceRecord { installation_id, verse_id, source_class });
+    }
+    Ok(accepted.into_values().collect())
+}
+
+/// What one confirmation of the install offer records.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct OfferConfirmation {
+    pub installation_id: String,
+    pub package_id: String,
+    pub content_hash: String,
+    /// Digest consented to; for a web bundle the portal capability digest (portal-bundle README §7.2, A-10).
+    pub capability_digest: String,
+    pub verse_id: String,
+    pub source_class: Option<String>,
+}
+
+/// One confirmation, three audit entries in order: `install`, `consent`, `bind` (bindings.md §5.5 step 3).
+pub async fn record_offer_confirmation(db: &Db, actor_did: &str, confirmation: &OfferConfirmation) -> anyhow::Result<()> {
+    let mut install = AuditEntry::verse(AuditAction::Install, actor_did, &confirmation.verse_id, AuditOutcome::Ok, None);
+    install.installation = Some(confirmation.installation_id.clone());
+    install.package_id = Some(confirmation.package_id.clone());
+    install.content_hash = Some(confirmation.content_hash.clone());
+    install.target = confirmation.installation_id.clone();
+    append_audit(db, &install).await?;
+    record_consent(
+        db,
+        &ConsentRecord {
+            installation_id: confirmation.installation_id.clone(),
+            package_id: confirmation.package_id.clone(),
+            content_hash: confirmation.content_hash.clone(),
+            capability_digest: confirmation.capability_digest.clone(),
+            actor_did: actor_did.to_string(),
+            at: String::new(),
+        },
+    )
+    .await?;
+    let record = AcceptanceRecord {
+        installation_id: confirmation.installation_id.clone(),
+        verse_id: confirmation.verse_id.clone(),
+        source_class: confirmation.source_class.clone(),
+    };
+    record_acceptance(db, actor_did, &record, &confirmation.package_id).await?;
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
 // Kill-list override (bindings.md §5.7; OD-E1 user decision 2026-11-08)
 // ---------------------------------------------------------------------------
 
