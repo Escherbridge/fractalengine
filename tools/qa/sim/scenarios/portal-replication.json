@@ -1,0 +1,423 @@
+{
+  "name": "portal-replication",
+  "description": "PJ4: a bundle replicates across owner/editor/viewer, arrives as StaticSandbox with no auto-admit, and its writes are judged by role at write time. Needs tools/qa/portal/build_bundles.py output.",
+  "seed": 20261202,
+  "fixture": "basic",
+  "verse_name": "QA Basic",
+  "assets": "generated",
+  "peers": [
+    {
+      "name": "owner",
+      "role": "owner"
+    },
+    {
+      "name": "editor",
+      "role": "editor"
+    },
+    {
+      "name": "viewer",
+      "role": "viewer"
+    }
+  ],
+  "probe": {
+    "rest_ms": 1000,
+    "hierarchy_ms": 4000,
+    "ui_ms": 2000,
+    "query_ms": 10000,
+    "host_ms": 2000,
+    "portal_ms": 1500
+  },
+  "steps": [
+    {
+      "id": "0",
+      "title": "Preflight: joined peers open the shared verse",
+      "settle_s": 15,
+      "actions": [
+        {
+          "peer": "editor",
+          "via": "gui",
+          "op": "click",
+          "args": {
+            "name": "Close window",
+            "role": "button"
+          },
+          "optional": true
+        },
+        {
+          "peer": "editor",
+          "via": "gui",
+          "op": "click",
+          "args": {
+            "name": "Open verse QA Basic"
+          },
+          "optional": true
+        },
+        {
+          "peer": "viewer",
+          "via": "gui",
+          "op": "click",
+          "args": {
+            "name": "Close window",
+            "role": "button"
+          },
+          "optional": true
+        },
+        {
+          "peer": "viewer",
+          "via": "gui",
+          "op": "click",
+          "args": {
+            "name": "Open verse QA Basic"
+          },
+          "optional": true
+        }
+      ],
+      "expect": [
+        {
+          "probe": "nav",
+          "target": "view",
+          "predicate": "equals",
+          "path": "verse_id",
+          "value": "$fixture.verse_id"
+        }
+      ]
+    },
+    {
+      "id": "1",
+      "title": "Editor uploads the actions bundle and creates its repository node",
+      "settle_s": 60,
+      "covers": [
+        "PJ4",
+        "R3",
+        "R4"
+      ],
+      "actions": [
+        {
+          "peer": "owner",
+          "via": "rest",
+          "op": "create_fractal",
+          "args": {
+            "name": "Portal Fractal"
+          },
+          "id": "pf"
+        },
+        {
+          "peer": "owner",
+          "via": "rest",
+          "op": "create_petal",
+          "args": {
+            "fractal_id": "$pf.id",
+            "name": "Portal Petal"
+          },
+          "id": "pp"
+        },
+        {
+          "peer": "owner",
+          "via": "host",
+          "op": "sleep",
+          "args": {
+            "seconds": 5
+          }
+        },
+        {
+          "peer": "owner",
+          "via": "gui",
+          "op": "click",
+          "args": {
+            "name": "Open fractal Portal Fractal"
+          }
+        },
+        {
+          "peer": "owner",
+          "via": "gui",
+          "op": "click",
+          "args": {
+            "name": "Open petal Portal Petal"
+          }
+        },
+        {
+          "peer": "editor",
+          "via": "gui",
+          "op": "click",
+          "args": {
+            "name": "Open fractal Portal Fractal"
+          }
+        },
+        {
+          "peer": "editor",
+          "via": "gui",
+          "op": "click",
+          "args": {
+            "name": "Open petal Portal Petal"
+          }
+        },
+        {
+          "peer": "viewer",
+          "via": "gui",
+          "op": "click",
+          "args": {
+            "name": "Open fractal Portal Fractal"
+          }
+        },
+        {
+          "peer": "viewer",
+          "via": "gui",
+          "op": "click",
+          "args": {
+            "name": "Open petal Portal Petal"
+          }
+        },
+        {
+          "peer": "editor",
+          "via": "rest",
+          "op": "upload_bundle",
+          "args": {
+            "petal_id": "$pp.id",
+            "path": "$assets.portal.actions_v1.path",
+            "name": "actions_v1"
+          },
+          "id": "act",
+          "bind": {
+            "content_hash": "data.content_hash",
+            "asset_id": "data.id"
+          }
+        },
+        {
+          "peer": "editor",
+          "via": "rest",
+          "op": "create_repository_node",
+          "args": {
+            "fractal_id": "$pf.id",
+            "petal_id": "$pp.id",
+            "name": "Actions repo",
+            "bundle_asset": "$act.asset_id",
+            "position": [
+              4,
+              0,
+              0
+            ]
+          },
+          "id": "ract"
+        }
+      ],
+      "expect": [
+        {
+          "probe": "node",
+          "target": "$ract.id",
+          "predicate": "present",
+          "peers": "all",
+          "within_s": 60,
+          "after": "ract"
+        },
+        {
+          "probe": "asset_blob",
+          "target": "$act.content_hash",
+          "predicate": "present",
+          "peers": [
+            "viewer",
+            "owner"
+          ],
+          "within_s": 90,
+          "after": "act"
+        }
+      ]
+    },
+    {
+      "id": "2",
+      "title": "Viewer holds the row and blob but the state is StaticSandbox: no auto-admit, no auto-open",
+      "settle_s": 20,
+      "covers": [
+        "PJ4",
+        "D-X5"
+      ],
+      "actions": [],
+      "expect": [
+        {
+          "probe": "portal",
+          "target": "qa.portal.actions",
+          "predicate": "equals",
+          "path": "admission",
+          "peers": [
+            "viewer",
+            "owner"
+          ],
+          "within_s": 20,
+          "mode": "always",
+          "hold_s": 15,
+          "value": "StaticSandbox"
+        },
+        {
+          "probe": "portal",
+          "target": "qa.portal.actions",
+          "predicate": "equals",
+          "path": "mounted",
+          "peers": [
+            "viewer",
+            "owner"
+          ],
+          "within_s": 20,
+          "mode": "always",
+          "hold_s": 15,
+          "value": false
+        }
+      ]
+    },
+    {
+      "id": "3",
+      "title": "Editor admits on its own peer; the bundle's declared set_property persists on every peer",
+      "settle_s": 60,
+      "covers": [
+        "PJ4",
+        "R10"
+      ],
+      "actions": [
+        {
+          "peer": "editor",
+          "via": "rest",
+          "op": "portal_admit",
+          "args": {
+            "package_id": "qa.portal.actions",
+            "content_hash": "$act.content_hash"
+          },
+          "id": "adm"
+        },
+        {
+          "peer": "editor",
+          "via": "gui",
+          "op": "click",
+          "args": {
+            "name": "Open bundle"
+          },
+          "id": "open",
+          "needs": [
+            "adm"
+          ],
+          "note": "accessible name placeholder: T3.1 ux.md fixes the exact Open name"
+        },
+        {
+          "peer": "editor",
+          "via": "rest",
+          "op": "portal_slot",
+          "args": {
+            "slot": 1
+          },
+          "id": "write1",
+          "needs": [
+            "open"
+          ]
+        }
+      ],
+      "expect": [
+        {
+          "probe": "properties",
+          "target": "$ract.id",
+          "predicate": "equals",
+          "path": "qa_counter",
+          "value": 1,
+          "peers": "all",
+          "within_s": 45,
+          "after": "write1"
+        }
+      ]
+    },
+    {
+      "id": "4",
+      "title": "Owner demotes the editor; the bundle's act is refused at write time and absent everywhere; re-grant does not resurrect it",
+      "settle_s": 150,
+      "covers": [
+        "PJ4",
+        "QA-0131"
+      ],
+      "actions": [
+        {
+          "peer": "owner",
+          "via": "gui",
+          "op": "click",
+          "args": {
+            "name": "Revoke role grant for ${peers.editor.did}",
+            "exact": true
+          },
+          "id": "demote_open"
+        },
+        {
+          "peer": "owner",
+          "via": "gui",
+          "op": "click",
+          "args": {
+            "name": "Confirm Revoke role grant for ${peers.editor.did}",
+            "exact": true,
+            "wait_s": 3
+          },
+          "id": "demote",
+          "needs": [
+            "demote_open"
+          ]
+        },
+        {
+          "peer": "editor",
+          "via": "host",
+          "op": "wait_role",
+          "args": {
+            "not_role": "editor",
+            "timeout_s": 90
+          },
+          "id": "demoted",
+          "needs": [
+            "demote"
+          ]
+        },
+        {
+          "peer": "editor",
+          "via": "rest",
+          "op": "portal_slot",
+          "args": {
+            "slot": 2
+          },
+          "id": "write2",
+          "sync": "+20",
+          "expect": "refused",
+          "needs": [
+            "demoted"
+          ]
+        },
+        {
+          "peer": "owner",
+          "via": "rest",
+          "op": "regrant_role",
+          "args": {
+            "peer": "editor",
+            "role": "editor"
+          },
+          "id": "regrant",
+          "sync": "+60",
+          "needs": [
+            "demoted"
+          ],
+          "note": "driver op name is a draft: reuse the p2p-core re-grant step pattern if it differs"
+        }
+      ],
+      "expect": [
+        {
+          "probe": "properties",
+          "target": "$ract.id",
+          "predicate": "absent",
+          "path": "qa_extra",
+          "peers": "all",
+          "within_s": 30,
+          "after": "write2"
+        },
+        {
+          "probe": "properties",
+          "target": "$ract.id",
+          "predicate": "absent",
+          "path": "qa_extra",
+          "peers": "all",
+          "mode": "always",
+          "hold_s": 30,
+          "after": "regrant",
+          "covers": "the refused write stays absent: no resurrection"
+        }
+      ]
+    }
+  ]
+}

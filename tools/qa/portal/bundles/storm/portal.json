@@ -1,0 +1,12 @@
+{
+  "schema": "fe-portal-bundle/1",
+  "entry": "web/index.html",
+  "title": "QA Storm",
+  "csp": {"connect": [], "img": [], "font": [], "media": [], "frame": [], "wasm": false, "inline_styles": false},
+  "navigation": [],
+  "subscriptions": {"node": true, "readings": true, "queries": [{"name": "node_count", "sql": "SELECT count() AS n FROM node GROUP ALL", "params": {}}]},
+  "commands": {"set_property": {"keys": ["qa_storm"]}},
+  "hooks": [],
+  "streams": [],
+  "ui_intents": []
+}

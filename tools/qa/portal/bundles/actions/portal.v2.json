@@ -1,0 +1,12 @@
+{
+  "schema": "fe-portal-bundle/1",
+  "entry": "web/index.html",
+  "title": "QA Actions v2",
+  "csp": {"connect": [], "img": [], "font": [], "media": [], "frame": [], "wasm": false, "inline_styles": false},
+  "navigation": [],
+  "subscriptions": {"node": true, "readings": false, "queries": []},
+  "commands": {"set_property": {"keys": ["qa_counter"]}},
+  "hooks": [],
+  "streams": [],
+  "ui_intents": []
+}

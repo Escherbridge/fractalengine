@@ -1,0 +1,16 @@
+{
+  "schema": "fe-qa-portal-bundles/1",
+  "note": "Index read by build_bundles.py (T5.2). Each bundle is <dir>/portal*.json plus <dir>/web/**; sealed with a run-local publisher through the staged seal_hexon.",
+  "bundles": {
+    "docs-site": {"package_id": "qa.portal.docs-site", "version": "1.0.0", "variants": {"signed": {"manifest": "portal.json"}, "unsigned": {"manifest": "portal.json", "seal": false}}, "journeys": ["PJ1", "PJ2"]},
+    "dashboard": {"package_id": "qa.portal.dashboard", "version": "1.0.0", "variants": {"signed": {"manifest": "portal.json"}, "unsigned": {"manifest": "portal.json", "seal": false}}, "journeys": ["PJ1", "PJ2", "PJ3", "PJ6"]},
+    "actions": {"package_id": "qa.portal.actions", "version": "1.0.0", "variants": {
+      "v1": {"manifest": "portal.v1.json", "version": "1.0.0", "extra_member": {"web/build-id.txt": "actions-v1"}},
+      "v2": {"manifest": "portal.v2.json", "version": "1.1.0", "extra_member": {"web/build-id.txt": "actions-v2"}, "note": "same capabilities as v1"},
+      "v3": {"manifest": "portal.v3.json", "version": "1.2.0", "extra_member": {"web/build-id.txt": "actions-v3"}, "note": "adds a set_property key scope"}
+    }, "journeys": ["PJ2", "PJ4", "PJ9"]},
+    "escape": {"package_id": "qa.portal.escape", "version": "1.0.0", "variants": {"signed": {"manifest": "portal.json"}}, "journeys": ["PJ8"]},
+    "storm": {"package_id": "qa.portal.storm", "version": "1.0.0", "variants": {"signed": {"manifest": "portal.json"}}, "journeys": ["PJ7"]},
+    "ladder": {"package_id": "qa.portal.ladder", "version": "1.0.0", "generated": true, "tiers": ["tier_100kb", "tier_1mb", "tier_5mb", "tier_25mb"], "over_cap": {"name": "tier_40mb_overcap", "size": 40000000}, "note": "docs-site shape plus one padding member web/pad.bin sized from tools/qa/sim/assets.py LADDER; no source dir", "journeys": ["PJ5"]}
+  }
+}
