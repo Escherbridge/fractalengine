@@ -111,6 +111,18 @@ trusting "pure efficiency" claims; push control; a board that silently drifts st
 
 ## 2. State
 
+- **2026-11-09 ~00:40 — SWARM TURN 1 COMPLETE; turn 2 being planned.** `wf_54bcb9d3-643` ended: 59 slices =
+  43 done, 15 partial (PHR-S2, PHR-S4, E6, E7, E10W, E13, E14b, E19, E16, D2, P-S0c, P-SP, P-S5, P-SI, P-S8),
+  1 no-op, 0 blocked/failed; 117 agents, 18.8M subagent tokens, 4.8 h. Branches: track/extension-platform
+  ≈ +40 commits, track/portal-surface ≈ +15, private repo +2 — **all unbuilt** (gate closed for memory since
+  2026-11-08 15:46). Orchestrator interventions: security fixes `5ed08447` (by PHR-S6), `201d7ba7`, CSV
+  injection steered to G5; wiring fixes `721ba6bc` (bus), `bf9eedb6` (registry_source); held E12+G3 work
+  recovered `74723bc1` (`!/tools/fe-ext/` — carry into main at merge); bindings contract `e440a473`; steers
+  `f154b12e`/`689e9df4`. Integration debt: 105 files with open NEEDS (`.omc/state/turn2-inputs.md`, generator
+  `.omc/plans/turn2-inputs.py`). **Turn 2** = integration wave (one slice per central file) + feature gaps
+  (net/ client, bindings BND-0..11, lab adapter, slot draw, terrain mapping, sim ops, E10W drain) + review
+  hand-offs + gates; planner output `.omc/state/turn2-dag.json` + `.omc/plans/turn2-plan.md`. Then the refine
+  pass (cargo check/clippy/tests) once the gate opens, then merge review. Monitor crew + crons as below.
 - **2026-11-08 ~19:50 — EXTENSION PROGRAM SWARM RUNNING (user directive: one session drives everything,
   maximum parallelism).** Workflow `wf_54bcb9d3-643` (task `w1jahbste`), script
   `~/.claude/projects/<this project>/a1c488fe-…/workflows/scripts/ext-program-swarm-wf_54bcb9d3-643.js`:
