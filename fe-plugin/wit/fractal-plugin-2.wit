@@ -517,6 +517,43 @@ interface bus-hooks {
     on-call-result: func(call: call-id, outcome: result<json, host-error>);
 }
 
+/// Hook-point calls selected by scoped bindings (docs/extensions/bindings.md section 7.3).
+/// A component exports this only when its manifest declares `provides`; plain 2.0 components stay valid.
+interface hooks {
+    use types.{json};
+
+    /// One call the host makes for a resolved binding.
+    record hook-call {
+        /// Catalogue id, e.g. "petal.map".
+        hook: string,
+        /// The binding key; "" for keyless hooks.
+        key: string,
+        /// The scope string of the binding row that selected this call.
+        binding-scope: string,
+        /// The binding's config, validated against `provides[].config_schema`.
+        config: json,
+        /// Hook-specific input (bindings.md section 6); {"event": "configure"} for service hooks.
+        input: json,
+        /// ingest.decode, asset.import, blob.mirror; empty otherwise.
+        body: list<u8>,
+    }
+
+    /// What a hook returns; JSON at most 64 KiB, `body` at most the hook's cap.
+    record hook-output {
+        output: json,
+        body: list<u8>,
+    }
+
+    /// A guest-reported outcome that is not a fault: the built-in serves the use.
+    variant hook-error {
+        refused(string),
+        invalid-input(string),
+        failed(string),
+    }
+
+    on-hook: func(call: hook-call) -> result<hook-output, hook-error>;
+}
+
 /// The world every third-party extension component targets.
 world extension {
     import context;
@@ -534,4 +571,10 @@ world extension {
     export ingress-hooks;
     export egress-hooks;
     export bus-hooks;
+}
+
+/// An extension that serves binding hook points (manifest `provides`).
+world extension-with-hooks {
+    include extension;
+    export hooks;
 }

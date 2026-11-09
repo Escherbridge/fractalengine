@@ -117,3 +117,24 @@ for less, never more):
 | kv | keys ≤ 256 bytes, values ≤ 65 536 bytes, manifest `kv.max_bytes` (≤ 1 MiB) per instance |
 | log | 4 KiB per message, 50 messages/s per instance (excess dropped and counted) |
 | instance memory | 16 MiB (today's pooled cap; OD-E4 measures) |
+
+## §hooks
+
+Binding hook calls (docs/extensions/bindings.md §7.3, BND-3). Interface `hooks` has one function,
+`on-hook(hook-call) -> result<hook-output, hook-error>`, and the new world `extension-with-hooks`
+is `include extension` plus `export hooks`. The export is optional at the contract level and
+required by policy: a manifest that declares `provides` needs a component that exports it
+(`missing-export fractalengine:plugin/hooks@2.0.0`, checked by `hooks::check_hooks_export`);
+plain `extension` components stay valid, so `bindings.rs` keeps binding world `extension` and
+`wasm/component/hooks.rs` binds the second world over the same instance.
+
+- **E5 stays at its default.** `bus-hooks.on-call-result` is unchanged: a command failure keeps
+  mapping to the existing host-error cases, with no extra `command-error` case. `hook-error`
+  has its own three cases because a hook refusal (`scene.*`) is not a bus outcome.
+- **Not a bus command.** `bus-hooks.on-command` cannot carry a host call: `caller-kind` has no
+  `host` case and commands are bus traffic with role floors.
+- **Limits per call** (host side, `hooks.rs`): own fuel refill (`tick.fuel`), JSON in and out
+  at most 64 KiB, `body` at most the §6 cap of the hook, the §6 deadline. A trap, fuel
+  exhaustion, bad output or a missed deadline is a counted fault and the built-in serves the use.
+- **Service hooks** get one `configure` call at start and one per config change
+  (`input = {"event":"configure"}`); call hooks get one call per use.

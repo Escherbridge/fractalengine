@@ -8,8 +8,25 @@
   "required": ["manifest_version", "id", "version", "kind"],
   "allOf": [
     {
-      "$comment": "kind web-bundle (portal_surface_20261107) carries no runtime envelope: its capabilities live in `portal`, whose content and the forbidden envelope keys are the portal contract's (docs/spec/portal-bundle/README.md section 1.8, manifest-v1.schema.json). The extension host refuses web-bundle with reserved-kind (semantic V3), so this branch only stops the schema from demanding extension-only keys.",
-      "if": { "properties": { "kind": { "const": "web-bundle" } } },
+      "$comment": "kind web-bundle (portal_surface_20261107) carries no runtime envelope: its capabilities live in `portal`, whose content and the forbidden envelope keys are the portal contract's (docs/spec/portal-bundle/README.md section 1.8, manifest-v1.schema.json). The extension host refuses web-bundle with reserved-kind (semantic V3), so this branch stops the schema from demanding extension-only keys and forbids them (A-11).",
+      "if": { "properties": { "kind": { "const": "web-bundle" } }, "required": ["kind"] },
+      "then": {
+        "$comment": "A-11 (portal-bundle README section 1.8): every runtime-capability key is forbidden for a web bundle; descriptive keys stay allowed.",
+        "properties": {
+          "contract": false,
+          "binding": false,
+          "scene": false,
+          "readings": false,
+          "routes": false,
+          "tick": false,
+          "kv": false,
+          "ingress": false,
+          "egress": false,
+          "bus": false,
+          "ui": false,
+          "provides": false
+        }
+      },
       "else": { "required": ["name", "contract", "binding"] }
     }
   ],

@@ -18,6 +18,42 @@ pub const HOST_MAX_READINGS_CEILING: u32 = 1_000;
 /// Largest `args_schema` in bytes.
 pub const MAX_ARGS_SCHEMA_BYTES: usize = 4_096;
 
+/// Hook points a 2.0 host serves in `provides` (bindings.md section 6; stretch hooks are `unknown-hook`).
+pub const KNOWN_HOOKS: &[&str] = &[
+    "petal.activate",
+    "petal.map",
+    "api.routes",
+    "scene.create",
+    "scene.transform",
+    "scene.property",
+    "ingest.decode",
+    "ui.panel",
+    "egress.connector",
+    "egress.snippet",
+    "asset.import",
+    "blob.mirror",
+    "blob.source",
+    "sync.tileset-source",
+];
+
+/// Keyed hooks: the only ones whose `provides` entry may carry `keys` (the rest are keyless).
+const KEYED_HOOKS: [&str; 9] = [
+    "api.routes",
+    "ingest.decode",
+    "ui.panel",
+    "egress.connector",
+    "egress.snippet",
+    "asset.import",
+    "blob.mirror",
+    "blob.source",
+    "sync.tileset-source",
+];
+
+/// Most `provides` entries, `keys` and `uses` per entry.
+const MAX_PROVIDES: usize = 32;
+const MAX_HOOK_KEYS: usize = 32;
+const MAX_HOOK_USES: usize = 16;
+
 /// The distinct refusal reasons of the validation table (docs/extensions/manifest-v2.md).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Refusal {
@@ -53,6 +89,10 @@ pub enum Refusal {
     OverHostCeiling,
     /// V16: an `http-server` endpoint forwards a credential or host-authenticating header.
     CredentialHeader,
+    /// V17: a `provides` hook outside the catalogue this host serves.
+    UnknownHook,
+    /// V18: a provided hook whose needs are not declared.
+    HookCapabilityMissing,
 }
 
 impl Refusal {
@@ -75,6 +115,8 @@ impl Refusal {
             Self::DuplicateId => "duplicate-id",
             Self::OverHostCeiling => "over-host-ceiling",
             Self::CredentialHeader => "credential-header",
+            Self::UnknownHook => "unknown-hook",
+            Self::HookCapabilityMissing => "hook-capability-missing",
         }
     }
 }
@@ -615,6 +657,23 @@ pub struct UiEntry {
     pub when: Option<UiWhenSpec>,
 }
 
+/// One hook point this extension can serve when a scoped binding selects it (docs/extensions/bindings.md).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ProvidedHook {
+    /// Catalogue id, `<family>.<point>`.
+    pub hook: String,
+    /// Keyed hooks: binding keys served (exact, `prefix*` or `*`); absent means any key.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub keys: Option<Vec<String>>,
+    /// Ids of this manifest's ingress, egress, ui or named-query entries the hook runs through.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub uses: Option<Vec<String>>,
+    /// JSON Schema (args_schema subset) for the binding's `config`; absent means `{}`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub config_schema: Option<Value>,
+}
+
 /// The whole manifest (`plugin/extension.json`).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -663,6 +722,9 @@ pub struct ExtensionManifest {
     /// UI contributions.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub ui: Vec<UiEntry>,
+    /// Hook points served for scoped bindings.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub provides: Vec<ProvidedHook>,
     /// Reserved for the portal program.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub portal: Option<Value>,
@@ -696,7 +758,7 @@ pub fn parse_and_validate(bytes: &[u8]) -> Result<ValidatedManifest, ManifestErr
 }
 
 impl ExtensionManifest {
-    /// V1..V16 in table order; the first failing row is reported.
+    /// V1..V18 in table order; the first failing row is reported.
     pub fn validate(&self) -> Result<(), ManifestError> {
         self.check_structure()?; // V1
         self.check_contract()?; // V2
@@ -710,7 +772,9 @@ impl ExtensionManifest {
         self.check_scope_conflicts()?; // V13
         self.check_duplicates()?; // V14
         self.check_ceilings()?; // V15
-        self.check_credential_headers() // V16
+        self.check_credential_headers()?; // V16
+        self.check_provided_hooks()?; // V17
+        self.check_hook_needs() // V18
     }
 
     fn check_structure(&self) -> Result<(), ManifestError> {
@@ -787,6 +851,12 @@ impl ExtensionManifest {
         for entry in &self.ui {
             check_ui(entry)?;
         }
+        if self.provides.len() > MAX_PROVIDES {
+            return schema(format!("provides has more than {MAX_PROVIDES} entries"));
+        }
+        for provided in &self.provides {
+            check_provided_structure(provided)?;
+        }
         Ok(())
     }
 
@@ -847,6 +917,9 @@ impl ExtensionManifest {
                 Egress::Mqtt(e) if e.topics.is_empty() => return empty("egress topics"),
                 _ => {}
             }
+        }
+        if self.provides.iter().any(|p| p.keys.as_ref().is_some_and(Vec::is_empty)) {
+            return empty("provides keys");
         }
         if let Some(bus) = &self.bus {
             if bus.call.as_ref().is_some_and(Vec::is_empty) {
@@ -1079,12 +1152,14 @@ impl ExtensionManifest {
             .filter(|c| c.source == "host/query")
             .filter_map(|c| c.id.as_deref());
         let ui_ids = self.ui.iter().map(|u| u.id.as_str());
+        let hook_ids = self.provides.iter().map(|p| p.hook.as_str());
         for (what, ids) in [
             ("endpoint", endpoint_ids.collect::<Vec<_>>()),
             ("stream", stream_ids.collect()),
             ("command", command_ids.collect()),
             ("named query", query_ids.collect()),
             ("ui", ui_ids.collect()),
+            ("provided hook", hook_ids.collect()),
         ] {
             let mut seen = BTreeSet::new();
             if let Some(dup) = ids.into_iter().find(|id| !seen.insert(*id)) {
@@ -1118,6 +1193,109 @@ impl ExtensionManifest {
         }
         Ok(())
     }
+
+    fn check_provided_hooks(&self) -> Result<(), ManifestError> {
+        match self.provides.iter().find(|p| !KNOWN_HOOKS.contains(&p.hook.as_str())) {
+            Some(p) => refuse(Refusal::UnknownHook, format!("{} is not a hook this host serves", p.hook)),
+            None => Ok(()),
+        }
+    }
+
+    /// Ids of the entries a provided hook may name in `uses`, by kind.
+    fn hook_use_sets(&self) -> HookUseSets<'_> {
+        let mut sets = HookUseSets::default();
+        for endpoint in &self.ingress {
+            match endpoint {
+                Ingress::HttpServer(e) => sets.routable.push(e.id.as_str()),
+                Ingress::WebsocketAccept(e) => sets.routable.push(e.id.as_str()),
+                _ => {}
+            }
+        }
+        sets.egress = self
+            .egress
+            .iter()
+            .map(|e| match e {
+                Egress::Http(x) => x.id.as_str(),
+                Egress::Mqtt(x) => x.id.as_str(),
+            })
+            .collect();
+        sets.ui = self.ui.iter().map(|u| u.id.as_str()).collect();
+        for entry in self.bus.iter().filter_map(|b| b.consume.as_ref()).flatten() {
+            match entry.source.as_str() {
+                "host/query" => sets.queries.extend(entry.id.as_deref()),
+                "host/readings" => sets.reads_data = true,
+                _ => {}
+            }
+        }
+        sets.reads_data |= !sets.queries.is_empty();
+        sets
+    }
+
+    fn check_hook_needs(&self) -> Result<(), ManifestError> {
+        let sets = self.hook_use_sets();
+        let missing = |hook: &str, what: &str| {
+            refuse(Refusal::HookCapabilityMissing, format!("hook {hook} needs {what}"))
+        };
+        for provided in &self.provides {
+            let hook = provided.hook.as_str();
+            if provided.keys.is_some() && !KEYED_HOOKS.contains(&hook) {
+                return missing(hook, "no keys (it is a keyless hook)");
+            }
+            let uses: Vec<&str> = provided.uses.iter().flatten().map(String::as_str).collect();
+            // (ids the hook may use, whether at least one must be named)
+            let (allowed, needs_one): (Vec<&str>, bool) = match hook {
+                "api.routes" => (sets.routable.clone(), true),
+                "ui.panel" => (sets.ui.clone(), true),
+                "egress.connector" => (sets.egress.iter().chain(&sets.queries).copied().collect(), true),
+                "blob.mirror" | "blob.source" | "sync.tileset-source" => (sets.egress.clone(), true),
+                _ => (Vec::new(), false),
+            };
+            if needs_one && uses.is_empty() {
+                return missing(hook, "a uses id of the matching ingress, egress or ui entry");
+            }
+            if let Some(stray) = uses.iter().find(|id| !allowed.contains(id)) {
+                return missing(hook, &format!("a uses id of the right kind (`{stray}` is not)"));
+            }
+            match hook {
+                "egress.connector" => {
+                    if !uses.iter().any(|id| sets.egress.contains(id)) {
+                        return missing(hook, "an egress id in uses");
+                    }
+                    if !sets.reads_data {
+                        return missing(hook, "a host/query or host/readings consume");
+                    }
+                }
+                "ingest.decode" if self.readings.is_none() || self.tick.is_none() => {
+                    return missing(hook, "the readings grant and a tick block");
+                }
+                "scene.create" | "scene.transform" | "scene.property"
+                    if !self.scene.as_ref().is_some_and(|s| s.read) =>
+                {
+                    return missing(hook, "scene.read");
+                }
+                "asset.import" if provided.keys.is_none() => {
+                    return missing(hook, "keys (the MIME types it converts)");
+                }
+                _ => {}
+            }
+        }
+        Ok(())
+    }
+}
+
+/// Entry ids a provided hook can run through, grouped by kind.
+#[derive(Default)]
+struct HookUseSets<'a> {
+    /// `http-server` and `websocket-accept` ingress ids.
+    routable: Vec<&'a str>,
+    /// Egress ids.
+    egress: Vec<&'a str>,
+    /// UI contribution ids.
+    ui: Vec<&'a str>,
+    /// Named `host/query` ids.
+    queries: Vec<&'a str>,
+    /// A `host/query` or `host/readings` consume exists.
+    reads_data: bool,
 }
 
 /// True when `key` is allowed by an exact key, a `prefix*` or `*` pattern.
@@ -1544,6 +1722,42 @@ fn check_args_node(node: &Value, depth: usize) -> Result<(), ManifestError> {
     Ok(())
 }
 
+/// True for a binding key a keyed hook serves: an exact key, a `prefix*` or `*`.
+fn is_hook_key(key: &str) -> bool {
+    if key == "*" {
+        return true;
+    }
+    let body = key.strip_suffix('*').unwrap_or(key);
+    body.len() <= 128
+        && body.bytes().next().is_some_and(|b| b.is_ascii_lowercase() || b.is_ascii_digit())
+        && body
+            .bytes()
+            .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || matches!(b, b'.' | b'_' | b'+' | b'@' | b'/' | b'-'))
+}
+
+/// V1 for one `provides` entry: id shape, key shape, `uses` ids and the `config_schema` subset.
+fn check_provided_structure(provided: &ProvidedHook) -> Result<(), ManifestError> {
+    let shaped = provided.hook.len() <= 65
+        && provided.hook.split_once('.').is_some_and(|(family, point)| is_local_id(family) && is_local_id(point));
+    if !shaped {
+        return schema(format!("provides hook {} must be <family>.<point>", provided.hook));
+    }
+    if let Some(keys) = &provided.keys {
+        if keys.len() > MAX_HOOK_KEYS || has_duplicates(keys.iter()) || keys.iter().any(|k| !is_hook_key(k)) {
+            return schema("provides keys must be unique, at most 32, exact keys, prefix* or *");
+        }
+    }
+    if let Some(uses) = &provided.uses {
+        if uses.len() > MAX_HOOK_USES || has_duplicates(uses.iter()) || uses.iter().any(|id| !is_local_id(id)) {
+            return schema("provides uses must be unique local ids, at most 16");
+        }
+    }
+    if let Some(config_schema) = &provided.config_schema {
+        check_args_schema(config_schema)?;
+    }
+    Ok(())
+}
+
 fn check_ui(entry: &UiEntry) -> Result<(), ManifestError> {
     check_local(&entry.id)?;
     if entry.label.is_empty() || entry.label.chars().count() > 48 {
@@ -1611,6 +1825,14 @@ mod tests {
             ("mutating named query", with(BI, |m| m["bus"]["consume"][0]["sql"] = serde_json::json!("DELETE FROM iot_reading")), Some(Refusal::InvalidQuery)),
             ("forwarded credential header", with(DEVICE, |m| m["ingress"][0]["forward_headers"] = serde_json::json!(["x-device-id", "authorization"])), Some(Refusal::CredentialHeader)),
             ("forwarded host header", with(DEVICE, |m| m["ingress"][0]["forward_headers"] = serde_json::json!(["x-fe-join-lease"])), Some(Refusal::CredentialHeader)),
+            ("provided hook", with(FLEET, |m| m["provides"] = serde_json::json!([{"hook":"petal.map"}])), None),
+            ("unknown hook", with(FLEET, |m| m["provides"] = serde_json::json!([{"hook":"petal.teleport"}])), Some(Refusal::UnknownHook)),
+            ("stretch hook", with(FLEET, |m| m["provides"] = serde_json::json!([{"hook":"asset.export"}])), Some(Refusal::UnknownHook)),
+            ("hook without its capability", with(FLEET, |m| m["provides"] = serde_json::json!([{"hook":"api.routes","uses":["start"]}])), Some(Refusal::HookCapabilityMissing)),
+            ("keys on a keyless hook", with(FLEET, |m| m["provides"] = serde_json::json!([{"hook":"petal.map","keys":["a"]}])), Some(Refusal::HookCapabilityMissing)),
+            ("empty hook keys", with(FLEET, |m| m["provides"] = serde_json::json!([{"hook":"asset.import","keys":[]}])), Some(Refusal::EmptyScope)),
+            ("duplicate hook", with(FLEET, |m| m["provides"] = serde_json::json!([{"hook":"petal.map"},{"hook":"petal.map"}])), Some(Refusal::DuplicateId)),
+            ("config schema outside the subset", with(FLEET, |m| m["provides"] = serde_json::json!([{"hook":"petal.map","config_schema":{"oneOf":[]}}])), Some(Refusal::Schema)),
         ];
         for (row, bytes, expected) in rows {
             let got = parse_and_validate(&bytes).err().map(|e| e.reason);
@@ -1629,5 +1851,7 @@ mod tests {
         assert_eq!(parse_and_validate(&relabelled).unwrap().capability_digest, base);
         let widened = with(FLEET, |m| m["scene"]["property_scope"] = serde_json::json!(["*"]));
         assert_ne!(parse_and_validate(&widened).unwrap().capability_digest, base);
+        let providing = with(FLEET, |m| m["provides"] = serde_json::json!([{"hook":"petal.map"}]));
+        assert_ne!(parse_and_validate(&providing).unwrap().capability_digest, base, "provides re-prompts consent");
     }
 }
