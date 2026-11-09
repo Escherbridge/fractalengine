@@ -5,7 +5,41 @@ use bevy_egui::egui;
 use crate::accessibility::ResponseExt;
 
 use crate::actions::{UiAction, UiManager};
+use crate::portal::chrome::{chrome_model, ChromeAction, ChromeTone};
 use crate::theme;
+
+/// Host-drawn admission badge plus the Admit / Revoke actions the state allows (ux.md §3).
+fn render_bundle_chrome(ui: &mut egui::Ui, ui_mgr: &mut UiManager) {
+    let Some(model) = ui_mgr.portal.bundle_state().and_then(chrome_model) else {
+        return;
+    };
+    let color = match model.tone {
+        ChromeTone::Accent => theme::TREE_PRIMARY_ACCENT,
+        ChromeTone::Neutral => theme::TEXT_DIM,
+        ChromeTone::Error => theme::STATUS_OFFLINE,
+    };
+    ui.add(egui::Label::new(egui::RichText::new(&model.badge_text).color(color)).truncate())
+        .named(ui, &model.badge_name)
+        .on_hover_text(&model.badge_text);
+    ui.horizontal_wrapped(|ui| {
+        for action in [Some(model.primary), model.secondary].into_iter().flatten() {
+            if action == ChromeAction::Close {
+                continue; // The fixed Close button above is the one Close control.
+            }
+            let size = crate::ui_shell::layout_policy::control_size(ui.ctx(), [28.0, 24.0]);
+            if ui
+                .add(egui::Button::new(action.label()).min_size(size))
+                .named(ui, action.accessible_name())
+                .clicked()
+            {
+                ui_mgr.push_action(match action {
+                    ChromeAction::Admit => UiAction::PortalAdmitBundle,
+                    _ => UiAction::PortalRevokeBundle,
+                });
+            }
+        }
+    });
+}
 
 const FEEDBACK_HEIGHT: f32 = 64.0;
 
@@ -79,7 +113,8 @@ pub(crate) fn right_portal_toolbar(ctx: &egui::Context, ui_mgr: &mut UiManager) 
                         ui_mgr.push_action(action);
                     }
                 }
-                if ui
+                if !ui_mgr.portal.is_bundle()
+                    && ui
                     .add(egui::Button::new("Open externally").min_size(crate::ui_shell::layout_policy::control_size(ui.ctx(), [28.0, 24.0])))
                     .named(ui, "Open portal externally")
                     .on_hover_text("Request this URL in your system browser")
@@ -97,11 +132,12 @@ pub(crate) fn right_portal_toolbar(ctx: &egui::Context, ui_mgr: &mut UiManager) 
             });
             ui.add(
                 egui::Label::new(
-                    egui::RichText::new(ui_mgr.portal_hostname()).color(theme::TEXT_DIM),
+                    egui::RichText::new(ui_mgr.portal.hostname()).color(theme::TEXT_DIM),
                 )
                 .truncate(),
             )
-            .on_hover_text(ui_mgr.portal_url());
+            .on_hover_text(ui_mgr.portal.url());
+            render_bundle_chrome(ui, ui_mgr);
             render_feedback(ui, ui_mgr);
             ui.separator();
 
