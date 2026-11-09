@@ -39,6 +39,56 @@ Ratified in the user grill on 2026-11-07. Do not re-litigate (`.omc/state/bus/SE
 
 <!-- Binding; maintained by the orchestrating session (P2P-QA). Dated bullets, newest first. -->
 
+- 2026-11-09 03:00 (orchestrator fractalengine-71, mandatory for R-TOOL) — the editor's static checker
+  (Pyright) reports real runtime errors in the sim harness of this tree: tools/qa/sim/loopback.py uses
+  `KEY_ID` without defining or importing it (lines ~50, 58, 375, 379, 412, 424 → NameError at runtime);
+  scenario.py:223/228/232 iterates a value that can be None; run.py:120/361/387 dereferences possibly-None
+  values. R-TOOL fixes them (owner of I-SIM/B11 files) and runs `python -I -m py_compile` over tools/qa/sim
+  (syntax only — no test runs).
+- 2026-11-09 02:45 (orchestrator fractalengine-71, SECURITY, mandatory — automated commit review of
+  B10a/I-API, confirmed) — **scene hooks are bypassable two ways.** (1) **R-HOOKS — fail-open on
+  caller-sized input:** fe-runtime/src/scene_hook_gate.rs skips the bound hook and proceeds when the hook
+  input exceeds `MAX_HOOK_INPUT_BYTES`; the caller controls that size (node names, property values). When a
+  binding exists and the input is over the cap, REFUSE (REST/MCP/WS answer 413-style `input-too-large`);
+  "fail open" (bindings.md) covers hook crash/timeout only, never input the caller sized. (2) **R-API (+R-HOOKS
+  keeps the API stable) — door parity:** only the REST create/transform/set-property handlers in
+  fe-api/src/rest.rs consult the gate; MCP tools (create_node, update_transform, place_asset, set_property in
+  fe-api/src/mcp/tools.rs) and WS entity commands (CreateNode, SetNodeProperty in fe-api/src/ws.rs) write
+  through the cores directly. Every door that creates, transforms or sets properties calls the same
+  `scene_gate_verdict` with its own `SceneCallerKind` (Mcp, Ws) and stages the augment exactly as REST does.
+  R-X verifies parity across REST, MCP, WS and the GUI authoring path (one shared-core gate is preferred if a
+  slice owns the core).
+- 2026-11-09 02:25 (orchestrator fractalengine-71, SECURITY, mandatory for R-LIFE) — **decode body cap
+  checked after allocation** (automated commit review of B10b): fe-plugin/src/bindings/decode.rs reads every
+  payload file via `host.payload_files(&job.asset_ids)` and only then sums against
+  `MAX_DECODE_BODY_BYTES`, so an oversized device payload is fully loaded before it is refused. Fix: the
+  `DecodeHost` returns declared sizes first (asset `size_bytes` from the DB), the sum is checked BEFORE any
+  read, and bytes are then read through a bounded reader that stops at the remaining budget (a declared size
+  that lies is cut off, not trusted). Extend the decode journey with one oversized payload.
+- 2026-11-09 02:15 (orchestrator fractalengine-71, mandatory integration) — **I-UI** adds `pub mod bindings;`
+  to fe-ui/src/extensions/mod.rs (B9 left it out); **R-GOV** adds ops_drain.rs arms for B9's new
+  `ExtensionOp` variants (RefreshBindings, SetBinding, ClearBinding, TakeBindingOffer) so the match stays
+  exhaustive, each going through the same binding authority/consent path as B7/B8 (no op skips judging);
+  **I-BIN2** moves terrain_bridge.rs off `RemoteRegistryClient`/`FetchStrategy` onto F-REG's `fetch_hexon`.
+- 2026-11-09 01:50 (orchestrator fractalengine-71, SECURITY, mandatory — automated commit review of turn-2
+  F-OPS/N5, confirmed) — three fixes:
+  **(1) R-NET — credential slots are not package-scoped (HIGH):** fe-plugin/src/net/mod.rs:537 looks up
+  `credentials.get(&auth.credential)` with the manifest-declared slot name, and
+  fractalengine/src/extension_host/net_sources.rs `FileCredentialStore::get(slot)` keys by slot alone, so any
+  extension declaring the same slot name reads another extension's credential. Change the `CredentialStore`
+  contract to `get(package_id, slot)` (store `{package_id: {slot: ..}}`), have `Net` pass the instance's
+  package id, update fe-plugin/src/net/tests.rs and docs (manifest-v2.md `auth` section); no fallback to an
+  unscoped slot.
+  **(2) R-GOV (and R-REG if still running) — SSRF denylist incomplete:** `is_internal` in
+  fractalengine/src/extension_host/sources.rs:187 misses 0.0.0.0/8, 198.18/15, 240/4, multicast, ::/96,
+  64:ff9b::/96 + 64:ff9b:1::/48 (NAT64), 2002::/16 (check the embedded v4), fec0::/10, ff00::/8. Replace with
+  an ALLOW-list of global unicast only (resolve once, check every resolved address, connect to the checked
+  address — no DNS rebinding); R-NET applies the same predicate to fe-plugin net/ egress and dial-outs (one
+  shared function).
+  **(3) R-GOV — consent bypass on update:** ops_drain.rs treats any build for an installed installation_id as
+  an update judged only on the capability digest. An update whose `publisher_did` (or signing trust root)
+  differs from the installed build is a NEW install: fresh consent, with the publisher change shown in the
+  ConsentRequest; `activate_update` also checks the consent record's publisher.
 - 2026-11-08 23:00 (orchestrator fractalengine-71, SECURITY, mandatory for G5) — **CSV formula injection in
   bi-push** (automated commit review of E17): `csv_field` in extensions/bi-push/src/payload.rs quotes `, " \r
   \n` but does not neutralise cells starting with `= + - @ \t \r`; node names/properties come from any verse
