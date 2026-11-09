@@ -19,6 +19,8 @@ pub mod device_payload;
 pub mod elevated_query;
 pub mod entity;
 pub mod entity_property;
+pub mod extension_binding;
+pub mod extension_policy;
 pub mod field_def;
 pub mod inbound_admissions;
 pub mod invite;

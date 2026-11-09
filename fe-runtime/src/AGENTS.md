@@ -840,6 +840,40 @@ before invoking the atomic commit helper is the commit admission boundary: an
 already admitted transaction may commit after revocation. Its persisted receipt
 must still be returned; revocation is not a rollback or a retry instruction.
 
+**Extension admissions (extension_platform_20261107 E4, wired by I-DB 2026-11-09).**
+The host mints three more admission facts, none of them guest input:
+
+- `with_package(PackageIdentity)`: the sealed build's `{package_id, content_hash}`,
+  the R24 provenance key the DB stamps on every reading and journal fact this
+  instance writes. `PackageIdentity::new` refuses a non-reverse-DNS id or a hash
+  that is not 64 lowercase hex, so a malformed pair never reaches a row.
+- `with_readings(ReadingsAdmission)`: the manifest's readings grant bound to ONE
+  source class the operator picked (`simulation`, `device` or `connector`, never
+  inferred) and its metric names.
+- `with_scene_writes(kinds)`: the declared `scene.write` kinds.
+
+A package admission is v2 and closed by default. Its empty `property_scope`
+grants NO property (a 1.0 context's empty list still grants all), and without
+`with_scene_writes` it may stage no write kind at all.
+
+`DbCommand::PluginCommit` is one tick's write window: `ops` (the atomic scene
+batch) plus `readings` (`fe_sdk::plugin_host::StagedReading`). Both land, or
+nothing does, except that a batch whose readings then fail answers
+`unknown-outcome`. Both plugin commands reply on an
+embedded `Sender<PluginResult>`, where `PluginResult = Result<PluginReply,
+PluginRefusal>`. The refusal keeps the WIT `host-error` class:
+
+| Refusal | Meaning |
+|---|---|
+| `capability-denied` | The admission does not grant the request. |
+| `invalid-input` | The request failed validation; nothing landed. |
+| `revoked` | The admission was revoked; nothing landed. |
+| `backend` | The DB failed; nothing landed. |
+| `unknown-outcome` | The scene batch committed but its readings did not all land. The caller must reconcile and must never retry blindly. |
+
+A string reply would have lost that class. The DB side is fe-database
+`src/AGENTS.md` §plugin-host-flush.
+
 ScopedQuery carries sql/vars, requested petal_scope and a mandatory correlation
 string. Pending routing maps it to the existing QueryResult family; all DB
 outcomes echo QueryResult(Some(id)) or QueryFailed(id). Desktop text must use
@@ -1178,3 +1212,88 @@ GUI's processing order are unchanged.
 - A full DB channel blocks only the relay (it used to block the Bevy main thread); a stop request
   abandons the command in hand. A terrain-credential read still never waits on a full channel.
 - The API command queue no longer wakes the reactive render loop: Bevy does not drain it.
+
+## §extension-binding
+
+`extension_binding.rs` holds the wire half of scoped extension bindings (docs/extensions/bindings.md §3,
+§5, §6; slice BND-0, declared by I-DB 2026-11-09). It covers:
+
+- the replicated `BindingRecord` and its doc-key codec (`binding/{scope}/{hook}/{key}/{author_did}`);
+- the per-peer resolution vocabulary (`BindingResolution`, `UnresolvedReason`, `BindingOffer`);
+- the hook catalogue.
+
+It lives in fe-runtime because fe-database (storage, judging), fe-plugin (resolver, activation), fe-api
+(routes) and fe-ui (Bindings view) all need it, and only fe-runtime is below every one of them.
+
+- **No fall-through.** Resolution takes the nearest scope that holds an effective row: petal, then
+  fractal, then verse. An explicit `builtin` row masks every outer binding. `inherit` clears the row, as if
+  no row existed at that scope. A row for an extension this peer cannot run never falls through to an
+  outer scope's binding: the point shows *unresolved* and the built-in serves it meanwhile. Falling
+  through would run a binding the scope's Manager never chose.
+- **The catalogue is a const table** (`HOOK_CATALOGUE`). A hook's family, key kind, call kind, deadline,
+  body cap, eagerness and one-peer placement are build facts, not data. Stretch rows stay in the table
+  and answer `unknown-hook` until they are built. `served_hook_ids()` is the v1 tier.
+  `fe_sdk::manifest_v2::KNOWN_HOOKS` must equal it minus `portal.open`: a web bundle binds
+  `portal.open` with no `provides` entry.
+- **Per-peer resolution.** Each peer resolves on its own. A peer that lacks the extension, or whose
+  policy forbids it, keeps the built-in. It shows the unresolved state with at most one offer (install,
+  review or override), and acting on that offer always needs the local DID. Nothing installs itself.
+
+## §scene-hook-gate
+
+`scene_hook_gate.rs` is the send-side gate for `scene.create`, `scene.transform` and `scene.property`
+(bindings.md §6; slice BND-10a). It sits on the writer side: the GUI commit path and the API doors ask
+the gate before they send a node write. The DB thread, `ApplyReplicatedRow` and `PluginCommit` never
+pass through it, because a replicated row or an extension's own commit was already judged where it was
+written.
+
+- `SceneHookGate::install` sets the process gate once. The binary does this before the API thread
+  serves, and the API doors read it with `installed()`. The same value is inserted as a Bevy resource for
+  the GUI. `Default` is a disabled gate, so every write proceeds.
+- **Door parity (steer 2026-11-09 02:45).** Every door that creates, transforms or sets a property calls
+  the gate with its own `SceneCallerKind` and stages the augment the same way. That covers REST, MCP
+  tools, WS entity commands and the GUI. A door that skips the gate is a bypass, not an optimisation.
+- **Fail-open has limits.** A guest crash, trap, fuel exhaustion or missed deadline proceeds, and the
+  gate counts it (OQ-B4). An input over `MAX_HOOK_INPUT_BYTES` while a binding exists must REFUSE with
+  `input-too-large`, because the caller controls that size (steer 02:45, owned by R-HOOKS). Only keys in
+  the build's `property_scope` reach the guest; any other key proceeds and counts as `skipped`.
+- An allowing guest may augment the write with `set_property` ops on the subject node. Those ops stage
+  in the instance's tick window through `SceneHookBackend::stage_augment`, are capped at
+  `MAX_AUGMENT_OPS`, and flush as an ordinary `PluginCommit`.
+
+## §blob-fallback
+
+`bevy_blob_reader.rs` holds the extension byte-source seam (bindings.md §6 `blob.source`,
+`sync.tileset-source`; slice BND-10d). `BlobFallback` is asked **only after every peer missed**. It is
+never a transport, a relay or a choice of peer.
+
+- `BlobFallbackSlot` is late-bound and shared by the sync thread and the blob reader. It is empty
+  (peers only) until the plugin host installs a source, and empty again once the host stops.
+- Every fallback byte passes `verify_fallback_bytes`. That checks the asking path's cap, then the exact
+  size when the asker knows it, then BLAKE3 against the requested hash. Refused bytes are logged and
+  dropped. An extension can therefore supply bytes but can never change what a hash means.
+- The reader path that uses the slot when no `on_blob_miss` callback exists is not wired yet (needs
+  `app.rs`, which no turn-2 slice owns).
+
+## §extension-db-commands
+
+These commands carry the extension governance and binding DB plane (I-DB, 2026-11-09). Each one carries
+its own typed `crossbeam` reply, in the PluginRead style: no new `DbResult` variant and no API
+pending-family entry, so an extension reply can never satisfy an unrelated API waiter.
+
+- **Governance.** The governance commands are `SetExtensionPolicy`, `GetExtensionPolicy`,
+  `AppendExtensionAudit`, `ListExtensionAudit`, `RecordKillListOverride` and `LoadExtensionGovernance`.
+  - They carry no DID: the DB thread acts as its own node DID, the row author peers judge.
+  - Payloads cross as `serde_json::Value` because fe-runtime cannot name fe-database's `PolicyRow` or
+    `AuditEntry`. The DB arm parses them strictly.
+  - An `Err` string starts with the refusal code (`invalid-policy:`, `role-denied:`,
+    `confirmation-mismatch:`, `invalid-input:`). The host maps it with a prefix split.
+- **Bindings.** The binding commands are `PutBinding`, `ListBindings` and `LoadBindingSnapshot`. They
+  reply with the typed `BindingRefusal { code, message }`, where `code` is the bindings.md §4.2 error id.
+  `StoredBinding` and `VerseBindings` are the judged shapes the resolver and the API read.
+- **Accepted payloads.** `AcceptedPayload` is the `ingest.decode` trigger. It carries the pinned six
+  fields plus `asset_ids`, which the decoder needs to read the files. On the accepting peer only, the
+  DB thread hands the event to the sink the host installed with fe-database
+  `handlers::device_payload::set_accepted_payload_sink`; a replicated payload never fires it. That
+  module still declares its own field-identical `AcceptedPayloadEvent` until it becomes an alias of
+  this type.

@@ -8,6 +8,7 @@ pub mod channels;
 pub mod diag15m; // DIAG-15M: temporary render diagnostics
 pub mod distributed_query;
 pub mod entity_access;
+pub mod extension_binding;
 pub mod join_invite;
 pub mod editor_batch;
 pub mod input;
@@ -27,6 +28,7 @@ pub mod qa_portal;
 pub mod qa_web;
 pub mod safe_id;
 pub mod scene_asset;
+pub mod scene_hook_gate;
 pub mod scene_materials;
 pub mod scene_replication;
 pub mod service_lifecycle;
