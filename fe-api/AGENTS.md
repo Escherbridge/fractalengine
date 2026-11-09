@@ -2315,3 +2315,25 @@ GET /api/v1/debug/nodes/{node_id}/scene-asset-publication is metadata-only QA re
 API admission and host-to-DB forwarding each use bounded try_send. The host retains a single exact nonce/deadline/navigation owner and never blocks waiting in its frame. The dedicated typed DB result/failure cannot consume native review/adoption or unrelated API ownership. API return checks both bridge echo and DTO nonce/node/op shape, scope, whole response bound, deadline and current credential expiry/generation/revocation again. Responses are no-store and failures use fixed safe text, never SQL/cause/raw-row data. DB's final fenced transaction is the point-in-time stored authority/state linearization point; later credential checks do not promise continuous role ownership.
 
 No operation_id requires native NONE owner/anchor/provenance and zero complete asset adoption ops; after adoption it refuses. A supplied operation_id requires exactly one persisted matching intention and stored provenance/metadata agreement; no fallback receipt is synthesized. The versioned DTO exposes only approved typed fields/digests. bytes_verified_by_this_read=false; actual downloads/BLAKE3/SHA256 remain separate. The node-bound endpoint cannot independently prove the pre-placement zero-reference instant. Standard credential admission retains its existing bounded durable reader; the audit itself goes through the already running DB owner and never opens another store.
+
+## §portal-bundles (`portal_bundles.rs`, portal_surface_20261107 T0.3 / T4.2)
+
+Routes: `POST /api/v1/petals/{petal_id}/portal-bundles` (multipart upload, body cap `route_body_limit()`) and
+`GET /api/v1/portal-bundles/{asset_id}` (summary plus the local admission read). The QA-only observation routes are
+under `/api/v1/debug/portal/*` (`qa_portal.rs`, see §QA Portal evidence).
+
+- **Bytes never cross the DB channel.** Upload stores one blob API-side, then sends a metadata-only
+  `DbCommand::CreateAsset`. The DB thread never receives the bytes.
+- **Size cap.** `FE_PORTAL_BUNDLE_MAX_BYTES` is read here and in fe-webview under the same name, because fe-webview cannot
+  depend on fe-api. The default is OD-4's 32 MiB.
+- **Validation is pure.** `fe_format::portal_bundle::validate_portal_bundle` decides refusal classes from archive facts;
+  the route only maps them to responses.
+- **CORS is narrow.** `share_route_allows` admits a static portal origin (an `s-` label) on `GET /api/v1/shared/<one segment>`
+  and nothing else. Credentials are never set. `a-` labels never match. Configured origins are unchanged.
+- **Admission read is private.** The summary's `admission` appears only when the token's `client` claim equals this peer's
+  DID, so a remote token never learns this peer's admission state.
+- **Open residual.** The `Access-Control-Allow-Private-Network` header and the WebView2 permission branch wait for spike SP-8.
+  An operator `cors_origins = "*"` still opens every route to every origin; that behaviour predates this track.
+
+Tests: `tests/portal_bundle_test.rs` (R9); the anchor-petal reach and the nosniff attachment rule are extended in
+`asset_ownership_test.rs` and `device_ingest_test.rs`.

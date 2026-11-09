@@ -207,6 +207,12 @@ cargo test -p fe-webview
 cargo test -p fractalengine --bin fractalengine -- panic_log:: window_chrome::
 ```
 
+Portal bundle journeys (`portal_surface_20261107`) are registered here as the `fe-webview/tests/portal_protocol_journey.rs`
+(custom protocol, CSP, navigation admission) and `fe-webview/tests/portal_ipc_journey.rs` (`fe.portal.v1` bridge) binaries.
+Both run inside the crate-wide `cargo test -p fe-webview` line above. They are not repeated as a fenced command, so the
+chunked runner does not run them twice; a targeted steer can run them alone with
+`cargo test -p fe-webview --test portal_protocol_journey --test portal_ipc_journey`.
+
 ---
 
 ## R7 — Roles & sharing
@@ -280,7 +286,7 @@ REST, MCP tools, operator gate, screenshot/vision/input, egress/export, elevated
 **Total ≈ 297**
 
 ```bash
-cargo test -p fe-api --test api_integration --test api_harness_smoke --test mcp_integration --test screenshot_test --test vision_test --test vision_scope_test --test token_lifecycle_test --test namespace_capability_test --test existence_oracle_test --test record_id_read_test --test gis_test --test export_share_test --test share_signer_persistence_test --test analytics_scope_test --test ws_integration
+cargo test -p fe-api --test api_integration --test api_harness_smoke --test mcp_integration --test screenshot_test --test vision_test --test vision_scope_test --test token_lifecycle_test --test namespace_capability_test --test existence_oracle_test --test record_id_read_test --test gis_test --test export_share_test --test share_signer_persistence_test --test analytics_scope_test --test portal_bundle_test --test ws_integration
 cargo test -p fe-api --lib -- auth:: crs:: bridge_client endpoint:: entity_store_bridge export:: operator_gate query_guard rest:: mcp:: share:: upload:: visibility:: vision:: ws::
 cargo test -p fe-database --lib -- handlers::elevated_query api_token_store session_cache handlers::api_token
 cargo test -p fe-runtime --lib -- vision::
@@ -426,6 +432,7 @@ cargo test -p fe-ui --lib -- plugin::
 | `fe-database/tests/{petal_render_distance_test,visibility_groups_test,node_lifecycle_test,node_view_test,node_data_write_readback_test}.rs` | R4 / R1 (see R1, R4 tables) |
 | `fe-database/tests/` (rest: db_test, shared_handle_test, schema_idempotent, migration_*, replication_backpressure_test, canon_log_*_test, dcl20_bypass_counter_test) | R10 |
 | `fe-terrain/**` | R4 (always `--features render`) |
+| `fe-api/src/portal_bundles.rs`, `fe-api/src/qa_portal.rs`, `fe-api/tests/portal_bundle_test.rs` | R9 |
 | `fe-api/**` | R9, except files cross-listed into R4/R7/R8 (see R9 table header) |
 | `fe-sync/**` | R8 |
 | `fe-network/**`, `fractalengine-relay/**` | R8 |

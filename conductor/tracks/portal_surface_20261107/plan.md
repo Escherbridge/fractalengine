@@ -275,30 +275,31 @@ SI, the integration wiring slice, runs serially at the join of every BUILD wave:
 
 ## 7. Task checklist
 
-- [ ] T0.1 bundle container + `portal` manifest section v1 (AUTHOR-ONLY)
-- [ ] T1.1 protocol / CSP / allowlist contract + spike list (AUTHOR-ONLY)
-- [ ] T2.1 `fe.portal.v1` IPC contract, assumption-marked until the sibling bus milestone (AUTHOR-ONLY)
-- [ ] T3.1 repository-node UX + chrome states (AUTHOR-ONLY)
-- [ ] T4.1 admission state machine + static-sandbox feeds (AUTHOR-ONLY)
-- [ ] T5.1 QA lane: harness spec, PJ1–PJ10 text, fixture sources, scenario JSON (AUTHOR-ONLY)
-- [ ] T6.1 static export spec (AUTHOR-ONLY)
-- [ ] T1.2 spikes SP-1..SP-7 (BUILD)
-- [ ] T0.2 fe-format validator (BUILD)
-- [ ] T0.3 fe-api bundle routes + listing + `NodeKind::Repository` (BUILD)
-- [ ] T1.3 custom protocol + CSP + navigation allowlist (BUILD)
-- [ ] T1.4 delete `tauri_commands.rs` (BUILD)
-- [ ] R-P1 protocol security review (BUILD)
-- [ ] T3.2 repository inspector + chrome (BUILD)
-- [ ] T5.2 bundle builder (BUILD)
-- [ ] T5.3 sim `portal` probe (BUILD)
-- [ ] T5.4 fixed bundle QA operations + `fe.py portal` (BUILD)
-- [ ] R-P3 UX review (BUILD)
-- [ ] T2.2 IPC bridge (BUILD)
-- [ ] T0.4 scene-asset MIME branch, cross-track (BUILD)
-- [ ] T2.3 readings broadcast, only on the OD-13 fallback (BUILD)
-- [ ] R-P2 IPC security review (BUILD)
-- [ ] T4.2 admission integration, revoke, static feeds (BUILD)
-- [ ] R-P4 admission security review (BUILD)
+- [x] T0.1 bundle container + `portal` manifest section v1 (AUTHOR-ONLY) — e3fc03df, code-first docs
+- [x] T1.1 protocol / CSP / allowlist contract + spike list (AUTHOR-ONLY) — e3fc03df, code-first docs
+- [x] T2.1 `fe.portal.v1` IPC contract, assumption-marked until the sibling bus milestone (AUTHOR-ONLY) — e3fc03df, written against A-1
+- [x] T3.1 repository-node UX + chrome states (AUTHOR-ONLY) — 465b318a
+- [x] T4.1 admission state machine + static-sandbox feeds (AUTHOR-ONLY) — e3fc03df
+- [x] T5.1 QA lane: harness spec, PJ1–PJ10 text, fixture sources, scenario JSON (AUTHOR-ONLY) — f4cf05eb
+- [x] T6.1 static export spec (AUTHOR-ONLY) — e3fc03df
+- [ ] T1.2 spikes SP-1..SP-7 (BUILD) — desk check only (a15c3bc8, protocol.md §12); SP-1..SP-9 not run on WebView2
+- [x] T0.2 fe-format validator (BUILD) — ce3df043, unbuilt
+- [x] T0.3 fe-api bundle routes + listing + `NodeKind::Repository` (BUILD) — 114c0a28, unbuilt
+- [x] T1.3 custom protocol + CSP + navigation allowlist (BUILD) — 134d00c5, unbuilt
+- [x] T1.4 delete `tauri_commands.rs` (BUILD) — file absent at HEAD, lib.rs line dropped, unbuilt
+- [x] R-P1 protocol security review (BUILD) — eb909b4c, verdict PASS-WITH-FIXES in review-p1.md (fixes applied)
+- [ ] T3.2 repository inspector + chrome (BUILD) — PARTIAL: code in dcfcd388, Repository call site unwired (P3-03)
+- [x] T5.2 bundle builder (BUILD) — 4c02d9fb, unbuilt
+- [x] T5.3 sim `portal` probe (BUILD) — 4c02d9fb, unbuilt
+- [x] T5.4 fixed bundle QA operations + `fe.py portal` (BUILD) — 4c02d9fb and eabcef17, unbuilt
+- [x] R-P3 UX review (BUILD) — eb909b4c, verdict PASS-WITH-FIXES, NEEDS P3-01..P3-03 still open in review-p3.md
+- [x] T2.2 IPC bridge (BUILD) — 382f9d7d, unbuilt
+- [x] T0.4 scene-asset MIME branch, cross-track (BUILD) — abfead92, unbuilt
+- [ ] T2.3 readings broadcast, only on the OD-13 fallback (BUILD) — not started; the OD-13 fallback is not triggered (no readings_ingested_tx in fe-api)
+- [x] R-P2 IPC security review (BUILD) — review-p2.md verdict PASS
+- [x] T4.2 admission integration, revoke, static feeds (BUILD) — fc29e431, unbuilt
+- [x] R-P4 admission security review (BUILD) — eb909b4c, verdict PASS-WITH-FIXES, NEEDS P4-06 still open in review-p4.md
 - [ ] T5.5 run PJ1–PJ9 + sim scenarios (BUILD)
-- [ ] D docs consolidation + test-batches rows; full sweep once
+- [x] D docs consolidation + test-batches rows (R6, R9), this pass
+- [ ] full sweep once (campaign end, on user request)
 - [ ] T6.2 static export (BUILD, later)

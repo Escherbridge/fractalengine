@@ -81,16 +81,15 @@ at command dispatch (`dispatch_commands`) and again in wry's
 layer never sees). The trust bar (`TRUST_BAR_JS`) is injected as an init
 script on every page; do not remove.
 
-## §tauri-commands — tauri_commands.rs
+## §tauri-commands — removed (portal_surface_20261107 T1.4, OD-9)
 
-Only the asset helpers remain: `resolve_asset` and `get_asset_base_url`.
-Nothing registers them yet: there is no `tauri::Builder` in the binary; the
-embedded backend uses wry directly. `resolve_asset` retains lexical path checks
-and canonicalizes both base and target to confine symlinks to the petal asset dir.
+`tauri_commands.rs` is deleted and its `lib.rs` line dropped. Nothing registered its
+commands: there is no `tauri::Builder` in the binary, and the embedded backend drives
+wry directly. The bridge that replaces it is `portal_bundle/` (§portal-bundle below).
 
-The six unregistered node/petal commands and their unused PetalInfo DTO were
-removed. They returned fabricated data, empty lists or successful no-op writes;
-there is no webview-JS object mutation/query bridge at this seam.
+The six unregistered node/petal commands and their unused PetalInfo DTO had been removed
+earlier. They returned fabricated data, empty lists or successful no-op writes; there is no
+webview-JS object mutation/query bridge at this seam.
 
 ## fallback-backend
 
@@ -167,3 +166,11 @@ Each job binds the owned popup lifetime cookie, controller, visible state, page 
 Fixed scripts also embed the admitted exact source URL inside the document, preventing a delayed script from operating on another origin/page. A bounded loading sentinel permits retry without interpreting incomplete DOM facts. Before releasing a completed receipt the backend rechecks its owned popup/session/page generation, exact source, helper and capture dimensions again. Request expiry and changed-page results terminate pending native work; completed document/PNG diagnostic refusals do not claim a page loaded. The existing journeys extend actual COM stream cap enforcement, page-generation ABA/refused foreign destinations and strict PNG framing refusal. Runtime image and native callback execution remain root-owned verification.
 
 The page clock records the raw admitted destination inside the existing native policy owner, after the final allow setter succeeds. NavigationStarting may precede the Source change and the initiating script callback. Only a second-link job beginning on page one may wait through that intermediate old-Source state, with exactly one generation increment admitting the exact same-origin page two and no intervening refusal. Completion still requires Source to become page two and a new fixed observation of its ready document. Starting that operation on page two is refused, so a self-link cannot mistake the old ready document for a fresh navigation. Generic geometry/history/close invalidations clear the admitted destination; extra transitions and foreign destinations remain terminal stale work. The extended existing native boundary journey covers this ordering and invalidation contract; source checks do not establish native execution acceptance.
+
+## §portal-bundle — `portal_bundle/` (portal_surface_20261107)
+
+Signed web bundles in the Petal Portal: the `fe-portal` custom protocol, exact-origin navigation admission in both
+navigation layers, governance-backed admission with revoke, and the host-brokered `fe.portal.v1` IPC bridge. The
+rationale, ordering rules and residuals live in [`portal_bundle/AGENTS.md`](portal_bundle/AGENTS.md). Bundle origins
+are admitted only by exact match against the live mount table; the raw URL policy (`fe_runtime::portal_url::is_url_allowed`)
+is never relaxed. Journeys: `tests/portal_protocol_journey.rs` and `tests/portal_ipc_journey.rs` (R6).

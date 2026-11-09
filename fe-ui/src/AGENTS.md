@@ -141,7 +141,7 @@ delegates to a small domain function in `portal.rs` / `node_props.rs` /
 dispatcher and lets the domain logic be unit-tested without a Bevy `App`
 where possible (see §portal).
 
-## Portal URL ownership and backend feedback
+## §portal — Portal URL ownership and backend feedback
 
 Both Inspector and Node Options validate a trimmed draft through actions::portal::validate_url
 and queue one captured SaveNodeUrl payload. The dispatcher rechecks current Petal, actual tree
@@ -1552,3 +1552,17 @@ and native_accessibility/AGENTS.md for the separately audited painter contract.
 - `DbResult::HierarchyRead` (an API hierarchy read) only answers pending API waiters.
 - `handle_verse_replica_lifecycle` sends `RememberVerseReplica` once per verse with a
   namespace id, so the sync thread can open a publication lease (fe-sync §publication-lease).
+
+## §portal-bundle — bundle chrome, repository inspector, OpenBundle (portal_surface_20261107 T3.2)
+
+- **Chrome is pure.** `portal/chrome.rs` maps a `BundleState` to badge text, tone and offered actions. Accessible names are
+  ASCII (for example `Admitted - z6Mkha...ab12`) so locators stay stable. The DID short form is the first 6 and last 4
+  characters. The toolbar badge (`panels/portal_toolbar.rs`) is the only trust indicator; page content never sets it.
+- **Repository section is pure data in, buttons out.** `portal/repository.rs` takes plain data assembled by the call site and
+  returns the buttons, primary first. Open is always present. The section shows "unsigned" for an unsigned build, or a short
+  DID plus trust-root name.
+- **Open flow.** `UiAction::OpenBundle { node_id }` becomes `BrowserCommand::OpenBundle { node_id }`. The state change comes
+  from `actions::portal::OpenBundleOutcome`, so a bundle origin never enters the persisted-URL field (`validate_url` refuses it).
+- **Not wired yet.** The Repository inspector call site is not connected in `panels/inspector.rs`: review P3-03 is a NEEDS and
+  the section has no caller. Open is reachable only through the action.
+- **Reviews.** `conductor/tracks/portal_surface_20261107/review-p3.md` (PASS-WITH-FIXES, blocked on P3-01..P3-03).
