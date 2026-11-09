@@ -547,9 +547,11 @@ NO-GO (local Workstream G implementation is GO); `../gis-tile-etl` kept, never p
   table over); shared cores + separate guards = drift; a writer of a shared JSON column must
   satisfy the STRICTEST reader; "pure efficiency" changes that remove redundancy need a
   correctness check (creator copies were load-bearing).
-- **Toolchains:** local default 1.94.0, CI floating stable (1.99.0 at writing); 1.96/1.97.1/1.98/
-  1.99.0 installed; MSRV now **1.91**. Reproduce CI Lint with `cargo +1.99.0 clippy --workspace
-  --all-targets --keep-going -- -D warnings`.
+- **Toolchains (user decision 2026-11-09, `3c225eb8` on track/extension-platform):** `rust-toolchain.toml`
+  pins **1.99.0** for local and CI (`dtolnay/rust-toolchain@1.99.0`); MSRV **1.96** (wasmtime 49 needs it).
+  **Clippy is never run** — not in any gate, sweep, refine pass or CI job (memory `no-clippy-directive-20261109`);
+  the build gate is `cargo check -p <touched crates>`. Until the track merges, `main` still has the old
+  floating-stable CI and MSRV 1.91.
 - **SurrealKV durability:** the shared DB handle's durability relies on `SURREAL_DATASTORE_SYNC_DATA=every` (per-commit fsync), which both `fractalengine` and `fe-relay` mains set only when unset (`fractalengine/src/main.rs:42-43`). An operator override to a different value (e.g. `periodic` or `off`) silently drops the fsync guarantee — document any such override with the persistence model explicitly stated.
 - **iroh 1.x store migration ops:** the first 1.x start on an existing `FE_P2P_DIR` copies it to
   `<dir>.v035.bak-<unix_ts>`, upgrades `docs.redb` + `blobs/blobs.db`, writes
@@ -620,8 +622,8 @@ NO-GO (local Workstream G implementation is GO); `../gis-tile-etl` kept, never p
 5. **When the user decides QA-0165:** role-at-write (recommended) → open the per-key `(HLC, author)`
    clock track for verse/fractal/petal rows and non-transform node fields (QA-0156/0165/0166 share
    that root); current-role → document the re-judge semantics instead.
-6. **When the user says push:** the local commits (only docs since `c484734a` as of 19:17) go after whatever sweep they ask for; watch
-   CI (`cargo +1.99.0 clippy --workspace --all-targets -- -D warnings` reproduces Lint).
+6. **When the user says push:** the local commits go after whatever sweep they ask for; watch CI (Lint is
+   fmt + cargo-deny + fuzz, warn-only; no clippy).
 7. **city-sim** (`.omc/plans/city-sim.js`) only on the user's go-ahead; a simulator run closes the
    build gate for its duration (flip `cargo_allowed` and post it; flip back after).
 8. **Screenshot pass — DONE 2026-11-08 14:25 (`9a8168e2`, seven images; re-capture per docs/images/MANIFEST.md
