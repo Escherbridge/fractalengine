@@ -8,7 +8,7 @@ The design in one sentence: **the host authorizes the sender before it reads a b
 
 ## 1. Transport
 
-1.1. **Page → host.** `window.ipc.postMessage(string)`. wry defines `window.ipc` on every document (`webview2/mod.rs:884-889`) and hands each message to the `with_ipc_handler` closure (`lib.rs:1155-1161`) as a `Request<String>` whose URI is the sending document's URL (`WebMessageReceived` `Source`, `webview2/mod.rs:898-912`). That URI is the authorization input. Because `window.ipc` exists on every page, external sites included, authorization goes by sender, never by whether the API is present.
+1.1. **Page → host.** `window.ipc.postMessage(string)`, received by a native `ICoreWebView2::add_WebMessageReceived` handler, never wry's `with_ipc_handler` (SP-9: wry builds the request with `Request::builder().uri(url)...unwrap()`, and a `Source` over 65 534 bytes panics inside a COM callback and aborts the process). The handler is registered the way `qa_navigation.rs:139-185` registers its navigation guard and reads `Source` capped at 8 192 bytes and the body capped at 65 536 bytes; anything over either cap is dropped as `dropped_origin` before any parse. wry still defines `window.ipc` on every document (`webview2/mod.rs:884-889`). The bounded `Source` is the authorization input. Because `window.ipc` exists on every page, external sites included, authorization goes by sender, never by whether the API is present.
 1.2. **Host → page on Windows.** `ICoreWebView2::PostWebMessageAsJson` to the top-level document, issued only while §2 checks 1–2 hold at send time; SP-3 proves that a post issued before a navigation never reaches the next document (`protocol.md` §10). The page API listens on `window.chrome.webview` and drops any envelope whose `n` is not its own document token. There is no `eval` of variable code, honouring "All JS↔Rust calls via a versioned typed command enum (typed IPC) — no raw eval" (`conductor/tech-stack.md:139`).
 1.3. **Host → page elsewhere** (OD-2; blocked in wave 1 by OD-10): a fixed-template `evaluate_script` whose only variable is a `serde_json` literal, the fixture-surface approach (`backends/fixture_surface.rs:510-526`).
 1.4. **Document generation and token.**
@@ -99,19 +99,19 @@ The page never polls REST on a timer: every `GET /api/v1/hierarchy` also rebuilt
 
 5.1. **`node`** consumes `host/node-changes` [A-1], "the scene change feed that the `/ws` subscription carries" (sibling R13).
   - `params`: `{petal_id?, node_id?}`. A `petal_id` other than the binding petal, or a `node_id` outside it, answers `not_found`, exactly as REST does (§existence-oracle).
-  - First delivery `snapshot`: `{petal_id, version, nodes}`, the `/ws` `SceneSnapshot` body (`fe-api/src/ws.rs:83-87`). Then `delta`: `{petal_id, version, changes}`, the `SceneDelta` body (`:89-92`).
+  - First delivery `snapshot`, in parts (`bus.md` §2.1): `{part, last, nodes}`, at most 500 nodes (`NodeDto` plus `properties`) per part, repeated until a part carries `last: true`. Then `delta`: `{changes}`, the `SceneChange` list exactly as `/ws` sends it, so one parser serves both.
   - Broadcast lag answers `resync_required` and ends the subscription, mirroring `/ws` lag hygiene (`fe-api/AGENTS.md` §websocket); the page subscribes again for a fresh snapshot.
 5.2. **`readings`** consumes `host/readings` [A-1], "rows accepted by the readings door, both local and replicated" (sibling R13).
   - `params`: `{node_id?, metric?}`, confined to readings anchored in the binding petal.
-  - The first delivery is an empty `snapshot` (`{rows: []}`); then `delta` with `{rows}` in the shape `host/readings` carries [A-1]. History comes from a declared query, not from this stream.
+  - Deltas only (`bus.md` §2.2): no snapshot is delivered. Each `delta` carries `{readings: [...]}` (key `readings`, not `rows`; at most 1 000 per event, each with `reading_id, node_id, metric, value, units, recorded_at, recorded_at_ms, source_did, origin`). History comes from a declared query, not from this stream.
 5.3. **`query`** consumes `host/query` [A-1]: one guarded `SELECT` run through fe-api's query guard as the installing identity (sibling R13).
   - `params`: `{name, args}`. `name` is a declared query; `args` supplies every declared parameter with a value of its declared type, bound through the query `vars` map (`QueryRequest.vars`, `fe-api/src/types.rs:278-284`). A `node_id` argument outside the binding petal answers `not_found`. Undeclared SQL is impossible: the page only ever names a query.
-  - Deliveries are `snapshot` only, with the `/api/v1/query` response `data` (so `data.rows`). The host sends one only when the result digest differs from the last one delivered.
-  - Cadence is the sibling's: at least 1 s between re-runs, and OD-3 asks for re-runs only when something in the query's scope changed, so an idle portal adds no reads. Each run is charged, together with REST, to the identity's `QUERY_RATE_PER_SEC` of 10 (`fe-api/src/limits.rs:18`). REST's caps apply, 10 000 rows and 8 MiB (`:4,6`); a run over a cap delivers `resync_required` with `data.reason: "too_large"` and ends the subscription.
+  - Deliveries are `snapshot` only, with `{data: [rows], row_count, truncated}` (`bus.md` §2.3). Over a cap the rows are cut at the boundary and `truncated` is true; the subscription continues. The host sends one only when the result digest differs from the last one delivered.
+  - Cadence is the sibling's: at least 1 s between re-runs, and OD-3 asks for re-runs only when something in the query's scope changed, so an idle portal adds no reads. Each run is charged, together with REST, to the identity's `QUERY_RATE_PER_SEC` of 10 (`fe-api/src/limits.rs:18`). REST's caps apply, 10 000 rows and 8 MiB (`:4,6`); a run over a cap delivers the cut snapshot with `truncated: true`.
 5.4. **Bus streams** (`hooks`): `stream` is `<package_id>/<stream>` and MUST be a declared hook. The host subscribes through the broker as a client of caller kind `portal` [A-1, sibling R14-R15]. Each event is a `delta` whose `data` is the event JSON. Broker drop-oldest counts arrive as `dropped`.
 5.5. **Coalescing.** At most one delivery per subscription per 250 ms (4 Hz).
   - `node` deltas coalesce per node id, last state wins, so the last delivery always equals the final state. R9's "100 changes in 1 s produce at most 5 deliveries" follows from 4 Hz plus one leading delivery.
-  - `readings` deltas concatenate up to 1 000 rows; beyond that the oldest rows are dropped and counted in `dropped`.
+  - `readings` deltas concatenate up to 1 000 readings; beyond that the oldest rows are dropped and counted in `dropped`.
   - Bus events concatenate up to the broker's subscriber queue bound, dropping the oldest (sibling R15).
 5.6. **Lifetime.** A subscription belongs to one document generation and ends at any bump (§1.4). In wave 1 no bundle document lives on hidden: Close, hide and leave all unload (`protocol.md` §2.5-2.6). The spec's "pauses while hidden" is therefore realised as "ends at hide, and the reopened document subscribes again".
 
@@ -138,7 +138,7 @@ The page never polls REST on a timer: every `GET /api/v1/hierarchy` also rebuilt
 | `invalid` | over size, bad envelope, failed strict decode, wrong argument type | `invalid-input` | `invalid` |
 | `rate_limited` | a bucket is empty, or too many pending replies | `rate-limited` | `rate_limited` |
 | `too_many_subscriptions` | a 17th live subscription | `budget-exceeded` | `too_many_subscriptions` |
-| `capability_denied` | not declared, a reserved key, or not granted | `capability-denied` | `refused_capability` |
+| `capability_denied` | not declared, a reserved key, or not granted (an undeclared `subscribe` stream included) | `capability-denied` | `refused_capability` |
 | `policy_denied` | the verse policy refuses it (sibling R18) | `policy-denied` | `refused_capability` |
 | `role_denied` | the DB refused the write at use | (DB refusal) | `refused_role` |
 | `not_found` | out of scope or unknown, the same answer REST gives | uniform not-found | `refused_role` |

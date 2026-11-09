@@ -33,7 +33,7 @@ This file is T0.1: the bundle container, its identity, its members, the `portal`
 1.5. `HexonType::Bundle` is a different, pre-existing archive type. A web bundle is never `HexonType::Bundle`.
 1.6. **Sealed bundles.** `seal` is the last transform (sibling R1). A sealed bundle commits every `web/` member in `members.json` under the publisher signature. A member that `members.json` does not commit fails every lazy read with `IntegrityError::Uncovered` (`fe-format/src/integrity.rs:178-181`), and the validator refuses it at ingest (`integrity`).
 1.7. **Unsealed bundles** are valid. They render only in the static sandbox and can never be admitted (D-X5).
-1.8. **Envelope keys.** For `kind: "web-bundle"` every runtime-capability key of manifest v2 MUST be absent: `contract`, `binding`, `scene`, `readings`, `routes`, `tick`, `ingress`, `egress`, `bus` and `ui` (refusal `envelope_key_forbidden`). A bundle declares everything it may do inside `portal`. Descriptive manifest v2 keys stay allowed.
+1.8. **Envelope keys.** For `kind: "web-bundle"` every runtime-capability key of manifest v2 MUST be absent: `contract`, `binding`, `scene`, `readings`, `routes`, `tick`, `ingress`, `egress`, `bus`, `kv` and `ui` (refusal `envelope_key_forbidden`). `kv` is banned because a bundle keeps no host-side key-value state; its storage is its own origin's. A bundle declares everything it may do inside `portal`. Descriptive manifest v2 keys stay allowed.
 
 ## 2. Identity
 

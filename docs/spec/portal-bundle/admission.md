@@ -23,7 +23,7 @@ The **admission record** is governance's. The **chrome state** is derived from a
 | 1 | no embedded browser backend | Unavailable | no | no |
 | 2 | platform outside OD-10 | Blocked — unsupported platform | no | no |
 | 3 | (b) host-wide disable, or (a) the installation is locally disabled | Revoked — kill switch | no | no |
-| 4 | the pair is on an accepted revocation list (d) | Revoked — revocation list | no | no |
+| 4 | the bundle matches an accepted revocation list entry by hash (d), and no audited verse-Owner override applies (§4.7) | Revoked — revocation list | no | no |
 | 5 | the pair's admission record is `Revoked`: user revoke, (c) policy removal, or a role drop below policy | Revoked — admission withdrawn | no | no |
 | 6 | the blob is not local | Waiting for bundle bytes | no | no |
 | 7 | over the size cap (README §8.4) | Blocked — too large | no | no |
@@ -49,7 +49,7 @@ Only an explicit local **Open** ever mounts. A replicated repository-node row, a
 | Static | Admit… declined or dismissed | Static | none |
 | Admitted | **Revoke on this peer** | Revoked — admission withdrawn | §5 |
 | any rendered | kill switch (a) or (b) engaged | Revoked — kill switch | §5 |
-| any rendered | a list naming the pair is accepted (d) | Revoked — revocation list | §5 |
+| any rendered | a list matching the bundle by hash is accepted (d) | Revoked — revocation list | §5 |
 | Admitted | (c) policy removal, or the installing identity's role drops below the policy | Revoked — admission withdrawn | §5 |
 | Revoked — kill switch or revocation list | the cause is lifted | Revoked — admission withdrawn if the bundle had been Admitted; otherwise Static on the next Open | none; re-admission is explicit (`ux.md` §4.4) |
 | Revoked — admission withdrawn | Admit… accepted (the cause is gone) | Admitted | as Static → Admitted |
@@ -63,12 +63,13 @@ Every revocation path withdraws the admission record, so lifting a cause never s
 
 This section answers the orchestrator's 2026-11-07 16:45 point and is the portal half of the store-client contract v0's rule "a kill-listed web bundle is never rendered".
 
-4.1. **Never rendered.** A web bundle whose `(package_id, content_hash)` appears on a revocation list that governance accepted from a revocation-capable trust root (S-PLUGIN, `conductor/open-core.md:54`; `plugin_host_revival_20261031` spec §4) is never rendered: not as Admitted and **not in the no-IPC static sandbox**. It is never mounted, so the protocol answers `404` for both its labels, and a bundle already open is unloaded within one frame of the list being accepted (§5).
-4.2. **Kind-less.** The list entry stays exactly `{package_id, content_hash, reason, revoked_at}`. The portal matches the pair and needs no kind: package ids share one namespace across kinds and a package's kind never changes, so one pair names one package. Nothing in this track adds a field to the list.
-4.3. **Unsealed builds** have `content_hash` = BLAKE3 of the archive (README §2.3), so a list can name one, and matching is the same exact-pair rule.
+4.1. **Never rendered.** A web bundle that matches (§4.2) an entry on a revocation list that governance accepted from a revocation-capable trust root (S-PLUGIN, `conductor/open-core.md:54`; `plugin_host_revival_20261031` spec §4) is refused by default: not rendered as Admitted and **not in the no-IPC static sandbox**, except under the explicit, audited verse-Owner override (§4.7). It is never mounted, so the protocol answers `404` for both its labels, and a bundle already open is unloaded within one frame of the list being accepted (§5).
+4.2. **Match by hash, under any id** (steer 2026-11-08 20:45; same rule as `docs/extensions/package-format.md`). An entry matches a bundle when the entry's `content_hash` equals the bundle's `content_hash`, OR the entry names the bundle's archive digest or the digest of any of its members. The entry's `package_id` is informational and never narrows the match, so renaming a killed bundle does not escape the list. `content_hash` is the lowercase-hex BLAKE3 of the canonical manifest with the signature blanked. The portal needs no kind and reads the entry fields it needs from governance's accepted-list view; it adds no field to the list. Governance exposes the match as `RevocationSet::is_revoked_any(&[digests])`; the portal passes the bundle's `content_hash`, archive digest and member digests.
+4.3. **Unsealed builds** have `content_hash` = BLAKE3 of the archive (README §2.3), so a list can name one, and matching is the same hash rule.
 4.4. **Order.** The list check is §2 rule 4, ahead of reading any byte. It runs at Open and again for the mounted pair whenever governance accepts a new list.
 4.5. **No second list client.** The portal never fetches, verifies or caches lists. It reads governance's accepted-list view [A-2]; offline, the last good list applies (plugin_host_revival OD-8).
-4.6. **Residual.** The static sandbox renders unsigned builds, and anyone can repackage a killed bundle's members as a new unsigned build with a new `content_hash`. An exact-pair list cannot follow repackaging, by contract. The repackaged build gets only the static sandbox: no IPC, no actions, and data only through share URLs an Editor attached to the node. A verse that must not render unsigned bundles at all needs a policy ceiling (A-12).
+4.6. **Residual.** The residual narrows to genuine repackaging: new bytes under a new signature (or none), which no hash on the list covers. Only publisher-key revocation catches that. The static sandbox renders unsigned builds, so a killed bundle's members repackaged as a new unsigned build with new bytes escape the hash match, by contract. The repackaged build gets only the static sandbox: no IPC, no actions, and data only through share URLs an Editor attached to the node. A verse that must not render unsigned bundles at all needs a policy ceiling (A-12).
+4.7. **Verse-Owner override** (user decision 2026-11-08 22:00; same rule as extensions). A verse Owner may explicitly override a kill-list refusal for that Owner's own peer. The override is local to that peer, is audited by governance (`RecordKillListOverride`), and never applies to other peers or non-Owner roles. Without it the bundle stays refused. On revocation of an open mount, the portal unloads, and rows written through the bundle's IPC actions stay: there is no withdrawal (OD-E1).
 
 ## 5. Revoke mid-session
 
@@ -76,10 +77,10 @@ Triggers: a `host/admission` event for the mounted pair carrying any kill-switch
 
 1. **Remove the mount.** From here the protocol answers `410` to in-flight requests and `404` to new ones; no byte is served after the decision.
 2. **Bump the document generation.** The dying document's posts now fail `ipc-v1.md` §2 check 2, and the host issues no further replies or deliveries.
-3. **Close every subscription** with the broker. `act` and `invoke` calls not yet handed to the DB or the broker are dropped. A commit the DB already admitted completes with its true receipt: revocation is not rollback (sibling R23).
+3. **Close every subscription** with the broker. `act` and `invoke` calls not yet handed to the DB or the broker are dropped. A commit the DB already admitted completes with its true receipt: revocation is not rollback and not withdrawal (sibling R23, OD-E1); the rows stay.
 4. **Unload** the document with `load_html` under a one-shot unload token (`protocol.md` §2.5, §6.7).
 5. **Emit** `BundleState { Revoked(reason) }`; the badge changes in place (`ux.md` §4.4).
-6. **Clear storage** for the bundle's labels on Windows (SP-6), asynchronously.
+6. **Clear storage** for the bundle's labels on Windows (SP-6), asynchronously. It starts on the unload's `NavigationCompleted` (step 4), never before: clearing while the dying document is still loaded would let it rewrite the storage.
 
 Governance withdraws the admission record and audits the revocation itself (sibling R21). The order is the point: the mount goes before anything else so no byte is served after the decision, and the generation bumps before the unload so the dying document cannot act in between. R-P4 checks that steps 1–5 land within one frame of the decision.
 
@@ -148,7 +149,7 @@ A new build reaches a repository node when an Editor writes a new `portal.bundle
 ## 11. Test-table seeds (S4, S3)
 
 - **Precedence (S3 chrome model, pure):** one row per §2 rule, including a kill-listed pair whose bytes are absent (Revoked, not Waiting) and an unsealed build with a stale Admitted record (Static).
-- **Revocation (S4, extends `fe-webview/tests/portal_ipc_journey.rs`):** a mounted admitted bundle with three live subscriptions and one queued `act`; a list naming the pair is accepted; then the protocol answers `410` or `404`, `live_subscriptions` is 0, the queued `act` is never sent, a post from the old document raises `dropped_origin`, and re-Open renders nothing.
+- **Revocation (S4, extends `fe-webview/tests/portal_ipc_journey.rs`):** a mounted admitted bundle with three live subscriptions and one queued `act`; a list entry matching the bundle's `content_hash` under a different `package_id` is accepted; then the protocol answers `410` or `404`, `live_subscriptions` is 0, the queued `act` is never sent, a post from the old document raises `dropped_origin`, and re-Open renders nothing.
 - **Update (S4):** v1 Admitted; v2 with the same capabilities keeps the admitted label; v3 adding a key scope opens Static on a new label.
 - **Admission read (S4, extends `fe-api/tests/portal_bundle_test.rs`):** the summary's `admission` follows governance for the local identity and is absent for a remote token.
 - **Native:** PJ2, PJ3 and PJ9 (`tools/qa/portal/journeys.md`).

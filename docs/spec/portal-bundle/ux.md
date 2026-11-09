@@ -35,7 +35,7 @@ Shown in the right inspector when the selected node has `node_kind = repository`
 
 Actions, in one row beneath:
 
-- **Open** (primary, always present).
+- **Open** (primary, always present). The visible label is "Open"; the accessible name is "Open bundle" (§5), set with `.named(ui, "Open bundle")`, so locators never match the bare "Open" of other controls.
 - **Admit...** only in Static sandbox when the local role may admit. Opens the governance consent dialog.
 - **Revoke on this peer** only when Admitted. Withdraws the local admission; an open portal goes to Revoked.
 - **Replace bundle** only for Editor or above. It is a property write (`portal.bundle_asset`) through the existing asset picker; the node keeps its identity. Viewers do not see it.
