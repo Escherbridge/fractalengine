@@ -260,6 +260,13 @@ fn empty_outcome(scope: String) -> BatchOutcome {
     }
 }
 
+/// R24 stamp-and-stop: host-stamped `ext` provenance on one journal fact (governance.md §Provenance).
+fn stamp_provenance(payload: &mut Value, admission: &PluginAdmission) {
+    if let Some(package) = admission.package() {
+        payload["ext"] = json!({"package_id":package.package_id(),"content_hash":package.content_hash()});
+    }
+}
+
 /// The manifest write kind an op stages, with its wire name.
 fn write_kind(op: &PendingOp) -> (SceneWrite, &'static str) {
     match op {
@@ -379,7 +386,9 @@ pub(crate) async fn commit(
                 let id = ulid::Ulid::new().to_string();
                 let state = json!({"node_id":id,"petal_id":petal_id,"display_name":name,"position":[0.0,0.0,0.0],"elevation":0.0,
                     "rotation":[0.0,0.0,0.0],"scale":[1.0,1.0,1.0],"properties":{},"interactive":false,"edit_seq":0,"created_at":chrono::Utc::now().to_rfc3339()});
-                let payload = json!({"journal_version":1,"scope":scope,"state":state,"after_state":state,"coverage_reason":"plugin_object_created","schema_versions":{},"plugin_id":admission.plugin_id()});
+                let mut payload = json!({"journal_version":1,"scope":scope,"state":state,"after_state":state,"coverage_reason":"plugin_object_created","schema_versions":{},"plugin_id":admission.plugin_id()});
+                // A created node's only fact may be this baseline: it carries the same provenance as every later fact.
+                stamp_provenance(&mut payload, admission);
                 facts.push((id.clone(), "baseline".into(), 1, payload.clone()));
                 staged.insert(
                     id.clone(),
@@ -552,10 +561,7 @@ pub(crate) async fn commit(
         node.state = change.after;
         for (operation, version, mut payload) in change.facts {
             payload["plugin_id"] = json!(admission.plugin_id());
-            // R24 stamp-and-stop: host-stamped provenance beside the fact's write clock (governance.md §Provenance).
-            if let Some(package) = admission.package() {
-                payload["ext"] = json!({"package_id":package.package_id(),"content_hash":package.content_hash()});
-            }
+            stamp_provenance(&mut payload, admission);
             node.previous = Some(json!({"row_version":version,"payload":payload}));
             facts.push((node_id.clone(), operation, version, payload));
         }

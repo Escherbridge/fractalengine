@@ -1203,6 +1203,26 @@ fn test_rename_entity_omits_node_scene_change() {
         ),
         "an unknown reading anchor refuses the whole flush, transforms included"
     );
+    // G1-C8: a reading anchored on a node the same batch deletes refuses up front; the node survives,
+    // which the flush below proves by moving it.
+    let (reply, rx) = crossbeam::channel::bounded(1);
+    db.cmd_tx
+        .send(DbCommand::PluginCommit {
+            admission: sensor_admission.clone(),
+            ops: vec![PendingOp::DeleteNode {
+                node_id: anchors[1].clone(),
+            }],
+            readings: vec![reading_for(&anchors[1], 9)],
+            reply,
+        })
+        .unwrap();
+    assert!(
+        matches!(
+            rx.recv_timeout(Duration::from_secs(5)).unwrap(),
+            Err(fe_runtime::plugin_host::PluginRefusal::InvalidInput(_))
+        ),
+        "a reading on a node the batch deletes refuses the whole flush"
+    );
     readings.pop();
     let (reply, rx) = crossbeam::channel::bounded(1);
     db.cmd_tx

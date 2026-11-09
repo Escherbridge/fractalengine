@@ -1602,7 +1602,7 @@ self-authorship, not role, in `handlers::replicated_row` (`canon_log/AGENTS.md`
 
 The three node property commands echo optional correlation IDs on their typed replies. Failures reuse handlers::correlated_failure: API requests get RequestFailed with the exact ID, GUI requests retain Error. Persistence, scene-change broadcasts and node-log append behavior remain shared. A persisted property must acknowledge independently of which node the GUI currently selects.
 
-## �property-schema
+## §property-schema
 
 `field_def.enforced_schema` is optional: absent means legacy metadata, present
 means the SDK bounded property-schema contract. SetFieldSchema requires
@@ -1619,7 +1619,7 @@ The default column now accepts arbitrary JSON types; defaults remain suggestions
 This contract covers ordinary property commands, not arbitrary operator SQL or
 replication. Those paths must not be represented as validated ordinary writes.
 
-## �node-history
+## §node-history
 
 Ordinary empty/asset creation now atomically writes a complete `baseline` v1.
 Native GLTF import uses that same sealed creation boundary, including its new
@@ -1825,6 +1825,13 @@ order is the R6 whole-flush rule:
 4. **Land the readings** through `insert_readings_with_provenance` as the admitted source
    class, with the package stamp (R24).
 
+Every journal fact the batch writes carries `payload.ext = {package_id, content_hash}`
+(`stamp_provenance`), the created node's `baseline` fact included: a plain create writes no
+other fact, so without it that node had no provenance at all (R-BND). Decoder stamping
+(`payload_id`, `source_class: decoder`, bindings.md §6 `ingest.decode`) has no carrier on
+`PluginCommit` yet: `StagedReading` holds neither, so decoded readings land as the grant's class
+with no payload link until the seam gains one.
+
 If the scene batch committed but its readings failed, the reply is `unknown-outcome`, never
 a retry instruction. The old arm destructured `BatchOutcome.nodes` as a 4-tuple (E0308 after
 E4) and never called `flush`, so no staged reading ever reached the DB. Both plugin arms now
@@ -1881,8 +1888,14 @@ the policy row's author and the override's Owner check both use it.
   newest `(written_at, payload bytes)` per key.
 - **Judging happens on read, and demotion deletes nothing.** `judge_versions` marks a version
   admissible when its author held Manager+ at the scope when it wrote AND holds it now. The newest
-  admissible version per point is effective. A demoted author's rows stay stored, and they become
-  admissible again when the role returns.
+  admissible version per point is effective. A demoted author's rows stay stored for audit, but a
+  re-grant does NOT revive them (bindings.md §4.5): the write-time half reads
+  `role_grants::authorized_at_write` over `fe_policy::materialize_at`, and a statement's continuity
+  (`manager_since`) restarts at the re-grant, so only versions written inside the new window are
+  admissible. The same rule withdraws a version backdated into the author's old window. The
+  current-role half is what stops a demoted author from backdating while still demoted (an author
+  stamps its own HLC). Keep binding (`keep_binding`, `kept_template`) re-authors a withdrawn version
+  as the clicking Manager with its effective `runs_on` pinned; it has no DB command yet (R-BND).
 - **Re-emit.** The DB thread re-publishes this node's own live versions at startup (with every verse)
   and on `ReemitLocalRoleStatements` (per verse), beside the role-statement re-emit. That is the
   second chance for a publish dropped on a full bridge.

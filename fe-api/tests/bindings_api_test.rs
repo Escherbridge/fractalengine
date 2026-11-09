@@ -92,19 +92,31 @@ impl BindingHost for FakeBindings {
     }
     fn effective(&self, petal_scope: &str, _caller_did: &str) -> Option<Vec<EffectivePoint>> {
         (petal_scope == SCOPE).then(|| {
-            vec![EffectivePoint {
-                hook: "petal.map".into(),
-                key: String::new(),
-                scope: "VERSE#v1-FRACTAL#f1".into(),
-                mode: BindingMode::Extension,
-                package_id: Some("org.example.city-map".into()),
-                version_req: Some(">=1.0.0".into()),
-                resolution: Some(BindingResolution::unresolved(
-                    "org.example.city-map",
-                    "VERSE#v1-FRACTAL#f1",
-                    UnresolvedReason::NotInstalled,
-                )),
-            }]
+            vec![
+                EffectivePoint {
+                    hook: "petal.map".into(),
+                    key: String::new(),
+                    scope: "VERSE#v1-FRACTAL#f1".into(),
+                    mode: BindingMode::Extension,
+                    package_id: Some("org.example.city-map".into()),
+                    version_req: Some(">=1.0.0".into()),
+                    resolution: Some(BindingResolution::unresolved(
+                        "org.example.city-map",
+                        "VERSE#v1-FRACTAL#f1",
+                        UnresolvedReason::NotInstalled,
+                    )),
+                },
+                // Bound only in a sibling petal: nothing at this petal's chain decides it.
+                EffectivePoint {
+                    hook: "ingest.decode".into(),
+                    key: "acme.thermo/frame@1".into(),
+                    scope: SCOPE.into(),
+                    mode: BindingMode::Builtin,
+                    package_id: None,
+                    version_req: None,
+                    resolution: Some(BindingResolution::Builtin { scope: None }),
+                },
+            ]
         })
     }
 }
@@ -175,6 +187,10 @@ async fn bindings_api_journey() {
     assert_eq!(local_view["points"][0]["resolution"]["offer"], "install");
     let remote_view = effective_bindings(host.as_ref(), &viewer, scope()).await.unwrap();
     assert_eq!(remote_view["points"][0]["package_id"], "org.example.city-map");
+    // A point bound only at another petal never reaches any caller: it names a scope this petal does not inherit.
+    for view in [&local_view, &remote_view] {
+        assert_eq!(view["points"].as_array().map(Vec::len), Some(1), "only this petal's decided points: {view}");
+    }
     assert!(remote_view["points"][0].get("resolution").is_none(), "remote callers never see host state: {remote_view}");
     // A delegated token of this node (node DID, below Owner) is remote too.
     let delegated = claims(LOCAL, "manager", "t-delegated");

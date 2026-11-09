@@ -31,3 +31,7 @@ IO, no clock, no DB; the binary builds the snapshot on each re-resolution trigge
   existing per-petal local bind (§5.3).
 
 Instance caps (§5.6): only lazy hooks resolve `capacity`; an eager hook or a petal that already runs an instance never does.
+
+- **Kill-list override (§5.7, R-BND).** Row 6 passes a revoked build only when `kill_override` is set AND
+  `LocalFacts.is_verse_owner_host`: the override is the Owner's, for the Owner's own host. An override record on any
+  other host (a changed local identity, a restored store) never lets a kill-listed build resolve.

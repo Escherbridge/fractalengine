@@ -327,7 +327,8 @@ fn check_build(
         BuildIntegrity::UntrustedSigner => return Err(UnresolvedReason::UntrustedSigner),
         BuildIntegrity::EntitlementRequired => return Err(UnresolvedReason::EntitlementRequired),
     }
-    if build.revoked && !build.kill_override {
+    // §5.7: an Owner override counts only on the verse Owner's own host, whatever override record this host holds.
+    if build.revoked && !(build.kill_override && facts.is_verse_owner_host) {
         return Err(UnresolvedReason::Revoked);
     }
     if build.policy != PolicyVerdict::Admits {
@@ -544,7 +545,8 @@ mod tests {
             ("untrusted-signer", Box::new(|f| f.builds[0].integrity = BuildIntegrity::UntrustedSigner), Some(UnresolvedReason::UntrustedSigner), None),
             ("entitlement", Box::new(|f| f.builds[0].integrity = BuildIntegrity::EntitlementRequired), Some(UnresolvedReason::EntitlementRequired), None),
             ("revoked", Box::new(|f| f.builds[0].revoked = true), Some(UnresolvedReason::Revoked), None),
-            ("revoked but overridden", Box::new(|f| { f.builds[0].revoked = true; f.builds[0].kill_override = true; }), None, None),
+            ("revoked but overridden on the Owner's host", Box::new(|f| { f.builds[0].revoked = true; f.builds[0].kill_override = true; f.is_verse_owner_host = true; }), None, None),
+            ("override record on a non-Owner host", Box::new(|f| { f.builds[0].revoked = true; f.builds[0].kill_override = true; }), Some(UnresolvedReason::Revoked), None),
             ("policy-denied", Box::new(|f| f.builds[0].policy = PolicyVerdict::VerseDenies), Some(UnresolvedReason::PolicyDenied), None),
             ("not-provided", Box::new(|f| f.builds[0].provides.clear()), Some(UnresolvedReason::NotProvided), None),
             ("consent-missing", Box::new(|f| f.builds[0].consent_recorded = false), Some(UnresolvedReason::ConsentMissing), Some(BindingOffer::ReviewPermissions)),

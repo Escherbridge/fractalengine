@@ -165,6 +165,17 @@ impl fe_sdk::plugin_host::TransactionSink for MockHostEnv {
                         .get_mut(node_id)
                         .filter(|node| node.petal_id == petal_id)
                         .ok_or("node not found or not permitted")?;
+                    // Host parity: path and stamp geometry moves only through its own editors.
+                    let path_or_stamp = ["gpx_points", "owning_path_id", fe_sdk::PATH_ASSET_PROPERTY_KEY]
+                        .iter()
+                        .any(|key| node.properties.contains_key(*key))
+                        || matches!(
+                            node.properties.get("node_kind"),
+                            Some(fe_sdk::property::PropertyValue::String(kind)) if kind == "stamp"
+                        );
+                    if path_or_stamp {
+                        return Err("plugin transforms refuse path and stamp geometry".into());
+                    }
                     // Absent fields keep the stored value, as the DB commit resolves a patch.
                     node.position = position.unwrap_or(node.position);
                     node.rotation = rotation.unwrap_or(node.rotation);

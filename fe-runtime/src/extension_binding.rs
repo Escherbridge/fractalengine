@@ -629,6 +629,9 @@ mod tests {
                 "blob.source", "sync.tileset-source", "portal.open",
             ]
         );
+        // A manifest may `provide` exactly the served hooks a package can serve; a web bundle binds `portal.open` bare.
+        let providable: Vec<&str> = served.iter().copied().filter(|id| *id != "portal.open").collect();
+        assert_eq!(providable, fe_sdk::manifest_v2::KNOWN_HOOKS, "catalogue and manifest v2 hook ids drifted");
         for spec in HOOK_CATALOGUE {
             assert!(is_valid_hook_id(spec.id), "{}", spec.id);
         }

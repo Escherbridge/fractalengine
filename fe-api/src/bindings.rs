@@ -270,13 +270,38 @@ pub async fn effective_bindings(
 fn effective_after_gate(host: &dyn BindingHost, claims: &ApiClaims, petal_scope: Option<String>) -> Result<Value, ExtError> {
     let scope = petal_scope.ok_or_else(ExtError::not_found)?;
     require_ceiling(claims, fe_policy::RoleLevel::Viewer, "reading bindings")?;
-    let mut points = host.effective(&scope, &claims.sub).ok_or_else(ExtError::not_found)?;
+    let mut points = decided_points(host.effective(&scope, &claims.sub).ok_or_else(ExtError::not_found)?);
     if !is_local(host, claims) {
         for point in &mut points {
             point.resolution = None;
         }
     }
     Ok(json!({ "petal_scope": scope, "points": points }))
+}
+
+/// Only points a binding at this petal's chain decides: a point bound only at another petal or fractal is dropped
+/// (it would name hooks and keys of scopes the caller may not see), and a `builtin` decided at a nearer scope than
+/// the host's winning row (a petal's stored terrain, OQ-B6) is shown as that builtin.
+fn decided_points(points: Vec<EffectivePoint>) -> Vec<EffectivePoint> {
+    points
+        .into_iter()
+        .filter_map(|mut point| {
+            let deciding = match &point.resolution {
+                Some(BindingResolution::Builtin { scope: None }) => return None,
+                Some(BindingResolution::Builtin { scope: Some(deciding) }) if *deciding != point.scope => {
+                    Some(deciding.clone())
+                }
+                _ => None,
+            };
+            if let Some(deciding) = deciding {
+                point.scope = deciding;
+                point.mode = BindingMode::Builtin;
+                point.package_id = None;
+                point.version_req = None;
+            }
+            Some(point)
+        })
+        .collect()
 }
 
 /// `PUT /api/v1/bindings` and MCP `set_binding`: runs bindings.md §4.2 and returns the stored row. `scope` is
