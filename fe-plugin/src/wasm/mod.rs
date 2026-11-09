@@ -57,7 +57,6 @@ impl WasmEngine {
     /// Create a new Wasmtime engine with pooling allocation and fuel metering.
     pub fn new() -> Result<Self, WasmError> {
         let mut config = wasmtime::Config::new();
-        config.async_support(true);
         config.consume_fuel(true);
 
         // Configure pooling allocation strategy
@@ -165,6 +164,7 @@ impl WasmEngine {
                 // Check if it's an out-of-fuel trap by checking remaining fuel
                 let remaining_fuel = store.get_fuel().unwrap_or(0);
                 let is_fuel_error = remaining_fuel == 0
+                    || e.downcast_ref::<wasmtime::Trap>() == Some(&wasmtime::Trap::OutOfFuel)
                     || e.to_string().contains("all fuel consumed")
                     || e.to_string().contains("out of fuel")
                     || e.to_string().to_lowercase().contains("fuel");
@@ -231,7 +231,7 @@ impl std::fmt::Debug for PluginStoreData {
 #[derive(Debug, thiserror::Error)]
 pub enum WasmError {
     #[error("Wasmtime error: {0}")]
-    Wasmtime(#[from] anyhow::Error),
+    Wasmtime(String),
 
     #[error("Missing export: '{0}'")]
     MissingExport(String),
@@ -250,6 +250,12 @@ pub enum WasmError {
 
     #[error("Linker registration error: {0}")]
     LinkerError(String),
+}
+
+impl From<wasmtime::Error> for WasmError {
+    fn from(error: wasmtime::Error) -> Self {
+        Self::Wasmtime(format!("{error:#}"))
+    }
 }
 
 // ---------------------------------------------------------------------------

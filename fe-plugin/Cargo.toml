@@ -12,7 +12,7 @@ fe-runtime = { path = "../fe-runtime" }
 fe-sdk = { path = "../fe-sdk" }
 fe-policy = { path = "../fe-policy" }
 rhai = "1.19"
-wasmtime = { version = "29", features = ["async"] }
+wasmtime = { version = "49.0.2", features = ["async"] }
 blake3 = { workspace = true }
 anyhow = { workspace = true }
 crossbeam = { workspace = true }
