@@ -40,10 +40,10 @@
     },
     {
       "id": "2", "title": "Virtual devices post over HTTP and publish over MQTT; readings arrive on every peer", "settle_s": 60, "covers": ["R5", "R6", "R8"],
-      "note": "Three devices report once per second for 30 s. HTTP goes through the petal-scoped ingress mount (docs/extensions/bus.md section 8) as the owner (Editor floor met); MQTT goes through the loopback broker the host subscribed to. The viewer is below the ingress role floor.",
+      "note": "Three devices report once per second for 30 s. HTTP goes through the petal-scoped ingress mount (docs/extensions/bus.md section 8) as the owner (Editor floor met); MQTT goes through the loopback broker the host subscribed to, on a topic the manifest's site-broker filter (site-a/+/telemetry) matches; the run installs the loopback fixture build whose site-broker URL is that broker (P6.2). The viewer is below the ingress role floor.",
       "actions": [
         {"id": "http_dev", "peer": "owner", "via": "rest", "op": "ingress_post", "args": {"installation": "$inst.installation", "petal_id": "$fixture.petal_a_id", "endpoint": "telemetry", "devices": ["dev-a", "dev-b"], "metric": "temp_c", "count": 30, "period_s": 1}, "sync": "barrier"},
-        {"id": "mqtt_dev", "peer": "owner", "via": "rest", "op": "mqtt_publish", "args": {"broker": "loopback", "topic": "fe-sim/dev-c/telemetry", "devices": ["dev-c"], "metric": "temp_c", "count": 30, "period_s": 1}, "sync": "barrier"},
+        {"id": "mqtt_dev", "peer": "owner", "via": "rest", "op": "mqtt_publish", "args": {"broker": "loopback", "topic": "site-a/dev-c/telemetry", "devices": ["dev-c"], "metric": "temp_c", "count": 30, "period_s": 1}, "sync": "barrier"},
         {"id": "viewer_post", "peer": "viewer", "via": "rest", "op": "ingress_post", "args": {"installation": "$inst.installation", "petal_id": "$fixture.petal_a_id", "endpoint": "telemetry", "devices": ["dev-x"], "metric": "temp_c", "count": 1, "period_s": 1}, "expect": "refused", "covers": "R8 role_floor editor"}
       ],
       "expect": [

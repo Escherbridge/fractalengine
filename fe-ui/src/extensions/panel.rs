@@ -150,8 +150,8 @@ pub enum ExtensionOp {
     ActivateUpdate { installation_id: String, capability_digest: String },
     /// Record consent to exactly this digest.
     Consent { installation_id: String, capability_digest: String, accept_in_verse: Option<String> },
-    /// Verse Owner's kill-list override, confirmed by the typed package id.
-    KillListOverride { package_id: String, confirm: String },
+    /// Verse Owner's kill-list override for one verse (fe-database `KillListOverrideRequest`), confirmed by the typed package id.
+    KillListOverride { installation_id: String, verse_id: String, package_id: String, content_hash: String, confirm: String },
     /// Drop a staged install or update; a running version keeps running.
     DiscardStaged { installation_id: String },
     /// Remove consent and stop every binding.
@@ -360,8 +360,11 @@ impl ExtensionsPanelState {
                 self.updates.remove(&installation_id);
                 self.queue(ExtensionOp::Consent { installation_id, capability_digest, accept_in_verse }, "Enabling");
             }
-            ConsentDecision::KillListOverride { package_id, confirm } => {
-                self.queue(ExtensionOp::KillListOverride { package_id, confirm }, "Applying override");
+            ConsentDecision::KillListOverride { installation_id, verse_id, package_id, content_hash, confirm } => {
+                self.queue(
+                    ExtensionOp::KillListOverride { installation_id, verse_id, package_id, content_hash, confirm },
+                    "Applying override",
+                );
             }
             ConsentDecision::Declined { installation_id } => {
                 self.updates.remove(&installation_id);

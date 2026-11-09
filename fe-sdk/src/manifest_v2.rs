@@ -51,6 +51,8 @@ pub enum Refusal {
     DuplicateId,
     /// V15: a number above a host ceiling.
     OverHostCeiling,
+    /// V16: an `http-server` endpoint forwards a credential or host-authenticating header.
+    CredentialHeader,
 }
 
 impl Refusal {
@@ -72,8 +74,19 @@ impl Refusal {
             Self::ScopeConflict => "scope-conflict",
             Self::DuplicateId => "duplicate-id",
             Self::OverHostCeiling => "over-host-ceiling",
+            Self::CredentialHeader => "credential-header",
         }
     }
+}
+
+/// Headers the host authenticates with; never forwarded to a guest (V16, steer 2026-11-08 20:20).
+const CREDENTIAL_HEADERS: [&str; 5] = ["authorization", "proxy-authorization", "cookie", "set-cookie", "x-api-key"];
+
+/// True for a credential or host-authenticating header (every `x-fe-*`); the one list the validator,
+/// the fe-api ingress mount, fe-plugin `net` and the `fe-ext` sandbox share.
+pub fn is_credential_header(name: &str) -> bool {
+    let name = name.trim().to_ascii_lowercase();
+    CREDENTIAL_HEADERS.contains(&name.as_str()) || name.starts_with("x-fe-")
 }
 
 /// A refused manifest: the reason plus a human detail naming the offending member.
@@ -683,7 +696,7 @@ pub fn parse_and_validate(bytes: &[u8]) -> Result<ValidatedManifest, ManifestErr
 }
 
 impl ExtensionManifest {
-    /// V1..V15 in table order; the first failing row is reported.
+    /// V1..V16 in table order; the first failing row is reported.
     pub fn validate(&self) -> Result<(), ManifestError> {
         self.check_structure()?; // V1
         self.check_contract()?; // V2
@@ -696,7 +709,8 @@ impl ExtensionManifest {
         self.check_consume()?; // V10 (own stream), V11, V12
         self.check_scope_conflicts()?; // V13
         self.check_duplicates()?; // V14
-        self.check_ceilings() // V15
+        self.check_ceilings()?; // V15
+        self.check_credential_headers() // V16
     }
 
     fn check_structure(&self) -> Result<(), ManifestError> {
@@ -1089,6 +1103,17 @@ impl ExtensionManifest {
                 || tick.max_readings.is_some_and(|v| v > HOST_MAX_READINGS_CEILING)
             {
                 return refuse(Refusal::OverHostCeiling, "tick budget exceeds the host ceiling");
+            }
+        }
+        Ok(())
+    }
+
+    fn check_credential_headers(&self) -> Result<(), ManifestError> {
+        for endpoint in &self.ingress {
+            if let Ingress::HttpServer(e) = endpoint {
+                if let Some(header) = e.forward_headers.iter().flatten().find(|h| is_credential_header(h)) {
+                    return refuse(Refusal::CredentialHeader, format!("ingress {} forwards {header}", e.id));
+                }
             }
         }
         Ok(())
@@ -1584,6 +1609,8 @@ mod tests {
             ("duplicate ui id", with(FLEET, |m| m["ui"][1]["id"] = serde_json::json!("start")), Some(Refusal::DuplicateId)),
             ("inspector key outside scope", with(FLEET, |m| m["ui"][3]["properties"] = serde_json::json!(["other.key"])), Some(Refusal::ScopeConflict)),
             ("mutating named query", with(BI, |m| m["bus"]["consume"][0]["sql"] = serde_json::json!("DELETE FROM iot_reading")), Some(Refusal::InvalidQuery)),
+            ("forwarded credential header", with(DEVICE, |m| m["ingress"][0]["forward_headers"] = serde_json::json!(["x-device-id", "authorization"])), Some(Refusal::CredentialHeader)),
+            ("forwarded host header", with(DEVICE, |m| m["ingress"][0]["forward_headers"] = serde_json::json!(["x-fe-join-lease"])), Some(Refusal::CredentialHeader)),
         ];
         for (row, bytes, expected) in rows {
             let got = parse_and_validate(&bytes).err().map(|e| e.reason);

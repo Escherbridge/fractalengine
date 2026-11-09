@@ -1,6 +1,6 @@
 {
   "name": "ext-fleet",
-  "description": "Extension platform fleet journey (spec R35): policy, install, consent and bind a four-mover fleet, run it at 2 Hz for 3 minutes, bus command floors through REST and WS, demote then re-grant the installing editor mid-flight, then publish the revocation list. Holds the observables of R5, R18, R22, R23, R24. Uses the extension driver ops and the extension probe (tools/qa/sim/AGENTS.md section extension).",
+  "description": "Extension platform fleet journey (spec R35): policy, install, consent and bind a four-mover fleet, run it at 2 Hz for 3 minutes, bus command floors through REST and WS, demote then re-grant the installing editor mid-flight, then publish the revocation list (stop, never withdrawal: OD-E1). Holds the observables of R5, R18, R22, R23, R24. Uses the extension driver ops and the extension probe (tools/qa/sim/AGENTS.md section extension).",
   "seed": 20261108,
   "fixture": "basic",
   "verse_name": "QA Basic",
@@ -44,14 +44,14 @@
     },
     {
       "id": "2", "title": "Four movers at 2 Hz for 3 minutes: one batched commit per tick, transforms agree on every peer", "settle_s": 190, "covers": ["R4", "R5"],
-      "note": "Run is bounded by hold_s 180. commits <= ticks_run and four ops per commit are exposed by the extension probe as derived fields commits_within_ticks (bool) and ops_per_commit. The owner host log must hold no 'slow DB command' line for PluginCommit and no 504 (analyze.py reads the host log).",
+      "note": "Run is bounded by hold_s 180. commits <= ticks_run and four ops per commit are exposed by the extension probe as derived fields commits_within_ticks (bool) and ops_per_commit. The installation is host-local (bus.md section 11), so its counters live on the editor's host, and the editor host log must hold no 'slow DB command' line for PluginCommit and no 504 (analyze.py reads the host log).",
       "actions": [
         {"id": "start", "peer": "editor", "via": "rest", "op": "extension_command", "args": {"installation": "$inst.installation", "petal_id": "$fixture.petal_a_id", "command": "start", "args": {}}, "sync": "barrier"}
       ],
       "expect": [
-        {"probe": "extension", "target": "$inst.installation", "path": "counters.commits_within_ticks", "peers": ["owner"], "predicate": "equals", "value": true, "mode": "always", "hold_s": 180, "after": "start", "covers": "R5 commits <= ticks_run"},
-        {"probe": "extension", "target": "$inst.installation", "path": "counters.ops_per_commit", "peers": ["owner"], "predicate": "equals", "value": 4, "within_s": 60, "after": "start"},
-        {"probe": "extension", "target": "$inst.installation", "path": "counters.refusals", "peers": ["owner"], "predicate": "equals", "value": {}, "within_s": 60, "after": "start", "covers": "R22 an Editor-floor identity is never refused for authority"},
+        {"probe": "extension", "target": "$inst.installation", "path": "counters.commits_within_ticks", "peers": ["editor"], "predicate": "equals", "value": true, "mode": "always", "hold_s": 180, "after": "start", "covers": "R5 commits <= ticks_run"},
+        {"probe": "extension", "target": "$inst.installation", "path": "counters.ops_per_commit", "peers": ["editor"], "predicate": "equals", "value": 4, "within_s": 60, "after": "start"},
+        {"probe": "extension", "target": "$inst.installation", "path": "counters.refusals", "peers": ["editor"], "predicate": "equals", "value": {}, "within_s": 60, "after": "start", "covers": "R22 an Editor-floor identity is never refused for authority"},
         {"probe": "transform", "target": "$inst.installation.movers", "path": "position", "predicate": "agree", "peers": "all", "within_s": 90, "covers": "R5 transforms agree on every peer"},
         {"probe": "ui", "target": "view", "path": "notice.text", "peers": ["editor"], "predicate": "excludes", "value": "504", "mode": "always", "hold_s": 180}
       ]
@@ -65,8 +65,8 @@
         {"id": "owner_ws", "peer": "owner", "via": "rest", "op": "extension_command", "args": {"installation": "$inst.installation", "petal_id": "$fixture.petal_a_id", "command": "start", "args": {}, "door": "ws"}, "sync": "+2"}
       ],
       "expect": [
-        {"probe": "extension", "target": "$inst.installation", "path": "counters.commands_refused", "peers": ["owner"], "predicate": "equals", "value": 2, "within_s": 20, "after": "viewer_ws"},
-        {"probe": "extension", "target": "$inst.installation", "path": "state", "peers": ["owner"], "predicate": "equals", "value": "active", "within_s": 20, "after": "owner_ws"}
+        {"probe": "extension", "target": "$inst.installation", "path": "counters.commands_refused", "peers": ["editor"], "predicate": "equals", "value": 2, "within_s": 20, "after": "viewer_ws"},
+        {"probe": "extension", "target": "$inst.installation", "path": "state", "peers": ["editor"], "predicate": "equals", "value": "active", "within_s": 20, "after": "owner_ws"}
       ]
     },
     {
@@ -92,18 +92,20 @@
       ]
     },
     {
-      "id": "5", "title": "Owner publishes the revocation list: instances stop, extension rows are withdrawn, hand edits survive", "settle_s": 120, "covers": ["R23", "R24"],
-      "note": "A property the editor sets by hand on a fleet-moved node must survive withdrawal (R24 AC). Readings from the fleet vanish from /api/v1/query.",
+      "id": "5", "title": "Owner publishes the revocation list: the instance stops after its in-flight commit, the rows it wrote stay, hand edits survive", "settle_s": 120, "covers": ["R23", "R24"],
+      "note": "OD-E1 (user decision 2026-11-08, docs/extensions/governance.md section Provenance): revocation is stop, never withdrawal. The fleet's rows stay on every peer with their host-stamped {package_id, content_hash}; fleet_readings counts the rows stamped org.example.fleet-sim. After the drain no fleet row lands (R23 AC), so that count holds still and agrees everywhere. Only the editor hosts the installation, so only it reports the state.",
       "actions": [
         {"id": "hand_edit", "peer": "editor", "via": "rest", "op": "set_property", "args": {"node_id": "$inst.installation.mover0", "key": "hand_note", "value": "kept"}},
         {"id": "revoke_list", "peer": "owner", "via": "rest", "op": "publish_revocation", "args": {"entries": [{"package_id": "org.example.fleet-sim", "content_hash": "$inst.content_hash"}]}, "needs": ["hand_edit"], "sync": "barrier"},
+        {"id": "drained", "peer": "owner", "via": "host", "op": "sleep", "args": {"seconds": 30}, "needs": ["revoke_list"]},
         {"id": "reinstall", "peer": "editor", "via": "rest", "op": "install_extension", "args": {"package": "fleet-sim", "verse_id": "$fixture.verse_id"}, "expect": "refused", "needs": ["revoke_list"], "sync": "+30"}
       ],
       "expect": [
-        {"probe": "extension", "target": "$inst.installation", "path": "state", "peers": "all", "predicate": "equals", "value": "revoked", "within_s": 60, "after": "revoke_list", "covers": "R23 layer d stops running instances"},
-        {"probe": "hierarchy", "target": "$fixture.petal_a_id", "path": "extension_created", "peers": "all", "predicate": "count", "value": 0, "within_s": 90, "after": "revoke_list", "covers": "R24 extension-created nodes removed"},
-        {"probe": "properties", "target": "$inst.installation.mover0", "path": "hand_note", "peers": "all", "predicate": "equals", "value": "kept", "within_s": 90, "after": "revoke_list", "covers": "R24 hand edit survives"},
-        {"probe": "query", "target": "fleet_readings", "path": "rows", "peers": "all", "predicate": "count", "value": 0, "within_s": 90, "after": "revoke_list", "covers": "R24 revoked readings excluded"},
+        {"probe": "extension", "target": "$inst.installation", "path": "state", "peers": ["editor"], "predicate": "equals", "value": "revoked", "within_s": 60, "after": "revoke_list", "covers": "R23 layer d stops the running instance"},
+        {"probe": "query", "target": "fleet_readings", "path": "rows", "peers": "all", "predicate": "count", "value": {"min": 1}, "within_s": 90, "after": "revoke_list", "covers": "R24 stamp-and-stop: the fleet's readings stay"},
+        {"probe": "query", "target": "fleet_readings", "path": "rows", "peers": "all", "predicate": "agree", "mode": "always", "hold_s": 20, "after": "drained", "covers": "R23 no fleet row lands after the stop"},
+        {"probe": "transform", "target": "$inst.installation.movers", "path": "position", "predicate": "agree", "peers": "all", "within_s": 90, "after": "revoke_list", "covers": "R24 moved nodes keep their last fleet position"},
+        {"probe": "properties", "target": "$inst.installation.mover0", "path": "hand_note", "peers": "all", "predicate": "equals", "value": "kept", "within_s": 90, "after": "revoke_list", "covers": "hand edit survives"},
         {"probe": "alive", "target": "all", "predicate": "present", "mode": "always", "hold_s": 10}
       ]
     }

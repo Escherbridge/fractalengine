@@ -37,14 +37,8 @@ pub const MAX_EGRESS_IN_FLIGHT: usize = 16;
 pub const OUTBOUND_QUEUE: usize = 64;
 
 /// Headers the host never forwards to a guest and never lets a guest set, whatever the manifest says
-/// (P2P-QA steer 2026-11-08 20:20; manifest-v2.md V16 is the second layer).
-const CREDENTIAL_HEADERS: &[&str] = &["authorization", "proxy-authorization", "cookie", "set-cookie", "x-api-key"];
-
-/// True for a credential or host-authenticating header (every `x-fe-*`).
-pub fn is_credential_header(name: &str) -> bool {
-    let name = name.trim().to_ascii_lowercase();
-    CREDENTIAL_HEADERS.contains(&name.as_str()) || name.starts_with("x-fe-")
-}
+/// (P2P-QA steer 2026-11-08 20:20; manifest-v2.md V16 is the second layer); one list in fe-sdk.
+pub use fe_sdk::manifest_v2::is_credential_header;
 
 /// A host-side secret named by a manifest `auth.credential` slot; never replicated, never shown to a guest.
 #[derive(Clone, PartialEq, Eq)]

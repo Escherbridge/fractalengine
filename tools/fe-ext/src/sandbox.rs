@@ -13,7 +13,7 @@ use fe_plugin::transaction::{StagedCommitSink, StagedFlush};
 use fe_plugin::wasm::component::bindings::exports::fractalengine::plugin::ingress_hooks::{IngressFrame, Transport};
 use fe_plugin::wasm::component::{window_for_token, Binding, ComponentHost, InstanceSetup, KvSlot, MemoryKv};
 use fe_plugin_test::mock_host::MockHostEnv;
-use fe_sdk::manifest_v2::{ExtensionManifest, ExtensionSourceClass, Ingress, Method};
+use fe_sdk::manifest_v2::{is_credential_header, ExtensionManifest, ExtensionSourceClass, Ingress, Method};
 use fe_sdk::node::NodeSnapshot;
 use fe_sdk::plugin_host::{json_property, property_json, PendingOp, StagedTimestamp, TransactionReceipt};
 use serde::Deserialize;
@@ -247,9 +247,6 @@ fn seed_node(fixture_node: &FixtureNode, petal_id: &str) -> NodeSnapshot {
 /// The identity the sandbox binds as, and the caller of http and websocket-accept frames that name none.
 const SANDBOX_DID: &str = "did:key:sandbox";
 
-/// Headers the host never forwards, whatever `forward_headers` says (fe-plugin `net::is_credential_header`).
-const CREDENTIAL_HEADERS: [&str; 5] = ["authorization", "proxy-authorization", "cookie", "set-cookie", "x-api-key"];
-
 /// What the host's ingress mount does with one fixture frame before any guest code runs.
 enum Admission {
     Deliver(Box<IngressFrame>),
@@ -300,8 +297,7 @@ fn forwarded_headers(headers: &[(String, String)], declared: &[String]) -> Vec<(
         .filter_map(|(name, value)| {
             let name = name.trim().to_ascii_lowercase();
             let wanted = declared.iter().any(|declared| declared.eq_ignore_ascii_case(&name));
-            let credential = CREDENTIAL_HEADERS.contains(&name.as_str()) || name.starts_with("x-fe-");
-            (wanted && !credential).then(|| (name, value.clone()))
+            (wanted && !is_credential_header(&name)).then(|| (name, value.clone()))
         })
         .collect()
 }

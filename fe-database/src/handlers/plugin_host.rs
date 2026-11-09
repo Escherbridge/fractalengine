@@ -552,6 +552,10 @@ pub(crate) async fn commit(
         node.state = change.after;
         for (operation, version, mut payload) in change.facts {
             payload["plugin_id"] = json!(admission.plugin_id());
+            // R24 stamp-and-stop: host-stamped provenance beside the fact's write clock (governance.md §Provenance).
+            if let Some(package) = admission.package() {
+                payload["ext"] = json!({"package_id":package.package_id(),"content_hash":package.content_hash()});
+            }
             node.previous = Some(json!({"row_version":version,"payload":payload}));
             facts.push((node_id.clone(), operation, version, payload));
         }
@@ -584,7 +588,7 @@ pub(crate) async fn commit(
         "expanded plugin batch exceeds 2 MiB"
     );
     let mut intention = json!({"plugin_id":admission.plugin_id(),"petal_id":admission.petal_id(),"scope":scope,"source_did":local_did,"ops":ops});
-    // Local attribution only; replicated provenance stamping waits for OD-E1 (R24).
+    // Local attribution; scene provenance stays local under OD-E1 (governance.md §Provenance).
     if let Some(package) = admission.package() {
         intention["package"] = json!({"package_id":package.package_id(),"content_hash":package.content_hash()});
     }
@@ -791,12 +795,13 @@ pub(crate) async fn flush(
             let verse_id = crate::parse_scope(&outcome.scope)
                 .map_err(|error| PluginRefusal::UnknownOutcome(format!("flush scope unusable: {error}")))?
                 .verse_id;
-            super::iot_reading::insert_readings_with_replication(
+            super::iot_reading::insert_readings_with_provenance(
                 db,
                 admission.petal_id(),
                 Some(verse_id.as_str()),
                 local_did,
                 grant.source_class(),
+                admission.package(),
                 &door,
                 Some(sinks.blobs),
                 sinks.replication,

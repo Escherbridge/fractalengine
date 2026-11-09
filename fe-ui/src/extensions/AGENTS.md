@@ -21,3 +21,11 @@ this module draws them and the guest draws no pixels.
 
 Slot call sites (owned elsewhere, one line each): `ui_shell::topbar` toolbar, `panels/sidebar.rs`, `panels/inspector.rs`,
 `dialogs/context_menu.rs`, the viewport overlay pass, and the dashboard.
+
+## §modules (G6, 2026-11-09)
+
+`mod.rs` declares every module: `slots` (P1.8), `panel` + `browse` + `details` + `permissions` (P4, design in
+`docs/extensions/extensions-ui.md`), `consent` (P2.4) and `builtin` (P5.5). Declared means compiled and reachable by the
+`extensions::` test filter (J9, the consent and slot journeys), not yet mounted: `ExtensionSlotsPlugin` and
+`ExtensionsPanelPlugin` are not added to the app, no surface calls `panel::draw` / `consent::render` or a slot draw function,
+and the binary drains neither `take_ops` nor `take_commands`. That wiring is the integration wave's (review.md G1-A7, G4-A9/A10).

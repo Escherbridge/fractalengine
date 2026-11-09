@@ -1,5 +1,12 @@
-//! Extension UI slot host: renders manifest-declared contributions (see `fe-ui/src/extensions/AGENTS.md`).
+//! Extension UI: the slot host, the Extensions panel, consent and the built-in connectors
+//! (see `fe-ui/src/extensions/AGENTS.md` and `docs/extensions/extensions-ui.md`).
 
+pub mod browse;
+pub mod builtin;
+pub mod consent;
+pub mod details;
+pub mod panel;
+pub mod permissions;
 pub mod slots;
 
 use bevy::prelude::*;

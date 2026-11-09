@@ -33,20 +33,8 @@ pub const REPLY_TIMEOUT: Duration = Duration::from_millis(6_000);
 /// Audit rows one `GET .../audit` returns at most.
 pub const MAX_AUDIT_ROWS: usize = 500;
 
-/// Headers the host authenticates with; never forwarded to a guest whatever the manifest declares.
-const CREDENTIAL_HEADERS: &[&str] = &[
-    "authorization",
-    "proxy-authorization",
-    "cookie",
-    "set-cookie",
-    "x-api-key",
-];
-
-/// True for a credential or host-authenticating header (every `x-fe-*`).
-pub fn is_credential_header(name: &str) -> bool {
-    let name = name.trim().to_ascii_lowercase();
-    CREDENTIAL_HEADERS.contains(&name.as_str()) || name.starts_with("x-fe-")
-}
+/// Credential and host-authenticating headers are never forwarded to a guest, whatever the manifest declares.
+pub use fe_sdk::manifest_v2::is_credential_header;
 
 // ---------------------------------------------------------------------------
 // Host seam
