@@ -203,15 +203,15 @@ Toasts, dialogs, window chrome, status bar, embedded webview (PetalPortal), app 
 
 ```bash
 cargo test -p fe-ui --lib -- notice:: ui_shell:: dialogs::join panels::widgets panels::toolbar panels::sidebar panels::tool_options panels::tool_inspector panels::tool_panel settings:: portal:: plugin::
-cargo test -p fe-webview
+cargo test -p fe-webview --lib --test security_test --test tauri_backend_test --test tauri_cutover_test
+cargo test -p fe-webview --test portal_protocol_journey --test portal_ipc_journey
 cargo test -p fractalengine --bin fractalengine -- panic_log:: window_chrome::
 ```
 
-Portal bundle journeys (`portal_surface_20261107`) are registered here as the `fe-webview/tests/portal_protocol_journey.rs`
-(custom protocol, CSP, navigation admission) and `fe-webview/tests/portal_ipc_journey.rs` (`fe.portal.v1` bridge) binaries.
-Both run inside the crate-wide `cargo test -p fe-webview` line above. They are not repeated as a fenced command, so the
-chunked runner does not run them twice; a targeted steer can run them alone with
-`cargo test -p fe-webview --test portal_protocol_journey --test portal_ipc_journey`.
+Portal bundle journeys (`portal_surface_20261107`) have their own row: `fe-webview/tests/portal_protocol_journey.rs`
+(custom protocol, CSP, navigation admission) and `fe-webview/tests/portal_ipc_journey.rs` (`fe.portal.v1` bridge).
+The crate line above lists the other fe-webview targets explicitly, so the journeys run once. A `--lib` line covers
+the unit tests; a new fe-webview test binary must be added to one of the two rows.
 
 ---
 
@@ -257,12 +257,17 @@ fe-sync, distributed query, tileset transfer, relay, network thread.
 **Total ≈ 375**
 
 ```bash
-cargo test -p fe-sync
+cargo test -p fe-sync -- --skip docs_engine::tests::a_hash_with_no_tileset_context_is_unaffected_by_the_filter
+cargo test -p fe-sync --lib -- docs_engine::tests::a_hash_with_no_tileset_context_is_unaffected_by_the_filter
 cargo test -p fe-api --test distributed_query_test
 cargo test -p fe-network
 cargo test -p fractalengine-relay
 cargo test -p fe-runtime --lib -- peer_registry distributed_query blob_transport blob_store bevy_blob_reader
 ```
+
+**Docs-engine row (QA-0118):** the `fe-sync` line skips `docs_engine::tests::a_hash_with_no_tileset_context_is_unaffected_by_the_filter`,
+and the next line runs it alone. That test carries the QA-0118 re-arm assertion (a refused scene fetch is retried once the
+provider admits again) and the portal-bundle prefetch check. Its name predates QA-0118; renaming it is a separate change.
 
 **Slow sub-batch:** `fe-sync/tests/relay_assisted_test.rs` and `fe-sync/tests/tileset_transfer_test.rs`
 touch real endpoints/relay handshakes — flagged by the stress/timing scan; verify at campaign end if a
@@ -347,10 +352,22 @@ cargo test -p fe-plugin
 cargo test -p fe-plugin-test
 cargo test -p fe-hexon
 cargo test -p fe-hexon-registry
-cargo test -p fe-format
+cargo test -p fe-format -- --skip portal_bundle::
+cargo test -p fe-format --lib -- portal_bundle::
 cargo test -p fe-sdk
 cargo test -p fe-ui --lib -- atlas::dashboard atlas::model_editor atlas::search_bar atlas::tag_panel atlas::room_editor actions::hexon
 ```
+
+**Portal bundle validator (fe-format):** `fe-format/src/portal_bundle.rs` tests (`portal_bundle::tests::`) run in the second line,
+and the first line skips them so they run once. Their coverage: validator refusal classes, capability digest, and the capability
+increase rule.
+
+## Portal QA lane (not cargo)
+
+The portal QA journeys PJ1-PJ10 (`tools/qa/portal/journeys.md`) run as sim scenarios (`tools/qa/sim/scenarios/portal-core.json`,
+`portal-replication.json`, `portal-load.json`), not as `cargo test`, so this section has no runner chunks. PJ10 (static export, R17)
+is registered for P6 and runs only once P6 lands its export route in `fe-api/src/portal_bundles.rs`; it extends
+`fe-api/tests/portal_bundle_test.rs`, which the R9 row already runs.
 
 ---
 
