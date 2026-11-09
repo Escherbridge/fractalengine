@@ -354,6 +354,19 @@ pub async fn written_while_authorized(
     scope: &str,
     hlc: u64,
 ) -> anyhow::Result<bool> {
+    written_while_authorized_at(db, verse_id, author, scope, RoleLevel::Editor, hlc).await
+}
+
+/// [`written_while_authorized`] for a required `level` (scene rows: Editor; binding rows:
+/// Manager, bindings.md §4.4).
+pub async fn written_while_authorized_at(
+    db: &Db,
+    verse_id: &str,
+    author: &str,
+    scope: &str,
+    level: RoleLevel,
+    hlc: u64,
+) -> anyhow::Result<bool> {
     let Some(owner) = verse_owner(db, verse_id).await? else {
         return Ok(true);
     };
@@ -361,15 +374,28 @@ pub async fn written_while_authorized(
         return Ok(true);
     }
     let admitted = load_admitted(db, verse_id).await?;
-    if !materialize(&owner, admitted.iter())
-        .role_at(author, scope)
-        .is_at_least(RoleLevel::Editor)
-    {
-        return Ok(true);
+    let current = materialize(&owner, admitted.iter());
+    Ok(authorized_at_write(&owner, &current, &admitted, author, scope, level, hlc))
+}
+
+/// Pure core of [`written_while_authorized_at`] over a loaded verse view (`current` =
+/// `materialize(owner, admitted)`), so a caller judging many rows materializes once.
+pub fn authorized_at_write(
+    owner: &str,
+    current: &EffectiveRoles,
+    admitted: &[RoleStatement],
+    author: &str,
+    scope: &str,
+    level: RoleLevel,
+    hlc: u64,
+) -> bool {
+    // The owner, and authority not derived from statements, are the current gate's call.
+    if owner == author || !current.role_at(author, scope).is_at_least(level) {
+        return true;
     }
-    Ok(fe_policy::materialize_at(&owner, admitted.iter(), hlc)
+    fe_policy::materialize_at(owner, admitted.iter(), hlc)
         .role_at(author, scope)
-        .is_at_least(RoleLevel::Editor))
+        .is_at_least(level)
 }
 
 /// Place one VALIDATED statement (`fe_policy::validate_statement` already passed) under

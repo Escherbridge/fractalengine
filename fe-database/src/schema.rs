@@ -1003,6 +1003,8 @@ pub async fn apply_all(db: &crate::repo::Db) -> anyhow::Result<()> {
         .await?.check().map_err(|e| anyhow::anyhow!("idx_observation_window_member_sealed: {e}"))?;
     // Extension governance: the replicated per-verse policy row (handlers/AGENTS.md §extension-policy).
     crate::handlers::extension_policy::apply_schema(db).await?;
+    // Scoped extension bindings: replicated per-author binding versions (src/AGENTS.md §extension-binding).
+    crate::handlers::extension_binding::apply_schema(db).await?;
 
     Ok(())
 }
@@ -1049,6 +1051,7 @@ pub const DEVELOPMENT_RESET_TABLE_NAMES: &[&str] = &[
     "observation_hydration",
     "api_token",
     "extension_policy",
+    "extension_binding",
 ];
 
 /// All table names, for admin operations like dump / clear.
@@ -1349,6 +1352,8 @@ mod tests {
         assert!(!ALL_TABLE_NAMES.contains(&JoinDelegationRow::TABLE_NAME));
         assert!(DEVELOPMENT_RESET_TABLE_NAMES.contains(&JoinDelegationRow::TABLE_NAME));
         assert!(JoinDelegationRow::schema().contains("['quarantined', 'active']"));
+        // The dev reset refuses a table it does not list (admin.rs), so the binding table must be listed.
+        assert!(DEVELOPMENT_RESET_TABLE_NAMES.contains(&"extension_binding"));
         assert!(ALL_TABLE_NAMES.contains(&"iot_reading"));
         assert!(ALL_TABLE_NAMES.contains(&"petal"));
         assert!(ALL_TABLE_NAMES.contains(&"verse_member"));

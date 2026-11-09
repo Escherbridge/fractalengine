@@ -479,6 +479,11 @@ async fn apply_row_mode(
             super::extension_policy::apply_replicated_policy_row(db, verse_id, record_id, row_bytes, author_did)
                 .await
         }
+        // Scoped bindings (bindings.md §4.3): bounded clock, one live version per doc key; admissibility on read.
+        super::extension_binding::BINDING_DOC_TABLE => {
+            super::extension_binding::apply_replicated_binding_row(db, verse_id, record_id, row_bytes, author_did)
+                .await
+        }
         // Revocation dominates; the unsigned `del` marker is NotApplicable (§device-enrolment).
         crate::canon_log::device_enrolment::DEVICE_ENROLMENT_TABLE => {
             crate::canon_log::device_enrolment::apply_replicated_enrolment(db, record_id, row_bytes)
@@ -517,7 +522,7 @@ enum Floor {
     Write,
     /// Manager+ at the VERSE scope: verse governance fields and `device_format`.
     ManageVerse,
-    /// Manager+ at each exact current/requested Petal scope.
+    /// Manager+ at each exact gated scope: a petal's requirements, or a binding row's scope at any level.
     ManageScope,
 }
 
@@ -584,6 +589,7 @@ fn is_applied_table(table: &str) -> bool {
         table,
         "verse" | "fractal" | "petal" | "node" | "asset" | "device_format"
             | super::extension_policy::POLICY_TABLE
+            | super::extension_binding::BINDING_DOC_TABLE
     ) || ReplicationMode::for_table(table) == ReplicationMode::Timeseries
 }
 
@@ -698,7 +704,7 @@ async fn admit_inbound_row(
         return Ok(Admission::Defer(DeferralReason::Manifest));
     }
 
-    let (scopes, floor) = match confine(db, verse_id, table, record_id, row_bytes).await? {
+    let (scopes, floor) = match confine(db, verse_id, table, record_id, row_bytes, author_did).await? {
         Confined::Gate { scopes, floor } => (scopes, floor),
         Confined::Stop(Admission::Deny(reason)) => {
             tracing::warn!(
@@ -805,13 +811,18 @@ async fn is_verse_member(db: &Db, verse_id: &str, did: &str) -> anyhow::Result<b
 /// Confine one row of a known verse: every reference it carries, AND the
 /// current parent of the durable row it would change, must resolve to this
 /// replica's verse. Returns the scopes and floor its author must clear.
+/// `author_did` (attested) is read only by rows that name their author in the key.
 async fn confine(
     db: &Db,
     verse_id: &str,
     table: &str,
     record_id: &str,
     row_bytes: &[u8],
+    author_did: &str,
 ) -> anyhow::Result<Confined> {
+    if table == super::extension_binding::BINDING_DOC_TABLE {
+        return confine_binding(db, verse_id, record_id, row_bytes, author_did).await;
+    }
     // The empty `del` entry reaches here only for `node` (the wire tombstone).
     let row: serde_json::Value = if row_bytes.is_empty() {
         serde_json::json!({})
@@ -1118,6 +1129,41 @@ fn confine_device_format(verse_id: &str, row: &serde_json::Value) -> anyhow::Res
         )),
         None => deny("device_format row has no verse_id"),
     }
+}
+
+/// A binding row (bindings.md §4.3): structurally sound, its scope's fractal and petal located in this
+/// verse exactly as the scope names them (unknown = `Parent`), then Manager+ NOW at the binding's scope.
+async fn confine_binding(
+    db: &Db,
+    verse_id: &str,
+    record_id: &str,
+    row_bytes: &[u8],
+    author_did: &str,
+) -> anyhow::Result<Confined> {
+    let record = match super::extension_binding::confine_inbound(verse_id, record_id, row_bytes, author_did) {
+        Ok(record) => record,
+        Err(reason) => return deny(reason),
+    };
+    let parts = match crate::parse_scope(&record.scope) {
+        Ok(parts) => parts,
+        Err(e) => return deny(format!("binding scope: {e}")),
+    };
+    let located = match (parts.fractal_id.as_deref(), parts.petal_id.as_deref()) {
+        (None, None) => record.scope.clone(),
+        (Some(fractal_id), None) => here_or_stop!(locate_fractal(db, verse_id, fractal_id).await?),
+        (Some(_), Some(petal_id)) => here_or_stop!(locate_petal(db, verse_id, petal_id).await?),
+        (None, Some(_)) => return deny("binding petal scope names no fractal"),
+    };
+    if located != record.scope {
+        return deny(format!(
+            "binding scope {} does not match the stored hierarchy ({located})",
+            record.scope
+        ));
+    }
+    Ok(Confined::Gate {
+        scopes: vec![record.scope],
+        floor: Floor::ManageScope,
+    })
 }
 
 /// `iot_reading`: its petal is here, its anchor node is a node of that petal,

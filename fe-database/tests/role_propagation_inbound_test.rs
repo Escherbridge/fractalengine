@@ -10,7 +10,7 @@ use std::path::Path;
 use std::sync::{Arc, Mutex, MutexGuard, Once};
 use std::time::Duration;
 
-use fe_database::handlers::extension_policy;
+use fe_database::handlers::{extension_binding, extension_policy};
 use fe_database::handlers::inbound_admissions::{
     deferred_admission_drop_count, InboundAdmissions, RowReport,
 };
@@ -20,6 +20,7 @@ use fe_database::role_manager::{assign_role_checked, resolve_role};
 use fe_database::{build_scope, spawn_db_thread_shared, BlobStoreHandle, DbThread, RoleLevel};
 use fe_policy::RoleStatementPayload;
 use fe_runtime::blob_store::mock::MockBlobStore;
+use fe_runtime::extension_binding::{BindingMode, BindingRecord};
 use fe_runtime::messages::{DbCommand, DbResult, DeferralReason, ReplicatedRowOutcome};
 
 const OWNER: &str = "did:key:z6MkInboundOwner";
@@ -123,6 +124,26 @@ fn policy_row(author: &str, written_at: u64) -> Vec<u8> {
         },
     }))
     .expect("policy json")
+}
+
+/// A replicated fractal-wide `petal.map` binding (docs/extensions/bindings.md §3, §8.1) by `author`:
+/// `(record id, payload bytes)`.
+fn binding_row(author: &str, written_at: u64) -> (String, Vec<u8>) {
+    let record = BindingRecord {
+        schema_version: 1,
+        scope: fractal_scope(),
+        hook: "petal.map".into(),
+        key: String::new(),
+        mode: BindingMode::Extension,
+        package_id: Some("org.example.city-map".into()),
+        version_req: Some(">=1.2.0, <2.0.0".into()),
+        config: serde_json::json!({ "district": "harbour" }),
+        runs_on: None,
+        author_did: author.into(),
+        written_at: written_at.to_string(),
+    };
+    let record_id = extension_binding::binding_record_id(&record).expect("binding record id");
+    (record_id, serde_json::to_vec(&record).expect("binding json"))
 }
 
 fn manifest_row() -> Vec<u8> {
@@ -390,6 +411,16 @@ async fn promotion_flows() {
         assert_eq!(reports[0].outcome, author_role(MANAGER), "{promotion:?}");
         assert!(extension_policy::get_policy(&db, VERSE).await.expect("read policy").is_none());
 
+        // B1 (bindings.md §4.3): its fractal-wide binding, also written after its promotion, arrives first too:
+        // deferred on Manager+ NOW at the binding's own scope, never stored.
+        let (binding_id, binding_bytes) = binding_row(MANAGER, policy_written_at + (1 << 16));
+        let reports = queue
+            .apply(&db, VERSE, extension_binding::BINDING_DOC_TABLE, &binding_id, &binding_bytes, MANAGER, None)
+            .await;
+        assert_eq!(reports[0].outcome, author_role(MANAGER), "{promotion:?}");
+        let plane = extension_binding::load_binding_snapshot(&db, VERSE).await.expect("binding plane");
+        assert!(plane.versions.is_empty(), "{promotion:?}: a deferred binding is not stored");
+
         let settled = match promotion {
             Promotion::InboundOwnerStatement => {
                 let promote = grant(OWNER, MANAGER, &verse_scope(), "manager", 20);
@@ -411,6 +442,17 @@ async fn promotion_flows() {
         );
         let stored = extension_policy::get_policy(&db, VERSE).await.expect("read policy").expect("policy row");
         assert_eq!((stored.author_did.as_str(), stored.policy.mode), (MANAGER, extension_policy::PolicyMode::AllowList));
+        assert!(
+            applied(&settled, &binding_id),
+            "{promotion:?}: the deferred binding applies on the same promotion: {settled:?}"
+        );
+        // Written after the grant and held now, so admissible on read and the fractal's effective map binding.
+        let plane = extension_binding::load_binding_snapshot(&db, VERSE).await.expect("binding plane");
+        assert!(
+            matches!(plane.versions.as_slice(), [version] if version.effective && version.record.author_did == MANAGER),
+            "{promotion:?}: {:?}",
+            plane.versions
+        );
 
         // Precondition 7 over the stored row: the allow range admits 0.1.x only, a local digest deny matches
         // under any id, and a URL whose authority ends at `?` is not loopback (G2: `?@localhost` disguise).
