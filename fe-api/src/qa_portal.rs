@@ -338,6 +338,51 @@ pub async fn portal_ipc_stats(
     }
 }
 
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct KillSwitchRequest {
+    engage: bool,
+}
+
+/// POST /api/v1/debug/portal/killswitch: `{"engage": bool}` only; gated like `portal_action`.
+/// The native bridge has no kill-switch operation yet, so a valid request is refused after the gate.
+pub async fn portal_killswitch(
+    State(state): State<Arc<ApiState>>,
+    Extension(claims): Extension<ApiClaims>,
+    uri: Uri,
+    body: axum::body::Bytes,
+) -> Response {
+    if let Err(error) = crate::qa_debug::QA_GATE
+        .admit(state.input.allowed, &state, &claims)
+        .await
+    {
+        return refusal(error.status(), "qa_gate_refused", &error.message());
+    }
+    let request = match serde_json::from_slice::<KillSwitchRequest>(&body) {
+        Ok(request) if uri.query().is_none() => request,
+        _ => {
+            return refusal(
+                StatusCode::BAD_REQUEST,
+                "invalid_fixture_operation",
+                "Only {\"engage\": true|false} is accepted",
+            )
+        }
+    };
+    if crate::auth::require_role_level(&claims, fe_database::RoleLevel::Owner).is_err() {
+        return refusal(
+            StatusCode::FORBIDDEN,
+            "qa_gate_refused",
+            "QA authorization is no longer current",
+        );
+    }
+    tracing::warn!(engage = request.engage, "portal kill switch requested; native bridge operation missing");
+    refusal(
+        StatusCode::SERVICE_UNAVAILABLE,
+        "portal_killswitch_unavailable",
+        "Native kill-switch operation is not wired",
+    )
+}
+
 /// POST /api/v1/debug/portal/action: activate `data-fe-slot` number 1..32; the only input is the number.
 pub async fn portal_action(
     State(state): State<Arc<ApiState>>,
