@@ -1,0 +1,9 @@
+{
+  "petal_id": "p1",
+  "start_ms": 3000000,
+  "ticks": 3,
+  "source_class": "connector",
+  "nodes": [
+    { "id": "sensor-1", "name": "Sensor 1" }
+  ]
+}
