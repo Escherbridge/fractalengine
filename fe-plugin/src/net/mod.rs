@@ -1,5 +1,6 @@
 //! Network brokers: declared ingress (HTTP/WS accept on the API mount, WS dial, MQTT) and egress; see net/AGENTS.md.
 
+mod address;
 mod connect;
 mod egress;
 mod ingress;
@@ -24,6 +25,7 @@ use crate::bus::sources::{AuditAction, AuditEntry, AuditSink, RoleSource};
 use crate::bus::{HostError, InstanceKey, InstanceSpec};
 use crate::tick::Clock;
 
+pub use address::is_public_unicast;
 pub use egress::{IncomingResponse, OutgoingRequest};
 pub use ingress::{HttpIngressRequest, IngressRefusal, WsAcceptRequest, WsSession};
 
@@ -80,17 +82,17 @@ impl std::fmt::Debug for Credential {
 /// A filled credential with its scheme and optional header name.
 type ShapedCredential = Option<(AuthScheme, Credential, Option<String>)>;
 
-/// The operator-filled local credential store.
+/// The operator-filled local credential store; slots are scoped per package (net/AGENTS.md §credentials).
 pub trait CredentialStore: Send + Sync {
-    /// The secret in `slot`, or `None` while the operator has not filled it.
-    fn get(&self, slot: &str) -> Option<Credential>;
+    /// The secret the operator filled in `slot` for `package_id`, or `None`; a slot never resolves across packages.
+    fn get(&self, package_id: &str, slot: &str) -> Option<Credential>;
 }
 
 /// A store with every slot empty: credentialed endpoints stay down with `credential-missing`.
 pub struct NoCredentials;
 
 impl CredentialStore for NoCredentials {
-    fn get(&self, _slot: &str) -> Option<Credential> {
+    fn get(&self, _package_id: &str, _slot: &str) -> Option<Credential> {
         None
     }
 }
@@ -531,10 +533,10 @@ impl Net {
         });
     }
 
-    /// A credential for `slot` shaped for `scheme`, read fresh on every call, or why the endpoint must stay down.
-    fn credential(&self, auth: Option<&AuthSlot>) -> Result<ShapedCredential, EndpointState> {
+    /// `package_id`'s credential for `slot` shaped for `scheme`, read fresh on every call, or why the endpoint must stay down.
+    fn credential(&self, package_id: &str, auth: Option<&AuthSlot>) -> Result<ShapedCredential, EndpointState> {
         let Some(auth) = auth else { return Ok(None) };
-        let credential = self.sources.credentials.get(&auth.credential).ok_or(EndpointState::CredentialMissing)?;
+        let credential = self.sources.credentials.get(package_id, &auth.credential).ok_or(EndpointState::CredentialMissing)?;
         let needs_username = matches!(auth.scheme, AuthScheme::Basic | AuthScheme::MqttPassword);
         let username_missing = credential.username.as_deref().is_none_or(str::is_empty);
         if credential.secret.is_empty() || (needs_username && username_missing) {

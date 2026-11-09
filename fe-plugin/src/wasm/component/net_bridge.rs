@@ -202,7 +202,7 @@ impl ExtensionBroker for HostBroker {
     }
 }
 
-/// A faulted hook already degraded the instance; an ingress call then answers `None` (202, no body)
+/// A faulted hook already degraded the instance; an ingress call then answers `None` (fe-api: 204, no body)
 /// and the scheduler stops the instance on its next tick.
 impl NetHooks for ExtensionInstance {
     fn on_ingress(&mut self, frame: IngressFrame) -> Option<IngressReply> {
@@ -230,7 +230,7 @@ impl NetHooks for ExtensionInstance {
     }
 }
 
-/// The handle the scheduler ticks; a poisoned lock drops the delivery (an HTTP caller sees 202).
+/// The handle the scheduler ticks; a poisoned lock drops the delivery (an HTTP caller sees 204).
 impl NetHooks for InstanceHandle {
     fn on_ingress(&mut self, frame: IngressFrame) -> Option<IngressReply> {
         match self.lock() {

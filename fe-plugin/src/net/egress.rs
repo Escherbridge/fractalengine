@@ -1,11 +1,13 @@
 //! Egress (spec R9): declared outbound HTTP requests and MQTT publishes; the guest names an endpoint, never a host.
 
+use std::sync::Arc;
 use std::time::Duration;
 
 use fe_sdk::manifest_v2::{Egress, HttpEgress, Method, Qos};
 use reqwest::header::{HeaderMap, HeaderName, HeaderValue, CONTENT_TYPE};
 use tokio::sync::mpsc::error::TrySendError;
 
+use super::address::{literal_refusal, CheckedResolver};
 use super::connect::is_loopback;
 use super::mqtt::{topic_matches, valid_topic_name};
 use super::mqtt_session::MqttPublish;
@@ -29,8 +31,9 @@ const MAX_REQUEST_HEADERS: usize = 64;
 const MAX_PATH_BYTES: usize = 2_048;
 const MAX_QUERY_PAIRS: usize = 64;
 const MAX_URL_BYTES: usize = 8_192;
-/// Percent-encodings that could decode into a separator, a dot segment, a NUL, or another escape (double encoding).
-const REFUSED_ENCODINGS: [&str; 5] = ["%2e", "%2f", "%5c", "%25", "%00"];
+/// Percent-encodings that could decode into a separator, a dot segment, a NUL, another escape (double encoding),
+/// a servlet `;` path parameter (`..%3b/` behind a decoding proxy), or an overlong UTF-8 dot or slash (`%c0%ae`).
+const REFUSED_ENCODINGS: [&str; 8] = ["%2e", "%2f", "%5c", "%25", "%00", "%3b", "%c0", "%c1"];
 
 /// WIT `egress.outgoing-request`.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -124,7 +127,7 @@ impl Net {
             return Err(plain(HostError::BudgetExceeded(format!("at most {MAX_EGRESS_IN_FLIGHT} requests in flight"))));
         }
         let missing = || plain(HostError::NotAvailable("credential-missing".into()));
-        match self.credential(declared.auth.as_ref()) {
+        match self.credential(&key.package_id, declared.auth.as_ref()) {
             Ok(None) => {}
             Ok(Some((scheme, credential, header))) => {
                 let (name, value) = auth_header(scheme, &credential, header.as_deref()).ok_or_else(missing)?;
@@ -250,15 +253,23 @@ impl Net {
     }
 }
 
-/// One reqwest client per HTTP egress endpoint: no proxy, no referer, bounded time, redirects only inside the base.
+/// One reqwest client per HTTP egress endpoint: no proxy, no referer, bounded time, redirects only inside the base,
+/// and every address checked by [`CheckedResolver`] (an IP literal is checked here: reqwest never resolves one).
 pub(super) fn build_client(http: &HttpEgress) -> Result<reqwest::Client, String> {
     let base = reqwest::Url::parse(&http.url).map_err(|error| format!("bad egress url: {error}"))?;
-    let loopback = base.host_str().is_some_and(|host| is_loopback(host.trim_start_matches('[').trim_end_matches(']')));
+    let host = base
+        .host_str()
+        .map(|host| host.trim_start_matches('[').trim_end_matches(']').to_ascii_lowercase())
+        .ok_or_else(|| "egress url has no host".to_string())?;
+    let loopback = is_loopback(&host);
     if !(base.scheme() == "https" || (base.scheme() == "http" && loopback)) {
         return Err("egress must be https, or http to loopback".into());
     }
     if !base.username().is_empty() || base.password().is_some() || base.query().is_some() || base.fragment().is_some() {
         return Err("egress urls carry no credentials, query or fragment".into());
+    }
+    if let Some(reason) = literal_refusal(&host) {
+        return Err(reason);
     }
     let timeout = http.timeout_ms.unwrap_or(DEFAULT_TIMEOUT_MS).clamp(MIN_TIMEOUT_MS, MAX_TIMEOUT_MS);
     let redirect_base = base.clone();
@@ -277,6 +288,9 @@ pub(super) fn build_client(http: &HttpEgress) -> Result<reqwest::Client, String>
         .referer(false)
         .timeout(Duration::from_millis(timeout))
         .connect_timeout(Duration::from_secs(10))
+        .dns_resolver(Arc::new(CheckedResolver))
+        // A manifest-named server never negotiates h2 here (RUSTSEC-2026-0258 stays off this path; deny.toml).
+        .http1_only()
         .no_proxy()
         .https_only(!loopback)
         .user_agent("FractalEngine-extension-host")
@@ -284,7 +298,7 @@ pub(super) fn build_client(http: &HttpEgress) -> Result<reqwest::Client, String>
         .map_err(|error| format!("egress client: {error}"))
 }
 
-/// Same scheme, host and port, no userinfo, and a path at or under the base path.
+/// Same scheme, host and port, no userinfo, a path at or under the base path, and no servlet dot segment (`..;`).
 pub(super) fn within_base(url: &reqwest::Url, base: &reqwest::Url) -> bool {
     let prefix = base.path().trim_end_matches('/');
     url.scheme() == base.scheme()
@@ -292,6 +306,7 @@ pub(super) fn within_base(url: &reqwest::Url, base: &reqwest::Url) -> bool {
         && url.port_or_known_default() == base.port_or_known_default()
         && url.username().is_empty()
         && url.password().is_none()
+        && !url.path().split('/').any(|segment| matches!(segment.split(';').next(), Some(".") | Some("..")))
         && (prefix.is_empty() || url.path() == prefix || url.path().starts_with(&format!("{prefix}/")))
 }
 

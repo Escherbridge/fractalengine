@@ -99,8 +99,8 @@ pub(super) async fn run(
         if *stop.borrow() {
             return;
         }
-        // Re-read on every connect, so an operator filling the slot needs no restart.
-        match net.credential(config.auth.as_ref()) {
+        // Re-read on every connect, so an operator filling the slot needs no restart; slots are this package's only.
+        match net.credential(&key.package_id, config.auth.as_ref()) {
             Err(state) => net.set_endpoint_state(&key, generation, &config.endpoint, state),
             Ok(Some((scheme, _, _))) if scheme != AuthScheme::MqttPassword => {
                 net.set_endpoint_state(&key, generation, &config.endpoint, EndpointState::CredentialMissing);

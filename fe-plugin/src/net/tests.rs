@@ -1,5 +1,5 @@
 //! Net journey through the public `Net` seam: one row per rule of net/AGENTS.md (§credentials, §ingress,
-//! §dial-outs, §mqtt, §egress, §host-ceilings), on a manifest smuggled past validation (P2P-QA steer 2026-11-08 20:20).
+//! §dial-outs, §mqtt, §egress, §addresses, §host-ceilings), on a manifest smuggled past validation (P2P-QA steer 2026-11-08 20:20).
 
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
@@ -59,12 +59,12 @@ impl Audit {
     }
 }
 
-/// Operator-filled credential slots.
-struct Slots(HashMap<String, Credential>);
+/// Operator-filled credential slots, keyed by `(package_id, slot)` as the host's store is.
+struct Slots(HashMap<(String, String), Credential>);
 
 impl CredentialStore for Slots {
-    fn get(&self, slot: &str) -> Option<Credential> {
-        self.0.get(slot).cloned()
+    fn get(&self, package_id: &str, slot: &str) -> Option<Credential> {
+        self.0.get(&(package_id.to_string(), slot.to_string())).cloned()
     }
 }
 
@@ -310,22 +310,26 @@ fn net_journey_ingress_table_credentials_and_egress_refusals() {
     // §credentials, endpoint secrets: re-read per use; an unfilled, empty or ill-fitting slot keeps the endpoint down.
     let slot = |scheme: AuthScheme, credential: &str, header: Option<&str>| AuthSlot { scheme, credential: credential.into(), header: header.map(str::to_string) };
     let filled = |username: Option<&str>, secret: &str| Credential { username: username.map(str::to_string), secret: secret.into() };
+    let mine = |slot: &str| (PACKAGE.to_string(), slot.to_string());
     let store = Slots(HashMap::from([
-        ("token".to_string(), filled(None, "s3cret")),
-        ("blank".to_string(), filled(None, "")),
-        ("aladdin".to_string(), filled(Some("Aladdin"), "open sesame")),
+        (mine("token"), filled(None, "s3cret")),
+        (mine("blank"), filled(None, "")),
+        (mine("aladdin"), filled(Some("Aladdin"), "open sesame")),
+        // Another package's slot under a name this manifest could declare too (P2P-QA steer 2026-11-09 01:50).
+        (("org.example.vault-client".to_string(), "vault-token".to_string()), filled(None, "not-yours")),
     ]));
     let operator = Net::new(Arc::new(clock.clone()), NetSources { roles: roles.clone(), audit: audit.clone(), credentials: Arc::new(store), runtime: None });
     for (rule, auth, expected) in [
         ("an unfilled slot", slot(AuthScheme::Bearer, "absent", None), None),
         ("an empty secret", slot(AuthScheme::Bearer, "blank", None), None),
         ("basic without a username", slot(AuthScheme::Basic, "token", None), None),
+        ("another package's slot of the same name", slot(AuthScheme::Bearer, "vault-token", None), None),
         ("bearer", slot(AuthScheme::Bearer, "token", None), Some(("authorization", "Bearer s3cret"))),
         ("basic, RFC 7617's example", slot(AuthScheme::Basic, "aladdin", None), Some(("authorization", "Basic QWxhZGRpbjpvcGVuIHNlc2FtZQ=="))),
         ("a named header", slot(AuthScheme::Header, "token", Some("X-Api-Key")), Some(("x-api-key", "s3cret"))),
         ("a header the host owns", slot(AuthScheme::Header, "token", Some("Host")), None),
     ] {
-        let header = match operator.credential(Some(&auth)) {
+        let header = match operator.credential(PACKAGE, Some(&auth)) {
             Err(state) => {
                 assert_eq!(state, EndpointState::CredentialMissing, "{rule}");
                 None
@@ -335,6 +339,9 @@ fn net_journey_ingress_table_credentials_and_egress_refusals() {
         assert_eq!(header, expected.map(|(name, value)| (name.to_string(), value.to_string())), "{rule}");
     }
     assert!(!format!("{:?}", filled(Some("Aladdin"), "open sesame")).contains("open sesame"), "Debug never prints a secret");
+    let hello = Packet::Connect { client_id: "fe0".into(), keep_alive_s: 30, username: Some("site-a".into()), password: Some(b"pw".to_vec()) };
+    let shown = format!("{hello:?}");
+    assert!(shown.contains("<redacted>") && !shown.contains(&format!("{:?}", b"pw".to_vec())), "MQTT CONNECT never prints the password: {shown}");
     let missing = net.http_request(&key, "vault", request(Method::Get, "", vec![], b""));
     assert!(matches!(missing, Err(HostError::NotAvailable(reason)) if reason == "credential-missing"));
 
@@ -343,6 +350,7 @@ fn net_journey_ingress_table_credentials_and_egress_refusals() {
     for path in [
         "../admin", "v1/../../admin", "v1/%2e%2e/admin", "v1/%2E%2E/admin", "v1/%252e%252e/admin", "v1/..;/admin", "v1/%2fadmin",
         "a\\b", "//evil.example/x", "https://evil.example/", "v1?x=1", "v1#top", "user@evil.example", "v1/a b", "v1/\u{0}",
+        "v1/..%3b/admin", "v1/..%3B/admin", "v1/%c0%ae%c0%ae/admin",
     ] {
         assert!(super::egress::endpoint_url(base, path, &[]).is_err(), "{path}");
     }
@@ -359,6 +367,7 @@ fn net_journey_ingress_table_credentials_and_egress_refusals() {
         ("https://bi.example.org/api", true),
         ("https://bi.example.org/apix/x", false),
         ("https://bi.example.org/api/../admin", false),
+        ("https://bi.example.org/api/..;/admin", false),
         ("https://bi.example.org:8443/api/x", false),
         ("http://bi.example.org/api/x", false),
         ("https://evil.example/api/x", false),
@@ -367,10 +376,71 @@ fn net_journey_ingress_table_credentials_and_egress_refusals() {
         assert_eq!(super::egress::within_base(&reqwest::Url::parse(location).unwrap(), &base_url), followed, "{location}");
     }
 
-    // An egress client is never built for plaintext beyond loopback, userinfo or a query in the base.
-    for (url, rule) in [("http://bi.example.org/", "plaintext"), ("https://user:pw@bi.example.org/", "userinfo"), ("https://bi.example.org/?k=v", "query")] {
+    // An egress client is never built for plaintext beyond loopback, userinfo, a query, or a non-public IP literal.
+    for (url, rule) in [
+        ("http://bi.example.org/", "plaintext"),
+        ("https://user:pw@bi.example.org/", "userinfo"),
+        ("https://bi.example.org/?k=v", "query"),
+        ("https://169.254.169.254/latest/", "cloud metadata"),
+        ("https://10.0.0.5/", "private"),
+        ("https://[::ffff:127.0.0.1]/", "IPv4-mapped loopback is not a loopback name"),
+        ("https://[64:ff9b::a00:5]/", "NAT64 of a private address"),
+    ] {
         let http: HttpEgress = serde_json::from_value(json!({ "id": "x", "url": url, "methods": ["GET"], "rate_hz": 1 })).unwrap();
         assert!(super::egress::build_client(&http).is_err(), "{rule}");
+    }
+
+    // §addresses: one allow-list (global unicast) for egress, dial-outs and registry reads; loopback only by its declared name.
+    for (ip, public) in [
+        ("8.8.8.8", true),
+        ("172.32.0.1", true),
+        ("100.128.0.1", true),
+        ("2606:4700::1111", true),
+        ("2002:808:808::1", true),
+        ("0.1.2.3", false),
+        ("10.1.2.3", false),
+        ("100.64.0.1", false),
+        ("127.0.0.1", false),
+        ("169.254.169.254", false),
+        ("172.16.0.1", false),
+        ("192.0.0.8", false),
+        ("192.0.2.1", false),
+        ("192.168.1.1", false),
+        ("198.18.0.1", false),
+        ("198.51.100.1", false),
+        ("203.0.113.1", false),
+        ("224.0.0.1", false),
+        ("240.0.0.1", false),
+        ("255.255.255.255", false),
+        ("::", false),
+        ("::1", false),
+        ("::a00:1", false),
+        ("::ffff:10.0.0.1", false),
+        ("::ffff:8.8.8.8", true),
+        ("64:ff9b::808:808", false),
+        ("64:ff9b:1::1", false),
+        ("2001::1", false),
+        ("2001:db8::1", false),
+        ("2002:a00:1::1", false),
+        ("3fff::1", false),
+        ("fc00::1", false),
+        ("fd12:3456::1", false),
+        ("fe80::1", false),
+        ("fec0::1", false),
+        ("ff02::1", false),
+    ] {
+        assert_eq!(is_public_unicast(ip.parse().unwrap()), public, "{ip}");
+    }
+    for (host, ip, admitted) in [
+        ("localhost", "127.0.0.1", true),
+        ("localhost", "::1", true),
+        ("localhost", "8.8.8.8", false),
+        ("::1", "::1", true),
+        ("feed.example.org", "127.0.0.1", false),
+        ("feed.example.org", "10.0.0.1", false),
+        ("feed.example.org", "8.8.8.8", true),
+    ] {
+        assert_eq!(super::address::admits(host, ip.parse().unwrap()), admitted, "{host} -> {ip}");
     }
 
     // §egress refusals: undeclared endpoints and methods are audited capability denials (R9 AC); every refusal is counted.
@@ -429,6 +499,11 @@ fn net_journey_ingress_table_credentials_and_egress_refusals() {
         ("ws://feed.example.org/", None),
         ("mqtt://broker.example.org", None),
         ("ws://localhost.evil.example/", None),
+        ("wss://8.8.8.8/v1", Some((true, true, "8.8.8.8", 443))),
+        ("wss://169.254.169.254/", None),
+        ("wss://192.168.1.10:8443/", None),
+        ("mqtts://[fd00::1]", None),
+        ("mqtts://[::ffff:7f00:1]", None),
         ("wss://user:pw@feed.example.org/", None),
         ("wss://feed.example.org/?token=x", None),
         ("https://feed.example.org/", None),
@@ -475,6 +550,11 @@ fn net_journey_ingress_table_credentials_and_egress_refusals() {
         drop(broker);
         assert!(reader.next(&mut stream).await.is_err(), "the reader reports the close");
         assert_eq!((reader.take_oversized(), reader.buffered()), (1, 0));
+
+        // §addresses at connect: literals need no lookup; a refused address refuses the whole answer before any socket opens.
+        let checked = super::address::resolve_checked("127.0.0.1", 9001).await.unwrap();
+        assert_eq!(checked, vec!["127.0.0.1:9001".parse::<std::net::SocketAddr>().unwrap()]);
+        assert!(super::address::resolve_checked("10.0.0.1", 443).await.is_err(), "a private literal never connects");
     });
 
     // Disabled = unregistered: the mount answers the uniform not-found, unaudited (E5 default).

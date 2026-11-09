@@ -1,7 +1,8 @@
 //! Extension network broker wiring: builds `fe_plugin::net::Net` over the host's roles, audit sink and a local credential file.
-//! Seam E7 in fe-plugin/src/net/AGENTS.md; the credential-store decision is in fractalengine/src/AGENTS.md §extension-net.
+//! Seam E7; the credential-store decision (file, format, scope, permissions) is in fe-plugin/src/net/AGENTS.md §credential-store.
 
 use std::collections::BTreeMap;
+use std::io::Write as _;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
@@ -23,7 +24,11 @@ struct StoredSlot {
     secret: String,
 }
 
-/// Operator-filled slots in a local JSON file (`{ "<slot>": { "username"?, "secret" } }`): never replicated, re-read per connect.
+/// Slots per package: `{ "<package_id>": { "<slot>": { "username"?, "secret" } } }`.
+type StoredSlots = BTreeMap<String, BTreeMap<String, StoredSlot>>;
+
+/// Operator-filled slots in a local JSON file, scoped per package (P2P-QA steer 2026-11-09 01:50): an extension
+/// declaring another package's slot name reads nothing. Never replicated, re-read per connect.
 pub struct FileCredentialStore {
     path: PathBuf,
 }
@@ -34,7 +39,7 @@ impl FileCredentialStore {
         Self { path: data_dir.join(CREDENTIALS_FILE) }
     }
 
-    fn read_all(&self) -> BTreeMap<String, StoredSlot> {
+    fn read_all(&self) -> StoredSlots {
         let Ok(meta) = std::fs::metadata(&self.path) else { return BTreeMap::new() };
         if meta.len() > MAX_CREDENTIAL_FILE_BYTES {
             tracing::warn!("extension credential file exceeds {MAX_CREDENTIAL_FILE_BYTES} bytes; treating every slot as empty");
@@ -48,23 +53,33 @@ impl FileCredentialStore {
         })
     }
 
-    /// Fill or replace one slot (operator action); written atomically via a temp file and rename.
-    pub fn set_slot(&self, slot: &str, username: Option<String>, secret: String) -> std::io::Result<()> {
+    /// Fill or replace one of `package_id`'s slots (operator action); written owner-only via a temp file and rename.
+    pub fn set_slot(&self, package_id: &str, slot: &str, username: Option<String>, secret: String) -> std::io::Result<()> {
         let mut all = self.read_all();
-        all.insert(slot.to_owned(), StoredSlot { username, secret });
+        all.entry(package_id.to_owned()).or_default().insert(slot.to_owned(), StoredSlot { username, secret });
         let json = serde_json::to_vec_pretty(&all).map_err(std::io::Error::other)?;
         if let Some(parent) = self.path.parent() {
             std::fs::create_dir_all(parent)?;
         }
         let temp = self.path.with_extension("json.tmp");
-        std::fs::write(&temp, json)?;
+        let mut options = std::fs::OpenOptions::new();
+        options.write(true).create(true).truncate(true);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::OpenOptionsExt as _;
+            options.mode(0o600);
+        }
+        let mut file = options.open(&temp)?;
+        file.write_all(&json)?;
+        file.sync_all()?;
+        drop(file);
         std::fs::rename(&temp, &self.path)
     }
 }
 
 impl CredentialStore for FileCredentialStore {
-    fn get(&self, slot: &str) -> Option<Credential> {
-        let stored = self.read_all().remove(slot)?;
+    fn get(&self, package_id: &str, slot: &str) -> Option<Credential> {
+        let stored = self.read_all().remove(package_id)?.remove(slot)?;
         if stored.secret.is_empty() {
             return None;
         }

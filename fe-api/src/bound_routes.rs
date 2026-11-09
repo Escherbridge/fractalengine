@@ -84,9 +84,21 @@ pub async fn bound_ingress(
     claims: &ApiClaims,
     petal_scope: Option<String>,
     key: &str,
-    mut parts: IngressRequestParts,
+    parts: IngressRequestParts,
 ) -> Result<BoundOutcome, ExtError> {
     gate(extension_host, claims)?;
+    admitted_bound_ingress(binding_host, extension_host, claims, petal_scope, key, parts).await
+}
+
+/// [`bound_ingress`] after the rate gate: the handler gates once, so one aliased request is charged one rate unit.
+async fn admitted_bound_ingress(
+    binding_host: &dyn BindingHost,
+    extension_host: &dyn ExtensionHost,
+    claims: &ApiClaims,
+    petal_scope: Option<String>,
+    key: &str,
+    mut parts: IngressRequestParts,
+) -> Result<BoundOutcome, ExtError> {
     let scope = petal_scope.ok_or_else(ExtError::not_found)?;
     // A token below Viewer reads as unknown, never as forbidden.
     crate::auth::require_role_level(claims, fe_policy::RoleLevel::Viewer).map_err(|_| ExtError::not_found())?;
@@ -97,8 +109,9 @@ pub async fn bound_ingress(
         RouteTarget::Unresolved { package_id, reason } => Ok(BoundOutcome::Unresolved { package_id, reason }),
         RouteTarget::Package(package_id) => {
             parts.package_id = package_id;
-            // Role floor, rate, size, content type and the credential strip live in the ingress core.
-            crate::extensions::ingress(extension_host, claims, true, parts).await.map(BoundOutcome::Answer)
+            // Role floor (capped by the token's max_role), rate, size, content type and the credential strip live in
+            // the ingress core, so the alias can never forward what the package mount would strip.
+            crate::extensions::admitted_ingress(extension_host, claims, true, parts).await.map(BoundOutcome::Answer)
         }
     }
 }
@@ -185,7 +198,7 @@ async fn serve(
         content_type,
         body,
     };
-    match bound_ingress(bindings.0.as_ref(), extensions.0.as_ref(), &claims, petal_scope, &key, parts).await {
+    match admitted_bound_ingress(bindings.0.as_ref(), extensions.0.as_ref(), &claims, petal_scope, &key, parts).await {
         Ok(BoundOutcome::Answer(answer)) => answer_response(answer),
         Ok(BoundOutcome::Unresolved { package_id, reason }) => unresolved_response(&package_id, &reason),
         Err(e) if e.code == "no-reply" => StatusCode::NO_CONTENT.into_response(),

@@ -4,8 +4,8 @@
 /// The largest remaining length MQTT can encode.
 pub const MAX_REMAINING_LENGTH: usize = 268_435_455;
 
-/// The packets the host sends or understands.
-#[derive(Debug, Clone, PartialEq, Eq)]
+/// The packets the host sends or understands; `Debug` redacts the CONNECT password and prints only payload sizes.
+#[derive(Clone, PartialEq, Eq)]
 pub enum Packet {
     Connect { client_id: String, keep_alive_s: u16, username: Option<String>, password: Option<Vec<u8>> },
     ConnAck { session_present: bool, return_code: u8 },
@@ -16,6 +16,42 @@ pub enum Packet {
     PingReq,
     PingResp,
     Disconnect,
+}
+
+impl std::fmt::Debug for Packet {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Connect { client_id, keep_alive_s, username, password } => f
+                .debug_struct("Connect")
+                .field("client_id", client_id)
+                .field("keep_alive_s", keep_alive_s)
+                .field("username", username)
+                .field("password", &password.as_ref().map(|_| "<redacted>"))
+                .finish(),
+            Self::ConnAck { session_present, return_code } => {
+                f.debug_struct("ConnAck").field("session_present", session_present).field("return_code", return_code).finish()
+            }
+            Self::Publish { topic, packet_id, qos, retain, dup, payload } => f
+                .debug_struct("Publish")
+                .field("topic", topic)
+                .field("packet_id", packet_id)
+                .field("qos", qos)
+                .field("retain", retain)
+                .field("dup", dup)
+                .field("payload_bytes", &payload.len())
+                .finish(),
+            Self::PubAck { packet_id } => f.debug_struct("PubAck").field("packet_id", packet_id).finish(),
+            Self::Subscribe { packet_id, filters } => {
+                f.debug_struct("Subscribe").field("packet_id", packet_id).field("filters", filters).finish()
+            }
+            Self::SubAck { packet_id, return_codes } => {
+                f.debug_struct("SubAck").field("packet_id", packet_id).field("return_codes", return_codes).finish()
+            }
+            Self::PingReq => f.write_str("PingReq"),
+            Self::PingResp => f.write_str("PingResp"),
+            Self::Disconnect => f.write_str("Disconnect"),
+        }
+    }
 }
 
 /// What the front of a read buffer holds.

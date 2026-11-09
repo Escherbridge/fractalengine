@@ -79,10 +79,13 @@ ignore = [
     # Re-run `cargo deny check advisories` after the lockfile refresh; any wasmtime id that
     # reappears is a LIVE sandbox risk (the host executes untrusted WASM) and is not ignorable.
     # Transitive: the patch release re-resolves other crates (graph change).
+    # fe-plugin's extension egress client (servers an extension manifest names) is HTTP/1-only, so it never reaches h2.
     { id = "RUSTSEC-2026-0258", reason = "h2 0.4.14 (via hyper/reqwest): 0.4.16 re-resolves socket2/windows-sys — graph change" },
-    # fe-plugin's extension network client (tokio-rustls, ring provider) now also reaches rustls, dialling hosts an
-    # extension manifest names: re-triage this id against that client path at the L1 lockfile refresh.
-    { id = "RUSTSEC-2026-0285", reason = "rustls 0.23.40 (via iroh/reqwest, and fe-plugin net dial-outs): 0.23.45 bumps aws-lc-rs/aws-lc-sys — graph change" },
+    # Re-triaged by R-NET (turn 2) for fe-plugin's net client (tokio-rustls dial-outs and reqwest egress, hosts an
+    # extension manifest names): a peer can send should-be-encrypted TLS 1.3 handshake messages in plaintext, but the
+    # transcript stays authenticated (C:L, I:N, A:N), so no certificate, SNI or credential check is bypassed. Still
+    # retire it at the L1 lockfile refresh if 0.23.45 resolves without new crates.
+    { id = "RUSTSEC-2026-0285", reason = "rustls 0.23.40 (via iroh/reqwest, and fe-plugin net dial-outs/egress): 0.23.45 bumps aws-lc-rs/aws-lc-sys — graph change; transcript stays authenticated" },
     { id = "RUSTSEC-2026-0257", reason = "webbrowser 1.2.1 (via bevy_egui; Unix BROWSER env only): 1.2.2 changes its dependency set — graph change" },
     # Transitive: fixed only in a new minor/major the upstream crate has not adopted.
     { id = "RUSTSEC-2026-0194", reason = "quick-xml 0.39 (via tauri plist, parses bundled Info.plist only): fixed in 0.41 only" },

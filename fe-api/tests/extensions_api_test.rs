@@ -292,8 +292,17 @@ async fn extensions_api_journey() {
     assert_eq!(host.seen.lock().unwrap().commands.last().unwrap().0, caller_of(&local, ApiCallerKind::Mcp));
     assert_eq!(extension_command_tool(host.as_ref(), &local, true, &json!({"petal_id": PETAL})).await.unwrap_err().status, 400);
 
-    // Ingress: credential headers are stripped by the host whatever the caller sent; the body ceiling is 413.
-    let sent = vec![("Authorization", "Bearer secret"), ("cookie", "s=1"), ("x-api-key", "k"), ("x-fe-join-lease", "l"), ("x-device-id", "d1")];
+    // Ingress: credential headers are stripped by the host whatever the caller sent (every case, every `x-fe-*`); the body ceiling is 413.
+    let sent = vec![
+        ("Authorization", "Bearer secret"),
+        ("Proxy-Authorization", "Basic cHJveHk="),
+        ("cookie", "s=1"),
+        ("Set-Cookie", "s=2"),
+        ("x-api-key", "k"),
+        ("x-fe-join-lease", "l"),
+        ("X-FE-Session", "s"),
+        ("x-device-id", "d1"),
+    ];
     let answer = ingress(host.as_ref(), &local, true, parts(sent, b"{}".to_vec())).await.unwrap();
     assert_eq!((answer.status, answer.body.as_slice()), (202, b"ok".as_slice()));
     {

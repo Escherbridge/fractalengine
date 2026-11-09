@@ -87,7 +87,7 @@ type Refused = (IngressRefusal, Option<String>);
 const NOT_FOUND: Refused = (IngressRefusal::NotFound, None);
 
 impl Net {
-    /// Admit one HTTP ingress request (R8 table); the receiver resolves when `on-ingress` returns (`None` = 202).
+    /// Admit one HTTP ingress request (R8 table); the receiver resolves when `on-ingress` returns (`None`: fe-api answers 204).
     pub fn accept_http(&self, request: HttpIngressRequest) -> Result<oneshot::Receiver<Option<IngressReply>>, IngressRefusal> {
         let target = format!("{}/ingress/{}", request.package_id, request.endpoint);
         let caller = request.caller_did.clone();

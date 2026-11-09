@@ -9,6 +9,8 @@ use tokio_rustls::rustls::pki_types::ServerName;
 use tokio_rustls::rustls::{self, ClientConfig, RootCertStore};
 use tokio_rustls::TlsConnector;
 
+use super::address::{literal_refusal, resolve_checked};
+
 /// Connect and TLS handshake bound.
 pub(super) const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
 
@@ -36,7 +38,7 @@ pub(super) fn is_loopback(host: &str) -> bool {
     matches!(host, "127.0.0.1" | "::1" | "localhost")
 }
 
-/// Parse a declared `wss`/`ws`/`mqtts`/`mqtt` URL; plaintext to anything but loopback is refused here too.
+/// Parse a declared `wss`/`ws`/`mqtts`/`mqtt` URL; plaintext beyond loopback and non-public IP literals are refused here too.
 pub(super) fn target(url: &str) -> Result<Target, String> {
     let parsed = reqwest::Url::parse(url).map_err(|error| format!("bad endpoint url: {error}"))?;
     let (tls, websocket, default_port) = match parsed.scheme() {
@@ -61,12 +63,19 @@ pub(super) fn target(url: &str) -> Result<Target, String> {
     if !tls && !is_loopback(&host) {
         return Err(format!("plaintext to {host} is refused (loopback only)"));
     }
+    if let Some(reason) = literal_refusal(&host) {
+        return Err(reason);
+    }
     Ok(Target { tls, websocket, host, port: parsed.port().unwrap_or(default_port) })
 }
 
-/// Open the stream: TCP, then TLS (webpki roots, ring provider) unless the target is plaintext loopback.
+/// Open the stream: resolve once and check every address (net/AGENTS.md §addresses), TCP to exactly those, then TLS
+/// (webpki roots, ring provider, verified against the declared name) unless the target is plaintext loopback.
 pub(super) async fn connect(target: &Target) -> Result<Stream, String> {
-    let tcp = tokio::time::timeout(CONNECT_TIMEOUT, TcpStream::connect((target.host.as_str(), target.port)))
+    let addrs = tokio::time::timeout(CONNECT_TIMEOUT, resolve_checked(&target.host, target.port))
+        .await
+        .map_err(|_| format!("resolving {} timed out", target.host))??;
+    let tcp = tokio::time::timeout(CONNECT_TIMEOUT, TcpStream::connect(addrs.as_slice()))
         .await
         .map_err(|_| format!("connecting to {} timed out", target.host))?
         .map_err(|error| format!("connecting to {} failed: {error}", target.host))?;

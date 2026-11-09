@@ -10,7 +10,7 @@ use tokio_tungstenite::tungstenite::client::IntoClientRequest;
 use tokio_tungstenite::tungstenite::http::{HeaderName, HeaderValue};
 use tokio_tungstenite::tungstenite::protocol::frame::coding::CloseCode;
 use tokio_tungstenite::tungstenite::protocol::{CloseFrame, WebSocketConfig};
-use tokio_tungstenite::tungstenite::Message;
+use tokio_tungstenite::tungstenite::{Error as WsError, Message};
 
 use super::connect::{self, CONNECT_TIMEOUT};
 use super::ingress::frame_body;
@@ -21,8 +21,8 @@ use super::{
 use crate::bus::rate::TokenBucket;
 use crate::bus::InstanceKey;
 
-/// tungstenite's own limit: frames between the declared cap and this are dropped and counted; larger ones drop the connection.
-const TRANSPORT_FRAME_CEILING: usize = 4 * 1024 * 1024;
+/// The largest control-frame payload (RFC 6455 §5.5); the transport limit never falls below it, so a close or ping still reads.
+const MAX_CONTROL_PAYLOAD: usize = 125;
 /// Ping period; a connection that sends nothing (not even a pong) for two periods is dropped and redialled.
 const KEEP_ALIVE: Duration = Duration::from_secs(30);
 
@@ -72,8 +72,8 @@ pub(super) async fn run(
         if *stop.borrow() {
             return;
         }
-        // Re-read on every dial, so an operator filling the slot needs no restart.
-        match net.credential(config.auth.as_ref()) {
+        // Re-read on every dial, so an operator filling the slot needs no restart; slots are this package's only.
+        match net.credential(&key.package_id, config.auth.as_ref()) {
             Err(state) => net.set_endpoint_state(&key, generation, &config.endpoint, state),
             Ok(credential) => match session(&net, &key, generation, &config, credential, &mut outbound, &mut stop, &mut attempt).await {
                 Ended::Stopped => return,
@@ -125,7 +125,8 @@ async fn session(
         Some(Ok(stream)) => stream,
         Some(Err(error)) => return Ended::Dropped(error),
     };
-    let limit = config.max_frame_bytes.saturating_mul(4).clamp(64 * 1024, TRANSPORT_FRAME_CEILING);
+    // The declared cap is the transport limit: tungstenite refuses an over-cap frame from its header, before buffering it.
+    let limit = config.max_frame_bytes.max(MAX_CONTROL_PAYLOAD);
     let ws_config = WebSocketConfig::default().max_message_size(Some(limit)).max_frame_size(Some(limit));
     let handshake = timeout(CONNECT_TIMEOUT, tokio_tungstenite::client_async_with_config(request, stream, Some(ws_config)));
     let mut socket = match until_stopped(stop, handshake).await {
@@ -157,6 +158,10 @@ async fn session(
                     Some(Ok(Message::Close(_))) | None => break Ended::Dropped("closed by the server".into()),
                     // Pings are answered by tungstenite; pongs only refresh `last_heard`.
                     Some(Ok(_)) => {}
+                    Some(Err(WsError::Capacity(error))) => {
+                        net.count(key, generation, |counters| counters.ingress_dropped_size += 1);
+                        break Ended::Dropped(format!("the server sent a frame over max_frame_bytes ({error})"));
+                    }
                     Some(Err(error)) => break Ended::Dropped(error.to_string()),
                 }
             }

@@ -610,6 +610,16 @@ pub async fn ingress(
     parts: IngressRequestParts,
 ) -> Result<IngressAnswer, ExtError> {
     gate(host, claims)?;
+    admitted_ingress(host, claims, petal_authorized, parts).await
+}
+
+/// [`ingress`] after the rate gate: a handler (or the bound alias) that already gated calls this, so a request is charged once.
+pub(crate) async fn admitted_ingress(
+    host: &dyn ExtensionHost,
+    claims: &ApiClaims,
+    petal_authorized: bool,
+    parts: IngressRequestParts,
+) -> Result<IngressAnswer, ExtError> {
     if !petal_authorized {
         return Err(ExtError::not_found());
     }
@@ -654,6 +664,18 @@ pub fn open_ingress_websocket(
     endpoint: &str,
 ) -> Result<WsHostSession, ExtError> {
     gate(host, claims)?;
+    admitted_websocket(host, claims, petal_authorized, petal_id, package_id, endpoint)
+}
+
+/// [`open_ingress_websocket`] after the rate gate (the mount handler gates once per request).
+fn admitted_websocket(
+    host: &dyn ExtensionHost,
+    claims: &ApiClaims,
+    petal_authorized: bool,
+    petal_id: &str,
+    package_id: &str,
+    endpoint: &str,
+) -> Result<WsHostSession, ExtError> {
     if !petal_authorized {
         return Err(ExtError::not_found());
     }
@@ -667,9 +689,22 @@ pub fn open_ingress_websocket(
     .map_err(ExtError::from)
 }
 
+/// Reports `websocket_closed` when dropped: the pump ending, or an admitted upgrade that never completes (the
+/// connection would otherwise hold a `max_connections` slot and the guest would never hear `closed`).
+struct ClosedOnDrop {
+    host: Arc<dyn ExtensionHost>,
+    connection: u64,
+}
+
+impl Drop for ClosedOnDrop {
+    fn drop(&mut self) {
+        self.host.websocket_closed(self.connection);
+    }
+}
+
 /// Pump one accepted socket: client frames to the host, the host's outbound frames to the client, until either ends.
-async fn run_ingress_socket(host: Arc<dyn ExtensionHost>, mut socket: WebSocket, mut session: WsHostSession) {
-    let connection = session.connection;
+async fn run_ingress_socket(closed: ClosedOnDrop, mut socket: WebSocket, mut session: WsHostSession) {
+    let (host, connection) = (closed.host.clone(), closed.connection);
     loop {
         tokio::select! {
             outbound = session.outbound.recv() => match outbound {
@@ -693,7 +728,7 @@ async fn run_ingress_socket(host: Arc<dyn ExtensionHost>, mut socket: WebSocket,
             },
         }
     }
-    host.websocket_closed(connection);
+    drop(closed);
 }
 
 /// MCP `extension_command {petal_id, package_id, command, args}`; the caller resolves `petal_authorized`.
@@ -1046,23 +1081,22 @@ async fn mount_ingress(
         .is_some_and(|v| v.eq_ignore_ascii_case("websocket"));
     if wants_upgrade {
         let authorized = authorized_petal_scope(&state, &claims, &petal_id).await.is_some();
-        let session =
-            match open_ingress_websocket(host.0.as_ref(), &claims, authorized, &petal_id, &package_id, &endpoint) {
-                Ok(session) => session,
-                Err(e) => return error_response(e),
-            };
-        let connection = session.connection;
+        // Gated once above; the core below does not charge the remote rate again.
+        let session = match admitted_websocket(host.0.as_ref(), &claims, authorized, &petal_id, &package_id, &endpoint) {
+            Ok(session) => session,
+            Err(e) => return error_response(e),
+        };
+        let closed = ClosedOnDrop { host: host.0.clone(), connection: session.connection };
         let upgrade = match WebSocketUpgrade::from_request(request, &()).await {
             Ok(upgrade) => upgrade,
-            Err(rejection) => {
-                host.0.websocket_closed(connection);
-                return rejection.into_response();
-            }
+            // `closed` drops here and reports the close.
+            Err(rejection) => return rejection.into_response(),
         };
-        let pump_host = host.0.clone();
+        // Both limits: tungstenite refuses an over-ceiling frame from its header, before buffering it (default 16 MiB).
         return upgrade
             .max_message_size(MAX_INGRESS_BODY_BYTES)
-            .on_upgrade(move |socket| run_ingress_socket(pump_host, socket, session));
+            .max_frame_size(MAX_INGRESS_BODY_BYTES)
+            .on_upgrade(move |socket| run_ingress_socket(closed, socket, session));
     }
     let (head, body) = request.into_parts();
     let content_type = head
@@ -1092,7 +1126,7 @@ async fn mount_ingress(
         content_type,
         body,
     };
-    match ingress(host.0.as_ref(), &claims, authorized, parts).await {
+    match admitted_ingress(host.0.as_ref(), &claims, authorized, parts).await {
         Ok(answer) => answer_response(answer),
         Err(e) if e.code == "no-reply" => StatusCode::NO_CONTENT.into_response(),
         Err(e) => error_response(e),
