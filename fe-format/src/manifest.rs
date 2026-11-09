@@ -27,6 +27,9 @@ pub enum HexonType {
     /// field) — the canonical-log kind-5 operation's own signature binds the
     /// sealed hexon, so a second fe-format signature would rebind nothing.
     ObservationBatch,
+    /// A sealed third-party extension package (`plugin/extension.json` header
+    /// member plus a `plugin/component.wasm` body member); see `src/AGENTS.md` §plugin-package.
+    Plugin,
 }
 
 /// Metadata for a `TerrainTileset` hexon.

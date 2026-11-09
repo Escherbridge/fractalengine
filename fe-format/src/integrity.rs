@@ -27,6 +27,12 @@ pub const MEMBERS_DOC_PATH: &str = "members.json";
 pub const CHUNK_INDEX_PATH: &str = "chunks/index.json";
 /// Prefix of self-certifying content-addressed asset members.
 pub const ASSETS_PREFIX: &str = "assets/";
+/// Plugin hexon header member: manifest v2, rendered for consent before the body is fetched.
+pub const PLUGIN_EXTENSION_PATH: &str = "plugin/extension.json";
+/// Plugin hexon body member: the Wasm component, committed by `members.json`.
+pub const PLUGIN_COMPONENT_PATH: &str = "plugin/component.wasm";
+/// Plugin counter-signatures; the one member the integrity root never commits.
+pub const PLUGIN_COUNTERSIGNATURES_PATH: &str = "plugin/countersignatures.json";
 /// The only members a root's `header` map may commit (small JSON, read in the header phase).
 pub const HEADER_MEMBER_PATHS: &[&str] = &[
     ENTRIES_PATH,
@@ -34,6 +40,7 @@ pub const HEADER_MEMBER_PATHS: &[&str] = &[
     "schema.json",
     "terrain/tileset_meta.json",
     "terrain/config.json",
+    PLUGIN_EXTENSION_PATH,
     MEMBERS_DOC_PATH,
     CHUNK_INDEX_PATH,
 ];
@@ -41,6 +48,16 @@ pub const HEADER_MEMBER_PATHS: &[&str] = &[
 /// Zip path of a container's chunk `seq`.
 pub fn chunk_member_path(seq: u32) -> String {
     format!("chunks/{seq}.hexon")
+}
+
+/// Package `content_hash`: blake3 hex of the canonical manifest bytes with `signature` blanked.
+pub fn content_hash(manifest_json: &[u8]) -> anyhow::Result<String> {
+    let mut doc: serde_json::Value =
+        serde_json::from_slice(manifest_json).context("content_hash: invalid manifest JSON")?;
+    doc.as_object_mut()
+        .context("content_hash: manifest must be a JSON object")?
+        .insert("signature".into(), serde_json::Value::String(String::new()));
+    Ok(digest_hex(&crate::signature::canonical_json_bytes(&doc)?))
 }
 
 /// Lowercase blake3 hex of `bytes` (the digest form every map in the root uses).
@@ -165,7 +182,7 @@ impl SealedCoverage {
 
     /// Check one member's blake3 hex against the coverage rules.
     pub fn check_member_digest(&self, path: &str, digest: &str) -> Result<(), IntegrityError> {
-        if path == MANIFEST_PATH {
+        if path == MANIFEST_PATH || path == PLUGIN_COUNTERSIGNATURES_PATH {
             return Ok(());
         }
         if let Some(hash) = path.strip_prefix(ASSETS_PREFIX) {
@@ -337,7 +354,10 @@ fn read_index<R: Read + Seek>(
 }
 
 fn cap_for(path: &str) -> u64 {
-    if HEADER_MEMBER_PATHS.contains(&path) || path == MANIFEST_PATH {
+    if HEADER_MEMBER_PATHS.contains(&path)
+        || path == MANIFEST_PATH
+        || path == PLUGIN_COUNTERSIGNATURES_PATH
+    {
         limits::MAX_JSON_ENTRY_BYTES
     } else {
         limits::MAX_ENTRY_UNCOMPRESSED_BYTES
@@ -453,6 +473,9 @@ pub fn seal(archive_bytes: &[u8], key: &SigningKey) -> anyhow::Result<Vec<u8>> {
             continue;
         }
         copy_order.push(index);
+        if name == PLUGIN_COUNTERSIGNATURES_PATH {
+            continue; // copied, never committed
+        }
         if HEADER_MEMBER_PATHS.contains(&name.as_str()) {
             header_bytes.insert(name, data);
         } else {
@@ -620,5 +643,43 @@ mod tests {
                 path: format!("assets/{fake}")
             })
         );
+
+        // Plugin package: `plugin/extension.json` is a committed header member, the
+        // component a committed body member, and `plugin/countersignatures.json`
+        // rides along uncommitted without changing `content_hash`.
+        let plugin_zip = |component: &[u8], countersigs: Option<&[u8]>| -> Vec<u8> {
+            let mut plugin_manifest = manifest();
+            plugin_manifest.hexon_type = HexonType::Plugin;
+            let mut members: Vec<(&str, Vec<u8>)> = vec![
+                (MANIFEST_PATH, serde_json::to_vec(&plugin_manifest).unwrap()),
+                (PLUGIN_EXTENSION_PATH, br#"{"id":"org.example.unit"}"#.to_vec()),
+                (PLUGIN_COMPONENT_PATH, component.to_vec()),
+            ];
+            if let Some(bytes) = countersigs {
+                members.push((PLUGIN_COUNTERSIGNATURES_PATH, bytes.to_vec()));
+            }
+            let mut out = zip::ZipWriter::new(Cursor::new(Vec::new()));
+            for (name, bytes) in members {
+                out.start_file(name, SimpleFileOptions::default()).unwrap();
+                out.write_all(&bytes).unwrap();
+            }
+            out.finish().unwrap().into_inner()
+        };
+        let manifest_of = |sealed: &[u8]| -> Vec<u8> {
+            let mut archive = zip::ZipArchive::new(Cursor::new(sealed)).unwrap();
+            let mut bytes = Vec::new();
+            archive.by_name(MANIFEST_PATH).unwrap().read_to_end(&mut bytes).unwrap();
+            bytes
+        };
+        let plain = seal(&plugin_zip(b"wasm", None), &key).expect("plugin seals");
+        let countersigned = seal(&plugin_zip(b"wasm", Some(b"{}")), &key).expect("plugin seals");
+        let strict = IntegrityPolicy::RequireSealed { pin: None };
+        verify_archive(&plain, &strict).expect("sealed plugin verifies");
+        verify_archive(&countersigned, &strict).expect("counter-signature file is exempt");
+        assert!(plain != countersigned);
+        let hash = content_hash(&manifest_of(&plain)).unwrap();
+        assert_eq!(hash, content_hash(&manifest_of(&countersigned)).unwrap());
+        let other = seal(&plugin_zip(b"other", None), &key).unwrap();
+        assert_ne!(hash, content_hash(&manifest_of(&other)).unwrap());
     }
 }

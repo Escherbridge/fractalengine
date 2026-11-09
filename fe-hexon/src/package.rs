@@ -273,6 +273,362 @@ pub fn hexon_uri(manifest: &HexonManifest) -> String {
     format!("{}@{}", manifest.crate_id, manifest.version)
 }
 
+// ---- sealed plugin packages (fe-format/src/AGENTS.md §plugin-package; docs/extensions/package-format.md) ----
+
+/// Host ceiling for `plugin/extension.json`.
+pub const PLUGIN_EXTENSION_MAX_BYTES: u64 = 64 * 1024;
+/// Host ceiling for `plugin/component.wasm`.
+pub const PLUGIN_COMPONENT_MAX_BYTES: u64 = 16 * 1024 * 1024;
+/// Ceiling for `plugin/countersignatures.json`.
+pub const PLUGIN_COUNTERSIGNATURES_MAX_BYTES: u64 = 64 * 1024;
+/// Most counter-signature entries a package may carry.
+pub const PLUGIN_COUNTERSIGNATURES_MAX_ENTRIES: usize = 16;
+/// Contract prefix a plugin component must target.
+const PLUGIN_CONTRACT_PREFIX: &str = "fractalengine:plugin@2.";
+/// Wasm binary preamble of a *component* (core modules carry version `01 00 00 00`).
+const WASM_COMPONENT_PREAMBLE: [u8; 8] = [0x00, 0x61, 0x73, 0x6d, 0x0d, 0x00, 0x01, 0x00];
+
+/// Typed refusal of a plugin package; the reason strings are the contract's (J5 table).
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+pub enum PluginPackageError {
+    #[error("package-invalid ({0})")]
+    Invalid(String),
+    #[error("untrusted-signer ({0})")]
+    UntrustedSigner(String),
+    #[error("unsupported-contract")]
+    UnsupportedContract,
+}
+
+fn invalid(reason: impl Into<String>) -> PluginPackageError {
+    PluginPackageError::Invalid(reason.into())
+}
+
+/// Who may sign a plugin package: trust roots by `did:key`, plus the dev escape hatch.
+pub struct PluginTrust<'a> {
+    /// True when the `did:key` is a configured trust root (e.g. `trusted_publishers.toml`).
+    pub is_trust_root: &'a dyn Fn(&str) -> bool,
+    /// Accept a wholly unsigned package; callers must keep this unreachable from release builds.
+    pub allow_unsigned_dev: bool,
+}
+
+/// A plugin package that passed [`verify_plugin_package`]; the sealed bytes stay with the caller.
+#[derive(Debug, Clone)]
+pub struct PluginPackage {
+    pub package_id: String,
+    pub version: String,
+    pub publisher_did: String,
+    /// blake3 of the canonical signed manifest bytes: one value per sealed build.
+    pub content_hash: String,
+    /// blake3 of `plugin/component.wasm` as stored.
+    pub component_digest: String,
+    pub extension_json: Vec<u8>,
+    pub license_json: Option<Vec<u8>>,
+    pub component: Vec<u8>,
+    /// The trust root that vouched for the package (publisher or counter-signer); `None` for dev-unsigned.
+    pub trusted_by: Option<String>,
+}
+
+impl PluginPackage {
+    /// The two values a revocation entry may name; either one revokes the package under any id.
+    pub fn revocation_keys(&self) -> [&str; 2] {
+        [&self.content_hash, &self.component_digest]
+    }
+}
+
+#[derive(Deserialize)]
+struct CountersignatureDoc {
+    content_hash: String,
+    entries: Vec<CountersignatureEntry>,
+}
+
+#[derive(Deserialize)]
+struct CountersignatureEntry {
+    key_id: String,
+    signature: String,
+}
+
+/// Map a seal failure to the contract's refusal vocabulary.
+fn integrity_refusal(err: fe_format::IntegrityError) -> PluginPackageError {
+    use fe_format::IntegrityError as E;
+    match err {
+        E::NotSealed => PluginPackageError::UntrustedSigner("unsigned".into()),
+        E::BadSignature => invalid("bad-signature"),
+        E::DigestMismatch { path } => invalid(format!("digest-mismatch {path}")),
+        E::Uncovered { path } => invalid(format!("uncommitted-member {path}")),
+        E::MissingMember { path } => invalid(format!("missing-member {path}")),
+        other => invalid(other.to_string()),
+    }
+}
+
+fn read_plugin_member<R: Read + std::io::Seek>(
+    archive: &mut zip::ZipArchive<R>,
+    name: &str,
+    cap: u64,
+    budget: &mut u64,
+) -> Result<Option<Vec<u8>>, PluginPackageError> {
+    read_named(archive, name, cap, budget).map_err(|e| invalid(format!("{e:#}")))
+}
+
+/// Verify sealed plugin bytes end to end: seal, closed member set, identity, contract, trust.
+/// Nothing is stored; `expected_id` is the id the install asked for (REST body or registry document).
+pub fn verify_plugin_package(
+    bytes: &[u8],
+    expected_id: Option<&str>,
+    trust: &PluginTrust<'_>,
+) -> Result<PluginPackage, PluginPackageError> {
+    use fe_format::integrity::{
+        content_hash, digest_hex, MANIFEST_PATH, MEMBERS_DOC_PATH, PLUGIN_COMPONENT_PATH,
+        PLUGIN_COUNTERSIGNATURES_PATH, PLUGIN_EXTENSION_PATH,
+    };
+    use fe_format::limits::{check_entry_count, MAX_ARCHIVE_UNCOMPRESSED_BYTES, MAX_JSON_ENTRY_BYTES};
+
+    let mut archive = zip::ZipArchive::new(Cursor::new(bytes))
+        .map_err(|e| invalid(format!("invalid ZIP archive: {e}")))?;
+    check_entry_count(archive.len()).map_err(|e| invalid(format!("{e:#}")))?;
+    let mut budget = MAX_ARCHIVE_UNCOMPRESSED_BYTES;
+
+    let manifest_raw =
+        read_plugin_member(&mut archive, MANIFEST_PATH, MAX_JSON_ENTRY_BYTES, &mut budget)?
+            .ok_or_else(|| invalid("missing-member manifest.json"))?;
+    let manifest: fe_format::HexonManifest = serde_json::from_slice(&manifest_raw)
+        .map_err(|e| invalid(format!("manifest.json: {e}")))?;
+    if !matches!(manifest.hexon_type, fe_format::HexonType::Plugin) {
+        return Err(invalid("not-a-plugin"));
+    }
+    // The id check runs before anything else is trusted (revocation-by-renaming steer).
+    if let Some(expected) = expected_id {
+        if expected != manifest.hexon_id {
+            return Err(invalid("id-mismatch"));
+        }
+    }
+
+    let unsigned = manifest.signature.as_deref().map_or(true, str::is_empty);
+    if unsigned {
+        if !trust.allow_unsigned_dev || manifest.integrity.is_some() {
+            return Err(PluginPackageError::UntrustedSigner("unsigned".into()));
+        }
+    } else {
+        fe_format::verify_archive(bytes, &fe_format::IntegrityPolicy::RequireSealed { pin: None })
+            .map_err(integrity_refusal)?;
+    }
+
+    // Closed member set (a sealed package already refused uncommitted extras above).
+    let allowed = [
+        MANIFEST_PATH,
+        MEMBERS_DOC_PATH,
+        PLUGIN_EXTENSION_PATH,
+        PLUGIN_COMPONENT_PATH,
+        PLUGIN_COUNTERSIGNATURES_PATH,
+        "license.json",
+    ];
+    for name in archive.file_names() {
+        if !name.ends_with('/') && !allowed.contains(&name) {
+            return Err(invalid(format!("unexpected-member {name}")));
+        }
+    }
+
+    let extension_json = read_plugin_member(
+        &mut archive,
+        PLUGIN_EXTENSION_PATH,
+        PLUGIN_EXTENSION_MAX_BYTES,
+        &mut budget,
+    )?
+    .ok_or_else(|| invalid(format!("missing-member {PLUGIN_EXTENSION_PATH}")))?;
+    let component = read_plugin_member(
+        &mut archive,
+        PLUGIN_COMPONENT_PATH,
+        PLUGIN_COMPONENT_MAX_BYTES,
+        &mut budget,
+    )?
+    .ok_or_else(|| invalid(format!("missing-member {PLUGIN_COMPONENT_PATH}")))?;
+    let license_json =
+        read_plugin_member(&mut archive, "license.json", MAX_JSON_ENTRY_BYTES, &mut budget)?;
+    let countersignatures = read_plugin_member(
+        &mut archive,
+        PLUGIN_COUNTERSIGNATURES_PATH,
+        PLUGIN_COUNTERSIGNATURES_MAX_BYTES,
+        &mut budget,
+    )?;
+
+    // Identity: the extension manifest must name the signed id and version.
+    let extension: serde_json::Value = serde_json::from_slice(&extension_json)
+        .map_err(|e| invalid(format!("extension.json: {e}")))?;
+    let field = |key: &str| {
+        extension
+            .get(key)
+            .and_then(|v| v.as_str())
+            .unwrap_or_default()
+    };
+    if field("id") != manifest.hexon_id {
+        return Err(invalid("id-mismatch"));
+    }
+    if field("version") != manifest.version {
+        return Err(invalid("version-mismatch"));
+    }
+    if !field("contract").starts_with(PLUGIN_CONTRACT_PREFIX)
+        || !component.starts_with(&WASM_COMPONENT_PREAMBLE)
+    {
+        return Err(PluginPackageError::UnsupportedContract);
+    }
+
+    let content_hash = content_hash(&manifest_raw).map_err(|e| invalid(format!("{e:#}")))?;
+    let component_digest = digest_hex(&component);
+
+    // Counter-signatures sign the same canonical bytes; only trust-root keys are checked.
+    let mut countersigner: Option<String> = None;
+    if let Some(raw) = countersignatures {
+        let doc: CountersignatureDoc = serde_json::from_slice(&raw)
+            .map_err(|_| invalid("countersignatures-malformed"))?;
+        if doc.content_hash != content_hash {
+            return Err(invalid("countersignature-mismatch"));
+        }
+        if doc.entries.len() > PLUGIN_COUNTERSIGNATURES_MAX_ENTRIES {
+            return Err(invalid("countersignatures-too-many"));
+        }
+        for entry in &doc.entries {
+            if !(trust.is_trust_root)(&entry.key_id) {
+                continue;
+            }
+            let verified =
+                signature::verify_manifest(&manifest_raw, &entry.signature, &entry.key_id)
+                    .unwrap_or(false);
+            if !verified {
+                return Err(invalid("countersignature-mismatch"));
+            }
+            countersigner.get_or_insert_with(|| entry.key_id.clone());
+        }
+    }
+
+    let trusted_by = if unsigned {
+        None
+    } else if (trust.is_trust_root)(&manifest.publisher_did) {
+        Some(manifest.publisher_did.clone())
+    } else if countersigner.is_some() {
+        countersigner
+    } else {
+        return Err(PluginPackageError::UntrustedSigner("no-trust-root".into()));
+    };
+
+    Ok(PluginPackage {
+        package_id: manifest.hexon_id,
+        version: manifest.version,
+        publisher_did: manifest.publisher_did,
+        content_hash,
+        component_digest,
+        extension_json,
+        license_json,
+        component,
+        trusted_by,
+    })
+}
+
+/// Why a store install failed: a verifier refusal (store untouched) or an I/O error.
+#[derive(Debug, thiserror::Error)]
+pub enum PluginInstallError {
+    #[error(transparent)]
+    Refused(#[from] PluginPackageError),
+    #[error("package store: {0}")]
+    Store(#[from] std::io::Error),
+}
+
+/// Directory store of verified sealed plugin packages: `{root}/{package_id}/{content_hash}.hexon`.
+pub struct PluginPackageStore {
+    root: std::path::PathBuf,
+}
+
+impl PluginPackageStore {
+    pub fn new(root: impl Into<std::path::PathBuf>) -> Self {
+        Self { root: root.into() }
+    }
+
+    /// Store path for a build; ids and hashes are charset-checked so a name never escapes the root.
+    fn path_for(
+        &self,
+        package_id: &str,
+        content_hash: &str,
+    ) -> std::io::Result<std::path::PathBuf> {
+        let id_ok = package_id.len() <= 128
+            && package_id.split('.').count() >= 2
+            && package_id.split('.').all(|label| {
+                !label.is_empty()
+                    && !label.starts_with('-')
+                    && label
+                        .bytes()
+                        .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-')
+            });
+        let hash_ok = content_hash.len() == 64
+            && content_hash
+                .bytes()
+                .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b));
+        if !id_ok || !hash_ok {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                "unsafe package id or hash",
+            ));
+        }
+        Ok(self
+            .root
+            .join(package_id)
+            .join(format!("{content_hash}.hexon")))
+    }
+
+    /// Verify, then store; a refusal leaves the store untouched. Idempotent per `(id, content_hash)`.
+    pub fn install(
+        &self,
+        sealed: &[u8],
+        expected_id: Option<&str>,
+        trust: &PluginTrust<'_>,
+    ) -> Result<PluginPackage, PluginInstallError> {
+        let package = verify_plugin_package(sealed, expected_id, trust)?;
+        let path = self.path_for(&package.package_id, &package.content_hash)?;
+        if !path.exists() {
+            if let Some(dir) = path.parent() {
+                std::fs::create_dir_all(dir)?;
+            }
+            let staging = path.with_extension("hexon.tmp");
+            std::fs::write(&staging, sealed)?;
+            std::fs::rename(&staging, &path)?;
+        }
+        Ok(package)
+    }
+
+    /// Sealed bytes of an installed build; callers always re-verify before use.
+    pub fn get(&self, package_id: &str, content_hash: &str) -> std::io::Result<Option<Vec<u8>>> {
+        match std::fs::read(self.path_for(package_id, content_hash)?) {
+            Ok(bytes) => Ok(Some(bytes)),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
+            Err(e) => Err(e),
+        }
+    }
+
+    /// Delete one installed build; absent is not an error.
+    pub fn remove(&self, package_id: &str, content_hash: &str) -> std::io::Result<()> {
+        match std::fs::remove_file(self.path_for(package_id, content_hash)?) {
+            Err(e) if e.kind() != std::io::ErrorKind::NotFound => Err(e),
+            _ => Ok(()),
+        }
+    }
+
+    /// Every installed `(package_id, content_hash)`, sorted.
+    pub fn list(&self) -> std::io::Result<Vec<(String, String)>> {
+        let mut out = Vec::new();
+        let Ok(ids) = std::fs::read_dir(&self.root) else {
+            return Ok(out);
+        };
+        for id in ids.flatten().filter(|e| e.path().is_dir()) {
+            let package_id = id.file_name().to_string_lossy().into_owned();
+            for file in std::fs::read_dir(id.path())?.flatten() {
+                let name = file.file_name().to_string_lossy().into_owned();
+                if let Some(hash) = name.strip_suffix(".hexon") {
+                    out.push((package_id.clone(), hash.to_string()));
+                }
+            }
+        }
+        out.sort();
+        Ok(out)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -789,6 +1145,171 @@ mod tests {
             );
         }
         // If open fails due to corruption, that's also acceptable
+
+        // J5 package tamper table: sealed plugin packages, each variant refused with its
+        // own reason and the package store left empty (docs/extensions/package-format.md).
+        let publisher = SigningKey::from_bytes(&[11u8; 32]);
+        let outsider = SigningKey::from_bytes(&[12u8; 32]);
+        let reviewer = SigningKey::from_bytes(&[13u8; 32]);
+        let did = |key: &SigningKey| fe_format::verifying_key_to_did(&key.verifying_key());
+        let (publisher_did, reviewer_did) = (did(&publisher), did(&reviewer));
+        let extension = br#"{"id":"org.example.fleet-sim","version":"1.0.0","name":"Fleet","contract":"fractalengine:plugin@2.0.0"}"#;
+        let component = [&WASM_COMPONENT_PREAMBLE[..], b"body"].concat();
+        let pack = |key: &SigningKey, component: &[u8]| {
+            crate::publisher::PluginHexonBuilder::new(&extension[..], component)
+                .build(key)
+                .expect("plugin builds")
+        };
+        // Rewrite a sealed package: `edit` maps (member, bytes) to new bytes or None to drop it.
+        let rezip = |bytes: &[u8],
+                     edit: &dyn Fn(&str, Vec<u8>) -> Option<Vec<u8>>,
+                     extra: Option<(&str, Vec<u8>)>| {
+            let mut source = zip::ZipArchive::new(Cursor::new(bytes)).unwrap();
+            let mut out = zip::ZipWriter::new(Cursor::new(Vec::new()));
+            let options = zip::write::FileOptions::default();
+            for i in 0..source.len() {
+                let mut file = source.by_index(i).unwrap();
+                let name = file.name().to_string();
+                let mut body = Vec::new();
+                file.read_to_end(&mut body).unwrap();
+                if let Some(body) = edit(&name, body) {
+                    out.start_file(name, options).unwrap();
+                    out.write_all(&body).unwrap();
+                }
+            }
+            if let Some((name, body)) = extra {
+                out.start_file(name, options).unwrap();
+                out.write_all(&body).unwrap();
+            }
+            out.finish().unwrap().into_inner()
+        };
+        let keep = |_: &str, body: Vec<u8>| Some(body);
+        let trusted_publisher = |did: &str| did == publisher_did;
+        let trust = PluginTrust {
+            is_trust_root: &trusted_publisher,
+            allow_unsigned_dev: false,
+        };
+        let sealed = pack(&publisher, &component);
+        let store_dir = std::env::temp_dir().join(format!("fe-plugin-store-{}", ulid::Ulid::new()));
+        let store = PluginPackageStore::new(&store_dir);
+
+        let flip = |name: &str, mut body: Vec<u8>| {
+            if name == "plugin/component.wasm" {
+                body[10] ^= 1;
+            }
+            Some(body)
+        };
+        let widen = |name: &str, body: Vec<u8>| {
+            if name == "plugin/extension.json" {
+                return Some(br#"{"id":"org.example.fleet-sim","version":"1.0.0","name":"Fleet","contract":"fractalengine:plugin@2.0.0","scene":{"read":true}}"#.to_vec());
+            }
+            Some(body)
+        };
+        let unsign = |name: &str, body: Vec<u8>| {
+            if name == "manifest.json" {
+                let mut doc: serde_json::Value = serde_json::from_slice(&body).unwrap();
+                doc.as_object_mut().unwrap().remove("signature");
+                return Some(serde_json::to_vec(&doc).unwrap());
+            }
+            Some(body)
+        };
+        let manifest_json = {
+            let mut archive = zip::ZipArchive::new(Cursor::new(&sealed[..])).unwrap();
+            let mut body = Vec::new();
+            archive.by_name("manifest.json").unwrap().read_to_end(&mut body).unwrap();
+            body
+        };
+        let bad_countersig = serde_json::to_vec(&serde_json::json!({
+            "schema_version": 1,
+            "content_hash": fe_format::integrity::content_hash(&manifest_json).unwrap(),
+            "entries": [{"key_id": reviewer_did, "signature": "AAAA"}],
+        }))
+        .unwrap();
+        let reviewer_trust = |did: &str| did == publisher_did || did == reviewer_did;
+        let with_reviewer = PluginTrust {
+            is_trust_root: &reviewer_trust,
+            allow_unsigned_dev: false,
+        };
+
+        type Refusal = PluginPackageError;
+        let rows: Vec<(&str, Vec<u8>, Option<&str>, &PluginTrust<'_>, Refusal)> = vec![
+            (
+                "flipped component byte",
+                rezip(&sealed, &flip, None),
+                None,
+                &trust,
+                invalid("digest-mismatch plugin/component.wasm"),
+            ),
+            (
+                "edited extension.json",
+                rezip(&sealed, &widen, None),
+                None,
+                &trust,
+                invalid("digest-mismatch plugin/extension.json"),
+            ),
+            (
+                "uncommitted extra member",
+                rezip(&sealed, &keep, Some(("plugin/extra.bin", vec![1]))),
+                None,
+                &trust,
+                invalid("uncommitted-member plugin/extra.bin"),
+            ),
+            (
+                "signature removed",
+                rezip(&sealed, &unsign, None),
+                None,
+                &trust,
+                Refusal::UntrustedSigner("unsigned".into()),
+            ),
+            (
+                "signed by a non-root key",
+                pack(&outsider, &component),
+                None,
+                &trust,
+                Refusal::UntrustedSigner("no-trust-root".into()),
+            ),
+            (
+                "trusted counter-signature with a bad signature",
+                rezip(&sealed, &keep, Some(("plugin/countersignatures.json", bad_countersig))),
+                None,
+                &with_reviewer,
+                invalid("countersignature-mismatch"),
+            ),
+            (
+                "core module packaged as plugin",
+                pack(&publisher, b"\0asm\x01\0\0\0body"),
+                None,
+                &trust,
+                Refusal::UnsupportedContract,
+            ),
+            (
+                "requested under another id",
+                sealed.clone(),
+                Some("org.example.other"),
+                &trust,
+                invalid("id-mismatch"),
+            ),
+        ];
+        for (label, bytes, expected_id, trust, expected) in rows {
+            let err = store
+                .install(&bytes, expected_id, trust)
+                .expect_err(label);
+            assert!(
+                matches!(&err, PluginInstallError::Refused(got) if *got == expected),
+                "{label}: got {err:?}, want {expected:?}"
+            );
+            assert!(store.list().unwrap().is_empty(), "{label}: store must stay empty");
+        }
+
+        let installed = store.install(&sealed, Some("org.example.fleet-sim"), &trust).unwrap();
+        assert_eq!(installed.trusted_by.as_deref(), Some(publisher_did.as_str()));
+        assert_eq!(installed.component_digest, fe_format::integrity::digest_hex(&component));
+        assert_eq!(
+            store.list().unwrap(),
+            vec![("org.example.fleet-sim".to_string(), installed.content_hash.clone())]
+        );
+        assert_eq!(store.get("org.example.fleet-sim", &installed.content_hash).unwrap().unwrap(), sealed);
+        let _ = std::fs::remove_dir_all(&store_dir);
     }
 
     /// A signed-shape package whose `assets/bomb` inflates past the 64 MiB
