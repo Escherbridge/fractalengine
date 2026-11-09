@@ -111,6 +111,13 @@ trusting "pure efficiency" claims; push control; a board that silently drifts st
 
 ## 2. State
 
+- **2026-11-08 19:17 — orchestrator handover to `fractalengine-71`; drift corrected.** Verified at resume:
+  origin/main = `c484734a` (pushed 14:31; `cf6f9750` was pushed 11:34, one minute before the bullet below
+  was written), so only the docs commit `5fbccce3` is local — the "130 commits unpushed" line below is
+  stale. Build gate **CLOSED for memory since 15:46** (19:17 tick: commit 101/128 GB, free RAM 2.8 GB;
+  reopens < 100 GB and > 4 GB). EXT sessions: no bus files yet; both worktrees at `30163ca2`, 89 behind
+  main. Hourly monitor cron recreated in this session (expires 2026-11-15). `fractalengine-48` was
+  asked to stand down; that message is held for the user's approval in its session.
 - **2026-11-08 11:35 — P2P convergence campaign CONVERGED; extension sessions handed off; this
   session = orchestrator / merge gate (supersedes every bullet below).** Since the 10-15 bullet: FF
   campaign closed green 2026-10-25 (`6141914`, pushed `820a9d4`, CI green); open-core split + 11
@@ -544,7 +551,7 @@ NO-GO (local Workstream G implementation is GO); `../gis-tile-etl` kept, never p
 5. **When the user decides QA-0165:** role-at-write (recommended) → open the per-key `(HLC, author)`
    clock track for verse/fractal/petal rows and non-transform node fields (QA-0156/0165/0166 share
    that root); current-role → document the re-judge semantics instead.
-6. **When the user says push:** the 130 local commits go after whatever sweep they ask for; watch
+6. **When the user says push:** the local commits (only docs since `c484734a` as of 19:17) go after whatever sweep they ask for; watch
    CI (`cargo +1.99.0 clippy --workspace --all-targets -- -D warnings` reproduces Lint).
 7. **city-sim** (`.omc/plans/city-sim.js`) only on the user's go-ahead; a simulator run closes the
    build gate for its duration (flip `cargo_allowed` and post it; flip back after).
