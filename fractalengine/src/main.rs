@@ -14,6 +14,7 @@ use tracing_subscriber::prelude::*;
 use tracing_subscriber::EnvFilter;
 
 mod asset_bridge;
+mod extension_host;
 mod api_endpoint;
 mod gpx_bridge;
 mod input_bridge;
@@ -527,6 +528,8 @@ fn main() {
         },
     );
     app.add_systems(bevy::prelude::Startup, register_first_party_extension_ui);
+    // The terrain package's slot commands run as editor actions (src/AGENTS.md section extension-host).
+    app.add_plugins(extension_host::terrain_commands::TerrainCommandsPlugin);
     if let Some(results) = app.world().get_resource::<fe_plugin::PluginResultReceiver>() {
         // drain_plugin_results empties it every frame (src/AGENTS.md §render-loop).
         render_work.watch(results.0.lock().unwrap_or_else(|error| error.into_inner()).clone());
@@ -725,6 +728,16 @@ fn main() {
         }
     }
 
+    // Scene hooks gate node writes from the GUI and every API door; installed before the API serves.
+    if let Some(backend) = plugin_bridge::scene_hook_backend(&app) {
+        match fe_runtime::scene_hook_gate::SceneHookGate::install(backend) {
+            Ok(gate) => {
+                app.insert_resource(gate);
+            }
+            Err(reason) => tracing::warn!(reason, "scene hook gate not installed"),
+        }
+    }
+
     maintenance_services.push(fe_api::spawn_api_service(fe_api::ApiConfig {
         bind_addr: format!("127.0.0.1:{qa_api_port}"),
         api_cmd_tx: api_cmd_tx.clone(),
@@ -766,6 +779,8 @@ fn main() {
         // here; loud WARN when on) — fe-api/AGENTS.md §agent-input-surface.
         input: fe_api::input::InputSurface::new(qa_enabled, Some(input_tx)).with_qa_debug(qa_tx).with_portal_fixture(portal_fixture_tx).with_invitation_transfer(invitation_transfer_tx),
         listening_tx: Some(api_listening_tx),
+        extension_host: plugin_bridge::api_extension_host(&app),
+        binding_host: plugin_bridge::api_binding_host(&app),
     }));
 
     // Agent QA: write loopback-only API tokens for every local verse once the

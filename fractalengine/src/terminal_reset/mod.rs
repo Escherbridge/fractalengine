@@ -273,16 +273,17 @@ fn freeze_editor(world: &mut World, supervisor: &mut Supervisor) -> Result<(), &
             .shutdown()
             .map_err(|_| "Plugin leases could not be revoked; reset will not run")?;
     }
-    let plugin = world
-        .get_resource::<fe_plugin::PluginHostService>()
-        .ok_or("Plugin service owner is unavailable")?
-        .0
-        .lock()
-        .map_err(|_| "Plugin service owner is unavailable")?
-        .take()
-        .ok_or("Plugin service ownership was already consumed")?;
-    plugin.request_stop();
-    supervisor.services.push(plugin);
+    // No PluginHostService resource means no plugin thread was ever started: nothing to stop (PHR-S1).
+    if let Some(service) = world.get_resource::<fe_plugin::PluginHostService>() {
+        let plugin = service
+            .0
+            .lock()
+            .map_err(|_| "Plugin service owner is unavailable")?
+            .take()
+            .ok_or("Plugin service ownership was already consumed")?;
+        plugin.request_stop();
+        supervisor.services.push(plugin);
+    }
     Ok(())
 }
 

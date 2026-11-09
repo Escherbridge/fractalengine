@@ -155,6 +155,10 @@ pub fn bridge_petal_terrain(
     mut view_modes: MessageWriter<TerrainViewModeMsg>,
     mut volume_binding: ResMut<fe_renderer::terrain_overlay::EarthworkTerrainBinding>,
     mut applied: Local<Option<(String, [u8; 32])>>,
+    bindings: Option<Res<crate::plugin_bridge::ExtensionBindings>>,
+    tilesets: Option<Res<SharedTilesetRegistry>>,
+    mut map_state: Option<ResMut<fe_ui::terrain_map::PetalMapState>>,
+    mut resolver: Local<crate::extension_host::petal_map::PetalMapResolver>,
 ) {
     // Leaving the petal forgets the dedupe key, so re-entry always rebuilds.
     if applied
@@ -188,7 +192,25 @@ pub fn bridge_petal_terrain(
             } else {
                 *applied = None;
             }
-            let config = terrain.as_ref().and_then(terrain_config_from_petal_json);
+            let mut config = terrain.as_ref().and_then(terrain_config_from_petal_json);
+            // A bound `petal.map` decides before the stored column (bindings.md section 6); presentation only.
+            if let Some(bindings) = bindings.as_deref() {
+                let installed: Vec<String> = tilesets
+                    .as_deref()
+                    .map(|shared| {
+                        shared.0.list_tilesets().into_iter().map(|info| info.tileset_id).collect()
+                    })
+                    .unwrap_or_default();
+                let outcome = consult_petal_map(&mut resolver, bindings, petal_id, terrain.as_ref(), &installed);
+                match outcome.decision {
+                    crate::extension_host::petal_map::MapDecision::Assign(bound) => config = Some(*bound),
+                    crate::extension_host::petal_map::MapDecision::NoMap => config = None,
+                    crate::extension_host::petal_map::MapDecision::UseStored => {}
+                }
+                if let Some(state) = map_state.as_deref_mut() {
+                    state.bound_source = outcome.source;
+                }
+            }
             volume_binding.petal_id = Some(petal_id.clone());
             volume_binding.raw_fingerprint = fingerprint;
             volume_binding.input_scale_valid = config.as_ref().is_some_and(|config| {
@@ -214,6 +236,51 @@ pub fn bridge_petal_terrain(
             view_modes.write(TerrainViewModeMsg(view_mode_from_terrain_json(
                 terrain.as_ref(),
             )));
+        }
+    }
+}
+
+/// One `petal.map` decision for `petal_id` from the binding plane's answer and the stored column.
+fn consult_petal_map(
+    resolver: &mut crate::extension_host::petal_map::PetalMapResolver,
+    bindings: &crate::plugin_bridge::ExtensionBindings,
+    petal_id: &str,
+    stored_terrain: Option<&serde_json::Value>,
+    installed_tilesets: &[String],
+) -> crate::extension_host::petal_map::MapOutcome {
+    let now_ms = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |elapsed| elapsed.as_millis() as u64);
+    let mut caller = BindingsMapCaller { bindings, petal_id };
+    resolver.decide(
+        bindings.petal_map_need(petal_id),
+        &crate::extension_host::petal_map::MapQuery { petal_id, stored_terrain, installed_tilesets, now_ms },
+        &mut caller,
+    )
+}
+
+/// Calls the bound instance's `petal.map` through the binding worker, waiting at most the hook deadline.
+struct BindingsMapCaller<'a> {
+    bindings: &'a crate::plugin_bridge::ExtensionBindings,
+    petal_id: &'a str,
+}
+
+impl crate::extension_host::petal_map::MapHookCaller for BindingsMapCaller<'_> {
+    fn call_map(
+        &mut self,
+        _target: &fe_plugin::bindings::activation::CallTarget,
+        input: &serde_json::Value,
+    ) -> Result<String, String> {
+        let point = fe_runtime::extension_binding::BindingPoint::new("petal.map", "");
+        let answer = self
+            .bindings
+            .call_hook(self.petal_id, point, input.clone())
+            .recv_timeout(std::time::Duration::from_millis(250))
+            .map_err(|_| "petal.map missed its 250 ms deadline".to_string())?;
+        match answer {
+            crate::plugin_bridge::HookAnswer::Output { output, .. } => Ok(output),
+            crate::plugin_bridge::HookAnswer::Builtin => Err("no instance serves petal.map here".into()),
+            crate::plugin_bridge::HookAnswer::Failed(reason) => Err(reason),
         }
     }
 }
@@ -676,60 +743,65 @@ fn install_from_registry(
     token: Option<String>,
     tx: &crossbeam::channel::Sender<HexonAssembleOutcome>,
 ) {
-    let rt = match tokio::runtime::Builder::new_current_thread()
-        .enable_all()
-        .build()
-    {
-        Ok(rt) => rt,
-        Err(e) => {
-            if tx
-                .send(HexonAssembleOutcome::RegistryFailed {
-                    uri: uri.to_string(),
-                    reason: format!("could not start a runtime for the fetch: {e}"),
-                })
-                .is_err()
-            {
-                tracing::warn!(uri, "InstallFromRegistry result channel closed");
-            }
-            return;
+    let fail = |reason: String| {
+        if tx
+            .send(HexonAssembleOutcome::RegistryFailed {
+                uri: uri.to_string(),
+                reason,
+            })
+            .is_err()
+        {
+            tracing::warn!(uri, "InstallFromRegistry result channel closed");
         }
     };
-
-    let client: std::sync::Arc<dyn fe_hexon::partial::PartialHexonFetch> = std::sync::Arc::new(
-        fe_hexon::remote::RemoteRegistryClient::new(registry_url.to_string(), token),
-    );
-    let strategy = fe_hexon::partial::FetchStrategy::new(fe_hexon::p2p::P2pConfig::from_env());
-    let tx_progress = tx.clone();
-    let uri_for_progress = uri.to_string();
-    let result = rt.block_on(fetch_and_install_from_registry(
-        &strategy,
-        client,
-        registry.store(),
-        uri,
-        fe_format::limits::MAX_ARCHIVE_UNCOMPRESSED_BYTES,
-        move |chunks_received, total_chunks| {
-            if tx_progress
-                .send(HexonAssembleOutcome::RegistryProgress {
-                    uri: uri_for_progress.clone(),
-                    chunks_received,
-                    total_chunks,
-                })
-                .is_err()
-            {
-                tracing::warn!(
-                    uri = %uri_for_progress,
-                    "InstallFromRegistry progress channel closed"
-                );
-            }
-        },
-    ));
-
-    let outcome = match result {
+    // The operator-chosen registry is the trust anchor (any valid seal); unsigned content is never admitted.
+    let trust = fe_hexon::registry_source::SourceTrust {
+        is_trust_root: std::sync::Arc::new(|_: &str| true),
+        index_signer: std::sync::Arc::new(|_: &str| None),
+        allow_unsigned_dev: false,
+    };
+    let source = match fe_hexon::remote::remote_source("hexon registry", registry_url, token, trust) {
+        Ok(source) => source,
+        Err(e) => return fail(format!("could not start the registry client: {e}")),
+    };
+    let (wanted_id, wanted_version) = match uri.split_once('@') {
+        Some((id, version)) => (id, Some(version)),
+        None => (uri, None),
+    };
+    let listing = match fe_hexon::registry_source::RegistrySource::list(&source, Some(wanted_id)) {
+        Ok(listing) => listing,
+        Err(e) => return fail(e.to_string()),
+    };
+    // Newest-first is the registry's order; the first exact id (and pinned version) match wins.
+    let Some(entry) = listing.entries.into_iter().find(|entry| {
+        entry.package_id == wanted_id && wanted_version.is_none_or(|v| entry.version == v)
+    }) else {
+        return fail(format!("'{uri}' is not offered by the registry"));
+    };
+    let progress = |chunks_received: u32| {
+        if tx
+            .send(HexonAssembleOutcome::RegistryProgress {
+                uri: uri.to_string(),
+                chunks_received,
+                total_chunks: 1,
+            })
+            .is_err()
+        {
+            tracing::warn!(uri, "InstallFromRegistry progress channel closed");
+        }
+    };
+    progress(0);
+    let content = match source.fetch_hexon(&entry) {
+        Ok(fe_hexon::registry_source::FetchedHexon::Content(content)) => content,
+        Ok(fe_hexon::registry_source::FetchedHexon::Plugin(_)) => {
+            return fail("a plugin package cannot be installed as a map; use the Extensions panel".into())
+        }
+        Err(e) => return fail(e.to_string()),
+    };
+    progress(1);
+    let outcome = match registry.store().install_tileset(&content.bytes) {
         Ok(installed) => {
-            // `assemble_sealed_container`/`install_tileset` write through the
-            // store directly (no `TilesetRegistry::install`), so the
-            // in-memory source cache needs an explicit reload — same as
-            // `assemble_and_install` above.
+            // `install_tileset` writes through the store directly, so the in-memory source cache needs a reload.
             if let Err(e) = registry.reload(&installed.hexon_id) {
                 tracing::warn!(
                     hexon_id = %installed.hexon_id,
@@ -751,7 +823,7 @@ fn install_from_registry(
     }
 }
 
-/// Pure fetch+install core (PAS-P5 S7b step 3): `FetchStrategy::fetch_header`
+/// Chunked fetch+install core kept for the partial-fetch tests (production uses `fetch_hexon`) (PAS-P5 S7b step 3): `FetchStrategy::fetch_header`
 /// then `fetch_chunk` for every chunk a container names (seq `0` is the whole
 /// archive for a monolithic hexon). `on_progress(chunks_received, total)` is
 /// called once after the header resolves (`0, total`) and once per verified
@@ -763,6 +835,7 @@ fn install_from_registry(
 ///
 /// `max_total_bytes` bounds the chunk bytes held in memory before reassembly
 /// (S8: a signed index naming many large chunks cannot exhaust memory).
+#[cfg(test)]
 async fn fetch_and_install_from_registry(
     strategy: &fe_hexon::partial::FetchStrategy,
     client: std::sync::Arc<dyn fe_hexon::partial::PartialHexonFetch>,

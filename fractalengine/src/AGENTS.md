@@ -2050,10 +2050,18 @@ made a default-build reset quiesce half the app and then fail.
   `plugin_bridge`) passes it to `with_admission`; off, install and activation answer `HostOff`.
 - **First-party UI.** `register_first_party_extension_ui` (Startup, unconditional) calls
   `fe_terrain::extension::register_terrain_ui` into `fe_ui::plugin::UiExtensions`. Terrain is compiled
-  in, never an admitted package, so the switch does not gate it. The call lives here because fe-ui has
-  no fe-terrain dependency.
-- **Status.** Nothing installs in-app yet: neither binary constructs a `PluginManager`, so no package reaches
-  `install_plugin` (review.md #17, DEFERRED to extension_platform P1.7 and P2.4). Until then the switch
-  only chooses `PackageAdmission`.
+  in, never an admitted package (id `org.fractalengine.terrain`), so the switch does not gate it. The call
+  lives here because fe-ui has no fe-terrain dependency. `extension_host::terrain_commands::TerrainCommandsPlugin`
+  turns its slot commands (`terrain-config`, `gpx-import`, `terrain-toggle`) into editor actions.
+- **Status.** `plugin_bridge::install_with` builds the `PluginManager`; the bridge admits packages (when the
+  switch is on) through the governance gates. `main.rs` hands fe-api `plugin_bridge::api_extension_host` and
+  `api_binding_host` (`ApiConfig::extension_host` / `binding_host`) and installs the process
+  `SceneHookGate` over `plugin_bridge::scene_hook_backend` before the API serves.
+- **Registry installs.** `terrain_bridge::install_from_registry` lists then `fetch_hexon`s through
+  `fe_hexon::remote::remote_source` (whole archive, 64 MiB cap, verified locally). Trust is the operator-chosen
+  registry: any valid seal, never unsigned; a plugin package is refused here (Extensions panel only).
+- **Map bindings.** `bridge_petal_terrain` asks `ExtensionBindings::petal_map_need`, decides with
+  `extension_host::petal_map::PetalMapResolver` (hook waits at most 250 ms; cached 5 s) and records
+  `PetalMapState::bound_source`. It reacts to petal-terrain echoes only; a binding change alone does not re-run it.
 - **Relay.** `fractalengine-relay`'s own `plugin-host` feature (default off) adds a bare
   `PluginHostPlugin` (no scene backend) and the same `PackageAdmission` from the env var.
