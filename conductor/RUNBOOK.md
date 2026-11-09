@@ -526,7 +526,12 @@ NO-GO (local Workstream G implementation is GO); `../gis-tile-etl` kept, never p
    read the `.omc/state/bus/*.md` deltas; answer `question`/`blocker` entries with dated
    `steer`/`decision` lines on `P2P-QA.md` (and in the track's checkpoint.md STEER when the plan
    changes); relay to the user anything reserved for them (OD-7, OD-11, OD-E1..E10 defaults,
-   QA-0165, pushes). Recreate the hourly cron if `CronList` is empty (`.omc/plans/bus-monitor.md`).
+   QA-0165, pushes). At session start, post `- <date> P2P-QA decision - orchestrator <your
+   ListAgents name> - ...` on `P2P-QA.md`: EXT sessions address SendMessage by that name, because
+   more than one session can sit in the main tree. Then recreate the hourly cron if `CronList` is
+   empty. Its prompt runs `.omc/plans/bus-monitor.ps1` directly with the PowerShell tool and applies
+   the flag rules in `.omc/plans/bus-monitor.md`. Do not spawn a haiku agent per tick: on 2026-11-08
+   that cost 90-110k tokens an hour to read a 2 KB report.
 2. **Merge gate.** On `ready-to-merge <branch> <sha> <scope>`: in that worktree run `/code-review
    high` (plus `/security-review` when the scope touches auth, capabilities, IPC, packaging or
    signing), record the verdict on the bus and in the track checkpoint, merge into `main` only on
@@ -684,8 +689,9 @@ NO-GO (local Workstream G implementation is GO); `../gis-tile-etl` kept, never p
 
 ## 9. Recommended invocations
 
-- **`Agent` (haiku) with `.omc/plans/bus-monitor.md`** on every cron tick — trigger: "long-horizon
-  orchestration of three sessions; facts first, then act" (fact script `.omc/plans/bus-monitor.ps1`).
+- **`.omc/plans/bus-monitor.ps1` run directly** on every cron tick, flag rules from
+  `.omc/plans/bus-monitor.md` — trigger: "long-horizon orchestration of three sessions; facts
+  first, then act". Not a haiku agent per tick (90-110k tokens each on 2026-11-08 for a 2 KB report).
 - **`/code-review high` in the branch's worktree, `/security-review` for auth / capabilities / IPC /
   packaging / signing** on every `ready-to-merge` — trigger: "protocol rule 5: adversarial review
   before merge".
