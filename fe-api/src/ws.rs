@@ -9,8 +9,13 @@ use tokio::sync::broadcast;
 
 use fe_identity::api_token::ApiClaims;
 use fe_runtime::messages::{ApiCommand, DbCommand, DbResult, SceneChange, TransformUpdate};
+use fe_runtime::scene_hook_gate::{SceneAugment, SceneCallerKind, SceneHookInput};
 
+use crate::mcp::scene_gate::{gate_scene_write, scope_petal_id, stage_scene_augment};
 use crate::server::{ApiHosts, ApiState};
+
+/// The `scene.*` caller kind for `/ws` writes: the WIT `caller-kind` has no `ws`, and `/ws` is the REST token surface.
+const WS_SCENE_CALLER: SceneCallerKind = SceneCallerKind::Rest;
 
 // ---------------------------------------------------------------------------
 // Client → Server messages
@@ -138,8 +143,13 @@ pub async fn ws_handler(
     State(state): State<Arc<ApiState>>,
     Extension(hosts): Extension<ApiHosts>,
 ) -> impl IntoResponse {
-    ws.on_upgrade(move |socket| handle_socket(socket, state, hosts))
+    ws.max_message_size(MAX_CLIENT_MESSAGE_BYTES)
+        .max_frame_size(MAX_CLIENT_MESSAGE_BYTES)
+        .on_upgrade(move |socket| handle_socket(socket, state, hosts))
 }
+
+/// Largest client frame or message: axum's default REST body limit for the same commands (bus params, properties).
+const MAX_CLIENT_MESSAGE_BYTES: usize = 2 * 1024 * 1024;
 
 // ---------------------------------------------------------------------------
 // Socket lifecycle
@@ -224,6 +234,9 @@ async fn handle_socket(mut socket: WebSocket, state: Arc<ApiState>, hosts: ApiHo
     type TransformTriple = ([f32; 3], [f32; 3], [f32; 3]); // (position, rotation, scale)
     let mut transform_debounce: std::collections::HashMap<String, TransformTriple> =
         std::collections::HashMap::new();
+    // Augments the scene gate allowed for each node's pending transform; staged once its persist is sent.
+    let mut transform_augments: std::collections::HashMap<String, SceneAugment> =
+        std::collections::HashMap::new();
     let mut debounce_interval = tokio::time::interval(std::time::Duration::from_millis(200));
     debounce_interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
 
@@ -282,6 +295,12 @@ async fn handle_socket(mut socket: WebSocket, state: Arc<ApiState>, hosts: ApiHo
                             .await
                             .is_some();
                         let outcome = match (&hosts.extension, authorized) {
+                            // Same ceiling as command args (bus.md §6), checked only once the petal is authorized.
+                            (Some(_), true)
+                                if params.to_string().len() > crate::extensions::MAX_COMMAND_ARGS_BYTES =>
+                            {
+                                Err(crate::extensions::ExtError::invalid("params exceed 16 KiB"))
+                            }
                             (Some(host), true) => {
                                 let streams = bus_streams.get_or_insert_with(|| {
                                     crate::extensions::ExtensionStreams::open(host.clone(), claims.clone())
@@ -292,8 +311,13 @@ async fn handle_socket(mut socket: WebSocket, state: Arc<ApiState>, hosts: ApiHo
                         };
                         let resp = match outcome {
                             Ok(sub) => WsServerMsg::BusSubscribed { sub, source },
+                            // Every 404 (unknown, foreign, host absent, not available) is the one uniform text.
+                            Err(e) if e.status == 404 => WsServerMsg::Error {
+                                code: "not_found".into(),
+                                message: crate::rest::NOT_FOUND_OR_DENIED.into(),
+                            },
                             Err(e) => WsServerMsg::Error {
-                                code: if e.status == 404 { "not_found".into() } else { e.code.replace('-', "_") },
+                                code: e.code.replace('-', "_"),
                                 message: e.message,
                             },
                         };
@@ -359,6 +383,25 @@ async fn handle_socket(mut socket: WebSocket, state: Arc<ApiState>, hosts: ApiHo
                             }).await;
                             continue;
                         };
+                        // scene.transform before the optimistic broadcast, as REST asks it (§scene-gate-doors).
+                        let augment = match gate_scene_write(&claims, WS_SCENE_CALLER, || SceneHookInput::Transform {
+                            petal_id: petal_id.clone(),
+                            node_id: node_id.clone(),
+                            position,
+                            rotation,
+                            scale,
+                        })
+                        .await
+                        {
+                            Ok(augment) => augment,
+                            Err(refusal) => {
+                                send_protected(&mut socket, &state, &claims, &WsServerMsg::Error {
+                                    code: "refused".into(),
+                                    message: format!("node {node_id}: {refusal}"),
+                                }).await;
+                                continue;
+                            }
+                        };
                         let now = unix_now_ms();
                         if !credential_still_current(&mut socket, &state, &claims).await { break; }
                         // Optimistic broadcast — subscribers see the update immediately.
@@ -374,7 +417,11 @@ async fn handle_socket(mut socket: WebSocket, state: Arc<ApiState>, hosts: ApiHo
                         // Store for debounced DB persist (200ms batching).
                         // The debounce_interval branch drains this map and sends
                         // TransformPersist commands so the DB isn't flooded by
-                        // high-frequency WS streams.
+                        // high-frequency WS streams. A superseded proposal's augment is dropped with it.
+                        match augment {
+                            Some(augment) => { transform_augments.insert(node_id.clone(), augment); }
+                            None => { transform_augments.remove(&node_id); }
+                        }
                         transform_debounce.insert(node_id, (position, rotation, scale));
                     }
                     Some(WsClientMsg::SceneSubscribe { petal_id, .. }) => {
@@ -518,12 +565,18 @@ async fn handle_socket(mut socket: WebSocket, state: Arc<ApiState>, hosts: ApiHo
                     break;
                 }
                 for (node_id, (position, rotation, scale)) in transform_debounce.drain() {
-                    let _ = state.api_cmd_tx.send(ApiCommand::TransformPersist {
+                    let augment = transform_augments.remove(&node_id);
+                    let sent = state.api_cmd_tx.send(ApiCommand::TransformPersist {
                         node_id,
                         position,
                         rotation,
                         scale,
                     });
+                    if sent.is_ok() {
+                        stage_scene_augment(augment, None);
+                    } else {
+                        tracing::warn!("WS transform persist send failed (DB bridge gone)");
+                    }
                 }
             }
         }
@@ -809,30 +862,54 @@ async fn handle_entity_command(
             crate::rest::resolve_node_scope(state, node_id).await
         }
     };
-    if crate::rest::covered_scope(claims, scope).is_none() {
+    let Some(scope) = crate::rest::covered_scope(claims, scope) else {
         return Err(crate::rest::NOT_FOUND_OR_DENIED.into());
-    }
+    };
 
-    let db_cmd = match command {
+    // scene.create / scene.property ask the gate as REST does; a refusal is the command's error (§scene-gate-doors).
+    let (db_cmd, create_augment) = match command {
         Ec::CreateNode {
             petal_id,
             name,
             position,
-        } => DbCommand::CreateNode {
-            petal_id,
-            name,
-            position: position.unwrap_or([0.0, 0.0, 0.0]),
-            correlation_id: None,
-        },
-        Ec::DeleteNode { node_id } => DbCommand::DeleteNode { node_id },
+        } => {
+            let position = position.unwrap_or([0.0, 0.0, 0.0]);
+            let augment = gate_scene_write(claims, WS_SCENE_CALLER, || SceneHookInput::Create {
+                petal_id: petal_id.clone(),
+                name: name.clone(),
+                position,
+            })
+            .await?;
+            let cmd = DbCommand::CreateNode {
+                petal_id,
+                name,
+                position,
+                correlation_id: None,
+            };
+            (cmd, augment)
+        }
+        Ec::DeleteNode { node_id } => (DbCommand::DeleteNode { node_id }, None),
         Ec::SetNodeProperty {
             node_id,
             key,
             value,
         } => {
+            let augment = match scope_petal_id(&scope) {
+                Some(petal_id) => {
+                    gate_scene_write(claims, WS_SCENE_CALLER, || SceneHookInput::Property {
+                        petal_id,
+                        node_id: node_id.clone(),
+                        key: key.clone(),
+                        value: value.clone(),
+                    })
+                    .await?
+                }
+                None => None,
+            };
             let dto = crate::rest::set_property_as(state, claims, &node_id, key, value)
                 .await
                 .map_err(entity_command_failure)?;
+            stage_scene_augment(augment, None);
             return Ok(serde_json::json!({"node_id": dto.node_id, "key": dto.key}));
         }
         Ec::DeleteNodeProperty { node_id, key } => {
@@ -855,9 +932,12 @@ async fn handle_entity_command(
     match tokio::time::timeout(std::time::Duration::from_secs(5), reply_rx).await {
         Ok(Ok(DbResult::NodeCreated {
             id, name, petal_id, ..
-        })) => Ok(serde_json::json!({
-            "node_id": id, "name": name, "petal_id": petal_id,
-        })),
+        })) => {
+            stage_scene_augment(create_augment, Some(&id));
+            Ok(serde_json::json!({
+                "node_id": id, "name": name, "petal_id": petal_id,
+            }))
+        }
         Ok(Ok(DbResult::NodeDeleted { node_id, petal_id })) => Ok(serde_json::json!({
             "node_id": node_id, "petal_id": petal_id,
         })),

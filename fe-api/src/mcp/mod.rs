@@ -4,6 +4,7 @@
 //! Authz lives ONLY in [`authorize`]: role → DB-resolved scope → containment,
 //! before any handler runs. Handlers (`tools.rs`) never call `require_*`.
 
+pub(crate) mod scene_gate;
 mod tools;
 
 use std::future::Future;
@@ -80,6 +81,9 @@ pub enum ScopeRule {
     /// than the target is rejected (2026-10-09 depth-escalation hardening —
     /// the anchor and the write target can never be two different levels).
     HierarchyArgs(HierarchyTarget),
+    /// `verse_id` + optional `fractal_id` / `petal_id` name ONE exact binding scope; the deepest id
+    /// is DB-resolved and every shallower id must match its chain (`bindings::authorized_target_scope`).
+    BindingTarget,
 }
 
 /// The hierarchy level a `HierarchyArgs` tool writes into — authz anchors
@@ -214,7 +218,9 @@ macro_rules! tool {
 }
 
 use HierarchyTarget::{Fractal, Petal, Verse};
-use ScopeRule::{FieldDefArg, Global, HierarchyArgs, HistoryNodeArg, NodeArg, PetalArg, VerseArg};
+use ScopeRule::{
+    BindingTarget, FieldDefArg, Global, HierarchyArgs, HistoryNodeArg, NodeArg, PetalArg, VerseArg,
+};
 
 /// DEC-C14: the 20-name mcp_scene_primitives vocabulary + 9 shipped extras = 29.
 static TOOLS: &[ToolSpec] = &[
@@ -317,14 +323,14 @@ static TOOLS: &[ToolSpec] = &[
     tool!(ui_logs, Owner, Global, requires QaDebug, "Read a bounded, redacted log tail for the current verse generation. FE_API_INPUT_ALLOW=1 required. Requires owner role."),
     // --- Extension platform (AGENTS.md §extensions): hidden unless the binary wires the hosts ---
     tool!(list_extensions, Viewer, ScopeRule::None, requires Extensions,
-        "List the extension installations on this node with state and capabilities. Local operator only: every other caller gets the uniform not-found. Requires the node's own owner token."),
+        "List the extension installations on this node with state and capabilities. Local operator only (the node's own owner token): every other caller gets the uniform not-found. Requires viewer role."),
     tool!(extension_command, Viewer, PetalArg("petal_id"), requires Extensions,
         "Invoke a command an extension exposes in a petal: {petal_id, package_id, command, args}. Runs with the caller's DID and role ceiling; the extension's own gates apply. Requires viewer role + petal scope."),
-    tool!(list_bindings, Viewer, ScopeRule::None, requires Bindings,
+    tool!(list_bindings, Viewer, BindingTarget, requires Bindings,
         "List the judged extension-binding versions at one exact scope (verse_id, plus fractal_id or petal_id for a deeper level), like REST GET /api/v1/bindings. Requires viewer role + scope."),
-    tool!(set_binding, Manager, ScopeRule::None, requires Bindings,
+    tool!(set_binding, Manager, BindingTarget, requires Bindings,
         "Bind a hook point at a scope: {verse_id, fractal_id?, petal_id?, hook, key, mode, package_id?, version_req?, config?, runs_on?}, like REST PUT /api/v1/bindings. The nearest scope wins; mode inherit clears. Requires manager role + scope."),
-    tool!(clear_binding, Manager, ScopeRule::None, requires Bindings,
+    tool!(clear_binding, Manager, BindingTarget, requires Bindings,
         "Clear a binding by writing mode inherit at the scope: {verse_id, fractal_id?, petal_id?, hook, key}, like REST DELETE /api/v1/bindings. Requires manager role + scope."),
     tool!(inject_input, Owner, Global, requires Input,
         "Synthesize pointer/keyboard/scroll input into the running GUI: a batch of up to 64 commands (pointer_move, pointer_click, pointer_drag, key_press, text_entry, scroll), an optional wait_frames to settle (<=120) and an optional capture_after to attach a PNG of the result (capture_after also needs the screenshot surface on and spends its 1 capture/sec budget). Scope-confined: the token must cover the open verse. OFF by default (set FE_API_INPUT_ALLOW=1 to enable) — unlike the default-on screenshot/camera surfaces, this MUTATES state; combined with them an Owner token gets full remote control. Refused with 409 while a posed capture holds the camera. Control/Super+C/V/X clipboard chords are refused, and text/image clipboard writes from UI controls are suppressed throughout injection and settling, including its final frame; idle user copies remain enabled. Synthetic input never reads or writes the host OS clipboard. 5 requests/sec. Requires owner role."),
@@ -537,6 +543,12 @@ async fn authorize(
             (scope, ClaimedAncestry::default())
         }
         ScopeRule::HierarchyArgs(target) => resolve_hierarchy_scope(state, args, target).await?,
+        // The REST binding routes' resolver (exact level + claimed chain); the tail re-checks containment.
+        ScopeRule::BindingTarget => {
+            let target = binding_target(args)?;
+            let scope = crate::bindings::authorized_target_scope(state, claims, &target).await;
+            (scope, ClaimedAncestry::default())
+        }
     };
     let denied = || crate::rest::NOT_FOUND_OR_DENIED.to_string();
     // Same resolve-and-authorize core as REST (§existence-oracle).
@@ -560,6 +572,23 @@ fn id_arg<'a>(
         Some(id) if !valid(id) => Err(format!("invalid {key}")),
         Some(id) => Ok(id),
     }
+}
+
+/// `BindingTarget` ids: `verse_id` required, `fractal_id` / `petal_id` optional, each a ULID when present.
+fn binding_target(args: &serde_json::Value) -> Result<crate::bindings::BindingTarget, String> {
+    let id = |key: &str| -> Result<Option<String>, String> {
+        match args.get(key) {
+            None | Some(serde_json::Value::Null) => Ok(None),
+            Some(serde_json::Value::String(id)) if id.is_empty() => Ok(None),
+            Some(serde_json::Value::String(id)) if is_valid_ulid(id) => Ok(Some(id.clone())),
+            Some(_) => Err(format!("invalid {key}")),
+        }
+    };
+    Ok(crate::bindings::BindingTarget {
+        verse_id: id("verse_id")?.ok_or_else(|| "verse_id is required".to_string())?,
+        fractal_id: id("fractal_id")?,
+        petal_id: id("petal_id")?,
+    })
 }
 
 /// `HierarchyArgs`: resolve the id AT the tool's write-target level from the
@@ -704,6 +733,8 @@ mod tests {
             "resolve_node_scope",
             "resolve_fractal_scope",
             "resolve_verse_scope",
+            "authorized_petal_scope",
+            "authorized_target_scope",
         ] {
             assert!(
                 !handlers.contains(needle),
@@ -760,13 +791,18 @@ mod tests {
         }
         assert_eq!(
             TOOLS.len(),
-            49,
+            54,
             "DEC-C14: 27 non-sim + 5 sim (p2p_asset_streaming S6 added set_petal_render_distance); \
              CDL-SPEC10 A5 added 4 R5 device tools (register/list_device_formats, \
              ingest/list_device_payloads); §screenshot added `screenshot`; \
              agent_vision_20261031 added `get_camera`; agent_input_surface_20261031 added \
-             `inject_input`"
+             `inject_input`; the extension platform added 5 host-gated tools"
         );
+        // Binding tools address their scope by ids the dispatcher resolves, never in the handler.
+        for name in ["list_bindings", "set_binding", "clear_binding"] {
+            let spec = TOOLS.iter().find(|t| t.name == name).unwrap();
+            assert_eq!(spec.scope_rule, ScopeRule::BindingTarget, "{name}");
+        }
     }
 
     #[test]

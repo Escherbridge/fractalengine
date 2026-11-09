@@ -24,8 +24,13 @@ use serde_json::json;
 use fe_api::mcp::{
     mcp_handler, tool_available, tool_specs, HierarchyTarget, JsonRpcRequest, ScopeRule, ToolSeam,
 };
+use fe_api::bindings::{BindingHost, BindingListReply, BindingWriteReply, EffectivePoint};
+use fe_api::extensions::{
+    AdminOp, AdminRefusal, ApiCaller, CommandReply, ExtensionHost, HostRefusal, IngressAnswer,
+    IngressCall, IngressRefusal,
+};
 use fe_api::rest::NOT_FOUND_OR_DENIED;
-use fe_api::server::ApiState;
+use fe_api::server::{ApiHosts, ApiState};
 use fe_api::upload::{ingest_glb_with_limit, GlbPayload, UploadError, UploadOwner, UNKNOWN_ASSET};
 use fe_database::handlers::crud::{create_asset_reply, AssetRegistration};
 use fe_database::handlers::device_payload;
@@ -33,9 +38,10 @@ use fe_database::RoleLevel;
 use fe_identity::api_token::ApiClaims;
 use fe_runtime::app::PendingApiRequests;
 use fe_runtime::blob_store::{hash_from_hex, BlobHash, BlobStore, BlobStoreHandle};
+use fe_runtime::extension_binding::BindingRecord;
 use fe_runtime::messages::{
-    ApiCommand, DbCommand, DbResult, FractalHierarchyData, NodeHierarchyData, PetalHierarchyData,
-    VerseHierarchyData,
+    ApiCommand, BindingRefusal, DbCommand, DbResult, FractalHierarchyData, NodeHierarchyData,
+    PetalHierarchyData, VerseHierarchyData,
 };
 use fractalengine_test_harness::api::ApiHarness;
 
@@ -898,6 +904,17 @@ async fn rpc(
     method: &str,
     params: serde_json::Value,
 ) -> serde_json::Value {
+    rpc_on(state, &ApiHosts::default(), c, method, params).await
+}
+
+/// [`rpc`] on a host that wires the extension/binding seams in `hosts`.
+async fn rpc_on(
+    state: &Arc<ApiState>,
+    hosts: &ApiHosts,
+    c: &ApiClaims,
+    method: &str,
+    params: serde_json::Value,
+) -> serde_json::Value {
     let req = JsonRpcRequest {
         jsonrpc: "2.0".into(),
         id: Some(json!(7)),
@@ -906,7 +923,7 @@ async fn rpc(
     };
     let resp = mcp_handler(
         State(state.clone()),
-        Extension(fe_api::server::ApiHosts::default()),
+        Extension(hosts.clone()),
         Extension(c.clone()),
         Json(req),
     )
@@ -924,13 +941,127 @@ async fn call_tool(
     tool: &str,
     args: serde_json::Value,
 ) -> serde_json::Value {
-    rpc(
+    call_tool_on(state, &ApiHosts::default(), c, tool, args).await
+}
+
+/// [`call_tool`] on a host with the extension/binding seams in `hosts` wired.
+async fn call_tool_on(
+    state: &Arc<ApiState>,
+    hosts: &ApiHosts,
+    c: &ApiClaims,
+    tool: &str,
+    args: serde_json::Value,
+) -> serde_json::Value {
+    rpc_on(
         state,
+        hosts,
         c,
         "tools/call",
         json!({ "name": tool, "arguments": args }),
     )
     .await
+}
+
+/// A plugin host + binding plane that records every call and answers the uniform not-found: the RBAC
+/// journeys below wire it so the five extension tools are reachable, and require that no denied call reaches it.
+#[derive(Default)]
+struct RecordingPluginHost {
+    calls: Mutex<Vec<&'static str>>,
+}
+
+impl RecordingPluginHost {
+    fn touched(&self, call: &'static str) {
+        self.calls.lock().unwrap().push(call);
+    }
+
+    fn wired(self: &Arc<Self>) -> ApiHosts {
+        ApiHosts { extension: Some(self.clone()), binding: Some(self.clone()) }
+    }
+}
+
+impl ExtensionHost for RecordingPluginHost {
+    fn local_did(&self) -> String {
+        "did:key:z6MkRecordingHostNode".into()
+    }
+    fn admit_remote(&self, _did: &str) -> bool {
+        true
+    }
+    fn list(&self) -> Vec<serde_json::Value> {
+        self.touched("list");
+        Vec::new()
+    }
+    fn status(&self, _installation: &str) -> Option<serde_json::Value> {
+        self.touched("status");
+        None
+    }
+    fn audit(&self, _installation: &str, _limit: usize) -> Option<Vec<serde_json::Value>> {
+        self.touched("audit");
+        None
+    }
+    fn administer(&self, _actor_did: &str, _op: AdminOp) -> Result<serde_json::Value, AdminRefusal> {
+        self.touched("administer");
+        Err(AdminRefusal { code: "not-found".into(), message: NOT_FOUND_OR_DENIED.into() })
+    }
+    fn record_denied_admin(&self, _actor_did: &str, _target: &str) {}
+    fn call_command(
+        &self,
+        _caller: &ApiCaller,
+        _petal_id: &str,
+        _package_id: &str,
+        _command: &str,
+        _args: &serde_json::Value,
+    ) -> Result<CommandReply, HostRefusal> {
+        self.touched("call_command");
+        Err(HostRefusal::NotFound)
+    }
+    fn ingress(
+        &self,
+        _call: IngressCall,
+    ) -> Result<tokio::sync::oneshot::Receiver<Option<IngressAnswer>>, IngressRefusal> {
+        self.touched("ingress");
+        Err(IngressRefusal::NotFound)
+    }
+    fn open_client(&self, _caller: &ApiCaller) -> (u64, Arc<tokio::sync::Notify>) {
+        self.touched("open_client");
+        (0, Arc::new(tokio::sync::Notify::new()))
+    }
+    fn client_subscribe(
+        &self,
+        _client: u64,
+        _petal_id: &str,
+        _source: &str,
+        _params: &serde_json::Value,
+    ) -> Result<u64, HostRefusal> {
+        self.touched("client_subscribe");
+        Err(HostRefusal::NotFound)
+    }
+    fn client_unsubscribe(&self, _client: u64, _subscription: u64) {}
+    fn take_client_events(&self, _client: u64, _max: usize) -> Vec<String> {
+        Vec::new()
+    }
+    fn close_client(&self, _client: u64) {}
+}
+
+impl BindingHost for RecordingPluginHost {
+    fn local_did(&self) -> String {
+        "did:key:z6MkRecordingHostNode".into()
+    }
+    fn put_binding(&self, _caller_did: &str, _template: BindingRecord) -> BindingWriteReply {
+        self.touched("put_binding");
+        let (tx, rx) = tokio::sync::oneshot::channel();
+        let _ = tx.send(Err(BindingRefusal { code: "not-found".into(), message: NOT_FOUND_OR_DENIED.into() }));
+        rx
+    }
+    fn list_bindings(&self, _caller_did: &str, _scope: &str) -> BindingListReply {
+        self.touched("list_bindings");
+        let (tx, rx) = tokio::sync::oneshot::channel();
+        let _ = tx.send(Err(BindingRefusal { code: "not-found".into(), message: NOT_FOUND_OR_DENIED.into() }));
+        rx
+    }
+    fn effective(&self, _petal_scope: &str, _caller_did: &str) -> Option<Vec<EffectivePoint>> {
+        self.touched("effective");
+        None
+    }
 }
 
 /// Text payload of a tool response's first content block.
@@ -2132,9 +2263,12 @@ fn role_below(level: RoleLevel) -> &'static str {
 async fn every_tool_rejects_a_sub_min_role_token() {
     let Emu { state, model, .. } = emu(true);
     let home = seed_chain(&model, "home");
+    // The plugin host is wired so the five extension tools are probed too.
+    let plugin_host = Arc::new(RecordingPluginHost::default());
+    let hosts = plugin_host.wired();
     // An unwired seam's tool does not exist (answers "unknown tool"), so it
     // has no role floor to probe.
-    for spec in tool_specs().iter().filter(|t| tool_available(t, &state, &fe_api::server::ApiHosts::default())) {
+    for spec in tool_specs().iter().filter(|t| tool_available(t, &state, &hosts)) {
         // Args point at a resource the token's scope DOES cover, so the only
         // reason to deny is the role floor.
         let c = claims(&home.verse_scope(), role_below(spec.min_role));
@@ -2142,7 +2276,7 @@ async fn every_tool_rejects_a_sub_min_role_token() {
             "petal_id": home.petal, "node_id": home.node,
             "fractal_id": home.fractal, "verse_id": home.verse,
         });
-        let resp = call_tool(&state, &c, spec.name, args).await;
+        let resp = call_tool_on(&state, &hosts, &c, spec.name, args).await;
         assert_eq!(
             resp["result"]["isError"], true,
             "{} admitted {:?}-1",
@@ -2159,6 +2293,7 @@ async fn every_tool_rejects_a_sub_min_role_token() {
         model.lock().unwrap().log.is_empty(),
         "no denied call may write"
     );
+    assert!(plugin_host.calls.lock().unwrap().is_empty(), "no denied call may reach the plugin host");
 }
 
 #[tokio::test]
@@ -2172,6 +2307,8 @@ async fn every_scoped_tool_rejects_a_foreign_scope_token() {
         .unwrap()
         .field_defs
         .insert(foreign_field_def.clone(), foreign.verse_scope());
+    let plugin_host = Arc::new(RecordingPluginHost::default());
+    let hosts = plugin_host.wired();
     let mut scoped = 0;
     for spec in tool_specs() {
         if matches!(spec.scope_rule, ScopeRule::None | ScopeRule::Global) {
@@ -2199,7 +2336,7 @@ async fn every_scoped_tool_rejects_a_foreign_scope_token() {
                 "fractal_id": foreign.fractal, "verse_id": foreign.verse, "field_def_id": foreign_field_def,
             }),
         };
-        let resp = call_tool(&state, &c, spec.name, args).await;
+        let resp = call_tool_on(&state, &hosts, &c, spec.name, args).await;
         assert_eq!(
             tool_text(&resp),
             NOT_FOUND_OR_DENIED,
@@ -2207,12 +2344,14 @@ async fn every_scoped_tool_rejects_a_foreign_scope_token() {
             spec.name
         );
     }
-    // 23 + set_petal_render_distance (S6) + the four CDL-SPEC10 device tools.
-    assert_eq!(scoped, 33, "every non-Global/None row is scope-checked");
+    // 23 + set_petal_render_distance (S6) + the four CDL-SPEC10 device tools,
+    // + extension_command (PetalArg) + the three BindingTarget binding tools.
+    assert_eq!(scoped, 37, "every non-Global/None row is scope-checked");
     assert!(
         model.lock().unwrap().log.is_empty(),
         "no denied call may write"
     );
+    assert!(plugin_host.calls.lock().unwrap().is_empty(), "no foreign-scope call may reach the plugin host");
 }
 
 // ---------------------------------------------------------------------------

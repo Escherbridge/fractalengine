@@ -149,7 +149,7 @@ pub fn build_router_with_hosts(state: Arc<ApiState>, hosts: ApiHosts) -> Router 
         );
 
     // Authenticated routes — Bearer JWT required.
-    let mut authenticated = Router::new()
+    let authenticated = Router::new()
         // Global
         .route("/api/v1/hierarchy", get(crate::rest::get_hierarchy))
         .route("/api/v1/verses", post(crate::rest::create_verse))
@@ -499,21 +499,14 @@ pub fn build_router_with_hosts(state: Arc<ApiState>, hosts: ApiHosts) -> Router 
                 )),
         )
         // First-party extension routes mount inside the auth layer below.
-        .merge(mount_extension_handles(&builtin_extension_handles()));
-    // Plugin-host routes mount inside the auth layer; absent hosts mount nothing (AGENTS.md §extensions).
-    if let Some(host) = hosts.extension.clone() {
-        authenticated = authenticated.merge(crate::extensions::routes(host));
-    }
-    if let Some(host) = hosts.binding.clone() {
-        authenticated = authenticated.merge(crate::bindings::routes(host));
-    }
-    if let (Some(binding_host), Some(extension_host)) = (hosts.binding.clone(), hosts.extension.clone()) {
-        authenticated = authenticated.merge(crate::bound_routes::router(binding_host, extension_host));
-    }
-    let authenticated = authenticated.layer(axum::middleware::from_fn_with_state(
-        state.clone(),
-        crate::auth::auth_middleware,
-    ));
+        .merge(mount_extension_handles(&builtin_extension_handles()))
+        // Plugin-host routes always mount inside the auth layer; an absent host answers the uniform
+        // not-found through the same handlers (AGENTS.md §extensions "Mounting").
+        .merge(plugin_host_routes(&hosts))
+        .layer(axum::middleware::from_fn_with_state(
+            state.clone(),
+            crate::auth::auth_middleware,
+        ));
 
     public
         .merge(authenticated)
@@ -521,6 +514,143 @@ pub fn build_router_with_hosts(state: Arc<ApiState>, hosts: ApiHosts) -> Router 
         .layer(TraceLayer::new_for_http())
         .layer(Extension(hosts))
         .with_state(state)
+}
+
+/// The extension, binding and bound-alias routers, body-capped at the mount; an unwired host is replaced by a
+/// not-found host so every path answers exactly what a wired host answers for an unknown id (AGENTS.md §extensions).
+fn plugin_host_routes(hosts: &ApiHosts) -> Router<Arc<ApiState>> {
+    use crate::bindings::BindingHost;
+    use crate::extensions::ExtensionHost;
+    let extension: Arc<dyn ExtensionHost> = match &hosts.extension {
+        Some(host) => host.clone(),
+        None => Arc::new(absent_hosts::AbsentExtensionHost),
+    };
+    let binding: Arc<dyn BindingHost> = match &hosts.binding {
+        Some(host) => host.clone(),
+        None => Arc::new(absent_hosts::AbsentBindingHost),
+    };
+    let ingress_cap = || DefaultBodyLimit::max(crate::extensions::MAX_INGRESS_BODY_BYTES);
+    Router::new()
+        .merge(crate::extensions::routes(extension.clone()).layer(ingress_cap()))
+        .merge(
+            crate::bindings::routes(binding.clone())
+                .layer(DefaultBodyLimit::max(crate::bindings::MAX_BINDING_BODY_BYTES)),
+        )
+        .merge(crate::bound_routes::router(binding, extension).layer(ingress_cap()))
+}
+
+/// Hosts that stand in for an unwired plugin host or binding plane: every lookup is the uniform not-found.
+mod absent_hosts {
+    use std::sync::Arc;
+
+    use fe_runtime::extension_binding::BindingRecord;
+    use fe_runtime::messages::BindingRefusal;
+    use serde_json::Value;
+    use tokio::sync::{oneshot, Notify};
+
+    use crate::bindings::{BindingHost, BindingListReply, BindingWriteReply, EffectivePoint};
+    use crate::extensions::{
+        AdminOp, AdminRefusal, AdminReply, ApiCaller, CommandReply, ExtensionHost, HostRefusal,
+        IngressAnswer, IngressCall, IngressRefusal,
+    };
+
+    /// No DID equals this, so no token is the local identity here.
+    const NO_LOCAL_DID: &str = "";
+
+    /// A reply channel that already holds the uniform not-found refusal.
+    fn not_found<T, E>(refusal: E) -> oneshot::Receiver<Result<T, E>> {
+        let (tx, rx) = oneshot::channel();
+        let _ = tx.send(Err(refusal));
+        rx
+    }
+
+    fn admin_not_found() -> AdminReply {
+        not_found(AdminRefusal { code: "not-found".into(), message: crate::rest::NOT_FOUND_OR_DENIED.into() })
+    }
+
+    fn binding_not_found() -> BindingRefusal {
+        BindingRefusal { code: "not-found".into(), message: crate::rest::NOT_FOUND_OR_DENIED.into() }
+    }
+
+    /// Stands in for `ApiConfig.extension_host: None` (relay, harness).
+    pub(super) struct AbsentExtensionHost;
+
+    impl ExtensionHost for AbsentExtensionHost {
+        fn local_did(&self) -> String {
+            NO_LOCAL_DID.to_owned()
+        }
+        fn admit_remote(&self, _did: &str) -> bool {
+            true
+        }
+        fn list(&self) -> Vec<Value> {
+            Vec::new()
+        }
+        fn status(&self, _installation: &str) -> Option<Value> {
+            None
+        }
+        fn audit(&self, _installation: &str, _limit: usize) -> Option<Vec<Value>> {
+            None
+        }
+        fn administer(&self, _actor_did: &str, _op: AdminOp) -> Result<Value, AdminRefusal> {
+            Err(AdminRefusal { code: "not-found".into(), message: crate::rest::NOT_FOUND_OR_DENIED.into() })
+        }
+        fn record_denied_admin(&self, _actor_did: &str, _target: &str) {}
+        fn call_command(
+            &self,
+            _caller: &ApiCaller,
+            _petal_id: &str,
+            _package_id: &str,
+            _command: &str,
+            _args: &Value,
+        ) -> Result<CommandReply, HostRefusal> {
+            Err(HostRefusal::NotFound)
+        }
+        fn ingress(&self, _call: IngressCall) -> Result<oneshot::Receiver<Option<IngressAnswer>>, IngressRefusal> {
+            Err(IngressRefusal::NotFound)
+        }
+        fn open_client(&self, _caller: &ApiCaller) -> (u64, Arc<Notify>) {
+            (0, Arc::new(Notify::new()))
+        }
+        fn client_subscribe(
+            &self,
+            _client: u64,
+            _petal_id: &str,
+            _source: &str,
+            _params: &Value,
+        ) -> Result<u64, HostRefusal> {
+            Err(HostRefusal::NotFound)
+        }
+        fn client_unsubscribe(&self, _client: u64, _subscription: u64) {}
+        fn take_client_events(&self, _client: u64, _max: usize) -> Vec<String> {
+            Vec::new()
+        }
+        fn close_client(&self, _client: u64) {}
+        // The trait defaults answer `not-available` (503); an absent host has nothing to answer about.
+        fn verse_policy(&self, _verse_id: &str) -> AdminReply {
+            admin_not_found()
+        }
+        fn set_verse_policy(&self, _actor_did: &str, _verse_id: &str, _policy: Value) -> AdminReply {
+            admin_not_found()
+        }
+    }
+
+    /// Stands in for `ApiConfig.binding_host: None`.
+    pub(super) struct AbsentBindingHost;
+
+    impl BindingHost for AbsentBindingHost {
+        fn local_did(&self) -> String {
+            NO_LOCAL_DID.to_owned()
+        }
+        fn put_binding(&self, _caller_did: &str, _template: BindingRecord) -> BindingWriteReply {
+            not_found(binding_not_found())
+        }
+        fn list_bindings(&self, _caller_did: &str, _scope: &str) -> BindingListReply {
+            not_found(binding_not_found())
+        }
+        fn effective(&self, _petal_scope: &str, _caller_did: &str) -> Option<Vec<EffectivePoint>> {
+            None
+        }
+    }
 }
 
 /// Extension handles whose routes the engine mounts (fe-api/AGENTS.md §extension-routes).

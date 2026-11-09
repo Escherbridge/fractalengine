@@ -2340,23 +2340,33 @@ No operation_id requires native NONE owner/anchor/provenance and zero complete a
   local-identity path; the Owner and confirmation checks live in fe-database
   (`handlers/AGENTS.md` §extension-policy). Precondition refusals map to governance.md's suggested statuses
   in `From<AdminRefusal>`; `not-local-identity` is the uniform not-found.
-- **Mounting (I-API).** `ApiConfig.extension_host` / `binding_host` (`Option<Arc<dyn ..>>`; `None` in the relay
-  and both harness tests) become `server::ApiHosts`, which `build_router_with_hosts` merges INSIDE the auth layer:
-  `extensions::routes`, `bindings::routes`, and `bound_routes::router` (needs both hosts). `build_router(state)`
-  is the same with no hosts, so every existing caller is unchanged. `ApiHosts` is NOT in `ApiState` (many
-  constructors) but an axum `Extension` over the whole router, which is how `/mcp` and `/ws` reach it.
+- **Mounting (I-API, R-API).** `ApiConfig.extension_host` / `binding_host` (`Option<Arc<dyn ..>>`; `None` in the
+  relay and both harness tests) become `server::ApiHosts`. `build_router_with_hosts` ALWAYS merges
+  `extensions::routes`, `bindings::routes` and `bound_routes::router` INSIDE the auth layer (`plugin_host_routes`);
+  an absent host is replaced by `server::absent_hosts` (every lookup answers the uniform not-found, its
+  policy reads too, where the trait default would say 503 `not-available`). So a relay answers an extension or
+  binding path exactly as a GUI host answers an unknown id: 401 without a token, then the uniform 404 body,
+  never axum's bare 404 (which told a caller the node has no plugin host). Body caps sit at the mount:
+  `DefaultBodyLimit` of `MAX_INGRESS_BODY_BYTES` on the extension and alias routers (the admin JSON bodies;
+  ingress itself reads the raw body through its own bounded `to_bytes`) and `MAX_BINDING_BODY_BYTES` on the
+  binding routes. `build_router(state)` is the same with no hosts. `ApiHosts` is NOT in `ApiState` (many
+  constructors) but an axum `Extension` over the whole router, which is how `/mcp` and `/ws` reach it; the
+  stand-ins never go into `ApiHosts`, so MCP still hides the tools and `/ws` still answers not-found.
   `Method::PUT` joined the CORS list for `PUT /api/v1/bindings`.
 - **MCP.** `list_extensions`, `extension_command` (PetalArg: the dispatcher's petal scope is the
   `petal_authorized` input), `list_bindings`, `set_binding`, `clear_binding` carry `ToolSeam::Extensions` /
   `Bindings`: `tool_available(spec, state, hosts)` hides them (and answers "unknown tool") when the host is
-  absent. The binding tools use `ScopeRule::None`: the handler resolves `authorized_target_scope` itself and the
-  core returns the uniform not-found; `set_binding`/`clear_binding` floor at Manager in the dispatcher and again
-  in the core.
+  absent. The binding tools use `ScopeRule::BindingTarget`: the DISPATCHER parses `verse_id` (+ `fractal_id`,
+  `petal_id`, each a ULID) and resolves it with the REST routes' `bindings::authorized_target_scope` (exact
+  level, claimed chain, containment), so authz stays in `authorize` like every other row and the grep test bans
+  `authorized_target_scope` / `authorized_petal_scope` from `tools.rs`. `set_binding`/`clear_binding` floor at
+  Manager in the dispatcher and again in the core. `mcp_integration.rs`'s role-floor and foreign-scope journeys
+  wire a recording plugin host and require that no denied call reaches it.
 - **WS.** `bus_subscribe {petal_id, source, params?}` -> `bus_subscribed {sub, source}`; `bus_unsubscribe {sub}`;
   events arrive as `{"type":"bus_event", ...envelope}` (bus.md WS row). The `ExtensionStreams` client opens on
-  the first subscribe and closes (host client + subscriptions) when the socket ends. A missing host, an
-  unauthorized petal, an unknown petal and a `host/` source all return the same `not_found` error text as
-  `subscribe` (`NOT_FOUND_OR_DENIED`).
+  the first subscribe and closes (host client + subscriptions) when the socket ends. EVERY 404 from subscribe
+  (missing host, unauthorized or unknown petal, `host/` source, unknown package, a host's `not-available`
+  detail) is rewritten to `not_found` + `NOT_FOUND_OR_DENIED`, so the text never tells unknown from foreign.
 
 ## §bindings
 
@@ -2365,5 +2375,31 @@ implements `BindingHost` (writes through `DbCommand::PutBinding`, reads through 
 resolution cache). Role rules: reads Viewer+, writes Manager+ at the token ceiling, the DB plane re-judges the
 DID. Only the local DID (Owner token + node DID) sees `resolution` in `bindings/effective`. `bound_routes.rs`
 serves `/api/v1/petals/{petal}/apis/{key}/{endpoint}` through the winning `api.routes` binding: unresolved is a
-503 without an offer, no binding is the uniform not-found. Known gap: the MCP binding tools resolve the target
-scope before the core's rate `gate` (the core keeps the remote-rate check first for its own DB reads).
+503 without an offer, no binding is the uniform not-found. Kept order: the MCP dispatcher resolves a binding
+tool's scope before the core's remote-rate `gate` (one DB read per call, bounded by `/mcp`'s concurrency limit;
+the answer is the uniform not-found either way, so the order reveals nothing).
+
+## §scene-gate-doors
+
+Every API door that creates a node, moves one or sets a property asks the `scene.*` gate
+(`fe_runtime::scene_hook_gate`, bindings.md §6) through ONE function, `rest::scene_gate_verdict`, after its own
+authz and before its write (R-API door parity, steer 2026-11-09 02:45):
+
+| Door | Hook | Caller kind | Refusal |
+|---|---|---|---|
+| REST `POST .../nodes`, `POST /api/v1/nodes`, `PATCH .../transform`, `PATCH .../properties` | create / transform / property | `Rest` | 409 `refused` |
+| MCP `create_node`, `place_asset` | create | `Mcp` | tool error "Refused by <package>: <reason>" |
+| MCP `update_transform`, `set_property`, `commit_node_mutation` (`full_transform` / `property_set`) | transform / property | `Mcp` | same |
+| `/ws` `entity_command` `create_node` / `set_node_property` | create / property | `Rest` | `entity_command_result.error` |
+| `/ws` `transform_update` | transform | `Rest` | `error {code: "refused", message: "node <id>: ..."}` |
+
+`mcp/scene_gate.rs` holds the MCP/WS wrapper: any verdict other than `Proceed` keeps the write unsent (so a new
+refusal kind, such as R-HOOKS' over-cap `input-too-large`, fails closed here without an edit), and an allowed
+augment stages only after its write was sent (`stage_created` with the new node id for a create). A transform is
+gated BEFORE the optimistic broadcast, so a refused move is never previewed. `/ws` gates each `transform_update`
+(REST parity, not the GUI's commit-only rule) and stages that node's latest augment after the debounced
+`TransformPersist` is sent; a superseded proposal's augment is dropped with it. `/ws` reports caller kind `Rest`
+because the WIT `caller-kind` has no `ws` (`ws.rs` `WS_SCENE_CALLER`, one line to change if the contract adds
+one). Doors still outside the gate (HANDED-OFF in review-turn2/R-API.md): REST
+`POST /nodes/{id}/mutations` and `POST /petals/{p}/objects` (`node_history.rs`), waypoint create/move, GPX import
+and `promote_instance` on both REST and MCP; one shared-core gate inside those cores is the fix.
