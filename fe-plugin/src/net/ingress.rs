@@ -5,14 +5,21 @@ use tokio::sync::mpsc::error::TrySendError;
 use tokio::sync::{mpsc, oneshot};
 
 use super::{
-    is_credential_header, AcceptedConnection, ConnectionEvent, Delivery, EndpointState, IngressFrame, IngressReply,
-    Net, NetState, ReplyTo, Transport, WsFrame, WsOutbound, OUTBOUND_QUEUE,
+    host_rate, host_size, is_credential_header, sendable_close_code, AcceptedConnection, ConnectionEvent, Delivery,
+    EndpointState, IngressFrame, IngressReply, Net, NetState, ReplyTo, Transport, WsFrame, WsOutbound,
+    HOST_CONNECTION_CEILING, HOST_RATE_CEILING_HZ, OUTBOUND_QUEUE,
 };
 use crate::bus::rate::TokenBucket;
 use crate::bus::{role_level, HostError, InstanceKey};
 
 /// Close reasons are cut to fit a websocket close frame.
 const MAX_CLOSE_REASON_BYTES: usize = 123;
+/// Per-caller HTTP buckets kept per instance before idle ones are swept.
+const MAX_TRACKED_CALLERS: usize = 1_024;
+/// A caller bucket untouched (and full) this long is forgotten.
+const CALLER_IDLE_MS: u64 = 60_000;
+/// RFC 6455 policy violation: the caller's role fell below the endpoint floor.
+const CLOSE_POLICY: u16 = 1008;
 
 /// One request on `/api/v1/petals/{petal_id}/extensions/{package_id}/ingress/{endpoint}[/{sub_path}]`, after bearer auth.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -56,7 +63,7 @@ impl IngressRefusal {
     }
 }
 
-/// A websocket upgrade on an accept-mode mount, after bearer auth.
+/// A websocket upgrade on an accept-mode mount, after bearer auth (an in-band auth message never reaches here).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct WsAcceptRequest {
     pub petal_id: String,
@@ -76,7 +83,7 @@ pub struct WsSession {
 /// A refusal plus, for role-floor refusals, the installation to audit.
 type Refused = (IngressRefusal, Option<String>);
 
-/// The unaudited uniform not-found.
+/// The unaudited uniform not-found (undeclared or disabled: E5 default, not audited).
 const NOT_FOUND: Refused = (IngressRefusal::NotFound, None);
 
 impl Net {
@@ -84,6 +91,7 @@ impl Net {
     pub fn accept_http(&self, request: HttpIngressRequest) -> Result<oneshot::Receiver<Option<IngressReply>>, IngressRefusal> {
         let target = format!("{}/ingress/{}", request.package_id, request.endpoint);
         let caller = request.caller_did.clone();
+        // The lock is released before auditing: the audit sink never runs under the broker state.
         self.admit_http(request).map_err(|(refusal, audited)| {
             if let Some(installation) = audited {
                 self.audit(self.denial(&caller, Some(installation), target, "not-found"));
@@ -92,13 +100,14 @@ impl Net {
         })
     }
 
+    /// Steps 1-3 never reveal existence; only an authorised caller learns 429/405/413/415 (net/AGENTS.md §ingress).
     fn admit_http(&self, request: HttpIngressRequest) -> Result<oneshot::Receiver<Option<IngressReply>>, Refused> {
         let now = self.now();
         let key = InstanceKey::new(request.petal_id.clone(), request.package_id.clone());
         let mut state = self.lock();
         let instance = state.instances.get_mut(&key).ok_or(NOT_FOUND)?;
         let Some(Ingress::HttpServer(endpoint)) = instance.ingress(&request.endpoint).cloned() else {
-            return Err((IngressRefusal::NotFound, None));
+            return Err(NOT_FOUND);
         };
         let floor = role_level(endpoint.role_floor.unwrap_or(RoleFloor::Editor));
         if !self.sources.roles.role_at(&request.caller_did, &request.petal_id).is_at_least(floor) {
@@ -106,27 +115,34 @@ impl Net {
             return Err((IngressRefusal::NotFound, Some(instance.spec.installation_id.clone())));
         }
         if !request.sub_path.is_empty() && !endpoint.sub_paths.unwrap_or(false) {
-            return Err((IngressRefusal::NotFound, None));
+            instance.counters.ingress_refused += 1;
+            return Err(NOT_FOUND);
+        }
+        let caller_key = (endpoint.id.clone(), request.caller_did.clone());
+        if instance.http_callers.len() >= MAX_TRACKED_CALLERS && !instance.http_callers.contains_key(&caller_key) {
+            instance.http_callers.retain(|_, bucket| !bucket.is_idle(now, CALLER_IDLE_MS));
         }
         let allowed = instance
             .http_callers
-            .entry((endpoint.id.clone(), request.caller_did.clone()))
-            .or_insert_with(|| TokenBucket::new(endpoint.rate_hz, now))
+            .entry(caller_key)
+            .or_insert_with(|| TokenBucket::new(host_rate(endpoint.rate_hz, HOST_RATE_CEILING_HZ), now))
             .try_take(now);
         if !allowed {
             instance.counters.ingress_dropped_rate += 1;
             return Err((IngressRefusal::TooManyRequests, None));
         }
         if !parse_method(&request.method).is_some_and(|method| endpoint.methods.contains(&method)) {
+            instance.counters.ingress_refused += 1;
             return Err((IngressRefusal::MethodNotAllowed, None));
         }
-        if request.body.len() as u64 > endpoint.max_body_bytes {
+        if request.body.len() > host_size(endpoint.max_body_bytes) {
             instance.counters.ingress_dropped_size += 1;
             return Err((IngressRefusal::PayloadTooLarge, None));
         }
         if let Some(accepted) = &endpoint.content_types {
             let media = media_type(request.content_type.as_deref());
             if !accepted.iter().any(|kind| kind.eq_ignore_ascii_case(&media)) {
+                instance.counters.ingress_refused += 1;
                 return Err((IngressRefusal::UnsupportedMediaType, None));
             }
         }
@@ -152,7 +168,7 @@ impl Net {
         Ok(receiver)
     }
 
-    /// Accept a websocket upgrade on an accept-mode mount; the guest hears `opened`.
+    /// Accept a websocket upgrade on an accept-mode mount (steps 1-2, then `max_connections`); the guest hears `opened`.
     pub fn open_websocket(&self, request: WsAcceptRequest) -> Result<WsSession, IngressRefusal> {
         let now = self.now();
         let key = InstanceKey::new(request.petal_id.clone(), request.package_id.clone());
@@ -165,17 +181,19 @@ impl Net {
                 Some(instance) => match instance.ingress(&request.endpoint).cloned() {
                     Some(Ingress::WebsocketAccept(endpoint)) => {
                         let floor = role_level(endpoint.role_floor.unwrap_or(RoleFloor::Editor));
+                        let cap = endpoint.max_connections.min(HOST_CONNECTION_CEILING) as usize;
                         let open = connections.values().filter(|open| open.key == key && open.endpoint == endpoint.id).count();
                         if !self.sources.roles.role_at(&request.caller_did, &request.petal_id).is_at_least(floor) {
                             instance.counters.ingress_refused += 1;
                             audited = Some(instance.spec.installation_id.clone());
                             Err(IngressRefusal::NotFound)
-                        } else if open >= endpoint.max_connections as usize {
+                        } else if open >= cap {
+                            instance.counters.ingress_refused += 1;
                             Err(IngressRefusal::TooManyRequests)
                         } else {
                             let id = *next_id;
                             *next_id += 1;
-                            let max_frame_bytes = usize::try_from(endpoint.max_frame_bytes).unwrap_or(usize::MAX);
+                            let max_frame_bytes = host_size(endpoint.max_frame_bytes);
                             let (outbound, receiver) = mpsc::channel(OUTBOUND_QUEUE);
                             connections.insert(
                                 id,
@@ -183,8 +201,9 @@ impl Net {
                                     key: key.clone(),
                                     endpoint: endpoint.id.clone(),
                                     caller_did: request.caller_did.clone(),
+                                    floor,
                                     max_frame_bytes,
-                                    bucket: TokenBucket::new(endpoint.rate_hz, now),
+                                    bucket: TokenBucket::new(host_rate(endpoint.rate_hz, HOST_RATE_CEILING_HZ), now),
                                     outbound,
                                 },
                             );
@@ -204,41 +223,59 @@ impl Net {
     }
 
     /// One frame from an accepted connection; over-size, over-rate or queue-full frames are dropped and counted.
+    /// A caller whose role fell below the floor since the upgrade is disconnected (1008) and audited.
     pub fn websocket_frame(&self, connection: u64, frame: WsFrame) {
         let now = self.now();
-        let mut state = self.lock();
-        let NetState { instances, connections, .. } = &mut *state;
-        let Some(open) = connections.get_mut(&connection) else { return };
-        let Some(instance) = instances.get_mut(&open.key) else { return };
-        if frame.len() > open.max_frame_bytes {
-            instance.counters.ingress_dropped_size += 1;
-            return;
-        }
-        if !open.bucket.try_take(now) {
-            instance.counters.ingress_dropped_rate += 1;
-            return;
-        }
-        let (content_type, body) = frame_body(frame);
-        let frame = IngressFrame {
-            endpoint: open.endpoint.clone(),
-            transport: Transport::Websocket,
-            connection: Some(connection),
-            caller_did: Some(open.caller_did.clone()),
-            method: None,
-            path: None,
-            query: Vec::new(),
-            headers: Vec::new(),
-            topic: None,
-            content_type,
-            body,
-            received_at_ms: now,
+        let demoted = {
+            let mut state = self.lock();
+            let NetState { instances, connections, .. } = &mut *state;
+            let Some(open) = connections.get_mut(&connection) else { return };
+            let Some(instance) = instances.get_mut(&open.key) else { return };
+            if !self.sources.roles.role_at(&open.caller_did, &open.key.petal_id).is_at_least(open.floor) {
+                instance.counters.ingress_refused += 1;
+                let _ = open.outbound.try_send(WsOutbound::Close { code: CLOSE_POLICY, reason: "role below the endpoint floor".into() });
+                let target = format!("{}/ingress/{}", open.key.package_id, open.endpoint);
+                let entry = self.denial(&open.caller_did, Some(instance.spec.installation_id.clone()), target, "not-found");
+                let endpoint = open.endpoint.clone();
+                connections.remove(&connection);
+                instance.push(Delivery::Connection { endpoint, connection, event: ConnectionEvent::Closed });
+                Some(entry)
+            } else {
+                if frame.len() > open.max_frame_bytes {
+                    instance.counters.ingress_dropped_size += 1;
+                    return;
+                }
+                if !open.bucket.try_take(now) {
+                    instance.counters.ingress_dropped_rate += 1;
+                    return;
+                }
+                let (content_type, body) = frame_body(frame);
+                let frame = IngressFrame {
+                    endpoint: open.endpoint.clone(),
+                    transport: Transport::Websocket,
+                    connection: Some(connection),
+                    caller_did: Some(open.caller_did.clone()),
+                    method: None,
+                    path: None,
+                    query: Vec::new(),
+                    headers: Vec::new(),
+                    topic: None,
+                    content_type,
+                    body,
+                    received_at_ms: now,
+                };
+                if instance.push(Delivery::Ingress { frame: Box::new(frame), reply: ReplyTo::Connection(connection) }) {
+                    instance.counters.ingress_frames += 1;
+                }
+                None
+            }
         };
-        if instance.push(Delivery::Ingress { frame: Box::new(frame), reply: ReplyTo::Connection(connection) }) {
-            instance.counters.ingress_frames += 1;
+        if let Some(entry) = demoted {
+            self.audit(entry);
         }
     }
 
-    /// The client closed or the socket failed; the guest hears `closed`.
+    /// The client closed or the socket failed; the guest hears `closed` (once: a host-side close already reported it).
     pub fn websocket_closed(&self, connection: u64) {
         let mut state = self.lock();
         let Some(open) = state.connections.remove(&connection) else { return };
@@ -260,17 +297,18 @@ impl Net {
         while !reason.is_char_boundary(cut) {
             cut -= 1;
         }
-        outbound.try_send(WsOutbound::Close { code, reason: reason[..cut].to_string() }).map_err(queue_error)
+        let close = WsOutbound::Close { code: sendable_close_code(code), reason: reason[..cut].to_string() };
+        outbound.try_send(close).map_err(queue_error)
     }
 
     fn outbound_for(&self, key: &InstanceKey, endpoint: &str, connection: Option<u64>, frame_len: Option<usize>) -> Result<mpsc::Sender<WsOutbound>, HostError> {
         let state = self.lock();
         let instance = state.instances.get(key).ok_or_else(|| HostError::Revoked("instance is not active".into()))?;
-        let too_big = |max: u64| frame_len.is_some_and(|len| len as u64 > max);
+        let too_big = |max: u64| frame_len.is_some_and(|len| len > host_size(max));
         match instance.ingress(endpoint) {
             Some(Ingress::WebsocketAccept(accept)) => {
                 if too_big(accept.max_frame_bytes) {
-                    return Err(HostError::InvalidInput(format!("frame is over max_frame_bytes ({})", accept.max_frame_bytes)));
+                    return Err(HostError::InvalidInput(format!("frame is over max_frame_bytes ({})", host_size(accept.max_frame_bytes))));
                 }
                 let id = connection.ok_or_else(|| HostError::InvalidInput("accept mode names a connection".into()))?;
                 state
@@ -282,7 +320,7 @@ impl Net {
             }
             Some(Ingress::WebsocketDial(dial)) => {
                 if too_big(dial.max_frame_bytes) {
-                    return Err(HostError::InvalidInput(format!("frame is over max_frame_bytes ({})", dial.max_frame_bytes)));
+                    return Err(HostError::InvalidInput(format!("frame is over max_frame_bytes ({})", host_size(dial.max_frame_bytes))));
                 }
                 let current = instance.dial_connections.get(endpoint).copied();
                 if current.is_none() {
@@ -329,7 +367,7 @@ impl Net {
         });
     }
 
-    /// A frame a dial-out task already size- and rate-checked; false when the inbox was full.
+    /// A frame a dial-out task already size- and rate-checked; false when the inbox was full or the task is stale.
     pub(super) fn deliver_frame(&self, key: &InstanceKey, generation: u64, frame: IngressFrame, reply: ReplyTo) -> bool {
         self.with_generation(key, generation, |state| {
             let Some(instance) = state.instances.get_mut(key) else { return false };
@@ -373,7 +411,7 @@ pub(super) fn forwarded_headers(headers: &[(String, String)], declared: &[String
         .iter()
         .filter_map(|(name, value)| {
             let name = name.trim().to_ascii_lowercase();
-            let wanted = declared.iter().any(|declared| declared.eq_ignore_ascii_case(&name));
+            let wanted = declared.iter().any(|declared| declared.trim().eq_ignore_ascii_case(&name));
             (wanted && !is_credential_header(&name)).then(|| (name, value.clone()))
         })
         .collect()

@@ -11,9 +11,11 @@ mod ws_dial;
 mod tests;
 
 use std::collections::{BTreeMap, HashMap, VecDeque};
+use std::future::Future;
 use std::sync::{Arc, Mutex, MutexGuard};
 
-use fe_sdk::manifest_v2::{AuthScheme, AuthSlot, Egress, Ingress};
+use fe_policy::RoleLevel;
+use fe_sdk::manifest_v2::{AuthScheme, AuthSlot, Egress, Ingress, ReconnectMs};
 use serde::Serialize;
 use tokio::sync::{mpsc, oneshot, watch};
 
@@ -36,9 +38,30 @@ pub const MAX_EGRESS_IN_FLIGHT: usize = 16;
 /// Outbound frames or publishes queued per connection or session.
 pub const OUTBOUND_QUEUE: usize = 64;
 
+/// Host ceilings re-applied at runtime (net/AGENTS.md §host-ceilings): the schema's numbers, for a manifest smuggled past it.
+pub const HOST_RATE_CEILING_HZ: f64 = 100.0;
+/// `max_body_bytes`, `max_frame_bytes` and `max_payload_bytes`.
+pub const HOST_SIZE_CEILING: u64 = 1024 * 1024;
+/// `max_connections` per websocket-accept endpoint.
+pub const HOST_CONNECTION_CEILING: u32 = 256;
+/// Redial bounds (`reconnect_ms`): the defaults and the clamp.
+const DEFAULT_RECONNECT_MS: (u64, u64) = (1_000, 60_000);
+const RECONNECT_FLOOR_MS: u64 = 250;
+const RECONNECT_CEILING_MS: u64 = 600_000;
+
 /// Headers the host never forwards to a guest and never lets a guest set, whatever the manifest says
 /// (P2P-QA steer 2026-11-08 20:20; manifest-v2.md V16 is the second layer); one list in fe-sdk.
 pub use fe_sdk::manifest_v2::is_credential_header;
+
+/// Hop-by-hop, framing and handshake headers the host owns in both directions.
+const HOST_OWNED_HEADERS: &[&str] =
+    &["connection", "keep-alive", "proxy-connection", "te", "trailer", "transfer-encoding", "upgrade", "host", "content-length"];
+
+/// True for a header only the host may set: framing, hop-by-hop, any `proxy-*` and any `sec-websocket-*`.
+pub(crate) fn is_host_owned_header(name: &str) -> bool {
+    let name = name.trim().to_ascii_lowercase();
+    HOST_OWNED_HEADERS.contains(&name.as_str()) || name.starts_with("proxy-") || name.starts_with("sec-websocket-")
+}
 
 /// A host-side secret named by a manifest `auth.credential` slot; never replicated, never shown to a guest.
 #[derive(Clone, PartialEq, Eq)]
@@ -202,11 +225,12 @@ struct Session<T> {
     stop: watch::Sender<bool>,
 }
 
-/// An accepted websocket connection on an ingress mount.
+/// An accepted websocket connection on an ingress mount; the floor is re-checked on every frame.
 struct AcceptedConnection {
     key: InstanceKey,
     endpoint: String,
     caller_did: String,
+    floor: RoleLevel,
     max_frame_bytes: usize,
     bucket: TokenBucket,
     outbound: mpsc::Sender<WsOutbound>,
@@ -320,17 +344,19 @@ impl Net {
             let unavailable = || EndpointState::NotAvailable("this host has no network runtime".into());
             for endpoint in &spec.manifest.ingress {
                 let id = ingress_id(endpoint).to_string();
-                let status = match endpoint {
-                    Ingress::HttpServer(_) | Ingress::WebsocketAccept(_) => EndpointState::Mounted,
-                    Ingress::WebsocketDial(_) | Ingress::Mqtt(_) if !runtime => unavailable(),
-                    Ingress::WebsocketDial(dial) => {
+                // A dial-out whose target or filters the host refuses never spawns (no redial loop against it).
+                let status = match (endpoint, dial_out_refusal(endpoint)) {
+                    (Ingress::HttpServer(_) | Ingress::WebsocketAccept(_), _) => EndpointState::Mounted,
+                    (_, Some(reason)) => EndpointState::NotAvailable(reason),
+                    _ if !runtime => unavailable(),
+                    (Ingress::WebsocketDial(dial), None) => {
                         let (outbound, receiver) = mpsc::channel(OUTBOUND_QUEUE);
                         let (stop, stopped) = watch::channel(false);
                         instance.dialers.insert(id.clone(), Session { outbound: Some(outbound), stop });
                         spawns.push(Spawn::Dial(ws_dial::DialConfig::from_manifest(dial), receiver, stopped));
                         EndpointState::Down("connecting".into())
                     }
-                    Ingress::Mqtt(mqtt) => {
+                    (Ingress::Mqtt(mqtt), None) => {
                         let (stop, stopped) = watch::channel(false);
                         instance.mqtt.insert(id.clone(), Session { outbound: None, stop });
                         spawns.push(Spawn::Mqtt(mqtt_session::MqttConfig::ingress(spec, mqtt), None, stopped));
@@ -349,14 +375,20 @@ impl Net {
                         Err(error) => (http.id.clone(), EndpointState::NotAvailable(error)),
                     },
                     Egress::Http(http) => (http.id.clone(), unavailable()),
-                    Egress::Mqtt(mqtt) if runtime => {
-                        let (outbound, receiver) = mpsc::channel(OUTBOUND_QUEUE);
-                        let (stop, stopped) = watch::channel(false);
-                        instance.mqtt.insert(mqtt.id.clone(), Session { outbound: Some(outbound), stop });
-                        spawns.push(Spawn::Mqtt(mqtt_session::MqttConfig::egress(spec, mqtt), Some(receiver), stopped));
-                        (mqtt.id.clone(), EndpointState::Down("connecting".into()))
-                    }
-                    Egress::Mqtt(mqtt) => (mqtt.id.clone(), unavailable()),
+                    Egress::Mqtt(mqtt) => match connect::target(&mqtt.broker) {
+                        Err(reason) => (mqtt.id.clone(), EndpointState::NotAvailable(reason)),
+                        Ok(target) if target.websocket => {
+                            (mqtt.id.clone(), EndpointState::NotAvailable("mqtt needs an mqtts:// (or loopback mqtt://) broker".into()))
+                        }
+                        Ok(_) if !runtime => (mqtt.id.clone(), unavailable()),
+                        Ok(_) => {
+                            let (outbound, receiver) = mpsc::channel(OUTBOUND_QUEUE);
+                            let (stop, stopped) = watch::channel(false);
+                            instance.mqtt.insert(mqtt.id.clone(), Session { outbound: Some(outbound), stop });
+                            spawns.push(Spawn::Mqtt(mqtt_session::MqttConfig::egress(spec, mqtt), Some(receiver), stopped));
+                            (mqtt.id.clone(), EndpointState::Down("connecting".into()))
+                        }
+                    },
                 };
                 instance.endpoints.insert(id, status);
             }
@@ -480,7 +512,7 @@ impl Net {
     fn with_generation<R>(&self, key: &InstanceKey, generation: u64, change: impl FnOnce(&mut NetState) -> R) -> Option<R> {
         let mut state = self.lock();
         let current = state.instances.get(key).is_some_and(|instance| instance.generation == generation);
-        current.then(|| change(&mut state))
+        current.then(|| change(&mut *state))
     }
 
     fn set_endpoint_state(&self, key: &InstanceKey, generation: u64, endpoint: &str, status: EndpointState) {
@@ -499,15 +531,79 @@ impl Net {
         });
     }
 
-    /// A credential for `slot` shaped for `scheme`, or why the endpoint must stay down.
-    fn credential(&self, auth: &Option<AuthSlot>) -> Result<ShapedCredential, EndpointState> {
+    /// A credential for `slot` shaped for `scheme`, read fresh on every call, or why the endpoint must stay down.
+    fn credential(&self, auth: Option<&AuthSlot>) -> Result<ShapedCredential, EndpointState> {
         let Some(auth) = auth else { return Ok(None) };
         let credential = self.sources.credentials.get(&auth.credential).ok_or(EndpointState::CredentialMissing)?;
         let needs_username = matches!(auth.scheme, AuthScheme::Basic | AuthScheme::MqttPassword);
-        if needs_username && credential.username.is_none() {
+        let username_missing = credential.username.as_deref().is_none_or(str::is_empty);
+        if credential.secret.is_empty() || (needs_username && username_missing) {
             return Err(EndpointState::CredentialMissing);
         }
         Ok(Some((auth.scheme, credential, auth.header.clone())))
+    }
+}
+
+/// Why the host refuses to dial an ingress endpoint at all (bad or plaintext target, malformed filter).
+fn dial_out_refusal(endpoint: &Ingress) -> Option<String> {
+    match endpoint {
+        Ingress::WebsocketDial(dial) => match connect::target(&dial.url) {
+            Ok(target) if target.websocket => None,
+            Ok(_) => Some("websocket-dial needs a wss:// (or loopback ws://) url".into()),
+            Err(reason) => Some(reason),
+        },
+        Ingress::Mqtt(subscriber) => match connect::target(&subscriber.broker) {
+            Ok(target) if target.websocket => Some("mqtt needs an mqtts:// (or loopback mqtt://) broker".into()),
+            Ok(_) if subscriber.topics.is_empty() => Some("mqtt ingress declares no topic filter".into()),
+            Ok(_) => subscriber
+                .topics
+                .iter()
+                .find(|filter| !mqtt::valid_topic_filter(filter))
+                .map(|filter| format!("{filter:?} is not a valid topic filter")),
+            Err(reason) => Some(reason),
+        },
+        Ingress::HttpServer(_) | Ingress::WebsocketAccept(_) => None,
+    }
+}
+
+/// A declared rate under a host ceiling; non-finite or non-positive never refills (TokenBucket's rule).
+fn host_rate(declared_hz: f64, ceiling_hz: f64) -> f64 {
+    if declared_hz.is_finite() && declared_hz > 0.0 {
+        declared_hz.min(ceiling_hz)
+    } else {
+        0.0
+    }
+}
+
+/// A declared size under [`HOST_SIZE_CEILING`].
+fn host_size(declared: u64) -> usize {
+    usize::try_from(declared.min(HOST_SIZE_CEILING)).unwrap_or(usize::MAX)
+}
+
+/// `reconnect_ms` with the defaults and the host clamp applied; `max` never below `min`.
+fn reconnect_bounds(declared: Option<&ReconnectMs>) -> (u64, u64) {
+    let (min, max) = declared.map_or(DEFAULT_RECONNECT_MS, |reconnect| (reconnect.min, reconnect.max));
+    let min = min.clamp(RECONNECT_FLOOR_MS, RECONNECT_CEILING_MS);
+    (min, max.clamp(min, RECONNECT_CEILING_MS))
+}
+
+/// Run `future` unless the stop switch flips (or its sender drops) first; `None` means stop.
+async fn until_stopped<F: Future>(stop: &mut watch::Receiver<bool>, future: F) -> Option<F::Output> {
+    if *stop.borrow() {
+        return None;
+    }
+    tokio::select! {
+        output = future => Some(output),
+        _ = stop.changed() => None,
+    }
+}
+
+/// A close code a peer may legally receive (RFC 6455 §7.4); reserved or local-only codes become 1000.
+fn sendable_close_code(code: u16) -> u16 {
+    if matches!(code, 1000..=1003 | 1007..=1014 | 3000..=4999) {
+        code
+    } else {
+        1000
     }
 }
 
@@ -570,7 +666,7 @@ fn base64(input: &[u8]) -> String {
     out
 }
 
-/// The header a credential adds to an HTTP request or websocket handshake.
+/// The header a credential adds to an HTTP request or websocket handshake; never one the host owns (framing, handshake).
 fn auth_header(scheme: AuthScheme, credential: &Credential, header: Option<&str>) -> Option<(String, String)> {
     match scheme {
         AuthScheme::Bearer => Some(("authorization".into(), format!("Bearer {}", credential.secret))),
@@ -578,7 +674,10 @@ fn auth_header(scheme: AuthScheme, credential: &Credential, header: Option<&str>
             let username = credential.username.as_deref()?;
             Some(("authorization".into(), format!("Basic {}", base64(format!("{username}:{}", credential.secret).as_bytes()))))
         }
-        AuthScheme::Header => Some((header?.to_ascii_lowercase(), credential.secret.clone())),
+        AuthScheme::Header => {
+            let name = header?.trim().to_ascii_lowercase();
+            (!name.is_empty() && !is_host_owned_header(&name)).then(|| (name, credential.secret.clone()))
+        }
         AuthScheme::MqttPassword => None,
     }
 }

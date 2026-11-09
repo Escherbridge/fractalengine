@@ -24,12 +24,14 @@ pub(super) type Stream = Box<dyn Io>;
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(super) struct Target {
     pub(super) tls: bool,
+    /// `ws`/`wss` (else `mqtt`/`mqtts`).
+    pub(super) websocket: bool,
     /// Without IPv6 brackets.
     pub(super) host: String,
     pub(super) port: u16,
 }
 
-/// `127.0.0.1`, `::1` or `localhost` (manifest-v2.md §egress "Loopback").
+/// Exactly `127.0.0.1`, `::1` or `localhost` (manifest-v2.md §egress "Loopback"); callers pass the host unbracketed.
 pub(super) fn is_loopback(host: &str) -> bool {
     matches!(host, "127.0.0.1" | "::1" | "localhost")
 }
@@ -37,15 +39,18 @@ pub(super) fn is_loopback(host: &str) -> bool {
 /// Parse a declared `wss`/`ws`/`mqtts`/`mqtt` URL; plaintext to anything but loopback is refused here too.
 pub(super) fn target(url: &str) -> Result<Target, String> {
     let parsed = reqwest::Url::parse(url).map_err(|error| format!("bad endpoint url: {error}"))?;
-    let (tls, default_port) = match parsed.scheme() {
-        "wss" => (true, 443),
-        "ws" => (false, 80),
-        "mqtts" => (true, 8883),
-        "mqtt" => (false, 1883),
+    let (tls, websocket, default_port) = match parsed.scheme() {
+        "wss" => (true, true, 443),
+        "ws" => (false, true, 80),
+        "mqtts" => (true, false, 8883),
+        "mqtt" => (false, false, 1883),
         other => return Err(format!("unsupported scheme {other}")),
     };
     if !parsed.username().is_empty() || parsed.password().is_some() {
         return Err("endpoint urls carry no credentials".into());
+    }
+    if parsed.query().is_some() || parsed.fragment().is_some() {
+        return Err("endpoint urls carry no query or fragment".into());
     }
     let host = parsed
         .host_str()
@@ -56,7 +61,7 @@ pub(super) fn target(url: &str) -> Result<Target, String> {
     if !tls && !is_loopback(&host) {
         return Err(format!("plaintext to {host} is refused (loopback only)"));
     }
-    Ok(Target { tls, host, port: parsed.port().unwrap_or(default_port) })
+    Ok(Target { tls, websocket, host, port: parsed.port().unwrap_or(default_port) })
 }
 
 /// Open the stream: TCP, then TLS (webpki roots, ring provider) unless the target is plaintext loopback.

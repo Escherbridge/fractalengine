@@ -8,7 +8,7 @@ use tokio::sync::{mpsc, watch};
 
 use super::connect::{self, Stream, CONNECT_TIMEOUT};
 use super::mqtt::{decode, encode, topic_matches, Decoded, Packet};
-use super::{backoff_ms, EndpointState, IngressFrame, Net, ReplyTo, Transport};
+use super::{backoff_ms, host_rate, host_size, until_stopped, EndpointState, IngressFrame, Net, ReplyTo, Transport, HOST_RATE_CEILING_HZ};
 use crate::bus::rate::TokenBucket;
 use crate::bus::{InstanceKey, InstanceSpec};
 
@@ -45,7 +45,7 @@ pub(super) struct MqttConfig {
 }
 
 impl MqttConfig {
-    /// A subscriber for an ingress endpoint.
+    /// A subscriber for an ingress endpoint, host ceilings applied (net/AGENTS.md §host-ceilings).
     pub(super) fn ingress(spec: &InstanceSpec, mqtt: &MqttIngress) -> Self {
         Self {
             endpoint: mqtt.id.clone(),
@@ -55,8 +55,8 @@ impl MqttConfig {
             role: Role::Subscribe {
                 topics: mqtt.topics.clone(),
                 qos: qos_level(mqtt.qos),
-                max_payload: usize::try_from(mqtt.max_payload_bytes).unwrap_or(usize::MAX),
-                rate_hz: mqtt.rate_hz,
+                max_payload: host_size(mqtt.max_payload_bytes),
+                rate_hz: host_rate(mqtt.rate_hz, HOST_RATE_CEILING_HZ),
             },
         }
     }
@@ -99,7 +99,8 @@ pub(super) async fn run(
         if *stop.borrow() {
             return;
         }
-        match net.credential(&config.auth) {
+        // Re-read on every connect, so an operator filling the slot needs no restart.
+        match net.credential(config.auth.as_ref()) {
             Err(state) => net.set_endpoint_state(&key, generation, &config.endpoint, state),
             Ok(Some((scheme, _, _))) if scheme != AuthScheme::MqttPassword => {
                 net.set_endpoint_state(&key, generation, &config.endpoint, EndpointState::CredentialMissing);
@@ -118,9 +119,8 @@ pub(super) async fn run(
         }
         attempt = attempt.saturating_add(1);
         let wait = backoff_ms(attempt, RECONNECT_MIN_MS, RECONNECT_MAX_MS);
-        tokio::select! {
-            _ = tokio::time::sleep(Duration::from_millis(wait)) => {}
-            _ = stop.changed() => return,
+        if until_stopped(&mut stop, tokio::time::sleep(Duration::from_millis(wait))).await.is_none() {
+            return;
         }
     }
 }
@@ -145,20 +145,25 @@ impl Session<'_> {
             Ok(target) => target,
             Err(error) => return Ended::Dropped(error),
         };
-        let mut stream = match connect::connect(&target).await {
-            Ok(stream) => stream,
-            Err(error) => return Ended::Dropped(error),
+        let mut stream = match until_stopped(stop, connect::connect(&target)).await {
+            None => return Ended::Stopped,
+            Some(Ok(stream)) => stream,
+            Some(Err(error)) => return Ended::Dropped(error),
         };
         let max_packet = match &self.config.role {
             Role::Subscribe { max_payload, .. } => max_payload.saturating_add(PACKET_OVERHEAD),
             Role::Publish => PUBLISHER_MAX_PACKET,
         };
-        let mut reader = Reader { buffer: Vec::new(), chunk: vec![0; READ_CHUNK], skip: 0, max_packet, oversized: 0 };
+        let mut reader = Reader::new(max_packet);
         let hello = Packet::Connect { client_id: self.config.client_id.clone(), keep_alive_s: KEEP_ALIVE_S, username, password };
         if let Err(error) = write(&mut stream, &hello).await {
             return Ended::Dropped(error);
         }
-        match tokio::time::timeout(CONNECT_TIMEOUT, reader.next(&mut stream)).await {
+        let connack = match until_stopped(stop, tokio::time::timeout(CONNECT_TIMEOUT, reader.next(&mut stream))).await {
+            None => return Ended::Stopped,
+            Some(read) => read,
+        };
+        match connack {
             Ok(Ok(Packet::ConnAck { return_code: 0, .. })) => {}
             Ok(Ok(Packet::ConnAck { return_code, .. })) => return Ended::Dropped(format!("broker refused the connection (code {return_code})")),
             Ok(Ok(_)) => return Ended::Dropped("expected CONNACK".into()),
@@ -171,7 +176,11 @@ impl Session<'_> {
             if let Err(error) = write(&mut stream, &subscribe).await {
                 return Ended::Dropped(error);
             }
-            match tokio::time::timeout(CONNECT_TIMEOUT, reader.next(&mut stream)).await {
+            let suback = match until_stopped(stop, tokio::time::timeout(CONNECT_TIMEOUT, reader.next(&mut stream))).await {
+                None => return Ended::Stopped,
+                Some(read) => read,
+            };
+            match suback {
                 Ok(Ok(Packet::SubAck { return_codes, .. })) if return_codes.iter().all(|code| *code != 0x80) => {}
                 Ok(Ok(Packet::SubAck { .. })) => return Ended::Dropped("the broker refused a topic filter".into()),
                 Ok(Ok(_)) => return Ended::Dropped("expected SUBACK".into()),
@@ -270,7 +279,7 @@ impl Session<'_> {
     }
 
     fn flush_oversized(&self, reader: &mut Reader) {
-        let skipped = std::mem::take(&mut reader.oversized);
+        let skipped = reader.take_oversized();
         if skipped > 0 {
             self.net.count(self.key, self.generation, |counters| counters.ingress_dropped_size += skipped);
         }
@@ -293,8 +302,9 @@ async fn write(stream: &mut Stream, packet: &Packet) -> Result<(), String> {
         .map_err(|error| error.to_string())
 }
 
-/// Buffers bytes until a whole packet decodes; oversized packets are skipped as they stream past, never buffered.
-struct Reader {
+/// Buffers bytes until a whole packet decodes; oversized packets are skipped as they stream past, never buffered,
+/// so the buffer stays under `max_packet + READ_CHUNK` whatever the broker announces.
+pub(super) struct Reader {
     buffer: Vec<u8>,
     chunk: Vec<u8>,
     skip: usize,
@@ -303,8 +313,24 @@ struct Reader {
 }
 
 impl Reader {
+    /// A reader that refuses (skips) any packet larger than `max_packet` bytes.
+    pub(super) fn new(max_packet: usize) -> Self {
+        Self { buffer: Vec::new(), chunk: vec![0; READ_CHUNK], skip: 0, max_packet, oversized: 0 }
+    }
+
+    /// Oversized packets skipped since the last call.
+    pub(super) fn take_oversized(&mut self) -> u64 {
+        std::mem::take(&mut self.oversized)
+    }
+
+    /// Bytes currently held (never more than `max_packet + READ_CHUNK`).
+    #[cfg(test)]
+    pub(super) fn buffered(&self) -> usize {
+        self.buffer.len()
+    }
+
     /// Cancel-safe: the only await is the read, and its bytes are appended before the next await.
-    async fn next(&mut self, stream: &mut Stream) -> Result<Packet, String> {
+    pub(super) async fn next(&mut self, stream: &mut Stream) -> Result<Packet, String> {
         loop {
             match decode(&self.buffer, self.max_packet).map_err(|error| error.to_string())? {
                 Decoded::Packet(packet, used) => {

@@ -9,21 +9,28 @@ use tokio::sync::mpsc::error::TrySendError;
 use super::connect::is_loopback;
 use super::mqtt::{topic_matches, valid_topic_name};
 use super::mqtt_session::MqttPublish;
-use super::{auth_header, is_credential_header, Delivery, EndpointState, Net, NetState, MAX_EGRESS_IN_FLIGHT};
+use super::{
+    auth_header, host_rate, host_size, is_credential_header, is_host_owned_header, Delivery, EndpointState, Net, NetState,
+    HOST_RATE_CEILING_HZ, MAX_EGRESS_IN_FLIGHT,
+};
 use crate::bus::rate::TokenBucket;
 use crate::bus::{HostError, InstanceKey};
 
 const DEFAULT_MAX_REQUEST_BYTES: u64 = 1024 * 1024;
+const MAX_REQUEST_CEILING: u64 = 8 * 1024 * 1024;
 const DEFAULT_MAX_RESPONSE_BYTES: u64 = 1024 * 1024;
 const MAX_RESPONSE_CEILING: u64 = 8 * 1024 * 1024;
 const DEFAULT_TIMEOUT_MS: u64 = 10_000;
+const MIN_TIMEOUT_MS: u64 = 100;
 const MAX_TIMEOUT_MS: u64 = 30_000;
 const MAX_REDIRECTS: usize = 5;
 const MAX_EGRESS_RATE_HZ: f64 = 10.0;
 const MAX_REQUEST_HEADERS: usize = 64;
-/// Hop-by-hop and framing headers the host owns in both directions.
-const HOST_OWNED_HEADERS: &[&str] =
-    &["connection", "keep-alive", "proxy-connection", "te", "trailer", "transfer-encoding", "upgrade", "host", "content-length"];
+const MAX_PATH_BYTES: usize = 2_048;
+const MAX_QUERY_PAIRS: usize = 64;
+const MAX_URL_BYTES: usize = 8_192;
+/// Percent-encodings that could decode into a separator, a dot segment, a NUL, or another escape (double encoding).
+const REFUSED_ENCODINGS: [&str; 5] = ["%2e", "%2f", "%5c", "%25", "%00"];
 
 /// WIT `egress.outgoing-request`.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -81,6 +88,7 @@ impl Net {
         Ok(id)
     }
 
+    /// Declared endpoint, declared method, contained url, guest headers, size, rate, in-flight, credential, client.
     fn prepare_http(&self, key: &InstanceKey, endpoint: &str, request: OutgoingRequest) -> Result<(u64, u64, HttpJob), Refused> {
         let now = self.now();
         let mut state = self.lock();
@@ -100,24 +108,23 @@ impl Net {
         let url = endpoint_url(&declared.url, &request.path, &request.query).map_err(|error| plain(HostError::InvalidInput(error)))?;
         let mut headers =
             request_headers(&request.headers, request.content_type.as_deref()).map_err(|error| plain(HostError::InvalidInput(error)))?;
-        let max_request = declared.max_request_bytes.unwrap_or(DEFAULT_MAX_REQUEST_BYTES);
+        let max_request = declared.max_request_bytes.unwrap_or(DEFAULT_MAX_REQUEST_BYTES).min(MAX_REQUEST_CEILING);
         if request.body.len() as u64 > max_request {
-            return Err((HostError::BudgetExceeded(format!("request body is over max_request_bytes ({max_request})")), None));
+            return Err(plain(HostError::BudgetExceeded(format!("request body is over max_request_bytes ({max_request})"))));
         }
         let allowed = instance
             .egress_buckets
             .entry(endpoint.to_string())
-            .or_insert_with(|| TokenBucket::new(declared.rate_hz.min(MAX_EGRESS_RATE_HZ), now))
+            .or_insert_with(|| TokenBucket::new(host_rate(declared.rate_hz, MAX_EGRESS_RATE_HZ), now))
             .try_take(now);
         if !allowed {
-            instance.counters.egress_refused += 1;
-            return Err((HostError::RateLimited(format!("{endpoint} is over rate_hz")), None));
+            return Err(plain(HostError::RateLimited(format!("{endpoint} is over rate_hz"))));
         }
         if instance.egress_in_flight >= MAX_EGRESS_IN_FLIGHT {
-            return Err((HostError::BudgetExceeded(format!("at most {MAX_EGRESS_IN_FLIGHT} requests in flight")), None));
+            return Err(plain(HostError::BudgetExceeded(format!("at most {MAX_EGRESS_IN_FLIGHT} requests in flight"))));
         }
         let missing = || plain(HostError::NotAvailable("credential-missing".into()));
-        match self.credential(&declared.auth) {
+        match self.credential(declared.auth.as_ref()) {
             Ok(None) => {}
             Ok(Some((scheme, credential, header))) => {
                 let (name, value) = auth_header(scheme, &credential, header.as_deref()).ok_or_else(missing)?;
@@ -148,8 +155,11 @@ impl Net {
         Ok((id, instance.generation, job))
     }
 
-    /// Count, audit (denials only) and return a refused egress call.
+    /// Count every refusal of a live instance, audit the denials (R9 AC), and return the error.
     fn refuse_egress(&self, key: &InstanceKey, endpoint: &str, (error, who): Refused) -> HostError {
+        if let Some(instance) = self.lock().instances.get_mut(key) {
+            instance.counters.egress_refused += 1;
+        }
         if let (true, Some((actor, installation))) = (error.is_denial(), who) {
             self.audit(self.denial(&actor, Some(installation), format!("{}/egress/{endpoint}", key.package_id), error.code()));
         }
@@ -169,15 +179,17 @@ impl Net {
         });
     }
 
-    /// WIT `egress.mqtt-publish`: a declared broker, a topic matching a declared filter, within size, QoS and rate.
+    /// WIT `egress.mqtt-publish`: a declared broker, a topic matching a declared filter, within size, QoS and rate; queued.
     pub fn mqtt_publish(&self, key: &InstanceKey, endpoint: &str, topic: &str, payload: Vec<u8>, qos: Qos, retain: bool) -> Result<(), HostError> {
         let sender = self.prepare_publish(key, endpoint, topic, payload.len(), qos, retain).map_err(|refused| self.refuse_egress(key, endpoint, refused))?;
-        sender.try_send(MqttPublish { topic: topic.to_string(), payload, qos, retain }).map_err(|error| match error {
-            TrySendError::Full(_) => HostError::RateLimited(format!("{endpoint}'s publish queue is full")),
-            TrySendError::Closed(_) => HostError::NotAvailable(format!("{endpoint} is not connected")),
+        sender.try_send(MqttPublish { topic: topic.to_string(), payload, qos, retain }).map_err(|error| {
+            let error = match error {
+                TrySendError::Full(_) => HostError::RateLimited(format!("{endpoint}'s publish queue is full")),
+                TrySendError::Closed(_) => HostError::NotAvailable(format!("{endpoint} is not connected")),
+            };
+            self.refuse_egress(key, endpoint, plain(error))
         })?;
-        let mut state = self.lock();
-        if let Some(instance) = state.instances.get_mut(key) {
+        if let Some(instance) = self.lock().instances.get_mut(key) {
             instance.counters.mqtt_published += 1;
         }
         Ok(())
@@ -204,51 +216,51 @@ impl Net {
             return Err((HostError::CapabilityDenied(format!("egress endpoint {endpoint} is not declared")), who));
         };
         if !valid_topic_name(topic) {
-            return Err((HostError::InvalidInput(format!("{topic:?} is not a topic name")), None));
+            return Err(plain(HostError::InvalidInput(format!("{topic:?} is not a topic name"))));
         }
         if !declared.topics.iter().any(|filter| topic_matches(filter, topic)) {
             return Err((HostError::CapabilityDenied(format!("{topic} matches no declared topic filter")), who));
         }
-        if payload_len as u64 > declared.max_payload_bytes {
-            return Err((HostError::BudgetExceeded(format!("payload is over max_payload_bytes ({})", declared.max_payload_bytes)), None));
+        let max_payload = host_size(declared.max_payload_bytes);
+        if payload_len > max_payload {
+            return Err(plain(HostError::BudgetExceeded(format!("payload is over max_payload_bytes ({max_payload})"))));
         }
         if qos == Qos::AtLeastOnce && declared.qos != Some(Qos::AtLeastOnce) {
-            return Err((HostError::InvalidInput("at-least-once was not declared for this endpoint".into()), None));
+            return Err(plain(HostError::InvalidInput("at-least-once was not declared for this endpoint".into())));
         }
         if retain && declared.retain != Some(true) {
-            return Err((HostError::InvalidInput("retain was not declared for this endpoint".into()), None));
+            return Err(plain(HostError::InvalidInput("retain was not declared for this endpoint".into())));
         }
         let allowed = instance
             .egress_buckets
             .entry(endpoint.to_string())
-            .or_insert_with(|| TokenBucket::new(declared.rate_hz, now))
+            .or_insert_with(|| TokenBucket::new(host_rate(declared.rate_hz, HOST_RATE_CEILING_HZ), now))
             .try_take(now);
         if !allowed {
-            instance.counters.egress_refused += 1;
-            return Err((HostError::RateLimited(format!("{endpoint} is over rate_hz")), None));
+            return Err(plain(HostError::RateLimited(format!("{endpoint} is over rate_hz"))));
         }
         if instance.endpoints.get(endpoint) == Some(&EndpointState::CredentialMissing) {
-            return Err((HostError::NotAvailable("credential-missing".into()), None));
+            return Err(plain(HostError::NotAvailable("credential-missing".into())));
         }
         instance
             .mqtt
             .get(endpoint)
             .and_then(|session| session.outbound.clone())
-            .ok_or((HostError::NotAvailable(format!("{endpoint} has no session on this host")), None))
+            .ok_or_else(|| plain(HostError::NotAvailable(format!("{endpoint} has no session on this host"))))
     }
 }
 
-/// One reqwest client per HTTP egress endpoint: no proxy, bounded time, redirects only inside the base.
+/// One reqwest client per HTTP egress endpoint: no proxy, no referer, bounded time, redirects only inside the base.
 pub(super) fn build_client(http: &HttpEgress) -> Result<reqwest::Client, String> {
     let base = reqwest::Url::parse(&http.url).map_err(|error| format!("bad egress url: {error}"))?;
     let loopback = base.host_str().is_some_and(|host| is_loopback(host.trim_start_matches('[').trim_end_matches(']')));
     if !(base.scheme() == "https" || (base.scheme() == "http" && loopback)) {
         return Err("egress must be https, or http to loopback".into());
     }
-    if !base.username().is_empty() || base.password().is_some() || base.query().is_some() {
-        return Err("egress urls carry no credentials or query".into());
+    if !base.username().is_empty() || base.password().is_some() || base.query().is_some() || base.fragment().is_some() {
+        return Err("egress urls carry no credentials, query or fragment".into());
     }
-    let timeout = http.timeout_ms.unwrap_or(DEFAULT_TIMEOUT_MS).min(MAX_TIMEOUT_MS);
+    let timeout = http.timeout_ms.unwrap_or(DEFAULT_TIMEOUT_MS).clamp(MIN_TIMEOUT_MS, MAX_TIMEOUT_MS);
     let redirect_base = base.clone();
     let policy = reqwest::redirect::Policy::custom(move |attempt| {
         if attempt.previous().len() >= MAX_REDIRECTS {
@@ -262,6 +274,7 @@ pub(super) fn build_client(http: &HttpEgress) -> Result<reqwest::Client, String>
     });
     reqwest::Client::builder()
         .redirect(policy)
+        .referer(false)
         .timeout(Duration::from_millis(timeout))
         .connect_timeout(Duration::from_secs(10))
         .no_proxy()
@@ -271,27 +284,33 @@ pub(super) fn build_client(http: &HttpEgress) -> Result<reqwest::Client, String>
         .map_err(|error| format!("egress client: {error}"))
 }
 
-/// Same scheme, host and port, and a path at or under the base path.
-fn within_base(url: &reqwest::Url, base: &reqwest::Url) -> bool {
+/// Same scheme, host and port, no userinfo, and a path at or under the base path.
+pub(super) fn within_base(url: &reqwest::Url, base: &reqwest::Url) -> bool {
     let prefix = base.path().trim_end_matches('/');
     url.scheme() == base.scheme()
         && url.host_str() == base.host_str()
         && url.port_or_known_default() == base.port_or_known_default()
+        && url.username().is_empty()
+        && url.password().is_none()
         && (prefix.is_empty() || url.path() == prefix || url.path().starts_with(&format!("{prefix}/")))
 }
 
-/// `base` + `path` + `query`; any path that could leave the base (dot segments, encoded slashes, authority) is refused.
+/// `base` + `path` + `query`; any path that could leave the base (dot segments, encodings, authority) is refused.
 pub(super) fn endpoint_url(base: &str, path: &str, query: &[(String, String)]) -> Result<reqwest::Url, String> {
-    if path.len() > 2_048 {
-        return Err("path is over 2048 bytes".into());
+    if path.len() > MAX_PATH_BYTES {
+        return Err(format!("path is over {MAX_PATH_BYTES} bytes"));
+    }
+    if query.len() > MAX_QUERY_PAIRS {
+        return Err(format!("at most {MAX_QUERY_PAIRS} query parameters"));
     }
     let lower = path.to_ascii_lowercase();
+    // `..;/` is a dot segment to servlet containers, so a segment's part before `;` counts.
     let leaves = path.contains("://")
         || path.starts_with("//")
         || path.contains(['\\', '?', '#', '@'])
         || path.chars().any(|c| c.is_control() || c.is_whitespace())
-        || path.split('/').any(|segment| segment == "." || segment == "..")
-        || ["%2e", "%2f", "%5c"].iter().any(|encoded| lower.contains(encoded));
+        || path.split('/').any(|segment| matches!(segment.split(';').next(), Some(".") | Some("..")))
+        || REFUSED_ENCODINGS.iter().any(|encoded| lower.contains(encoded));
     if leaves {
         return Err(format!("path {path:?} leaves the endpoint base"));
     }
@@ -310,13 +329,16 @@ pub(super) fn endpoint_url(base: &str, path: &str, query: &[(String, String)]) -
             pairs.append_pair(name, value);
         }
     }
+    if url.as_str().len() > MAX_URL_BYTES {
+        return Err(format!("the url is over {MAX_URL_BYTES} bytes"));
+    }
     if !within_base(&url, &base) {
         return Err(format!("path {path:?} leaves the endpoint base"));
     }
     Ok(url)
 }
 
-/// Guest headers minus everything the host owns; a refused header refuses the call.
+/// Guest headers minus everything the host owns; a credential or host-owned header refuses the whole call.
 fn request_headers(headers: &[(String, String)], content_type: Option<&str>) -> Result<HeaderMap, String> {
     if headers.len() > MAX_REQUEST_HEADERS {
         return Err(format!("at most {MAX_REQUEST_HEADERS} headers"));
@@ -324,7 +346,7 @@ fn request_headers(headers: &[(String, String)], content_type: Option<&str>) -> 
     let mut map = HeaderMap::new();
     for (name, value) in headers {
         let lower = name.trim().to_ascii_lowercase();
-        if is_credential_header(&lower) || HOST_OWNED_HEADERS.contains(&lower.as_str()) || lower.starts_with("proxy-") {
+        if is_credential_header(&lower) || is_host_owned_header(&lower) {
             return Err(format!("header {name} is set by the host"));
         }
         let header_name = HeaderName::from_bytes(lower.as_bytes()).map_err(|_| format!("invalid header name {name}"))?;
@@ -335,6 +357,16 @@ fn request_headers(headers: &[(String, String)], content_type: Option<&str>) -> 
         map.insert(CONTENT_TYPE, HeaderValue::from_str(kind).map_err(|_| "invalid content type".to_string())?);
     }
     Ok(map)
+}
+
+/// Response headers a guest may see: never a credential (`set-cookie`, `authorization`, `x-fe-*`) or a framing header.
+pub(super) fn response_headers(headers: &HeaderMap) -> Vec<(String, String)> {
+    headers
+        .iter()
+        .filter(|(name, _)| !is_credential_header(name.as_str()) && !is_host_owned_header(name.as_str()))
+        .filter_map(|(name, value)| value.to_str().ok().map(|value| (name.as_str().to_string(), value.to_string())))
+        .take(MAX_REQUEST_HEADERS)
+        .collect()
 }
 
 fn reqwest_method(method: Method) -> reqwest::Method {
@@ -362,14 +394,9 @@ async fn perform(job: HttpJob) -> Result<IncomingResponse, HostError> {
     }
     let status = response.status().as_u16();
     let content_type = response.headers().get(CONTENT_TYPE).and_then(|value| value.to_str().ok()).map(str::to_string);
-    let headers = response
-        .headers()
-        .iter()
-        .filter(|(name, _)| !is_credential_header(name.as_str()) && !HOST_OWNED_HEADERS.contains(&name.as_str()))
-        .filter_map(|(name, value)| value.to_str().ok().map(|value| (name.as_str().to_string(), value.to_string())))
-        .take(MAX_REQUEST_HEADERS)
-        .collect();
+    let headers = response_headers(response.headers());
     let mut body = Vec::new();
+    // Counted as the bytes arrive (after any decompression), so the cap holds before buffering more.
     while let Some(chunk) = response.chunk().await.map_err(transport_error)? {
         if (body.len() + chunk.len()) as u64 > job.max_response {
             return Err(HostError::BudgetExceeded("response is over max_response_bytes".into()));

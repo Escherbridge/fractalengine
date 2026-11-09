@@ -1,10 +1,11 @@
-//! Websocket dial-out task: connect, deliver frames, send the guest's frames, redial with jittered backoff.
+//! Websocket dial-out task: connect, deliver frames, send the guest's frames, keep alive, redial with jittered backoff.
 
 use std::time::Duration;
 
 use fe_sdk::manifest_v2::{AuthSlot, WebsocketDialIngress};
 use futures_util::{SinkExt, StreamExt};
 use tokio::sync::{mpsc, watch};
+use tokio::time::{timeout, Instant};
 use tokio_tungstenite::tungstenite::client::IntoClientRequest;
 use tokio_tungstenite::tungstenite::http::{HeaderName, HeaderValue};
 use tokio_tungstenite::tungstenite::protocol::frame::coding::CloseCode;
@@ -13,16 +14,19 @@ use tokio_tungstenite::tungstenite::Message;
 
 use super::connect::{self, CONNECT_TIMEOUT};
 use super::ingress::frame_body;
-use super::{auth_header, backoff_ms, EndpointState, IngressFrame, Net, ReplyTo, ShapedCredential, Transport, WsFrame, WsOutbound};
+use super::{
+    auth_header, backoff_ms, host_rate, host_size, reconnect_bounds, until_stopped, EndpointState, IngressFrame, Net, ReplyTo,
+    ShapedCredential, Transport, WsFrame, WsOutbound, HOST_RATE_CEILING_HZ,
+};
 use crate::bus::rate::TokenBucket;
 use crate::bus::InstanceKey;
 
-const DEFAULT_RECONNECT_MIN_MS: u64 = 1_000;
-const DEFAULT_RECONNECT_MAX_MS: u64 = 60_000;
 /// tungstenite's own limit: frames between the declared cap and this are dropped and counted; larger ones drop the connection.
-const TRANSPORT_FRAME_CEILING: usize = 16 * 1024 * 1024;
+const TRANSPORT_FRAME_CEILING: usize = 4 * 1024 * 1024;
+/// Ping period; a connection that sends nothing (not even a pong) for two periods is dropped and redialled.
+const KEEP_ALIVE: Duration = Duration::from_secs(30);
 
-/// A `websocket-dial` endpoint as the task needs it.
+/// A `websocket-dial` endpoint as the task needs it, host ceilings applied.
 pub(super) struct DialConfig {
     endpoint: String,
     url: String,
@@ -34,20 +38,17 @@ pub(super) struct DialConfig {
 }
 
 impl DialConfig {
-    /// From the manifest declaration (`reconnect_ms` defaults to 1-60 s).
+    /// From the manifest declaration (`reconnect_ms` defaults to 1-60 s, clamped to 0.25-600 s).
     pub(super) fn from_manifest(dial: &WebsocketDialIngress) -> Self {
-        let (min, max) = dial
-            .reconnect_ms
-            .as_ref()
-            .map_or((DEFAULT_RECONNECT_MIN_MS, DEFAULT_RECONNECT_MAX_MS), |reconnect| (reconnect.min, reconnect.max));
+        let (reconnect_min_ms, reconnect_max_ms) = reconnect_bounds(dial.reconnect_ms.as_ref());
         Self {
             endpoint: dial.id.clone(),
             url: dial.url.clone(),
-            max_frame_bytes: usize::try_from(dial.max_frame_bytes).unwrap_or(usize::MAX),
-            rate_hz: dial.rate_hz,
+            max_frame_bytes: host_size(dial.max_frame_bytes),
+            rate_hz: host_rate(dial.rate_hz, HOST_RATE_CEILING_HZ),
             auth: dial.auth.clone(),
-            reconnect_min_ms: min.max(1),
-            reconnect_max_ms: max.max(min),
+            reconnect_min_ms,
+            reconnect_max_ms,
         }
     }
 }
@@ -71,7 +72,8 @@ pub(super) async fn run(
         if *stop.borrow() {
             return;
         }
-        match net.credential(&config.auth) {
+        // Re-read on every dial, so an operator filling the slot needs no restart.
+        match net.credential(config.auth.as_ref()) {
             Err(state) => net.set_endpoint_state(&key, generation, &config.endpoint, state),
             Ok(credential) => match session(&net, &key, generation, &config, credential, &mut outbound, &mut stop, &mut attempt).await {
                 Ended::Stopped => return,
@@ -80,9 +82,8 @@ pub(super) async fn run(
         }
         attempt = attempt.saturating_add(1);
         let wait = backoff_ms(attempt, config.reconnect_min_ms, config.reconnect_max_ms);
-        tokio::select! {
-            _ = tokio::time::sleep(Duration::from_millis(wait)) => {}
-            _ = stop.changed() => return,
+        if until_stopped(&mut stop, tokio::time::sleep(Duration::from_millis(wait))).await.is_none() {
+            return;
         }
     }
 }
@@ -119,60 +120,90 @@ async fn session(
             _ => return Ended::Dropped("credential is not a valid header".into()),
         }
     }
-    let stream = match connect::connect(&target).await {
-        Ok(stream) => stream,
-        Err(error) => return Ended::Dropped(error),
+    let stream = match until_stopped(stop, connect::connect(&target)).await {
+        None => return Ended::Stopped,
+        Some(Ok(stream)) => stream,
+        Some(Err(error)) => return Ended::Dropped(error),
     };
     let limit = config.max_frame_bytes.saturating_mul(4).clamp(64 * 1024, TRANSPORT_FRAME_CEILING);
     let ws_config = WebSocketConfig::default().max_message_size(Some(limit)).max_frame_size(Some(limit));
-    let handshake = tokio::time::timeout(CONNECT_TIMEOUT, tokio_tungstenite::client_async_with_config(request, stream, Some(ws_config))).await;
-    let mut socket = match handshake {
-        Ok(Ok((socket, _response))) => socket,
-        Ok(Err(error)) => return Ended::Dropped(format!("websocket handshake failed: {error}")),
-        Err(_) => return Ended::Dropped("websocket handshake timed out".into()),
+    let handshake = timeout(CONNECT_TIMEOUT, tokio_tungstenite::client_async_with_config(request, stream, Some(ws_config)));
+    let mut socket = match until_stopped(stop, handshake).await {
+        None => return Ended::Stopped,
+        Some(Ok(Ok((socket, _response)))) => socket,
+        Some(Ok(Err(error))) => return Ended::Dropped(format!("websocket handshake failed: {error}")),
+        Some(Err(_)) => return Ended::Dropped("websocket handshake timed out".into()),
     };
+    // A task that outlived a re-registration gets None here and never touches the new instance.
     let Some(connection) = net.dial_opened(key, generation, &config.endpoint) else {
-        let _ = socket.close(None).await;
+        let _ = timeout(CONNECT_TIMEOUT, socket.close(None)).await;
         return Ended::Stopped;
     };
     *attempt = 0;
     let mut bucket = TokenBucket::new(config.rate_hz, net.now());
+    let mut keep_alive = tokio::time::interval_at(Instant::now() + KEEP_ALIVE, KEEP_ALIVE);
+    let mut last_heard = Instant::now();
     let ended = loop {
         tokio::select! {
             _ = stop.changed() => {
-                let _ = socket.close(None).await;
+                let _ = timeout(CONNECT_TIMEOUT, socket.close(None)).await;
                 break Ended::Stopped;
             }
-            message = socket.next() => match message {
-                Some(Ok(Message::Text(text))) => deliver(net, key, generation, config, connection, WsFrame::Text(text.as_str().to_string()), &mut bucket),
-                Some(Ok(Message::Binary(bytes))) => deliver(net, key, generation, config, connection, WsFrame::Binary(bytes.to_vec()), &mut bucket),
-                Some(Ok(Message::Close(_))) | None => break Ended::Dropped("closed by the server".into()),
-                Some(Ok(_)) => {}
-                Some(Err(error)) => break Ended::Dropped(error.to_string()),
-            },
+            message = socket.next() => {
+                last_heard = Instant::now();
+                match message {
+                    Some(Ok(Message::Text(text))) => deliver(net, key, generation, config, connection, WsFrame::Text(text.as_str().to_string()), &mut bucket),
+                    Some(Ok(Message::Binary(bytes))) => deliver(net, key, generation, config, connection, WsFrame::Binary(bytes.to_vec()), &mut bucket),
+                    Some(Ok(Message::Close(_))) | None => break Ended::Dropped("closed by the server".into()),
+                    // Pings are answered by tungstenite; pongs only refresh `last_heard`.
+                    Some(Ok(_)) => {}
+                    Some(Err(error)) => break Ended::Dropped(error.to_string()),
+                }
+            }
             outgoing = outbound.recv() => match outgoing {
                 Some(WsOutbound::Frame(frame)) => {
                     let message = match frame {
                         WsFrame::Text(text) => Message::text(text),
                         WsFrame::Binary(bytes) => Message::binary(bytes),
                     };
-                    if let Err(error) = socket.send(message).await {
-                        break Ended::Dropped(error.to_string());
+                    if let Err(reason) = bounded_send(&mut socket, message).await {
+                        break Ended::Dropped(reason);
                     }
                 }
                 Some(WsOutbound::Close { code, reason }) => {
-                    let _ = socket.close(Some(CloseFrame { code: CloseCode::from(code), reason: reason.into() })).await;
+                    let frame = CloseFrame { code: CloseCode::from(code), reason: reason.into() };
+                    let _ = timeout(CONNECT_TIMEOUT, socket.close(Some(frame))).await;
                     break Ended::Dropped("closed by the extension".into());
                 }
                 None => {
-                    let _ = socket.close(None).await;
+                    let _ = timeout(CONNECT_TIMEOUT, socket.close(None)).await;
                     break Ended::Stopped;
                 }
             },
+            _ = keep_alive.tick() => {
+                if last_heard.elapsed() >= KEEP_ALIVE * 2 {
+                    break Ended::Dropped("keep-alive timed out".into());
+                }
+                if let Err(reason) = bounded_send(&mut socket, Message::Ping(Default::default())).await {
+                    break Ended::Dropped(reason);
+                }
+            }
         }
     };
     net.dial_closed(key, generation, &config.endpoint, connection);
     ended
+}
+
+/// One send that a stalled server cannot hold forever.
+async fn bounded_send<S>(socket: &mut tokio_tungstenite::WebSocketStream<S>, message: Message) -> Result<(), String>
+where
+    S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin,
+{
+    match timeout(CONNECT_TIMEOUT, socket.send(message)).await {
+        Ok(Ok(())) => Ok(()),
+        Ok(Err(error)) => Err(error.to_string()),
+        Err(_) => Err("send timed out".into()),
+    }
 }
 
 /// Size and rate checks, then the frame goes to the guest's inbox; replies return on this connection.
@@ -200,5 +231,6 @@ fn deliver(net: &Net, key: &InstanceKey, generation: u64, config: &DialConfig, c
         body,
         received_at_ms: net.now(),
     };
+    // A full inbox is counted inside `push`; a stale generation is dropped silently.
     net.deliver_frame(key, generation, frame, ReplyTo::Dialed(config.endpoint.clone()));
 }
