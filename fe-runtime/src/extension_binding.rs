@@ -101,7 +101,7 @@ impl BindingRecord {
         }
         match self.mode {
             BindingMode::Extension => {
-                if self.package_id.as_deref().map_or(true, str::is_empty) {
+                if self.package_id.as_deref().is_none_or(str::is_empty) {
                     return Err(BindingCodecError::PackageRequired);
                 }
             }
