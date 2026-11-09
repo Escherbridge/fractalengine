@@ -39,6 +39,15 @@ Ratified in the user grill on 2026-11-07. Do not re-litigate (`.omc/state/bus/SE
 
 <!-- Binding; maintained by the orchestrating session (P2P-QA). Dated bullets, newest first. -->
 
+- 2026-11-09 06:30 (USER DECISIONS, binding) — **Extension administration is a GUI surface, optionally
+  exposed through a CLI — not REST.** install / consent / bind (acceptance) / enable / update / unbind /
+  uninstall stay refused on REST and MCP for every caller (plugin_bridge.rs behaviour stands); governance.md
+  §Local identity and extensions-ui.md are corrected to say so. A CLI (`fe-ext admin …`) may drive the same
+  operations only through a LOCAL channel to the running app (named pipe / Unix socket bound to the OS user,
+  never the network API) and every capability grant still needs the GUI consent confirmation; turn 3 designs
+  it. The three ext sim scenarios move to the GUI surface (fe.py / ui-tree) or the CLI, not REST. **No test
+  batches run until all work is verified complete** (turn 3 → refine check → merge review); cargo-deny is
+  triaged cheaply (lockfile-only bumps + documented ignores).
 - 2026-11-09 03:00 (orchestrator fractalengine-71, mandatory for R-TOOL) — the editor's static checker
   (Pyright) reports real runtime errors in the sim harness of this tree: tools/qa/sim/loopback.py uses
   `KEY_ID` without defining or importing it (lines ~50, 58, 375, 379, 412, 424 → NameError at runtime);
