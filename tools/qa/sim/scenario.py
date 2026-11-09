@@ -14,17 +14,19 @@ SEARCH_DIRS = (os.path.join(REPO_ROOT, "qa", "sim", "scenarios"), os.path.join(H
 VIAS = {
     "rest": {"request", "create_fractal", "create_petal", "create_node", "set_transform", "set_property",
              "delete_property", "delete_node", "upsert_group", "delete_group", "upload_asset", "query",
-             "lookup_node", "lookup_petal", "lookup_group", "ingest_readings"},
+             "lookup_node", "lookup_petal", "lookup_group", "ingest_readings",
+             "upload_bundle", "create_repository_node", "portal_update_bundle", "portal_slot", "portal_observe",
+             "portal_ipc_stats", "portal_admit", "portal_killswitch", "portal_ipc_post", "regrant_role"},
     "mcp": None,  # any MCP tool name; args are the tool arguments
     "gui": {"click", "click_until", "type", "key", "scroll", "scroll_until", "wait_for", "click_at"},
     "host": {"restart", "stop_peer", "sleep", "wait_role", "fingerprint"},
     "macro": {"place_grid", "drone_flight", "freeplay"},
 }
 PROBES = ("node", "transform", "properties", "hierarchy", "groups", "terrain", "role", "nav", "ui",
-          "asset_blob", "query", "timeseries", "get", "alive")
+          "asset_blob", "query", "timeseries", "get", "alive", "portal")
 CADENCE_KEYS = {"rest_ms": (250, 60000), "hierarchy_ms": (2000, 600000), "ui_ms": (500, 60000),
-                "query_ms": (1000, 600000), "host_ms": (1000, 60000)}
-DEFAULT_CADENCE = {"rest_ms": 500, "hierarchy_ms": 2000, "ui_ms": 1000, "query_ms": 5000, "host_ms": 2000}
+                "query_ms": (1000, 600000), "host_ms": (1000, 60000), "portal_ms": (1000, 600000)}
+DEFAULT_CADENCE = {"rest_ms": 500, "hierarchy_ms": 2000, "ui_ms": 1000, "query_ms": 5000, "host_ms": 2000, "portal_ms": 5000}
 NAMESPACES = {"fixture", "peers", "assets", "run"}
 LOOP_VARS = {"i", "tick"}
 SAFE_ID = re.compile(r"^[A-Za-z][A-Za-z0-9_]{0,47}$")

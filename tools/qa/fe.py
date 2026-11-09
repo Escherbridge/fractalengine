@@ -563,6 +563,20 @@ def command_portal_fixture(run, args):
     emit(receipt)
 
 
+def command_portal(run, args):
+    """Fixed bundle operations over /api/v1/debug/portal/* (tools/qa/portal/client.py)."""
+    from portal.client import PortalError, run_command
+    _verse, token, _camera = resolve_token(run, args.verse)
+
+    def transport(method, path, body=None, timeout=8.0):
+        return call(run, method, path, token, body, timeout=timeout)
+
+    try:
+        run_command(args.operation, getattr(args, "slot", None), transport, emit)
+    except PortalError as error:
+        raise Refused(0, error.code, error.message) from error
+
+
 def batch_view_change(run, verse, refusal):
     """The view a scope-denied input batch left behind (QA-0163 b), or None when the denial is a plain one.
 
@@ -1061,6 +1075,12 @@ def build_parser():
     portal_capture = portal_ops.add_parser("capture")
     portal_capture.add_argument("--out", help="new .png beneath the selected run in an existing directory")
     portal.set_defaults(func=command_portal_fixture)
+    bundle = sub.add_parser("portal", help="fixed bundle page operations: observe, slot N, ipc-stats")
+    bundle_ops = bundle.add_subparsers(dest="operation", required=True)
+    bundle_ops.add_parser("observe")
+    bundle_ops.add_parser("ipc-stats")
+    bundle_ops.add_parser("slot").add_argument("slot", type=int, help="data-fe-slot number 1..32")
+    bundle.set_defaults(func=command_portal)
     answer = sub.add_parser("dialog-answer", help="queue a run-confined native dialog answer")
     answer.add_argument("path", nargs="?")
     answer.add_argument("--cancel", action="store_true")
@@ -1198,7 +1218,7 @@ def main(argv=None):
         if getattr(args, "recipient_peer", None):
             args.recipient_run = peer_run_dir(args.recipient_peer, args.peers)
         run = load_run(args.run)
-        observe_logs = args.command in {"move","click","drag","key","type","scroll","dialog-answer","window","portal-fixture"}
+        observe_logs = args.command in {"move","click","drag","key","type","scroll","dialog-answer","window","portal-fixture","portal"}
         watermark = log_watermark(run, args.verse) if observe_logs else None
         try:
             args.func(run, args)

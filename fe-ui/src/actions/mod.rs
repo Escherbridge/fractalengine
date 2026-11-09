@@ -45,6 +45,10 @@ pub enum UiAction {
     OpenPortal {
         url: String,
     },
+    /// Open the selected repository node's portal bundle (admission is decided by the host).
+    OpenBundle {
+        node_id: String,
+    },
     /// Close the portal webview (replaces PortalPanelState.close).
     ClosePortal,
     /// Navigate back in portal history (replaces PortalPanelState.go_back).
@@ -1325,6 +1329,11 @@ pub(crate) fn process_ui_actions(
             UiAction::OpenPortal { url } => {
                 if open_portal(&node_mgr, &mut ui_mgr, &url, now_secs).is_some() {
                     browser_commands.write(BrowserCommand::Navigate { url });
+                }
+            }
+            UiAction::OpenBundle { node_id } => {
+                if let Some(node_id) = portal::open_bundle(&mut ui_mgr, &node_mgr, &node_id, now_secs) {
+                    browser_commands.write(BrowserCommand::OpenBundle { node_id });
                 }
             }
             UiAction::ClosePortal => {

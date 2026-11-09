@@ -11,6 +11,7 @@ import time
 import urllib.parse
 from concurrent.futures import ThreadPoolExecutor
 
+import portal_probe
 import predicates
 from client import Outcome, extract_id
 from runtime import small
@@ -26,6 +27,10 @@ REF_NAME = re.compile(r"\$\{?([A-Za-z_][A-Za-z0-9_]*)")
 
 def digest_of(value):
     return hashlib.sha256(json.dumps(value, sort_keys=True, default=str).encode("utf-8")).hexdigest()[:16]
+
+
+PORTAL_OPS = {"upload_bundle", "create_repository_node", "portal_update_bundle", "portal_slot", "portal_observe",
+              "portal_ipc_stats", "portal_admit", "portal_killswitch", "portal_ipc_post", "regrant_role"}
 
 
 def new_ulid(rng=None):
@@ -449,6 +454,8 @@ class Driver:
             return client.rest("DELETE", "/api/v1/petals/%s/visibility-groups/%s" % (args["petal_id"], args["group_id"]))
         if op == "upload_asset":
             return client.upload_multipart(args["petal_id"], args["path"], args.get("name"))
+        if op in PORTAL_OPS:
+            return self.portal_op(client, op, args, verse)
         if op == "query":
             return client.rest("POST", "/api/v1/query", {"sql": args["sql"]})
         if op == "ingest_readings":
@@ -521,6 +528,44 @@ class Driver:
         if op == "fingerprint":
             return Outcome(status=200, ok=True, refused=False, data=self.fingerprint(args.get("label", "mid")))
         raise ValueError("unknown host op " + op)
+
+    # -- portal ops (tools/qa/portal/AGENTS.md section sim-contract) --------------------------------
+    def portal_op(self, client, op, args, verse):
+        """Portal rest ops; admission, kill switch, IPC posts and re-grant have no API route yet and refuse by name."""
+        if op == "upload_bundle":
+            out = portal_probe.upload_bundle(client, args)
+            data = out.get("data")
+            if out.ok and isinstance(data, dict):
+                data.setdefault("id", data.get("asset_id"))  # scenarios bind data.id like upload_asset
+                if data.get("package_id") and data.get("asset_id"):
+                    assets = getattr(self.ctx, "portal_assets", None)
+                    if assets is None:
+                        assets = self.ctx.portal_assets = {}
+                    assets[data["package_id"]] = data["asset_id"]
+            return out
+        if op == "create_repository_node":
+            created = client.rest("POST", "/api/v1/verses/%s/fractals/%s/petals/%s/nodes" % (
+                verse, args["fractal_id"], args["petal_id"]),
+                {"name": args["name"], "position": args.get("position", [0, 0, 0])})
+            node_id = extract_id(created.get("data")) if created.ok else None
+            if not node_id:
+                return created
+            for key, value in (("node_kind", "repository"), ("portal.bundle_asset", args["bundle_asset"])):
+                written = client.rest("PATCH", "/api/v1/nodes/%s/properties" % node_id, {"key": key, "value": value})
+                if not written.ok:
+                    return written
+            return created
+        if op == "portal_update_bundle":
+            return client.rest("PATCH", "/api/v1/nodes/%s/properties" % args["repository_node_id"],
+                               {"key": "portal.bundle_asset", "value": args["bundle_asset"]})
+        if op in ("portal_observe", "portal_ipc_stats"):
+            route = "observe" if op == "portal_observe" else "ipc-stats"
+            return client.send("GET", portal_probe.DEBUG_BASE + route, None, client.debug_token(), 8.0)
+        if op == "portal_slot":
+            return client.send("POST", portal_probe.DEBUG_BASE + "action", {"slot": int(args["slot"])},
+                               client.debug_token(), 8.0)
+        return Outcome(status=0, ok=False, refused=True, code="portal_op_unwired",
+                       error="%s has no API route in this build (admission and re-grant seams are not wired)" % op)
 
     # -- macros ----------------------------------------------------------------------------------
     def macro(self, client, op, args, sid, action_id, action):

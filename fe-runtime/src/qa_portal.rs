@@ -16,6 +16,12 @@ pub enum FixtureOp {
     ActivateSecondLink,
     ActivateRefusedThirdLink,
     Capture,
+    /// Bundle page: title, probe digest and named probe texts.
+    PortalObserve,
+    /// Bundle page: activate `data-fe-slot` number 1..=32.
+    PortalSlot(u8),
+    /// Host IPC outcome counters.
+    PortalIpcStats,
 }
 
 #[derive(Clone, Debug)]
