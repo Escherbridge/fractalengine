@@ -1,6 +1,7 @@
 //! fe-plugin — plugin host: [`PluginHostPlugin`] spawns the plugin runtime thread (thread 7).
 //! Thread/channel architecture: src/AGENTS.md §architecture.
 
+pub mod bus;
 pub mod capability;
 pub mod context;
 pub mod host_env;
@@ -218,6 +219,10 @@ pub fn plugin_host_allowed_from_env() -> bool {
 #[derive(Resource, Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct PackageAdmission(pub bool);
 
+/// Bevy resource: the host's integration bus broker (cloneable; shared with fe-api and the bridge).
+#[derive(Resource, Clone)]
+pub struct BusHandle(pub bus::Bus);
+
 /// Bevy plugin that initializes the plugin host infrastructure.
 ///
 /// Spawns a dedicated thread (thread 7) with its own Tokio runtime for
@@ -237,6 +242,14 @@ impl Plugin for PluginHostPlugin {
             .unwrap_or_default()
             .with_contexts(contexts.clone());
         app.insert_resource(ticks.clone());
+        // The integration bus (src/bus/AGENTS.md): E7 pre-inserts a BusHandle with real sources; otherwise fail-closed.
+        let bus = app
+            .world()
+            .get_resource::<BusHandle>()
+            .cloned()
+            .unwrap_or_else(|| BusHandle(bus::Bus::new(ticks.clock(), bus::BusSources::fail_closed(), String::new())));
+        app.insert_resource(bus.clone());
+        let worker_bus = bus.0;
         // Create crossbeam channels for plugin <-> engine comms
         let (cmd_tx, cmd_rx) = crossbeam::channel::bounded::<PluginCommand>(256);
         let (result_tx, result_rx) = crossbeam::channel::bounded::<PluginResult>(256);
@@ -256,7 +269,7 @@ impl Plugin for PluginHostPlugin {
 
                 rt.block_on(async move {
                     tracing::info!("Plugin host thread started");
-                    plugin_thread_loop(cmd_rx, result_tx,contexts,worker_stop,ticks).await;
+                    plugin_thread_loop(cmd_rx, result_tx,contexts,worker_stop,ticks,worker_bus).await;
                     tracing::info!("Plugin host thread stopped");
                 });
             })
@@ -280,7 +293,7 @@ impl Plugin for PluginHostPlugin {
 
 /// The plugin thread's main loop. Receives commands from Bevy and dispatches
 /// them, sending results back.
-async fn plugin_thread_loop(cmd_rx: Receiver<PluginCommand>, result_tx: Sender<PluginResult>,contexts:scene_host::PluginContexts,stop:fe_runtime::service_lifecycle::StopSignal,ticks:tick::TickHost) {
+async fn plugin_thread_loop(cmd_rx: Receiver<PluginCommand>, result_tx: Sender<PluginResult>,contexts:scene_host::PluginContexts,stop:fe_runtime::service_lifecycle::StopSignal,ticks:tick::TickHost,bus:bus::Bus) {
     loop {
         if contexts.is_closed() || stop.is_requested() {break;}
         // Block no longer than the earliest tick deadline (src/AGENTS.md §tick-scheduler).
@@ -296,6 +309,8 @@ async fn plugin_thread_loop(cmd_rx: Receiver<PluginCommand>, result_tx: Sender<P
             }
         }
         ticks.poll();
+        // One broker turn: settle runs/snapshots, start due runs, expire calls. Per-instance `dispatch` waits on E1's BusHooks.
+        bus.poll();
     }
     ticks.stop_all(tick::DeactivateReason::HostStopping);
 }
