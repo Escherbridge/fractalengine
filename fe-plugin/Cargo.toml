@@ -23,6 +23,11 @@ tracing = { workspace = true }
 bevy = { workspace = true }
 thiserror = { workspace = true }
 ulid = { workspace = true }
+ed25519-dalek = { workspace = true }
+hex = "0.4"
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "json"] }
+# `entitlement` carries EntitlementVerifier (landed by hexon_entitlements_20261031).
+fe-format = { path = "../fe-format", default-features = false, features = ["entitlement"] }
 
 [dev-dependencies]
 fe-plugin-test = { path = "../fe-plugin-test" }

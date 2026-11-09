@@ -7,6 +7,7 @@ use crossbeam::channel::Sender;
 
 use crate::capability::{CapabilityManifest, CapabilityToken};
 use crate::package::{payload_hash, verify_package, PackageError, SignatureEntry, UnsignedPolicy};
+use crate::registry_client::{EntitlementContext, RegistryClient, RegistryInstallError};
 use crate::trust_roots::{RevocationSet, TrustRoots};
 use crate::registry::{PluginRegistry, PluginState, PluginTier};
 use crate::wasm::aot::AotCache;
@@ -152,6 +153,28 @@ impl PluginManager {
 
         tracing::info!(plugin = %plugin_id, "Plugin installed successfully");
         Ok(())
+    }
+
+    /// Fetch `uri` over registry protocol v1, then install through the same signature + revocation gate; returns the plugin id.
+    pub async fn install_from_registry(
+        &mut self,
+        client: &RegistryClient,
+        uri: &str,
+        entitlement: Option<EntitlementContext<'_>>,
+    ) -> Result<String, LifecycleError> {
+        let package = client.fetch_package(uri, entitlement).await?;
+        let manifest_text = std::str::from_utf8(&package.manifest_bytes)
+            .map_err(|e| LifecycleError::Registry(RegistryInstallError::Malformed(e.to_string())))?;
+        let manifest = CapabilityManifest::from_json(manifest_text)
+            .map_err(|e| LifecycleError::Registry(RegistryInstallError::Malformed(e.to_string())))?;
+        self.install_plugin(
+            &package.package_id,
+            &package.payload,
+            &package.manifest_bytes,
+            &package.signatures,
+            &manifest,
+        )?;
+        Ok(package.package_id)
     }
 
     /// Attach the same admitted instance registry installed by PluginHostPlugin.
@@ -410,6 +433,9 @@ pub enum LifecycleError {
 
     #[error("Package verification failed: {0}")]
     Package(#[from] PackageError),
+
+    #[error("Registry install failed: {0}")]
+    Registry(#[from] RegistryInstallError),
 
     #[error("AOT compilation error: {0}")]
     AotCompileError(String),
