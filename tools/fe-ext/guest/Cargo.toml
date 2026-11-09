@@ -1,0 +1,14 @@
+[package]
+name = "fe-ext-guest"
+version = "0.1.0"
+edition = "2021"
+license = "Apache-2.0"
+description = "Rust guest SDK for FractalEngine extensions: generated WIT 2.0 bindings plus write-window, readings and route helpers"
+publish = false
+
+[dependencies]
+wit-bindgen = "0.46"
+serde_json = "1"
+
+# Standalone: built for wasm32-wasip2 by `fe-ext build`, never part of the host workspace.
+[workspace]

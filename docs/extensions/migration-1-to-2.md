@@ -2,7 +2,7 @@
 type: guide
 title: Migrating a 1.0 plugin to fractalengine:plugin@2.0.0
 track: extension_platform_20261107
-status: draft (P3.4, slice E12D; the 1.0 contract is retired by P1.1 / slice E1)
+status: draft (P3.4, slice E12D, reviewed by G3; the 1.0 contract is retired by P1.1 / slice E1)
 ---
 
 # Migration: 1.0 to 2.0
@@ -82,12 +82,15 @@ Each 2.0 grant is per binding: one petal, and one installation. The 1.0 `verse_s
 
 ## Port checklist
 
-1. Write `plugin/extension.json` from the old capability list, using the table above.
+1. Start with `fe-ext new general <name>`, then write its `extension.json` (packed as `plugin/extension.json`)
+   from the old capability list, using the table above.
 2. Replace each `node-api` / `query-api` call with its `txn`, `scene` or `kv` equivalent. Expect every write to be deferred to the next tick.
 3. Replace `query-select` SQL with a named `host/query` consume entry. If the SQL was not a single SELECT, it cannot be ported as-is.
 4. Implement `on-tick(info)` and set `tick.cadence_ms` to the rate you actually need. Nothing runs without a `tick` block.
 5. Replace `on-scene-change` with a `host/node-changes` subscription, and handle `resync-required` by re-reading the petal.
-6. Run `fe-ext validate`, then `fe-ext run --sandbox` on your old fixtures, and compare outcomes rather than call counts.
+6. Run `fe-ext validate --project <dir>`, then `fe-ext run --sandbox --fixture <file>` with your old scene
+   recreated as a sandbox fixture (`Fixture` in [`tools/fe-ext/src/sandbox.rs`](../../tools/fe-ext/src/sandbox.rs)),
+   and compare outcomes (final nodes and readings in the trace) rather than call counts.
 
 ## Sharpen
 

@@ -2,7 +2,7 @@
 type: guide
 title: Extensions for FractalEngine
 track: extension_platform_20261107
-status: draft (P3.4, slice E12D; links to examples and tools are checked in P6.5)
+status: draft (P3.4, slice E12D, reviewed by G3; links to examples and tools are checked in P6.5)
 ---
 
 # Extensions for FractalEngine
@@ -33,17 +33,25 @@ Reference contracts (normative; the guides above explain them, they do not repla
 
 | `kind` | Use it for | Example |
 |---|---|---|
-| `simulation` | Fleets of movers and sensors driven by a config | [`fleet-sim.extension.json`](../../fe-sdk/schema/examples/fleet-sim.extension.json) |
-| `device-adapter` | HTTP, websocket or MQTT devices turned into readings | [`device-adapter.extension.json`](../../fe-sdk/schema/examples/device-adapter.extension.json) |
-| `bi-connector` | Pushing query results to an external analytics target | [`bi-push.extension.json`](../../fe-sdk/schema/examples/bi-push.extension.json) |
-| `general` | Anything else that uses the same grants | (no first-party example) |
+| `simulation` | Fleets of movers and sensors driven by a config | [`extensions/fleet-sim`](../../extensions/fleet-sim) |
+| `device-adapter` | HTTP, websocket or MQTT devices turned into readings | [`extensions/device-adapter`](../../extensions/device-adapter) |
+| `bi-connector` | Pushing query results to an external analytics target | [`extensions/bi-push`](../../extensions/bi-push) |
+| `general` | Anything else that uses the same grants | `fe-ext new general <name>` ([`tools/fe-ext/src/new.rs`](../../tools/fe-ext/src/new.rs)) |
 
-`web-bundle` is reserved for the portal track and is refused for extensions.
+The fleet-sim and device-adapter `extension.json` files are byte copies of the schema examples of
+the same name in [`fe-sdk/schema/examples/`](../../fe-sdk/schema/examples). `web-bundle` is reserved for the portal
+track and is refused for extensions (`reserved-kind`).
+
+## Tools
+
+- [`tools/fe-ext`](../../tools/fe-ext): the authoring CLI (`new`, `build`, `validate`, `pack`, `sign`,
+  `countersign`, `inspect`, `run --sandbox`, `keygen`). Design notes: [`tools/fe-ext/AGENTS.md`](../../tools/fe-ext/AGENTS.md).
+- [`tools/fe-ext/guest`](../../tools/fe-ext/guest/src/lib.rs): the Rust guest SDK (generated 2.0 bindings, the
+  `Extension` trait and `extension!` macro, write-window, readings-batching and snap-to-alert helpers).
 
 ## Status
 
 - The contracts above are drafts. The host binds WIT 2.0 only after the build gate opens (D-X2).
-- The `fe-ext` CLI and the guest SDK ([R25](../../tools/fe-ext)) arrive in P3. Commands shown in the
-  authoring guide are the planned surface until then.
-- The first-party examples land with slice E12X; until then the links above point at the schema
-  examples that exist today.
+- The CLI, the guest SDK and the examples are written but not yet built or run (code-first swarm,
+  2026-11-08); J8 (`cargo test -p fe-ext -- j8`) is their journey once the build gate opens.
+- `--lab` (multi-peer runs through fe-sim) arrives with the first-party simulation package (R30).

@@ -109,3 +109,50 @@ reruns R11 (fe-plugin bus/tick/wasm), R9 (`fe-api/tests/extensions_api_test.rs`)
 - G1-C10 HANDED-OFF E10 — a manifest without a `tick` block gets no `TickScheduler`, hence no bus seat: pure bus/ingress extensions have no host path yet; E10 must also call `Bus::forget` and `TickHost::forget` at uninstall.
 - G1-C11 FIXED `fe-api/src/extensions.rs` gate — the remote rate gate keyed delegated tokens by the node DID, which `admit_remote` always admits; it now keys them `sub#jti`.
 - G1-C12 KEPT product fit and leak discipline — P1 still serves `conductor/product.md` (readings through the door, guarded `host/query` for BI egress, one flush per tick holds in `TickScheduler::flush`); the forbidden-term grep over every line G1 added found no hits.
+
+## G3 — P3 authoring tools (2026-11-08, slice G3, over E12 `tools/fe-ext/**` (untracked, see C1), E12X `9de56ad8`, E12D `336c31c8`)
+
+Scope: `tools/fe-ext/**` (CLI, sandbox, J8, guest SDK), `extensions/{fleet-sim,device-adapter}/**`,
+`docs/extensions/{README,authoring-guide,cookbook,migration-1-to-2}.md`, read against spec R25-R27, plan P3.1-P3.4,
+the WIT 2.0 file, `docs/extensions/{manifest-v2,package-format,bus}.md`, the 20:20 credential steer and the real
+code every call lands in (fe-plugin component host, tick, context, net/ingress; fe-hexon package/publisher;
+fe-format signature; fe-sdk manifest_v2/plugin_host/path_geometry; fe-sim-model; fe-api rest.rs tracking).
+No build, parser or test run (directive 2026-11-08).
+
+**Phase verdict: PASS WITH FIXES (nothing builds until C1 and C3 land).** 30 verdict lines: 13 FIXED, 8 KEPT, 7 HANDED-OFF, 2 DEFERRED.
+
+### ADVOCATE (what authors and the next slices need)
+
+- G3-A1 FIXED `tools/fe-ext/tests/j8_cli.rs` — plan P3.3 says the examples are "covered by J8's run --sandbox on each example", but J8 never touched them; J8 now runs each built example twice (one fingerprint, byte-identical traces), checks the fixture outcomes, packs and inspects it.
+- G3-A2 FIXED `extensions/{fleet-sim,device-adapter}/tests/journey.rs` (deleted), their `Cargo.toml` — the journeys were unreachable by any batch filter (AGENTS.md test policy 2) and the `fe-ext` dev-dependency built the whole host stack (fe-plugin, wasmtime, bevy) into each example's own target dir with its own unlocked lock file (the 2026-11-08 disk-fill class); their assertions moved into J8 unchanged.
+- G3-A3 FIXED `tools/fe-ext/src/new.rs` — a scaffolded device-adapter could not run (`binding refused: a source class set needs the operator's pick`): the fixture now carries the manifest's first class; the sample `on_tick` stamps a key inside the manifest's own `<prefix>.*` scope, so simulation and device scaffolds commit instead of being refused silently.
+- G3-A4 FIXED `tools/fe-ext/src/inspect.rs` — `trusted_by` always named the publisher (verification accepts every signer), which reads as a trust verdict; inspect now prints `publisher_did` and the verified `countersigners`, and J8 asserts the reviewer DID.
+- G3-A5 FIXED `docs/extensions/authoring-guide.md` — the commands were not the CLI's (`validate extension/`, `pack` without `--key`, `sign` described as the first signature, no `new`/`build`/`keygen`); the §1 manifest lacked `name` and would fail `schema` (now the real general scaffold); "an empty list is refused" narrowed to scope lists (G0-C14).
+- G3-A6 FIXED `docs/extensions/cookbook.md` — every recipe now links the Rust code that does it; `kv` is per instance (G0-A10), forwarded credential headers cite V16 `credential-header`, the stale "SDK planned for P3.2" lines are gone.
+- G3-A7 FIXED `docs/extensions/README.md` — the Kinds table links `extensions/*` and the general scaffold, a Tools section names the CLI and guest SDK, and the status no longer says they are planned.
+- G3-A8 FIXED `docs/extensions/migration-1-to-2.md` — the port checklist uses the real CLI flags and the sandbox fixture format.
+- G3-A9 KEPT `tools/fe-ext/guest/src/lib.rs` — the `Extension` trait (every hook defaulted but `on_tick`) plus one `extension!` glue type exported `with_types_in $crate::bindings` is the wit-bindgen cross-crate pattern; signatures match the WIT exports.
+- G3-A10 KEPT `tools/fe-ext/guest/src/tracking.rs` — same four metrics, alert only strictly over the threshold, default 50 m, never cleared, as fe-api `rest.rs:2356-2402`; the threshold is the caller's because REST reads it from the node's `deviation_threshold_m`.
+- G3-A11 KEPT `extensions/*/extension.json` — byte copies of `fe-sdk/schema/examples/` (diff clean), so the J2 example rows and the shipped packages cannot drift.
+
+### CRITIC (defects, contract drift, build blockers)
+
+- G3-C1 HIGH HANDED-OFF orchestrator (`.gitignore`) — `/tools/*` with only a `!/tools/qa/` exception ignores all of `tools/fe-ext`: E12 never reached git (`git ls-files tools/fe-ext` is empty); add `!/tools/fe-ext/` before committing E12 and this gate's edits there.
+- G3-C2 HIGH FIXED `tools/fe-ext/src/new.rs:89-90` — `replace('\', "/")` is an unterminated char literal (the backslash was eaten in transit), so the crate could not compile; now `'\\'`.
+- G3-C3 HIGH HANDED-OFF orchestrator (root `Cargo.toml`) — `tools/fe-ext` is not a workspace member although its manifest inherits `edition`/`license`, so it and every scaffold that path-depends on it fail to load; add the member and `exclude` `tools/fe-ext/guest` plus the `extensions/*` guest crates.
+- G3-C4 HIGH HANDED-OFF E9 / G2 (`fe-hexon/src/package.rs:493`) — counter-signatures are checked with fe-hexon `signature::verify_manifest` over the RAW manifest bytes, but package-format.md §Signatures (and `fe-ext countersign`) sign `signing_bytes` with fe-format `sign_manifest`; every conforming counter-signature is refused `countersignature-mismatch`, and J8's countersign step fails until the verifier uses `fe_format::verify_manifest`. fe-ext keeps to the contract.
+- G3-C5 MEDIUM FIXED `tools/fe-ext/src/sandbox.rs` — fixture frames reached the guest unchecked: an undeclared endpoint, any header including `authorization` (steer 20:20), a wrong method, media type or size; `admit_ingress` now applies fe-plugin `net/ingress.rs`'s order and header stripping, and records host refusals as `host: <reason>`.
+- G3-C6 LOW FIXED `tools/fe-ext/src/sandbox.rs` — the binding's `source-class` was none for a single-class manifest while the token wrote as that class; it is now the token's class, as in production.
+- G3-C7 LOW FIXED `tools/fe-ext/src/main.rs` `build` — the artifact path assumed `<project>/target`, which a `CARGO_TARGET_DIR` or config `target-dir` moves (worktrees share one target dir); build now passes `--target-dir`.
+- G3-C8 LOW FIXED `tools/fe-ext/src/key.rs` — keygen checked `exists()` then wrote (a race) with default permissions on a signing seed; it now opens `create_new`, owner-only on Unix.
+- G3-C9 MEDIUM HANDED-OFF E2 / G1 (`fe-sdk/src/manifest_v2.rs`) — V16 `credential-header` exists only as the schema `not` rule; the Rust validator that `fe-ext validate` and REST install share has no refusal for it, so both accept `forward_headers: ["authorization"]` (host stripping still holds, and the sandbox now strips too).
+- G3-C10 MEDIUM HANDED-OFF orchestrator (`conductor/test-batches.md`) — J8's header says it is registered as the fe-ext batch, but there is no fe-ext row; add `cargo test -p fe-ext -- j8` plus `--manifest-path` rows for the guest SDK and example unit tests.
+- G3-C11 LOW HANDED-OFF E9 / G2 (`fe-hexon/src/publisher.rs`, `package.rs`) — `PluginHexonBuilder`, which `fe-ext pack` uses, still omits the `entries.json` package-format.md requires after G0-C1, and the verifier's closed member list would refuse it; both change together.
+- G3-C12 LOW HANDED-OFF E17 owner (`extensions/bi-push/`) — it copied the pattern A2 removed (`tests/journey.rs` + `fe-ext` dev-dependency); move its sandbox leg into J8 the same way.
+- G3-C13 KEPT `extensions/fleet-sim/src/lib.rs` `drive` — two installations on different peers can both drive the first tick before `fleet.driver` converges; acceptable in an example, and R30 (E14b) owns the real driver claim.
+- G3-C14 KEPT `extensions/device-adapter` §window — a node deleted between a frame and the flush refuses the whole window and its staged readings are not retried; documented, and R31 (E15) may filter anchors at tick time.
+- G3-C15 DEFERRED sandbox bus and egress feed (`NoBroker`) — R10's "Start fleet" and the device actuation cannot be exercised in the sandbox; trigger: a broker sandbox mode or P5's `--lab` (E14b).
+- G3-C16 DEFERRED R25 AC "installs on a dev host" — J8 stops at `pack` + `inspect`; trigger: the P6 scenario journeys install both packages over REST.
+- G3-C17 KEPT sandbox determinism — nodes sorted by id, properties through `BTreeMap`, created ids `sbx-NNNNNN`, `ManualClock`, WASI randomness seeded per activation, and the lock file has no serde_json `preserve_order` (no indexmap dependency).
+- G3-C18 KEPT leak discipline — the forbidden-term grep over every E12, E12X and E12D file and every G3 edit found no hits.
+- G3-C19 KEPT product fit — the tools serve `conductor/product.md`: device adapters feed the existing readings door, the sandbox runs the real host path, and no new SQL path appears.

@@ -7,13 +7,16 @@ Example simulation extension (`kind: simulation`, track extension_platform P3.3)
 ## Build and run
 
 Standalone crate (own `[workspace]`), built for `wasm32-wasip2` by `fe-ext build`, never a host workspace member.
-Needs `extensions/fleet-sim` in the root `Cargo.toml` `exclude` list (see the track findings).
+Root `Cargo.toml` lists it under `exclude` for clarity (see the track findings).
 
     fe-ext build --project extensions/fleet-sim
     fe-ext run --sandbox --project extensions/fleet-sim --fixture extensions/fleet-sim/fixtures/basic.json
-    cargo test --manifest-path extensions/fleet-sim/Cargo.toml          # unit (plan.rs) + tests/journey.rs
+    cargo test --manifest-path extensions/fleet-sim/Cargo.toml          # unit tests only (plan.rs)
 
-`tests/journey.rs` skips quietly when `dist/component.wasm` is absent. It is the fleet-sim leg of J8.
+The sandbox journey is the fleet-sim leg of J8 (`tools/fe-ext/tests/j8_cli.rs`, `cargo test -p fe-ext -- j8`): it runs
+once `dist/component.wasm` exists and checks the fixture outcomes below plus `pack` and `inspect`. It lives there, not
+in this crate, so the example never pulls the host stack (fe-plugin, wasmtime) into its own target directory and
+lock file, and so a batch filter reaches it (G3, 2026-11-08).
 
 ## §driver
 

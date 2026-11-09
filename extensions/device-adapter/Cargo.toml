@@ -13,8 +13,6 @@ crate-type = ["cdylib", "rlib"]
 fe-ext-guest = { path = "../../tools/fe-ext/guest" }
 serde_json = "1"
 
-[dev-dependencies]
-fe-ext = { path = "../../tools/fe-ext" }
-
+# The sandbox journey lives in J8 (tools/fe-ext/tests/j8_cli.rs), so this crate never builds the host stack.
 # Standalone: built for wasm32-wasip2 by `fe-ext build`, never part of the host workspace.
 [workspace]

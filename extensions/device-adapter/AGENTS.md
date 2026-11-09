@@ -6,12 +6,18 @@ frames in, readings and transforms out, MQTT actuation back. The manifest is a b
 
 ## Build and run
 
-Standalone crate (own `[workspace]`), built for `wasm32-wasip2` by `fe-ext build`. Needs
-`extensions/device-adapter` in the root `Cargo.toml` `exclude` list (see the track findings).
+Standalone crate (own `[workspace]`), built for `wasm32-wasip2` by `fe-ext build`. Root `Cargo.toml`
+lists it under `exclude` for clarity (see the track findings).
 
     fe-ext build --project extensions/device-adapter
     fe-ext run --sandbox --project extensions/device-adapter --fixture extensions/device-adapter/fixtures/basic.json
-    cargo test --manifest-path extensions/device-adapter/Cargo.toml     # unit (mapping.rs) + tests/journey.rs
+    cargo test --manifest-path extensions/device-adapter/Cargo.toml     # unit tests only (mapping.rs)
+
+The sandbox journey is the device-adapter leg of J8 (`tools/fe-ext/tests/j8_cli.rs`, `cargo test -p fe-ext -- j8`),
+for the same reasons as fleet-sim's (extensions/fleet-sim/AGENTS.md §build-and-run). The sandbox applies the host's
+ingress checks before the guest sees a frame: an undeclared endpoint or sub-path is 404, then method 405, size 413
+(websocket and mqtt: dropped), media type 415, and only the declared `forward_headers` minus credential headers
+arrive, as in fe-plugin `net/ingress.rs`.
 
 ## §frame
 
@@ -48,3 +54,5 @@ The `site-a` prefix is the `SITE` constant and must match the topic filters in `
 `fixtures/basic.json`: node `sensor-1` carries `device.id = dev-1`; five recorded frames cover each transport, a
 malformed value and an unknown device. Bus commands and egress completions are not fed by the sandbox yet
 (`NoBroker`), so actuation is covered by the manifest and by code review until the broker lands.
+J8 asserts: replies `[(1, 202), (2, -), (2, -), (3, 400), (3, 404)]`, four readings on `sensor-1`, the websocket
+pose `[12.5, 0, -4]` and `device.last_seen = 2001000`.

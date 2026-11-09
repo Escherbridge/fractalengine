@@ -2,41 +2,60 @@
 type: guide
 title: Extension authoring guide
 track: extension_platform_20261107
-status: draft (P3.4, slice E12D; CLI commands are planned until P3.1 lands)
+status: draft (P3.4, slice E12D, reviewed by G3; the CLI is written, not yet built)
 ---
 
 # Authoring guide
 
 This walks one extension from an empty folder to a signed package that installs on a dev host.
-The running example is a `simulation` kind (see [README](README.md#kinds)). The steps are the same for every kind.
+The steps are the same for every kind (see [README](README.md#kinds)). Every command below is the
+real `fe-ext` surface ([`tools/fe-ext/src/main.rs`](../../tools/fe-ext/src/main.rs)).
 
-## 1. Start from a manifest, not from code
+## 1. Scaffold, then start from the manifest
 
-The manifest is the whole capability surface. Write it first, because the host grants nothing it does not declare.
-
-```json
-{ "manifest_version": 2, "id": "org.example.fleet-sim", "version": "0.1.0",
-  "kind": "simulation", "contract": "fractalengine:plugin@2.0.0", "binding": "petal",
-  "scene": { "read": true, "write": ["set_transform"] },
-  "readings": { "source_class": "simulation", "metrics": ["speed_mps"] },
-  "tick": { "cadence_ms": 1000 } }
+```bash
+fe-ext new general my-ext        # or simulation | device-adapter | bi-connector; writes ./my-ext/
 ```
 
-Four rules decide most validation errors (full table in [manifest-v2.md](manifest-v2.md#validation)):
+`new` writes a guest crate, `extension.json`, `fixtures/basic.json` and a journey test, and refuses
+to write anything if its own manifest fails validation. The simulation, device-adapter and
+bi-connector scaffolds copy the shipped schema examples with your id; the general one is the
+template in [`tools/fe-ext/src/new.rs`](../../tools/fe-ext/src/new.rs) (`manifest_for`):
 
-- **Absent grants nothing.** A missing section means no access. Do not write empty lists: an empty list is refused as `empty-scope`, so omit the field instead.
-- **A writing extension must declare `tick`.** Writes are staged and only a tick flushes them. `scene.write` without `tick` fails as `cadence-required`.
+```json
+{ "manifest_version": 2, "id": "local.my-ext", "version": "0.1.0", "name": "my-ext",
+  "kind": "general", "contract": "fractalengine:plugin@2.0.0", "binding": "petal",
+  "scene": { "read": true, "write": ["set_property"], "property_scope": ["my_ext.*"] },
+  "tick": { "cadence_ms": 1000, "max_ops": 16, "max_readings": 16, "fuel": 200000 } }
+```
+
+The manifest is the whole capability surface: the host grants nothing it does not declare. Four
+rules decide most validation errors (full table in [manifest-v2.md](manifest-v2.md#validation)):
+
+- **Absent grants nothing.** A missing section means no access. A *scope* list that is present and
+  empty (`scene.write`, `property_scope`, `metrics`, an endpoint's `methods` or `topics`, ...) is
+  refused as `empty-scope`, so omit the field instead. Declaration lists such as `ingress: []` may be empty.
+- **A writing extension must declare `tick`.** Writes are staged and only a tick flushes them.
+  `scene.write` or `readings` without `tick` fails as `cadence-required`.
 - **`*` must be written out.** A wildcard in `property_scope` or `metrics` is explicit, never implied.
-- **The id is the signed identity.** `id` must equal the `hexon_id` the package is signed under, or install refuses it as `id-mismatch`.
+- **The id is the signed identity.** `id` must equal the `hexon_id` the package is signed under, or
+  install refuses it as `id-mismatch`. `fe-ext pack` takes the id from the manifest, so they match.
 
-Open the full worked example, [`fleet-sim.extension.json`](../../fe-sdk/schema/examples/fleet-sim.extension.json), and change one thing at a time. Each change you make is a consent prompt the operator will see.
+Then open a worked example, [`extensions/fleet-sim/extension.json`](../../extensions/fleet-sim/extension.json),
+and change one thing at a time. Each grant you add is a line on the operator's consent prompt.
 
 ## 2. Implement the world
 
 The component implements the `extension` world in [`fractal-plugin-2.wit`](../../fe-plugin/wit/fractal-plugin-2.wit).
-It imports ten interfaces (`context` through `log`) and exports four (`lifecycle`, `ingress-hooks`, `egress-hooks`, `bus-hooks`). The guest may call only what the manifest grants.
+It imports ten interfaces (`context` through `log`) and exports four (`lifecycle`, `ingress-hooks`,
+`egress-hooks`, `bus-hooks`). The guest may call only what the manifest grants.
 
-The rule that shapes every guest is stated at the top of that file:
+In Rust, the guest SDK ([`tools/fe-ext/guest/src/lib.rs`](../../tools/fe-ext/guest/src/lib.rs)) does the
+wiring: implement its `Extension` trait (only `on_tick` is required; every other hook has a no-op
+default) and call `extension!(YourType)` once. [`extensions/fleet-sim/src/lib.rs`](../../extensions/fleet-sim/src/lib.rs)
+is a complete guest in about 230 lines.
+
+The rule that shapes every guest is stated at the top of the WIT file:
 
 ```wit
 // - Writes are STAGED into one per-instance window and flushed once per tick as ONE
@@ -52,51 +71,83 @@ stage-set-transform: func(node: node-id, patch: transform-patch) -> result<_, ho
 
 Two things to notice:
 
-1. **The `on-tick` hook is the only place a flush is scheduled.** Anything staged in `on-activate` is flushed at the next tick, not immediately.
-2. **Created node ids are not known when you stage.** `stage-create-node` returns an ordinal. The real id arrives in the next tick's `tick-info.last-commit` as a `commit-receipt`. Keep the ordinal in `kv` until then.
+1. **The `on-tick` hook is the only place a flush is scheduled.** Anything staged in `on-activate`,
+   `on-ingress` or `on-command` is flushed after the next tick, not immediately.
+2. **Created node ids are not known when you stage.** `stage-create-node` returns an ordinal. The real
+   id arrives in the next tick's `tick-info.last-commit` as a `commit-receipt`. Keep the ordinal in `kv` until then.
 
-The install, activate and uninstall hooks receive a `binding` (installation id, petal id, identity DID, source class). Read the petal from the binding; do not hard-code one. `on-deactivate` receives only a reason.
+The install, activate and uninstall hooks receive a `binding` (installation id, petal id, identity DID,
+source class). Read the petal from the binding; do not hard-code one. `on-deactivate` receives only a reason.
 
 ## 3. Use the host for every effect
 
-- **Readings** go through `readings.stage`. Each reading is validated the same way the REST readings door validates it. `source_did` and `source_class` are set by the host, never by you.
-- **Outbound HTTP or MQTT** is queued through `egress`. Results come back later through `egress-hooks.on-egress-result`. Calls never block the worker.
-- **Inbound traffic** arrives on `ingress-hooks.on-ingress` for each endpoint you declared.
+- **Readings** go through `readings.stage`. Each reading is validated the same way the REST readings
+  door validates it. `source_did` and `source_class` are set by the host, never by you. The SDK's
+  `readings_batch::ReadingBatcher` stages what fits the window and keeps the rest for the next tick.
+- **Outbound HTTP or MQTT** is queued through `egress`. Results come back later through
+  `egress-hooks.on-egress-result`. Calls never block the worker.
+- **Inbound traffic** arrives on `ingress-hooks.on-ingress` for each endpoint you declared. Only the
+  headers you list in `forward_headers` arrive, and never a credential header.
 - **Other extensions and the UI** talk over `bus`. See the [cookbook](cookbook.md#subscribe-to-a-host-stream).
 - **Per-instance memory** is `kv`, host-local and never replicated. Declare its size in the manifest first.
 
-## 4. Validate
+## 4. Validate and build
 
 ```bash
-fe-ext validate extension/        # planned: P3.1 (E12)
+fe-ext validate --project my-ext   # the manifest table plus host ceilings; the component too once built
+fe-ext build --project my-ext      # needs `rustup target add wasm32-wasip2`; writes my-ext/dist/component.wasm
 ```
 
-`validate` runs the manifest table and prints the first failing row's reason. REST install gives the same answer, because both use one validator. A reason such as `source-class-mismatch` means the manifest and the kind disagree; fix the manifest rather than the code.
+`validate` prints the failing row's reason and exits non-zero. REST install gives the same answer,
+because both use one validator (`fe_sdk::manifest_v2::parse_and_validate`). A reason such as
+`source-class-mismatch` means the manifest and the kind disagree; fix the manifest rather than the
+code. `build` then runs the component through the host's install admission, so a missing export or
+a forbidden import fails here rather than at install.
 
 ## 5. Run in the sandbox
 
 ```bash
-fe-ext run --sandbox --fixture fixtures/fleet.json   # planned: P3.1 (E12)
+fe-ext run --sandbox --project my-ext --fixture my-ext/fixtures/basic.json --out trace.json
 ```
 
-The sandbox runs your component in the real host against an in-memory scene, with a deterministic tick clock.
-Two runs of the same fixture must print the same fingerprint. If they do not, your guest depends on wall-clock time or on iteration order it does not control; read `now-ms` from `context` instead.
+The sandbox runs your component in the real host against an in-memory scene, with a deterministic
+tick clock, and prints a `fingerprint` line. Two runs of the same fixture must print the same
+fingerprint. If they do not, your guest depends on wall-clock time or on iteration order it does not
+control; read `now-ms` from `context` instead. The fixture format is `Fixture` in
+[`tools/fe-ext/src/sandbox.rs`](../../tools/fe-ext/src/sandbox.rs); recorded ingress frames pass the
+host's endpoint, method, size, media-type and header checks before your guest sees them, exactly as
+in production. Worked fixtures: [`extensions/fleet-sim/fixtures/basic.json`](../../extensions/fleet-sim/fixtures/basic.json)
+and [`extensions/device-adapter/fixtures/basic.json`](../../extensions/device-adapter/fixtures/basic.json).
 
 ## 6. Pack, sign, install
 
 ```bash
-fe-ext pack          # builds the plugin hexon (planned: P3.1)
-fe-ext sign          # publisher signature over signing_bytes
-fe-ext inspect <pkg> # prints identity, signer, content_hash and capability digest
+fe-ext keygen publisher.key                             # prints the publisher did:key; never overwrites
+fe-ext pack --project my-ext --key publisher.key        # sealed and signed: my-ext/dist/local.my-ext-0.1.0.hexon
+fe-ext countersign my-ext/dist/local.my-ext-0.1.0.hexon --key reviewer.key
+fe-ext inspect my-ext/dist/local.my-ext-0.1.0.hexon     # identity, signers, content_hash, capability digest
 ```
 
-Install only succeeds if the publisher key (or a counter-signing key) is a trust root on the host. The consent dialog then shows the **capability digest**. Consent covers exactly that digest; if you change any grant, the operator is asked again. Reordering a list also changes the digest, so keep lists stable across versions.
+`pack` seals and signs in one step. `sign` re-seals an existing package under another publisher key,
+which gives it a new `content_hash`; `countersign` adds a second signature without touching any sealed
+member, so the `content_hash` stays the same.
+
+Install only succeeds if the publisher key (or a counter-signing key) is a trust root on the host.
+The consent dialog then shows the **capability digest**. Consent covers exactly that digest; if you
+change any grant, the operator is asked again. Reordering a list also changes the digest, so keep
+lists stable across versions.
 
 ## Sharpen
 
-- **Pattern:** *declare-then-grant* (a capability manifest). The host grants the intersection of declared scope and operator consent, checked again at every call.
-- **Architecture:** the guest is a pure function of `(binding, tick-info, staged inputs)`. That is what makes the sandbox fingerprint deterministic, and why `now-ms` is injected rather than read.
-- **Deferred:** `--lab` multi-peer runs (R30) and the `general` kind's UI contributions. Revisit when the simulation track's P5 lands.
-- **Efficiency:** batch readings in one `stage` call per tick. The per-flush cap is 1000 readings and 64 ops, so one large batch costs one commit instead of many.
+- **Pattern:** *declare-then-grant* (a capability manifest). The host grants the intersection of declared
+  scope and operator consent, checked again at every call.
+- **Architecture:** the guest is a pure function of `(binding, tick-info, staged inputs)`. That is what makes
+  the sandbox fingerprint deterministic, and why `now-ms` is injected rather than read.
+- **Deferred:** `--lab` multi-peer runs (R30), and feeding bus commands and egress results into the sandbox
+  (today it answers them `not-available`).
+- **Efficiency:** batch readings in one `stage` call per tick. The per-flush cap is 1000 readings and 64 ops,
+  so one large batch costs one commit instead of many.
 
-*Question to check your grasp:* if an extension stages a transform in `on-activate` and the petal is deactivated before the next tick, does the transform ever commit? (Answer is in `fractal-plugin-2.wit`, `lifecycle.on-deactivate`.)
+*Question to check your grasp:* if an extension stages a transform in `on-activate` and the petal is
+deactivated before the next tick, does the transform ever commit? (Answer is in `fractal-plugin-2.wit`,
+`lifecycle.on-deactivate`.)
