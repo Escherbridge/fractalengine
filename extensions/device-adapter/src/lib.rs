@@ -1,7 +1,8 @@
-//! device-adapter: HTTP, websocket and MQTT frames become readings and transforms; actuation goes out over MQTT.
+//! device-adapter: HTTP, websocket (accepted or dialled) and MQTT frames become readings and transforms; actuation goes out over MQTT.
 //! Design notes: extensions/device-adapter/AGENTS.md.
 
 pub mod mapping;
+pub mod plan;
 
 use std::cell::RefCell;
 use std::collections::BTreeMap;
@@ -10,8 +11,8 @@ use fe_ext_guest::egress::{self, MqttQos};
 use fe_ext_guest::readings_batch::ReadingBatcher;
 use fe_ext_guest::{
     extension, log, scene, txn, window, Caller, CommandError, Extension, HostError, IncomingResponse, IngressFrame, IngressReply, TickInfo,
-    Transport,
 };
+use plan::DeviceNaming;
 use serde_json::{json, Value};
 
 /// The MQTT site prefix; it must match the `site-broker` and `actuate` topic filters in extension.json.
@@ -46,12 +47,12 @@ fn node_for_device(device_id: &str) -> Result<Option<String>, HostError> {
     Ok(scene::query_nodes(&query.to_string())?.into_iter().next().map(|node| node.node_id))
 }
 
-/// The device id the transport itself names: the forwarded header (http) or the topic (mqtt).
-fn transport_hint(frame: &IngressFrame) -> Option<String> {
-    match frame.transport {
-        Transport::Http => frame.headers.iter().find(|(name, _)| name == "x-device-id").map(|(_, value)| value.clone()),
-        Transport::Mqtt => frame.topic.as_deref().and_then(mapping::device_id_from_topic).map(str::to_string),
-        Transport::Websocket => None,
+/// The device id the endpoint's plan says the transport names: the forwarded header (http) or the topic (mqtt).
+fn transport_hint(frame: &IngressFrame, naming: DeviceNaming) -> Option<String> {
+    match naming {
+        DeviceNaming::Header => frame.headers.iter().find(|(name, _)| name == "x-device-id").map(|(_, value)| value.clone()),
+        DeviceNaming::Topic => frame.topic.as_deref().and_then(mapping::device_id_from_topic).map(str::to_string),
+        DeviceNaming::Body => None,
     }
 }
 
@@ -60,8 +61,12 @@ struct DeviceAdapter;
 impl Extension for DeviceAdapter {
     /// Map one frame, queue its readings and remember the newest transform; the reply is the transport's acknowledgement.
     fn on_ingress(frame: IngressFrame) -> Option<IngressReply> {
-        // Only http and websocket have a caller to answer; mqtt failures are logged and dropped.
-        let answer = frame.transport != Transport::Mqtt;
+        let Some(plan) = plan::plan_for(&frame.endpoint) else {
+            warn(&format!("{}: frame from an undeclared endpoint dropped", frame.endpoint));
+            return None;
+        };
+        // Only a caller on http or an accepted socket is answered; dialled-feed and mqtt failures are logged and dropped.
+        let answer = plan.answers_errors;
         let refuse = |status: u16, error: String| {
             if answer {
                 return reply(status, json!({ "error": error }));
@@ -70,7 +75,7 @@ impl Extension for DeviceAdapter {
             None
         };
 
-        let hint = transport_hint(&frame);
+        let hint = transport_hint(&frame, plan.naming);
         let parsed = match mapping::parse_frame(&frame.body, hint.as_deref()) {
             Ok(parsed) => parsed,
             Err(error) => return refuse(400, error),
@@ -102,10 +107,11 @@ impl Extension for DeviceAdapter {
             update.last_seen_ms = update.last_seen_ms.max(Some(frame.received_at_ms));
         });
 
-        // http acknowledges with the count; websocket and mqtt stay quiet on success.
-        match frame.transport {
-            Transport::Http => reply(202, json!({ "accepted": parsed.readings.len() })),
-            _ => None,
+        // http acknowledges with the count; websocket (accepted or dialled) and mqtt stay quiet on success.
+        if plan.acknowledges {
+            reply(202, json!({ "accepted": parsed.readings.len() }))
+        } else {
+            None
         }
     }
 

@@ -3,7 +3,7 @@
   "id": "org.example.device-adapter",
   "version": "0.1.0",
   "name": "Device adapter",
-  "description": "Turns HTTP, websocket and MQTT device frames into readings and transforms; actuates through MQTT.",
+  "description": "Turns HTTP, websocket (accepted or dialled) and MQTT device frames into readings and transforms; actuates through MQTT.",
   "kind": "device-adapter",
   "contract": "fractalengine:plugin@2.0.0",
   "binding": "petal",
@@ -35,6 +35,15 @@
       "rate_hz": 20,
       "max_connections": 16,
       "role_floor": "editor"
+    },
+    {
+      "id": "feed",
+      "transport": "websocket-dial",
+      "url": "wss://feed.example.org/v1/devices",
+      "max_frame_bytes": 16384,
+      "rate_hz": 50,
+      "auth": { "scheme": "bearer", "credential": "device-feed" },
+      "reconnect_ms": { "min": 1000, "max": 60000 }
     },
     {
       "id": "site-broker",

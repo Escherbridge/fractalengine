@@ -109,10 +109,14 @@ mod tests {
             (br#"{"device_id":"a/b","position":[0,0,0]}"#, None, "device_id must be"),
             (br#"{"readings":[{"metric":"m","value":null,"units":"u"}]}"#, Some("d"), "finite number"),
             (b"not json", Some("d"), "not JSON"),
+            (br#"{"device_id":"dev-9","readings":[{"metric":"m","value":1,"units":"u"}],"position":[0,0]}"#, None, "position must be"),
         ] {
             let error = parse_frame(body, hint).unwrap_err();
             assert!(error.contains(expected), "{error} should contain {expected}");
         }
+        // A dialled feed names the device only in the body.
+        let dialled = parse_frame(br#"{"device_id":"dev-9","heading_deg":90}"#, None).unwrap();
+        assert_eq!((dialled.device_id.as_str(), dialled.heading_deg), ("dev-9", Some(90.0)));
         assert_eq!(device_id_from_topic("site-a/dev-1/telemetry"), Some("dev-1"));
         assert_eq!(device_id_from_topic("site-a/dev-1"), None);
         assert_eq!(device_id_from_topic("a/b/c/d"), None);
