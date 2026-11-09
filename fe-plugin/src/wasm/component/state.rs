@@ -6,6 +6,7 @@ use std::sync::{Arc, Mutex};
 use fe_sdk::manifest_v2::HOST_FUEL_CEILING;
 use fe_sdk::plugin_host::{NodeReader, PendingOp};
 
+use crate::bindings::decode::DecodeStamp;
 use crate::capability::V2Grants;
 use crate::context::PluginContext;
 use crate::tick::{Clock, SharedWindow, DEFAULT_TICK_FUEL};
@@ -140,6 +141,8 @@ pub struct InstanceState {
     pub(crate) log: Arc<Mutex<GuestLog>>,
     /// Scene/route reads in the current hook call (reset on every guest entry).
     pub(crate) reads_this_hook: AtomicU32,
+    /// Provenance of the `ingest.decode` call in flight; host-set, cleared when the call returns.
+    pub(crate) decode_stamp: Option<DecodeStamp>,
     wasi: wasmtime_wasi::WasiCtx,
     table: wasmtime::component::ResourceTable,
     pub(crate) limits: wasmtime::StoreLimits,
@@ -173,10 +176,16 @@ impl InstanceState {
             geometry_reader: setup.geometry_reader,
             log,
             reads_this_hook: AtomicU32::new(0),
+            decode_stamp: None,
             wasi,
             table: wasmtime::component::ResourceTable::new(),
             limits,
         }
+    }
+
+    /// The `DecodeStamp` readings staged right now must carry (`None` outside an `ingest.decode` call).
+    pub fn decode_stamp(&self) -> Option<&DecodeStamp> {
+        self.decode_stamp.as_ref()
     }
 
     /// The v2 grants of the instance token.

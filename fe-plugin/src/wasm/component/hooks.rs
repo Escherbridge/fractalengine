@@ -4,7 +4,7 @@ use std::collections::BTreeMap;
 use std::time::{Duration, Instant};
 
 use fe_runtime::extension_binding::{hook_spec, HookCallKind};
-use fe_sdk::manifest_v2::{ExtensionManifest, KNOWN_HOOKS};
+use fe_sdk::manifest_v2::KNOWN_HOOKS;
 use wasmtime::component::Instance;
 use wasmtime::Store;
 
@@ -193,20 +193,6 @@ pub fn check_hooks_export(declares_provides: bool, component_exports_hooks: bool
 /// True when the component type carries the `hooks` export.
 pub fn component_exports_hooks(ty: &wasmtime::component::types::Component, engine: &wasmtime::Engine) -> bool {
     ty.get_export(engine, HOOKS_EXPORT).is_some()
-}
-
-impl ExtensionComponent {
-    /// True when this admitted component carries the `hooks` export.
-    pub fn exports_hooks(&self) -> bool {
-        let component = self.pre.instance_pre().component();
-        component_exports_hooks(&component.component_type(), component.engine())
-    }
-
-    /// The install and activation check: `missing-export hooks` when `manifest` declares `provides`
-    /// and this component cannot answer a hook call.
-    pub fn check_provides(&self, manifest: &ExtensionManifest) -> Result<(), ComponentError> {
-        check_hooks_export(!manifest.provides.is_empty(), self.exports_hooks())
-    }
 }
 
 /// The bound `hooks` export of one instance, with its own fuel refill and counters.

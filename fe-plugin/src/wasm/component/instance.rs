@@ -13,7 +13,9 @@ use super::bindings::fractalengine::plugin::egress::IncomingResponse;
 use super::bindings::fractalengine::plugin::txn;
 use super::bindings::fractalengine::plugin::types::{Binding, Caller, HostError};
 use super::bindings::Extension;
+use super::hooks::{HookCallError, HookReply, HookRequest, HooksGuest};
 use super::state::{refusal_error, InstanceState};
+use crate::bindings::decode::DecodeStamp;
 use crate::capability::CapabilityToken;
 use crate::tick::{self, Clock, SharedWindow, TickFault, TickInstance};
 use crate::transaction::StagedWindow;
@@ -69,6 +71,8 @@ pub struct ExtensionInstance {
     hook_fuel: u64,
     degraded: Option<String>,
     stats: InstanceStats,
+    /// The optional `hooks` export, bound to this same instance (src/AGENTS.md §hook-calls).
+    hooks: Option<HooksGuest>,
 }
 
 impl ExtensionInstance {
@@ -80,7 +84,44 @@ impl ExtensionInstance {
             hook_fuel,
             degraded: None,
             stats: InstanceStats::default(),
+            hooks: None,
         }
+    }
+
+    /// Keep the bound `hooks` export (`None` for a plain 2.0 component).
+    pub(crate) fn with_hooks(mut self, hooks: Option<HooksGuest>) -> Self {
+        self.hooks = hooks;
+        self
+    }
+
+    /// Per-hook counters of the `hooks` export, when the component has one.
+    pub fn hook_stats(&self) -> Option<&super::hooks::HookStats> {
+        self.hooks.as_ref().map(HooksGuest::stats)
+    }
+
+    /// One host-initiated hook call: refused while degraded, degraded on a fault like a tick fault;
+    /// readings staged during the call see `stamp` through `InstanceState::decode_stamp`.
+    pub fn call_hook(&mut self, request: &HookRequest, stamp: Option<&DecodeStamp>) -> Result<HookReply, HookCallError> {
+        if let Some(reason) = &self.degraded {
+            return Err(HookCallError::Fault(HookFault::Degraded(reason.clone())));
+        }
+        let Some(guest) = self.hooks.as_mut() else {
+            return Err(HookCallError::NotServed(request.hook.clone()));
+        };
+        let now = self.clock.now_ms();
+        self.stats.hook_calls += 1;
+        self.store.data_mut().decode_stamp = stamp.cloned();
+        let outcome = guest.call(&mut self.store, request, now);
+        self.store.data_mut().decode_stamp = None;
+        if let Err(HookCallError::Fault(fault)) = &outcome {
+            match fault {
+                HookFault::FuelExhausted => self.stats.fuel_exhaustions += 1,
+                _ => self.stats.traps += 1,
+            }
+            // `HooksGuest::call` already discarded the window; refuse every later hook.
+            self.degraded = Some(fault.to_string());
+        }
+        outcome
     }
 
     /// The host-minted binding this instance runs under.
@@ -326,6 +367,14 @@ impl InstanceHandle {
     /// Lock for a hook call or a status read.
     pub fn lock(&self) -> Result<MutexGuard<'_, ExtensionInstance>, String> {
         self.0.lock().map_err(|_| "extension instance lock poisoned".to_string())
+    }
+
+    /// [`ExtensionInstance::call_hook`] under the instance lock (a poisoned lock is a fault).
+    pub fn call_hook(&self, request: &HookRequest, stamp: Option<&DecodeStamp>) -> Result<HookReply, HookCallError> {
+        let mut instance = self
+            .lock()
+            .map_err(|message| HookCallError::Fault(HookFault::Trap(message)))?;
+        instance.call_hook(request, stamp)
     }
 }
 
