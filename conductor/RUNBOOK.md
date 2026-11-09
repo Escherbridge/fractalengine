@@ -208,6 +208,20 @@ trusting "pure efficiency" claims; push control; a board that silently drifts st
 
 ## 3. Decisions
 
+**2026-11-08 ~22:00 (user, mid-swarm): extension governance + scoped bindings.**
+- **OD-E1 = no withdrawal:** a revoked extension stops after its in-flight writes complete; rows it wrote
+  stay with provenance. *Reversal: moderate* (withdrawal needs the R24 re-judge path).
+- **Kill list at install:** refused by default; explicit, audited verse-Owner override for that Owner's own
+  peer (extensions and web bundles). *Reversal: cheap.*
+- **Scoped extension bindings (new feature):** verse/fractal/petal binds an extension to a hook point;
+  nearest scope wins; Manager+ at that scope; replicated rows judged at write time; per-peer resolution with
+  built-in fallback, unresolved state and a consent install offer; hook families cover map/terrain, API
+  routes, scene ops, ingest, UI panels, egress, file/storage/network ops, portal/web; renderer shared paths =
+  stretch. Contract `docs/extensions/bindings.md` (track/extension-platform); implementation = next swarm
+  turn. *Reversal: cheap now (contract only).*
+- **Monitor crew:** haiku swarm analyst/historian (`.omc/plans/swarm-analyst.md`, digest
+  `.omc/plans/swarm-digest.py`, ledger `.omc/state/swarm-ledger.md`, cron :43) proposes; the orchestrator acts.
+
 **2026-11-08 (user + orchestrator): test execution and hand-off.**
 - Campaign-end workspace sweep skipped; tests run only when told and only through the chunked runner
   `tools/qa/test_batches.ps1 -Batches <ids>`; `cargo test --workspace` is retired (root `AGENTS.md`
