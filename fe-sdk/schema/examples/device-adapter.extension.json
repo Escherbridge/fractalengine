@@ -77,12 +77,24 @@
             "required": ["node_id", "action"],
             "additionalProperties": false
           }
+        },
+        {
+          "id": "reset",
+          "description": "Reset the device anchored at node_id (the context-menu entry sends exactly {node_id}).",
+          "role_floor": "editor",
+          "rate_hz": 1,
+          "args_schema": {
+            "type": "object",
+            "properties": { "node_id": { "type": "string", "maxLength": 128 } },
+            "required": ["node_id"],
+            "additionalProperties": false
+          }
         }
       ]
     }
   },
   "ui": [
     { "id": "device", "slot": "InspectorSection", "label": "Device", "properties": ["device.id", "device.last_seen"] },
-    { "id": "reset", "slot": "ContextMenu", "label": "Reset device", "command": "actuate", "when": { "property": "device.id" } }
+    { "id": "reset", "slot": "ContextMenu", "label": "Reset device", "command": "reset", "when": { "property": "device.id" } }
   ]
 }

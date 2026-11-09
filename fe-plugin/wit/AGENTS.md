@@ -31,6 +31,11 @@ flush and nothing lands (spec R6, journey J3). Writes staged in non-tick hooks (
 commands) wait for the next flush, which is why a writing extension must declare a cadence
 (manifest rule `cadence-required`).
 
+**A trap discards the window.** A guest trap, fuel exhaustion or `wasi:cli/exit` in ANY hook (not
+only `on-tick`) degrades the instance, and the window is discarded unflushed: `on-deactivate`
+reason `degraded` gets no final flush. So a command or ingress hook that traps halfway through
+staging can never leave a partial batch for the next tick to commit.
+
 `stage-create-node` returns an ordinal, not an id: ids exist only after the DB commits, and they
 come back in `commit-receipt.created-node-ids` on the next `tick-info`. Referencing a node created
 in the same window (a provisional id usable by later ops) is deferred: it needs a `PendingOp`
@@ -89,7 +94,7 @@ with `package-invalid` (reason `forbidden-import <name>`):
 | `wasi:cli/stdout`, `wasi:cli/stderr` | routed to `log` at info / warn, same caps |
 | `wasi:io/{error,streams,poll}` | only as the cli streams need |
 | `wasi:clocks/{wall-clock,monotonic-clock}` | frozen at `context.now-ms` (not a clock source) |
-| `wasi:random/{random,insecure,insecure-seed}` | a per-instance stream seeded from `blake3(installation-id ‖ activation count)`; the fixture seed in sandbox and lab |
+| `wasi:random/{random,insecure,insecure-seed}` | a per-instance stream seeded from `blake3(installation-id ‖ activation count)`; the fixture seed in sandbox and lab. Deterministic, so NOT cryptographically secure: a guest holds no secret worth protecting (credentials stay host-side), and the guest SDK docs say so |
 | `wasi:filesystem/*` | linked with zero preopens |
 
 Never linked: `wasi:sockets/*`, `wasi:http/*`, and anything else. The exact WASI patch version is
@@ -107,8 +112,8 @@ for less, never more):
 | bytes per flush | 65 536 (`MAX_HOST_BYTES`) |
 | query-nodes rows | 1..200 (`MAX_NODE_QUERY_ROWS`) |
 | any `json` argument | 65 536 bytes, finite numbers only |
-| `bus-hooks.on-events` batch | 64 events, 256 KiB |
+| `bus-hooks.on-events` batch | 64 events, 256 KiB (a larger `host/query` snapshot, ≤ 1 MiB, arrives alone) |
 | `on-command` result | 65 536 bytes |
-| kv | keys ≤ 256 bytes, values ≤ 65 536 bytes, 1 MiB per installation |
+| kv | keys ≤ 256 bytes, values ≤ 65 536 bytes, manifest `kv.max_bytes` (≤ 1 MiB) per instance |
 | log | 4 KiB per message, 50 messages/s per instance (excess dropped and counted) |
 | instance memory | 16 MiB (today's pooled cap; OD-E4 measures) |

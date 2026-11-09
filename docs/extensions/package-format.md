@@ -12,6 +12,12 @@ plugin_host_revival OD-9 closed by D-X1). Everything that already applies to sea
 unchanged: the D-76 integrity root, the ed25519 manifest signature, registry protocol v1,
 `PackageStore` and S-ENTITLEMENT. This page defines only what is plugin-specific.
 
+The `plugin` family has two content kinds (manifest v2 `kind`). The container, identity, signature
+and revocation rules below are shared by both, so web bundles pass the same verifier (D-X5). The
+body members differ: extension kinds carry one Wasm component (this page); `kind: web-bundle`
+carries `web/` members and never a component, as `portal_surface_20261107` specifies
+(`docs/spec/portal-bundle/README.md` §1, which also admits unsealed bundles for the static sandbox).
+
 ## Type
 
 `HexonType::Plugin`, serialized `"hexon_type": "plugin"` (fe-format `manifest.rs`, `snake_case`).
@@ -23,13 +29,17 @@ The doc edit to `docs/hexon-format-spec.md` lands with slice E9, after hexon_ent
 | Member | Phase | Committed by | Required | Content |
 |---|---|---|---|---|
 | `manifest.json` | header | the signature | yes | `HexonManifest`: `hexon_type: "plugin"`, `hexon_id`, `version`, `publisher_did`, `integrity`, `signature`. |
+| `entries.json` | header | `integrity.header` | yes | An empty fe-format `EntryCatalog`, exactly `{"entries": []}`. fe-format's lazy reader (`HexonArchiveIndex::open`, which the registry's header and download routes use) refuses an archive without it, so a package without it cannot ride registry protocol v1. |
 | `members.json` | header | `integrity.header` | yes | Body digests, written by `seal`. |
 | `plugin/extension.json` | header | `integrity.header` | yes | Manifest v2 ([manifest-v2.md](manifest-v2.md)). Joins `HEADER_MEMBER_PATHS` so consent renders before the body is fetched. ≤ 64 KiB. |
 | `license.json` | header | `integrity.header` | no | fe-format `License`; a `paid` licence makes the component an encrypted entry (below). |
-| `plugin/component.wasm` | body | `members.json` | yes | One Wasm **component** (not a core module) targeting the manifest's `contract`. ≤ 16 MiB (host ceiling; fe-format's own entry cap is 64 MiB). |
-| `plugin/countersignatures.json` | header | **nothing** | no | Counter-signatures (below). The only member the integrity root never commits. |
+| `plugin/component.wasm` | body | `members.json` | yes (extension kinds) | One Wasm **component** (not a core module) targeting the manifest's `contract`. ≤ 16 MiB (host ceiling; fe-format's own entry cap is 64 MiB). A web bundle must not carry it. |
+| `plugin/countersignatures.json` | header | **nothing** | no | Counter-signatures (below). Besides `manifest.json` itself, the only member the integrity root never commits. |
 
-Any other member is refused (`package-invalid`, reason `uncommitted-member` or `unexpected-member`).
+For an extension kind, any other member is refused (`package-invalid`, reason `uncommitted-member`
+or `unexpected-member`); a web bundle's `web/` members follow the portal contract.
+`HexonArchive::export` is not a plugin packer: it writes no plugin members. `fe-ext pack` and
+fe-hexon's `PluginHexonBuilder` write the members above directly, then `seal`.
 `seal` is the last transform, as for every sealed hexon (fe-format `src/AGENTS.md` §integrity).
 
 ## Identity
@@ -40,6 +50,7 @@ Any other member is refused (`package-invalid`, reason `uncommitted-member` or `
 | `version` | `manifest.json` `version`. Must equal `plugin/extension.json` `version`. |
 | `content_hash` | `lowercase_hex(blake3(signing_bytes))` |
 | `component_digest` | `members.json["plugin/component.wasm"]`: lowercase blake3 hex of the component bytes as stored (ciphertext for a licensed package). |
+| `plaintext_digest` | Licensed packages only: lowercase blake3 hex of the decrypted component, computed by the host in the body phase. Never in the archive, never trusted from a registry. |
 | `signing_bytes` | The canonical JSON of `manifest.json` with `"signature": ""` — exactly the bytes `fe_format::signature::sign_manifest` signs (sorted keys, no whitespace). |
 
 The manifest commits `integrity`, which commits `plugin/extension.json` and `members.json`, which
@@ -56,11 +67,15 @@ must equal the signed `hexon_id` (and `plugin/extension.json` `id`); any mismatc
 `package-invalid` (`id-mismatch`) before anything else is trusted.
 
 **Revocation matches by hash, under any id.** An accepted revocation entry revokes an installed
-or candidate package when the entry's `content_hash` equals EITHER the package's `content_hash`
-OR its `component_digest` (`members.json["plugin/component.wasm"]`, the blake3 of the component
-bytes). The entry's `package_id` is informational and never narrows the match. A list publisher
-may name either value; naming the `component_digest` also catches the same component re-sealed
-under a new id or version. The list's wire shape is unchanged (plugin_host_revival §4).
+or candidate package when the entry's `content_hash` equals the package's `content_hash`, its
+`component_digest` (`members.json["plugin/component.wasm"]`, the blake3 of the component bytes),
+or, for a licensed package, its `plaintext_digest`. The entry's `package_id` is informational and
+never narrows the match. A list publisher may name any of these values; naming the
+`component_digest` also catches the same component re-sealed under a new id or version, and naming
+the `plaintext_digest` also catches a licensed component re-encrypted under a new content key
+(whose ciphertext, and so `component_digest`, changes). The header phase checks `content_hash`
+and `component_digest`; the body phase checks `plaintext_digest` after decryption. The list's wire
+shape is unchanged (plugin_host_revival §4).
 
 ## Signatures
 
@@ -85,15 +100,20 @@ already commits the payload.
   signature}` list), so a second party can counter-sign a published package without resealing it.
 - `key_id` is the signer's `did:key`, so a signature is checkable without a lookup; whether that
   key is trusted is trust-root policy ([governance.md](governance.md#trust-roots)), not format.
+- `signature` is base64, the same encoding as `manifest.json` `signature` (fe-format
+  `sign_manifest`). plugin_host_revival's pre-hexon `SignatureEntry` carries hex; that encoding is
+  not reused here, so one package never mixes two.
 - `content_hash` must equal the package's; a mismatch is `package-invalid` (`countersignature-mismatch`).
 - An entry whose `key_id` is a configured trust root and whose signature fails is `package-invalid`
   (a tampered counter-signature). Entries from unknown keys are ignored.
 - ≤ 16 entries, ≤ 64 KiB.
 
 **Trust decision** (governance R17): the publisher signature must verify; then the package is
-trusted when `publisher_did` or the `key_id` of at least one verifying counter-signature is a trust
-root. An unsigned package (no `signature`) is refused unless the dev flag is set, and that flag is
-unreachable from release builds.
+trusted when the ed25519 key of `publisher_did`, or of the `key_id` of at least one verifying
+counter-signature, equals a trust root's `public_key`. Roots match by key bytes, never by label:
+the trust-roots file names keys with free-form `key_id` labels (plugin_host_revival S2,
+`fe-plugin/src/trust_roots.rs`), while packages name signers by `did:key`. An unsigned package (no
+`signature`) is refused unless the dev flag is set, and that flag is unreachable from release builds.
 
 ## Component checks at install
 
@@ -111,7 +131,8 @@ unreachable from release builds.
    `plugin/extension.json`, checks identity equality, computes `content_hash`, checks the revocation
    list, and renders consent. Nothing executable has been fetched.
 2. **Body.** The host fetches `plugin/component.wasm`, checks its digest against `members.json`,
-   decrypts it if licensed, runs the component checks, and stores the sealed bytes in the package store.
+   decrypts it if licensed (then checks the revocation list against `plaintext_digest`), runs the
+   component checks, and stores the sealed bytes in the package store.
 
 ## Licensed packages
 
@@ -144,4 +165,4 @@ Every row is refused with its own reason and the package store is unchanged afte
 | the valid package requested as `org.example.other` (REST body or registry document id) | `package-invalid` (`id-mismatch`) |
 | a revocation list naming the package's `content_hash` under a different `package_id` | `revoked` |
 | the same component re-sealed under a new id, with a list naming its `component_digest` | `revoked` |
-| the valid package | installed; `content_hash` and `component_digest` printed by `fe-ext inspect` match |
+| the valid package | installed; `content_hash` and `component_digest` printed by `fe-ext inspect` match, and a loopback fe-hexon-registry serves its header (`plugin/extension.json` readable before download) |

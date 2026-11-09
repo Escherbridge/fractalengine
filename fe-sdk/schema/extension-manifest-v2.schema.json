@@ -5,7 +5,14 @@
   "$comment": "STRUCTURE ONLY. Policy rules with distinct refusal reasons (empty-scope, insecure-endpoint, cadence-below-floor, cadence-required, source-class-mismatch, undeclared-command, undeclared-stream, unknown-source, reserved-kind, scope-conflict, duplicate-id, over-host-ceiling) are semantic and normative in docs/extensions/manifest-v2.md section 'Validation'. One validator (fe-sdk manifest_v2, slice E2) runs schema then semantics for both fe-ext validate and REST install. Unknown fields are refused everywhere: a field this host cannot enforce must never be silently ignored.",
   "type": "object",
   "additionalProperties": false,
-  "required": ["manifest_version", "id", "version", "name", "kind", "contract", "binding"],
+  "required": ["manifest_version", "id", "version", "kind"],
+  "allOf": [
+    {
+      "$comment": "kind web-bundle (portal_surface_20261107) carries no runtime envelope: its capabilities live in `portal`, whose content and the forbidden envelope keys are the portal contract's (docs/spec/portal-bundle/README.md section 1.8, manifest-v1.schema.json). The extension host refuses web-bundle with reserved-kind (semantic V3), so this branch only stops the schema from demanding extension-only keys.",
+      "if": { "properties": { "kind": { "const": "web-bundle" } } },
+      "else": { "required": ["name", "contract", "binding"] }
+    }
+  ],
   "properties": {
     "manifest_version": { "const": 2 },
     "id": {
@@ -60,7 +67,7 @@
       "items": { "$ref": "#/$defs/uiContribution" }
     },
     "portal": {
-      "$comment": "Reserved: owned and specified by portal_surface_20261107 (D-X5); only meaningful with kind web-bundle.",
+      "$comment": "Owned and specified by portal_surface_20261107 (D-X5): docs/spec/portal-bundle/manifest-v1.schema.json validates it. Only meaningful with kind web-bundle (any other kind: reserved-kind).",
       "type": "object"
     }
   },
@@ -87,11 +94,23 @@
       "type": "string",
       "pattern": "^(\\*|[A-Za-z0-9_.:-]{1,255}\\*?)$"
     },
-    "endpointUrl": {
-      "description": "Absolute URL. Non-TLS schemes are allowed by structure only for loopback hosts (semantic rule insecure-endpoint).",
+    "httpUrl": {
+      "description": "Absolute https URL (http only to loopback: semantic rule insecure-endpoint). The scheme must match the transport.",
       "type": "string",
       "maxLength": 2048,
-      "pattern": "^(https|http|wss|ws|mqtts|mqtt)://[^\\s/?#*]+(/[^\\s#]*)?$"
+      "pattern": "^(https|http)://[^\\s/?#*]+(/[^\\s#]*)?$"
+    },
+    "wsUrl": {
+      "description": "Absolute wss URL (ws only to loopback: semantic rule insecure-endpoint). The scheme must match the transport.",
+      "type": "string",
+      "maxLength": 2048,
+      "pattern": "^(wss|ws)://[^\\s/?#*]+(/[^\\s#]*)?$"
+    },
+    "mqttUrl": {
+      "description": "Absolute mqtts URL (mqtt only to loopback: semantic rule insecure-endpoint). The scheme must match the transport.",
+      "type": "string",
+      "maxLength": 2048,
+      "pattern": "^(mqtts|mqtt)://[^\\s/?#*]+(/[^\\s#]*)?$"
     },
     "auth": {
       "description": "A host-side credential slot. The value lives in the host's local credential store; it never enters the manifest, the replicated store or the guest.",
@@ -248,7 +267,7 @@
       "properties": {
         "id": { "$ref": "#/$defs/localId" },
         "transport": { "const": "websocket-dial" },
-        "url": { "$ref": "#/$defs/endpointUrl" },
+        "url": { "$ref": "#/$defs/wsUrl" },
         "max_frame_bytes": { "type": "integer", "minimum": 1, "maximum": 1048576 },
         "rate_hz": { "$ref": "#/$defs/rateHz" },
         "auth": { "$ref": "#/$defs/auth" },
@@ -271,7 +290,7 @@
       "properties": {
         "id": { "$ref": "#/$defs/localId" },
         "transport": { "const": "mqtt" },
-        "broker": { "$ref": "#/$defs/endpointUrl" },
+        "broker": { "$ref": "#/$defs/mqttUrl" },
         "topics": {
           "type": "array",
           "uniqueItems": true,
@@ -303,7 +322,7 @@
       "properties": {
         "id": { "$ref": "#/$defs/localId" },
         "transport": { "const": "http" },
-        "url": { "$ref": "#/$defs/endpointUrl" },
+        "url": { "$ref": "#/$defs/httpUrl" },
         "methods": {
           "type": "array",
           "uniqueItems": true,
@@ -323,7 +342,7 @@
       "properties": {
         "id": { "$ref": "#/$defs/localId" },
         "transport": { "const": "mqtt" },
-        "broker": { "$ref": "#/$defs/endpointUrl" },
+        "broker": { "$ref": "#/$defs/mqttUrl" },
         "topics": {
           "description": "Topic filters a publish topic must match (MQTT + and # semantics).",
           "type": "array",
@@ -472,6 +491,25 @@
       "type": "object",
       "additionalProperties": false,
       "required": ["id", "slot", "label"],
+      "$comment": "Slot shapes: a field the slot does not render is refused, never silently ignored (manifest-v2.md section ui).",
+      "allOf": [
+        {
+          "if": { "properties": { "slot": { "enum": ["ToolbarAction", "SidebarTool"] } } },
+          "then": { "properties": { "properties": false, "stream": false, "field": false, "when": false } }
+        },
+        {
+          "if": { "properties": { "slot": { "const": "ContextMenu" } } },
+          "then": { "properties": { "properties": false, "stream": false, "field": false } }
+        },
+        {
+          "if": { "properties": { "slot": { "const": "InspectorSection" } } },
+          "then": { "properties": { "command": false, "stream": false, "field": false, "when": false } }
+        },
+        {
+          "if": { "properties": { "slot": { "enum": ["DashboardWidget", "ViewportOverlay"] } } },
+          "then": { "properties": { "command": false, "properties": false, "when": false } }
+        }
+      ],
       "properties": {
         "id": { "$ref": "#/$defs/localId" },
         "slot": {

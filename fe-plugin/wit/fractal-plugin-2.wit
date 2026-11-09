@@ -509,7 +509,8 @@ interface bus-hooks {
         failed(string),
     }
 
-    /// A batch of deliveries, in seq order per subscription (at most 64 events, 256 KiB).
+    /// A batch of deliveries, in seq order per subscription (at most 64 events, 256 KiB; a
+    /// host/query snapshot over 256 KiB, at most 1 MiB, arrives alone).
     on-events: func(events: list<bus-event>);
     /// A declared command; `args` already passed the declared args_schema. Result <= 64 KiB.
     on-command: func(command: string, args: json, caller: caller) -> result<json, command-error>;

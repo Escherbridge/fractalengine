@@ -10,7 +10,7 @@ track: extension_platform_20261107
 |---|---|
 | `extension-manifest-v2.schema.json` | JSON Schema 2020-12 for `plugin/extension.json`. Structure only. |
 | `examples/fleet-sim.extension.json` | Simulation kind; the base manifest of journey J2 and the J5 tamper table. |
-| `examples/device-adapter.extension.json` | Device-adapter kind: all four ingress transports' shapes, MQTT egress, a command. |
+| `examples/device-adapter.extension.json` | Device-adapter kind: three of the four ingress transports (`http-server`, `websocket-accept`, `mqtt`; not `websocket-dial`), MQTT egress, two commands (one per UI shape). |
 | `examples/bi-push.extension.json` | BI connector: a named `host/query` consume and an HTTPS egress (bus.md §9.3). |
 
 ## §structure-vs-policy
@@ -21,6 +21,18 @@ maxima). Every rule that needs a distinct refusal reason or a host ceiling — `
 semantic and normative in `docs/extensions/manifest-v2.md` §Validation. Keeping policy out of the
 schema keeps reasons distinct (a schema failure is always `schema`) and lets a host lower its
 ceilings without a schema change.
+
+Three structural rules are conditional (G0 review, 2026-11-08), so a serde-only validator must
+mirror them explicitly:
+
+- **URL scheme per transport.** `httpUrl` (`https`/`http`) for egress `http`, `wsUrl` (`wss`/`ws`)
+  for `websocket-dial`, `mqttUrl` (`mqtts`/`mqtt`) for both MQTT endpoints. A mismatch is `schema`;
+  plaintext to a non-loopback host stays the semantic `insecure-endpoint`.
+- **UI slot shapes.** Each slot admits only the fields it renders (manifest-v2.md §ui); any other is
+  `schema`, because a field the host would silently ignore breaks the "never silently ignored" rule.
+- **`kind: web-bundle`** does not require `name`, `contract` or `binding`; the extension host still
+  refuses the kind (`reserved-kind`, V3), and the portal contract validates the `portal` section and
+  forbids the runtime envelope keys (`docs/spec/portal-bundle/README.md` §1.8). No cross-tree `$ref`.
 
 ## §parity
 

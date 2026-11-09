@@ -25,7 +25,11 @@ not declare, the consent dialog renders exactly what it declares, and the verse 
 ## Grant rules
 
 1. **Absent grants nothing.** A missing section, field or list is no access.
-2. **An empty list is refused**, not silently empty (`empty-scope`). Omit the field instead.
+2. **An empty scope list is refused**, not silently empty (`empty-scope`; the lists are V4's). Omit
+   the field instead. A scope list is one that narrows a grant, where "empty" could be misread as
+   "everything" (the 1.0 trap). Declaration lists (`ingress`, `egress`, `ui`, `bus.consume`,
+   `bus.expose.streams`, `bus.expose.commands`) only add entries, so an empty one declares nothing
+   and is accepted.
 3. **`*` must be written out** wherever a wildcard is allowed (property scope, metrics, ad-hoc query SQL).
 4. **Patterns** in `property_scope`: an exact key (`fleet.status`), a prefix ending in `*`
    (`fleet.*`), or `*` alone. Nothing else is a pattern.
@@ -41,10 +45,10 @@ not declare, the consent dialog renders exactly what it declares, and the verse 
 | `manifest_version` | yes | `2`. |
 | `id` | yes | The `package_id`: reverse-DNS, lowercase, two or more labels (`org.example.fleet-sim`). Equals the sealed hexon's signed `hexon_id` and the id the install names, else `package-invalid` (`id-mismatch`); revocation matches by hash whatever id an entry names ([package-format.md](package-format.md#identity)). The label `host` is never a package id (it has no dot), which keeps `host/*` bus addresses reserved. |
 | `version` | yes | SemVer; equals the hexon manifest `version`. |
-| `name`, `description` | `name` yes | Display text (80 / 1 000 chars). |
-| `kind` | yes | `simulation`, `device-adapter`, `bi-connector` or `general`. `web-bundle` is reserved for `portal_surface_20261107`, which owns the `portal` section; the extension host refuses it (`reserved-kind`). |
-| `contract` | yes | `fractalengine:plugin@2.0.0`. Any other major is `unsupported-contract`. |
-| `binding` | yes | `petal` (the only value in 2.0). |
+| `name`, `description` | `name` yes (except `web-bundle`) | Display text (80 / 1 000 chars). |
+| `kind` | yes | `simulation`, `device-adapter`, `bi-connector` or `general`. `web-bundle` is reserved for `portal_surface_20261107`, which owns the `portal` section and forbids the runtime keys for that kind (`docs/spec/portal-bundle/README.md` §1.8); the schema therefore does not demand `name`, `contract` or `binding` for it, and the extension host refuses it (`reserved-kind`). |
+| `contract` | yes (except `web-bundle`) | `fractalengine:plugin@2.0.0`. Any other major, or a 2.x minor newer than the one the host binds (its imports may not exist here), is `unsupported-contract`. |
+| `binding` | yes (except `web-bundle`) | `petal` (the only value in 2.0). |
 
 ### `scene`
 
@@ -58,7 +62,7 @@ not declare, the consent dialog renders exactly what it declares, and the verse 
 
 | Field | Meaning |
 |---|---|
-| `source_class` | `simulation`, `device` or `connector`, or a list of them. With a list, the operator picks exactly ONE at bind time (never inferred, never defaulted); the consent dialog shows the pick. Rows carry it as the door's `source_class`. |
+| `source_class` | `simulation`, `device` or `connector`, or a list of them. With a list, the operator picks exactly ONE at bind time (never inferred, never defaulted). Consent covers the whole declared set (it is in the digest); the bind dialog shows the pick and the binding records it. The readings door records it as the reading's `source_class` (canonical-log observation membership; `iot_reading` rows have no class column). |
 | `metrics` | Metric names `readings.stage` accepts, or `["*"]`. |
 
 `source_did` is always the host's local DID. `manual` and `decoder` are not extension classes.
@@ -83,8 +87,9 @@ tick flushes it (R5). Host ceilings are host configuration; a local policy may l
 
 ### `kv`
 
-`{ "max_bytes": n }` (≤ 1 MiB) grants the `kv` interface: host-local per-installation state,
-never replicated and never on the DB thread.
+`{ "max_bytes": n }` (≤ 1 MiB) grants the `kv` interface: host-local state per instance (one
+installation at one petal, so two bindings never share keys), `max_bytes` per instance, never
+replicated and never on the DB thread.
 
 ### `ingress` — endpoints that receive traffic (spec R8)
 
@@ -100,6 +105,17 @@ Every endpoint has an `id` (`[a-z][a-z0-9-]{0,31}`, unique across `ingress` and 
 
 Over-size → 413 (http) or the frame is dropped and counted (websocket, mqtt). Over-rate → 429 or
 dropped and counted. An undeclared or disabled endpoint answers the uniform not-found.
+
+- **Mount path (decision, G0 2026-11-08).** The mount is petal-scoped,
+  `/api/v1/petals/{petal_id}/extensions/{package_id}/ingress/{id}`, instead of spec R8's
+  `/api/v1/extensions/{installation}/ingress/{endpoint}`: a device on another host can know the
+  package id but never a host-local installation id, the petal segment selects the one binding
+  (OD-E3) and runs the existing petal-scope guard, and it matches the readings door
+  (`/api/v1/petals/{petal_id}/iot/readings`). Bus commands follow the same rule ([bus.md](bus.md#8-external-access)).
+- **Delegation.** `http-server` and `websocket-accept` endpoints delegate the host's identity: every
+  DID at or above `role_floor` can make the extension write, and the rows are authored by the
+  host's local DID, not the caller's (`ingress-frame.caller-did` tells the guest who sent it). The
+  consent dialog states this per endpoint, exactly as for `external: true` commands.
 
 ### `egress` — declared outbound requests (spec R9)
 
@@ -146,7 +162,10 @@ must pass the static query guard at validate time (`invalid-query`).
 | `DashboardWidget`, `ViewportOverlay` | `stream`, `field?` | The label and the latest value at JSON Pointer `field` of an exposed stream. |
 
 Accessible names are `ext:<package_id>/<id>`. A contribution with neither `command`, `properties`
-nor `stream` is listed in the Extensions details pane, never rendered as a dead control.
+nor `stream` is listed in the Extensions details pane, never rendered as a dead control. Each slot
+admits only the fields in its row (plus `id`, `slot`, `label`, `icon`); any other field is `schema`,
+never silently ignored. The command a slot calls must accept the args that slot sends (`{}`, or
+`{"node_id": "<ULID>"}` for `ContextMenu`), else `scope-conflict` (V13).
 
 ## Validation
 
@@ -155,8 +174,8 @@ Every row is refused with its own reason; the first failing row in table order i
 
 | # | Rule | Reason |
 |---|---|---|
-| V1 | The JSON Schema fails (unknown field, type, pattern, bound), or an `args_schema` leaves the subset in bus.md or exceeds 4 KiB | `schema` |
-| V2 | `contract` is not `fractalengine:plugin@2.x.y` | `unsupported-contract` |
+| V1 | The JSON Schema fails (unknown field, type, pattern, bound, an endpoint URL scheme that does not match its transport, a UI field its slot does not render), or an `args_schema` leaves the subset in bus.md or exceeds 4 KiB | `schema` |
+| V2 | `contract` is not `fractalengine:plugin@2.x.y`, or names a 2.x minor newer than the host binds | `unsupported-contract` |
 | V3 | `kind` is `web-bundle`, or a `portal` section appears with any other kind | `reserved-kind` |
 | V4 | A scope list is present and empty: `scene.write`, `scene.property_scope`, `readings.metrics`, an endpoint's `methods`, `topics`, `content_types` or `forward_headers`, a stream's `consumers`, a consume entry's `metrics`, `bus.call` | `empty-scope` |
 | V5 | An `http`, `ws` or `mqtt` URL to a non-loopback host, or any endpoint URL with userinfo, a query or a fragment | `insecure-endpoint` |
@@ -167,7 +186,7 @@ Every row is refused with its own reason; the first failing row in table order i
 | V10 | A UI `stream`, or a `consume` of this package's own `<id>/<stream>`, that `bus.expose.streams` does not declare | `undeclared-stream` |
 | V11 | A `consume` source `host/<x>` outside {`query`, `readings`, `node-changes`, `admission`}, or the same source consumed twice (named queries count by `id`) | `unknown-source` |
 | V12 | A named `host/query` SQL that fails the static guard (`fe_query::sql_guard`, query mode) | `invalid-query` |
-| V13 | Scope conflicts: `InspectorSection` keys outside `property_scope`; `InspectorSection` or `host/node-changes` without `scene.read`; `set_property` without `property_scope`; `auth.scheme: header` without `header` | `scope-conflict` |
+| V13 | Scope conflicts: `InspectorSection` keys outside `property_scope`; `InspectorSection` or `host/node-changes` without `scene.read`; `set_property` without `property_scope`; `auth.scheme: header` without `header`; a UI `command` whose `args_schema` refuses the args its slot sends (`{}`; `ContextMenu`: `{"node_id": "<ULID>"}`) | `scope-conflict` |
 | V14 | Duplicate `id` across `ingress` + `egress`, within streams, commands, `ui`, or named queries | `duplicate-id` |
 | V15 | A number above the host ceiling (`fuel`, sizes, rates, connections, timeouts) | `over-host-ceiling` |
 
@@ -201,6 +220,9 @@ capability_digest = lowercase_hex(blake3(canonical_json(projection(manifest))))
   `label` and `icon` in each `ui` entry are removed. Every other member stays, including future
   ones, so a new grant can never slip past consent.
 - Arrays keep manifest order: reordering a list re-prompts. Authors keep lists stable.
+- `kind: web-bundle` uses the portal contract's digest instead (`docs/spec/portal-bundle/README.md`
+  §7.2: JCS over the `portal` capability set); governance records consent against whichever digest
+  the kind defines.
 
 An update with the same digest does not prompt; any other digest re-prompts and the old version
 keeps running until consent is given.

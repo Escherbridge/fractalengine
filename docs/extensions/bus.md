@@ -164,7 +164,19 @@ Admission changes on this host (spec R23), so dependent surfaces react without p
 - **params:** `{}`. **Deltas only:**
   `{"package_id": "…", "content_hash": "…", "kind": "extension" | "web-bundle",
     "state": "admitted" | "disabled" | "policy-denied" | "revoked" | "removed",
-    "reason"?: "…", "verse_id"?: "…"}`.
+    "reason": "…", "verse_id"?: "…"}`.
+- **`reason`** is a closed set, so a consumer can name the kill-switch layer (R23) without parsing
+  text (portal_surface_20261107 `admission.md` A-16):
+
+  | `state` | `reason` |
+  |---|---|
+  | `admitted` | `consented` (first admission or re-consent), `restored` (a cause was lifted and the record was still consented) |
+  | `disabled` | `local-disable` (layer a), `disable-all` (layer b), `consent-revoked` |
+  | `policy-denied` | `policy-removed` (layer c), `ceiling`, `role-lost` |
+  | `revoked` | `revocation-list` (layer d) |
+  | `removed` | `uninstalled` |
+
+  A new reason is a contract change, never a free-text value.
 - **Visibility:** an extension sees events for its own package and for packages named in its
   `consume` and `call` lists. Host-internal clients (the UI, the portal broker client) see all.
 - States and their meaning: [governance.md](governance.md#admission-record).
@@ -191,14 +203,18 @@ A command is answered by the one instance of `<package_id>` bound to the call's 
 
 | # | Check | Local caller gets | Remote caller gets |
 |---|---|---|---|
-| 1 | an active instance of the package is bound at the petal | `not-found` | uniform not-found |
+| 0 | remote caller: the DID's request rate on extension routes (10/s, keyed by DID before any lookup, so it is no existence oracle) | — | 429, not audited |
+| 1 | an active instance of the package is bound at the petal | `not-available` (REST/MCP: 404) | uniform not-found |
 | 2 | the command is in `bus.expose.commands` | `capability-denied` | uniform not-found |
 | 3 | remote caller: `external: true` and the verse policy allows bus external access | — | uniform not-found |
 | 4 | the caller's role at the petal ≥ `role_floor` | `capability-denied` | uniform not-found |
 | 5 | an extension caller lists the target in `bus.call` (and is not calling itself) | `capability-denied` | — |
-| 6 | per-caller rate (10/s per DID across the host) and the command's `rate_hz` | `rate-limited` | 429 |
+| 6 | per-caller rate and the command's `rate_hz`: 10/s per remote DID; the local DID's calls are keyed per caller (`ui`, local REST/MCP, each extension package, each portal package), so one chatty extension never starves the UI | `rate-limited` | 429 |
 | 7 | `args` validates against `args_schema` (absent schema: `{}` only) | `invalid-input` | 400 |
 | 8 | the instance's command queue (16) has room | `rate-limited` | 429 |
+
+`host-error` has no not-found: an extension or portal caller whose target has no active instance
+gets `not-available` (portal `unavailable`), the same code a stopped producer gives.
 
 Then `on-command(command, args, caller)` runs on the worker, with its own fuel. The reply must
 arrive within 5 s, or the caller gets `unknown-outcome` (504) and the call is not retried. Results
@@ -243,7 +259,8 @@ a command is a deliberate delegation of the host's identity.
 | commands | 16 per instance | refuse `rate-limited` |
 
 Nothing blocks the worker or the render loop. A guest receives at most 64 events (256 KiB) per
-`on-events` call, in `seq` order per subscription.
+`on-events` call, in `seq` order per subscription. The one event that can exceed 256 KiB, a
+`host/query` snapshot (≤ 1 MiB, §2.3), is delivered alone in its own `on-events` call.
 
 **`ended` reasons:** `unsubscribed`, `producer-inactive`, `consent-revoked`, `role-lost`,
 `instance-stopped`, `policy-denied`, `revoked`.
@@ -257,7 +274,8 @@ Nothing blocks the worker or the render loop. A guest receives at most 64 events
 | Stream event | declared, ≤ 64 KiB |
 | Stream rate | declared, ≤ 50/s |
 | Command args / result | 16 KiB / 64 KiB |
-| Command rate | declared ≤ 10/s per command; 10/s per caller DID across the host (`limits.rs` ingest precedent) |
+| Command rate | declared ≤ 10/s per command; 10/s per remote caller DID across the host (`limits.rs` ingest precedent); the local DID per caller (§4 check 6) |
+| Remote request rate | 10/s per DID on every extension route, checked first (§4 check 0) |
 | Command reply timeout | 5 s |
 | `host/query` floor | `min_interval_ms` ≥ 1 000 (default 1 000) |
 | `host/query` rate | the identity's `QUERY_RATE_PER_SEC` (10), shared with REST |
@@ -369,6 +387,9 @@ With a fake query source, a fake scene feed and a fake readings feed:
 6. A full command queue answers `rate-limited`.
 7. An undeclared consume is refused with `capability-denied`.
 8. A grant, a call and a denial each produce exactly one audit entry.
+9. An extension caller that spends its command budget gets `rate-limited` while a `ui` call to the
+   same command in the same second succeeds (per-caller keying, §4 check 6); a call to a package
+   with no instance at the petal answers the extension caller `not-available`.
 
 ## 11. Decision record
 
@@ -377,3 +398,12 @@ With a fake query source, a fake scene feed and a fake readings feed:
   identity's shared query rate. No fixed interval; idle costs zero reads. Tables without a change
   feed are refused at subscribe. Supersedes spec R13's "re-runs at a declared interval of at least
   1 s" and answers portal_surface_20261107 OD-3.
+- **Petal-scoped external routes (2026-11-08, G0):** commands and ingress mount under
+  `/api/v1/petals/{petal_id}/extensions/{package_id}/…`, superseding spec R15's
+  `/api/v1/extensions/{installation}/commands/{command}` and R8's ingress path. A remote caller can
+  know a package id but never a host-local installation id, the petal selects the one binding, and
+  the existing petal-scope guard and uniform not-found apply unchanged. Status and audit stay
+  installation-scoped (`GET /api/v1/extensions/{installation}[/audit]`, spec R11, R21).
+- **Rates (2026-11-08, G0):** remote DIDs are rate-limited before any lookup (§4 check 0), so a
+  flood of denied calls cannot become a flood of audit appends on the DB thread (spec §4.10); the
+  local DID's command budget is split per caller so an extension cannot starve the UI.
