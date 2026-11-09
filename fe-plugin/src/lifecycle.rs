@@ -1,5 +1,6 @@
-//! Wasm plugin lifecycle ops (flow: src/AGENTS.md §lifecycle) and extension governance: R19 activation
-//! preconditions and R23 kill-switch arrival (src/AGENTS.md §governance).
+//! Wasm plugin lifecycle ops (flow: src/AGENTS.md §lifecycle), extension governance: R19 activation
+//! preconditions and R23 kill-switch arrival (src/AGENTS.md §governance), and the 2.0 instance
+//! start / update / uninstall path (src/AGENTS.md §update).
 
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
@@ -11,10 +12,11 @@ use fe_sdk::manifest_v2::ExtensionManifest;
 use crate::capability::{CapabilityManifest, CapabilityToken};
 use crate::package::{payload_hash, verify_package, PackageError, SignatureEntry, UnsignedPolicy};
 use crate::registry_client::{RegistryClient, RegistryInstallError};
-use crate::tick::{DeactivateReason, TickHost, TickState};
+use crate::tick::{DeactivateReason, GuestLifecycle, Launch, TickHost, TickState, UpdateFailure};
 use crate::trust_roots::{RevocationError, RevocationList, RevocationSet, TrustRoots};
 use crate::registry::{PluginRegistry, PluginState, PluginTier};
 use crate::wasm::aot::AotCache;
+use crate::wasm::component::InstanceHandle;
 use crate::wasm::fuel::FuelBudget;
 use crate::wasm::{PluginStoreData, WasmEngine, WasmPlugin};
 use crate::PluginCommand;
@@ -150,6 +152,11 @@ impl PackageFacts {
         std::iter::once(self.content_hash.as_str())
             .chain(self.component_digest.as_deref())
             .chain(self.plaintext_digest.as_deref())
+    }
+
+    /// Whether `set` names any of this build's digests, under any package id.
+    fn is_revoked_in(&self, set: &RevocationSet) -> bool {
+        set.is_revoked_any(&self.hashes().collect::<Vec<_>>())
     }
 }
 
@@ -393,6 +400,73 @@ impl Governance {
 }
 
 // ---------------------------------------------------------------------------
+// 2.0 instances: start, update (P4.3), uninstall (src/AGENTS.md §update)
+// ---------------------------------------------------------------------------
+
+/// A 2.0 build ready to start: instantiated, its context staged on the `TickHost`'s contexts, nothing run yet.
+pub struct StagedInstance {
+    /// The context and `TickHost` key; the same for every build of one installation.
+    pub plugin_id: String,
+    /// blake3 of the `plugin/component.wasm` the instance was built from (`ExtensionComponent::digest`).
+    pub component_digest: String,
+    pub launch: Launch,
+}
+
+/// The staged build must be the one R19 judged: its component digest, its context and its seat's scope.
+fn bind_staged(
+    request: &ActivationRequest<'_>,
+    package: &PackageFacts,
+    staged: &StagedInstance,
+) -> Result<(), LifecycleError> {
+    let judged = package
+        .component_digest
+        .as_deref()
+        .is_some_and(|digest| digest.eq_ignore_ascii_case(&staged.component_digest));
+    if !judged {
+        return Err(LifecycleError::PayloadMismatch(staged.plugin_id.clone()));
+    }
+    let context = &staged.launch.context;
+    if context.plugin_id() != staged.plugin_id || context.petal_id() != request.petal_id {
+        return Err(LifecycleError::LaunchMismatch(format!("{}: the context is bound to another instance or petal", staged.plugin_id)));
+    }
+    let seat_matches = staged.launch.seat.as_ref().map_or(true, |seat| {
+        let spec = &seat.spec;
+        spec.installation_id == request.installation_id
+            && spec.verse_id == request.verse_id
+            && spec.petal_id == request.petal_id
+            && spec.identity_did == request.actor_did
+            && spec.manifest.id == package.package_id
+            && spec.content_hash.eq_ignore_ascii_case(&package.content_hash)
+    });
+    if !seat_matches {
+        return Err(LifecycleError::LaunchMismatch(format!("{}: the bus seat names another installation, scope or build", staged.plugin_id)));
+    }
+    Ok(())
+}
+
+/// The component's lifecycle exports as `TickHost` runs them; a hook fault degrades the instance and refuses.
+impl GuestLifecycle for InstanceHandle {
+    fn on_install(&mut self) -> Result<(), String> {
+        self.lock()?.on_install().map_err(|fault| fault.to_string())?
+    }
+
+    fn on_activate(&mut self) -> Result<(), String> {
+        self.lock()?.on_activate().map_err(|fault| fault.to_string())?
+    }
+
+    fn on_uninstall(&mut self) {
+        let outcome = self.lock().and_then(|mut instance| instance.on_uninstall().map_err(|fault| fault.to_string()));
+        if let Err(error) = outcome {
+            tracing::warn!(%error, "extension on-uninstall faulted");
+        }
+    }
+
+    fn degraded(&self) -> Option<String> {
+        self.lock().ok()?.degraded().map(str::to_string)
+    }
+}
+
+// ---------------------------------------------------------------------------
 // InstalledPlugin — tracks a Wasm plugin's runtime state
 // ---------------------------------------------------------------------------
 
@@ -517,7 +591,7 @@ impl PluginManager {
             PackageCheck::Invalid(reason) => return refusal(Precondition::PackageInvalid, reason.clone()),
             PackageCheck::Untrusted(reason) => return refusal(Precondition::UntrustedSigner, reason.clone()),
         };
-        if package.hashes().any(|hash| self.revocations.is_revoked(hash))
+        if package.is_revoked_in(&self.revocations)
             && !governance.overridden(request.verse_id, &package.content_hash)
         {
             return refusal(Precondition::Revoked, format!("{} is on an accepted kill list", package.package_id));
@@ -606,7 +680,7 @@ impl PluginManager {
             .running
             .iter()
             .filter(|(_, build)| {
-                build.package.hashes().any(|hash| self.revocations.is_revoked(hash))
+                build.package.is_revoked_in(&self.revocations)
                     && !self.governance.overridden(&build.verse_id, &build.package.content_hash)
             })
             .map(|(id, _)| id.clone())
@@ -618,7 +692,7 @@ impl PluginManager {
                 .filter(|(id, record)| {
                     self.installed.contains_key(*id)
                         && !self.governance.running.contains_key(*id)
-                        && self.revocations.is_revoked(&record.content_hash)
+                        && self.revocations.is_revoked_any(&[record.content_hash.as_str()])
                 })
                 .map(|(id, _)| id.clone()),
         );
@@ -708,6 +782,91 @@ impl PluginManager {
         true
     }
 
+    /// R19, then start a 2.0 instance on the worker's `TickHost`; the build is tracked so kill switches find it.
+    pub fn start_instance(&mut self, request: &ActivationRequest<'_>, staged: StagedInstance) -> Result<(), LifecycleError> {
+        let (ticks, package) = self.admit_staged(request, &staged)?;
+        ticks.launch(&staged.plugin_id, staged.launch).map_err(LifecycleError::HostError)?;
+        self.mark_running(&staged.plugin_id, request.verse_id, package);
+        Ok(())
+    }
+
+    /// P4.3: R19 for the new build (consent covers ITS capability digest), then `TickHost::update`; on a refusal the
+    /// previous build is re-activated and keeps running (src/AGENTS.md §update).
+    pub fn update_instance(&mut self, request: &ActivationRequest<'_>, staged: StagedInstance) -> Result<(), LifecycleError> {
+        let (ticks, package) = self.admit_staged(request, &staged)?;
+        let StagedInstance { plugin_id, launch, .. } = staged;
+        match ticks.update(&plugin_id, launch) {
+            Ok(()) => {
+                self.mark_running(&plugin_id, request.verse_id, package);
+                Ok(())
+            }
+            Err(UpdateFailure::NotRunning(detail)) => Err(LifecycleError::NotRunning(detail)),
+            Err(UpdateFailure::RolledBack(reason)) => Err(LifecycleError::RolledBack(reason)),
+            Err(UpdateFailure::PreviousStopped(reason)) => {
+                self.governance.running.remove(&plugin_id);
+                if let Ok(mut registry) = self.registry.lock() {
+                    if let Err(error) = registry.deactivate(&plugin_id) {
+                        tracing::debug!(plugin = %plugin_id, %error, "registry state after a failed update");
+                    }
+                }
+                Err(LifecycleError::UpdateAborted(reason))
+            }
+        }
+    }
+
+    /// Uninstall a 2.0 instance (G1-C10): stop `unbound`, `on-uninstall` with one final flush, then forget its tick,
+    /// bus and network counters. Consent records and the package store are the caller's.
+    pub fn uninstall_instance(&mut self, plugin_id: &str) {
+        self.governance.running.remove(plugin_id);
+        if let Some(ticks) = &self.ticks {
+            ticks.uninstall(plugin_id);
+        }
+        if let Ok(mut registry) = self.registry.lock() {
+            if registry.unregister(plugin_id).is_err() {
+                tracing::debug!(plugin = %plugin_id, "uninstalled instance had no registry entry");
+            }
+        }
+    }
+
+    /// R19 plus the staged-build binding; any refusal revokes the staged context so a refused build holds no lease.
+    fn admit_staged(
+        &self,
+        request: &ActivationRequest<'_>,
+        staged: &StagedInstance,
+    ) -> Result<(TickHost, PackageFacts), LifecycleError> {
+        let admitted = match &self.ticks {
+            None => Err(LifecycleError::HostError("no tick host is attached to this manager".into())),
+            Some(ticks) => self
+                .check_activation(request)
+                .map_err(LifecycleError::from)
+                .and_then(|package| bind_staged(request, package, staged).map(|()| (ticks.clone(), package.clone()))),
+        };
+        if admitted.is_err() {
+            self.ticks
+                .as_ref()
+                .map_or(&self.contexts, TickHost::contexts)
+                .discard(&staged.launch.context);
+        }
+        admitted
+    }
+
+    /// Track a started build for the kill switches and move its registry entry to `Active`.
+    fn mark_running(&mut self, plugin_id: &str, verse_id: &str, package: PackageFacts) {
+        self.governance
+            .running
+            .insert(plugin_id.to_string(), RunningBuild { verse_id: verse_id.to_string(), package });
+        if let Ok(mut registry) = self.registry.lock() {
+            if matches!(registry.get_state(plugin_id), Some(PluginState::Disabled(_))) {
+                let _ = registry.enable(plugin_id);
+            }
+            if !matches!(registry.get_state(plugin_id), Some(PluginState::Active)) {
+                if let Err(error) = registry.activate(plugin_id) {
+                    tracing::debug!(plugin = %plugin_id, %error, "registry state after a start");
+                }
+            }
+        }
+    }
+
     /// Configure publisher trust roots and the unsigned-package policy (default: no roots, refuse unsigned).
     pub fn with_trust(mut self, trust_roots: TrustRoots, unsigned_policy: UnsignedPolicy) -> Self {
         self.trust_roots = trust_roots;
@@ -736,7 +895,7 @@ impl PluginManager {
     }
 
     fn refuse_if_revoked(&self, plugin_id: &str, content_hash: &str) -> Result<(), LifecycleError> {
-        if self.revocations.is_revoked(content_hash) {
+        if self.revocations.is_revoked_any(&[content_hash]) {
             return Err(PackageError::Revoked {
                 package_id: plugin_id.to_string(),
                 content_hash: content_hash.to_string(),
@@ -1010,12 +1169,17 @@ impl PluginManager {
         Ok(())
     }
 
-    /// Uninstall a plugin: call `on_uninstall`, unregister, evict from AOT cache.
+    /// Uninstall a plugin: call `on_uninstall`, unregister, evict from AOT cache, forget every counter (G1-C10).
     pub async fn uninstall_plugin(
         &mut self,
         plugin_id: &str,
         wasm_bytes: &[u8],
     ) -> Result<(), LifecycleError> {
+        // A scheduled instance stops `unbound` and its tick, bus and network counters go.
+        self.governance.running.remove(plugin_id);
+        if let Some(ticks) = &self.ticks {
+            ticks.uninstall(plugin_id);
+        }
         // Deactivate if active, calling on_uninstall
         if let Some(installed) = self.installed.get_mut(plugin_id) {
             if installed
@@ -1143,6 +1307,18 @@ pub enum LifecycleError {
 
     #[error("revocation list refused: {0}")]
     Revocation(#[from] RevocationIntakeError),
+
+    #[error("staged build does not match the judged request: {0}")]
+    LaunchMismatch(String),
+
+    #[error("no running instance to update: {0}")]
+    NotRunning(String),
+
+    #[error("update failed, previous version kept: {0}")]
+    RolledBack(String),
+
+    #[error("update failed and the previous version stopped: {0}")]
+    UpdateAborted(String),
 }
 
 #[cfg(test)]
@@ -1298,6 +1474,62 @@ mod tests {
         manager.governance = Governance { local_did: LOCAL.into(), gates, ..Governance::default() };
     }
 
+    /// A 2.0 guest stand-in: logs its lifecycle hooks, never stages, refuses `on-activate` when asked.
+    #[derive(Clone)]
+    struct FakeGuest {
+        log: Arc<std::sync::Mutex<Vec<&'static str>>>,
+        refuse: bool,
+    }
+
+    impl crate::tick::TickInstance for FakeGuest {
+        fn refuel(&mut self, _fuel: u64) -> Result<(), String> {
+            Ok(())
+        }
+        fn on_tick(&mut self, _info: &crate::tick::TickInfo) -> Result<(), crate::tick::TickFault> {
+            Ok(())
+        }
+        fn on_deactivate(&mut self, _reason: DeactivateReason) {
+            self.log.lock().unwrap().push("deactivate");
+        }
+    }
+
+    impl crate::tick::TickSink for FakeGuest {
+        fn submit(&mut self, _tick: u64, _flush: crate::transaction::StagedFlush, reply: Sender<crate::tick::FlushReply>) {
+            let _ = reply.send(crate::tick::FlushReply::Refused("no database in this journey".into()));
+        }
+    }
+
+    impl GuestLifecycle for FakeGuest {
+        fn on_install(&mut self) -> Result<(), String> {
+            self.log.lock().unwrap().push("install");
+            Ok(())
+        }
+        fn on_activate(&mut self) -> Result<(), String> {
+            self.log.lock().unwrap().push("activate");
+            if self.refuse { Err("guest refused".into()) } else { Ok(()) }
+        }
+        fn on_uninstall(&mut self) {
+            self.log.lock().unwrap().push("uninstall");
+        }
+        fn degraded(&self) -> Option<String> {
+            None
+        }
+    }
+
+    /// A staged 2.0 build of `fleet` on `ticks`' contexts; no seat (J1 covers the bus).
+    fn staged_build(ticks: &TickHost, digest: &str, guest: &FakeGuest, first_activation: bool) -> StagedInstance {
+        let (commands, _queued) = crossbeam::channel::unbounded();
+        let token = CapabilityToken::mint("fleet", &CapabilityManifest::from_json(r#"{"id":"fleet"}"#).unwrap());
+        let context = ticks.contexts().stage("fleet".into(), "petal".into(), token, commands).unwrap();
+        let window: crate::tick::SharedWindow = Arc::new(std::sync::Mutex::new(crate::transaction::StagedWindow::new(0, 0)));
+        let scheduler = crate::tick::TickScheduler::without_ticks(ticks.clock(), window, Box::new(guest.clone()), Box::new(guest.clone()));
+        StagedInstance {
+            plugin_id: "fleet".into(),
+            component_digest: digest.into(),
+            launch: Launch { scheduler, seat: None, guest: Box::new(guest.clone()), context, first_activation },
+        }
+    }
+
     /// Journey (AC-4 table + identity binding): every refusal is typed, then the valid package installs and activation is pinned to it.
     #[tokio::test]
     async fn install_plugin_signature_journey() {
@@ -1421,7 +1653,8 @@ mod tests {
 
     /// Journey (R23 kill switch, OD-E1): a revoked hash is refused at install under any id; then a running
     /// governed instance is stopped by policy removal, by an accepted list (unless the Owner overrode it in
-    /// that verse), and by Disable all; a replayed older list and a non-revoker's list are refused.
+    /// that verse), and by Disable all; a replayed older list and a non-revoker's list are refused. Then a
+    /// 2.0 build starts, updates (P4.3: R19 again, rollback), is revoked by component digest and uninstalled.
     #[tokio::test]
     async fn kill_switch_journey() {
         let (mut manager, _tmp) = make_test_manager();
@@ -1515,6 +1748,58 @@ mod tests {
         // OD-8 pulls go to https, or to an exact loopback host (a look-alike host or userinfo is refused).
         assert!(is_pull_url("https://roots.example/revocations.json") && is_pull_url("http://127.0.0.1:8080/l"));
         assert!(!is_pull_url("http://127.0.0.1.evil.example/l") && !is_pull_url("http://u@localhost/l"));
+
+        // G4-A11 at the manager: a 2.0 build starts only as the build R19 judged (its component digest).
+        let ticks = TickHost::new(Arc::new(crate::tick::ManualClock::default()), crate::scene_host::PluginContexts::default());
+        manager = manager.with_ticks(ticks.clone());
+        let fleet = |content: &str, component: &str, digest: &str| {
+            PackageCheck::Verified(PackageFacts {
+                component_digest: Some(component.repeat(32)),
+                capability_digest: digest.into(),
+                ..facts("fleet", &content.repeat(32))
+            })
+        };
+        let (v1, v2) = (fleet("c1", "d1", "digest-1"), fleet("c2", "d2", "digest-2"));
+        let log = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let guest = FakeGuest { log: log.clone(), refuse: false };
+        manager.governance_mut().record_consent(consent("inst-3", "fleet", "digest-1"));
+        let other_bytes = staged_build(&ticks, &"ee".repeat(32), &guest, true);
+        let other_lease = other_bytes.launch.context.revocation_lease();
+        assert!(matches!(
+            manager.start_instance(&request(LOCAL, "inst-3", "verse-3", &v1), other_bytes),
+            Err(LifecycleError::PayloadMismatch(_))
+        ));
+        assert!(other_lease.require_active().is_err(), "a refused build holds no lease");
+        manager
+            .start_instance(&request(LOCAL, "inst-3", "verse-3", &v1), staged_build(&ticks, &"d1".repeat(32), &guest, true))
+            .unwrap();
+        assert_eq!(manager.governance().running_in("verse-3"), vec!["fleet".to_string()]);
+        assert_eq!(*log.lock().unwrap(), ["install", "activate"]);
+
+        // P4.3: the update's grants are not consented yet, so R19 refuses before anything stops.
+        let unconsented = manager.update_instance(&request(LOCAL, "inst-3", "verse-3", &v2), staged_build(&ticks, &"d2".repeat(32), &guest, false));
+        assert!(matches!(unconsented, Err(LifecycleError::Refused(ref refusal)) if refusal.precondition == Precondition::ConsentMissing));
+        assert_eq!(*log.lock().unwrap(), ["install", "activate"], "the running build was not touched");
+        // Consented, but the new build refuses on-activate: the previous one is re-activated.
+        manager.governance_mut().record_consent(consent("inst-3", "fleet", "digest-2"));
+        let broken = FakeGuest { log: Arc::new(std::sync::Mutex::new(Vec::new())), refuse: true };
+        assert!(matches!(
+            manager.update_instance(&request(LOCAL, "inst-3", "verse-3", &v2), staged_build(&ticks, &"d2".repeat(32), &broken, false)),
+            Err(LifecycleError::RolledBack(_))
+        ));
+        assert_eq!(*log.lock().unwrap(), ["install", "activate", "deactivate", "activate"]);
+        manager
+            .update_instance(&request(LOCAL, "inst-3", "verse-3", &v2), staged_build(&ticks, &"d2".repeat(32), &guest, false))
+            .unwrap();
+        assert_eq!(ticks.counters("fleet").map(|counters| counters.state), Some(TickState::Running));
+
+        // The kill switch now tracks the UPDATED build: a list naming its component digest stops it.
+        let list = signed_list(&revoker(), "revoker", "2026-11-09T00:00:00Z", &"d2".repeat(32));
+        assert_eq!(manager.accept_revocation_list(&list).unwrap(), vec!["fleet".to_string()]);
+        assert_eq!(ticks.counters("fleet").map(|counters| counters.state), Some(TickState::Stopped));
+        // Uninstall forgets the instance's counters (G1-C10).
+        manager.uninstall_instance("fleet");
+        assert!(ticks.counters("fleet").is_none() && manager.governance().running_in("verse-3").is_empty());
     }
 
     #[tokio::test]

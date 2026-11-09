@@ -47,6 +47,8 @@ pub trait SceneBackendFactory: Send + Sync {
 #[derive(Clone, Default, Resource)]
 pub struct PluginContexts {
     contexts: Arc<Mutex<HashMap<String, PluginContext>>>,
+    /// Built but not admitted: an update's new build runs `on-activate` here beside the running one.
+    staged: Arc<Mutex<HashMap<String, PluginContext>>>,
     factory: Option<Arc<dyn SceneBackendFactory>>,
     closed: Arc<AtomicBool>,
 }
@@ -66,16 +68,7 @@ impl PluginContexts {
         capabilities: CapabilityToken,
         tx: crossbeam::channel::Sender<PluginCommand>,
     ) -> Result<PluginContext, String> {
-        if self.is_closed() {
-            return Err("plugin host is shutting down".into());
-        }
-        if capabilities.plugin_id != plugin_id {
-            return Err("plugin token belongs to another instance".into());
-        }
-        let mut context = PluginContext::new(plugin_id, petal_id, capabilities, tx);
-        if let Some(factory) = &self.factory {
-            context = factory.bind(context)?;
-        }
+        let context = self.build(plugin_id, petal_id, capabilities, tx)?;
         let mut contexts = self
             .contexts
             .lock()
@@ -91,6 +84,89 @@ impl PluginContexts {
         }
         contexts.insert(context.session.id.clone(), context.clone());
         Ok(context)
+    }
+
+    /// A host-minted context with the factory's backends; nothing is registered yet.
+    fn build(
+        &self,
+        plugin_id: String,
+        petal_id: String,
+        capabilities: CapabilityToken,
+        tx: crossbeam::channel::Sender<PluginCommand>,
+    ) -> Result<PluginContext, String> {
+        if self.is_closed() {
+            return Err("plugin host is shutting down".into());
+        }
+        if capabilities.plugin_id != plugin_id {
+            return Err("plugin token belongs to another instance".into());
+        }
+        let context = PluginContext::new(plugin_id, petal_id, capabilities, tx);
+        match &self.factory {
+            Some(factory) => factory.bind(context),
+            None => Ok(context),
+        }
+    }
+
+    /// Build a context with a live lease but leave it unadmitted (src/AGENTS.md §update): `admit` or `discard` it.
+    pub fn stage(
+        &self,
+        plugin_id: String,
+        petal_id: String,
+        capabilities: CapabilityToken,
+        tx: crossbeam::channel::Sender<PluginCommand>,
+    ) -> Result<PluginContext, String> {
+        let context = self.build(plugin_id, petal_id, capabilities, tx)?;
+        let mut staged = self
+            .staged
+            .lock()
+            .map_err(|_| "plugin context registry lock poisoned")?;
+        if self.is_closed() {
+            context.session.revoke();
+            return Err("plugin host is shutting down".into());
+        }
+        staged.insert(context.session.id.clone(), context.clone());
+        Ok(context)
+    }
+
+    /// Admit a staged context; refused (and its lease revoked) while another context of the plugin is admitted.
+    pub fn admit(&self, context: &PluginContext) -> Result<(), String> {
+        let staged = self
+            .staged
+            .lock()
+            .map_err(|_| "plugin context registry lock poisoned")?
+            .remove(&context.session.id);
+        let Some(staged) = staged else {
+            return Err("plugin context was not staged on this host".into());
+        };
+        let Ok(mut contexts) = self.contexts.lock() else {
+            staged.session.revoke();
+            return Err("plugin context registry lock poisoned".into());
+        };
+        if self.is_closed() {
+            staged.session.revoke();
+            return Err("plugin host is shutting down".into());
+        }
+        if contexts
+            .values()
+            .any(|existing| existing.plugin_id() == staged.plugin_id())
+        {
+            staged.session.revoke();
+            return Err("plugin instance is already bound".into());
+        }
+        contexts.insert(staged.session.id.clone(), staged);
+        Ok(())
+    }
+
+    /// Revoke a staged context that will not run; an admitted context is never touched here.
+    pub fn discard(&self, context: &PluginContext) {
+        let removed = self
+            .staged
+            .lock()
+            .ok()
+            .and_then(|mut staged| staged.remove(&context.session.id));
+        if let Some(staged) = removed {
+            staged.session.revoke();
+        }
     }
 
     /// Revoke queued command origins when the trusted host stops an instance.
@@ -121,17 +197,18 @@ impl PluginContexts {
             .ok_or_else(|| "plugin origin is not admitted".into())
     }
 
-    /// Revoke all instances and stop accepting work when the application exits.
+    /// Revoke all instances (admitted and staged) and stop accepting work when the application exits.
     pub fn shutdown(&self) -> Result<(), String> {
         self.closed.store(true, Ordering::Release);
-        let mut contexts = self
-            .contexts
-            .lock()
-            .map_err(|_| "plugin context registry lock poisoned")?;
-        for context in contexts.values() {
-            context.session.revoke();
+        for registry in [&self.contexts, &self.staged] {
+            let mut contexts = registry
+                .lock()
+                .map_err(|_| "plugin context registry lock poisoned")?;
+            for context in contexts.values() {
+                context.session.revoke();
+            }
+            contexts.clear();
         }
-        contexts.clear();
         Ok(())
     }
 
