@@ -116,8 +116,10 @@ trusting "pure efficiency" claims; push control; a board that silently drifts st
   was written), so only the docs commit `5fbccce3` is local — the "130 commits unpushed" line below is
   stale. Build gate **CLOSED for memory since 15:46** (19:17 tick: commit 101/128 GB, free RAM 2.8 GB;
   reopens < 100 GB and > 4 GB). EXT sessions: no bus files yet; both worktrees at `30163ca2`, 89 behind
-  main. Hourly monitor cron recreated in this session (expires 2026-11-15). `fractalengine-48` was
-  asked to stand down; that message is held for the user's approval in its session.
+  main. Hourly monitor cron recreated in this session (expires 2026-11-15). `fractalengine-48` (PID
+  66276, sessionId `2aa714d7…`, transcript tail checked: no unrecorded state) was stopped with its MCP
+  tree at the user's request (19:35) after its stand-down message expired undelivered — its cron died
+  with it, so only this session's monitor ticks.
 - **2026-11-08 11:35 — P2P convergence campaign CONVERGED; extension sessions handed off; this
   session = orchestrator / merge gate (supersedes every bullet below).** Since the 10-15 bullet: FF
   campaign closed green 2026-10-25 (`6141914`, pushed `820a9d4`, CI green); open-core split + 11
