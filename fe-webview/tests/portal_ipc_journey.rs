@@ -1,19 +1,25 @@
-//! Portal IPC journey (spec R8-R11) over the real mount table, gate, page-API serving and bridge; only the broker edge is faked.
+//! Portal IPC journey (spec R8-R11, R14) over the real mount table, gate, host, page-API and feed serving and bridge;
+//! only the broker and governance edges are faked.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::io::Write as _;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
+use std::rc::Rc;
 use std::sync::{mpsc, Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use ed25519_dalek::SigningKey;
-use fe_webview::ipc::BundleState;
-use fe_webview::portal_bundle::ipc::{serve, PAGE_API_PATH};
-use fe_webview::portal_bundle::origin::admitted_label;
+use fe_webview::ipc::{BrowserEvent, BundleState, RevokedReason};
+use fe_webview::portal_bundle::admission::{
+    AdmissionEvent, AdmissionRecord, AdmissionSignal, GovernanceView, KillListStatus, RecordReason, RecordState,
+};
+use fe_webview::portal_bundle::feeds::{serve, FeedSource, FEEDS_PATH};
+use fe_webview::portal_bundle::ipc::PAGE_API_PATH;
+use fe_webview::portal_bundle::origin::{admitted_label, static_label};
 use fe_webview::portal_bundle::{
-    prepare, AdmissionVerdict, Attempt, BindRequest, BrokerClient, BrokerEvent, BundleIdentity, BundleResolver,
-    BundleSource, Decision, DeliveryKind, Ingress, IpcError, MountMode, NavigationGate, PendingReply, PortalBridge,
-    PortalBroker, PortalIntent, PortalMounts, UiIntent,
+    prepare, AdmissionVerdict, Attempt, BindRequest, BrokerClient, BrokerEvent, BundleHost, BundleIdentity, BundleParts,
+    BundleResolver, BundleSource, BundleWebview, Decision, DeliveryKind, Ingress, IpcError, Label, MountMode,
+    NavigationGate, PendingReply, PortalBridge, PortalBroker, PortalIntent, PortalMounts, UiIntent, UNLOAD_URL,
 };
 use http::StatusCode;
 use serde_json::{json, Value};
@@ -32,6 +38,8 @@ const GRANTED: &[&str] = &[
     "emit:selection",
     "intent:focus_node",
 ];
+/// A share token whose payload is `{"v":1,"exp":1794240000}` (2026-11-09T16:00:00Z); the signature is never checked here.
+const SHARE_TOKEN: &str = "eyJ2IjoxLCJleHAiOjE3OTQyNDAwMDB9.c2lnbmF0dXJl";
 
 // ---------------------------------------------------------------------------
 // A sealed bundle declaring every capability class (README §5)
@@ -48,6 +56,11 @@ impl Drop for Fixture {
 }
 
 fn sealed_bundle(key: &SigningKey) -> Fixture {
+    sealed_bundle_with(key, "1.0.0", &["fleet.*"])
+}
+
+/// The same package at `version`, declaring `set_property` over `keys`.
+fn sealed_bundle_with(key: &SigningKey, version: &str, keys: &[&str]) -> Fixture {
     let portal = json!({
         "schema": "fe-portal-bundle/1", "entry": "web/index.html", "title": "Flow dashboard",
         "csp": { "connect": [], "img": [], "font": [], "media": [], "frame": [], "wasm": false, "inline_styles": false },
@@ -57,16 +70,16 @@ fn sealed_bundle(key: &SigningKey) -> Fixture {
             "queries": [{ "name": "hourly_flow", "sql": "SELECT metric FROM iot_reading WHERE metric = $metric",
                           "params": { "metric": "string" } }]
         },
-        "commands": { "set_property": { "keys": ["fleet.*"] },
+        "commands": { "set_property": { "keys": keys },
                       "invoke": [{ "package": "org.example.fleet-sim", "command": "start" }] },
         "hooks": [{ "source": "org.example.fleet-sim/positions" }],
         "streams": [{ "id": "selection", "max_rate_hz": 4, "max_event_bytes": 2048 }],
         "ui_intents": ["focus_node"]
     });
-    let extension = json!({ "manifest_version": 2, "id": PACKAGE, "version": "1.0.0", "kind": "web-bundle", "portal": portal });
+    let extension = json!({ "manifest_version": 2, "id": PACKAGE, "version": version, "kind": "web-bundle", "portal": portal });
     let manifest = json!({
         "schema_version": "1.0.0", "hexon_id": PACKAGE, "hexon_type": "plugin",
-        "publisher_did": "did:key:z6Mkunsealed", "version": "1.0.0", "name": "Flow dashboard",
+        "publisher_did": "did:key:z6Mkunsealed", "version": version, "name": "Flow dashboard",
         "created_at": "2026-11-08T00:00:00Z", "updated_at": "2026-11-08T00:00:00Z"
     });
     let mut zip = zip::ZipWriter::new(std::io::Cursor::new(Vec::new()));
@@ -90,6 +103,7 @@ fn sealed_bundle(key: &SigningKey) -> Fixture {
 struct Resolver {
     path: PathBuf,
     admit: Option<String>,
+    feeds: FeedSource,
 }
 
 impl BundleResolver for Resolver {
@@ -102,6 +116,127 @@ impl BundleResolver for Resolver {
             None => AdmissionVerdict::Unadmitted { can_admit: true },
         }
     }
+    fn feeds(&self, _node_id: &str) -> FeedSource {
+        self.feeds.clone()
+    }
+}
+
+// ---------------------------------------------------------------------------
+// The faked governance edge (A-2, A-15) and a resolver that consults it
+// ---------------------------------------------------------------------------
+
+#[derive(Default)]
+struct FakeGovernance {
+    records: Mutex<BTreeMap<(String, String), AdmissionRecord>>,
+    killed: Mutex<BTreeSet<String>>,
+}
+
+impl FakeGovernance {
+    /// Record consent for `(package_id, content_hash)` covering `capability_digest`.
+    fn admit(&self, package_id: &str, content_hash: &str, publisher_did: &str, capability_digest: &str) {
+        let record = AdmissionRecord {
+            state: RecordState::Admitted,
+            reason: RecordReason::Consented,
+            publisher_did: publisher_did.into(),
+            capability_digest: capability_digest.into(),
+        };
+        self.records.lock().unwrap().insert((package_id.into(), content_hash.into()), record);
+    }
+    /// Accept a list entry naming `digest`.
+    fn kill(&self, digest: &str) {
+        self.killed.lock().unwrap().insert(digest.into());
+    }
+}
+
+impl GovernanceView for FakeGovernance {
+    fn host_disabled(&self) -> bool {
+        false
+    }
+    fn kill_list(&self, digest: &str) -> KillListStatus {
+        if self.killed.lock().unwrap().contains(digest) {
+            KillListStatus::Listed
+        } else {
+            KillListStatus::Clear
+        }
+    }
+    fn record(&self, package_id: &str, content_hash: &str) -> Option<AdmissionRecord> {
+        self.records.lock().unwrap().get(&(package_id.to_owned(), content_hash.to_owned())).cloned()
+    }
+    fn can_admit(&self, _node_id: &str, _identity: &BundleIdentity) -> bool {
+        true
+    }
+}
+
+/// A repository node whose `portal.bundle_asset` an Editor can repoint, judged by governance.
+struct GovernedResolver {
+    path: Mutex<PathBuf>,
+    governance: Arc<FakeGovernance>,
+}
+
+impl GovernedResolver {
+    fn new(path: &Path, governance: &Arc<FakeGovernance>) -> Arc<Self> {
+        Arc::new(Self { path: Mutex::new(path.to_path_buf()), governance: Arc::clone(governance) })
+    }
+    fn point_at(&self, path: &Path) {
+        *self.path.lock().unwrap() = path.to_path_buf();
+    }
+}
+
+impl BundleResolver for GovernedResolver {
+    fn resolve(&self, _node_id: &str) -> Result<BundleSource, BundleState> {
+        Ok(BundleSource { asset_id: "asset-gov".into(), blob_path: Some(self.path.lock().unwrap().clone()), revoked: None })
+    }
+    fn governance(&self) -> Option<&dyn GovernanceView> {
+        Some(self.governance.as_ref())
+    }
+}
+
+/// Records what the host asked of the webview.
+#[derive(Default)]
+struct FakeWebview {
+    loads: Vec<String>,
+    shown: bool,
+    cleared: Vec<String>,
+}
+
+impl BundleWebview for FakeWebview {
+    fn bundle_load(&mut self, url: &str) -> anyhow::Result<()> {
+        self.loads.push(url.to_owned());
+        Ok(())
+    }
+    fn bundle_show(&mut self) -> anyhow::Result<()> {
+        self.shown = true;
+        Ok(())
+    }
+    fn bundle_hide(&mut self) -> anyhow::Result<()> {
+        self.shown = false;
+        Ok(())
+    }
+    fn bundle_clear_storage(&mut self, label: &Label) {
+        self.cleared.push(label.to_string());
+    }
+}
+
+fn states(events: &[BrowserEvent]) -> Vec<BundleState> {
+    events
+        .iter()
+        .filter_map(|event| match event {
+            BrowserEvent::BundleState { state, .. } => Some(state.clone()),
+            _ => None,
+        })
+        .collect()
+}
+
+/// Poll until the open worker's outcome lands (a promotion at install starts another worker, so keep polling).
+fn settle(host: &mut BundleHost, webview: &mut FakeWebview) -> Vec<BrowserEvent> {
+    for _ in 0..1_000 {
+        let events = host.poll(webview);
+        if !events.is_empty() {
+            return events;
+        }
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    panic!("no bundle outcome within 5 s");
 }
 
 // ---------------------------------------------------------------------------
@@ -213,7 +348,7 @@ struct Page {
     bundle: Fixture,
     publisher: String,
     mounts: PortalMounts,
-    gate: NavigationGate,
+    gate: Rc<NavigationGate>,
     bridge: PortalBridge,
     broker: Arc<FakeBroker>,
     dyn_broker: Arc<dyn PortalBroker>,
@@ -231,12 +366,12 @@ impl Page {
         let key = SigningKey::from_bytes(&[9u8; 32]);
         let publisher = fe_format::verifying_key_to_did(&key.verifying_key());
         let bundle = sealed_bundle(&key);
-        let resolver = Resolver { path: bundle.path.clone(), admit: Some(publisher.clone()) };
+        let resolver = Resolver { path: bundle.path.clone(), admit: Some(publisher.clone()), feeds: FeedSource::default() };
         let mount = prepare(&resolver, "node-repo", u64::MAX).expect("admitted mount");
         assert_eq!(mount.mode, MountMode::Admitted);
         let mounts = PortalMounts::new();
         let mount = mounts.install(mount);
-        let gate = NavigationGate::new(mounts.clone());
+        let gate = Rc::new(NavigationGate::new(mounts.clone()));
         gate.expect_entry(mount.entry_url.clone());
         assert_eq!(gate.decide(&main_frame(&mount.entry_url)), Decision::AllowEnter);
         let broker = Arc::new(FakeBroker {
@@ -281,8 +416,13 @@ impl Page {
     }
 
     fn get_page_api(&self, label: &str) -> http::Response<Vec<u8>> {
+        self.get(label, PAGE_API_PATH)
+    }
+
+    /// GET `path` on `label` through the handler the backend registers (members, page API, feeds).
+    fn get(&self, label: &str, path: &str) -> http::Response<Vec<u8>> {
         let request = http::Request::builder()
-            .uri(format!("fe-portal://{label}.localhost{PAGE_API_PATH}"))
+            .uri(format!("fe-portal://{label}.localhost{path}"))
             .body(Vec::new())
             .unwrap();
         serve(&self.mounts, &self.bridge, &request)
@@ -434,10 +574,34 @@ fn sender_gate_drops_every_unauthorized_post_without_a_reply() {
     page.pump();
     assert_eq!(page.ok(fresh)["api"], "fe.portal.v1");
 
-    // The same bytes unadmitted: a static origin, no page API, and its posts are dropped.
-    let resolver = Resolver { path: page.bundle.path.clone(), admit: None };
+    // An admitted origin never gets feeds: its data path is IPC (admission.md §7.2).
+    assert_eq!(page.get(&page.label.clone(), FEEDS_PATH).status(), StatusCode::NOT_FOUND);
+
+    // The same bytes unadmitted: a static origin, no page API, its posts dropped, and only exact share URLs as feeds.
+    let local_api = "http://127.0.0.1:8765";
+    let relay = "https://relay.example.org";
+    let share = |origin: &str| format!("{origin}/api/v1/shared/{SHARE_TOKEN}");
+    let feeds = FeedSource {
+        feeds: BTreeMap::from([
+            ("flow".to_owned(), share(local_api)),
+            ("relay".to_owned(), share(relay)),
+            ("other_port".to_owned(), share("http://127.0.0.1:9999")),
+            ("intranet".to_owned(), share("https://192.168.1.10")),
+            ("bundle_origin".to_owned(), share("https://fe-portal.s-aaaaaaaaaaaaaaaaaaaaaaaaaa.localhost")),
+            ("with_query".to_owned(), format!("{}?coords=1", share(local_api))),
+            ("other_route".to_owned(), format!("{local_api}/api/v1/query")),
+            ("Upper".to_owned(), share(local_api)),
+        ]),
+        local_api_origin: Some(local_api.to_owned()),
+    };
+    let resolver = Resolver { path: page.bundle.path.clone(), admit: None, feeds };
     let static_mount = prepare(&resolver, "node-repo", u64::MAX).expect("static mount");
     assert_eq!(static_mount.mode, MountMode::Static);
+    let csp = static_mount.csp().to_str().unwrap().to_owned();
+    assert!(
+        csp.contains(&format!("connect-src 'self' {local_api} {relay};")),
+        "connect-src gains exactly the kept feed origins: {csp}"
+    );
     let static_label = static_mount.label.to_string();
     let static_sender = static_mount.entry_url.clone();
     page.mounts.install(static_mount);
@@ -445,6 +609,19 @@ fn sender_gate_drops_every_unauthorized_post_without_a_reply() {
     let before = page.bridge.stats().total.dropped_origin;
     assert_eq!(page.post_from(&static_sender, &envelope(&page.token, 300, "hello", json!({}))), Ingress::Dropped);
     assert_eq!(page.bridge.stats().total.dropped_origin, before + 1);
+    let feeds_json = page.get(&static_label, FEEDS_PATH);
+    assert_eq!(feeds_json.status(), StatusCode::OK);
+    assert_eq!(feeds_json.headers()["content-type"], "application/json; charset=utf-8");
+    assert_eq!(feeds_json.headers()["x-content-type-options"], "nosniff");
+    let expires_at = "2026-11-09T16:00:00Z";
+    assert_eq!(
+        serde_json::from_slice::<Value>(feeds_json.body()).unwrap(),
+        json!({ "v": 1, "feeds": {
+            "flow": { "url": share(local_api), "expires_at": expires_at },
+            "relay": { "url": share(relay), "expires_at": expires_at }
+        } }),
+        "loopback only on this peer's API port, https only where the raw policy allows, the exact route only"
+    );
     page.pump();
     assert!(page.broker.log().contains(&format!("close {BROKER_CLIENT}")), "unmounting the admitted build closes its client");
 }
@@ -615,14 +792,113 @@ fn subscriptions_actions_and_bus_route_through_the_broker() {
     let stats = page.bridge.stats();
     assert!(stats.total.refused_capability >= 6 && stats.total.refused_role >= 3 && stats.total.rate_limited >= 13);
 
-    // A reload ends every subscription at the broker; unmounting closes the client.
+    // A reload ends every subscription at the broker.
     let unsubscribed = |log: &[String]| log.iter().filter(|line| line.starts_with("unsubscribe ")).count();
     let before = unsubscribed(&page.broker.log());
     page.reload();
     page.pump();
     assert_eq!(unsubscribed(&page.broker.log()), before + 16);
     assert_eq!(page.bridge.stats().total.live_subscriptions, 0);
-    page.mounts.unmount();
+
+    // PJ3 (admission.md §5): three live subscriptions and one queued act, then a revocation list names this build's
+    // hash under another package id. The revoke runs in one call, before the bridge pumps again.
+    page.fetch_token();
+    page.advance(2_000);
+    for stream in ["node", "readings", "org.example.fleet-sim/positions"] {
+        let id = page.subscribe(stream, json!({}));
+        page.pump();
+        assert!(page.ok(id)["sub"].is_u64(), "{stream}");
+    }
+    assert_eq!(page.bridge.stats().total.live_subscriptions, 3);
+    page.send("act", json!({ "op": "set_property", "node_id": NODE_A, "key": "fleet.queued", "value": 1 }));
+    let mount = page.mounts.current().expect("still mounted");
+    let mut webview = FakeWebview::default();
+    let mut host = BundleHost::new(BundleParts { mounts: page.mounts.clone(), gate: Rc::clone(&page.gate), supported: true });
+    let listed = AdmissionEvent {
+        package_id: "org.example.renamed".into(),
+        content_hash: mount.content_hash.clone(),
+        state: RecordState::Revoked,
+        reason: RecordReason::RevocationList,
+    };
+    let revoked = host.apply_admission(&AdmissionSignal::Event(listed), &mut webview, Some(&page.bridge));
+    assert_eq!(states(&revoked), vec![BundleState::Revoked(RevokedReason::RevocationList)]);
+    assert!(page.mounts.current().is_none());
+    assert_eq!(page.get(&page.label.clone(), "/index.html").status(), StatusCode::NOT_FOUND, "no byte after the decision");
+    assert_eq!(page.bridge.stats().total.live_subscriptions, 0);
+    let log = page.broker.log();
+    assert_eq!(unsubscribed(&log), before + 16 + 3, "every subscription ends at the broker inside the revoke");
+    assert_eq!(log.last(), Some(&format!("close {BROKER_CLIENT}")));
+    let dropped = page.bridge.stats().total.dropped_origin;
+    let stale = envelope(&page.token, 900, "hello", json!({}));
+    assert_eq!(page.post_from(&page.sender.clone(), &stale), Ingress::Dropped, "the dying document is not heard");
+    assert_eq!(page.bridge.stats().total.dropped_origin, dropped + 1);
     page.pump();
-    assert_eq!(page.broker.log().last(), Some(&format!("close {BROKER_CLIENT}")));
+    assert!(!page.broker.log().iter().any(|line| line.ends_with("fleet.queued")), "the queued act never reaches the write path");
+    assert_eq!(webview.loads, vec![UNLOAD_URL.to_owned()]);
+    assert!(!webview.shown);
+    assert_eq!(page.gate.decide(&main_frame(UNLOAD_URL)), Decision::AllowHostUnload);
+    let static_twin = static_label(&mount.content_hash).unwrap().to_string();
+    assert_eq!(webview.cleared, vec![page.label.clone(), static_twin], "SP-6 clears both of the build's origins");
+
+    // Re-opening renders nothing while the list stands; the archive digest alone matches, before any parse.
+    let governance = Arc::new(FakeGovernance::default());
+    governance.kill(&mount.archive_digest);
+    let reopen: Arc<dyn BundleResolver> = GovernedResolver::new(&page.bundle.path, &governance);
+    assert!(host.open("node-repo", Some(reopen), &mut webview).is_empty());
+    assert_eq!(states(&settle(&mut host, &mut webview)), vec![BundleState::Revoked(RevokedReason::RevocationList)]);
+    assert!(page.mounts.current().is_none());
+    assert_eq!(webview.loads, vec![UNLOAD_URL.to_owned()], "no entry is loaded");
+
+    // PJ9 (admission.md §6): governance carries consent over to every build of the package, but the portal admits only
+    // the capabilities consent covered. v2 keeps the admitted origin; v3 adds a key scope and opens Static on its own
+    // origin; consent for v3 promotes the open portal back to the admitted origin.
+    let key = SigningKey::from_bytes(&[9u8; 32]);
+    let v2 = sealed_bundle_with(&key, "1.1.0", &["fleet.*"]);
+    let v3 = sealed_bundle_with(&key, "1.2.0", &["fleet.*", "console.*"]);
+    let facts = |path: &Path| {
+        let unjudged = Resolver { path: path.to_path_buf(), admit: None, feeds: FeedSource::default() };
+        let mount = prepare(&unjudged, "node-upd", u64::MAX).expect("identity");
+        (mount.content_hash.clone(), mount.capability_digest.clone())
+    };
+    let (h1, d1) = facts(&page.bundle.path);
+    let (h2, d2) = facts(&v2.path);
+    let (h3, d3) = facts(&v3.path);
+    assert_eq!(d1, d2, "a version bump alone changes no capability");
+    assert_ne!(d1, d3);
+    let governance = Arc::new(FakeGovernance::default());
+    for hash in [&h1, &h2, &h3] {
+        governance.admit(PACKAGE, hash, &page.publisher, &d1);
+    }
+    let node = GovernedResolver::new(&page.bundle.path, &governance);
+    let node_resolver: Arc<dyn BundleResolver> = node.clone();
+    let mounts = PortalMounts::new();
+    let mut host = BundleHost::new(BundleParts {
+        mounts: mounts.clone(),
+        gate: Rc::new(NavigationGate::new(mounts.clone())),
+        supported: true,
+    });
+    let mut webview = FakeWebview::default();
+    let admitted = BundleState::Admitted { publisher: page.publisher.clone() };
+    host.open("node-upd", Some(node_resolver), &mut webview);
+    assert_eq!(states(&settle(&mut host, &mut webview)), vec![admitted.clone()]);
+    let admitted_origin = mounts.current().expect("v1").label.clone();
+    node.point_at(&v2.path);
+    assert!(host.refresh("node-upd", &mut webview).is_empty(), "a reload, not a Close");
+    assert_eq!(states(&settle(&mut host, &mut webview)), vec![admitted.clone()]);
+    assert_eq!(mounts.current().expect("v2").label, admitted_origin, "same publisher, same capabilities: storage follows");
+    node.point_at(&v3.path);
+    host.refresh("node-upd", &mut webview);
+    assert_eq!(states(&settle(&mut host, &mut webview)), vec![BundleState::StaticSandbox { can_admit: true }]);
+    let static_v3 = mounts.current().expect("v3");
+    assert_eq!(static_v3.label, static_label(&h3).unwrap(), "a capability increase never inherits the admitted origin");
+    governance.admit(PACKAGE, &h3, &page.publisher, &d3);
+    let consent = AdmissionEvent {
+        package_id: PACKAGE.into(),
+        content_hash: h3.clone(),
+        state: RecordState::Admitted,
+        reason: RecordReason::Consented,
+    };
+    assert!(host.apply_admission(&AdmissionSignal::Event(consent), &mut webview, None).is_empty());
+    assert_eq!(states(&settle(&mut host, &mut webview)), vec![admitted]);
+    assert_eq!(mounts.current().expect("re-admitted v3").label, admitted_origin);
 }

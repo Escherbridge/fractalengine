@@ -3,6 +3,7 @@ use std::sync::Arc;
 use crate::backend::{BackendEvent, WebViewBackend, WindowGeometry};
 use crate::backends::ActiveBackend;
 use crate::ipc::{BrowserCommand, BrowserEvent, BundleState};
+use crate::portal_bundle::admission::AdmissionSignal;
 use crate::portal_bundle::{BridgeWebview, BundleHost, BundleResolver, BundleWebview, PortalBroker, PortalIntent};
 use crate::security;
 use bevy::prelude::IntoScheduleConfigs;
@@ -21,13 +22,19 @@ pub const TRUST_BAR_JS: &str = r#"
     document.body.prepend(bar);
 "#;
 
-/// Binary-injected repository-node resolver; without it every `OpenBundle` reports Unavailable.
+/// Binary-injected repository-node resolver (with governance's view, for admission); without it every `OpenBundle` reports Unavailable.
 #[derive(bevy::prelude::Resource, Clone)]
 pub struct PortalBundleResolver(pub Arc<dyn BundleResolver>);
 
 /// Binary-injected integration-bus client for Admitted bundles; without it every bridge call but `hello` is `unavailable`.
 #[derive(bevy::prelude::Resource, Clone)]
 pub struct PortalBrokerRes(pub Arc<dyn PortalBroker>);
+
+/// The binary saw a repository node's bundle bytes arrive or its `portal.bundle_asset` change (admission.md §3, §6).
+#[derive(Debug, Clone, PartialEq, Eq, bevy::prelude::Message)]
+pub struct PortalBundleChanged {
+    pub node_id: String,
+}
 
 pub struct WebViewPlugin;
 
@@ -36,10 +43,20 @@ impl bevy::prelude::Plugin for WebViewPlugin {
         app.add_message::<BrowserCommand>();
         app.add_message::<BrowserEvent>();
         app.add_message::<PortalIntent>();
+        app.add_message::<AdmissionSignal>();
+        app.add_message::<PortalBundleChanged>();
         app.init_resource::<PortalPanelRect>();
         app.add_systems(bevy::prelude::Update, init_backend);
         app.add_systems(bevy::prelude::Update, dispatch_commands);
         app.add_systems(bevy::prelude::Update, drain_backend_events);
+        // Revocations land before the bridge pumps, so no post or delivery of a revoked document crosses this frame.
+        app.add_systems(
+            bevy::prelude::Update,
+            apply_portal_admission
+                .after(dispatch_commands)
+                .after(drain_backend_events)
+                .before(pump_portal_ipc),
+        );
         // After the frame's mounts settle, so a new mount binds before its first post can arrive.
         app.add_systems(bevy::prelude::Update, pump_portal_ipc.after(drain_backend_events));
         app.add_systems(bevy::prelude::PostUpdate, sync_portal_position.run_if(fe_runtime::maintenance::editor_running));
@@ -437,6 +454,42 @@ fn drain_backend_events(
     }
     if let Some(host) = bundles.as_mut() {
         for event in host.poll(&mut *backend) {
+            events.write(event);
+        }
+    }
+}
+
+/// Revoke listener (admission.md §5): governance signals and bundle changes, applied to the live mount in the frame they arrive.
+///
+/// The binary writes [`AdmissionSignal`] and [`PortalBundleChanged`]; order its writer `.before(apply_portal_admission)`.
+pub fn apply_portal_admission(
+    backend_res: Option<bevy::ecs::system::NonSendMut<WebViewBackendRes>>,
+    mut signals: bevy::prelude::MessageReader<AdmissionSignal>,
+    mut changes: bevy::prelude::MessageReader<PortalBundleChanged>,
+    mut events: bevy::prelude::MessageWriter<BrowserEvent>,
+) {
+    let Some(mut res) = backend_res else {
+        signals.clear();
+        changes.clear();
+        return;
+    };
+    let WebViewBackendRes {
+        backend, bundles, ..
+    } = &mut *res;
+    let (Some(backend), Some(host)) = (backend.as_mut(), bundles.as_mut()) else {
+        signals.clear();
+        changes.clear();
+        return;
+    };
+    // An Arc clone: the bridge closes alongside the `&mut` webview the host unloads through.
+    let bridge = backend.portal_bridge().cloned();
+    for signal in signals.read() {
+        for event in host.apply_admission(signal, &mut *backend, bridge.as_ref()) {
+            events.write(event);
+        }
+    }
+    for change in changes.read() {
+        for event in host.refresh(&change.node_id, &mut *backend) {
             events.write(event);
         }
     }

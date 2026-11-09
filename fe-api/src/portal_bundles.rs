@@ -1,10 +1,11 @@
-//! Portal bundle ingest, file index and summary read (README §8; see `fe-api/AGENTS.md` §portal-bundles).
+//! Portal bundle ingest, file index, summary read and the share-route CORS rule (README §8, admission.md §8; see `fe-api/AGENTS.md` §portal-bundles).
 
 use std::path::{Path as FsPath, PathBuf};
 use std::sync::{Arc, OnceLock};
 
 use axum::extract::{Path, State};
-use axum::http::StatusCode;
+use axum::http::request::Parts;
+use axum::http::{HeaderValue, Method, StatusCode};
 use axum::response::{IntoResponse, Response};
 use axum::{Extension, Json};
 use axum_extra::extract::Multipart;
@@ -51,22 +52,33 @@ pub fn route_body_limit() -> usize {
 }
 
 // ---------------------------------------------------------------------------
-// Local admission seam (governance owns the record; README §8.5)
+// Local admission seam (governance owns the record; README §8.5, admission.md §2)
 // ---------------------------------------------------------------------------
 
-/// Admission state as governance reports it for this peer.
+/// admission.md §2 state for this peer: `state` ∈ admitted | static_sandbox | revoked | blocked; `reason` a snake_case code.
 #[derive(Debug, Clone, Serialize)]
 pub struct AdmissionView {
     pub state: String,
     pub reason: Option<String>,
 }
 
-/// Governance's read side: the host's own DID and its admission record per build.
+/// The build facts governance judges; both digests are kill-list keys (an entry matches by hash under any id).
+#[derive(Debug, Clone, Copy)]
+pub struct AdmissionQuery<'a> {
+    pub package_id: &'a str,
+    pub content_hash: &'a str,
+    /// BLAKE3 of the stored archive: the blob hash.
+    pub archive_digest: &'a str,
+    pub sealed_by: Option<&'a str>,
+    pub capability_digest: &'a str,
+}
+
+/// Governance's read side, injected by the binary (which maps it through the portal's scope-free record verdict).
 pub trait LocalAdmissionSource: Send + Sync {
-    /// The DID of this host's local identity.
+    /// The host's own API client DID: a token is local only when its `client` claim names it.
     fn local_did(&self) -> String;
-    /// Admission record for `(package_id, content_hash)` on this peer, if any.
-    fn admission(&self, package_id: &str, content_hash: &str) -> Option<AdmissionView>;
+    /// The §2 state of this build on this peer, scope-free (no verse ceiling, no `can_admit`).
+    fn admission(&self, bundle: &AdmissionQuery<'_>) -> Option<AdmissionView>;
 }
 
 static LOCAL_ADMISSION: OnceLock<Arc<dyn LocalAdmissionSource>> = OnceLock::new();
@@ -76,13 +88,54 @@ pub fn set_local_admission_source(source: Arc<dyn LocalAdmissionSource>) {
     let _ = LOCAL_ADMISSION.set(source);
 }
 
-/// Admission block for the summary: present only for the host's local identity.
-fn admission_for(claims: &ApiClaims, package_id: &str, content_hash: &str) -> Option<AdmissionView> {
+/// Admission block for the summary: present only for the host's own client identity.
+fn admission_for(claims: &ApiClaims, bundle: &AdmissionQuery<'_>) -> Option<AdmissionView> {
     let source = LOCAL_ADMISSION.get()?;
-    let local = source.local_did();
-    (claims.sub == local || claims.client.as_deref() == Some(local.as_str()))
-        .then(|| source.admission(package_id, content_hash))
+    // Every accepted token's `sub` is this node, so only the `client` claim can single out the local identity.
+    (claims.client.as_deref() == Some(source.local_did().as_str()))
+        .then(|| source.admission(bundle))
         .flatten()
+}
+
+// ---------------------------------------------------------------------------
+// Share-route CORS for static portal origins (admission.md §8.2)
+// ---------------------------------------------------------------------------
+
+/// The share-redemption route prefix (`GET /api/v1/shared/{token}`).
+const SHARE_ROUTE_PREFIX: &str = "/api/v1/shared/";
+const STATIC_PORTAL_ORIGIN_PREFIX: &[u8] = b"https://fe-portal.s-";
+const PORTAL_ORIGIN_SUFFIX: &[u8] = b".localhost";
+/// Base32 characters of a portal origin label after its `s-` prefix.
+const PORTAL_LABEL_CHARS: usize = 26;
+
+/// Exactly `https://fe-portal.s-[a-z2-7]{26}.localhost`: a static-label portal origin, never an admitted `a-` one.
+pub fn is_static_portal_origin(origin: &[u8]) -> bool {
+    origin
+        .strip_prefix(STATIC_PORTAL_ORIGIN_PREFIX)
+        .and_then(|rest| rest.strip_suffix(PORTAL_ORIGIN_SUFFIX))
+        .is_some_and(|label| {
+            label.len() == PORTAL_LABEL_CHARS
+                && label
+                    .iter()
+                    .all(|c| c.is_ascii_lowercase() || (b'2'..=b'7').contains(c))
+        })
+}
+
+/// The CORS rule SI combines with `cors_origins` in `server.rs`: a static portal origin, on `GET /api/v1/shared/{token}`
+/// or its preflight only, never with credentials (the token is the credential).
+pub fn share_route_allows(origin: &HeaderValue, parts: &Parts) -> bool {
+    let route = parts
+        .uri
+        .path()
+        .strip_prefix(SHARE_ROUTE_PREFIX)
+        .is_some_and(|token| !token.is_empty() && !token.contains('/'));
+    let method = parts.method == Method::GET
+        || (parts.method == Method::OPTIONS
+            && parts
+                .headers
+                .get("access-control-request-method")
+                .is_some_and(|requested| requested == "GET"));
+    route && method && is_static_portal_origin(origin.as_bytes())
 }
 
 // ---------------------------------------------------------------------------
@@ -611,12 +664,53 @@ pub async fn get_portal_bundle(
             }
         };
     let mut fields = summary_fields(&inspected, &asset_id, &blob_hash);
-    if let Some(view) = admission_for(
-        &claims,
-        &inspected.validated.package_id,
-        &inspected.content_hash,
-    ) {
+    let query = AdmissionQuery {
+        package_id: &inspected.validated.package_id,
+        content_hash: &inspected.content_hash,
+        archive_digest: &blob_hash,
+        sealed_by: inspected.sealed_by.as_deref(),
+        capability_digest: &inspected.validated.capability_digest,
+    };
+    if let Some(view) = admission_for(&claims, &query) {
         fields.insert("admission".into(), json!(view));
     }
     Json(ApiResponse::success(Value::Object(fields))).into_response()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// admission.md §8.2: static labels only, the share route only, GET and its preflight only.
+    #[test]
+    fn share_route_cors_admits_only_static_portal_origins_on_the_share_route() {
+        let label = "abcdefghijklmnopqrstuvwxyz";
+        let static_origin = format!("https://fe-portal.s-{label}.localhost");
+        let admitted_origin = format!("https://fe-portal.a-{label}.localhost");
+        let share = "/api/v1/shared/eyJ2IjoxfQ.c2ln";
+        let rows = [
+            ("static origin, GET", static_origin.clone(), "GET", share, None, true),
+            ("static origin, preflight for GET", static_origin.clone(), "OPTIONS", share, Some("GET"), true),
+            ("preflight for POST", static_origin.clone(), "OPTIONS", share, Some("POST"), false),
+            ("POST", static_origin.clone(), "POST", share, None, false),
+            ("admitted origin", admitted_origin, "GET", share, None, false),
+            ("http spelling", format!("http://fe-portal.s-{label}.localhost"), "GET", share, None, false),
+            ("explicit port", format!("{static_origin}:443"), "GET", share, None, false),
+            ("uppercase", static_origin.to_uppercase(), "GET", share, None, false),
+            ("short label", format!("https://fe-portal.s-{}.localhost", &label[1..]), "GET", share, None, false),
+            ("extra host label", format!("https://x.fe-portal.s-{label}.localhost"), "GET", share, None, false),
+            ("another route", static_origin.clone(), "GET", "/api/v1/query", None, false),
+            ("empty token", static_origin.clone(), "GET", "/api/v1/shared/", None, false),
+            ("nested path", static_origin, "GET", "/api/v1/shared/a/b", None, false),
+        ];
+        for (row, origin, method, path, requested, expected) in rows {
+            let mut request = axum::http::Request::builder().method(method).uri(path);
+            if let Some(requested) = requested {
+                request = request.header("access-control-request-method", requested);
+            }
+            let (parts, ()) = request.body(()).expect("request").into_parts();
+            let origin = HeaderValue::from_str(&origin).expect("origin header");
+            assert_eq!(share_route_allows(&origin, &parts), expected, "{row}");
+        }
+    }
 }

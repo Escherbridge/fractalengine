@@ -9,7 +9,8 @@ use wry::{PageLoadEvent, WebView, WebViewBuilder};
 
 use crate::backend::{BackendEvent, WebViewBackend, WindowGeometry};
 use crate::portal_bundle::{
-    self, BridgeWebview, BundleParts, BundleWebview, Decision, NavigationGate, PortalBridge, PortalMounts,
+    self, origin, BridgeWebview, BundleParts, BundleWebview, Decision, Label, NavigationGate, PortalBridge,
+    PortalMounts,
 };
 
 use super::win32_popup::webview_fill_rect;
@@ -36,6 +37,10 @@ pub struct TauriBackend {
     bundles_supported: bool,
     /// `fe.portal.v1` bridge, shared with the native message handler and the protocol workers.
     bridge: PortalBridge,
+    /// Revoked origins whose storage is cleared once a document of another origin commits (SP-6).
+    storage_clears: Rc<RefCell<Vec<Label>>>,
+    /// URLs of documents that finished loading while a clear was queued (filled by the page-load handler).
+    committed_loads: Rc<RefCell<Vec<String>>>,
     #[cfg(target_os = "windows")]
     popup_hwnd: isize,
     #[cfg(target_os = "windows")]
@@ -132,6 +137,10 @@ impl WebViewBackend for TauriBackend {
         let protocol_workers = portal_bundle::protocol::ProtocolWorkers::start();
         let bridge = PortalBridge::new();
         let protocol_bridge = bridge.clone();
+        let storage_clears: Rc<RefCell<Vec<Label>>> = Rc::new(RefCell::new(Vec::new()));
+        let committed_loads: Rc<RefCell<Vec<String>>> = Rc::new(RefCell::new(Vec::new()));
+        let load_clears = storage_clears.clone();
+        let load_committed = committed_loads.clone();
         // The fixed `ipc-stats` QA operation reads host counters only, never page state (protocol.md §9).
         #[cfg(target_os = "windows")]
         let fixture_surface = {
@@ -156,21 +165,28 @@ impl WebViewBackend for TauriBackend {
             .with_autoplay(true)
             .with_initialization_script(trust_bar_js)
             .with_on_page_load_handler(move |event, url| {
-                if !load_guard_unusable.get() && matches!(event, PageLoadEvent::Finished) {
-                    if let Ok(url) = url.parse() {
-                        load_events.borrow_mut().push(BackendEvent::PageLoaded(url));
+                if !matches!(event, PageLoadEvent::Finished) {
+                    return;
+                }
+                if !load_guard_unusable.get() {
+                    if let Ok(parsed) = url.parse() {
+                        load_events.borrow_mut().push(BackendEvent::PageLoaded(parsed));
                     }
+                }
+                // SP-6: once another origin's document commits, a revoked one can no longer write.
+                if !load_clears.borrow().is_empty() {
+                    load_committed.borrow_mut().push(url);
                 }
             })
             // Registered once: requests resolve against the shared mount table, off the main thread;
-            // `ipc::serve` adds the page API for Admitted mounts.
+            // `feeds::serve` wraps `ipc::serve` (page API for Admitted) and adds `feeds.json` for Static.
             .with_asynchronous_custom_protocol(
                 portal_bundle::SCHEME.to_owned(),
                 move |_webview_id, request, responder| {
                     let mounts = protocol_mounts.clone();
                     let bridge = protocol_bridge.clone();
                     protocol_workers.submit(Box::new(move || {
-                        responder.respond(portal_bundle::ipc::serve(&mounts, &bridge, &request));
+                        responder.respond(portal_bundle::feeds::serve(&mounts, &bridge, &request));
                     }));
                 },
             )
@@ -285,6 +301,8 @@ impl WebViewBackend for TauriBackend {
             gate,
             bundles_supported,
             bridge,
+            storage_clears,
+            committed_loads,
             #[cfg(target_os = "windows")]
             popup_hwnd,
             #[cfg(target_os = "windows")]
@@ -429,6 +447,7 @@ impl WebViewBackend for TauriBackend {
             return vec![BackendEvent::WindowClosed];
         }
 
+        self.run_storage_clears();
         let drained = std::mem::take(&mut *self.events.borrow_mut());
         // Track in-page navigations so the navigate() dedup matches reality.
         for evt in &drained {
@@ -517,6 +536,32 @@ impl TauriBackend {
         );
         Ok(())
     }
+
+    /// SP-6 (admission.md §5 step 6): clear each queued origin once a document of another origin has committed.
+    fn run_storage_clears(&self) {
+        let committed = std::mem::take(&mut *self.committed_loads.borrow_mut());
+        if committed.is_empty() {
+            return;
+        }
+        let due: Vec<Label> = {
+            let mut queued = self.storage_clears.borrow_mut();
+            let (due, waiting): (Vec<Label>, Vec<Label>) = queued
+                .drain(..)
+                .partition(|label| committed.iter().any(|url| origin::parse(url).as_ref() != Some(label)));
+            *queued = waiting;
+            due
+        };
+        let live = self.mounts.current().map(|mount| mount.label.clone());
+        for label in due {
+            // Re-admitted and reopened before the unload committed: clearing now would wipe a live document's storage.
+            if live.as_ref() == Some(&label) {
+                tracing::warn!(origin = %label.https_origin(), "portal storage clear skipped: the origin is mounted again");
+                continue;
+            }
+            #[cfg(target_os = "windows")]
+            clear_origin_storage(&self.webview, &label);
+        }
+    }
 }
 
 impl BundleWebview for TauriBackend {
@@ -545,6 +590,44 @@ impl BundleWebview for TauriBackend {
 
     fn bundle_hide(&mut self) -> anyhow::Result<()> {
         WebViewBackend::hide(self)
+    }
+
+    /// Queued, never run inline: the unload document must commit first (protocol.md §12 SP-6).
+    fn bundle_clear_storage(&mut self, label: &Label) {
+        let mut queued = self.storage_clears.borrow_mut();
+        if !queued.contains(label) {
+            queued.push(label.clone());
+        }
+    }
+}
+
+/// `Storage.clearDataForOrigin` for one label's https origin (SP-6); the parameters come from a parsed label only.
+#[cfg(target_os = "windows")]
+fn clear_origin_storage(webview: &WebView, label: &Label) {
+    use webview2_com::CallDevToolsProtocolMethodCompletedHandler;
+    use windows::core::HSTRING;
+    use wry::WebViewExtWindows;
+
+    let origin = label.https_origin();
+    let parameters = serde_json::json!({ "origin": origin, "storageTypes": "all" }).to_string();
+    let reported = origin.clone();
+    let handler = CallDevToolsProtocolMethodCompletedHandler::create(Box::new(move |result, _json| {
+        match result {
+            Ok(()) => tracing::info!(origin = %reported, "portal bundle storage cleared"),
+            Err(error) => tracing::warn!(origin = %reported, "portal bundle storage clear failed: {error}"),
+        }
+        Ok(())
+    }));
+    // SAFETY: called on the UI thread that owns the webview; the HSTRINGs outlive the call.
+    let issued = unsafe {
+        webview.webview().CallDevToolsProtocolMethod(
+            &HSTRING::from("Storage.clearDataForOrigin"),
+            &HSTRING::from(parameters),
+            &handler,
+        )
+    };
+    if let Err(error) = issued {
+        tracing::warn!(origin = %origin, "portal bundle storage clear was not issued: {error}");
     }
 }
 

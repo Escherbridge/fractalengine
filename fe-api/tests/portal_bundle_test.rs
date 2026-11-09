@@ -1,18 +1,42 @@
 //! Portal bundle ingest through the full router (README §8; fe-api/AGENTS.md §portal-bundles):
 //! upload stores one blob and one metadata-only asset row, the by-id route answers the file
-//! index, the raw blob stays attachment + nosniff, refusals store nothing, repository nodes list.
+//! index, the raw blob stays attachment + nosniff, the summary's admission follows governance for
+//! the local identity only, refusals store nothing, repository nodes list.
 //! `CreateAsset` is answered by the production `create_asset_reply`.
 
 use std::io::Write as _;
+use std::sync::Arc;
 
 use axum::body::Body;
 use axum::http::{Request, StatusCode};
 use ed25519_dalek::SigningKey;
+use fe_api::portal_bundles::{
+    set_local_admission_source, AdmissionQuery, AdmissionView, LocalAdmissionSource,
+};
 use fe_database::handlers::crud::{create_asset_reply, AssetRegistration};
 use fe_runtime::app::PendingApiRequests;
 use fe_runtime::messages::{ApiCommand, DbCommand, DbResult};
 use fractalengine_test_harness::api::{body_bytes, body_json_lenient, ApiHarness};
 use serde_json::{json, Value};
+
+/// Governance as the binary adapts it: an accepted kill list naming one archive digest, under no package id.
+struct ArchiveKillList {
+    local_did: String,
+    archive_digest: String,
+}
+
+impl LocalAdmissionSource for ArchiveKillList {
+    fn local_did(&self) -> String {
+        self.local_did.clone()
+    }
+    fn admission(&self, bundle: &AdmissionQuery<'_>) -> Option<AdmissionView> {
+        Some(if bundle.archive_digest == self.archive_digest {
+            AdmissionView { state: "revoked".into(), reason: Some("revocation_list".into()) }
+        } else {
+            AdmissionView { state: "static_sandbox".into(), reason: None }
+        })
+    }
+}
 
 /// Service the harness's API-to-DB channel like the DB thread (`CreateAsset` only).
 fn serve_create_asset(h: &ApiHarness) {
@@ -184,20 +208,29 @@ async fn asset_count(h: &ApiHarness) -> usize {
     rows.len()
 }
 
-/// Seed one petal and mint editor / viewer tokens at it.
-async fn seed_petal_with_tokens(h: &ApiHarness) -> (String, String, String) {
+/// Seed one petal and mint editor / viewer tokens at it; also returns the petal scope.
+async fn seed_petal_with_tokens(h: &ApiHarness) -> (String, String, String, String) {
     let verse = h.seed_verse("Bundle Verse").await.expect("verse");
     let fractal = h.seed_fractal(&verse, "Bundle Fractal").await.expect("fractal");
     let petal = h.seed_petal(&fractal, "Docs", None).await.expect("petal");
     let scope = fe_database::build_scope(&verse, Some(&fractal), Some(&petal));
-    (petal, h.mint_token(&scope, "editor"), h.mint_token(&scope, "viewer"))
+    let (editor, viewer) = (h.mint_token(&scope, "editor"), h.mint_token(&scope, "viewer"));
+    (petal, editor, viewer, scope)
+}
+
+/// The summary read's `admission` block for `token`, or `None` when absent.
+async fn summary_admission(h: &ApiHarness, token: &str, asset_id: &str) -> Option<Value> {
+    let (status, _, got) = fetch(h, token, &format!("/api/v1/portal-bundles/{asset_id}")).await;
+    assert_eq!(status, StatusCode::OK);
+    let summary: Value = serde_json::from_slice(&got).expect("summary json");
+    summary["data"].get("admission").cloned()
 }
 
 #[tokio::test]
 async fn bundle_upload_lists_members_and_keeps_the_raw_blob_an_attachment() {
     let h = ApiHarness::spawn().await.expect("spawn harness");
     serve_create_asset(&h);
-    let (petal, editor, viewer) = seed_petal_with_tokens(&h).await;
+    let (petal, editor, viewer, scope) = seed_petal_with_tokens(&h).await;
 
     let bytes = docs_bundle();
     let (status, body) = upload_bundle(&h, &editor, &petal, &bytes).await;
@@ -243,6 +276,25 @@ async fn bundle_upload_lists_members_and_keeps_the_raw_blob_an_attachment() {
     assert!(summary["data"].get("members").is_none(), "{summary}");
     assert!(summary["data"].get("admission").is_none(), "{summary}");
 
+    // Governance answers (README §8.5): the summary carries its verdict for the host's own client identity only,
+    // judged on the stored archive's digest (a kill list matches by hash under any package id).
+    let local_did = fe_identity::new_client_did();
+    set_local_admission_source(Arc::new(ArchiveKillList {
+        local_did: local_did.clone(),
+        archive_digest: blob_hash.clone(),
+    }));
+    let local = h.mint_client_token(&scope, "viewer", &local_did);
+    assert_eq!(
+        summary_admission(&h, &local, &asset_id).await,
+        Some(json!({ "state": "revoked", "reason": "revocation_list" }))
+    );
+    for (row, token) in [
+        ("a node-level token: every accepted token's sub is this node", viewer.clone()),
+        ("another API client", h.mint_client_token(&scope, "viewer", &fe_identity::new_client_did())),
+    ] {
+        assert_eq!(summary_admission(&h, &token, &asset_id).await, None, "{row}");
+    }
+
     // The raw blob by hash is never served inline.
     let (status, headers, got) = fetch(&h, &viewer, &format!("/api/v1/assets/{blob_hash}")).await;
     assert_eq!(status, StatusCode::OK);
@@ -260,7 +312,7 @@ async fn bundle_upload_lists_members_and_keeps_the_raw_blob_an_attachment() {
 async fn sealed_bundle_reports_its_publisher_and_committed_member_digests() {
     let h = ApiHarness::spawn().await.expect("spawn harness");
     serve_create_asset(&h);
-    let (petal, editor, viewer) = seed_petal_with_tokens(&h).await;
+    let (petal, editor, viewer, _) = seed_petal_with_tokens(&h).await;
 
     let key = SigningKey::from_bytes(&[7u8; 32]);
     let sealed = fe_format::integrity::seal(&docs_bundle(), &key).expect("seal");
@@ -292,7 +344,7 @@ async fn sealed_bundle_reports_its_publisher_and_committed_member_digests() {
 async fn refused_bundles_and_denied_callers_store_nothing() {
     let h = ApiHarness::spawn().await.expect("spawn harness");
     serve_create_asset(&h);
-    let (petal, editor, viewer) = seed_petal_with_tokens(&h).await;
+    let (petal, editor, viewer, _) = seed_petal_with_tokens(&h).await;
     let outsider_verse = h.seed_verse("Other Verse").await.expect("verse");
     let outsider = h.mint_token(&fe_database::build_scope(&outsider_verse, None, None), "editor");
 
@@ -333,7 +385,7 @@ async fn refused_bundles_and_denied_callers_store_nothing() {
 async fn repository_node_lists_by_kind_and_carries_the_bundle_reference() {
     let h = ApiHarness::spawn().await.expect("spawn harness");
     serve_create_asset(&h);
-    let (petal, editor, viewer) = seed_petal_with_tokens(&h).await;
+    let (petal, editor, viewer, _) = seed_petal_with_tokens(&h).await;
 
     let (_, body) = upload_bundle(&h, &editor, &petal, &docs_bundle()).await;
     let asset_id = body["data"]["asset_id"].as_str().expect("asset_id").to_string();
