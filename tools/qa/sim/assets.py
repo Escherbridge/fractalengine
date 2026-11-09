@@ -262,6 +262,42 @@ def write_asset(key, kind, mesh, out_dir, extra=None):
     return entry
 
 
+# Portal fixture archives are built by tools/qa/portal/build_bundles.py (sealed with a run-local publisher); this module
+# only locates and verifies them so scenarios resolve `$assets.portal.<key>.path` (see tools/qa/portal/AGENTS.md section builder).
+PORTAL_OUT_DIR = os.path.join(REPO_ROOT, ".qa", "assets", "portal")
+PORTAL_MANIFEST_SCHEMA = "fe-qa-portal-assets/1"
+PORTAL_KEYS = ("dashboard", "dashboard_unsigned", "docs_site", "actions_v1", "actions_v2", "actions_v3", "escape", "storm",
+               "ladder_tier_100kb", "ladder_tier_1mb", "ladder_tier_5mb", "ladder_tier_25mb", "ladder_tier_40mb_overcap")
+
+
+def portal_manifest(out_dir=PORTAL_OUT_DIR):
+    """The portal asset manifest as {key: entry}; {} when build_bundles.py has not run."""
+    try:
+        with open(os.path.join(out_dir, "manifest.json"), encoding="utf-8") as handle:
+            manifest = json.load(handle)
+    except (OSError, ValueError):
+        return {}
+    if manifest.get("schema") != PORTAL_MANIFEST_SCHEMA:
+        return {}
+    return {entry["key"]: entry for entry in manifest.get("assets", [])}
+
+
+def portal_missing(out_dir=PORTAL_OUT_DIR):
+    """Keys scenarios reference that are absent from the manifest or whose archive file is gone or has the wrong size."""
+    entries = portal_manifest(out_dir)
+    missing = []
+    for key in PORTAL_KEYS:
+        entry = entries.get(key)
+        if not entry or not os.path.isfile(entry.get("path", "")) or os.path.getsize(entry["path"]) != entry.get("bytes"):
+            missing.append(key)
+    return missing
+
+
+def portal_ladder_targets():
+    """Tier name to target archive bytes, shared with build_bundles.py so portal tiers track the asset ladder."""
+    return {"ladder_" + tier: size for tier, size in LADDER.items()}
+
+
 def _blake3(data):
     try:
         import blake3
@@ -304,7 +340,12 @@ def main(argv=None):
     parser = argparse.ArgumentParser(description="Generate deterministic test GLBs + manifest.json.")
     parser.add_argument("--out", default=OUT_DIR)
     parser.add_argument("--no-ladder", action="store_true", help="skip the 100 KB..25 MB texture ladder")
+    parser.add_argument("--check-portal", action="store_true", help="list missing portal archives and exit (non-zero when any)")
     args = parser.parse_args(argv)
+    if args.check_portal:
+        missing = portal_missing()
+        print("missing portal archives: %s" % (", ".join(missing) if missing else "none"))
+        return 1 if missing else 0
     manifest = generate(args.out, not args.no_ladder)
     for entry in manifest["assets"]:
         print("%-12s %-10s %10d bytes  tris %-5d sha256 %s" % (entry["key"], entry["kind"], entry["size"],

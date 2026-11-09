@@ -62,7 +62,12 @@ Oracle: slots 1-9 raise the native refusal counter by one with the exact refused
 4. Re-consent: Admitted again.
 
 ## PJ10 (P6, later) Static export
-The exported directory is served by a static server whose origin is in `cors_origins`. Oracle: renders from a share URL; an expired share URL answers 410 and the page shows its expired state; no page API is present.
+Bundle: the `dashboard` build exported with `static-export.md` (the export carries no host bridge; `window.fe` is never defined).
+1. Export the admitted dashboard to a directory; serve it from a static server whose origin is listed in `cors_origins`, with a scoped viewer token in the share URL.
+2. Open the share URL. Oracle: the page loads, `status` probe reads `api-absent`, and the `node-name` / `node-position` probes fill from the public REST (not from IPC); the `csp` probe still reads `canary-blocked`.
+3. Expire the share (clock advance or revoke the viewer token). Oracle: the same URL answers 410 and the page shows its expired state; no request carries a host credential.
+4. Mutation check: serve the export without the `cors_origins` entry; the REST reads must fail and the probes stay empty.
+Receipt: page probe values, the 410 status line, one PNG. Tier: static server only (no host); native tier not involved.
 
 ## Extends
 J02 observe/capture (PJ1, PJ8); `portal_ipc_journey.rs` table (PJ2, PJ3, PJ9); p2p-core revoke pattern (PJ4); p2p-assets ladder (PJ5); QA-0118 prefetch pattern (PJ6); city-lite write ceiling of about 8/s (PJ7).

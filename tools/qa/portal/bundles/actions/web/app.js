@@ -9,10 +9,11 @@ try {
   probe('storage').textContent = localStorage.getItem('qa_origin_key');
 } catch (error) { probe('storage').textContent = 'storage-error'; }
 
+// fe.act resolves {node_id, key} and rejects with FePortalError {code} (ipc-v1 section 4.2).
 async function act(key, value) {
   try {
-    const reply = await window.fe.act({ op: 'set_property', node_id: repositoryNodeId, key, value });
-    probe('last-reply').textContent = reply.ok ? 'ok:' + key : 'error:' + reply.error.code;
+    const result = await window.fe.act({ op: 'set_property', node_id: repositoryNodeId, key, value });
+    probe('last-reply').textContent = 'ok:' + result.key;
   } catch (error) { probe('last-reply').textContent = 'error:' + (error.code || error.message); }
 }
 

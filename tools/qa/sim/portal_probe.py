@@ -15,7 +15,9 @@ BUNDLE_MIME = "application/vnd.fractalengine.portal-bundle+hexon"
 DEBUG_BASE = "/api/v1/debug/portal/"
 ALL_TARGET = "*"
 IPC_COUNTERS = ("accepted", "refused_capability", "refused_role", "rate_limited", "dropped_origin", "invalid",
-                "failed", "too_many_subscriptions", "live_subscriptions", "deliveries")
+                "failed", "too_many_subscriptions", "live_subscriptions", "deliveries",
+                # Host-aggregated extras the scenarios read; absent in a stats reply they read as None.
+                "writes_accepted", "delivered_non_control", "dropped_origin_total")
 # Debug refusals that say a bundle is not mounted: the observation records them as {"mounted": false}.
 NOT_MOUNTED_CODES = {"portal_bundle_not_mounted", "portal_fixture_unavailable", "portal_fixture_changed"}
 
@@ -119,14 +121,39 @@ def recorded(value, limit=2048):
 
 
 def read_path(value, path):
-    """Resolve a dotted probe path (`observe.probe.node-name`, `ipc.dropped_origin`) in a collected value."""
+    """Resolve a probe path in a collected value.
+
+    Observe-derived: `mounted`, `badge` (the host-drawn label), `observe`, `observe.<field>`, `observe.probe.<name>`
+    (probe names contain dashes, so the remainder after `probe.` is the name). Counter-derived: `ipc.<counter>` plus
+    `writes_accepted`, `ipc.delivered_non_control` (falls back to `deliveries`) and `ipc.dropped_origin_total` (falls
+    back to `dropped_origin`). `admission` is the local admission read.
+    """
+    observed = value.get("observe") if isinstance(value, dict) else None
+    stats = value.get("ipc") if isinstance(value, dict) else None
+    if path == "mounted":
+        return bool(observed and observed.get("mounted"))
+    if path == "badge":
+        return observed.get("label") if observed and observed.get("mounted") else None
+    if path == "writes_accepted":
+        return _counter(stats, "writes_accepted", "accepted")
+    if path == "ipc.delivered_non_control":
+        return _counter(stats, "delivered_non_control", "deliveries")
+    if path == "ipc.dropped_origin_total":
+        return _counter(stats, "dropped_origin_total", "dropped_origin")
     head, _, rest = path.partition(".")
     if head == "observe" and rest.startswith("probe."):
-        return ((value.get("observe") or {}).get("probes") or {}).get(rest[len("probe."):])
+        return ((observed or {}).get("probes") or {}).get(rest[len("probe."):])
     current = value.get(head) if isinstance(value, dict) else None
     for part in rest.split(".") if rest else []:
         current = current.get(part) if isinstance(current, dict) else None
     return current
+
+
+def _counter(stats, name, fallback):
+    """Named counter, else its plain fallback; None when the mount is absent or neither is reported."""
+    if not isinstance(stats, dict):
+        return None
+    return stats[name] if stats.get(name) is not None else stats.get(fallback)
 
 
 def encode(value):

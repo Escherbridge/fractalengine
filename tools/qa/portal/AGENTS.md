@@ -1,6 +1,6 @@
 # tools/qa/portal - portal surface QA lane
 
-Harness spec for track `portal_surface_20261107` (spec section 6.7, plan P5). Authored text-only (D-X2); the builder, probe and routes land in T5.2-T5.4. Journeys: [journeys.md](journeys.md). Fixture sources: `bundles/`. Scenarios: `../sim/scenarios/portal-{core,replication,load}.json`.
+Harness spec for track `portal_surface_20261107` (spec section 6.7, plan P5). Authored text-only (D-X2); builder, probe and routes are written but not yet run (build gate closed). Journeys: [journeys.md](journeys.md). Fixture sources: `bundles/`. Scenarios: `../sim/scenarios/portal-{core,replication,load}.json`.
 
 ## section: tiers
 
@@ -28,7 +28,9 @@ Sources live in `bundles/<name>/` as `portal*.json` (the `fe-portal-bundle/1` se
 Conventions every fixture page follows (the fixed observation depends on them):
 - `data-fe-probe="<name>"` marks an element whose text the host may read. The observation returns the title, a capped digest over probe elements only, and the named probe values. Nothing else in the DOM is observable.
 - `data-fe-slot="<n>"` marks the n-th activatable control. `portal_slot` activates by number; there is no selector input.
-- Page code uses only the draft `window.fe` surface: `hello()` returning `{capabilities, context:{petal_id, repository_node_id}}`, `subscribe(kind, params, cb)`, `act({op:'set_property',...})`, `intent({...})`. Reply errors carry `error.code`. See assumptions below.
+- Page code uses only the `fe.portal.v1` surface (`docs/spec/portal-bundle/ipc-v1.md` section 4): `hello()` resolves `{api, capabilities, context, limits}`; `subscribe(stream, params, cb)` calls `cb({kind, seq, data, dropped})`; `act({op:'set_property', node_id, key, value})` resolves `{node_id, key}`; `intent({...})`. Every promise rejects with `FePortalError {name, code, message}`, so fixtures read `error.code`, never a reply object.
+- Delivery bodies are the `/ws` bodies: `node` snapshot parts carry `data.nodes[]` (final part `last: true`), deltas carry `data.changes[]` (`SceneChange`, tag `op`, ids as `node_id`); `readings` deltas carry `data.readings[]`; `query` snapshots carry `data.data[]` rows. `resync_required` ends the subscription and the page subscribes again.
+- `hello().context` fields: `package_id, content_hash, version, publisher_did, repository_node_id, petal_id` (`petal_id` is the binding petal). Fixtures use only `petal_id` and `repository_node_id`.
 - Sealing: through the staged production `seal_hexon.exe` with a run-local publisher seed (controlled-fixtures precedent, `tools/qa/AGENTS.md` controlled fixtures). `unsigned` variants skip sealing to exercise the static sandbox. `extra_member` entries are written into the archive by the builder so each version has a distinct content hash.
 - The `Probe Target` node (dashboard) is created by the scenario; the dashboard matches it by name.
 
@@ -47,14 +49,24 @@ Ops and probe the portal scenarios assume. T5.3 / T5.4 / SI implement them; `sce
 | `portal_ipc_post` | `row, package_id?, content_hash?` | fixed PJ2 rows: unsigned, external, foreign_frame, hidden, stale, control |
 | `portal_observe` / `portal_ipc_stats` | none | read-only, used by the probe |
 
-Probe `portal`: `target` is a package id (or `*` for totals). `path` values used: `admission`, `mounted`, `badge`, `protocol_status`, `observe`, `observe.title`, `observe.probe.<name>`, `observe.api_script_status`, `origin_storage.<key>`, `ipc.<counter>` (`accepted refused_capability refused_role rate_limited dropped_origin invalid` plus `live_subscriptions`, `too_many_subscriptions`, `delivered_non_control`, `dropped_origin_total`), `writes_accepted`, `idle_reads.*`, `frame_stall_ms`, `peer_log.db_thread_timeouts`. Cadence `portal_ms`. The probe is read-only and never polls the hierarchy ("probing does not perturb", `tools/qa/AGENTS.md` sim section).
+**Observation digest.** `observe.digest` is BLAKE3 (lowercase hex) over the UTF-8 text of the `data-fe-probe` elements only, in probe-name order, each text followed by one NUL byte; each probe text is capped at 256 chars, the set at 64 probes and 64 KiB. `client.py` recomputes it when the `blake3` module is importable and raises `portal_digest_mismatch` otherwise on drift. Anything outside probe elements (headings, attributes, scripts) never changes the digest.
+
+Probe `portal`: `target` is a package id (or `*` for totals). `path` values used: `admission`, `mounted`, `badge`, `protocol_status`, `observe`, `observe.title`, `observe.probe.<name>`, `observe.api_script_status`, `origin_storage.<key>`, `ipc.<counter>` (the ten `ipc-stats` counters `accepted refused_capability refused_role rate_limited dropped_origin invalid failed too_many_subscriptions live_subscriptions deliveries`, plus the totals `ipc.delivered_non_control` and `ipc.dropped_origin_total` and `writes_accepted`), `idle_reads.*`, `frame_stall_ms`, `peer_log.db_thread_timeouts`. Cadence `portal_ms`.
+
+Probe path resolution (`sim/portal_probe.py read_path`): `observe.probe.<name>` reads a probe text (names may contain dashes); `badge` is the host-drawn label (`observe.label`); `mounted` is a boolean; `writes_accepted` is the host's `writes_accepted` counter, else `accepted`; `ipc.delivered_non_control` falls back to `deliveries`, and `ipc.dropped_origin_total` to `dropped_origin` (assumed per-mount fallbacks until the host reports totals, see assumptions). Counter classes follow `ipc-v1.md` section 7.1: `failed` counts `unavailable`, `backend` and `unknown_outcome`; `not_found` counts as `refused_role` (same uniform answer REST gives), so out-of-scope `node_id` writes raise `refused_role`, not a separate counter; `deliveries` counts every host-to-page delivery, control replies included. The probe is read-only and never polls the hierarchy ("probing does not perturb", `tools/qa/AGENTS.md` sim section).
 
 Native routes (T5.4): `/api/v1/debug/portal/{observe,action,ipc-stats}` behind the portal-fixture Owner/input gate and five-second host deadline; client `tools/qa/portal/client.py`; CLI `fe.py portal observe|slot|ipc-stats`.
+
+## section: builder
+
+`build_bundles.py` packs each `bundles/<name>/` (`portal*.json` plus `web/**`) into an unsealed plugin-family archive with fixed member order and timestamps, then seals it through the hash-verified staged `seal_hexon.exe` with a run-local seed passed only in the environment. Output: `.qa/assets/portal/*.hexon` and `manifest.json` (`fe-qa-portal-assets/1`, entries `{key, path, bytes, package_id, version, sealed, journeys, blake3|sha256}`). `unsigned` variants skip sealing; `actions` variants add a distinct `web/build-id.txt` so each version has its own content hash; `ladder` pads `docs-site` with an incompressible `web/pad.bin` to the `sim/assets.py` `LADDER` sizes plus a 40 MB over-cap build.
+`sim/assets.py` locates the archives (`portal_manifest`, `portal_missing`, `python tools/qa/sim/assets.py --check-portal`) and `PORTAL_KEYS` is the key set scenarios reference as `$assets.portal.<key>.path`. `sim/run.py` `ASSET_MANIFESTS` needs a `portal` entry for that namespace (`NEEDS tools/qa/sim/run.py: add "portal": .qa/assets/portal/manifest.json`).
 
 ## section: assumptions
 
 - Gui accessible name for the repository **Open** action is `Open bundle` until `docs/spec/portal-bundle/ux.md` (T3.1) fixes it; scenarios mark every use with a note.
-- The `window.fe` shape and the `hello().context` fields are drafts; `docs/spec/portal-bundle/README.md` wins when it lands and the fixtures follow it.
+- The `window.fe` shape and `hello().context` follow `ipc-v1.md` sections 4-5; if the spec moves, the spec wins and the fixtures follow.
+- Host `ipc-stats` may not yet report `writes_accepted`, `delivered_non_control` or `dropped_origin_total`; the probe falls back to `accepted`, `deliveries` and `dropped_origin` (single-mount totals), which is exact only while one bundle is mounted (A-7).
 - Scenario references `$assets.portal.<key>.path` assume `build_bundles.py` registers its archives in the asset manifest under `portal`: `dashboard`, `dashboard_unsigned`, `docs_site`, `actions_v1..v3`, `storm`, `ladder_tier_*`, `ladder_tier_40mb_overcap`.
 - `regrant_role` is a draft driver op; reuse the p2p-core re-grant step pattern if the driver names it differently.
 - Run order for T5.5: headless tier first (cheap), native `fe.py portal` second, simulator last. Peers stay at N=3 (portal-replication) or 2 until QA-0119.
