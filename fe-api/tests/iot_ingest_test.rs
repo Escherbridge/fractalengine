@@ -18,6 +18,10 @@ use fe_database::handlers::iot_reading::IotReadingInput;
 use fe_identity::api_token::ApiClaims;
 use fe_runtime::messages::{DbCommand, DbResult};
 
+// The device-adapter extension's own frame mapping, compiled in so the parity journey runs the shipped code.
+#[path = "../../extensions/device-adapter/src/mapping.rs"]
+mod device_mapping;
+
 type Db = surrealdb::Surreal<surrealdb::engine::local::Db>;
 
 // ---------------------------------------------------------------------------
@@ -229,6 +233,70 @@ async fn ingest_batch_persists_and_reads_back() {
     assert_eq!(rows[0]["units"], "C");
     assert_eq!(rows[0]["source_did"], "did:key:z6MkUser");
     assert_eq!(rows[1]["value"].as_f64(), Some(22.5));
+
+    // PARITY (P5.3): the same frames through the adapter's mapping and through the REST door
+    // store identical rows; only provenance (`source_did`) and the anchor differ.
+    let frames = [
+        r#"{"readings":[{"metric":"temperature_c","value":21.5,"units":"C","at_ms":1784109600000}]}"#,
+        r#"{"readings":[{"metric":"temperature_c","value":22.5,"units":"C","at_ms":1784113200000}]}"#,
+    ];
+    let pb = ulid();
+    let pc = ulid();
+    let seeded = setup_test_db().await;
+    seed_petal(&seeded, &pb).await;
+    seed_node(&seeded, &pb, "sensor-door", 1.0, 2.0).await;
+    seed_petal(&seeded, &pc).await;
+    seed_node(&seeded, &pc, "sensor-adapter", 1.0, 2.0).await;
+    let parity_state = test_state(seeded);
+
+    let at = |at_ms: Option<i64>| {
+        at_ms.map(|ms| {
+            chrono::DateTime::from_timestamp_millis(ms)
+                .unwrap()
+                .to_rfc3339_opts(chrono::SecondsFormat::Millis, true)
+        })
+    };
+    let door_batch: Vec<IotReadingInput> = frames
+        .iter()
+        .map(|frame| device_mapping::parse_frame(frame.as_bytes(), Some("dev-1")).unwrap())
+        .flat_map(|parsed| parsed.readings)
+        .map(|r| reading("sensor-door", &r.metric, r.value, at(r.at_ms).as_deref()))
+        .collect();
+    let adapter_batch: Vec<IotReadingInput> = frames
+        .iter()
+        .map(|frame| device_mapping::parse_frame(frame.as_bytes(), Some("dev-1")).unwrap())
+        .flat_map(|parsed| parsed.readings)
+        .map(|r| IotReadingInput {
+            units: r.units.clone(),
+            ..reading("sensor-adapter", &r.metric, r.value, at(r.at_ms).as_deref())
+        })
+        .collect();
+    let door = post_readings(&parity_state, test_claims("VERSE#v1", "editor"), &pb, door_batch).await;
+    assert_eq!(door.status(), StatusCode::OK);
+    let mut adapter_claims = test_claims("VERSE#v1", "editor");
+    adapter_claims.sub = "did:key:z6MkAdapter".to_string();
+    let via_adapter = post_readings(&parity_state, adapter_claims, &pc, adapter_batch).await;
+    assert_eq!(via_adapter.status(), StatusCode::OK);
+
+    let reader = parity_state.db_reader.as_ref().unwrap();
+    let project = |petal: String| async move {
+        let mut res = reader
+            .query("SELECT metric, value, units, recorded_at_ms, source_did FROM iot_reading WHERE petal_id = $pid ORDER BY recorded_at_ms ASC")
+            .bind(("pid", petal))
+            .await
+            .unwrap();
+        res.take::<Vec<serde_json::Value>>(0).unwrap()
+    };
+    let door_rows = project(pb.clone()).await;
+    let adapter_rows = project(pc.clone()).await;
+    assert_eq!(door_rows.len(), 2);
+    assert_eq!(adapter_rows.len(), 2);
+    for (door_row, adapter_row) in door_rows.iter().zip(&adapter_rows) {
+        for field in ["metric", "value", "units", "recorded_at_ms"] {
+            assert_eq!(door_row[field], adapter_row[field], "{field} must match across doors");
+        }
+        assert_ne!(door_row["source_did"], adapter_row["source_did"], "provenance differs by caller");
+    }
 }
 
 #[tokio::test]
