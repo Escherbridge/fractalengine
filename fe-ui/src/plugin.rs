@@ -41,6 +41,10 @@ pub struct SpawnedNodeMarker {
 #[derive(Component, Debug, Default, Clone, Copy)]
 pub struct Billboard;
 
+/// Bevy resource wrapping the SDK's UI contribution registry; extensions register into it, panels read it (AGENTS.md §ui-extensions).
+#[derive(Resource, Debug, Default)]
+pub struct UiExtensions(pub fe_sdk::UiExtensionRegistry);
+
 /// Ceiling on renderable mesh instances before spawners stop and the user is
 /// warned — sized under the GPU 2 GiB bind-group limit; see AGENTS.md §mesh-budget.
 pub const MAX_MESH_INSTANCES: usize = 2_000_000;
@@ -889,6 +893,7 @@ impl Plugin for GardenerConsolePlugin {
             Update,
             crate::ui_shell::right_sidebar::update_residency_readout,
         );
+        app.init_resource::<UiExtensions>();
         app.init_resource::<SidebarState>();
         app.init_resource::<crate::native_accessibility::navigation_ui::NavigationReads>();
         app.init_resource::<ToolState>();

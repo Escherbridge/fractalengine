@@ -483,6 +483,8 @@ pub fn build_router(state: Arc<ApiState>) -> Router {
                     mcp_concurrency_limit,
                 )),
         )
+        // First-party extension routes mount inside the auth layer below.
+        .merge(mount_extension_handles(&builtin_extension_handles()))
         .layer(axum::middleware::from_fn_with_state(
             state.clone(),
             crate::auth::auth_middleware,
@@ -493,6 +495,87 @@ pub fn build_router(state: Arc<ApiState>) -> Router {
         .layer(cors)
         .layer(TraceLayer::new_for_http())
         .with_state(state)
+}
+
+/// Extension handles whose routes the engine mounts (fe-api/AGENTS.md §extension-routes).
+fn builtin_extension_handles() -> Vec<fe_sdk::ApiExtensionHandle> {
+    vec![fe_terrain::api_ext::terrain_api_routes()]
+}
+
+/// Resolve an extension route's `handler_id` to its handler; `None` = unknown (route not mounted).
+fn extension_handler(handler_id: &str) -> Option<axum::routing::MethodRouter<Arc<ApiState>>> {
+    match handler_id {
+        "get_elevation_profile" => Some(get(crate::rest::get_elevation_profile)),
+        "get_track_stats" => Some(get(crate::rest::get_track_stats)),
+        _ => None,
+    }
+}
+
+/// Rewrite a declared `:param` path segment to axum 0.8 `{param}` syntax.
+fn extension_axum_path(declared: &str) -> String {
+    declared
+        .split('/')
+        .map(|segment| match segment.strip_prefix(':') {
+            Some(name) => format!("{{{name}}}"),
+            None => segment.to_string(),
+        })
+        .collect::<Vec<_>>()
+        .join("/")
+}
+
+/// Mount each handle's GET routes under `/api/v1/ext/{base_path}`; unknown handlers or methods are skipped with a warning (fail closed).
+fn mount_extension_handles(handles: &[fe_sdk::ApiExtensionHandle]) -> Router<Arc<ApiState>> {
+    let mut router = Router::new();
+    for handle in handles {
+        for route in &handle.routes {
+            let handler = match (route.method, extension_handler(&route.handler_id)) {
+                (fe_sdk::HttpMethod::Get, Some(handler)) => handler,
+                _ => {
+                    tracing::warn!(
+                        extension = %handle.base_path,
+                        handler = %route.handler_id,
+                        "extension route not mounted: no handler registered for this method/handler_id"
+                    );
+                    continue;
+                }
+            };
+            let path = format!(
+                "/api/v1/ext/{}{}",
+                handle.base_path.trim_matches('/'),
+                extension_axum_path(&route.path)
+            );
+            router = router.route(&path, handler);
+        }
+    }
+    router
+}
+
+#[cfg(test)]
+mod extension_mount_tests {
+    use super::*;
+
+    #[test]
+    fn declared_params_become_axum_params() {
+        assert_eq!(
+            extension_axum_path("/elevation-profile/:track_id"),
+            "/elevation-profile/{track_id}"
+        );
+    }
+
+    #[test]
+    fn every_builtin_extension_route_has_a_handler() {
+        for handle in builtin_extension_handles() {
+            assert!(!handle.routes.is_empty());
+            for route in &handle.routes {
+                assert!(
+                    extension_handler(&route.handler_id).is_some(),
+                    "unmounted extension route {} {}",
+                    handle.base_path,
+                    route.handler_id
+                );
+            }
+        }
+    }
 }
 
 /// Concurrency limit for `/mcp` (tower `ConcurrencyLimit` semantics: excess

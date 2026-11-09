@@ -1552,3 +1552,10 @@ and native_accessibility/AGENTS.md for the separately audited painter contract.
 - `DbResult::HierarchyRead` (an API hierarchy read) only answers pending API waiters.
 - `handle_verse_replica_lifecycle` sends `RememberVerseReplica` once per verse with a
   namespace id, so the sync thread can open a publication lease (fe-sync §publication-lease).
+
+## §ui-extensions (plugin_host_revival_20261031 S1)
+
+`plugin::UiExtensions` wraps `fe_sdk::UiExtensionRegistry` as a Bevy resource, always initialised (empty) by
+`GardenerConsolePlugin`. fe-ui never registers extensions itself (no fe-terrain dependency); the binary
+fills it at Startup when the plugin host is enabled (`fractalengine/src/AGENTS.md` §plugin-host). Panels that
+render contributions should read `UiExtensions.0.get_by_slot(..)`; none do yet (consent UX is S3).

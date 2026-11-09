@@ -306,6 +306,12 @@ fn main() -> anyhow::Result<()> {
         },
     );
 
+    // Plugin host: feature `plugin-host` + FE_PLUGIN_HOST_ALLOW=1, both required; no scene backend on the relay.
+    #[cfg(feature = "plugin-host")]
+    if fe_plugin::plugin_host_allowed_from_env() {
+        app.add_plugins(fe_plugin::PluginHostPlugin);
+    }
+
     // Graceful shutdown (A8): SIGINT (and SIGTERM on unix) sends
     // `DbCommand::Shutdown` **and** `SyncCommand::Shutdown`, waits briefly for
     // the DB flush + sync teardown, then flips the flag the Bevy system below

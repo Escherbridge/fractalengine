@@ -31,10 +31,10 @@ pub struct CapabilityManifest {
     /// `CAP_*` constants for the canonical names.
     #[serde(default)]
     pub capabilities: Vec<String>,
-    /// Network access level: `"none"`, `"local"`, `"internet"`.
+    /// Network access level; v1 grants only `"none"` (OD-1: [`CapabilityManifest::from_json`] rejects the rest).
     #[serde(default = "default_network_scope")]
     pub network_scope: String,
-    /// Whether the plugin may issue outbound HTTP requests.
+    /// Outbound HTTP request; v1 has no grant path, so `true` is rejected at parse and always denied at use.
     #[serde(default)]
     pub external_http: bool,
 }
@@ -44,9 +44,16 @@ fn default_network_scope() -> String {
 }
 
 impl CapabilityManifest {
-    /// Parse a manifest from a JSON string.
+    /// Parse a manifest from a JSON string, refusing any network grant v1 cannot honour (fe-plugin/src/AGENTS.md §network-deny).
     pub fn from_json(json: &str) -> Result<Self, serde_json::Error> {
-        serde_json::from_str(json)
+        let manifest: Self = serde_json::from_str(json)?;
+        if manifest.network_scope != "none" || manifest.external_http {
+            return Err(serde::de::Error::custom(format!(
+                "network access is not grantable in v1 (network_scope={:?}, external_http={})",
+                manifest.network_scope, manifest.external_http
+            )));
+        }
+        Ok(manifest)
     }
 }
 
@@ -170,15 +177,10 @@ pub fn validate_access(
                 })
             }
         }
-        CapabilityOperation::HttpRequest => {
-            if token.external_http {
-                Ok(())
-            } else {
-                Err(CapabilityError::HttpDenied {
-                    plugin_id: token.plugin_id.clone(),
-                })
-            }
-        }
+        // Deny-by-default with no grant path (OD-1): token network fields never widen this.
+        CapabilityOperation::HttpRequest => Err(CapabilityError::HttpDenied {
+            plugin_id: token.plugin_id.clone(),
+        }),
     }
 }
 
@@ -289,12 +291,31 @@ mod tests {
     }
 
     #[test]
-    fn validate_http_allowed() {
-        let token = CapabilityToken::mint(
-            "test-plugin",
-            &CapabilityManifest::from_json(r#"{"external_http": true}"#).unwrap(),
-        );
-        assert!(validate_access(&token, &CapabilityOperation::HttpRequest).is_ok());
+    fn network_scope_table_allow_or_deny_for_none_local_internet() {
+        // (network_scope, external_http): the manifest parse refuses every grant, and a
+        // hand-built manifest that smuggles one past the parser is still denied at use.
+        for (scope, http) in [("none", false), ("local", false), ("internet", true), ("none", true)] {
+            let json = format!(r#"{{"network_scope": "{scope}", "external_http": {http}}}"#);
+            let parsed = CapabilityManifest::from_json(&json);
+            assert_eq!(parsed.is_ok(), scope == "none" && !http, "parse {scope}/{http}");
+
+            let manifest = CapabilityManifest {
+                verse_scope: vec![],
+                petal_scope: vec![],
+                property_scope: vec![],
+                capabilities: vec![],
+                network_scope: scope.into(),
+                external_http: http,
+            };
+            let token = CapabilityToken::mint("test-plugin", &manifest);
+            assert!(
+                matches!(
+                    validate_access(&token, &CapabilityOperation::HttpRequest),
+                    Err(CapabilityError::HttpDenied { .. })
+                ),
+                "request must be denied for {scope}/{http}"
+            );
+        }
     }
 
     #[test]

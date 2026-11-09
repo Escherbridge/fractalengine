@@ -193,6 +193,23 @@ pub struct PluginHostService(pub std::sync::Mutex<Option<fe_runtime::service_lif
 // Bevy plugin
 // ---------------------------------------------------------------------------
 
+/// Runtime opt-in env var for the plugin host (deny-by-default, mirrors `FE_API_SCREENSHOT_ALLOW`).
+pub const PLUGIN_HOST_ENV: &str = "FE_PLUGIN_HOST_ALLOW";
+
+/// Whether an env value opts the host in: exactly `"1"`; unset, empty or garbage stay off.
+pub fn plugin_host_allowed(value: Option<&str>) -> bool {
+    value == Some("1")
+}
+
+/// Read [`PLUGIN_HOST_ENV`] once at startup; a loud WARN fires when the host is switched on.
+pub fn plugin_host_allowed_from_env() -> bool {
+    let allowed = plugin_host_allowed(std::env::var(PLUGIN_HOST_ENV).ok().as_deref());
+    if allowed {
+        tracing::warn!("{PLUGIN_HOST_ENV}=1: plugin host ENABLED (WASM/Rhai sandbox is un-audited; see SECURITY.md)");
+    }
+    allowed
+}
+
 /// Bevy plugin that initializes the plugin host infrastructure.
 ///
 /// Spawns a dedicated thread (thread 7) with its own Tokio runtime for
@@ -380,6 +397,25 @@ fn drain_plugin_results(receiver: Res<PluginResultReceiver>, mut registry: ResMu
         count += 1;
         if count >= 64 {
             break;
+        }
+    }
+}
+
+#[cfg(test)]
+mod host_gate_tests {
+    use super::plugin_host_allowed;
+
+    #[test]
+    fn only_exact_one_opts_the_host_in() {
+        for (value, expected) in [
+            (None, false),
+            (Some(""), false),
+            (Some("0"), false),
+            (Some("true"), false),
+            (Some("yes"), false),
+            (Some("1"), true),
+        ] {
+            assert_eq!(plugin_host_allowed(value), expected, "{value:?}");
         }
     }
 }
