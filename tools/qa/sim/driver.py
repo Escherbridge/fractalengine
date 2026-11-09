@@ -531,7 +531,7 @@ class Driver:
 
     # -- portal ops (tools/qa/portal/AGENTS.md section sim-contract) --------------------------------
     def portal_op(self, client, op, args, verse):
-        """Portal rest ops; admission, kill switch, IPC posts and re-grant have no API route yet and refuse by name."""
+        """Portal ops; admission and re-grant drive the GUI, kill switch and IPC row posts refuse by name (no seam yet)."""
         if op == "upload_bundle":
             out = portal_probe.upload_bundle(client, args)
             data = out.get("data")
@@ -564,8 +564,40 @@ class Driver:
         if op == "portal_slot":
             return client.send("POST", portal_probe.DEBUG_BASE + "action", {"slot": int(args["slot"])},
                                client.debug_token(), 8.0)
+        if op == "portal_admit":
+            return self._portal_admit(client, args)
+        if op == "regrant_role":
+            return self._regrant_role(client, args)
         return Outcome(status=0, ok=False, refused=True, code="portal_op_unwired",
-                       error="%s has no API route in this build (admission and re-grant seams are not wired)" % op)
+                       error="%s has no API route or GUI affordance in this build (kill switch and IPC row posts)" % op)
+
+    def _portal_admit(self, client, args):
+        """`portal_admit`: the repository view's "Admit bundle" button (ux.md section 5); an optional confirm click follows."""
+        out = client.gui("click", {"name": "Admit bundle", "exact": True, "wait_s": float(args.get("wait_s", 5))})
+        if out.ok:
+            client.gui("click", {"name": "Confirm Admit bundle", "exact": True, "wait_s": 1})  # consent step, if the build has one
+        return out
+
+    def _regrant_role(self, client, args):
+        """`regrant_role`: the Access tab assign chain of p2p-core 13c; clicks stop at the first refusal."""
+        target = self.clients[args["peer"]]
+        role, did = args.get("role", "editor"), target.did
+        verse_name = args.get("verse_name", "QA Basic")
+        chain = [("Browse current verse fractals", None), ("Options menu for verse " + verse_name, None),
+                 ("Options… verse " + verse_name, None), ("Access", "button"),
+                 ("Role to assign for " + did, None), (role, None),
+                 ("Assign role %s to %s" % (role, did), None),
+                 ("Confirm Assign role %s to %s" % (role, did), None)]
+        out = None
+        for name, kind in chain:
+            click = {"name": name, "exact": True, "wait_s": 3}
+            if kind:
+                click["role"] = kind
+            out = client.gui("click", click)
+            if not out.ok:
+                return out
+        client.gui("click", {"name": "Close window", "role": "button", "wait_s": 1})
+        return out
 
     # -- macros ----------------------------------------------------------------------------------
     def macro(self, client, op, args, sid, action_id, action):

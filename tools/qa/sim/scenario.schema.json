@@ -102,6 +102,10 @@
         "host_ms": {
           "type": "integer",
           "minimum": 0
+        },
+        "portal_ms": {
+          "type": "integer",
+          "minimum": 0
         }
       }
     },
@@ -128,7 +132,8 @@
             "query",
             "timeseries",
             "get",
-            "alive"
+            "alive",
+            "portal"
           ]
         },
         "target": {}
@@ -287,7 +292,8 @@
             "query",
             "timeseries",
             "get",
-            "alive"
+            "alive",
+            "portal"
           ]
         },
         "target": {},
