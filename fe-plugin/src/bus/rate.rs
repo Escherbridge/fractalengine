@@ -6,7 +6,10 @@ pub struct TokenBucket {
     rate_per_ms: f64,
     capacity: f64,
     tokens: f64,
+    /// Refill bookkeeping; any read moves it.
     last_ms: u64,
+    /// Creation or the last take; only `try_take` moves it, so a sweep never makes a bucket look recently used.
+    touched_ms: u64,
 }
 
 impl TokenBucket {
@@ -14,7 +17,7 @@ impl TokenBucket {
     pub fn new(rate_hz: f64, now_ms: u64) -> Self {
         let rate = if rate_hz.is_finite() && rate_hz > 0.0 { rate_hz } else { 0.0 };
         let capacity = rate.ceil().max(1.0);
-        Self { rate_per_ms: rate / 1_000.0, capacity, tokens: capacity, last_ms: now_ms }
+        Self { rate_per_ms: rate / 1_000.0, capacity, tokens: capacity, last_ms: now_ms, touched_ms: now_ms }
     }
 
     /// A full bucket of `burst` tokens refilling at `rate_hz` (the portal write budget: 2/s, burst 5).
@@ -28,6 +31,7 @@ impl TokenBucket {
     /// Take one token if one is available at `now_ms`.
     pub fn try_take(&mut self, now_ms: u64) -> bool {
         self.refill(now_ms);
+        self.touched_ms = self.touched_ms.max(now_ms);
         if self.tokens >= 1.0 {
             self.tokens -= 1.0;
             true
@@ -36,11 +40,10 @@ impl TokenBucket {
         }
     }
 
-    /// Full again and untouched for `idle_ms`: forgetting it changes nothing.
+    /// Full again and not asked for `idle_ms`: forgetting it changes nothing.
     pub fn is_idle(&mut self, now_ms: u64, idle_ms: u64) -> bool {
-        let untouched = now_ms.saturating_sub(self.last_ms) >= idle_ms;
         self.refill(now_ms);
-        untouched && self.tokens >= self.capacity
+        now_ms.saturating_sub(self.touched_ms) >= idle_ms && self.tokens >= self.capacity
     }
 
     fn refill(&mut self, now_ms: u64) {

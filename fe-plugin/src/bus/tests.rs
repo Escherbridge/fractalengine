@@ -436,4 +436,10 @@ fn bus_journey_queries_streams_commands_and_audit() {
     bus.poll();
     assert!(matches!(in_flight.reply.try_recv().unwrap(), WriteOutcome::Committed(_)));
     assert_eq!(audit.outcomes(AuditAction::PropertyWrite).last().map(String::as_str), Some("ok"));
+
+    // The 10 s sweep forgets a budget a minute after its last take, however often it looks (per-DID buckets stay bounded).
+    let mut budget = crate::bus::rate::TokenBucket::new(1.0, 0);
+    assert!(budget.try_take(0));
+    let swept: Vec<bool> = (1..=7).map(|step| budget.is_idle(step * 10_000, 60_000)).collect();
+    assert_eq!(swept, [false, false, false, false, false, true, true]);
 }

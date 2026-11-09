@@ -992,11 +992,18 @@ impl PluginManager {
     /// acceptance and kill layer a, and stays a binding instance.
     pub fn update_instance(&mut self, request: &ActivationRequest<'_>, staged: StagedInstance) -> Result<(), LifecycleError> {
         let (ticks, package) = self.admit_staged(request, &staged)?;
-        let origin = self
-            .governance
-            .running
-            .get(&staged.plugin_id)
-            .map_or(InstanceOrigin::LocalBind, |build| build.origin);
+        // An update replaces a build of the SAME installation and package; anything else is an install (consent anew).
+        let running = self.governance.running.get(&staged.plugin_id);
+        if let Some(build) = running.filter(|build| {
+            build.installation_id != request.installation_id || build.package.package_id != package.package_id
+        }) {
+            ticks.contexts().discard(&staged.launch.context);
+            return Err(LifecycleError::LaunchMismatch(format!(
+                "{}: runs {} of installation {}, not an update of it",
+                staged.plugin_id, build.package.package_id, build.installation_id
+            )));
+        }
+        let origin = running.map_or(InstanceOrigin::LocalBind, |build| build.origin);
         if origin == InstanceOrigin::Binding {
             if let Err(error) = self.check_binding_local(request) {
                 ticks.contexts().discard(&staged.launch.context);
@@ -2017,6 +2024,16 @@ mod tests {
         // P4.3: the update's grants are not consented yet, so R19 refuses before anything stops.
         let unconsented = manager.update_instance(&request(LOCAL, "inst-3", "verse-3", &v2), staged_build(&ticks, &"d2".repeat(32), &guest, false));
         assert!(matches!(unconsented, Err(LifecycleError::Refused(ref refusal)) if refusal.precondition == Precondition::ConsentMissing));
+        assert_eq!(*log.lock().unwrap(), ["install", "activate"], "the running build was not touched");
+        // The running id staged for another installation is no update (an install, consented anew): refused untouched.
+        manager.governance_mut().record_consent(consent("inst-4", "fleet", "digest-2"));
+        let foreign = staged_build(&ticks, &"d2".repeat(32), &guest, false);
+        let foreign_lease = foreign.launch.context.revocation_lease();
+        assert!(matches!(
+            manager.update_instance(&request(LOCAL, "inst-4", "verse-3", &v2), foreign),
+            Err(LifecycleError::LaunchMismatch(_))
+        ));
+        assert!(foreign_lease.require_active().is_err(), "a refused update holds no lease");
         assert_eq!(*log.lock().unwrap(), ["install", "activate"], "the running build was not touched");
         // Consented, but the new build refuses on-activate: the previous one is re-activated.
         manager.governance_mut().record_consent(consent("inst-3", "fleet", "digest-2"));

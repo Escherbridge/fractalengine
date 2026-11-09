@@ -24,7 +24,7 @@ use crate::tick::{Clock, DeactivateReason};
 pub struct ActivationLimits {
     /// A lazy instance stops after this long without a call while its petal is not active.
     pub idle_stop_ms: u64,
-    /// Binding-started instances per installation on this host; lazy starts past it resolve `capacity`.
+    /// Binding-started instances per installation on this host, eager ones included; starts past it resolve `capacity`.
     pub max_instances_per_installation: usize,
 }
 
@@ -54,7 +54,7 @@ pub enum Trigger {
     KillList,
     /// The active petal is in a verse this host has not resolved yet.
     Navigation,
-    /// A binding instance stopped, so lazy points past the cap may start.
+    /// A binding instance stopped, so points past the cap may start.
     Capacity,
 }
 
@@ -66,7 +66,7 @@ pub struct InstancePlan {
     pub installation_id: String,
     pub package_id: String,
     pub petal: PetalAddress,
-    /// Kept by an eager point: never refused for capacity, never idle-stopped.
+    /// Kept by an eager point: never idle-stopped or evicted, but counted against the cap like any binding instance.
     pub eager: bool,
 }
 
@@ -615,6 +615,7 @@ impl BindingActivator {
         }
 
         let stopping: HashSet<String> = plan.stops.iter().map(|stop| stop.plugin_id.clone()).collect();
+        let mut planned: HashMap<String, usize> = HashMap::new();
         for (key, want) in desired {
             let serving = self
                 .instances
@@ -640,6 +641,14 @@ impl BindingActivator {
                 plan.stops.push(StopPlan { plugin_id: existing.plugin_id.clone(), reason: DeactivateReason::Unbound });
             }
             if want.plan.eager || active_petal.as_deref() == Some(key.petal_id.as_str()) {
+                // The cap counts eager instances too (bindings.md §5.6); a held start shows `capacity` until a stop.
+                let installation_id = want.plan.installation_id.clone();
+                let held = self.binding_count_except(&installation_id, &stopping) + planned.get(&installation_id).copied().unwrap_or(0);
+                if held >= self.limits.max_instances_per_installation {
+                    self.mark_unresolved(&want.plan, UnresolvedReason::Capacity);
+                    continue;
+                }
+                *planned.entry(installation_id).or_default() += 1;
                 plan.starts.push(want.plan);
                 plan.configures.extend(want.services);
             }
@@ -854,11 +863,10 @@ impl BindingActivator {
         for stop in plan.stops {
             let stopped = lock(manager).stop_instance(&stop.plugin_id, stop.reason);
             if let Some(instance) = self.instances.get(&stop.plugin_id) {
-                let verse_id = instance.verse_id.clone();
                 let binding_started = instance.origin == InstanceOrigin::Binding;
                 self.release(&stop.plugin_id);
-                if binding_started && self.has_capacity_waits(&verse_id) {
-                    self.mark_dirty(&verse_id, Trigger::Capacity);
+                if binding_started {
+                    self.wake_capacity_waits();
                 }
             }
             if stopped {
@@ -877,18 +885,26 @@ impl BindingActivator {
         report
     }
 
-    /// Whether any cached point of the verse waits on the instance cap.
-    fn has_capacity_waits(&self, verse_id: &str) -> bool {
-        self.verses.get(verse_id).is_some_and(|cache| {
-            cache.petals.values().any(|(_, points)| {
-                points.values().any(|cached| {
-                    matches!(cached.resolved.resolution, BindingResolution::Unresolved { reason: UnresolvedReason::Capacity, .. })
+    /// Mark every verse with a point waiting on the cap: the cap is per installation, so a stop frees room in any verse.
+    fn wake_capacity_waits(&mut self) {
+        let waiting: Vec<String> = self
+            .verses
+            .iter()
+            .filter(|(_, cache)| {
+                cache.petals.values().any(|(_, points)| {
+                    points.values().any(|cached| {
+                        matches!(cached.resolved.resolution, BindingResolution::Unresolved { reason: UnresolvedReason::Capacity, .. })
+                    })
                 })
             })
-        })
+            .map(|(verse_id, _)| verse_id.clone())
+            .collect();
+        for verse_id in waiting {
+            self.mark_dirty(&verse_id, Trigger::Capacity);
+        }
     }
 
-    /// One start: cap (lazy only), the installed build, R19 plus rows 12-13 before staging, then the host start.
+    /// One start: the cap (eager included), the installed build, R19 plus rows 12-13 before staging, then the host start.
     fn start(&mut self, plan: InstancePlan, manager: &Mutex<PluginManager>, launcher: &mut dyn BindingLauncher, report: &mut ApplyReport) {
         if self.tracked_at(&plan.key()).is_some() {
             return;
@@ -912,7 +928,7 @@ impl BindingActivator {
             }
             self.release(&existing.plugin_id);
         }
-        if !plan.eager && self.binding_count(&plan.installation_id) >= self.limits.max_instances_per_installation {
+        if self.binding_count(&plan.installation_id) >= self.limits.max_instances_per_installation {
             let detail = format!("{} binding instances is the cap for this installation", self.limits.max_instances_per_installation);
             return self.refuse(&plan, UnresolvedReason::Capacity, detail, false, report);
         }
@@ -1021,11 +1037,17 @@ impl BindingActivator {
         }
     }
 
-    /// The points at that petal serving `package_id` show the refusal; the built-in serves them meanwhile.
+    /// Record a refused start or update in the report; its points show the refusal (see [`Self::mark_unresolved`]).
     fn refuse(&mut self, plan: &InstancePlan, reason: UnresolvedReason, detail: String, remember: bool, report: &mut ApplyReport) {
         if remember {
             self.failures.insert(plan.plugin_id.clone(), Failure { verse_id: plan.petal.verse_id.clone(), reason });
         }
+        self.mark_unresolved(plan, reason);
+        report.refused.push((plan.plugin_id.clone(), reason, detail));
+    }
+
+    /// The points at that petal serving `package_id` show `reason` until the next re-resolution; the built-in serves.
+    fn mark_unresolved(&mut self, plan: &InstancePlan, reason: UnresolvedReason) {
         let offer = match reason {
             UnresolvedReason::ConsentMissing | UnresolvedReason::NotAccepted | UnresolvedReason::Disabled => reason.offer(),
             _ => None,
@@ -1044,7 +1066,6 @@ impl BindingActivator {
             cached.resolved.resolution = BindingResolution::Unresolved { package_id, scope, reason, offer };
             cached.binding = None;
         }
-        report.refused.push((plan.plugin_id.clone(), reason, detail));
     }
 
     fn cached_petal(&self, petal_id: &str) -> Option<(&PetalAddress, &PetalPoints)> {
@@ -1079,9 +1100,18 @@ impl BindingActivator {
 
     /// Binding-started instances an installation holds on this host.
     fn binding_count(&self, installation_id: &str) -> usize {
+        self.binding_count_except(installation_id, &HashSet::new())
+    }
+
+    /// [`binding_count`](Self::binding_count) without the instances a plan is about to stop.
+    fn binding_count_except(&self, installation_id: &str, stopping: &HashSet<String>) -> usize {
         self.instances
-            .values()
-            .filter(|instance| instance.origin == InstanceOrigin::Binding && instance.installation_id == installation_id)
+            .iter()
+            .filter(|(plugin_id, instance)| {
+                instance.origin == InstanceOrigin::Binding
+                    && instance.installation_id == installation_id
+                    && !stopping.contains(*plugin_id)
+            })
             .count()
     }
 
@@ -1343,7 +1373,8 @@ mod tests {
     }
 
     /// Journey (bindings.md §5.3-5.7 on one host): acceptance gates every start; a verse egress connector starts
-    /// eagerly in every petal, shares one egress bucket and is configured once per config change; a peer-pinned
+    /// eagerly in every petal up to the cap (the rest wait at `capacity`), shares one egress bucket and is configured
+    /// once per config change; a peer-pinned
     /// connector runs elsewhere; a lazy map starts on navigation, hits the cap, idle-stops and frees the cap;
     /// Disable holds against re-resolution until Enable; a kill list stops the revoked build after its drain
     /// while the Owner's override keeps the other running in its verse only; a clear stops the connector
@@ -1428,21 +1459,29 @@ mod tests {
         ));
         assert_eq!(state_of(&activator, "p1", &lake), Some(BindingResolution::Elsewhere { runs_on: OTHER.into() }));
 
-        // "Allow in v1" for the connector: the eager point starts in every petal, past the lazy cap of 2.
+        // "Allow in v1" for the connector: the eager point starts in every petal up to the cap of 2, eager instances
+        // included (bindings.md §5.6 "at most N binding-started instances per installation per host"); p3 waits.
         lock(&manager).governance_mut().accept_in_verse("inst-conn", "v1");
         facts.accepted.insert(("inst-conn".into(), "v1".into()));
         activator.mark_dirty("v1", Trigger::Lifecycle);
         assert_eq!(activator.take_dirty(), vec![("v1".to_string(), BTreeSet::from([Trigger::Lifecycle]))]);
         let plan = reconcile(&mut activator, &rows, &facts, &manager);
-        assert_eq!(starts(&plan), ["inst-conn@p1", "inst-conn@p2", "inst-conn@p3"]);
+        assert_eq!(starts(&plan), ["inst-conn@p1", "inst-conn@p2"]);
+        assert!(matches!(
+            state_of(&activator, "p3", &warehouse),
+            Some(BindingResolution::Unresolved { reason: UnresolvedReason::Capacity, offer: None, .. })
+        ));
         let report = activator.apply(plan, &manager, &mut launcher);
-        assert_eq!(report.started.len(), 3, "{report:?}");
-        assert_eq!(launcher.configured.len(), 3, "one configure per started service point");
+        assert_eq!(report.started.len(), 2, "{report:?}");
+        assert_eq!(launcher.configured.len(), 2, "one configure per started service point");
         assert!(launcher.configured.iter().all(|(_, config)| *config == csv));
         assert_eq!(ticks.counters("inst-conn@p2").map(|counters| counters.state), Some(TickState::Running));
-        assert!(reconcile(&mut activator, &rows, &facts, &manager).is_empty(), "re-resolving an unchanged verse plans nothing");
+        assert!(
+            reconcile(&mut activator, &rows, &facts, &manager).is_empty(),
+            "re-resolving an unchanged verse plans nothing, and the held start stays held"
+        );
 
-        // Three petal instances draw from one rate_hz bucket per endpoint; an unbound instance keeps its own.
+        // The petal instances draw from one rate_hz bucket per endpoint; an unbound instance keeps its own.
         let buckets = activator.egress_buckets();
         let (conn_p1, conn_p2) = (InstanceKey::new("p1", CONNECTOR), InstanceKey::new("p2", CONNECTOR));
         assert_eq!(buckets.try_take(&conn_p1, "sink", 1.0, 1_000), Some(true));
@@ -1530,7 +1569,7 @@ mod tests {
         rows.push(row(&verse_scope, "egress.connector", "warehouse", Some(CONNECTOR), LOCAL, 20, json_format.clone()));
         let plan = reconcile(&mut activator, &rows, &facts, &manager);
         assert!(plan.starts.is_empty() && plan.stops.is_empty(), "{plan:?}");
-        assert_eq!(plan.configures.len(), 3);
+        assert_eq!(plan.configures.len(), 2);
         activator.apply(plan, &manager, &mut launcher);
         assert_eq!(launcher.configured.last().map(|(_, config)| config), Some(&json_format));
 
@@ -1572,14 +1611,7 @@ mod tests {
         rows.push(row(&verse_scope, "egress.connector", "warehouse", None, LOCAL, 30, json!({})));
         let plan = reconcile(&mut activator, &rows, &facts, &manager);
         let stops: Vec<(&str, DeactivateReason)> = plan.stops.iter().map(|stop| (stop.plugin_id.as_str(), stop.reason)).collect();
-        assert_eq!(
-            stops,
-            [
-                ("inst-conn@p1", DeactivateReason::Unbound),
-                ("inst-conn@p2", DeactivateReason::Unbound),
-                ("inst-conn@p3", DeactivateReason::Unbound),
-            ]
-        );
+        assert_eq!(stops, [("inst-conn@p1", DeactivateReason::Unbound), ("inst-conn@p2", DeactivateReason::Unbound)]);
         activator.apply(plan, &manager, &mut launcher);
         assert_eq!(buckets.members("inst-conn"), 0);
         assert_eq!(buckets.try_take(&conn_p1, "sink", 1.0, 700_000), None);

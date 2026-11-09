@@ -53,7 +53,9 @@ is dropped here as well), `feed_node_changes_lagged` (broadcast lag → resync),
 - **The worker turn** is `poll()`: `settle` (collect finished runs and snapshots, coalesce pending scene
   changes into ≤256-change deltas), `launch` (start due runs and requested snapshots), `settle` again (so a
   synchronous source delivers in the same turn), `expire_calls` (5 s → `unknown-outcome`, never retried; idle
-  buckets swept every 10 s). The worker also calls `dispatch(key, hooks, max)` per instance; priority is call
+  buckets swept every 10 s: a bucket goes once it is full and nothing took from it for 60 s. Only `try_take`
+  moves `touched_ms`; before R-LIFE the sweep's own refill reset the clock, so per-DID buckets never left and a
+  stream of fresh remote DIDs grew the maps without bound). The worker also calls `dispatch(key, hooks, max)` per instance; priority is call
   results, then commands, then one event batch (≤64 events / 256 KiB, round-robin across subscriptions, `seq`
   order inside each; a query snapshot over 256 KiB travels alone).
 - **Queues and drops** (bus.md §5). Each subscription has a bounded queue and an overflow rule:
@@ -152,6 +154,9 @@ data, and every portal operation derives its identity from the client, never fro
   check (`role_of`): stream floors, command floors (check 4) and the write floor. A portal client opened
   without a ceiling is capped at Viewer (fail closed). The binary computes the ceiling: the installing
   identity's role at the bundle's scope, never above the viewer's token.
+- **Host sources** (`host/node-changes`, `host/readings`, `host/query`, `host/admission`) need a local binding
+  and a capped role of Viewer or above at the mount petal (R-LIFE). A foreign DID's binding gets the uniform
+  not-found, as for emit, invoke and writes. Before this, only the stream branch judged the role.
 - **emit** (`client_publish`): a declared stream and a local caller; size within its `max_event_bytes`
   (≤ 64 KiB); rate within `max_rate_hz` capped at 10 Hz, keyed by `(petal, package, stream)` so a reload cannot
   reset it. Fan-out shares `fan_out_stream` with guest publishes, with `from_portal = true`. Each subscription

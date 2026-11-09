@@ -1682,7 +1682,8 @@ impl Bus {
             (Source::Admission, ClientGrants::Ui) => PlanKind::Admission { visible: None },
             (_, ClientGrants::Portal(portal)) => {
                 let PortalGrants { petal_id: mount, verse_id: mount_verse, consume, property_scope, .. } = &**portal;
-                if mount != petal_id {
+                // Host sources are this host's data: a foreign DID's binding, or a ceiling below viewer, reads none of it.
+                if mount != petal_id || remote || !self.role_of(caller, petal_id).is_at_least(RoleLevel::Viewer) {
                     return Err(not_granted());
                 }
                 verse_id = mount_verse.clone();

@@ -456,6 +456,14 @@ staged with `stage_instance`, scheduler and seat assembled) and nothing has run 
 - **Publisher change.** A build whose publisher or signing root differs from the installed one is a NEW install with
   fresh consent, never an update (steer 2026-11-09 01:50). `ConsentRecord` holds no publisher, so the caller (the ops
   drain) must route that case to install before reaching `update_instance`.
+- **Same installation, same package.** `update_instance` refuses `launch-mismatch` (and discards the staged context)
+  when the running build under that id belongs to another installation or package (R-LIFE). Without it, a caller
+  that picked the wrong id could swap a different package into a running seat under one consent check.
+- **Binding-instance cap.** The activator counts eager binding instances against the per-installation cap too
+  (bindings.md §5.6 "at most 64 binding-started instances per installation per host"). Eager ones are never
+  idle-stopped or evicted, but a start past the cap is held at `capacity` until a binding instance stops in any
+  verse (R-LIFE). Without it, a Manager binding `petal.activate` at a verse with N petals started N instances on
+  every accepting peer.
 - **Local Disable holds.** `disable_instance(installation_id)` stops every instance of the installation and keeps it
   disabled (bindings cannot restart it) until `start_instance` (the operator's Enable) or `enable_installation`.
 - **Uninstall.** `uninstall_instance(id)` covers every instance ever started for the installation: `TickHost::uninstall`
@@ -500,3 +508,9 @@ fuel refill and frozen clock, degrade on `HookCallError::Fault` exactly like a t
 `DecodeStamp` (if any) to every reading staged until the call returns. A guest refusal leaves the built-in serving.
 Host-initiated calls (`configure`, `ingest.decode`, `blob.*`, `egress.*`, `petal.map`) come from the binary's
 binding worker, never the DB thread or the render loop.
+
+**Decode bytes (steer 2026-11-09 02:25).** `bindings/decode.rs::read_within_cap` owns the order, not the host:
+`DecodeHost::declared_files` reports each asset row's size, type and BLAKE3 without reading a blob; the sum is
+checked against the 1 MiB hook cap before any read (`TooLarge`); then each file is read through
+`read_bounded(file, size + 1)` and kept only when its length and BLAKE3 equal the row (`Mismatch`). A declared
+size that lies is cut off, not trusted, and no extension sees a byte the store cannot vouch for.

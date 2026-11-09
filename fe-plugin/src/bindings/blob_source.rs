@@ -31,8 +31,9 @@ pub const MAX_SOURCE_CALLS_IN_FLIGHT: usize = 4;
 pub const SOURCE_BUDGET: Duration = Duration::from_secs(30);
 
 /// Delivers one hook call to the running instance `target.plugin_id`. The binary implements it over `HooksGuest`,
-/// taking that instance's lock, refusing while it is degraded and degrading it on `HookCallError::Fault`. It runs on
-/// a call thread: never the plugin worker, the DB thread or the render loop.
+/// taking that instance's lock, refusing while it is degraded or once its lease is revoked (a stopped instance takes no
+/// new call, OD-E1) and degrading it on `HookCallError::Fault`. It runs on a call thread: never the plugin worker, the
+/// DB thread or the render loop.
 pub trait HookCaller: Send + Sync {
     fn call(&self, target: &CallTarget, request: &HookRequest) -> Result<HookReply, HookCallError>;
 }
