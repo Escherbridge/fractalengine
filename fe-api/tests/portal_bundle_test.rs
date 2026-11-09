@@ -228,6 +228,11 @@ async fn summary_admission(h: &ApiHarness, token: &str, asset_id: &str) -> Optio
 
 #[tokio::test]
 async fn bundle_upload_lists_members_and_keeps_the_raw_blob_an_attachment() {
+    // fe-runtime mirrors the MIME (it cannot depend on fe-format); the two copies must never drift.
+    assert_eq!(
+        fe_format::portal_bundle::PORTAL_BUNDLE_MIME,
+        fe_runtime::scene_asset::PORTAL_BUNDLE_MIME
+    );
     let h = ApiHarness::spawn().await.expect("spawn harness");
     serve_create_asset(&h);
     let (petal, editor, viewer, scope) = seed_petal_with_tokens(&h).await;

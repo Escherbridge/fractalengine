@@ -277,9 +277,11 @@ pub fn inspect_archive(
     })
 }
 
-/// The raw URL policy applied to a bundle's declared origin (spec §6.1).
+/// The URL policy for a declared origin or feed origin (spec §6.1): `is_url_allowed` on the parsed URL, no fixture bypass.
 fn origin_allowed(origin: &str) -> bool {
-    fe_runtime::portal_url::embedded_allowed(origin)
+    origin
+        .parse::<url::Url>()
+        .is_ok_and(|url| fe_runtime::portal_url::is_url_allowed(&url))
 }
 
 /// BLAKE3 hex of a file, streamed.
@@ -445,33 +447,6 @@ fn asset_name(title: &str, package_id: &str) -> String {
     name.chars().take(MAX_ASSET_NAME_CHARS).collect()
 }
 
-/// Refuse (before any byte is stored) an upload that would pass the owner's quota; fails closed.
-async fn check_quota(state: &ApiState, owner_did: &str, incoming: u64) -> Result<(), Response> {
-    let quota = state.upload_quota_bytes;
-    let rows = crate::gis::run_select(
-        state,
-        "SELECT math::sum(size_bytes) AS used FROM asset WHERE owner_did = $owner GROUP ALL",
-        vec![("owner".to_string(), json!(owner_did))],
-    )
-    .await
-    .ok_or_else(|| {
-        tracing::warn!("bundle quota lookup failed; refusing upload");
-        error_json(StatusCode::BAD_GATEWAY, "asset registration failed")
-    })?;
-    let used = rows
-        .first()
-        .and_then(|row| row.get("used"))
-        .and_then(|used| used.as_u64().or_else(|| used.as_f64().map(|f| f as u64)))
-        .unwrap_or(0);
-    if used.saturating_add(incoming) > quota {
-        return Err(error_json(
-            StatusCode::PAYLOAD_TOO_LARGE,
-            &format!("upload quota exceeded: this owner may register at most {quota} asset bytes"),
-        ));
-    }
-    Ok(())
-}
-
 /// POST /api/v1/petals/{petal_id}/portal-bundles — multipart `file` part; Editor+ at the petal.
 /// Validates README §6 in full, stores one blob, registers one metadata-only `asset` row.
 pub async fn upload_portal_bundle(
@@ -536,8 +511,11 @@ pub async fn upload_portal_bundle(
     }
 
     let owner_did = crate::upload::owner_key(&claims).to_string();
-    if let Err(denied) = check_quota(&state, &owner_did, bytes.len() as u64).await {
-        return denied;
+    let quota_owner = crate::upload::UploadOwner::new(&claims, &petal_id);
+    if let Err(denied) =
+        crate::upload::check_upload_quota(&state, &quota_owner, bytes.len() as u64).await
+    {
+        return error_json(denied.status(), &denied.message());
     }
 
     // Validate, then store: bytes are consumed here and never reach the DB channel.
