@@ -82,11 +82,6 @@ impl PluginContext {
         self
     }
 
-    /// The host-injected reader (the default unfiltered route-geometry reader of `InstanceSetup`).
-    pub(crate) fn node_reader(&self) -> Option<Arc<Mutex<dyn NodeReader>>> {
-        self.reader.clone()
-    }
-
     /// Attach a trusted atomic sink bound to this plugin's admitted capability limits.
     pub fn with_transaction_sink(mut self, sink: Arc<Mutex<dyn TransactionSink>>) -> Self {
         self.sink = Some(sink);

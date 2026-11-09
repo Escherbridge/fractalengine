@@ -1097,11 +1097,13 @@ mod tests {
         fn on_call_result(&mut self, _call: u64, _outcome: Result<String, crate::bus::HostError>) {}
     }
 
+    type PendingReplies = Arc<Mutex<Vec<(u64, Sender<FlushReply>, u32)>>>;
+
     /// Answers each flush `delay_ms` of manual time after it was submitted.
     struct SlowSink {
         clock: ManualClock,
         delay_ms: u64,
-        pending: Arc<Mutex<Vec<(u64, Sender<FlushReply>, u32)>>>,
+        pending: PendingReplies,
         submitted: Arc<Mutex<Vec<StagedFlush>>>,
     }
 
@@ -1120,7 +1122,7 @@ mod tests {
         infos: Arc<Mutex<Vec<TickInfo>>>,
         fuel_refills: Arc<Mutex<Vec<u64>>>,
         deactivations: Arc<Mutex<Vec<DeactivateReason>>>,
-        pending: Arc<Mutex<Vec<(u64, Sender<FlushReply>, u32)>>>,
+        pending: PendingReplies,
         submitted: Arc<Mutex<Vec<StagedFlush>>>,
     }
 

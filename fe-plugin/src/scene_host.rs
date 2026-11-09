@@ -178,7 +178,7 @@ impl PluginContexts {
         };
         let Ok(mut contexts) = self.contexts.lock() else {
             staged.session.revoke();
-            self.forget_keys(&[staged.session.id.clone()]);
+            self.forget_keys(std::slice::from_ref(&staged.session.id));
             return Err("plugin context registry lock poisoned".into());
         };
         let refused = if self.is_closed() {
@@ -193,7 +193,7 @@ impl PluginContexts {
         };
         if let Err(reason) = refused {
             staged.session.revoke();
-            self.forget_keys(&[staged.session.id.clone()]);
+            self.forget_keys(std::slice::from_ref(&staged.session.id));
             return Err(reason);
         }
         contexts.insert(staged.session.id.clone(), staged);
@@ -231,7 +231,7 @@ impl PluginContexts {
             .and_then(|mut staged| staged.remove(&context.session.id));
         if let Some(staged) = removed {
             staged.session.revoke();
-            self.forget_keys(&[staged.session.id.clone()]);
+            self.forget_keys(std::slice::from_ref(&staged.session.id));
         }
     }
 

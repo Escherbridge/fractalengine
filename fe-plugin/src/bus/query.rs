@@ -70,7 +70,7 @@ impl QueryState {
     pub(super) fn begin_launch(&mut self, now_ms: u64) -> Option<u64> {
         self.launching = true;
         self.dirty = false;
-        std::mem::replace(&mut self.last_started_ms, Some(now_ms))
+        self.last_started_ms.replace(now_ms)
     }
 
     /// The run is in flight.

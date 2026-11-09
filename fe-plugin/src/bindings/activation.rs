@@ -727,7 +727,7 @@ impl BindingActivator {
         let now = self.clock.now_ms();
         let previous = std::mem::replace(&mut self.active, active.clone());
         if let Some(previous) = previous {
-            if active.as_ref().map_or(true, |next| next.petal_id != previous.petal_id) {
+            if active.as_ref().is_none_or(|next| next.petal_id != previous.petal_id) {
                 for instance in self.instances.values_mut().filter(|instance| instance.key.petal_id == previous.petal_id) {
                     instance.last_use_ms = now;
                 }
@@ -793,6 +793,8 @@ impl BindingActivator {
         Need::Call(CallTarget { plugin_id, installation_id, key, binding_scope, config })
     }
 
+    // Err carries the Builtin resolution by value; boxing would change this public API used by other crates.
+    #[allow(clippy::result_large_err)]
     /// [`need`](Self::need), lazily starting the instance when the point resolves (call hooks, bindings.md §5.6).
     pub fn ensure_call_target(
         &mut self,

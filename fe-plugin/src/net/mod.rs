@@ -514,7 +514,7 @@ impl Net {
     fn with_generation<R>(&self, key: &InstanceKey, generation: u64, change: impl FnOnce(&mut NetState) -> R) -> Option<R> {
         let mut state = self.lock();
         let current = state.instances.get(key).is_some_and(|instance| instance.generation == generation);
-        current.then(|| change(&mut *state))
+        current.then(|| change(&mut state))
     }
 
     fn set_endpoint_state(&self, key: &InstanceKey, generation: u64, endpoint: &str, status: EndpointState) {

@@ -843,7 +843,7 @@ impl Bus {
                 .get(&InstanceKey::new(petal_id, own.clone()))
                 .and_then(|calling| calling.spec.manifest.bus.as_ref())
                 .and_then(|bus| bus.call.as_ref())
-                .is_some_and(|targets| targets.iter().any(|listed| *listed == address));
+                .is_some_and(|targets| targets.contains(&address));
             if own == package_id || !listed {
                 return Err(BusRefusal::CapabilityDenied(format!("{address} is not listed under bus.call")));
             }
@@ -926,7 +926,7 @@ impl Bus {
                 Err(refusal) => Err(refusal),
                 Ok((caller, grants)) => {
                     let petal_id = grants.petal_id.clone();
-                    let admitted = if grants.invoke.iter().any(|target| *target == address) {
+                    let admitted = if grants.invoke.contains(&address) {
                         self.admit_call(&mut state, &caller, &petal_id, package_id, command_id, args, now)
                     } else if caller.local {
                         Err(BusRefusal::CapabilityDenied(format!("{address} is not declared under commands.invoke")))

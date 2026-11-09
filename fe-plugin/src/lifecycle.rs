@@ -509,7 +509,7 @@ fn bind_staged(
     if context.plugin_id() != staged.plugin_id || context.petal_id() != request.petal_id {
         return Err(LifecycleError::LaunchMismatch(format!("{}: the context is bound to another instance or petal", staged.plugin_id)));
     }
-    let seat_matches = staged.launch.seat.as_ref().map_or(true, |seat| {
+    let seat_matches = staged.launch.seat.as_ref().is_none_or(|seat| {
         let spec = &seat.spec;
         spec.installation_id == request.installation_id
             && spec.verse_id == request.verse_id
@@ -1786,12 +1786,13 @@ mod tests {
         // Admission off: nothing is even verified.
         manager.admission = false;
         let err = manager
-            .install_plugin("test-plugin", &bytes, MANIFEST_BYTES, &[valid.clone()])
+            .install_plugin("test-plugin", &bytes, MANIFEST_BYTES, std::slice::from_ref(&valid))
             .unwrap_err();
         assert!(matches!(err, LifecycleError::HostOff));
         manager.admission = true;
 
-        let refusals: [(&str, Vec<SignatureEntry>, fn(&LifecycleError) -> bool); 5] = [
+        type RefusalCase = (&'static str, Vec<SignatureEntry>, fn(&LifecycleError) -> bool);
+        let refusals: [RefusalCase; 5] = [
             // Unsigned is refused by default.
             ("test-plugin", vec![], |e| matches!(e, LifecycleError::Package(PackageError::Unsigned(_)))),
             // Unlisted key is refused with a typed error.

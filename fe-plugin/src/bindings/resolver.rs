@@ -98,8 +98,8 @@ impl PackagePolicy {
     pub fn admits(&self, package_id: &str) -> bool {
         !self.verse_deny.contains(package_id)
             && !self.local_deny.contains(package_id)
-            && self.verse_allow_list.as_ref().map_or(true, |list| list.contains(package_id))
-            && self.local_allow_list.as_ref().map_or(true, |list| list.contains(package_id))
+            && self.verse_allow_list.as_ref().is_none_or(|list| list.contains(package_id))
+            && self.local_allow_list.as_ref().is_none_or(|list| list.contains(package_id))
     }
 }
 
@@ -291,7 +291,7 @@ fn first_failure<'a>(
     if !facts.host_enabled {
         return Err((UnresolvedReason::HostOff, None));
     }
-    if hook_spec(&record.hook).map_or(true, |spec| spec.tier != HookTier::V1) {
+    if hook_spec(&record.hook).is_none_or(|spec| spec.tier != HookTier::V1) {
         return Err((UnresolvedReason::UnknownHook, None));
     }
     if !facts.builds.iter().any(|build| build.package_id == package_id) {
@@ -357,7 +357,7 @@ fn check_build(
     if build.degraded {
         return Err(UnresolvedReason::Degraded);
     }
-    let lazy = hook_spec(&point.hook).map_or(true, |spec| !spec.eager);
+    let lazy = hook_spec(&point.hook).is_none_or(|spec| !spec.eager);
     if lazy
         && build.binding_instances >= MAX_BINDING_INSTANCES_PER_INSTALLATION
         && !build.instance_at_petals.contains(&petal.petal_id)
@@ -371,7 +371,7 @@ fn check_build(
 fn provided_entry<'a>(provides: &'a [ProvidedHook], point: &BindingPoint) -> Option<&'a ProvidedHook> {
     provides.iter().find(|entry| {
         entry.hook == point.hook
-            && entry.keys.as_ref().map_or(true, |keys| keys.iter().any(|pattern| key_matches(pattern, &point.key)))
+            && entry.keys.as_ref().is_none_or(|keys| keys.iter().any(|pattern| key_matches(pattern, &point.key)))
     })
 }
 
@@ -612,7 +612,7 @@ mod tests {
         // Keyed points are independent.
         let keyed = row(BindingScopeLevel::Verse, "ingest.decode", "acme/raw", BindingMode::Builtin, 9);
         assert_eq!(
-            run(&[keyed.clone()], &facts(), &[], "ingest.decode", "other").resolution,
+            run(std::slice::from_ref(&keyed), &facts(), &[], "ingest.decode", "other").resolution,
             BindingResolution::Builtin { scope: None }
         );
         assert!(matches!(
@@ -625,10 +625,10 @@ mod tests {
     #[test]
     fn stored_terrain_is_an_implicit_petal_builtin() {
         let verse = row(BindingScopeLevel::Verse, "petal.map", "", BindingMode::Extension, 5);
-        let implicit = run(&[verse.clone()], &facts(), &["p1"], "petal.map", "");
+        let implicit = run(std::slice::from_ref(&verse), &facts(), &["p1"], "petal.map", "");
         assert_eq!(implicit.resolution, BindingResolution::Builtin { scope: Some(scope_of(BindingScopeLevel::Petal)) });
         assert!(implicit.detail.implicit_terrain);
-        let other_petal = run(&[verse.clone()], &facts(), &["p9"], "petal.map", "");
+        let other_petal = run(std::slice::from_ref(&verse), &facts(), &["p9"], "petal.map", "");
         assert!(other_petal.resolution.is_extension());
         let explicit = row(BindingScopeLevel::Petal, "petal.map", "", BindingMode::Extension, 6);
         assert!(run(&[verse, explicit], &facts(), &["p1"], "petal.map", "").resolution.is_extension());
@@ -648,7 +648,7 @@ mod tests {
             vec![ProvidedHook { hook: "egress.connector".into(), keys: None, uses: None, config_schema: None }];
         let connector = row(BindingScopeLevel::Verse, "egress.connector", "bi", BindingMode::Extension, 5);
         assert_eq!(
-            run(&[connector.clone()], &connector_facts, &[], "egress.connector", "bi").resolution,
+            run(std::slice::from_ref(&connector), &connector_facts, &[], "egress.connector", "bi").resolution,
             BindingResolution::Elsewhere { runs_on: MANAGER.into() },
             "null reads as the author for a one-peer hook"
         );
