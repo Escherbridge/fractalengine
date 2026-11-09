@@ -10,10 +10,12 @@ pub mod bindings {
     });
 }
 
+pub mod hooks;
 pub mod readings_batch;
 pub mod tracking;
 pub mod window;
 
+pub use hooks::{Call as HookCall, Failure as HookFailure, HookFn, Output as HookOutput};
 pub use bindings::exports::fractalengine::plugin::bus_hooks::{BusEvent, CommandError};
 pub use bindings::exports::fractalengine::plugin::ingress_hooks::{ConnectionEvent, IngressFrame, IngressReply, Transport};
 pub use bindings::exports::fractalengine::plugin::lifecycle::{DeactivateReason, TickInfo};

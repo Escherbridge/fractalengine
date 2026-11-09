@@ -5,7 +5,7 @@ use std::process::Command;
 
 use anyhow::{bail, Context, Result};
 use clap::{Parser, Subcommand};
-use fe_ext::{inspect, key, new, pack, project::Project, sandbox, validate};
+use fe_ext::{inspect, key, lab, new, pack, project::Project, sandbox, validate};
 
 #[derive(Parser)]
 #[command(name = "fe-ext", version, about = "Author, check, pack, sign and sandbox-run FractalEngine extensions")]
@@ -77,18 +77,31 @@ enum Cmd {
         #[arg(long)]
         json: bool,
     },
-    /// Run the component in the real host against an in-memory scene.
+    /// Run the component in the real host: `--sandbox` (one peer, fixture) or `--lab` (fe-sim scenario).
     Run {
-        /// In-memory scene, manual clock, fixture-fed (multi-peer `--lab` arrives later).
-        #[arg(long)]
+        /// In-memory scene, manual clock, fixture-fed.
+        #[arg(long, conflicts_with = "lab")]
         sandbox: bool,
+        /// Host the fleet-sim package as the fe-sim reading schedule; needs `--scenario`.
+        #[arg(long, requires = "scenario")]
+        lab: bool,
+        /// Sandbox fixture (required with `--sandbox`).
         #[arg(long)]
-        fixture: PathBuf,
+        fixture: Option<PathBuf>,
+        /// fe-sim scenario script (JSON) for `--lab`.
+        #[arg(long)]
+        scenario: Option<PathBuf>,
+        /// Parent for the lab session directories (default: a pid-named directory under the OS temp dir).
+        #[arg(long)]
+        root: Option<PathBuf>,
+        /// Lab sessions to run back to back; every fingerprint must match the first.
+        #[arg(long, default_value_t = 1)]
+        runs: u32,
         #[arg(long, default_value = ".")]
         project: PathBuf,
         #[arg(long)]
         component: Option<PathBuf>,
-        /// Write the full trace JSON here.
+        /// Write the full trace (sandbox) or report (lab) JSON here.
         #[arg(long)]
         out: Option<PathBuf>,
     },
@@ -166,10 +179,19 @@ fn run(cli: Cli) -> Result<()> {
                 }
             }
         }
-        Cmd::Run { sandbox: sandboxed, fixture, project, component, out } => {
-            if !sandboxed {
-                bail!("only `--sandbox` is available; `--lab` (multi-peer) arrives with the first-party packages");
+        Cmd::Run { sandbox: sandboxed, lab: labbed, fixture, scenario, root, runs, project, component, out } => {
+            if labbed {
+                let scenario = scenario.context("`--lab` needs `--scenario <script.json>`")?;
+                let report = lab::run_lab(&lab::LabArgs { scenario, project, component, root, runs, out })?;
+                for line in &report.summary {
+                    println!("{line}");
+                }
+                return Ok(());
             }
+            if !sandboxed {
+                bail!("pass `--sandbox --fixture <file>` or `--lab --scenario <file>`");
+            }
+            let fixture = fixture.context("`--sandbox` needs `--fixture <file>`")?;
             let report = sandbox::run_project(&project, &fixture, component.as_deref())?;
             for line in &report.summary {
                 println!("{line}");

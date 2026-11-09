@@ -15,6 +15,7 @@ in `docs/extensions/` and `fe-plugin/wit/fractal-plugin-2.wit`; this file holds 
 | `countersign` | `src/pack.rs` | Appends `plugin/countersignatures.json` by raw-copying every other zip member, so `content_hash` never moves. Signs `signing_bytes` with `fe_format::sign_manifest` (package-format.md §Signatures: the same bytes and base64 as the publisher). Until fe-hexon's verifier checks entries with `fe_format::verify_manifest` instead of its raw-bytes `signature::verify_manifest`, the re-verify here refuses with `countersignature-mismatch` (handed off by G3). |
 | `inspect` | `src/inspect.rs` | Verifies with every signer accepted (trust is the host's decision) and prints the ids, hashes, capability digest, `publisher_did` and the verified `countersigners`. It never prints a "trusted by": under accept-all that would always name the publisher. |
 | `run --sandbox` | `src/sandbox.rs` | See §sandbox. |
+| `run --lab` | `src/lab.rs` | `--scenario <script.json> [--runs N] [--root DIR] [--out report.json]`: hosts the fleet-sim package as the fe-sim reading schedule (see �lab); `--runs` repeats the session and every fingerprint must equal the first. `--sandbox` and `--lab` are mutually exclusive. |
 | `keygen` | `src/key.rs` | A key is 64 hex characters (the ed25519 seed). Never overwrites. |
 
 ## §sandbox
@@ -43,7 +44,11 @@ when every op and reading is valid (the production all-or-nothing flush).
   this a fixture could hand the guest a header or endpoint production never would (steer 2026-11-08 20:20).
 - The binding's `source_class` is the class the token writes as (the fixture pick, or the manifest's only class),
   as in production; a manifest that declares a class SET needs `source_class` in the fixture or the bind is refused.
-- `--lab` (multi-peer through fe-sim) arrives with the first-party packages; the flag is refused today.
+- `--lab` is the separate mode below; `--sandbox` takes `--fixture`, `--lab` takes `--scenario`.
+
+## �lab
+
+`run --lab` (src/lab.rs, R30) calls `lab::run_lab`: `HostedFleetSource` plans the fleet through the real component, `ScenarioSession::start_with_source` (fe-sim, hence the `fe-sim` dependency) ingests it, and the canonical fingerprint is `blake3` of the outcome. The package must cover the whole native schedule or the run errors. Each run needs a fresh session directory under `--root`.
 
 ## §guest-sdk (tools/fe-ext/guest)
 
@@ -57,6 +62,7 @@ host does (`fe-plugin/wit/AGENTS.md` §one-file).
   what fits the window, requeuing on refusal. `tracking::snap_and_stage`: REST's `check_tracking_and_alert`
   semantics (four metrics, `tracking_alert = "off_route"` only when deviation is strictly over the threshold,
   default 50 m) staged through `txn`; `key_prefix` puts the keys inside the manifest's property scope.
+- `hooks`: `Call`/`Output`/`Failure`, `route` and `key_matches` for `hooks.on-hook` (bindings.md �7.3), re-exported as `HookCall`/`HookOutput`/`HookFailure`/`HookFn`. The `extension` world does not export `hooks`; a provider uses `extension-with-hooks` and maps the generated `hook-call` onto `Call::parse`.
 - The helpers compile natively (wit-bindgen stubs the imports off-wasm), so their pure parts carry unit tests.
 
 ## Build wiring
@@ -72,7 +78,7 @@ host does (`fe-plugin/wit/AGENTS.md` §one-file).
 ## Tests
 
 J8 (`tests/j8_cli.rs`, `cargo test -p fe-ext -- j8`) is the one journey: `new` for every kind, the validation table,
-then each shipped example (`extensions/fleet-sim`, `extensions/device-adapter`) once its `dist/component.wasm` exists
+then each shipped example (`extensions/fleet-sim`, `extensions/device-adapter`, `extensions/bi-push`; bi-push asserts zero faults) once its `dist/component.wasm` exists
 (two sandbox runs, one fingerprint, identical traces, the fixture outcomes, `pack`, `inspect`), then the scaffold's
 pack/countersign/tamper/sandbox half when `FE_EXT_TEST_COMPONENT` names a built component. The examples carry only
 pure unit tests; their sandbox legs moved here so no example crate builds the host stack. Guest-side unit tests run

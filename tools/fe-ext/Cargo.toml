@@ -22,6 +22,7 @@ fe-hexon = { path = "../../fe-hexon" }
 fe-plugin = { path = "../../fe-plugin" }
 fe-plugin-test = { path = "../../fe-plugin-test" }
 fe-sim-model = { path = "../../fe-sim/model" }
+fe-sim = { path = "../../fe-sim" }
 anyhow = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }

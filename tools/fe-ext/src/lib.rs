@@ -2,6 +2,7 @@
 
 pub mod inspect;
 pub mod key;
+pub mod lab;
 pub mod new;
 pub mod pack;
 pub mod project;

@@ -58,6 +58,12 @@ fn device_adapter_outcomes(trace: &Value) {
     assert_eq!(sensor["properties"]["device.last_seen"].as_u64(), Some(2_001_000));
 }
 
+/// bi-push fixture: three ticks with the connector class and zero hook faults (a faulting run exits non-zero first).
+fn bi_push_outcomes(trace: &Value) {
+    assert!(trace["faults"].as_array().is_some_and(Vec::is_empty), "bi-push recorded faults: {}", trace["faults"]);
+    node(trace, "sensor-1");
+}
+
 #[test]
 fn j8_new_validate_pack_inspect_countersign_and_sandbox() {
     let temp = tempfile::tempdir().expect("temp dir");
@@ -105,9 +111,10 @@ fn j8_new_validate_pack_inspect_countersign_and_sandbox() {
     // two sandbox runs print one fingerprint and write identical traces, the trace shows the example's outcomes,
     // and the example packs into a sealed package that inspects under its own id.
     let examples = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../extensions");
-    let legs: [(&str, &str, fn(&Value)); 2] = [
+    let legs: [(&str, &str, fn(&Value)); 3] = [
         ("fleet-sim", "org.example.fleet-sim", fleet_sim_outcomes),
         ("device-adapter", "org.example.device-adapter", device_adapter_outcomes),
+        ("bi-push", "org.example.bi-push", bi_push_outcomes),
     ];
     for (example, package_id, outcomes) in legs {
         let example_dir = examples.join(example);
