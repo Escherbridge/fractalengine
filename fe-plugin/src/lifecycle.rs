@@ -6,6 +6,8 @@ use std::sync::Arc;
 use crossbeam::channel::Sender;
 
 use crate::capability::{CapabilityManifest, CapabilityToken};
+use crate::package::{payload_hash, verify_package, PackageError, SignatureEntry, UnsignedPolicy};
+use crate::trust_roots::{RevocationSet, TrustRoots};
 use crate::registry::{PluginRegistry, PluginState, PluginTier};
 use crate::wasm::aot::AotCache;
 use crate::wasm::fuel::FuelBudget;
@@ -49,6 +51,9 @@ pub struct PluginManager {
     /// Command sender for plugin -> engine communication.
     cmd_tx: Sender<PluginCommand>,
     contexts: crate::scene_host::PluginContexts,
+    trust_roots: TrustRoots,
+    unsigned_policy: UnsignedPolicy,
+    revocations: RevocationSet,
 }
 
 impl PluginManager {
@@ -67,28 +72,51 @@ impl PluginManager {
             installed: std::collections::HashMap::new(),
             cmd_tx,
             contexts: crate::scene_host::PluginContexts::default(),
+            trust_roots: TrustRoots::default(),
+            unsigned_policy: UnsignedPolicy::default(),
+            revocations: RevocationSet::default(),
         })
     }
 
-    /// Install a Wasm plugin: verify hash, AOT compile, register as `Installed`.
+    /// Configure publisher trust roots and the unsigned-package policy (default: no roots, refuse unsigned).
+    pub fn with_trust(mut self, trust_roots: TrustRoots, unsigned_policy: UnsignedPolicy) -> Self {
+        self.trust_roots = trust_roots;
+        self.unsigned_policy = unsigned_policy;
+        self
+    }
+
+    /// Replace the verified revocation set consulted at install and activation.
+    pub fn set_revocations(&mut self, revocations: RevocationSet) {
+        self.revocations = revocations;
+    }
+
+    /// Install a Wasm plugin: verify publisher signature, check revocation, AOT compile, register as `Installed`.
     pub fn install_plugin(
         &mut self,
         plugin_id: &str,
         wasm_bytes: &[u8],
+        manifest_bytes: &[u8],
+        signatures: &[SignatureEntry],
         _manifest: &CapabilityManifest,
-        expected_hash: Option<&str>,
     ) -> Result<(), LifecycleError> {
-        // Step 1: Verify signature (BLAKE3 hash check)
-        let actual_hash = AotCache::hash_bytes(wasm_bytes);
-        if let Some(expected) = expected_hash {
-            if actual_hash != expected {
-                return Err(LifecycleError::SignatureMismatch {
-                    expected: expected.to_string(),
-                    actual: actual_hash,
-                });
+        // Step 1: ed25519 over manifest_bytes || blake3(payload) against the trust roots
+        let actual_hash = payload_hash(wasm_bytes);
+        let verified = verify_package(
+            plugin_id,
+            manifest_bytes,
+            wasm_bytes,
+            signatures,
+            &self.trust_roots,
+            self.unsigned_policy,
+        )?;
+        if self.revocations.is_revoked(plugin_id, &actual_hash) {
+            return Err(PackageError::Revoked {
+                package_id: plugin_id.to_string(),
+                content_hash: actual_hash,
             }
+            .into());
         }
-        tracing::info!(plugin = %plugin_id, hash = %actual_hash, "Plugin signature verified");
+        tracing::info!(plugin = %plugin_id, hash = %actual_hash, ?verified, "Plugin signature verified");
 
         // Step 2: AOT compile and cache
         let compiled = self
@@ -160,6 +188,14 @@ impl PluginManager {
                     state: format!("{state:?}"),
                 });
             }
+        }
+        let content_hash = payload_hash(wasm_bytes);
+        if self.revocations.is_revoked(plugin_id, &content_hash) {
+            return Err(PackageError::Revoked {
+                package_id: plugin_id.to_string(),
+                content_hash,
+            }
+            .into());
         }
         // Load or compile from AOT cache
         let compiled = self
@@ -372,8 +408,8 @@ pub enum LifecycleError {
     #[error("Invalid state for plugin '{plugin_id}': {state}")]
     InvalidState { plugin_id: String, state: String },
 
-    #[error("Signature mismatch: expected {expected}, got {actual}")]
-    SignatureMismatch { expected: String, actual: String },
+    #[error("Package verification failed: {0}")]
+    Package(#[from] PackageError),
 
     #[error("AOT compilation error: {0}")]
     AotCompileError(String),
@@ -396,53 +432,100 @@ mod tests {
     use super::*;
     use crate::registry::PluginRegistry;
 
+    const MANIFEST_BYTES: &[u8] = br#"{"id":"test-plugin"}"#;
+
+    fn publisher() -> ed25519_dalek::SigningKey {
+        ed25519_dalek::SigningKey::from_bytes(&[9u8; 32])
+    }
+
+    fn trust_roots_for(key: &ed25519_dalek::SigningKey) -> TrustRoots {
+        TrustRoots::from_toml_str(&format!(
+            "[[publisher]]\nkey_id = \"pub\"\npublic_key = \"{}\"\n",
+            hex::encode(key.verifying_key().to_bytes())
+        ))
+        .unwrap()
+    }
+
+    fn sign(key: &ed25519_dalek::SigningKey, key_id: &str, bytes: &[u8]) -> SignatureEntry {
+        use ed25519_dalek::Signer;
+        let message = crate::package::signed_message(MANIFEST_BYTES, bytes);
+        SignatureEntry {
+            key_id: key_id.into(),
+            signature: hex::encode(key.sign(&message).to_bytes()),
+        }
+    }
+
     fn make_test_manager() -> (PluginManager, tempfile::TempDir) {
         let engine = Arc::new(WasmEngine::new().unwrap());
         let tmp = tempfile::tempdir().unwrap();
         let registry = Arc::new(std::sync::Mutex::new(PluginRegistry::new()));
         let (tx, _rx) = crossbeam::channel::unbounded();
 
-        let manager = PluginManager::new(engine, tmp.path().join("plugins"), registry, tx).unwrap();
+        let manager = PluginManager::new(engine, tmp.path().join("plugins"), registry, tx)
+            .unwrap()
+            .with_trust(trust_roots_for(&publisher()), UnsignedPolicy::Refuse);
 
         (manager, tmp)
     }
 
-    #[test]
-    fn install_plugin_verifies_and_compiles() {
-        let (mut manager, _tmp) = make_test_manager();
+    /// Installs an unsigned module through the dev flag so lifecycle tests need no signing.
+    fn install_dev(manager: &mut PluginManager, id: &str, bytes: &[u8]) {
+        manager.unsigned_policy = UnsignedPolicy::AllowDev;
+        let manifest = CapabilityManifest::from_json("{}").unwrap();
+        manager
+            .install_plugin(id, bytes, MANIFEST_BYTES, &[], &manifest)
+            .unwrap();
+    }
 
-        let wat = r#"(module)"#;
-        let bytes = wat::parse_str(wat).unwrap();
+    #[test]
+    fn install_plugin_signature_journey() {
+        let (mut manager, _tmp) = make_test_manager();
+        let bytes = wat::parse_str(r#"(module)"#).unwrap();
         let manifest = CapabilityManifest::from_json(r#"{"property_scope": ["*"]}"#).unwrap();
 
-        let result = manager.install_plugin("test-plugin", &bytes, &manifest, None);
-        assert!(result.is_ok());
+        // Unsigned is refused by default.
+        let err = manager
+            .install_plugin("test-plugin", &bytes, MANIFEST_BYTES, &[], &manifest)
+            .unwrap_err();
+        assert!(matches!(err, LifecycleError::Package(PackageError::Unsigned(_))));
 
-        // Check registry
+        // Unlisted key is refused with a typed error.
+        let stranger = ed25519_dalek::SigningKey::from_bytes(&[1u8; 32]);
+        let err = manager
+            .install_plugin("test-plugin", &bytes, MANIFEST_BYTES, &[sign(&stranger, "stranger", &bytes)], &manifest)
+            .unwrap_err();
+        assert!(matches!(err, LifecycleError::Package(PackageError::UntrustedKey { .. })));
+
+        // A trusted key signing different payload bytes fails verification.
+        let err = manager
+            .install_plugin("test-plugin", &bytes, MANIFEST_BYTES, &[sign(&publisher(), "pub", b"other")], &manifest)
+            .unwrap_err();
+        assert!(matches!(err, LifecycleError::Package(PackageError::InvalidSignature { .. })));
+
+        // Counter-signature list: an untrusted entry beside a valid trusted one is accepted.
+        let signatures = [sign(&stranger, "stranger", &bytes), sign(&publisher(), "pub", &bytes)];
+        manager
+            .install_plugin("test-plugin", &bytes, MANIFEST_BYTES, &signatures, &manifest)
+            .unwrap();
         let reg = manager.registry.lock().unwrap();
-        assert!(reg.get("test-plugin").is_some());
         assert_eq!(reg.get_state("test-plugin"), Some(&PluginState::Installed));
     }
 
     #[test]
-    fn install_plugin_signature_mismatch() {
+    fn install_plugin_refuses_revoked_pair() {
         let (mut manager, _tmp) = make_test_manager();
-
-        let wat = r#"(module)"#;
-        let bytes = wat::parse_str(wat).unwrap();
+        let bytes = wat::parse_str(r#"(module)"#).unwrap();
         let manifest = CapabilityManifest::from_json("{}").unwrap();
-
-        let result = manager.install_plugin(
-            "test-plugin",
-            &bytes,
-            &manifest,
-            Some("wrong_hash_value_here_00000000000000000000000000000000000000000000000000000000"),
-        );
-        assert!(result.is_err());
-        match result.unwrap_err() {
-            LifecycleError::SignatureMismatch { .. } => {}
-            other => panic!("Expected SignatureMismatch, got {:?}", other),
-        }
+        manager.set_revocations(RevocationSet::from_entries(&[crate::trust_roots::RevocationEntry {
+            package_id: "test-plugin".into(),
+            content_hash: payload_hash(&bytes),
+            reason: "withdrawn".into(),
+            revoked_at: "2026-11-08T00:00:00Z".into(),
+        }]));
+        let err = manager
+            .install_plugin("test-plugin", &bytes, MANIFEST_BYTES, &[sign(&publisher(), "pub", &bytes)], &manifest)
+            .unwrap_err();
+        assert!(matches!(err, LifecycleError::Package(PackageError::Revoked { .. })));
     }
 
     #[tokio::test]
@@ -452,10 +535,7 @@ mod tests {
         // Install first
         let wat = r#"(module)"#;
         let bytes = wat::parse_str(wat).unwrap();
-        let manifest = CapabilityManifest::from_json("{}").unwrap();
-        manager
-            .install_plugin("deact-test", &bytes, &manifest, None)
-            .unwrap();
+        install_dev(&mut manager, "deact-test", &bytes);
 
         // Deactivate (should fail since it's Installed, not Active)
         let result = manager.deactivate_plugin("deact-test").await;
@@ -468,10 +548,7 @@ mod tests {
 
         let wat = r#"(module)"#;
         let bytes = wat::parse_str(wat).unwrap();
-        let manifest = CapabilityManifest::from_json("{}").unwrap();
-        manager
-            .install_plugin("uninstall-test", &bytes, &manifest, None)
-            .unwrap();
+        install_dev(&mut manager, "uninstall-test", &bytes);
 
         manager
             .uninstall_plugin("uninstall-test", &bytes)

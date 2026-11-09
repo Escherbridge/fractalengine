@@ -38,8 +38,8 @@ uninstall_plugin  → call on_uninstall  → remove from registry + delete files
 
 Notes:
 
-- "Signature verification" at install is a BLAKE3 hash check against the
-  caller-supplied `expected_hash` (absent = skip).
+- Install verification is ed25519 publisher signatures (see §signed-packages);
+  the old optional BLAKE3 `expected_hash` check is gone.
 - `activate_plugin` only validates registry state
   (`Installed`/`Deactivated`/`Degraded(_)` → activatable) and then returns
   `NotImplemented`; the real path is `activate_with_bytes`, because the Wasm
@@ -211,3 +211,26 @@ empty spans remain empty strings for the existing legitimate ABI semantics.
 ## Terminal maintenance ownership
 
 `PluginHostService` retains the plugin runtime join. Host maintenance first revokes `PluginContexts` leases, then requests stop and joins the runtime while DB/results continue draining. Revocation is not rollback of an already-admitted commit; the final serial DB barrier remains necessary.
+
+## §signed-packages
+
+`package.rs` + `trust_roots.rs` implement seam S-PLUGIN; `lifecycle.rs::install_plugin` is the call site.
+
+- **Signed message** = `manifest_bytes || blake3(payload)` (32 raw digest bytes). A package carries a
+  list of `{key_id, signature(hex)}`; install succeeds when at least one entry verifies against a
+  trust root, so a second party can counter-sign without a format change. Whether a particular signer
+  is required is trust-root policy, not format.
+- **Errors are typed** (`PackageError`): `Unsigned`, `UntrustedKey` (no entry names a trust root),
+  `InvalidSignature` (a trusted key's signature fails: tampering, never dev-admitted), `Revoked`.
+- **Dev flag**: `UnsignedPolicy::AllowDev` exists only under `cfg(debug_assertions)`, so a release
+  build cannot construct it; every use logs `tracing::warn!`. It admits unsigned and untrusted-key
+  packages only.
+- **Trust roots (OD-3)**: `trusted_publishers.toml`, loaded once at startup, no dynamic registration:
+  `[[publisher]] key_id, public_key (hex ed25519), revocation (default false), revocation_url (optional)`.
+- **Revocation list (public wire contract, schema_version 1, never changed in place)**:
+  `{schema_version, issued_at, entries:[{package_id, content_hash, reason, revoked_at}], signer_key_id, signature}`.
+  `signature` is ed25519 (hex) over the canonical JSON (keys sorted, compact) of
+  `{"entries":...,"issued_at":...}` (`RevocationList::signed_bytes`). Only a trust root with
+  `revocation = true` may sign; the host is a consumer, never a publisher. `content_hash` is the hex blake3
+  of the payload (`package::payload_hash`). Fetching (OD-8 pull + cache) belongs to the registry-install slice;
+  this module verifies and answers `RevocationSet::is_revoked`, consulted at install and `activate_with_bytes`.
