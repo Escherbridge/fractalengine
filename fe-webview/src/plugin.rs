@@ -1,19 +1,29 @@
+use std::sync::Arc;
+
 use crate::backend::{BackendEvent, WebViewBackend, WindowGeometry};
 use crate::backends::ActiveBackend;
-use crate::ipc::{BrowserCommand, BrowserEvent};
+use crate::ipc::{BrowserCommand, BrowserEvent, BundleState};
+use crate::portal_bundle::{BundleHost, BundleResolver, BundleWebview};
 use crate::security;
 use bevy::prelude::IntoScheduleConfigs;
 
 /// Trust-bar JavaScript injected into every webview at construction.
 ///
-/// Displays a fixed top banner identifying the page as an external website.
+/// Displays a fixed top banner identifying the page as an external website, or as a portal
+/// bundle on a bundle origin (same label pattern as `portal_bundle::origin::parse`). It is page
+/// content; the host-drawn toolbar badge is the trust indicator (`portal_bundle/AGENTS.md` §chrome).
 /// SECURITY: always inject trust bar — do not remove.
 pub const TRUST_BAR_JS: &str = r#"
     const bar = document.createElement('div');
     bar.style.cssText = 'position:fixed;top:0;left:0;right:0;height:24px;background:#1a1a2e;color:#8888cc;font-family:sans-serif;font-size:11px;padding:4px 8px;z-index:2147483647;pointer-events:none;';
-    bar.textContent = '🌐 External Website: ' + location.hostname;
+    const bundleOrigin = location.protocol === 'https:' && /^fe-portal\.[as]-[a-z2-7]{26}\.localhost$/.test(location.hostname);
+    bar.textContent = bundleOrigin ? 'Portal bundle' : '🌐 External Website: ' + location.hostname;
     document.body.prepend(bar);
 "#;
+
+/// Binary-injected repository-node resolver; without it every `OpenBundle` reports Unavailable.
+#[derive(bevy::prelude::Resource, Clone)]
+pub struct PortalBundleResolver(pub Arc<dyn BundleResolver>);
 
 pub struct WebViewPlugin;
 
@@ -41,6 +51,8 @@ pub struct WebViewBackendRes {
     /// `init_backend` recreates it. Never set on create-failure, which stays
     /// terminal to avoid a retry-every-frame loop.
     pub lost: bool,
+    /// Bundle lifecycle over this backend's mount table; `None` without an embedded browser.
+    pub bundles: Option<BundleHost>,
 }
 
 // ---------------------------------------------------------------------------
@@ -161,9 +173,11 @@ fn init_backend(world: &mut bevy::prelude::World) {
                     "Portal: backend initialized OK: {}",
                     std::any::type_name::<ActiveBackend>()
                 );
+                let bundles = backend.bundle_parts().map(BundleHost::new);
                 world.insert_non_send_resource(WebViewBackendRes {
                     backend: Some(backend),
                     lost: false,
+                    bundles,
                 });
             }
             Err(e) => {
@@ -171,6 +185,7 @@ fn init_backend(world: &mut bevy::prelude::World) {
                 world.insert_non_send_resource(WebViewBackendRes {
                     backend: None,
                     lost: false,
+                    bundles: None,
                 });
             }
         }
@@ -182,7 +197,21 @@ fn init_backend(world: &mut bevy::prelude::World) {
         world.insert_non_send_resource(WebViewBackendRes {
             backend: None,
             lost: false,
+            bundles: None,
         });
+    }
+}
+
+/// Every `OpenBundle` in `commands` reports Unavailable (no embedded browser to mount into).
+fn report_bundles_unavailable(commands: &[BrowserCommand], events: &mut bevy::prelude::MessageWriter<BrowserEvent>) {
+    for command in commands {
+        if let BrowserCommand::OpenBundle { node_id } = command {
+            events.write(BrowserEvent::BundleState {
+                node_id: node_id.clone(),
+                label: None,
+                state: BundleState::Unavailable,
+            });
+        }
     }
 }
 
@@ -192,6 +221,7 @@ fn dispatch_commands(
     mut reader: bevy::prelude::MessageReader<BrowserCommand>,
     mut events: bevy::prelude::MessageWriter<BrowserEvent>,
     tab_filter: bevy::prelude::Res<crate::petal_portal::TabVisibilityFilter>,
+    resolver: Option<bevy::prelude::Res<PortalBundleResolver>>,
 ) {
     let cmds: Vec<BrowserCommand> = reader
         .read()
@@ -218,6 +248,7 @@ fn dispatch_commands(
     }
 
     let Some(mut res) = backend_res else {
+        report_bundles_unavailable(&cmds, &mut events);
         events.write(BrowserEvent::Error {
             message: "Embedded browser is not ready; choose Open externally or try again".into(),
         });
@@ -227,7 +258,11 @@ fn dispatch_commands(
         );
         return;
     };
-    let Some(backend) = res.backend.as_mut() else {
+    let WebViewBackendRes {
+        backend, bundles, ..
+    } = &mut *res;
+    let Some(backend) = backend.as_mut() else {
+        report_bundles_unavailable(&cmds, &mut events);
         events.write(BrowserEvent::Error {
             message: "Embedded browser is unavailable; choose Open externally".into(),
         });
@@ -249,9 +284,15 @@ fn dispatch_commands(
                     continue;
                 }
                 // Backend deduplicates — silently skip if already at this URL.
-                let Ok(parsed) = url.parse() else {
+                let Ok(parsed) = url.parse::<url::Url>() else {
                     continue;
                 };
+                // A mounted bundle goes first; the gate admits exactly this (normalized) host load.
+                if let Some(host) = bundles.as_mut() {
+                    for event in host.detach_for_navigation(parsed.as_str()) {
+                        events.write(event);
+                    }
+                }
                 if let Err(e) = backend.navigate(&parsed) {
                     bevy::log::error!("Portal: navigate failed: {e}");
                     events.write(BrowserEvent::Error {
@@ -286,8 +327,38 @@ fn dispatch_commands(
             }
             BrowserCommand::Close => {
                 bevy::log::info!("Portal: closing portal");
+                // Bundles unload on close (and a pending open is voided); external sites are only hidden.
+                let closed = match bundles.as_mut() {
+                    Some(host) => host.close(&mut *backend),
+                    None => Vec::new(),
+                };
                 if let Err(e) = backend.hide() {
                     bevy::log::error!("Portal: hide failed: {e}");
+                }
+                for event in closed {
+                    events.write(event);
+                }
+            }
+            BrowserCommand::OpenBundle { node_id } => match bundles.as_mut() {
+                Some(host) => {
+                    let resolver = resolver.as_ref().map(|resolver| Arc::clone(&resolver.0));
+                    for event in host.open(&node_id, resolver, &mut *backend) {
+                        events.write(event);
+                    }
+                }
+                None => {
+                    events.write(BrowserEvent::BundleState {
+                        node_id,
+                        label: None,
+                        state: BundleState::Unavailable,
+                    });
+                }
+            },
+            BrowserCommand::CloseBundle => {
+                if let Some(host) = bundles.as_mut() {
+                    for event in host.close(&mut *backend) {
+                        events.write(event);
+                    }
                 }
             }
             BrowserCommand::GetUrl => {}
@@ -314,7 +385,12 @@ fn drain_backend_events(
     mut events: bevy::prelude::MessageWriter<BrowserEvent>,
 ) {
     let Some(mut res) = backend_res else { return };
-    let Some(backend) = res.backend.as_mut() else {
+    let WebViewBackendRes {
+        backend: slot,
+        lost,
+        bundles,
+    } = &mut *res;
+    let Some(backend) = slot.as_mut() else {
         return;
     };
 
@@ -346,8 +422,16 @@ fn drain_backend_events(
         }
     }
     if window_closed {
-        res.backend = None;
-        res.lost = true;
+        // The mount table dies with its webview; the recreated backend gets a fresh host.
+        *slot = None;
+        *bundles = None;
+        *lost = true;
+        return;
+    }
+    if let Some(host) = bundles.as_mut() {
+        for event in host.poll(&mut *backend) {
+            events.write(event);
+        }
     }
 }
 

@@ -18,6 +18,26 @@ fn test_localhost_blocked() {
             "loopback alias: {raw}"
         );
     }
+    // Bundle origins are never admitted by the raw policy; only the live mount table admits them.
+    let label = "a-aaaaaaaaaaaaaaaaaaaaaaaaaa";
+    let static_label = "s-aaaaaaaaaaaaaaaaaaaaaaaaaa";
+    for (raw, canonical) in [
+        (format!("https://fe-portal.{label}.localhost/"), true),
+        (format!("https://fe-portal.{static_label}.localhost/index.html"), true),
+        (format!("fe-portal://{label}.localhost/index.html"), true),
+        (format!("http://fe-portal.{label}.localhost/"), false),
+        (format!("https://fe-portal.{label}.localhost:443/"), false),
+        (format!("https://fe-portal.{label}.localhost./"), false),
+        (format!("https://FE-PORTAL.{}.LOCALHOST/", label.to_uppercase()), false),
+    ] {
+        assert!(!is_url_allowed(&raw.parse().unwrap()), "bundle spelling: {raw}");
+        assert!(!fe_runtime::portal_url::embedded_allowed(&raw), "bundle spelling: {raw}");
+        assert_eq!(
+            fe_webview::portal_bundle::origin::parse(&raw).is_some(),
+            canonical,
+            "only the two exact spellings name a bundle origin: {raw}"
+        );
+    }
 }
 
 #[test]

@@ -6,6 +6,5 @@ pub mod ipc;
 pub mod overlay;
 pub mod petal_portal;
 pub mod plugin;
+pub mod portal_bundle;
 pub mod security;
-#[cfg(feature = "backend-tauri")]
-pub mod tauri_commands;

@@ -8,6 +8,7 @@ use url::Url;
 use wry::{PageLoadEvent, WebView, WebViewBuilder};
 
 use crate::backend::{BackendEvent, WebViewBackend, WindowGeometry};
+use crate::portal_bundle::{self, BundleParts, BundleWebview, Decision, NavigationGate, PortalMounts};
 
 use super::win32_popup::webview_fill_rect;
 #[cfg(not(target_os = "windows"))]
@@ -25,19 +26,48 @@ pub struct TauriBackend {
     current_url: Option<Url>,
     fixture_session: Rc<Cell<bool>>,
     guard_unusable: Rc<Cell<bool>>,
+    /// Bundle mount table, shared with the `fe-portal` protocol workers.
+    mounts: PortalMounts,
+    /// Bundle navigation guard state, consulted first by both navigation layers.
+    gate: Rc<NavigationGate>,
+    /// Windows with `ICoreWebView2_22` (spike P-1); otherwise bundles are Blocked.
+    bundles_supported: bool,
     #[cfg(target_os = "windows")]
     popup_hwnd: isize,
     #[cfg(target_os = "windows")]
     fixture_surface: super::fixture_surface::Surface,
 }
 
-/// Navigation-handler decision: validates via `security::is_url_allowed`, records
-/// `UrlChanged`/`Error` on `events`, returns whether to allow the navigation.
+/// Navigation-handler decision: the bundle gate first (`portal_bundle/AGENTS.md` §navigation), then
+/// `security::embedded_allowed` for what it defers; records `UrlChanged`/`Error` on `events`.
 fn decide_navigation(
     raw_url: &str,
     events: &Rc<RefCell<Vec<BackendEvent>>>,
     fixture_session: bool,
+    gate: &NavigationGate,
 ) -> bool {
+    let attempt = portal_bundle::Attempt {
+        raw_url,
+        is_redirect: false,
+        is_main_frame: true,
+    };
+    match gate.decide(&attempt) {
+        Decision::DeferToRawPolicy => {}
+        Decision::Refuse(reason) => {
+            tracing::warn!("navigation_handler: refused bundle navigation ({})", reason.as_str());
+            events
+                .borrow_mut()
+                .push(BackendEvent::Error(format!("Navigation blocked: {}", reason.as_str())));
+            return false;
+        }
+        Decision::AllowHostUnload => return true,
+        Decision::AllowSame | Decision::AllowEnter | Decision::AllowLeave => {
+            if let Ok(url) = raw_url.parse() {
+                events.borrow_mut().push(BackendEvent::UrlChanged(url));
+            }
+            return true;
+        }
+    }
     let allowed = if fixture_session {
         fe_runtime::qa_web::allows(raw_url)
     } else {
@@ -45,6 +75,7 @@ fn decide_navigation(
     };
     match raw_url.parse::<Url>() {
         Ok(parsed) if allowed => {
+            gate.external_committed();
             if !fe_runtime::qa_web::preview_allows(raw_url) {
                 events.borrow_mut().push(BackendEvent::UrlChanged(parsed));
             }
@@ -91,6 +122,12 @@ impl WebViewBackend for TauriBackend {
         let load_guard_unusable = guard_unusable.clone();
         #[cfg(target_os = "windows")]
         let fixture_surface = super::fixture_surface::Surface::default();
+        let mounts = PortalMounts::new();
+        let gate = Rc::new(NavigationGate::new(mounts.clone()));
+        let nav_gate = gate.clone();
+        let download_gate = gate.clone();
+        let protocol_mounts = mounts.clone();
+        let protocol_workers = portal_bundle::protocol::ProtocolWorkers::start();
 
         // --- build wry WebView -------------------------------------------
 
@@ -109,13 +146,24 @@ impl WebViewBackend for TauriBackend {
                         load_events.borrow_mut().push(BackendEvent::PageLoaded(url));
                     }
                 }
-            });
+            })
+            // Registered once: requests resolve against the shared mount table, off the main thread.
+            .with_asynchronous_custom_protocol(
+                portal_bundle::SCHEME.to_owned(),
+                move |_webview_id, request, responder| {
+                    let mounts = protocol_mounts.clone();
+                    protocol_workers.submit(Box::new(move || {
+                        responder.respond(portal_bundle::protocol::serve(&mounts, &request));
+                    }));
+                },
+            )
+            .with_download_started_handler(move |url, _destination| download_gate.allows_download(&url));
 
         if fe_runtime::qa_web::captured() {
             builder = builder.with_new_window_req_handler(|_, _| wry::NewWindowResponse::Deny);
         } else {
             builder = builder.with_navigation_handler(move |url: String| {
-                decide_navigation(&url, &nav_events, false)
+                decide_navigation(&url, &nav_events, false, &nav_gate)
             });
         }
 
@@ -124,7 +172,8 @@ impl WebViewBackend for TauriBackend {
             use wry::WebViewBuilderExtWindows;
             builder = builder
                 .with_default_context_menus(false)
-                .with_browser_accelerator_keys(false);
+                .with_browser_accelerator_keys(false)
+                .with_https_scheme(true);
         }
 
         // --- platform-specific window strategy ----------------------------
@@ -161,6 +210,7 @@ impl WebViewBackend for TauriBackend {
                     guard_unusable.clone(),
                     events.clone(),
                     fixture_surface.clock.clone(),
+                    gate.clone(),
                 ) {
                     drop(webview);
                     win32::destroy(popup_hwnd);
@@ -174,6 +224,18 @@ impl WebViewBackend for TauriBackend {
             (webview, popup_hwnd)
         };
 
+        // Spike P-1: without ICoreWebView2_22 wry falls back to a filter that misses worker
+        // requests, which would then dial loopback; bundles stay Blocked on such runtimes.
+        #[cfg(target_os = "windows")]
+        let bundles_supported = {
+            use windows::core::Interface;
+            use wry::WebViewExtWindows;
+            webview
+                .webview()
+                .cast::<webview2_com::Microsoft::Web::WebView2::Win32::ICoreWebView2_22>()
+                .is_ok()
+        };
+
         #[cfg(not(target_os = "windows"))]
         let webview = {
             let parent = ParentHandle(*parent_handle);
@@ -181,6 +243,9 @@ impl WebViewBackend for TauriBackend {
                 .build_as_child(&parent)
                 .map_err(|e| anyhow::anyhow!("TauriBackend: build_as_child failed: {e}"))?
         };
+        // OD-10 / SP-7: the IPC sender URL is not origin-correct off Windows.
+        #[cfg(not(target_os = "windows"))]
+        let bundles_supported = false;
 
         tracing::info!("TauriBackend: initialization complete");
 
@@ -192,6 +257,9 @@ impl WebViewBackend for TauriBackend {
             current_url: None,
             fixture_session,
             guard_unusable,
+            mounts,
+            gate,
+            bundles_supported,
             #[cfg(target_os = "windows")]
             popup_hwnd,
             #[cfg(target_os = "windows")]
@@ -300,6 +368,8 @@ impl WebViewBackend for TauriBackend {
     fn destroy(&mut self) {
         #[cfg(target_os = "windows")]
         self.fixture_surface.clock.bump();
+        // No byte of a bundle is served once its webview is gone; unmount also bumps the generation.
+        self.mounts.unmount();
         if self.alive {
             self.alive = false;
             #[cfg(target_os = "windows")]
@@ -418,6 +488,35 @@ impl TauriBackend {
     }
 }
 
+impl BundleWebview for TauriBackend {
+    fn bundle_parts(&self) -> Option<BundleParts> {
+        Some(BundleParts {
+            mounts: self.mounts.clone(),
+            gate: Rc::clone(&self.gate),
+            supported: self.bundles_supported,
+        })
+    }
+
+    /// Host-minted URLs only (an entry or the unload document); the gate admits them by token, not policy.
+    fn bundle_load(&mut self, url: &str) -> anyhow::Result<()> {
+        self.ensure_usable()?;
+        // Opening a bundle is an explicit host navigation: it ends any fixture session.
+        self.fixture_session.set(false);
+        self.current_url = None;
+        self.webview
+            .load_url(url)
+            .map_err(|e| anyhow::anyhow!("TauriBackend: bundle load failed: {e}"))
+    }
+
+    fn bundle_show(&mut self) -> anyhow::Result<()> {
+        WebViewBackend::show(self)
+    }
+
+    fn bundle_hide(&mut self) -> anyhow::Result<()> {
+        WebViewBackend::hide(self)
+    }
+}
+
 impl Drop for TauriBackend {
     fn drop(&mut self) {
         self.destroy();
@@ -441,10 +540,15 @@ mod tests {
         Rc::new(RefCell::new(Vec::new()))
     }
 
+    /// A gate with nothing mounted: every non-bundle destination defers to the raw policy.
+    fn fresh_gate() -> NavigationGate {
+        NavigationGate::new(PortalMounts::new())
+    }
+
     #[test]
     fn decide_navigation_allows_public_https_and_emits_url_changed() {
         let events = fresh_events();
-        assert!(decide_navigation("https://example.com/", &events, false));
+        assert!(decide_navigation("https://example.com/", &events, false, &fresh_gate()));
         let evts = events.borrow();
         assert_eq!(evts.len(), 1);
         assert!(matches!(
@@ -459,7 +563,8 @@ mod tests {
         assert!(!decide_navigation(
             "http://192.168.1.1/admin",
             &events,
-            false
+            false,
+            &fresh_gate()
         ));
         let evts = events.borrow();
         assert_eq!(evts.len(), 1);
@@ -471,18 +576,21 @@ mod tests {
 
     #[test]
     fn decide_navigation_blocks_localhost_and_emits_error() {
+        let foreign = crate::portal_bundle::origin::admitted_label("did:key:other", "org.example.other")
+            .document_url("web/index.html")
+            .expect("foreign url");
         let events = fresh_events();
-        assert!(!decide_navigation("http://localhost:8080/", &events, false));
+        assert!(!decide_navigation("http://localhost:8080/", &events, false, &fresh_gate()));
         let evts = events.borrow();
         assert_eq!(evts.len(), 1);
         assert!(matches!(&evts[0], BackendEvent::Error(_)));
         drop(evts);
         assert!(
-            !decide_navigation("https://example.com/escape", &events, true),
+            !decide_navigation("https://example.com/escape", &events, true, &fresh_gate()),
             "fixture session cannot escape to an otherwise public destination"
         );
         assert!(
-            !decide_navigation("http://127.0.0.1:49152/web/one", &events, true),
+            !decide_navigation("http://127.0.0.1:49152/web/one", &events, true, &fresh_gate()),
             "fixture session requires live host capability"
         );
         #[cfg(windows)]
@@ -567,6 +675,7 @@ mod tests {
                     &unusable,
                     &events,
                     &super::super::fixture_surface::NavigationClock::default(),
+                    &fresh_gate(),
                 );
                 assert!(unusable.get());
                 let calls = attempt.calls.borrow();
@@ -592,6 +701,7 @@ mod tests {
                 &Cell::new(false),
                 &RefCell::new(Vec::new()),
                 &clock,
+                &fresh_gate(),
             ));
             assert_eq!(&attempt.calls.borrow()[..], &["cancel", "metadata", "allow"]);
             assert_eq!(
@@ -599,13 +709,83 @@ mod tests {
                 Some(super::super::fixture_surface::PageState::StartingSecond),
                 "the policy owner records the same metadata it actually admitted"
             );
+
+            // The same bundle rows on the native owner, which also sees IsRedirected (rows 10-11).
+            let (_bundle, mount) =
+                crate::portal_bundle::test_fixture::static_mount(&["https://docs.example.org"]);
+            let mounts = PortalMounts::new();
+            let mount = mounts.install(mount);
+            let gate = NavigationGate::new(mounts.clone());
+            let entry = mount.entry_url.clone();
+            let page = mount.label.document_url("web/app.js").expect("member url");
+            let clock = super::super::fixture_surface::NavigationClock::default();
+            let run = |url: &str, redirected: bool| {
+                let attempt = Attempt {
+                    metadata: Some((url.to_owned(), redirected)),
+                    fail_cancel: None,
+                    fail_stop: false,
+                    fail_close: false,
+                    calls: RefCell::new(Vec::new()),
+                };
+                enforce(
+                    &attempt,
+                    &Cell::new(false),
+                    &Cell::new(false),
+                    &RefCell::new(Vec::new()),
+                    &clock,
+                    &gate,
+                )
+            };
+            assert!(!run(&entry, false), "a page cannot enter a bundle without the host's Open");
+            gate.expect_entry(entry.clone());
+            assert!(!run(&entry, true), "a redirect into a bundle origin is refused even with a token");
+            assert!(run(&entry, false), "the host's Open enters once");
+            assert!(run(&page, false), "same mounted origin");
+            assert!(!run(&foreign, false), "a foreign bundle origin");
+            assert!(run("https://docs.example.org/", false), "declared leave");
+            assert!(mounts.current().is_none(), "leaving unmounts");
+            assert!(
+                !run("https://undeclared.example.org/", true),
+                "every hop of a leave is judged against the declared list"
+            );
+            assert!(
+                !run("https://example.com/", false),
+                "a detached bundle document cannot navigate itself"
+            );
+            gate.expect_unload();
+            assert!(run(crate::portal_bundle::UNLOAD_URL, false), "the host unload, by one-shot token");
+            assert!(!run(&page, false), "history back into an unmounted bundle");
         }
+
+        // Bundle origins (protocol.md §6.3): admitted only by exact match against the live mount.
+        let (_bundle, mount) =
+            crate::portal_bundle::test_fixture::static_mount(&["https://docs.example.org"]);
+        let mounts = PortalMounts::new();
+        let mount = mounts.install(mount);
+        let gate = NavigationGate::new(mounts.clone());
+        let entry = mount.entry_url.clone();
+        let page = mount.label.document_url("web/app.js").expect("member url");
+        let events = fresh_events();
+        assert!(!decide_navigation(&entry, &events, false, &gate), "page-initiated entry");
+        gate.expect_entry(entry.clone());
+        assert!(decide_navigation(&entry, &events, false, &gate), "the host's Open enters once");
+        assert!(decide_navigation(&page, &events, false, &gate), "same mounted origin");
+        assert!(!decide_navigation(&foreign, &events, false, &gate), "a foreign bundle origin");
+        assert!(!decide_navigation("https://undeclared.example.org/", &events, false, &gate));
+        assert!(!decide_navigation("http://127.0.0.1/", &events, false, &gate));
+        assert!(decide_navigation("https://docs.example.org/guide", &events, false, &gate), "declared leave");
+        assert!(mounts.current().is_none(), "leaving unmounts");
+        assert!(!decide_navigation(&page, &events, false, &gate), "history back into an unmounted bundle");
+        assert!(
+            decide_navigation("https://example.com/", &events, false, &gate),
+            "after leaving, external behaviour is unchanged"
+        );
     }
 
     #[test]
     fn decide_navigation_blocks_non_http_scheme_and_emits_error() {
         let events = fresh_events();
-        assert!(!decide_navigation("ftp://example.com/", &events, false));
+        assert!(!decide_navigation("ftp://example.com/", &events, false, &fresh_gate()));
         let evts = events.borrow();
         assert_eq!(evts.len(), 1);
         assert!(matches!(&evts[0], BackendEvent::Error(_)));
@@ -614,7 +794,7 @@ mod tests {
     #[test]
     fn decide_navigation_blocks_unparseable_url_and_emits_error() {
         let events = fresh_events();
-        assert!(!decide_navigation("not a url at all", &events, false));
+        assert!(!decide_navigation("not a url at all", &events, false, &fresh_gate()));
         let evts = events.borrow();
         assert_eq!(evts.len(), 1);
         assert!(matches!(
@@ -626,7 +806,7 @@ mod tests {
     #[test]
     fn decide_navigation_does_not_emit_url_changed_when_blocked() {
         let events = fresh_events();
-        decide_navigation("http://127.0.0.1/", &events, false);
+        decide_navigation("http://127.0.0.1/", &events, false, &fresh_gate());
         assert!(
             !events
                 .borrow()
