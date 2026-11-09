@@ -7,9 +7,10 @@
 use serde::{Deserialize, Serialize};
 
 /// A named slot in the engine UI where extensions can contribute elements.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default, Serialize, Deserialize)]
 pub enum UiSlot {
     /// A collapsible section in the node inspector panel.
+    #[default]
     InspectorSection,
     /// A tool entry in the left sidebar.
     SidebarTool,
@@ -23,8 +24,18 @@ pub enum UiSlot {
     DashboardWidget,
 }
 
+/// Context-menu filter on the clicked node: a property present, or equal to a value.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct UiWhen {
+    /// Property key that must be present.
+    pub property: String,
+    /// Required value; presence alone when absent.
+    #[serde(default)]
+    pub equals: Option<serde_json::Value>,
+}
+
 /// A single UI element contributed by a plugin.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct UiContribution {
     /// Which slot this contribution targets.
     pub slot: UiSlot,
@@ -34,6 +45,40 @@ pub struct UiContribution {
     pub label: String,
     /// Optional icon identifier (e.g. an icon name or emoji).
     pub icon: Option<String>,
+    /// Manifest-local contribution id; the accessible name is `ext:<plugin_id>/<id>` (empty for built-ins).
+    #[serde(default)]
+    pub id: String,
+    /// Toolbar, sidebar, context menu: an exposed command id of the package.
+    #[serde(default)]
+    pub command: Option<String>,
+    /// Inspector section: property keys shown as read-only rows.
+    #[serde(default)]
+    pub properties: Vec<String>,
+    /// Dashboard widget, viewport overlay: an exposed stream id of the package.
+    #[serde(default)]
+    pub stream: Option<String>,
+    /// JSON Pointer into the stream event whose latest value is shown.
+    #[serde(default)]
+    pub field: Option<String>,
+    /// Context menu: filter on the clicked node.
+    #[serde(default)]
+    pub when: Option<UiWhen>,
+}
+
+impl UiContribution {
+    /// Accessible name `ext:<plugin_id>/<id>`; empty when the contribution has no manifest id.
+    pub fn accessible_name(&self) -> String {
+        if self.id.is_empty() {
+            String::new()
+        } else {
+            format!("ext:{}/{}", self.plugin_id, self.id)
+        }
+    }
+
+    /// True when it carries an action, rows or a stream, so a slot may render it as a live control.
+    pub fn is_renderable(&self) -> bool {
+        self.command.is_some() || !self.properties.is_empty() || self.stream.is_some()
+    }
 }
 
 /// Registry of all plugin-contributed UI elements.
@@ -119,24 +164,34 @@ mod tests {
             plugin_id: "plugin-a".into(),
             label: "Export".into(),
             icon: Some("download".into()),
+            id: "export".into(),
+            command: Some("export".into()),
+            ..Default::default()
         });
         reg.register(UiContribution {
             slot: UiSlot::InspectorSection,
             plugin_id: "plugin-a".into(),
             label: "Physics".into(),
-            icon: None,
+            properties: vec!["physics.mass".into()],
+            ..Default::default()
         });
         reg.register(UiContribution {
             slot: UiSlot::ToolbarAction,
             plugin_id: "plugin-b".into(),
             label: "Share".into(),
             icon: Some("share".into()),
+            ..Default::default()
         });
 
         assert_eq!(reg.total(), 3);
         assert_eq!(reg.get_by_slot(UiSlot::ToolbarAction).len(), 2);
         assert_eq!(reg.get_by_slot(UiSlot::InspectorSection).len(), 1);
         assert_eq!(reg.get_by_slot(UiSlot::SidebarTool).len(), 0);
+
+        let toolbar = reg.get_by_slot(UiSlot::ToolbarAction);
+        assert_eq!(toolbar[0].accessible_name(), "ext:plugin-a/export");
+        assert!(toolbar[0].is_renderable());
+        assert!(!toolbar[1].is_renderable(), "no command, rows or stream: details pane only");
     }
 
     #[test]
@@ -147,19 +202,19 @@ mod tests {
             slot: UiSlot::ToolbarAction,
             plugin_id: "plugin-a".into(),
             label: "Export".into(),
-            icon: None,
+            ..Default::default()
         });
         reg.register(UiContribution {
             slot: UiSlot::SidebarTool,
             plugin_id: "plugin-a".into(),
             label: "Brush".into(),
-            icon: None,
+            ..Default::default()
         });
         reg.register(UiContribution {
             slot: UiSlot::ToolbarAction,
             plugin_id: "plugin-b".into(),
             label: "Share".into(),
-            icon: None,
+            ..Default::default()
         });
 
         assert_eq!(reg.total(), 3);

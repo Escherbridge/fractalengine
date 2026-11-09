@@ -63,6 +63,54 @@ pub enum PendingOp {
         /// Existing plain node admitted for lifecycle deletion.
         node_id: String,
     },
+    /// Patch a node transform; absent fields keep the stored value at commit.
+    SetTransform {
+        /// Existing node in the admitted petal.
+        node_id: String,
+        /// New world position, if changed.
+        #[serde(default)]
+        position: Option<[f64; 3]>,
+        /// New rotation quaternion `[x, y, z, w]`, if changed.
+        #[serde(default)]
+        rotation: Option<[f64; 4]>,
+        /// New scale, if changed.
+        #[serde(default)]
+        scale: Option<[f64; 3]>,
+    },
+}
+
+/// Maximum readings staged in one tick window.
+pub const MAX_STAGED_READINGS: usize = 1_000;
+/// Maximum metric-name length in bytes.
+pub const MAX_METRIC_LEN: usize = 128;
+/// Maximum units-string length in bytes.
+pub const MAX_UNITS_LEN: usize = 64;
+
+/// A sensor time on a staged reading.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum StagedTimestamp {
+    /// RFC-3339 text, parsed at the DB door.
+    Rfc3339(String),
+    /// Milliseconds since the Unix epoch.
+    EpochMs(i64),
+}
+
+/// One reading staged by an extension; source class and DID are host-stamped, never guest input.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct StagedReading {
+    /// Anchor node; checked against the bound petal at flush.
+    pub node_id: String,
+    /// Metric name, inside the manifest's declared metrics.
+    pub metric: String,
+    /// Finite measurement.
+    pub value: f64,
+    /// Units label, may be empty.
+    #[serde(default)]
+    pub units: String,
+    /// Sensor time; the flushing tick's clock when absent.
+    #[serde(default)]
+    pub recorded_at: Option<StagedTimestamp>,
 }
 
 /// An exact property predicate, compared without numeric coercion.
@@ -236,7 +284,86 @@ pub fn validate_transaction(ops: &[PendingOp]) -> Result<(), String> {
             PendingOp::DeleteNode { node_id } => {
                 crate::storage::validate_node_id(node_id).map_err(|error| error.to_string())?
             }
+            PendingOp::SetTransform {
+                node_id,
+                position,
+                rotation,
+                scale,
+            } => {
+                crate::storage::validate_node_id(node_id).map_err(|error| error.to_string())?;
+                validate_transform_patch(*position, *rotation, *scale)?;
+            }
         }
+    }
+    Ok(())
+}
+
+/// A patch must change something and stay finite, with a usable rotation and positive scale.
+pub fn validate_transform_patch(
+    position: Option<[f64; 3]>,
+    rotation: Option<[f64; 4]>,
+    scale: Option<[f64; 3]>,
+) -> Result<(), String> {
+    if position.is_none() && rotation.is_none() && scale.is_none() {
+        return Err("transform patch changes nothing".into());
+    }
+    if position.is_some_and(|v| v.iter().any(|c| !c.is_finite())) {
+        return Err("transform position must be finite".into());
+    }
+    if let Some(q) = rotation {
+        let norm_sq: f64 = q.iter().map(|c| c * c).sum();
+        if q.iter().any(|c| !c.is_finite()) || norm_sq < 1e-12 {
+            return Err("transform rotation must be a finite nonzero quaternion".into());
+        }
+    }
+    if scale.is_some_and(|v| v.iter().any(|c| !c.is_finite() || *c <= 0.0)) {
+        return Err("transform scale must be finite and positive".into());
+    }
+    Ok(())
+}
+
+/// Validate one tick window's staged readings: count, shape and finiteness (anchors are a flush-time check).
+pub fn validate_staged_readings(readings: &[StagedReading]) -> Result<(), String> {
+    if readings.len() > MAX_STAGED_READINGS {
+        return Err("plugin commit exceeds 1000 readings".into());
+    }
+    for reading in readings {
+        crate::storage::validate_node_id(&reading.node_id).map_err(|error| error.to_string())?;
+        let metric_ok = !reading.metric.is_empty()
+            && reading.metric.len() <= MAX_METRIC_LEN
+            && reading
+                .metric
+                .bytes()
+                .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'_' | b'.' | b':' | b'-'));
+        if !metric_ok {
+            return Err("reading metric must be 1..128 of [A-Za-z0-9_.:-]".into());
+        }
+        if !reading.value.is_finite() {
+            return Err("reading value must be finite".into());
+        }
+        if reading.units.len() > MAX_UNITS_LEN {
+            return Err("reading units exceed 64 bytes".into());
+        }
+        if matches!(&reading.recorded_at, Some(StagedTimestamp::Rfc3339(text)) if text.is_empty() || text.len() > 64)
+        {
+            return Err("reading recorded_at must be 1..64 bytes of RFC-3339".into());
+        }
+    }
+    Ok(())
+}
+
+/// Validate a whole commit (ops plus readings) and their combined encoded size.
+pub fn validate_commit(ops: &[PendingOp], readings: &[StagedReading]) -> Result<(), String> {
+    validate_transaction(ops)?;
+    validate_staged_readings(readings)?;
+    let readings_len = serde_json::to_vec(readings)
+        .map_err(|error| error.to_string())?
+        .len();
+    let ops_len = serde_json::to_vec(ops)
+        .map_err(|error| error.to_string())?
+        .len();
+    if ops_len + readings_len > MAX_HOST_BYTES * 8 {
+        return Err("plugin commit exceeds 524288 bytes".into());
     }
     Ok(())
 }
