@@ -1,0 +1,232 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "fe-portal-bundle-manifest-v1",
+  "title": "FractalEngine portal bundle manifest section, fe-portal-bundle/1",
+  "description": "The `portal` section of plugin/extension.json (manifest v2, kind web-bundle). Normative text: docs/spec/portal-bundle/README.md section 5. Every object is closed and every key is required, so consent renders the whole capability set. Checks this schema cannot express (is_url_allowed, query guard, pattern coverage of reserved keys, member existence) are the validator's (README section 6).",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema", "entry", "title", "csp", "navigation", "subscriptions", "commands", "hooks", "streams", "ui_intents"],
+  "properties": {
+    "schema": { "const": "fe-portal-bundle/1" },
+    "entry": {
+      "$ref": "#/$defs/memberPath",
+      "pattern": "^web/([A-Za-z0-9_~-][A-Za-z0-9._~-]{0,127}/){0,15}[A-Za-z0-9_~-][A-Za-z0-9._~-]{0,127}\\.([Hh][Tt][Mm][Ll]?)$"
+    },
+    "title": { "type": "string", "minLength": 1, "maxLength": 120 },
+    "csp": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["connect", "img", "font", "media", "frame", "wasm", "inline_styles"],
+      "properties": {
+        "connect": { "$ref": "#/$defs/originList" },
+        "img": { "$ref": "#/$defs/originList" },
+        "font": { "$ref": "#/$defs/originList" },
+        "media": { "$ref": "#/$defs/originList" },
+        "frame": { "$ref": "#/$defs/originList" },
+        "wasm": { "type": "boolean" },
+        "inline_styles": { "type": "boolean" }
+      }
+    },
+    "navigation": { "$ref": "#/$defs/originList" },
+    "subscriptions": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["node", "readings", "queries"],
+      "properties": {
+        "node": { "type": "boolean" },
+        "readings": { "type": "boolean" },
+        "queries": {
+          "type": "array",
+          "maxItems": 16,
+          "items": { "$ref": "#/$defs/namedQuery" }
+        }
+      }
+    },
+    "commands": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "set_property": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["keys"],
+          "properties": {
+            "keys": {
+              "type": "array",
+              "minItems": 1,
+              "maxItems": 32,
+              "uniqueItems": true,
+              "items": { "$ref": "#/$defs/keyPattern" }
+            }
+          }
+        },
+        "invoke": {
+          "type": "array",
+          "maxItems": 16,
+          "uniqueItems": true,
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["package", "command"],
+            "properties": {
+              "package": { "$ref": "#/$defs/packageId" },
+              "command": { "$ref": "#/$defs/localId" }
+            }
+          }
+        }
+      }
+    },
+    "hooks": {
+      "type": "array",
+      "maxItems": 16,
+      "uniqueItems": true,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["source"],
+        "properties": {
+          "source": { "$ref": "#/$defs/busStream" }
+        }
+      }
+    },
+    "streams": {
+      "type": "array",
+      "maxItems": 8,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["id", "max_rate_hz", "max_event_bytes"],
+        "properties": {
+          "id": { "$ref": "#/$defs/localId" },
+          "max_rate_hz": { "type": "integer", "minimum": 1, "maximum": 10 },
+          "max_event_bytes": { "type": "integer", "minimum": 1, "maximum": 16384 },
+          "consumers": {
+            "type": "array",
+            "minItems": 1,
+            "maxItems": 16,
+            "uniqueItems": true,
+            "items": { "$ref": "#/$defs/packageId" }
+          }
+        }
+      }
+    },
+    "ui_intents": {
+      "type": "array",
+      "maxItems": 2,
+      "uniqueItems": true,
+      "items": { "enum": ["focus_node", "select_node"] }
+    }
+  },
+  "$defs": {
+    "memberPath": {
+      "description": "README section 3.1: web/ plus 1-16 unreserved segments, none starting with a dot; at most 512 bytes. The reserved web/__fe/ prefix is refused by the validator (member_reserved).",
+      "type": "string",
+      "maxLength": 512,
+      "pattern": "^web/([A-Za-z0-9_~-][A-Za-z0-9._~-]{0,127}/){0,15}[A-Za-z0-9_~-][A-Za-z0-9._~-]{0,127}$"
+    },
+    "origin": {
+      "description": "An exact https origin: no path, query, fragment, userinfo or wildcard. The validator also requires fe_runtime::portal_url::is_url_allowed (origin_blocked).",
+      "type": "string",
+      "maxLength": 255,
+      "pattern": "^https://[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?(\\.[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?)+(:[0-9]{1,5})?$"
+    },
+    "originList": {
+      "type": "array",
+      "maxItems": 16,
+      "uniqueItems": true,
+      "items": { "$ref": "#/$defs/origin" }
+    },
+    "namedQuery": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["name", "sql", "params"],
+      "properties": {
+        "name": { "type": "string", "pattern": "^[a-z][a-z0-9_]{0,47}$" },
+        "sql": {
+          "description": "One SELECT, at most 8 KiB, no statement separator. The authoritative check is fe-api's query guard at every subscribe and re-run.",
+          "type": "string",
+          "minLength": 6,
+          "maxLength": 8192,
+          "pattern": "^\\s*[Ss][Ee][Ll][Ee][Cc][Tt]\\s[^;]*$"
+        },
+        "params": {
+          "description": "Query variables ($name in the SQL), bound through the /api/v1/query vars map. Names starting fe_ are host-reserved.",
+          "type": "object",
+          "maxProperties": 16,
+          "propertyNames": { "pattern": "^[a-z][a-z0-9_]{0,31}$", "not": { "pattern": "^fe_" } },
+          "additionalProperties": { "enum": ["string", "integer", "number", "boolean", "node_id"] }
+        }
+      }
+    },
+    "keyPattern": {
+      "description": "An exact property key or a prefix.* wildcard. Patterns covering node_kind or portal.* are refused by the validator (README 5.1).",
+      "type": "string",
+      "maxLength": 128,
+      "pattern": "^[a-z0-9_]+(\\.[a-z0-9_]+)*(\\.\\*)?$",
+      "not": { "pattern": "^(node_kind|portal(\\..*)?)$" }
+    },
+    "packageId": {
+      "type": "string",
+      "maxLength": 128,
+      "pattern": "^[a-z0-9][a-z0-9._-]{0,127}$"
+    },
+    "localId": {
+      "type": "string",
+      "pattern": "^[a-z][a-z0-9_-]{0,47}$"
+    },
+    "busStream": {
+      "description": "A foreign extension stream, <package_id>/<stream>. Host streams (host/...) are declared under subscriptions instead.",
+      "type": "string",
+      "maxLength": 177,
+      "pattern": "^[a-z0-9][a-z0-9._-]{0,127}/[a-z][a-z0-9_-]{0,47}$",
+      "not": { "pattern": "^host/" }
+    }
+  },
+  "examples": [
+    {
+      "schema": "fe-portal-bundle/1",
+      "entry": "web/index.html",
+      "title": "Pump station operating procedures",
+      "csp": { "connect": [], "img": [], "font": [], "media": [], "frame": [], "wasm": false, "inline_styles": false },
+      "navigation": ["https://docs.example.org"],
+      "subscriptions": { "node": false, "readings": false, "queries": [] },
+      "commands": {},
+      "hooks": [],
+      "streams": [],
+      "ui_intents": []
+    },
+    {
+      "schema": "fe-portal-bundle/1",
+      "entry": "web/index.html",
+      "title": "Flow dashboard",
+      "csp": { "connect": [], "img": [], "font": ["https://fonts.example.net"], "media": [], "frame": [], "wasm": true, "inline_styles": false },
+      "navigation": [],
+      "subscriptions": {
+        "node": true,
+        "readings": true,
+        "queries": [
+          { "name": "hourly_flow", "sql": "SELECT metric, math::mean(value) AS mean FROM iot_reading WHERE metric = $metric GROUP BY metric", "params": { "metric": "string" } }
+        ]
+      },
+      "commands": {},
+      "hooks": [],
+      "streams": [],
+      "ui_intents": ["focus_node", "select_node"]
+    },
+    {
+      "schema": "fe-portal-bundle/1",
+      "entry": "web/console.html",
+      "title": "Fleet console",
+      "csp": { "connect": [], "img": [], "font": [], "media": [], "frame": [], "wasm": false, "inline_styles": true },
+      "navigation": [],
+      "subscriptions": { "node": true, "readings": false, "queries": [] },
+      "commands": {
+        "set_property": { "keys": ["fleet.*", "console.note"] },
+        "invoke": [{ "package": "org.example.fleet-sim", "command": "start" }]
+      },
+      "hooks": [{ "source": "org.example.fleet-sim/positions" }],
+      "streams": [{ "id": "selection", "max_rate_hz": 4, "max_event_bytes": 2048 }],
+      "ui_intents": ["focus_node"]
+    }
+  ]
+}

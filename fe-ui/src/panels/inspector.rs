@@ -288,6 +288,7 @@ fn inspector_tab_body(
             ui.add_space(4.0);
             inspector_entity_section(ui, node_mgr, ui_mgr);
             ui.add_space(2.0);
+            repository_section(ui, node_mgr, ui_mgr, local_role);
             crate::panels::asset_card::asset_card_section(
                 ui,
                 node_mgr,
@@ -2464,6 +2465,32 @@ fn inspector_schema_section(
 // ---------------------------------------------------------------------------
 // Tests — pure real-unit conversion helpers (FR-2). No Bevy App / egui context.
 // ---------------------------------------------------------------------------
+
+/// Repository section for a node whose bundle summary the binary has fed; nothing otherwise.
+fn repository_section(ui: &mut egui::Ui, node_mgr: &NodeManager, ui_mgr: &mut UiManager, local_role: &LocalUserRole) {
+    use crate::portal::repository::{intent_command, show_repository_section, RepositoryCommand};
+    let Some(node_id) = node_mgr.primary().map(|selection| selection.node_id.clone()) else {
+        return;
+    };
+    if ui_mgr.repository_probe_node.as_deref() != Some(node_id.as_str()) {
+        ui_mgr.repository_view.request(&node_id);
+        ui_mgr.repository_probe_node = Some(node_id.clone());
+    }
+    let live = match &ui_mgr.portal {
+        crate::portal::PortalState::Bundle { node_id: open, state, .. } if *open == node_id => Some(state),
+        _ => None,
+    };
+    let Some(view) = ui_mgr.repository_view.view(&node_id, live, local_role.can_edit()) else {
+        return;
+    };
+    if let Some(intent) = show_repository_section(ui, &view) {
+        match intent_command(intent, &node_id) {
+            RepositoryCommand::Dispatch(action) => ui_mgr.push_action(action),
+            RepositoryCommand::PickBundleAsset { node_id } => ui_mgr.bundle_asset_pick = Some(node_id),
+        }
+    }
+    ui.add_space(2.0);
+}
 
 #[cfg(test)]
 mod tests {

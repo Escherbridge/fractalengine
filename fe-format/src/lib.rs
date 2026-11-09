@@ -11,6 +11,7 @@ pub mod license;
 pub mod limits;
 pub mod manifest;
 pub mod partial;
+pub mod portal_bundle;
 pub mod signature;
 #[cfg(test)]
 pub(crate) mod test_support;

@@ -10,6 +10,7 @@ use webview2_com::NavigationStartingEventHandler;
 use wry::WebViewExtWindows;
 
 use crate::backend::BackendEvent;
+use crate::portal_bundle::{Attempt, Decision, NavigationGate};
 
 pub(super) const TERMINAL_ERROR: &str =
     "Browser disabled: native navigation enforcement failed; restart the application";
@@ -59,12 +60,14 @@ impl NavigationAttempt for NativeAttempt<'_> {
     }
 }
 
+/// Cancel first, read the raw URI, ask the bundle gate, then the raw/fixture policy for what it defers.
 pub(super) fn enforce(
     attempt: &impl NavigationAttempt,
     fixture_session: &Cell<bool>,
     unusable: &Cell<bool>,
     events: &RefCell<Vec<BackendEvent>>,
     clock: &super::fixture_surface::NavigationClock,
+    gate: &NavigationGate,
 ) -> bool {
     if unusable.get() {
         // Closing can reenter callbacks; the terminal transition already owns Stop/Close.
@@ -81,23 +84,36 @@ pub(super) fn enforce(
         disable(attempt, unusable, events, true);
         return false;
     };
+    let decision = gate.decide(&Attempt {
+        raw_url: &raw,
+        is_redirect: redirected,
+        is_main_frame: true,
+    });
     let fixture_target = fe_runtime::qa_web::preview_allows(&raw);
-    let allowed = if fixture_session.get() || fixture_target {
-        !redirected && fe_runtime::qa_web::allows(&raw)
-    } else {
-        crate::security::embedded_allowed(&raw)
+    let allowed = match decision {
+        Decision::DeferToRawPolicy if fixture_session.get() || fixture_target => {
+            !redirected && fe_runtime::qa_web::allows(&raw)
+        }
+        Decision::DeferToRawPolicy => crate::security::embedded_allowed(&raw),
+        Decision::Refuse(_) => false,
+        Decision::AllowSame | Decision::AllowEnter | Decision::AllowLeave | Decision::AllowHostUnload => true,
     };
     if allowed {
         if attempt.set_cancel(false).is_err() {
             disable(attempt, unusable, events, false);
             return false;
         }
-        if fixture_target {
-            fixture_session.set(true);
+        if decision == Decision::DeferToRawPolicy {
+            if fixture_target {
+                fixture_session.set(true);
+            }
+            gate.external_committed();
         }
         clock.admit(raw.clone());
-        if let Ok(url) = raw.parse() {
-            events.borrow_mut().push(BackendEvent::UrlChanged(url));
+        if decision != Decision::AllowHostUnload {
+            if let Ok(url) = raw.parse() {
+                events.borrow_mut().push(BackendEvent::UrlChanged(url));
+            }
         }
         true
     } else {
@@ -142,6 +158,7 @@ pub(super) fn install(
     unusable: Rc<Cell<bool>>,
     events: Rc<RefCell<Vec<BackendEvent>>>,
     clock: Rc<super::fixture_surface::NavigationClock>,
+    gate: Rc<NavigationGate>,
 ) -> anyhow::Result<()> {
     let native = webview.webview();
     let controller = webview.controller();
@@ -164,6 +181,7 @@ pub(super) fn install(
                     &callback_unusable,
                     &callback_events,
                     &clock,
+                    &gate,
                 );
                 Ok(())
             })),

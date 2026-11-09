@@ -1625,3 +1625,16 @@ could not grow, and the baseline commit on this box is ~80 GB (WSL VM 26 GB, VS 
   exit 1 when any chunk is not `ok` (`build_failed` = no `test result:` line at all).
 - Protocol: post `building <SESSION> tests <batches>` on the session bus before a run and close it
   after; one build at a time on this machine (`.omc/state/bus/SESSION-PROTOCOL.md`).
+
+## §portal-qa-lane (portal_surface_20261107 T5.1-T5.5)
+
+The portal bundle QA lane has three tiers: headless journeys in `fe-webview/tests/portal_*_journey.rs` and
+`fe-api/tests/portal_bundle_test.rs`, native WebView2 through `fe.py portal ...`, and the simulator through
+`tools/qa/sim/portal_probe.py` with scenarios `portal-core`, `portal-replication` and `portal-load`. The harness spec,
+journeys PJ1-PJ10 and fixture bundle sources are in [`portal/AGENTS.md`](portal/AGENTS.md) and [`portal/journeys.md`](portal/journeys.md).
+
+- **Builder.** `portal/build_bundles.py` (T5.2) seals fixtures through the staged `seal_hexon.exe` with a run-local seed, and
+  writes unsigned twins. It is a fixture producer, not a test.
+- **Fixed operations only.** Routes `/api/v1/debug/portal/{observe,action,ipc-stats}` (`fe-api/src/qa_portal.rs`) run fixed,
+  host-owned scripts and numbered slots. No caller supplies JavaScript, selectors or URLs.
+- **Not yet run.** T5.5 (the PJ1-PJ9 execution) is open. Desk-checked code is not evidence; receipts and PNGs come from the run.

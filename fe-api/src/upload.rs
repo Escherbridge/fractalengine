@@ -362,7 +362,7 @@ fn payload_upper_bound(payload: &GlbPayload) -> u64 {
 
 /// Refuse (before any byte is stored) an upload that would push the owner's
 /// registered asset bytes past `state.upload_quota_bytes`. Fails closed.
-async fn check_upload_quota(
+pub(crate) async fn check_upload_quota(
     state: &ApiState,
     owner: &UploadOwner,
     incoming: u64,

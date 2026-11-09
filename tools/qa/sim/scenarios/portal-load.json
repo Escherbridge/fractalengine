@@ -1,0 +1,570 @@
+{
+  "name": "portal-load",
+  "description": "PJ5 size ladder with a 40 MB over-cap bundle, and PJ7 subscription storm plus write burst with a 60 s idle phase. Needs tools/qa/portal/build_bundles.py output.",
+  "seed": 20261203,
+  "fixture": "basic",
+  "verse_name": "QA Basic",
+  "assets": "generated",
+  "peers": [
+    {
+      "name": "owner",
+      "role": "owner"
+    },
+    {
+      "name": "editor",
+      "role": "editor"
+    }
+  ],
+  "probe": {
+    "rest_ms": 1000,
+    "hierarchy_ms": 4000,
+    "ui_ms": 2000,
+    "query_ms": 10000,
+    "host_ms": 2000,
+    "portal_ms": 1500
+  },
+  "steps": [
+    {
+      "id": "0",
+      "title": "Preflight: joined peers open the shared verse",
+      "settle_s": 15,
+      "actions": [
+        {
+          "peer": "editor",
+          "via": "gui",
+          "op": "click",
+          "args": {
+            "name": "Close window",
+            "role": "button"
+          },
+          "optional": true
+        },
+        {
+          "peer": "editor",
+          "via": "gui",
+          "op": "click",
+          "args": {
+            "name": "Open verse QA Basic"
+          },
+          "optional": true
+        }
+      ],
+      "expect": [
+        {
+          "probe": "nav",
+          "target": "view",
+          "predicate": "equals",
+          "path": "verse_id",
+          "value": "$fixture.verse_id"
+        }
+      ]
+    },
+    {
+      "id": "1",
+      "title": "PJ5: size ladder uploads, replication and the 40 MB over-cap refusal",
+      "settle_s": 300,
+      "covers": [
+        "PJ5",
+        "R2",
+        "R15"
+      ],
+      "actions": [
+        {
+          "peer": "owner",
+          "via": "rest",
+          "op": "create_fractal",
+          "args": {
+            "name": "Portal Fractal"
+          },
+          "id": "pf"
+        },
+        {
+          "peer": "owner",
+          "via": "rest",
+          "op": "create_petal",
+          "args": {
+            "fractal_id": "$pf.id",
+            "name": "Portal Petal"
+          },
+          "id": "pp"
+        },
+        {
+          "peer": "owner",
+          "via": "host",
+          "op": "sleep",
+          "args": {
+            "seconds": 5
+          }
+        },
+        {
+          "peer": "owner",
+          "via": "gui",
+          "op": "click",
+          "args": {
+            "name": "Open fractal Portal Fractal"
+          }
+        },
+        {
+          "peer": "owner",
+          "via": "gui",
+          "op": "click",
+          "args": {
+            "name": "Open petal Portal Petal"
+          }
+        },
+        {
+          "peer": "editor",
+          "via": "gui",
+          "op": "click",
+          "args": {
+            "name": "Open fractal Portal Fractal"
+          }
+        },
+        {
+          "peer": "editor",
+          "via": "gui",
+          "op": "click",
+          "args": {
+            "name": "Open petal Portal Petal"
+          }
+        },
+        {
+          "peer": "editor",
+          "via": "rest",
+          "op": "upload_bundle",
+          "args": {
+            "petal_id": "$pp.id",
+            "path": "$assets.portal.ladder_tier_100kb.path",
+            "name": "ladder_tier_100kb"
+          },
+          "id": "up_tier_100kb",
+          "bind": {
+            "content_hash": "data.content_hash",
+            "asset_id": "data.id"
+          }
+        },
+        {
+          "peer": "editor",
+          "via": "rest",
+          "op": "create_repository_node",
+          "args": {
+            "fractal_id": "$pf.id",
+            "petal_id": "$pp.id",
+            "name": "Ladder tier_100kb",
+            "bundle_asset": "$up_tier_100kb.asset_id",
+            "position": [
+              0,
+              0,
+              0
+            ]
+          },
+          "id": "r_tier_100kb"
+        },
+        {
+          "peer": "editor",
+          "via": "rest",
+          "op": "upload_bundle",
+          "args": {
+            "petal_id": "$pp.id",
+            "path": "$assets.portal.ladder_tier_1mb.path",
+            "name": "ladder_tier_1mb"
+          },
+          "id": "up_tier_1mb",
+          "bind": {
+            "content_hash": "data.content_hash",
+            "asset_id": "data.id"
+          }
+        },
+        {
+          "peer": "editor",
+          "via": "rest",
+          "op": "create_repository_node",
+          "args": {
+            "fractal_id": "$pf.id",
+            "petal_id": "$pp.id",
+            "name": "Ladder tier_1mb",
+            "bundle_asset": "$up_tier_1mb.asset_id",
+            "position": [
+              0,
+              0,
+              0
+            ]
+          },
+          "id": "r_tier_1mb"
+        },
+        {
+          "peer": "editor",
+          "via": "rest",
+          "op": "upload_bundle",
+          "args": {
+            "petal_id": "$pp.id",
+            "path": "$assets.portal.ladder_tier_5mb.path",
+            "name": "ladder_tier_5mb"
+          },
+          "id": "up_tier_5mb",
+          "bind": {
+            "content_hash": "data.content_hash",
+            "asset_id": "data.id"
+          }
+        },
+        {
+          "peer": "editor",
+          "via": "rest",
+          "op": "create_repository_node",
+          "args": {
+            "fractal_id": "$pf.id",
+            "petal_id": "$pp.id",
+            "name": "Ladder tier_5mb",
+            "bundle_asset": "$up_tier_5mb.asset_id",
+            "position": [
+              0,
+              0,
+              0
+            ]
+          },
+          "id": "r_tier_5mb"
+        },
+        {
+          "peer": "editor",
+          "via": "rest",
+          "op": "upload_bundle",
+          "args": {
+            "petal_id": "$pp.id",
+            "path": "$assets.portal.ladder_tier_25mb.path",
+            "name": "ladder_tier_25mb"
+          },
+          "id": "up_tier_25mb",
+          "bind": {
+            "content_hash": "data.content_hash",
+            "asset_id": "data.id"
+          }
+        },
+        {
+          "peer": "editor",
+          "via": "rest",
+          "op": "create_repository_node",
+          "args": {
+            "fractal_id": "$pf.id",
+            "petal_id": "$pp.id",
+            "name": "Ladder tier_25mb",
+            "bundle_asset": "$up_tier_25mb.asset_id",
+            "position": [
+              0,
+              0,
+              0
+            ]
+          },
+          "id": "r_tier_25mb"
+        },
+        {
+          "peer": "editor",
+          "via": "rest",
+          "op": "upload_bundle",
+          "args": {
+            "petal_id": "$pp.id",
+            "path": "$assets.portal.ladder_tier_40mb_overcap.path",
+            "name": "ladder_tier_40mb_overcap"
+          },
+          "id": "up_over",
+          "bind": {
+            "content_hash": "data.content_hash",
+            "asset_id": "data.id"
+          },
+          "expect": "refused",
+          "note": "413 over the 32 MiB default cap"
+        }
+      ],
+      "expect": [
+        {
+          "probe": "asset_blob",
+          "target": "$up_tier_100kb.content_hash",
+          "predicate": "present",
+          "peers": [
+            "owner"
+          ],
+          "within_s": 90,
+          "after": "up_tier_100kb"
+        },
+        {
+          "probe": "asset_blob",
+          "target": "$up_tier_1mb.content_hash",
+          "predicate": "present",
+          "peers": [
+            "owner"
+          ],
+          "within_s": 90,
+          "after": "up_tier_1mb"
+        },
+        {
+          "probe": "asset_blob",
+          "target": "$up_tier_5mb.content_hash",
+          "predicate": "present",
+          "peers": [
+            "owner"
+          ],
+          "within_s": 90,
+          "after": "up_tier_5mb"
+        },
+        {
+          "probe": "asset_blob",
+          "target": "$up_tier_25mb.content_hash",
+          "predicate": "present",
+          "peers": [
+            "owner"
+          ],
+          "within_s": 240,
+          "after": "up_tier_25mb"
+        },
+        {
+          "probe": "asset_blob",
+          "target": "$assets.portal.ladder_tier_40mb_overcap.content_hash",
+          "predicate": "absent",
+          "peers": "all",
+          "within_s": 30,
+          "after": "up_over",
+          "covers": "over-cap upload stores nothing"
+        }
+      ],
+      "probe": {
+        "portal_ms": 3000
+      }
+    },
+    {
+      "id": "2",
+      "title": "PJ5: a ladder entry renders within budget while a 5 MB member is served",
+      "settle_s": 90,
+      "covers": [
+        "PJ5"
+      ],
+      "actions": [
+        {
+          "peer": "owner",
+          "via": "rest",
+          "op": "portal_admit",
+          "args": {
+            "package_id": "qa.portal.ladder",
+            "content_hash": "$up_tier_5mb.content_hash"
+          },
+          "id": "adm5"
+        },
+        {
+          "peer": "owner",
+          "via": "gui",
+          "op": "click",
+          "args": {
+            "name": "Open bundle"
+          },
+          "id": "open5",
+          "needs": [
+            "adm5"
+          ],
+          "note": "accessible name placeholder: T3.1 ux.md fixes the exact Open name"
+        }
+      ],
+      "expect": [
+        {
+          "probe": "portal",
+          "target": "qa.portal.ladder",
+          "predicate": "equals",
+          "path": "observe.title",
+          "peers": [
+            "owner"
+          ],
+          "within_s": 30,
+          "after": "open5",
+          "value": "QA Docs Site"
+        },
+        {
+          "probe": "portal",
+          "target": "qa.portal.ladder",
+          "predicate": "count",
+          "path": "frame_stall_ms",
+          "peers": [
+            "owner"
+          ],
+          "within_s": 30,
+          "after": "open5",
+          "note": "no host-band frame stall over the threshold",
+          "value": 0
+        }
+      ]
+    },
+    {
+      "id": "3",
+      "title": "PJ7: storm bundle opens 64 subscriptions, floods 500 msgs/s for 5 s, bursts 20 writes, then idles 60 s",
+      "settle_s": 120,
+      "covers": [
+        "PJ7",
+        "R9",
+        "R10"
+      ],
+      "actions": [
+        {
+          "peer": "owner",
+          "via": "rest",
+          "op": "upload_bundle",
+          "args": {
+            "petal_id": "$pp.id",
+            "path": "$assets.portal.storm.path",
+            "name": "storm"
+          },
+          "id": "storm",
+          "bind": {
+            "content_hash": "data.content_hash",
+            "asset_id": "data.id"
+          }
+        },
+        {
+          "peer": "owner",
+          "via": "rest",
+          "op": "create_repository_node",
+          "args": {
+            "fractal_id": "$pf.id",
+            "petal_id": "$pp.id",
+            "name": "Storm repo",
+            "bundle_asset": "$storm.asset_id",
+            "position": [
+              0,
+              0,
+              6
+            ]
+          },
+          "id": "rstorm"
+        },
+        {
+          "peer": "owner",
+          "via": "rest",
+          "op": "portal_admit",
+          "args": {
+            "package_id": "qa.portal.storm",
+            "content_hash": "$storm.content_hash"
+          },
+          "id": "adm_storm"
+        },
+        {
+          "peer": "owner",
+          "via": "gui",
+          "op": "click",
+          "args": {
+            "name": "Open bundle"
+          },
+          "id": "open_storm",
+          "needs": [
+            "adm_storm"
+          ],
+          "note": "accessible name placeholder: T3.1 ux.md fixes the exact Open name"
+        },
+        {
+          "peer": "owner",
+          "via": "rest",
+          "op": "portal_slot",
+          "args": {
+            "slot": 1
+          },
+          "id": "run_storm",
+          "needs": [
+            "open_storm"
+          ]
+        },
+        {
+          "peer": "owner",
+          "via": "host",
+          "op": "sleep",
+          "args": {
+            "seconds": 75
+          },
+          "id": "storm_wait",
+          "needs": [
+            "run_storm"
+          ]
+        }
+      ],
+      "expect": [
+        {
+          "probe": "portal",
+          "target": "qa.portal.storm",
+          "predicate": "equals",
+          "path": "ipc.live_subscriptions",
+          "peers": [
+            "owner"
+          ],
+          "within_s": 20,
+          "after": "run_storm",
+          "value": 16
+        },
+        {
+          "probe": "portal",
+          "target": "qa.portal.storm",
+          "predicate": "count",
+          "path": "ipc.too_many_subscriptions",
+          "peers": [
+            "owner"
+          ],
+          "within_s": 20,
+          "after": "run_storm",
+          "value": 48
+        },
+        {
+          "probe": "portal",
+          "target": "qa.portal.storm",
+          "predicate": "present",
+          "path": "ipc.rate_limited",
+          "peers": [
+            "owner"
+          ],
+          "within_s": 20,
+          "after": "run_storm"
+        },
+        {
+          "probe": "portal",
+          "target": "qa.portal.storm",
+          "predicate": "equals",
+          "path": "writes_accepted",
+          "peers": [
+            "owner"
+          ],
+          "within_s": 20,
+          "after": "run_storm",
+          "note": "at most 7: burst 5 plus the 2/s refill",
+          "value": 7
+        },
+        {
+          "probe": "portal",
+          "target": "qa.portal.storm",
+          "predicate": "equals",
+          "path": "peer_log.db_thread_timeouts",
+          "peers": [
+            "owner"
+          ],
+          "within_s": 90,
+          "after": "storm_wait",
+          "value": 0
+        },
+        {
+          "probe": "portal",
+          "target": "qa.portal.storm",
+          "predicate": "equals",
+          "path": "idle_reads.node_readings",
+          "peers": [
+            "owner"
+          ],
+          "within_s": 90,
+          "after": "storm_wait",
+          "value": 0
+        },
+        {
+          "probe": "portal",
+          "target": "qa.portal.storm",
+          "predicate": "equals",
+          "path": "idle_reads.query_per_cadence_max",
+          "peers": [
+            "owner"
+          ],
+          "within_s": 90,
+          "after": "storm_wait",
+          "value": 1
+        }
+      ]
+    }
+  ]
+}

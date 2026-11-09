@@ -24,6 +24,12 @@ the path until 2026-10-10, so a caller authorized for one petal could list
 another verse's stamps by naming a foreign path). Volumes are already real m³ (computed
 through the terrain scale authority upstream, N-1) — this crate only sums them.
 
+**Repository nodes (portal_surface_20261107 T0.3).** `NodeKind::Repository` (`"repository"`) tags a
+node whose `properties.node_kind` is `repository`. Its `portal.*` keys (`portal.bundle_asset`,
+`portal.feeds`) are host-reserved: a bundle can never repoint its own node. The bundle's identity and
+admission come from the portal summary read (`fe-api/AGENTS.md` §portal-bundles), not from this
+crate, so a repository node carries only the reference.
+
 ## §gis
 
 `gis.rs` provides petal-scoped SurrealQL builders for the

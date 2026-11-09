@@ -8,6 +8,7 @@ import subprocess
 import threading
 import time
 
+import portal_probe
 import predicates
 from client import Outcome
 from runtime import small
@@ -277,6 +278,9 @@ class Prober:
             for target, key in targets.get("timeseries", []):
                 counts["timeseries"] = counts.get("timeseries", 0) + 1
                 jobs.append(("timeseries", key, submit(client.mcp, "query_timeseries", target, 20.0)))
+        if targets.get("portal") and self._is_due(due, "portal", "portal_ms", now):
+            counts["portal"] = counts.get("portal", 0) + 1
+            jobs.append(("portal", None, submit(self._portal_round, client, targets["portal"])))
         errors = 0
         alive = None
         for kind, key, future in jobs:
@@ -327,6 +331,9 @@ class Prober:
                 rows = outcome.get("data") if outcome.ok else None
                 value = {"count": len(rows), "digest": predicates.digest(rows), "rows": small(rows, 2048)} if isinstance(rows, list) else {"absent": True, "status": outcome.get("status"), "code": outcome.get("code")}
                 self._emit(name, previous, "query", key, value, t)
+            elif kind == "portal":
+                for target, value in outcome.get("rows") or []:
+                    self._emit(name, previous, "portal", target_key(target), value, t)
             elif kind == "timeseries":
                 data = outcome.get("data") if outcome.ok else None
                 # QA-0140(5): digest the rows only; meta (answered/missing hosts) is peer-relative.
@@ -348,6 +355,13 @@ class Prober:
         if alive is not None or targets.get("alive"):
             self._emit(name, previous, "alive", "peer", {"alive": bool(alive)} if alive is not None else {"alive": True}, t)
         return errors
+
+    def _portal_round(self, client, portal_targets):
+        """One portal probe round (portal_probe.collect); the package-to-asset binding comes from the driver's uploads."""
+        from client import Outcome
+        assets = getattr(self.ctx, "portal_assets", {})
+        rows = portal_probe.collect(client, [target for target, _key in portal_targets], assets.get)
+        return Outcome(status=200, ok=True, refused=False, rows=rows)
 
     @staticmethod
     def _extension_view(key, outcome):

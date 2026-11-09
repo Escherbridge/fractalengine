@@ -16,6 +16,12 @@ pub enum FixtureOp {
     ActivateSecondLink,
     ActivateRefusedThirdLink,
     Capture,
+    /// Bundle page: title, probe digest and named probe texts.
+    PortalObserve,
+    /// Bundle page: activate `data-fe-slot` number 1..=32.
+    PortalSlot(u8),
+    /// Host IPC outcome counters.
+    PortalIpcStats,
 }
 
 #[derive(Clone, Debug)]
@@ -82,6 +88,9 @@ pub struct FixtureReceipt {
     pub width: Option<u32>,
     pub height: Option<u32>,
     pub sha256: Option<String>,
+    /// Bundle-page evidence (title, probe digest, slot/IPC counters); `None` for the legacy fixture.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub portal: Option<serde_json::Value>,
 }
 
 #[derive(Debug)]

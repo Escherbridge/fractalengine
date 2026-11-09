@@ -681,7 +681,7 @@ async fn input_injection_disabled_role_round_trip_rate_limited_headless_and_came
                         scope: portal_scope.clone(), operation, popup_session: 1, page_generation: 1,
                         url: "http://127.0.0.1:49152/web/one".into(),
                         observation: FixtureObservation { page:"one".into(),title:"QA Portal one".into(),heading:"QA Portal one".into(),second_link:"/web/two".into(),third_link:"/web/three".into(),ready:true,invoked:false },
-                        link_invoked:false,native_refusal_observed:false,capture_source:Some("owned_webview2_capture_preview"),width:Some(1),height:Some(1),sha256:Some("0".repeat(64))
+                        link_invoked:false,native_refusal_observed:false,capture_source:Some("owned_webview2_capture_preview"),width:Some(1),height:Some(1),sha256:Some("0".repeat(64)),portal:None
                     }, png:Some(b"private native bytes must never escape without the live capability".to_vec()) }));
                 }
             });

@@ -120,7 +120,10 @@ pub fn build_router_with_hosts(state: Arc<ApiState>, hosts: ApiHosts) -> Router 
             .filter_map(|o| o.parse::<HeaderValue>().ok())
             .collect();
         CorsLayer::new()
-            .allow_origin(AllowOrigin::list(origins))
+            // Configured origins, plus static portal origins on the share route only (portal_bundles).
+            .allow_origin(AllowOrigin::predicate(move |origin, parts| {
+                origins.contains(origin) || crate::portal_bundles::share_route_allows(origin, parts)
+            }))
             .allow_methods([
                 Method::GET,
                 Method::POST,
@@ -246,6 +249,21 @@ pub fn build_router_with_hosts(state: Arc<ApiState>, hosts: ApiHosts) -> Router 
             post(crate::upload::upload_petal_asset)
                 .layer(DefaultBodyLimit::max(crate::upload::ASSET_ROUTE_BODY_LIMIT)),
         )
+        // Portal bundle upload (multipart; cap + framing) and summary read
+        .route(
+            "/api/v1/petals/{petal_id}/portal-bundles",
+            post(crate::portal_bundles::upload_portal_bundle)
+                .layer(DefaultBodyLimit::max(crate::portal_bundles::route_body_limit())),
+        )
+        .route(
+            "/api/v1/portal-bundles/{asset_id}",
+            get(crate::portal_bundles::get_portal_bundle),
+        )
+        // Static-directory export of a repository node's portal bundle (Viewer+, reach-checked)
+        .route(
+            "/api/v1/nodes/{node_id}/portal/export.zip",
+            get(crate::portal_bundles::export_portal_bundle),
+        )
         // Node asset download (node -> asset -> blob, real headers)
         .route(
             "/api/v1/nodes/{node_id}/asset",
@@ -369,6 +387,12 @@ pub fn build_router_with_hosts(state: Arc<ApiState>, hosts: ApiHosts) -> Router 
             get(crate::qa_scene_asset::get).layer(axum::extract::DefaultBodyLimit::max(0)),
         )
         .route("/api/v1/debug/invitation", get(crate::qa_invitation::observe).post(crate::qa_invitation::consume).layer(axum::extract::DefaultBodyLimit::max(2048)))
+        .route("/api/v1/debug/portal/observe", get(crate::qa_portal::portal_observe))
+        .route("/api/v1/debug/portal/ipc-stats", get(crate::qa_portal::portal_ipc_stats))
+        .route("/api/v1/debug/portal/action", post(crate::qa_portal::portal_action).layer(axum::extract::DefaultBodyLimit::max(1024)))
+        // Local kill switch for the QA lane (`{"engage": bool}` only), behind the same portal-fixture Owner+input gate
+        // as `action` (steer 2026-11-09 02:15; handler `qa_portal::portal_killswitch`).
+        .route("/api/v1/debug/portal/killswitch", post(crate::qa_portal::portal_killswitch).layer(axum::extract::DefaultBodyLimit::max(64)))
         .route("/api/v1/debug/portal-fixture/observe", get(crate::qa_portal::observe))
         .route("/api/v1/debug/portal-fixture/action", post(crate::qa_portal::action).layer(axum::extract::DefaultBodyLimit::max(1024)))
         .route("/api/v1/debug/portal-fixture/capture", post(crate::qa_portal::capture).layer(axum::extract::DefaultBodyLimit::max(1024)))

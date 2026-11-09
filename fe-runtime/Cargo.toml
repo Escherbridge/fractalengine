@@ -23,6 +23,8 @@ fe-identity = { path = "../fe-identity" }
 fe-sdk = { path = "../fe-sdk" }
 fe-policy = { path = "../fe-policy" }
 ed25519-dalek = { workspace = true }
+# Portal bundle header-member reads (scene_asset::inflate_bundle_member).
+zip = { version = "2", default-features = false, features = ["deflate"] }
 
 [dependencies.url]
 version = "2"

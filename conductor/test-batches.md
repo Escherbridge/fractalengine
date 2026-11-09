@@ -206,9 +206,16 @@ Toasts, dialogs, window chrome, status bar, embedded webview (PetalPortal), app 
 
 ```bash
 cargo test -p fe-ui --lib -- notice:: ui_shell:: dialogs::join panels::widgets panels::toolbar panels::sidebar panels::tool_options panels::tool_inspector panels::tool_panel settings:: portal:: plugin::
-cargo test -p fe-webview
+cargo test -p fe-webview --lib --test security_test --test tauri_backend_test --test tauri_cutover_test
+cargo test -p fe-webview --test portal_protocol_journey --test portal_ipc_journey
+cargo test -p fractalengine --bin fractalengine -- portal_host::
 cargo test -p fractalengine --bin fractalengine -- panic_log:: window_chrome::
 ```
+
+Portal bundle journeys (`portal_surface_20261107`) have their own row: `fe-webview/tests/portal_protocol_journey.rs`
+(custom protocol, CSP, navigation admission) and `fe-webview/tests/portal_ipc_journey.rs` (`fe.portal.v1` bridge).
+The crate line above lists the other fe-webview targets explicitly, so the journeys run once. A `--lib` line covers
+the unit tests; a new fe-webview test binary must be added to one of the two rows.
 
 ---
 
@@ -256,12 +263,17 @@ fe-sync, distributed query, tileset transfer, relay, network thread.
 **Total ≈ 375**
 
 ```bash
-cargo test -p fe-sync
+cargo test -p fe-sync -- --skip docs_engine::tests::a_hash_with_no_tileset_context_is_unaffected_by_the_filter
+cargo test -p fe-sync --lib -- docs_engine::tests::a_hash_with_no_tileset_context_is_unaffected_by_the_filter
 cargo test -p fe-api --test distributed_query_test
 cargo test -p fe-network
 cargo test -p fractalengine-relay
 cargo test -p fe-runtime --lib -- peer_registry distributed_query blob_transport blob_store bevy_blob_reader
 ```
+
+**Docs-engine row (QA-0118):** the `fe-sync` line skips `docs_engine::tests::a_hash_with_no_tileset_context_is_unaffected_by_the_filter`,
+and the next line runs it alone. That test carries the QA-0118 re-arm assertion (a refused scene fetch is retried once the
+provider admits again) and the portal-bundle prefetch check. Its name predates QA-0118; renaming it is a separate change.
 
 **Slow sub-batch:** `fe-sync/tests/relay_assisted_test.rs` and `fe-sync/tests/tileset_transfer_test.rs`
 touch real endpoints/relay handshakes — flagged by the stress/timing scan; verify at campaign end if a
@@ -286,7 +298,7 @@ REST, MCP tools, operator gate, screenshot/vision/input, egress/export, elevated
 **Total ≈ 297**
 
 ```bash
-cargo test -p fe-api --test api_integration --test api_harness_smoke --test mcp_integration --test screenshot_test --test vision_test --test vision_scope_test --test token_lifecycle_test --test namespace_capability_test --test existence_oracle_test --test record_id_read_test --test gis_test --test export_share_test --test share_signer_persistence_test --test analytics_scope_test --test ws_integration
+cargo test -p fe-api --test api_integration --test api_harness_smoke --test mcp_integration --test screenshot_test --test vision_test --test vision_scope_test --test token_lifecycle_test --test namespace_capability_test --test existence_oracle_test --test record_id_read_test --test gis_test --test export_share_test --test share_signer_persistence_test --test analytics_scope_test --test portal_bundle_test --test ws_integration
 cargo test -p fe-api --test bindings_api_test --test extensions_api_test
 cargo test -p fe-api --lib -- auth:: crs:: bridge_client endpoint:: entity_store_bridge export:: operator_gate query_guard rest:: mcp:: share:: upload:: visibility:: vision:: ws::
 cargo test -p fe-database --lib -- handlers::elevated_query api_token_store session_cache handlers::api_token
@@ -352,7 +364,8 @@ cargo test -p fe-plugin
 cargo test -p fe-plugin-test
 cargo test -p fe-hexon
 cargo test -p fe-hexon-registry
-cargo test -p fe-format
+cargo test -p fe-format -- --skip portal_bundle::
+cargo test -p fe-format --lib -- portal_bundle::
 cargo test -p fe-sdk
 cargo test -p fe-ext -- j8
 cargo test --manifest-path tools/fe-ext/guest/Cargo.toml
@@ -366,6 +379,17 @@ cargo test -p fe-ui --lib -- atlas::dashboard atlas::model_editor atlas::search_
 cargo test -p fe-ui --lib -- extensions::
 cargo test -p fractalengine --bin fractalengine -- extension_host:: plugin_bridge::
 ```
+
+**Portal bundle validator (fe-format):** `fe-format/src/portal_bundle.rs` tests (`portal_bundle::tests::`) run in the second line,
+and the first line skips them so they run once. Their coverage: validator refusal classes, capability digest, and the capability
+increase rule.
+
+## Portal QA lane (not cargo)
+
+The portal QA journeys PJ1-PJ10 (`tools/qa/portal/journeys.md`) run as sim scenarios (`tools/qa/sim/scenarios/portal-core.json`,
+`portal-replication.json`, `portal-load.json`), not as `cargo test`, so this section has no runner chunks. PJ10 (static export, R17)
+is registered for P6 and runs only once P6 lands its export route in `fe-api/src/portal_bundles.rs`; it extends
+`fe-api/tests/portal_bundle_test.rs`, which the R9 row already runs.
 
 ---
 
@@ -450,6 +474,7 @@ cargo test -p fe-ui --lib -- plugin::
 | `fe-database/tests/db_test.rs` (J3 IoT flush fn only) | R4 (IoT) |
 | `fe-database/tests/` (rest: db_test, shared_handle_test, schema_idempotent, migration_*, replication_backpressure_test, canon_log_*_test, dcl20_bypass_counter_test) | R10 |
 | `fe-terrain/**` | R4 (always `--features render`) |
+| `fe-api/src/portal_bundles.rs`, `fe-api/src/qa_portal.rs`, `fe-api/tests/portal_bundle_test.rs` | R9 |
 | `fe-api/**` | R9, except files cross-listed into R4/R7/R8 (see R9 table header) |
 | `fe-api/src/{bindings,bound_routes}.rs`, `fe-api/tests/{bindings_api_test,extensions_api_test}.rs` | R9 |
 | `fe-sync/**` | R8 |
@@ -472,6 +497,7 @@ cargo test -p fe-ui --lib -- plugin::
 | `fractalengine/src/{plugin_bridge.rs,extension_host/**}` | R11 |
 | `fractalengine/src/{screenshot_bridge,vision_bridge}.rs` | R9 |
 | `fractalengine/src/{panic_log,window_chrome}.rs` | R6 |
+| `fractalengine/src/portal_host/**` | R6 |
 | `fractalengine/tests/security_harness.rs` | R9 |
 | `fractalengine/tests/integration_test.rs` | Harness |
 | `fe-test-harness/**` | Harness (always slow) |

@@ -11,6 +11,7 @@ import time
 import urllib.parse
 from concurrent.futures import ThreadPoolExecutor
 
+import portal_probe
 import predicates
 from client import Outcome, extract_id
 from runtime import small
@@ -29,6 +30,10 @@ REF_NAME = re.compile(r"\$\{?([A-Za-z_][A-Za-z0-9_]*)")
 
 def digest_of(value):
     return hashlib.sha256(json.dumps(value, sort_keys=True, default=str).encode("utf-8")).hexdigest()[:16]
+
+
+PORTAL_OPS = {"upload_bundle", "create_repository_node", "portal_update_bundle", "portal_slot", "portal_observe",
+              "portal_ipc_stats", "portal_admit", "portal_killswitch", "portal_ipc_post", "regrant_role"}
 
 
 def new_ulid(rng=None):
@@ -459,6 +464,8 @@ class Driver:
             return client.rest("DELETE", "/api/v1/petals/%s/visibility-groups/%s" % (args["petal_id"], args["group_id"]))
         if op == "upload_asset":
             return client.upload_multipart(args["petal_id"], args["path"], args.get("name"))
+        if op in PORTAL_OPS:
+            return self.portal_op(client, op, args, verse)
         if op == "query":
             return client.rest("POST", "/api/v1/query", {"sql": args["sql"]})
         if op == "ingest_readings":
@@ -708,6 +715,81 @@ class Driver:
         if op == "fingerprint":
             return Outcome(status=200, ok=True, refused=False, data=self.fingerprint(args.get("label", "mid")))
         raise ValueError("unknown host op " + op)
+
+    # -- portal ops (tools/qa/portal/AGENTS.md section sim-contract) --------------------------------
+    def portal_op(self, client, op, args, verse):
+        """Portal ops; admission and re-grant drive the GUI, the kill switch is a fixed debug route, IPC row posts refuse by
+        name (no seam yet)."""
+        if op == "upload_bundle":
+            out = portal_probe.upload_bundle(client, args)
+            data = out.get("data")
+            if out.ok and isinstance(data, dict):
+                data.setdefault("id", data.get("asset_id"))  # scenarios bind data.id like upload_asset
+                if data.get("package_id") and data.get("asset_id"):
+                    assets = getattr(self.ctx, "portal_assets", None)
+                    if assets is None:
+                        assets = self.ctx.portal_assets = {}
+                    assets[data["package_id"]] = data["asset_id"]
+            return out
+        if op == "create_repository_node":
+            created = client.rest("POST", "/api/v1/verses/%s/fractals/%s/petals/%s/nodes" % (
+                verse, args["fractal_id"], args["petal_id"]),
+                {"name": args["name"], "position": args.get("position", [0, 0, 0])})
+            node_id = extract_id(created.get("data")) if created.ok else None
+            if not node_id:
+                return created
+            for key, value in (("node_kind", "repository"), ("portal.bundle_asset", args["bundle_asset"])):
+                written = client.rest("PATCH", "/api/v1/nodes/%s/properties" % node_id, {"key": key, "value": value})
+                if not written.ok:
+                    return written
+            return created
+        if op == "portal_update_bundle":
+            return client.rest("PATCH", "/api/v1/nodes/%s/properties" % args["repository_node_id"],
+                               {"key": "portal.bundle_asset", "value": args["bundle_asset"]})
+        if op in ("portal_observe", "portal_ipc_stats"):
+            route = "observe" if op == "portal_observe" else "ipc-stats"
+            return client.send("GET", portal_probe.DEBUG_BASE + route, None, client.debug_token(), 8.0)
+        if op == "portal_slot":
+            return client.send("POST", portal_probe.DEBUG_BASE + "action", {"slot": int(args["slot"])},
+                               client.debug_token(), 8.0)
+        if op == "portal_killswitch":
+            # Fixed body {engage} only, behind the portal-fixture Owner+input gate (steer 2026-11-09 02:15).
+            return client.send("POST", portal_probe.DEBUG_BASE + "killswitch", {"engage": bool(args.get("engage", True))},
+                               client.debug_token(), 8.0)
+        if op == "portal_admit":
+            return self._portal_admit(client, args)
+        if op == "regrant_role":
+            return self._regrant_role(client, args)
+        return Outcome(status=0, ok=False, refused=True, code="portal_op_unwired",
+                       error="%s has no API route or GUI affordance in this build (IPC row posts)" % op)
+
+    def _portal_admit(self, client, args):
+        """`portal_admit`: the repository view's "Admit bundle" button (ux.md section 5); an optional confirm click follows."""
+        out = client.gui("click", {"name": "Admit bundle", "exact": True, "wait_s": float(args.get("wait_s", 5))})
+        if out.ok:
+            client.gui("click", {"name": "Confirm Admit bundle", "exact": True, "wait_s": 1})  # consent step, if the build has one
+        return out
+
+    def _regrant_role(self, client, args):
+        """`regrant_role`: the Access tab assign chain of p2p-core 13c; clicks stop at the first refusal."""
+        target = self.clients[args["peer"]]
+        role, did = args.get("role", "editor"), target.did
+        verse_name = args.get("verse_name", "QA Basic")
+        chain = [("Browse current verse fractals", None), ("Options menu for verse " + verse_name, None),
+                 ("Options… verse " + verse_name, None), ("Access", "button"),
+                 ("Role to assign for " + did, None), (role, None),
+                 ("Assign role %s to %s" % (role, did), None),
+                 ("Confirm Assign role %s to %s" % (role, did), None)]
+        out = None
+        for name, kind in chain:
+            click = {"name": name, "exact": True, "wait_s": 3}
+            if kind:
+                click["role"] = kind
+            out = client.gui("click", click)
+            if not out.ok:
+                return out
+        client.gui("click", {"name": "Close window", "role": "button", "wait_s": 1})
+        return out
 
     # -- macros ----------------------------------------------------------------------------------
     def macro(self, client, op, args, sid, action_id, action):

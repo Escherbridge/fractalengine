@@ -5,7 +5,56 @@ use bevy_egui::egui;
 use crate::accessibility::ResponseExt;
 
 use crate::actions::{UiAction, UiManager};
+use crate::portal::chrome::{chrome_model, ChromeAction, ChromeTone};
 use crate::theme;
+
+/// Host-drawn admission badge plus the Admit / Revoke action the state allows (ux.md §3).
+///
+/// Drawn in a fixed-height band for every bundle state, so the native viewport below never moves
+/// when the first state arrives or the badge changes.
+fn render_bundle_chrome(ui: &mut egui::Ui, ui_mgr: &mut UiManager) {
+    if !ui_mgr.portal.is_bundle() {
+        return;
+    }
+    let control = crate::ui_shell::layout_policy::control_size(ui.ctx(), [28.0, 24.0]);
+    let height = ui.text_style_height(&egui::TextStyle::Body) + ui.spacing().item_spacing.y + control.y;
+    let (rect, _) = ui.allocate_exact_size(egui::vec2(ui.available_width(), height), egui::Sense::hover());
+    let mut band = ui.new_child(
+        egui::UiBuilder::new()
+            .id_salt("portal-bundle-chrome")
+            .max_rect(rect)
+            .layout(egui::Layout::top_down(egui::Align::Min)),
+    );
+    band.set_clip_rect(rect.intersect(ui.clip_rect()));
+    let ui = &mut band;
+    let Some(model) = ui_mgr.portal.bundle_state().and_then(chrome_model) else {
+        return;
+    };
+    let node_id = ui_mgr.portal.bundle_node_id().unwrap_or_default().to_owned();
+    let color = match model.tone {
+        ChromeTone::Accent => theme::TREE_PRIMARY_ACCENT,
+        ChromeTone::Neutral => theme::TEXT_DIM,
+        ChromeTone::Error => theme::STATUS_OFFLINE,
+    };
+    ui.add(egui::Label::new(egui::RichText::new(&model.badge_text).color(color)).truncate())
+        .named(ui, &model.badge_name)
+        .on_hover_text(&model.badge_text);
+    ui.horizontal_wrapped(|ui| {
+        for action in [Some(model.primary), model.secondary].into_iter().flatten() {
+            if action == ChromeAction::Close {
+                continue; // The fixed Close button above is the one Close control.
+            }
+            let size = crate::ui_shell::layout_policy::control_size(ui.ctx(), [28.0, 24.0]);
+            if ui
+                .add(egui::Button::new(action.label()).min_size(size))
+                .named(ui, action.accessible_name())
+                .clicked()
+            {
+                ui_mgr.push_action(action.ui_action(&node_id));
+            }
+        }
+    });
+}
 
 const FEEDBACK_HEIGHT: f32 = 64.0;
 
@@ -79,7 +128,8 @@ pub(crate) fn right_portal_toolbar(ctx: &egui::Context, ui_mgr: &mut UiManager) 
                         ui_mgr.push_action(action);
                     }
                 }
-                if ui
+                if !ui_mgr.portal.is_bundle()
+                    && ui
                     .add(egui::Button::new("Open externally").min_size(crate::ui_shell::layout_policy::control_size(ui.ctx(), [28.0, 24.0])))
                     .named(ui, "Open portal externally")
                     .on_hover_text("Request this URL in your system browser")
@@ -95,13 +145,15 @@ pub(crate) fn right_portal_toolbar(ctx: &egui::Context, ui_mgr: &mut UiManager) 
                     ui_mgr.push_action(UiAction::ClosePortal);
                 }
             });
+            // ux.md §3: the badge sits below the action buttons and above the hostname line.
+            render_bundle_chrome(ui, ui_mgr);
             ui.add(
                 egui::Label::new(
-                    egui::RichText::new(ui_mgr.portal_hostname()).color(theme::TEXT_DIM),
+                    egui::RichText::new(ui_mgr.portal.hostname()).color(theme::TEXT_DIM),
                 )
                 .truncate(),
             )
-            .on_hover_text(ui_mgr.portal_url());
+            .on_hover_text(ui_mgr.portal.url());
             render_feedback(ui, ui_mgr);
             ui.separator();
 

@@ -1,0 +1,12 @@
+{
+  "schema": "fe-portal-bundle/1",
+  "entry": "web/index.html",
+  "title": "QA Docs Site",
+  "csp": {"connect": [], "img": [], "font": [], "media": [], "frame": [], "wasm": false, "inline_styles": false},
+  "navigation": [],
+  "subscriptions": {"node": false, "readings": false, "queries": []},
+  "commands": {},
+  "hooks": [],
+  "streams": [],
+  "ui_intents": []
+}

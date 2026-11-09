@@ -1814,9 +1814,141 @@ Opt-in QA hosts emit credential-free, create-new phase receipts beneath the alre
 
 API session shutdown and dev-token file invalidation accompany the durable credential-generation rotation in the reset transaction. Reopened REST and legacy WS admission reject pre-reset JWTs even when their signatures and Owner claims remain valid. Identity/signing keys are retained; token-row deletion alone is not the revocation mechanism. The source-authored lifecycle journeys still require the integrated execution and independent review gate before reset activation.
 
+## §portal-host (portal_surface_20261107 P-S1/P-S2/P-S4/P-S6, swarm turn 2)
+
+`portal_host/` hosts web bundles in the binary: `resolver.rs` (P-RESOLVE), `broker.rs` (P-BROKER), and `mod.rs`.
+`mod.rs` holds the one `install()` call, the off-frame worker and the drains behind fe-ui's Repository section.
+The specs are `docs/spec/portal-bundle/{admission,ipc-v1,ux}.md`.
+
+**Merge prerequisite.** This tree compiles only after it rebases onto `track/extension-platform`. It names:
+- `fe_plugin::{bus, BusHandle, PackageAdmission}`;
+- `crate::extension_host::governance::ExtensionGovernance`;
+- `fe_ui::extensions::consent`;
+- the pinned DB commands `LoadExtensionGovernance` and `AppendExtensionAudit`.
+
+**Install order.** `portal_host::install` runs after `WebViewPlugin` and after the extension host inserts `BusHandle` and
+`ExtensionGovernance`, because it reads both at install time. Each missing piece is logged as an error and fails closed:
+- no governance: the resolver judges through `NoGovernance`, so nothing is admitted and bundles render static only;
+- no bus: there is no `PortalBrokerRes`, so the bridge answers every call `unavailable`.
+
+The worker is an `OwnedService` in `maintenance_services`, so it stops with the other host services.
+
+### Resolver (P-RESOLVE)
+
+- **The chain.** It resolves node -> `portal.bundle_asset` -> `asset` row -> local blob, with an absent link
+  answering `Unavailable`. Reads run on the caller's worker through a private current-thread runtime, and are refused
+  on a tokio worker.
+- **The kill list before bytes.** The blob hash is checked against the kill list before any byte is read (rules 3-4).
+  The header is read only after the file's hash is verified, so it comes from bytes the list just cleared.
+- **Bounded caches.** Node, petal and build caches hold at most 1 024 entries and evict the oldest; a miss fails closed.
+- **The record mirror.** `learn_consent` writes a record (the digest is required), and `host/admission` events update its
+  state. An `admitted` event alone never creates a record.
+- **Policy per target.** Verse policy is evaluated per target with no manifest, so `ceilings.kinds` never applies to
+  a web bundle (E10 default).
+- **fe-api's local read (`LocalAdmission`).** It is scope-free, because no node names a verse, so no Owner override
+  applies there.
+  - Every committed member digest goes to the kill list with the content hash and the archive digest (R-POR-09).
+  - A read build that stays static answers `reason: "cannot_admit"` when the scope-free half of may-admit fails:
+    the host switch is off, Disable all is on, the build is unsealed, or no loaded trust root sealed it.
+  - Verse policy and role need a target, so a static build with no reason may still be refused by the consent dialog.
+  - The archive-only pre-check (empty `package_id` and `content_hash`) carries no reason.
+
+### Broker (P-BROKER)
+
+- **The ceiling.** A binding's ceiling is the minimum of three roles: the bus role view, fe-ui's `LocalUserRole` at the
+  active petal (Viewer until it resolves) and the viewer token. A bind below Viewer is refused, and the ceiling rides on
+  `Bus::open_portal_client`, never on a `Caller` literal (steer 23:40).
+- **The role source.** `NodeDidRoles` answers Owner for the node DID and None for everyone else. That is identical to
+  `plugin_bridge`'s bus roles for the only DID a portal binding names (`bus.local_did()`), and it avoids reaching into
+  that module's private role view.
+- **Scope pinning.** The scope is pinned from `BrowserCommand::OpenBundle` (`track_portal_scopes`, before
+  `apply_portal_admission`). It is event-driven: `VerseManager` mutates every frame, so there is no tree mirror. Write
+  ancestry is pinned at Open.
+- **The lock rule.** Never hold the broker lock across `bus.client_set_property`: the bus calls the write sink, which
+  takes that lock. `take_events` may hold it.
+- **The write path (A-13).** It is installed once with `bus.install_portal_writes(write_sink)` before `into_resource()`.
+  Each write is ONE `PluginCommit` with no readings, carrying provenance `{package_id, content_hash}` and the pinned
+  ancestry, and it is judged by the DB at write time.
+- **Installations and audit.** The installation id is the package id, which is A-14 and the ops drain's convention.
+  Refusals are audited through `ExtensionGovernance::audit_sink`.
+- **Bind-time re-check (`still_admitted`).** Governance must still hold an `Admitted` record for the exact pair, for
+  the same publisher and the same capability digest, with Disable all off. No un-overridden kill-list entry may name
+  any of the build's digests: content hash, archive digest or member digest, under any package id. The bridge hands all
+  of these over in `BindRequest` (R-POR-IPC). The mount verdict already decided this; the re-check guards a rebind
+  inside the re-judge tick's 500 ms window.
+- **Invoke codes.** A portal is a local caller, so `bus_error` passes `CapabilityDenied` through unchanged: a declared
+  target that is not exposed, or below its role floor, answers `capability_denied` (ipc-v1.md §6.2, bus.md §4). It is
+  not the remote callers' uniform `not_found`. The bus audits that refusal itself, and the bridge never audits it again.
+
+### Admission drains (R-POR-08, P-S4)
+
+- **Summary.** `repository_view.take_wanted()` -> worker. The node is resolved first, so its scope is known; then the
+  `asset` row is read for the blob hash, then `fe_api::portal_bundles::inspect_stored`.
+  - The `admission` block uses the *scoped* `admission::verdict`. `Unadmitted { can_admit: false }` (unsealed, untrusted,
+    or the policy or role says no) answers `reason: "cannot_admit"`, so the section offers Admit only where the dialog
+    can accept it.
+  - Every selection change triggers a read: one node read off-frame. A non-repository node answers `Unreadable` and
+    shows no section.
+- **Admit uses a portal-owned instance of governance's consent dialog (`PortalConsent`).**
+  - It does not use the shared `ConsentState`, because fe-ui routes those decisions to the ops drain as
+    `ExtensionOp::Consent`, which requires a staged extension package. The dialog code is the same (A-10, never a second
+    dialog), so `request.portal` renders the grant list.
+  - **Refusals** fill `blocked` in actionable order:
+    1. no governance;
+    2. host switch off;
+    3. Disable all;
+    4. unsealed;
+    5. untrusted publisher;
+    6. kill-listed with no Owner;
+    7. policy or role.
+  - **A kill-listed build** offers the override only when the local DID is the verse's `created_by`. The DB re-checks
+    Owner and the typed confirmation.
+  - **Accept** -> `ExtensionGovernance::record_consent`, which writes one durable `consent` audit entry and then the
+    plugin manager. Only after it succeeds: `learn_consent` -> `AdmissionSignal::Event(Admitted, Consented)` ->
+    `invalidate(node)`. A failed write admits nothing.
+- **Revoke** (OD-E1). One blocking `consent-revoke` audit entry; `load_consents` drops the consent on the next start.
+  - Then `Event(Disabled, ConsentRevoked)`, the pairing bus.md §2.4 fixes. The open mount unloads as "Revoked —
+    admission withdrawn" (admission.md §2 rule 5, per pair), and the broker closes the client after in-flight writes
+    settle. Rows stay.
+  - `revoked` belongs to the kill list alone (`revocation-list`) and matches by hash under any id. I-POR-BIN's
+    `Event(Revoked, ConsentRevoked)` showed a user Revoke as "revocation list" and kept the record in the list's rule.
+    R-POR-IPC corrected it.
+  - Revocation fails closed: it applies in-session even when the durable write is uncertain, and the user sees a warning.
+- **Hydration.** Governance hands hydrated consents only to the plugin manager, so the worker reads
+  `LoadExtensionGovernance` once at startup (6 tries) and learns the local DID's consents. A rotated key's consents are
+  ignored. A bundle opened earlier re-judges on the `ListAccepted` that follows.
+- **Re-judge tick.** While a bundle portal is open, `ListAccepted` is posted every 500 ms (bounded by the reactive
+  loop's tick).
+  - Why: list acceptance, policy-row refreshes, role resolution and overrides change the view without a
+    `host/admission` event.
+  - The re-judge is memory-only and emits nothing on `Keep`.
+  - To make it change-driven, governance needs a generation counter (NEEDS, extension_host/governance.rs).
+- **`PortalBundleChanged`** (a reload of the open portal), only on a real change:
+  - a summary read whose asset differs from the last one read for that node;
+  - awaited bytes that arrived (checked with `has_blob` on the tick);
+  - the open node removed;
+  - a `portal.bundle_asset` change on an open node no read has seen.
+
+  A property change on a known node only re-reads. A read that was running when the change happened is re-run (the
+  `stale` set).
+- **Deferred.**
+  - Replace (`bundle_asset_pick`) needs a bundle-asset picker in fe-ui. Trigger: P-UI ships it; the binary half is then
+    a `SetNodeProperty portal.bundle_asset` write plus `invalidate`.
+  - `local_client_did` is `None`, because `fe_api::dev_token::DevTokenWriter` mints its client DID internally. Trigger:
+    it accepts one, and `main.rs` passes the same DID to both.
+  - **Runtime Disable all does not reach the portal yet** (R-POR-IPC, handed off). `PortalGovernance::disabled_all`
+    starts from `FE_EXT_DISABLE_ALL` and follows `host/admission` `disable-all` events. Nothing in either tree posts
+    them: `Bus::feed_admission` has no caller, and `plugin_bridge::administer`'s `DisableAll`/`EnableAll` only flip the
+    plugin manager. Trigger: the merge. The fix is for `administer` to call
+    `PortalResolverRes.view().set_host_disabled(..)` (the view is an `AtomicBool`, safe from the API thread). The open
+    mount then unloads on the next re-judge tick. Relaying `host/admission` itself (a UI bus client in `portal_host`)
+    waits until something calls `feed_admission`.
+
 ## QA Portal evidence
 
-`qa_portal_bridge` is the small owner-thread coordinator for fixed native fixture operations. It captures the active full hierarchy scope and exact selected Portal entity/node, requires the local Owner role and existing ViewScope containment, then rechecks them while pending and before reply. A close, selection/scope/role change, dropped caller or five-second deadline cancels the backend job. Native session/page/visibility and live helper checks remain in the backend, so the binary never enumerates or captures host windows. Idle frames do no context cloning or native work.
+`qa_portal_bridge` is the small owner-thread coordinator for fixed native fixture operations. It captures the active full hierarchy scope and exact selected Portal entity/node, requires the local Owner role and existing ViewScope containment, then rechecks them while pending and before reply.
+
+A bundle portal is a Portal here, through `PortalState::opened_for_entity`. Bundle ops (`PortalObserve`, `PortalSlot`, `PortalIpcStats`) take the fixture surface's `start_portal` path, which reads the mount table and the bundle origin. fe-api's handler checks their receipt with `is_bundle_origin_url`. `qa_web::allows` never applies to a bundle URL: it gates only the website fixture ops (`live_source`/`execute`) and their receipts. `/api/v1/debug/ui-state` carries `portal: {node_id, state, badge_text, badge_name}` from `fe_ui::portal::chrome::chrome_model` while a bundle portal is open, and `null` otherwise; the QA probe's `badge` paths read it (R-POR-30). A close, selection/scope/role change, dropped caller or five-second deadline cancels the backend job. Native session/page/visibility and live helper checks remain in the backend, so the binary never enumerates or captures host windows. Idle frames do no context cloning or native work.
 
 Native fixture admission and release additionally require the selected entity actual SpawnedNodeMarker to match its selected node and the active Petal. Existing scope-change coverage exercises the Portal context owner, selection/open state, role loss and changed Petal snapshots. The API completion credential check will use the independently owned durable auth helper once that prerequisite is frozen; current code retains the existing expiry/revocation-cache checks in addition to scope/role/permit fences.
 

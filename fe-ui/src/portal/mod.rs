@@ -2,6 +2,20 @@
 //! `fe-ui/src/AGENTS.md` §portal.
 
 use bevy::prelude::Entity;
+use fe_webview::ipc::BundleState;
+
+pub mod binding_offer;
+pub mod chrome;
+pub mod repository;
+pub mod repository_view;
+
+/// A bundle admission change for one repository node, requested from the chrome or the inspector; the binary drains
+/// these into governance (Admit opens its consent dialog).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum BundleAdmissionRequest {
+    Admit { node_id: String },
+    Revoke { node_id: String },
+}
 
 /// Portal webview lifecycle state (owned by [`crate::actions::UiManager`]).
 #[derive(Debug, Clone, Default)]
@@ -13,6 +27,69 @@ pub enum PortalState {
         cached_hostname: String,
         opened_for_entity: Entity,
     },
+    /// A repository node's bundle; `state` is host-decided and drives the chrome (see `portal/chrome.rs`).
+    Bundle {
+        node_id: String,
+        /// Origin label while a mount exists; shown in place of a hostname, never a URL.
+        label: Option<String>,
+        state: BundleState,
+        opened_for_entity: Entity,
+    },
+}
+
+impl PortalState {
+    /// Whether any portal (website or bundle) is open.
+    pub fn is_open(&self) -> bool {
+        !matches!(self, Self::Closed)
+    }
+
+    /// Whether the open portal is a bundle.
+    pub fn is_bundle(&self) -> bool {
+        matches!(self, Self::Bundle { .. })
+    }
+
+    /// The entity the portal was opened for, if open.
+    pub fn opened_for_entity(&self) -> Option<Entity> {
+        match self {
+            Self::Closed => None,
+            Self::Open { opened_for_entity, .. } | Self::Bundle { opened_for_entity, .. } => {
+                Some(*opened_for_entity)
+            }
+        }
+    }
+
+    /// Current page URL; empty for bundles (a bundle origin is never a persisted or dispatched URL).
+    pub fn url(&self) -> &str {
+        match self {
+            Self::Open { current_url, .. } => current_url,
+            Self::Closed | Self::Bundle { .. } => "",
+        }
+    }
+
+    /// Toolbar origin line: the website hostname, or the bundle origin label.
+    pub fn hostname(&self) -> &str {
+        match self {
+            Self::Open { cached_hostname, .. } => cached_hostname,
+            Self::Bundle { label, .. } => label.as_deref().unwrap_or(""),
+            Self::Closed => "",
+        }
+    }
+
+    /// The bundle's chrome state, if a bundle portal is open.
+    pub fn bundle_state(&self) -> Option<&BundleState> {
+        match self {
+            Self::Bundle { state, .. } => Some(state),
+            _ => None,
+        }
+    }
+
+    /// The repository node whose bundle is open, if a bundle portal is open.
+    pub fn bundle_node_id(&self) -> Option<&str> {
+        match self {
+            Self::Bundle { node_id, .. } => Some(node_id),
+            _ => None,
+        }
+    }
 }
 
 /// Screen-space rect (in egui points) for the webview portal overlay.

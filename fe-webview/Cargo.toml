@@ -35,9 +35,19 @@ tracing = { workspace = true }
 fe-database = { path = "../fe-database" }
 fe-policy = { path = "../fe-policy" }
 fe-runtime = { path = "../fe-runtime" }
+# Portal bundles (src/portal_bundle): sealed-archive reads and the portal manifest validator.
+fe-format = { path = "../fe-format" }
+# Origin labels and the unsealed content hash.
+blake3 = { workspace = true }
+# Must be the same `http` 1.x that wry's custom-protocol handler takes and returns (locked 1.4.0).
+http = "1"
+# Central-directory sizes for the validator without inflating members (same spec as fe-format).
+zip = { version = "2", default-features = false, features = ["deflate"] }
 
 [dev-dependencies]
 ulid = { workspace = true }
+# Seals fixture bundles in tests/portal_protocol_journey.rs.
+ed25519-dalek = { workspace = true }
 
 [target.'cfg(windows)'.dependencies]
 webview2-com = { version = "0.38.2", optional = true }

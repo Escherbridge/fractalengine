@@ -1,0 +1,20 @@
+<!doctype html>
+<html lang="en">
+<head><meta charset="utf-8"><title>QA Escape</title></head>
+<body>
+<h1 data-fe-probe="title">QA Escape</h1>
+<span data-fe-probe="last-slot">none</span>
+<span data-fe-probe="status">starting</span>
+<a data-fe-slot="1" href="https://undeclared.example.net/">Undeclared https</a>
+<a data-fe-slot="2" href="http://127.0.0.1:1/">Loopback</a>
+<a data-fe-slot="3" href="http://192.168.1.1/">Private</a>
+<a data-fe-slot="4" href="https://a-aaaaaaaaaaaaaaaaaaaaaaaaaa.localhost/">Other bundle origin</a>
+<a data-fe-slot="5" href="file:///C:/">File</a>
+<a data-fe-slot="6" href="javascript:document.title='escaped'">Script URL</a>
+<button data-fe-slot="7" type="button">window.open</button>
+<button data-fe-slot="8" type="button">Meta refresh</button>
+<form data-fe-slot="9" method="post" action="https://example.org/post"><button type="submit">Form POST</button></form>
+<a data-fe-slot="10" href="https://example.org/">Declared https (control)</a>
+<script src="app.js"></script>
+</body>
+</html>

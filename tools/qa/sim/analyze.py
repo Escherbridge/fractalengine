@@ -15,7 +15,7 @@ sys.path.insert(0, HERE)
 import predicates  # noqa: E402
 import timeline_svg  # noqa: E402
 
-PEER_LOCAL_PROBES = {"role", "nav", "ui", "alive", "_tick", "_error"}
+PEER_LOCAL_PROBES = {"role", "nav", "ui", "alive", "portal", "_tick", "_error"}
 DIVERGENCE_S = 15.0
 MOVING_MIN_VALUES = 8  # a target that took at least this many values, one per DIVERGENCE_S or faster, is moving
 FLIGHT_TAIL_S = 15.0  # replicas keep changing this long after a flight's last write
@@ -919,6 +919,7 @@ class Analysis:
                          "hierarchy_per_s": round(counts.get("hierarchy", 0) / duration, 3),
                          "node_per_s": round(counts.get("node", 0) / duration, 2),
                          "ui_per_s": round(counts.get("ui", 0) / duration, 2),
+                         "portal_per_s": round(counts.get("portal", 0) / duration, 3),
                          "query_per_s": round((counts.get("query", 0) + counts.get("timeseries", 0)) / duration, 3),
                          "tick_p50_s": pct(durations[peer], 50), "tick_p95_s": pct(durations[peer], 95),
                          "errors": errors[peer]})

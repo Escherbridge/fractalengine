@@ -6,7 +6,11 @@ use std::time::Instant;
 pub const MAX_SCENE_ASSET_BYTES: u64 = 256 * 1024 * 1024;
 pub const SCENE_ASSET_ROW_MARKER: &str = "_fe_scene_asset";
 /// The MIME types a scene asset row may declare (transfer, publication and upload share it).
-pub const SCENE_ASSET_MIMES: [&str; 2] = ["model/gltf-binary", "model/gltf+json"];
+pub const SCENE_ASSET_MIMES: [&str; 3] = ["model/gltf-binary", "model/gltf+json", PORTAL_BUNDLE_MIME];
+/// Sealed portal bundle MIME (mirrors `fe_format::portal_bundle::PORTAL_BUNDLE_MIME`; fe-format cannot be a dependency here).
+pub const PORTAL_BUNDLE_MIME: &str = "application/vnd.fractalengine.portal-bundle+hexon";
+/// Bundle size cap (OD-4 default); the per-node override is enforced at ingest.
+pub const MAX_PORTAL_BUNDLE_BYTES: u64 = 32 * 1024 * 1024;
 
 /// The DB resolves all identities and authority; a request is never an authority token.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -95,6 +99,10 @@ pub fn verify_scene_asset_bytes(
         *blake3::hash(bytes).as_bytes() == *hash,
         "scene asset digest mismatch"
     );
+    if content_type == PORTAL_BUNDLE_MIME {
+        // Bundles replicate as inert bytes: no glTF branch, no texture guard (see AGENTS.md scene-asset-transfer).
+        return verify_portal_bundle_bytes(bytes);
+    }
     let extension = match content_type {
         "model/gltf-binary" => {
             anyhow::ensure!(
@@ -117,6 +125,161 @@ pub fn verify_scene_asset_bytes(
     };
     crate::ktx2_guard::check_asset_bytes(bytes, Some(extension))
         .map_err(|error| anyhow::anyhow!("scene asset refused: {error}"))?;
+    Ok(())
+}
+
+const ZIP_LOCAL_SIGNATURE: &[u8; 4] = &[0x50, 0x4B, 0x03, 0x04];
+const ZIP_EOCD_SIGNATURE: &[u8; 4] = &[0x50, 0x4B, 0x05, 0x06];
+const ZIP_CENTRAL_SIGNATURE: &[u8; 4] = &[0x50, 0x4B, 0x01, 0x02];
+const ZIP_EOCD_LEN: usize = 22;
+const BUNDLE_MAX_MEMBERS: usize = 4096;
+const BUNDLE_HEADER_MEMBER_MAX: u64 = 64 * 1024;
+const BUNDLE_HEADER_MEMBERS: [&str; 5] = [
+    "manifest.json",
+    "members.json",
+    "entries.json",
+    "license.json",
+    "plugin/extension.json",
+];
+
+fn le16(bytes: &[u8], at: usize) -> usize {
+    u16::from_le_bytes([bytes[at], bytes[at + 1]]) as usize
+}
+
+fn le32(bytes: &[u8], at: usize) -> u64 {
+    u32::from_le_bytes([bytes[at], bytes[at + 1], bytes[at + 2], bytes[at + 3]]) as u64
+}
+
+/// Inflates one header member, reading at most `BUNDLE_HEADER_MEMBER_MAX` bytes whatever the directory claims.
+fn inflate_bundle_member(bytes: &[u8], name: &str) -> anyhow::Result<Vec<u8>> {
+    use std::io::Read;
+    let mut archive = zip::ZipArchive::new(std::io::Cursor::new(bytes))?;
+    let member = archive.by_name(name)?;
+    let mut inflated = Vec::new();
+    member
+        .take(BUNDLE_HEADER_MEMBER_MAX + 1)
+        .read_to_end(&mut inflated)?;
+    anyhow::ensure!(
+        inflated.len() as u64 <= BUNDLE_HEADER_MEMBER_MAX,
+        "bundle header member {name} inflates past its cap"
+    );
+    Ok(inflated)
+}
+
+/// Bounded structural check of a sealed portal bundle: ZIP magic, central directory, header members.
+/// Signature and digest verification stay in the admission pipeline (`verify_sealed_header`).
+pub fn verify_portal_bundle_bytes(bytes: &[u8]) -> anyhow::Result<()> {
+    anyhow::ensure!(
+        bytes.len() as u64 <= MAX_PORTAL_BUNDLE_BYTES,
+        "portal bundle exceeds the size cap"
+    );
+    anyhow::ensure!(
+        bytes.starts_with(ZIP_LOCAL_SIGNATURE),
+        "bundle MIME requires a ZIP container"
+    );
+    anyhow::ensure!(bytes.len() >= ZIP_EOCD_LEN, "bundle has no end record");
+    let search_floor = bytes.len().saturating_sub(ZIP_EOCD_LEN + u16::MAX as usize);
+    let eocd = (search_floor..=bytes.len() - ZIP_EOCD_LEN)
+        .rev()
+        .find(|&at| &bytes[at..at + 4] == ZIP_EOCD_SIGNATURE)
+        .ok_or_else(|| anyhow::anyhow!("bundle has no end record"))?;
+    anyhow::ensure!(
+        eocd + ZIP_EOCD_LEN + le16(bytes, eocd + 20) == bytes.len(),
+        "bundle end record comment is inconsistent"
+    );
+    let entries = le16(bytes, eocd + 10);
+    let directory_size = le32(bytes, eocd + 12);
+    let directory_offset = le32(bytes, eocd + 16);
+    anyhow::ensure!(
+        le16(bytes, eocd + 4) == 0 && le16(bytes, eocd + 6) == 0 && le16(bytes, eocd + 8) == entries,
+        "multi-disk bundles are refused"
+    );
+    anyhow::ensure!(
+        entries != 0xFFFF && directory_size != 0xFFFF_FFFF && directory_offset != 0xFFFF_FFFF,
+        "zip64 bundles are refused"
+    );
+    anyhow::ensure!(
+        (1..=BUNDLE_MAX_MEMBERS).contains(&entries)
+            && directory_offset + directory_size == eocd as u64,
+        "bundle central directory is out of bounds"
+    );
+    let mut cursor = directory_offset as usize;
+    let mut names = std::collections::BTreeMap::<String, (usize, u64, u64, usize)>::new();
+    let mut total_uncompressed = 0u64;
+    for _ in 0..entries {
+        anyhow::ensure!(
+            cursor + 46 <= eocd && &bytes[cursor..cursor + 4] == ZIP_CENTRAL_SIGNATURE,
+            "bundle central directory is malformed"
+        );
+        let (flags, method) = (le16(bytes, cursor + 8), le16(bytes, cursor + 10));
+        let (compressed, uncompressed) = (le32(bytes, cursor + 20), le32(bytes, cursor + 24));
+        let (name_len, extra_len, comment_len) = (
+            le16(bytes, cursor + 28),
+            le16(bytes, cursor + 30),
+            le16(bytes, cursor + 32),
+        );
+        let local_offset = le32(bytes, cursor + 42) as usize;
+        let name_end = cursor + 46 + name_len;
+        anyhow::ensure!(
+            flags & 1 == 0 && (method == 0 || method == 8),
+            "bundle member is encrypted or uses an unsupported method"
+        );
+        anyhow::ensure!(
+            name_len > 0 && name_end + extra_len + comment_len <= eocd,
+            "bundle central directory is malformed"
+        );
+        let name = std::str::from_utf8(&bytes[cursor + 46..name_end])?;
+        anyhow::ensure!(
+            !name.starts_with('/')
+                && !name.contains('\\')
+                && !name.chars().any(char::is_control)
+                && !name.split('/').any(|part| part == ".."),
+            "bundle member path is unsafe"
+        );
+        anyhow::ensure!(
+            local_offset + 30 <= directory_offset as usize
+                && &bytes[local_offset..local_offset + 4] == ZIP_LOCAL_SIGNATURE,
+            "bundle member has no local header"
+        );
+        total_uncompressed += uncompressed;
+        anyhow::ensure!(
+            total_uncompressed <= MAX_SCENE_ASSET_BYTES,
+            "bundle expands past the scene asset cap"
+        );
+        anyhow::ensure!(
+            names.insert(name.to_owned(), (method, compressed, uncompressed, local_offset)).is_none(),
+            "bundle repeats a member path"
+        );
+        cursor = name_end + extra_len + comment_len;
+    }
+    anyhow::ensure!(cursor == eocd, "bundle central directory is malformed");
+    for required in ["manifest.json", "plugin/extension.json"] {
+        anyhow::ensure!(names.contains_key(required), "sealed bundle lacks {required}");
+    }
+    for header in BUNDLE_HEADER_MEMBERS {
+        if let Some((_, _, uncompressed, _)) = names.get(header) {
+            anyhow::ensure!(
+                *uncompressed <= BUNDLE_HEADER_MEMBER_MAX,
+                "bundle header member {header} is oversized"
+            );
+        }
+    }
+    // The manifest must name a plugin hexon with an integrity root: stored members are read in place,
+    // deflated ones are inflated through a hard-capped reader (see AGENTS.md scene-asset-transfer).
+    let (method, compressed, _, local_offset) = names["manifest.json"];
+    let manifest_bytes = if method == 0 {
+        let start = local_offset + 30 + le16(bytes, local_offset + 26) + le16(bytes, local_offset + 28);
+        let end = start + compressed as usize;
+        anyhow::ensure!(end <= directory_offset as usize, "bundle manifest is truncated");
+        bytes[start..end].to_vec()
+    } else {
+        inflate_bundle_member(bytes, "manifest.json")?
+    };
+    let manifest: serde_json::Value = serde_json::from_slice(&manifest_bytes)?;
+    anyhow::ensure!(
+        manifest["hexon_type"] == "plugin" && manifest["integrity"].is_object(),
+        "bundle is not a sealed plugin hexon"
+    );
     Ok(())
 }
 

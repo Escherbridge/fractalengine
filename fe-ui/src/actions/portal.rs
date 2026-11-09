@@ -34,7 +34,7 @@ pub(crate) fn receive_browser_event(
     event: &fe_webview::ipc::BrowserEvent,
     now: f64,
 ) {
-    if should_auto_close(&ui.portal, nodes.selected_entity()) || !ui.portal_is_open() {
+    if should_auto_close(&ui.portal, nodes.selected_entity()) || !ui.portal.is_open() {
         return;
     }
     use fe_webview::ipc::BrowserEvent;
@@ -42,7 +42,18 @@ pub(crate) fn receive_browser_event(
         BrowserEvent::UrlChanged { url }
             if fe_webview::security::embedded_preview_allowed(url.as_str()) =>
         {
-            if let PortalState::Open {
+            // A mounted bundle left for a declared origin (protocol.md §2.6): the page is now an external website,
+            // still shown, so it gets the website chrome; the host's `Closed` for the bundle then finds no Bundle.
+            // Before the first mounted state (`label` is None) a URL change is the previous page's, so it is ignored.
+            let mounted = matches!(&ui.portal, PortalState::Bundle { label: Some(_), .. });
+            let left_bundle = mounted.then(|| ui.portal.opened_for_entity()).flatten();
+            if let Some(opened_for_entity) = left_bundle {
+                ui.portal = PortalState::Open {
+                    current_url: url.to_string(),
+                    cached_hostname: url.host_str().unwrap_or_default().to_owned(),
+                    opened_for_entity,
+                };
+            } else if let PortalState::Open {
                 current_url,
                 cached_hostname,
                 ..
@@ -65,6 +76,7 @@ pub(crate) fn receive_browser_event(
             ui.portal_feedback.loading = false;
             ui.portal_feedback.error = Some(message.clone());
         }
+        BrowserEvent::BundleState { node_id, label, state } => apply_bundle_state(ui, node_id, label, state),
         BrowserEvent::ExternalLaunchRequested => {
             ui.show_toast("External browser launch requested", now)
         }
@@ -113,6 +125,9 @@ pub(crate) fn validate_url(raw: &str) -> Result<Option<String>, String> {
     }
     if raw.len() > 8192 {
         return Err("URL must be at most 8192 bytes".into());
+    }
+    if is_bundle_origin_url(raw) {
+        return Err("bundle origins open only from a repository node".into());
     }
     match raw.parse::<url::Url>() {
         Ok(parsed) if fe_webview::security::is_url_allowed(&parsed) => Ok(Some(raw.to_owned())),
@@ -285,18 +300,118 @@ pub(crate) fn compute_open_portal(node_mgr: &NodeManager, raw_url: &str) -> Open
     }
 }
 
+/// Pure: whether `raw` spells a bundle origin (either spelling) or uses the `fe-portal` scheme.
+pub(crate) fn is_bundle_origin_url(raw: &str) -> bool {
+    let raw = raw.trim();
+    raw.to_ascii_lowercase()
+        .starts_with(&format!("{}:", fe_webview::portal_bundle::SCHEME))
+        || fe_webview::portal_bundle::origin::parse(raw).is_some()
+}
+
+/// Result of attempting to open a repository node's bundle.
+pub(crate) enum OpenBundleOutcome {
+    /// Apply this state and write `BrowserCommand::OpenBundle { node_id }`.
+    Mount(PortalState),
+    /// The node is not the single selected node.
+    NotSelected,
+}
+
+/// Pure: decide what `UiAction::OpenBundle` does; the bundle must be the selected node.
+pub(crate) fn compute_open_bundle(node_mgr: &NodeManager, node_id: &str) -> OpenBundleOutcome {
+    let (Some(entity), Some(selected)) = (node_mgr.selected_entity(), node_mgr.primary()) else {
+        return OpenBundleOutcome::NotSelected;
+    };
+    if selected.node_id != node_id {
+        return OpenBundleOutcome::NotSelected;
+    }
+    let state = if fe_webview::backends::embedded_browsing_supported() {
+        fe_webview::ipc::BundleState::Closed
+    } else {
+        fe_webview::ipc::BundleState::Unavailable
+    };
+    OpenBundleOutcome::Mount(PortalState::Bundle {
+        node_id: node_id.to_owned(),
+        label: None,
+        state,
+        opened_for_entity: entity,
+    })
+}
+
+/// `UiAction::OpenBundle`: opens the portal for a repository node; returns the node id to mount.
+pub(crate) fn open_bundle(
+    ui: &mut super::UiManager,
+    nodes: &NodeManager,
+    node_id: &str,
+    now: f64,
+) -> Option<String> {
+    match compute_open_bundle(nodes, node_id) {
+        OpenBundleOutcome::Mount(state) => {
+            ui.portal_feedback = PortalFeedback {
+                loading: matches!(state.bundle_state(), Some(fe_webview::ipc::BundleState::Closed)),
+                error: None,
+            };
+            ui.portal = state;
+            Some(node_id.to_owned())
+        }
+        OpenBundleOutcome::NotSelected => {
+            ui.show_advisory("Select this repository node before opening it", now);
+            None
+        }
+    }
+}
+
+/// Most admission requests one undrained queue holds; a click storm before the binary drains cannot grow it further.
+const MAX_QUEUED_ADMISSIONS: usize = 8;
+
+/// `UiAction::PortalAdmitBundle` / `PortalRevokeBundle`: queue the request for the named node (the inspector's
+/// selection or the open bundle), never "whatever portal is open"; an identical queued request is not repeated.
+pub(crate) fn queue_admission(ui: &mut super::UiManager, request: crate::portal::BundleAdmissionRequest) {
+    let queue = &mut ui.bundle_admission_requests;
+    if !queue.contains(&request) && queue.len() < MAX_QUEUED_ADMISSIONS {
+        queue.push(request);
+    }
+}
+
+/// Host-decided bundle state -> portal state; events for another node are stale and ignored.
+fn apply_bundle_state(
+    ui: &mut super::UiManager,
+    event_node: &str,
+    event_label: &Option<String>,
+    event_state: &fe_webview::ipc::BundleState,
+) {
+    use fe_webview::ipc::BundleState;
+    let PortalState::Bundle { node_id, label, state, .. } = &mut ui.portal else {
+        return;
+    };
+    if node_id != event_node {
+        return;
+    }
+    if matches!(event_state, BundleState::Closed) {
+        ui.portal = PortalState::Closed;
+        ui.portal_feedback = PortalFeedback::default();
+        return;
+    }
+    let admission_moved = *state != *event_state
+        && [&*state, event_state]
+            .iter()
+            .any(|side| matches!(side, BundleState::Admitted { .. } | BundleState::Revoked(_)));
+    *label = event_label.clone();
+    *state = event_state.clone();
+    ui.portal_feedback = PortalFeedback::default();
+    if admission_moved {
+        // The cached summary's admission is stale; the Repository section re-reads it when it shows again.
+        ui.repository_view.invalidate(event_node);
+    }
+}
+
 /// Pure: whether the portal should auto-close this frame because the
 /// selection changed or was cleared while the portal was open for a
 /// specific entity.
 pub(crate) fn should_auto_close(portal: &PortalState, selected: Option<Entity>) -> bool {
-    let PortalState::Open {
-        opened_for_entity, ..
-    } = portal
-    else {
+    let Some(opened_for_entity) = portal.opened_for_entity() else {
         return false;
     };
-    let entity_changed = selected != Some(*opened_for_entity);
-    selected.is_none() || entity_changed
+    selected != Some(opened_for_entity)
 }
 
 /// Result of validating + computing the persist payload for the captured URL save action.
@@ -510,6 +625,60 @@ mod tests {
             feedback_ui.portal_feedback = PortalFeedback::default();
             assert_eq!(render(&mut feedback_ui), ready);
         }
+        // Bundle journey: raw bundle URLs are refused, Open mounts, host events drive the chrome.
+        for raw in ["fe-portal://a-aaaaaaaaaaaaaaaaaaaaaaaaaa.localhost/x", "https://fe-portal.s-aaaaaaaaaaaaaaaaaaaaaaaaaa.localhost/web/index.html"] {
+            assert!(validate_url(raw).is_err(), "{raw}");
+        }
+        let mut bundle_ui = super::super::UiManager::default();
+        assert!(open_bundle(&mut bundle_ui, &NodeManager::default(), "node-1", 0.0).is_none());
+        assert_eq!(open_bundle(&mut bundle_ui, &nodes, "node-1", 0.0).as_deref(), Some("node-1"));
+        assert!(bundle_ui.portal.is_bundle() && bundle_ui.portal.url().is_empty());
+        let blocked = BrowserEvent::BundleState {
+            node_id: "node-1".into(),
+            label: None,
+            state: fe_webview::ipc::BundleState::Blocked(fe_webview::ipc::BlockedReason::TooLarge),
+        };
+        receive_browser_event(&mut bundle_ui, &nodes, &blocked, 0.0);
+        assert!(matches!(bundle_ui.portal.bundle_state(), Some(fe_webview::ipc::BundleState::Blocked(_))));
+        let stale = BrowserEvent::BundleState {
+            node_id: "node-2".into(),
+            label: None,
+            state: fe_webview::ipc::BundleState::WaitingForBytes,
+        };
+        receive_browser_event(&mut bundle_ui, &nodes, &stale, 0.0);
+        assert!(matches!(bundle_ui.portal.bundle_state(), Some(fe_webview::ipc::BundleState::Blocked(_))));
+        let closed = BrowserEvent::BundleState { node_id: "node-1".into(), label: None, state: fe_webview::ipc::BundleState::Closed };
+        receive_browser_event(&mut bundle_ui, &nodes, &closed, 0.0);
+        assert!(!bundle_ui.portal.is_open());
+        // The inspector's Admit names its node: it queues with no portal open (the inspector case), and only once.
+        let admit = crate::portal::BundleAdmissionRequest::Admit { node_id: "node-1".into() };
+        for _ in 0..3 {
+            queue_admission(&mut bundle_ui, admit.clone());
+        }
+        assert_eq!(bundle_ui.bundle_admission_requests, [admit]);
+        // Leave (protocol.md §2.6): a mounted bundle navigates to a declared origin; the shown page keeps chrome.
+        let docs = BrowserEvent::UrlChanged { url: "https://docs.example.org/guide".parse().unwrap() };
+        assert_eq!(open_bundle(&mut bundle_ui, &nodes, "node-1", 0.0).as_deref(), Some("node-1"));
+        receive_browser_event(&mut bundle_ui, &nodes, &docs, 0.0);
+        assert!(bundle_ui.portal.is_bundle(), "a URL change before the first mounted state is the previous page's");
+        let mounted = BrowserEvent::BundleState {
+            node_id: "node-1".into(),
+            label: Some("s-aaaaaaaaaaaaaaaaaaaaaaaaaa".into()),
+            state: fe_webview::ipc::BundleState::StaticSandbox { can_admit: false },
+        };
+        receive_browser_event(&mut bundle_ui, &nodes, &mounted, 0.0);
+        assert!(bundle_ui.repository_view.take_wanted().is_empty(), "the first mounted state is not an admission change");
+        let admitted = BrowserEvent::BundleState {
+            node_id: "node-1".into(),
+            label: Some("a-aaaaaaaaaaaaaaaaaaaaaaaaaa".into()),
+            state: fe_webview::ipc::BundleState::Admitted { publisher: "did:key:z6Mkexample0000".into() },
+        };
+        receive_browser_event(&mut bundle_ui, &nodes, &admitted, 0.0);
+        assert_eq!(bundle_ui.repository_view.take_wanted(), ["node-1"], "an admission change re-reads the section summary");
+        receive_browser_event(&mut bundle_ui, &nodes, &docs, 0.0);
+        receive_browser_event(&mut bundle_ui, &nodes, &closed, 0.0);
+        assert_eq!(bundle_ui.portal.url(), "https://docs.example.org/guide", "the left-for page is an open website");
+
         nodes.deselect();
         receive_browser_event(
             &mut ui,

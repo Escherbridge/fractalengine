@@ -35,7 +35,8 @@ FILE_ATTRIBUTE_REPARSE_POINT = 0x400
 STAGE_COPY_MARGIN_GB = 2.0  # free space kept beyond the files a publish copies
 PEERS_POINTER = os.path.join(REPO_ROOT, ".qa", "peers-current")
 ASSET_MANIFESTS = {"generated": os.path.join(REPO_ROOT, ".qa", "assets", "generated", "manifest.json"),
-                   "khronos": os.path.join(REPO_ROOT, ".qa", "assets", "khronos", "manifest.json")}
+                   "khronos": os.path.join(REPO_ROOT, ".qa", "assets", "khronos", "manifest.json"),
+                   "portal": os.path.join(REPO_ROOT, ".qa", "assets", "portal", "manifest.json")}
 # Disjoint 3-logical-core masks per peer (checkpoint steer, QA-0119); the rest stays for the harness and desktop.
 AFFINITY_MASKS = [0x007, 0x038, 0x1C0, 0xE00]
 RAM_PER_PEER_GB = 0.9

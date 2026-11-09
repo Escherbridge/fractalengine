@@ -1297,3 +1297,9 @@ pending-family entry, so an extension reply can never satisfy an unrelated API w
   `handlers::device_payload::set_accepted_payload_sink`; a replicated payload never fires it. That
   module still declares its own field-identical `AcceptedPayloadEvent` until it becomes an alias of
   this type.
+## Portal bundle header reads
+
+`scene_asset::inflate_bundle_member` reads one named zip member of a bundle header, capped at `BUNDLE_HEADER_MEMBER_MAX`
+inflated bytes whatever the directory claims (zip-bomb guard). This is why fe-runtime depends on `zip` (deflate only, no
+default features, same pin as fe-format and fe-webview). Only header members are read here; full bundle validation lives
+in `fe-format::portal_bundle`.

@@ -1,0 +1,976 @@
+{
+  "name": "portal-core",
+  "description": "Portal surface core journeys PJ1, PJ2, PJ3, PJ6, PJ9 (tools/qa/portal/journeys.md). Run tools/qa/portal/build_bundles.py first. Needs the SI registration of the portal probe, the portal_ms cadence and the portal ops (tools/qa/portal/AGENTS.md section sim-contract).",
+  "seed": 20261201,
+  "fixture": "basic",
+  "verse_name": "QA Basic",
+  "assets": "generated",
+  "peers": [
+    {
+      "name": "owner",
+      "role": "owner"
+    },
+    {
+      "name": "editor",
+      "role": "editor"
+    }
+  ],
+  "probe": {
+    "rest_ms": 1000,
+    "hierarchy_ms": 4000,
+    "ui_ms": 2000,
+    "query_ms": 10000,
+    "host_ms": 2000,
+    "portal_ms": 1500
+  },
+  "steps": [
+    {
+      "id": "0",
+      "title": "Preflight: joined peers open the shared verse",
+      "settle_s": 15,
+      "actions": [
+        {
+          "peer": "editor",
+          "via": "gui",
+          "op": "click",
+          "args": {
+            "name": "Close window",
+            "role": "button"
+          },
+          "optional": true
+        },
+        {
+          "peer": "editor",
+          "via": "gui",
+          "op": "click",
+          "args": {
+            "name": "Open verse QA Basic"
+          },
+          "optional": true
+        }
+      ],
+      "expect": [
+        {
+          "probe": "nav",
+          "target": "view",
+          "predicate": "equals",
+          "path": "verse_id",
+          "value": "$fixture.verse_id"
+        }
+      ]
+    },
+    {
+      "id": "1",
+      "title": "PJ1: owner uploads dashboard and docs-site, creates repository nodes, admits both locally and opens the dashboard",
+      "settle_s": 60,
+      "covers": [
+        "PJ1",
+        "R1",
+        "R2",
+        "R5",
+        "R6",
+        "R9",
+        "R13"
+      ],
+      "actions": [
+        {
+          "peer": "owner",
+          "via": "rest",
+          "op": "create_fractal",
+          "args": {
+            "name": "Portal Fractal"
+          },
+          "id": "pf"
+        },
+        {
+          "peer": "owner",
+          "via": "rest",
+          "op": "create_petal",
+          "args": {
+            "fractal_id": "$pf.id",
+            "name": "Portal Petal"
+          },
+          "id": "pp"
+        },
+        {
+          "peer": "owner",
+          "via": "host",
+          "op": "sleep",
+          "args": {
+            "seconds": 5
+          }
+        },
+        {
+          "peer": "owner",
+          "via": "gui",
+          "op": "click",
+          "args": {
+            "name": "Open fractal Portal Fractal"
+          }
+        },
+        {
+          "peer": "owner",
+          "via": "gui",
+          "op": "click",
+          "args": {
+            "name": "Open petal Portal Petal"
+          }
+        },
+        {
+          "peer": "editor",
+          "via": "gui",
+          "op": "click",
+          "args": {
+            "name": "Open fractal Portal Fractal"
+          }
+        },
+        {
+          "peer": "editor",
+          "via": "gui",
+          "op": "click",
+          "args": {
+            "name": "Open petal Portal Petal"
+          }
+        },
+        {
+          "peer": "owner",
+          "via": "rest",
+          "op": "upload_bundle",
+          "args": {
+            "petal_id": "$pp.id",
+            "path": "$assets.portal.dashboard.path",
+            "name": "dashboard"
+          },
+          "id": "dash",
+          "bind": {
+            "content_hash": "data.content_hash",
+            "asset_id": "data.id"
+          }
+        },
+        {
+          "peer": "owner",
+          "via": "rest",
+          "op": "upload_bundle",
+          "args": {
+            "petal_id": "$pp.id",
+            "path": "$assets.portal.docs_site.path",
+            "name": "docs_site"
+          },
+          "id": "docs",
+          "bind": {
+            "content_hash": "data.content_hash",
+            "asset_id": "data.id"
+          }
+        },
+        {
+          "peer": "owner",
+          "via": "rest",
+          "op": "create_node",
+          "args": {
+            "fractal_id": "$pf.id",
+            "petal_id": "$pp.id",
+            "name": "Probe Target",
+            "position": [
+              1,
+              0,
+              1
+            ]
+          },
+          "id": "target"
+        },
+        {
+          "peer": "owner",
+          "via": "rest",
+          "op": "create_repository_node",
+          "args": {
+            "fractal_id": "$pf.id",
+            "petal_id": "$pp.id",
+            "name": "Dashboard repo",
+            "bundle_asset": "$dash.asset_id",
+            "position": [
+              4,
+              0,
+              0
+            ]
+          },
+          "id": "rdash"
+        },
+        {
+          "peer": "owner",
+          "via": "rest",
+          "op": "create_repository_node",
+          "args": {
+            "fractal_id": "$pf.id",
+            "petal_id": "$pp.id",
+            "name": "Docs repo",
+            "bundle_asset": "$docs.asset_id",
+            "position": [
+              6,
+              0,
+              0
+            ]
+          },
+          "id": "rdocs"
+        },
+        {
+          "peer": "owner",
+          "via": "rest",
+          "op": "portal_admit",
+          "args": {
+            "package_id": "qa.portal.dashboard",
+            "content_hash": "$dash.content_hash"
+          },
+          "id": "adm_dash"
+        },
+        {
+          "peer": "owner",
+          "via": "rest",
+          "op": "portal_admit",
+          "args": {
+            "package_id": "qa.portal.docs-site",
+            "content_hash": "$docs.content_hash"
+          },
+          "id": "adm_docs"
+        },
+        {
+          "peer": "owner",
+          "via": "gui",
+          "op": "click",
+          "args": {
+            "name": "Open bundle"
+          },
+          "id": "open_dash",
+          "needs": [
+            "adm_dash"
+          ],
+          "note": "accessible name placeholder: T3.1 ux.md fixes the exact Open name"
+        },
+        {
+          "peer": "owner",
+          "via": "rest",
+          "op": "set_transform",
+          "args": {
+            "node_id": "$target.id",
+            "position": [
+              9,
+              0,
+              3
+            ],
+            "rotation": [
+              0,
+              0,
+              0
+            ],
+            "scale": [
+              1,
+              1,
+              1
+            ]
+          },
+          "id": "move",
+          "sync": "+30",
+          "needs": [
+            "open_dash"
+          ]
+        }
+      ],
+      "expect": [
+        {
+          "probe": "portal",
+          "target": "qa.portal.dashboard",
+          "predicate": "includes",
+          "path": "badge",
+          "peers": [
+            "owner"
+          ],
+          "within_s": 20,
+          "after": "open_dash",
+          "value": "Admitted"
+        },
+        {
+          "probe": "portal",
+          "target": "qa.portal.dashboard",
+          "predicate": "equals",
+          "path": "observe.title",
+          "peers": [
+            "owner"
+          ],
+          "within_s": 20,
+          "after": "open_dash",
+          "value": "QA Dashboard"
+        },
+        {
+          "probe": "portal",
+          "target": "qa.portal.dashboard",
+          "predicate": "equals",
+          "path": "observe.probe.csp",
+          "peers": [
+            "owner"
+          ],
+          "within_s": 20,
+          "after": "open_dash",
+          "value": "canary-blocked"
+        },
+        {
+          "probe": "portal",
+          "target": "qa.portal.dashboard",
+          "predicate": "equals",
+          "path": "observe.probe.node-position",
+          "peers": [
+            "owner"
+          ],
+          "within_s": 10,
+          "after": "move",
+          "covers": "R9 the node subscription equals GET /nodes/{id}/transform",
+          "value": "9.00,0.00,3.00"
+        }
+      ],
+      "checkpoints": [
+        {
+          "peer": "owner",
+          "capture": "window",
+          "expect_visual": "dashboard bundle rendered with an Admitted badge"
+        }
+      ]
+    },
+    {
+      "id": "2",
+      "title": "PJ2: unsigned, unadmitted, external, foreign-frame, hidden and stale rows get no IPC; the control row is answered",
+      "settle_s": 60,
+      "covers": [
+        "PJ2",
+        "R8",
+        "R12"
+      ],
+      "actions": [
+        {
+          "peer": "owner",
+          "via": "rest",
+          "op": "upload_bundle",
+          "args": {
+            "petal_id": "$pp.id",
+            "path": "$assets.portal.dashboard_unsigned.path",
+            "name": "dashboard_unsigned"
+          },
+          "id": "dash_unsigned",
+          "bind": {
+            "content_hash": "data.content_hash",
+            "asset_id": "data.id"
+          }
+        },
+        {
+          "peer": "owner",
+          "via": "rest",
+          "op": "upload_bundle",
+          "args": {
+            "petal_id": "$pp.id",
+            "path": "$assets.portal.actions_v1.path",
+            "name": "actions_v1"
+          },
+          "id": "act",
+          "bind": {
+            "content_hash": "data.content_hash",
+            "asset_id": "data.id"
+          }
+        },
+        {
+          "peer": "owner",
+          "via": "rest",
+          "op": "create_repository_node",
+          "args": {
+            "fractal_id": "$pf.id",
+            "petal_id": "$pp.id",
+            "name": "Dashboard unsigned repo",
+            "bundle_asset": "$dash_unsigned.asset_id",
+            "position": [
+              8,
+              0,
+              0
+            ]
+          },
+          "id": "rdash_u"
+        },
+        {
+          "peer": "owner",
+          "via": "rest",
+          "op": "create_repository_node",
+          "args": {
+            "fractal_id": "$pf.id",
+            "petal_id": "$pp.id",
+            "name": "Actions repo",
+            "bundle_asset": "$act.asset_id",
+            "position": [
+              10,
+              0,
+              0
+            ]
+          },
+          "id": "ract"
+        },
+        {
+          "peer": "owner",
+          "via": "rest",
+          "op": "portal_admit",
+          "args": {
+            "package_id": "qa.portal.actions",
+            "content_hash": "$act.content_hash"
+          },
+          "id": "adm_act"
+        },
+        {
+          "peer": "owner",
+          "via": "rest",
+          "op": "portal_ipc_post",
+          "args": {
+            "row": "unsigned",
+            "package_id": "qa.portal.dashboard",
+            "content_hash": "$dash_unsigned.content_hash"
+          },
+          "id": "r_unsigned",
+          "note": "fixed ipc rows: unsigned, unadmitted, external, foreign_frame, hidden, stale, control"
+        },
+        {
+          "peer": "owner",
+          "via": "rest",
+          "op": "portal_ipc_post",
+          "args": {
+            "row": "external"
+          },
+          "id": "r_external"
+        },
+        {
+          "peer": "owner",
+          "via": "rest",
+          "op": "portal_ipc_post",
+          "args": {
+            "row": "foreign_frame",
+            "package_id": "qa.portal.actions",
+            "content_hash": "$act.content_hash"
+          },
+          "id": "r_frame"
+        },
+        {
+          "peer": "owner",
+          "via": "rest",
+          "op": "portal_ipc_post",
+          "args": {
+            "row": "hidden",
+            "package_id": "qa.portal.actions",
+            "content_hash": "$act.content_hash"
+          },
+          "id": "r_hidden"
+        },
+        {
+          "peer": "owner",
+          "via": "rest",
+          "op": "portal_ipc_post",
+          "args": {
+            "row": "stale",
+            "package_id": "qa.portal.actions",
+            "content_hash": "$act.content_hash"
+          },
+          "id": "r_stale"
+        },
+        {
+          "peer": "owner",
+          "via": "rest",
+          "op": "portal_ipc_post",
+          "args": {
+            "row": "control",
+            "package_id": "qa.portal.actions",
+            "content_hash": "$act.content_hash"
+          },
+          "id": "r_control",
+          "needs": [
+            "adm_act"
+          ]
+        }
+      ],
+      "expect": [
+        {
+          "probe": "portal",
+          "target": "qa.portal.dashboard",
+          "predicate": "equals",
+          "path": "observe.api_script_status",
+          "peers": [
+            "owner"
+          ],
+          "within_s": 15,
+          "after": "r_unsigned",
+          "note": "static origin: /__fe/portal-v1.js is 404 so window.fe is absent",
+          "value": 404
+        },
+        {
+          "probe": "portal",
+          "target": "*",
+          "predicate": "count",
+          "path": "ipc.dropped_origin_total",
+          "peers": [
+            "owner"
+          ],
+          "within_s": 15,
+          "after": "r_stale",
+          "value": 5
+        },
+        {
+          "probe": "portal",
+          "target": "qa.portal.actions",
+          "predicate": "equals",
+          "path": "ipc.delivered_non_control",
+          "peers": [
+            "owner"
+          ],
+          "within_s": 15,
+          "after": "r_stale",
+          "value": 0
+        },
+        {
+          "probe": "portal",
+          "target": "qa.portal.actions",
+          "predicate": "count",
+          "path": "ipc.accepted",
+          "peers": [
+            "owner"
+          ],
+          "within_s": 15,
+          "after": "r_control",
+          "value": 1
+        }
+      ]
+    },
+    {
+      "id": "3",
+      "title": "PJ3: the kill switch mid-session unloads the portal; re-open renders nothing; lifting it restores a clean origin",
+      "settle_s": 90,
+      "covers": [
+        "PJ3",
+        "R14"
+      ],
+      "actions": [
+        {
+          "peer": "owner",
+          "via": "gui",
+          "op": "click",
+          "args": {
+            "name": "Open bundle"
+          },
+          "id": "reopen_dash",
+          "note": "accessible name placeholder: T3.1 ux.md fixes the exact Open name"
+        },
+        {
+          "peer": "owner",
+          "via": "rest",
+          "op": "portal_slot",
+          "args": {
+            "slot": 1
+          },
+          "id": "focus"
+        },
+        {
+          "peer": "owner",
+          "via": "rest",
+          "op": "portal_killswitch",
+          "args": {
+            "engage": true
+          },
+          "id": "kill",
+          "sync": "+10"
+        },
+        {
+          "peer": "owner",
+          "via": "gui",
+          "op": "click",
+          "args": {
+            "name": "Open bundle"
+          },
+          "id": "reopen_dead",
+          "sync": "+20",
+          "expect": "any",
+          "needs": [
+            "kill"
+          ]
+        },
+        {
+          "peer": "owner",
+          "via": "rest",
+          "op": "portal_killswitch",
+          "args": {
+            "engage": false
+          },
+          "id": "unkill",
+          "sync": "+40",
+          "needs": [
+            "kill"
+          ]
+        },
+        {
+          "peer": "owner",
+          "via": "rest",
+          "op": "portal_admit",
+          "args": {
+            "package_id": "qa.portal.dashboard",
+            "content_hash": "$dash.content_hash",
+            "sync": "+45",
+            "needs": [
+              "unkill"
+            ]
+          },
+          "id": "readmit"
+        }
+      ],
+      "expect": [
+        {
+          "probe": "portal",
+          "target": "qa.portal.dashboard",
+          "predicate": "includes",
+          "path": "badge",
+          "peers": [
+            "owner"
+          ],
+          "within_s": 5,
+          "after": "kill",
+          "value": "Revoked"
+        },
+        {
+          "probe": "portal",
+          "target": "qa.portal.dashboard",
+          "predicate": "equals",
+          "path": "observe",
+          "peers": [
+            "owner"
+          ],
+          "within_s": 5,
+          "after": "kill",
+          "covers": "document unloaded",
+          "value": "refused"
+        },
+        {
+          "probe": "portal",
+          "target": "qa.portal.dashboard",
+          "predicate": "equals",
+          "path": "ipc.live_subscriptions",
+          "peers": [
+            "owner"
+          ],
+          "within_s": 5,
+          "after": "kill",
+          "value": 0
+        },
+        {
+          "probe": "portal",
+          "target": "qa.portal.dashboard",
+          "predicate": "equals",
+          "path": "protocol_status",
+          "peers": [
+            "owner"
+          ],
+          "within_s": 5,
+          "after": "kill",
+          "value": 410
+        },
+        {
+          "probe": "portal",
+          "target": "qa.portal.dashboard",
+          "predicate": "equals",
+          "path": "observe",
+          "peers": [
+            "owner"
+          ],
+          "within_s": 10,
+          "after": "reopen_dead",
+          "covers": "re-opening still renders nothing",
+          "value": "refused"
+        },
+        {
+          "probe": "portal",
+          "target": "qa.portal.dashboard",
+          "predicate": "absent",
+          "path": "origin_storage.qa_origin_key",
+          "peers": [
+            "owner"
+          ],
+          "within_s": 20,
+          "after": "readmit",
+          "note": "SP-6; record the residual if present"
+        }
+      ]
+    },
+    {
+      "id": "4",
+      "title": "PJ6: offline - a local bundle renders, a missing bundle waits, then renders after the prefetch re-arm",
+      "settle_s": 150,
+      "covers": [
+        "PJ6",
+        "R15"
+      ],
+      "actions": [
+        {
+          "peer": "editor",
+          "via": "rest",
+          "op": "portal_admit",
+          "args": {
+            "package_id": "qa.portal.dashboard",
+            "content_hash": "$dash.content_hash"
+          },
+          "id": "ed_adm_dash"
+        },
+        {
+          "peer": "owner",
+          "via": "host",
+          "op": "stop_peer",
+          "id": "provider_down"
+        },
+        {
+          "peer": "editor",
+          "via": "gui",
+          "op": "click",
+          "args": {
+            "name": "Open bundle"
+          },
+          "id": "ed_open_local",
+          "needs": [
+            "provider_down"
+          ],
+          "note": "repository node of the already-local bundle selected first"
+        },
+        {
+          "peer": "editor",
+          "via": "gui",
+          "op": "click",
+          "args": {
+            "name": "Open bundle"
+          },
+          "id": "ed_open_missing",
+          "sync": "+20",
+          "needs": [
+            "provider_down"
+          ],
+          "note": "repository node of the not-local bundle selected first"
+        },
+        {
+          "peer": "owner",
+          "via": "host",
+          "op": "restart",
+          "args": {
+            "no_bootstrap": true
+          },
+          "id": "provider_up",
+          "sync": "+40"
+        }
+      ],
+      "expect": [
+        {
+          "probe": "portal",
+          "target": "qa.portal.dashboard",
+          "predicate": "equals",
+          "path": "observe.title",
+          "peers": [
+            "editor"
+          ],
+          "within_s": 20,
+          "after": "ed_open_local",
+          "value": "QA Dashboard"
+        },
+        {
+          "probe": "portal",
+          "target": "qa.portal.docs-site",
+          "predicate": "equals",
+          "path": "badge",
+          "peers": [
+            "editor"
+          ],
+          "within_s": 20,
+          "after": "ed_open_missing",
+          "value": "Waiting for bundle bytes"
+        },
+        {
+          "probe": "portal",
+          "target": "qa.portal.docs-site",
+          "predicate": "equals",
+          "path": "observe.title",
+          "peers": [
+            "editor"
+          ],
+          "within_s": 120,
+          "after": "provider_up",
+          "covers": "renders after the prefetch re-arm (15 s or more)",
+          "value": "QA Docs Site"
+        }
+      ]
+    },
+    {
+      "id": "5",
+      "title": "PJ9: v2 keeps the origin, v3 adds a key scope and drops to static until re-consent",
+      "settle_s": 90,
+      "covers": [
+        "PJ9",
+        "R14"
+      ],
+      "actions": [
+        {
+          "peer": "owner",
+          "via": "rest",
+          "op": "upload_bundle",
+          "args": {
+            "petal_id": "$pp.id",
+            "path": "$assets.portal.actions_v2.path",
+            "name": "actions_v2"
+          },
+          "id": "act2",
+          "bind": {
+            "content_hash": "data.content_hash",
+            "asset_id": "data.id"
+          }
+        },
+        {
+          "peer": "owner",
+          "via": "rest",
+          "op": "upload_bundle",
+          "args": {
+            "petal_id": "$pp.id",
+            "path": "$assets.portal.actions_v3.path",
+            "name": "actions_v3"
+          },
+          "id": "act3",
+          "bind": {
+            "content_hash": "data.content_hash",
+            "asset_id": "data.id"
+          }
+        },
+        {
+          "peer": "owner",
+          "via": "rest",
+          "op": "portal_update_bundle",
+          "args": {
+            "repository_node_id": "$ract.id",
+            "bundle_asset": "$act2.asset_id"
+          },
+          "id": "to_v2",
+          "needs": [
+            "act2"
+          ]
+        },
+        {
+          "peer": "owner",
+          "via": "rest",
+          "op": "portal_slot",
+          "args": {
+            "slot": 1
+          },
+          "id": "v2_write",
+          "sync": "+15",
+          "needs": [
+            "to_v2"
+          ]
+        },
+        {
+          "peer": "owner",
+          "via": "rest",
+          "op": "portal_update_bundle",
+          "args": {
+            "repository_node_id": "$ract.id",
+            "bundle_asset": "$act3.asset_id"
+          },
+          "id": "to_v3",
+          "sync": "+25",
+          "needs": [
+            "act3"
+          ]
+        },
+        {
+          "peer": "owner",
+          "via": "rest",
+          "op": "portal_slot",
+          "args": {
+            "slot": 2
+          },
+          "id": "v3_write_static",
+          "sync": "+35",
+          "needs": [
+            "to_v3"
+          ],
+          "expect": "any"
+        },
+        {
+          "peer": "owner",
+          "via": "rest",
+          "op": "portal_admit",
+          "args": {
+            "package_id": "qa.portal.actions",
+            "content_hash": "$act3.content_hash",
+            "reconsent": true,
+            "sync": "+45",
+            "needs": [
+              "to_v3"
+            ]
+          },
+          "id": "reconsent"
+        }
+      ],
+      "expect": [
+        {
+          "probe": "portal",
+          "target": "qa.portal.actions",
+          "predicate": "includes",
+          "path": "badge",
+          "peers": [
+            "owner"
+          ],
+          "within_s": 10,
+          "after": "to_v2",
+          "value": "Admitted"
+        },
+        {
+          "probe": "portal",
+          "target": "qa.portal.actions",
+          "predicate": "equals",
+          "path": "observe.probe.storage",
+          "peers": [
+            "owner"
+          ],
+          "within_s": 10,
+          "after": "to_v2",
+          "covers": "same origin, storage persists",
+          "value": "seeded"
+        },
+        {
+          "probe": "portal",
+          "target": "qa.portal.actions",
+          "predicate": "equals",
+          "path": "badge",
+          "peers": [
+            "owner"
+          ],
+          "within_s": 10,
+          "after": "to_v3",
+          "value": "Static — not admitted on this peer"
+        },
+        {
+          "probe": "portal",
+          "target": "*",
+          "predicate": "count",
+          "path": "ipc.dropped_origin_total",
+          "peers": [
+            "owner"
+          ],
+          "within_s": 10,
+          "after": "v3_write_static",
+          "covers": "the post from the static document is dropped (5 from PJ2 plus this one)",
+          "value": 6
+        },
+        {
+          "probe": "portal",
+          "target": "qa.portal.actions",
+          "predicate": "includes",
+          "path": "badge",
+          "peers": [
+            "owner"
+          ],
+          "within_s": 10,
+          "after": "reconsent",
+          "value": "Admitted"
+        }
+      ]
+    }
+  ]
+}

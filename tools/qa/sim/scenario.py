@@ -17,17 +17,19 @@ VIAS = {
              "lookup_node", "lookup_petal", "lookup_group", "ingest_readings",
              # extension platform (E19) and scoped bindings (BND-11, bindings.md section 9); driver.py EXTENSION_OPS
              "install_extension", "consent_extension", "bind_extension", "set_extension_policy", "extension_command",
-             "ingress_post", "mqtt_publish", "publish_revocation", "set_binding", "accept_extension"},
+             "ingress_post", "mqtt_publish", "publish_revocation", "set_binding", "accept_extension",
+             "upload_bundle", "create_repository_node", "portal_update_bundle", "portal_slot", "portal_observe",
+             "portal_ipc_stats", "portal_admit", "portal_killswitch", "portal_ipc_post", "regrant_role"},
     "mcp": None,  # any MCP tool name; args are the tool arguments
     "gui": {"click", "click_until", "type", "key", "scroll", "scroll_until", "wait_for", "click_at"},
     "host": {"restart", "stop_peer", "sleep", "wait_role", "fingerprint"},
     "macro": {"place_grid", "drone_flight", "freeplay"},
 }
 PROBES = ("node", "transform", "properties", "hierarchy", "groups", "terrain", "role", "nav", "ui",
-          "asset_blob", "query", "timeseries", "get", "alive", "extension")
+          "asset_blob", "query", "timeseries", "get", "alive", "extension", "portal")
 CADENCE_KEYS = {"rest_ms": (250, 60000), "hierarchy_ms": (2000, 600000), "ui_ms": (500, 60000),
-                "query_ms": (1000, 600000), "host_ms": (1000, 60000)}
-DEFAULT_CADENCE = {"rest_ms": 500, "hierarchy_ms": 2000, "ui_ms": 1000, "query_ms": 5000, "host_ms": 2000}
+                "query_ms": (1000, 600000), "host_ms": (1000, 60000), "portal_ms": (1000, 600000)}
+DEFAULT_CADENCE = {"rest_ms": 500, "hierarchy_ms": 2000, "ui_ms": 1000, "query_ms": 5000, "host_ms": 2000, "portal_ms": 5000}
 NAMESPACES = {"fixture", "peers", "assets", "run"}
 LOOP_VARS = {"i", "tick"}
 SAFE_ID = re.compile(r"^[A-Za-z][A-Za-z0-9_]{0,47}$")

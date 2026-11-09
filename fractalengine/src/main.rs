@@ -22,6 +22,7 @@ mod native_accessibility;
 mod native_window_witness;
 mod plugin_bridge;
 mod panic_log;
+mod portal_host;
 mod qa_a11y_timing;
 mod qa_debug_bridge;
 mod qa_dev_token;
@@ -481,6 +482,7 @@ fn main() {
     let blob_store_for_api = blob_store.clone();
     let blob_store_for_assets = blob_store.clone();
     let blob_store_for_extensions = blob_store.clone();
+    let blob_store_for_portal = blob_store.clone();
 
     // S4 startup-seeding clone: `sync_cmd_tx` moves into `SyncCommandSenderRes`
     // just below, so the startup-publish loop (after `tileset_registry`
@@ -640,6 +642,8 @@ fn main() {
 
     // The dev-token writer resolves the local role per verse on its own clone.
     let dev_token_db = dev_token_out.as_ref().map(|_| shared_db.clone());
+    // The portal resolver reads repository nodes on the same clone (src/AGENTS.md §portal-host).
+    let portal_db = shared_db.clone();
     let (api_listening_tx, api_listening_rx) = crossbeam::channel::bounded(1);
     let (dev_listening_tx, dev_listening_rx) = crossbeam::channel::bounded(1);
     let (qa_listening_tx, qa_listening_rx) = crossbeam::channel::bounded(1);
@@ -1028,6 +1032,19 @@ fn main() {
     // WebView portal: inline wry overlay + petal portal lifecycle systems.
     app.add_plugins(fe_webview::plugin::WebViewPlugin);
     app.add_plugins(fe_webview::petal_portal::PetalPortalPlugin);
+    // Portal bundles: resolver, bus broker and the Repository section's admission drains. After the extension
+    // host's bus and governance, which it reads (src/AGENTS.md §portal-host).
+    maintenance_services.push(portal_host::install(
+        &mut app,
+        portal_host::PortalHostConfig {
+            db: portal_db,
+            blobs: blob_store_for_portal,
+            scene_changes: entity_change_tx.subscribe(),
+            // fe-api's dev-token writer mints its own client DID, so no token is local for the summary read yet.
+            local_client_did: None,
+        },
+        &render_work,
+    ));
 
     terminal_reset::install(&mut app, maintenance_services, maintenance_jobs, db_thread, maintenance_token_path, qa_root);
     app.run();

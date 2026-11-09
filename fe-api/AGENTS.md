@@ -2403,3 +2403,25 @@ gated BEFORE the optimistic broadcast, so a refused move is never previewed. `/w
 `caller-kind`, which has no `ws`, is not involved. Doors still outside the gate (HANDED-OFF in review-turn2/R-API.md): REST
 `POST /nodes/{id}/mutations` and `POST /petals/{p}/objects` (`node_history.rs`), waypoint create/move, GPX import
 and `promote_instance` on both REST and MCP; one shared-core gate inside those cores is the fix.
+## §portal-bundles (`portal_bundles.rs`, portal_surface_20261107 T0.3 / T4.2)
+
+Routes: `POST /api/v1/petals/{petal_id}/portal-bundles` (multipart upload, body cap `route_body_limit()`) and
+`GET /api/v1/portal-bundles/{asset_id}` (summary plus the local admission read). The QA-only observation routes are
+under `/api/v1/debug/portal/*` (`qa_portal.rs`, see §QA Portal evidence).
+Export: `GET /api/v1/nodes/{node_id}/portal/export.zip` (see `src/AGENTS.md` §portal-bundles).
+
+- **Bytes never cross the DB channel.** Upload stores one blob API-side, then sends a metadata-only
+  `DbCommand::CreateAsset`. The DB thread never receives the bytes.
+- **Size cap.** `FE_PORTAL_BUNDLE_MAX_BYTES` is read here and in fe-webview under the same name, because fe-webview cannot
+  depend on fe-api. The default is OD-4's 32 MiB.
+- **Validation is pure.** `fe_format::portal_bundle::validate_portal_bundle` decides refusal classes from archive facts;
+  the route only maps them to responses.
+- **CORS is narrow.** `share_route_allows` admits a static portal origin (an `s-` label) on `GET /api/v1/shared/<one segment>`
+  and nothing else. Credentials are never set. `a-` labels never match. Configured origins are unchanged.
+- **Admission read is private.** The summary's `admission` appears only when the token's `client` claim equals this peer's
+  DID, so a remote token never learns this peer's admission state.
+- **Open residual.** The `Access-Control-Allow-Private-Network` header and the WebView2 permission branch wait for spike SP-8.
+  An operator `cors_origins = "*"` still opens every route to every origin; that behaviour predates this track.
+
+Tests: `tests/portal_bundle_test.rs` (R9); the anchor-petal reach and the nosniff attachment rule are extended in
+`asset_ownership_test.rs` and `device_ingest_test.rs`.
