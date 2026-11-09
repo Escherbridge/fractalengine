@@ -30,6 +30,8 @@ pub enum NodeKind {
     Stamp,
     /// A baked earthwork modification region (T3, D-A8).
     EarthworkRegion,
+    /// A node holding a portal web bundle (`properties.portal.bundle_asset`).
+    Repository,
 }
 
 impl NodeKind {
@@ -38,6 +40,7 @@ impl NodeKind {
         match self {
             NodeKind::Stamp => "stamp",
             NodeKind::EarthworkRegion => "earthwork_region",
+            NodeKind::Repository => "repository",
         }
     }
 
@@ -46,6 +49,7 @@ impl NodeKind {
         match tag {
             "stamp" => Some(NodeKind::Stamp),
             "earthwork_region" => Some(NodeKind::EarthworkRegion),
+            "repository" => Some(NodeKind::Repository),
             _ => None,
         }
     }
@@ -121,9 +125,14 @@ mod tests {
 
     #[test]
     fn kind_tag_round_trips() {
-        for k in [NodeKind::Stamp, NodeKind::EarthworkRegion] {
+        for k in [
+            NodeKind::Stamp,
+            NodeKind::EarthworkRegion,
+            NodeKind::Repository,
+        ] {
             assert_eq!(NodeKind::from_tag(k.as_tag()), Some(k));
         }
+        assert_eq!(NodeKind::Repository.as_tag(), "repository");
         assert_eq!(NodeKind::from_tag("unknown"), None);
     }
 

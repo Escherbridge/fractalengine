@@ -630,6 +630,90 @@ async fn html_payload_is_served_as_attachment_with_nosniff() {
         .to_str()
         .unwrap()
         .starts_with("attachment"));
+
+    // A portal bundle's HTML members are never served inline either: the raw archive blob stays
+    // attachment + nosniff, and the by-id route answers a JSON file index, not the HTML.
+    let bundle = html_bundle(&html);
+    let boundary = "BUNDLEBOUNDARY";
+    let mut multipart = format!(
+        "--{boundary}
+Content-Disposition: form-data; name=\"file\"; filename=\"b.hexon\"
+         Content-Type: application/octet-stream
+
+"
+    )
+    .into_bytes();
+    multipart.extend_from_slice(&bundle);
+    multipart.extend_from_slice(format!("
+--{boundary}--
+").as_bytes());
+    let req = Request::builder()
+        .method("POST")
+        .uri(format!("/api/v1/petals/{petal}/portal-bundles"))
+        .header("content-type", format!("multipart/form-data; boundary={boundary}"))
+        .header("authorization", format!("Bearer {editor}"))
+        .body(Body::from(multipart))
+        .expect("bundle upload request");
+    let resp = h.request(req).await;
+    assert_eq!(resp.status(), StatusCode::OK);
+    let uploaded = body_json_lenient(resp).await;
+    let bundle_id = uploaded["data"]["asset_id"].as_str().expect("asset_id").to_string();
+    let bundle_blob = uploaded["data"]["blob_hash"].as_str().expect("blob_hash").to_string();
+
+    let (status, headers, got) = fetch(&h, &viewer, &format!("/api/v1/assets/{bundle_blob}")).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(got, bundle);
+    assert_eq!(headers.get("x-content-type-options").unwrap(), "nosniff");
+    assert!(headers
+        .get("content-disposition")
+        .unwrap()
+        .to_str()
+        .unwrap()
+        .starts_with("attachment"));
+    let (status, headers, got) =
+        fetch(&h, &viewer, &format!("/api/v1/assets/by-id/{bundle_id}")).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(headers.get("x-content-type-options").unwrap(), "nosniff");
+    assert!(
+        headers.get("content-type").unwrap().to_str().unwrap().starts_with("application/json"),
+        "a bundle id answers its file index, never an inline HTML member"
+    );
+    assert!(!got.windows(8).any(|w| w == b"<script>"), "no member bytes in the index");
+}
+
+/// An unsealed web-bundle archive whose entry page is `html` (a stored-XSS probe).
+fn html_bundle(html: &[u8]) -> Vec<u8> {
+    use std::io::Write as _;
+    let extension = serde_json::json!({
+        "manifest_version": 2, "id": "org.example.xss-probe", "version": "1.0.0",
+        "kind": "web-bundle",
+        "portal": {
+            "schema": "fe-portal-bundle/1", "entry": "web/index.html", "title": "Probe",
+            "csp": { "connect": [], "img": [], "font": [], "media": [], "frame": [],
+                     "wasm": false, "inline_styles": false },
+            "navigation": [],
+            "subscriptions": { "node": false, "readings": false, "queries": [] },
+            "commands": {}, "hooks": [], "streams": [], "ui_intents": []
+        }
+    });
+    let manifest = serde_json::json!({
+        "schema_version": "1.0.0", "hexon_id": "org.example.xss-probe",
+        "hexon_type": "plugin", "publisher_did": "did:key:z6Mkfixture", "version": "1.0.0",
+        "name": "Probe", "created_at": "2026-11-08T00:00:00Z",
+        "updated_at": "2026-11-08T00:00:00Z"
+    });
+    let mut zip = zip::ZipWriter::new(std::io::Cursor::new(Vec::new()));
+    let options = zip::write::SimpleFileOptions::default();
+    for (name, bytes) in [
+        ("manifest.json", serde_json::to_vec(&manifest).unwrap()),
+        ("entries.json", br#"{"entries":[]}"#.to_vec()),
+        ("plugin/extension.json", serde_json::to_vec(&extension).unwrap()),
+        ("web/index.html", html.to_vec()),
+    ] {
+        zip.start_file(name, options).unwrap();
+        zip.write_all(&bytes).unwrap();
+    }
+    zip.finish().unwrap().into_inner()
 }
 
 /// An IoT reading posted with `payload_id` set joins to the device payload it

@@ -72,6 +72,51 @@ async fn upload(
     petal_id: &str,
     bytes: &[u8],
 ) -> (StatusCode, serde_json::Value) {
+    post_file(h, token, &format!("/api/v1/petals/{petal_id}/assets"), bytes).await
+}
+
+/// A minimal unsealed web-bundle archive (README `portal-bundle` §1, docs-site shape).
+fn minimal_bundle() -> Vec<u8> {
+    use std::io::Write as _;
+    let extension = serde_json::json!({
+        "manifest_version": 2, "id": "org.example.owner-docs", "version": "1.0.0",
+        "kind": "web-bundle",
+        "portal": {
+            "schema": "fe-portal-bundle/1", "entry": "web/index.html", "title": "Owner docs",
+            "csp": { "connect": [], "img": [], "font": [], "media": [], "frame": [],
+                     "wasm": false, "inline_styles": false },
+            "navigation": [],
+            "subscriptions": { "node": false, "readings": false, "queries": [] },
+            "commands": {}, "hooks": [], "streams": [], "ui_intents": []
+        }
+    });
+    let manifest = serde_json::json!({
+        "schema_version": "1.0.0", "hexon_id": "org.example.owner-docs",
+        "hexon_type": "plugin", "publisher_did": "did:key:z6Mkfixture", "version": "1.0.0",
+        "name": "Owner docs", "created_at": "2026-11-08T00:00:00Z",
+        "updated_at": "2026-11-08T00:00:00Z"
+    });
+    let mut zip = zip::ZipWriter::new(std::io::Cursor::new(Vec::new()));
+    let options = zip::write::SimpleFileOptions::default();
+    for (name, bytes) in [
+        ("manifest.json", serde_json::to_vec(&manifest).unwrap()),
+        ("entries.json", br#"{"entries":[]}"#.to_vec()),
+        ("plugin/extension.json", serde_json::to_vec(&extension).unwrap()),
+        ("web/index.html", b"<!doctype html>".to_vec()),
+    ] {
+        zip.start_file(name, options).unwrap();
+        zip.write_all(&bytes).unwrap();
+    }
+    zip.finish().unwrap().into_inner()
+}
+
+/// POST `bytes` as the `file` part of a multipart request to `uri`; returns (status, envelope).
+async fn post_file(
+    h: &ApiHarness,
+    token: &str,
+    uri: &str,
+    bytes: &[u8],
+) -> (StatusCode, serde_json::Value) {
     let boundary = "ASSETOWNERBOUNDARY";
     let mut body = format!(
         "--{boundary}\r\nContent-Disposition: form-data; name=\"file\"; filename=\"m.glb\"\r\n\
@@ -82,7 +127,7 @@ async fn upload(
     body.extend_from_slice(format!("\r\n--{boundary}--\r\n").as_bytes());
     let req = Request::builder()
         .method("POST")
-        .uri(format!("/api/v1/petals/{petal_id}/assets"))
+        .uri(uri)
         .header(
             "content-type",
             format!("multipart/form-data; boundary={boundary}"),
@@ -191,6 +236,30 @@ async fn unplaced_upload_is_readable_from_its_anchor_petal_only() {
     ] {
         let (status, _) = fetch(&h, &outsider, &uri).await;
         assert_eq!(status, StatusCode::NOT_FOUND, "{uri}");
+    }
+
+    // A bundle upload takes the same anchor-petal reach: the home scope reads its file index
+    // and its raw blob; a foreign scope gets the uniform 404 on both.
+    let editor_bundle = minimal_bundle();
+    let (status, body) = post_file(
+        &h,
+        &editor,
+        &format!("/api/v1/petals/{}/portal-bundles", petals[0]),
+        &editor_bundle,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let bundle_id = body["data"]["asset_id"].as_str().expect("asset_id").to_string();
+    let bundle_blob = body["data"]["blob_hash"].as_str().expect("blob_hash").to_string();
+    for (reader, want) in [(&viewer, StatusCode::OK), (&outsider, StatusCode::NOT_FOUND)] {
+        for uri in [
+            format!("/api/v1/assets/by-id/{bundle_id}"),
+            format!("/api/v1/portal-bundles/{bundle_id}"),
+            format!("/api/v1/assets/{bundle_blob}"),
+        ] {
+            let (status, _) = fetch(&h, reader, &uri).await;
+            assert_eq!(status, want, "{uri}");
+        }
     }
 }
 

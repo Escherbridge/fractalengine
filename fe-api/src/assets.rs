@@ -368,6 +368,16 @@ async fn serve_asset_by_id(db: &Db, blob_store: &BlobStoreHandle, asset_id: &str
         }
     };
 
+    // A portal bundle answers its file index (members listed, never served inline).
+    if meta.content_type == fe_format::portal_bundle::PORTAL_BUNDLE_MIME {
+        return crate::portal_bundles::file_index_response(
+            blob_store,
+            &meta.asset_id,
+            &meta.content_hash,
+        )
+        .await;
+    }
+
     // Future-proofing: a directory-shaped asset (many files + a placeholder
     // record) isn't representable as a single byte stream yet. Fail loud and
     // structured instead of serving garbage bytes.
