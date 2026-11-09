@@ -18,6 +18,12 @@ const MAX_HEADER_RESPONSE_BYTES: u64 = 8 * limits::MAX_JSON_ENTRY_BYTES;
 const MAX_MEMBER_RESPONSE_BYTES: u64 = limits::MAX_ENTRY_UNCOMPRESSED_BYTES;
 /// Response cap for `/chunk` (a monolithic `seq = 0` is the whole archive).
 const MAX_CHUNK_RESPONSE_BYTES: u64 = limits::MAX_ARCHIVE_UNCOMPRESSED_BYTES;
+/// A registry that does not accept the connection in this time is unreachable.
+const CONNECT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
+/// Longest silence between body reads; an idle timeout, so a large tileset still streams.
+const READ_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(60);
+/// `hexon_type` of an extension package (`HexonType::Plugin`).
+const PLUGIN_HEXON_TYPE: &str = "plugin";
 
 /// Mirror of the registry's `ApiResponse` envelope.
 #[derive(Debug, Deserialize)]
@@ -60,10 +66,19 @@ pub struct RemoteRegistryClient {
 impl RemoteRegistryClient {
     /// Create a client for `base_url` (trailing slash tolerated) with optional bearer token.
     pub fn new(base_url: impl Into<String>, token: Option<String>) -> Self {
+        // A stalled registry must not hold the extension ops worker forever.
+        let http = reqwest::Client::builder()
+            .connect_timeout(CONNECT_TIMEOUT)
+            .read_timeout(READ_TIMEOUT)
+            .build()
+            .unwrap_or_else(|error| {
+                tracing::warn!(%error, "registry client: timeouts unavailable, using the default client");
+                reqwest::Client::new()
+            });
         Self {
             base_url: base_url.into().trim_end_matches('/').to_string(),
             token,
-            http: reqwest::Client::new(),
+            http,
         }
     }
 
@@ -111,18 +126,9 @@ impl RemoteRegistryClient {
         Self::unwrap_envelope(resp).await
     }
 
-    /// Download the full `.hexon` archive bytes for `uri` (fetch-and-install path).
+    /// Download the full `.hexon` archive bytes for `uri`, never past the whole-archive cap.
     pub async fn download(&self, uri: &str) -> Result<Vec<u8>> {
-        let resp = self
-            .get(format!("{}/api/v1/hexons/{uri}/download", self.base_url))
-            .send()
-            .await
-            .context("registry download request failed")?;
-        let status = resp.status();
-        if !status.is_success() {
-            return Err(anyhow!("registry download failed: {status}"));
-        }
-        Ok(resp.bytes().await?.to_vec())
+        self.download_capped(uri, limits::MAX_ARCHIVE_UNCOMPRESSED_BYTES).await
     }
 
     /// `{base}/api/v1/hexons/{uri}/{tail…}` with every segment percent-encoded.
@@ -344,13 +350,15 @@ fn download_cap(entry: &RegistryEntry) -> u64 {
 pub struct RemoteProtocolV1Transport {
     client: RemoteRegistryClient,
     runtime: tokio::runtime::Runtime,
+    /// When set, listings keep only hits of this `hexon_type` (asked of the registry and re-checked here).
+    hexon_type: Option<&'static str>,
 }
 
 impl RemoteProtocolV1Transport {
     /// Transport for `base_url`; downloads are anonymous unless the operator configured a registry token.
     pub fn new(base_url: impl Into<String>, token: Option<String>) -> std::io::Result<Self> {
         let runtime = tokio::runtime::Builder::new_current_thread().enable_all().build()?;
-        Ok(Self { client: RemoteRegistryClient::new(base_url, token), runtime })
+        Ok(Self { client: RemoteRegistryClient::new(base_url, token), runtime, hexon_type: None })
     }
 }
 
@@ -374,11 +382,12 @@ impl ProtocolV1Transport for RemoteProtocolV1Transport {
     fn search(&self, query: Option<&str>) -> Result<Vec<RegistryEntry>, String> {
         let hits = self
             .runtime
-            .block_on(self.client.search(query, None, None))
+            .block_on(self.client.search(query, None, self.hexon_type))
             .map_err(|e| e.to_string())?;
         Ok(hits
             .into_iter()
             .filter(|hit| valid_package_id(&hit.hexon_id) && valid_version(&hit.version))
+            .filter(|hit| self.hexon_type.is_none_or(|wanted| hit.hexon_type == wanted))
             .map(entry_from_summary)
             .collect())
     }
@@ -413,5 +422,16 @@ pub fn remote_source(
     trust: SourceTrust,
 ) -> std::io::Result<ProtocolV1Source> {
     let transport = RemoteProtocolV1Transport::new(base_url, token)?;
+    Ok(ProtocolV1Source::new(label, std::sync::Arc::new(transport), trust))
+}
+
+/// The Extensions Browse source over a protocol-v1 registry: anonymous by construction, listing only plugin packages.
+pub fn remote_extension_source(
+    label: impl Into<String>,
+    base_url: impl Into<String>,
+    trust: SourceTrust,
+) -> std::io::Result<ProtocolV1Source> {
+    let mut transport = RemoteProtocolV1Transport::new(base_url, None)?;
+    transport.hexon_type = Some(PLUGIN_HEXON_TYPE);
     Ok(ProtocolV1Source::new(label, std::sync::Arc::new(transport), trust))
 }

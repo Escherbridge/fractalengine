@@ -7,7 +7,7 @@ use std::sync::Arc;
 
 use base64::Engine as _;
 use chrono::{DateTime, Utc};
-use ed25519_dalek::{Signature, Signer, SigningKey, Verifier, VerifyingKey};
+use ed25519_dalek::{Signature, Signer, SigningKey, VerifyingKey};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
@@ -203,22 +203,11 @@ pub enum FetchedHexon {
     Content(VerifiedContent),
 }
 
-/// Raw `manifest.json` of a `.hexon` zip, read under the JSON entry cap.
+/// Raw `manifest.json` of a `.hexon`, read by the zip reader `verify_archive` uses (no parser differential).
 fn read_manifest_raw(bytes: &[u8]) -> Result<Vec<u8>, RegistryError> {
-    use std::io::Read as _;
-    let invalid = |reason: String| RegistryError::PackageInvalid(reason);
-    let mut archive =
-        zip::ZipArchive::new(std::io::Cursor::new(bytes)).map_err(|e| invalid(format!("invalid ZIP archive: {e}")))?;
-    let cap = fe_format::limits::MAX_JSON_ENTRY_BYTES;
-    let member = archive
-        .by_name(fe_format::integrity::MANIFEST_PATH)
-        .map_err(|_| invalid("missing-member manifest.json".into()))?;
-    let mut raw = Vec::new();
-    member.take(cap + 1).read_to_end(&mut raw).map_err(|e| invalid(format!("manifest.json: {e}")))?;
-    if raw.len() as u64 > cap {
-        return Err(RegistryError::TooLarge { what: "manifest.json".into(), max: cap });
-    }
-    Ok(raw)
+    fe_format::HexonArchive::read_member(bytes, fe_format::integrity::MANIFEST_PATH, fe_format::limits::MAX_JSON_ENTRY_BYTES)
+        .map_err(|e| RegistryError::PackageInvalid(format!("manifest.json: {e:#}")))?
+        .ok_or_else(|| RegistryError::PackageInvalid("missing-member manifest.json".into()))
 }
 
 /// Verify sealed bytes of any hexon type: plugins through [`verify_fetched`], content hexons by seal, id, version and listed hash.
@@ -460,7 +449,8 @@ pub fn verify_index(bytes: &[u8], trust: &SourceTrust) -> Result<VerifiedIndex, 
         .and_then(Value::as_str)
         .and_then(decode_signature)
         .ok_or(RegistryError::IndexSignature)?;
-    key.verify(&index_signed_bytes(&doc)?, &signature).map_err(|_| RegistryError::IndexSignature)?;
+    // Strict, as for revocation lists: no small-order or non-canonical signature components.
+    key.verify_strict(&index_signed_bytes(&doc)?, &signature).map_err(|_| RegistryError::IndexSignature)?;
 
     let time = |field: &str| -> Result<Option<DateTime<Utc>>, RegistryError> {
         match doc.get(field) {
@@ -687,12 +677,14 @@ pub struct StaticIndexSource {
     fetcher: Arc<dyn BytesFetcher>,
     trust: SourceTrust,
     cache_path: Option<PathBuf>,
+    /// Newest index verified in this process: the rollback floor even when no cache file is configured.
+    newest: std::sync::Mutex<Option<VerifiedIndex>>,
 }
 
 impl StaticIndexSource {
     /// Source over the endpoint `base` (a folder, or the http(s) prefix that serves `config.json`), read through `fetcher`.
     pub fn new(base: impl Into<String>, fetcher: Arc<dyn BytesFetcher>, trust: SourceTrust) -> Self {
-        Self { base: base.into(), fetcher, trust, cache_path: None }
+        Self { base: base.into(), fetcher, trust, cache_path: None, newest: std::sync::Mutex::new(None) }
     }
 
     /// Keep the last verified index at `path` and fall back to it when the endpoint is unreachable.
@@ -701,10 +693,16 @@ impl StaticIndexSource {
         self
     }
 
-    /// `base/location`; a relative location that climbs is refused so a document cannot point outside the endpoint.
+    /// `base/location`. A document names an http(s) URL or a relative path inside the endpoint; absolute, UNC,
+    /// drive or scheme paths are refused (Windows would authenticate to a host the document chose), as is climbing.
     fn resolve(&self, location: &str) -> Result<String, RegistryError> {
-        if location.contains("://") || Path::new(location).is_absolute() {
+        let lower = location.to_ascii_lowercase();
+        if lower.starts_with("https://") || lower.starts_with("http://") {
             return Ok(location.to_owned());
+        }
+        let unc = location.chars().take(2).filter(|character| is_separator(*character)).count() == 2;
+        if unc || location.contains(':') || Path::new(location).is_absolute() {
+            return Err(RegistryError::DetailMismatch(format!("location {location:?} is not a path inside the source")));
         }
         if location.split(is_separator).any(|part| part == "..") {
             return Err(RegistryError::DetailMismatch(format!("location {location:?} climbs out of the source")));
@@ -733,7 +731,25 @@ impl StaticIndexSource {
         Some(verify_index(&bytes, &self.trust))
     }
 
-    /// The live index; the cache when the endpoint is unreachable or the live index is older (rollback).
+    fn remembered(&self) -> Option<VerifiedIndex> {
+        self.newest.lock().ok().and_then(|newest| newest.clone())
+    }
+
+    fn remember(&self, index: &VerifiedIndex) {
+        if let Ok(mut newest) = self.newest.lock() {
+            if newest.as_ref().is_none_or(|known| known.issued_at <= index.issued_at) {
+                *newest = Some(index.clone());
+            }
+        }
+    }
+
+    /// The newer of `index` and the in-process copy.
+    fn newer_of_remembered(&self, index: VerifiedIndex) -> VerifiedIndex {
+        self.remembered().filter(|known| known.issued_at > index.issued_at).unwrap_or(index)
+    }
+
+    /// The live index; the newest verified copy (cache file or in process) when the endpoint is unreachable
+    /// or the live index is older (rollback guard).
     fn load_index(&self) -> Result<(VerifiedIndex, bool), RegistryError> {
         let live = self
             .check_protocol()
@@ -742,23 +758,27 @@ impl StaticIndexSource {
         match live {
             Ok(bytes) => {
                 let index = verify_index(&bytes, &self.trust)?;
-                if let Some(Ok(cached)) = self.cached_index() {
-                    if index.issued_at < cached.issued_at {
-                        tracing::warn!(base = %self.base, "registry index older than the cached copy ignored");
-                        return Ok((cached, true));
-                    }
+                let floor = match self.cached_index() {
+                    Some(Ok(cached)) => Some(self.newer_of_remembered(cached)),
+                    _ => self.remembered(),
+                };
+                if let Some(floor) = floor.filter(|floor| index.issued_at < floor.issued_at) {
+                    tracing::warn!(base = %self.base, "registry index older than the last verified copy ignored");
+                    return Ok((floor, true));
                 }
                 if let Some(cache) = &self.cache_path {
-                    if let Err(error) = std::fs::write(cache, &bytes) {
+                    let written = cache.parent().map_or(Ok(()), std::fs::create_dir_all).and_then(|()| std::fs::write(cache, &bytes));
+                    if let Err(error) = written {
                         tracing::warn!(%error, "registry index cache not written");
                     }
                 }
+                self.remember(&index);
                 Ok((index, false))
             }
             // The cache is re-verified: a tampered cache file is refused like a tampered fetch.
             Err(RegistryError::Transport(reason)) => match self.cached_index() {
-                Some(cached) => Ok((cached?, true)),
-                None => Err(RegistryError::Transport(reason)),
+                Some(cached) => Ok((self.newer_of_remembered(cached?), true)),
+                None => self.remembered().map(|known| (known, true)).ok_or(RegistryError::Transport(reason)),
             },
             Err(other) => Err(other),
         }
@@ -825,7 +845,7 @@ impl RegistrySource for StaticIndexSource {
         let location = self.resolve(&format!("{DETAIL_DIR}/{}/{}/attestation.json", entry.package_id, version.version))?;
         let bytes = match self.fetcher.get(&location, HEADER_MAX_BYTES) {
             Ok(bytes) => bytes,
-            Err(RegistryError::Transport(_)) => return Err(RegistryError::HeaderUnavailable),
+            Err(RegistryError::Transport(_) | RegistryError::NotFound(_)) => return Err(RegistryError::HeaderUnavailable),
             Err(other) => return Err(other),
         };
         let attestation: Attestation =
@@ -897,6 +917,18 @@ impl ProtocolV1Source {
     }
 }
 
+/// The registry uri (`id` or `id@version`) must name the entry's own id and version (revocation-by-renaming steer).
+fn requested_uri_matches(entry: &RegistryEntry) -> Result<(), RegistryError> {
+    let (id, version) = match entry.url.split_once('@') {
+        Some((id, version)) => (id, Some(version)),
+        None => (entry.url.as_str(), None),
+    };
+    if id != entry.package_id || version.is_some_and(|version| version != entry.version) {
+        return Err(RegistryError::PackageInvalid("id-mismatch: the registry uri names another build".into()));
+    }
+    Ok(())
+}
+
 impl RegistrySource for ProtocolV1Source {
     fn label(&self) -> String {
         self.label.clone()
@@ -909,6 +941,7 @@ impl RegistrySource for ProtocolV1Source {
     }
 
     fn header(&self, entry: &RegistryEntry) -> Result<Vec<u8>, RegistryError> {
+        requested_uri_matches(entry)?;
         self.check_protocol()?;
         let Some(bytes) = self.transport.attestation(entry).map_err(RegistryError::Transport)? else {
             return Err(RegistryError::HeaderUnavailable);
@@ -928,6 +961,7 @@ impl RegistrySource for ProtocolV1Source {
     }
 
     fn fetch(&self, entry: &RegistryEntry) -> Result<FetchedPackage, RegistryError> {
+        requested_uri_matches(entry)?;
         self.check_protocol()?;
         let bytes = self.transport.download(entry).map_err(RegistryError::Transport)?;
         verify_fetched(bytes, entry, &self.trust)
@@ -936,7 +970,9 @@ impl RegistrySource for ProtocolV1Source {
 
 impl ProtocolV1Source {
     /// Download and verify any hexon type (plugin or content such as a tileset), dispatching on the manifest's type.
+    /// Whole-archive and capped at [`PACKAGE_MAX_BYTES`]: large chunked tilesets keep the partial-fetch path.
     pub fn fetch_hexon(&self, entry: &RegistryEntry) -> Result<FetchedHexon, RegistryError> {
+        requested_uri_matches(entry)?;
         self.check_protocol()?;
         let bytes = self.transport.download(entry).map_err(RegistryError::Transport)?;
         verify_fetched_hexon(bytes, entry, &self.trust)
@@ -1081,9 +1117,13 @@ mod tests {
         let local = LocalSource::new(root, trust.clone());
         assert_eq!(local.list(None).unwrap().entries[0].content_hash, facts.content_hash);
 
-        // Rollback: an older, validly signed index is ignored in favour of the newer cached copy.
+        // Rollback: an older, validly signed index is ignored in favour of the newer cached copy and, with no
+        // cache file configured, in favour of the newest copy this process verified.
+        let uncached = StaticIndexSource::new(base.clone(), Arc::new(FileFetcher), trust.clone());
+        assert!(!uncached.list(None).unwrap().from_cache);
         put(root, "index.json", &signed(index_doc("2026-11-01T00:00:00Z"), &index_key));
         assert!(source.list(None).unwrap().from_cache, "older index ignored");
+        assert!(uncached.list(None).unwrap().from_cache, "older index ignored without a cache file");
 
         // Tampered index: an entry altered after signing.
         let mut tampered = sign_index(index_doc("2026-11-09T00:00:00Z"), "index-root", &index_key).unwrap();
@@ -1094,6 +1134,20 @@ mod tests {
         // Tampered detail document: the signed index pins its hash.
         put(root, "index.json", &signed(index_doc("2026-11-09T00:00:00Z"), &index_key));
         put(root, &detail_path, &[detail.as_slice(), b" ".as_slice()].concat());
+        assert!(matches!(source.fetch(&entry), Err(RegistryError::DetailMismatch(_))));
+        put(root, &detail_path, &detail);
+
+        // A validly pinned detail naming a UNC download path is refused before any read (no implicit credentials).
+        let unc_detail = serde_json::to_vec(&serde_json::json!({
+            "package_id": PACKAGE_ID, "kind": "extension",
+            "versions": [{"version": "1.0.0", "content_hash": facts.content_hash, "size_bytes": good.len(),
+                          "download_url": r"\\attacker\share\fleet-sim-1.0.0.hexon", "yanked": false}],
+        }))
+        .unwrap();
+        let mut unc_index = index_doc("2026-11-09T12:00:00Z");
+        unc_index["entries"][0]["detail_hash"] = Value::String(fe_format::integrity::digest_hex(&unc_detail));
+        put(root, &detail_path, &unc_detail);
+        put(root, "index.json", &signed(unc_index, &index_key));
         assert!(matches!(source.fetch(&entry), Err(RegistryError::DetailMismatch(_))));
         put(root, &detail_path, &detail);
 
@@ -1120,5 +1174,8 @@ mod tests {
         let matched = ProtocolV1Source::new("v1 registry", Arc::new(FakeV1 { protocol: Some("1".into()), bytes: good }), trust);
         let v1_entry = entry_for(&facts, format!("{PACKAGE_ID}@1.0.0"), 0);
         assert_eq!(matched.fetch(&v1_entry).unwrap().package.version, "1.0.0");
+        // A request uri naming another build is refused before any download (revocation-by-renaming steer).
+        let renamed = RegistryEntry { url: "org.example.other@1.0.0".into(), ..v1_entry };
+        assert!(matches!(matched.fetch(&renamed), Err(RegistryError::PackageInvalid(_))));
     }
 }

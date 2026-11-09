@@ -285,6 +285,22 @@ pub const PLUGIN_COUNTERSIGNATURES_MAX_BYTES: u64 = 64 * 1024;
 pub const PLUGIN_COUNTERSIGNATURES_MAX_ENTRIES: usize = 16;
 /// Contract prefix a plugin component must target.
 const PLUGIN_CONTRACT_PREFIX: &str = "fractalengine:plugin@2.";
+/// Minor of the WIT the host binds (`fe-plugin/wit/fractal-plugin-2.wit` is `2.0.0`); a newer minor is refused (G0-C15).
+const HOST_CONTRACT_MINOR: u64 = 0;
+
+/// `fractalengine:plugin@2.<minor>.<patch>` with `minor` no newer than the host binds.
+fn contract_supported(contract: &str) -> bool {
+    let Some(rest) = contract.strip_prefix(PLUGIN_CONTRACT_PREFIX) else {
+        return false;
+    };
+    let mut parts = rest.split('.');
+    match (parts.next(), parts.next(), parts.next()) {
+        (Some(minor), Some(patch), None) => {
+            patch.parse::<u64>().is_ok() && minor.parse::<u64>().is_ok_and(|minor| minor <= HOST_CONTRACT_MINOR)
+        }
+        _ => false,
+    }
+}
 /// Wasm binary preamble of a *component* (core modules carry version `01 00 00 00`).
 const WASM_COMPONENT_PREAMBLE: [u8; 8] = [0x00, 0x61, 0x73, 0x6d, 0x0d, 0x00, 0x01, 0x00];
 
@@ -507,7 +523,7 @@ pub fn verify_plugin_package(
     if field("version") != manifest.version {
         return Err(invalid("version-mismatch"));
     }
-    if !field("contract").starts_with(PLUGIN_CONTRACT_PREFIX)
+    if !contract_supported(field("contract"))
         || !component.starts_with(&WASM_COMPONENT_PREAMBLE)
     {
         return Err(PluginPackageError::UnsupportedContract);
@@ -1333,6 +1349,18 @@ mod tests {
             (
                 "core module packaged as plugin",
                 pack(&publisher, b"\0asm\x01\0\0\0body"),
+                None,
+                &trust,
+                Refusal::UnsupportedContract,
+            ),
+            (
+                "contract minor newer than the host binds",
+                crate::publisher::PluginHexonBuilder::new(
+                    &br#"{"id":"org.example.fleet-sim","version":"1.0.0","name":"Fleet","contract":"fractalengine:plugin@2.1.0"}"#[..],
+                    &component[..],
+                )
+                .build(&publisher)
+                .unwrap(),
                 None,
                 &trust,
                 Refusal::UnsupportedContract,

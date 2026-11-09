@@ -8,7 +8,7 @@ use std::sync::Arc;
 
 use fe_format::{AssetEntry, EntryKind, HexonArchive, HexonManifest, HexonType, License};
 use fe_hexon::registry_source::{FetchedHexon, RegistryEntry, RegistryError, RegistrySource, SourceTrust};
-use fe_hexon::remote::{remote_source, RemoteRegistryClient};
+use fe_hexon::remote::{remote_extension_source, remote_source, RemoteRegistryClient};
 use fe_hexon_registry::{build_router, scan_dir, RegistryState};
 
 const ALPINE_V12_BLOB: &[u8] = b"alpine tile data v1.2.0 (newer)";
@@ -188,12 +188,17 @@ async fn search_download_verify_roundtrip() {
             index_signer: Arc::new(|_| None),
             allow_unsigned_dev: true,
         };
-        let source = remote_source("test registry", base, None, trust).unwrap();
+        let source = remote_source("test registry", base.clone(), None, trust.clone()).unwrap();
         let listing = source.list(Some("alpine")).unwrap();
         let entry = listing.entries.iter().find(|e| e.version == "1.2.0").expect("alpine 1.2.0 listed").clone();
         assert_eq!(entry.content_hash.len(), 64);
         // Unsealed fixtures have no attestation-able plugin header: consent renders after download.
         assert!(source.header(&entry).is_err());
+        // A tileset is never verified as a plugin: `fetch` refuses it, `fetch_hexon` verifies it as content.
+        assert!(matches!(source.fetch(&entry), Err(RegistryError::PackageInvalid(_))));
+        // The Extensions source (anonymous, plugin packages only) does not offer these content fixtures.
+        let extensions = remote_extension_source("extensions", base, trust).unwrap();
+        assert!(extensions.list(None).unwrap().entries.is_empty());
         let wrong = RegistryEntry { content_hash: "0".repeat(64), ..entry.clone() };
         let refused = source.fetch_hexon(&wrong).unwrap_err();
         let accepted = source.fetch_hexon(&entry).unwrap();

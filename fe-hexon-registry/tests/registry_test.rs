@@ -66,6 +66,18 @@ async fn health_reports_indexed_count() {
     assert_eq!(status, StatusCode::OK);
     let config: serde_json::Value = serde_json::from_slice(&body).unwrap();
     assert_eq!(config["registry_protocol"], 1);
+    // The protocol header rides on API responses too, so a header-reading client still accepts a download.
+    let resp = router
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri("/api/v1/hexons/alpine-terrain/download")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(resp.headers().get("x-hexon-registry-protocol").unwrap(), "1");
     let (_, body) = get(&router, "/api/v1/hexons/search").await;
     for hit in json_data(&body).as_array().unwrap() {
         let hash = hit["content_hash"].as_str().unwrap();
@@ -431,6 +443,44 @@ async fn publish_outcomes() {
         "{}",
         error_text(&body)
     );
+
+    // a case-only look-alike of an indexed id -> 409 (one case-insensitive id namespace, no squatting).
+    let look_alike = fixtures::seal_with(
+        fixtures::build_hexon(
+            "Night-Sky",
+            "3.0.0",
+            HexonType::Skybox,
+            "Night Sky",
+            "Starfield skybox",
+            &["skybox"],
+            "starfield",
+            EntryKind::Skybox,
+            b"a look-alike starfield",
+        ),
+        &fixtures::other_key(),
+    );
+    let (status, body) = post_publish(&router, look_alike, None).await;
+    assert_eq!(status, StatusCode::CONFLICT, "{}", error_text(&body));
+    assert!(
+        error_text(&body).contains("differs only in case"),
+        "{}",
+        error_text(&body)
+    );
+
+    // an id outside the store-client contract grammar (here ending `.json`) -> 400.
+    let off_grammar = fixtures::seal(fixtures::build_hexon(
+        "night-sky.json",
+        "1.0.0",
+        HexonType::Skybox,
+        "Night Sky",
+        "Starfield skybox",
+        &["skybox"],
+        "starfield",
+        EntryKind::Skybox,
+        b"an off-grammar starfield",
+    ));
+    let (status, body) = post_publish(&router, off_grammar, None).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{}", error_text(&body));
 
     // the rejected imposter version must never have been written or indexed.
     assert!(!tmp.path().join("night-sky@2.1.0.hexon").exists());

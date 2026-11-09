@@ -1,7 +1,7 @@
 //! Extension registry sources the operator configured: local folders, static signed indexes, protocol-v1 registries.
 //! Every fetcher is anonymous; index keys are pinned per endpoint (docs/extensions/extensions-ui.md §Registry sources).
 
-use std::net::{IpAddr, SocketAddr};
+use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
@@ -17,6 +17,8 @@ use serde::Deserialize;
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(120);
 const USER_AGENT: &str = "fractalengine-extension-sources";
+/// Folder beside the sources file holding each static source's last verified index.
+const INDEX_CACHE_DIR: &str = "extension-index-cache";
 
 /// One pinned index key of a static endpoint: the signer id the index names and its Ed25519 key (hex).
 #[derive(Debug, Clone, Deserialize)]
@@ -47,13 +49,33 @@ pub struct SourceConfig {
 }
 
 /// Read a JSON array of [`SourceConfig`]; a missing file means no sources, a malformed one is an error.
+/// A static source without `cache` caches beside the file, so its rollback guard survives a restart.
 pub fn load_source_configs(path: &Path) -> Result<Vec<SourceConfig>, String> {
     let text = match std::fs::read_to_string(path) {
         Ok(text) => text,
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
         Err(error) => return Err(format!("{}: {error}", path.display())),
     };
-    serde_json::from_str(&text).map_err(|error| format!("{}: {error}", path.display()))
+    let mut configs: Vec<SourceConfig> =
+        serde_json::from_str(&text).map_err(|error| format!("{}: {error}", path.display()))?;
+    let cache_dir = path.parent().unwrap_or(Path::new("")).join(INDEX_CACHE_DIR);
+    for config in &mut configs {
+        if let SourceKind::Static { cache, .. } = &mut config.kind {
+            if cache.is_none() {
+                *cache = Some(cache_dir.join(cache_file_name(&config.id)));
+            }
+        }
+    }
+    Ok(configs)
+}
+
+/// `index-<id>.json` with the id reduced to `[A-Za-z0-9_-]` (never a path, never a device name).
+fn cache_file_name(source_id: &str) -> String {
+    let safe: String = source_id
+        .chars()
+        .map(|c| if c.is_ascii_alphanumeric() || c == '-' || c == '_' { c } else { '_' })
+        .collect();
+    format!("index-{safe}.json")
 }
 
 /// The sources Browse offers, in configured order.
@@ -126,7 +148,14 @@ fn build_one(config: &SourceConfig, shared: &SourceTrust) -> Result<Arc<dyn Regi
             if base.is_empty() {
                 return Err("base is empty".into());
             }
-            let trust = endpoint_trust(shared, parse_pins(index_keys)?);
+            let pins = parse_pins(index_keys)?;
+            // An index key never signs packages or revocation lists (store-client contract v1); verify_index re-checks.
+            if let Some((key_id, _)) =
+                pins.iter().find(|(_, key)| (shared.is_trust_root)(&fe_format::verifying_key_to_did(key)))
+            {
+                return Err(format!("index key {key_id} is a trust root; an index key never signs packages"));
+            }
+            let trust = endpoint_trust(shared, pins);
             let fetcher: Arc<dyn BytesFetcher> = if is_http(base) {
                 Arc::new(AnonymousHttpFetcher::for_base(base)?)
             } else {
@@ -146,8 +175,8 @@ fn build_one(config: &SourceConfig, shared: &SourceTrust) -> Result<Arc<dyn Regi
             if !url.username().is_empty() || url.password().is_some() {
                 return Err("base_url must not carry credentials".into());
             }
-            // Anonymous: no registry token is ever configured for a source.
-            let source = fe_hexon::remote::remote_source(config.label.clone(), url.as_str(), None, shared.clone())
+            // Anonymous by construction (no token parameter), listing plugin packages only.
+            let source = fe_hexon::remote::remote_extension_source(config.label.clone(), url.as_str(), shared.clone())
                 .map_err(|error| format!("registry client: {error}"))?;
             Ok(Arc::new(source))
         }
@@ -160,18 +189,20 @@ fn is_http(location: &str) -> bool {
 }
 
 fn parse_pins(pins: &[IndexKeyPin]) -> Result<Vec<(String, VerifyingKey)>, String> {
-    pins.iter()
-        .map(|pin| {
-            let raw = hex::decode(pin.public_key.trim()).map_err(|error| format!("index key {}: {error}", pin.key_id))?;
-            let bytes: [u8; 32] =
-                raw.try_into().map_err(|_| format!("index key {} must be 32 bytes of hex", pin.key_id))?;
-            let key = VerifyingKey::from_bytes(&bytes).map_err(|error| format!("index key {}: {error}", pin.key_id))?;
-            if key.is_weak() {
-                return Err(format!("index key {} is a weak key", pin.key_id));
-            }
-            Ok((pin.key_id.clone(), key))
-        })
-        .collect()
+    let mut parsed: Vec<(String, VerifyingKey)> = Vec::with_capacity(pins.len());
+    for pin in pins {
+        if parsed.iter().any(|(key_id, _)| *key_id == pin.key_id) {
+            return Err(format!("index key {} is pinned twice", pin.key_id));
+        }
+        let raw = hex::decode(pin.public_key.trim()).map_err(|error| format!("index key {}: {error}", pin.key_id))?;
+        let bytes: [u8; 32] = raw.try_into().map_err(|_| format!("index key {} must be 32 bytes of hex", pin.key_id))?;
+        let key = VerifyingKey::from_bytes(&bytes).map_err(|error| format!("index key {}: {error}", pin.key_id))?;
+        if key.is_weak() {
+            return Err(format!("index key {} is a weak key", pin.key_id));
+        }
+        parsed.push((pin.key_id.clone(), key));
+    }
+    Ok(parsed)
 }
 
 /// The shared package trust plus this endpoint's own pinned index keys (an index key never signs packages).
@@ -183,25 +214,36 @@ fn endpoint_trust(shared: &SourceTrust, pins: Vec<(String, VerifyingKey)>) -> So
     }
 }
 
-/// True for loopback, private, link-local, CGNAT and unspecified addresses.
+/// True for loopback, private, link-local, CGNAT, unspecified, "this network", multicast and reserved addresses,
+/// including IPv4 carried in IPv4-mapped, IPv4-compatible and NAT64 (`64:ff9b::/96`) IPv6 addresses.
 fn is_internal(ip: IpAddr) -> bool {
     match ip {
         IpAddr::V4(v4) => {
-            let octets = v4.octets();
+            let [first, second, third, _] = v4.octets();
             v4.is_loopback()
                 || v4.is_private()
                 || v4.is_link_local()
                 || v4.is_unspecified()
                 || v4.is_broadcast()
-                || (octets[0] == 100 && (octets[1] & 0xC0) == 64)
+                || v4.is_multicast()
+                || first == 0
+                || first >= 240
+                || (first == 100 && (second & 0xC0) == 64)
+                || (first == 192 && second == 0 && third == 0)
+                || (first == 198 && (second & 0xFE) == 18)
         }
         IpAddr::V6(v6) => {
-            let first = v6.segments()[0];
+            let segments = v6.segments();
+            let nat64 = segments[..6] == [0x64, 0xff9b, 0, 0, 0, 0];
+            let embedded = Ipv4Addr::from((u32::from(segments[6]) << 16) | u32::from(segments[7]));
             v6.is_loopback()
                 || v6.is_unspecified()
-                || (first & 0xfe00) == 0xfc00
-                || (first & 0xffc0) == 0xfe80
-                || v6.to_ipv4_mapped().is_some_and(|v4| is_internal(IpAddr::V4(v4)))
+                || v6.is_multicast()
+                || (segments[0] & 0xfe00) == 0xfc00
+                || (segments[0] & 0xffc0) == 0xfe80
+                || (segments[0] & 0xffc0) == 0xfec0
+                || (nat64 && is_internal(IpAddr::V4(embedded)))
+                || v6.to_ipv4().is_some_and(|v4| is_internal(IpAddr::V4(v4)))
         }
     }
 }

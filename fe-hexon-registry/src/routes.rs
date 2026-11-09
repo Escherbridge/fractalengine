@@ -24,7 +24,7 @@ const MAX_PUBLISH_BYTES: usize = 1 << 30;
 
 /// Registry protocol version advertised by `/health` and `/config.json`.
 pub const REGISTRY_PROTOCOL: u64 = 1;
-/// Header carrying [`REGISTRY_PROTOCOL`] on `/health`.
+/// Header carrying [`REGISTRY_PROTOCOL`] on every response (clients never require it; `config.json` is the authority).
 const PROTOCOL_HEADER: &str = "x-hexon-registry-protocol";
 
 /// Response envelope matching fe-api's `ApiResponse` shape.
@@ -101,8 +101,17 @@ pub fn build_router(state: Arc<RegistryState>) -> Router {
         .route("/health", get(health))
         .route("/config.json", get(config_doc))
         .nest("/api/v1", api)
+        .layer(middleware::map_response(stamp_protocol))
         .layer(TraceLayer::new_for_http())
         .with_state(state)
+}
+
+/// Stamp [`PROTOCOL_HEADER`] on every response, including token refusals.
+async fn stamp_protocol<B>(mut response: Response<B>) -> Response<B> {
+    response
+        .headers_mut()
+        .insert(PROTOCOL_HEADER, header::HeaderValue::from(REGISTRY_PROTOCOL));
+    response
 }
 
 /// Bearer-token gate for `/api/v1` routes; no-op when no token is configured.
@@ -130,12 +139,12 @@ fn json_err(status: StatusCode, msg: impl Into<String>) -> Response {
 
 async fn health(State(state): State<Arc<RegistryState>>) -> Response {
     let count = state.index.read().await.len();
-    let body = Json(ApiResponse::success(serde_json::json!({
+    Json(ApiResponse::success(serde_json::json!({
         "status": "ok",
         "indexed": count,
         "protocol_version": REGISTRY_PROTOCOL,
-    })));
-    ([(PROTOCOL_HEADER, REGISTRY_PROTOCOL.to_string())], body).into_response()
+    })))
+    .into_response()
 }
 
 /// GET /config.json — public store-client contract v1 config; `registry_protocol` is what clients check.
@@ -432,6 +441,14 @@ fn safe_component(s: &str, extra: &[char]) -> bool {
         })
 }
 
+/// Store-client contract v1 package id: `^[A-Za-z0-9][A-Za-z0-9_.-]{0,127}$`, not ending `.json`.
+fn contract_package_id(id: &str) -> bool {
+    (1..=128).contains(&id.len())
+        && id.starts_with(|c: char| c.is_ascii_alphanumeric())
+        && safe_component(id, &[])
+        && !id.to_ascii_lowercase().ends_with(".json")
+}
+
 /// Create `dest` with `bytes`, refusing (AlreadyExists) to overwrite a file
 /// that appeared after the duplicate check.
 async fn write_new(dest: &std::path::Path, bytes: Bytes) -> std::io::Result<()> {
@@ -487,7 +504,7 @@ async fn publish(State(state): State<Arc<RegistryState>>, body: Bytes) -> Respon
             "manifest missing hexon_type or publisher_did",
         );
     }
-    if !safe_component(&id, &[]) || !safe_component(&version, &['+']) {
+    if !contract_package_id(&id) || !safe_component(&version, &['+']) {
         return json_err(
             StatusCode::BAD_REQUEST,
             "invalid hexon_id or version characters",
@@ -533,6 +550,12 @@ async fn publish(State(state): State<Arc<RegistryState>>, body: Bytes) -> Respon
                 .any(|e| e.hexon_id == id && e.version == version)
         {
             Some(format!("already published: {id}@{version}"))
+        } else if let Some(other) = index
+            .iter()
+            .find(|e| e.hexon_id != id && e.hexon_id.eq_ignore_ascii_case(&id))
+        {
+            // Ids are one case-insensitive namespace: no squatting a look-alike of another publisher's id.
+            Some(format!("{id} differs only in case from {}", other.hexon_id))
         } else {
             index
                 .iter()

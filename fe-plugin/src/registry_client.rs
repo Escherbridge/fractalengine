@@ -9,7 +9,7 @@ use crate::package::{payload_hash, SignatureEntry};
 
 /// Registry protocol version this client speaks.
 pub const SUPPORTED_PROTOCOL: u32 = 1;
-/// Response header every `/api/v1/*` registry response carries.
+/// Protocol header a registry may send; never required (store-client contract v1 reads `config.json`).
 pub const PROTOCOL_HEADER: &str = "X-Hexon-Registry-Protocol";
 /// Plugin manifest member: the exact bytes the publisher signed.
 pub const MANIFEST_MEMBER: &str = "plugin/manifest.json";
@@ -109,7 +109,7 @@ impl RegistryClient {
         Ok(url)
     }
 
-    /// Refuses any registry that does not advertise protocol v1 on `/health`.
+    /// Refuses any registry that advertises no protocol v1: `/health` header or body, else `config.json` `registry_protocol`.
     pub async fn check_protocol(&self) -> Result<(), RegistryInstallError> {
         let response = self
             .get(self.url(&["health"])?)
@@ -131,13 +131,28 @@ impl RegistryClient {
             .and_then(|v| v.as_u64())
             .map(|v| v.to_string());
         if protocol_matches(from_body.as_deref()) {
+            return Ok(());
+        }
+        let from_config = self.config_protocol().await;
+        if protocol_matches(from_config.as_deref()) {
             Ok(())
         } else {
-            Err(RegistryInstallError::ProtocolMismatch { found: header.or(from_body) })
+            Err(RegistryInstallError::ProtocolMismatch { found: header.or(from_body).or(from_config) })
         }
     }
 
-    /// Downloads the sealed package archive, re-checking the protocol header on the download response.
+    /// `registry_protocol` from the public `config.json`; `None` when absent or unreadable.
+    async fn config_protocol(&self) -> Option<String> {
+        let response = self.get(self.url(&["config.json"]).ok()?).send().await.ok()?;
+        if !response.status().is_success() {
+            return None;
+        }
+        let bytes = read_capped(response, MAX_HEALTH_BYTES).await.ok()?;
+        let config: serde_json::Value = serde_json::from_slice(&bytes).ok()?;
+        config.get("registry_protocol").and_then(|v| v.as_u64()).map(|v| v.to_string())
+    }
+
+    /// Downloads the sealed package archive; a protocol header on the response, when sent, must say 1.
     pub async fn download(&self, uri: &str) -> Result<Vec<u8>, RegistryInstallError> {
         self.check_protocol().await?;
         let response = self
@@ -151,9 +166,10 @@ impl RegistryClient {
         if !response.status().is_success() {
             return Err(RegistryInstallError::Transport(format!("download status {}", response.status())));
         }
-        let header = header_value(&response);
-        if !protocol_matches(header.as_deref()) {
-            return Err(RegistryInstallError::ProtocolMismatch { found: header });
+        if let Some(found) = header_value(&response) {
+            if !protocol_matches(Some(found.as_str())) {
+                return Err(RegistryInstallError::ProtocolMismatch { found: Some(found) });
+            }
         }
         read_capped(response, MAX_PACKAGE_BYTES).await
     }
