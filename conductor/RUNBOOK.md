@@ -111,6 +111,22 @@ trusting "pure efficiency" claims; push control; a board that silently drifts st
 
 ## 2. State
 
+- **2026-11-09 ~07:15 — BOTH TRACKS MERGED INTO MAIN AND PUSHED (user: secure the work before usage runs
+  out).** origin/main = `6fdbd951` (merges `0b579b64` ext-platform, `f2adc8f0` portal — 9 conflicts resolved as
+  unions + 4 compile fixes; lock `6fdbd951`). Branches `track/extension-platform` + `track/portal-surface` and the
+  private repo (`140bd6c`) are pushed too. **Verified:** `cargo check` green on every ext-platform crate (refine
+  pass) and on the merged tree for fe-format/fe-runtime/fe-api/fe-webview/fe-ui/fractalengine. **NOT verified:**
+  no test batch has run (user rule: tests only after ALL work is verified complete); no merge-gate review
+  (`/code-review`/`/security-review`) was run on the merges — deferred by the user to avoid orphaning work; CI on
+  `6fdbd951` is the first full build of this code (watch it: `gh run list --branch main --limit 3`). Clippy removed
+  everywhere; toolchain pinned 1.99.0 / MSRV 1.96. **Next session:** (1) check CI on `6fdbd951`; (2) plan TURN 3
+  from `.omc/state/turn3-inputs.md` (77 files of open NEEDS + 186 HANDED-OFF/DEFERRED review lines; generator
+  `.omc/plans/turn3-inputs.py`) — scope in the user decisions of 2026-11-09 (GUI + local-CLI extension
+  administration, single scene gate at DbCommandSender, portal.open branch, native kill switch, decode
+  provenance, Disable-All → portal set_host_disabled, standalone Cargo.lock policy) ending in per-track
+  completeness critics + R-Z; work happens on main now (the track worktrees are merged; recreate branches if a
+  swarm needs isolation); (3) only then the refine check, merge-quality review, and the user-named test
+  batches. cargo-deny triage was dropped (limited gains; CI deny stays warn-only).
 - **2026-11-09 ~04:45 — TURN 2 COMPLETE; REFINE PASS (cargo) RUNNING on ext-platform.** `wf_3db960d5-6b1`
   ended 63 done / 7 partial / 0 held-failed (140 agents, 23.5M tokens, 3.2 h). R-X verdict PASS-WITH-FIXES,
   **not buildable / not merge-ready yet** (records `799229cb` ext-platform — also carries R-X's uncommitted
