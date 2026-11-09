@@ -205,6 +205,7 @@ Toasts, dialogs, window chrome, status bar, embedded webview (PetalPortal), app 
 cargo test -p fe-ui --lib -- notice:: ui_shell:: dialogs::join panels::widgets panels::toolbar panels::sidebar panels::tool_options panels::tool_inspector panels::tool_panel settings:: portal:: plugin::
 cargo test -p fe-webview --lib --test security_test --test tauri_backend_test --test tauri_cutover_test
 cargo test -p fe-webview --test portal_protocol_journey --test portal_ipc_journey
+cargo test -p fractalengine --bin fractalengine -- portal_host::
 cargo test -p fractalengine --bin fractalengine -- panic_log:: window_chrome::
 ```
 
@@ -468,6 +469,7 @@ cargo test -p fe-ui --lib -- plugin::
 | `fractalengine/src/terrain_bridge.rs` | R4 |
 | `fractalengine/src/{screenshot_bridge,vision_bridge}.rs` | R9 |
 | `fractalengine/src/{panic_log,window_chrome}.rs` | R6 |
+| `fractalengine/src/portal_host/**` | R6 |
 | `fractalengine/tests/security_harness.rs` | R9 |
 | `fractalengine/tests/integration_test.rs` | Harness |
 | `fe-test-harness/**` | Harness (always slow) |
