@@ -33,6 +33,41 @@ These decisions are binding. They were ratified in the 2026-11-07 user grills; d
 
 *Binding. Dated bullets, newest first, maintained by the orchestrating session. Agents re-read this at every phase boundary and apply it over any other instruction except safety rules.*
 
+- 2026-11-08 23:40 (orchestrator fractalengine-71, SECURITY relay, mandatory) — **bus `Caller` gains
+  `role_ceiling`** (sibling G1-C1, `3e946344` on track/extension-platform): every API token now carries the
+  node DID as `sub`; "local" = node DID + an Owner token; the bus `Caller` struct gains `role_ceiling`, so
+  every `Caller { .. }` literal in this tree (portal IPC broker routing, fixture ops, probes) must set it —
+  a portal action's ceiling is the installing identity's role at the bundle's scope, never above the
+  viewer's token. P-S4/P-SI/S6 own the touch points; S6 verifies.
+- 2026-11-08 22:00 (USER DECISIONS, binding) — **Kill list:** a kill-listed bundle is refused by default,
+  with an explicit, audited verse-Owner override for that Owner's own peer (same rule as extensions); on
+  revocation an open mount unloads, but rows written through the bundle's IPC actions STAY (no withdrawal,
+  OD-E1). **Scoped extension bindings** (new feature, contract `docs/extensions/bindings.md` in the
+  sibling tree): a verse/fractal/petal binds an installed extension or bundle to a hook point, nearest
+  scope wins, Manager+ sets it, resolution is per peer with built-in fallback and a consent install offer.
+  Portal/web operations are one hook family: a petal may bind its portal surface. Keep S1-S4 compatible
+  with a bound bundle being chosen per scope; the binding table itself is the next swarm turn.
+- 2026-11-08 20:45 (orchestrator fractalengine-71) — **answers to SD's A-13/A-14/A-16** (orchestrator
+  defaults, user may override): **A-13 yes** — a portal action is a one-op commit on the extension write
+  path outside any tick: one DB command, host-stamped provenance `{package_id, content_hash}`, judged by the
+  installing identity's role at write time like any editor write (D-X6), subject to the identity's shared
+  rate limits; no tick budget applies. **A-14 yes** — an admitted bundle is an installation of kind
+  `web-bundle` with no instance, using the sibling R11 status vocabulary. **A-16 yes** —
+  `host/admission` carries `{package_id, content_hash, state, reason}`. Drop the "pending EXT-PLATFORM"
+  markers on these three.
+- 2026-11-08 20:45 (orchestrator fractalengine-71, SECURITY, mandatory) — **kill-list matching is by hash
+  under any id**, the same rule as docs/extensions/package-format.md in the sibling tree (revocation bypass
+  by renaming, steer 20:10): an entry matches a bundle when its `content_hash` equals the bundle's
+  `content_hash` OR its archive/member digest; the entry's `package_id` is informational and never narrows
+  the match. Replace admission.md's exact-pair match. Residual s4.6 narrows to genuine repackaging (new bytes,
+  new signature), which only publisher-key revocation catches; say so.
+- 2026-11-08 20:45 (orchestrator fractalengine-71) — **store-client contract is now v1** (the marketplace
+  review, 18 fixes). Deltas that touch this track: `content_hash` = lowercase-hex BLAKE3 of the canonical
+  manifest with the signature blanked (it keys the kill list); a kill-listed package is refused at install as
+  well as at render; leaving the index (takedown, all versions yanked) is NOT revocation; clients send no
+  credentials to the catalogue base or any URL a catalogue document names; signed documents use integers
+  only; a kill list or index older (issued_at) than the cached one is ignored.
+
 <!-- no steers yet -->
 
 ## SESSION BUS
