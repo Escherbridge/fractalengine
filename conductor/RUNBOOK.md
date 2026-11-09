@@ -111,6 +111,19 @@ trusting "pure efficiency" claims; push control; a board that silently drifts st
 
 ## 2. State
 
+- **2026-11-08 ~19:50 — EXTENSION PROGRAM SWARM RUNNING (user directive: one session drives everything,
+  maximum parallelism).** Workflow `wf_54bcb9d3-643` (task `w1jahbste`), script
+  `~/.claude/projects/<this project>/a1c488fe-…/workflows/scripts/ext-program-swarm-wf_54bcb9d3-643.js`:
+  59 slices = plugin_host_revival (8) + extension_platform (33) + portal_surface (16) + private
+  marketplace docs lane (M-R contract-v0 review, M-F follow-ups), 5 concurrent, from the metadata.json
+  partitions plus overlap-ordering edges (DAG builder: session scratchpad `dag.py`). Grill answers: all
+  three tracks; code against draft seams (G0 never blocks code slices; later G gates check conformance);
+  **no cargo/build/test at all until a refine pass when the machine is quiet**; width 5. Workers never
+  commit; a serialized haiku step commits each slice per tree with the rule-4 leak grep and posts seam
+  milestones (E0, P-SD, M-R) on the EXT bus files. Trees: ext-platform + ext-portal worktrees (both
+  fast-forwarded to `ffd76c4f`), private repo main. Resume after a sleep/kill: `Workflow({scriptPath,
+  resumeFromRunId: "wf_54bcb9d3-643"})` (memory `workflow-dies-across-sleep`). After it ends: refine pass
+  (cargo check/clippy per crate, then the user-named test batches) → `ready-to-merge` review → merge.
 - **2026-11-08 19:17 — orchestrator handover to `fractalengine-71`; drift corrected.** Verified at resume:
   origin/main = `c484734a` (pushed 14:31; `cf6f9750` was pushed 11:34, one minute before the bullet below
   was written), so only the docs commit `5fbccce3` is local — the "130 commits unpushed" line below is
@@ -118,7 +131,7 @@ trusting "pure efficiency" claims; push control; a board that silently drifts st
   reopens < 100 GB and > 4 GB). EXT sessions: no bus files yet; both worktrees at `30163ca2`, 89 behind
   main. Hourly monitor cron recreated in this session (expires 2026-11-15). `fractalengine-48` (PID
   66276, sessionId `2aa714d7…`, transcript tail checked: no unrecorded state) was stopped with its MCP
-  tree at the user's request (19:35) after its stand-down message expired undelivered — its cron died
+  tree at the user's request (~19:29) after its stand-down message expired undelivered — its cron died
   with it, so only this session's monitor ticks.
 - **2026-11-08 11:35 — P2P convergence campaign CONVERGED; extension sessions handed off; this
   session = orchestrator / merge gate (supersedes every bullet below).** Since the 10-15 bullet: FF
