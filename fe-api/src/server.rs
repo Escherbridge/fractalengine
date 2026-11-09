@@ -244,6 +244,11 @@ pub fn build_router(state: Arc<ApiState>) -> Router {
             "/api/v1/portal-bundles/{asset_id}",
             get(crate::portal_bundles::get_portal_bundle),
         )
+        // Static-directory export of a repository node's portal bundle (Viewer+, reach-checked)
+        .route(
+            "/api/v1/nodes/{node_id}/portal/export.zip",
+            get(crate::portal_bundles::export_portal_bundle),
+        )
         // Node asset download (node -> asset -> blob, real headers)
         .route(
             "/api/v1/nodes/{node_id}/asset",

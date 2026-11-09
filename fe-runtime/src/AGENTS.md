@@ -1178,3 +1178,10 @@ GUI's processing order are unchanged.
 - A full DB channel blocks only the relay (it used to block the Bevy main thread); a stop request
   abandons the command in hand. A terrain-credential read still never waits on a full channel.
 - The API command queue no longer wakes the reactive render loop: Bevy does not drain it.
+
+## Portal bundle header reads
+
+`scene_asset::inflate_bundle_member` reads one named zip member of a bundle header, capped at `BUNDLE_HEADER_MEMBER_MAX`
+inflated bytes whatever the directory claims (zip-bomb guard). This is why fe-runtime depends on `zip` (deflate only, no
+default features, same pin as fe-format and fe-webview). Only header members are read here; full bundle validation lives
+in `fe-format::portal_bundle`.

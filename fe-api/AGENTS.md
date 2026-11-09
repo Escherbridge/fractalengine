@@ -2321,6 +2321,7 @@ No operation_id requires native NONE owner/anchor/provenance and zero complete a
 Routes: `POST /api/v1/petals/{petal_id}/portal-bundles` (multipart upload, body cap `route_body_limit()`) and
 `GET /api/v1/portal-bundles/{asset_id}` (summary plus the local admission read). The QA-only observation routes are
 under `/api/v1/debug/portal/*` (`qa_portal.rs`, see §QA Portal evidence).
+Export: `GET /api/v1/nodes/{node_id}/portal/export.zip` (see `src/AGENTS.md` §portal-bundles).
 
 - **Bytes never cross the DB channel.** Upload stores one blob API-side, then sends a metadata-only
   `DbCommand::CreateAsset`. The DB thread never receives the bytes.

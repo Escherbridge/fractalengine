@@ -37,3 +37,17 @@ remain unknown outcomes; no automatic replay or retroactive cancellation.
 Existing router/channel/prepared journeys are extended without new test
 declarations. The simple MCP model exercises transport, not real durable guards;
 real-store terrain and API publisher-cap journeys own those assertions.
+
+## §portal-bundles — export route (portal_surface_20261107 T4.2 / S8)
+
+`GET /api/v1/nodes/{node_id}/portal/export.zip` (mounted beside the portal-bundles routes in `server.rs`) calls
+`portal_bundles::export_portal_bundle`: Viewer+ with node reach, one uniform 404 for unknown/unreachable/not-a-repository
+nodes (no existence oracle). The archive is written with the `zip` crate (deflate only, no default features) and carries
+`fe-portal.json` (`fe-portal-export/1`) plus the bundle members with the in-archive prefix stripped.
+
+- **Double revocation check.** The stored bundle is inspected, then revocation/kill-list is re-checked with the full build
+  facts (`revoked_on_this_peer`, matched by hash under any id) immediately before writing; a revoked build is never exported.
+- **CSP composer.** `static_csp` rebuilds the policy from the manifest's `PortalCsp` plus admitted feed origins
+  (`admit_export_feeds`: https only, `is_csp_source` charset, max 16 feeds); any source failing the check refuses the export
+  rather than being dropped, so the exported CSP is never weaker than declared.
+- **Seal.** Member reads verify the seal (`VerifyIfSealed`); a tampered member is a refusal.

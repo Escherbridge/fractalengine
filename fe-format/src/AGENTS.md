@@ -327,3 +327,11 @@ member present, never re-serialized, so a client's hash over
   callers: fe-hexon's `FetchStrategy::fetch_chunk(seq 0)`, fe-terrain's sealed
   P2P install, and fe-terrain's streamed decode, which passes the smaller
   streamed budget. One guard set, no copies.
+
+## §portal-bundle (`portal_bundle.rs`, portal_surface_20261107)
+
+Pure validator for signed web bundles: `validate_portal_bundle` decides refusal classes from archive facts and the manifest
+`PortalCsp` shape; it does no I/O. Hosts (fe-api upload/export, fe-webview protocol) map its refusals to their own
+surfaces and never re-implement the checks. Bundles are `.hexon` archives read through `HexonArchiveIndex`, so the seal
+and integrity rules in §archive-index and §integrity apply unchanged. See `fe-api/src/AGENTS.md` §portal-bundles and
+`fe-webview/src/portal_bundle/AGENTS.md`.

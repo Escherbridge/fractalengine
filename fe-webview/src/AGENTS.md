@@ -174,3 +174,10 @@ navigation layers, governance-backed admission with revoke, and the host-brokere
 rationale, ordering rules and residuals live in [`portal_bundle/AGENTS.md`](portal_bundle/AGENTS.md). Bundle origins
 are admitted only by exact match against the live mount table; the raw URL policy (`fe_runtime::portal_url::is_url_allowed`)
 is never relaxed. Journeys: `tests/portal_protocol_journey.rs` and `tests/portal_ipc_journey.rs` (R6).
+
+## §portal-bundle — export and scope notes
+
+The static export of a bundle (`GET /api/v1/nodes/{node_id}/portal/export.zip`) is served by fe-api, not fe-webview; the
+in-app static mount and the export share the same feed ordering and CSP rules (`fe-api/src/AGENTS.md` §portal-bundles).
+The optional `tauri` dependency is deliberately left in place (it is the documented default backend); its removal is out
+of scope for this track.
