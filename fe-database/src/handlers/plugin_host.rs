@@ -1,45 +1,75 @@
-//! Typed plugin reads and atomic batches; see src/AGENTS.md §plugin-host.
+//! Typed plugin reads, atomic batches and tick flushes; see src/AGENTS.md §plugin-host.
 
 use super::{entity, field_def, node_history};
 use crate::{
     repo::Db,
     types::{NodeId, OpLogEntry, OpType},
 };
-use fe_runtime::plugin_host::{PluginAdmission, PluginRead, PluginReply};
-use fe_sdk::plugin_host::{PendingOp, TransactionReceipt, MAX_HOST_BYTES};
+use bevy::math::{EulerRot, Quat};
+use fe_runtime::messages::{IotReadingInput, SceneChange};
+use fe_runtime::plugin_host::{PluginAdmission, PluginRead, PluginRefusal, PluginReply};
+use fe_sdk::manifest_v2::SceneWrite;
+use fe_sdk::plugin_host::{
+    PendingOp, StagedReading, StagedTimestamp, TransactionReceipt, MAX_HOST_BYTES,
+};
 use serde_json::{json, Value};
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 
 const PLUGIN_QUERY_CANDIDATES: usize = 1024;
+
+/// Tag a failure with its typed refusal so the reply keeps its WIT class.
+fn refuse(kind: fn(String) -> PluginRefusal, detail: impl Into<String>) -> anyhow::Error {
+    anyhow::Error::new(kind(detail.into()))
+}
+
+/// Classify a failure for the typed reply; an untagged failure before effects is an input refusal.
+pub(crate) fn refusal(error: anyhow::Error) -> PluginRefusal {
+    error
+        .downcast::<PluginRefusal>()
+        .unwrap_or_else(|error| PluginRefusal::InvalidInput(format!("{error:#}")))
+}
 
 async fn authorize_as(
     db: &Db,
     admission: &PluginAdmission,
     local_did: &str,
     floor: fe_policy::RoleLevel,
-    capability: &str,
+    granted: bool,
     handshake: bool,
 ) -> anyhow::Result<(String, entity::ParentMutation)> {
-    admission.require_active().map_err(anyhow::Error::msg)?;
-    anyhow::ensure!(admission.allows(capability), "plugin capability denied");
-    let scope =
-        super::preconditions::require_petal_scope(db, admission.petal_id(), "PluginHost").await?;
+    admission
+        .require_active()
+        .map_err(|error| refuse(PluginRefusal::Revoked, error))?;
+    if !granted {
+        return Err(refuse(
+            PluginRefusal::CapabilityDenied,
+            "plugin capability denied",
+        ));
+    }
+    let scope = super::preconditions::require_petal_scope(db, admission.petal_id(), "PluginHost")
+        .await
+        .map_err(|error| refuse(PluginRefusal::Revoked, format!("{error:#}")))?;
     let parts = crate::parse_scope(&scope)?;
-    anyhow::ensure!(
-        parts.petal_id.as_deref() == Some(admission.petal_id()),
-        "plugin scope mismatch"
-    );
-    anyhow::ensure!(
-        admission.allows_scope(&crate::build_scope(&parts.verse_id, None, None), &scope),
-        "plugin scope denied"
-    );
-    anyhow::ensure!(
-        admission.bound_scope() == Some(scope.as_str())
-            || (handshake && admission.bound_scope().is_none()),
-        "plugin admitted ancestry changed"
-    );
-    let permission = entity::prepare_scope_permission(db, &scope, local_did, floor).await?;
-    admission.require_active().map_err(anyhow::Error::msg)?;
+    if parts.petal_id.as_deref() != Some(admission.petal_id()) {
+        return Err(refuse(PluginRefusal::Revoked, "plugin scope mismatch"));
+    }
+    if !admission.allows_scope(&crate::build_scope(&parts.verse_id, None, None), &scope) {
+        return Err(refuse(PluginRefusal::CapabilityDenied, "plugin scope denied"));
+    }
+    if admission.bound_scope() != Some(scope.as_str())
+        && !(handshake && admission.bound_scope().is_none())
+    {
+        return Err(refuse(
+            PluginRefusal::Revoked,
+            "plugin admitted ancestry changed",
+        ));
+    }
+    let permission = entity::prepare_scope_permission(db, &scope, local_did, floor)
+        .await
+        .map_err(|error| refuse(PluginRefusal::Revoked, format!("{error:#}")))?;
+    admission
+        .require_active()
+        .map_err(|error| refuse(PluginRefusal::Revoked, error))?;
     Ok((scope, permission))
 }
 
@@ -79,16 +109,25 @@ pub(crate) async fn read(
     local_did: &str,
 ) -> anyhow::Result<PluginReply> {
     let handshake = matches!(request, PluginRead::PetalScope);
-    let (floor, capability) = if handshake && !admission.allows(fe_sdk::CAP_STORAGE_READ) {
-        (fe_policy::RoleLevel::Editor, fe_sdk::CAP_STORAGE_WRITE)
+    // A writer without scene reads (a readings-only adapter included) still pins its ancestry.
+    let (floor, granted) = if handshake && !admission.allows(fe_sdk::CAP_STORAGE_READ) {
+        (
+            fe_policy::RoleLevel::Editor,
+            admission.allows(fe_sdk::CAP_STORAGE_WRITE) || admission.readings().is_some(),
+        )
     } else {
-        (fe_policy::RoleLevel::Viewer, fe_sdk::CAP_STORAGE_READ)
+        (
+            fe_policy::RoleLevel::Viewer,
+            admission.allows(fe_sdk::CAP_STORAGE_READ),
+        )
     };
     let (scope, permission) =
-        authorize_as(db, admission, local_did, floor, capability, handshake).await?;
+        authorize_as(db, admission, local_did, floor, granted, handshake).await?;
     if matches!(request, PluginRead::PetalScope) {
         permission.commit(db, &[], vec![]).await?;
-        admission.require_active().map_err(anyhow::Error::msg)?;
+        admission
+            .require_active()
+            .map_err(|error| refuse(PluginRefusal::Revoked, error))?;
         return Ok(PluginReply::Scope(scope));
     }
     let (mut guards, mut bindings) = permission.into_parts();
@@ -104,20 +143,24 @@ pub(crate) async fn read(
             sql.push_str(" LIMIT 2");
         }
         PluginRead::Nodes(query) => {
-            anyhow::ensure!(
-                admission.allows(fe_sdk::CAP_QUERY_SELECT),
-                "plugin query capability denied"
-            );
+            if !admission.allows(fe_sdk::CAP_QUERY_SELECT) {
+                return Err(refuse(
+                    PluginRefusal::CapabilityDenied,
+                    "plugin query capability denied",
+                ));
+            }
             query.validate().map_err(anyhow::Error::msg)?;
             if let Some(name) = &query.name {
                 sql.push_str(" AND (display_name=$plugin_read_name OR ($plugin_read_name='' AND display_name=NONE))");
                 bindings.push(("plugin_read_name".into(), json!(name)));
             }
             if let Some(property) = &query.property {
-                anyhow::ensure!(
-                    admission.allows_property(&property.key),
-                    "plugin property capability denied"
-                );
+                if !admission.allows_property(&property.key) {
+                    return Err(refuse(
+                        PluginRefusal::CapabilityDenied,
+                        "plugin property capability denied",
+                    ));
+                }
             }
             sql.push_str(" ORDER BY node_id LIMIT $plugin_read_limit");
             bindings.push(("plugin_read_limit".into(), json!(PLUGIN_QUERY_CANDIDATES + 1)));
@@ -161,11 +204,13 @@ pub(crate) async fn read(
         admission,
         local_did,
         fe_policy::RoleLevel::Viewer,
-        fe_sdk::CAP_STORAGE_READ,
+        admission.allows(fe_sdk::CAP_STORAGE_READ),
         false,
     )
     .await?;
-    admission.require_active().map_err(anyhow::Error::msg)?;
+    admission
+        .require_active()
+        .map_err(|error| refuse(PluginRefusal::Revoked, error))?;
     Ok(if is_single {
         PluginReply::Node(nodes.into_iter().next())
     } else {
@@ -178,6 +223,19 @@ struct StagedNode {
     previous: Option<Value>,
     created: bool,
     deleted: bool,
+    transformed: bool,
+    properties_changed: bool,
+}
+
+/// One node a committed batch wrote.
+#[derive(Debug)]
+pub(crate) struct CommittedNode {
+    pub node_id: String,
+    pub state: Value,
+    pub created: bool,
+    pub deleted: bool,
+    /// Its property bag changed, so GUI property caches reload it.
+    pub properties_changed: bool,
 }
 
 /// Post-commit effects consumed by the ordinary DB dispatcher bridges.
@@ -185,8 +243,88 @@ struct StagedNode {
 pub(crate) struct BatchOutcome {
     pub receipt: TransactionReceipt,
     pub scope: String,
-    pub nodes: Vec<(String, Value, bool, bool)>,
-    pub changes: Vec<fe_runtime::messages::SceneChange>,
+    pub nodes: Vec<CommittedNode>,
+    pub changes: Vec<SceneChange>,
+}
+
+fn empty_outcome(scope: String) -> BatchOutcome {
+    BatchOutcome {
+        receipt: TransactionReceipt {
+            op_count: 0,
+            created_node_ids: vec![],
+            reading_count: 0,
+        },
+        scope,
+        nodes: vec![],
+        changes: vec![],
+    }
+}
+
+/// The manifest write kind an op stages, with its wire name.
+fn write_kind(op: &PendingOp) -> (SceneWrite, &'static str) {
+    match op {
+        PendingOp::CreateNode { .. } => (SceneWrite::CreateNode, "create_node"),
+        PendingOp::SetProperty { .. } => (SceneWrite::SetProperty, "set_property"),
+        PendingOp::DeleteNode { .. } => (SceneWrite::DeleteNode, "delete_node"),
+        PendingOp::SetTransform { .. } => (SceneWrite::SetTransform, "set_transform"),
+    }
+}
+
+/// Resolve a transform patch over the staged state into the journal's Euler-XYZ `f32` transform.
+fn resolve_transform(
+    state: &Value,
+    position: Option<[f64; 3]>,
+    rotation: Option<[f64; 4]>,
+    scale: Option<[f64; 3]>,
+) -> anyhow::Result<([f32; 3], [f32; 3], [f32; 3])> {
+    fn narrow(values: &[f64]) -> anyhow::Result<[f32; 3]> {
+        let [x, y, z] = values else {
+            anyhow::bail!("plugin transform needs three components");
+        };
+        let narrowed = [*x as f32, *y as f32, *z as f32];
+        anyhow::ensure!(
+            narrowed.iter().all(|value| value.is_finite()),
+            "plugin transform exceeds render precision"
+        );
+        Ok(narrowed)
+    }
+    fn euler(rotation: Quat) -> anyhow::Result<[f32; 3]> {
+        anyhow::ensure!(
+            rotation.is_finite() && rotation.length_squared() > f32::EPSILON,
+            "plugin rotation must be a finite nonzero quaternion"
+        );
+        let (x, y, z) = rotation.normalize().to_euler(EulerRot::XYZ);
+        Ok([x, y, z])
+    }
+    let stored = |key: &str| -> anyhow::Result<Vec<f64>> {
+        state[key]
+            .as_array()
+            .and_then(|values| values.iter().map(Value::as_f64).collect::<Option<Vec<f64>>>())
+            .ok_or_else(|| anyhow::anyhow!("stored node {key} is unavailable"))
+    };
+    let position = match position {
+        Some(position) => narrow(&position)?,
+        None => narrow(&stored("position")?)?,
+    };
+    let scale = match scale {
+        Some(scale) => narrow(&scale)?,
+        None => narrow(&stored("scale")?)?,
+    };
+    let rotation = match rotation {
+        Some(quaternion) => euler(Quat::from_array(quaternion.map(|value| value as f32)))?,
+        None => {
+            let current = stored("rotation")?;
+            if current.len() == 3 {
+                narrow(&current)?
+            } else {
+                // Legacy initial rows hold a quaternion; full transforms store Euler XYZ.
+                let quaternion = fe_runtime::node_history::stored_rotation_quaternion(&current)
+                    .ok_or_else(|| anyhow::anyhow!("stored node rotation is unavailable"))?;
+                euler(Quat::from_array(quaternion))?
+            }
+        }
+    };
+    Ok((position, rotation, scale))
 }
 
 pub(crate) async fn commit(
@@ -195,28 +333,35 @@ pub(crate) async fn commit(
     ops: &[PendingOp],
     local_did: &str,
 ) -> anyhow::Result<BatchOutcome> {
-    fe_sdk::plugin_host::validate_transaction(ops).map_err(anyhow::Error::msg)?;
+    fe_sdk::plugin_host::validate_transaction(ops)
+        .map_err(|error| refuse(PluginRefusal::InvalidInput, error))?;
+    for op in ops {
+        let (kind, name) = write_kind(op);
+        if !admission.allows_write(kind) {
+            return Err(refuse(
+                PluginRefusal::CapabilityDenied,
+                format!("plugin {name} write denied"),
+            ));
+        }
+    }
     let (scope, permission) = authorize_as(
         db,
         admission,
         local_did,
         fe_policy::RoleLevel::Editor,
-        fe_sdk::CAP_STORAGE_WRITE,
+        admission.allows(fe_sdk::CAP_STORAGE_WRITE),
         false,
     )
     .await?;
     if ops.is_empty() {
-        admission.require_active().map_err(anyhow::Error::msg)?;
-        permission.commit(db, &[], vec![]).await?;
-        return Ok(BatchOutcome {
-            receipt: TransactionReceipt {
-                op_count: 0,
-                created_node_ids: vec![],
-            },
-            scope,
-            nodes: vec![],
-            changes: vec![],
-        });
+        admission
+            .require_active()
+            .map_err(|error| refuse(PluginRefusal::Revoked, error))?;
+        permission
+            .commit(db, &[], vec![])
+            .await
+            .map_err(|error| refuse(PluginRefusal::Revoked, format!("{error:#}")))?;
+        return Ok(empty_outcome(scope));
     }
     let (mut guards, mut bindings) = permission.into_parts();
     let mut staged: BTreeMap<String, StagedNode> = BTreeMap::new();
@@ -243,14 +388,16 @@ pub(crate) async fn commit(
                         previous: Some(json!({"row_version":1,"payload":payload})),
                         created: true,
                         deleted: false,
+                        transformed: false,
+                        properties_changed: false,
                     },
                 );
                 created_node_ids.push(id);
                 continue;
             }
-            PendingOp::SetProperty { node_id, .. } | PendingOp::DeleteNode { node_id } => {
-                node_id.clone()
-            }
+            PendingOp::SetProperty { node_id, .. }
+            | PendingOp::DeleteNode { node_id }
+            | PendingOp::SetTransform { node_id, .. } => node_id.clone(),
         };
         if !staged.contains_key(&node_id) {
             let mut response = db
@@ -289,6 +436,8 @@ pub(crate) async fn commit(
                     previous,
                     created: false,
                     deleted: false,
+                    transformed: false,
+                    properties_changed: false,
                 },
             );
         }
@@ -296,10 +445,12 @@ pub(crate) async fn commit(
         anyhow::ensure!(!node.deleted, "plugin batch accesses a node after deletion");
         let (operation, data, schema_versions) = match op {
             PendingOp::SetProperty { key, value, .. } => {
-                anyhow::ensure!(
-                    admission.allows_property(key),
-                    "plugin property capability denied"
-                );
+                if !admission.allows_property(key) {
+                    return Err(refuse(
+                        PluginRefusal::CapabilityDenied,
+                        "plugin property capability denied",
+                    ));
+                }
                 if !rules.contains_key(key) {
                     let snapshot = field_def::capture_property_rules(db, &scope, key).await?;
                     let prefix = format!("plugin_rule_{index}");
@@ -319,13 +470,44 @@ pub(crate) async fn commit(
                 }
                 let versions =
                     field_def::validate_captured_property_rules(&scope, key, value, &rules[key])?;
-                changes.push(fe_runtime::messages::SceneChange::PropertyChanged {
+                changes.push(SceneChange::PropertyChanged {
                     node_id: node_id.clone(),
                     petal_id: admission.petal_id().into(),
                     key: key.clone(),
                     value: value.clone(),
                 });
+                node.properties_changed = true;
                 ("property_set", json!({"key":key,"value":value}), versions)
+            }
+            PendingOp::SetTransform {
+                position,
+                rotation,
+                scale,
+                ..
+            } => {
+                let properties = &node.state["properties"];
+                anyhow::ensure!(
+                    ["gpx_points", "owning_path_id", fe_sdk::PATH_ASSET_PROPERTY_KEY]
+                        .iter()
+                        .all(|key| properties.get(*key).is_none())
+                        && properties.get("node_kind").and_then(Value::as_str) != Some("stamp"),
+                    "plugin transforms refuse path and stamp geometry"
+                );
+                let (position, rotation, scale) =
+                    resolve_transform(&node.state, *position, *rotation, *scale)?;
+                changes.push(SceneChange::NodeTransform {
+                    node_id: node_id.clone(),
+                    petal_id: admission.petal_id().into(),
+                    position,
+                    rotation,
+                    scale,
+                });
+                node.transformed = true;
+                (
+                    "full_transform",
+                    json!({"position":position,"rotation":rotation,"scale":scale}),
+                    json!({}),
+                )
             }
             PendingOp::DeleteNode { .. } => {
                 anyhow::ensure!(
@@ -347,7 +529,7 @@ pub(crate) async fn commit(
                 guards.push(format!("IF array::len((SELECT VALUE node_id FROM node WHERE (properties.parent_id=${name} OR properties.gpx_track_id=${name} OR properties.owning_path_id=${name}) AND tombstone=NONE LIMIT 1)) != 0 {{ THROW 'plugin deletion gained dependent children'; }}"));
                 bindings.push((name, json!(node_id)));
                 node.deleted = true;
-                changes.push(fe_runtime::messages::SceneChange::NodeRemoved {
+                changes.push(SceneChange::NodeRemoved {
                     node_id: node_id.clone(),
                     petal_id: admission.petal_id().into(),
                 });
@@ -401,15 +583,22 @@ pub(crate) async fn commit(
         expanded_bytes <= 2 * 1024 * 1024,
         "expanded plugin batch exceeds 2 MiB"
     );
+    let mut intention = json!({"plugin_id":admission.plugin_id(),"petal_id":admission.petal_id(),"scope":scope,"source_did":local_did,"ops":ops});
+    // Local attribution only; replicated provenance stamping waits for OD-E1 (R24).
+    if let Some(package) = admission.package() {
+        intention["package"] = json!({"package_id":package.package_id(),"content_hash":package.content_hash()});
+    }
     let entry = OpLogEntry {
         lamport_clock: 0,
         hlc_timestamp: String::new(),
         node_id: NodeId(admission.petal_id().into()),
         op_type: OpType::PluginTransaction,
-        payload: json!({"plugin_id":admission.plugin_id(),"petal_id":admission.petal_id(),"scope":scope,"source_did":local_did,"ops":ops}),
+        payload: intention,
         sig: "00".repeat(64),
     };
-    admission.require_active().map_err(anyhow::Error::msg)?;
+    admission
+        .require_active()
+        .map_err(|error| refuse(PluginRefusal::Revoked, error))?;
     crate::op_log::commit_operation_atomic_with(db,entry,|hlc| {
         for (index,(id,node)) in staged.iter_mut().enumerate() {
             let name=format!("plugin_write_{index}");
@@ -418,8 +607,16 @@ pub(crate) async fn commit(
                 guards.push(format!("CREATE node CONTENT object::extend(${name}_state,{{position:<geometry<point>> [0.0,0.0]}})"));
                 bindings.push((format!("{name}_state"),node.state.clone()));
             } else {
-                guards.push(format!("UPDATE node SET properties=${name}_properties{} WHERE node_id=${name}_id",if node.deleted {format!(", tombstone=${name}_tombstone")}else {String::new()}));
+                let transform=if node.transformed {format!(", position=<geometry<point>> [${name}_x,${name}_z], elevation=${name}_y, rotation=${name}_rotation, scale=${name}_scale, edit_seq=${name}_seq")} else {String::new()};
+                let tombstone=if node.deleted {format!(", tombstone=${name}_tombstone")} else {String::new()};
+                guards.push(format!("UPDATE node SET properties=${name}_properties{transform}{tombstone} WHERE node_id=${name}_id"));
                 bindings.extend([(format!("{name}_id"),json!(id)),(format!("{name}_properties"),node.state["properties"].clone())]);
+                if node.transformed {
+                    for (suffix,value) in [("x",&node.state["position"][0]),("y",&node.state["position"][1]),("z",&node.state["position"][2]),
+                        ("rotation",&node.state["rotation"]),("scale",&node.state["scale"]),("seq",&node.state["edit_seq"])] {
+                        bindings.push((format!("{name}_{suffix}"),value.clone()));
+                    }
+                }
                 if node.deleted {bindings.push((format!("{name}_tombstone"),node.state["tombstone"].clone()));}
             }
         }
@@ -431,19 +628,196 @@ pub(crate) async fn commit(
                 "payload":payload,"row_version":version,"created_at":chrono::Utc::now().to_rfc3339()})));
         }
         (guards,bindings)
-    }).await?;
+    }).await.map_err(|error| refuse(PluginRefusal::Backend, format!("{error:#}")))?;
     Ok(BatchOutcome {
         receipt: TransactionReceipt {
             op_count: ops.len(),
             created_node_ids,
+            reading_count: 0,
         },
         scope,
         nodes: staged
             .into_iter()
-            .map(|(id, node)| (id, node.state, node.created, node.deleted))
+            .map(|(node_id, node)| CommittedNode {
+                node_id,
+                state: node.state,
+                created: node.created,
+                deleted: node.deleted,
+                properties_changed: node.properties_changed,
+            })
             .collect(),
         changes,
     })
+}
+
+/// Check staged readings as the readings door does (declared metric, RFC-3339 or epoch-ms time,
+/// anchors of the bound petal) before any effect, so one bad reading refuses the whole flush (R6).
+async fn door_readings(
+    db: &Db,
+    admission: &PluginAdmission,
+    readings: &[StagedReading],
+) -> anyhow::Result<Vec<IotReadingInput>> {
+    use super::iot_reading::IotIngestError;
+    if readings.is_empty() {
+        return Ok(Vec::new());
+    }
+    let grant = admission.readings().ok_or_else(|| {
+        refuse(
+            PluginRefusal::CapabilityDenied,
+            "plugin readings capability denied",
+        )
+    })?;
+    let invalid_time =
+        |raw: String| refuse(PluginRefusal::InvalidInput, IotIngestError::InvalidTimestamp(raw).to_string());
+    let mut anchors = BTreeSet::new();
+    let mut inputs = Vec::with_capacity(readings.len());
+    for reading in readings {
+        if !grant.allows_metric(&reading.metric) {
+            return Err(refuse(
+                PluginRefusal::CapabilityDenied,
+                format!("plugin metric '{}' is not declared", reading.metric),
+            ));
+        }
+        let recorded_at = match &reading.recorded_at {
+            None => None,
+            Some(StagedTimestamp::Rfc3339(raw)) => {
+                chrono::DateTime::parse_from_rfc3339(raw).map_err(|_| invalid_time(raw.clone()))?;
+                Some(raw.clone())
+            }
+            Some(StagedTimestamp::EpochMs(millis)) => Some(
+                chrono::DateTime::<chrono::Utc>::from_timestamp_millis(*millis)
+                    .ok_or_else(|| invalid_time(millis.to_string()))?
+                    .to_rfc3339(),
+            ),
+        };
+        anchors.insert(reading.node_id.clone());
+        inputs.push(IotReadingInput {
+            node_id: reading.node_id.clone(),
+            metric: reading.metric.clone(),
+            value: reading.value,
+            units: reading.units.clone(),
+            recorded_at,
+            payload_id: None,
+        });
+    }
+    // The door's anchor rule: an existing node row of the bound petal.
+    let anchor_ids: Vec<String> = anchors.into_iter().collect();
+    let mut response = db
+        .query("SELECT VALUE node_id FROM node WHERE petal_id=$plugin_anchor_petal AND node_id IN $plugin_anchor_ids")
+        .bind(("plugin_anchor_petal", admission.petal_id().to_string()))
+        .bind(("plugin_anchor_ids", anchor_ids.clone()))
+        .await?
+        .check()?;
+    let known: Vec<String> = response.take(0)?;
+    if let Some(unknown) = anchor_ids.iter().find(|id| !known.contains(*id)) {
+        return Err(refuse(
+            PluginRefusal::InvalidInput,
+            IotIngestError::UnknownAnchor(unknown.clone()).to_string(),
+        ));
+    }
+    Ok(inputs)
+}
+
+/// Authorize a readings-only flush: the readings grant, the Editor floor and the pinned ancestry.
+async fn authorize_readings(
+    db: &Db,
+    admission: &PluginAdmission,
+    local_did: &str,
+) -> anyhow::Result<BatchOutcome> {
+    let (scope, permission) = authorize_as(
+        db,
+        admission,
+        local_did,
+        fe_policy::RoleLevel::Editor,
+        admission.readings().is_some(),
+        false,
+    )
+    .await?;
+    permission
+        .commit(db, &[], vec![])
+        .await
+        .map_err(|error| refuse(PluginRefusal::Revoked, format!("{error:#}")))?;
+    Ok(empty_outcome(scope))
+}
+
+/// Everything a flush publishes through; the DB thread's PluginCommit arm supplies it.
+pub(crate) struct FlushSinks<'a> {
+    pub effects: EffectSinks<'a>,
+    pub blobs: &'a crate::BlobStoreHandle,
+    pub replication: Option<&'a crate::ReplicationSender>,
+    /// Transform-only nodes coalesce here like `UpdateNodeTransform` (QA-0161).
+    pub deferred: &'a mut crate::command_lane::DeferredPublications,
+}
+
+/// One tick's write window (R5, R6): the readings pass the door's checks, the scene batch commits
+/// atomically, then the readings land through the door as the admitted source class.
+pub(crate) async fn flush(
+    db: &Db,
+    admission: &PluginAdmission,
+    ops: &[PendingOp],
+    readings: &[StagedReading],
+    local_did: &str,
+    mut sinks: FlushSinks<'_>,
+) -> Result<TransactionReceipt, PluginRefusal> {
+    admission.require_active().map_err(PluginRefusal::Revoked)?;
+    fe_sdk::plugin_host::validate_commit(ops, readings).map_err(PluginRefusal::InvalidInput)?;
+    let door = door_readings(db, admission, readings)
+        .await
+        .map_err(refusal)?;
+    let committed = if ops.is_empty() && !door.is_empty() {
+        authorize_readings(db, admission, local_did).await
+    } else {
+        commit(db, admission, ops, local_did).await
+    };
+    let outcome = committed.map_err(refusal)?;
+    // Past the commit admission boundary: everything below runs even if the lease is revoked now.
+    for node in &outcome.nodes {
+        if node.created || node.deleted || node.properties_changed {
+            super::scene_publication::publish_after_commit(
+                db,
+                sinks.blobs,
+                sinks.replication,
+                local_did,
+                &node.node_id,
+            )
+            .await;
+        } else {
+            sinks.deferred.defer(node.node_id.clone());
+        }
+    }
+    publish(&outcome, sinks.effects);
+    let landed = match admission.readings() {
+        Some(grant) if !door.is_empty() => {
+            let verse_id = crate::parse_scope(&outcome.scope)
+                .map_err(|error| PluginRefusal::UnknownOutcome(format!("flush scope unusable: {error}")))?
+                .verse_id;
+            super::iot_reading::insert_readings_with_replication(
+                db,
+                admission.petal_id(),
+                Some(verse_id.as_str()),
+                local_did,
+                grant.source_class(),
+                &door,
+                Some(sinks.blobs),
+                sinks.replication,
+            )
+            .await
+            .map_err(|error| {
+                // The door validates before it writes; only a scene batch already committed makes this partial.
+                if ops.is_empty() && error.validation_rejection().is_some() {
+                    PluginRefusal::InvalidInput(error.to_string())
+                } else {
+                    PluginRefusal::UnknownOutcome(format!(
+                        "the flush was admitted but its readings did not all land: {error}"
+                    ))
+                }
+            })?
+        }
+        _ => 0,
+    };
+    let mut receipt = outcome.receipt;
+    receipt.reading_count = landed;
+    Ok(receipt)
 }
 
 pub(crate) struct EffectSinks<'a> {
@@ -453,8 +827,8 @@ pub(crate) struct EffectSinks<'a> {
 }
 
 /// Publish only the state that survived the atomic commit.
-pub(crate) fn publish(outcome: &BatchOutcome, sinks: EffectSinks<'_>) {
-    use fe_runtime::messages::{DbResult, LifecycleEvent, SceneChange};
+fn publish(outcome: &BatchOutcome, sinks: EffectSinks<'_>) {
+    use fe_runtime::messages::{DbResult, LifecycleEvent};
     let Ok(parts) = crate::parse_scope(&outcome.scope) else {
         tracing::error!("committed plugin scope invalid");
         return;
@@ -463,8 +837,9 @@ pub(crate) fn publish(outcome: &BatchOutcome, sinks: EffectSinks<'_>) {
         tracing::error!("committed plugin petal missing");
         return;
     };
-    for (node_id, state, created, deleted) in &outcome.nodes {
-        if *deleted {
+    for node in &outcome.nodes {
+        let node_id = &node.node_id;
+        if node.deleted {
             super::send_result(
                 sinks.results,
                 DbResult::PluginNodeRemoved {
@@ -481,8 +856,8 @@ pub(crate) fn publish(outcome: &BatchOutcome, sinks: EffectSinks<'_>) {
                     },
                 );
             }
-        } else if *created {
-            let materialization = serde_json::from_value(state.clone())
+        } else if node.created {
+            let materialization = serde_json::from_value(node.state.clone())
                 .map_err(anyhow::Error::from)
                 .and_then(|state| {
                     node_history::materialization(
@@ -524,17 +899,18 @@ pub(crate) fn publish(outcome: &BatchOutcome, sinks: EffectSinks<'_>) {
                     },
                 );
             }
-        } else {
+        } else if node.properties_changed {
             super::send_result(
                 sinks.results,
                 DbResult::NodePropertiesLoaded {
                     node_id: node_id.clone(),
-                    properties: state["properties"].clone(),
+                    properties: node.state["properties"].clone(),
                     correlation_id: Some(format!("plugin-properties-{}", ulid::Ulid::new())),
                 },
             );
         }
     }
+    // Transforms reach the GUI and entity store through the scene feed, as UpdateNodeTransform does.
     for change in &outcome.changes {
         super::replicated_row::emit_scene_change(sinks.scene, change.clone());
     }
