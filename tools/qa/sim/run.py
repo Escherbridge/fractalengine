@@ -330,6 +330,7 @@ class Host:
         self.record = None
         self.sampler = None
         self.started_at = None
+        self.peer_env = {}  # name -> environment for that peer's restarts (its own extension config dir)
 
     def peers_cmd(self, action, extra=""):
         return "& %s -Action %s %s" % (ps_quote(os.path.join(QA, "peers.ps1")), action, extra)
@@ -443,7 +444,7 @@ class Host:
 
     def restart(self, name, no_bootstrap):
         extra = "-Peer %s -OwnerRun %s%s" % (name, ps_quote(self.owner_dir), " -NoBootstrap" if no_bootstrap else "")
-        code, out, err = powershell(self.peers_cmd("Restart", extra), timeout=900)
+        code, out, err = powershell(self.peers_cmd("Restart", extra), timeout=900, env=self.peer_env.get(name))
         if code != 0:
             raise RuntimeError("peers.ps1 Restart %s failed: %s" % (name, (out + err)[-1000:]))
         self.reload()
@@ -560,6 +561,41 @@ def uses_loopback(scenario):
     return any(a.get("op") in LOOPBACK_OPS for step in scenario["steps"] for g in ("prepare", "actions") for a in step.get(g, []))
 
 
+def stage_extension_config(run_dir, loopback):
+    """One run-scoped extension config dir every peer inherits (FE_EXT_CONFIG_DIR through peers.ps1 and launch.ps1).
+
+    It holds the loopback's revocation root and pinned index source; the pull interval drops to the 10 s floor so a
+    published revocation lands inside one run (the 15 min default never would).
+    """
+    config_dir = loopback.write_extension_config(os.path.join(run_dir, "extensions"))
+    os.environ["FE_EXT_CONFIG_DIR"] = config_dir
+    os.environ.setdefault("FE_EXT_REVOCATION_PULL_SECS", "10")
+    return {"config_dir": config_dir, "revocation_pull_secs": os.environ["FE_EXT_REVOCATION_PULL_SECS"]}
+
+
+def register_peer_extension_policies(host, scenario, run_dir, loopback):
+    """Give each peer declaring extension_policy its own config dir (shared files plus extensions.toml) for its restarts.
+
+    Governance reads extensions.toml at startup only and peers.ps1 Start has no per-member environment, so the policy
+    lands at that peer's next restart, which the scenario places (scenario.py requires one): a peer can install while
+    admitted and then see the deny turn its installed build policy-denied.
+    """
+    registered = {}
+    for peer in scenario["peers"]:
+        policy = peer.get("extension_policy")
+        if not policy or peer["name"] not in host.names:
+            continue
+        if loopback is None:
+            raise RuntimeError("peer %s declares extension_policy but the scenario stages no extension config" % peer["name"])
+        peer_dir = loopback.write_extension_config(os.path.join(run_dir, "extensions-%s" % peer["name"]))
+        with open(os.path.join(peer_dir, "extensions.toml"), "w", encoding="utf-8", newline="\n") as handle:
+            handle.write("deny = %s\n" % json.dumps(policy["deny"]))  # package ids: JSON strings are TOML basic strings
+        host.peer_env[peer["name"]] = {**os.environ, "FE_EXT_CONFIG_DIR": peer_dir}
+        log("peer %s: local extension policy deny %s loads at its next restart" % (peer["name"], ",".join(policy["deny"])))
+        registered[peer["name"]] = {"config_dir": peer_dir, "deny": policy["deny"]}
+    return registered
+
+
 def run(args):
     scenario = scenario_mod.load(args.scenario)
     steps = select_steps(scenario["steps"], args.steps)
@@ -595,6 +631,10 @@ def run(args):
             loopback = Loopback(run_dir, "%s:%s" % (scenario["name"], scenario["seed"]))
             meta["loopback"] = loopback.start()
             log("loopback up: mqtt %s, revocation %s, sink %s" % (loopback.mqtt_url, loopback.revocation_url, loopback.sink_url))
+            if args.attach:
+                log("WARNING: --attach: the peers were started elsewhere, so they do not trust this run's loopback keys")
+            else:
+                meta["extension_config"] = stage_extension_config(run_dir, loopback)
         if args.attach:
             host.attach()
             attached_exe = host.record["members"][0]["process_identity"].get("exe_path")
@@ -609,6 +649,7 @@ def run(args):
             host.tile()
             if not args.skip_join:
                 host.join(run_dir)
+            meta["extension_policies"] = register_peer_extension_policies(host, scenario, run_dir, loopback)
         present = [m["name"] for m in host.record["members"]]
         meta["peers"] = [{"name": m["name"], "role": m.get("role"), "run_dir": m["run_dir"], "api_base": m.get("api_base"),
                           "pid": m["process_identity"]["pid"], "exe": m["process_identity"].get("exe_path")} for m in host.record["members"]]

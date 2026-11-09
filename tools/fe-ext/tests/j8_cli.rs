@@ -138,8 +138,13 @@ fn j8_new_validate_pack_inspect_countersign_and_sandbox() {
         let package = root.join(format!("{example}.hexon"));
         let packed = fe_ext(&["pack", "--project", example_path, "--key", key.to_str().unwrap(), "--out", package.to_str().unwrap()], root);
         assert!(packed.status.success(), "{example} pack: {}", stderr(&packed));
-        let facts: Value = serde_json::from_slice(&fe_ext(&["inspect", package.to_str().unwrap(), "--json"], root).stdout).unwrap();
+        let inspected = fe_ext(&["inspect", package.to_str().unwrap(), "--json"], root);
+        assert!(inspected.status.success(), "{example} inspect: {}", stderr(&inspected));
+        let facts: Value = serde_json::from_slice(&inspected.stdout).unwrap();
         assert_eq!(facts["package_id"], package_id);
+        // The sealed package is the one pack announced (same content hash on both sides of the CLI).
+        let announced = stdout(&packed).lines().find_map(|line| line.strip_prefix("content_hash ").map(str::to_string));
+        assert_eq!(facts["content_hash"].as_str(), announced.as_deref(), "{example}: inspect reads the packed build");
     }
 
     // The scaffold's packaging half needs a built component: FE_EXT_TEST_COMPONENT points at the compiled

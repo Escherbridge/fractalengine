@@ -517,8 +517,11 @@ class Driver:
         return client.rest("POST", "/api/v1/extensions/%s/consent" % args["installation"], body)
 
     def _ext_accept_extension(self, client, args, verse):
-        """Local acceptance of an installation in a verse (bindings.md 5.3): POST /extensions/{installation}/accept."""
-        return client.rest("POST", "/api/v1/extensions/%s/accept" % args["installation"], {"verse_id": verse})
+        """Local acceptance in a verse (bindings.md 5.3) is the bind verb with verse_id and no petal (governance.md section Audit)."""
+        body = {"verse_id": verse}
+        if args.get("source_class"):  # a manifest with a class set takes the one-class pick here (bindings.md 5.3)
+            body["source_class"] = args["source_class"]
+        return client.rest("POST", "/api/v1/extensions/%s/bind" % args["installation"], body)
 
     def _ext_bind_extension(self, client, args, verse):
         body = {k: v for k, v in args.items() if k not in ("installation", "discover")}

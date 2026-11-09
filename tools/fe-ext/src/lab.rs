@@ -166,8 +166,9 @@ impl StagedCommitSink for LabSink {
         }
         host.nodes = nodes;
         self.created = created;
+        let reading_count = rows.len();
         self.rows.lock().map_err(|_| "lab rows lock poisoned".to_string())?.extend(rows);
-        Ok(TransactionReceipt { op_count: flush.ops.len(), created_node_ids })
+        Ok(TransactionReceipt { op_count: flush.ops.len(), created_node_ids, reading_count })
     }
 }
 
@@ -319,24 +320,28 @@ fn rows_to_plan(model: &fe_sim_model::fleet::FleetModel, rows: &[PlannedRow]) ->
             .at_ms
             .checked_sub(model.start_ms)
             .ok_or_else(|| anyhow!("reading for {} at {} predates the fleet origin", row.node_id, row.at_ms))?;
-        // Anchor id == name in the hosting scene; the cadence disambiguates sensors sharing anchor and metric.
+        // Anchor id == name in the hosting scene. Sensors sharing anchor, metric and units take the rows due at
+        // one instant in sensor order (the first matching sensor not yet filled there), so a shared anchor never
+        // collapses two sensors into one.
         let sensor = model
             .sensors
             .iter()
-            .position(|spec| {
+            .enumerate()
+            .position(|(index, spec)| {
                 spec.anchor == row.node_id
                     && spec.metric == row.metric
                     && spec.units == row.units
                     && spec.cadence_ms > 0
                     && offset % spec.cadence_ms == 0
+                    && !plan.contains_key(&(row.at_ms, index))
             })
-            .ok_or_else(|| anyhow!("reading {} {} at {} matches no fleet sensor", row.node_id, row.metric, row.at_ms))?;
+            .ok_or_else(|| anyhow!("reading {} {} at {} matches no unfilled fleet sensor", row.node_id, row.metric, row.at_ms))?;
         let cadence = model.sensors[sensor].cadence_ms;
         let tick = offset / cadence;
         if tick == 0 || offset > model.duration_ms {
             bail!("reading {} {} at {} is outside the fleet window", row.node_id, row.metric, row.at_ms);
         }
-        plan.entry((row.at_ms, sensor)).or_insert(ScheduledReading { at_ms: row.at_ms, sensor, tick, value: row.value });
+        plan.insert((row.at_ms, sensor), ScheduledReading { at_ms: row.at_ms, sensor, tick, value: row.value });
     }
     // The package must cover the whole native schedule; a skipped metric or a short run is an error, not a gap.
     let expected = plan_readings(model);
@@ -362,6 +367,8 @@ pub fn run_lab(args: &LabArgs) -> Result<LabReport> {
     let component = project.read_component(args.component.as_deref())?;
     let script_text = std::fs::read_to_string(&args.scenario).with_context(|| format!("reading scenario {}", args.scenario.display()))?;
     let script = ScenarioScript::parse(&script_text)?;
+    // A caller-named root keeps every session for inspection; the default one is scratch, removed after each run.
+    let keep_sessions = args.root.is_some();
     let root = args
         .root
         .clone()
@@ -376,6 +383,10 @@ pub fn run_lab(args: &LabArgs) -> Result<LabReport> {
         let planned = session.status().readings_planned;
         session.step(u32::MAX)?;
         let outcome = session.stop()?;
+        if !keep_sessions {
+            // Best effort: a peer store handle the OS has not released yet only leaves scratch behind.
+            let _ = std::fs::remove_dir_all(&session_dir);
+        }
         let digest = blake3::hash(&serde_json::to_vec(&outcome.canonical_fingerprint())?).to_hex().to_string();
         match &fingerprint {
             None => fingerprint = Some(digest),
@@ -385,6 +396,9 @@ pub fn run_lab(args: &LabArgs) -> Result<LabReport> {
         last = (planned, outcome.ingested);
     }
     let fingerprint = fingerprint.expect("at least one run");
+    if !keep_sessions {
+        let _ = std::fs::remove_dir(&root);
+    }
     let summary = vec![
         format!("scenario {} hosted by {}", script.name, args.project.display()),
         format!("runs {}, readings planned {}, ingested {}", args.runs, last.0, last.1),

@@ -387,9 +387,12 @@ class Prober:
         def sql(text):
             return client.send("POST", "/api/v1/query", {"sql": text}, token, 15.0)
 
+        def quoted(text):  # SurrealQL string literal, escaped like driver.surreal_string
+            return "'" + str(text).replace("\\", "\\\\").replace("'", "\\'") + "'"
+
         if name == "fleet_readings":
             out = sql("SELECT reading_id, node_id, metric, value, recorded_at_ms, ext_package_id, ext_content_hash FROM iot_reading "
-                      "WHERE ext_package_id = '%s' ORDER BY reading_id" % FLEET_PACKAGE_ID)
+                      "WHERE ext_package_id = %s ORDER BY reading_id" % quoted(FLEET_PACKAGE_ID))
             rows = out.get("data") if out.ok else None
             if not isinstance(rows, list):
                 return out
@@ -399,9 +402,9 @@ class Prober:
             return out
         if not petal:
             return Outcome(status=0, ok=False, refused=True, code="unresolved_petal")
-        out = sql("SELECT reading_id, node_id, metric, value, units, recorded_at_ms FROM iot_reading WHERE petal_id = '%s' "
-                  "ORDER BY reading_id" % petal)
-        nodes = sql("SELECT node_id, display_name FROM node WHERE petal_id = '%s' AND tombstone = NONE" % petal)
+        out = sql("SELECT reading_id, node_id, metric, value, units, recorded_at_ms FROM iot_reading WHERE petal_id = %s "
+                  "ORDER BY reading_id" % quoted(petal))
+        nodes = sql("SELECT node_id, display_name FROM node WHERE petal_id = %s AND tombstone = NONE" % quoted(petal))
         rows, node_rows = (out.get("data") if out.ok else None), (nodes.get("data") if nodes.ok else None)
         if not isinstance(rows, list) or not isinstance(node_rows, list):
             return out if not out.ok else nodes

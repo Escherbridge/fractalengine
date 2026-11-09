@@ -56,7 +56,12 @@ SCHEMA = {
         "peers": {"type": "array", "minItems": 2, "maxItems": 8, "items": {
             "type": "object", "required": ["name", "role"], "additionalProperties": False,
             "properties": {"name": {"type": "string", "pattern": "^[a-z][a-z0-9]{0,15}$"},
-                           "role": {"enum": ["owner", "editor", "viewer"]}}}},
+                           "role": {"enum": ["owner", "editor", "viewer"]},
+                           "extension_policy": {
+                               "type": "object", "additionalProperties": False, "required": ["deny"],
+                               "description": "this peer's local extensions.toml (governance.md Local policy); run.py stages it and it loads at the peer's next host restart op, which the scenario must contain",
+                               "properties": {"deny": {"type": "array", "items": {
+                                   "type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9_.-]{0,127}$"}}}}}}},
         "probe": {"$ref": "#/$defs/cadence"},
         "watch": {"type": "array", "items": {"$ref": "#/$defs/watch"}},
         "steps": {"type": "array", "minItems": 1, "items": {"$ref": "#/$defs/step"}},
@@ -184,6 +189,15 @@ def validate(scenario):
             errors.append("peer %s: role must be owner|editor|viewer" % peer.get("name"))
         if isinstance(peer, dict) and not re.match(r"^[a-z][a-z0-9]{0,15}$", str(peer.get("name"))):
             errors.append("peer %s: name must be lowercase alphanumeric" % peer.get("name"))
+        policy = peer.get("extension_policy") if isinstance(peer, dict) else None
+        if policy is not None and (not isinstance(policy, dict) or set(policy) != {"deny"} or not isinstance(policy["deny"], list)
+                                   or not all(isinstance(d, str) and re.match(r"^[A-Za-z0-9][A-Za-z0-9_.-]{0,127}$", d)
+                                              for d in policy["deny"])):
+            errors.append("peer %s: extension_policy is {deny: [package ids]}" % peer.get("name"))
+        if policy is not None and not any(a.get("peer") == peer.get("name") and a.get("via") == "host" and a.get("op") == "restart"
+                                          for step in scenario.get("steps", []) if isinstance(step, dict)
+                                          for group in ("prepare", "actions") for a in step.get(group, []) if isinstance(a, dict)):
+            errors.append("peer %s: extension_policy loads at a restart; add a host restart op for that peer" % peer.get("name"))
     _validate_cadence(scenario.get("probe", {}), "probe", errors)
     for index, watch in enumerate(scenario.get("watch", [])):
         if not isinstance(watch, dict) or watch.get("probe") not in PROBES or "target" not in watch:

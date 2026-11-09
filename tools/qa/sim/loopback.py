@@ -11,7 +11,11 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 LOOPBACK_HOST = "127.0.0.1"
 INDEX_DOMAIN = b"fractalengine/catalog-index/v1\n"  # fe-hexon registry_source INDEX_SIGNING_DOMAIN + LF
-KEY_ID = "fe-sim-loopback"
+# Two keys, never one: an index key that is also a trust root is refused (fe-hexon verify_index IndexKeyMisused,
+# store-client steer 2026-11-08 20:45), so the index key is pinned per source and the revocation key is the trust root.
+INDEX_KEY_ID = "fe-sim-index"
+REVOCATION_KEY_ID = "fe-sim-revocation"
+SOURCE_ID = "fe-sim-loopback"
 DEFAULT_MQTT_PORT = int(os.environ.get("FE_SIM_MQTT_PORT", "18831"))
 DEFAULT_HTTP_PORT = int(os.environ.get("FE_SIM_LOOPBACK_HTTP_PORT", "18832"))
 DEFAULT_SINK_PORT = int(os.environ.get("FE_SIM_SINK_PORT", "18833"))
@@ -27,12 +31,13 @@ def canonical(value):
 
 
 class SigningRoot:
-    """One ed25519 key the host trusts for the run (trusted_publishers.toml with revocation = true)."""
+    """One run-seeded ed25519 key; `purpose` keeps the index key and the revocation root distinct."""
 
-    def __init__(self, seed_text):
+    def __init__(self, seed_text, purpose):
         from cryptography.hazmat.primitives import serialization
         from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
-        self._key = Ed25519PrivateKey.from_private_bytes(hashlib.sha256(("fe-sim-root:%s" % seed_text).encode()).digest())
+        self._key = Ed25519PrivateKey.from_private_bytes(
+            hashlib.sha256(("fe-sim-%s:%s" % (purpose, seed_text)).encode()).digest())
         self.public_hex = self._key.public_key().public_bytes(
             serialization.Encoding.Raw, serialization.PublicFormat.Raw).hex()
 
@@ -40,19 +45,19 @@ class SigningRoot:
         return self._key.sign(message).hex()
 
 
-def signed_index(root, doc):
-    """Index document signed as KEY_ID: the domain line, then canonical JSON without `signature`."""
+def signed_index(index_key, doc):
+    """Index document signed as INDEX_KEY_ID: the domain line, then canonical JSON without `signature`."""
     doc = {k: v for k, v in doc.items() if k != "signature"}
-    doc["signer_key_id"] = KEY_ID
-    doc["signature"] = root.sign_hex(INDEX_DOMAIN + canonical(doc).encode("utf-8"))
+    doc["signer_key_id"] = INDEX_KEY_ID
+    doc["signature"] = index_key.sign_hex(INDEX_DOMAIN + canonical(doc).encode("utf-8"))
     return doc
 
 
-def signed_revocation(root, entries, issued_at):
+def signed_revocation(revocation_root, entries, issued_at):
     """schema_version 1 revocation list; the signature covers canonical {entries, issued_at} only."""
     body = canonical({"entries": entries, "issued_at": issued_at}).encode("utf-8")
-    return {"schema_version": 1, "issued_at": issued_at, "entries": entries, "signer_key_id": KEY_ID,
-            "signature": root.sign_hex(body)}
+    return {"schema_version": 1, "issued_at": issued_at, "entries": entries, "signer_key_id": REVOCATION_KEY_ID,
+            "signature": revocation_root.sign_hex(body)}
 
 
 def blake3_hex(data):
@@ -341,7 +346,8 @@ class Loopback:
     def __init__(self, run_dir, seed, mqtt_port=DEFAULT_MQTT_PORT, http_port=DEFAULT_HTTP_PORT, sink_port=DEFAULT_SINK_PORT):
         self.dir = os.path.join(run_dir, "loopback")
         os.makedirs(self.dir, exist_ok=True)
-        self.root = SigningRoot(seed)
+        self.index_key = SigningRoot(seed, "index")
+        self.revocation_root = SigningRoot(seed, "revocation")
         self.site = StaticSite(http_port)
         self.sink = HttpSink(sink_port)
         self.broker = MqttBroker(mqtt_port)
@@ -367,12 +373,27 @@ class Loopback:
         return "http://%s:%d/" % (LOOPBACK_HOST, self.sink.port)
 
     def describe(self):
-        """What the stage needs to trust this run's root and point fixture builds at the services."""
-        return {"key_id": KEY_ID, "public_key": self.root.public_hex, "revocation_url": self.revocation_url,
-                "index_url": self.index_url, "mqtt_url": self.mqtt_url, "sink_url": self.sink_url,
-                "trusted_publisher_toml": '[[publisher]]\nkey_id = "%s"\npublic_key = "%s"\nrevocation = true\n'
-                                          'revocation_url = "%s"\nrole = "dev"\n' % (
-                                              KEY_ID, self.root.public_hex, self.revocation_url)}
+        """What the peers need to trust this run's revocation root and pin its index key (see write_extension_config)."""
+        # role "publisher", not "dev": a dev root loads only with FE_EXT_DEV=1 in a debug build, so a release stage
+        # would drop it silently and never accept a revocation list.
+        trusted = ('[[publisher]]\nkey_id = "%s"\npublic_key = "%s"\nrevocation = true\nrevocation_url = "%s"\n'
+                   'role = "publisher"\n' % (REVOCATION_KEY_ID, self.revocation_root.public_hex, self.revocation_url))
+        source = {"id": SOURCE_ID, "label": "fe-sim loopback", "kind": "static", "base": self.index_url,
+                  "index_keys": [{"key_id": INDEX_KEY_ID, "public_key": self.index_key.public_hex}]}
+        return {"revocation_key_id": REVOCATION_KEY_ID, "revocation_public_key": self.revocation_root.public_hex,
+                "index_key_id": INDEX_KEY_ID, "index_public_key": self.index_key.public_hex,
+                "revocation_url": self.revocation_url, "index_url": self.index_url, "mqtt_url": self.mqtt_url,
+                "sink_url": self.sink_url, "trusted_publisher_toml": trusted, "extension_sources": [source]}
+
+    def write_extension_config(self, config_dir):
+        """Write trusted_publishers.toml and extension_sources.json where the peers read them (FE_EXT_CONFIG_DIR)."""
+        info = self.describe()
+        os.makedirs(config_dir, exist_ok=True)
+        with open(os.path.join(config_dir, "trusted_publishers.toml"), "w", encoding="utf-8", newline="\n") as handle:
+            handle.write(info["trusted_publisher_toml"])
+        with open(os.path.join(config_dir, "extension_sources.json"), "w", encoding="utf-8", newline="\n") as handle:
+            json.dump(info["extension_sources"], handle, indent=1)
+        return config_dir
 
     def start(self):
         if self.started:
@@ -405,8 +426,9 @@ class Loopback:
         for path, data in (packages or {}).items():
             self.site.put(path if path.startswith("/") else "/" + path, data, "application/octet-stream")
         stamp = issued_at or time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
-        self.site.put("/config.json", json.dumps({"registry_protocol": 1, "index_key_id": KEY_ID}))
-        self.site.put("/index.json", json.dumps(signed_index(self.root, {"schema_version": 1, "issued_at": stamp, "entries": rows})))
+        # index_key_id here is an unsigned hint; the host trusts only the key pinned in extension_sources.json.
+        self.site.put("/config.json", json.dumps({"registry_protocol": 1, "index_key_id": INDEX_KEY_ID}))
+        self.site.put("/index.json", json.dumps(signed_index(self.index_key, {"schema_version": 1, "issued_at": stamp, "entries": rows})))
         return self.index_url
 
     def publish_revocation(self, entries, at=None):
@@ -415,9 +437,9 @@ class Loopback:
         stamp = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime((at if at is not None else time.time()) + self.revocation_serial))
         full = [{"package_id": e["package_id"], "content_hash": e["content_hash"], "reason": e.get("reason", "fe-sim revocation"),
                  "revoked_at": e.get("revoked_at", stamp)} for e in entries]
-        self.site.put("/revocation.json", json.dumps(signed_revocation(self.root, full, stamp)))
+        self.site.put("/revocation.json", json.dumps(signed_revocation(self.revocation_root, full, stamp)))
         self.revocation_entries = full
-        return {"issued_at": stamp, "entries": len(full), "url": self.revocation_url, "signer_key_id": KEY_ID}
+        return {"issued_at": stamp, "entries": len(full), "url": self.revocation_url, "signer_key_id": REVOCATION_KEY_ID}
 
 
 def probe_port(port, timeout=0.5):
