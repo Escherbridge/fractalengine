@@ -234,6 +234,9 @@ pub struct TransactionReceipt {
     pub op_count: usize,
     /// Created node IDs in creation-operation order.
     pub created_node_ids: Vec<String>,
+    /// Readings landed by the same flush; absent in receipts from hosts that predate readings.
+    #[serde(default)]
+    pub reading_count: usize,
 }
 
 /// A host-supplied reader; implementations recheck the bound petal at use.

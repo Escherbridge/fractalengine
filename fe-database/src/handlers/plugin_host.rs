@@ -765,6 +765,16 @@ pub(crate) async fn flush(
 ) -> Result<TransactionReceipt, PluginRefusal> {
     admission.require_active().map_err(PluginRefusal::Revoked)?;
     fe_sdk::plugin_host::validate_commit(ops, readings).map_err(PluginRefusal::InvalidInput)?;
+    // R6 whole-flush rule: a reading anchored on a node this batch deletes would pass the door,
+    // then fail the insert after the scene batch landed, so refuse the flush up front (G1-C8).
+    if let Some(reading) = readings.iter().find(|reading| {
+        ops.iter().any(|op| matches!(op, PendingOp::DeleteNode { node_id } if *node_id == reading.node_id))
+    }) {
+        return Err(PluginRefusal::InvalidInput(format!(
+            "plugin reading anchors node '{}' that the same batch deletes",
+            reading.node_id
+        )));
+    }
     let door = door_readings(db, admission, readings)
         .await
         .map_err(refusal)?;

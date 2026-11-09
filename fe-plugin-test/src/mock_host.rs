@@ -154,6 +154,28 @@ impl fe_sdk::plugin_host::TransactionSink for MockHostEnv {
                         value: json_property(value.clone()),
                     });
                 }
+                PendingOp::SetTransform {
+                    node_id,
+                    position,
+                    rotation,
+                    scale,
+                } => {
+                    let node = staged
+                        .nodes
+                        .get_mut(node_id)
+                        .filter(|node| node.petal_id == petal_id)
+                        .ok_or("node not found or not permitted")?;
+                    // Absent fields keep the stored value, as the DB commit resolves a patch.
+                    node.position = position.unwrap_or(node.position);
+                    node.rotation = rotation.unwrap_or(node.rotation);
+                    node.scale = scale.unwrap_or(node.scale);
+                    staged.scene_changes.push(SceneChange::TransformChanged {
+                        node_id: node_id.clone(),
+                        position: node.position,
+                        rotation: node.rotation,
+                        scale: node.scale,
+                    });
+                }
                 PendingOp::CreateNode {
                     petal_id: target,
                     name,
@@ -220,6 +242,7 @@ impl fe_sdk::plugin_host::TransactionSink for MockHostEnv {
         Ok(TransactionReceipt {
             op_count: ops.len(),
             created_node_ids,
+            reading_count: 0,
         })
     }
 }
