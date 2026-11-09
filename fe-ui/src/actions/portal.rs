@@ -360,6 +360,14 @@ pub(crate) fn open_bundle(
     }
 }
 
+/// Pure: the node id of the open bundle portal, the target of Admit/Revoke.
+pub(crate) fn open_bundle_node(portal: &PortalState) -> Option<&str> {
+    match portal {
+        PortalState::Bundle { node_id, .. } => Some(node_id),
+        _ => None,
+    }
+}
+
 /// Host-decided bundle state -> portal state; events for another node are stale and ignored.
 fn apply_bundle_state(
     ui: &mut super::UiManager,

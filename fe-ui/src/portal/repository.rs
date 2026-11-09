@@ -5,6 +5,7 @@ use fe_webview::ipc::BundleState;
 
 use super::chrome::{chrome_model, short_did, ChromeTone};
 use crate::accessibility::ResponseExt;
+use crate::actions::UiAction;
 use crate::theme;
 
 /// Plain data the call site assembles from the node, the portal summary read and governance.
@@ -32,6 +33,25 @@ pub enum RepositoryIntent {
     Admit,
     Revoke,
     Replace,
+}
+
+/// What the call site does with a clicked intent.
+#[derive(Debug, Clone)]
+pub enum RepositoryCommand {
+    /// Queue this action on the UI action queue.
+    Dispatch(UiAction),
+    /// Open the asset picker; the pick becomes a `portal.bundle_asset` property write on this node.
+    PickBundleAsset { node_id: String },
+}
+
+/// Pure: map a clicked intent to its command for the selected repository node.
+pub fn intent_command(intent: RepositoryIntent, node_id: &str) -> RepositoryCommand {
+    match intent {
+        RepositoryIntent::Open => RepositoryCommand::Dispatch(UiAction::OpenBundle { node_id: node_id.to_owned() }),
+        RepositoryIntent::Admit => RepositoryCommand::Dispatch(UiAction::PortalAdmitBundle),
+        RepositoryIntent::Revoke => RepositoryCommand::Dispatch(UiAction::PortalRevokeBundle),
+        RepositoryIntent::Replace => RepositoryCommand::PickBundleAsset { node_id: node_id.to_owned() },
+    }
 }
 
 /// Pure: the buttons shown, primary first (Open is always present).
@@ -177,5 +197,13 @@ mod tests {
         view.state = BundleState::WaitingForBytes;
         view.can_replace = false;
         assert_eq!(repository_intents(&view), [RepositoryIntent::Open]);
+        assert!(matches!(
+            intent_command(RepositoryIntent::Open, "n1"),
+            RepositoryCommand::Dispatch(UiAction::OpenBundle { node_id }) if node_id == "n1"
+        ));
+        assert!(matches!(
+            intent_command(RepositoryIntent::Replace, "n1"),
+            RepositoryCommand::PickBundleAsset { .. }
+        ));
     }
 }

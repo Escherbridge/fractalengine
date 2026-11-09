@@ -2,6 +2,8 @@
 
 use fe_webview::ipc::BundleState;
 
+use crate::actions::UiAction;
+
 /// Visual weight of a badge; the text always carries the state too.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ChromeTone {
@@ -25,6 +27,15 @@ impl ChromeAction {
             Self::Close => "Close",
             Self::Admit => "Admit…",
             Self::RevokeLocal => "Revoke on this peer",
+        }
+    }
+
+    /// The queued action this button maps to.
+    pub fn ui_action(self) -> UiAction {
+        match self {
+            Self::Close => UiAction::ClosePortal,
+            Self::Admit => UiAction::PortalAdmitBundle,
+            Self::RevokeLocal => UiAction::PortalRevokeBundle,
         }
     }
 
@@ -182,5 +193,7 @@ mod tests {
         assert_eq!(chrome_model(&BundleState::WaitingForBytes).unwrap().badge_name, "Waiting for bundle bytes");
         assert_eq!(chrome_model(&BundleState::Unavailable).unwrap().badge_name, "Embedded browsing unavailable");
         assert!(chrome_model(&BundleState::Closed).is_none());
+        assert!(matches!(ChromeAction::Admit.ui_action(), UiAction::PortalAdmitBundle));
+        assert!(matches!(ChromeAction::Close.ui_action(), UiAction::ClosePortal));
     }
 }
