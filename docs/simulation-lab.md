@@ -218,6 +218,15 @@ Checked at parse/start time, before anything runs:
 A scenario that violates any of these fails validation before a single peer
 spawns, rather than running partway and hanging or silently truncating.
 
+## Hosting the fleet-sim extension
+
+A fleet is data (`fleet.config`), and on a live host the first-party `extensions/fleet-sim` package drives it on the
+wall clock. The lab runs the same package under its simulated clock, so a lab run and a live run of one config agree
+on values: `ScenarioSession::start_with_source` accepts a `FleetSource` that supplies the reading schedule, with
+`ModelFleetSource` (the pure planner) as the default. Two lab runs of one FleetConfig v2 document give the same
+fingerprint. The simulated clock never enters a production process, and `fe-ext run --lab` is the authoring entry
+point for this hosted run.
+
 ## See also
 
 - [README.md](../README.md) — "Peer-to-Peer Sync & Distributed Data" for how

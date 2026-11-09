@@ -314,6 +314,24 @@ status snapshot between every call reproduce the one-shot fingerprint).
   session (Drop mid-run) can hold sync threads parked on full event
   channels.
 
+## §extension-host (R30 — the lab hosts the fleet-sim package)
+
+`session.rs::FleetSource` is the one seam between a session and its reading schedule. `ScenarioSession::start`
+uses `ModelFleetSource` (`plan_fleet`); `start_with_source` takes any other source, so the lab can host the SAME
+`extensions/fleet-sim` package a live host runs. Everything else (SimNet, faults, `/api/v1/sim/*`, the HLC override)
+is unchanged, and the SimClock still never enters a production process (§hlc-sim).
+
+- **Clock.** The source receives a `LabClock` over the session's `SimClock` (at `fleet.start_ms`, before any action).
+  An adapter (the `fe-ext run --lab` leg, which owns the fe-plugin dependency; fe-sim has none) implements
+  `fe_plugin::tick::Clock` over `LabClock::now_ms` and steps the package tick by tick.
+- **Contract.** The returned plan holds `ScheduledReading`s ordered by `(at_ms, sensor)`, sensor indices into
+  `fleet.sensors`, values from `evaluate(model, tick, at_ms)` exactly like `plan_readings`. `check_plan` refuses an
+  out-of-range sensor or an unordered plan before any peer acts, so a bad package fails the start, not a barrier.
+- **Class.** Rows ingest through the same F5 seam as ever with `SourceClass::Simulation`; the package's manifest
+  declares `source_class: simulation` and the host stamps it (never inferred).
+- **Pinned by** `session.rs::stepped_session_matches_one_shot_run_exactly` (a package-shaped source reproduces the
+  model planner's fingerprint) and the unchanged `scenario.rs::sim_fleet_writes_real_iot_reading_rows_on_cadence`.
+
 ## §honest-limits (recorded, not hidden)
 
 - **Inbound DB-channel drops**: fe-sync forwards inbound rows with
