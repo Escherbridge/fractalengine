@@ -294,6 +294,8 @@ mod tests {
             hlc_timestamp: ms,
             source_did: "did:key:z6MkSeed".into(),
             payload_id: None,
+            ext_package_id: None,
+            ext_content_hash: None,
         }
     }
 

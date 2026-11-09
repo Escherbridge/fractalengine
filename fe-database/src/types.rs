@@ -51,6 +51,9 @@ pub enum OpType {
     SetPetalTerrain,
     /// Petal declaration metadata, independent of residency settings.
     SetPetalRequirements,
+    /// One extension governance action or denial (docs/extensions/governance.md §Audit); local only,
+    /// never replicated (OD-E7). Payload: `handlers::extension_policy::AuditEntry`.
+    ExtensionAudit,
 }
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]

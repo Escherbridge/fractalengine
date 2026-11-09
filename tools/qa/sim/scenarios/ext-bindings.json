@@ -1,0 +1,1177 @@
+{
+  "name": "ext-bindings",
+  "description": "Scoped extension bindings (BND-11, docs/extensions/bindings.md): a fractal petal.map binding resolves per peer (resolved, not-installed with the Install offer, policy-denied after a device-local deny), a nearer petal binding overrides, demotion withdraws, Keep binding re-authors and a re-grant does not revive, and a kill-listed build stops where installed and is refused at install while the audited Owner override runs it on the Owner peer only.",
+  "seed": 20261110,
+  "fixture": "basic",
+  "verse_name": "QA Basic",
+  "assets": "generated",
+  "peers": [
+    {
+      "name": "owner",
+      "role": "owner"
+    },
+    {
+      "name": "editor",
+      "role": "editor"
+    },
+    {
+      "name": "viewer",
+      "role": "viewer",
+      "extension_policy": {
+        "deny": [
+          "org.example.city-map"
+        ]
+      }
+    }
+  ],
+  "probe": {
+    "rest_ms": 500,
+    "hierarchy_ms": 2000,
+    "ui_ms": 1000,
+    "query_ms": 2000,
+    "host_ms": 2000
+  },
+  "steps": [
+    {
+      "id": "0",
+      "title": "Preflight: every peer in the shared verse",
+      "settle_s": 15,
+      "actions": [
+        {
+          "peer": "editor",
+          "via": "gui",
+          "op": "click",
+          "args": {
+            "name": "Close window",
+            "role": "button"
+          },
+          "optional": true
+        },
+        {
+          "peer": "editor",
+          "via": "gui",
+          "op": "click",
+          "args": {
+            "name": "Open verse QA Basic"
+          },
+          "optional": true
+        },
+        {
+          "peer": "viewer",
+          "via": "gui",
+          "op": "click",
+          "args": {
+            "name": "Close window",
+            "role": "button"
+          },
+          "optional": true
+        },
+        {
+          "peer": "viewer",
+          "via": "gui",
+          "op": "click",
+          "args": {
+            "name": "Open verse QA Basic"
+          },
+          "optional": true
+        }
+      ],
+      "expect": [
+        {
+          "probe": "role",
+          "target": "$fixture.verse_id",
+          "peers": [
+            "editor"
+          ],
+          "predicate": "equals",
+          "value": "editor"
+        }
+      ]
+    },
+    {
+      "id": "1",
+      "title": "Owner and viewer install, consent and accept the city map; the editor becomes a Manager",
+      "settle_s": 40,
+      "covers": [
+        "BND-11"
+      ],
+      "note": "The verse policy allows both builds (city-map, and city-map-legacy for step 6). The viewer installs while its policy still admits the package: its local extensions.toml deny (peers[].extension_policy) loads only at the restart in step 3. city-map provides petal.map without scene writes, so Viewer+ passes row 10 (assumed fixture manifest, bindings.md 8.1). Acceptance is the bind verb with verse_id (governance.md section Audit).",
+      "actions": [
+        {
+          "id": "pkg",
+          "peer": "owner",
+          "via": "rest",
+          "op": "request",
+          "args": {
+            "method": "GET",
+            "path": "/api/v1/extensions/catalog/city-map"
+          }
+        },
+        {
+          "id": "legacy_pkg",
+          "peer": "owner",
+          "via": "rest",
+          "op": "request",
+          "args": {
+            "method": "GET",
+            "path": "/api/v1/extensions/catalog/city-map-legacy"
+          }
+        },
+        {
+          "id": "policy",
+          "peer": "owner",
+          "via": "rest",
+          "op": "set_extension_policy",
+          "args": {
+            "verse_id": "$fixture.verse_id",
+            "mode": "allow-list",
+            "allow": [
+              {
+                "package_id": "org.example.city-map",
+                "content_hash": "$pkg.content_hash"
+              },
+              {
+                "package_id": "org.example.city-map-legacy",
+                "content_hash": "$legacy_pkg.content_hash"
+              }
+            ]
+          },
+          "needs": [
+            "pkg",
+            "legacy_pkg"
+          ]
+        },
+        {
+          "id": "o_inst",
+          "peer": "owner",
+          "via": "rest",
+          "op": "install_extension",
+          "args": {
+            "package": "city-map",
+            "verse_id": "$fixture.verse_id"
+          },
+          "bind": {
+            "installation": "installation"
+          },
+          "needs": [
+            "policy"
+          ]
+        },
+        {
+          "id": "o_consent",
+          "peer": "owner",
+          "via": "rest",
+          "op": "consent_extension",
+          "args": {
+            "installation": "$o_inst.installation",
+            "grants": "manifest"
+          },
+          "needs": [
+            "o_inst"
+          ]
+        },
+        {
+          "id": "o_accept",
+          "peer": "owner",
+          "via": "rest",
+          "op": "accept_extension",
+          "args": {
+            "installation": "$o_inst.installation"
+          },
+          "needs": [
+            "o_consent"
+          ]
+        },
+        {
+          "id": "v_inst",
+          "peer": "viewer",
+          "via": "rest",
+          "op": "install_extension",
+          "args": {
+            "package": "city-map",
+            "verse_id": "$fixture.verse_id"
+          },
+          "bind": {
+            "installation": "installation"
+          },
+          "needs": [
+            "policy"
+          ]
+        },
+        {
+          "id": "v_consent",
+          "peer": "viewer",
+          "via": "rest",
+          "op": "consent_extension",
+          "args": {
+            "installation": "$v_inst.installation",
+            "grants": "manifest"
+          },
+          "needs": [
+            "v_inst"
+          ]
+        },
+        {
+          "id": "v_accept",
+          "peer": "viewer",
+          "via": "rest",
+          "op": "accept_extension",
+          "args": {
+            "installation": "$v_inst.installation"
+          },
+          "needs": [
+            "v_consent"
+          ]
+        },
+        {
+          "peer": "owner",
+          "via": "gui",
+          "op": "click_until",
+          "args": {
+            "click": {
+              "name": "Browse all verses",
+              "exact": true
+            },
+            "until": "Join a verse from browser",
+            "max": 3
+          }
+        },
+        {
+          "peer": "owner",
+          "via": "gui",
+          "op": "click",
+          "args": {
+            "name": "Options for verse QA Basic",
+            "exact": true
+          }
+        },
+        {
+          "peer": "owner",
+          "via": "gui",
+          "op": "click",
+          "args": {
+            "name": "Access",
+            "role": "button",
+            "exact": true
+          }
+        },
+        {
+          "peer": "owner",
+          "via": "gui",
+          "op": "click",
+          "args": {
+            "name": "Role to assign for ${peers.editor.did}",
+            "exact": true
+          }
+        },
+        {
+          "peer": "owner",
+          "via": "gui",
+          "op": "click",
+          "args": {
+            "name": "manager",
+            "exact": true
+          }
+        },
+        {
+          "peer": "owner",
+          "via": "gui",
+          "op": "click",
+          "args": {
+            "name": "Assign role manager to ${peers.editor.did}",
+            "exact": true
+          },
+          "id": "promote"
+        },
+        {
+          "peer": "owner",
+          "via": "gui",
+          "op": "click",
+          "args": {
+            "name": "Confirm Assign role manager to ${peers.editor.did}",
+            "exact": true,
+            "wait_s": 3
+          },
+          "optional": true
+        }
+      ],
+      "expect": [
+        {
+          "probe": "extension",
+          "target": "$o_inst.installation",
+          "path": "state",
+          "peers": [
+            "owner"
+          ],
+          "predicate": "equals",
+          "value": "active",
+          "within_s": 30,
+          "after": "o_accept"
+        },
+        {
+          "probe": "role",
+          "target": "$fixture.verse_id",
+          "peers": [
+            "editor"
+          ],
+          "predicate": "equals",
+          "value": "manager",
+          "within_s": 60,
+          "after": "promote"
+        }
+      ]
+    },
+    {
+      "id": "2",
+      "title": "A fractal petal.map binding resolves where installed and offers Install where missing",
+      "settle_s": 40,
+      "covers": [
+        "BND-11"
+      ],
+      "note": "Resolution is per peer and only the local DID sees it (bindings.md 5.5): every probe reads its own peer. The winning scope is the scope string (VERSE#v-FRACTAL#f), the local answer is points[].resolution.",
+      "actions": [
+        {
+          "id": "fractal_bind",
+          "peer": "owner",
+          "via": "rest",
+          "op": "set_binding",
+          "args": {
+            "verse_id": "$fixture.verse_id",
+            "hook": "petal.map",
+            "key": "",
+            "fractal_id": "$fixture.fractal_id",
+            "mode": "extension",
+            "package_id": "org.example.city-map",
+            "version_req": ">=1.2.0, <2.0.0",
+            "config": {
+              "district": "harbour"
+            }
+          }
+        }
+      ],
+      "expect": [
+        {
+          "probe": "get",
+          "target": "/api/v1/petals/${fixture.petal_a_id}/bindings/effective",
+          "path": "points.0.package_id",
+          "peers": [
+            "owner",
+            "editor",
+            "viewer"
+          ],
+          "predicate": "equals",
+          "value": "org.example.city-map",
+          "within_s": 30,
+          "after": "fractal_bind",
+          "covers": "the row replicates to every peer"
+        },
+        {
+          "probe": "get",
+          "target": "/api/v1/petals/${fixture.petal_a_id}/bindings/effective",
+          "path": "points.0.scope",
+          "peers": [
+            "owner",
+            "editor",
+            "viewer"
+          ],
+          "predicate": "equals",
+          "value": "VERSE#${fixture.verse_id}-FRACTAL#${fixture.fractal_id}",
+          "within_s": 30,
+          "after": "fractal_bind"
+        },
+        {
+          "probe": "get",
+          "target": "/api/v1/petals/${fixture.petal_a_id}/bindings/effective",
+          "path": "points.0.resolution.state",
+          "peers": [
+            "owner",
+            "viewer"
+          ],
+          "predicate": "equals",
+          "value": "resolved",
+          "within_s": 30,
+          "after": "fractal_bind"
+        },
+        {
+          "probe": "get",
+          "target": "/api/v1/petals/${fixture.petal_a_id}/bindings/effective",
+          "path": "points.0.resolution.reason",
+          "peers": [
+            "editor"
+          ],
+          "predicate": "equals",
+          "value": "not-installed",
+          "within_s": 30,
+          "after": "fractal_bind"
+        },
+        {
+          "probe": "get",
+          "target": "/api/v1/petals/${fixture.petal_a_id}/bindings/effective",
+          "path": "points.0.resolution.offer",
+          "peers": [
+            "editor"
+          ],
+          "predicate": "equals",
+          "value": "install",
+          "within_s": 30,
+          "after": "fractal_bind",
+          "covers": "the offer is for the local DID"
+        }
+      ]
+    },
+    {
+      "id": "3",
+      "title": "The editor takes the offer; the viewer's device policy turns its installed build policy-denied",
+      "settle_s": 60,
+      "covers": [
+        "BND-11"
+      ],
+      "note": "Row 7 (policy-denied) needs an installed build: a peer that never installed stops at row 3 (bindings.md 5.2 order). The viewer's extensions.toml deny loads at this restart (governance reads it at startup only); the deny is local, so the owner and editor keep resolving.",
+      "actions": [
+        {
+          "id": "e_inst",
+          "peer": "editor",
+          "via": "rest",
+          "op": "install_extension",
+          "args": {
+            "package": "city-map",
+            "verse_id": "$fixture.verse_id"
+          },
+          "bind": {
+            "installation": "installation"
+          }
+        },
+        {
+          "id": "e_consent",
+          "peer": "editor",
+          "via": "rest",
+          "op": "consent_extension",
+          "args": {
+            "installation": "$e_inst.installation",
+            "grants": "manifest"
+          },
+          "needs": [
+            "e_inst"
+          ]
+        },
+        {
+          "id": "e_accept",
+          "peer": "editor",
+          "via": "rest",
+          "op": "accept_extension",
+          "args": {
+            "installation": "$e_inst.installation"
+          },
+          "needs": [
+            "e_consent"
+          ]
+        },
+        {
+          "id": "viewer_policy",
+          "peer": "viewer",
+          "via": "host",
+          "op": "restart",
+          "args": {},
+          "needs": [
+            "e_accept"
+          ]
+        }
+      ],
+      "expect": [
+        {
+          "probe": "get",
+          "target": "/api/v1/petals/${fixture.petal_a_id}/bindings/effective",
+          "path": "points.0.resolution.state",
+          "peers": [
+            "editor"
+          ],
+          "predicate": "equals",
+          "value": "resolved",
+          "within_s": 40,
+          "after": "e_accept"
+        },
+        {
+          "probe": "get",
+          "target": "/api/v1/petals/${fixture.petal_a_id}/bindings/effective",
+          "path": "points.0.resolution.reason",
+          "peers": [
+            "viewer"
+          ],
+          "predicate": "equals",
+          "value": "policy-denied",
+          "within_s": 90,
+          "after": "viewer_policy"
+        },
+        {
+          "probe": "get",
+          "target": "/api/v1/petals/${fixture.petal_a_id}/bindings/effective",
+          "path": "points.0.resolution.offer",
+          "peers": [
+            "viewer"
+          ],
+          "predicate": "absent",
+          "within_s": 90,
+          "after": "viewer_policy",
+          "covers": "no dead control"
+        },
+        {
+          "probe": "get",
+          "target": "/api/v1/petals/${fixture.petal_a_id}/bindings/effective",
+          "path": "points.0.resolution.state",
+          "peers": [
+            "owner",
+            "editor"
+          ],
+          "predicate": "equals",
+          "value": "resolved",
+          "mode": "always",
+          "hold_s": 20,
+          "after": "viewer_policy",
+          "covers": "the device deny is local"
+        }
+      ]
+    },
+    {
+      "id": "4",
+      "title": "A nearer petal binding overrides the fractal one; clearing it returns to the fractal binding",
+      "settle_s": 40,
+      "covers": [
+        "BND-11"
+      ],
+      "actions": [
+        {
+          "id": "petal_builtin",
+          "peer": "owner",
+          "via": "rest",
+          "op": "set_binding",
+          "args": {
+            "verse_id": "$fixture.verse_id",
+            "hook": "petal.map",
+            "key": "",
+            "fractal_id": "$fixture.fractal_id",
+            "petal_id": "$fixture.petal_a_id",
+            "mode": "builtin"
+          }
+        },
+        {
+          "id": "petal_clear",
+          "peer": "owner",
+          "via": "rest",
+          "op": "set_binding",
+          "args": {
+            "verse_id": "$fixture.verse_id",
+            "hook": "petal.map",
+            "key": "",
+            "fractal_id": "$fixture.fractal_id",
+            "petal_id": "$fixture.petal_a_id",
+            "clear": true
+          },
+          "needs": [
+            "petal_builtin"
+          ],
+          "sync": "+15"
+        }
+      ],
+      "expect": [
+        {
+          "probe": "get",
+          "target": "/api/v1/petals/${fixture.petal_a_id}/bindings/effective",
+          "path": "points.0.scope",
+          "peers": [
+            "owner",
+            "editor",
+            "viewer"
+          ],
+          "predicate": "equals",
+          "value": "VERSE#${fixture.verse_id}-FRACTAL#${fixture.fractal_id}-PETAL#${fixture.petal_a_id}",
+          "within_s": 30,
+          "after": "petal_builtin"
+        },
+        {
+          "probe": "get",
+          "target": "/api/v1/petals/${fixture.petal_a_id}/bindings/effective",
+          "path": "points.0.resolution.state",
+          "peers": [
+            "owner",
+            "editor",
+            "viewer"
+          ],
+          "predicate": "equals",
+          "value": "builtin",
+          "within_s": 30,
+          "after": "petal_builtin",
+          "covers": "nearest scope wins on every peer"
+        },
+        {
+          "probe": "get",
+          "target": "/api/v1/petals/${fixture.petal_b_id}/bindings/effective",
+          "path": "points.0.scope",
+          "peers": [
+            "owner",
+            "editor"
+          ],
+          "predicate": "equals",
+          "value": "VERSE#${fixture.verse_id}-FRACTAL#${fixture.fractal_id}",
+          "within_s": 30,
+          "after": "petal_builtin",
+          "covers": "the sibling petal is untouched"
+        },
+        {
+          "probe": "get",
+          "target": "/api/v1/petals/${fixture.petal_a_id}/bindings/effective",
+          "path": "points.0.resolution.state",
+          "peers": [
+            "owner",
+            "editor"
+          ],
+          "predicate": "equals",
+          "value": "resolved",
+          "within_s": 40,
+          "after": "petal_clear"
+        },
+        {
+          "probe": "get",
+          "target": "/api/v1/petals/${fixture.petal_a_id}/bindings/effective",
+          "path": "points.0.scope",
+          "peers": [
+            "owner",
+            "editor"
+          ],
+          "predicate": "equals",
+          "value": "VERSE#${fixture.verse_id}-FRACTAL#${fixture.fractal_id}",
+          "within_s": 40,
+          "after": "petal_clear"
+        }
+      ]
+    },
+    {
+      "id": "5",
+      "title": "Demoting a binding's author withdraws it; Keep binding re-authors it; a re-grant does not revive it",
+      "settle_s": 60,
+      "covers": [
+        "BND-11"
+      ],
+      "note": "The editor (Manager) masks petal B with a petal-scope builtin. The owner revokes the grant (ext-fleet step 4 path): the version turns inadmissible on every peer (kept for audit) and the fractal binding applies again. Keep binding is the owner re-publishing the same row (bindings.md 4.5). The editor is then re-granted Editor so it can witness step 6; its withdrawn version stays inadmissible.",
+      "actions": [
+        {
+          "id": "editor_mask",
+          "peer": "editor",
+          "via": "rest",
+          "op": "set_binding",
+          "args": {
+            "verse_id": "$fixture.verse_id",
+            "hook": "petal.map",
+            "key": "",
+            "fractal_id": "$fixture.fractal_id",
+            "petal_id": "$fixture.petal_b_id",
+            "mode": "builtin"
+          }
+        },
+        {
+          "peer": "owner",
+          "via": "gui",
+          "op": "click",
+          "args": {
+            "name": "Browse all verses",
+            "exact": true
+          },
+          "needs": [
+            "editor_mask"
+          ],
+          "sync": "+15"
+        },
+        {
+          "peer": "owner",
+          "via": "gui",
+          "op": "click",
+          "args": {
+            "name": "Options for verse QA Basic",
+            "exact": true
+          }
+        },
+        {
+          "peer": "owner",
+          "via": "gui",
+          "op": "click",
+          "args": {
+            "name": "Access",
+            "exact": true
+          }
+        },
+        {
+          "peer": "owner",
+          "via": "gui",
+          "op": "click",
+          "args": {
+            "name": "Revoke role grant for ${peers.editor.did}",
+            "exact": true
+          }
+        },
+        {
+          "id": "demote",
+          "peer": "owner",
+          "via": "gui",
+          "op": "click",
+          "args": {
+            "name": "Confirm Revoke role grant for ${peers.editor.did}",
+            "exact": true,
+            "wait_s": 3
+          }
+        },
+        {
+          "id": "hold",
+          "peer": "owner",
+          "via": "host",
+          "op": "sleep",
+          "args": {
+            "seconds": 15
+          },
+          "needs": [
+            "demote"
+          ]
+        },
+        {
+          "id": "keep",
+          "peer": "owner",
+          "via": "rest",
+          "op": "set_binding",
+          "args": {
+            "verse_id": "$fixture.verse_id",
+            "hook": "petal.map",
+            "key": "",
+            "fractal_id": "$fixture.fractal_id",
+            "petal_id": "$fixture.petal_b_id",
+            "mode": "builtin"
+          },
+          "needs": [
+            "hold"
+          ]
+        },
+        {
+          "peer": "owner",
+          "via": "gui",
+          "op": "click",
+          "args": {
+            "name": "Role to assign for ${peers.editor.did}",
+            "exact": true
+          },
+          "needs": [
+            "keep"
+          ]
+        },
+        {
+          "peer": "owner",
+          "via": "gui",
+          "op": "click",
+          "args": {
+            "name": "editor",
+            "exact": true
+          }
+        },
+        {
+          "peer": "owner",
+          "via": "gui",
+          "op": "click",
+          "args": {
+            "name": "Assign role editor to ${peers.editor.did}",
+            "exact": true
+          },
+          "id": "regrant"
+        },
+        {
+          "peer": "owner",
+          "via": "gui",
+          "op": "click",
+          "args": {
+            "name": "Confirm Assign role editor to ${peers.editor.did}",
+            "exact": true,
+            "wait_s": 3
+          },
+          "optional": true
+        }
+      ],
+      "expect": [
+        {
+          "probe": "get",
+          "target": "/api/v1/petals/${fixture.petal_b_id}/bindings/effective",
+          "path": "points.0.mode",
+          "peers": [
+            "owner",
+            "viewer"
+          ],
+          "predicate": "equals",
+          "value": "builtin",
+          "within_s": 40,
+          "after": "editor_mask"
+        },
+        {
+          "probe": "get",
+          "target": "/api/v1/petals/${fixture.petal_b_id}/bindings/effective",
+          "path": "points.0.scope",
+          "peers": [
+            "owner",
+            "viewer"
+          ],
+          "predicate": "equals",
+          "value": "VERSE#${fixture.verse_id}-FRACTAL#${fixture.fractal_id}",
+          "within_s": 90,
+          "after": "demote",
+          "covers": "the withdrawn mask stops applying on every peer"
+        },
+        {
+          "probe": "get",
+          "target": "/api/v1/bindings?verse_id=${fixture.verse_id}&fractal_id=${fixture.fractal_id}&petal_id=${fixture.petal_b_id}",
+          "path": "bindings",
+          "peers": [
+            "owner",
+            "viewer"
+          ],
+          "predicate": "includes",
+          "value": {
+            "author_did": "${peers.owner.did}",
+            "mode": "builtin",
+            "effective": true
+          },
+          "within_s": 60,
+          "after": "keep",
+          "covers": "Keep binding re-authors as the clicking Manager"
+        },
+        {
+          "probe": "get",
+          "target": "/api/v1/petals/${fixture.petal_b_id}/bindings/effective",
+          "path": "points.0.mode",
+          "peers": [
+            "owner",
+            "viewer"
+          ],
+          "predicate": "equals",
+          "value": "builtin",
+          "within_s": 60,
+          "after": "keep"
+        },
+        {
+          "probe": "role",
+          "target": "$fixture.verse_id",
+          "peers": [
+            "editor"
+          ],
+          "predicate": "equals",
+          "value": "editor",
+          "within_s": 60,
+          "after": "regrant"
+        },
+        {
+          "probe": "get",
+          "target": "/api/v1/bindings?verse_id=${fixture.verse_id}&fractal_id=${fixture.fractal_id}&petal_id=${fixture.petal_b_id}",
+          "path": "bindings",
+          "peers": [
+            "owner",
+            "viewer"
+          ],
+          "predicate": "includes",
+          "value": {
+            "author_did": "${peers.editor.did}",
+            "admissible": false
+          },
+          "within_s": 60,
+          "after": "regrant",
+          "covers": "a re-grant does not revive a withdrawn version; it stays stored for audit"
+        }
+      ]
+    },
+    {
+      "id": "6",
+      "title": "A kill-listed build stops where installed and is refused at install; the Owner override runs it on the Owner peer only",
+      "settle_s": 90,
+      "covers": [
+        "BND-11"
+      ],
+      "note": "OD-E1 and bindings.md 5.7. Petal B's mask is cleared so the fractal binding is effective on both petals. The editor installs the legacy build before the kill list, so after it the editor resolves revoked (row 6, stop after in-flight writes) with no offer. The override is the audited kill-list-overrides route (confirm = package_id), keyed to this verse and build on the Owner's host and never replicated.",
+      "actions": [
+        {
+          "id": "unmask",
+          "peer": "owner",
+          "via": "rest",
+          "op": "set_binding",
+          "args": {
+            "verse_id": "$fixture.verse_id",
+            "hook": "petal.map",
+            "key": "",
+            "fractal_id": "$fixture.fractal_id",
+            "petal_id": "$fixture.petal_b_id",
+            "clear": true
+          }
+        },
+        {
+          "id": "el_inst",
+          "peer": "editor",
+          "via": "rest",
+          "op": "install_extension",
+          "args": {
+            "package": "city-map-legacy",
+            "verse_id": "$fixture.verse_id"
+          },
+          "bind": {
+            "installation": "installation"
+          },
+          "needs": [
+            "unmask"
+          ]
+        },
+        {
+          "id": "el_consent",
+          "peer": "editor",
+          "via": "rest",
+          "op": "consent_extension",
+          "args": {
+            "installation": "$el_inst.installation",
+            "grants": "manifest"
+          },
+          "needs": [
+            "el_inst"
+          ]
+        },
+        {
+          "id": "el_accept",
+          "peer": "editor",
+          "via": "rest",
+          "op": "accept_extension",
+          "args": {
+            "installation": "$el_inst.installation"
+          },
+          "needs": [
+            "el_consent"
+          ]
+        },
+        {
+          "id": "rebind",
+          "peer": "owner",
+          "via": "rest",
+          "op": "set_binding",
+          "args": {
+            "verse_id": "$fixture.verse_id",
+            "hook": "petal.map",
+            "key": "",
+            "fractal_id": "$fixture.fractal_id",
+            "mode": "extension",
+            "package_id": "org.example.city-map-legacy",
+            "version_req": ">=0.1.0",
+            "config": {
+              "district": "harbour"
+            }
+          },
+          "needs": [
+            "el_accept"
+          ]
+        },
+        {
+          "id": "kill",
+          "peer": "owner",
+          "via": "rest",
+          "op": "publish_revocation",
+          "args": {
+            "entries": [
+              {
+                "package_id": "org.example.city-map-legacy",
+                "content_hash": "$legacy_pkg.content_hash"
+              }
+            ]
+          },
+          "needs": [
+            "rebind"
+          ],
+          "sync": "+20"
+        },
+        {
+          "id": "refused_owner",
+          "peer": "owner",
+          "via": "rest",
+          "op": "install_extension",
+          "args": {
+            "package": "city-map-legacy",
+            "verse_id": "$fixture.verse_id"
+          },
+          "expect": "refused",
+          "needs": [
+            "kill"
+          ],
+          "sync": "+20"
+        },
+        {
+          "id": "refused_viewer",
+          "peer": "viewer",
+          "via": "rest",
+          "op": "install_extension",
+          "args": {
+            "package": "city-map-legacy",
+            "verse_id": "$fixture.verse_id"
+          },
+          "expect": "refused",
+          "needs": [
+            "kill"
+          ]
+        },
+        {
+          "id": "override",
+          "peer": "owner",
+          "via": "rest",
+          "op": "request",
+          "args": {
+            "method": "POST",
+            "path": "/api/v1/extensions/kill-list-overrides",
+            "body": {
+              "verse_id": "$fixture.verse_id",
+              "package_id": "org.example.city-map-legacy",
+              "content_hash": "$legacy_pkg.content_hash",
+              "confirm": "org.example.city-map-legacy"
+            }
+          },
+          "needs": [
+            "refused_owner"
+          ]
+        },
+        {
+          "id": "ol_inst",
+          "peer": "owner",
+          "via": "rest",
+          "op": "install_extension",
+          "args": {
+            "package": "city-map-legacy",
+            "verse_id": "$fixture.verse_id"
+          },
+          "bind": {
+            "installation": "installation"
+          },
+          "needs": [
+            "override"
+          ]
+        },
+        {
+          "id": "ol_consent",
+          "peer": "owner",
+          "via": "rest",
+          "op": "consent_extension",
+          "args": {
+            "installation": "$ol_inst.installation",
+            "grants": "manifest"
+          },
+          "needs": [
+            "ol_inst"
+          ]
+        },
+        {
+          "id": "ol_accept",
+          "peer": "owner",
+          "via": "rest",
+          "op": "accept_extension",
+          "args": {
+            "installation": "$ol_inst.installation"
+          },
+          "needs": [
+            "ol_consent"
+          ]
+        }
+      ],
+      "expect": [
+        {
+          "probe": "get",
+          "target": "/api/v1/petals/${fixture.petal_a_id}/bindings/effective",
+          "path": "points.0.package_id",
+          "peers": [
+            "owner",
+            "editor",
+            "viewer"
+          ],
+          "predicate": "equals",
+          "value": "org.example.city-map-legacy",
+          "within_s": 30,
+          "after": "rebind"
+        },
+        {
+          "probe": "get",
+          "target": "/api/v1/petals/${fixture.petal_a_id}/bindings/effective",
+          "path": "points.0.resolution.state",
+          "peers": [
+            "editor"
+          ],
+          "predicate": "equals",
+          "value": "resolved",
+          "within_s": 40,
+          "after": "rebind"
+        },
+        {
+          "probe": "get",
+          "target": "/api/v1/petals/${fixture.petal_a_id}/bindings/effective",
+          "path": "points.0.resolution.reason",
+          "peers": [
+            "editor"
+          ],
+          "predicate": "equals",
+          "value": "revoked",
+          "within_s": 60,
+          "after": "kill",
+          "covers": "the pull (10 s in a run) stops the installed build"
+        },
+        {
+          "probe": "get",
+          "target": "/api/v1/petals/${fixture.petal_a_id}/bindings/effective",
+          "path": "points.0.resolution.offer",
+          "peers": [
+            "editor"
+          ],
+          "predicate": "absent",
+          "within_s": 60,
+          "after": "kill",
+          "covers": "Override is offered on the Owner's host only"
+        },
+        {
+          "probe": "get",
+          "target": "/api/v1/petals/${fixture.petal_a_id}/bindings/effective",
+          "path": "points.0.resolution.state",
+          "peers": [
+            "owner"
+          ],
+          "predicate": "equals",
+          "value": "resolved",
+          "within_s": 60,
+          "after": "ol_accept",
+          "covers": "row 6 passes on the Owner host only"
+        },
+        {
+          "probe": "get",
+          "target": "/api/v1/petals/${fixture.petal_a_id}/bindings/effective",
+          "path": "points.0.resolution.reason",
+          "peers": [
+            "editor"
+          ],
+          "predicate": "equals",
+          "value": "revoked",
+          "mode": "always",
+          "hold_s": 20,
+          "after": "ol_accept",
+          "covers": "the override never replicates"
+        },
+        {
+          "probe": "get",
+          "target": "/api/v1/petals/${fixture.petal_a_id}/bindings/effective",
+          "path": "points.0.resolution.state",
+          "peers": [
+            "viewer"
+          ],
+          "predicate": "not_equals",
+          "value": "resolved",
+          "mode": "always",
+          "hold_s": 20,
+          "after": "ol_accept"
+        },
+        {
+          "probe": "alive",
+          "target": "all",
+          "predicate": "present",
+          "mode": "always",
+          "hold_s": 10
+        }
+      ]
+    }
+  ]
+}

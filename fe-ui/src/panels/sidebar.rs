@@ -75,6 +75,7 @@ pub(crate) fn left_sidebar(
                     );
                     ui.add_space(8.0);
                     sidebar_section_groups(ui, nav, ui_mgr, vis_state);
+                    crate::extensions::draw_sidebar_slot(ui);
 
                     ui.add_space(4.0);
                 },

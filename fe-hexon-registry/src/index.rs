@@ -19,6 +19,8 @@ pub struct HexonIndexEntry {
     pub tags: Vec<String>,
     pub publisher_did: String,
     pub size_bytes: u64,
+    /// BLAKE3 of the manifest with the signature blanked (store-client contract v1); empty when the manifest cannot be canonicalised.
+    pub content_hash: String,
     /// `manifest.integrity` is present (cheap presence check at scan time —
     /// NOT a cryptographic verification; that happens at publish and again,
     /// per read, in the meta/chunk/member routes via `HexonArchiveIndex`).
@@ -109,7 +111,10 @@ pub fn validate_package(bytes: &[u8]) -> Result<serde_json::Value> {
 /// (plus, cheaply, `chunks/index.json`'s presence/bundle-count for `layout` — a
 /// container's chunk table is small, header-phase JSON, same cap as the manifest).
 pub fn index_one(path: &Path) -> Result<HexonIndexEntry> {
-    let manifest = read_zip_json(path, "manifest.json")?;
+    let manifest_raw = read_zip_bytes(path, "manifest.json")?;
+    let manifest: serde_json::Value =
+        serde_json::from_slice(&manifest_raw).context("invalid JSON in manifest.json")?;
+    let content_hash = fe_format::integrity::content_hash(&manifest_raw).unwrap_or_default();
     let s = |key: &str| -> Option<String> {
         manifest
             .get(key)
@@ -144,6 +149,7 @@ pub fn index_one(path: &Path) -> Result<HexonIndexEntry> {
             .unwrap_or_default(),
         publisher_did: s("publisher_did").unwrap_or_default(),
         size_bytes: std::fs::metadata(path)?.len(),
+        content_hash,
         sealed,
         layout,
         path: path.to_path_buf(),

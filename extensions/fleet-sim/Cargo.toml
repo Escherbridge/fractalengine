@@ -1,0 +1,19 @@
+[package]
+name = "fleet-sim"
+version = "0.1.0"
+edition = "2021"
+license = "Apache-2.0"
+publish = false
+description = "Example extension: route-following movers and simulated sensor readings from fleet.config nodes (FleetConfig v2)"
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+fe-ext-guest = { path = "../../tools/fe-ext/guest" }
+fe-sim-model = { path = "../../fe-sim/model" }
+serde_json = "1"
+
+# The sandbox journey lives in J8 (tools/fe-ext/tests/j8_cli.rs), so this crate never builds the host stack.
+# Standalone: built for wasm32-wasip2 by `fe-ext build`, never part of the host workspace.
+[workspace]

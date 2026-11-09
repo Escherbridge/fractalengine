@@ -1559,3 +1559,14 @@ QA69 (QA-0024): RulerHudInput::paint reports the complete painted footprint to
 fe-renderer's ScenePointerChrome::exclude_completed_hud, so the HUD's pixels
 never admit a scene press (Brush stroke, armed shape, camera). Pointer-only; see
 fe-renderer/src/scene-pointer-design.md §passive-hud.
+
+## §extension-manifest (`extension.rs`, extension_platform E18)
+
+`TERRAIN_EXTENSION_ID` is `org.fractalengine.terrain`, a valid v2 package id (it was
+`fractalengine:terrain`). The manifest is built-in and native (no install, no guest call) and declares
+`provides: [{ "hook": "petal.map" }]`, making terrain the first `petal.map` provider
+(docs/extensions/bindings.md section 6). A binding naming it serves its `config` as a `TerrainConfig`
+through the strictest reader (`petal_binding.rs`) and never writes the petal row; a petal's stored
+`terrain` counts as a petal-scope `builtin` binding and wins over an inherited one. The resolver is
+`fractalengine/src/extension_host/petal_map.rs`; `PetalMapState` records the effective source.
+`iot/path_tracker.rs` delegates its f64 snap and interpolation to `fe_sdk::path_geometry`.

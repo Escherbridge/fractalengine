@@ -69,6 +69,8 @@ async fn harness_health_ready_and_authed_roundtrip() {
         screenshot: fe_api::screenshot::ScreenshotSurface::disabled(),
         input: fe_api::input::InputSurface::disabled(),
         listening_tx: Some(listening_tx),
+        extension_host: None,
+        binding_host: None,
     });
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
     let address = loop {

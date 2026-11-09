@@ -11,7 +11,9 @@ use std::sync::{Arc, Mutex};
 
 use crate::capability::CapabilityToken;
 use crate::host_env::HostEnv;
-use crate::transaction::PluginTransaction;
+use crate::transaction::{PluginTransaction, StagedCommitSink, StagedFlush};
+use fe_sdk::manifest_v2::SceneWrite;
+use fe_sdk::plugin_host::StagedReading;
 use crate::PluginCommand;
 
 /// Runtime context provided to plugin callbacks.
@@ -34,6 +36,7 @@ pub struct PluginContext {
     pub(crate) host: HostEnv,
     reader: Option<Arc<Mutex<dyn NodeReader>>>,
     sink: Option<Arc<Mutex<dyn TransactionSink>>>,
+    staged_sink: Option<Arc<Mutex<dyn StagedCommitSink>>>,
 }
 
 impl PluginContext {
@@ -53,6 +56,7 @@ impl PluginContext {
             host: HostEnv::new(),
             reader: None,
             sink: None,
+            staged_sink: None,
         }
     }
 
@@ -81,6 +85,12 @@ impl PluginContext {
     /// Attach a trusted atomic sink bound to this plugin's admitted capability limits.
     pub fn with_transaction_sink(mut self, sink: Arc<Mutex<dyn TransactionSink>>) -> Self {
         self.sink = Some(sink);
+        self
+    }
+
+    /// Attach the trusted sink a tick flush commits through (ops and readings in one command).
+    pub fn with_staged_sink(mut self, sink: Arc<Mutex<dyn StagedCommitSink>>) -> Self {
+        self.staged_sink = Some(sink);
         self
     }
 
@@ -220,23 +230,78 @@ impl PluginContext {
         Ok(nodes)
     }
 
+    /// Check one op against the token: write kind, property scope and bound petal.
+    pub fn authorize_op(&self, op: &PendingOp) -> Result<(), String> {
+        let (kind, property) = match op {
+            PendingOp::SetProperty { key, .. } => (SceneWrite::SetProperty, Some(key)),
+            PendingOp::CreateNode { petal_id, .. } => {
+                if petal_id != &self.petal_id {
+                    return Err("plugin creation targets another petal".into());
+                }
+                (SceneWrite::CreateNode, None)
+            }
+            PendingOp::DeleteNode { .. } => (SceneWrite::DeleteNode, None),
+            PendingOp::SetTransform { .. } => (SceneWrite::SetTransform, None),
+        };
+        if !self.capabilities.allows_scene_write(kind) {
+            return Err(format!("plugin capability denied: scene write {kind:?}"));
+        }
+        if let Some(key) = property {
+            validate_access(&self.capabilities, &CapabilityOperation::PropertyAccess { key: key.clone() })
+                .map_err(|error| error.to_string())?;
+        }
+        Ok(())
+    }
+
+    /// Check one staged reading: metric inside the grant and a host-fixed source class.
+    pub fn authorize_reading(&self, reading: &StagedReading) -> Result<(), String> {
+        if !self.session.is_active() {
+            return Err("plugin instance is no longer admitted".into());
+        }
+        if !self.capabilities.allows_reading(&reading.metric) {
+            return Err(format!("plugin capability denied: reading metric {}", reading.metric));
+        }
+        Ok(())
+    }
+
+    /// Commit a whole tick window as one atomic command and return its persisted receipt.
+    pub fn commit_staged(&self, flush: &StagedFlush) -> Result<TransactionReceipt, String> {
+        if !self.session.is_active() {
+            return Err("plugin instance is no longer admitted".into());
+        }
+        if !flush.ops.is_empty() {
+            self.require_capability(fe_sdk::CAP_STORAGE_WRITE)?;
+        }
+        fe_sdk::plugin_host::validate_commit(&flush.ops, &flush.readings)?;
+        self.authorize_petal(&self.petal_id)?;
+        for op in &flush.ops {
+            self.authorize_op(op)?;
+        }
+        for reading in &flush.readings {
+            self.authorize_reading(reading)?;
+        }
+        let receipt = match &self.staged_sink {
+            Some(sink) => sink
+                .lock()
+                .map_err(|_| "plugin sink lock poisoned")?
+                .commit_staged(&self.petal_id, flush)?,
+            None if flush.readings.is_empty() => return self.commit_ops(&flush.ops),
+            None => return Err("plugin staged sink is unavailable".into()),
+        };
+        let created = flush.ops.iter().filter(|op| matches!(op, PendingOp::CreateNode { .. })).count();
+        if receipt.op_count != flush.ops.len() || receipt.created_node_ids.len() != created {
+            return Err("plugin sink returned an invalid commit receipt; outcome requires reconciliation".into());
+        }
+        Ok(receipt)
+    }
+
     /// Commit a complete admitted batch and return its persisted receipt.
     pub fn commit_ops(&self, ops: &[PendingOp]) -> Result<TransactionReceipt, String> {
         self.require_capability(fe_sdk::CAP_STORAGE_WRITE)?;
         fe_sdk::plugin_host::validate_transaction(ops)?;
         self.authorize_petal(&self.petal_id)?;
         for op in ops {
-            match op {
-                PendingOp::SetProperty { key, .. } => validate_access(
-                    &self.capabilities,
-                    &CapabilityOperation::PropertyAccess { key: key.clone() },
-                )
-                .map_err(|error| error.to_string())?,
-                PendingOp::CreateNode { petal_id, .. } if petal_id != &self.petal_id => {
-                    return Err("plugin creation targets another petal".into())
-                }
-                _ => {}
-            }
+            self.authorize_op(op)?;
         }
         let receipt = self
             .sink

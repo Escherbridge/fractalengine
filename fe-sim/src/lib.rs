@@ -19,7 +19,8 @@
 //!   `IrohDocsReplicator` (fe-sync `virtual_transport.rs`), so prod and sim
 //!   cannot drift by construction; a sim sync thread binds no iroh
 //!   endpoint at all (pinned by `fe_sync::bound_endpoint_count`).
-//! * [`sensors`] — pure sensor models (sine, weather-like, random-walk):
+//! * [`sensors`] — pure sensor models (the model lives in the wasm-compatible `fe-sim-model`
+//!   crate under `fe-sim/model`; `fleet`/`sensors` re-export it, see `fe-sim/model/AGENTS.md`) (sine, weather-like, random-walk):
 //!   a reading is a pure function of (model config, tick), never of hidden
 //!   state or wall time.
 //! * [`fleet`] — the declarative fleet config and its runner: synthetic

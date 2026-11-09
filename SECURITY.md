@@ -43,8 +43,10 @@ merely restate them will be deduplicated against this list.
   which returned 22 hits: 21 production sites plus 1 test fixture.
 - **Known dependency advisories are triaged, not yet fixed.** `deny.toml`
   explicitly ignores these RustSec IDs, each with a reason:
-  - 19 for `wasmtime` 29 in the dormant WASM plugin host. Each needs a major
-    upgrade.
+  - None for `wasmtime`: the 19 ignores for 29.0.1 were retired when
+    `fe-plugin` moved to 49.0.2 (2026-11-08). The WASM host executes untrusted
+    code once enabled, so a new `wasmtime` advisory is not ignorable; bump
+    instead.
   - Several transitive advisories whose patched release would re-resolve
     other crates: `h2`, `rustls`, and `webbrowser` via bevy_egui. (`ammonia`
     and `quinn-proto` were upgraded to fixed releases on 2026-10-13.)
@@ -85,9 +87,17 @@ merely restate them will be deduplicated against this list.
   neighbour cannot be attributed on the wire, so they fall back to
   claim-based admission. Treat anyone holding a verse's namespace
   capability as able to write to it.
-- **The plugin sandbox is young.** Rhai and WebAssembly plugins run with
-  operation limits, fuel metering, and capability manifests, but the
-  sandbox has not had an external audit. Only install plugins you trust.
+- **The plugin sandbox is young and has not had an external audit.** Rhai
+  and WebAssembly plugins run with operation limits, fuel metering, and
+  capability manifests. `network_scope` and `external_http` are denied at
+  parse and at use, with no grant path in v1. The host thread runs in every
+  build but admits no package unless the binary has the `plugin-host` build
+  feature and starts with `FE_PLUGIN_HOST_ALLOW=1`. An admitted package must
+  carry an ed25519 publisher signature from a configured trust root. The
+  unsigned-package dev escape exists only in debug builds. Paid (licensed)
+  packages are refused until the entitlement verifier ships. The automatic
+  revocation-list pull is not built yet. Once enabled the host runs plugin
+  code, so only install plugins you trust.
 
 ## Scope
 

@@ -488,5 +488,7 @@ fn owned_api_config(
         screenshot: fe_api::screenshot::ScreenshotSurface::disabled(),
         input: fe_api::input::InputSurface::disabled(),
         listening_tx: Some(listening_tx),
+        extension_host: None,
+        binding_host: None,
     }
 }

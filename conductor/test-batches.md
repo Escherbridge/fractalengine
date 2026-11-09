@@ -142,8 +142,9 @@ missing `reqwest`/`tokio` symbols.
 | `fe-sim/src/**` | 43 |
 | `fe-database/tests/{device_enrolment_test,device_payload_test,iot_reading_test,observation_plane_test}.rs` | 60 |
 | `fe-api/tests/{device_ingest_test,iot_ingest_test,sim_control_test}.rs`, `fe-api/src/sim.rs` | 23 |
+| `fe-database/tests/db_test.rs` (J3 flush fn only: `test_rename_entity_omits_node_scene_change`, body at ~L1138) | 1 |
 
-**IoT subtotal ≈ 148** — **region total ≈ 759**
+**IoT subtotal ≈ 149** — **region total ≈ 760**
 
 ```bash
 cargo test -p fe-terrain --features render
@@ -159,6 +160,8 @@ cargo test -p iot-bridge   # extensions/iot-bridge package name
 cargo test -p fe-sim
 cargo test -p fe-database --test device_enrolment_test --test device_payload_test --test iot_reading_test --test observation_plane_test
 cargo test -p fe-api --test device_ingest_test --test iot_ingest_test --test sim_control_test
+# J3 lives inside this fn (the name predates J3; filter by it, do not rename it here)
+cargo test -p fe-database --test db_test -- test_rename_entity_omits_node_scene_change
 ```
 
 ---
@@ -220,12 +223,14 @@ RBAC, role propagation/grants, invites, claim ownership, admission, asset owners
 | `fe-database/tests/role_propagation_inbound_test.rs` **(SLOW — 606s flood test)** | 12 |
 | `fe-policy/**` | 85 |
 | `fe-api/tests/asset_ownership_test.rs` | 10 |
+| `fe-database/src/handlers/extension_binding.rs`, `fe-database/tests/extension_binding_test.rs` (scoped extension bindings, Manager+ authority) | 1 |
 
-**Total ≈ 164** (152 fast + 12 slow)
+**Total ≈ 165** (153 fast + 12 slow)
 
 ```bash
 cargo test -p fe-database --lib -- invite:: scoped_invite scope:: rbac:: role_manager role_grants handlers::invite handlers::claim_orphaned_verse
 cargo test -p fe-database --test role_propagation_durable_test --test role_propagation_api_cap_test --test role_propagation_local_test
+cargo test -p fe-database --test extension_binding_test
 cargo test -p fe-policy
 cargo test -p fe-api --test asset_ownership_test
 
@@ -276,11 +281,13 @@ REST, MCP tools, operator gate, screenshot/vision/input, egress/export, elevated
 | `fe-runtime/src/vision.rs` | 5 |
 | `fractalengine/src/{screenshot_bridge,vision_bridge}.rs` | 32 |
 | `fractalengine/tests/security_harness.rs` | 5 |
+| `fe-api/src/{bindings,bound_routes}.rs`, `fe-api/tests/{bindings_api_test,extensions_api_test}.rs` (already inside `fe-api/**`; listed for the batch filter) | 4 |
 
 **Total ≈ 297**
 
 ```bash
 cargo test -p fe-api --test api_integration --test api_harness_smoke --test mcp_integration --test screenshot_test --test vision_test --test vision_scope_test --test token_lifecycle_test --test namespace_capability_test --test existence_oracle_test --test record_id_read_test --test gis_test --test export_share_test --test share_signer_persistence_test --test analytics_scope_test --test ws_integration
+cargo test -p fe-api --test bindings_api_test --test extensions_api_test
 cargo test -p fe-api --lib -- auth:: crs:: bridge_client endpoint:: entity_store_bridge export:: operator_gate query_guard rest:: mcp:: share:: upload:: visibility:: vision:: ws::
 cargo test -p fe-database --lib -- handlers::elevated_query api_token_store session_cache handlers::api_token
 cargo test -p fe-runtime --lib -- vision::
@@ -333,8 +340,12 @@ fe-plugin, fe-plugin-test, fe-hexon, fe-hexon-registry, fe-format, fe-sdk, Atlas
 | `fe-sdk/**` | 46 |
 | `fe-ui/src/atlas/{dashboard,model_editor,search_bar,tag_panel,room_editor}.rs` | 23 |
 | `fe-ui/src/actions/hexon.rs` | 1 |
+| `fe-ui/src/extensions/**` (consent, slots, panel, builtin, bindings) | 7 |
+| `fe-runtime/src/{extension_binding,scene_hook_gate}.rs` | 7 |
+| `tools/fe-ext/**` (host CLI in the workspace; `guest/` is excluded and builds standalone) | 5 |
+| `extensions/{bi-push,device-adapter,fleet-sim}/**` (standalone crates, own `[workspace]`) | 4 |
 
-**Total ≈ 312**
+**Total ≈ 335**
 
 ```bash
 cargo test -p fe-plugin
@@ -343,7 +354,17 @@ cargo test -p fe-hexon
 cargo test -p fe-hexon-registry
 cargo test -p fe-format
 cargo test -p fe-sdk
+cargo test -p fe-ext -- j8
+cargo test --manifest-path tools/fe-ext/guest/Cargo.toml
+cargo test --manifest-path extensions/fleet-sim/Cargo.toml
+cargo test --manifest-path extensions/device-adapter/Cargo.toml
+cargo test --manifest-path extensions/bi-push/Cargo.toml
+cargo test -p fe-plugin -- net::tests:: bindings::resolver::tests:: tick::tests::tick_journey_skips_counts_and_degrades_without_flushing
+cargo test -p fe-hexon --features remote -- registry_source::tests::
+cargo test -p fe-runtime --lib -- extension_binding::tests:: scene_hook_gate::tests::
 cargo test -p fe-ui --lib -- atlas::dashboard atlas::model_editor atlas::search_bar atlas::tag_panel atlas::room_editor actions::hexon
+cargo test -p fe-ui --lib -- extensions::
+cargo test -p fractalengine --bin fractalengine -- extension_host:: plugin_bridge::
 ```
 
 ---
@@ -402,6 +423,7 @@ cargo test -p fe-ui --lib -- plugin::
 | `fe-ui/src/actions/path.rs` | R5 |
 | `fe-ui/src/actions/query.rs` | R3 |
 | `fe-ui/src/actions/hexon.rs` | R11 |
+| `fe-ui/src/extensions/**` | R11 |
 | `fe-ui/src/dialogs/` (excl. `join.rs`) | R2/R6 (split by file — see R2, R6 tables) |
 | `fe-ui/src/dialogs/join.rs` | R6, R8 |
 | `fe-ui/src/panels/` (split per R2/R3/R4/R5/R6 tables) | see region tables |
@@ -413,6 +435,7 @@ cargo test -p fe-ui --lib -- plugin::
 | `fe-database/src/handlers/{petal_terrain,petal_render_distance}.rs` | R4 |
 | `fe-database/src/handlers/{visibility_groups,crud,node_view}.rs` | R1 |
 | `fe-database/src/handlers/{invite,claim_orphaned_verse}.rs` | R7 |
+| `fe-database/src/handlers/extension_binding.rs`, `fe-database/tests/extension_binding_test.rs` | R7 |
 | `fe-database/src/handlers/elevated_query.rs` | R9 |
 | `fe-database/src/handlers/{api_token}.rs`, `api_token_store.rs`, `session_cache.rs` | R9 |
 | `fe-database/src/handlers/` (rest: blob_migration, asset_gc, asset_backfill, inbound_admissions, ts_partial, verse_settings) | R10 |
@@ -424,13 +447,16 @@ cargo test -p fe-ui --lib -- plugin::
 | `fe-database/tests/{entity_property_test,gis_data_test}.rs` | R3 |
 | `fe-database/tests/{device_enrolment_test,device_payload_test,iot_reading_test,observation_plane_test}.rs` | R4 (IoT) |
 | `fe-database/tests/{petal_render_distance_test,visibility_groups_test,node_lifecycle_test,node_view_test,node_data_write_readback_test}.rs` | R4 / R1 (see R1, R4 tables) |
+| `fe-database/tests/db_test.rs` (J3 IoT flush fn only) | R4 (IoT) |
 | `fe-database/tests/` (rest: db_test, shared_handle_test, schema_idempotent, migration_*, replication_backpressure_test, canon_log_*_test, dcl20_bypass_counter_test) | R10 |
 | `fe-terrain/**` | R4 (always `--features render`) |
 | `fe-api/**` | R9, except files cross-listed into R4/R7/R8 (see R9 table header) |
+| `fe-api/src/{bindings,bound_routes}.rs`, `fe-api/tests/{bindings_api_test,extensions_api_test}.rs` | R9 |
 | `fe-sync/**` | R8 |
 | `fe-network/**`, `fractalengine-relay/**` | R8 |
 | `fe-runtime/src/{peer_registry,distributed_query,blob_transport,blob_store,bevy_blob_reader}.rs` | R8 |
 | `fe-runtime/src/vision.rs` | R9 |
+| `fe-runtime/src/{extension_binding,scene_hook_gate}.rs` | R11 |
 | `fe-runtime/` (rest) | Misc |
 | `fe-identity/**`, `fe-canonical-log/**` | R10 |
 | `fe-policy/**` | R7 |
@@ -439,9 +465,11 @@ cargo test -p fe-ui --lib -- plugin::
 | `fe-renderer/src/{terrain_overlay,terrain_height}.rs` | R4 |
 | `fe-webview/**` | R6 |
 | `extensions/iot-bridge/**`, `fe-sim/**` | R4 (IoT) |
+| `extensions/{bi-push,device-adapter,fleet-sim}/**`, `tools/fe-ext/**` | R11 |
 | `fractalengine/src/{asset_bridge}.rs` | R2 |
 | `fractalengine/src/gpx_bridge.rs` | R5 |
 | `fractalengine/src/terrain_bridge.rs` | R4 |
+| `fractalengine/src/{plugin_bridge.rs,extension_host/**}` | R11 |
 | `fractalengine/src/{screenshot_bridge,vision_bridge}.rs` | R9 |
 | `fractalengine/src/{panic_log,window_chrome}.rs` | R6 |
 | `fractalengine/tests/security_harness.rs` | R9 |

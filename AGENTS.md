@@ -245,7 +245,7 @@ sessions), so they are run on purpose, never by habit:
 
 1. **Run tests only when explicitly told** — by the user, or by a steer/task that names the batch.
    Never run tests automatically after a fix, and never as a pre-commit ritual. The pre-commit gate
-   is `cargo check -p <touched crates>`; clippy and tests belong to the explicitly requested sweep.
+   is `cargo check -p <touched crates>`; tests belong to the explicitly requested sweep. Clippy is not run (user decision 2026-11-09): it is not part of any gate, sweep or CI job.
 2. **Every test must be selectable.** Tests live in the usability-region batches of
    `conductor/test-batches.md` (each batch = a `cargo test -p <crate> -- <filter> ...` command).
    New or extended tests land inside an existing batch, or register a new, small batch with its

@@ -528,6 +528,47 @@ impl CallerAuth {
 /// Every author's replica entry for one node key: `(author_did, row_bytes)`.
 pub type RejudgeCandidates = Vec<(String, Vec<u8>)>;
 
+/// A refused binding command: `code` is the bindings.md §4.2 error id (`invalid-binding`, `not-found`, ...).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BindingRefusal {
+    pub code: String,
+    pub message: String,
+}
+
+/// One stored binding version as judged on read (bindings.md §4.4).
+#[derive(Debug, Clone, PartialEq, serde::Serialize)]
+pub struct StoredBinding {
+    pub record: crate::extension_binding::BindingRecord,
+    /// The author held Manager+ at the scope when it wrote.
+    pub written_authorized: bool,
+    /// Written authorized and the author still holds Manager+ now.
+    pub admissible: bool,
+    /// The newest admissible version at its point.
+    pub effective: bool,
+}
+
+/// One verse's binding plane for the per-peer resolver: every version judged, the roles and stored-terrain petals.
+#[derive(Debug, Clone)]
+pub struct VerseBindings {
+    pub verse_id: String,
+    pub versions: Vec<StoredBinding>,
+    pub roles: Option<fe_policy::EffectiveRoles>,
+    pub stored_terrain_petals: std::collections::BTreeSet<String>,
+}
+
+/// A device payload this peer accepted (never a replicated row); the `ingest.decode` trigger (bindings.md §6).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AcceptedPayload {
+    pub payload_id: String,
+    pub format_id: String,
+    pub mime: String,
+    pub node_id: String,
+    pub petal_id: String,
+    pub recorded_at_ms: i64,
+    /// The payload's file assets, so the decoder can read them without another lookup.
+    pub asset_ids: Vec<String>,
+}
+
 #[derive(Debug, Clone)]
 pub enum DbCommand {
     ReadSceneAssetPublication {
@@ -586,13 +627,63 @@ pub enum DbCommand {
     PluginRead {
         admission: crate::plugin_host::PluginAdmission,
         request: crate::plugin_host::PluginRead,
-        reply: crossbeam::channel::Sender<Result<crate::plugin_host::PluginReply,String>>,
+        reply: crossbeam::channel::Sender<crate::plugin_host::PluginResult>,
     },
-    /// An admitted atomic plugin batch; queued work is never a commit receipt.
+    /// One tick's write window: the atomic scene batch, then its readings through the IoT door (whole-flush rule).
     PluginCommit {
         admission: crate::plugin_host::PluginAdmission,
         ops: Vec<fe_sdk::plugin_host::PendingOp>,
-        reply: crossbeam::channel::Sender<Result<crate::plugin_host::PluginReply,String>>,
+        readings: Vec<fe_sdk::plugin_host::StagedReading>,
+        reply: crossbeam::channel::Sender<crate::plugin_host::PluginResult>,
+    },
+    /// Write a verse's extension policy row as the DB thread's own DID (Manager+ there); replies the stored `PolicyRow` JSON.
+    SetExtensionPolicy {
+        verse_id: String,
+        policy: serde_json::Value,
+        reply: crossbeam::channel::Sender<Result<serde_json::Value, String>>,
+    },
+    /// The verse's stored `PolicyRow` JSON, `None` when no row (first-party-only).
+    GetExtensionPolicy {
+        verse_id: String,
+        reply: crossbeam::channel::Sender<Result<Option<serde_json::Value>, String>>,
+    },
+    /// Append one extension audit entry (`AuditEntry` JSON); replies its lamport. A closed reply is ignored.
+    AppendExtensionAudit {
+        entry: serde_json::Value,
+        reply: crossbeam::channel::Sender<Result<u64, String>>,
+    },
+    /// The newest `limit` audit entries, newest first: by installation, else by verse, else the whole trail.
+    ListExtensionAudit {
+        installation: Option<String>,
+        verse_id: Option<String>,
+        limit: usize,
+        reply: crossbeam::channel::Sender<Result<Vec<serde_json::Value>, String>>,
+    },
+    /// The verse Owner's kill-list override (`KillListOverrideRequest` JSON), judged against the DB thread's own DID.
+    RecordKillListOverride {
+        request: serde_json::Value,
+        reply: crossbeam::channel::Sender<Result<serde_json::Value, String>>,
+    },
+    /// Startup hydrate: `{policies, consents, overrides, acceptances}` as JSON.
+    LoadExtensionGovernance {
+        reply: crossbeam::channel::Sender<Result<serde_json::Value, String>>,
+    },
+    /// Write one binding version as the local DID; `caller_did` is the REST/MCP token DID (`None` = the GUI).
+    PutBinding {
+        caller_did: Option<String>,
+        binding: crate::extension_binding::BindingRecord,
+        reply: crossbeam::channel::Sender<Result<crate::extension_binding::BindingRecord, BindingRefusal>>,
+    },
+    /// Every stored version at exactly `scope`, judged; a remote `caller_did` needs Viewer+ there.
+    ListBindings {
+        scope: String,
+        caller_did: Option<String>,
+        reply: crossbeam::channel::Sender<Result<Vec<StoredBinding>, BindingRefusal>>,
+    },
+    /// One verse's judged binding plane for the per-peer resolver.
+    LoadBindingSnapshot {
+        verse_id: String,
+        reply: crossbeam::channel::Sender<Result<VerseBindings, BindingRefusal>>,
     },
     Ping,
     Seed,

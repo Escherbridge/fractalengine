@@ -37,6 +37,8 @@ sample-hexons/dist/
 /tools/*
 # ...except our own authored QA scripts (tools/qa/AGENTS.md) - these ARE tracked
 !/tools/qa/
+# ...and the extension authoring CLI + guest SDK (extension_platform E12)
+!/tools/fe-ext/
 
 # Agent-QA staged builds + isolated run dirs (tools/qa/stage.ps1, launch.ps1) -
 # ephemeral, machine-local, can be large (a staged exe per commit)

@@ -7,7 +7,8 @@ use std::path::Path;
 use std::sync::Arc;
 
 use fe_format::{AssetEntry, EntryKind, HexonArchive, HexonManifest, HexonType, License};
-use fe_hexon::remote::RemoteRegistryClient;
+use fe_hexon::registry_source::{FetchedHexon, RegistryEntry, RegistryError, RegistrySource, SourceTrust};
+use fe_hexon::remote::{remote_extension_source, remote_source, RemoteRegistryClient};
 use fe_hexon_registry::{build_router, scan_dir, RegistryState};
 
 const ALPINE_V12_BLOB: &[u8] = b"alpine tile data v1.2.0 (newer)";
@@ -177,6 +178,60 @@ async fn search_download_verify_roundtrip() {
 
     // Missing package surfaces a registry error.
     assert!(client.manifest("no-such-hexon").await.is_err());
+
+    // Through the RegistrySource trait: the registry advertises protocol v1, so the listing carries each
+    // content_hash and a content hexon (terrain tileset) verifies through `fetch_hexon` (R32).
+    let base = format!("http://{addr}");
+    let fetched = tokio::task::spawn_blocking(move || {
+        let trust = SourceTrust {
+            is_trust_root: Arc::new(|_| false),
+            index_signer: Arc::new(|_| None),
+            allow_unsigned_dev: true,
+        };
+        let source = remote_source("test registry", base.clone(), None, trust.clone()).unwrap();
+        let listing = source.list(Some("alpine")).unwrap();
+        let entry = listing.entries.iter().find(|e| e.version == "1.2.0").expect("alpine 1.2.0 listed").clone();
+        assert_eq!(entry.content_hash.len(), 64);
+        // Unsealed fixtures have no attestation-able plugin header: consent renders after download.
+        assert!(source.header(&entry).is_err());
+        // A tileset is never verified as a plugin: `fetch` refuses it, `fetch_hexon` verifies it as content.
+        assert!(matches!(source.fetch(&entry), Err(RegistryError::PackageInvalid(_))));
+        // The Extensions source (anonymous, plugin packages only) does not offer these content fixtures.
+        let extensions = remote_extension_source("extensions", base, trust).unwrap();
+        assert!(extensions.list(None).unwrap().entries.is_empty());
+        let wrong = RegistryEntry { content_hash: "0".repeat(64), ..entry.clone() };
+        let refused = source.fetch_hexon(&wrong).unwrap_err();
+        let accepted = source.fetch_hexon(&entry).unwrap();
+        (refused, accepted)
+    })
+    .await
+    .unwrap();
+    assert!(matches!(fetched.0, RegistryError::ContentHashMismatch { .. }));
+    match fetched.1 {
+        FetchedHexon::Content(content) => {
+            assert_eq!(content.hexon_id, "alpine-terrain");
+            assert_eq!(content.version, "1.2.0");
+        }
+        other => panic!("expected a content hexon, got {other:?}"),
+    }
+
+    // A registry that advertises no protocol is still refused before any listing (fail closed).
+    let silent = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let silent_addr = silent.local_addr().unwrap();
+    tokio::spawn(async move {
+        axum::serve(silent, axum::Router::new()).await.unwrap();
+    });
+    let refusal = tokio::task::spawn_blocking(move || {
+        let trust = SourceTrust {
+            is_trust_root: Arc::new(|_| false),
+            index_signer: Arc::new(|_| None),
+            allow_unsigned_dev: false,
+        };
+        remote_source("silent registry", format!("http://{silent_addr}"), None, trust).unwrap().list(None)
+    })
+    .await
+    .unwrap();
+    assert_eq!(refusal.unwrap_err(), RegistryError::ProtocolMismatch { found: None });
 }
 
 #[tokio::test]

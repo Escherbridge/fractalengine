@@ -28,6 +28,7 @@ types the plugin/extension API is expressed in — `fe-plugin` and
 | `events` | `PluginEvent`, `EventSubscription` — inter-plugin events |
 | `legacy_identifier` | `legacy_identifier`, `LegacyTable` — SPEC-10 §4.5 text id -> canonical 32-byte identifier (§legacy-identifier) |
 | `source_class` | `SourceClass`, `is_valid_format_id` — SPEC-10 §7.1 source classes + §2.2 rule 4 `format_id` grammar (§source-class) |
+| `manifest_v2` | `ExtensionManifest`, `parse_and_validate`, `capability_digest` - extension manifest v2 serde + the ONE validator (see manifest-v2 below) |
 | `device_format` | `DeviceFormatDescriptor` — R5 device extension format descriptor (§device-format) |
 
 ## §storage
@@ -263,3 +264,61 @@ missing smoothness becomes zero. Numeric corner codes use the existing i64 code
 conversion. Compact and equivalent zero-handle rows compare equally, while inactive
 handles and sub-f32 position/handle changes remain distinct. Non-finite typed source
 rows cannot mint a witness. This is decoding, not zone sanitation or triangulation.
+
+## manifest-v2 (`extension_platform_20261107`, slice E2)
+
+`manifest_v2.rs` is the single validator behind `fe-ext validate` and REST install
+(`docs/extensions/manifest-v2.md` Validation is normative; `schema/extension-manifest-v2.schema.json`
+is structure only). `parse_and_validate(bytes)` runs serde (unknown fields refused), then
+`ExtensionManifest::validate`, which walks V1..V15 in table order and reports the first failing row
+as a `Refusal` (kebab-case `as_str()` is the reason both doors print).
+
+- **Schema parity without a regex dep.** The JSON-Schema patterns and bounds are re-implemented
+  as hand checks in `check_structure` (`is_package_id`, `is_semver`, `split_url`, ...). Edit the
+  schema file and these together; the J2 test walks the three shipped examples to catch drift.
+- **Contract check is split.** V1 only requires the `fractalengine:plugin@x.y.z` shape, so an old
+  major reaches V2 and reports `unsupported-contract` rather than `schema`.
+- **`capability_digest`** blake3-hashes the canonical grant projection of the RAW JSON (not the typed
+  struct), so a member this build does not model still re-prompts consent. The canonicalizer mirrors
+  fe-format's (sorted keys, no whitespace); keep them identical.
+- **Named `host/query` SQL** is guarded with `query::is_select_only` here; the REST door may layer
+  `fe_query::sql_guard` on top, it can only be stricter.
+- **`args_schema`** is checked against the bus.md subset (keywords, depth 4, 4 KiB) at V1.
+- **Host ceilings** are constants (`HOST_*`); a local policy lowers them in fe-plugin, never here.
+
+## plugin-host additions (E2)
+
+`PendingOp::SetTransform` patches position/rotation/scale (absent fields keep stored values; scale
+must be positive, rotation a nonzero finite quaternion). `StagedReading` is the tick-window reading;
+source class and DID are host-stamped, never fields. `validate_staged_readings` bounds count (1000),
+metric grammar (1..128 of `[A-Za-z0-9_.:-]`), finiteness and units; anchors are a flush-time check in
+the DB handler. `validate_commit(ops, readings)` is the one call for a whole `PluginCommit`.
+`SetTransform` is a `set_transform` write in the manifest (`scene.write`) and is applied inside
+the same atomic batch as the tick's other ops.
+
+## provides (bindings turn, `manifest_v2.rs`)
+
+`ExtensionManifest.provides: Vec<ProvidedHook>` lists the hook points the package serves
+(`hook`, optional `keys`, `uses`, `config_schema`; docs/extensions/bindings.md section 6).
+`KNOWN_HOOKS` is the catalogue this host serves; an id outside it is V17 `unknown-hook`. Only the
+`KEYED_HOOKS` may carry `keys`. V18 `hook-capability-missing` checks that the hook's needs
+(an ingress/egress/ui entry named in `uses`, `readings` + `tick` for `ingest.decode`, `scene.read`
+for `scene.*`, ...) are declared. Bounds: 32 entries, 32 keys, 16 `uses`. `provides` is inside the
+capability digest, so adding a hook re-prompts consent. A binding grants nothing: this module only
+validates what a package claims; resolution and acceptance live in fe-plugin and the binary.
+
+## path-geometry f64 route math (E2)
+
+`snap_to_polyline`, `cumulative_distances_f64`, `position_at_progress_f64` and `RouteSnap` hold the
+f64 snap/interpolation formerly private to fe-terrain `iot/path_tracker.rs`; that file should delegate
+so the sim, the IoT tracker and the WIT `routes` interface share one implementation. fe-terrain's
+`iot/path_tracker.rs` now delegates to it. The f32
+renderer helpers stay separate on purpose (their accumulation order is a stamp-placement contract).
+
+## §live-consumers (plugin_host_revival S7)
+
+`ApiExtensionHandle` and `UiExtensionRegistry` have live consumers. `fe-api/src/server.rs` mounts
+`fe_terrain::api_ext::terrain_api_routes()` in `build_router`. `fe_ui::plugin::UiExtensions` wraps the
+`UiExtensionRegistry`, and `register_first_party_extension_ui` (fractalengine `main.rs`) fills it at Startup.
+No third-party package contributes to either registry yet (fractalengine/src/AGENTS.md §plugin-host), so
+a change to either shape breaks first-party consumers at once.

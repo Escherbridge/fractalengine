@@ -356,6 +356,115 @@ impl HexonBuilder {
     }
 }
 
+/// The `entries.json` every plugin package carries (docs/extensions/package-format.md §Members).
+pub const PLUGIN_ENTRIES_JSON: &[u8] = br#"{"entries":[]}"#;
+
+/// Builds a sealed `HexonType::Plugin` package (see `fe-format/src/AGENTS.md` §plugin-package).
+pub struct PluginHexonBuilder {
+    extension_json: Vec<u8>,
+    component: Vec<u8>,
+    license_json: Option<Vec<u8>>,
+    publisher_name: Option<String>,
+}
+
+impl PluginHexonBuilder {
+    /// `extension_json` is manifest v2; `hexon_id`, `version` and `name` are taken from it.
+    pub fn new(extension_json: impl Into<Vec<u8>>, component: impl Into<Vec<u8>>) -> Self {
+        Self {
+            extension_json: extension_json.into(),
+            component: component.into(),
+            license_json: None,
+            publisher_name: None,
+        }
+    }
+
+    /// Optional `license.json` header member.
+    pub fn license_json(mut self, license_json: impl Into<Vec<u8>>) -> Self {
+        self.license_json = Some(license_json.into());
+        self
+    }
+
+    pub fn publisher_name(mut self, name: impl Into<String>) -> Self {
+        self.publisher_name = Some(name.into());
+        self
+    }
+
+    /// Write the members, then `seal` (the last transform) with `signing_key`.
+    pub fn build(self, signing_key: &SigningKey) -> Result<Vec<u8>, BuilderError> {
+        use std::io::Write;
+
+        if self.component.is_empty() {
+            return Err(BuilderError::MissingField("plugin/component.wasm"));
+        }
+        let extension: serde_json::Value = serde_json::from_slice(&self.extension_json)
+            .map_err(|e| anyhow::anyhow!("plugin/extension.json parse error: {e}"))?;
+        let text = |key: &'static str| {
+            extension
+                .get(key)
+                .and_then(|v| v.as_str())
+                .filter(|v| !v.is_empty())
+                .map(str::to_string)
+        };
+        let hexon_id = text("id").ok_or(BuilderError::MissingField("extension.id"))?;
+        let version = text("version").ok_or(BuilderError::MissingField("extension.version"))?;
+        let name = text("name").ok_or(BuilderError::MissingField("extension.name"))?;
+
+        let now = chrono::Utc::now().to_rfc3339();
+        let manifest = fe_format::HexonManifest {
+            schema_version: "1.0.0".to_string(),
+            hexon_id,
+            hexon_type: fe_format::HexonType::Plugin,
+            publisher_did: fe_format::verifying_key_to_did(&signing_key.verifying_key()),
+            publisher_name: self.publisher_name,
+            version,
+            build_id: Some(ulid::Ulid::new().to_string()),
+            name,
+            description: text("description"),
+            tags: Vec::new(),
+            created_at: now.clone(),
+            updated_at: now,
+            source_peer_did: None,
+            approx_size_bytes: Some(self.component.len() as u64),
+            min_engine_version: None,
+            homepage_url: None,
+            dependencies: Vec::new(),
+            platforms: Vec::new(),
+            address: None,
+            integrity: None,
+            signature: None,
+        };
+
+        let options =
+            zip::write::FileOptions::default().compression_method(zip::CompressionMethod::Deflated);
+        let mut members: Vec<(&str, Vec<u8>)> = vec![
+            (
+                fe_format::integrity::MANIFEST_PATH,
+                serde_json::to_vec_pretty(&manifest).map_err(anyhow::Error::from)?,
+            ),
+            // Empty catalogue: `HexonArchiveIndex::open` (registry header + download routes) requires it.
+            (
+                fe_format::integrity::ENTRIES_PATH,
+                PLUGIN_ENTRIES_JSON.to_vec(),
+            ),
+            (
+                fe_format::integrity::PLUGIN_EXTENSION_PATH,
+                self.extension_json,
+            ),
+            (fe_format::integrity::PLUGIN_COMPONENT_PATH, self.component),
+        ];
+        if let Some(license) = self.license_json {
+            members.push(("license.json", license));
+        }
+        let mut writer = zip::ZipWriter::new(std::io::Cursor::new(Vec::new()));
+        for (path, bytes) in members {
+            writer.start_file(path, options).map_err(anyhow::Error::from)?;
+            writer.write_all(&bytes)?;
+        }
+        let unsealed = writer.finish().map_err(anyhow::Error::from)?.into_inner();
+        Ok(fe_format::seal(&unsealed, signing_key)?)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

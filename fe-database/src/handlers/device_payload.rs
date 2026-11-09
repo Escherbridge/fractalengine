@@ -17,6 +17,28 @@ use crate::query_helpers::exec_query;
 use crate::repo::Db;
 use crate::{BlobStoreHandle, ReplicationSender};
 
+/// An accepted-payload event (BND-10b); mirrors the pinned `fe_runtime::messages::AcceptedPayload` plus `asset_ids`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AcceptedPayloadEvent {
+    pub payload_id: String,
+    pub format_id: String,
+    pub mime: String,
+    pub node_id: String,
+    pub petal_id: String,
+    pub recorded_at_ms: i64,
+    pub asset_ids: Vec<String>,
+}
+
+/// Receiver of accepted-payload events, set once by the host at startup.
+pub type AcceptedPayloadSink = Box<dyn Fn(AcceptedPayloadEvent) + Send + Sync>;
+
+static ACCEPTED_PAYLOAD_SINK: std::sync::OnceLock<AcceptedPayloadSink> = std::sync::OnceLock::new();
+
+/// Install the sink (first call wins); wiring it to the DB-thread channel is the integration slice's job.
+pub fn set_accepted_payload_sink(sink: AcceptedPayloadSink) -> bool {
+    ACCEPTED_PAYLOAD_SINK.set(sink).is_ok()
+}
+
 /// Ingestion-HLC window width that buckets `observation_window_member` rows
 /// (SPEC-10 §3.4 rule 2: "one half-open interval of ingestion HLC wall time").
 /// CDL-SPEC10 B3 confirmed the one-minute width and moved the bucket from
@@ -506,6 +528,19 @@ pub async fn insert_device_payloads(
     )
     .await
     .map_err(|e| DevicePayloadIngestError::Db(e.to_string()))?;
+
+    // Accepting peer only: replicated rows never reach this path and an idempotent retry returned above.
+    if let Some(sink) = ACCEPTED_PAYLOAD_SINK.get() {
+        sink(AcceptedPayloadEvent {
+            payload_id: payload_id.clone(),
+            format_id: payload.format_id.clone(),
+            mime: descriptor.mime.clone(),
+            node_id: payload.node_id.clone(),
+            petal_id: petal_id.to_string(),
+            recorded_at_ms: recorded.timestamp_millis(),
+            asset_ids: payload.asset_ids.clone(),
+        });
+    }
 
     Ok((payload_id, payload.asset_ids.clone()))
 }

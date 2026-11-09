@@ -474,6 +474,16 @@ async fn apply_row_mode(
         // (the admission gate already enforced the Manager+ floor and the
         // verse match) — see `apply_device_format_row`.
         "device_format" => apply_device_format_row(db, record_id, row_bytes).await,
+        // Governance (spec R18): role-at-write, bounded clock, newest `(written_at, author)` wins.
+        super::extension_policy::POLICY_TABLE => {
+            super::extension_policy::apply_replicated_policy_row(db, verse_id, record_id, row_bytes, author_did)
+                .await
+        }
+        // Scoped bindings (bindings.md §4.3): bounded clock, one live version per doc key; admissibility on read.
+        super::extension_binding::BINDING_DOC_TABLE => {
+            super::extension_binding::apply_replicated_binding_row(db, verse_id, record_id, row_bytes, author_did)
+                .await
+        }
         // Revocation dominates; the unsigned `del` marker is NotApplicable (§device-enrolment).
         crate::canon_log::device_enrolment::DEVICE_ENROLMENT_TABLE => {
             crate::canon_log::device_enrolment::apply_replicated_enrolment(db, record_id, row_bytes)
@@ -512,7 +522,7 @@ enum Floor {
     Write,
     /// Manager+ at the VERSE scope: verse governance fields and `device_format`.
     ManageVerse,
-    /// Manager+ at each exact current/requested Petal scope.
+    /// Manager+ at each exact gated scope: a petal's requirements, or a binding row's scope at any level.
     ManageScope,
 }
 
@@ -578,6 +588,8 @@ fn is_applied_table(table: &str) -> bool {
     matches!(
         table,
         "verse" | "fractal" | "petal" | "node" | "asset" | "device_format"
+            | super::extension_policy::POLICY_TABLE
+            | super::extension_binding::BINDING_DOC_TABLE
     ) || ReplicationMode::for_table(table) == ReplicationMode::Timeseries
 }
 
@@ -692,7 +704,7 @@ async fn admit_inbound_row(
         return Ok(Admission::Defer(DeferralReason::Manifest));
     }
 
-    let (scopes, floor) = match confine(db, verse_id, table, record_id, row_bytes).await? {
+    let (scopes, floor) = match confine(db, verse_id, table, record_id, row_bytes, author_did).await? {
         Confined::Gate { scopes, floor } => (scopes, floor),
         Confined::Stop(Admission::Deny(reason)) => {
             tracing::warn!(
@@ -799,13 +811,18 @@ async fn is_verse_member(db: &Db, verse_id: &str, did: &str) -> anyhow::Result<b
 /// Confine one row of a known verse: every reference it carries, AND the
 /// current parent of the durable row it would change, must resolve to this
 /// replica's verse. Returns the scopes and floor its author must clear.
+/// `author_did` (attested) is read only by rows that name their author in the key.
 async fn confine(
     db: &Db,
     verse_id: &str,
     table: &str,
     record_id: &str,
     row_bytes: &[u8],
+    author_did: &str,
 ) -> anyhow::Result<Confined> {
+    if table == super::extension_binding::BINDING_DOC_TABLE {
+        return confine_binding(db, verse_id, record_id, row_bytes, author_did).await;
+    }
     // The empty `del` entry reaches here only for `node` (the wire tombstone).
     let row: serde_json::Value = if row_bytes.is_empty() {
         serde_json::json!({})
@@ -823,6 +840,16 @@ async fn confine(
         "asset" => confine_asset(db, verse_id, &row).await,
         "device_payload" => confine_device_payload(db, verse_id, &row).await,
         "device_format" => confine_device_format(verse_id, &row),
+        // The extension policy row: the strictest reader's shape rules, then Manager+ at the verse.
+        super::extension_policy::POLICY_TABLE => {
+            match super::extension_policy::confine_inbound(verse_id, record_id, row_bytes) {
+                Ok(()) => Ok(Confined::Gate {
+                    scopes: vec![crate::scope::build_scope(verse_id, None, None)],
+                    floor: Floor::ManageVerse,
+                }),
+                Err(reason) => deny(reason),
+            }
+        }
         "iot_reading" => confine_reading(db, verse_id, &row).await,
         other => deny(format!("no confinement rule for table '{other}'")),
     }
@@ -1104,8 +1131,44 @@ fn confine_device_format(verse_id: &str, row: &serde_json::Value) -> anyhow::Res
     }
 }
 
+/// A binding row (bindings.md §4.3): structurally sound, its scope's fractal and petal located in this
+/// verse exactly as the scope names them (unknown = `Parent`), then Manager+ NOW at the binding's scope.
+async fn confine_binding(
+    db: &Db,
+    verse_id: &str,
+    record_id: &str,
+    row_bytes: &[u8],
+    author_did: &str,
+) -> anyhow::Result<Confined> {
+    let record = match super::extension_binding::confine_inbound(verse_id, record_id, row_bytes, author_did) {
+        Ok(record) => record,
+        Err(reason) => return deny(reason),
+    };
+    let parts = match crate::parse_scope(&record.scope) {
+        Ok(parts) => parts,
+        Err(e) => return deny(format!("binding scope: {e}")),
+    };
+    let located = match (parts.fractal_id.as_deref(), parts.petal_id.as_deref()) {
+        (None, None) => record.scope.clone(),
+        (Some(fractal_id), None) => here_or_stop!(locate_fractal(db, verse_id, fractal_id).await?),
+        (Some(_), Some(petal_id)) => here_or_stop!(locate_petal(db, verse_id, petal_id).await?),
+        (None, Some(_)) => return deny("binding petal scope names no fractal"),
+    };
+    if located != record.scope {
+        return deny(format!(
+            "binding scope {} does not match the stored hierarchy ({located})",
+            record.scope
+        ));
+    }
+    Ok(Confined::Gate {
+        scopes: vec![record.scope],
+        floor: Floor::ManageScope,
+    })
+}
+
 /// `iot_reading`: its petal is here, its anchor node is a node of that petal,
-/// and an R5 `payload_id` link names a payload of the same petal.
+/// an R5 `payload_id` link names a payload of the same petal, and an R24
+/// extension stamp is a whole, well-formed `{package_id, content_hash}`.
 async fn confine_reading(
     db: &Db,
     verse_id: &str,
@@ -1132,6 +1195,19 @@ async fn confine_reading(
                 ))
             }
         }
+    }
+    // R24 host-stamped provenance: both columns or neither, in the stamping host's own shape.
+    match (present(row, "ext_package_id"), present(row, "ext_content_hash")) {
+        (None, None) => {}
+        (Some(package_id), Some(content_hash)) => {
+            let stamp = package_id.as_str().zip(content_hash.as_str()).map(|(id, hash)| {
+                fe_runtime::plugin_host::PackageIdentity::new(id.to_owned(), hash.to_owned())
+            });
+            if !matches!(stamp, Some(Ok(_))) {
+                return deny("iot_reading extension provenance is malformed");
+            }
+        }
+        _ => return deny("iot_reading extension provenance names only one of its two fields"),
     }
     Ok(Confined::Gate {
         scopes: vec![scope],
@@ -3858,6 +3934,47 @@ mod tests {
         }
 
         assert_eq!(reading_count(&db).await, 3, "exactly the union of facts");
+
+        // R24: an extension-stamped fact joins the union with its stamp; a half stamp is denied.
+        let mut stamped: serde_json::Value =
+            serde_json::from_slice(&reading_row("reading-4", "node-a", 4.0)).unwrap();
+        stamped["ext_package_id"] = serde_json::json!("org.example.fleet-sim");
+        stamped["ext_content_hash"] = serde_json::json!("ab".repeat(32));
+        let outcome = apply_replicated_row_handler(
+            &db,
+            "v1",
+            "iot_reading",
+            "reading-4",
+            &serde_json::to_vec(&stamped).unwrap(),
+            "did:key:carol",
+            None,
+        )
+        .await
+        .unwrap();
+        assert_eq!(outcome, ReplicatedRowOutcome::Applied);
+        let rows = select_json(
+            &db,
+            "SELECT * FROM iot_reading WHERE reading_id = 'reading-4'",
+        )
+        .await;
+        assert_eq!(rows[0]["ext_package_id"], "org.example.fleet-sim");
+        assert_eq!(rows[0]["ext_content_hash"], serde_json::json!("ab".repeat(32)));
+
+        stamped["reading_id"] = serde_json::json!("reading-5");
+        stamped.as_object_mut().unwrap().remove("ext_content_hash");
+        let outcome = apply_replicated_row_handler(
+            &db,
+            "v1",
+            "iot_reading",
+            "reading-5",
+            &serde_json::to_vec(&stamped).unwrap(),
+            "did:key:carol",
+            None,
+        )
+        .await
+        .unwrap();
+        assert_eq!(outcome, ReplicatedRowOutcome::Denied);
+        assert_eq!(reading_count(&db).await, 4, "a half-stamped reading never lands");
     }
 
     /// A12: readings are never tombstoned — the empty iroh-docs `del` entry is

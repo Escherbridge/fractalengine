@@ -1,17 +1,13 @@
-//! Wasmtime embedding engine for FractalEngine plugins.
+//! Wasmtime embedding for FractalEngine plugins; see src/wasm/AGENTS.md.
 //!
-//! Provides a [`WasmEngine`] that wraps wasmtime with pooling allocation,
-//! fuel metering, and host imports matching the Rhai API surface.
-//!
-//! # Sub-modules
-//!
-//! - [`host_imports`] — Host functions registered into the Wasmtime [`Linker`](wasmtime::Linker).
-//! - [`fuel`] — [`FuelBudget`] for per-call fuel accounting.
-//! - [`aot`] — [`AotCache`] for ahead-of-time precompilation with BLAKE3 hashing.
+//! - [`component`] — the 2.0 component host (world `extension`), the only third-party ABI.
+//! - [`WasmEngine`] — the core-module engine, now import-free: the 1.0 `fe` core ABI is retired.
+//! - [`fuel`] — [`FuelBudget`](fuel::FuelBudget) for core stores.
+//! - [`aot`] — [`AotCache`](aot::AotCache), BLAKE3-keyed precompilation for modules and components.
 
 pub mod aot;
+pub mod component;
 pub mod fuel;
-pub mod host_imports;
 
 use crate::context::PluginContext;
 
@@ -37,19 +33,15 @@ pub struct WasmPlugin {
 // WasmEngine — the wasmtime host environment
 // ---------------------------------------------------------------------------
 
-/// The Wasmtime embedding engine.
+/// The core-module engine: pooled, fuel-metered, and linking NO host imports.
 ///
-/// Wraps a [`wasmtime::Engine`] configured with:
-/// - [`wasmtime::InstanceAllocationStrategy::Pooling`] for fast instantiation.
-/// - Fuel metering enabled for per-call resource accounting.
-/// - Async support for host function interop.
-///
-/// The engine also owns a [`wasmtime::Linker`] pre-populated with all
-/// host import functions that mirror the Rhai API surface.
+/// The 1.0 `fe` core ABI is retired (spec R2): a core module that imports anything fails to
+/// instantiate, and [`component::ComponentHost::compile`] refuses core modules as
+/// `unsupported-contract`. Third-party guests run only through [`component`].
 pub struct WasmEngine {
     /// The global wasmtime compilation + runtime environment.
     engine: wasmtime::Engine,
-    /// Pre-configured linker with all host imports registered.
+    /// An empty linker: nothing is importable by a core module.
     linker: wasmtime::Linker<PluginStoreData>,
 }
 
@@ -57,7 +49,6 @@ impl WasmEngine {
     /// Create a new Wasmtime engine with pooling allocation and fuel metering.
     pub fn new() -> Result<Self, WasmError> {
         let mut config = wasmtime::Config::new();
-        config.async_support(true);
         config.consume_fuel(true);
 
         // Configure pooling allocation strategy
@@ -74,11 +65,7 @@ impl WasmEngine {
         ));
 
         let engine = wasmtime::Engine::new(&config)?;
-
-        // Build the linker with host imports
-        let mut linker: wasmtime::Linker<PluginStoreData> = wasmtime::Linker::new(&engine);
-        host_imports::register_host_imports(&mut linker)?;
-
+        let linker: wasmtime::Linker<PluginStoreData> = wasmtime::Linker::new(&engine);
         Ok(Self { engine, linker })
     }
 
@@ -165,6 +152,7 @@ impl WasmEngine {
                 // Check if it's an out-of-fuel trap by checking remaining fuel
                 let remaining_fuel = store.get_fuel().unwrap_or(0);
                 let is_fuel_error = remaining_fuel == 0
+                    || e.downcast_ref::<wasmtime::Trap>() == Some(&wasmtime::Trap::OutOfFuel)
                     || e.to_string().contains("all fuel consumed")
                     || e.to_string().contains("out of fuel")
                     || e.to_string().to_lowercase().contains("fuel");
@@ -231,7 +219,7 @@ impl std::fmt::Debug for PluginStoreData {
 #[derive(Debug, thiserror::Error)]
 pub enum WasmError {
     #[error("Wasmtime error: {0}")]
-    Wasmtime(#[from] anyhow::Error),
+    Wasmtime(String),
 
     #[error("Missing export: '{0}'")]
     MissingExport(String),
@@ -250,6 +238,12 @@ pub enum WasmError {
 
     #[error("Linker registration error: {0}")]
     LinkerError(String),
+}
+
+impl From<wasmtime::Error> for WasmError {
+    fn from(error: wasmtime::Error) -> Self {
+        Self::Wasmtime(format!("{error:#}"))
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -339,6 +333,67 @@ mod tests {
         // Fuel should be back to per_tick amount
         let current = store.get_fuel().unwrap();
         assert_eq!(current, 500);
+
+        // J1 (E3): the same refill drives a 2.0 component through the scheduler. The store is drained before each
+        // due instant, so a tick runs only because `TickScheduler` refuels it with the token's budget first; what
+        // `on-tick` stages lands in the shared window and leaves as one flush per tick.
+        use crate::tick::{FlushReply, ManualClock, TickEvent, TickInstance, TickScheduler, TickSink};
+        use crate::transaction::StagedFlush;
+        use fe_sdk::plugin_host::{PendingOp, TransactionReceipt};
+        use std::sync::{Arc, Mutex};
+
+        /// Records every flush and commits it at once.
+        struct RecordingSink(Arc<Mutex<Vec<StagedFlush>>>);
+        impl TickSink for RecordingSink {
+            fn submit(&mut self, _tick: u64, flush: StagedFlush, reply: crossbeam::channel::Sender<FlushReply>) {
+                let receipt = TransactionReceipt {
+                    op_count: flush.ops.len(),
+                    created_node_ids: Vec::new(),
+                    reading_count: flush.readings.len(),
+                };
+                self.0.lock().unwrap().push(flush);
+                let _ = reply.send(FlushReply::Committed(receipt));
+            }
+        }
+
+        let host = component::ComponentHost::new().unwrap();
+        let mover = host
+            .compile(&component::test_guest::component(component::test_guest::STAGE_ONE_TRANSFORM))
+            .unwrap();
+        let mock = Arc::new(Mutex::new(fe_plugin_test::mock_host::MockHostEnv::new()));
+        let clock = ManualClock::default();
+        let setup = component::test_guest::fleet_setup(&mock, &clock);
+        let tick_budget = *setup.context.capabilities().tick_budget().expect("the fleet manifest declares a tick block");
+        let window = setup.window.clone();
+        let mut handle = component::InstanceHandle::new(host.instantiate(&mover, setup).unwrap());
+        let flushes = Arc::new(Mutex::new(Vec::new()));
+        let mut scheduler = TickScheduler::new(
+            tick_budget,
+            Arc::new(clock.clone()),
+            window.clone(),
+            Box::new(handle.clone()),
+            Box::new(RecordingSink(flushes.clone())),
+        );
+        for tick in 1..=2u64 {
+            TickInstance::refuel(&mut handle, 0).unwrap();
+            clock.set(tick * tick_budget.cadence_ms);
+            assert_eq!(scheduler.poll(), Some(TickEvent::Ran { tick, flushed: true }), "tick {tick} ran on the refill");
+        }
+        assert_eq!(scheduler.poll(), None, "nothing is due; the poll only settles tick 2's answer");
+        let positions: Vec<_> = flushes
+            .lock()
+            .unwrap()
+            .iter()
+            .flat_map(|flush| flush.ops.iter())
+            .map(|op| match op {
+                PendingOp::SetTransform { node_id, position, .. } if node_id == "n1" => *position,
+                other => panic!("unexpected staged op {other:?}"),
+            })
+            .collect();
+        assert_eq!(positions, vec![Some([1.0, 0.0, 0.0]), Some([2.0, 0.0, 0.0])], "one flush per tick, in tick order");
+        assert!(window.lock().unwrap().is_empty(), "each flush took the whole window");
+        let counters = scheduler.counters_handle().lock().unwrap().clone();
+        assert_eq!((counters.ticks_run, counters.flushes, counters.commits), (2, 2, 2));
     }
 
     #[test]
@@ -389,6 +444,45 @@ mod tests {
             WasmEngine::is_degraded(&store),
             "Plugin should be marked degraded"
         );
+
+        // The same for a 2.0 component driven through the scheduler seam: an on-tick that never
+        // returns exhausts its fuel, the staged window is discarded unflushed, and the instance
+        // refuses every later hook.
+        use crate::tick::{CommitOutcome, ManualClock, TickFault, TickInfo, TickInstance};
+        let host = component::ComponentHost::new().unwrap();
+        let burner = host
+            .compile(&component::test_guest::component(component::test_guest::BURN_FOREVER))
+            .unwrap();
+        let mock = std::sync::Arc::new(std::sync::Mutex::new(fe_plugin_test::mock_host::MockHostEnv::new()));
+        let setup = component::test_guest::fleet_setup(&mock, &ManualClock::default());
+        let window = setup.window.clone();
+        window
+            .lock()
+            .unwrap()
+            .stage_op(crate::transaction::PendingOp::SetTransform {
+                node_id: "n1".into(),
+                position: Some([1.0, 0.0, 0.0]),
+                rotation: None,
+                scale: None,
+            })
+            .unwrap();
+        let mut handle = component::InstanceHandle::new(host.instantiate(&burner, setup).unwrap());
+        TickInstance::refuel(&mut handle, 10_000).unwrap();
+        let info = TickInfo {
+            tick: 1,
+            now_ms: 500,
+            scheduled_at_ms: 500,
+            delta_ms: 0,
+            skipped: 0,
+            last_commit: CommitOutcome::None,
+        };
+        assert_eq!(TickInstance::on_tick(&mut handle, &info), Err(TickFault::FuelExhausted));
+        assert!(window.lock().unwrap().is_empty(), "the faulted tick's window is discarded");
+        assert_eq!(handle.lock().unwrap().stats().fuel_exhaustions, 1);
+        assert!(matches!(
+            handle.lock().unwrap().on_activate(),
+            Err(component::HookFault::Degraded(_))
+        ));
     }
 
     #[test]

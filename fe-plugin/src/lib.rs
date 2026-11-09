@@ -1,14 +1,21 @@
 //! fe-plugin — plugin host: [`PluginHostPlugin`] spawns the plugin runtime thread (thread 7).
-//! Thread/channel architecture: src/AGENTS.md §architecture.
+//! Thread/channel architecture and the module map: src/AGENTS.md §architecture.
 
+pub mod bindings;
+pub mod bus;
 pub mod capability;
 pub mod context;
 pub mod host_env;
 pub mod lifecycle;
+pub mod net;
+pub mod package;
 pub mod registry;
+pub mod registry_client;
 pub mod scene_host;
 pub mod rhai;
+pub mod tick;
 pub mod transaction;
+pub mod trust_roots;
 pub mod wasm;
 
 use bevy::prelude::*;
@@ -193,6 +200,31 @@ pub struct PluginHostService(pub std::sync::Mutex<Option<fe_runtime::service_lif
 // Bevy plugin
 // ---------------------------------------------------------------------------
 
+/// Runtime opt-in env var for package admission (deny-by-default, mirrors `FE_API_SCREENSHOT_ALLOW`; src/AGENTS.md §admission-gate).
+pub const PLUGIN_HOST_ENV: &str = "FE_PLUGIN_HOST_ALLOW";
+
+/// Whether an env value opts admission in: exactly `"1"`; unset, empty or garbage stay off.
+pub fn plugin_host_allowed(value: Option<&str>) -> bool {
+    value == Some("1")
+}
+
+/// Read [`PLUGIN_HOST_ENV`] once at startup; a loud WARN fires when admission is switched on.
+pub fn plugin_host_allowed_from_env() -> bool {
+    let allowed = plugin_host_allowed(std::env::var(PLUGIN_HOST_ENV).ok().as_deref());
+    if allowed {
+        tracing::warn!("{PLUGIN_HOST_ENV}=1: plugin package admission ENABLED (WASM sandbox is un-audited; see SECURITY.md)");
+    }
+    allowed
+}
+
+/// Bevy resource: whether third-party packages may be admitted (binary feature + env, decided once at startup).
+#[derive(Resource, Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct PackageAdmission(pub bool);
+
+/// Bevy resource: the host's integration bus broker (cloneable; shared with fe-api and the bridge).
+#[derive(Resource, Clone)]
+pub struct BusHandle(pub bus::Bus);
+
 /// Bevy plugin that initializes the plugin host infrastructure.
 ///
 /// Spawns a dedicated thread (thread 7) with its own Tokio runtime for
@@ -204,6 +236,22 @@ impl Plugin for PluginHostPlugin {
     fn build(&self, app: &mut App) {
         let contexts=app.world().get_resource::<scene_host::PluginContexts>().cloned().unwrap_or_default();
         app.insert_resource(contexts.clone());
+        // The lab pre-inserts a TickHost on its SimClock; every other process gets the wall clock.
+        let ticks = app
+            .world()
+            .get_resource::<tick::TickHost>()
+            .cloned()
+            .unwrap_or_default()
+            .with_contexts(contexts.clone());
+        app.insert_resource(ticks.clone());
+        // The integration bus (src/bus/AGENTS.md): E7 pre-inserts a BusHandle with real sources; otherwise fail-closed.
+        let bus = app
+            .world()
+            .get_resource::<BusHandle>()
+            .cloned()
+            .unwrap_or_else(|| BusHandle(bus::Bus::new(ticks.clock(), bus::BusSources::fail_closed(), String::new())));
+        app.insert_resource(bus.clone());
+        let worker_bus = bus.0;
         // Create crossbeam channels for plugin <-> engine comms
         let (cmd_tx, cmd_rx) = crossbeam::channel::bounded::<PluginCommand>(256);
         let (result_tx, result_rx) = crossbeam::channel::bounded::<PluginResult>(256);
@@ -223,7 +271,7 @@ impl Plugin for PluginHostPlugin {
 
                 rt.block_on(async move {
                     tracing::info!("Plugin host thread started");
-                    plugin_thread_loop(cmd_rx, result_tx,contexts,worker_stop).await;
+                    plugin_thread_loop(cmd_rx, result_tx,contexts,worker_stop,ticks,worker_bus).await;
                     tracing::info!("Plugin host thread stopped");
                 });
             })
@@ -240,26 +288,55 @@ impl Plugin for PluginHostPlugin {
         )));
 
         // Add drain system
-        app.add_systems(Update, drain_plugin_results);
+        app.add_systems(Update, (drain_plugin_results, apply_tick_events));
         app.add_systems(Last,shutdown_plugin_contexts);
     }
 }
 
 /// The plugin thread's main loop. Receives commands from Bevy and dispatches
 /// them, sending results back.
-async fn plugin_thread_loop(cmd_rx: Receiver<PluginCommand>, result_tx: Sender<PluginResult>,contexts:scene_host::PluginContexts,stop:fe_runtime::service_lifecycle::StopSignal) {
+async fn plugin_thread_loop(cmd_rx: Receiver<PluginCommand>, result_tx: Sender<PluginResult>,contexts:scene_host::PluginContexts,stop:fe_runtime::service_lifecycle::StopSignal,ticks:tick::TickHost,bus:bus::Bus) {
     loop {
         if contexts.is_closed() || stop.is_requested() {break;}
-        match cmd_rx.recv_timeout(std::time::Duration::from_millis(100)) {
+        // Block no longer than the earliest tick deadline (src/AGENTS.md §tick-scheduler).
+        match cmd_rx.recv_timeout(ticks.next_wait(std::time::Duration::from_millis(100))) {
             Ok(cmd) => {
                 handle_plugin_command(cmd, &result_tx,&contexts);
             }
-            Err(crossbeam::channel::RecvTimeoutError::Timeout)=>continue,
+            Err(crossbeam::channel::RecvTimeoutError::Timeout)=>{}
             Err(crossbeam::channel::RecvTimeoutError::Disconnected) => {
                 // Channel closed — Bevy is shutting down
                 tracing::info!("Plugin command channel closed, shutting down");
                 break;
             }
+        }
+        // Bus turn first, then each seat's bus and network dispatch inside `ticks.poll` (src/AGENTS.md §bus-seat).
+        bus.poll();
+        ticks.poll();
+    }
+    // Every seat leaves the bus and the network broker (dial-outs stop) before its final flush (OD-E1).
+    ticks.stop_all(tick::DeactivateReason::HostStopping);
+}
+
+/// Bevy system: apply scheduler events (degraded, stopped) to the registry; the ticks themselves never run in Bevy.
+fn apply_tick_events(ticks: Res<tick::TickHost>, mut registry: ResMut<PluginRegistry>) {
+    use tick::{DeactivateReason as Reason, TickHostEventKind as Kind};
+    for event in ticks.take_events() {
+        let id = event.plugin_id.as_str();
+        let applied = match event.kind {
+            Kind::Degraded(reason) => registry.degrade(id, &reason),
+            Kind::Stopped(Reason::Revoked) => registry.revoke(id, "revoked"),
+            Kind::Stopped(Reason::Disabled) => registry.disable(id, "disabled"),
+            Kind::Stopped(Reason::PolicyDenied) => registry.disable(id, "policy-denied"),
+            Kind::Stopped(Reason::RoleLost) => registry.disable(id, "role-lost"),
+            Kind::Stopped(Reason::Degraded) => Ok(()),
+            Kind::Stopped(_) => match registry.get_state(id) {
+                Some(crate::registry::PluginState::Active | crate::registry::PluginState::Degraded(_)) => registry.deactivate(id),
+                _ => Ok(()),
+            },
+        };
+        if let Err(error) = applied {
+            tracing::debug!(plugin = %id, %error, "tick event for an unregistered plugin");
         }
     }
 }
@@ -380,6 +457,25 @@ fn drain_plugin_results(receiver: Res<PluginResultReceiver>, mut registry: ResMu
         count += 1;
         if count >= 64 {
             break;
+        }
+    }
+}
+
+#[cfg(test)]
+mod host_gate_tests {
+    use super::plugin_host_allowed;
+
+    #[test]
+    fn only_exact_one_opts_the_host_in() {
+        for (value, expected) in [
+            (None, false),
+            (Some(""), false),
+            (Some("0"), false),
+            (Some("true"), false),
+            (Some("yes"), false),
+            (Some("1"), true),
+        ] {
+            assert_eq!(plugin_host_allowed(value), expected, "{value:?}");
         }
     }
 }

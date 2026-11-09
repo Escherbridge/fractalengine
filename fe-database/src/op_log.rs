@@ -4636,6 +4636,54 @@ mod tests {
         .unwrap()
         .check()
         .unwrap();
+        // J7 stamp-and-stop (OD-E1, R24): a sealed-package batch stamps host provenance on its journal
+        // fact beside the fact's write clock; once its lease is revoked the next commit is refused, and
+        // the row and its stamp stay (revocation is stop, never withdrawal).
+        let package = fe_runtime::plugin_host::PackageIdentity::new(
+            "org.example.fleet-sim".into(),
+            "ab".repeat(32),
+        )
+        .unwrap();
+        let extension_lease = fe_sdk::plugin_host::PluginLease::default();
+        let extension = admission
+            .clone()
+            .with_package(package)
+            .with_scene_writes(vec![fe_sdk::manifest_v2::SceneWrite::SetProperty])
+            .unwrap()
+            .with_lease(extension_lease.clone());
+        let stamped_op = [PendingOp::SetProperty {
+            node_id: other_node.clone(),
+            key: "calibration".into(),
+            value: serde_json::json!({"gain":4}),
+        }];
+        crate::handlers::plugin_host::commit(&db, &extension, &stamped_op, "did:qa")
+            .await
+            .unwrap();
+        let stamped_fact = crate::handlers::node_history::latest(&db, &other_node)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            stamped_fact["payload"]["ext"],
+            serde_json::json!({"package_id":"org.example.fleet-sim","content_hash":"ab".repeat(32)}),
+            "the host stamps the version; the guest never names it"
+        );
+        assert!(stamped_fact["hlc_timestamp"].as_i64().is_some_and(|clock| clock > 0));
+        extension_lease.revoke();
+        let before_stop = op_log_count(&db).await;
+        crate::handlers::plugin_host::commit(&db, &extension, &stamped_op, "did:qa")
+            .await
+            .expect_err("a revoked build's next commit is refused");
+        assert_eq!(op_log_count(&db).await, before_stop);
+        let kept = crate::handlers::node_history::committed_receipt(&db, &other_node)
+            .await
+            .unwrap();
+        assert_eq!(kept["state"]["properties"]["calibration"]["gain"], 4, "revocation withdraws nothing");
+        assert_eq!(
+            crate::handlers::node_history::latest(&db, &other_node).await.unwrap().unwrap(),
+            stamped_fact,
+            "the stamped version stays the latest, stamp included"
+        );
         let url_db = probe_db().await;
         url_db.query("CREATE verse CONTENT {verse_id:'url-v',name:'v',created_by:'did:qa',default_access:'viewer',created_at:'2026-11-01'}; CREATE fractal CONTENT {fractal_id:'url-f',verse_id:'url-v',owner_did:'did:qa',name:'f',created_at:'2026-11-01'}; CREATE petal CONTENT {petal_id:'url-p',fractal_id:'url-f',name:'p',node_id:'p',created_at:'2026-11-01'}; CREATE model CONTENT {asset_id:'url-a',petal_id:'url-p',transform:{}};")
             .await.unwrap().check().unwrap();

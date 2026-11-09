@@ -1073,6 +1073,7 @@ fn test_rename_entity_omits_node_scene_change() {
                     name: "from committed plugin".into(),
                 },
             ],
+            readings: vec![],
             reply,
         })
         .unwrap();
@@ -1120,6 +1121,7 @@ fn test_rename_entity_omits_node_scene_change() {
             ops: vec![PendingOp::DeleteNode {
                 node_id: created.clone(),
             }],
+            readings: vec![],
             reply,
         })
         .unwrap();
@@ -1132,5 +1134,110 @@ fn test_rename_entity_omits_node_scene_change() {
             assert_eq!(petal_id, sibling);
         }
         other => panic!("expected GUI-only committed removal, got {other:?}"),
+    }
+    // J3: four transforms and eight readings commit as one flush; a reading on an unknown anchor refuses the whole flush.
+    use fe_sdk::plugin_host::{StagedReading, StagedTimestamp};
+    use fe_sdk::source_class::SourceClass;
+    let anchors: Vec<String> = std::iter::once(surviving_node.clone())
+        .chain((0..3).map(|_| create_node(&db.cmd_tx, &db.res_rx, &sibling)))
+        .collect();
+    let readings_grant =
+        fe_runtime::plugin_host::ReadingsAdmission::new(SourceClass::Simulation, vec!["*".into()])
+            .unwrap();
+    let sensor_admission = PluginAdmission::new(
+        "sensor-plugin".into(),
+        sibling.clone(),
+        vec![fe_sdk::CAP_STORAGE_WRITE.into()],
+        vec![],
+        vec![],
+        vec![],
+    )
+    .unwrap()
+    .with_readings(readings_grant);
+    let (reply, rx) = crossbeam::channel::bounded(1);
+    db.cmd_tx
+        .send(DbCommand::PluginRead {
+            admission: sensor_admission.clone(),
+            request: PluginRead::PetalScope,
+            reply,
+        })
+        .unwrap();
+    let scope = match rx.recv_timeout(Duration::from_secs(5)).unwrap().unwrap() {
+        PluginReply::Scope(scope) => scope,
+        other => panic!("unexpected scope reply: {other:?}"),
+    };
+    let sensor_admission = sensor_admission.bind_scope(scope).unwrap();
+    let reading_for = |node_id: &str, index: usize| StagedReading {
+        node_id: node_id.to_string(),
+        metric: "temperature".into(),
+        value: index as f64,
+        units: "C".into(),
+        recorded_at: Some(StagedTimestamp::EpochMs(1_700_000_000_000 + index as i64)),
+    };
+    let moves: Vec<PendingOp> = anchors
+        .iter()
+        .map(|node_id| PendingOp::SetTransform {
+            node_id: node_id.clone(),
+            position: Some([4.0, 5.0, 6.0]),
+            rotation: None,
+            scale: None,
+        })
+        .collect();
+    let mut readings: Vec<StagedReading> = (0..8)
+        .map(|index| reading_for(&anchors[index % anchors.len()], index))
+        .collect();
+    readings.push(reading_for("no-such-anchor", 8));
+    let (reply, rx) = crossbeam::channel::bounded(1);
+    db.cmd_tx
+        .send(DbCommand::PluginCommit {
+            admission: sensor_admission.clone(),
+            ops: moves.clone(),
+            readings: readings.clone(),
+            reply,
+        })
+        .unwrap();
+    assert!(
+        matches!(
+            rx.recv_timeout(Duration::from_secs(5)).unwrap(),
+            Err(fe_runtime::plugin_host::PluginRefusal::InvalidInput(_))
+        ),
+        "an unknown reading anchor refuses the whole flush, transforms included"
+    );
+    // G1-C8: a reading anchored on a node the same batch deletes refuses up front; the node survives,
+    // which the flush below proves by moving it.
+    let (reply, rx) = crossbeam::channel::bounded(1);
+    db.cmd_tx
+        .send(DbCommand::PluginCommit {
+            admission: sensor_admission.clone(),
+            ops: vec![PendingOp::DeleteNode {
+                node_id: anchors[1].clone(),
+            }],
+            readings: vec![reading_for(&anchors[1], 9)],
+            reply,
+        })
+        .unwrap();
+    assert!(
+        matches!(
+            rx.recv_timeout(Duration::from_secs(5)).unwrap(),
+            Err(fe_runtime::plugin_host::PluginRefusal::InvalidInput(_))
+        ),
+        "a reading on a node the batch deletes refuses the whole flush"
+    );
+    readings.pop();
+    let (reply, rx) = crossbeam::channel::bounded(1);
+    db.cmd_tx
+        .send(DbCommand::PluginCommit {
+            admission: sensor_admission,
+            ops: moves,
+            readings,
+            reply,
+        })
+        .unwrap();
+    match rx.recv_timeout(Duration::from_secs(5)).unwrap().unwrap() {
+        PluginReply::Committed(receipt) => {
+            assert_eq!(receipt.op_count, 4);
+            assert_eq!(receipt.reading_count, 8);
+        }
+        other => panic!("unexpected J3 reply: {other:?}"),
     }
 }

@@ -230,3 +230,137 @@ pub fn position_at_progress(
 pub fn polyline_length(points: &[[f32; 3]]) -> f32 {
     cumulative_distances(points).1
 }
+
+/// Result of snapping a world position to a polyline (f64 route math shared by sim and IoT).
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct RouteSnap {
+    /// Nearest point on the route.
+    pub nearest_point: [f64; 3],
+    /// Segment holding it (`points[i]` to `points[i+1]`).
+    pub segment_index: usize,
+    /// Fraction of total arc length, 0.0 start to 1.0 end.
+    pub route_progress: f64,
+    /// Arc length left to the end, metres.
+    pub distance_remaining_m: f64,
+    /// Distance from the position to the route, metres.
+    pub deviation_m: f64,
+}
+
+/// Euclidean distance between two f64 points.
+pub fn distance_f64(a: &[f64; 3], b: &[f64; 3]) -> f64 {
+    let (dx, dy, dz) = (b[0] - a[0], b[1] - a[1], b[2] - a[2]);
+    (dx * dx + dy * dy + dz * dz).sqrt()
+}
+
+/// Cumulative f64 distances (index 0 is 0.0) and the total length.
+pub fn cumulative_distances_f64(points: &[[f64; 3]]) -> (Vec<f64>, f64) {
+    let mut distances = Vec::with_capacity(points.len().max(1));
+    distances.push(0.0);
+    let mut total = 0.0;
+    for pair in points.windows(2) {
+        total += distance_f64(&pair[0], &pair[1]);
+        distances.push(total);
+    }
+    (distances, total)
+}
+
+/// Nearest point on segment AB to P, with its squared distance.
+pub fn nearest_point_on_segment(p: [f64; 3], a: [f64; 3], b: [f64; 3]) -> ([f64; 3], f64) {
+    let ab = [b[0] - a[0], b[1] - a[1], b[2] - a[2]];
+    let ap = [p[0] - a[0], p[1] - a[1], p[2] - a[2]];
+    let ab_dot_ab = ab[0] * ab[0] + ab[1] * ab[1] + ab[2] * ab[2];
+    let ab_dot_ap = ab[0] * ap[0] + ab[1] * ap[1] + ab[2] * ap[2];
+    let t = if ab_dot_ab > 1e-12 {
+        (ab_dot_ap / ab_dot_ab).clamp(0.0, 1.0)
+    } else {
+        0.0
+    };
+    let nearest = [a[0] + ab[0] * t, a[1] + ab[1] * t, a[2] + ab[2] * t];
+    let (dx, dy, dz) = (p[0] - nearest[0], p[1] - nearest[1], p[2] - nearest[2]);
+    (nearest, dx * dx + dy * dy + dz * dz)
+}
+
+/// Snap a position to a polyline; `cumdist`/`total` come from [`cumulative_distances_f64`].
+pub fn snap_to_polyline(
+    points: &[[f64; 3]],
+    cumdist: &[f64],
+    total: f64,
+    position: [f64; 3],
+) -> RouteSnap {
+    match points.len() {
+        0 => {
+            return RouteSnap {
+                nearest_point: position,
+                segment_index: 0,
+                route_progress: 0.0,
+                distance_remaining_m: 0.0,
+                deviation_m: 0.0,
+            }
+        }
+        1 => {
+            return RouteSnap {
+                nearest_point: points[0],
+                segment_index: 0,
+                route_progress: 0.0,
+                distance_remaining_m: total,
+                deviation_m: distance_f64(&position, &points[0]),
+            }
+        }
+        _ => {}
+    }
+    let mut best_dist_sq = f64::MAX;
+    let mut best_point = position;
+    let mut best_segment = 0usize;
+    for index in 0..points.len() - 1 {
+        let (projected, dist_sq) = nearest_point_on_segment(position, points[index], points[index + 1]);
+        if dist_sq < best_dist_sq {
+            best_dist_sq = dist_sq;
+            best_point = projected;
+            best_segment = index;
+        }
+    }
+    let segment_length = distance_f64(&points[best_segment], &points[best_segment + 1]);
+    let fraction = if segment_length > 1e-9 {
+        distance_f64(&points[best_segment], &best_point) / segment_length
+    } else {
+        0.0
+    };
+    let progress_dist = cumdist[best_segment] + fraction * segment_length;
+    let route_progress = if total > 1e-9 { progress_dist / total } else { 0.0 };
+    RouteSnap {
+        nearest_point: best_point,
+        segment_index: best_segment,
+        route_progress: route_progress.clamp(0.0, 1.0),
+        distance_remaining_m: (total - progress_dist).max(0.0),
+        deviation_m: best_dist_sq.sqrt(),
+    }
+}
+
+/// f64 arc-length interpolation (same selection rule as [`position_at_progress`]).
+pub fn position_at_progress_f64(
+    points: &[[f64; 3]],
+    cumdist: &[f64],
+    total: f64,
+    progress: f64,
+) -> [f64; 3] {
+    match points.len() {
+        0 => return [0.0, 0.0, 0.0],
+        1 => return points[0],
+        _ => {}
+    }
+    let target = progress.clamp(0.0, 1.0) * total;
+    let segment = cumdist
+        .iter()
+        .position(|&d| d > target)
+        .unwrap_or(points.len() - 1)
+        .saturating_sub(1)
+        .min(points.len() - 2);
+    let seg_len = cumdist[segment + 1] - cumdist[segment];
+    let t = if seg_len > 1e-9 { (target - cumdist[segment]) / seg_len } else { 0.0 };
+    let (a, b) = (&points[segment], &points[segment + 1]);
+    [
+        a[0] + (b[0] - a[0]) * t,
+        a[1] + (b[1] - a[1]) * t,
+        a[2] + (b[2] - a[2]) * t,
+    ]
+}

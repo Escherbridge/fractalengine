@@ -13,6 +13,70 @@ fn test_tampered_ed25519_signature() {
 }
 
 #[test]
+fn test_tampered_sealed_plugin_rejected() {
+    use fe_format::integrity::{IntegrityError, MANIFEST_PATH, PLUGIN_COMPONENT_PATH};
+    use fe_format::{verify_archive, IntegrityPolicy, IntegrityStatus};
+    use fe_hexon::package::{verify_plugin_package, PluginTrust};
+    use fe_hexon::publisher::PluginHexonBuilder;
+    use std::io::{Cursor, Read, Write};
+
+    // A real manifest v2 sealed by the production builder (what `fe-ext pack` and a registry ship).
+    let key = SigningKey::generate(&mut OsRng);
+    let publisher = fe_format::verifying_key_to_did(&key.verifying_key());
+    let is_publisher = |did: &str| did == publisher;
+    let trust = PluginTrust { is_trust_root: &is_publisher, allow_unsigned_dev: false };
+    let extension_json = include_bytes!("../../fe-sdk/schema/examples/bi-push.extension.json");
+    let package_id = serde_json::from_slice::<serde_json::Value>(extension_json).unwrap()["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    // Admission never compiles the component here (that is the plugin host's job), so stub bytes suffice.
+    let sealed = PluginHexonBuilder::new(extension_json.to_vec(), b"\0asm-component-stub".to_vec())
+        .build(&key)
+        .expect("plugin seals");
+    let strict = IntegrityPolicy::RequireSealed { pin: None };
+    assert!(matches!(verify_archive(&sealed, &strict), Ok(IntegrityStatus::Sealed { .. })));
+    assert!(
+        verify_plugin_package(&sealed, Some(&package_id), &trust).is_ok(),
+        "the untampered package passes the install verifier"
+    );
+
+    // An attacker's re-zip: well-formed, valid CRCs, one member replaced (so only the seal can catch it).
+    let rewrite = |target: &str, edit: &dyn Fn(Vec<u8>) -> Vec<u8>| -> Vec<u8> {
+        let mut archive = zip::ZipArchive::new(Cursor::new(sealed.as_slice())).unwrap();
+        let mut out = zip::ZipWriter::new(Cursor::new(Vec::new()));
+        for index in 0..archive.len() {
+            let mut file = archive.by_index(index).unwrap();
+            let name = file.name().to_string();
+            let mut bytes = Vec::new();
+            file.read_to_end(&mut bytes).unwrap();
+            out.start_file(name.as_str(), zip::write::SimpleFileOptions::default()).unwrap();
+            out.write_all(&if name == target { edit(bytes) } else { bytes }).unwrap();
+        }
+        out.finish().unwrap().into_inner()
+    };
+
+    // Flipped manifest signature: refused by the seal and by the install verifier, never a silent pass.
+    let bad_signature = rewrite(MANIFEST_PATH, &|bytes| {
+        let mut doc: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+        let signature = doc["signature"].as_str().unwrap().to_string();
+        let flipped = if signature.starts_with('A') { 'B' } else { 'A' };
+        doc["signature"] = format!("{flipped}{}", &signature[1..]).into();
+        serde_json::to_vec(&doc).unwrap()
+    });
+    assert!(verify_archive(&bad_signature, &strict).is_err());
+    assert!(verify_plugin_package(&bad_signature, Some(&package_id), &trust).is_err());
+
+    // Swapped component: the signed members list commits its digest, so the swap is named precisely.
+    let swapped = rewrite(PLUGIN_COMPONENT_PATH, &|_| b"\0asm-evil-component".to_vec());
+    assert_eq!(
+        verify_archive(&swapped, &strict),
+        Err(IntegrityError::DigestMismatch { path: PLUGIN_COMPONENT_PATH.into() })
+    );
+    assert!(verify_plugin_package(&swapped, Some(&package_id), &trust).is_err());
+}
+
+#[test]
 fn test_ttl_limit_enforced() {
     use fe_identity::jwt::mint_session_token;
     use fe_identity::NodeKeypair;

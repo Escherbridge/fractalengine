@@ -88,7 +88,14 @@ unchanged either way.
 ## Running it
 
 ```sh
-cd extensions/iot-bridge
-cargo check   # standalone workspace ([workspace] table in Cargo.toml); no root build needed
-cargo test    # unit tests in src/*.rs + tests/bridge_loop.rs
+cargo check -p iot-bridge   # from the repo root
+cargo test -p iot-bridge    # unit tests in src/*.rs + tests/bridge_loop.rs
 ```
+
+## §workspace — root workspace member
+
+`iot-bridge` is a root workspace member (root `Cargo.toml` `members`), so it shares the
+root `Cargo.lock` and its own `[workspace]` table was dropped. Its standalone lock file is
+no longer authoritative. `rhai` is pinned to `1.24` here and in `fe-plugin/Cargo.toml`
+(OD-7 / A-7: the host aligns upward to the example's line). A version change in one of
+the two must be made in the other, or the host and the example drift again.

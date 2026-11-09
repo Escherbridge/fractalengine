@@ -8,6 +8,7 @@ rust-version.workspace = true
 description = "Full-lab simulation mode: synthetic IoT fleets + simulated peers + time acceleration (feature-gated off the prod path)"
 
 [dependencies]
+fe-sim-model = { path = "model" }
 fe-database = { path = "../fe-database" }
 fe-runtime = { path = "../fe-runtime" }
 fe-sync = { path = "../fe-sync" }

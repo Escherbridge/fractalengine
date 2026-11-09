@@ -1,0 +1,4 @@
+# wasmtime 49 needs rustc >= 1.96; one compiler for local and CI builds.
+[toolchain]
+channel = "1.99.0"
+components = ["rustfmt"]

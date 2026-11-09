@@ -375,7 +375,14 @@ define_table! {
         /// any. Additive (`option<string>`, no DEFAULT) so an old peer's
         /// SCHEMAFULL row coercion is unaffected by its absence.
         #[serde(default, skip_serializing_if = "Option::is_none")]
-        payload_id: Option<String> => "TYPE option<string>"
+        payload_id: Option<String> => "TYPE option<string>",
+        /// R24 host-stamped extension provenance, both or neither: the sealed
+        /// package a PluginCommit flush wrote this reading under. Additive like
+        /// `payload_id`; see AGENTS.md §iot-readings.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        ext_package_id: Option<String> => "TYPE option<string>",
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        ext_content_hash: Option<String> => "TYPE option<string>"
     }
 }
 
@@ -994,6 +1001,10 @@ pub async fn apply_all(db: &crate::repo::Db) -> anyhow::Result<()> {
         .await?.check().map_err(|e| anyhow::anyhow!("idx_observation_batch_op_id: {e}"))?;
     db.query("DEFINE INDEX IF NOT EXISTS idx_observation_window_member_sealed ON TABLE observation_window_member FIELDS sealed_op_id")
         .await?.check().map_err(|e| anyhow::anyhow!("idx_observation_window_member_sealed: {e}"))?;
+    // Extension governance: the replicated per-verse policy row (handlers/AGENTS.md §extension-policy).
+    crate::handlers::extension_policy::apply_schema(db).await?;
+    // Scoped extension bindings: replicated per-author binding versions (src/AGENTS.md §extension-binding).
+    crate::handlers::extension_binding::apply_schema(db).await?;
 
     Ok(())
 }
@@ -1039,6 +1050,8 @@ pub const DEVELOPMENT_RESET_TABLE_NAMES: &[&str] = &[
     "observation_catalog_conflict",
     "observation_hydration",
     "api_token",
+    "extension_policy",
+    "extension_binding",
 ];
 
 /// All table names, for admin operations like dump / clear.
@@ -1339,6 +1352,8 @@ mod tests {
         assert!(!ALL_TABLE_NAMES.contains(&JoinDelegationRow::TABLE_NAME));
         assert!(DEVELOPMENT_RESET_TABLE_NAMES.contains(&JoinDelegationRow::TABLE_NAME));
         assert!(JoinDelegationRow::schema().contains("['quarantined', 'active']"));
+        // The dev reset refuses a table it does not list (admin.rs), so the binding table must be listed.
+        assert!(DEVELOPMENT_RESET_TABLE_NAMES.contains(&"extension_binding"));
         assert!(ALL_TABLE_NAMES.contains(&"iot_reading"));
         assert!(ALL_TABLE_NAMES.contains(&"petal"));
         assert!(ALL_TABLE_NAMES.contains(&"verse_member"));

@@ -7,6 +7,9 @@ use axum::response::{IntoResponse, Response};
 use axum::Extension;
 use fe_identity::api_token::ApiClaims;
 use fe_runtime::messages::{ApiCommand, DbCommand, DbResult, TransformUpdate};
+use fe_runtime::scene_hook_gate::{
+    SceneAugment, SceneCaller, SceneCallerKind, SceneHookGate, SceneHookInput, SceneVerdict,
+};
 
 use crate::auth::{require_role, require_scope};
 #[cfg(test)]
@@ -102,6 +105,75 @@ fn create_failed(msg: impl Into<String>) -> Response {
 
 fn created(id: String, name: String) -> Response {
     Json(ApiResponse::success(CreatedEntityDto { id, name })).into_response()
+}
+
+/// Ask the installed `scene.*` gate before a node write (bindings.md §6); `input` is built only
+/// when a gate is installed. Faults, timeouts and unbound petals proceed (OQ-B4).
+pub(crate) async fn scene_gate_verdict(
+    claims: &ApiClaims,
+    kind: SceneCallerKind,
+    input: impl FnOnce() -> SceneHookInput,
+) -> SceneVerdict {
+    match SceneHookGate::installed() {
+        Some(gate) => {
+            gate.check(input(), SceneCaller::api(kind, &claims.sub))
+                .await
+        }
+        None => SceneVerdict::Proceed { augment: None },
+    }
+}
+
+/// REST form of [`scene_gate_verdict`]: a refusal is `409 refused` with the guest's reason; a bound
+/// write whose hook input is over the cap is `413 input-too-large`.
+async fn scene_gate_rest(
+    claims: &ApiClaims,
+    input: impl FnOnce() -> SceneHookInput,
+) -> Result<Option<SceneAugment>, Response> {
+    match scene_gate_verdict(claims, SceneCallerKind::Rest, input).await {
+        SceneVerdict::Proceed { augment } => Ok(augment),
+        SceneVerdict::Refused { package_id, reason } => Err((
+            StatusCode::CONFLICT,
+            Json(serde_json::json!({
+                "ok": false,
+                "data": null,
+                "error": "refused",
+                "package_id": package_id,
+                "reason": reason,
+            })),
+        )
+            .into_response()),
+        SceneVerdict::InputTooLarge {
+            package_id,
+            limit_bytes,
+        } => Err((
+            StatusCode::PAYLOAD_TOO_LARGE,
+            Json(serde_json::json!({
+                "ok": false,
+                "data": null,
+                "error": "input-too-large",
+                "package_id": package_id,
+                "limit_bytes": limit_bytes,
+            })),
+        )
+            .into_response()),
+    }
+}
+
+/// Stage an allowed augment once its write is sent; it never delays or fails the write.
+fn stage_scene_augment(augment: Option<SceneAugment>, created_node_id: Option<&str>) {
+    let Some(augment) = augment else { return };
+    let staged = match created_node_id {
+        Some(node_id) => augment.stage_created(node_id),
+        None => augment.stage(),
+    };
+    if let Err(error) = staged {
+        tracing::warn!(%error, "scene hook augment was not staged");
+    }
+}
+
+/// The petal of an authorized node scope (`VERSE#v-FRACTAL#f-PETAL#p`).
+fn scope_petal_id(scope: &str) -> Option<String> {
+    fe_database::parse_scope(scope).ok()?.petal_id
 }
 
 // ---------------------------------------------------------------------------
@@ -318,10 +390,28 @@ async fn create_node_in_petal(
     petal_id: String,
     req: CreateNodeRequest,
 ) -> Response {
+    if req
+        .asset_id
+        .as_deref()
+        .is_some_and(|asset_id| !is_valid_ulid(asset_id))
+    {
+        return create_denied(StatusCode::BAD_REQUEST, "invalid asset_id");
+    }
+    if req.asset_id.is_none() && (req.rotation.is_some() || req.scale.is_some()) {
+        // CreateNode carries no rotation/scale; dropping them silently is worse.
+        return create_denied(StatusCode::BAD_REQUEST, "rotation/scale require asset_id");
+    }
+    let augment = match scene_gate_rest(claims, || SceneHookInput::Create {
+        petal_id: petal_id.clone(),
+        name: req.name.clone(),
+        position: req.position.unwrap_or([0.0; 3]),
+    })
+    .await
+    {
+        Ok(augment) => augment,
+        Err(refused) => return refused,
+    };
     if let Some(asset_id) = req.asset_id.as_deref() {
-        if !is_valid_ulid(asset_id) {
-            return create_denied(StatusCode::BAD_REQUEST, "invalid asset_id");
-        }
         let placed = crate::upload::place_asset_core(
             state,
             claims,
@@ -334,20 +424,19 @@ async fn create_node_in_petal(
         )
         .await;
         return match placed {
-            Ok(p) => Json(ApiResponse::success(serde_json::json!({
-                "id": p.node_id,
-                "name": p.name,
-                "asset_id": p.asset_id,
-                "asset_path": p.asset_path,
-            })))
-            .into_response(),
+            Ok(p) => {
+                stage_scene_augment(augment, Some(&p.node_id));
+                Json(ApiResponse::success(serde_json::json!({
+                    "id": p.node_id,
+                    "name": p.name,
+                    "asset_id": p.asset_id,
+                    "asset_path": p.asset_path,
+                })))
+                .into_response()
+            }
             Err(e) if e == crate::upload::UNKNOWN_ASSET => create_denied(StatusCode::NOT_FOUND, &e),
             Err(e) => create_failed(e),
         };
-    }
-    if req.rotation.is_some() || req.scale.is_some() {
-        // CreateNode carries no rotation/scale; dropping them silently is worse.
-        return create_denied(StatusCode::BAD_REQUEST, "rotation/scale require asset_id");
     }
     let cmd = DbCommand::CreateNode {
         petal_id,
@@ -356,7 +445,10 @@ async fn create_node_in_petal(
         correlation_id: None,
     };
     match db_round_trip(state, cmd).await {
-        Ok(DbResult::NodeCreated { id, name, .. }) => created(id, name),
+        Ok(DbResult::NodeCreated { id, name, .. }) => {
+            stage_scene_augment(augment, Some(&id));
+            created(id, name)
+        }
         Ok(DbResult::Error(e)) => {
             tracing::error!("create_node failed: {e}");
             create_failed("operation failed")
@@ -375,26 +467,43 @@ pub async fn update_transform(
     Extension(claims): Extension<ApiClaims>,
     Path(node_id): Path<String>,
     Json(req): Json<UpdateTransformRequest>,
-) -> impl IntoResponse {
+) -> Response {
+    let error = |msg: &str| Json(ApiResponse::<serde_json::Value>::error(msg)).into_response();
     if require_role(&claims, "editor").is_err() {
-        return Json(ApiResponse::error("insufficient permissions"));
+        return error("insufficient permissions");
     }
 
     if !crate::endpoint::is_addressable_node_id(&node_id) {
-        return Json(ApiResponse::error("invalid node_id"));
+        return error("invalid node_id");
     }
 
     // Resolve node scope for enforcement
-    if crate::rest::authorized_node_scope(&state, &claims, &node_id)
-        .await
-        .is_none()
-    {
-        return Json(ApiResponse::error(crate::rest::NOT_FOUND_OR_DENIED));
-    }
+    let Some(scope) = crate::rest::authorized_node_scope(&state, &claims, &node_id).await else {
+        return error(crate::rest::NOT_FOUND_OR_DENIED);
+    };
 
     if let Some(denial) = stamp_translate_denied(&state, &node_id, req.position).await {
-        return Json(ApiResponse::error(denial));
+        return error(denial);
     }
+
+    // scene.transform runs before the optimistic broadcast, so a refused move is never previewed.
+    let augment = match scope_petal_id(&scope) {
+        Some(petal_id) => {
+            let gated = scene_gate_rest(&claims, || SceneHookInput::Transform {
+                petal_id,
+                node_id: node_id.clone(),
+                position: req.position,
+                rotation: req.rotation,
+                scale: req.scale,
+            })
+            .await;
+            match gated {
+                Ok(augment) => augment,
+                Err(refused) => return refused,
+            }
+        }
+        None => None,
+    };
 
     let mut outcomes = state.entity_change_tx.subscribe();
     let broadcast_receivers = persist_transform(
@@ -407,15 +516,17 @@ pub async fn update_transform(
     );
     let persist = match transform_outcome(&mut outcomes, &node_id, req.position).await {
         Some(true) => "persisted",
-        Some(false) => return Json(ApiResponse::error(TRANSFORM_REFUSED)),
+        Some(false) => return error(TRANSFORM_REFUSED),
         None => "queued",
     };
+    stage_scene_augment(augment, None);
 
     Json(ApiResponse::success(serde_json::json!({
         "node_id": node_id,
         "broadcast_receivers": broadcast_receivers,
         "persist": persist
     })))
+    .into_response()
 }
 
 /// Reply copy for a transform the DB refused after the optimistic preview.
@@ -566,29 +677,44 @@ pub async fn set_node_property(
     Extension(claims): Extension<ApiClaims>,
     Path(node_id): Path<String>,
     Json(req): Json<SetPropertyRequest>,
-) -> impl IntoResponse {
+) -> Response {
+    let error = |msg: String| Json(ApiResponse::<PropertySetDto>::error(msg)).into_response();
     if require_role(&claims, "editor").is_err() {
-        return Json(ApiResponse::<PropertySetDto>::error(
-            "insufficient permissions",
-        ));
+        return error("insufficient permissions".into());
     }
     if !is_valid_ulid(&node_id) {
-        return Json(ApiResponse::<PropertySetDto>::error("invalid node_id"));
+        return error("invalid node_id".into());
     }
 
     // Resolve node scope for enforcement — deny if resolution fails
-    if crate::rest::authorized_node_scope(&state, &claims, &node_id)
-        .await
-        .is_none()
-    {
-        return Json(ApiResponse::<PropertySetDto>::error(
-            crate::rest::NOT_FOUND_OR_DENIED,
-        ));
-    }
+    let Some(scope) = crate::rest::authorized_node_scope(&state, &claims, &node_id).await else {
+        return error(crate::rest::NOT_FOUND_OR_DENIED.into());
+    };
+
+    // scene.property: only keys inside the bound build's property_scope reach the guest.
+    let augment = match scope_petal_id(&scope) {
+        Some(petal_id) => {
+            let gated = scene_gate_rest(&claims, || SceneHookInput::Property {
+                petal_id,
+                node_id: node_id.clone(),
+                key: req.key.clone(),
+                value: req.value.clone(),
+            })
+            .await;
+            match gated {
+                Ok(augment) => augment,
+                Err(refused) => return refused,
+            }
+        }
+        None => None,
+    };
 
     match set_property_as(&state, &claims, &node_id, req.key, req.value).await {
-        Ok(dto) => Json(ApiResponse::success(dto)),
-        Err(e) => Json(ApiResponse::<PropertySetDto>::error(e)),
+        Ok(dto) => {
+            stage_scene_augment(augment, None);
+            Json(ApiResponse::success(dto)).into_response()
+        }
+        Err(e) => error(e),
     }
 }
 

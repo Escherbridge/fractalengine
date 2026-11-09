@@ -41,6 +41,10 @@ pub struct SpawnedNodeMarker {
 #[derive(Component, Debug, Default, Clone, Copy)]
 pub struct Billboard;
 
+/// Bevy resource wrapping the SDK's UI contribution registry; extensions register into it, panels read it (AGENTS.md §ui-extensions).
+#[derive(Resource, Debug, Default)]
+pub struct UiExtensions(pub fe_sdk::UiExtensionRegistry);
+
 /// Ceiling on renderable mesh instances before spawners stop and the user is
 /// warned — sized under the GPU 2 GiB bind-group limit; see AGENTS.md §mesh-budget.
 pub const MAX_MESH_INSTANCES: usize = 2_000_000;
@@ -889,6 +893,8 @@ impl Plugin for GardenerConsolePlugin {
             Update,
             crate::ui_shell::right_sidebar::update_residency_readout,
         );
+        app.init_resource::<UiExtensions>();
+        app.init_resource::<crate::panels::plugin_install_panel::PluginInstallState>();
         app.init_resource::<SidebarState>();
         app.init_resource::<crate::native_accessibility::navigation_ui::NavigationReads>();
         app.init_resource::<ToolState>();
@@ -1040,6 +1046,27 @@ impl Plugin for GardenerConsolePlugin {
             ).run_if(fe_runtime::maintenance::editor_running),
         );
         app.add_systems(EguiPrimaryContextPass, gardener_ui_system.in_set(GardenerUiSet::GeometryReady));
+        app.add_systems(EguiPrimaryContextPass, plugin_install_dialog_system.after(gardener_ui_system));
+        // Extension slot host + Extensions window + consent modal (extensions/AGENTS.md section host-handle):
+        // the resources are lent to the surfaces around gardener_ui_system and returned after the overlay/window draw.
+        app.add_plugins((
+            crate::extensions::ExtensionSlotsPlugin,
+            crate::extensions::ExtensionsPanelPlugin,
+        ));
+        app.add_systems(
+            EguiPrimaryContextPass,
+            (
+                crate::extensions::lend_slots_to_surfaces.before(gardener_ui_system),
+                (
+                    crate::extensions::extension_overlay_system,
+                    crate::extensions::extensions_window_system,
+                )
+                    .after(gardener_ui_system),
+                crate::extensions::reclaim_slots_from_surfaces
+                    .after(crate::extensions::extension_overlay_system)
+                    .after(crate::extensions::extensions_window_system),
+            ),
+        );
         // The title bar's window request (move/resize/min/max/close) applies
         // the same frame it was raised — ui_shell/AGENTS.md §window-chrome.
         app.add_systems(
@@ -1432,6 +1459,18 @@ fn apply_camera_focus(
                 5.0_f32.clamp(controller.min_distance, controller.max_distance);
         }
     }
+}
+
+/// Draws the plugin install consent modal while a request is pending.
+fn plugin_install_dialog_system(
+    mut ctx: EguiContexts,
+    mut state: ResMut<crate::panels::plugin_install_panel::PluginInstallState>,
+) {
+    if state.pending().is_none() {
+        return;
+    }
+    let Ok(ectx) = ctx.ctx_mut() else { return };
+    crate::panels::plugin_install_panel::render(ectx, &mut state);
 }
 
 /// Projects the cursor position onto the Y=0 world plane each frame.

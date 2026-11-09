@@ -20,7 +20,6 @@ embed-resource = "3"
 
 [dev-dependencies]
 tokio = { workspace = true }
-ed25519-dalek = { workspace = true }
 rand = "0.8"
 fe-identity = { path = "../fe-identity" }
 fe-webview = { path = "../fe-webview" }
@@ -32,6 +31,8 @@ tempfile = "3"
 # own test module).
 fe-hexon-registry = { path = "../fe-hexon-registry" }
 axum = { workspace = true }
+# security_harness re-zips a sealed plugin (fe-format's zip 2 line).
+zip = { version = "2", default-features = false, features = ["deflate"] }
 
 [dependencies]
 # PAS-P5 S7a: `terrain_bridge::verify_install_meta` parses `fe_format::HeaderDoc`
@@ -55,6 +56,11 @@ fe-webview = { path = "../fe-webview", features = ["webview"] }
 fe-api = { path = "../fe-api" }
 fe-entity-store = { path = "../fe-entity-store" }
 fe-terrain = { path = "../fe-terrain", features = ["render"] }
+# extension_host: publisher-key parsing (sources.rs), registry/revocation HTTP (sources.rs,
+# revocation_pull.rs; fe-plugin's reqwest line) and local governance policy TOML (governance.rs).
+ed25519-dalek = { workspace = true }
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "json"] }
+toml = "0.8"
 bevy = { workspace = true }
 bevy_egui = { workspace = true }
 crossbeam = { workspace = true }
@@ -75,3 +81,9 @@ ulid = { workspace = true }
 image = { version = "0.25", default-features = false, features = ["png"] }
 # `Icon::from_rgba` for the window/taskbar icon — same 0.30 line bevy_winit pins.
 winit = { version = "0.30", default-features = false }
+
+[features]
+default = []
+# Third-party package admission: needs this feature AND FE_PLUGIN_HOST_ALLOW=1; the host thread
+# itself always runs, inert (src/AGENTS.md §plugin-host).
+plugin-host = []

@@ -231,6 +231,25 @@ signature is unchanged (it always passes `verse_id: None`, so window
 membership — gated on a known verse — never fires on that path; its fixed
 `SourceClass::Device` default is therefore never actually read).
 
+**R24 extension provenance (extension_platform_20261107 E10W, OD-E1 stamp-and-stop).**
+`insert_readings_with_provenance` is the door body; `insert_readings_with_replication`
+delegates to it with `None`. The PluginCommit flush passes the admission's host-minted
+`fe_runtime::plugin_host::PackageIdentity`: `handlers/plugin_host.rs::flush` calls
+`insert_readings_with_provenance`, and the scene journal fact carries `payload.ext`. E4 closed
+G2-C4, and since I-DB the DB arm calls `flush` (§plugin-host-flush). So every reading an extension
+writes carries `ext_package_id` + `ext_content_hash` (additive `option<string>`
+columns, omitted when unstamped: the `payload_id` precedent). The guest never names
+either value. The pair replicates with the row; `replicated_row::confine_reading`
+denies a half stamp or one `PackageIdentity::new` would refuse (strictest reader).
+Revocation never touches these rows: no exclusion at the scope-substitution seam or
+in ts partials, so the stamp is a filter key, not a visibility switch. Limits: an
+older peer's SCHEMAFULL table lacks the columns and fails the create of a stamped
+row (peers upgrade together, as with `payload_id`); the window-membership door digest
+does not cover the stamp yet (a canonical-log contract change, deferred). Scene
+versions carry the same pair in the local journal fact (`node_log.payload.ext`),
+never in the replicated `_fe_scene` marker (docs/extensions/governance.md
+Provenance section).
+
 **Typed rejection across the DB-thread seam (F24).** The dispatch loop's
 `InsertIotReadings` arm maps a validation failure (`IotIngestError::{
 UnknownAnchor, InvalidTimestamp, EmptyMetric}`) into
@@ -1583,7 +1602,7 @@ self-authorship, not role, in `handlers::replicated_row` (`canon_log/AGENTS.md`
 
 The three node property commands echo optional correlation IDs on their typed replies. Failures reuse handlers::correlated_failure: API requests get RequestFailed with the exact ID, GUI requests retain Error. Persistence, scene-change broadcasts and node-log append behavior remain shared. A persisted property must acknowledge independently of which node the GUI currently selects.
 
-## �property-schema
+## §property-schema
 
 `field_def.enforced_schema` is optional: absent means legacy metadata, present
 means the SDK bounded property-schema contract. SetFieldSchema requires
@@ -1600,7 +1619,7 @@ The default column now accepts arbitrary JSON types; defaults remain suggestions
 This contract covers ordinary property commands, not arbitrary operator SQL or
 replication. Those paths must not be represented as validated ordinary writes.
 
-## �node-history
+## §node-history
 
 Ordinary empty/asset creation now atomically writes a complete `baseline` v1.
 Native GLTF import uses that same sealed creation boundary, including its new
@@ -1784,6 +1803,102 @@ before effects, in addition to the 64 KiB input and per-snapshot bounds.
 ### Schema revision array migration
 
 Field-definition revision history is an optional array of descriptor objects. The pinned database parser requires an explicit object-containing type for FLEXIBLE; a bare array or any is insufficient. Reapply the outer array<object> declaration and its wildcard object element with OVERWRITE so existing roots retain arbitrary nested descriptor fields. Default values use the explicit optional JSON union to preserve scalar and compound representations. Boot and persisted roundtrip evidence are required in addition to source review.
+
+
+## §plugin-host-flush
+
+The DB thread's `PluginCommit { admission, ops, readings, reply }` arm calls
+`handlers::plugin_host::flush` and nothing else (I-DB 2026-11-09, closing G5-C5 and G6-C3;
+the same slice's `handlers/mod.rs` lines close G6-C2 and G2-A7). `flush` takes `FlushSinks`: the GUI result channel, the scene feed, the lifecycle
+seam, the blob store, the replication sender and the loop's `DeferredPublications`. The
+order is the R6 whole-flush rule:
+
+1. **Refuse up front.** A revoked lease, an invalid batch, or a reading anchored on a node the
+   same batch deletes is refused before anything is written. The door then validates the
+   readings against the bound petal.
+2. **Commit the scene batch atomically.** A readings-only flush still re-checks the Editor
+   floor and the pinned ancestry.
+3. **Publish what survived.** A created, deleted or property-changed node is published at
+   once. A transform-only node goes on the deferred lane, exactly like `UpdateNodeTransform`
+   (QA-0161), so a tick that moves 64 nodes does not hold the serial queue for 64
+   publications.
+4. **Land the readings** through `insert_readings_with_provenance` as the admitted source
+   class, with the package stamp (R24).
+
+Every journal fact the batch writes carries `payload.ext = {package_id, content_hash}`
+(`stamp_provenance`), the created node's `baseline` fact included: a plain create writes no
+other fact, so without it that node had no provenance at all (R-BND). Decoder stamping
+(`payload_id`, `source_class: decoder`, bindings.md §6 `ingest.decode`) has no carrier on
+`PluginCommit` yet: `StagedReading` holds neither, so decoded readings land as the grant's class
+with no payload link until the seam gains one.
+
+If the scene batch committed but its readings failed, the reply is `unknown-outcome`, never
+a retry instruction. The old arm destructured `BatchOutcome.nodes` as a 4-tuple (E0308 after
+E4) and never called `flush`, so no staged reading ever reached the DB. Both plugin arms now
+answer the typed `PluginResult`: `PluginRead` maps its failure through
+`plugin_host::refusal`, which keeps the WIT class.
+
+## §extension-governance-commands
+
+The DB arms for the governance commands (fe-runtime `src/AGENTS.md` §extension-db-commands)
+are thin. Each one parses the JSON payload strictly, calls `handlers::extension_policy`, and
+answers with the handler error's `Display` (`invalid-policy: …`, `role-denied: …`,
+`confirmation-mismatch: …`, `invalid-input: …`). They act as the DB thread's own `local_did`:
+the policy row's author and the override's Owner check both use it.
+
+- **`AppendExtensionAudit` refuses `kill-list-override` entries.** `load_kill_list_overrides`
+  rebuilds overrides from ok audit entries at startup, so an appended one would hydrate as an
+  override without `record_kill_list_override`'s Owner and confirmation checks. The arm logs
+  a refused append at warn, because a lost audit entry matters. It ignores a closed reply:
+  the bus audit forwarder drops its receiver at once.
+- **`ListExtensionAudit` reads by installation, then by verse, then the whole trail.** With
+  both filters it narrows the installation's rows to that verse. With neither, it reads the
+  whole trail newest first, capped at `AUDIT_TRAIL_READ_MAX` (10,000; per-subject reads keep
+  the handler's 500), for the binding worker's acceptance replay. The cap fails closed: an
+  acceptance older than the window reads as not accepted.
+- **`LoadExtensionGovernance` answers `{policies, consents, overrides, acceptances}`.**
+  Consents are sorted by installation. `acceptances` is the lossless `load_acceptances` replay,
+  so the host can hydrate "Allow in verse" without the whole-trail scan.
+
+## §extension-binding
+
+`handlers/extension_binding.rs` is the DB plane of scoped extension bindings (docs/extensions/bindings.md
+§3-§4; slice BND-1; declared in `handlers/mod.rs` and dispatched by I-DB 2026-11-09).
+
+- **Storage.** Table `extension_binding` holds one live version per doc key
+  `binding/{scope}/{hook}/{key}/{author_did}`. The index columns (`binding_key`, `verse_id`, `scope`,
+  `hook`, `author_did`, `mode`, `package_id`) exist only for lookups. The canonical `payload` JSON is
+  the truth on read, and a row whose payload does not parse is skipped with a warning.
+- **Local write** (`PutBinding` → `put_binding`) runs in this order:
+  1. Shape the row: canonical scope, a v1 hook, a key that fits the hook, a manifest v2 package id,
+     a SemVer `version_req`, and a DID for `runs_on`.
+  2. Check that the scope is a known verse, fractal or petal.
+  3. Judge the remote caller (`caller_did` other than the local DID): it needs Viewer+ there, or it
+     gets the uniform `not-found`, and Manager+ for the write.
+  4. Check that the local DID itself holds Manager+, because it authors the row.
+  5. For an `extension` row, check the replicated verse policy at package level.
+  6. Commit ONE `ExtensionAudit` op and the row atomically. `written_at` is that op's HLC, and
+     `author_did` is host-stamped.
+  7. Publish the row.
+
+  A Manager+ refusal is audited `refused`. A local write never defers.
+- **Inbound rows.** `confine_inbound` checks the structure: the key and payload agree, the author is
+  the attested author, and the scope is in this verse. Then the Manager+-now gate runs.
+  `apply_replicated_binding_row` bounds the author-stamped clock (`admit_scene_hlc`), then keeps the
+  newest `(written_at, payload bytes)` per key.
+- **Judging happens on read, and demotion deletes nothing.** `judge_versions` marks a version
+  admissible when its author held Manager+ at the scope when it wrote AND holds it now. The newest
+  admissible version per point is effective. A demoted author's rows stay stored for audit, but a
+  re-grant does NOT revive them (bindings.md §4.5): the write-time half reads
+  `role_grants::authorized_at_write` over `fe_policy::materialize_at`, and a statement's continuity
+  (`manager_since`) restarts at the re-grant, so only versions written inside the new window are
+  admissible. The same rule withdraws a version backdated into the author's old window. The
+  current-role half is what stops a demoted author from backdating while still demoted (an author
+  stamps its own HLC). Keep binding (`keep_binding`, `kept_template`) re-authors a withdrawn version
+  as the clicking Manager with its effective `runs_on` pinned; it has no DB command yet (R-BND).
+- **Re-emit.** The DB thread re-publishes this node's own live versions at startup (with every verse)
+  and on `ReemitLocalRoleStatements` (per verse), beside the role-statement re-emit. That is the
+  second chance for a publish dropped on a full bridge.
 
 
 ## scoped-query

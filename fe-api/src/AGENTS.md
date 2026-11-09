@@ -37,3 +37,10 @@ remain unknown outcomes; no automatic replay or retroactive cancellation.
 Existing router/channel/prepared journeys are extended without new test
 declarations. The simple MCP model exercises transport, not real durable guards;
 real-store terrain and API publisher-cap journeys own those assertions.
+
+## Scene-gate wrapper and plugin-host stand-ins (R-API, 2026-11-09)
+
+`mcp/scene_gate.rs` is crate-shared: `mcp/tools.rs` and `ws.rs` both call it, and it only wraps
+`rest::scene_gate_verdict` (REST keeps its own 409 form). `server.rs` `absent_hosts` holds the not-found
+stand-ins for an unwired `ExtensionHost` / `BindingHost`; they back REST routes only and never enter
+`ApiHosts`. Door table and rationale: `../AGENTS.md` §scene-gate-doors and §extensions "Mounting".

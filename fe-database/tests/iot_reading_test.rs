@@ -115,6 +115,28 @@ async fn batch_insert_reads_back_every_field() {
         .collect();
     assert_eq!(hlcs.len(), 3);
     assert!(hlcs.iter().all(|h| *h > 0));
+
+    // Parity: the provenance entry point without a package lands the same row shape, unstamped.
+    let parity = vec![reading("n1", "temperature_c", 23.0, Some("2026-07-15T12:00:00Z"))];
+    let landed = fe_database::handlers::iot_reading::insert_readings_with_provenance(
+        &db,
+        "p1",
+        None,
+        "did:key:z6MkSensor",
+        fe_sdk::source_class::SourceClass::Simulation,
+        None,
+        &parity,
+        None,
+        None,
+    )
+    .await
+    .expect("provenance insert");
+    assert_eq!(landed, 1);
+    let rows = select_all_readings(&db).await;
+    let stamped = rows.last().expect("parity row");
+    assert_eq!(stamped["value"].as_f64(), Some(23.0));
+    assert_eq!(stamped["source_did"], "did:key:z6MkSensor");
+    assert!(stamped.get("ext_package_id").is_none_or(serde_json::Value::is_null));
 }
 
 #[tokio::test]

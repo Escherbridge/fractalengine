@@ -1,3 +1,8 @@
+// SUPERSEDED by fractal-plugin-2.wit (fractalengine:plugin@2.0.0, D-X1). Kept unchanged for the
+// first-party core-ABI test fixtures until extension_platform P1.1 swaps them; never a third-party
+// target. A sealed plugin package declaring this 1.0 contract is refused as `unsupported-contract`.
+// Parse one file at a time: this directory holds two package versions (fe-plugin/wit/AGENTS.md).
+//
 // WIT interface definition for FractalEngine plugins.
 //
 // This file defines the component-model contract between the engine host

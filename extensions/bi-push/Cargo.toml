@@ -1,0 +1,18 @@
+[package]
+name = "bi-push"
+version = "0.1.0"
+edition = "2021"
+license = "Apache-2.0"
+publish = false
+description = "First-party BI connector: pushes the guarded host/query rows as JSON or CSV to one declared HTTPS endpoint"
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+fe-ext-guest = { path = "../../tools/fe-ext/guest" }
+serde_json = "1"
+
+# The sandbox leg belongs in J8 (tools/fe-ext/tests/j8_cli.rs), so this crate never builds the host stack.
+# Standalone: built for wasm32-wasip2 by `fe-ext build`, never part of the host workspace.
+[workspace]

@@ -18,6 +18,12 @@ use fe_database::handlers::iot_reading::IotReadingInput;
 use fe_identity::api_token::ApiClaims;
 use fe_runtime::messages::{DbCommand, DbResult};
 
+// The device-adapter extension's own frame mapping, compiled in so the parity journey runs the shipped code.
+// Its transform helpers are the guest's, unused here.
+#[path = "../../extensions/device-adapter/src/mapping.rs"]
+#[allow(dead_code)]
+mod device_mapping;
+
 type Db = surrealdb::Surreal<surrealdb::engine::local::Db>;
 
 // ---------------------------------------------------------------------------
@@ -229,6 +235,103 @@ async fn ingest_batch_persists_and_reads_back() {
     assert_eq!(rows[0]["units"], "C");
     assert_eq!(rows[0]["source_did"], "did:key:z6MkUser");
     assert_eq!(rows[1]["value"].as_f64(), Some(22.5));
+
+    // PARITY (P5.3, R31 AC): device frames decoded by the device-adapter's shipped mapping land as the same rows
+    // through the REST door (the body a device POSTs, RFC-3339 times) and through the extension door's R24 landing,
+    // `insert_readings_with_provenance` with the staged epoch-ms rendered as the plugin flush's door check renders it.
+    // Only provenance differs. The guest -> PluginCommit leg joins when the DB arm carries staged readings (review G5-C5).
+    let frames = [
+        r#"{"readings":[{"metric":"temperature_c","value":21.5,"units":"C","at_ms":1784109600000}]}"#,
+        r#"{"readings":[{"metric":"humidity_pct","value":40.25,"units":"%","at_ms":1784113200123}]}"#,
+    ];
+    let decoded: Vec<device_mapping::ParsedReading> = frames
+        .iter()
+        .flat_map(|frame| device_mapping::parse_frame(frame.as_bytes(), Some("dev-1")).expect("frame maps").readings)
+        .collect();
+    let pb = ulid();
+    let pc = ulid();
+    let seeded = setup_test_db().await;
+    seed_petal(&seeded, &pb).await;
+    seed_node(&seeded, &pb, "sensor-door", 1.0, 2.0).await;
+    seed_petal(&seeded, &pc).await;
+    seed_node(&seeded, &pc, "sensor-adapter", 1.0, 2.0).await;
+    let writer = seeded.clone();
+    let parity_state = test_state(seeded);
+
+    let input = |node_id: &str, r: &device_mapping::ParsedReading, recorded_at: Option<String>| IotReadingInput {
+        node_id: node_id.to_string(),
+        metric: r.metric.clone(),
+        value: r.value,
+        units: r.units.clone(),
+        recorded_at,
+        payload_id: None,
+    };
+    let door_batch: Vec<IotReadingInput> = decoded
+        .iter()
+        .map(|r| {
+            let at = r.at_ms.map(|ms| {
+                chrono::DateTime::from_timestamp_millis(ms).unwrap().to_rfc3339_opts(chrono::SecondsFormat::Millis, true)
+            });
+            input("sensor-door", r, at)
+        })
+        .collect();
+    let door = post_readings(&parity_state, test_claims("VERSE#v1", "editor"), &pb, door_batch).await;
+    assert_eq!(door.status(), StatusCode::OK);
+
+    let package = fe_runtime::plugin_host::PackageIdentity::new("org.example.device-adapter".into(), "cd".repeat(32)).unwrap();
+    let staged: Vec<IotReadingInput> = decoded
+        .iter()
+        .map(|r| {
+            let at = r.at_ms.map(|ms| chrono::DateTime::<chrono::Utc>::from_timestamp_millis(ms).unwrap().to_rfc3339());
+            input("sensor-adapter", r, at)
+        })
+        .collect();
+    let landed = fe_database::handlers::iot_reading::insert_readings_with_provenance(
+        &writer,
+        &pc,
+        Some("v1"),
+        "did:key:z6MkHost",
+        fe_runtime::messages::SourceClass::Device,
+        Some(&package),
+        &staged,
+        None,
+        None,
+    )
+    .await
+    .expect("the adapter's readings pass the same door");
+    assert_eq!(landed, 2);
+
+    let reader = parity_state.db_reader.as_ref().unwrap();
+    let project = |petal: String| async move {
+        let mut res = reader
+            .query("SELECT metric, value, units, recorded_at_ms, source_did, ext_package_id FROM iot_reading WHERE petal_id = $pid ORDER BY recorded_at_ms ASC")
+            .bind(("pid", petal))
+            .await
+            .unwrap();
+        res.take::<Vec<serde_json::Value>>(0).unwrap()
+    };
+    let door_rows = project(pb.clone()).await;
+    let adapter_rows = project(pc.clone()).await;
+    // Both doors carry each frame's own values (a mapping or time-encoding fault fails here, not only a mismatch).
+    let frame_values = [("temperature_c", 21.5, "C", 1_784_109_600_000_i64), ("humidity_pct", 40.25, "%", 1_784_113_200_123)];
+    for rows in [&door_rows, &adapter_rows] {
+        let seen: Vec<(&str, f64, &str, i64)> = rows
+            .iter()
+            .map(|row| {
+                (
+                    row["metric"].as_str().unwrap(),
+                    row["value"].as_f64().unwrap(),
+                    row["units"].as_str().unwrap(),
+                    row["recorded_at_ms"].as_i64().unwrap(),
+                )
+            })
+            .collect();
+        assert_eq!(seen, frame_values);
+    }
+    assert!(door_rows.iter().all(|row| row["source_did"] == "did:key:z6MkUser"
+        && row.get("ext_package_id").is_none_or(serde_json::Value::is_null)));
+    assert!(adapter_rows.iter().all(|row| row["source_did"] == "did:key:z6MkHost"
+        && row["ext_package_id"] == "org.example.device-adapter"));
 }
 
 #[tokio::test]
@@ -306,6 +409,7 @@ async fn guarded_query_reads_iot_rows_scope_filtered() {
     seed_petal(&db, &pb).await;
     seed_node(&db, &pa, "sensor-a", 0.0, 0.0).await;
     seed_node(&db, &pb, "sensor-b", 0.0, 0.0).await;
+    let writer = db.clone();
     let state = test_state(db);
 
     for (petal, sensor, val) in [(&pa, "sensor-a", 1.0), (&pb, "sensor-b", 2.0)] {
@@ -345,6 +449,48 @@ async fn guarded_query_reads_iot_rows_scope_filtered() {
     assert_eq!(rows.len(), 1, "petal-B reading must be scope-filtered out");
     assert_eq!(rows[0]["petal_id"], pa.as_str());
     assert_eq!(rows[0]["value"].as_f64(), Some(1.0));
+
+    // R24 stamp-and-stop (OD-E1): the PluginCommit arm's door call stamps an extension's reading
+    // with the host-minted package identity, and revocation hides nothing, so the guard returns both.
+    let package = fe_runtime::plugin_host::PackageIdentity::new(
+        "org.example.fleet-sim".into(),
+        "ab".repeat(32),
+    )
+    .unwrap();
+    let landed = fe_database::handlers::iot_reading::insert_readings_with_provenance(
+        &writer,
+        &pa,
+        Some("v1"),
+        "did:key:z6MkHost",
+        fe_sdk::source_class::SourceClass::Simulation,
+        Some(&package),
+        &[reading("sensor-a", "temperature_c", 3.0, None)],
+        None,
+        None,
+    )
+    .await
+    .expect("an extension reading passes the same door");
+    assert_eq!(landed, 1);
+    let rows = query_guard::run_guarded_query(
+        db,
+        &guarded,
+        &std::collections::HashMap::new(),
+        limits::QUERY_ROW_CAP,
+    )
+    .await
+    .expect("guarded query runs");
+    assert_eq!(rows.len(), 2, "a stamped reading is never excluded");
+    let (stamped, door): (Vec<_>, Vec<_>) = rows
+        .iter()
+        .partition(|row| row.get("ext_package_id").is_some_and(|id| !id.is_null()));
+    assert_eq!(stamped.len(), 1);
+    assert_eq!(stamped[0]["value"].as_f64(), Some(3.0));
+    assert_eq!(stamped[0]["ext_package_id"], "org.example.fleet-sim");
+    assert_eq!(stamped[0]["ext_content_hash"], serde_json::json!("ab".repeat(32)));
+    assert!(
+        door[0].get("ext_content_hash").is_none_or(serde_json::Value::is_null),
+        "a REST-door reading carries no extension provenance"
+    );
 }
 
 // ---------------------------------------------------------------------------

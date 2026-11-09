@@ -178,6 +178,8 @@ pub enum KnownTable {
     Asset,
     DeviceFormat,
     DevicePayload,
+    /// Replicated binding versions (bindings.md §3); dump/load carry them like any replicated row.
+    ExtensionBinding,
 }
 
 impl KnownTable {
@@ -197,6 +199,7 @@ impl KnownTable {
         KnownTable::Asset,
         KnownTable::DeviceFormat,
         KnownTable::DevicePayload,
+        KnownTable::ExtensionBinding,
     ];
 
     pub fn as_str(self) -> &'static str {
@@ -216,6 +219,7 @@ impl KnownTable {
             KnownTable::Asset => "asset",
             KnownTable::DeviceFormat => "device_format",
             KnownTable::DevicePayload => "device_payload",
+            KnownTable::ExtensionBinding => crate::handlers::extension_binding::BINDING_TABLE,
         }
     }
 
@@ -237,6 +241,7 @@ impl KnownTable {
             "asset" => Some(KnownTable::Asset),
             "device_format" => Some(KnownTable::DeviceFormat),
             "device_payload" => Some(KnownTable::DevicePayload),
+            crate::handlers::extension_binding::BINDING_TABLE => Some(KnownTable::ExtensionBinding),
             _ => None,
         }
     }

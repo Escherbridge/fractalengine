@@ -151,6 +151,8 @@ pub enum UiAction {
         visible: Option<bool>,
         opacity: Option<f32>,
     },
+    /// Show or hide the active petal's terrain layer (terrain extension `terrain-toggle`).
+    ToggleTerrainVisibility,
     /// Set the active petal's splat view mode (`"mesh"|"splats"|"hybrid"`).
     GisSetViewMode {
         petal_id: String,
@@ -1486,6 +1488,30 @@ pub(crate) fn process_ui_actions(
                     visible,
                     opacity,
                 );
+            }
+            UiAction::ToggleTerrainVisibility => {
+                // The stored "terrain" layer's `visible` (absent layer counts as visible), read before the write borrows the map.
+                let visible_now = petal_map.terrain_json.as_ref().map(|doc| {
+                    doc.get("layers")
+                        .and_then(|layers| layers.as_array())
+                        .and_then(|layers| {
+                            layers.iter().find(|l| l.get("name").and_then(|n| n.as_str()) == Some("terrain"))
+                        })
+                        .and_then(|layer| layer.get("visible"))
+                        .and_then(|v| v.as_bool())
+                        .unwrap_or(true)
+                });
+                match (nav.active_petal_id.clone(), visible_now) {
+                    (Some(petal_id), Some(visible)) => gis::set_layer(
+                        &db_sender,
+                        &mut petal_map,
+                        petal_id,
+                        "terrain".to_owned(),
+                        Some(!visible),
+                        None,
+                    ),
+                    _ => ui_mgr.show_advisory("No terrain map on this petal to show or hide", now_secs),
+                }
             }
             UiAction::GisSetViewMode {
                 petal_id,

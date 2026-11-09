@@ -14,6 +14,7 @@ use tracing_subscriber::prelude::*;
 use tracing_subscriber::EnvFilter;
 
 mod asset_bridge;
+mod extension_host;
 mod api_endpoint;
 mod gpx_bridge;
 mod input_bridge;
@@ -479,6 +480,7 @@ fn main() {
     // content-addressed store.
     let blob_store_for_api = blob_store.clone();
     let blob_store_for_assets = blob_store.clone();
+    let blob_store_for_extensions = blob_store.clone();
 
     // S4 startup-seeding clone: `sync_cmd_tx` moves into `SyncCommandSenderRes`
     // just below, so the startup-publish loop (after `tileset_registry`
@@ -512,7 +514,27 @@ fn main() {
         },
     );
 
-    plugin_bridge::install(&mut app);
+    // The host thread always runs and stays inert; admitting third-party packages needs the
+    // `plugin-host` feature AND FE_PLUGIN_HOST_ALLOW=1 (src/AGENTS.md §plugin-host).
+    app.insert_resource(fe_plugin::PackageAdmission(
+        cfg!(feature = "plugin-host") && fe_plugin::plugin_host_allowed_from_env(),
+    ));
+    // The bus judges callers against the node DID and feeds `host/node-changes`; the API channel is bound below.
+    plugin_bridge::install_with(
+        &mut app,
+        plugin_bridge::ExtensionBridgeConfig {
+            local_did: node_kp.to_did_key(),
+            api_cmd_tx: None,
+            scene_changes: Some(entity_change_tx.subscribe()),
+        },
+    );
+    // ingest.decode reads accepted payload files from the same content-addressed store.
+    if let Some(slot) = app.world().get_resource::<plugin_bridge::ExtensionBlobSlot>() {
+        slot.bind(blob_store_for_extensions);
+    }
+    app.add_systems(bevy::prelude::Startup, register_first_party_extension_ui);
+    // The terrain package's slot commands run as editor actions (src/AGENTS.md section extension-host).
+    app.add_plugins(extension_host::terrain_commands::TerrainCommandsPlugin);
     if let Some(results) = app.world().get_resource::<fe_plugin::PluginResultReceiver>() {
         // drain_plugin_results empties it every frame (src/AGENTS.md §render-loop).
         render_work.watch(results.0.lock().unwrap_or_else(|error| error.into_inner()).clone());
@@ -553,6 +575,10 @@ fn main() {
     // ---- API Gateway thread ----
     // Channel: API thread sends ApiCommand -> tx, Bevy drains from rx.
     let (api_cmd_tx, api_cmd_rx) = crossbeam::channel::bounded(256);
+    // The bus `host/query` and snapshot sources ride the same API channel (plugin_bridge §bus sources).
+    if let Some(slot) = app.world().get_resource::<plugin_bridge::ExtensionApiSlot>() {
+        slot.bind(api_cmd_tx.clone());
+    }
     // Agent screenshot bridge: API thread -> Bevy capture (fe-api/AGENTS.md
     // §screenshot; the endpoint is on unless FE_API_SCREENSHOT_ALLOW=0).
     let (screenshot_tx, screenshot_rx) = fe_runtime::screenshot::screenshot_bridge();
@@ -707,6 +733,16 @@ fn main() {
         }
     }
 
+    // Scene hooks gate node writes from the GUI and every API door; installed before the API serves.
+    if let Some(backend) = plugin_bridge::scene_hook_backend(&app) {
+        match fe_runtime::scene_hook_gate::SceneHookGate::install(backend) {
+            Ok(gate) => {
+                app.insert_resource(gate);
+            }
+            Err(reason) => tracing::warn!(reason, "scene hook gate not installed"),
+        }
+    }
+
     maintenance_services.push(fe_api::spawn_api_service(fe_api::ApiConfig {
         bind_addr: format!("127.0.0.1:{qa_api_port}"),
         api_cmd_tx: api_cmd_tx.clone(),
@@ -748,6 +784,8 @@ fn main() {
         // here; loud WARN when on) — fe-api/AGENTS.md §agent-input-surface.
         input: fe_api::input::InputSurface::new(qa_enabled, Some(input_tx)).with_qa_debug(qa_tx).with_portal_fixture(portal_fixture_tx).with_invitation_transfer(invitation_transfer_tx),
         listening_tx: Some(api_listening_tx),
+        extension_host: plugin_bridge::api_extension_host(&app),
+        binding_host: plugin_bridge::api_binding_host(&app),
     }));
 
     // Agent QA: write loopback-only API tokens for every local verse once the
@@ -1005,6 +1043,29 @@ struct SceneChangeReceiver(crossbeam::channel::Receiver<fe_runtime::messages::Sc
 /// Arc-backed Bevy handle for the API and scene-change hot cache.
 #[derive(bevy::prelude::Resource, Clone)]
 struct SharedEntityStore(Arc<fe_entity_store::EntityStore>);
+
+/// Startup system: the first-party terrain extension contributes its UI slots (compiled in, never a package; AC-2).
+fn register_first_party_extension_ui(mut extensions: bevy::prelude::ResMut<fe_ui::plugin::UiExtensions>) {
+    fe_terrain::extension::register_terrain_ui(&mut extensions.0);
+}
+
+#[cfg(test)]
+mod extension_ui_tests {
+    use super::*;
+    use bevy::prelude::*;
+
+    #[test]
+    fn terrain_extension_appears_in_ui_registry_after_one_tick() {
+        let mut app = App::new();
+        app.init_resource::<fe_ui::plugin::UiExtensions>();
+        app.add_systems(Startup, register_first_party_extension_ui);
+        app.update();
+        let registry = &app.world().resource::<fe_ui::plugin::UiExtensions>().0;
+        assert_eq!(registry.total(), 3);
+        let inspector = registry.get_by_slot(fe_sdk::UiSlot::InspectorSection);
+        assert!(inspector.iter().any(|c| c.label == "Terrain Config"));
+    }
+}
 
 /// Bevy system: drain scene change events from the bridge channel into the
 /// `EntityStore` hot cache each frame (shared conversion in `fe_api::entity_store_bridge`).

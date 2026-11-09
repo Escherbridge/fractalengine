@@ -32,6 +32,30 @@ pub struct ConfirmedTerrainSource {
     fingerprint: Option<[u8; 32]>,
 }
 
+/// The binding that decided the active petal's map when it is not the stored column (bindings.md section 6).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum MapSource {
+    /// A `builtin` binding's `TerrainConfig` at `scope`.
+    Builtin { scope: String },
+    /// An extension's `petal.map` output, presentation on this peer only.
+    Extension { package_id: String, scope: String },
+    /// A bound extension that faulted or was refused; the built-in serves meanwhile.
+    Degraded { package_id: String, scope: String },
+    /// A bound extension that cannot run here (`reason` is the kebab-case unresolved reason).
+    Unresolved { package_id: String, scope: String, reason: String },
+}
+
+/// Where the active petal's map comes from, for the Map column and the bindings view.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum EffectiveMapSource {
+    /// No map.
+    None,
+    /// The petal's own `terrain` column (implicit petal-scope `builtin`).
+    Stored,
+    /// A binding decided or failed to; see [`MapSource`].
+    Bound(MapSource),
+}
+
 /// Which tileset(s) the active petal uses as its map, plus its world scale.
 #[derive(Debug, Clone, Resource)]
 pub struct PetalMapState {
@@ -57,6 +81,8 @@ pub struct PetalMapState {
     /// by a matching `PetalTerrainSetFailed` (denied). See AGENTS.md
     /// §terrain-map "Petal-map truth".
     pub pending_set: Option<PendingMapSet>,
+    /// Set by the host's `petal.map` resolver; `None` means the column (or nothing) serves.
+    pub bound_source: Option<MapSource>,
 }
 
 /// The pre-send snapshot a correlated `SetPetalTerrain` rolls back to on
@@ -80,11 +106,21 @@ impl Default for PetalMapState {
             terrain_json: None,
             confirmed_terrain_source: Default::default(),
             pending_set: None,
+            bound_source: None,
         }
     }
 }
 
 impl PetalMapState {
+    /// The effective source: a recorded binding, else the stored column, else no map.
+    pub fn effective_source(&self) -> EffectiveMapSource {
+        match (&self.bound_source, &self.terrain_json) {
+            (Some(source), _) => EffectiveMapSource::Bound(source.clone()),
+            (None, Some(terrain)) if !terrain.is_null() => EffectiveMapSource::Stored,
+            (None, _) => EffectiveMapSource::None,
+        }
+    }
+
     /// Replace optimistic/cleared terrain and retire its confirmed identity.
     pub(crate) fn replace_terrain_document(&mut self, terrain: Option<serde_json::Value>) {
         self.terrain_json = terrain;
@@ -154,6 +190,7 @@ pub(crate) fn load_petal_terrain_on_nav_change(
     // Reset to human scale pending the load; PetalTerrainLoaded restores the stored value.
     petal_map.world_scale = 1.0;
     petal_map.scale_bounds = None;
+    petal_map.bound_source = None;
     petal_map.replace_terrain_document(None);
     // Data-loss guard companion (ui_semantics_unification_20260808 #1): drop
     // the outgoing petal's proposal mirror so it can never bleed into the

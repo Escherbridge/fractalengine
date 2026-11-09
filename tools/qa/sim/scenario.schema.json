@@ -57,6 +57,23 @@
               "editor",
               "viewer"
             ]
+          },
+          "extension_policy": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "deny"
+            ],
+            "description": "this peer's local extensions.toml (governance.md Local policy); run.py stages it and it loads at the peer's next host restart op, which the scenario must contain",
+            "properties": {
+              "deny": {
+                "type": "array",
+                "items": {
+                  "type": "string",
+                  "pattern": "^[A-Za-z0-9][A-Za-z0-9_.-]{0,127}$"
+                }
+              }
+            }
           }
         }
       }
@@ -128,7 +145,8 @@
             "query",
             "timeseries",
             "get",
-            "alive"
+            "alive",
+            "extension"
           ]
         },
         "target": {}
@@ -287,7 +305,8 @@
             "query",
             "timeseries",
             "get",
-            "alive"
+            "alive",
+            "extension"
           ]
         },
         "target": {},

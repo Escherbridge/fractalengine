@@ -28,16 +28,27 @@ members = [
     # Sole exception: fractalengine-relay's default-OFF `sim-control`
     # feature (F9/A20) — default builds never compile it.
     "fe-sim",
+    # Reference extension; one rhai version with fe-plugin (see extensions/iot-bridge/AGENTS.md §workspace).
+    "extensions/iot-bridge",
+    # Extension authoring CLI (fe-ext); its guest and extension crates stay outside (see exclude).
+    "tools/fe-ext",
 ]
 # cargo-fuzz targets are their own workspace (nightly + libFuzzer); see fuzz/Cargo.toml.
-exclude = ["fuzz"]
+# Guest and extension crates declare their own [workspace] and build standalone (wasm32-wasip2 for guest).
+exclude = [
+    "fuzz",
+    "tools/fe-ext/guest",
+    "extensions/fleet-sim",
+    "extensions/device-adapter",
+    "extensions/bi-push",
+]
 resolver = "2"
 
 [workspace.package]
 edition = "2021"
 license = "Apache-2.0"
 repository = "https://github.com/Escherbridge/fractalengine"
-rust-version = "1.91"
+rust-version = "1.96"
 
 [workspace.dependencies]
 bevy = { version = "0.18", default-features = false, features = [

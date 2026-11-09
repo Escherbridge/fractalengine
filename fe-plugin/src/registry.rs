@@ -35,6 +35,10 @@ pub enum PluginState {
     Degraded(String),
     /// Explicitly deactivated by the user or host.
     Deactivated,
+    /// Switched off by an operator, policy or the kill switch; only `enable` leaves it.
+    Disabled(String),
+    /// Named by an accepted revocation list; terminal, `activate` and `enable` refuse it.
+    Revoked(String),
 }
 
 // ---------------------------------------------------------------------------
@@ -119,7 +123,70 @@ impl PluginRegistry {
                 entry.state = PluginState::Active;
                 Ok(())
             }
+            PluginState::Disabled(_) => Err(RegistryError::InvalidTransition {
+                plugin_id: plugin_id.to_string(),
+                from: "Disabled".to_string(),
+                to: "Active".to_string(),
+            }),
+            PluginState::Revoked(_) => Err(RegistryError::InvalidTransition {
+                plugin_id: plugin_id.to_string(),
+                from: "Revoked".to_string(),
+                to: "Active".to_string(),
+            }),
         }
+    }
+
+    /// Switch a plugin off (any non-revoked state); `reason` is shown in status.
+    pub fn disable(&mut self, plugin_id: &str, reason: &str) -> Result<(), RegistryError> {
+        let entry = self.entry_mut(plugin_id)?;
+        if matches!(entry.state, PluginState::Revoked(_)) {
+            return Err(RegistryError::InvalidTransition {
+                plugin_id: plugin_id.to_string(),
+                from: "Revoked".to_string(),
+                to: "Disabled".to_string(),
+            });
+        }
+        entry.state = PluginState::Disabled(reason.to_string());
+        Ok(())
+    }
+
+    /// Leave `Disabled` back to `Deactivated`; the caller then runs the normal activation path.
+    pub fn enable(&mut self, plugin_id: &str) -> Result<(), RegistryError> {
+        let entry = self.entry_mut(plugin_id)?;
+        match entry.state {
+            PluginState::Disabled(_) => {
+                entry.state = PluginState::Deactivated;
+                Ok(())
+            }
+            _ => Err(RegistryError::InvalidTransition {
+                plugin_id: plugin_id.to_string(),
+                from: format!("{:?}", entry.state),
+                to: "Deactivated".to_string(),
+            }),
+        }
+    }
+
+    /// Mark a plugin revoked (idempotent, terminal): it can only be unregistered.
+    pub fn revoke(&mut self, plugin_id: &str, reason: &str) -> Result<(), RegistryError> {
+        self.entry_mut(plugin_id)?.state = PluginState::Revoked(reason.to_string());
+        Ok(())
+    }
+
+    /// Mark an active plugin degraded (fuel exhaustion, trap); other states are left alone.
+    pub fn degrade(&mut self, plugin_id: &str, reason: &str) -> Result<(), RegistryError> {
+        let entry = self.entry_mut(plugin_id)?;
+        if matches!(entry.state, PluginState::Active) {
+            entry.state = PluginState::Degraded(reason.to_string());
+        }
+        Ok(())
+    }
+
+    fn entry_mut(&mut self, plugin_id: &str) -> Result<&mut PluginEntry, RegistryError> {
+        self.plugins
+            .get_mut(plugin_id)
+            .ok_or_else(|| RegistryError::NotFound {
+                plugin_id: plugin_id.to_string(),
+            })
     }
 
     /// Deactivate a running plugin.
@@ -145,6 +212,13 @@ impl PluginRegistry {
                 from: "Deactivated".to_string(),
                 to: "Deactivated".to_string(),
             }),
+            PluginState::Disabled(_) | PluginState::Revoked(_) => {
+                Err(RegistryError::InvalidTransition {
+                    plugin_id: plugin_id.to_string(),
+                    from: format!("{:?}", entry.state),
+                    to: "Deactivated".to_string(),
+                })
+            }
         }
     }
 
@@ -256,6 +330,20 @@ mod tests {
         // Deactivated -> Active (re-activation)
         reg.activate("p1").unwrap();
         assert_eq!(reg.get_state("p1"), Some(&PluginState::Active));
+
+        // Active -> Degraded -> Disabled: activate refuses until enable, then re-activates
+        reg.degrade("p1", "fuel").unwrap();
+        assert!(matches!(reg.get_state("p1"), Some(PluginState::Degraded(_))));
+        reg.disable("p1", "operator").unwrap();
+        assert!(reg.activate("p1").is_err() && reg.deactivate("p1").is_err());
+        reg.enable("p1").unwrap();
+        reg.activate("p1").unwrap();
+
+        // Revoked is terminal: no activate, enable or disable; only unregister
+        reg.revoke("p1", "list").unwrap();
+        assert!(reg.activate("p1").is_err() && reg.enable("p1").is_err());
+        assert!(reg.disable("p1", "x").is_err());
+        assert!(reg.list_active().is_empty());
     }
 
     #[test]

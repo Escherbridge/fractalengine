@@ -2034,3 +2034,60 @@ Critic pass 4 (2026-11-08) added the scene-change and plugin-result queues: both
 EntityStore (analytics queries, the QA-0087 transform rollback to WS clients) lagged up to the 1 s idle wait. Still
 unwatched, each waiting at most one idle tick: the tileset meta verdicts (on purpose, see
 `terrain_bridge::watch_results`), the one-shot API listener address and the F12 save toast (the window is focused).
+
+## §plugin-host (plugin_host_revival_20261031 S1, revised by S6)
+
+The opt-in gates package ADMISSION, not the thread (docs/extensions/governance.md §Host switch, R16).
+The host thread (thread 7, `plugin_bridge::install_with`, given the node DID and the API channel by `main.rs`) always runs, as it has since `2cc05f27`; with no
+admitted package it executes no third-party code. `terminal_reset` takes ownership of
+`PluginHostService` and requires it, which is why S6 restored the unconditional install: S1's thread gate
+made a default-build reset quiesce half the app and then fail.
+
+- **Admission switch.** `fe_plugin::PackageAdmission(bool)` is inserted once in `main.rs`: true only
+  with the Cargo feature `plugin-host` AND `FE_PLUGIN_HOST_ALLOW=1` (`plugin_host_allowed_from_env`,
+  exactly `1`, loud WARN when on; the `FE_API_SCREENSHOT_ALLOW` deny-by-default idiom). `cfg!` (not
+  `#[cfg]`) keeps the path type-checked in every build. Whoever builds the `PluginManager` (P1.7
+  `plugin_bridge`) passes it to `with_admission`; off, install and activation answer `HostOff`.
+- **First-party UI.** `register_first_party_extension_ui` (Startup, unconditional) calls
+  `fe_terrain::extension::register_terrain_ui` into `fe_ui::plugin::UiExtensions`. Terrain is compiled
+  in, never an admitted package (id `org.fractalengine.terrain`), so the switch does not gate it. The call
+  lives here because fe-ui has no fe-terrain dependency. `extension_host::terrain_commands::TerrainCommandsPlugin`
+  turns its slot commands (`terrain-config`, `gpx-import`, `terrain-toggle`) into editor actions.
+- **Status.** `plugin_bridge::install_with` builds the `PluginManager`; the bridge admits packages (when the
+  switch is on) through the governance gates. `main.rs` hands fe-api `plugin_bridge::api_extension_host` and
+  `api_binding_host` (`ApiConfig::extension_host` / `binding_host`) and installs the process
+  `SceneHookGate` over `plugin_bridge::scene_hook_backend` before the API serves.
+- **Registry installs.** `terrain_bridge::install_from_registry` lists then `fetch_hexon`s through
+  `fe_hexon::remote::remote_source` (whole archive, 64 MiB cap, verified locally). Trust is the operator-chosen
+  registry: any valid seal, never unsigned; a plugin package is refused here (Extensions panel only).
+- **Map bindings.** `bridge_petal_terrain` asks `ExtensionBindings::petal_map_need`, decides with
+  `extension_host::petal_map::PetalMapResolver` and records `PetalMapState::bound_source`; see
+  §extension-host for the off-frame call, the 5 s deadline and the binding-change re-check.
+- **Relay.** `fractalengine-relay`'s own `plugin-host` feature (default off) adds a bare
+  `PluginHostPlugin` (no scene backend) and the same `PackageAdmission` from the env var.
+
+## §extension-host (extension_platform_20261107, turn-2 review R-HOOKS)
+
+Binary-side leaves of the extension host (`extension_host/`); `plugin_bridge::install_with` wires them.
+
+- **`petal.map` never blocks the frame.** `PetalMapResolver::decide` starts the guest call on the binding
+  worker (`MapHookCaller::start_map`) and answers with the built-in meanwhile (`MapOutcome::awaiting`);
+  `bridge_petal_terrain` polls `PetalMapResolver::poll` each frame and applies a returned map when it lands.
+  The deadline is the catalogue's 5 s (`MAP_DEADLINE_MS`), not a frame budget: the old 250 ms
+  `recv_timeout` stalled the render loop and timed out every lazily started instance. While a call is in
+  flight the reactive loop's 250 ms idle wake bounds how late the answer is seen.
+- **Binding changes re-decide without a DB echo.** Every 500 ms (`PETAL_MAP_NEED_RECHECK`) the bridge re-reads
+  `ExtensionBindings::petal_map_need` for the active petal (a cache read) and decides again on the last stored
+  column when the answer moved (install, binding row, role change).
+- **OQ-B6 holds even on a stale snapshot.** A non-null stored column beats any binding whose scope is not this
+  petal (`column_wins`), checked against the live echo rather than the resolver's `stored_terrain_petals`.
+- **Extension output is presentation only.** It passes `terrain_config_from_petal_json` and may name only
+  tilesets installed on this peer (else it is a fault and the built-in serves), so a guest can never make the
+  peer fetch a tileset; it travels as `TerrainAssignmentMsg` and is never written to the petal row.
+- **Terrain slot commands.** `TerrainCommandsPlugin` takes only `org.fractalengine.terrain`'s commands after a
+  read-only scan, so other packages' queued presses cost nothing per frame (their bus dispatch is the
+  bridge's job).
+- **Reset joins the extension workers.** `terminal_reset::freeze_editor` stops `ExtensionBindingService`
+  and `RevocationPullService` beside `PluginHostService`; an absent or empty slot means nothing to stop.
+- **Payload bytes.** `main.rs` binds `ExtensionBlobSlot` to the shared blob store right after
+  `install_with`, so `ingest.decode` reads accepted payload files from the same content-addressed store.

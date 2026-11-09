@@ -1,0 +1,62 @@
+{
+  "manifest_version": 2,
+  "id": "org.example.fleet-sim",
+  "version": "0.1.0",
+  "name": "Fleet simulator",
+  "description": "Moves route-following movers and emits simulated sensor readings from fleet.config nodes (FleetConfig v2).",
+  "kind": "simulation",
+  "contract": "fractalengine:plugin@2.0.0",
+  "binding": "petal",
+  "scene": {
+    "read": true,
+    "write": ["create_node", "set_transform", "set_property"],
+    "property_scope": ["fleet.*"]
+  },
+  "readings": {
+    "source_class": "simulation",
+    "metrics": ["altitude_m", "temperature_c"]
+  },
+  "routes": true,
+  "tick": { "cadence_ms": 500, "max_ops": 64, "max_readings": 256, "fuel": 200000 },
+  "kv": { "max_bytes": 65536 },
+  "ingress": [],
+  "egress": [],
+  "bus": {
+    "expose": {
+      "streams": [
+        { "id": "positions", "description": "Mover positions, one event per tick.", "max_rate_hz": 4, "max_event_bytes": 4096 }
+      ],
+      "commands": [
+        {
+          "id": "start",
+          "description": "Start every fleet in the petal, or the one named by node_id.",
+          "role_floor": "editor",
+          "rate_hz": 1,
+          "args_schema": {
+            "type": "object",
+            "properties": { "node_id": { "type": "string", "maxLength": 128 } },
+            "additionalProperties": false
+          }
+        },
+        {
+          "id": "stop",
+          "role_floor": "editor",
+          "rate_hz": 1,
+          "args_schema": {
+            "type": "object",
+            "properties": { "node_id": { "type": "string", "maxLength": 128 } },
+            "additionalProperties": false
+          }
+        }
+      ]
+    },
+    "consume": [{ "source": "host/node-changes" }]
+  },
+  "ui": [
+    { "id": "start", "slot": "ToolbarAction", "label": "Start fleet", "icon": "play", "command": "start" },
+    { "id": "stop", "slot": "ToolbarAction", "label": "Stop fleet", "icon": "stop", "command": "stop" },
+    { "id": "start-this", "slot": "ContextMenu", "label": "Start this fleet", "command": "start", "when": { "property": "fleet.config" } },
+    { "id": "fleet", "slot": "InspectorSection", "label": "Fleet", "properties": ["fleet.status", "fleet.driver"] },
+    { "id": "movers", "slot": "DashboardWidget", "label": "Movers moving", "stream": "positions", "field": "/count" }
+  ]
+}

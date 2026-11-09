@@ -1,0 +1,18 @@
+[package]
+name = "device-adapter"
+version = "0.1.0"
+edition = "2021"
+license = "Apache-2.0"
+publish = false
+description = "Example extension: HTTP, websocket and MQTT device frames become readings and transforms; actuation goes out over MQTT"
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+fe-ext-guest = { path = "../../tools/fe-ext/guest" }
+serde_json = "1"
+
+# The sandbox journey lives in J8 (tools/fe-ext/tests/j8_cli.rs), so this crate never builds the host stack.
+# Standalone: built for wasm32-wasip2 by `fe-ext build`, never part of the host workspace.
+[workspace]

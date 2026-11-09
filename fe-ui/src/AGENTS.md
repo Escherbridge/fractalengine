@@ -1552,3 +1552,37 @@ and native_accessibility/AGENTS.md for the separately audited painter contract.
 - `DbResult::HierarchyRead` (an API hierarchy read) only answers pending API waiters.
 - `handle_verse_replica_lifecycle` sends `RememberVerseReplica` once per verse with a
   namespace id, so the sync thread can open a publication lease (fe-sync §publication-lease).
+
+## §ui-extensions (plugin_host_revival_20261031 S1)
+
+`plugin::UiExtensions` wraps `fe_sdk::UiExtensionRegistry` as a Bevy resource, always initialised (empty) by
+`GardenerConsolePlugin`. fe-ui never registers extensions itself (no fe-terrain dependency); the binary
+fills it at Startup with the first-party terrain contributions, unconditionally (`fractalengine/src/AGENTS.md`
+§plugin-host). Panels that render contributions should read `UiExtensions.0.get_by_slot(..)`; none do yet.
+
+## §plugin-consent (plugin_host_revival_20261031 S3)
+
+`panels/plugin_install_panel.rs` is the capability-consent modal. The installing host calls
+`PluginInstallState::request_install(PluginInstallRequest)` (a plain copy of the manifest fields; fe-ui
+has no fe-plugin dependency) and later drains `take_decision()` -> `Approved(id)` / `Declined(id)`.
+Install is enabled only once the verse/petal/property/capability/network list has been drawn for a full
+frame (`manifest_rendered`), and never when the manifest asks for network access v1 cannot grant
+(`requests_network`: anything but `network_scope == "none"` or any `external_http`, exactly fe-plugin's OD-1 parse rule).
+Rows come from `PluginInstallRequest::consent_rows`, which shows each list as the v1 host ENFORCES it: an empty
+verse/petal/property scope is a wildcard in `fe_plugin::capability::validate_access`, so it renders "All verses" /
+"All petals" / "All properties"; empty capabilities render "None" (`has_capability` fails closed). Rendering an
+empty scope as "None" understated the grant (S6 finding). The window is drawn by
+`plugin::plugin_install_dialog_system`, a standalone `EguiPrimaryContextPass` system after `gardener_ui_system`,
+so `gardener_console`'s signature is untouched. Nothing requests installs yet: fe-ui has no fe-plugin dependency
+and no `PluginManager` is built in the binary; the request/decision wiring lands with extension_platform P2.4
+(consent v2 at `fe-ui/src/extensions/consent.rs`) and P1.7.
+
+## §extension-mounting (I-UI, extension_platform_20261107)
+
+`plugin.rs` adds `ExtensionSlotsPlugin` + `ExtensionsPanelPlugin` and orders `lend_slots_to_surfaces` before and
+`extension_overlay_system` / `extensions_window_system` / `reclaim_slots_from_surfaces` after `gardener_ui_system`; the slot
+surfaces reach the lent state through the egui context (`extensions/AGENTS.md` section host-handle). `UiAction::ToggleTerrainVisibility`
+(actions/mod.rs) flips the stored `terrain` layer's `visible` via `gis::set_layer`, advising when the petal has no terrain document.
+At compact topbar width the extension toolbar actions move into the Tools menu with the built-in tools, so third-party buttons
+never push the right-hand cluster off the bar. The egress card draws its compiled-in Copy-for-BI rows itself, first and
+unconditionally (R33), then the bound `egress.snippet` rows (`extensions/AGENTS.md` section bound-slots).

@@ -566,3 +566,48 @@ Fixed statements use bound IDs, node/asset singleton probes2, complete node-refe
 No operation ID means a strict baseline: owner/anchor/provenance must each be native NONE and the complete asset SceneAssetAdopted set must be empty. NULL is different evidence and refuses that baseline. With an ID, exactly one asset adoption must match it, the captured reference set must include its origin node, and stored asset/provenance/op scope/hash/MIME/size/kind/op/adopter/RFC3339 time must agree. The origin can be another reference. The asset owner remains native absent and anchor equals the actual Petal. Full native provenance digests also agree, including unexposed fields/types. Missing/duplicate/malformed/mismatched proof refuses without a reconstructed receipt. Final guards cover target/asset/full reference and semantic-identity sets/model/payload absence/complete operation set plus authority and ancestry. No durable writes or op/history counters are part of this GET.
 
 This node-bound audit cannot observe an initial zero-reference instant. Seed log/constructor evidence remains setup provenance. Existing authorized byte routes and client content-digest verification remain separate oracles; this read never claims byte availability or verification.
+
+## extension-policy
+
+`extension_policy.rs` is the DB plane of extension governance (docs/extensions/governance.md; spec
+R18/R21/R23; slice E10). Three things live here, and nothing else in fe-database knows about extensions.
+
+- **The verse policy row** (`extension_policy` table, one row per verse, `PolicyRow`). Written locally by
+  `set_policy_with_replication` AS THE LOCAL DID, which must hold Manager+ at the verse (the API checked the
+  caller's own Manager+ first: the `device_format` rule, effective role = min(token, node)). The write is
+  log-first and atomic: ONE `ExtensionAudit` op (`policy-change`) and the DELETE+CREATE of the row share one
+  transaction (`commit_operation_atomic_with`), and the row's `written_at` is that op's own HLC. Durable
+  first, then `replicate_row`. Inbound rows: `confine_inbound` is the structural check for
+  `replicated_row::confine` (then `Floor::ManageVerse` defers a not-yet-Manager), and
+  `apply_replicated_policy_row` re-checks the attested author, bounds the author-stamped clock with
+  `admit_scene_hlc` (a far-future `written_at` would otherwise win last-writer-wins forever), applies
+  role-at-write (`held_at_write`, Manager at the verse), and keeps the newest `(written_at, author_did)`.
+  Demoting a policy's author does not withdraw it (same as `device_format`); a newer row replaces it.
+- **Policy semantics** (`evaluate`, pure). Precondition 7: denies union (verse, then local), the verse mode
+  (`first-party-only` when no row; a `dev` root and the debug-only unsigned dev flag count as first-party in
+  a dev build), then ceilings intersect (verse, then local). Absent ceiling fields never limit; only
+  `bus_external` defaults closed for the verse (`ExtensionPolicy::bus_external`). A deny or allow digest
+  matches `content_hash`, `component_digest` or `plaintext_digest` under ANY package id, so a re-sealed or
+  renamed build stays denied. `kinds` limits only the four extension kinds (web bundles follow the portal
+  contract's own ceiling). Accept-mode ingress (`http-server`, `websocket-accept`) listens on the API server,
+  so it needs `declared`; dial and MQTT endpoints need only `loopback` when their host is loopback. Allow
+  ranges are Cargo SemVer requirements; a pre-release or build-metadata version never matches a range (fail
+  closed: allow it by exact `content_hash`). The host evaluates; fe-plugin's lifecycle only orders the rows
+  and calls the binary's gate (fe-plugin `src/AGENTS.md` §governance).
+- **The audit trail** (`OpType::ExtensionAudit`, local op log only, never replicated: OD-E7). One
+  `append_audit` per action through `commit_operation` with no materializer: the entry is its own fact, a
+  no-op on replay. Consent records and kill-list overrides are NOT separate tables: they are audit entries,
+  and the host rebuilds its in-memory state from the trail at startup (`load_consents`,
+  `load_kill_list_overrides`), so the record and its audit can never disagree. Refusals that matter for
+  security (a node below Manager writing the policy, a non-Owner or unconfirmed override) are audited
+  `refused`; malformed input is not. Reads filter `op_log` by `payload.installation` or `payload.verse_id`;
+  P6 measures whether the scan needs an index.
+- **Kill-list override** (bindings.md §5.7, governance.md §Kill-list override): `record_kill_list_override`
+  requires the typed confirmation (`confirm` = `package_id`) and local DID = `verse.created_by`, keyed
+  `(verse_id, content_hash)`.
+
+`SCHEMA_STATEMENTS`/`apply_schema` define the table; `schema::apply_all` calls it and
+`DEVELOPMENT_RESET_TABLE_NAMES` lists `extension_policy` (the development reset refuses unknown tables).
+`replicated_row` routes the table: `is_applied_table`, `confine` (`confine_inbound`, then
+`Floor::ManageVerse`) and `apply_row_mode` (`apply_replicated_policy_row`). The module itself is declared
+in `handlers/mod.rs` (G2 hand-off: until that line lands none of this compiles).

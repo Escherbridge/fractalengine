@@ -4,8 +4,12 @@
 
 use serde_json::{json, Value};
 
-use fe_runtime::messages::{ApiCommand, DbCommand, DbResult, DevicePayloadInput, SourceClass};
+use fe_runtime::messages::{
+    ApiCommand, DbCommand, DbResult, DevicePayloadInput, NodeMutation, SourceClass,
+};
+use fe_runtime::scene_hook_gate::{SceneCallerKind, SceneHookInput};
 
+use super::scene_gate::{gate_scene_write, scope_petal_id, stage_scene_augment};
 use super::{ToolCall, ToolFuture, ToolOutcome};
 use crate::endpoint::{caller_auth, load_node};
 use crate::upload::{GlbPayload, MCP_MAX_ASSET_BYTES};
@@ -147,14 +151,25 @@ pub(super) fn create_node(call: ToolCall<'_>) -> ToolFuture<'_> {
     Box::pin(async move {
         let petal_id = scoped_petal(&call)?;
         let position = vec3_arg(call.args, "position", [0.0; 3])?;
+        let name = str_arg(call.args, "name").to_string();
+        // scene.create, as REST create_node asks it (fe-api/AGENTS.md §scene-gate-doors).
+        let augment = gate_scene_write(call.claims, SceneCallerKind::Mcp, || SceneHookInput::Create {
+            petal_id: petal_id.clone(),
+            name: name.clone(),
+            position,
+        })
+        .await?;
         let cmd = DbCommand::CreateNode {
             petal_id,
-            name: str_arg(call.args, "name").to_string(),
+            name,
             position,
             correlation_id: None,
         };
         match crate::rest::db_round_trip(call.state, cmd).await? {
-            DbResult::NodeCreated { id, name, .. } => Ok(json!({ "id": id, "name": name })),
+            DbResult::NodeCreated { id, name, .. } => {
+                stage_scene_augment(augment, Some(&id));
+                Ok(json!({ "id": id, "name": name }))
+            }
             DbResult::Error(e) => Err(db_failure("create_node", &e)),
             _ => Err("create_node failed".to_string()),
         }
@@ -172,13 +187,18 @@ pub(super) fn update_transform(call: ToolCall<'_>) -> ToolFuture<'_> {
         {
             return Err(denial.to_string());
         }
+        // scene.transform before the optimistic broadcast, so a refused move is never previewed.
+        let augment = gate_transform(&call, node_id, position, rotation, scale).await?;
         // Same core and verdict wait as REST PATCH .../transform (QA-0087).
         let mut outcomes = call.state.entity_change_tx.subscribe();
         crate::rest::persist_transform(call.state, call.claims, node_id, position, rotation, scale);
         // The MCP reply contract stays `{"status":"ok"}`; a DB refusal is an error.
         match crate::rest::transform_outcome(&mut outcomes, node_id, position).await {
             Some(false) => Err(crate::rest::TRANSFORM_REFUSED.to_string()),
-            Some(true) | None => Ok(json!({ "status": "ok" })),
+            Some(true) | None => {
+                stage_scene_augment(augment, None);
+                Ok(json!({ "status": "ok" }))
+            }
         }
     })
 }
@@ -404,17 +424,29 @@ pub(super) fn place_asset(call: ToolCall<'_>) -> ToolFuture<'_> {
         if !crate::types::is_valid_ulid(asset_id) {
             return Err("invalid asset_id".to_string());
         }
+        let name = str_arg(call.args, "name");
+        let position = vec3_arg(call.args, "position", [0.0; 3])?;
+        let rotation = vec3_arg(call.args, "rotation", [0.0; 3])?;
+        let scale = vec3_arg(call.args, "scale", [1.0; 3])?;
+        // A placed asset is a node create: scene.create, as REST create_node with an asset_id.
+        let augment = gate_scene_write(call.claims, SceneCallerKind::Mcp, || SceneHookInput::Create {
+            petal_id: petal_id.clone(),
+            name: name.to_string(),
+            position,
+        })
+        .await?;
         let placed = crate::upload::place_asset_core(
             call.state,
             call.claims,
             &petal_id,
-            str_arg(call.args, "name"),
+            name,
             asset_id,
-            vec3_arg(call.args, "position", [0.0; 3])?,
-            vec3_arg(call.args, "rotation", [0.0; 3])?,
-            vec3_arg(call.args, "scale", [1.0; 3])?,
+            position,
+            rotation,
+            scale,
         )
         .await?;
+        stage_scene_augment(augment, Some(&placed.node_id));
         Ok(serde_json::to_value(placed).unwrap_or_default())
     })
 }
@@ -425,17 +457,54 @@ pub(super) fn place_asset(call: ToolCall<'_>) -> ToolFuture<'_> {
 
 pub(super) fn set_property(call: ToolCall<'_>) -> ToolFuture<'_> {
     Box::pin(async move {
+        let node_id = str_arg(call.args, "node_id");
+        let key = str_arg(call.args, "key").to_string();
         let value = call.args.get("value").cloned().unwrap_or(Value::Null);
-        let dto = crate::rest::set_property_as(
-            call.state,
-            call.claims,
-            str_arg(call.args, "node_id"),
-            str_arg(call.args, "key").to_string(),
-            value,
-        )
-        .await?;
+        let augment = gate_property(&call, node_id, &key, &value).await?;
+        let dto = crate::rest::set_property_as(call.state, call.claims, node_id, key, value).await?;
+        stage_scene_augment(augment, None);
         Ok(serde_json::to_value(dto).unwrap_or_default())
     })
+}
+
+/// scene.property on the authorized node, as REST set_node_property asks it (only `property_scope` keys reach the guest).
+async fn gate_property(
+    call: &ToolCall<'_>,
+    node_id: &str,
+    key: &str,
+    value: &Value,
+) -> Result<Option<fe_runtime::scene_hook_gate::SceneAugment>, String> {
+    let Some(petal_id) = scope_petal_id(scope_str(call)?) else {
+        return Ok(None);
+    };
+    gate_scene_write(call.claims, SceneCallerKind::Mcp, || SceneHookInput::Property {
+        petal_id,
+        node_id: node_id.to_string(),
+        key: key.to_string(),
+        value: value.clone(),
+    })
+    .await
+}
+
+/// scene.transform on the authorized node.
+async fn gate_transform(
+    call: &ToolCall<'_>,
+    node_id: &str,
+    position: [f32; 3],
+    rotation: [f32; 3],
+    scale: [f32; 3],
+) -> Result<Option<fe_runtime::scene_hook_gate::SceneAugment>, String> {
+    let Some(petal_id) = scope_petal_id(scope_str(call)?) else {
+        return Ok(None);
+    };
+    gate_scene_write(call.claims, SceneCallerKind::Mcp, || SceneHookInput::Transform {
+        petal_id,
+        node_id: node_id.to_string(),
+        position,
+        rotation,
+        scale,
+    })
+    .await
 }
 
 pub(super) fn get_properties(call: ToolCall<'_>) -> ToolFuture<'_> {
@@ -512,20 +581,25 @@ pub(super) fn read_node_at_version(call: ToolCall<'_>) -> ToolFuture<'_> {
 
 pub(super) fn commit_node_mutation(call: ToolCall<'_>) -> ToolFuture<'_> {
     Box::pin(async move {
-        let mutation = serde_json::from_value(
+        let mutation: NodeMutation = serde_json::from_value(
             call.args
                 .get("mutation")
                 .cloned()
                 .ok_or("mutation required")?,
         )
         .map_err(|e| format!("invalid mutation: {e}"))?;
-        crate::node_history::commit_core(
-            call.state,
-            call.claims,
-            str_arg(call.args, "node_id"),
-            mutation,
-        )
-        .await
+        let node_id = str_arg(call.args, "node_id");
+        // A property set or full transform is a scene write like set_property / update_transform.
+        let augment = match &mutation {
+            NodeMutation::PropertySet { key, value } => gate_property(&call, node_id, key, value).await?,
+            NodeMutation::FullTransform { position, rotation, scale } => {
+                gate_transform(&call, node_id, *position, *rotation, *scale).await?
+            }
+            NodeMutation::PropertyDeleted { .. } => None,
+        };
+        let committed = crate::node_history::commit_core(call.state, call.claims, node_id, mutation).await?;
+        stage_scene_augment(augment, None);
+        Ok(committed)
     })
 }
 
@@ -725,6 +799,83 @@ pub(super) fn install_tileset(call: ToolCall<'_>) -> ToolFuture<'_> {
         let text = str_arg(call.args, "data_base64").to_string();
         let bytes = decode_base64(text, crate::terrain::TILESET_ARCHIVE_MAX_BYTES).await?;
         crate::terrain::install_tileset_core(call.state, call.claims, &petal_id, bytes.into()).await
+    })
+}
+
+// ---------------------------------------------------------------------------
+// Extension platform + bindings (AGENTS.md §extensions, §bindings). Authz of the role floor and petal scope ran in
+// the dispatcher; the cores in `extensions.rs` / `bindings.rs` own the host gates and the uniform not-found.
+// ---------------------------------------------------------------------------
+
+/// The wired extension host; absent means the tool was never advertised.
+fn extension_host<'a>(call: &ToolCall<'a>) -> Result<&'a dyn crate::extensions::ExtensionHost, String> {
+    call.hosts
+        .extension
+        .as_deref()
+        .ok_or_else(|| "extensions are not available on this host".to_string())
+}
+
+/// The wired binding host.
+fn binding_host<'a>(call: &ToolCall<'a>) -> Result<&'a dyn crate::bindings::BindingHost, String> {
+    call.hosts
+        .binding
+        .as_deref()
+        .ok_or_else(|| "bindings are not available on this host".to_string())
+}
+
+pub(super) fn list_extensions(call: ToolCall<'_>) -> ToolFuture<'_> {
+    Box::pin(async move {
+        let host = extension_host(&call)?;
+        crate::extensions::list_extensions(host, call.claims).map_err(|e| e.message)
+    })
+}
+
+pub(super) fn extension_command(call: ToolCall<'_>) -> ToolFuture<'_> {
+    Box::pin(async move {
+        let host = extension_host(&call)?;
+        // The dispatcher resolved the petal scope and checked token containment: it is authorized.
+        crate::extensions::extension_command_tool(host, call.claims, call.scope.is_some(), call.args)
+            .await
+            .map_err(|e| e.message)
+    })
+}
+
+/// Parse the tool arguments into a binding request type; a malformed shape is a plain argument error.
+fn binding_args<T: serde::de::DeserializeOwned>(args: &Value) -> Result<T, String> {
+    serde_json::from_value(args.clone()).map_err(|e| format!("invalid binding arguments: {e}"))
+}
+
+/// The binding scope the dispatcher resolved (`ScopeRule::BindingTarget`); the cores treat `None` as the uniform 404.
+fn binding_scope(call: &ToolCall<'_>) -> Option<String> {
+    call.scope.map(str::to_owned)
+}
+
+pub(super) fn list_bindings(call: ToolCall<'_>) -> ToolFuture<'_> {
+    Box::pin(async move {
+        let host = binding_host(&call)?;
+        crate::bindings::list_bindings(host, call.claims, binding_scope(&call))
+            .await
+            .map_err(|e| e.message)
+    })
+}
+
+pub(super) fn set_binding(call: ToolCall<'_>) -> ToolFuture<'_> {
+    Box::pin(async move {
+        let host = binding_host(&call)?;
+        let request: crate::bindings::SetBindingRequest = binding_args(call.args)?;
+        crate::bindings::set_binding(host, call.claims, binding_scope(&call), request)
+            .await
+            .map_err(|e| e.message)
+    })
+}
+
+pub(super) fn clear_binding(call: ToolCall<'_>) -> ToolFuture<'_> {
+    Box::pin(async move {
+        let host = binding_host(&call)?;
+        let request: crate::bindings::ClearBindingRequest = binding_args(call.args)?;
+        crate::bindings::clear_binding(host, call.claims, binding_scope(&call), request)
+            .await
+            .map_err(|e| e.message)
     })
 }
 
@@ -1494,6 +1645,59 @@ pub(super) mod schema {
             },
             "required": ["petal_id", "data_base64"]
         })
+    }
+
+    pub fn list_extensions() -> Value {
+        json!({ "type": "object", "properties": {} })
+    }
+
+    pub fn extension_command() -> Value {
+        json!({
+            "type": "object",
+            "properties": {
+                "petal_id": { "type": "string" },
+                "package_id": { "type": "string", "description": "The extension package id" },
+                "command": { "type": "string", "description": "A command id the package exposes" },
+                "args": { "type": "object", "description": "Command arguments (default {})" }
+            },
+            "required": ["petal_id", "package_id", "command"]
+        })
+    }
+
+    /// The scope ids every binding tool addresses by.
+    fn binding_target_properties() -> Value {
+        json!({
+            "verse_id": { "type": "string" },
+            "fractal_id": { "type": "string", "description": "With verse_id: bind at this fractal" },
+            "petal_id": { "type": "string", "description": "With verse_id (and fractal_id): bind at this petal" }
+        })
+    }
+
+    pub fn list_bindings() -> Value {
+        json!({ "type": "object", "properties": binding_target_properties(), "required": ["verse_id"] })
+    }
+
+    pub fn set_binding() -> Value {
+        let mut properties = binding_target_properties();
+        if let Some(map) = properties.as_object_mut() {
+            map.insert("hook".into(), json!({ "type": "string", "description": "Hook point id, e.g. petal.map" }));
+            map.insert("key".into(), json!({ "type": "string", "description": "Point key within the hook (default empty)" }));
+            map.insert("mode".into(), json!({ "type": "string", "description": "extension, builtin or inherit (inherit clears)" }));
+            map.insert("package_id".into(), json!({ "type": "string" }));
+            map.insert("version_req".into(), json!({ "type": "string" }));
+            map.insert("config".into(), json!({ "type": "object" }));
+            map.insert("runs_on".into(), json!({ "type": "string", "description": "DID of the peer that runs it" }));
+        }
+        json!({ "type": "object", "properties": properties, "required": ["verse_id", "hook", "mode"] })
+    }
+
+    pub fn clear_binding() -> Value {
+        let mut properties = binding_target_properties();
+        if let Some(map) = properties.as_object_mut() {
+            map.insert("hook".into(), json!({ "type": "string" }));
+            map.insert("key".into(), json!({ "type": "string" }));
+        }
+        json!({ "type": "object", "properties": properties, "required": ["verse_id", "hook"] })
     }
 
     pub fn get_gis_nodes() -> Value {

@@ -10,6 +10,7 @@ pub mod context;
 pub mod device_format;
 pub mod events;
 pub mod legacy_identifier;
+pub mod manifest_v2;
 pub mod node;
 pub mod path_asset;
 pub mod path_geometry;
@@ -41,7 +42,7 @@ pub use scene::{SceneChange, SceneChangeBatch};
 pub use storage::{ExtensionStorageApi, StorageError, CAP_STORAGE_READ, CAP_STORAGE_WRITE};
 pub use texture::{TextureEntry, TextureRegistry};
 pub use transaction::PluginTransaction;
-pub use ui::{UiContribution, UiExtensionRegistry, UiSlot};
+pub use ui::{UiContribution, UiExtensionRegistry, UiSlot, UiWhen};
 
 /// The SDK API version. Extension manifests declare a minimum compatible
 /// version; the engine checks this at load time for forward-compatibility.

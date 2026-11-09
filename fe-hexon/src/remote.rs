@@ -8,6 +8,9 @@ use reqwest::StatusCode;
 use serde::Deserialize;
 
 use crate::partial::{FetchSource, PartialFetchError, PartialHexonFetch};
+use crate::registry_source::{
+    valid_package_id, valid_version, ProtocolV1Source, ProtocolV1Transport, RegistryEntry, SourceTrust, PACKAGE_MAX_BYTES,
+};
 
 /// Response cap for `/meta`: every header member at its JSON cap, plus the manifest.
 const MAX_HEADER_RESPONSE_BYTES: u64 = 8 * limits::MAX_JSON_ENTRY_BYTES;
@@ -15,6 +18,12 @@ const MAX_HEADER_RESPONSE_BYTES: u64 = 8 * limits::MAX_JSON_ENTRY_BYTES;
 const MAX_MEMBER_RESPONSE_BYTES: u64 = limits::MAX_ENTRY_UNCOMPRESSED_BYTES;
 /// Response cap for `/chunk` (a monolithic `seq = 0` is the whole archive).
 const MAX_CHUNK_RESPONSE_BYTES: u64 = limits::MAX_ARCHIVE_UNCOMPRESSED_BYTES;
+/// A registry that does not accept the connection in this time is unreachable.
+const CONNECT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
+/// Longest silence between body reads; an idle timeout, so a large tileset still streams.
+const READ_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(60);
+/// `hexon_type` of an extension package (`HexonType::Plugin`).
+const PLUGIN_HEXON_TYPE: &str = "plugin";
 
 /// Mirror of the registry's `ApiResponse` envelope.
 #[derive(Debug, Deserialize)]
@@ -42,6 +51,9 @@ pub struct RemoteHexonSummary {
     pub publisher_did: String,
     #[serde(default)]
     pub size_bytes: u64,
+    /// BLAKE3 of the sealed manifest with the signature blanked; empty when the registry omits it.
+    #[serde(default)]
+    pub content_hash: String,
 }
 
 /// Client for the hosted hexon registry HTTP API.
@@ -54,10 +66,19 @@ pub struct RemoteRegistryClient {
 impl RemoteRegistryClient {
     /// Create a client for `base_url` (trailing slash tolerated) with optional bearer token.
     pub fn new(base_url: impl Into<String>, token: Option<String>) -> Self {
+        // A stalled registry must not hold the extension ops worker forever.
+        let http = reqwest::Client::builder()
+            .connect_timeout(CONNECT_TIMEOUT)
+            .read_timeout(READ_TIMEOUT)
+            .build()
+            .unwrap_or_else(|error| {
+                tracing::warn!(%error, "registry client: timeouts unavailable, using the default client");
+                reqwest::Client::new()
+            });
         Self {
             base_url: base_url.into().trim_end_matches('/').to_string(),
             token,
-            http: reqwest::Client::new(),
+            http,
         }
     }
 
@@ -105,18 +126,9 @@ impl RemoteRegistryClient {
         Self::unwrap_envelope(resp).await
     }
 
-    /// Download the full `.hexon` archive bytes for `uri` (fetch-and-install path).
+    /// Download the full `.hexon` archive bytes for `uri`, never past the whole-archive cap.
     pub async fn download(&self, uri: &str) -> Result<Vec<u8>> {
-        let resp = self
-            .get(format!("{}/api/v1/hexons/{uri}/download", self.base_url))
-            .send()
-            .await
-            .context("registry download request failed")?;
-        let status = resp.status();
-        if !status.is_success() {
-            return Err(anyhow!("registry download failed: {status}"));
-        }
-        Ok(resp.bytes().await?.to_vec())
+        self.download_capped(uri, limits::MAX_ARCHIVE_UNCOMPRESSED_BYTES).await
     }
 
     /// `{base}/api/v1/hexons/{uri}/{tail…}` with every segment percent-encoded.
@@ -228,4 +240,198 @@ impl PartialHexonFetch for RemoteRegistryClient {
         let url = self.hexon_url(uri, &tail)?;
         self.get_capped(url, MAX_MEMBER_RESPONSE_BYTES).await
     }
+}
+
+/// Largest `/health` body read while probing the protocol.
+const MAX_HEALTH_BYTES: u64 = 16 * 1024;
+
+impl RemoteRegistryClient {
+    /// Protocol version the registry advertises: `X-Hexon-Registry-Protocol`, else the `/health` body.
+    pub async fn protocol(&self) -> Result<Option<String>> {
+        let resp = self
+            .get(format!("{}/health", self.base_url))
+            .send()
+            .await
+            .context("registry health request failed")?;
+        if let Some(header) = resp
+            .headers()
+            .get("x-hexon-registry-protocol")
+            .and_then(|v| v.to_str().ok())
+        {
+            return Ok(Some(header.trim().to_string()));
+        }
+        let body = self.get_capped_response(resp, MAX_HEALTH_BYTES).await?;
+        let doc: serde_json::Value = serde_json::from_slice(&body).unwrap_or_default();
+        let advertised = doc
+            .pointer("/data/protocol_version")
+            .or_else(|| doc.get("protocol_version"))
+            .and_then(|v| v.as_u64())
+            .map(|v| v.to_string());
+        if advertised.is_some() {
+            return Ok(advertised);
+        }
+        // Store-client contract v1: `config.json` `registry_protocol` is the authority; the header is never required.
+        let config = self
+            .get(format!("{}/config.json", self.base_url))
+            .send()
+            .await
+            .context("registry config request failed")?;
+        if !config.status().is_success() {
+            return Ok(None);
+        }
+        let body = self.get_capped_response(config, MAX_HEALTH_BYTES).await?;
+        let doc: serde_json::Value = serde_json::from_slice(&body).unwrap_or_default();
+        Ok(doc.get("registry_protocol").and_then(|v| v.as_u64()).map(|v| v.to_string()))
+    }
+
+    /// Attestation document for `uri`: the manifest and header members from `/meta`, base64-encoded, so consent renders before download.
+    pub async fn attestation(&self, entry: &RegistryEntry) -> Result<Vec<u8>, PartialFetchError> {
+        use base64::Engine as _;
+        let engine = base64::engine::general_purpose::STANDARD;
+        let doc = self.fetch_header(&entry.url).await?;
+        let content_hash = fe_format::integrity::content_hash(doc.manifest.as_bytes())
+            .map_err(|e| PartialFetchError::Transport(format!("manifest: {e:#}")))?;
+        let members: std::collections::BTreeMap<&String, String> =
+            doc.header_members.iter().map(|(path, text)| (path, engine.encode(text.as_bytes()))).collect();
+        let attestation = serde_json::json!({
+            "package_id": entry.package_id,
+            "version": entry.version,
+            "content_hash": content_hash,
+            "manifest_b64": engine.encode(doc.manifest.as_bytes()),
+            "header_members_b64": members,
+        });
+        serde_json::to_vec(&attestation).map_err(|e| PartialFetchError::Transport(e.to_string()))
+    }
+
+    /// Read a response body under `cap` bytes.
+    async fn get_capped_response(&self, mut resp: reqwest::Response, cap: u64) -> Result<Vec<u8>> {
+        let mut body = Vec::new();
+        while let Some(piece) = resp.chunk().await? {
+            if (body.len() + piece.len()) as u64 > cap {
+                return Err(anyhow!("registry response exceeds {cap} bytes"));
+            }
+            body.extend_from_slice(&piece);
+        }
+        Ok(body)
+    }
+
+    /// [`Self::download`] that stops reading past `cap` bytes, so a registry cannot stream an unbounded body.
+    pub async fn download_capped(&self, uri: &str, cap: u64) -> Result<Vec<u8>> {
+        let resp = self
+            .get(format!("{}/api/v1/hexons/{uri}/download", self.base_url))
+            .send()
+            .await
+            .context("registry download request failed")?;
+        let status = resp.status();
+        if !status.is_success() {
+            return Err(anyhow!("registry download failed: {status}"));
+        }
+        self.get_capped_response(resp, cap).await
+    }
+}
+
+/// A registry uri is `id[@version]` in the contract v1 grammar; anything that could re-target the request is refused.
+fn is_plain_registry_uri(uri: &str) -> bool {
+    match uri.split_once('@') {
+        Some((id, version)) => valid_package_id(id) && valid_version(version),
+        None => valid_package_id(uri),
+    }
+}
+
+/// Bytes a download may read: the listed `size` when the registry gave one, never past the package cap.
+fn download_cap(entry: &RegistryEntry) -> u64 {
+    match entry.size {
+        0 => PACKAGE_MAX_BYTES,
+        listed => listed.min(PACKAGE_MAX_BYTES),
+    }
+}
+
+/// Synchronous [`ProtocolV1Transport`] over [`RemoteRegistryClient`]; call from a worker thread, never from async code.
+pub struct RemoteProtocolV1Transport {
+    client: RemoteRegistryClient,
+    runtime: tokio::runtime::Runtime,
+    /// When set, listings keep only hits of this `hexon_type` (asked of the registry and re-checked here).
+    hexon_type: Option<&'static str>,
+}
+
+impl RemoteProtocolV1Transport {
+    /// Transport for `base_url`; downloads are anonymous unless the operator configured a registry token.
+    pub fn new(base_url: impl Into<String>, token: Option<String>) -> std::io::Result<Self> {
+        let runtime = tokio::runtime::Builder::new_current_thread().enable_all().build()?;
+        Ok(Self { client: RemoteRegistryClient::new(base_url, token), runtime, hexon_type: None })
+    }
+}
+
+fn entry_from_summary(summary: RemoteHexonSummary) -> RegistryEntry {
+    RegistryEntry {
+        package_id: summary.hexon_id.clone(),
+        version: summary.version.clone(),
+        content_hash: summary.content_hash,
+        url: format!("{}@{}", summary.hexon_id, summary.version),
+        size: summary.size_bytes,
+        name: summary.name,
+        header_url: None,
+    }
+}
+
+impl ProtocolV1Transport for RemoteProtocolV1Transport {
+    fn protocol(&self) -> Result<Option<String>, String> {
+        self.runtime.block_on(self.client.protocol()).map_err(|e| e.to_string())
+    }
+
+    fn search(&self, query: Option<&str>) -> Result<Vec<RegistryEntry>, String> {
+        let hits = self
+            .runtime
+            .block_on(self.client.search(query, None, self.hexon_type))
+            .map_err(|e| e.to_string())?;
+        Ok(hits
+            .into_iter()
+            .filter(|hit| valid_package_id(&hit.hexon_id) && valid_version(&hit.version))
+            .filter(|hit| self.hexon_type.is_none_or(|wanted| hit.hexon_type == wanted))
+            .map(entry_from_summary)
+            .collect())
+    }
+
+    fn download(&self, entry: &RegistryEntry) -> Result<Vec<u8>, String> {
+        if !is_plain_registry_uri(&entry.url) {
+            return Err(format!("refusing registry uri {:?}", entry.url));
+        }
+        self.runtime
+            .block_on(self.client.download_capped(&entry.url, download_cap(entry)))
+            .map_err(|e| e.to_string())
+    }
+
+    fn attestation(&self, entry: &RegistryEntry) -> Result<Option<Vec<u8>>, String> {
+        if !is_plain_registry_uri(&entry.url) {
+            return Err(format!("refusing registry uri {:?}", entry.url));
+        }
+        match self.runtime.block_on(self.client.attestation(entry)) {
+            Ok(bytes) => Ok(Some(bytes)),
+            Err(PartialFetchError::NotFound) => Ok(None),
+            Err(other) => Err(other.to_string()),
+        }
+    }
+}
+
+/// A protocol-v1 registry as a [`RegistrySource`](crate::registry_source::RegistrySource): every download re-verified
+/// locally; `fetch_hexon` also admits content hexons such as tilesets (see `src/AGENTS.md` §registry-source-remote).
+pub fn remote_source(
+    label: impl Into<String>,
+    base_url: impl Into<String>,
+    token: Option<String>,
+    trust: SourceTrust,
+) -> std::io::Result<ProtocolV1Source> {
+    let transport = RemoteProtocolV1Transport::new(base_url, token)?;
+    Ok(ProtocolV1Source::new(label, std::sync::Arc::new(transport), trust))
+}
+
+/// The Extensions Browse source over a protocol-v1 registry: anonymous by construction, listing only plugin packages.
+pub fn remote_extension_source(
+    label: impl Into<String>,
+    base_url: impl Into<String>,
+    trust: SourceTrust,
+) -> std::io::Result<ProtocolV1Source> {
+    let mut transport = RemoteProtocolV1Transport::new(base_url, None)?;
+    transport.hexon_type = Some(PLUGIN_HEXON_TYPE);
+    Ok(ProtocolV1Source::new(label, std::sync::Arc::new(transport), trust))
 }

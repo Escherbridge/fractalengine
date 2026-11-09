@@ -306,6 +306,14 @@ fn main() -> anyhow::Result<()> {
         },
     );
 
+    // Plugin host (feature `plugin-host`, default OFF): the thread runs inert; admitting packages also
+    // needs FE_PLUGIN_HOST_ALLOW=1. No scene backend on the relay (fractalengine/src/AGENTS.md §plugin-host).
+    #[cfg(feature = "plugin-host")]
+    {
+        app.insert_resource(fe_plugin::PackageAdmission(fe_plugin::plugin_host_allowed_from_env()));
+        app.add_plugins(fe_plugin::PluginHostPlugin);
+    }
+
     // Graceful shutdown (A8): SIGINT (and SIGTERM on unix) sends
     // `DbCommand::Shutdown` **and** `SyncCommand::Shutdown`, waits briefly for
     // the DB flush + sync teardown, then flips the flag the Bevy system below
@@ -483,6 +491,8 @@ fn main() -> anyhow::Result<()> {
         input: fe_api::input::InputSurface::disabled(),
         // Dev-token emission is GUI-only (fe-api/AGENTS.md §qa-dev-token).
         listening_tx: None,
+        extension_host: None,
+        binding_host: None,
     });
 
     app.insert_resource(RevocationBroadcastSender(revocation_tx));

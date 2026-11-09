@@ -10,6 +10,7 @@ use std::path::Path;
 use std::sync::{Arc, Mutex, MutexGuard, Once};
 use std::time::Duration;
 
+use fe_database::handlers::{extension_binding, extension_policy};
 use fe_database::handlers::inbound_admissions::{
     deferred_admission_drop_count, InboundAdmissions, RowReport,
 };
@@ -19,6 +20,7 @@ use fe_database::role_manager::{assign_role_checked, resolve_role};
 use fe_database::{build_scope, spawn_db_thread_shared, BlobStoreHandle, DbThread, RoleLevel};
 use fe_policy::RoleStatementPayload;
 use fe_runtime::blob_store::mock::MockBlobStore;
+use fe_runtime::extension_binding::{BindingMode, BindingRecord};
 use fe_runtime::messages::{DbCommand, DbResult, DeferralReason, ReplicatedRowOutcome};
 
 const OWNER: &str = "did:key:z6MkInboundOwner";
@@ -100,6 +102,48 @@ async fn verse_db() -> Db {
         .await;
     }
     db
+}
+
+fn wall_ms() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .expect("clock after epoch")
+        .as_millis() as u64
+}
+
+/// A replicated `extension_policy` row (docs/extensions/governance.md §Policy row) by `author`.
+fn policy_row(author: &str, written_at: u64) -> Vec<u8> {
+    serde_json::to_vec(&serde_json::json!({
+        "schema_version": extension_policy::POLICY_SCHEMA_VERSION,
+        "verse_id": VERSE,
+        "author_did": author,
+        "written_at": written_at,
+        "policy": {
+            "mode": "allow-list",
+            "allow": [{ "package_id": "org.example.fleet-sim", "versions": ">=0.1.0, <0.2.0" }],
+        },
+    }))
+    .expect("policy json")
+}
+
+/// A replicated fractal-wide `petal.map` binding (docs/extensions/bindings.md §3, §8.1) by `author`:
+/// `(record id, payload bytes)`.
+fn binding_row(author: &str, written_at: u64) -> (String, Vec<u8>) {
+    let record = BindingRecord {
+        schema_version: 1,
+        scope: fractal_scope(),
+        hook: "petal.map".into(),
+        key: String::new(),
+        mode: BindingMode::Extension,
+        package_id: Some("org.example.city-map".into()),
+        version_req: Some(">=1.2.0, <2.0.0".into()),
+        config: serde_json::json!({ "district": "harbour" }),
+        runs_on: None,
+        author_did: author.into(),
+        written_at: written_at.to_string(),
+    };
+    let record_id = extension_binding::binding_record_id(&record).expect("binding record id");
+    (record_id, serde_json::to_vec(&record).expect("binding json"))
 }
 
 fn manifest_row() -> Vec<u8> {
@@ -357,19 +401,124 @@ async fn promotion_flows() {
             "role statements never enter the content queue"
         );
 
-        match promotion {
+        // E10 (R18): the same not-yet-Manager's extension policy row, written after its promotion on its
+        // own peer, arrives first: deferred on the author's role, never stored.
+        extension_policy::apply_schema(&db).await.expect("policy table");
+        let policy_written_at = (wall_ms() + 60_000) << 16;
+        let reports = queue
+            .apply(&db, VERSE, extension_policy::POLICY_TABLE, VERSE, &policy_row(MANAGER, policy_written_at), MANAGER, None)
+            .await;
+        assert_eq!(reports[0].outcome, author_role(MANAGER), "{promotion:?}");
+        assert!(extension_policy::get_policy(&db, VERSE).await.expect("read policy").is_none());
+
+        // B1 (bindings.md §4.3): its fractal-wide binding, also written after its promotion, arrives first too:
+        // deferred on Manager+ NOW at the binding's own scope, never stored.
+        let (binding_id, binding_bytes) = binding_row(MANAGER, policy_written_at + (1 << 16));
+        let reports = queue
+            .apply(&db, VERSE, extension_binding::BINDING_DOC_TABLE, &binding_id, &binding_bytes, MANAGER, None)
+            .await;
+        assert_eq!(reports[0].outcome, author_role(MANAGER), "{promotion:?}");
+        let plane = extension_binding::load_binding_snapshot(&db, VERSE).await.expect("binding plane");
+        assert!(plane.versions.is_empty(), "{promotion:?}: a deferred binding is not stored");
+
+        let settled = match promotion {
             Promotion::InboundOwnerStatement => {
                 let promote = grant(OWNER, MANAGER, &verse_scope(), "manager", 20);
                 let reports = deliver(&db, &mut queue, &promote).await;
                 assert_eq!(reports[0].outcome, ReplicatedRowOutcome::Applied);
+                reports
             }
             Promotion::LocalAssignRole => {
                 let store: BlobStoreHandle = Arc::new(MockBlobStore::new());
                 assign_role_checked(&db, OWNER, MANAGER, &verse_scope(), "manager", None, &store)
                     .await
                     .expect("owner assigns locally");
+                queue.retry_author_roles(&db, VERSE, None).await
+            }
+        };
+        assert!(
+            applied(&settled, VERSE),
+            "{promotion:?}: the deferred policy row applies on promotion: {settled:?}"
+        );
+        let stored = extension_policy::get_policy(&db, VERSE).await.expect("read policy").expect("policy row");
+        assert_eq!((stored.author_did.as_str(), stored.policy.mode), (MANAGER, extension_policy::PolicyMode::AllowList));
+        assert!(
+            applied(&settled, &binding_id),
+            "{promotion:?}: the deferred binding applies on the same promotion: {settled:?}"
+        );
+        // Written after the grant and held now, so admissible on read and the fractal's effective map binding.
+        let plane = extension_binding::load_binding_snapshot(&db, VERSE).await.expect("binding plane");
+        assert!(
+            matches!(plane.versions.as_slice(), [version] if version.effective && version.record.author_did == MANAGER),
+            "{promotion:?}: {:?}",
+            plane.versions
+        );
+
+        // Precondition 7 over the stored row: the allow range admits 0.1.x only, a local digest deny matches
+        // under any id, and a URL whose authority ends at `?` is not loopback (G2: `?@localhost` disguise).
+        fn build<'a>(
+            version: &'a str,
+            component_digest: &'a str,
+            manifest: &'a fe_sdk::manifest_v2::ExtensionManifest,
+        ) -> extension_policy::PolicyFacts<'a> {
+            extension_policy::PolicyFacts {
+                package_id: "org.example.fleet-sim",
+                version,
+                content_hash: "ab12ab12ab12ab12ab12ab12ab12ab12ab12ab12ab12ab12ab12ab12ab12ab12",
+                component_digest: Some(component_digest),
+                plaintext_digest: None,
+                trust: extension_policy::TrustTier::Publisher,
+                kind: fe_sdk::manifest_v2::ExtensionKind::BiConnector,
+                manifest: Some(manifest),
             }
         }
+        let mut bi_push: serde_json::Value =
+            serde_json::from_slice(include_bytes!("../../fe-sdk/schema/examples/bi-push.extension.json")).expect("example");
+        bi_push["egress"][0]["url"] = serde_json::json!("https://evil.example?@localhost/ingest/");
+        let disguised: fe_sdk::manifest_v2::ExtensionManifest = serde_json::from_value(bi_push.clone()).expect("manifest");
+        bi_push["egress"][0]["url"] = serde_json::json!("http://localhost:9000/ingest/");
+        let loopback: fe_sdk::manifest_v2::ExtensionManifest = serde_json::from_value(bi_push).expect("manifest");
+        let digest = "c".repeat(64);
+        let host_policy = extension_policy::LocalPolicy {
+            deny: Vec::new(),
+            ceilings: extension_policy::Ceilings {
+                egress: Some(extension_policy::NetCeiling::Loopback),
+                ..Default::default()
+            },
+        };
+        let deny_digest = extension_policy::LocalPolicy { deny: vec![digest.clone()], ..host_policy.clone() };
+        let verse_policy = Some(&stored.policy);
+        assert!(extension_policy::evaluate(verse_policy, &host_policy, &build("0.1.3", &digest, &loopback)).is_ok());
+        for (facts, local, reason) in [
+            (build("0.2.0", &digest, &loopback), &host_policy, extension_policy::DenialReason::NotAllowListed),
+            (build("0.1.3", &digest, &disguised), &host_policy, extension_policy::DenialReason::Ceiling("egress")),
+            (build("0.1.3", &digest, &loopback), &deny_digest, extension_policy::DenialReason::DenyListed(digest.clone())),
+        ] {
+            assert_eq!(extension_policy::evaluate(verse_policy, local, &facts).unwrap_err().reason, reason);
+        }
+
+        // The local write path: the node (here the owner) writes as itself, log-first, one audit op per
+        // action; a node below Manager is refused and that refusal is audited too.
+        let local = extension_policy::ExtensionPolicy {
+            mode: extension_policy::PolicyMode::TrustRoot,
+            ..Default::default()
+        };
+        let written = extension_policy::set_policy_with_replication(&db, OWNER, VERSE, local.clone(), None, None)
+            .await
+            .expect("owner writes the policy");
+        assert!(written.written_at > policy_written_at, "{promotion:?}: the local write orders after the row it replaces");
+        assert!(matches!(
+            extension_policy::set_policy_with_replication(&db, PEER, VERSE, local, None, None).await,
+            Err(extension_policy::PolicyWriteError::RoleDenied(_))
+        ));
+        let trail = extension_policy::list_audit(&db, extension_policy::AuditFilter::Verse(VERSE), 10)
+            .await
+            .expect("audit trail");
+        let outcomes: Vec<(&str, &str)> = trail
+            .iter()
+            .map(|entry| (entry["actor_did"].as_str().unwrap(), entry["outcome"].as_str().unwrap()))
+            .collect();
+        assert_eq!(outcomes, vec![(PEER, "refused"), (OWNER, "ok")], "{promotion:?}: newest first");
 
         assert!(
             keys(&admitted(&db).await).contains(&early.record_id),

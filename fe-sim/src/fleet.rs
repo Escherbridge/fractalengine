@@ -1,30 +1,19 @@
-//! Declarative fleet configuration + the pure tick planner (F8/A18).
+//! Declarative fleet configuration (lab shell) over the pure `fe-sim-model` core (F8/A18, E14a).
 //!
-//! A fleet is DATA, not code: one JSON document names the peers, the anchor
-//! nodes, and one entry per synthetic sensor (anchor + metric + units +
-//! cadence + a [`SensorModel`]). The planner is a **pure function of the
-//! config**: it precomputes the full fire schedule — every reading's
-//! sensor, tick index, and simulated timestamp — in a total
-//! `(at_ms, sensor index)` order, so two runs of the same config fire the
-//! identical readings in the identical order, by construction.
-//!
-//! Values are computed at fire time by [`crate::sensors::evaluate`]; the
-//! actual ingest (real `iot_reading` rows through the F5 emission seam)
-//! is driven by `scenario.rs`.
+//! A fleet is DATA, not code. The lab `FleetConfig` adds the v1 lab-only fields (`peers`,
+//! `ingest_peer`, `start_ms` real-clock bound) around the wasm-compatible [`FleetModel`] (sensors,
+//! movers, planner), which lives in `fe-sim/model`. See `fe-sim/model/AGENTS.md`.
 
 use serde::{Deserialize, Serialize};
 
-use crate::sensors::{evaluate, SensorModel};
+pub use fe_sim_model::fleet::{
+    plan_movers, route_progress, MoverSample, MoverSpec, SensorSpec, DEFAULT_MOVER_TICK_MS,
+    MAX_PLANNED_READINGS, SIM_TIME_LIMIT_MS,
+};
+pub use fe_sim_model::fleet::{FleetModel, ScheduledReading};
 
-/// Exclusive upper bound on any simulated epoch-ms: HLC packs wall time into
-/// the upper 48 bits (`wall << 16`), so a time at or past 2^48 would
-/// silently truncate. Every value below it is also chrono-representable
-/// (2^48 ms ≈ year 10889), so `rfc3339_from_ms` cannot panic on a validated
-/// fleet (AGENTS.md §hlc-sim).
-pub const SIM_TIME_LIMIT_MS: u64 = 1 << 48;
-
-/// Planned-readings cap per fleet (validation; bounds run time and memory).
-pub const MAX_PLANNED_READINGS: u64 = 100_000;
+#[cfg(test)]
+use crate::sensors::evaluate;
 
 /// Peers-per-fleet cap (validation; each peer is two threads + a Mem DB).
 pub const MAX_FLEET_PEERS: usize = 16;
@@ -37,24 +26,11 @@ pub fn real_now_ms() -> u64 {
         .as_millis() as u64
 }
 
-/// One synthetic sensor in the fleet config.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct SensorSpec {
-    /// Anchor node NAME — the runner creates one anchor node per fleet
-    /// `anchors` entry and maps names to the DB's node ids at setup.
-    pub anchor: String,
-    /// Metric name, e.g. `temperature_c` (non-empty — the ingest seam
-    /// validates it).
-    pub metric: String,
-    /// Unit label, e.g. `C`.
-    pub units: String,
-    /// Milliseconds between readings (simulated time).
-    pub cadence_ms: u64,
-    /// The value model — see [`crate::sensors`].
-    pub model: SensorModel,
+fn default_mover_tick_ms() -> u64 {
+    DEFAULT_MOVER_TICK_MS
 }
 
-/// The declarative fleet config (the `fleet` block of a scenario file).
+/// The declarative fleet config (the `fleet` block of a scenario file); `movers` is the v2 addition.
 ///
 /// ```json
 /// {
@@ -68,35 +44,39 @@ pub struct SensorSpec {
 ///       "model": { "type": "sine", "baseline": 15, "amplitude": 8,
 ///                  "period_ms": 3600000 } }
 ///   ],
+///   "movers": [
+///     { "node": "truck-1", "route": "route-a", "speed_mps": 12.5, "loop": true }
+///   ],
 ///   "start_ms": 1750000000000,
 ///   "duration_ms": 3600000
 /// }
 /// ```
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct FleetConfig {
-    /// Verse name for the run's verse.
+    /// Verse name for the run's verse (lab-only).
     pub verse_name: String,
-    /// Simulated peer names, in spawn order. The first is the verse
-    /// creator; every peer opens the verse replica.
+    /// Simulated peer names, in spawn order; the first is the verse creator (lab-only).
     pub peers: Vec<String>,
-    /// Which peer ingests the fleet's readings (its DB thread writes the
-    /// real `iot_reading` rows through the emission seam).
+    /// Which peer ingests the fleet's readings (lab-only).
     pub ingest_peer: String,
-    /// Anchor node names — one node per entry is created in the fleet's
-    /// petal on the ingest peer.
+    /// Anchor node names — one node per entry is created in the fleet's petal on the ingest peer.
     pub anchors: Vec<String>,
     /// The synthetic sensors.
     pub sensors: Vec<SensorSpec>,
+    /// Route-following movers (v2; empty for v1 documents).
+    #[serde(default)]
+    pub movers: Vec<MoverSpec>,
+    /// Milliseconds between mover samples (v2).
+    #[serde(default = "default_mover_tick_ms")]
+    pub mover_tick_ms: u64,
     /// Simulated epoch-ms at fleet start (the scenario clock's origin).
     pub start_ms: u64,
-    /// Simulated fleet duration. Sensors fire on their cadence while
-    /// inside it; tick `k` fires at `start_ms + k * cadence_ms`.
+    /// Simulated fleet duration. Sensors fire on their cadence while inside it.
     pub duration_ms: u64,
 }
 
 impl FleetConfig {
-    /// Parse a fleet config from declarative JSON (A18: the fleet config
-    /// is declarative).
+    /// Parse a fleet config from declarative JSON (A18: the fleet config is declarative).
     pub fn parse(json: &str) -> anyhow::Result<Self> {
         let config: Self =
             serde_json::from_str(json).map_err(|e| anyhow::anyhow!("invalid fleet config: {e}"))?;
@@ -104,11 +84,20 @@ impl FleetConfig {
         Ok(config)
     }
 
-    /// Structural validation beyond serde: the ingest peer must be a fleet
-    /// peer, every sensor's anchor must exist, cadences must be non-zero,
-    /// at least one peer/anchor must be declared, the size caps hold, and
-    /// simulated time is representable and never in the future (DEC-C13 —
-    /// AGENTS.md §hlc-sim). Checks against the real wall clock.
+    /// The pure model view of this config (what the planners and the wasm extension consume).
+    pub fn model(&self) -> FleetModel {
+        FleetModel {
+            anchors: self.anchors.clone(),
+            sensors: self.sensors.clone(),
+            movers: self.movers.clone(),
+            mover_tick_ms: self.mover_tick_ms,
+            start_ms: self.start_ms,
+            duration_ms: self.duration_ms,
+        }
+    }
+
+    /// Lab checks (peers, ingest peer, anchors) plus the model checks plus "never in the future"
+    /// (DEC-C13 — AGENTS.md §hlc-sim), against the real wall clock.
     pub fn validate(&self) -> anyhow::Result<()> {
         self.validate_at(real_now_ms())
     }
@@ -133,31 +122,10 @@ impl FleetConfig {
         if self.anchors.is_empty() {
             anyhow::bail!("fleet config: at least one anchor is required");
         }
-        if self.sensors.is_empty() {
-            anyhow::bail!("fleet config: at least one sensor is required");
+        if self.sensors.is_empty() && self.movers.is_empty() {
+            anyhow::bail!("fleet config: at least one sensor or mover is required");
         }
-        for sensor in &self.sensors {
-            if sensor.metric.trim().is_empty() {
-                anyhow::bail!("fleet config: sensor metric must be non-empty");
-            }
-            if sensor.cadence_ms == 0 {
-                anyhow::bail!("fleet config: sensor '{}' has cadence_ms 0", sensor.metric);
-            }
-            if !self.anchors.contains(&sensor.anchor) {
-                anyhow::bail!(
-                    "fleet config: sensor '{}' anchors to unknown anchor '{}'",
-                    sensor.metric,
-                    sensor.anchor
-                );
-            }
-        }
-        if self.start_ms >= SIM_TIME_LIMIT_MS {
-            anyhow::bail!(
-                "fleet config: start_ms {} is unrepresentable — simulated time must be \
-                 below 2^48 ms ({SIM_TIME_LIMIT_MS}; HLC packs wall time into 48 bits)",
-                self.start_ms
-            );
-        }
+        self.model().validate()?;
         if self.start_ms > now_ms {
             anyhow::bail!(
                 "fleet config: start_ms {} is in the future (real now is {now_ms}) — sim \
@@ -166,81 +134,25 @@ impl FleetConfig {
                 self.start_ms
             );
         }
-        match self.start_ms.checked_add(self.duration_ms) {
-            Some(end) if end < SIM_TIME_LIMIT_MS => {}
-            _ => anyhow::bail!(
-                "fleet config: start_ms + duration_ms runs past the simulated time limit \
-                 (2^48 ms = {SIM_TIME_LIMIT_MS})"
-            ),
-        }
-        let planned = self.planned_readings();
-        if planned > MAX_PLANNED_READINGS {
-            anyhow::bail!(
-                "fleet config: {planned} planned readings exceeds the cap of \
-                 {MAX_PLANNED_READINGS} (shorten duration_ms or raise cadence_ms)"
-            );
-        }
         Ok(())
     }
 
-    /// How many readings [`plan_fleet`] schedules: `duration / cadence` per
-    /// sensor, saturating (zero-cadence sensors count zero).
+    /// How many readings [`plan_fleet`] schedules (see [`FleetModel::planned_readings`]).
     pub fn planned_readings(&self) -> u64 {
-        self.sensors
-            .iter()
-            .filter(|s| s.cadence_ms > 0)
-            .map(|s| self.duration_ms / s.cadence_ms)
-            .fold(0u64, u64::saturating_add)
+        self.model().planned_readings()
     }
 }
 
-/// One scheduled reading — a pure planner artifact, before the anchor's DB
-/// node id is known (the runner substitutes it at fire time).
-#[derive(Debug, Clone, PartialEq)]
-pub struct ScheduledReading {
-    /// Simulated epoch-ms when the reading fires.
-    pub at_ms: u64,
-    /// Index into [`FleetConfig::sensors`].
-    pub sensor: usize,
-    /// 1-based tick index (tick `k` fires at `start_ms + k * cadence_ms`).
-    pub tick: u64,
-    /// The reading's value (pure `sensors::evaluate(model, tick, at_ms)`).
-    pub value: f64,
-}
-
-/// Precompute the full fire schedule in total `(at_ms, sensor)` order —
-/// a pure function of the config, so the same config always yields the
-/// same plan, byte for byte. An (unvalidated) config over
-/// [`MAX_PLANNED_READINGS`] plans nothing — `validate` rejects it loudly.
+/// Precompute the sensor fire schedule in total `(at_ms, sensor)` order (pure; see the model crate).
 pub fn plan_fleet(config: &FleetConfig) -> Vec<ScheduledReading> {
-    let mut plan: Vec<ScheduledReading> = Vec::new();
     if config.planned_readings() > MAX_PLANNED_READINGS {
         tracing::warn!(
             planned = config.planned_readings(),
             "plan_fleet: fleet exceeds the planned-readings cap — nothing planned (validate first)"
         );
-        return plan;
+        return Vec::new();
     }
-    for (idx, sensor) in config.sensors.iter().enumerate() {
-        // Bounded tick range — never `saturating_mul` against the duration
-        // (saturation pinned the offset at u64::MAX, so `duration_ms:
-        // u64::MAX` never terminated).
-        let Some(last_tick) = config.duration_ms.checked_div(sensor.cadence_ms) else {
-            continue; // cadence 0 (rejected by validate)
-        };
-        for tick in 1..=last_tick {
-            let offset = tick * sensor.cadence_ms; // ≤ duration_ms by construction
-            let at_ms = config.start_ms.saturating_add(offset);
-            plan.push(ScheduledReading {
-                at_ms,
-                sensor: idx,
-                tick,
-                value: evaluate(&sensor.model, tick, at_ms),
-            });
-        }
-    }
-    plan.sort_by(|a, b| a.at_ms.cmp(&b.at_ms).then(a.sensor.cmp(&b.sensor)));
-    plan
+    fe_sim_model::fleet::plan_readings(&config.model())
 }
 
 /// The RFC-3339 UTC form of a simulated epoch-ms — the `recorded_at` the
@@ -312,6 +224,29 @@ mod tests {
         // Purity: same config → same plan (values included).
         let again = plan_fleet(&cfg);
         assert_eq!(plan, again);
+
+        // Movers (v2): 100 m route at 10 m/s, 500 ms ticks, looped vs clamped, after a 1 s offset.
+        let mut cfg = config();
+        cfg.mover_tick_ms = 500;
+        for (looped, expect_last) in [(false, 1.0), (true, 0.9)] {
+            cfg.movers = vec![MoverSpec {
+                node: "truck".into(),
+                route: "route-a".into(),
+                speed_mps: 10.0,
+                looped,
+                start_offset_s: 1.0,
+            }];
+            let samples = plan_movers(&cfg.model(), |r| (r == "route-a").then_some(100.0));
+            assert_eq!(samples.len(), 600, "300 s / 500 ms ticks");
+            assert_eq!(samples[0].progress, 0.0, "still inside the start offset");
+            assert!((samples[2].progress - 0.05).abs() < 1e-9, "t=1.5s: 0.5 s * 10 m/s of 100 m");
+            // End of run: 299 s * 10 m/s = 2990 m — clamped at 1.0, or wrapped to 0.9 when looping.
+            let last = samples.last().unwrap().progress;
+            assert!((last - expect_last).abs() < 1e-6, "end of run: {last}");
+            assert!(samples.windows(2).all(|w| (w[0].at_ms, w[0].mover) <= (w[1].at_ms, w[1].mover)));
+            assert_eq!(samples, plan_movers(&cfg.model(), |_| Some(100.0)), "pure");
+        }
+        assert!(plan_movers(&cfg.model(), |_| None).is_empty(), "unknown route is skipped");
     }
 
     #[test]
@@ -350,6 +285,34 @@ mod tests {
         let mut cfg = config();
         cfg.anchors.clear();
         assert!(cfg.validate().is_err(), "no anchors");
+
+        // v2 mover rows: each broken mover field is rejected.
+        for (what, speed, offset, node) in [
+            ("zero speed", 0.0, 0.0, "truck"),
+            ("negative speed", -1.0, 0.0, "truck"),
+            ("nan speed", f64::NAN, 0.0, "truck"),
+            ("negative offset", 5.0, -1.0, "truck"),
+            ("empty node", 5.0, 0.0, " "),
+        ] {
+            let mut cfg = config();
+            cfg.movers.push(MoverSpec {
+                node: node.into(),
+                route: "route-a".into(),
+                speed_mps: speed,
+                looped: false,
+                start_offset_s: offset,
+            });
+            assert!(cfg.validate().is_err(), "{what}");
+        }
+        let mut cfg = config();
+        cfg.movers.push(MoverSpec {
+            node: "truck".into(),
+            route: "route-a".into(),
+            speed_mps: 5.0,
+            looped: true,
+            start_offset_s: 0.0,
+        });
+        cfg.validate().expect("a well-formed mover is accepted");
     }
 
     /// DEC-C13 time bounds (table-driven): sim time may be past, never

@@ -19,7 +19,7 @@ partitions_confidence: planned
 ## 0. Assumptions (proceed unless overridden; reversal cost in brackets)
 
 - **A-1** plugin_host_revival_20261031 runs in the EXT-PLATFORM session as this track's prerequisite lane. Its spec and plan stay authoritative for S0-S7. [low]
-- **A-2** The spec §8 defaults (OD-E1..OD-E10) hold until ratified. P2.3 (withdrawal) waits for OD-E1. [per OD]
+- **A-2** The spec §8 defaults (OD-E1..OD-E10) hold until ratified. OD-E1 is decided (no withdrawal); P2.3 is stamp-and-stop only.
 - **A-3** The release pipeline (release_ci_20260429) builds and signs first-party Wasm packages; dev builds trust a dev root. [low]
 - **A-4** BUILD tasks start only after the P2P campaign merges and flips the gate. Partitions that touch fe-database, fe-runtime or fe-sync are re-verified then; HEAD moved twice during authoring. [low]
 - **A-5** Python simulator code (`tools/qa/sim/*.py`) counts as BUILD, because it is not on the protocol's author-only list. Scenario JSON and schema text are AUTHOR-ONLY. [low]
@@ -75,9 +75,9 @@ Journey legend: **E** extends an existing journey · **S** swaps an obsolete one
 |---|---|---|---|---|---|---|---|
 | P2.1 | E9 | BUILD | sonnet | Sealed plugin package: `HexonType::Plugin`; `plugin/extension.json` in `HEADER_MEMBER_PATHS`; `content_hash`; plugin_host_revival S2's verifier applied to the sealed signature; package store | `fe-format/src/{manifest,integrity}.rs`, `fe-format/src/AGENTS.md`, `fe-hexon/src/{publisher,package}.rs`; shared `fe-plugin/src/lifecycle.rs`, `docs/hexon-format-spec.md`, `fractalengine/tests/security_harness.rs` | **E** `fe-hexon/src/package.rs::test_tampered_package_fails_signature` (J5 tamper table); **E** `fe-format/src/integrity.rs::seal_enforces_asset_hash_and_verifies_a_self_certifying_asset` (plugin header member); **S** `fe-plugin/src/lifecycle.rs::install_plugin_signature_mismatch` (BLAKE3 self-check → sealed admission); **E** `fractalengine/tests/security_harness.rs::test_tampered_ed25519_signature` | P0.6; plugin_host_revival S2; hexon_entitlements S5 (doc only); gate |
 | P2.2 | E10 | BUILD | opus | Verse policy row (Manager+, replicated, role-at-write) merged with local policy; activation preconditions in order (R19); consent record; audit `OpType` via `op_log::commit_operation`; kill-switch arrival stops running instances (R23); `FE_EXT_DISABLE_ALL` | `fe-database/src/handlers/extension_policy.rs` (new); shared `fe-database/src/types.rs`, `fe-database/src/handlers/AGENTS.md`, `fe-plugin/src/lifecycle.rs`, `fe-api/src/extensions.rs` (policy + audit routes), `fe-api/tests/extensions_api_test.rs` | **E** `extensions_api_test.rs` (J6 refusal table + audit trail); **E** `fe-database/tests/role_propagation_inbound_test.rs::a_not_yet_managers_statement_is_deferred_then_admitted_on_promotion` (an inbound policy row from a not-yet-Manager is deferred, then admitted) | P1.7, P2.1; plugin_host_revival S2-S4 |
-| P2.3 | E10W | BUILD | opus | Host-stamped provenance on extension scene versions and readings; revocation re-judge (one batch per verse, under the §rejudge-on-demotion discipline); readings excluded at the scope-substitution seam and in the distributed partials; reversible | **unpartitioned** — recompute after the P2P merge. Candidates: `fe-database/src/handlers/{scene_publication/**,replicated_row,iot_reading,ts_partial}.rs`, `fe-sync/src/{sharding,sync_thread,distributed_query}.rs`, `fe-api/src/query_guard.rs` | **E** the `fe-database/src/op_log.rs` QA-0121/QA-0131 re-judge block (J7); **E** `fe-api/tests/iot_ingest_test.rs::guarded_query_reads_iot_rows_scope_filtered` (revoked provenance excluded) | P2.2; OD-E1 ratified; A-4 |
+| P2.3 | E10W | BUILD | opus | Host-stamped provenance on extension scene versions and readings; revocation stops the instance after its in-flight writes (no re-judge, no readings exclusion; rows stay) | **unpartitioned** — recompute after the P2P merge. Candidates: `fe-database/src/handlers/{scene_publication/**,replicated_row,iot_reading,ts_partial}.rs`, `fe-sync/src/{sharding,sync_thread,distributed_query}.rs`, `fe-api/src/query_guard.rs` | **E** the `fe-database/src/op_log.rs` QA-0121/QA-0131 re-judge block (J7); **E** `fe-api/tests/iot_ingest_test.rs::guarded_query_reads_iot_rows_scope_filtered` (revoked provenance excluded) | P2.2; A-4 |
 | P2.4 | E11 | BUILD | sonnet | Consent v2: plugin_host_revival S3's modal, created at `fe-ui/src/extensions/consent.rs` and rendering manifest v2; re-prompt on a capability delta; REST consent echoes the digest | `fe-ui/src/extensions/consent.rs` (new) | **E** S3's planned `install_dialog_renders_capability_list_before_confirm_enabled` (v2 fields + delta re-prompt) | P1.8, P2.2; plugin_host_revival S3 |
-| P2.5 | D1 | AUTHOR-ONLY | haiku | Only if OD-E1 is ratified: amend the S-PLUGIN row in `conductor/open-core.md`, and finalize `docs/extensions/governance.md` | `conductor/open-core.md`, `docs/extensions/governance.md` | — | OD-E1; P0.5 |
+| P2.5 | D1 | AUTHOR-ONLY | haiku | Amend the S-PLUGIN row ("refuse activation; stop after in-flight writes complete; rows stay") in `conductor/open-core.md`, and finalize `docs/extensions/governance.md` | `conductor/open-core.md`, `docs/extensions/governance.md` | — | OD-E1; P0.5 |
 | P2.6 | G2 | BUILD | opus | P2 gate: ADVOCATE then CRITIC, `/code-review high` + `/security-review` (signing, trust roots, policy, provenance, revocation) | `review.md` (append) + fix-only edits | reruns the touched batches once | P2.1-P2.4 |
 
 ### P3 — Authoring tools
@@ -151,10 +151,10 @@ Journey legend: **E** extends an existing journey · **S** swaps an obsolete one
   3. Command floors: a viewer is refused, an editor is allowed.
   4. Ingress table: declared → 2xx, undeclared → not-found, over-rate → 429, over-size → 413, disabled → not-found.
   5. P2.2 adds the R19 refusal table, in order, and the audit trail.
-- **J7 withdrawal** (P2.3, the op_log re-judge block).
+- **J7 stamp-and-stop** (P2.3, the op_log write path).
   1. Seed an extension-provenance version over a manual baseline.
-  2. Accept a revocation list: the baseline is restored, an extension-created node is removed, and a manual property edit survives.
-  3. Remove the trust root: the withdrawn versions come back.
+  2. Accept a revocation list: the instance drains its in-flight commit and starts nothing new; the version, the extension-created node and the manual property edit all stay.
+  3. The stay-put rows still carry `{package_id, content_hash}`, and a new tick from the revoked package is refused.
 - **J8 CLI** (P3.1, new). `new` → `build` → `validate` (the J2 table) → `pack` → `sign` → `inspect` → `run --sandbox` twice, with byte-identical fingerprints.
 - **J9 panel** (P4.1 new; P4.3 extends). Through the queued ops and a fake bridge: install from file → consent → enable → disable → update with a delta (re-prompts), then without → uninstall. Each step asserts the visible state by accessible name.
 - **J10 scenarios** (P6.1).
@@ -165,7 +165,7 @@ Journey legend: **E** extends an existing journey · **S** swaps an obsolete one
     4. Check the command floors through REST and WS.
     5. The Owner demotes the Editor mid-flight, then re-grants (R22).
     6. A push connector consumes `host/query` into a loopback sink that equals `/api/v1/query`.
-    7. Publish the revocation list from the loopback trust-root URL, with a short pull interval. The instance stops everywhere, extension rows are withdrawn, and the hand edit survives (R23, R24).
+    7. Publish the revocation list from the loopback trust-root URL, with a short pull interval. The instance stops everywhere after its in-flight commit, its rows stay with provenance, and the hand edit is untouched (R23, R24).
     8. Fingerprint.
   - **ext-device** (the adapter on the Owner; HTTP ingress from a virtual device, MQTT from the loopback broker):
     1. Readings and transforms agree on every peer.
@@ -189,7 +189,7 @@ Each gate also re-checks that the phase still serves `conductor/product.md` and 
   - `fe-sdk/src/AGENTS.md`: §manifest-v2, `SetTransform`, the route-math move.
   - `fe-api/AGENTS.md`: §extensions.
   - `fractalengine/src/AGENTS.md`: the bridge now admits packages.
-- **conductor files:** product.md's stale line; open-core.md's S-PLUGIN row (if OD-E1 is ratified); the `conductor/tracks.md` status line.
+- **conductor files:** product.md's stale line; open-core.md's S-PLUGIN row (OD-E1 decided); the `conductor/tracks.md` status line.
 - **Retro:** record which OD-E defaults were overridden.
 
 ## 6. Cross-track and cross-session sequencing
@@ -228,9 +228,9 @@ Each gate also re-checks that the phase still serves `conductor/product.md` and 
 - [ ] P1.9 G1 review gate (BUILD)
 - [ ] P2.1 Sealed plugin package (BUILD)
 - [ ] P2.2 Verse policy, preconditions, consent record, audit, kill-switch arrival (BUILD)
-- [ ] P2.3 Provenance + withdrawal, needs OD-E1 (BUILD)
+- [ ] P2.3 Provenance stamp + stop on revocation, OD-E1 decided (BUILD)
 - [ ] P2.4 Consent v2 UI (BUILD)
-- [ ] P2.5 open-core.md S-PLUGIN amendment if OD-E1 (AUTHOR-ONLY)
+- [ ] P2.5 open-core.md S-PLUGIN amendment, OD-E1 decided (AUTHOR-ONLY)
 - [ ] P2.6 G2 review gate (BUILD)
 - [ ] P3.1 fe-ext CLI (BUILD)
 - [ ] P3.2 Guest SDK (BUILD)

@@ -218,6 +218,18 @@ Checked at parse/start time, before anything runs:
 A scenario that violates any of these fails validation before a single peer
 spawns, rather than running partway and hanging or silently truncating.
 
+## Hosting the fleet-sim extension
+
+A fleet is data (`fleet.config`), and on a live host the first-party `extensions/fleet-sim` package drives it on the
+wall clock. The lab is built to host the same package under its simulated clock:
+`ScenarioSession::start_with_source` accepts a `FleetSource` that supplies the reading schedule, with
+`ModelFleetSource` (the pure planner) as the default. A source's plan is checked before any peer spawns (order,
+sensor index, cadence, the fleet window, finite values, the readings cap), so a bad package fails the start.
+
+Not built yet: the adapter that runs the wasm package as a `FleetSource`, and `fe-ext run --lab`, its entry point
+(refused today). Until they land, every lab run uses the model planner, and a FleetConfig v2 document's movers are
+ignored in the lab. The simulated clock never enters a production process.
+
 ## See also
 
 - [README.md](../README.md) — "Peer-to-Peer Sync & Distributed Data" for how

@@ -15,14 +15,83 @@ use fe_sync::messages::SyncCommand;
 use serde::Serialize;
 
 use crate::clock::{SimClock, SCENARIO_RUN_LOCK};
-use crate::fleet::{plan_fleet, rfc3339_from_ms};
+use crate::fleet::{plan_fleet, rfc3339_from_ms, FleetConfig, ScheduledReading, MAX_PLANNED_READINGS};
 use crate::net::SimNet;
 use crate::peer::SimPeer;
 use crate::scenario::{
     apply_event, merge_actions, raw_query, Action, CanonicalReading, HlcSourceGuard, QueryRecord,
     Run, ScenarioOutcome, ScenarioScript, ScriptedEvent, DB_REPLY_BUDGET, SETTLE_POLL,
 };
-use crate::sensors::evaluate;
+/// The lab's `SimClock` as the plugin scheduler's injected clock source (R30/R4).
+///
+/// An adapter crate implements `fe_plugin::tick::Clock` over [`LabClock::now_ms`], so the lab hosts the
+/// SAME extension package under the SimClock; a production process never builds one.
+#[derive(Clone)]
+pub struct LabClock(pub std::sync::Arc<SimClock>);
+
+impl LabClock {
+    /// Current simulated epoch-ms.
+    pub fn now_ms(&self) -> u64 {
+        self.0.now_ms()
+    }
+}
+
+/// Where a session's reading schedule comes from (R30): the pure model or a hosted extension package.
+pub trait FleetSource {
+    /// The full fire plan in `(at_ms, sensor)` order, indices into `fleet.sensors`.
+    fn plan(&mut self, fleet: &FleetConfig, clock: LabClock) -> Result<Vec<ScheduledReading>>;
+}
+
+/// The built-in source: the pure model planner (`plan_fleet`), the pre-extension behaviour.
+pub struct ModelFleetSource;
+
+impl FleetSource for ModelFleetSource {
+    fn plan(&mut self, fleet: &FleetConfig, _clock: LabClock) -> Result<Vec<ScheduledReading>> {
+        Ok(plan_fleet(fleet))
+    }
+}
+
+/// Refuse a hosted plan the driver could not apply deterministically (see `src/AGENTS.md` §extension-host).
+fn check_plan(fleet: &FleetConfig, plan: &[ScheduledReading]) -> Result<()> {
+    anyhow::ensure!(
+        plan.len() as u64 <= MAX_PLANNED_READINGS,
+        "fleet source: {} readings exceeds the cap of {MAX_PLANNED_READINGS}",
+        plan.len()
+    );
+    for reading in plan {
+        let Some(sensor) = fleet.sensors.get(reading.sensor) else {
+            anyhow::bail!(
+                "fleet source: reading names sensor {} but the fleet has {}",
+                reading.sensor,
+                fleet.sensors.len()
+            );
+        };
+        let due = reading
+            .tick
+            .checked_mul(sensor.cadence_ms)
+            .filter(|offset| reading.tick >= 1 && *offset <= fleet.duration_ms)
+            .map(|offset| fleet.start_ms + offset);
+        anyhow::ensure!(
+            due == Some(reading.at_ms),
+            "fleet source: sensor {} tick {} at {} is off its cadence or outside the fleet window",
+            reading.sensor,
+            reading.tick,
+            reading.at_ms
+        );
+        anyhow::ensure!(
+            reading.value.is_finite(),
+            "fleet source: sensor {} tick {} has a non-finite value",
+            reading.sensor,
+            reading.tick
+        );
+    }
+    anyhow::ensure!(
+        plan.windows(2)
+            .all(|w| (w[0].at_ms, w[0].sensor) <= (w[1].at_ms, w[1].sensor)),
+        "fleet source: plan must be ordered by (at_ms, sensor)"
+    );
+    Ok(())
+}
 
 /// A fault applied interactively ([`ScenarioSession::inject_fault`]).
 #[derive(Debug, Clone, PartialEq, Serialize)]
@@ -110,6 +179,15 @@ impl ScenarioSession {
     /// know every peer. Blocks on [`SCENARIO_RUN_LOCK`] (held for the
     /// session's lifetime). `root_dir` must be fresh per session.
     pub fn start(script: ScenarioScript, root_dir: &Path) -> Result<Self> {
+        Self::start_with_source(script, root_dir, &mut ModelFleetSource)
+    }
+
+    /// [`Self::start`] with the reading schedule supplied by `source` (the extension-hosted fleet, R30).
+    pub fn start_with_source(
+        script: ScenarioScript,
+        root_dir: &Path,
+        source: &mut dyn FleetSource,
+    ) -> Result<Self> {
         script.validate()?;
         // The HLC override is process-global (clock.rs): serialize sessions
         // so a concurrent run cannot clobber the active source. Taken first
@@ -129,6 +207,10 @@ impl ScenarioSession {
         // Snapshots the process HLC before installing (restored on drop —
         // DEC-C13; AGENTS.md §hlc-sim).
         let hlc_guard = HlcSourceGuard::install(clock.clone());
+
+        // The schedule is fixed before a single peer spawns, so a bad hosted package fails the start cheaply.
+        let plan = source.plan(&script.fleet, LabClock(clock.clone()))?;
+        check_plan(&script.fleet, &plan)?;
 
         let net = SimNet::new(clock.clone());
 
@@ -371,7 +453,6 @@ impl ScenarioSession {
             })?;
         }
 
-        let plan = plan_fleet(&script.fleet);
         let actions = merge_actions(&script, &plan);
         Ok(Self {
             readings_planned: plan.len(),
@@ -496,14 +577,9 @@ impl ScenarioSession {
                 }
                 let mut batch: Vec<IotReadingInput> = Vec::with_capacity(readings.len());
                 for reading in readings {
+                    // The source's own value (a hosted package's wasm maths may differ from the native
+                    // model by an ULP); `check_plan` vetted index, cadence and finiteness at start.
                     let sensor = &script.fleet.sensors[reading.sensor];
-                    // Values were precomputed by the pure planner; this
-                    // re-evaluation is an internal parity check that the
-                    // fired value is exactly the model's.
-                    debug_assert_eq!(
-                        reading.value,
-                        evaluate(&sensor.model, reading.tick, reading.at_ms)
-                    );
                     batch.push(IotReadingInput {
                         node_id: anchor_node_ids
                             .get(&sensor.anchor)
@@ -734,6 +810,7 @@ fn shutdown(run: Run) {
 mod tests {
     use super::*;
     use crate::scenario::{default_script, offline_degraded_script, run_scenario};
+    use crate::sensors::evaluate;
 
     /// The anti-drift proof: driving the default script through the
     /// interactive surface — uneven step chunks with a status snapshot
@@ -777,6 +854,73 @@ mod tests {
             "start/step*/stop must reproduce run_scenario exactly"
         );
         assert_eq!(interactive.ingested, 21);
+
+        // The extension-hosted fleet (R30): a source that builds the plan the way the package does
+        // (per-sensor due ticks) must reproduce the model planner's fingerprint exactly.
+        let dir_c = tempfile::tempdir().expect("hosted tempdir");
+        let mut hosted = ScenarioSession::start_with_source(
+            default_script(),
+            dir_c.path(),
+            &mut PackageLikeSource,
+        )
+        .expect("start hosted");
+        hosted.step(u32::MAX).expect("step hosted");
+        assert_eq!(
+            hosted.stop().expect("stop hosted").canonical_fingerprint(),
+            one_shot.canonical_fingerprint(),
+            "an extension-hosted fleet under the SimClock matches the model planner"
+        );
+
+        // A hosted plan the driver could not replay is refused at start, before any peer spawns.
+        let good = plan_fleet(&default_script().fleet);
+        let sensors = default_script().fleet.sensors.len();
+        let refusals: [(&str, fn(&mut Vec<ScheduledReading>, usize)); 4] = [
+            ("ordered", |plan: &mut Vec<ScheduledReading>, _: usize| plan.reverse()),
+            ("off its cadence", |plan: &mut Vec<ScheduledReading>, _: usize| plan[0].at_ms += 1),
+            ("names sensor", |plan: &mut Vec<ScheduledReading>, sensors: usize| plan[0].sensor = sensors),
+            ("non-finite", |plan: &mut Vec<ScheduledReading>, _: usize| plan[0].value = f64::NAN),
+        ];
+        let dir_d = tempfile::tempdir().expect("refusal tempdir");
+        for (why, corrupt) in refusals {
+            let mut plan = good.clone();
+            corrupt(&mut plan, sensors);
+            match ScenarioSession::start_with_source(default_script(), dir_d.path(), &mut FixedSource(plan)) {
+                Ok(_) => panic!("a plan that is {why} must be refused"),
+                Err(error) => assert!(error.to_string().contains(why), "{why}: {error}"),
+            }
+        }
+    }
+
+    /// Hands the session a ready-made plan (the refusal rows).
+    struct FixedSource(Vec<ScheduledReading>);
+
+    impl FleetSource for FixedSource {
+        fn plan(&mut self, _fleet: &FleetConfig, _clock: LabClock) -> Result<Vec<ScheduledReading>> {
+            Ok(std::mem::take(&mut self.0))
+        }
+    }
+
+    /// Emulates the fleet-sim package: per sensor, every due tick, value from the shared model.
+    struct PackageLikeSource;
+
+    impl FleetSource for PackageLikeSource {
+        fn plan(&mut self, fleet: &FleetConfig, clock: LabClock) -> Result<Vec<ScheduledReading>> {
+            assert_eq!(clock.now_ms(), fleet.start_ms, "the lab clock starts at the fleet origin");
+            let mut plan = Vec::new();
+            for (sensor, spec) in fleet.sensors.iter().enumerate() {
+                for tick in 1..=fleet.duration_ms / spec.cadence_ms {
+                    let at_ms = fleet.start_ms + tick * spec.cadence_ms;
+                    plan.push(ScheduledReading {
+                        at_ms,
+                        sensor,
+                        tick,
+                        value: evaluate(&spec.model, tick, at_ms),
+                    });
+                }
+            }
+            plan.sort_by(|a, b| a.at_ms.cmp(&b.at_ms).then(a.sensor.cmp(&b.sensor)));
+            Ok(plan)
+        }
     }
 
     /// DEC-C13: a past-dated session resets the process-global HLC to sim

@@ -273,17 +273,41 @@ fn freeze_editor(world: &mut World, supervisor: &mut Supervisor) -> Result<(), &
             .shutdown()
             .map_err(|_| "Plugin leases could not be revoked; reset will not run")?;
     }
-    let plugin = world
-        .get_resource::<fe_plugin::PluginHostService>()
-        .ok_or("Plugin service owner is unavailable")?
-        .0
-        .lock()
-        .map_err(|_| "Plugin service owner is unavailable")?
-        .take()
-        .ok_or("Plugin service ownership was already consumed")?;
-    plugin.request_stop();
-    supervisor.services.push(plugin);
+    // No PluginHostService resource means no plugin thread was ever started: nothing to stop (PHR-S1).
+    if let Some(service) = world.get_resource::<fe_plugin::PluginHostService>() {
+        let plugin = service
+            .0
+            .lock()
+            .map_err(|_| "Plugin service owner is unavailable")?
+            .take()
+            .ok_or("Plugin service ownership was already consumed")?;
+        plugin.request_stop();
+        supervisor.services.push(plugin);
+    }
+    // The extension host's own workers (binding worker, revocation pull) join with the rest; an absent or
+    // already-taken one (no plugin manager, no revocation URL) has nothing to stop.
+    let extension_services = [
+        world
+            .get_resource::<crate::plugin_bridge::ExtensionBindingService>()
+            .and_then(|service| take_owned(&service.0)),
+        world
+            .get_resource::<crate::extension_host::revocation_pull::RevocationPullService>()
+            .and_then(|service| take_owned(&service.0)),
+    ];
+    for service in extension_services.into_iter().flatten() {
+        service.request_stop();
+        supervisor.services.push(service);
+    }
     Ok(())
+}
+
+/// Take a service out of its resource slot, even from a poisoned lock.
+fn take_owned(
+    slot: &std::sync::Mutex<Option<fe_runtime::service_lifecycle::OwnedService>>,
+) -> Option<fe_runtime::service_lifecycle::OwnedService> {
+    slot.lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .take()
 }
 
 impl Supervisor {

@@ -427,6 +427,85 @@ fn emit_lifecycle(
     }
 }
 
+/// Answer a typed DB reply; a closed receiver means the asker stopped waiting (logged, never an error).
+fn answer_typed<T>(reply: crossbeam::channel::Sender<T>, value: T, command: &'static str) {
+    if reply.send(value).is_err() {
+        tracing::debug!(command, "typed DB reply receiver closed before the answer");
+    }
+}
+
+/// Most rows one whole-trail audit read returns (startup acceptance replay; per-subject reads stay at 500).
+const AUDIT_TRAIL_READ_MAX: usize = 10_000;
+
+/// `AppendExtensionAudit`: a strict `AuditEntry`, except the actions only their own judged command may record.
+async fn append_extension_audit(db: &repo::Db, entry: serde_json::Value) -> Result<u64, String> {
+    use handlers::extension_policy::{append_audit, AuditAction, AuditEntry};
+    let entry: AuditEntry =
+        serde_json::from_value(entry).map_err(|error| format!("invalid-input: audit entry: {error}"))?;
+    // An appended override would hydrate as one at startup without the Owner check (src/AGENTS.md §extension-governance-commands).
+    if entry.action == AuditAction::KillListOverride {
+        return Err("invalid-input: kill-list overrides are recorded only through RecordKillListOverride".into());
+    }
+    append_audit(db, &entry).await.map_err(|error| format!("{error:#}"))
+}
+
+/// `ListExtensionAudit`: by installation (narrowed to the verse when both are named), by verse, or the whole trail.
+async fn list_extension_audit(
+    db: &repo::Db,
+    installation: Option<&str>,
+    verse_id: Option<&str>,
+    limit: usize,
+) -> anyhow::Result<Vec<serde_json::Value>> {
+    use handlers::extension_policy::{list_audit, AuditFilter};
+    match (installation, verse_id) {
+        (Some(installation), verse) => {
+            let mut rows = list_audit(db, AuditFilter::Installation(installation), limit).await?;
+            if let Some(verse) = verse {
+                rows.retain(|row| row["verse_id"] == verse);
+            }
+            Ok(rows)
+        }
+        (None, Some(verse)) => list_audit(db, AuditFilter::Verse(verse), limit).await,
+        (None, None) => {
+            let limit = limit.clamp(1, AUDIT_TRAIL_READ_MAX);
+            // `OpType::ExtensionAudit`'s stored name; same row shape as `extension_policy::list_audit`.
+            let mut response = db
+                .query(format!(
+                    "SELECT lamport_clock, payload FROM op_log WHERE op_type = 'ExtensionAudit' \
+                     ORDER BY lamport_clock DESC LIMIT {limit}"
+                ))
+                .await?
+                .check()
+                .map_err(|e| anyhow::anyhow!("extension audit read failed: {e}"))?;
+            let rows: Vec<serde_json::Value> = response.take(0)?;
+            Ok(rows
+                .into_iter()
+                .map(|mut row| {
+                    let lamport = row["lamport_clock"].take();
+                    let mut payload = row["payload"].take();
+                    if let Some(object) = payload.as_object_mut() {
+                        object.insert("lamport_clock".into(), lamport);
+                    }
+                    payload
+                })
+                .collect())
+        }
+    }
+}
+
+/// `LoadExtensionGovernance`: every policy row, consent, Owner override and local acceptance, read once at startup.
+async fn extension_governance_snapshot(db: &repo::Db) -> anyhow::Result<serde_json::Value> {
+    use handlers::extension_policy as policy;
+    let mut consents: Vec<policy::ConsentRecord> = policy::load_consents(db).await?.into_values().collect();
+    consents.sort_by(|a, b| a.installation_id.cmp(&b.installation_id));
+    Ok(serde_json::json!({
+        "policies": serde_json::to_value(policy::all_policies(db).await?)?,
+        "consents": serde_json::to_value(consents)?,
+        "overrides": serde_json::to_value(policy::load_kill_list_overrides(db).await?)?,
+        "acceptances": serde_json::to_value(policy::load_acceptances(db).await?)?,
+    }))
+}
+
 #[allow(clippy::result_large_err)] // DbInitError is large only on the rare init-failure path
 pub fn spawn_db_thread(
     rx: crossbeam::channel::Receiver<DbCommand>,
@@ -659,6 +738,11 @@ pub fn spawn_db_thread_shared(
             {
                 tracing::error!("Role statement startup failed: {e:#}");
             }
+            // Bindings this node authored ride the same second chance as its role statements.
+            match handlers::extension_binding::reemit_local_bindings(&db, repl_tx.as_ref(), &blob_store, &local_did, None).await {
+                Ok(emitted) => tracing::debug!(emitted, "re-emitted local binding versions at startup"),
+                Err(e) => tracing::warn!("binding re-emit at startup failed: {e:#}"),
+            }
 
             tracing::info!("SurrealDB ready");
             if tx.send(DbResult::Started).is_err() {
@@ -693,23 +777,73 @@ pub fn spawn_db_thread_shared(
                 };
                 match cmd {
                     Ok(DbCommand::PluginRead {admission,request,reply}) => {
-                        let result=handlers::plugin_host::read(&db,&admission,request,&local_did).await.map_err(|error|error.to_string());
+                        let result=handlers::plugin_host::read(&db,&admission,request,&local_did).await.map_err(handlers::plugin_host::refusal);
                         if let Err(error)=reply.send(result) {tracing::warn!(%error,"plugin read receiver closed");}
                     }
-                    Ok(DbCommand::PluginCommit {admission,ops,reply}) => {
-                        let result=match handlers::plugin_host::commit(&db,&admission,&ops,&local_did).await {
-                            Ok(outcome)=>{
-                                for (node_id,_,_,_) in &outcome.nodes {
-                                    handlers::scene_publication::publish_after_commit(&db,&blob_store,repl_tx.as_ref(),&local_did,node_id).await;
-                                }
-                                handlers::plugin_host::publish(&outcome,handlers::plugin_host::EffectSinks {
-                                    results:&tx,scene:entity_change_tx.as_ref(),lifecycle:&lifecycle_tx,
-                                });
-                                Ok(fe_runtime::plugin_host::PluginReply::Committed(outcome.receipt))
-                            }
-                            Err(error)=>Err(error.to_string()),
+                    Ok(DbCommand::PluginCommit {admission,ops,readings,reply}) => {
+                        // One write window (src/AGENTS.md §plugin-host-flush): `flush` publishes, defers transforms, then lands readings.
+                        let sinks=handlers::plugin_host::FlushSinks {
+                            effects:handlers::plugin_host::EffectSinks {results:&tx,scene:entity_change_tx.as_ref(),lifecycle:&lifecycle_tx},
+                            blobs:&blob_store,
+                            replication:repl_tx.as_ref(),
+                            deferred:&mut deferred,
                         };
+                        let result=handlers::plugin_host::flush(&db,&admission,&ops,&readings,&local_did,sinks).await
+                            .map(fe_runtime::plugin_host::PluginReply::Committed);
                         if let Err(error)=reply.send(result) {tracing::warn!(%error,"plugin commit receiver closed; outcome may require reconciliation");}
+                    }
+                    Ok(DbCommand::SetExtensionPolicy {verse_id,policy,reply}) => {
+                        let result=match serde_json::from_value::<handlers::extension_policy::ExtensionPolicy>(policy) {
+                            Ok(policy)=>handlers::extension_policy::set_policy_with_replication(&db,&local_did,&verse_id,policy,Some(&blob_store),repl_tx.as_ref()).await
+                                .map_err(|error|error.to_string())
+                                .and_then(|row|serde_json::to_value(&row).map_err(|error|format!("written policy row: {error}"))),
+                            Err(error)=>Err(format!("invalid-policy: {error}")),
+                        };
+                        answer_typed(reply,result,"SetExtensionPolicy");
+                    }
+                    Ok(DbCommand::GetExtensionPolicy {verse_id,reply}) => {
+                        let result=handlers::extension_policy::get_policy(&db,&verse_id).await
+                            .and_then(|row|row.map(|row|serde_json::to_value(&row)).transpose().map_err(anyhow::Error::from))
+                            .map_err(|error|format!("{error:#}"));
+                        answer_typed(reply,result,"GetExtensionPolicy");
+                    }
+                    Ok(DbCommand::AppendExtensionAudit {entry,reply}) => {
+                        let result=append_extension_audit(&db,entry).await;
+                        if let Err(error)=&result {tracing::warn!(%error,"extension audit entry not recorded");}
+                        // The bus audit forwarder drops its receiver at once, so a closed reply is the normal case here.
+                        let _=reply.send(result);
+                    }
+                    Ok(DbCommand::ListExtensionAudit {installation,verse_id,limit,reply}) => {
+                        let result=list_extension_audit(&db,installation.as_deref(),verse_id.as_deref(),limit).await.map_err(|error|format!("{error:#}"));
+                        answer_typed(reply,result,"ListExtensionAudit");
+                    }
+                    Ok(DbCommand::RecordKillListOverride {request,reply}) => {
+                        let result=match serde_json::from_value::<handlers::extension_policy::KillListOverrideRequest>(request) {
+                            Ok(request)=>handlers::extension_policy::record_kill_list_override(&db,&local_did,&request).await
+                                .map_err(|error|error.to_string())
+                                .and_then(|recorded|serde_json::to_value(&recorded).map_err(|error|format!("recorded override: {error}"))),
+                            Err(error)=>Err(format!("invalid-input: override body: {error}")),
+                        };
+                        answer_typed(reply,result,"RecordKillListOverride");
+                    }
+                    Ok(DbCommand::LoadExtensionGovernance {reply}) => {
+                        let result=extension_governance_snapshot(&db).await.map_err(|error|format!("{error:#}"));
+                        answer_typed(reply,result,"LoadExtensionGovernance");
+                    }
+                    Ok(DbCommand::PutBinding {caller_did,binding,reply}) => {
+                        let result=handlers::extension_binding::put_binding(&db,&local_did,caller_did.as_deref(),binding,Some(&blob_store),repl_tx.as_ref()).await
+                            .map_err(|error|error.refusal());
+                        answer_typed(reply,result,"PutBinding");
+                    }
+                    Ok(DbCommand::ListBindings {scope,caller_did,reply}) => {
+                        let result=handlers::extension_binding::list_bindings(&db,&scope,caller_did.as_deref()).await
+                            .map_err(|error|error.refusal());
+                        answer_typed(reply,result,"ListBindings");
+                    }
+                    Ok(DbCommand::LoadBindingSnapshot {verse_id,reply}) => {
+                        let result=handlers::extension_binding::load_binding_snapshot(&db,&verse_id).await
+                            .map_err(|error|handlers::extension_binding::BindingCommandError::Db(error).refusal());
+                        answer_typed(reply,result,"LoadBindingSnapshot");
                     }
                     Ok(DbCommand::Ping) => {
                         send_result(&tx, DbResult::Pong);
@@ -2290,6 +2424,10 @@ pub fn spawn_db_thread_shared(
                         {
                             Ok(n) => tracing::debug!(verse_id, emitted = n, "re-emitted local role statements on replica open"),
                             Err(e) => tracing::warn!(verse_id, "role statement re-emit failed: {e:#}"),
+                        }
+                        match handlers::extension_binding::reemit_local_bindings(&db, repl_tx.as_ref(), &blob_store, &local_did, Some(&verse_id)).await {
+                            Ok(n) => tracing::debug!(verse_id, emitted = n, "re-emitted local binding versions on replica open"),
+                            Err(e) => tracing::warn!(verse_id, "binding re-emit failed: {e:#}"),
                         }
                     }
                     Ok(DbCommand::Shutdown) | Err(_) => break,

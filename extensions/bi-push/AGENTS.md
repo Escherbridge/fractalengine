@@ -1,0 +1,47 @@
+# extensions/bi-push
+
+First-party push connector (`kind: bi-connector`, track extension_platform P5.5, R33): the named query `latest`
+(`host/query`) is delivered as JSON or CSV over HTTPS to the declared `sink` endpoint. The manifest is
+`fe-sdk/schema/examples/bi-push.extension.json` plus the `egress.connector` entry in `provides` (bindings.md §8.4).
+
+## Build and run
+
+Standalone crate (own `[workspace]`), built for `wasm32-wasip2` by `fe-ext build`; its own `[workspace]` table keeps it
+out of the root workspace without an `exclude` entry.
+
+    fe-ext build --project extensions/bi-push
+    cargo test --manifest-path extensions/bi-push/Cargo.toml     # payload unit test (src/payload.rs)
+
+The sandbox leg belongs in J8 (`tools/fe-ext/tests/j8_cli.rs`), like the other examples, so this crate never pulls the
+host stack into its own target directory (G3-C12, G5). Until BND-3 teaches the Rust validator `provides`, `fe-ext
+validate`/`pack` refuse this manifest as `schema` (unknown field), so that J8 leg waits for BND-3.
+
+## §payload
+
+`src/payload.rs` is pure. JSON re-emits `{data, row_count, truncated}`, the `/api/v1/query` shape, so the sink sees the
+rows REST returns. CSV is RFC 4180 (CRLF): header = union of row keys in first-seen order, and within one row the keys
+come sorted (the guest's serde_json has no `preserve_order`, so its map is key-ordered). Null is empty, nested values are compact
+JSON. A body over the sink's `max_request_bytes` (1 MiB) is dropped with a warning, never cut.
+
+- **Formula injection (OWASP).** Node names, metrics and units are written by any verse editor and replicate, so a
+  CSV opened in a spreadsheet must not run them. A text cell (and a header cell) starting with `= + - @ TAB CR` gets
+  a leading `'` and is always quoted; numbers, negatives included, are never touched (steer 2026-11-08 23:00).
+
+## §delivery
+
+The host re-runs `latest` only when `iot_reading` changes (bus.md §2.3), so the guest never polls the data. `on_events`
+keeps ONLY the newest snapshot (no backlog behind a slow sink) under a growing `generation`. Each `on_tick` (the 5 s
+cadence is the push interval, spec R33) sends the newest generation the sink has not acknowledged, one request at a
+time; a 2xx records it as delivered, and a refusal, a non-2xx or a transport error leaves it for the next tick. A sink
+that was down therefore catches up on the next interval even when the petal goes quiet (before G5 a failed push waited
+for the next data change). The shared `rate_hz: 1` bucket belongs to the host.
+
+## §config
+
+The guest SDK has no binding-config read yet, so `format` (json|csv) is read from kv key `bi-push/format` (a JSON
+string), default json. When the BND turn lands a config read, replace `configured_format`.
+
+## Parity
+
+The pull API (`/api/v1/query`, export, share) is core and unchanged. Loopback-sink parity with `/api/v1/query` is
+asserted in J10 once the sandbox feeds bus events (it does not yet, so the payload unit test covers rendering only).

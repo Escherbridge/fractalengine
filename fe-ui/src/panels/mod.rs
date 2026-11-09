@@ -11,6 +11,8 @@
 
 pub(crate) mod gis_panel;
 pub(crate) mod inspector;
+/// Capability-consent modal for plugin installs; see `fe-ui/src/AGENTS.md` §plugin-consent.
+pub mod plugin_install_panel;
 mod property_grid;
 pub(crate) mod property_value;
 pub(crate) mod proposal_report_panel;

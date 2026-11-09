@@ -93,11 +93,12 @@ Fresh context, not the agent that wrote S1-S4. Mandatory because this phase make
 
 ## 7. Task checklist
 
-- [ ] S0: wasmtime bump + `deny.toml` advisory re-reasoning (Phase 0)
-- [ ] S1: opt-in host thread, terrain extension registered, extension routes mounted, OD-1 closed (Phase 1)
-- [ ] S5: iot-bridge joins the workspace on one rhai version (Phase 5)
-- [ ] S2: publisher-signed package format + trust roots (Phase 2)
-- [ ] S3: capability-consent modal (Phase 3)
-- [ ] S4: install-from-registry + revocation-list consumer + licensed-package entitlement check (Phase 4)
-- [ ] S6: review-and-fix with mandatory security review, recorded verdicts
-- [ ] S7: docs consolidation; full sweep; `conductor/tracks.md` row
+- [x] S0: wasmtime bump + `deny.toml` advisory re-reasoning (Phase 0) — `c519111f`
+- [x] S1: opt-in host thread, terrain extension registered, extension routes mounted, OD-1 closed (Phase 1) — `aea5a29f`
+- [x] S5: iot-bridge joins the workspace on one rhai version (Phase 5) — `4d527c0a`
+- [x] S2: publisher-signed package format + trust roots (Phase 2) — `3e224cc6`
+- [x] S3: capability-consent modal (Phase 3) — `8df49217`
+- [x] S4: install-from-registry + revocation-list consumer + licensed-package entitlement check (Phase 4) — `9fdb2efb`
+- [x] S6: review-and-fix with mandatory security review, recorded verdicts — `5ed08447`, `review.md`
+- [x] S7: docs consolidation and `conductor/tracks.md` row (AGENTS.md, SECURITY.md updated)
+- [ ] Sweep: workspace test + clippy `-D warnings` once, then the user's in-app consent and opt-in check (not run; code-first directive)

@@ -1,9 +1,9 @@
-[workspace]
-
 [package]
 name = "iot-bridge"
 version = "0.1.0"
 edition = "2021"
+# A workspace member is a crate `cargo deny check licenses` judges; inherit the repo licence.
+license.workspace = true
 description = "Vertical-slice extension proving IoT device <-> node interop over the HOST-FN CONTRACT"
 
 [dependencies]

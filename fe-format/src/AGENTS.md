@@ -327,3 +327,28 @@ member present, never re-serialized, so a client's hash over
   callers: fe-hexon's `FetchStrategy::fetch_chunk(seq 0)`, fe-terrain's sealed
   P2P install, and fe-terrain's streamed decode, which passes the smaller
   streamed budget. One guard set, no copies.
+
+## §plugin-package (`manifest.rs`, `integrity.rs`)
+
+`HexonType::Plugin` (`"plugin"`) is the sealed third-party extension package (D-X1; contract:
+`docs/extensions/package-format.md`, track `extension_platform_20261107` R1).
+
+- **Members.** `plugin/extension.json` (manifest v2) joins `HEADER_MEMBER_PATHS`, so consent can render
+  from the header phase before the body is fetched. `plugin/component.wasm` is an ordinary body member
+  committed by `members.json`. `entries.json` is required and exactly `{"entries":[]}`: `HexonArchiveIndex::open`
+  (the registry's header and download routes) refuses an archive without it (G0-C1; fe-hexon
+  `PLUGIN_ENTRIES_JSON`). `seal` stays the last transform; nothing else about sealing changed.
+- **One reader.** fe-hexon reads members with zip 0.6 while `verify_archive` reads with zip 2, so the plugin
+  verifier re-runs `verify_sealed_header` + `SealedCoverage::check_member` over the exact bytes it returns
+  (G2): a ZIP-parser differential can never hand the host a component the root did not commit.
+- **Counter-signatures.** `plugin/countersignatures.json` is the one member the root never commits, so a
+  second party can counter-sign without resealing. `seal` copies it without a digest;
+  `SealedCoverage::check_member_digest` exempts it from the uncommitted-member rule. It is read under the
+  JSON cap. Its content is checked by the plugin verifier (`fe-hexon/src/package.rs` §plugin), not here,
+  with `fe_format::verify_manifest` over the canonical signing bytes (never fe-hexon's raw-bytes
+  `signature::verify_manifest`, which no conforming counter-signature passes: G3-C4).
+- **Identity.** `integrity::content_hash(manifest_json)` = blake3 of the canonical manifest with
+  `signature` blanked, i.e. exactly the bytes `sign_manifest` signs. It commits the integrity root, so it
+  changes with any committed member and never with a counter-signature.
+- **Old parsers** treat `"plugin"` as an unknown type (see the forward-compat rule in
+  `docs/hexon-format-spec.md`); the plugin verifier is the only consumer.
