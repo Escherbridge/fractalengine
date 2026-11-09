@@ -37,7 +37,7 @@ pub fn set_property(node: &str, key: &str, value: &Value) -> Result<(), HostErro
 pub fn set_position(node: &str, position: [f64; 3]) -> Result<(), HostError> {
     txn::stage_set_transform(
         node,
-        &TransformPatch {
+        TransformPatch {
             position: Some(Vec3 { x: position[0], y: position[1], z: position[2] }),
             rotation: None,
             scale: None,
@@ -49,7 +49,7 @@ pub fn set_position(node: &str, position: [f64; 3]) -> Result<(), HostError> {
 pub fn set_pose(node: &str, position: [f64; 3], rotation: [f64; 4]) -> Result<(), HostError> {
     txn::stage_set_transform(
         node,
-        &TransformPatch {
+        TransformPatch {
             position: Some(Vec3 { x: position[0], y: position[1], z: position[2] }),
             rotation: Some(Quat { x: rotation[0], y: rotation[1], z: rotation[2], w: rotation[3] }),
             scale: None,
