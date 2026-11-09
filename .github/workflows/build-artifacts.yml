@@ -8,7 +8,7 @@ name: Build Artifacts
 # sweep pass -- a failed build/test step fails the job (and the run), so no
 # broken binary is ever uploaded.
 #
-# Lint (fmt, clippy, cargo-deny, fuzz) is WARN-ONLY: findings surface as
+# Lint (fmt, cargo-deny, fuzz) is WARN-ONLY: findings surface as
 # ::warning:: annotations plus a run-summary table, but they never fail the run
 # and never gate build or test (RUNBOOK R7, 2026-10-13). ONE exception (AC-4):
 # a crash FOUND by the fuzzer is an ::error and blocks the rolling `latest`
@@ -58,20 +58,20 @@ jobs:
   # syntax reference, jobs.<job_id>.outputs) -- whether or not a step failed --
   # so the verdict survives the warn-only failures around it.
   lint:
-    name: Lint (warn-only -- fmt, clippy, cargo-deny, fuzz)
+    name: Lint (warn-only -- fmt, cargo-deny, fuzz)
     runs-on: ubuntu-latest
     continue-on-error: true
     outputs:
       # 'true' only when the fuzzer found a crash; '' or 'false' otherwise.
       fuzz_crash: ${{ steps.fuzz_verdict.outputs.fuzz_crash }}
     # 120: the bounded fuzz step adds a cold sanitizer build of fe-identity
-    # (bevy + iroh) on top of clippy.
+    # (bevy + iroh).
     timeout-minutes: 120
     steps:
       - uses: actions/checkout@v4
 
-      # Same native-dep set as the Linux build job: clippy runs every
-      # build script, which probes pkg-config for the GUI stack.
+      # Same native-dep set as the Linux build job: the fuzz build of fe-identity
+      # still compiles bevy + iroh, whose build scripts probe pkg-config for the GUI stack.
       - name: Install system dependencies
         run: |
           sudo apt-get update
@@ -83,9 +83,9 @@ jobs:
             libgl1-mesa-dev
 
       - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@stable
+        uses: dtolnay/rust-toolchain@1.99.0
         with:
-          components: rustfmt, clippy
+          components: rustfmt
 
       - name: Cache cargo + target
         uses: Swatinem/rust-cache@v2
@@ -102,15 +102,6 @@ jobs:
         continue-on-error: true
         shell: bash
         run: cargo fmt --check 2>&1 | tee "$RUNNER_TEMP/lint-fmt.log"
-
-      - name: Clippy (-D warnings)
-        id: clippy
-        continue-on-error: true
-        shell: bash
-        # --keep-going: one failing crate must not hide its dependents' lints.
-        run: |
-          cargo clippy --workspace --all-targets --keep-going --color never -- -D warnings \
-            2>&1 | tee "$RUNNER_TEMP/lint-clippy.log"
 
       # Supply-chain check (deny.toml), including the licence allow-list: the
       # 7 outlier licences (Unlicense, BSL-1.0, CC0-1.0, MIT-0, OFL-1.1,
@@ -270,7 +261,6 @@ jobs:
         shell: bash
         env:
           OUTCOME_FMT: ${{ steps.fmt.outcome }}
-          OUTCOME_CLIPPY: ${{ steps.clippy.outcome }}
           OUTCOME_DENY_INSTALL: ${{ steps.deny_install.outcome }}
           OUTCOME_DENY: ${{ steps.deny.outcome }}
           OUTCOME_FUZZ_TOOLCHAIN: ${{ steps.fuzz_toolchain.outcome }}
@@ -320,7 +310,6 @@ jobs:
             esac
           }
           report "rustfmt"                  "$OUTCOME_FMT"            fmt    '^Diff in '
-          report "clippy -D warnings"       "$OUTCOME_CLIPPY"         clippy '^(error|warning)(\[[a-z0-9_:]+\])?: |^ +--> '
           report "cargo-deny install"       "$OUTCOME_DENY_INSTALL"   none   ''
           report "cargo-deny"               "$OUTCOME_DENY"           deny   '^(error|warning)\[|ID: RUSTSEC-|(advisories|bans|sources|licenses) (ok|FAILED)|rejected: '
           report "nightly toolchain (fuzz)" "$OUTCOME_FUZZ_TOOLCHAIN" none   ''
@@ -370,7 +359,7 @@ jobs:
 
       - name: Install Rust toolchain
         id: toolchain
-        uses: dtolnay/rust-toolchain@stable
+        uses: dtolnay/rust-toolchain@1.99.0
 
       - name: Cache cargo + target
         uses: Swatinem/rust-cache@v2
@@ -478,7 +467,7 @@ jobs:
       - uses: actions/checkout@v4
 
       - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@stable
+        uses: dtolnay/rust-toolchain@1.99.0
 
       - name: Cache cargo + target
         uses: Swatinem/rust-cache@v2

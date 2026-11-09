@@ -48,7 +48,7 @@ resolver = "2"
 edition = "2021"
 license = "Apache-2.0"
 repository = "https://github.com/Escherbridge/fractalengine"
-rust-version = "1.91"
+rust-version = "1.96"
 
 [workspace.dependencies]
 bevy = { version = "0.18", default-features = false, features = [

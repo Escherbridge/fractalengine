@@ -7,7 +7,7 @@ Closes #
 ## Checklist
 
 - [ ] Ran the full sweep once at the end of the change set:
-      `cargo fmt && cargo clippy -- -D warnings && cargo test`
+      `cargo fmt && cargo check -p <touched crates>`
       (single integrated sweep — see CONTRIBUTING.md)
 - [ ] Doc comments are terse one-liners; rationale lives in the relevant
       directory-level `AGENTS.md`

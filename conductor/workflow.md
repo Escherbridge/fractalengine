@@ -51,8 +51,10 @@ Standing rule: **feature → track at start, retro + archive at completion.**
 
 ## Verification & quality gates
 
+Clippy is not run (user decision 2026-11-09): it is not part of any gate, sweep or CI job.
+
 **Tests run only when explicitly told (user directive 2026-11-07).** The default gate for any
-commit is `cargo check -p <touched crates>`; clippy and tests run only when the user or a steer names
+commit is `cargo check -p <touched crates>`; tests run only when the user or a steer names
 the batch (`conductor/test-batches.md`), through the chunked runner `tools\qa\test_batches.ps1
 -Batches <ids>`; the campaign-end sweep is `-Batches All`, once, on request. Never `cargo test
 --workspace` on this machine (2026-11-08: it filled the disk with 258 GB of test executables and
@@ -64,7 +66,6 @@ batch** — not per-task loops:
 
 ```bash
 tools\qa\test_batches.ps1 -Batches All      # chunked runner; never cargo test --workspace (2026-11-08)
-cargo clippy -- -D warnings
 cargo fmt --check
 ```
 
@@ -81,7 +82,7 @@ cargo fmt --check
 Per-change checklist (verified by the sweep + review, not re-run per fix):
 
 - [ ] All tests pass (`tools\qa\test_batches.ps1 -Batches <touched batches>`, when told)
-- [ ] `cargo fmt --check` and `cargo clippy -- -D warnings` pass
+- [ ] `cargo fmt --check` passes
 - [ ] Terse one-line doc comments on public items; rationale in the
       directory-level `AGENTS.md`, not inline comment blocks
 - [ ] No `unwrap()` or `expect()` in production code paths
@@ -146,7 +147,7 @@ git commit -m "conductor(track): Archive analytics_egress batch with retro"
 
 ```bash
 rustup toolchain install stable
-rustup component add rustfmt clippy
+rustup component add rustfmt
 cargo build
 ```
 
@@ -158,7 +159,6 @@ RUST_LOG=debug cargo run
 
 # End-of-batch sweep (run ONCE per change batch)
 tools\qa\test_batches.ps1 -Batches All      # chunked runner; never cargo test --workspace (2026-11-08)
-cargo clippy -- -D warnings
 cargo fmt --check
 ```
 
@@ -197,8 +197,8 @@ A track (or batch within it) is complete when:
 
 1. All code implemented to the track's spec
 2. New behavior covered by tests
-3. The end-of-batch sweep is green (`tools\qa\test_batches.ps1 -Batches <ids>`, clippy
-   `-D warnings`, `fmt --check`)
+3. The end-of-batch sweep is green (`tools\qa\test_batches.ps1 -Batches <ids>`,
+   `fmt --check`)
 4. Terse doc comments present; rationale captured in the directory
    `AGENTS.md` where non-obvious
 5. Security rules verified (signatures, fe-policy placement, no unsafe in

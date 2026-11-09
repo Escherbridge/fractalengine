@@ -24,12 +24,10 @@ Format, lint and type-check the crates you touched:
 
 ```bash
 cargo fmt
-cargo clippy -- -D warnings
 cargo check -p <crate> [-p <crate> ...]   # the crates you touched
 ```
 
-Clippy warnings are errors in this project; a PR that introduces warnings
-will not pass review.
+Clippy is not run (user decision 2026-11-09): it is not part of any gate, sweep or CI job.
 
 Then run only the test batches that cover your change. Each batch in
 [conductor/test-batches.md](conductor/test-batches.md) is a short list of plain
@@ -48,7 +46,7 @@ test binary at once and can fill the disk. See "Test execution policy" in
 ### Test policy: one sweep at the end
 
 When a change involves multiple fixes or touches several crates, apply all
-of the changes first and then run the `fmt` / `clippy` / test-batch sweep
+of the changes first and then run the `fmt` / test-batch sweep
 **once** at the end — do not iterate test-fix-test per individual change.
 One integrated sweep surfaces the full picture and keeps iteration cheap.
 (Exception: if you touch test-harness infrastructure itself, running just
