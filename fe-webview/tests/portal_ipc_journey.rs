@@ -1,6 +1,7 @@
 //! Portal IPC journey (spec R8-R11, R14) over the real mount table, gate, host, page-API and feed serving and bridge;
 //! only the broker and governance edges are faked.
 
+use std::cell::Cell;
 use std::collections::{BTreeMap, BTreeSet};
 use std::io::Write as _;
 use std::path::{Path, PathBuf};
@@ -9,17 +10,19 @@ use std::sync::{mpsc, Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use ed25519_dalek::SigningKey;
-use fe_webview::ipc::{BrowserEvent, BundleState, RevokedReason};
+use fe_policy::RoleLevel;
+use fe_webview::ipc::{BlockedReason, BrowserEvent, BundleState, RevokedReason};
 use fe_webview::portal_bundle::admission::{
-    AdmissionEvent, AdmissionRecord, AdmissionSignal, GovernanceView, KillListStatus, RecordReason, RecordState,
+    AdmissionEvent, AdmissionRecord, AdmissionSignal, GovernanceView, RecordReason, RecordState,
 };
 use fe_webview::portal_bundle::feeds::{serve, FeedSource, FEEDS_PATH};
 use fe_webview::portal_bundle::ipc::PAGE_API_PATH;
 use fe_webview::portal_bundle::origin::{admitted_label, static_label};
 use fe_webview::portal_bundle::{
     prepare, AdmissionVerdict, Attempt, BindRequest, BrokerClient, BrokerEvent, BundleHost, BundleIdentity, BundleParts,
-    BundleResolver, BundleSource, BundleWebview, Decision, DeliveryKind, Ingress, IpcError, Label, MountMode,
-    NavigationGate, PendingReply, PortalBridge, PortalBroker, PortalIntent, PortalMounts, UiIntent, UNLOAD_URL,
+    BundleResolver, BundleSource, BundleTarget, BundleWebview, Decision, DeliveryKind, Ingress, IpcError, Label,
+    MountMode, NavigationGate, PendingReply, PortalBridge, PortalBroker, PortalIntent, PortalMounts, UiIntent,
+    UNLOAD_URL,
 };
 use http::StatusCode;
 use serde_json::{json, Value};
@@ -129,6 +132,8 @@ impl BundleResolver for Resolver {
 struct FakeGovernance {
     records: Mutex<BTreeMap<(String, String), AdmissionRecord>>,
     killed: Mutex<BTreeSet<String>>,
+    /// Audited verse-Owner overrides as `(target anchor, content_hash)`.
+    overrides: Mutex<BTreeSet<(String, String)>>,
 }
 
 impl FakeGovernance {
@@ -146,23 +151,27 @@ impl FakeGovernance {
     fn kill(&self, digest: &str) {
         self.killed.lock().unwrap().insert(digest.into());
     }
+    /// The verse Owner's audited override for `content_hash` at `target`'s verse on this peer.
+    fn override_for(&self, target: &BundleTarget, content_hash: &str) {
+        self.overrides.lock().unwrap().insert((target.anchor(), content_hash.into()));
+    }
 }
 
 impl GovernanceView for FakeGovernance {
     fn host_disabled(&self) -> bool {
         false
     }
-    fn kill_list(&self, digest: &str) -> KillListStatus {
-        if self.killed.lock().unwrap().contains(digest) {
-            KillListStatus::Listed
-        } else {
-            KillListStatus::Clear
-        }
+    fn kill_listed(&self, digests: &[&str]) -> bool {
+        let killed = self.killed.lock().unwrap();
+        digests.iter().any(|digest| killed.contains(*digest))
+    }
+    fn kill_list_override(&self, target: &BundleTarget, content_hash: &str) -> bool {
+        self.overrides.lock().unwrap().contains(&(target.anchor(), content_hash.to_owned()))
     }
     fn record(&self, package_id: &str, content_hash: &str) -> Option<AdmissionRecord> {
         self.records.lock().unwrap().get(&(package_id.to_owned(), content_hash.to_owned())).cloned()
     }
-    fn can_admit(&self, _node_id: &str, _identity: &BundleIdentity) -> bool {
+    fn can_admit(&self, _target: &BundleTarget, _identity: &BundleIdentity) -> bool {
         true
     }
 }
@@ -185,6 +194,10 @@ impl GovernedResolver {
 impl BundleResolver for GovernedResolver {
     fn resolve(&self, _node_id: &str) -> Result<BundleSource, BundleState> {
         Ok(BundleSource { asset_id: "asset-gov".into(), blob_path: Some(self.path.lock().unwrap().clone()), revoked: None })
+    }
+    /// The installed build the binding at the petal's nearest scope selects (the same bytes, for the journey).
+    fn resolve_bound(&self, _petal_id: &str, _package_id: &str) -> Result<BundleSource, BundleState> {
+        self.resolve("bound")
     }
     fn governance(&self) -> Option<&dyn GovernanceView> {
         Some(self.governance.as_ref())
@@ -250,6 +263,8 @@ struct FakeState {
     events: Vec<BrokerEvent>,
     next_sub: u64,
     write_outcome: Option<Result<Value, IpcError>>,
+    /// A faulty broker that opens at the scope role whatever the viewer's token allows.
+    ignores_viewer: bool,
 }
 
 struct FakeBroker {
@@ -258,6 +273,16 @@ struct FakeBroker {
 }
 
 impl FakeBroker {
+    /// A broker granting every capability in [`GRANTED`]; the installing identity is Owner at the scope.
+    fn new() -> Arc<Self> {
+        Arc::new(FakeBroker {
+            granted: GRANTED.iter().map(|capability| (*capability).to_owned()).collect(),
+            state: Mutex::new(FakeState::default()),
+        })
+    }
+    fn ignore_viewer(&self, ignores: bool) {
+        self.state.lock().unwrap().ignores_viewer = ignores;
+    }
     fn log(&self) -> Vec<String> {
         self.state.lock().unwrap().log.clone()
     }
@@ -281,14 +306,29 @@ fn answered(outcome: Result<Value, IpcError>) -> PendingReply {
     receiver
 }
 
+/// The native handler's body read, counted: proves which senders ever get their body read.
+fn counted_read(reads: &Cell<u32>, body: Option<String>) -> impl FnOnce() -> Option<String> + '_ {
+    move || {
+        reads.set(reads.get() + 1);
+        body
+    }
+}
+
 impl PortalBroker for FakeBroker {
     fn open(&self, request: &BindRequest<'_>) -> Result<BrokerClient, IpcError> {
-        self.record(format!("open {} {}", request.package_id, request.repository_node_id));
+        self.record(format!("open {} {} {}", request.package_id, request.target.anchor(), request.viewer_ceiling));
+        let scope_role = RoleLevel::Owner;
+        let role_ceiling = if self.state.lock().unwrap().ignores_viewer {
+            scope_role
+        } else {
+            scope_role.min(request.viewer_ceiling)
+        };
         Ok(BrokerClient {
             client: BROKER_CLIENT,
             installing_did: "did:key:z6Mklocal".into(),
             petal_id: PETAL.into(),
             granted: self.granted.clone(),
+            role_ceiling,
         })
     }
     fn close(&self, client: u64) {
@@ -374,10 +414,7 @@ impl Page {
         let gate = Rc::new(NavigationGate::new(mounts.clone()));
         gate.expect_entry(mount.entry_url.clone());
         assert_eq!(gate.decide(&main_frame(&mount.entry_url)), Decision::AllowEnter);
-        let broker = Arc::new(FakeBroker {
-            granted: GRANTED.iter().map(|capability| (*capability).to_owned()).collect(),
-            state: Mutex::new(FakeState::default()),
-        });
+        let broker = FakeBroker::new();
         let dyn_broker: Arc<dyn PortalBroker> = broker.clone();
         let bridge = PortalBridge::new();
         bridge.set_visible(true);
@@ -492,7 +529,7 @@ impl Page {
 #[test]
 fn sender_gate_drops_every_unauthorized_post_without_a_reply() {
     let mut page = Page::open();
-    assert_eq!(page.broker.log(), vec![format!("open {PACKAGE} node-repo")], "the mount binds once");
+    assert_eq!(page.broker.log(), vec![format!("open {PACKAGE} node-repo owner")], "the mount binds once");
 
     // Control: the admitted, visible, current document gets a reply.
     let hello = page.send("hello", json!({}));
@@ -528,6 +565,27 @@ fn sender_gate_drops_every_unauthorized_post_without_a_reply() {
     page.bridge.set_visible(false);
     assert_eq!(page.post_from(&page.sender.clone(), &subscribe), Ingress::Dropped, "hidden portal");
     page.bridge.set_visible(true);
+
+    // SP-9, the native path: the sender is judged before the body is read, so an unreadable or over-cap Source, or any
+    // origin but the admitted document's, never has its body read; the document's own over-cap or non-string body is
+    // dropped unread, not answered. Mutation check: reading the body before check 1 makes `reads` non-zero.
+    let reads = Cell::new(0);
+    for (row, source) in [
+        ("unreadable Source", None),
+        ("external site", Some("https://example.com/")),
+        ("foreign bundle origin", Some(foreign.as_str())),
+        ("sender URL past the P-2 cap", Some(long_sender.as_str())),
+    ] {
+        let before = page.bridge.stats().total.dropped_origin;
+        let read = counted_read(&reads, Some(subscribe.clone()));
+        assert_eq!(page.bridge.receive(&page.mounts, source, read, page.now), Ingress::Dropped, "{row}");
+        assert_eq!(page.bridge.stats().total.dropped_origin, before + 1, "{row}");
+    }
+    assert_eq!(reads.get(), 0, "no unauthorised sender's body is ever read");
+    let before = page.bridge.stats().total.dropped_origin;
+    let refused_body = counted_read(&reads, None);
+    assert_eq!(page.bridge.receive(&page.mounts, Some(page.sender.as_str()), refused_body, page.now), Ingress::Dropped);
+    assert_eq!((reads.get(), page.bridge.stats().total.dropped_origin), (1, before + 1), "over its cap: dropped unread");
     let heard = page.received.len();
     page.pump();
     assert_eq!(page.received.len(), heard, "no dropped post is ever answered");
@@ -573,6 +631,35 @@ fn sender_gate_drops_every_unauthorized_post_without_a_reply() {
     let fresh = page.send("hello", json!({}));
     page.pump();
     assert_eq!(page.ok(fresh)["api"], "fe.portal.v1");
+
+    // Steer 2026-11-08 23:40: the client opens at the installing identity's role at the scope, never above the viewer's
+    // token. A lower viewer ceiling rebinds at once: live streams end, and an act is refused (audited) before the write
+    // path. A broker reporting a ceiling above the viewer's token gets no client at all (fail closed).
+    page.advance(1_000);
+    let stream = page.subscribe("readings", json!({}));
+    page.pump();
+    let stream_sub = page.ok(stream)["sub"].as_u64().unwrap();
+    page.bridge.set_viewer_ceiling(RoleLevel::Viewer);
+    page.pump();
+    assert_eq!(page.broker.log().last(), Some(&format!("open {PACKAGE} node-repo viewer")));
+    let ended = page.deliveries(stream_sub).last().map(|delivery| (delivery["kind"].clone(), delivery["data"].clone()));
+    assert_eq!(ended, Some((json!("ended"), json!({ "reason": "role-changed" }))));
+    let capped = page.send("act", json!({ "op": "set_property", "node_id": NODE_A, "key": "fleet.speed", "value": 1 }));
+    page.pump();
+    assert_eq!(page.error(capped), "role_denied");
+    assert!(!page.broker.log().iter().any(|line| line.starts_with("set_property")), "nothing reaches the write path");
+    assert!(page.broker.audits().contains(&"act set_property:fleet.speed role_denied".to_owned()));
+    page.broker.ignore_viewer(true);
+    page.bridge.set_viewer_ceiling(RoleLevel::Editor);
+    page.pump();
+    assert_eq!(page.broker.log().last(), Some(&format!("close {BROKER_CLIENT}")), "an over-ceiling client is closed unused");
+    let unbound = page.subscribe("readings", json!({}));
+    page.pump();
+    assert_eq!(page.error(unbound), "unavailable");
+    page.broker.ignore_viewer(false);
+    page.bridge.set_viewer_ceiling(RoleLevel::Owner);
+    page.pump();
+    assert_eq!(page.broker.log().last(), Some(&format!("open {PACKAGE} node-repo owner")));
 
     // An admitted origin never gets feeds: its data path is IPC (admission.md §7.2).
     assert_eq!(page.get(&page.label.clone(), FEEDS_PATH).status(), StatusCode::NOT_FOUND);
@@ -849,6 +936,21 @@ fn subscriptions_actions_and_bus_route_through_the_broker() {
     assert!(page.mounts.current().is_none());
     assert_eq!(webview.loads, vec![UNLOAD_URL.to_owned()], "no entry is loaded");
 
+    // admission.md §4.2/§4.7: an entry naming one member's digest under another id refuses the build too (a repackaged
+    // bundle with the same files). The Owner's audited override for this build in this verse lets it render as its
+    // record allows (static until a fresh Admit), and it never reaches another target.
+    assert!(!mount.member_digests.is_empty(), "sealed: the signed members.json digests");
+    let member_listed = Arc::new(FakeGovernance::default());
+    member_listed.kill(&mount.member_digests[0]);
+    let reopen: Arc<dyn BundleResolver> = GovernedResolver::new(&page.bundle.path, &member_listed);
+    host.open("node-repo", Some(Arc::clone(&reopen)), &mut webview);
+    assert_eq!(states(&settle(&mut host, &mut webview)), vec![BundleState::Revoked(RevokedReason::RevocationList)]);
+    member_listed.override_for(&BundleTarget::Node("node-repo".into()), &mount.content_hash);
+    host.open("node-repo", Some(Arc::clone(&reopen)), &mut webview);
+    assert_eq!(states(&settle(&mut host, &mut webview)), vec![BundleState::StaticSandbox { can_admit: true }]);
+    host.open("node-elsewhere", Some(reopen), &mut webview);
+    assert_eq!(states(&settle(&mut host, &mut webview)), vec![BundleState::Revoked(RevokedReason::RevocationList)]);
+
     // PJ9 (admission.md §6): governance carries consent over to every build of the package, but the portal admits only
     // the capabilities consent covered. v2 keeps the admitted origin; v3 adds a key scope and opens Static on its own
     // origin; consent for v3 promotes the open portal back to the admitted origin.
@@ -899,6 +1001,26 @@ fn subscriptions_actions_and_bus_route_through_the_broker() {
         reason: RecordReason::Consented,
     };
     assert!(host.apply_admission(&AdmissionSignal::Event(consent), &mut webview, None).is_empty());
-    assert_eq!(states(&settle(&mut host, &mut webview)), vec![admitted]);
+    assert_eq!(states(&settle(&mut host, &mut webview)), vec![admitted.clone()]);
     assert_eq!(mounts.current().expect("re-admitted v3").label, admitted_origin);
+
+    // Bindings §6 `portal.open` (B10f): a petal's bound bundle mounts on a local Open of its target, under the same
+    // admitted origin, and its broker client is scoped by the target (no repository node). Bytes of another package
+    // never mount under a binding that names this one.
+    let bound = BundleTarget::Bound { petal_id: PETAL.into(), package_id: PACKAGE.into() };
+    let bound_resolver: Arc<dyn BundleResolver> = node.clone();
+    host.open_target(bound.clone(), Some(Arc::clone(&bound_resolver)), &mut webview);
+    assert_eq!(states(&settle(&mut host, &mut webview)), vec![admitted]);
+    let bound_mount = mounts.current().expect("bound bundle");
+    assert_eq!((&bound_mount.target, bound_mount.node_id.as_str()), (&bound, format!("binding:{PETAL}:{PACKAGE}").as_str()));
+    assert_eq!(bound_mount.label, admitted_origin, "one origin per (publisher, package), whatever the scope");
+    let bound_broker = FakeBroker::new();
+    let bound_bridge = PortalBridge::new();
+    let dyn_bound_broker: Arc<dyn PortalBroker> = bound_broker.clone();
+    bound_bridge.pump(&mounts, Some(&dyn_bound_broker), Instant::now());
+    assert_eq!(bound_broker.log().first(), Some(&format!("open {PACKAGE} binding:{PETAL}:{PACKAGE} owner")));
+    let renamed = BundleTarget::Bound { petal_id: PETAL.into(), package_id: "org.example.other".into() };
+    host.open_target(renamed, Some(bound_resolver), &mut webview);
+    assert_eq!(states(&settle(&mut host, &mut webview)), vec![BundleState::Blocked(BlockedReason::Integrity)]);
+    assert!(mounts.current().is_none());
 }

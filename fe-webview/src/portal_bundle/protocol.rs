@@ -51,9 +51,10 @@ pub fn serve(mounts: &PortalMounts, request: &Request<Vec<u8>>) -> Response<Vec<
     if !path.starts_with('/') || path.contains('%') || path.contains('\\') {
         return empty(StatusCode::NOT_FOUND, policy);
     }
-    // 6. Reserved host paths: S2 serves `portal-v1.js` to Admitted mounts, S4 `feeds.json` to Static ones.
+    // 6. Reserved host paths answer 404 here; the wrappers `ipc::serve` (`portal-v1.js`, Admitted) and
+    //    `feeds::serve` (`feeds.json`, Static) answer their own path on that 404 and nothing else.
     if path.starts_with(RESERVED_PREFIX) || path == "/__fe" {
-        return reserved(&mount, path);
+        return reserved(&mount);
     }
     // 7. Member.
     let member = member_for_path(path);
@@ -114,8 +115,8 @@ fn member_for_path(path: &str) -> String {
     }
 }
 
-/// `/__fe/…`: nothing is host-served until S2/S4 add `portal-v1.js` and `feeds.json`.
-fn reserved(mount: &Mount, _path: &str) -> Response<Vec<u8>> {
+/// `/__fe/…`: a member never shadows a host path; the wrapping handlers serve the two host-served paths.
+fn reserved(mount: &Mount) -> Response<Vec<u8>> {
     empty(StatusCode::NOT_FOUND, Some(mount.csp()))
 }
 

@@ -6,13 +6,14 @@ use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
 use fe_format::portal_bundle::PortalSection;
+use fe_policy::RoleLevel;
 use http::header::{CONTENT_LENGTH, CONTENT_SECURITY_POLICY, CONTENT_TYPE};
 use http::{HeaderValue, Method, Request, Response, StatusCode};
 use serde::Deserialize;
 use serde_json::{json, Map, Value};
 
 use super::limits::{self, TokenBucket};
-use super::mount::{Mount, MountMode, PortalMounts};
+use super::mount::{BundleTarget, Mount, MountMode, PortalMounts};
 use super::origin;
 
 /// Wire name of this API.
@@ -173,11 +174,14 @@ pub type PendingReply = mpsc::Receiver<Result<Value, IpcError>>;
 #[derive(Debug, Clone, Copy)]
 pub struct BindRequest<'a> {
     pub mount_id: u64,
-    pub repository_node_id: &'a str,
+    /// What the local Open named: a repository node, or a scope's bound bundle; the broker derives the petal from it.
+    pub target: &'a BundleTarget,
     pub package_id: &'a str,
     pub content_hash: &'a str,
     pub publisher_did: &'a str,
     pub portal: &'a PortalSection,
+    /// The viewer token's `max_role`; the client's ceiling never exceeds it (steer 2026-11-08 23:40).
+    pub viewer_ceiling: RoleLevel,
 }
 
 /// The broker's half of a binding (ipc-v1.md §6.5); host-minted, never built from page data.
@@ -186,10 +190,13 @@ pub struct BrokerClient {
     pub client: u64,
     /// The local identity that admitted the bundle; acts and invokes are judged as it at use.
     pub installing_did: String,
-    /// The repository node's petal: the scope of every subscription, act and intent.
+    /// The target's petal: the scope of every subscription, act and intent.
     pub petal_id: String,
     /// Capability strings (§4.3) governance permits now, intents included; the bridge intersects them with the manifest.
     pub granted: BTreeSet<String>,
+    /// The bus `Caller.role_ceiling` the client was opened with: the installing identity's role at the target's scope,
+    /// capped at the request's `viewer_ceiling`. A client reported above that cap is closed unused.
+    pub role_ceiling: RoleLevel,
 }
 
 /// The integration-bus client the binary injects; every call is non-blocking and made on the main thread.
@@ -198,7 +205,8 @@ pub struct BrokerClient {
 /// capability-denied → `CapabilityDenied`, rate-limited → `RateLimited`, invalid-input → `Invalid`,
 /// limit-reached → `TooManySubscriptions`.
 pub trait PortalBroker: Send + Sync + 'static {
-    /// Open a caller-kind `portal` client at the repository node's petal.
+    /// Open a caller-kind `portal` client at the target's petal (`Bus::open_portal_client`), its ceiling the installing
+    /// identity's role at that scope and never above `request.viewer_ceiling`.
     fn open(&self, request: &BindRequest<'_>) -> Result<BrokerClient, IpcError>;
     /// Close a client; its subscriptions end.
     fn close(&self, client: u64);
@@ -363,6 +371,11 @@ impl PortalBridge {
         self.lock().visible = visible;
     }
 
+    /// The viewer's token ceiling (`Owner` for the in-app local viewer); a change rebinds the client on the next pump.
+    pub fn set_viewer_ceiling(&self, ceiling: RoleLevel) {
+        self.lock().viewer_ceiling = ceiling;
+    }
+
     /// This generation's document token for an Admitted `mount`, minted on first use (ipc-v1.md §1.4).
     pub fn document_token(&self, mount: &Mount, generation: u64) -> Option<String> {
         if mount.mode != MountMode::Admitted || mount.is_faulted() {
@@ -386,9 +399,30 @@ impl PortalBridge {
         Some(token)
     }
 
-    /// Checks 1-3 on one page post; nothing is decoded here (§2).
+    /// Checks 1-3 on one native post (P-2, SP-9): the sender is judged before `read_body` runs, so an unauthorised
+    /// page's body is never read. `None` (unreadable, not a string, over its cap) is dropped like a foreign sender.
+    pub fn receive(
+        &self,
+        mounts: &PortalMounts,
+        source: Option<&str>,
+        read_body: impl FnOnce() -> Option<String>,
+        now: Instant,
+    ) -> Ingress {
+        // Check 1 reads only the mount table: no bridge lock is held across the body read (a webview call).
+        let Some(mount) = source.and_then(|source| admitted_sender(mounts, source)) else {
+            self.lock().count(None, |c| c.dropped_origin += 1);
+            return Ingress::Dropped;
+        };
+        let Some(body) = read_body() else {
+            self.lock().count(Some(mount.mount_id), |c| c.dropped_origin += 1);
+            return Ingress::Dropped;
+        };
+        self.lock().ingress(mounts, &mount, &body, now)
+    }
+
+    /// [`receive`](Self::receive) with both parts already read; nothing is decoded here (§2).
     pub fn ingress(&self, mounts: &PortalMounts, source: &str, body: &str, now: Instant) -> Ingress {
-        self.lock().ingress(mounts, source, body, now)
+        self.receive(mounts, Some(source), || Some(body.to_owned()), now)
     }
 
     /// Per frame: follow the mount table, route accepted messages, collect replies and events, pace deltas.
@@ -506,7 +540,9 @@ struct OpenClient {
 /// The host-minted binding of the live Admitted mount (ipc-v1.md §6.5).
 struct Binding {
     mount_id: u64,
-    node_id: String,
+    target: BundleTarget,
+    /// The viewer ceiling the client was requested under; a change rebinds.
+    viewer_ceiling: RoleLevel,
     package_id: String,
     content_hash: String,
     version: String,
@@ -711,6 +747,8 @@ enum Effect {
 
 struct BridgeState {
     visible: bool,
+    /// The viewer token's `max_role`; `Owner` is the in-app local viewer (node DID + an Owner token).
+    viewer_ceiling: RoleLevel,
     tokens: TokenSource,
     document: Option<DocumentToken>,
     binding: Option<Binding>,
@@ -737,6 +775,7 @@ impl BridgeState {
     fn new() -> Self {
         Self {
             visible: false,
+            viewer_ceiling: RoleLevel::Owner,
             tokens: TokenSource::new(),
             document: None,
             binding: None,
@@ -775,21 +814,9 @@ impl BridgeState {
         self.inbox.len() + self.calls.len() + self.subs.values().filter(|sub| sub.awaiting.is_some()).count()
     }
 
-    // ---- checks 1-3 ------------------------------------------------------------------------
+    // ---- checks 2-3 (check 1 ran in `PortalBridge::receive`) ---------------------------------
 
-    fn ingress(&mut self, mounts: &PortalMounts, source: &str, body: &str, now: Instant) -> Ingress {
-        // 1. Sender: the exact origin of the live Admitted mount, read only within the P-2 cap.
-        let label = (source.len() <= limits::MAX_SOURCE_BYTES)
-            .then(|| origin::parse(source))
-            .flatten();
-        let mount = label
-            .as_ref()
-            .and_then(|label| mounts.lookup(label))
-            .filter(|mount| mount.mode == MountMode::Admitted);
-        let Some(mount) = mount else {
-            self.count(None, |c| c.dropped_origin += 1);
-            return Ingress::Dropped;
-        };
+    fn ingress(&mut self, mounts: &PortalMounts, mount: &Mount, body: &str, now: Instant) -> Ingress {
         // 2. Current: visible, and the body starts with this generation's token (constant-time).
         let generation = mounts.generation();
         let current = self
@@ -843,7 +870,15 @@ impl BridgeState {
         let generation = mounts.generation();
         // A broker injected after the mount bound gets one chance to open a client.
         let late_broker = broker.is_some() && self.binding.as_ref().is_some_and(|binding| !binding.broker_attempted);
-        if late_broker || self.binding.as_ref().map(|binding| binding.mount_id) != live_id {
+        // A changed viewer ceiling reopens the client under it; the live document hears its streams end.
+        let ceiling_changed = self
+            .binding
+            .as_ref()
+            .is_some_and(|binding| binding.viewer_ceiling != self.viewer_ceiling);
+        if late_broker || ceiling_changed || self.binding.as_ref().map(|binding| binding.mount_id) != live_id {
+            if ceiling_changed && self.binding.as_ref().map(|binding| binding.mount_id) == live_id {
+                self.end_live_document("role-changed");
+            }
             self.unbind();
             self.retain_queues(live_id.map(|id| (id, generation)));
             if let Some(mount) = &live {
@@ -871,16 +906,24 @@ impl BridgeState {
         let Some(publisher_did) = mount.publisher_did.clone() else {
             return;
         };
+        let viewer_ceiling = self.viewer_ceiling;
         let client = broker.and_then(|broker| {
             let request = BindRequest {
                 mount_id: mount.mount_id,
-                repository_node_id: &mount.node_id,
+                target: &mount.target,
                 package_id: &mount.package_id,
                 content_hash: &mount.content_hash,
                 publisher_did: &publisher_did,
                 portal: &mount.portal,
+                viewer_ceiling,
             };
             match broker.open(&request) {
+                // A ceiling above the viewer's token is a broker fault: no client, so every call is `unavailable`.
+                Ok(info) if info.role_ceiling > viewer_ceiling => {
+                    tracing::error!(package_id = %mount.package_id, "portal broker client exceeds the viewer's role ceiling");
+                    broker.close(info.client);
+                    None
+                }
                 Ok(info) => Some(OpenClient {
                     broker: Arc::clone(broker),
                     info,
@@ -901,7 +944,8 @@ impl BridgeState {
         self.buckets(mount.mount_id, now);
         self.binding = Some(Binding {
             mount_id: mount.mount_id,
-            node_id: mount.node_id.clone(),
+            target: mount.target.clone(),
+            viewer_ceiling,
             package_id: mount.package_id.clone(),
             content_hash: mount.content_hash.clone(),
             version: mount.archive.manifest().version.clone(),
@@ -912,6 +956,22 @@ impl BridgeState {
             broker_attempted: broker.is_some(),
             paused: false,
         });
+    }
+
+    /// The binding changes under a live document: each stream ends with `reason`, each waiting subscribe answers
+    /// `unavailable` and each waiting call `unknown_outcome` (a write may have landed). Runs before `unbind`.
+    fn end_live_document(&mut self, reason: &str) {
+        let calls: Vec<u32> = self.calls.iter().map(|call| call.id).collect();
+        for id in calls {
+            self.reply_current(id, Err(IpcError::UnknownOutcome));
+        }
+        let subs: Vec<(u32, Option<u32>)> = self.subs.iter().map(|(id, sub)| (*id, sub.awaiting)).collect();
+        for (sub_id, awaiting) in subs {
+            match awaiting {
+                Some(request) => self.reply_current(request, Err(IpcError::Unavailable)),
+                None => self.deliver(sub_id, DeliveryKind::Ended, json!({ "reason": reason })),
+            }
+        }
     }
 
     /// End the document: its subscriptions close at the broker and its pending calls are abandoned.
@@ -1046,7 +1106,7 @@ impl BridgeState {
             PageMessage::Intent { intent, node_id } => self.intent(intent, node_id, now, intents).map(Some),
         };
         if let (Err(IpcError::CapabilityDenied), Some((operation, target))) = (&outcome, &audit) {
-            self.audit_refusal(operation, target, now);
+            self.audit_refusal(operation, target, IpcError::CapabilityDenied, now);
         }
         match outcome {
             Ok(Some(data)) => self.reply(&to, Ok(data)),
@@ -1061,8 +1121,9 @@ impl BridgeState {
         Ok((binding, open))
     }
 
-    /// Check-5 refusals are audited within the audit budget; past it they are counted only.
-    fn audit_refusal(&mut self, operation: &str, target: &str, now: Instant) {
+    /// Refusals the bridge decides itself (check 5, and a ceiling below the write floor) are audited within the audit
+    /// budget; past it they are counted only.
+    fn audit_refusal(&mut self, operation: &str, target: &str, error: IpcError, now: Instant) {
         let Some(mount_id) = self.binding.as_ref().map(|binding| binding.mount_id) else {
             return;
         };
@@ -1070,9 +1131,8 @@ impl BridgeState {
             return;
         }
         if let Ok((_, open)) = self.client() {
-            let code = IpcError::CapabilityDenied.code();
             open.broker
-                .audit_refusal(open.info.client, operation, truncate(target, MAX_AUDIT_TARGET_BYTES), code);
+                .audit_refusal(open.info.client, operation, truncate(target, MAX_AUDIT_TARGET_BYTES), error.code());
         }
     }
 
@@ -1089,7 +1149,8 @@ impl BridgeState {
                 "content_hash": binding.content_hash,
                 "version": binding.version,
                 "publisher_did": binding.publisher_did,
-                "repository_node_id": binding.node_id,
+                // A scope's bound bundle has no repository node.
+                "repository_node_id": binding.target.node_id(),
                 "petal_id": petal_id,
             },
             "limits": limits::hello_limits(),
@@ -1134,8 +1195,8 @@ impl BridgeState {
     }
 
     fn act(&mut self, to: &ReplyTo, node_id: String, key: String, value: &Value, now: Instant) -> Result<Option<Value>, IpcError> {
-        let mount_id = {
-            let (binding, _) = self.client()?;
+        let (mount_id, ceiling) = {
+            let (binding, open) = self.client()?;
             let patterns = binding
                 .declared
                 .commands
@@ -1147,13 +1208,18 @@ impl BridgeState {
             if !binding.capabilities.contains("act:set_property") || !key_allowed(patterns, &key) {
                 return Err(IpcError::CapabilityDenied);
             }
-            binding.mount_id
+            (binding.mount_id, open.info.role_ceiling)
         };
         if !is_node_id(&node_id) || json_len(value) > limits::MAX_ARGUMENT_BYTES {
             return Err(IpcError::Invalid);
         }
         if !self.buckets(mount_id, now).set_property.try_take(now) {
             return Err(IpcError::RateLimited);
+        }
+        // Check 6 ahead of the DB: a client capped below Editor can never write, so nothing reaches the write path.
+        if !ceiling.is_at_least(RoleLevel::Editor) {
+            self.audit_refusal("act", &format!("set_property:{key}"), IpcError::RoleDenied, now);
+            return Err(IpcError::RoleDenied);
         }
         let reply = {
             let (_, open) = self.client()?;
@@ -1397,6 +1463,15 @@ impl BridgeState {
 // ---------------------------------------------------------------------------
 // Pure checks
 // ---------------------------------------------------------------------------
+
+/// Check 1: the sender URL, within the P-2 cap, is exactly the origin of the live, unfaulted, Admitted mount.
+fn admitted_sender(mounts: &PortalMounts, source: &str) -> Option<Arc<Mount>> {
+    if source.len() > limits::MAX_SOURCE_BYTES {
+        return None;
+    }
+    let label = origin::parse(source)?;
+    mounts.lookup(&label).filter(|mount| mount.mode == MountMode::Admitted)
+}
 
 /// End of `{"v":1,"n":"<token>","id":` when `body` starts with it; the token bytes compare in constant time.
 fn verified_prefix(body: &str, token: &str) -> Option<usize> {

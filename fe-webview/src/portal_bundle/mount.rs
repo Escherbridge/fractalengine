@@ -1,19 +1,19 @@
 //! Mount table, bundle resolution and the open/close/revoke lifecycle (protocol.md §2, admission.md §3-§5); see `portal_bundle/AGENTS.md` §mounts, §admission.
 
-use std::collections::HashMap;
+use std::collections::{BTreeSet, HashMap};
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{mpsc, Arc, Mutex, PoisonError, RwLock, RwLockReadGuard, RwLockWriteGuard};
 
-use fe_format::integrity::IntegrityStatus;
+use fe_format::integrity::{IntegrityStatus, MembersDoc, MEMBERS_DOC_PATH};
 use fe_format::portal_bundle::{
     validate_portal_bundle, BundleFacts, BundleMember, PortalSection, RefusalClass,
     DEFAULT_MAX_BUNDLE_BYTES, EXTENSION_MANIFEST_PATH,
 };
 use fe_format::HexonArchiveIndex;
 
-use super::admission::{self, AdmissionSignal, GovernanceView, KillListStatus, MountedBuild, Rejudge};
+use super::admission::{self, AdmissionSignal, GovernanceView, MountedBuild, Rejudge};
 use super::feeds::{self, FeedSource};
 use super::ipc::PortalBridge;
 use super::navigation::{normalize_origin, GateNotice, NavigationGate, UNLOAD_URL};
@@ -39,7 +39,34 @@ pub fn bundle_max_bytes() -> u64 {
 // Resolution seam (binary-injected; governance-backed when it returns a view)
 // ---------------------------------------------------------------------------
 
-/// Where a repository node's bundle lives on this peer.
+/// What an explicit local Open names; a replicated row never opens anything (D-X5; bindings.md §6 `portal.open`).
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub enum BundleTarget {
+    /// A repository node whose `portal.bundle_asset` names the build.
+    Node(String),
+    /// The web bundle a `portal.open` binding selects for `petal_id` on this peer (nearest scope wins, resolved per peer).
+    Bound { petal_id: String, package_id: String },
+}
+
+impl BundleTarget {
+    /// The repository node, for a node target.
+    pub fn node_id(&self) -> Option<&str> {
+        match self {
+            Self::Node(node_id) => Some(node_id),
+            Self::Bound { .. } => None,
+        }
+    }
+
+    /// The id chrome events carry: the node id, or `binding:<petal_id>:<package_id>` (never a valid node id).
+    pub fn anchor(&self) -> String {
+        match self {
+            Self::Node(node_id) => node_id.clone(),
+            Self::Bound { petal_id, package_id } => format!("binding:{petal_id}:{package_id}"),
+        }
+    }
+}
+
+/// Where a repository node's (or a binding's) bundle lives on this peer.
 #[derive(Debug, Clone)]
 pub struct BundleSource {
     pub asset_id: String,
@@ -60,12 +87,16 @@ pub struct BundleIdentity {
     /// The verified sealing DID; `None` for an unsealed build.
     pub publisher_did: Option<String>,
     pub capability_digest: String,
+    /// BLAKE3 hex of every member (signed `members.json` when sealed): kill-list keys for a repackaged build.
+    pub member_digests: Vec<String>,
 }
 
 impl BundleIdentity {
-    /// The digests a kill-list entry may name for this build, under any package id.
-    pub fn digests(&self) -> [&str; 2] {
-        [self.content_hash.as_str(), self.archive_digest.as_str()]
+    /// The digests a kill-list entry may name for this build, under any package id (admission.md §4.2).
+    pub fn digests(&self) -> Vec<&str> {
+        let mut digests = vec![self.content_hash.as_str(), self.archive_digest.as_str()];
+        digests.extend(self.member_digests.iter().map(String::as_str));
+        digests
     }
 }
 
@@ -86,6 +117,12 @@ pub trait BundleResolver: Send + Sync + 'static {
     /// Resolve `node_id`'s `portal.bundle_asset`; `Err` carries the state to show (Waiting, Blocked, Revoked).
     fn resolve(&self, node_id: &str) -> Result<BundleSource, BundleState>;
 
+    /// Resolve the installed build a `portal.open` binding at `petal_id`'s nearest scope selects (bindings.md §5-§6);
+    /// Unavailable by default. The host refuses bytes whose package id is not `package_id`.
+    fn resolve_bound(&self, _petal_id: &str, _package_id: &str) -> Result<BundleSource, BundleState> {
+        Err(BundleState::Unavailable)
+    }
+
     /// Verdict for an opened, validated build when [`governance`](Self::governance) is `None`; admits nothing by default.
     fn verdict(&self, _identity: &BundleIdentity) -> AdmissionVerdict {
         AdmissionVerdict::Unadmitted { can_admit: false }
@@ -96,9 +133,17 @@ pub trait BundleResolver: Send + Sync + 'static {
         None
     }
 
-    /// The node's static feeds and this peer's fe-api origin (admission.md §7); none by default.
+    /// The node's static feeds and this peer's fe-api origin (admission.md §7); none by default, never for a bound target.
     fn feeds(&self, _node_id: &str) -> FeedSource {
         FeedSource::default()
+    }
+}
+
+/// The resolver call a target selects.
+fn resolve_source(resolver: &dyn BundleResolver, target: &BundleTarget) -> Result<BundleSource, BundleState> {
+    match target {
+        BundleTarget::Node(node_id) => resolver.resolve(node_id),
+        BundleTarget::Bound { petal_id, package_id } => resolver.resolve_bound(petal_id, package_id),
     }
 }
 
@@ -120,12 +165,17 @@ pub struct Mount {
     pub label: Label,
     pub mode: MountMode,
     pub can_admit: bool,
+    /// What the local Open named.
+    pub target: BundleTarget,
+    /// [`BundleTarget::anchor`]: the repository node id, or a bound target's anchor; chrome events carry it.
     pub node_id: String,
     pub asset_id: String,
     pub package_id: String,
     pub content_hash: String,
     /// BLAKE3 of the whole archive: a kill-list key beside `content_hash`.
     pub archive_digest: String,
+    /// Member digests: kill-list keys beside `content_hash` (admission.md §4.2).
+    pub member_digests: Vec<String>,
     pub publisher_did: Option<String>,
     pub capability_digest: String,
     pub portal: PortalSection,
@@ -178,6 +228,7 @@ impl Mount {
             archive_digest: self.archive_digest.clone(),
             publisher_did: self.publisher_did.clone(),
             capability_digest: self.capability_digest.clone(),
+            member_digests: self.member_digests.clone(),
         }
     }
 
@@ -187,6 +238,7 @@ impl Mount {
             package_id: &self.package_id,
             content_hash: &self.content_hash,
             archive_digest: &self.archive_digest,
+            member_digests: &self.member_digests,
             mode: self.mode,
         }
     }
@@ -334,7 +386,14 @@ pub fn blocked_reason(class: RefusalClass) -> BlockedReason {
 
 /// Resolve and open `node_id`'s bundle into a mount, or the state to show instead (admission.md §2 order).
 pub fn prepare(resolver: &dyn BundleResolver, node_id: &str, max_bytes: u64) -> Result<Mount, BundleState> {
-    let source = resolver.resolve(node_id)?;
+    prepare_target(resolver, &BundleTarget::Node(node_id.to_owned()), max_bytes)
+}
+
+/// [`prepare`] for any [`BundleTarget`]; a bound target mounts only the package its binding names.
+pub fn prepare_target(resolver: &dyn BundleResolver, target: &BundleTarget, max_bytes: u64) -> Result<Mount, BundleState> {
+    let anchor = target.anchor();
+    let node_id = anchor.as_str();
+    let source = resolve_source(resolver, target)?;
     if let Some(reason) = source.revoked {
         return Err(BundleState::Revoked(reason));
     }
@@ -354,10 +413,10 @@ pub fn prepare(resolver: &dyn BundleResolver, node_id: &str, max_bytes: u64) -> 
     }
     // Rule 4 before any byte is parsed: a list entry may name the archive itself, under any package id.
     let archive_digest = file_blake3_hex(path).map_err(|_| blocked(BlockedReason::Integrity))?;
-    if let Some(view) = governance {
-        if admission::kill_list_status(view, &[archive_digest.as_str()]) == KillListStatus::Listed {
-            return Err(BundleState::Revoked(RevokedReason::RevocationList));
-        }
+    if let Some(reason) =
+        governance.and_then(|view| admission::revoked_before_bytes(view, target, Some(archive_digest.as_str())))
+    {
+        return Err(BundleState::Revoked(reason));
     }
     let archive = HexonArchiveIndex::open(path).map_err(|error| {
         tracing::warn!(node_id, "portal bundle failed header verification: {error:#}");
@@ -388,21 +447,31 @@ pub fn prepare(resolver: &dyn BundleResolver, node_id: &str, max_bytes: u64) -> 
         tracing::warn!(node_id, "portal bundle refused: {refusal}");
         blocked(blocked_reason(refusal.class))
     })?;
+    // A binding names a package: bytes of any other package never mount under it.
+    if let BundleTarget::Bound { package_id, .. } = target {
+        if validated.package_id != *package_id {
+            tracing::warn!(node_id, "bound portal bundle resolved to another package");
+            return Err(blocked(BlockedReason::Integrity));
+        }
+    }
     let content_hash = match publisher_did {
         Some(_) => fe_format::integrity::content_hash(archive.header_doc().manifest.as_bytes())
             .map_err(|_| blocked(BlockedReason::Integrity))?,
         None => archive_digest.clone(),
     };
+    let member_digests = member_digests(&archive, &members, publisher_did.is_some()).map_err(blocked)?;
     let identity = BundleIdentity {
         package_id: validated.package_id.clone(),
         content_hash: content_hash.clone(),
         archive_digest: archive_digest.clone(),
         publisher_did: publisher_did.clone(),
         capability_digest: validated.capability_digest.clone(),
+        member_digests: member_digests.clone(),
     };
-    // Admitted needs the exact pair, a seal by the admitting publisher and consent for these capabilities (rule 11).
+    // Admitted needs the exact pair, a seal by the admitting publisher and consent for these capabilities (rule 11);
+    // rule 4 now matches the content hash and every member digest, under any package id.
     let verdict = match governance {
-        Some(view) => admission::verdict(view, node_id, &identity),
+        Some(view) => admission::verdict(view, target, &identity),
         None => resolver.verdict(&identity),
     };
     let (mode, can_admit) = admission::mount_mode(&verdict, publisher_did.as_deref())?;
@@ -410,8 +479,12 @@ pub fn prepare(resolver: &dyn BundleResolver, node_id: &str, max_bytes: u64) -> 
         (MountMode::Admitted, Some(publisher)) => admitted_label(publisher, &validated.package_id),
         _ => static_label(&content_hash).ok_or_else(|| blocked(BlockedReason::Integrity))?,
     };
-    // Only a Static mount reads feeds; its `connect-src` gains exactly the kept feeds' share-route sources.
-    let kept_feeds = (mode == MountMode::Static).then(|| feeds::admit(&resolver.feeds(node_id)));
+    // Only a Static node mount reads feeds; its `connect-src` gains exactly the kept feeds' share-route sources.
+    let kept_feeds = match (mode, target.node_id()) {
+        (MountMode::Static, Some(repository)) => Some(feeds::admit(&resolver.feeds(repository))),
+        (MountMode::Static, None) => Some(feeds::admit(&FeedSource::default())),
+        (MountMode::Admitted, _) => None,
+    };
     let feed_sources = kept_feeds.as_ref().map_or(&[][..], |kept| kept.sources.as_slice());
     let policy = super::csp::compose(&validated.portal.csp, mode, feed_sources)
         .map_err(|_| blocked(BlockedReason::MalformedManifest))?;
@@ -426,11 +499,13 @@ pub fn prepare(resolver: &dyn BundleResolver, node_id: &str, max_bytes: u64) -> 
         label,
         mode,
         can_admit,
+        target: target.clone(),
         node_id: node_id.to_owned(),
         asset_id: source.asset_id,
         package_id: validated.package_id,
         content_hash,
         archive_digest,
+        member_digests,
         publisher_did,
         capability_digest: validated.capability_digest,
         entry_url,
@@ -472,6 +547,29 @@ fn member_read_reason(error: &anyhow::Error) -> BlockedReason {
     } else {
         BlockedReason::Integrity
     }
+}
+
+/// Every member's BLAKE3 hex (admission.md §4.2): the signed `members.json` when sealed, hashed here when unsealed.
+fn member_digests(archive: &HexonArchiveIndex, members: &[BundleMember], sealed: bool) -> Result<Vec<String>, BlockedReason> {
+    let mut digests = BTreeSet::new();
+    if sealed {
+        // Signed coverage: `read_member` checks every served member against exactly these digests.
+        let mut header = archive.header_doc();
+        let raw = header.header_members.remove(MEMBERS_DOC_PATH).ok_or(BlockedReason::Integrity)?;
+        let doc: MembersDoc = serde_json::from_str(&raw).map_err(|_| BlockedReason::Integrity)?;
+        digests.extend(doc.members.into_values());
+    } else {
+        let cap = fe_format::limits::MAX_ENTRY_UNCOMPRESSED_BYTES;
+        for member in members.iter().filter(|member| !member.path.ends_with('/')) {
+            let bytes = archive
+                .read_member_capped(&member.path, cap)
+                .map_err(|error| member_read_reason(&error))?;
+            if let Some(bytes) = bytes {
+                digests.insert(fe_format::integrity::digest_hex(&bytes));
+            }
+        }
+    }
+    Ok(digests.into_iter().collect())
 }
 
 /// BLAKE3 hex of a file, streamed (the unsealed `content_hash`, README §2.3).
@@ -519,13 +617,14 @@ pub trait BundleWebview {
 
 struct OpenOutcome {
     request: u64,
+    /// The target's anchor.
     node_id: String,
     result: Result<Mount, BundleState>,
 }
 
 /// The explicit local Open in force (admission.md §3: only an Open ever mounts).
 struct Shown {
-    node_id: String,
+    target: BundleTarget,
     /// `(package_id, content_hash)` of the build it last mounted, or refused as revoked at install.
     pair: Option<(String, String)>,
     /// A revocation unloaded it: only consent for `pair`, or a new Open, renders again (ux.md §4.4).
@@ -538,7 +637,7 @@ pub struct BundleHost {
     gate: Rc<NavigationGate>,
     supported: bool,
     latest_request: u64,
-    /// Node of the in-flight open (request = `latest_request`).
+    /// Anchor of the in-flight open (request = `latest_request`).
     pending: Option<String>,
     outcomes_tx: mpsc::Sender<OpenOutcome>,
     outcomes_rx: mpsc::Receiver<OpenOutcome>,
@@ -586,52 +685,64 @@ impl BundleHost {
         &self.mounts
     }
 
-    /// Explicit local Open: closes any open bundle, then resolves `node_id` on a worker thread.
+    /// Explicit local Open of a repository node: closes any open bundle, then resolves it on a worker thread.
     pub fn open(
         &mut self,
         node_id: &str,
         resolver: Option<Arc<dyn BundleResolver>>,
         webview: &mut dyn BundleWebview,
     ) -> Vec<BrowserEvent> {
+        self.open_target(BundleTarget::Node(node_id.to_owned()), resolver, webview)
+    }
+
+    /// Explicit local Open of any target (a scope's bound bundle included); one live mount per webview (A-7).
+    pub fn open_target(
+        &mut self,
+        target: BundleTarget,
+        resolver: Option<Arc<dyn BundleResolver>>,
+        webview: &mut dyn BundleWebview,
+    ) -> Vec<BrowserEvent> {
         let mut events = self.close(webview);
         self.resolver = resolver;
+        events.extend(self.start(&target));
         self.shown = Some(Shown {
-            node_id: node_id.to_owned(),
+            target,
             pair: None,
             revoked: false,
         });
-        events.extend(self.start(node_id));
         events
     }
 
-    /// Resolve `node_id` with the stored resolver on a worker thread; tears nothing down.
-    fn start(&mut self, node_id: &str) -> Vec<BrowserEvent> {
+    /// Resolve `target` with the stored resolver on a worker thread; tears nothing down.
+    fn start(&mut self, target: &BundleTarget) -> Vec<BrowserEvent> {
         self.signals_since_open.clear();
+        let anchor = target.anchor();
         if !self.supported {
-            return vec![state_event(node_id.to_owned(), None, blocked(BlockedReason::UnsupportedPlatform))];
+            return vec![state_event(anchor, None, blocked(BlockedReason::UnsupportedPlatform))];
         }
         let Some(resolver) = self.resolver.clone() else {
-            return vec![state_event(node_id.to_owned(), None, BundleState::Unavailable)];
+            return vec![state_event(anchor, None, BundleState::Unavailable)];
         };
         self.latest_request = self.latest_request.wrapping_add(1);
         let request = self.latest_request;
         let tx = self.outcomes_tx.clone();
-        let node = node_id.to_owned();
+        let job_target = target.clone();
+        let job_anchor = anchor.clone();
         let max_bytes = bundle_max_bytes();
         let spawned = std::thread::Builder::new()
             .name("fe-portal-open".into())
             .spawn(move || {
-                let result = prepare(resolver.as_ref(), &node, max_bytes);
-                let _ = tx.send(OpenOutcome { request, node_id: node, result });
+                let result = prepare_target(resolver.as_ref(), &job_target, max_bytes);
+                let _ = tx.send(OpenOutcome { request, node_id: job_anchor, result });
             });
         match spawned {
             Ok(_) => {
-                self.pending = Some(node_id.to_owned());
+                self.pending = Some(anchor);
                 Vec::new()
             }
             Err(error) => {
                 tracing::error!("portal bundle open worker failed to start: {error}");
-                vec![state_event(node_id.to_owned(), None, BundleState::Unavailable)]
+                vec![state_event(anchor, None, BundleState::Unavailable)]
             }
         }
     }
@@ -672,7 +783,7 @@ impl BundleHost {
         for notice in self.gate.take_notices() {
             match notice {
                 GateNotice::Left { node_id, label } => {
-                    if self.shown.as_ref().is_some_and(|shown| shown.node_id == node_id) {
+                    if self.shown.as_ref().is_some_and(|shown| shown.target.anchor() == node_id) {
                         self.shown = None;
                     }
                     events.push(state_event(node_id, Some(&label), BundleState::Closed));
@@ -736,14 +847,16 @@ impl BundleHost {
                     .is_some_and(|(package_id, content_hash)| admission::consents(event, package_id, content_hash)),
                 _ => false,
             };
-            let node_id = self.shown.as_ref().map(|shown| shown.node_id.clone());
-            return match node_id {
-                Some(node_id) if consented => self.reopen(&node_id, webview),
+            let target = self.shown.as_ref().map(|shown| shown.target.clone());
+            return match target {
+                Some(target) if consented => self.reopen(&target, webview),
                 _ => Vec::new(),
             };
         };
-        // An event naming the build revokes it even when the view lags the bus.
-        let named = event.and_then(|event| admission::revocation_for(event, mount.build()));
+        // An event naming the build revokes it even when the view lags the bus; only an audited Owner override for
+        // this build in this verse keeps it past a list entry (overrides are local and never withdrawn).
+        let overridden = self.overridden(&mount);
+        let named = event.and_then(|event| admission::revocation_for(event, mount.build(), overridden));
         let rejudged = self.rejudge(&mount);
         let refused = named.or_else(|| match &rejudged {
             Some(Rejudge::Refuse(state)) => Some(state.clone()),
@@ -755,8 +868,8 @@ impl BundleHost {
         let consented = mount.mode == MountMode::Static
             && event.is_some_and(|event| admission::consents(event, &mount.package_id, &mount.content_hash));
         match rejudged {
-            Some(Rejudge::Promote) => self.reopen(&mount.node_id, webview),
-            _ if consented => self.reopen(&mount.node_id, webview),
+            Some(Rejudge::Promote) => self.reopen(&mount.target, webview),
+            _ if consented => self.reopen(&mount.target, webview),
             Some(Rejudge::Restate(state)) => vec![state_event(mount.node_id.clone(), Some(&mount.label), state)],
             _ => Vec::new(),
         }
@@ -764,20 +877,25 @@ impl BundleHost {
 
     /// The node's bytes arrived or its `portal.bundle_asset` changed: an open, unrevoked portal reloads under the new state.
     pub fn refresh(&mut self, node_id: &str, webview: &mut dyn BundleWebview) -> Vec<BrowserEvent> {
+        self.refresh_target(&BundleTarget::Node(node_id.to_owned()), webview)
+    }
+
+    /// [`refresh`](Self::refresh) for any target: a bound bundle's binding or installed build changed.
+    pub fn refresh_target(&mut self, target: &BundleTarget, webview: &mut dyn BundleWebview) -> Vec<BrowserEvent> {
         let in_force = self
             .shown
             .as_ref()
-            .is_some_and(|shown| shown.node_id == node_id && !shown.revoked);
+            .is_some_and(|shown| shown.target == *target && !shown.revoked);
         if !in_force {
             return Vec::new();
         }
-        self.reopen(node_id, webview)
+        self.reopen(target, webview)
     }
 
     /// A fresh governance verdict for `mount`, when the resolver carries a view.
     fn rejudge(&self, mount: &Mount) -> Option<Rejudge> {
         let view = self.resolver.as_deref()?.governance()?;
-        let verdict = admission::verdict(view, &mount.node_id, &mount.identity());
+        let verdict = admission::verdict(view, &mount.target, &mount.identity());
         Some(admission::rejudge(
             &verdict,
             mount.mode,
@@ -786,11 +904,20 @@ impl BundleHost {
         ))
     }
 
+    /// An audited verse-Owner override covers `mount`'s build at its target (governance.md §kill-list-override).
+    fn overridden(&self, mount: &Mount) -> bool {
+        self.resolver
+            .as_deref()
+            .and_then(|resolver| resolver.governance())
+            .is_some_and(|view| view.kill_list_override(&mount.target, &mount.content_hash))
+    }
+
     /// Install a prepared build unless governance changed while it was prepared.
     fn checked_install(&mut self, mut mount: Mount, webview: &mut dyn BundleWebview) -> Vec<BrowserEvent> {
         let signals = std::mem::take(&mut self.signals_since_open);
+        let overridden = self.overridden(&mount);
         let raced = signals.iter().find_map(|signal| match signal {
-            AdmissionSignal::Event(event) => admission::revocation_for(event, mount.build()),
+            AdmissionSignal::Event(event) => admission::revocation_for(event, mount.build(), overridden),
             AdmissionSignal::ListAccepted => None,
         });
         let rejudged = self.rejudge(&mount);
@@ -807,8 +934,8 @@ impl BundleHost {
         match rejudged {
             // Admitted while it was prepared as Static: prepare again on the admitted label.
             Some(Rejudge::Promote) => {
-                let node_id = mount.node_id.clone();
-                self.start(&node_id)
+                let target = mount.target.clone();
+                self.start(&target)
             }
             Some(Rejudge::Restate(BundleState::StaticSandbox { can_admit })) => {
                 mount.can_admit = can_admit;
@@ -825,7 +952,7 @@ impl BundleHost {
         }
         let state = mount.state();
         let node_id = mount.node_id.clone();
-        if let Some(shown) = self.shown.as_mut().filter(|shown| shown.node_id == node_id) {
+        if let Some(shown) = self.shown.as_mut().filter(|shown| shown.target == mount.target) {
             shown.pair = Some(mount.pair());
             shown.revoked = false;
         }
@@ -868,25 +995,25 @@ impl BundleHost {
         vec![state_event(mount.node_id.clone(), None, state)]
     }
 
-    /// Reload `node_id` under its current state without closing the portal (no Closed; the badge changes when it lands).
-    fn reopen(&mut self, node_id: &str, webview: &mut dyn BundleWebview) -> Vec<BrowserEvent> {
+    /// Reload `target` under its current state without closing the portal (no Closed; the badge changes when it lands).
+    fn reopen(&mut self, target: &BundleTarget, webview: &mut dyn BundleWebview) -> Vec<BrowserEvent> {
         if self.resolver.is_none() {
             return Vec::new();
         }
         self.latest_request = self.latest_request.wrapping_add(1);
         self.pending = None;
         self.teardown(webview);
-        match self.shown.as_mut().filter(|shown| shown.node_id == node_id) {
+        match self.shown.as_mut().filter(|shown| shown.target == *target) {
             Some(shown) => shown.revoked = false,
             None => {
                 self.shown = Some(Shown {
-                    node_id: node_id.to_owned(),
+                    target: target.clone(),
                     pair: None,
                     revoked: false,
                 })
             }
         }
-        self.start(node_id)
+        self.start(target)
     }
 
     fn mark_revoked(&mut self, pair: Option<(String, String)>) {

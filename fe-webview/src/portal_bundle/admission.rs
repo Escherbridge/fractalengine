@@ -2,7 +2,7 @@
 
 use serde::{Deserialize, Serialize};
 
-use super::mount::{AdmissionVerdict, BundleIdentity, MountMode};
+use super::mount::{AdmissionVerdict, BundleIdentity, BundleTarget, MountMode};
 use crate::ipc::{BlockedReason, BundleState, RevokedReason};
 
 // ---------------------------------------------------------------------------
@@ -47,14 +47,14 @@ pub struct AdmissionRecord {
     pub capability_digest: String,
 }
 
-/// How the accepted kill list (layer d) treats one digest on this peer.
+/// How the accepted kill list (layer d) treats one build at one target on this peer.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum KillListStatus {
     #[default]
     Clear,
-    /// An accepted entry's `content_hash` equals the digest, whatever `package_id` the entry names.
+    /// An accepted entry's `content_hash` equals one of the build's digests, whatever `package_id` the entry names.
     Listed,
-    /// Listed, with an audited verse-Owner override for this peer (steer 2026-11-08 22:00).
+    /// Listed, with an audited verse-Owner override for this build in the target's verse on this peer (steer 2026-11-08 22:00).
     Overridden,
 }
 
@@ -62,14 +62,18 @@ pub enum KillListStatus {
 pub trait GovernanceView: Send + Sync + 'static {
     /// Layer (b): Disable all, or `FE_EXT_DISABLE_ALL=1`.
     fn host_disabled(&self) -> bool;
-    /// Layer (d) for one 64-hex digest; takes no package id, so an entry can never be narrowed by one.
-    fn kill_list(&self, digest: &str) -> KillListStatus;
+    /// Layer (d): an accepted entry names any of `digests` (`RevocationSet::is_revoked_any`); never narrowed by a package id.
+    fn kill_listed(&self, digests: &[&str]) -> bool;
+    /// An audited verse-Owner override keyed `(verse of target, content_hash)` on this peer; none by default.
+    fn kill_list_override(&self, _target: &BundleTarget, _content_hash: &str) -> bool {
+        false
+    }
     /// The record keyed by this exact pair, if any.
     fn record(&self, package_id: &str, content_hash: &str) -> Option<AdmissionRecord>;
-    /// May the local identity admit this build at `node_id` (trust root, verse policy, role; sibling R18-R19)?
-    fn can_admit(&self, node_id: &str, identity: &BundleIdentity) -> bool;
-    /// A verse-policy ceiling forbids rendering this build at `node_id` (A-12); none by default.
-    fn render_ceiling(&self, _node_id: &str, _identity: &BundleIdentity) -> bool {
+    /// May the local identity admit this build at `target` (trust root, verse policy, role; sibling R18-R19)?
+    fn can_admit(&self, target: &BundleTarget, identity: &BundleIdentity) -> bool;
+    /// A verse-policy ceiling forbids rendering this build at `target` (A-12); none by default.
+    fn render_ceiling(&self, _target: &BundleTarget, _identity: &BundleIdentity) -> bool {
         false
     }
 }
@@ -101,8 +105,14 @@ pub fn decide(identity: &BundleIdentity, inputs: &AdmissionInputs) -> AdmissionV
     if inputs.host_disabled || locally_disabled {
         return AdmissionVerdict::Revoked(RevokedReason::KillSwitch);
     }
-    // 4. Kill-listed under any id (unless overridden), or governance's own record says so.
-    if inputs.kill_list == KillListStatus::Listed || record_is(RecordState::Revoked) {
+    // 4. Kill-listed under any id, or governance's record says revoked. An audited Owner override for this build in
+    //    this verse spares both the listing and a list-caused record; the build then renders as its record allows,
+    //    so IPC returns only on a fresh Admit (admission.md §3, §4.7).
+    let list_spared = inputs.kill_list == KillListStatus::Overridden;
+    let record_revoked = record.is_some_and(|record| {
+        record.state == RecordState::Revoked && !(list_spared && record.reason == RecordReason::RevocationList)
+    });
+    if inputs.kill_list == KillListStatus::Listed || record_revoked {
         return AdmissionVerdict::Revoked(RevokedReason::RevocationList);
     }
     // 5. The record was withdrawn: consent revoked, policy removal, role drop.
@@ -131,39 +141,43 @@ pub fn decide(identity: &BundleIdentity, inputs: &AdmissionInputs) -> AdmissionV
     }
 }
 
-/// Combine the list status of one build's digests: an override on any digest names the build.
-pub fn kill_list_status(view: &dyn GovernanceView, digests: &[&str]) -> KillListStatus {
-    let statuses: Vec<KillListStatus> = digests.iter().map(|digest| view.kill_list(digest)).collect();
-    if statuses.contains(&KillListStatus::Overridden) {
-        KillListStatus::Overridden
-    } else if statuses.contains(&KillListStatus::Listed) {
-        KillListStatus::Listed
-    } else {
+/// Layer (d) for one build: listed when any digest matches; the override is per build and verse, never per digest.
+pub fn kill_list_status(
+    view: &dyn GovernanceView,
+    target: &BundleTarget,
+    digests: &[&str],
+    content_hash: &str,
+) -> KillListStatus {
+    if !view.kill_listed(digests) {
         KillListStatus::Clear
+    } else if view.kill_list_override(target, content_hash) {
+        KillListStatus::Overridden
+    } else {
+        KillListStatus::Listed
     }
 }
 
-/// The full verdict for a build opened at `node_id`: the mount's admission source when governance is injected.
-pub fn verdict(view: &dyn GovernanceView, node_id: &str, identity: &BundleIdentity) -> AdmissionVerdict {
+/// The full verdict for a build opened at `target`: the mount's admission source when governance is injected.
+pub fn verdict(view: &dyn GovernanceView, target: &BundleTarget, identity: &BundleIdentity) -> AdmissionVerdict {
     decide(
         identity,
         &AdmissionInputs {
             host_disabled: view.host_disabled(),
-            kill_list: kill_list_status(view, &identity.digests()),
+            kill_list: kill_list_status(view, target, &identity.digests(), &identity.content_hash),
             record: view.record(&identity.package_id, &identity.content_hash),
-            render_ceiling: view.render_ceiling(node_id, identity),
-            can_admit: view.can_admit(node_id, identity),
+            render_ceiling: view.render_ceiling(target, identity),
+            can_admit: view.can_admit(target, identity),
         },
     )
 }
 
-/// The scope-free verdict behind the summary read's `admission` (README §8.5): no ceiling, no `can_admit`.
-pub fn record_verdict(view: &dyn GovernanceView, identity: &BundleIdentity) -> AdmissionVerdict {
+/// The verdict behind the summary read's `admission` (README §8.5): no ceiling, no `can_admit`; `target` scopes the override only.
+pub fn record_verdict(view: &dyn GovernanceView, target: &BundleTarget, identity: &BundleIdentity) -> AdmissionVerdict {
     decide(
         identity,
         &AdmissionInputs {
             host_disabled: view.host_disabled(),
-            kill_list: kill_list_status(view, &identity.digests()),
+            kill_list: kill_list_status(view, target, &identity.digests(), &identity.content_hash),
             record: view.record(&identity.package_id, &identity.content_hash),
             render_ceiling: false,
             can_admit: false,
@@ -171,13 +185,16 @@ pub fn record_verdict(view: &dyn GovernanceView, identity: &BundleIdentity) -> A
     )
 }
 
-/// Rules 3-4 before any byte is read, from the asset row's blob hash: what a resolver puts in `BundleSource::revoked`.
-pub fn revoked_before_bytes(view: &dyn GovernanceView, blob_hash: Option<&str>) -> Option<RevokedReason> {
+/// Rules 3-4 before any byte is parsed, from the blob hash: what a resolver puts in `BundleSource::revoked`.
+///
+/// The override lookup keys on the blob hash, which is the `content_hash` of an unsealed build only, so a sealed
+/// build whose archive digest is listed stays refused here even under an override (fails closed).
+pub fn revoked_before_bytes(view: &dyn GovernanceView, target: &BundleTarget, blob_hash: Option<&str>) -> Option<RevokedReason> {
     if view.host_disabled() {
         return Some(RevokedReason::KillSwitch);
     }
     blob_hash
-        .filter(|digest| kill_list_status(view, &[*digest]) == KillListStatus::Listed)
+        .filter(|digest| kill_list_status(view, target, &[*digest], *digest) == KillListStatus::Listed)
         .map(|_| RevokedReason::RevocationList)
 }
 
@@ -248,17 +265,30 @@ pub struct MountedBuild<'a> {
     pub package_id: &'a str,
     pub content_hash: &'a str,
     pub archive_digest: &'a str,
+    pub member_digests: &'a [String],
     pub mode: MountMode,
 }
 
-/// The state an event forces on a mounted build, matched without the view (so a view lagging the bus cannot keep it loaded).
-pub fn revocation_for(event: &AdmissionEvent, build: MountedBuild<'_>) -> Option<BundleState> {
+impl MountedBuild<'_> {
+    /// True when `digest` is one of the build's kill-list keys (admission.md §4.2).
+    fn named_by(&self, digest: &str) -> bool {
+        digest == self.content_hash
+            || digest == self.archive_digest
+            || self.member_digests.iter().any(|member| member == digest)
+    }
+}
+
+/// The state an event forces on a mounted build, matched without the view (so a view lagging the bus cannot keep it
+/// loaded). `overridden`: an audited verse-Owner override covers this build at its target, so a list entry spares it.
+pub fn revocation_for(event: &AdmissionEvent, build: MountedBuild<'_>, overridden: bool) -> Option<BundleState> {
     let same_pair = event.package_id == build.package_id && event.content_hash == build.content_hash;
-    let names_build = event.content_hash == build.content_hash || event.content_hash == build.archive_digest;
+    let names_build = build.named_by(&event.content_hash);
     let reason = match (event.state, event.reason) {
         // Layer (b) is host-wide: it unloads whatever is mounted, static included.
         (RecordState::Disabled, RecordReason::DisableAll) => RevokedReason::KillSwitch,
-        // Layer (d) matches by hash under any package id.
+        // Governance.md "Arrival": an accepted list does not stop a build the Owner overrode in this verse.
+        (RecordState::Revoked, RecordReason::RevocationList) if overridden => return None,
+        // Layer (d) matches by hash (content, archive or member digest) under any package id.
         (RecordState::Revoked, _) if names_build => RevokedReason::RevocationList,
         (RecordState::Disabled, RecordReason::LocalDisable) if same_pair => RevokedReason::KillSwitch,
         (RecordState::Disabled | RecordState::PolicyDenied, _) if same_pair => RevokedReason::AdmissionWithdrawn,
@@ -317,6 +347,7 @@ mod tests {
             archive_digest: "z1".into(),
             publisher_did: publisher.map(str::to_owned),
             capability_digest: capability_digest.into(),
+            member_digests: vec!["m1".into()],
         }
     }
 
@@ -371,6 +402,12 @@ mod tests {
                 AdmissionInputs { kill_list: KillListStatus::Overridden, ..admitted.clone() },
                 AdmissionVerdict::Admitted { publisher_did: PUBLISHER.into() },
             ),
+            (
+                "4: a list-revoked record yields to the override, and IPC waits for a fresh Admit",
+                sealed.clone(),
+                AdmissionInputs { kill_list: KillListStatus::Overridden, ..with(record(State::Revoked, Why::RevocationList)) },
+                AdmissionVerdict::Unadmitted { can_admit: true },
+            ),
             ("5: consent revoked", sealed.clone(), with(record(State::Disabled, Why::ConsentRevoked)), revoked(RevokedReason::AdmissionWithdrawn)),
             ("5: role dropped below policy", sealed.clone(), with(record(State::PolicyDenied, Why::RoleLost)), revoked(RevokedReason::AdmissionWithdrawn)),
             (
@@ -395,16 +432,19 @@ mod tests {
             assert_eq!(decide(&identity, &inputs), expected, "{row}");
         }
 
+        let members = vec!["m1".to_owned()];
         let build = MountedBuild {
             package_id: "org.example.a",
             content_hash: "h1",
             archive_digest: "z1",
+            member_digests: &members,
             mode: MountMode::Admitted,
         };
         let state = |reason| Some(BundleState::Revoked(reason));
         for (row, event, expected) in [
             ("list entry under a renamed id", event("org.example.renamed", "h1", State::Revoked, Why::RevocationList), state(RevokedReason::RevocationList)),
             ("list entry naming the archive digest", event("org.example.x", "z1", State::Revoked, Why::RevocationList), state(RevokedReason::RevocationList)),
+            ("list entry naming one member (a repackaged build)", event("org.example.y", "m1", State::Revoked, Why::RevocationList), state(RevokedReason::RevocationList)),
             ("list entry for another build", event("org.example.a", "h9", State::Revoked, Why::RevocationList), None),
             ("disable all reaches any mount", event("org.example.other", "h9", State::Disabled, Why::DisableAll), state(RevokedReason::KillSwitch)),
             ("local disable of this pair", event("org.example.a", "h1", State::Disabled, Why::LocalDisable), state(RevokedReason::KillSwitch)),
@@ -414,8 +454,15 @@ mod tests {
             ("uninstalled while admitted", event("org.example.a", "h1", State::Removed, Why::Uninstalled), state(RevokedReason::AdmissionWithdrawn)),
             ("consent changes nothing here", event("org.example.a", "h1", State::Admitted, Why::Consented), None),
         ] {
-            assert_eq!(revocation_for(&event, build), expected, "{row}");
+            assert_eq!(revocation_for(&event, build, false), expected, "{row}");
         }
+        // Governance.md "Arrival": the Owner's override spares a list entry, never Disable all or a withdrawal.
+        let listed = event("org.example.renamed", "h1", State::Revoked, Why::RevocationList);
+        assert_eq!(revocation_for(&listed, build, true), None, "overridden in this verse");
+        let disable_all = event("org.example.other", "h9", State::Disabled, Why::DisableAll);
+        assert_eq!(revocation_for(&disable_all, build, true), state(RevokedReason::KillSwitch));
+        let withdrawn = event("org.example.a", "h1", State::Disabled, Why::ConsentRevoked);
+        assert_eq!(revocation_for(&withdrawn, build, true), state(RevokedReason::AdmissionWithdrawn));
         let consent = event("org.example.a", "h1", State::Admitted, Why::Consented);
         assert!(consents(&consent, "org.example.a", "h1"));
         assert!(!consents(&event("org.example.a", "h1", State::Admitted, Why::Restored), "org.example.a", "h1"), "restored never remounts");
@@ -441,6 +488,53 @@ mod tests {
             ),
         ] {
             assert_eq!(rejudge(&verdict, mode, Some(PUBLISHER), can_admit), expected, "{row}");
+        }
+
+        // Layer (d) over a view: any digest lists the build; the override is keyed (target's verse, content_hash),
+        // so an override recorded under another digest or another target never clears it (review-p4.md P4-05).
+        let node = BundleTarget::Node("node-a".into());
+        let elsewhere = BundleTarget::Node("node-b".into());
+        let view = |listed: &'static str, overrides: Vec<(BundleTarget, &'static str)>| ListView { listed, overrides };
+        for (row, view, target, expected) in [
+            ("a member digest lists the build", view("m1", vec![]), &node, KillListStatus::Listed),
+            ("nothing listed", view("other", vec![(node.clone(), "h1")]), &node, KillListStatus::Clear),
+            ("overridden for this build here", view("m1", vec![(node.clone(), "h1")]), &node, KillListStatus::Overridden),
+            ("an override in another verse", view("m1", vec![(elsewhere.clone(), "h1")]), &node, KillListStatus::Listed),
+            ("an override keyed by a member digest", view("h1", vec![(node.clone(), "m1")]), &node, KillListStatus::Listed),
+        ] {
+            assert_eq!(kill_list_status(&view, target, &sealed.digests(), &sealed.content_hash), expected, "{row}");
+        }
+        let blob_listed = view("z1", vec![(node.clone(), "h1")]);
+        assert_eq!(
+            revoked_before_bytes(&blob_listed, &node, Some("z1")),
+            Some(RevokedReason::RevocationList),
+            "a sealed archive digest refuses before any byte, whatever the content-hash override"
+        );
+        let unsealed_overridden = view("z1", vec![(node.clone(), "z1")]);
+        assert_eq!(revoked_before_bytes(&unsealed_overridden, &node, Some("z1")), None, "unsealed: blob hash = content_hash");
+    }
+
+    /// A list view: one listed digest, overrides as `(target, content_hash)`.
+    struct ListView {
+        listed: &'static str,
+        overrides: Vec<(BundleTarget, &'static str)>,
+    }
+
+    impl GovernanceView for ListView {
+        fn host_disabled(&self) -> bool {
+            false
+        }
+        fn kill_listed(&self, digests: &[&str]) -> bool {
+            digests.contains(&self.listed)
+        }
+        fn kill_list_override(&self, target: &BundleTarget, content_hash: &str) -> bool {
+            self.overrides.iter().any(|(at, hash)| at == target && *hash == content_hash)
+        }
+        fn record(&self, _package_id: &str, _content_hash: &str) -> Option<AdmissionRecord> {
+            None
+        }
+        fn can_admit(&self, _target: &BundleTarget, _identity: &BundleIdentity) -> bool {
+            true
         }
     }
 }

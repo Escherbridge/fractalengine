@@ -29,6 +29,18 @@ below are the rationale for those files; §reviews-and-open lists the gate verdi
 
 - **One live mount** (`Table::live: Option<Arc<Mount>>`, A-7). Opening another bundle closes
   the first.
+- **Targets** (`BundleTarget`, turn 2 P-WV for B10f). An Open names a repository node
+  (`Node`, the original path) or a scope's bound bundle (`Bound { petal_id, package_id }`,
+  bindings.md §6 `portal.open`). `BundleHost::open_target` and `prepare_target` take either;
+  `open`/`prepare`/`refresh` keep their node signatures. `BundleResolver::resolve_bound` resolves
+  the installed build the nearest-scope binding selects on this peer (Unavailable by default), and
+  `prepare_target` refuses bytes of any other package (Blocked — integrity). Only a local Open
+  calls it, so a replicated binding row never mounts anything (D-X5).
+  - `Mount::node_id` is the target's **anchor**: the node id, or `binding:<petal_id>:<package_id>`,
+    which no page can name (`ipc::is_node_id` refuses `:`). Chrome events carry it.
+  - A bound target reads no feeds and reports `repository_node_id: null` in `hello`; the broker
+    derives the petal from `BindRequest::target`. One origin per (publisher, package), so a bundle
+    bound at two scopes shares storage, like any admitted update.
 - **Readers snapshot, the main thread writes.** Protocol workers clone the `Arc<Mount>` under a
   read lock and release it before any I/O; install, unmount, leave and revoke happen only on the
   Bevy main thread (navigation callbacks run there too). Never hold the lock across a webview call.
@@ -43,11 +55,14 @@ below are the rationale for those files; §reviews-and-open lists the gate verdi
   spawns one short-lived `fe-portal-open` thread. A request counter voids stale outcomes, so only
   the latest Open ever mounts.
 - **Order inside `prepare`** follows admission.md §2: resolver-reported revocation (kill switch,
-  hash-matched kill list) → bytes present → size cap → header/seal verification → validator →
-  identity (`content_hash`) → governance verdict → label, CSP, entry URL.
-  - Residual: a revocation that governance can only match by `(package_id, content_hash)` is
-    decided after the header phase and the validator, not before. Nothing is rendered or served
-    either way.
+  hash-matched kill list) → bytes present → size cap → archive digest against the list →
+  header/seal verification → validator → identity (`content_hash`, member digests) → governance
+  verdict → label, CSP, entry URL.
+  - Residual: a list entry naming the `content_hash` or a member digest is decided after the
+    header phase and the validator, not before. Nothing is rendered or served either way.
+- **Member digests** are kill-list keys (admission.md §4.2). Sealed: the signed `members.json`
+  values, which `read_member` enforces on every served byte. Unsealed: hashed here, one member at
+  a time under the binary per-entry cap. They catch a killed bundle repackaged with the same files.
 - **Admitted needs a seal by the admitting publisher.** The archive opens under
   `VerifyIfSealed`, which enforces any seal that is present; requiring
   `IntegrityStatus::Sealed { publisher_did }` to equal the verdict's publisher is the same
@@ -93,8 +108,9 @@ below are the rationale for those files; §reviews-and-open lists the gate verdi
   is Blocked — malformed manifest), and every other value is a constant. This is because wry
   silently drops a non-ASCII header value (F-1); the journey asserts `to_str()` on every response.
 - **Range**: one `bytes=` range → 206; several or malformed → 200 full; out of bounds → 416.
-- `/__fe/…` is the extension point for S2 (`portal-v1.js`, Admitted only) and S4 (`feeds.json`,
-  Static only); S1 answers 404 for all of it.
+- `/__fe/…` answers 404 in `protocol::serve`, so no member ever shadows a host path. The
+  wrappers answer their own path on that 404: `ipc::serve` (`portal-v1.js`, Admitted only) and
+  `feeds::serve` (`feeds.json`, Static only), which is the handler the backend registers.
 
 ## §csp — csp.rs
 
@@ -154,8 +170,8 @@ below are the rationale for those files; §reviews-and-open lists the gate verdi
 ## §residuals and deferred
 
 - The mid-flight 410 row has no headless test: it needs a pause seam between read and recheck.
-- SP-1..SP-9 have not been run (code-first swarm). P-2 (native `WebMessageReceived`) belongs to
-  S2; P-3 is deferred.
+- SP-1..SP-9 have not been run (code-first swarm). P-2 (native `WebMessageReceived`) is built
+  (§ipc "Native ingress"); P-3 is deferred.
 - Per-origin storage clear (SP-6), the revoke listener and `/__fe/feeds.json` landed with S4 (`fc29e431`). The clear is unrun until SP-6 is spiked.
 - "Waiting → bytes arrive → mount" needs a re-Open from the chrome (S3) or S4's listener.
 - The binary must insert `plugin::PortalBundleResolver`. Without it, every Open is Unavailable.
@@ -170,15 +186,25 @@ below are the rationale for those files; §reviews-and-open lists the gate verdi
 
 - **Verdict ladder.** `decide` returns the first match, in this order:
   1. host-wide disable, or this installation locally disabled, gives `Revoked(KillSwitch)`;
-  2. kill-listed under any id (unless an audited verse-Owner override applies), or governance's record is `revoked`, gives `Revoked(RevocationList)`;
+  2. kill-listed under any id, or governance's record is `revoked`, gives `Revoked(RevocationList)`. An audited verse-Owner
+     override for this build in this verse spares the listing and a list-caused (`revocation-list`) record, never another cause;
   3. record `disabled` or `policy_denied` gives `Revoked(AdmissionWithdrawn)`;
   4. verse-policy ceiling gives `Blocked(VersePolicy)`;
   5. an `Admitted` record for the exact `(package_id, content_hash)` pair, sealed by the consented publisher and carrying the build's capability digest, gives `Admitted`;
   6. otherwise `Unadmitted { can_admit }`, where `can_admit` requires a seal. An unsealed build is never admitted (D-X5).
-- **Kill list matches by digest, never by id.** `GovernanceView::kill_list` takes no package id. An entry matches when its
-  `content_hash` or archive digest equals the build's. The entry's `package_id` is informational and never narrows the match
-  (orchestrator steer 2026-11-08 20:45). The residual is repackaging: new bytes and a new signature are caught only by
-  publisher-key revocation.
+- **Kill list matches by digest, never by id.** `GovernanceView::kill_listed(&[digests])` mirrors the sibling's
+  `RevocationSet::is_revoked_any` and takes no package id. The portal passes the `content_hash`, the archive digest and every
+  member digest (`BundleIdentity::digests`); an entry naming any of them matches. The entry's `package_id` is informational and
+  never narrows the match (orchestrator steer 2026-11-08 20:45). The residual is genuine repackaging: new bytes in every member
+  under a new signature are caught only by publisher-key revocation.
+- **Override is per build and verse, never per digest** (governance.md §kill-list-override: key `(verse_id, content_hash)` on
+  this host). `GovernanceView::kill_list_override(target, content_hash)`; the target names the verse. This closes P4-05 (an
+  override on one digest clearing a listing on another). `revocation_for(.., overridden)` lets a list event pass a build the
+  Owner overrode here, per governance.md "Arrival" (closes P4-04); Disable all and withdrawals still unload it. Overrides are
+  local and never withdrawn (E10 default), so a lagging view can only miss a fresh one, which fails closed.
+  - Residual: the pre-byte check keys the override on the blob hash, which is the `content_hash` only when unsealed. A sealed
+    build whose *archive digest* is listed is refused before bytes even under an override. Lists key on `content_hash`
+    (store-client v1), so this bites only a list naming a sealed archive.
 - **Re-consent is digest-bound.** A record admits exactly one capability digest. The digest covers CSP, navigation,
   subscriptions, commands, hooks, streams and intents, so a capability increase cannot slip through as a same-id update.
 - **Open question (OD-7, not settled in code).** Records are keyed on the exact pair, so a same-publisher update with no
@@ -191,9 +217,7 @@ below are the rationale for those files; §reviews-and-open lists the gate verdi
 - **Layers.** Host-wide disable unloads any mount, static included. Kill-list matching by hash applies at open (archive digest
   before any byte is parsed) and in `revocation_for` for live mounts.
 
-Residuals (review-p4.md): P4-04, an audited override still revokes on a `revoked` event naming that build (fails closed);
-P4-05, an override on one digest can clear a listing on the other, while the pre-byte check is stricter (both fail closed).
-The intended per-entry override semantics belong in the governance contract.
+P4-04 and P4-05 (review-p4.md) are closed by the per-build override above (turn 2, P-WV).
 
 ## §feeds — feeds.rs (admission.md §7)
 
@@ -223,6 +247,36 @@ The intended per-entry override semantics belong in the governance contract.
    pending-reply cap is not reached.
 
 Senders that fail checks 1-2 get no reply. They are dropped and counted, so an external site or a stale document learns nothing.
+
+**Native ingress (SP-9, P-2).** wry's `with_ipc_handler` is never registered: wry builds its request with
+`Request::builder().uri(source)...unwrap()`, and a `Source` over 65 534 bytes panics inside a COM callback, which aborts the
+app. `backends/tauri.rs::install_ipc_handler` adds its own `ICoreWebView2::add_WebMessageReceived` handler (wry's handler
+stays inert without an IPC closure) and calls `PortalBridge::receive`:
+
+- `Source` and the body are copied by `take_bounded`, which scans for the terminator only up to the cap (8 192 and 65 536
+  UTF-16 units; a unit is at least one UTF-8 byte) and frees the CoTaskMem buffer on every path. Longer, non-UTF-16 or
+  unreadable parts become `None` and are never converted. A non-string `postMessage` fails `TryGetWebMessageAsString`.
+- **Sender first.** `receive` runs check 1 on the mount table alone and only then calls the body reader, so no unauthorised
+  page's body is ever read. Neither the reader nor any webview call runs under the bridge lock.
+- A `None` part is dropped as `dropped_origin` without a reply, like a foreign sender. The page API rejects an over-cap
+  envelope itself before posting. Check 3 still answers `invalid` for a body whose UTF-8 bytes exceed the cap.
+- **No panic paths.** Nothing on the path unwraps or indexes page data: the prefix and id slices end on verified ASCII
+  bytes, locks recover from poisoning, and `origin::split` slices at found char boundaries. `panic = "abort"` makes any panic
+  here fatal, so keep it that way.
+- Lock rule the handler relies on: no bridge-locked or mount-locked section calls into WebView2. A re-entrant event would
+  otherwise find the std `Mutex` held by its own thread.
+
+**Role ceiling** (steer 2026-11-08 23:40). `BindRequest::viewer_ceiling` carries the viewer token's `max_role` (`Owner` for the
+in-app local viewer, set with `PortalBridge::set_viewer_ceiling`). The broker opens the bus client at the installing identity's
+role at the target's scope, capped there, and reports it as `BrokerClient::role_ceiling`; P-BROKER passes it to
+`Bus::open_portal_client`.
+
+- A reported ceiling above the viewer cap is a broker fault: the client is closed unused, and every call answers
+  `unavailable` (fail closed).
+- A changed viewer ceiling rebinds on the next pump. Live streams get `ended` with `reason: "role-changed"`, a waiting
+  subscribe answers `unavailable`, and a waiting call answers `unknown_outcome`.
+- `act` below Editor answers `role_denied` before the write path, audited through `audit_refusal`. The DB still judges every
+  write at use.
 
 **Document tokens.** A token is 128 bits of BLAKE3 keyed by a per-process secret, minted once per (mount, generation).
 `portal-v1.js` is served only for Admitted mounts, with `Cache-Control: no-store` and CORP same-origin, so other origins
@@ -261,10 +315,9 @@ JSON. There is no variable `eval`; `evaluate_script` appears only for fixed `his
 **Lock order.** Protocol workers and the native handler never hold the mount `RwLock` while taking the bridge mutex.
 `ipc::serve` reads the generation before `document_token`.
 
-**Open.** The steer of 2026-11-08 23:40 requires every `Caller { .. }` literal to carry `role_ceiling`, so a portal
-action is capped at the installing identity's role at the bundle's scope. No `Caller` literal in fe-webview sets it yet
-(checked at `eb909b4c`). This must land before the first build. Residuals: SP-3 (an envelope queued just before a leave
-may still reach the new page) and the OD-3 cadence question for the sibling.
+**Open.** fe-webview builds no bus `Caller`; the ceiling crosses the seam as above, and P-BROKER must open every portal
+client through `Bus::open_portal_client(installing_did, role_ceiling, ..)`. Residuals: SP-3 (an envelope queued just before
+a leave may still reach the new page) and the OD-3 cadence question for the sibling.
 
 ## §reviews-and-open — where the verdicts live
 

@@ -658,9 +658,13 @@ impl BridgeWebview for TauriBackend {
     }
 }
 
-/// Page → host (P-2): a native `WebMessageReceived` handler; wry's `with_ipc_handler` is never registered (SP-9).
+/// Page → host (P-2, SP-9): a native `WebMessageReceived` handler, so wry's `with_ipc_handler` (whose
+/// `Request::builder().uri(source).unwrap()` aborts the app on a long `Source`) is never registered. `Source` is read
+/// within its cap and judged first; the body is read, within its cap, only for the live Admitted mount's origin.
+/// Nothing on this path unwraps, indexes or slices page data, so no page can panic inside the COM callback.
 #[cfg(target_os = "windows")]
 fn install_ipc_handler(webview: &WebView, mounts: PortalMounts, bridge: PortalBridge) -> anyhow::Result<()> {
+    use crate::portal_bundle::limits::{MAX_ENVELOPE_BYTES, MAX_SOURCE_BYTES};
     use webview2_com::WebMessageReceivedEventHandler;
     use windows::core::PWSTR;
     use wry::WebViewExtWindows;
@@ -668,28 +672,52 @@ fn install_ipc_handler(webview: &WebView, mounts: PortalMounts, bridge: PortalBr
     let native = webview.webview();
     let handler = WebMessageReceivedEventHandler::create(Box::new(move |_, args| {
         let Some(args) = args else { return Ok(()) };
-        let mut source = PWSTR::null();
-        // SAFETY: WebView2 fills `source` with a CoTaskMem string; take_pwstr frees it.
-        if unsafe { args.Source(&mut source) }.is_err() {
-            bridge.ingress(&mounts, "", "", std::time::Instant::now());
-            return Ok(());
-        }
-        let source = webview2_com::take_pwstr(source);
-        let mut raw_body = PWSTR::null();
-        // A non-string message (postMessage of an object) is never the page API's shape: judge it as empty.
-        // SAFETY: as above.
-        let body = if unsafe { args.TryGetWebMessageAsString(&mut raw_body) }.is_ok() {
-            webview2_com::take_pwstr(raw_body)
-        } else {
-            String::new()
+        let mut raw_source = PWSTR::null();
+        // SAFETY: on success WebView2 hands over a CoTaskMem string, which `take_bounded` frees on every path.
+        let source = match unsafe { args.Source(&mut raw_source) } {
+            Ok(()) => take_bounded(raw_source, MAX_SOURCE_BYTES),
+            Err(_) => None,
         };
-        bridge.ingress(&mounts, &source, &body, std::time::Instant::now());
+        let read_body = || {
+            let mut raw_body = PWSTR::null();
+            // A non-string message (postMessage of an object) fails here and is dropped unread.
+            // SAFETY: as above.
+            match unsafe { args.TryGetWebMessageAsString(&mut raw_body) } {
+                Ok(()) => take_bounded(raw_body, MAX_ENVELOPE_BYTES),
+                Err(_) => None,
+            }
+        };
+        bridge.receive(&mounts, source.as_deref(), read_body, std::time::Instant::now());
         Ok(())
     }));
     let mut token = 0i64;
     // SAFETY: registered on the UI thread that owns the webview; the handler lives as long as it does.
     unsafe { native.add_WebMessageReceived(&handler, &mut token) }
         .map_err(|error| anyhow::anyhow!("portal IPC handler registration failed: {error}"))
+}
+
+/// Copy a CoTaskMem string WebView2 returned and free it; `None` when null, not valid UTF-16, or longer than
+/// `max_units` UTF-16 units. A unit is at least one UTF-8 byte, so this bounds bytes too; nothing longer is converted.
+#[cfg(target_os = "windows")]
+fn take_bounded(raw: windows::core::PWSTR, max_units: usize) -> Option<String> {
+    if raw.is_null() {
+        return None;
+    }
+    // Frees the buffer when this function returns, read or refused.
+    let _owned = webview2_com::CoTaskMemPWSTR::from(raw);
+    let start = raw.as_ptr().cast_const();
+    let mut length = 0usize;
+    // SAFETY: the buffer is NUL-terminated. Index `length` is read only while every earlier unit was non-NUL and
+    // `length <= max_units`, so the scan stops at the terminator or at index `max_units`, never past either.
+    while length <= max_units && unsafe { *start.add(length) } != 0 {
+        length += 1;
+    }
+    if length > max_units {
+        return None;
+    }
+    // SAFETY: the `length` units before the terminator were just read and stay alive while `_owned` does.
+    let units = unsafe { std::slice::from_raw_parts(start, length) };
+    String::from_utf16(units).ok()
 }
 
 impl Drop for TauriBackend {

@@ -15,8 +15,8 @@ pub use ipc::{
     PendingReply, PortalBridge, PortalBroker, PortalIntent, UiIntent,
 };
 pub use mount::{
-    bundle_max_bytes, prepare, AdmissionVerdict, BundleHost, BundleIdentity, BundleParts, BundleResolver,
-    BundleSource, BundleWebview, Mount, MountMode, PortalMounts,
+    bundle_max_bytes, prepare, prepare_target, AdmissionVerdict, BundleHost, BundleIdentity, BundleParts,
+    BundleResolver, BundleSource, BundleTarget, BundleWebview, Mount, MountMode, PortalMounts,
 };
 pub use navigation::{Attempt, Current, Decision, NavigationGate, RefuseReason, UNLOAD_URL};
 pub use origin::{Label, LabelKind, SCHEME};
