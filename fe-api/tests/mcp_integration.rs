@@ -897,17 +897,7 @@ fn claims(scope: &str, role: &str) -> ApiClaims {
     }
 }
 
-/// Fire a JSON-RPC request straight at the real MCP handler.
-async fn rpc(
-    state: &Arc<ApiState>,
-    c: &ApiClaims,
-    method: &str,
-    params: serde_json::Value,
-) -> serde_json::Value {
-    rpc_on(state, &ApiHosts::default(), c, method, params).await
-}
-
-/// [`rpc`] on a host that wires the extension/binding seams in `hosts`.
+/// Fire a JSON-RPC request straight at the real MCP handler on a host that wires the extension/binding seams in `hosts`.
 async fn rpc_on(
     state: &Arc<ApiState>,
     hosts: &ApiHosts,

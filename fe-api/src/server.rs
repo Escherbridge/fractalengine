@@ -706,34 +706,6 @@ fn mount_extension_handles(handles: &[fe_sdk::ApiExtensionHandle]) -> Router<Arc
     router
 }
 
-#[cfg(test)]
-mod extension_mount_tests {
-    use super::*;
-
-    #[test]
-    fn declared_params_become_axum_params() {
-        assert_eq!(
-            extension_axum_path("/elevation-profile/:track_id"),
-            "/elevation-profile/{track_id}"
-        );
-    }
-
-    #[test]
-    fn every_builtin_extension_route_has_a_handler() {
-        for handle in builtin_extension_handles() {
-            assert!(!handle.routes.is_empty());
-            for route in &handle.routes {
-                assert!(
-                    extension_handler(&route.handler_id).is_some(),
-                    "unmounted extension route {} {}",
-                    handle.base_path,
-                    route.handler_id
-                );
-            }
-        }
-    }
-}
-
 /// Concurrency limit for `/mcp` (tower `ConcurrencyLimit` semantics: excess
 /// requests wait for a permit BEFORE their body is buffered). A semaphore
 /// middleware because `tower`'s `limit` feature is not a fe-api dependency.
@@ -792,6 +764,34 @@ async fn ready_handler(State(state): State<Arc<ApiState>>) -> impl IntoResponse 
                 StatusCode::SERVICE_UNAVAILABLE,
                 Json(serde_json::json!({ "status": "not_ready" })),
             ),
+        }
+    }
+}
+
+#[cfg(test)]
+mod extension_mount_tests {
+    use super::*;
+
+    #[test]
+    fn declared_params_become_axum_params() {
+        assert_eq!(
+            extension_axum_path("/elevation-profile/:track_id"),
+            "/elevation-profile/{track_id}"
+        );
+    }
+
+    #[test]
+    fn every_builtin_extension_route_has_a_handler() {
+        for handle in builtin_extension_handles() {
+            assert!(!handle.routes.is_empty());
+            for route in &handle.routes {
+                assert!(
+                    extension_handler(&route.handler_id).is_some(),
+                    "unmounted extension route {} {}",
+                    handle.base_path,
+                    route.handler_id
+                );
+            }
         }
     }
 }

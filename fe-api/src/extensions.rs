@@ -554,6 +554,7 @@ async fn write_verse_policy(
 
 /// Call `<package_id>/<command>` at a petal. `petal_authorized` is the caller's token-scope check on the
 /// petal (false = out of scope or unknown): it yields the same not-found as an uninstalled package.
+#[allow(clippy::too_many_arguments)] // public entry point called by the REST and MCP routes; a params struct would churn both callers
 pub async fn command(
     host: &dyn ExtensionHost,
     claims: &ApiClaims,
