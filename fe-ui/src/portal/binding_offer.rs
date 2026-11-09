@@ -72,10 +72,12 @@ pub fn portal_offer(
     }
 }
 
-/// Inspector section: the offer's Open button or its state line; returns the clicked action.
+/// Inspector section: the offer's Open button (stable accessible name "Open bound bundle") or its state line; returns
+/// the clicked action.
 pub fn show_offer(ui: &mut bevy_egui::egui::Ui, offer: &PortalOffer) -> Option<UiAction> {
+    use crate::accessibility::ResponseExt;
     match offer.open_action() {
-        Some(action) => ui.button(offer.label()).clicked().then_some(action),
+        Some(action) => ui.button(offer.label()).named(ui, "Open bound bundle").clicked().then_some(action),
         None => {
             ui.weak(offer.label());
             None

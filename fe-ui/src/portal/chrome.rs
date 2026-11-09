@@ -30,12 +30,12 @@ impl ChromeAction {
         }
     }
 
-    /// The queued action this button maps to.
-    pub fn ui_action(self) -> UiAction {
+    /// The queued action this button maps to for the open bundle's repository node.
+    pub fn ui_action(self, node_id: &str) -> UiAction {
         match self {
             Self::Close => UiAction::ClosePortal,
-            Self::Admit => UiAction::PortalAdmitBundle,
-            Self::RevokeLocal => UiAction::PortalRevokeBundle,
+            Self::Admit => UiAction::PortalAdmitBundle { node_id: node_id.to_owned() },
+            Self::RevokeLocal => UiAction::PortalRevokeBundle { node_id: node_id.to_owned() },
         }
     }
 
@@ -193,7 +193,8 @@ mod tests {
         assert_eq!(chrome_model(&BundleState::WaitingForBytes).unwrap().badge_name, "Waiting for bundle bytes");
         assert_eq!(chrome_model(&BundleState::Unavailable).unwrap().badge_name, "Embedded browsing unavailable");
         assert!(chrome_model(&BundleState::Closed).is_none());
-        assert!(matches!(ChromeAction::Admit.ui_action(), UiAction::PortalAdmitBundle));
-        assert!(matches!(ChromeAction::Close.ui_action(), UiAction::ClosePortal));
+        assert!(matches!(ChromeAction::Admit.ui_action("n1"), UiAction::PortalAdmitBundle { node_id } if node_id == "n1"));
+        assert!(matches!(ChromeAction::RevokeLocal.ui_action("n1"), UiAction::PortalRevokeBundle { node_id } if node_id == "n1"));
+        assert!(matches!(ChromeAction::Close.ui_action("n1"), UiAction::ClosePortal));
     }
 }

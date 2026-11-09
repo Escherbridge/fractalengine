@@ -55,7 +55,8 @@ pub fn route_body_limit() -> usize {
 // Local admission seam (governance owns the record; README §8.5, admission.md §2)
 // ---------------------------------------------------------------------------
 
-/// admission.md §2 state for this peer: `state` ∈ admitted | static_sandbox | revoked | blocked; `reason` a snake_case code.
+/// admission.md §2 state for this peer: `state` ∈ admitted | static_sandbox | revoked | blocked; `reason` a snake_case
+/// code (`cannot_admit` on `static_sandbox` when the local identity may not admit it, README §8.5).
 #[derive(Debug, Clone, Serialize)]
 pub struct AdmissionView {
     pub state: String,
@@ -69,6 +70,8 @@ pub struct AdmissionQuery<'a> {
     pub content_hash: &'a str,
     /// BLAKE3 of the stored archive: the blob hash.
     pub archive_digest: &'a str,
+    /// Committed member digests (sealed builds; empty when unsealed or not yet read): kill-list keys too (admission.md §4.2).
+    pub member_digests: &'a [String],
     pub sealed_by: Option<&'a str>,
     pub capability_digest: &'a str,
 }
@@ -77,7 +80,9 @@ pub struct AdmissionQuery<'a> {
 pub trait LocalAdmissionSource: Send + Sync {
     /// The host's own API client DID: a token is local only when its `client` claim names it.
     fn local_did(&self) -> String;
-    /// The §2 state of this build on this peer, scope-free (no verse ceiling, no `can_admit`).
+    /// The §2 state of this build on this peer, scope-free (no verse ceiling); a static build the local identity may not
+    /// admit (unsealed, or governance's may-admit verdict is no) carries `reason: "cannot_admit"`. Empty `package_id`
+    /// and `content_hash` mean "not yet read": judge the archive digest alone.
     fn admission(&self, bundle: &AdmissionQuery<'_>) -> Option<AdmissionView>;
 }
 
@@ -282,6 +287,11 @@ fn origin_allowed(origin: &str) -> bool {
     origin
         .parse::<url::Url>()
         .is_ok_and(|url| fe_runtime::portal_url::is_url_allowed(&url))
+}
+
+/// The committed member digests of an inspected build (kill-list keys beside `content_hash` and the archive digest).
+fn committed_member_digests(inspected: &InspectedBundle) -> Vec<String> {
+    inspected.members.iter().filter_map(|member| member.blake3.clone()).collect()
 }
 
 /// BLAKE3 hex of a file, streamed.
@@ -642,10 +652,12 @@ pub async fn get_portal_bundle(
             }
         };
     let mut fields = summary_fields(&inspected, &asset_id, &blob_hash);
+    let member_digests = committed_member_digests(&inspected);
     let query = AdmissionQuery {
         package_id: &inspected.validated.package_id,
         content_hash: &inspected.content_hash,
         archive_digest: &blob_hash,
+        member_digests: &member_digests,
         sealed_by: inspected.sealed_by.as_deref(),
         capability_digest: &inspected.validated.capability_digest,
     };
@@ -851,10 +863,12 @@ fn build_export(
     feeds: &ExportFeeds,
 ) -> Result<(Vec<u8>, String), ExportFailure> {
     let inspected = inspect_stored(store, blob_hash_hex).map_err(ExportFailure::Stored)?;
+    let member_digests = committed_member_digests(&inspected);
     let query = AdmissionQuery {
         package_id: &inspected.validated.package_id,
         content_hash: &inspected.content_hash,
         archive_digest: blob_hash_hex,
+        member_digests: &member_digests,
         sealed_by: inspected.sealed_by.as_deref(),
         capability_digest: &inspected.validated.capability_digest,
     };
@@ -993,6 +1007,7 @@ pub async fn export_portal_bundle(
         package_id: "",
         content_hash: "",
         archive_digest: &blob_hash,
+        member_digests: &[],
         sealed_by: None,
         capability_digest: "",
     };

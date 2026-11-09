@@ -1569,6 +1569,15 @@ and native_accessibility/AGENTS.md for the separately audited painter contract.
   summary into `UiManager::repository_view` (it requests one when the primary selection changes). Clicks queue `UiAction`s;
   Admit/Revoke push `portal::BundleAdmissionRequest` onto `UiManager::bundle_admission_requests`, and Replace sets
   `bundle_asset_pick`; the binary drains both (rows already written stay after a revoke, OD-E1).
+- **Admit/Revoke name their node.** `UiAction::PortalAdmitBundle { node_id }` / `PortalRevokeBundle { node_id }`: the toolbar
+  passes the open bundle's node (`PortalState::bundle_node_id`), the inspector the selected repository node. They never mean
+  "whatever portal is open": the inspector is hidden while any portal is open (`ui_shell/right_sidebar.rs`), so that reading
+  made every section Admit a silent no-op (R-POR). The queue dedups and holds at most 8 undrained requests.
+- **Admit… is offered, governance decides.** The section offers Admit… for a static, sealed build whose summary does not
+  carry `reason: "cannot_admit"`; the binary's consent dialog applies the may-admit verdict. A host state change into or out
+  of Admitted/Revoked under an open portal invalidates that node's cached summary, so the section never shows a stale badge.
 - **Not wired yet.** `portal/binding_offer.rs::show_offer` has no caller: the binding host feed (`PortalBindingPoint`) and a
-  package-id to node lookup do not exist in fe-ui yet.
-- **Reviews.** `conductor/tracks/portal_surface_20261107/review-p3.md` (PASS-WITH-FIXES, blocked on P3-01..P3-03).
+  package-id to node lookup do not exist in fe-ui yet. Its Open is `UiAction::OpenBundle`, which mounts only the *selected*
+  node, so the caller must select the repository node first (or the advisory fires).
+- **Reviews.** `conductor/tracks/portal_surface_20261107/review-p3.md` (PASS-WITH-FIXES, blocked on P3-01..P3-03);
+  turn-2 gate `review-turn2/R-POR.md`.

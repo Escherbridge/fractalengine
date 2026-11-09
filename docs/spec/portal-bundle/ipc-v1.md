@@ -49,7 +49,7 @@ Cheap checks come first. Nothing is decoded before checks 1–3 pass.
 | `intent` | `intent: "focus_node" \| "select_node"`, `node_id` | `{}` |
 
 3.2. **Reply:** `{"v":1,"n":"<token>","re":<id>,"ok":true,"data":{…}}` or `{"v":1,"n":"<token>","re":<id>,"ok":false,"error":{"code":"<code>","message":"<text>"}}`.
-3.3. **Delivery:** `{"v":1,"n":"<token>","sub":<u32>,"seq":<u64>,"kind":"snapshot"|"delta"|"resync_required","data":{…}}`, plus `"dropped":<u64>` when the host dropped events for this subscription since the last delivery. `seq` starts at 0 with the first delivery and increases by exactly 1.
+3.3. **Delivery:** `{"v":1,"n":"<token>","sub":<u32>,"seq":<u64>,"kind":"snapshot"|"delta"|"resync_required"|"ended","data":{…}}`, plus `"dropped":<u64>` when the host dropped events for this subscription since the last delivery. `seq` starts at 0 with the first delivery and increases by exactly 1. `ended` carries `{reason}` (`bus.md` §5 reasons, plus `revoked` and the binding change of §5.6) and is the subscription's last delivery; the page may subscribe again.
 3.4. **Message text** is short and fixed per code. It never echoes page input.
 3.5. **Rust shape** (S2 may rename):
 
@@ -100,14 +100,14 @@ The page never polls REST on a timer: every `GET /api/v1/hierarchy` also rebuilt
 5.1. **`node`** consumes `host/node-changes` [A-1], "the scene change feed that the `/ws` subscription carries" (sibling R13).
   - `params`: `{petal_id?, node_id?}`. A `petal_id` other than the binding petal, or a `node_id` outside it, answers `not_found`, exactly as REST does (§existence-oracle).
   - First delivery `snapshot`, in parts (`bus.md` §2.1): `{part, last, nodes}`, at most 500 nodes (`NodeDto` plus `properties`) per part, repeated until a part carries `last: true`. Then `delta`: `{changes}`, the `SceneChange` list exactly as `/ws` sends it, so one parser serves both.
-  - Broadcast lag answers `resync_required` and ends the subscription, mirroring `/ws` lag hygiene (`fe-api/AGENTS.md` §websocket); the page subscribes again for a fresh snapshot.
+  - Broadcast lag or a full queue delivers `resync_required` and then a fresh snapshot **on the same subscription** (`bus.md` §2.1 "Loss"); pending coalesced deltas are discarded. The page clears its view and waits for that snapshot; it does not subscribe again (a second subscription would count against the 16).
 5.2. **`readings`** consumes `host/readings` [A-1], "rows accepted by the readings door, both local and replicated" (sibling R13).
   - `params`: `{node_id?, metric?}`, confined to readings anchored in the binding petal.
   - Deltas only (`bus.md` §2.2): no snapshot is delivered. Each `delta` carries `{readings: [...]}` (key `readings`, not `rows`; at most 1 000 per event, each with `reading_id, node_id, metric, value, units, recorded_at, recorded_at_ms, source_did, origin`). History comes from a declared query, not from this stream.
 5.3. **`query`** consumes `host/query` [A-1]: one guarded `SELECT` run through fe-api's query guard as the installing identity (sibling R13).
   - `params`: `{name, args}`. `name` is a declared query; `args` supplies every declared parameter with a value of its declared type, bound through the query `vars` map (`QueryRequest.vars`, `fe-api/src/types.rs:278-284`). A `node_id` argument outside the binding petal answers `not_found`. Undeclared SQL is impossible: the page only ever names a query.
   - Deliveries are `snapshot` only, with `{data: [rows], row_count, truncated}` (`bus.md` §2.3). Over a cap the rows are cut at the boundary and `truncated` is true; the subscription continues. The host sends one only when the result digest differs from the last one delivered.
-  - Cadence is the sibling's: at least 1 s between re-runs, and OD-3 asks for re-runs only when something in the query's scope changed, so an idle portal adds no reads. Each run is charged, together with REST, to the identity's `QUERY_RATE_PER_SEC` of 10 (`fe-api/src/limits.rs:18`). REST's caps apply, 10 000 rows and 8 MiB (`:4,6`); a run over a cap delivers the cut snapshot with `truncated: true`.
+  - Cadence is the sibling's OD-3 answer (`bus.md` §2.3, normative): a query re-runs **only when something in its scope changed** (a write to a table it reads, in the binding petal), with a coalescing floor of at least 1 s between runs and no fixed interval, so an idle portal adds no reads. A query over a table with no change feed is refused at subscribe (`unavailable`). Each run is charged, together with REST, to the identity's `QUERY_RATE_PER_SEC` of 10 (`fe-api/src/limits.rs:18`). REST's caps apply, 10 000 rows and 8 MiB (`:4,6`); a run over a cap delivers the cut snapshot with `truncated: true`.
 5.4. **Bus streams** (`hooks`): `stream` is `<package_id>/<stream>` and MUST be a declared hook. The host subscribes through the broker as a client of caller kind `portal` [A-1, sibling R14-R15]. Each event is a `delta` whose `data` is the event JSON. Broker drop-oldest counts arrive as `dropped`.
 5.5. **Coalescing.** At most one delivery per subscription per 250 ms (4 Hz).
   - `node` deltas coalesce per node id, last state wins, so the last delivery always equals the final state. R9's "100 changes in 1 s produce at most 5 deliveries" follows from 4 Hz plus one leading delivery.
@@ -123,11 +123,11 @@ The page never polls REST on a timer: every `GET /api/v1/hierarchy` also rebuilt
   3. `value` is at most 16 KiB of JSON, else `invalid`; the `set_property` bucket allows it, else `rate_limited`.
   4. The write rides the sibling's extension write path as a one-op commit with host-stamped provenance `{package_id, content_hash}` [A-13; sibling R5, R22, R24]. The DB re-checks the installing identity's role (Editor or above at the petal), the capability and the stored ancestry at use (`fractalengine/src/AGENTS.md` plugin scene bridge), and refuses with `role_denied`.
   5. The reply waits for the DB result. A transport timeout answers `unknown_outcome` and is never retried (fe-plugin `src/AGENTS.md` §Scene host).
-  - Replicas judge the resulting row by its author's role when written (QA-0131). The same revocation that withdraws an extension's rows withdraws a bundle's (sibling R24).
-6.2. **`invoke`.** The target is a declared `commands.invoke` entry, else `capability_denied`. `args` is at most 16 KiB. The broker call carries the caller `{kind: "portal", did: <installing identity>, package_id, content_hash}` [A-1]. The command's role floor is checked against that DID at the binding scope (sibling R14); below the floor answers the sibling's uniform `not_found`. The reply is `{result}`.
+  - Replicas judge the resulting row by its author's role when written (QA-0131). Revocation never withdraws rows (OD-E1, user decision 2026-11-08 22:00): it stops the bundle after in-flight writes complete, and rows already written through its actions stay, exactly as an extension's do (`admission.md` §4.7, §5 step 3).
+6.2. **`invoke`.** The target is a declared `commands.invoke` entry, else `capability_denied`. `args` is at most 16 KiB. The broker call carries the caller `{kind: "portal", did: <installing identity>, package_id, content_hash, role_ceiling}`; `role_ceiling` is the installing identity's role at the bundle's scope and never above the viewer's token (steer 2026-11-08 23:40). A portal is a local caller, so the bus answers it with local codes (`bus.md` §4): no active instance at the petal is `unavailable`, a command not exposed or a role below its floor is `capability_denied`. The reply is `{result}`.
 6.3. **`emit`.** `stream` is a declared `streams` id, `data` is at most its `max_event_bytes`, and the rate is at most its `max_rate_hz` (else `rate_limited`). The host publishes it as `<package_id>/<id>`; only packages that declared it under `consume`, were consented and satisfy `consumers` receive it (sibling R14).
 6.4. **`intent`.** The intent is declared, and `node_id` is in the binding petal. The host turns it into the existing fe-ui focus or select action. It is local UI only, never a write, and it is not audited.
-6.5. **The binding.** At mount, the host mints one binding per mount from the governance admission record plus the validated manifest: `{mount_id, package_id, content_hash, publisher_did, installing_did, petal_id, repository_node_id, declared}`. This follows the `PluginAdmission` pattern, a "host-minted capability binding; never deserialized from plugin request data" (`fe-runtime/src/plugin_host.rs:6`). Nothing in it ever comes from page data. The installing identity is the local identity that admitted the bundle; each desktop peer has one. The binding dies with the mount.
+6.5. **The binding.** At mount, the host mints one binding per mount from the governance admission record plus the validated manifest: `{mount_id, package_id, content_hash, publisher_did, installing_did, role_ceiling, petal_id, repository_node_id, declared}`; `role_ceiling` is the bus `Caller.role_ceiling` of §6.2, and a broker client reported above the viewer's token is closed unused. This follows the `PluginAdmission` pattern, a "host-minted capability binding; never deserialized from plugin request data" (`fe-runtime/src/plugin_host.rs:6`). Nothing in it ever comes from page data. The installing identity is the local identity that admitted the bundle; each desktop peer has one. The binding dies with the mount.
 
 ## 7. Errors and counters
 
@@ -149,7 +149,7 @@ The page never polls REST on a timer: every `GET /api/v1/hierarchy` also rebuilt
 | `timeout` | page side only: no reply in 10 s | none | none |
 
 7.2. Wire codes are snake_case; the sibling's WIT `host-error` is kebab-case. The table is the one mapping.
-7.3. **Counters** are host state, per mount and in total, exposed by the fixed `ipc-stats` QA operation (`protocol.md` §9): `accepted`, `refused_capability`, `refused_role`, `rate_limited`, `dropped_origin`, `invalid`, `failed`, `too_many_subscriptions`, `live_subscriptions` and `deliveries`. The first six are the spec's outcome classes (spec §6.7).
+7.3. **Counters** are host state, per mount and in total, exposed by the fixed `ipc-stats` QA operation (`protocol.md` §9): `accepted`, `refused_capability`, `refused_role`, `rate_limited`, `dropped_origin`, `invalid`, `failed`, `too_many_subscriptions`, `live_subscriptions` and `deliveries`. The first six are the spec's outcome classes (spec §6.7). `deliveries` counts §3.3 subscription deliveries (any `kind`), never §3.2 replies. The flat counters of an `ipc-stats` reply are process totals (a drop from a foreign origin counts only there); `mount` holds the last counted mount's.
 
 ## 8. Budgets (OD-8)
 
@@ -168,6 +168,7 @@ Buckets are token buckets: capacity = burst, refilled continuously at rate.
 | `intent` | 2/s, burst 4 |
 | `act` value, `invoke` args | 16 KiB each |
 | `query` re-runs | charged to the identity's `QUERY_RATE_PER_SEC` (10) together with REST |
+| Audited check-5 refusals | 2/s, burst 5 (§9) |
 
 - R10's "20 calls in 1 s → at most 7 accepted" is the burst of 5 plus 2 refilled.
 - The `set_property` budget is a quarter of the measured single-peer DB-thread ceiling of about 8 writes/s (commit `b66dfae7`), so a runaway bundle cannot starve the editor.
@@ -184,6 +185,7 @@ Audit goes through the sibling governance's seam (R21, A-5), attributed to `(pac
 | `invoke` | one entry, written by the broker (R15) with caller kind `portal` |
 | `emit`, deliveries, `intent`, `hello` | no; data is audited once it becomes rows, and intents are local UI |
 | Drops at checks 1–3 | counters only |
+| Refusals at check 5 beyond 2/s (burst 5) per page | counters only (`limits::AUDIT_REFUSAL_RATE`), so an admitted page cannot flood the audit log with denials |
 
 ## 10. Bus mapping
 
@@ -203,7 +205,7 @@ Audit goes through the sibling governance's seam (R21, A-5), attributed to `(pac
 - **A-1. Bus shape** (plan §0). A broker on the plugin worker, callable from the GUI process without blocking over a channel, offering `host/node-changes`, `host/readings` and `host/query` plus declared extension streams, commands and hooks, with caller kinds including `portal`. *Low before S2 builds, high after.*
 - **A-13. One-op portal writes.** The sibling's extension write path accepts a single-op commit from a portal client outside any tick, with the same DB re-checks and host-stamped provenance as an extension's tick commit. Its batching (sibling R5) is a tick concept a portal does not have. *Medium.* If declined, `act` falls back to the plugin scene bridge's typed DB command with provenance added there.
 - **A-14. A bundle is an installation without an instance.** Governance represents an admitted bundle as an installation of kind `web-bundle` (sibling R11 status vocabulary) that never ticks, so the broker identifies the portal client by that installation and audit rows carry its id. *Medium.*
-- **OD-3 (asked 2026-11-07 16:45).** Change-triggered `host/query` re-runs. Until EXT-PLATFORM answers, §5.3 runs at the sibling's interval and suppresses unchanged results page-side only.
+- **OD-3 (answered, `bus.md` §2.3).** `host/query` re-runs only on a scope change, with a floor of at least 1 s; the bus delivers a snapshot only when the result's digest changed, so the page never sees an unchanged result (§5.3).
 
 ## 12. Test-table seeds (S2)
 

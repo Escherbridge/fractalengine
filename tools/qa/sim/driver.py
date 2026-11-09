@@ -531,7 +531,8 @@ class Driver:
 
     # -- portal ops (tools/qa/portal/AGENTS.md section sim-contract) --------------------------------
     def portal_op(self, client, op, args, verse):
-        """Portal ops; admission and re-grant drive the GUI, kill switch and IPC row posts refuse by name (no seam yet)."""
+        """Portal ops; admission and re-grant drive the GUI, the kill switch is a fixed debug route, IPC row posts refuse by
+        name (no seam yet)."""
         if op == "upload_bundle":
             out = portal_probe.upload_bundle(client, args)
             data = out.get("data")
@@ -564,12 +565,16 @@ class Driver:
         if op == "portal_slot":
             return client.send("POST", portal_probe.DEBUG_BASE + "action", {"slot": int(args["slot"])},
                                client.debug_token(), 8.0)
+        if op == "portal_killswitch":
+            # Fixed body {engage} only, behind the portal-fixture Owner+input gate (steer 2026-11-09 02:15).
+            return client.send("POST", portal_probe.DEBUG_BASE + "killswitch", {"engage": bool(args.get("engage", True))},
+                               client.debug_token(), 8.0)
         if op == "portal_admit":
             return self._portal_admit(client, args)
         if op == "regrant_role":
             return self._regrant_role(client, args)
         return Outcome(status=0, ok=False, refused=True, code="portal_op_unwired",
-                       error="%s has no API route or GUI affordance in this build (kill switch and IPC row posts)" % op)
+                       error="%s has no API route or GUI affordance in this build (IPC row posts)" % op)
 
     def _portal_admit(self, client, args):
         """`portal_admit`: the repository view's "Admit bundle" button (ux.md section 5); an optional confirm click follows."""

@@ -63,10 +63,10 @@ Oracle: slots 1-9 raise the native refusal counter by one with the exact refused
 
 ## PJ10 (P6, later) Static export
 Bundle: the `dashboard` build exported with `static-export.md` (the export carries no host bridge; `window.fe` is never defined).
-1. Export the admitted dashboard to a directory; serve it from a static server whose origin is listed in `cors_origins`, with a scoped viewer token in the share URL.
-2. Open the share URL. Oracle: the page loads, `status` probe reads `api-absent`, and the `node-name` / `node-position` probes fill from the public REST (not from IPC); the `csp` probe still reads `canary-blocked`.
-3. Expire the share (clock advance or revoke the viewer token). Oracle: the same URL answers 410 and the page shows its expired state; no request carries a host credential.
-4. Mutation check: serve the export without the `cors_origins` entry; the REST reads must fail and the probes stay empty.
+1. Attach one share URL minted on a shared fe-api as the repository node's `portal.feeds` entry, export the dashboard (`GET /api/v1/nodes/{node_id}/portal/export.zip`), and serve the directory at the root of a static server whose origin is listed in that fe-api's `cors_origins`, sending `fe-portal.json.csp` as the `Content-Security-Policy` header.
+2. Open the export's entry page. Oracle: `status` reads `api-absent` (no `__fe/portal-v1.js` in the export), `feed` reads `200` (the share URL from `__fe/feeds.json`, fetched by the same code path the in-app static sandbox uses), and `csp` reads `canary-blocked`.
+3. Expire the share (clock advance past its TTL). Oracle: the feed answers 410 and `feed` reads `expired`; no request carries a host credential.
+4. Mutation check: serve the export without the `cors_origins` entry; the feed fetch fails and `feed` reads `error`.
 Receipt: page probe values, the 410 status line, one PNG. Tier: static server only (no host); native tier not involved.
 
 ## Extends

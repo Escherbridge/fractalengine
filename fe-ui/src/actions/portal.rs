@@ -360,11 +360,15 @@ pub(crate) fn open_bundle(
     }
 }
 
-/// Pure: the node id of the open bundle portal, the target of Admit/Revoke.
-pub(crate) fn open_bundle_node(portal: &PortalState) -> Option<&str> {
-    match portal {
-        PortalState::Bundle { node_id, .. } => Some(node_id),
-        _ => None,
+/// Most admission requests one undrained queue holds; a click storm before the binary drains cannot grow it further.
+const MAX_QUEUED_ADMISSIONS: usize = 8;
+
+/// `UiAction::PortalAdmitBundle` / `PortalRevokeBundle`: queue the request for the named node (the inspector's
+/// selection or the open bundle), never "whatever portal is open"; an identical queued request is not repeated.
+pub(crate) fn queue_admission(ui: &mut super::UiManager, request: crate::portal::BundleAdmissionRequest) {
+    let queue = &mut ui.bundle_admission_requests;
+    if !queue.contains(&request) && queue.len() < MAX_QUEUED_ADMISSIONS {
+        queue.push(request);
     }
 }
 
@@ -387,9 +391,17 @@ fn apply_bundle_state(
         ui.portal_feedback = PortalFeedback::default();
         return;
     }
+    let admission_moved = *state != *event_state
+        && [&*state, event_state]
+            .iter()
+            .any(|side| matches!(side, BundleState::Admitted { .. } | BundleState::Revoked(_)));
     *label = event_label.clone();
     *state = event_state.clone();
     ui.portal_feedback = PortalFeedback::default();
+    if admission_moved {
+        // The cached summary's admission is stale; the Repository section re-reads it when it shows again.
+        ui.repository_view.invalidate(event_node);
+    }
 }
 
 /// Pure: whether the portal should auto-close this frame because the
@@ -638,6 +650,12 @@ mod tests {
         let closed = BrowserEvent::BundleState { node_id: "node-1".into(), label: None, state: fe_webview::ipc::BundleState::Closed };
         receive_browser_event(&mut bundle_ui, &nodes, &closed, 0.0);
         assert!(!bundle_ui.portal.is_open());
+        // The inspector's Admit names its node: it queues with no portal open (the inspector case), and only once.
+        let admit = crate::portal::BundleAdmissionRequest::Admit { node_id: "node-1".into() };
+        for _ in 0..3 {
+            queue_admission(&mut bundle_ui, admit.clone());
+        }
+        assert_eq!(bundle_ui.bundle_admission_requests, [admit]);
         // Leave (protocol.md §2.6): a mounted bundle navigates to a declared origin; the shown page keeps chrome.
         let docs = BrowserEvent::UrlChanged { url: "https://docs.example.org/guide".parse().unwrap() };
         assert_eq!(open_bundle(&mut bundle_ui, &nodes, "node-1", 0.0).as_deref(), Some("node-1"));
@@ -649,6 +667,14 @@ mod tests {
             state: fe_webview::ipc::BundleState::StaticSandbox { can_admit: false },
         };
         receive_browser_event(&mut bundle_ui, &nodes, &mounted, 0.0);
+        assert!(bundle_ui.repository_view.take_wanted().is_empty(), "the first mounted state is not an admission change");
+        let admitted = BrowserEvent::BundleState {
+            node_id: "node-1".into(),
+            label: Some("a-aaaaaaaaaaaaaaaaaaaaaaaaaa".into()),
+            state: fe_webview::ipc::BundleState::Admitted { publisher: "did:key:z6Mkexample0000".into() },
+        };
+        receive_browser_event(&mut bundle_ui, &nodes, &admitted, 0.0);
+        assert_eq!(bundle_ui.repository_view.take_wanted(), ["node-1"], "an admission change re-reads the section summary");
         receive_browser_event(&mut bundle_ui, &nodes, &docs, 0.0);
         receive_browser_event(&mut bundle_ui, &nodes, &closed, 0.0);
         assert_eq!(bundle_ui.portal.url(), "https://docs.example.org/guide", "the left-for page is an open website");

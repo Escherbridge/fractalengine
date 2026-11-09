@@ -30,6 +30,7 @@ fn render_bundle_chrome(ui: &mut egui::Ui, ui_mgr: &mut UiManager) {
     let Some(model) = ui_mgr.portal.bundle_state().and_then(chrome_model) else {
         return;
     };
+    let node_id = ui_mgr.portal.bundle_node_id().unwrap_or_default().to_owned();
     let color = match model.tone {
         ChromeTone::Accent => theme::TREE_PRIMARY_ACCENT,
         ChromeTone::Neutral => theme::TEXT_DIM,
@@ -49,10 +50,7 @@ fn render_bundle_chrome(ui: &mut egui::Ui, ui_mgr: &mut UiManager) {
                 .named(ui, action.accessible_name())
                 .clicked()
             {
-                ui_mgr.push_action(match action {
-                    ChromeAction::Admit => UiAction::PortalAdmitBundle,
-                    _ => UiAction::PortalRevokeBundle,
-                });
+                ui_mgr.push_action(action.ui_action(&node_id));
             }
         }
     });

@@ -9,7 +9,8 @@ pub mod chrome;
 pub mod repository;
 pub mod repository_view;
 
-/// A host-bound bundle admission change requested from the chrome or inspector; the binary drains these.
+/// A bundle admission change for one repository node, requested from the chrome or the inspector; the binary drains
+/// these into governance (Admit opens its consent dialog).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum BundleAdmissionRequest {
     Admit { node_id: String },
@@ -78,6 +79,14 @@ impl PortalState {
     pub fn bundle_state(&self) -> Option<&BundleState> {
         match self {
             Self::Bundle { state, .. } => Some(state),
+            _ => None,
+        }
+    }
+
+    /// The repository node whose bundle is open, if a bundle portal is open.
+    pub fn bundle_node_id(&self) -> Option<&str> {
+        match self {
+            Self::Bundle { node_id, .. } => Some(node_id),
             _ => None,
         }
     }

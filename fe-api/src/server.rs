@@ -375,6 +375,9 @@ pub fn build_router(state: Arc<ApiState>) -> Router {
         .route("/api/v1/debug/portal/observe", get(crate::qa_portal::portal_observe))
         .route("/api/v1/debug/portal/ipc-stats", get(crate::qa_portal::portal_ipc_stats))
         .route("/api/v1/debug/portal/action", post(crate::qa_portal::portal_action).layer(axum::extract::DefaultBodyLimit::max(1024)))
+        // Local kill switch for the QA lane (`{"engage": bool}` only), behind the same portal-fixture Owner+input gate
+        // as `action` (steer 2026-11-09 02:15; handler `qa_portal::portal_killswitch`).
+        .route("/api/v1/debug/portal/killswitch", post(crate::qa_portal::portal_killswitch).layer(axum::extract::DefaultBodyLimit::max(64)))
         .route("/api/v1/debug/portal-fixture/observe", get(crate::qa_portal::observe))
         .route("/api/v1/debug/portal-fixture/action", post(crate::qa_portal::action).layer(axum::extract::DefaultBodyLimit::max(1024)))
         .route("/api/v1/debug/portal-fixture/capture", post(crate::qa_portal::capture).layer(axum::extract::DefaultBodyLimit::max(1024)))

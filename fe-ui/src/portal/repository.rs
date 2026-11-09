@@ -44,13 +44,15 @@ pub enum RepositoryCommand {
     PickBundleAsset { node_id: String },
 }
 
-/// Pure: map a clicked intent to its command for the selected repository node.
+/// Pure: map a clicked intent to its command for the selected repository node (Admit/Revoke name that node: the
+/// inspector is hidden while a portal is open, so "the open bundle" would be nothing).
 pub fn intent_command(intent: RepositoryIntent, node_id: &str) -> RepositoryCommand {
+    let node_id = node_id.to_owned();
     match intent {
-        RepositoryIntent::Open => RepositoryCommand::Dispatch(UiAction::OpenBundle { node_id: node_id.to_owned() }),
-        RepositoryIntent::Admit => RepositoryCommand::Dispatch(UiAction::PortalAdmitBundle),
-        RepositoryIntent::Revoke => RepositoryCommand::Dispatch(UiAction::PortalRevokeBundle),
-        RepositoryIntent::Replace => RepositoryCommand::PickBundleAsset { node_id: node_id.to_owned() },
+        RepositoryIntent::Open => RepositoryCommand::Dispatch(UiAction::OpenBundle { node_id }),
+        RepositoryIntent::Admit => RepositoryCommand::Dispatch(UiAction::PortalAdmitBundle { node_id }),
+        RepositoryIntent::Revoke => RepositoryCommand::Dispatch(UiAction::PortalRevokeBundle { node_id }),
+        RepositoryIntent::Replace => RepositoryCommand::PickBundleAsset { node_id },
     }
 }
 
@@ -200,6 +202,14 @@ mod tests {
         assert!(matches!(
             intent_command(RepositoryIntent::Open, "n1"),
             RepositoryCommand::Dispatch(UiAction::OpenBundle { node_id }) if node_id == "n1"
+        ));
+        assert!(matches!(
+            intent_command(RepositoryIntent::Admit, "n1"),
+            RepositoryCommand::Dispatch(UiAction::PortalAdmitBundle { node_id }) if node_id == "n1"
+        ));
+        assert!(matches!(
+            intent_command(RepositoryIntent::Revoke, "n1"),
+            RepositoryCommand::Dispatch(UiAction::PortalRevokeBundle { node_id }) if node_id == "n1"
         ));
         assert!(matches!(
             intent_command(RepositoryIntent::Replace, "n1"),

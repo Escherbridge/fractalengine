@@ -51,10 +51,10 @@ pub enum UiAction {
     },
     /// Close the portal webview (replaces PortalPanelState.close).
     ClosePortal,
-    /// Ask the host to admit the open bundle portal's bundle on this peer.
-    PortalAdmitBundle,
-    /// Ask the host to revoke the open bundle portal's bundle on this peer (rows already written stay).
-    PortalRevokeBundle,
+    /// Ask the host to admit this repository node's bundle on this peer (governance's consent dialog decides).
+    PortalAdmitBundle { node_id: String },
+    /// Ask the host to revoke this repository node's bundle on this peer (rows already written stay, OD-E1).
+    PortalRevokeBundle { node_id: String },
     /// Navigate back in portal history (replaces PortalPanelState.go_back).
     PortalGoBack,
     PortalGoForward,
@@ -1349,15 +1349,11 @@ pub(crate) fn process_ui_actions(
                 ui_mgr.portal = PortalState::Closed;
                 browser_commands.write(if was_bundle { BrowserCommand::CloseBundle } else { BrowserCommand::Close });
             }
-            UiAction::PortalAdmitBundle => {
-                if let Some(node_id) = portal::open_bundle_node(&ui_mgr.portal).map(str::to_owned) {
-                    ui_mgr.bundle_admission_requests.push(crate::portal::BundleAdmissionRequest::Admit { node_id });
-                }
+            UiAction::PortalAdmitBundle { node_id } => {
+                portal::queue_admission(&mut ui_mgr, crate::portal::BundleAdmissionRequest::Admit { node_id });
             }
-            UiAction::PortalRevokeBundle => {
-                if let Some(node_id) = portal::open_bundle_node(&ui_mgr.portal).map(str::to_owned) {
-                    ui_mgr.bundle_admission_requests.push(crate::portal::BundleAdmissionRequest::Revoke { node_id });
-                }
+            UiAction::PortalRevokeBundle { node_id } => {
+                portal::queue_admission(&mut ui_mgr, crate::portal::BundleAdmissionRequest::Revoke { node_id });
             }
             UiAction::PortalGoBack => {
                 if ui_mgr.portal_is_open() { browser_commands.write(BrowserCommand::GoBack); }

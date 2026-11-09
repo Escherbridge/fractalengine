@@ -36,7 +36,7 @@ Shown in the right inspector when the selected node has `node_kind = repository`
 Actions, in one row beneath:
 
 - **Open** (primary, always present). The visible label is "Open"; the accessible name is "Open bundle" (§5), set with `.named(ui, "Open bundle")`, so locators never match the bare "Open" of other controls.
-- **Admit...** only in Static sandbox when the local role may admit. Opens the governance consent dialog.
+- **Admit...** only in Static sandbox when the local role may admit. Opens the governance consent dialog. While no portal is open the section knows only the summary read (README §8.5): it offers Admit... for a sealed build whose `admission` does not carry `reason: "cannot_admit"`, and the consent dialog applies the full may-admit verdict. Admit and Revoke act on the section's own node, never on whatever portal happens to be open.
 - **Revoke on this peer** only when Admitted. Withdraws the local admission; an open portal goes to Revoked.
 - **Replace bundle** only for Editor or above. It is a property write (`portal.bundle_asset`) through the existing asset picker; the node keeps its identity. Viewers do not see it.
 
@@ -101,11 +101,13 @@ Stable, ASCII, unique per control. Set with the existing `.named(ui, ...)` helpe
 | Admit button | "Admit bundle" |
 | Revoke button | "Revoke bundle on this peer" |
 | Replace button | "Replace bundle" |
-| Section status row | "Bundle status: <badge text>" |
+| Section bundle row | "Bundle title: <value>" |
+| Section status row | "Bundle status: <badge text>" (the ASCII badge name, " - ") |
 | Section publisher row | "Bundle publisher: <value>" |
 | Section version row | "Bundle version: <value>" |
 | Section access list | "Bundle access" |
 | Toolbar badge | the badge text from section 3, e.g. "Admitted - <publisher>" |
+| Bound-bundle offer (`portal.open` binding, inspector) | "Open bound bundle" |
 | Toolbar Close | "Close portal" (existing) |
 | Toolbar Back, Forward, Reload | existing names, unchanged |
 
@@ -124,7 +126,7 @@ The badge is a labelled, non-interactive element so assistive technology reads s
 - **Waiting:** bytes absent shows "Waiting for bundle bytes" and resolves after the prefetch re-arm without user action (PJ6).
 - **Empty:** a bundle with no declared capabilities shows "None".
 - **Error:** every Blocked and Revoked reason renders its suffix (table-driven test over the chrome model).
-- **Disabled:** Admit... shows disabled with a hover reason when the role cannot admit but admission is otherwise possible.
+- **Absent, not disabled:** Admit... is absent when the local identity cannot admit (unsealed build, `cannot_admit`, or a role governance refuses), per §1 and §2 (review P3-09 settled this in favour of §2). A disabled Admit... with a hover reason is reserved for "after the cause is lifted" (P3-11, deferred until governance exposes installation status).
 - **Responsive:** rows wrap at the minimum toolbar width (260 px) with no horizontal scroll; the badge truncates with hover for the full text.
 - **Permissions:** Viewer sees no Replace; roles that cannot admit see no Admit...; Revoke appears only when a local admission record exists.
 

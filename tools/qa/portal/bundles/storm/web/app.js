@@ -9,7 +9,8 @@ async function runStorm() {
   const kinds = ['node', 'readings', 'query'];
   for (let i = 0; i < 64; i += 1) {
     const kind = kinds[i % 3];
-    const params = kind === 'query' ? { name: 'node_count' } : { petal_id: hello.context.petal_id };
+    // Valid params per stream (ipc-v1 section 5), so every refusal past the 16th is too_many_subscriptions, never invalid.
+    const params = kind === 'query' ? { name: 'node_count' } : kind === 'node' ? { petal_id: hello.context.petal_id } : {};
     try { await window.fe.subscribe(kind, params, () => {}); bump('subs-ok'); } catch (error) { bump('subs-refused'); }
   }
   probe('phase').textContent = 'flood';

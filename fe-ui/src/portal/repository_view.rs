@@ -89,13 +89,16 @@ pub fn parse_summary(data: &Value) -> Option<BundleSummary> {
 }
 
 /// Pure: admission `{state, reason}` strings -> chrome state; unknown values fail closed to a non-admittable static view.
+/// An unsealed build is never admittable (admission.md §2 rule 11), whatever the summary says.
 pub fn admission_to_state(state: &str, reason: Option<&str>, publisher: Option<&str>) -> BundleState {
     match state {
         "admitted" => match publisher {
             Some(did) => BundleState::Admitted { publisher: did.to_owned() },
             None => BundleState::StaticSandbox { can_admit: false },
         },
-        "static" | "static_sandbox" => BundleState::StaticSandbox { can_admit: reason != Some("cannot_admit") },
+        "static" | "static_sandbox" => BundleState::StaticSandbox {
+            can_admit: publisher.is_some() && reason != Some("cannot_admit"),
+        },
         "waiting_for_bytes" => BundleState::WaitingForBytes,
         "unavailable" => BundleState::Unavailable,
         "blocked" => BundleState::Blocked(match reason {
@@ -183,5 +186,15 @@ mod tests {
         cache.invalidate("n1");
         assert!(cache.view("n1", None, false).is_none());
         assert_eq!(cache.take_wanted(), ["n1"]);
+        // Static: Admit… only for a sealed build the local identity may admit; an unsealed build never offers it.
+        for (sealed_by, reason, can_admit) in
+            [(Some("did:key:z6Mkexample0000"), None, true), (Some("did:key:z6Mkexample0000"), Some("cannot_admit"), false), (None, None, false)]
+        {
+            assert_eq!(
+                admission_to_state("static_sandbox", reason, sealed_by),
+                BundleState::StaticSandbox { can_admit },
+                "{sealed_by:?} {reason:?}"
+            );
+        }
     }
 }

@@ -45,9 +45,18 @@ real-store terrain and API publisher-cap journeys own those assertions.
 nodes (no existence oracle). The archive is written with the `zip` crate (deflate only, no default features) and carries
 `fe-portal.json` (`fe-portal-export/1`) plus the bundle members with the in-archive prefix stripped.
 
-- **Double revocation check.** The stored bundle is inspected, then revocation/kill-list is re-checked with the full build
-  facts (`revoked_on_this_peer`, matched by hash under any id) immediately before writing; a revoked build is never exported.
-- **CSP composer.** `static_csp` rebuilds the policy from the manifest's `PortalCsp` plus admitted feed origins
-  (`admit_export_feeds`: https only, `is_csp_source` charset, max 16 feeds); any source failing the check refuses the export
-  rather than being dropped, so the exported CSP is never weaker than declared.
+- **Double revocation check.** First the stored archive digest alone (before any byte is read: a kill-listed blob answers
+  `409 revoked` even while its bytes are absent, admission.md §2 rules 3-5 before 6-9); then, after inspection, again with
+  the full build facts (`content_hash`, archive digest, publisher) immediately before writing. Both go through
+  `revoked_on_this_peer`, which governance answers by hash under any id. A revoked build is never exported.
+- **CSP composer.** `static_csp` rebuilds the policy from the manifest's `PortalCsp` plus the kept feed origins. A manifest
+  source failing `is_csp_source` refuses the export rather than being dropped, so the exported CSP is never weaker than
+  declared. Feeds go through `admit_export_feeds` (https, `is_csp_source` charset, `origin_allowed`, at most 16) and the
+  rest are named in `feeds_dropped`.
+- **URL policy.** `origin_allowed` is `fe_runtime::portal_url::is_url_allowed` on a parsed `url::Url` (hence fe-api's `url`
+  dependency), with no QA-fixture bypass: it judges a bundle's declared origins at upload and every export feed origin.
+- **One quota.** Bundle uploads count against `upload::check_upload_quota`, the same per-owner quota GLB uploads use.
 - **Seal.** Member reads verify the seal (`VerifyIfSealed`); a tampered member is a refusal.
+- **QA kill switch.** `POST /api/v1/debug/portal/killswitch {"engage": bool}` is mounted beside the other
+  `/api/v1/debug/portal/*` routes behind the same portal-fixture Owner+input gate (steer 2026-11-09 02:15); its handler,
+  `qa_portal::portal_killswitch`, is owed by the orchestrator (fe-api does not compile until it lands).
