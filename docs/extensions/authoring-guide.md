@@ -55,6 +55,24 @@ wiring: implement its `Extension` trait (only `on_tick` is required; every other
 default) and call `extension!(YourType)` once. [`extensions/fleet-sim/src/lib.rs`](../../extensions/fleet-sim/src/lib.rs)
 is a complete guest in about 230 lines.
 
+### Serving a hook point (`provides`)
+
+A scope can bind your extension to a hook point such as `petal.map` ([bindings.md](bindings.md)).
+Declare it in the manifest, then answer the host's calls:
+
+```json
+"provides": [{ "hook": "petal.map" }]
+```
+
+`provides` is checked at validation: a hook outside the catalogue is `unknown-hook` (V17), and a hook
+whose needs the manifest does not declare (bindings.md section 6) is `hook-capability-missing` (V18). Keyed hooks
+may list `keys` (an exact key, a `prefix*` or `*`). A provider builds against the `extension-with-hooks`
+world: the guest SDK's `hooks` module parses the generated `hook-call` with `HookCall::parse`, matches
+the key with `key_matches` and routes it with `route`, answering through `HookOutput` (`json`, `empty`,
+`allow`, `refuse`). A service hook also receives a `configure` call at start and on every config
+change (`HookCall::is_configure`). A binding grants nothing: the hook runs only on peers that installed,
+consented to and accepted your package.
+
 The rule that shapes every guest is stated at the top of the WIT file:
 
 ```wit
@@ -119,6 +137,30 @@ host's endpoint, method, size, media-type and header checks before your guest se
 in production. Worked fixtures: [`extensions/fleet-sim/fixtures/basic.json`](../../extensions/fleet-sim/fixtures/basic.json)
 and [`extensions/device-adapter/fixtures/basic.json`](../../extensions/device-adapter/fixtures/basic.json).
 
+### Fixtures
+
+A fixture is a JSON script of ticks, recorded ingress frames and the starting scene. `fe-ext new`
+writes `fixtures/basic.json` for your kind; extend that file rather than adding new ones, and keep
+one fixture per behaviour you want to pin by fingerprint.
+
+### Parity with the REST door
+
+A device adapter must produce the same reading rows as `POST /api/v1/.../iot/readings` for the same
+frames, apart from provenance and `source_class`. The sandbox does not call REST; the check is the
+`ext-device` scenario (step 2, R31), which sends identical frames through both doors. Keep the
+adapter's decode in one function so the fixture and the scenario exercise the same code.
+
+### Multi-peer runs (`--lab`)
+
+```bash
+fe-ext run --lab --scenario my-scenario.json --runs 2 --project my-ext
+```
+
+`--lab` hosts the fleet-sim package as the fe-sim reading schedule under the simulator's `SimClock`,
+so lab and live run the same component (R30). It needs `--scenario` (the fe-sim script), is mutually
+exclusive with `--sandbox`, and with `--runs N` every fingerprint must equal the first. Design notes:
+[`tools/fe-ext/AGENTS.md`](../../tools/fe-ext/AGENTS.md) (section lab).
+
 ## 6. Pack, sign, install
 
 ```bash
@@ -143,7 +185,7 @@ lists stable across versions.
   scope and operator consent, checked again at every call.
 - **Architecture:** the guest is a pure function of `(binding, tick-info, staged inputs)`. That is what makes
   the sandbox fingerprint deterministic, and why `now-ms` is injected rather than read.
-- **Deferred:** `--lab` multi-peer runs (R30), and feeding bus commands and egress results into the sandbox
+- **Deferred:** `--lab` covers the fleet-sim package only (R30), and feeding bus commands and egress results into the sandbox
   (today it answers them `not-available`).
 - **Efficiency:** batch readings in one `stage` call per tick. The per-flush cap is 1000 readings and 64 ops,
   so one large batch costs one commit instead of many.

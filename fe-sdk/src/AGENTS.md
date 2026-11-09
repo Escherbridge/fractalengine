@@ -293,12 +293,26 @@ must be positive, rotation a nonzero finite quaternion). `StagedReading` is the 
 source class and DID are host-stamped, never fields. `validate_staged_readings` bounds count (1000),
 metric grammar (1..128 of `[A-Za-z0-9_.:-]`), finiteness and units; anchors are a flush-time check in
 the DB handler. `validate_commit(ops, readings)` is the one call for a whole `PluginCommit`.
+`SetTransform` is a `set_transform` write in the manifest (`scene.write`) and is applied inside
+the same atomic batch as the tick's other ops.
+
+## provides (bindings turn, `manifest_v2.rs`)
+
+`ExtensionManifest.provides: Vec<ProvidedHook>` lists the hook points the package serves
+(`hook`, optional `keys`, `uses`, `config_schema`; docs/extensions/bindings.md section 6).
+`KNOWN_HOOKS` is the catalogue this host serves; an id outside it is V17 `unknown-hook`. Only the
+`KEYED_HOOKS` may carry `keys`. V18 `hook-capability-missing` checks that the hook's needs
+(an ingress/egress/ui entry named in `uses`, `readings` + `tick` for `ingest.decode`, `scene.read`
+for `scene.*`, ...) are declared. Bounds: 32 entries, 32 keys, 16 `uses`. `provides` is inside the
+capability digest, so adding a hook re-prompts consent. A binding grants nothing: this module only
+validates what a package claims; resolution and acceptance live in fe-plugin and the binary.
 
 ## path-geometry f64 route math (E2)
 
 `snap_to_polyline`, `cumulative_distances_f64`, `position_at_progress_f64` and `RouteSnap` hold the
 f64 snap/interpolation formerly private to fe-terrain `iot/path_tracker.rs`; that file should delegate
-so the sim, the IoT tracker and the WIT `routes` interface share one implementation. The f32
+so the sim, the IoT tracker and the WIT `routes` interface share one implementation. fe-terrain's
+`iot/path_tracker.rs` now delegates to it. The f32
 renderer helpers stay separate on purpose (their accumulation order is a stamp-placement contract).
 
 ## §live-consumers (plugin_host_revival S7)

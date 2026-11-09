@@ -653,21 +653,22 @@ Bound routes live under `/api/v1/petals/{petal_id}/apis/{key}/…` (§6).
     - local acceptance (§5.3);
     - audit action `kill-list-override` (acceptance reuses `bind`).
   - *Kill list:* the Owner kill-list override amends precondition 5 (§5.7).
-  - *OD-E1:* it is decided as no withdrawal. §Provenance and §OD-E1 still describe withdrawal and
-    must shrink to stamp-and-stop (E10W, D2).
+  - *OD-E1:* decided as no withdrawal. governance.md now reads stamp-and-stop (applied), and spec
+    R24 matches (D-EXT).
 - **bus.md:** §12. Applied in this change.
 - **spec:**
   - OD-E3 holds (instances stay petal-anchored).
   - R18's AC holds at write time (§4.2 step 3).
-  - R24 shrinks (OD-E1).
-  - Bindings need an R-requirement of their own.
+  - R24 shrank to stamp-and-stop (OD-E1), applied.
+  - Bindings have their own requirement, spec R37 (applied).
 - **Portal contract:** `portal.open` binds admitted web bundles with no `provides`. Their manifest
   stays the portal track's.
 - **manifest-v2.md "`manual` and `decoder` are not extension classes"** stands. `decoder` is
   host-stamped, and only inside `ingest.decode` calls.
-- **`fe-terrain/src/extension.rs:10`** `TERRAIN_EXTENSION_ID = "fractalengine:terrain"` is not a
-  v2 package id. The built-in needs none (`mode: builtin`), but R34's manifest constant needs a
-  reverse-DNS id before a binding can name the native provider as a package.
+- **`fe-terrain/src/extension.rs:10`** `TERRAIN_EXTENSION_ID` is now `org.fractalengine.terrain`, a
+  valid v2 package id (E18, applied). The built-in still needs no install (`mode: builtin`); its
+  manifest declares `provides: [{ "hook": "petal.map" }]`, so a binding can name the native
+  provider as a package.
 
 ## 11. Open questions (defaults in force until ratified)
 

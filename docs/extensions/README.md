@@ -17,6 +17,7 @@ it does is declared in its manifest, consented to by an operator, and checked by
 1. [Authoring guide](authoring-guide.md): build your first extension, from manifest to signed package.
 2. [Cookbook](cookbook.md): short recipes for the common shapes (ticks, ingress, the bus, queries).
 3. [Migration 1.0 to 2.0](migration-1-to-2.md): only if you have a 1.0 component.
+4. [Scoped bindings](bindings.md): only if your extension serves a hook point.
 
 Reference contracts (normative; the guides above explain them, they do not replace them):
 
@@ -54,4 +55,5 @@ track and is refused for extensions (`reserved-kind`).
 - The contracts above are drafts. The host binds WIT 2.0 only after the build gate opens (D-X2).
 - The CLI, the guest SDK and the examples are written but not yet built or run (code-first swarm,
   2026-11-08); J8 (`cargo test -p fe-ext -- j8`) is their journey once the build gate opens.
-- `--lab` (multi-peer runs through fe-sim) arrives with the first-party simulation package (R30).
+- `fe-ext run --lab` (multi-peer runs through fe-sim) hosts the first-party simulation package (R30); other kinds run in `--sandbox` only.
+- Scoped bindings ([bindings.md](bindings.md)) are contract-only: the binding table, resolver and hook catalogue are the next turn (spec R37). Terrain is the first `petal.map` provider.

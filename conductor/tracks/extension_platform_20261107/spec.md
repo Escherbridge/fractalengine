@@ -133,7 +133,7 @@ Ratified decisions are not re-litigated (`.omc/state/bus/SESSION-PROTOCOL.md` it
 
 ## 5. Scope, non-goals, boundary
 
-**In scope** (open capability, this repo): R1-R36 — contract, runtime, bus, governance, authoring tools, Extensions UI, first-party migrations and simulator QA.
+**In scope** (open capability, this repo): R1-R37 — contract, runtime, bus, governance, authoring tools, Extensions UI, first-party migrations and simulator QA.
 
 **Non-goals (hard):**
 - **Catalogue operations.** No marketplace hosting, no payments, no publisher verification (review queues, identity vetting, counter-signing authorities), no account systems, no catalogue curation. The Extensions UI reaches any catalogue only through S-REGISTRY / S-ENTITLEMENT.
@@ -349,15 +349,15 @@ Admission records are local and keyed by `(package_id, content_hash)`; they are 
 
 *AC (simulator):* a published list stops the instance on every peer that trusts its root within the budget, and no row from the package lands afterwards.
 
-**R24 — Host-stamped provenance and withdrawal (needs OD-E1).** Every scene version and reading written through the extension path carries host-stamped provenance `{package_id, content_hash}`. The guest can neither set nor strip it.
+**R24 — Host-stamped provenance; revocation stamps and stops (OD-E1 decided: no withdrawal).** Every scene version and reading written through the extension path carries host-stamped provenance `{package_id, content_hash}`. The guest can neither set nor strip it.
 - **Where it lives.** In the versioned scene snapshot, beside the version's write clock; and in additive optional `iot_reading` fields that are omitted when absent (the `payload_id` precedent).
-- **Withdrawal.** A host that accepts a revocation list re-judges the affected verses — one batch per verse, under the §rejudge-on-demotion queue discipline — treating versions with revoked provenance as inadmissible. The newest admissible version is restored, or the node is removed.
-- **Readings** with revoked provenance are excluded at the one scope-substitution seam and on the distributed partial path.
-- **Reversible.** Removing the trust root restores visibility; nothing is physically deleted.
+- **Stop, do not withdraw.** On revocation (kill list, trust-root removal, consent revoked) the instance stops after its in-flight writes complete: the current commit drains, and no new tick, command or subscription starts. Rows it wrote stay, with provenance kept for audit and filtering.
+- **No re-judge, no readings exclusion.** Revoked provenance is not inadmissible: nothing is re-judged, restored or removed, and readings stay visible on the scope-substitution seam and the distributed partial path.
+- **Kill list at install.** A listed package is refused by default. The verse Owner may override, audited, for the Owner's own peer only (governance.md precondition 5).
 
-This amends the S-PLUGIN contract text, which today only says "refuse activation", so it is a versioned seam change.
+This amends the S-PLUGIN contract text to "refuse activation; stop after in-flight writes complete; rows stay", a versioned seam change.
 
-*AC (simulator):* after the list arrives, every peer that trusts the root shows the fleet's extension-created nodes removed and its moved nodes restored to their last non-extension version, and the fleet's readings are absent from `/api/v1/query`. A node property the installing user edited by hand survives.
+*AC (simulator):* after the list arrives, every peer that trusts the root has stopped the fleet instance with its in-flight commit complete, no row from the package lands afterwards, and the fleet's earlier nodes and readings are unchanged and still carry `{package_id, content_hash}`. A node property the installing user edited by hand is untouched.
 
 ### 6.5 Authoring tools (P3)
 
@@ -412,7 +412,7 @@ This amends the S-PLUGIN contract text, which today only says "refuse activation
 Sources:
 - **Public defaults:**
   - Local — a file or folder of `.hexon` packages;
-  - Static signed index — an `index.json` listing `{package_id, version, content_hash, url, size}`, signed by a trust-root key with the revocation list's canonical-JSON rule, and cached for offline use.
+  - Static signed index — an `index.json` listing `{package_id, version, content_hash, url, size}`, signed by the endpoint's pinned index key (a key-id set pinned per endpoint, never a package or revocation signer) over `fractalengine/catalog-index/v1` LF + canonical JSON of the document minus its signature, and cached for offline use. An index or kill list older than the cached one is ignored, and a newer `schema_version` is refused.
 - **Protocol-v1 registries** (fe-hexon-registry) plug in through plugin_host_revival S4's client, which checks `X-Hexon-Registry-Protocol` first.
 - **Anything else** is reached only through this trait, or through a protocol-v1 endpoint the operator configures.
 
@@ -453,6 +453,16 @@ The egress API itself — `/api/v1/query`, export and share — stays core and u
 **R34 — Terrain aligned.** The terrain extension's metadata (`TerrainExtensionInfo`) becomes a manifest v2 constant, and its three contributions bind to the existing GPX-import and terrain actions through commands. It stays native and first-party.
 
 *AC:* plugin_host_revival AC-2's registry assertion holds, and each terrain contribution renders and triggers its existing action.
+
+**R37 — Scoped extension bindings.** A binding names which installed extension serves a hook point at a verse, fractal or petal. Contract: `docs/extensions/bindings.md`.
+- **Nearest scope wins** (petal > fractal > verse). A petal's own stored `terrain` counts as a petal-scope `builtin` binding.
+- **Authority.** A Manager+ at the scope writes bindings, by subtree authority (role propagation R7). Binding rows replicate and are judged by the author's role at write time (R22).
+- **Per-peer resolution.** A peer that lacks the bound extension, or is forbidden by policy, keeps the built-in behaviour, shows an unresolved-binding state naming the extension, and is offered an install through the normal consent dialog under the verse install policy. Nothing auto-installs.
+- **A binding grants nothing.** It chooses among what the peer installed, consented to and accepted locally; a kill-listed bound extension never runs, except under the audited verse-Owner override on the Owner's own host.
+- **First hook.** Terrain is the first `petal.map` provider (R34).
+- **Scope of this swarm.** The contract and the first provider land here; the binding table, resolver and hook catalogue are the BND-0..BND-11 turn that follows.
+
+*AC (simulator):* two peers, one with the bound extension and one without: the first shows the bound result, the second keeps the built-in map, shows the unresolved state and is offered the install; a petal-scope binding overrides the fractal one on that petal only.
 
 ### 6.8 Simulator QA (P6)
 
@@ -550,7 +560,7 @@ Manifest v2 (`plugin/extension.json`):
 
 | ID | Question | Recommended default | Reversal cost |
 |---|---|---|---|
-| OD-E1 | Should the kill switch withdraw rows (R24), amending the S-PLUGIN text from "refuse activation" to "refuse, stop and withdraw host-stamped extension rows"? | Yes, as a versioned seam change in `conductor/open-core.md` after ratification. If refused, R24 shrinks to stop-and-refuse and the scenario step adapts. | Medium (the provenance fields are additive, and withdrawal can be switched off) |
+| OD-E1 | Should the kill switch withdraw rows (R24)? | **Decided 2026-11-08: no withdrawal.** The instance stops after in-flight writes; rows stay with provenance. The S-PLUGIN row reads "refuse activation; stop after in-flight writes complete; rows stay". | Low (the provenance fields are additive) |
 | OD-E2 | Should first-party behaviour extensions be native or Wasm? | Wasm for simulation and device adapters, which dogfoods the third-party path. Native for terrain, the registry client and the BI built-ins. | Medium |
 | OD-E3 | Binding scope | One petal per activation, as `PluginContexts` / `DbSceneFactory` pin today. No verse-wide binding in v1. | Low |
 | OD-E4 | Host tick constants | Floor 100 ms. No default tick: a writing extension must declare one. At most 64 ops and 1 000 readings per flush, one commit in flight, fuel per tick capped by the host. P1 measures. | Low |
@@ -558,7 +568,7 @@ Manifest v2 (`plugin/extension.json`):
 | OD-E6 | Ingress surface and MQTT client | HTTP and websocket accept on the existing API server (one HTTP surface to secure). The MQTT client crate is chosen in P1 under `deny.toml` review. Credentials stay host-side and are never replicated. | Medium |
 | OD-E7 | Audit visibility | Local op-log only. Replicating the audit trail to verse Managers is a later decision. | Low |
 | OD-E8 | UI contributions | Declarative and host-rendered. No guest-drawn UI; rich UI belongs to portals. | Low |
-| OD-E9 | How readings are withdrawn | Read-path exclusion, which is reversible, rather than physical deletion. | Medium |
+| OD-E9 | How readings are withdrawn | Moot: OD-E1 decided no withdrawal, so readings stay. | None |
 | OD-E10 | Raw SQL for guests | Not in 2.0; `host/query` goes through the REST guard instead. | Low (can be added later) |
 
 ## 9. Risks
@@ -566,7 +576,7 @@ Manifest v2 (`plugin/extension.json`):
 - **Untrusted code goes live at scale.** This inherits plugin_host_revival's wasmtime advisory risk. P1 waits on its S0 bump, and package loading stays off by default (R16).
 - **Network capability is new attack surface.** It is host-brokered only, declared, consented, capped by policy, rate-limited and audited (R8, R9), and `/security-review` is mandatory.
 - **The DB thread is shared.** Batched flushes stop per-instance queue growth, but not growth from many instances together. P6 measures host-wide ceilings (active instances × cadence) against the `slow DB command` log.
-- **Provenance withdrawal touches the freshest P2P code** — the re-judge queues from QA-0121, QA-0131 and QA-0132. Its partition stays unpartitioned until the P2P campaign merges, and R24 is gated by OD-E1.
+- **Provenance stamping touches the freshest P2P code** — the scene-version and `iot_reading` write paths (QA-0121, QA-0131, QA-0132 queues). With OD-E1 decided there is no re-judge on revocation, only the additive stamp; the partition stays unpartitioned until the P2P campaign merges.
 - **WIT 2.0 may churn before bindgen exists.** The file carries an UNSTABLE header until P1.1, and no third party is invited before P1's review passes.
 - **Scope creep toward catalogue operations.** Any diff that adds business logic, accounts or curation is a non-goal violation (`conductor/open-core.md`).
 - **Fleet driver claims can race** when two peers claim a fleet at once. The HLC decides last-writer-wins, and the loser stops within one tick. This is recorded, not hidden.

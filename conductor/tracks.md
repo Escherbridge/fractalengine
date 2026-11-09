@@ -130,6 +130,8 @@ Builds on the S-PLUGIN enabler above. Decisions D-X1..D-X8 live in the track's c
   - The `fe-ext` CLI and an in-app Extensions UI follow.
   - First-party migrations start with fe-sim fleets, then device adapters, the hexon registry client and BI
     connectors.
+  - Revocation stamps and stops (OD-E1: no withdrawal; rows stay with provenance). Scoped bindings (spec R37)
+    let a verse, fractal or petal bind an installed extension to a hook point; terrain is the first provider.
 
   Author-only until the build gate opens (D-X2). `portal_surface_20261107` depends on it —
   [./tracks/extension_platform_20261107/](./tracks/extension_platform_20261107/)
