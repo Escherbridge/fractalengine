@@ -111,6 +111,14 @@ trusting "pure efficiency" claims; push control; a board that silently drifts st
 
 ## 2. State
 
+- **2026-11-09 ~01:15 — SWARM TURN 2 RUNNING.** Workflow `wf_3db960d5-6b1` (task `wljzr2law`), 70 slices:
+  13 integration (one owner per central file), 17 bindings B0–B11 (+B10a–f), 4 net, 12 feature remainders,
+  8 portal, 1 private spec, 3 docs, 12 opus review gates ending in the cross-track gate R-X; width 5,
+  critical path 7. Slice tasks `.omc/state/turn2-dag.json`; rules, pinned seams, scope flags and the
+  REFINE CHECKLIST (crate-by-crate `cargo check -p` order) in `.omc/plans/turn2-plan.md`. Commit step now
+  ignore-checks first. Resume: `Workflow({scriptPath: "<session>/workflows/scripts/ext-program-swarm-turn2-
+  wf_3db960d5-6b1.js", resumeFromRunId: "wf_3db960d5-6b1"})`. After it: refine pass when the gate opens →
+  merge review (ext-platform first, then portal rebased) → user push decision.
 - **2026-11-09 ~00:40 — SWARM TURN 1 COMPLETE; turn 2 being planned.** `wf_54bcb9d3-643` ended: 59 slices =
   43 done, 15 partial (PHR-S2, PHR-S4, E6, E7, E10W, E13, E14b, E19, E16, D2, P-S0c, P-SP, P-S5, P-SI, P-S8),
   1 no-op, 0 blocked/failed; 117 agents, 18.8M subagent tokens, 4.8 h. Branches: track/extension-platform
