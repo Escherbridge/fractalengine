@@ -11,7 +11,7 @@ description = "Plugin engines (Rhai and Wasmtime) with sandboxing and lifecycle"
 fe-runtime = { path = "../fe-runtime" }
 fe-sdk = { path = "../fe-sdk" }
 fe-policy = { path = "../fe-policy" }
-rhai = "1.19"
+rhai = "1.24"
 wasmtime = { version = "49.0.2", features = ["async"] }
 blake3 = { workspace = true }
 anyhow = { workspace = true }

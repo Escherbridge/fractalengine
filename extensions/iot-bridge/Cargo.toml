@@ -1,5 +1,3 @@
-[workspace]
-
 [package]
 name = "iot-bridge"
 version = "0.1.0"

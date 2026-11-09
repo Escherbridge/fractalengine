@@ -28,6 +28,8 @@ members = [
     # Sole exception: fractalengine-relay's default-OFF `sim-control`
     # feature (F9/A20) — default builds never compile it.
     "fe-sim",
+    # Reference extension; one rhai version with fe-plugin (see extensions/iot-bridge/AGENTS.md §workspace).
+    "extensions/iot-bridge",
 ]
 # cargo-fuzz targets are their own workspace (nightly + libFuzzer); see fuzz/Cargo.toml.
 exclude = ["fuzz"]
