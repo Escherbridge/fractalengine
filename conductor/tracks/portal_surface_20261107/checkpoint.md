@@ -33,6 +33,13 @@ These decisions are binding. They were ratified in the 2026-11-07 user grills; d
 
 *Binding. Dated bullets, newest first, maintained by the orchestrating session. Agents re-read this at every phase boundary and apply it over any other instruction except safety rules.*
 
+- 2026-11-09 02:15 (orchestrator fractalengine-71, mandatory integration for R-POR) — fe-api in this tree
+  does not compile: fe-api/src/portal_bundles.rs `origin_allowed` uses `url::Url` but fe-api/Cargo.toml has
+  no `url` dependency (add it with the workspace/fe-runtime version). The QA lane's
+  `POST /api/v1/debug/portal/killswitch {engage}` route is missing (fe-api/src/qa_portal.rs has no owner this
+  turn: R-POR mounts it in server.rs and lists the qa_portal.rs handler as NEEDS; the orchestrator writes the
+  handler after the turn if it is still absent). Keep the route behind the existing portal-fixture
+  Owner+input gate.
 - 2026-11-08 23:40 (orchestrator fractalengine-71, SECURITY relay, mandatory) — **bus `Caller` gains
   `role_ceiling`** (sibling G1-C1, `3e946344` on track/extension-platform): every API token now carries the
   node DID as `sub`; "local" = node DID + an Owner token; the bus `Caller` struct gains `role_ceiling`, so
