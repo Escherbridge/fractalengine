@@ -1,19 +1,396 @@
-//! Wasm plugin lifecycle ops (flow: src/AGENTS.md §lifecycle).
+//! Wasm plugin lifecycle ops (flow: src/AGENTS.md §lifecycle) and extension governance: R19 activation
+//! preconditions and R23 kill-switch arrival (src/AGENTS.md §governance).
 
+use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::sync::Arc;
 
 use crossbeam::channel::Sender;
+use fe_sdk::manifest_v2::ExtensionManifest;
 
 use crate::capability::{CapabilityManifest, CapabilityToken};
 use crate::package::{payload_hash, verify_package, PackageError, SignatureEntry, UnsignedPolicy};
 use crate::registry_client::{RegistryClient, RegistryInstallError};
-use crate::trust_roots::{RevocationSet, TrustRoots};
+use crate::tick::{DeactivateReason, TickHost, TickState};
+use crate::trust_roots::{RevocationError, RevocationList, RevocationSet, TrustRoots};
 use crate::registry::{PluginRegistry, PluginState, PluginTier};
 use crate::wasm::aot::AotCache;
 use crate::wasm::fuel::FuelBudget;
 use crate::wasm::{PluginStoreData, WasmEngine, WasmPlugin};
 use crate::PluginCommand;
+
+// ---------------------------------------------------------------------------
+// Governance (docs/extensions/governance.md §Activation preconditions, §Kill switch layers)
+// ---------------------------------------------------------------------------
+
+/// Host-wide stop switch: exactly `"1"` stops every instance `disabled` and answers `host-off`.
+pub const EXT_DISABLE_ALL_ENV: &str = "FE_EXT_DISABLE_ALL";
+
+/// Whether an env value switches Disable all on (exactly `"1"`, like [`crate::PLUGIN_HOST_ENV`]).
+pub fn ext_disable_all(value: Option<&str>) -> bool {
+    value == Some("1")
+}
+
+/// Read [`EXT_DISABLE_ALL_ENV`]; every new [`PluginManager`] starts from it.
+pub fn ext_disable_all_from_env() -> bool {
+    let on = ext_disable_all(std::env::var(EXT_DISABLE_ALL_ENV).ok().as_deref());
+    if on {
+        tracing::warn!("{EXT_DISABLE_ALL_ENV}=1: every extension instance is disabled on this host");
+    }
+    on
+}
+
+/// The R19 activation preconditions.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Precondition {
+    HostOff,
+    NotLocalIdentity,
+    PackageInvalid,
+    UntrustedSigner,
+    Revoked,
+    EntitlementRequired,
+    PolicyDenied,
+    RoleDenied,
+    ConsentMissing,
+}
+
+impl Precondition {
+    /// R19 check order; a non-local actor is judged on `NotLocalIdentity` before `HostOff`.
+    pub const ORDER: [Self; 9] = [
+        Self::HostOff,
+        Self::NotLocalIdentity,
+        Self::PackageInvalid,
+        Self::UntrustedSigner,
+        Self::Revoked,
+        Self::EntitlementRequired,
+        Self::PolicyDenied,
+        Self::RoleDenied,
+        Self::ConsentMissing,
+    ];
+
+    /// The stable refusal code REST, the GUI and the audit trail show.
+    pub const fn code(self) -> &'static str {
+        match self {
+            Self::HostOff => "host-off",
+            Self::NotLocalIdentity => "not-local-identity",
+            Self::PackageInvalid => "package-invalid",
+            Self::UntrustedSigner => "untrusted-signer",
+            Self::Revoked => "revoked",
+            Self::EntitlementRequired => "entitlement-required",
+            Self::PolicyDenied => "policy-denied",
+            Self::RoleDenied => "role-denied",
+            Self::ConsentMissing => "consent-missing",
+        }
+    }
+}
+
+/// The first failing precondition and why.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ActivationRefusal {
+    pub precondition: Precondition,
+    pub detail: String,
+}
+
+impl std::fmt::Display for ActivationRefusal {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}: {}", self.precondition.code(), self.detail)
+    }
+}
+
+impl std::error::Error for ActivationRefusal {}
+
+fn refusal<T>(precondition: Precondition, detail: impl Into<String>) -> Result<T, ActivationRefusal> {
+    Err(ActivationRefusal { precondition, detail: detail.into() })
+}
+
+/// How a package is trusted (the verifying root's `role`, governance.md §Trust roots).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TrustTier {
+    Release,
+    Dev,
+    Publisher,
+    DevUnsigned,
+}
+
+/// What governance needs to know about one verified build.
+#[derive(Debug, Clone)]
+pub struct PackageFacts {
+    pub package_id: String,
+    pub version: String,
+    /// blake3 of the canonical signed manifest.
+    pub content_hash: String,
+    /// blake3 of `plugin/component.wasm`.
+    pub component_digest: Option<String>,
+    /// Licensed body phase only.
+    pub plaintext_digest: Option<String>,
+    /// The consent digest (manifest-v2.md §Capability digest).
+    pub capability_digest: String,
+    pub trust: TrustTier,
+    /// Declares scene writes or readings: the role floor is Editor+ (Viewer+ otherwise).
+    pub writes: bool,
+    /// A `paid` licence: precondition 6 asks S-ENTITLEMENT.
+    pub licensed: bool,
+    /// The extension manifest (`None` for a web bundle).
+    pub manifest: Option<Arc<ExtensionManifest>>,
+}
+
+impl PackageFacts {
+    /// Whether a manifest writes (any `scene.write` kind, or a readings grant).
+    pub fn manifest_writes(manifest: &ExtensionManifest) -> bool {
+        manifest.readings.is_some()
+            || manifest
+                .scene
+                .as_ref()
+                .and_then(|scene| scene.write.as_ref())
+                .is_some_and(|kinds| !kinds.is_empty())
+    }
+
+    /// Every digest a kill-list or deny entry may name for this build.
+    pub fn hashes(&self) -> impl Iterator<Item = &str> {
+        std::iter::once(self.content_hash.as_str())
+            .chain(self.component_digest.as_deref())
+            .chain(self.plaintext_digest.as_deref())
+    }
+}
+
+/// How the caller's sealed-package verification ended (fe-hexon `verify_plugin_package`).
+#[derive(Debug, Clone)]
+pub enum PackageCheck {
+    Verified(PackageFacts),
+    /// Seal, integrity, identity or manifest v2 failure (row 3).
+    Invalid(String),
+    /// Unsigned without the dev flag, or no trust root vouches (row 4).
+    Untrusted(String),
+}
+
+/// One activation, install, bind or enable to judge.
+#[derive(Debug, Clone, Copy)]
+pub struct ActivationRequest<'a> {
+    pub actor_did: &'a str,
+    pub installation_id: &'a str,
+    pub verse_id: &'a str,
+    pub petal_id: &'a str,
+    pub package: &'a PackageCheck,
+}
+
+/// Rows 6-8, which need state this crate does not hold; the binary implements them.
+pub trait GovernanceGates: Send + Sync {
+    /// Row 6: a `paid` licence has a valid token through S-ENTITLEMENT's `EntitlementVerifier`.
+    fn entitlement(&self, package: &PackageFacts) -> Result<(), String>;
+    /// Row 7: the verse policy and the local policy both admit it (fe-database `extension_policy::evaluate`).
+    fn policy(&self, verse_id: &str, package: &PackageFacts) -> Result<(), String>;
+    /// Row 8: the local DID holds Editor+ at the petal for a writing build, Viewer+ otherwise.
+    fn role(&self, petal_id: &str, writes: bool) -> Result<(), String>;
+}
+
+/// Refuses rows 7-8 (and licensed builds at row 6) until the binary wires real gates.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct FailClosedGates;
+
+impl GovernanceGates for FailClosedGates {
+    fn entitlement(&self, package: &PackageFacts) -> Result<(), String> {
+        if package.licensed {
+            Err("no entitlement verifier on this host".into())
+        } else {
+            Ok(())
+        }
+    }
+    fn policy(&self, _verse_id: &str, _package: &PackageFacts) -> Result<(), String> {
+        Err("no verse policy source on this host".into())
+    }
+    fn role(&self, _petal_id: &str, _writes: bool) -> Result<(), String> {
+        Err("no role source on this host".into())
+    }
+}
+
+/// A local consent record (never replicated); fe-database keeps the durable copy in the audit trail.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ConsentRecord {
+    pub installation_id: String,
+    pub package_id: String,
+    pub content_hash: String,
+    pub capability_digest: String,
+    pub actor_did: String,
+    pub at: String,
+}
+
+/// Where a governed instance runs and which build it is (kill-switch arrival matches against this).
+#[derive(Debug, Clone)]
+struct RunningBuild {
+    verse_id: String,
+    package: PackageFacts,
+}
+
+/// `issued_at` as a sortable value: `[year, month, day, hour, minute, second]` plus nanoseconds.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+struct IssuedAt([u32; 6], u32);
+
+/// Strict RFC 3339 UTC (`YYYY-MM-DDTHH:MM:SS[.fraction]Z`), compared by value, not by string.
+fn parse_issued_at(text: &str) -> Option<IssuedAt> {
+    let body = text.strip_suffix('Z')?;
+    let (main, fraction) = body.split_once('.').unwrap_or((body, ""));
+    let bytes = main.as_bytes();
+    if bytes.len() != 19 || bytes[4] != b'-' || bytes[7] != b'-' || bytes[10] != b'T' || bytes[13] != b':' || bytes[16] != b':' {
+        return None;
+    }
+    let field = |from: usize, to: usize| {
+        main.get(from..to)
+            .filter(|digits| digits.bytes().all(|b| b.is_ascii_digit()))
+            .and_then(|digits| digits.parse::<u32>().ok())
+    };
+    let stamp = [field(0, 4)?, field(5, 7)?, field(8, 10)?, field(11, 13)?, field(14, 16)?, field(17, 19)?];
+    if fraction.len() > 9 || !fraction.bytes().all(|b| b.is_ascii_digit()) {
+        return None;
+    }
+    let nanos = format!("{fraction:0<9}").parse::<u32>().ok()?;
+    Some(IssuedAt(stamp, nanos))
+}
+
+/// Why a revocation list was not accepted.
+#[derive(Debug, thiserror::Error)]
+pub enum RevocationIntakeError {
+    #[error(transparent)]
+    Verify(#[from] RevocationError),
+    #[error("revocation list issued_at '{0}' is not RFC 3339 UTC")]
+    BadIssuedAt(String),
+    /// A replayed older list would silently un-revoke; it is refused.
+    #[error("revocation list from '{signer}' issued {issued_at} is older than the one already accepted")]
+    Stale { signer: String, issued_at: String },
+}
+
+/// Largest revocation list one OD-8 pull accepts.
+pub const REVOCATION_LIST_MAX_BYTES: usize = 1024 * 1024;
+
+/// Whether a pull URL is https, or plain http to an exact loopback host (QA's loopback trust root).
+fn is_pull_url(url: &str) -> bool {
+    if url.starts_with("https://") {
+        return true;
+    }
+    let Some(rest) = url.strip_prefix("http://") else { return false };
+    let authority = rest.split(['/', '?', '#']).next().unwrap_or("");
+    let host = if authority.starts_with('[') {
+        authority.split_inclusive(']').next().unwrap_or(authority)
+    } else {
+        authority.split(':').next().unwrap_or(authority)
+    };
+    !authority.contains('@') && matches!(host, "127.0.0.1" | "[::1]" | "localhost")
+}
+
+/// OD-8 pull of one revocation-capable root's list (anonymous, bounded); [`PluginManager::accept_revocation_list`]
+/// verifies it and applies the newest-per-signer rule.
+pub async fn fetch_revocation_list(client: &reqwest::Client, url: &str) -> Result<RevocationList, String> {
+    if !is_pull_url(url) {
+        return Err(format!("revocation_url must be https (or loopback http): {url}"));
+    }
+    let mut response = client
+        .get(url)
+        .timeout(std::time::Duration::from_secs(30))
+        .send()
+        .await
+        .map_err(|e| format!("revocation pull failed: {e}"))?;
+    if !response.status().is_success() {
+        return Err(format!("revocation pull answered {}", response.status()));
+    }
+    let mut body = Vec::new();
+    while let Some(chunk) = response.chunk().await.map_err(|e| format!("revocation pull failed: {e}"))? {
+        body.extend_from_slice(&chunk);
+        if body.len() > REVOCATION_LIST_MAX_BYTES {
+            return Err("revocation list exceeds 1 MiB".into());
+        }
+    }
+    serde_json::from_slice(&body).map_err(|e| format!("revocation list does not parse: {e}"))
+}
+
+/// The newest verified list per revocation-capable signer, plus a startup seed; the effective set is their union.
+#[derive(Debug, Clone, Default)]
+struct RevocationIntake {
+    seed: RevocationSet,
+    lists: HashMap<String, (IssuedAt, RevocationSet)>,
+}
+
+impl RevocationIntake {
+    fn effective(&self) -> RevocationSet {
+        let mut set = self.seed.clone();
+        for (_, list) in self.lists.values() {
+            set.extend(list.clone());
+        }
+        set
+    }
+}
+
+/// Host-local governance state: Disable all, consents, Owner kill-list overrides, running builds.
+pub struct Governance {
+    local_did: String,
+    disable_all: bool,
+    gates: Arc<dyn GovernanceGates>,
+    consents: HashMap<String, ConsentRecord>,
+    /// `(verse_id, content_hash)`: the verse Owner's override on this host (bindings.md §5.7).
+    overrides: HashSet<(String, String)>,
+    intake: RevocationIntake,
+    running: HashMap<String, RunningBuild>,
+}
+
+impl Default for Governance {
+    fn default() -> Self {
+        Self {
+            local_did: String::new(),
+            disable_all: false,
+            gates: Arc::new(FailClosedGates),
+            consents: HashMap::new(),
+            overrides: HashSet::new(),
+            intake: RevocationIntake::default(),
+            running: HashMap::new(),
+        }
+    }
+}
+
+impl Governance {
+    /// The identity extensions write as; empty means nothing is local (fail closed).
+    pub fn local_did(&self) -> &str {
+        &self.local_did
+    }
+
+    /// Whether Disable all (or `FE_EXT_DISABLE_ALL=1`) is on.
+    pub fn is_disabled_all(&self) -> bool {
+        self.disable_all
+    }
+
+    /// Record (or replace) an installation's consent; hydrated from fe-database `load_consents` at startup.
+    pub fn record_consent(&mut self, record: ConsentRecord) {
+        self.consents.insert(record.installation_id.clone(), record);
+    }
+
+    /// Drop an installation's consent; the caller stops its instances (`consent-revoked`).
+    pub fn revoke_consent(&mut self, installation_id: &str) -> Option<ConsentRecord> {
+        self.consents.remove(installation_id)
+    }
+
+    /// The installation's consent, if any.
+    pub fn consent(&self, installation_id: &str) -> Option<&ConsentRecord> {
+        self.consents.get(installation_id)
+    }
+
+    /// Record the verse Owner's audited override (fe-database `record_kill_list_override` checked who asked).
+    pub fn add_kill_list_override(&mut self, verse_id: &str, content_hash: &str) {
+        self.overrides.insert((verse_id.to_string(), content_hash.to_ascii_lowercase()));
+    }
+
+    fn overridden(&self, verse_id: &str, content_hash: &str) -> bool {
+        self.overrides.contains(&(verse_id.to_string(), content_hash.to_ascii_lowercase()))
+    }
+
+    /// Plugin ids of governed instances running in `verse_id`.
+    pub fn running_in(&self, verse_id: &str) -> Vec<String> {
+        let mut ids: Vec<String> = self
+            .running
+            .iter()
+            .filter(|(_, build)| build.verse_id == verse_id)
+            .map(|(id, _)| id.clone())
+            .collect();
+        ids.sort();
+        ids
+    }
+}
 
 // ---------------------------------------------------------------------------
 // InstalledPlugin — tracks a Wasm plugin's runtime state
@@ -64,6 +441,9 @@ pub struct PluginManager {
     /// Package admission switch (src/AGENTS.md §admission-gate); off refuses install and activation.
     admission: bool,
     verified: std::collections::HashMap<String, VerifiedInstall>,
+    governance: Governance,
+    /// The worker's scheduler; a stop leaves the bus first and drains the in-flight commit (OD-E1).
+    ticks: Option<TickHost>,
 }
 
 impl PluginManager {
@@ -87,7 +467,239 @@ impl PluginManager {
             revocations: RevocationSet::default(),
             admission: false,
             verified: std::collections::HashMap::new(),
+            governance: Governance { disable_all: ext_disable_all_from_env(), ..Governance::default() },
+            ticks: None,
         })
+    }
+
+    /// The host's local DID: the only actor that passes row 2 (R12).
+    pub fn with_local_did(mut self, local_did: impl Into<String>) -> Self {
+        self.governance.local_did = local_did.into();
+        self
+    }
+
+    /// Rows 6-8 (entitlement, policy, role); default [`FailClosedGates`].
+    pub fn with_gates(mut self, gates: Arc<dyn GovernanceGates>) -> Self {
+        self.governance.gates = gates;
+        self
+    }
+
+    /// Stop scheduled instances through the worker's `TickHost` (bus first, then the scheduler).
+    pub fn with_ticks(mut self, ticks: TickHost) -> Self {
+        self.ticks = Some(ticks);
+        self
+    }
+
+    /// Host-local governance state.
+    pub fn governance(&self) -> &Governance {
+        &self.governance
+    }
+
+    /// Mutable governance state (consent, overrides).
+    pub fn governance_mut(&mut self) -> &mut Governance {
+        &mut self.governance
+    }
+
+    /// R19, in order; the first failure is the refusal. Returns the verified build on success.
+    pub fn check_activation<'a>(&self, request: &ActivationRequest<'a>) -> Result<&'a PackageFacts, ActivationRefusal> {
+        let governance = &self.governance;
+        if governance.local_did.is_empty() || request.actor_did != governance.local_did {
+            return refusal(Precondition::NotLocalIdentity, "only the host's local identity administers extensions");
+        }
+        if !self.admission {
+            return refusal(Precondition::HostOff, "package admission is off on this host");
+        }
+        if governance.disable_all {
+            return refusal(Precondition::HostOff, "Disable all is on");
+        }
+        let package = match request.package {
+            PackageCheck::Verified(package) => package,
+            PackageCheck::Invalid(reason) => return refusal(Precondition::PackageInvalid, reason.clone()),
+            PackageCheck::Untrusted(reason) => return refusal(Precondition::UntrustedSigner, reason.clone()),
+        };
+        if package.hashes().any(|hash| self.revocations.is_revoked(hash))
+            && !governance.overridden(request.verse_id, &package.content_hash)
+        {
+            return refusal(Precondition::Revoked, format!("{} is on an accepted kill list", package.package_id));
+        }
+        let gates = &governance.gates;
+        gates.entitlement(package).or_else(|detail| refusal(Precondition::EntitlementRequired, detail))?;
+        gates.policy(request.verse_id, package).or_else(|detail| refusal(Precondition::PolicyDenied, detail))?;
+        gates.role(request.petal_id, package.writes).or_else(|detail| refusal(Precondition::RoleDenied, detail))?;
+        match governance.consents.get(request.installation_id) {
+            Some(consent)
+                if consent.package_id == package.package_id && consent.capability_digest == package.capability_digest =>
+            {
+                Ok(package)
+            }
+            Some(_) => refusal(Precondition::ConsentMissing, "the recorded consent covers another capability digest"),
+            None => refusal(Precondition::ConsentMissing, "no consent is recorded for this installation"),
+        }
+    }
+
+    /// R19, then activate the verified bytes; the build is tracked so kill switches can find it.
+    pub async fn activate_governed(
+        &mut self,
+        request: &ActivationRequest<'_>,
+        plugin_id: &str,
+        wasm_bytes: &[u8],
+        fuel_budget: FuelBudget,
+    ) -> Result<(), LifecycleError> {
+        let package = self.check_activation(request)?;
+        {
+            // An operator's Enable after a local, policy or role stop lands here; Revoked stays terminal.
+            let mut registry = self
+                .registry
+                .lock()
+                .map_err(|_| LifecycleError::RegistryError("registry lock poisoned".into()))?;
+            if matches!(registry.get_state(plugin_id), Some(PluginState::Disabled(_))) {
+                registry.enable(plugin_id).map_err(|e| LifecycleError::RegistryError(e.to_string()))?;
+            }
+        }
+        // Row 5 already decided revocation, including the Owner's per-verse override.
+        self.activate_checked(plugin_id, wasm_bytes, request.petal_id, fuel_budget, false).await?;
+        self.governance.running.insert(
+            plugin_id.to_string(),
+            RunningBuild { verse_id: request.verse_id.to_string(), package: package.clone() },
+        );
+        Ok(())
+    }
+
+    /// R23 (d): verify a signed list (only `revocation = true` roots), keep the newest per signer, and stop
+    /// every running build it names unless overridden in that verse. In-flight commits finish; rows stay (OD-E1).
+    pub fn accept_revocation_list(&mut self, list: &RevocationList) -> Result<Vec<String>, LifecycleError> {
+        let verified = self
+            .trust_roots
+            .verify_revocation_list(list)
+            .map_err(RevocationIntakeError::from)?;
+        let issued = parse_issued_at(&list.issued_at)
+            .ok_or_else(|| RevocationIntakeError::BadIssuedAt(list.issued_at.clone()))?;
+        let lists = &mut self.governance.intake.lists;
+        match lists.get(&list.signer_key_id).map(|(at, _)| *at) {
+            Some(newest) if issued < newest => {
+                return Err(RevocationIntakeError::Stale {
+                    signer: list.signer_key_id.clone(),
+                    issued_at: list.issued_at.clone(),
+                }
+                .into())
+            }
+            // Same instant twice (a re-delivery or the signer's own equivocation): union, fail closed.
+            Some(newest) if issued == newest => {
+                if let Some((_, set)) = lists.get_mut(&list.signer_key_id) {
+                    set.extend(verified);
+                }
+            }
+            _ => {
+                lists.insert(list.signer_key_id.clone(), (issued, verified));
+            }
+        }
+        self.revocations = self.governance.intake.effective();
+
+        let mut stopped: Vec<String> = self
+            .governance
+            .running
+            .iter()
+            .filter(|(_, build)| {
+                build.package.hashes().any(|hash| self.revocations.is_revoked(hash))
+                    && !self.governance.overridden(&build.verse_id, &build.package.content_hash)
+            })
+            .map(|(id, _)| id.clone())
+            .collect();
+        // Ungoverned (1.0 core) instances carry no verse, so no override can apply.
+        stopped.extend(
+            self.verified
+                .iter()
+                .filter(|(id, record)| {
+                    self.installed.contains_key(*id)
+                        && !self.governance.running.contains_key(*id)
+                        && self.revocations.is_revoked(&record.content_hash)
+                })
+                .map(|(id, _)| id.clone()),
+        );
+        stopped.sort();
+        stopped.dedup();
+        for plugin_id in &stopped {
+            self.stop_instance(plugin_id, DeactivateReason::Revoked);
+        }
+        Ok(stopped)
+    }
+
+    /// R23 (b): Disable all; every instance stops `disabled` and activation answers `host-off` until cleared.
+    pub fn disable_all(&mut self) -> Vec<String> {
+        self.governance.disable_all = true;
+        let mut ids: Vec<String> = self.governance.running.keys().chain(self.installed.keys()).cloned().collect();
+        ids.sort();
+        ids.dedup();
+        ids.retain(|plugin_id| self.stop_instance(plugin_id, DeactivateReason::Disabled));
+        // Instances scheduled outside this manager (e.g. a lab host) stop too.
+        if let Some(ticks) = &self.ticks {
+            ticks.stop_all(DeactivateReason::Disabled);
+        }
+        ids
+    }
+
+    /// Clear Disable all; nothing restarts by itself (each installation is enabled again by the local DID).
+    pub fn enable_all(&mut self) {
+        self.governance.disable_all = false;
+    }
+
+    /// R23 (a): local Disable of one instance; false when it was not running.
+    pub fn disable_instance(&mut self, plugin_id: &str) -> bool {
+        self.stop_instance(plugin_id, DeactivateReason::Disabled)
+    }
+
+    /// R23 (c) / R18: a verse policy row changed (local write or replicated arrival); every governed
+    /// instance in that verse the policy gate now refuses stops `policy-denied`.
+    pub fn reevaluate_verse_policy(&mut self, verse_id: &str) -> Vec<String> {
+        let denied: Vec<String> = self
+            .governance
+            .running
+            .iter()
+            .filter(|(_, build)| build.verse_id == verse_id && self.governance.gates.policy(verse_id, &build.package).is_err())
+            .map(|(id, _)| id.clone())
+            .collect();
+        for plugin_id in &denied {
+            self.stop_instance(plugin_id, DeactivateReason::PolicyDenied);
+        }
+        denied
+    }
+
+    /// Stop one instance for a kill-switch reason: the `TickHost` leaves the bus first and drains the
+    /// in-flight commit; a 1.0 core instance has its lease revoked. Returns whether anything was running.
+    fn stop_instance(&mut self, plugin_id: &str, reason: DeactivateReason) -> bool {
+        let tracked = self.governance.running.remove(plugin_id).is_some();
+        let loaded = self.installed.remove(plugin_id).is_some();
+        let scheduled = self
+            .ticks
+            .as_ref()
+            .and_then(|ticks| ticks.counters(plugin_id))
+            .is_some_and(|counters| counters.state != TickState::Stopped);
+        if !(tracked || loaded || scheduled) {
+            return false;
+        }
+        match (&self.ticks, scheduled) {
+            // TickHost::stop unbinds the context itself.
+            (Some(ticks), true) => ticks.stop(plugin_id, reason),
+            _ => {
+                if let Err(error) = self.contexts.unbind(plugin_id) {
+                    tracing::warn!(plugin = %plugin_id, %error, "revoking a stopped instance's lease failed");
+                }
+            }
+        }
+        if let Ok(mut registry) = self.registry.lock() {
+            let applied = match reason {
+                DeactivateReason::Revoked => registry.revoke(plugin_id, "revoked"),
+                DeactivateReason::Disabled => registry.disable(plugin_id, "disabled"),
+                DeactivateReason::PolicyDenied => registry.disable(plugin_id, "policy-denied"),
+                DeactivateReason::RoleLost => registry.disable(plugin_id, "role-lost"),
+                _ => registry.deactivate(plugin_id),
+            };
+            if let Err(error) = applied {
+                tracing::debug!(plugin = %plugin_id, %error, "registry state after a kill switch");
+            }
+        }
+        tracing::info!(plugin = %plugin_id, ?reason, "extension instance stopped by governance");
+        true
     }
 
     /// Configure publisher trust roots and the unsigned-package policy (default: no roots, refuse unsigned).
@@ -103,9 +715,10 @@ impl PluginManager {
         self
     }
 
-    /// Replace the verified revocation set consulted at install and activation.
+    /// Replace the startup seed (e.g. the cached last good lists); lists accepted since stay in the union.
     pub fn set_revocations(&mut self, revocations: RevocationSet) {
-        self.revocations = revocations;
+        self.governance.intake.seed = revocations;
+        self.revocations = self.governance.intake.effective();
     }
 
     fn require_admission(&self) -> Result<(), LifecycleError> {
@@ -229,7 +842,22 @@ impl PluginManager {
         petal_id: &str,
         fuel_budget: FuelBudget,
     ) -> Result<(), LifecycleError> {
+        self.activate_checked(plugin_id, wasm_bytes, petal_id, fuel_budget, true).await
+    }
+
+    /// The activation body; `check_revocation` is false only after R19 row 5 judged it (with overrides).
+    async fn activate_checked(
+        &mut self,
+        plugin_id: &str,
+        wasm_bytes: &[u8],
+        petal_id: &str,
+        fuel_budget: FuelBudget,
+        check_revocation: bool,
+    ) -> Result<(), LifecycleError> {
         self.require_admission()?;
+        if self.governance.disable_all {
+            return Err(LifecycleError::HostOff);
+        }
         {
             let registry = self
                 .registry
@@ -256,7 +884,9 @@ impl PluginManager {
             }
             Some(record) => record.manifest.clone(),
         };
-        self.refuse_if_revoked(plugin_id, &content_hash)?;
+        if check_revocation {
+            self.refuse_if_revoked(plugin_id, &content_hash)?;
+        }
         // Load or compile from AOT cache
         let compiled = self
             .aot_cache
@@ -501,6 +1131,12 @@ pub enum LifecycleError {
 
     #[error("Plugin host binding failed: {0}")]
     HostError(String),
+
+    #[error("activation refused: {0}")]
+    Refused(#[from] ActivationRefusal),
+
+    #[error("revocation list refused: {0}")]
+    Revocation(#[from] RevocationIntakeError),
 }
 
 #[cfg(test)]
@@ -555,6 +1191,105 @@ mod tests {
         manager
             .install_plugin(id, bytes, &manifest, &[sign(&publisher(), "pub", &manifest, bytes)])
             .unwrap();
+    }
+
+    const LOCAL: &str = "did:key:z6MkLocalHost";
+
+    fn revoker() -> ed25519_dalek::SigningKey {
+        ed25519_dalek::SigningKey::from_bytes(&[5u8; 32])
+    }
+
+    /// The publisher plus a revocation-capable root.
+    fn trust_roots_with_revoker() -> TrustRoots {
+        TrustRoots::from_toml_str(&format!(
+            "[[publisher]]\nkey_id = \"pub\"\npublic_key = \"{}\"\n\n[[publisher]]\nkey_id = \"revoker\"\npublic_key = \"{}\"\nrevocation = true\n",
+            hex::encode(publisher().verifying_key().to_bytes()),
+            hex::encode(revoker().verifying_key().to_bytes())
+        ))
+        .unwrap()
+    }
+
+    /// A list naming `hash` under a DIFFERENT package id (matching is by hash under any id).
+    fn signed_list(key: &ed25519_dalek::SigningKey, key_id: &str, issued_at: &str, hash: &str) -> RevocationList {
+        use ed25519_dalek::Signer;
+        let mut list = RevocationList {
+            schema_version: 1,
+            issued_at: issued_at.into(),
+            entries: vec![crate::trust_roots::RevocationEntry {
+                package_id: "renamed".into(),
+                content_hash: hash.into(),
+                reason: "withdrawn".into(),
+                revoked_at: issued_at.into(),
+            }],
+            signer_key_id: key_id.into(),
+            signature: String::new(),
+        };
+        list.signature = hex::encode(key.sign(&list.signed_bytes()).to_bytes());
+        list
+    }
+
+    /// Rows 6-8 as switches the journey flips (true = refuse).
+    #[derive(Default)]
+    struct SwitchGates {
+        entitlement: std::sync::atomic::AtomicBool,
+        policy: std::sync::atomic::AtomicBool,
+        role: std::sync::atomic::AtomicBool,
+    }
+
+    impl SwitchGates {
+        fn set(&self, entitlement: bool, policy: bool, role: bool) {
+            use std::sync::atomic::Ordering::SeqCst;
+            self.entitlement.store(entitlement, SeqCst);
+            self.policy.store(policy, SeqCst);
+            self.role.store(role, SeqCst);
+        }
+    }
+
+    impl GovernanceGates for SwitchGates {
+        fn entitlement(&self, _package: &PackageFacts) -> Result<(), String> {
+            if self.entitlement.load(std::sync::atomic::Ordering::SeqCst) { Err("no entitlement token".into()) } else { Ok(()) }
+        }
+        fn policy(&self, _verse_id: &str, _package: &PackageFacts) -> Result<(), String> {
+            if self.policy.load(std::sync::atomic::Ordering::SeqCst) { Err("verse policy: no allow entry admits this build".into()) } else { Ok(()) }
+        }
+        fn role(&self, _petal_id: &str, _writes: bool) -> Result<(), String> {
+            if self.role.load(std::sync::atomic::Ordering::SeqCst) { Err("below Editor at the petal".into()) } else { Ok(()) }
+        }
+    }
+
+    fn facts(package_id: &str, hash: &str) -> PackageFacts {
+        PackageFacts {
+            package_id: package_id.into(),
+            version: "1.0.0".into(),
+            content_hash: hash.into(),
+            component_digest: None,
+            plaintext_digest: None,
+            capability_digest: "digest-1".into(),
+            trust: TrustTier::Publisher,
+            writes: true,
+            licensed: true,
+            manifest: None,
+        }
+    }
+
+    fn request<'a>(actor: &'a str, installation: &'a str, verse: &'a str, package: &'a PackageCheck) -> ActivationRequest<'a> {
+        ActivationRequest { actor_did: actor, installation_id: installation, verse_id: verse, petal_id: "petal", package }
+    }
+
+    fn consent(installation: &str, package_id: &str, digest: &str) -> ConsentRecord {
+        ConsentRecord {
+            installation_id: installation.into(),
+            package_id: package_id.into(),
+            content_hash: String::new(),
+            capability_digest: digest.into(),
+            actor_did: LOCAL.into(),
+            at: "2026-11-08T00:00:00Z".into(),
+        }
+    }
+
+    fn governed(manager: &mut PluginManager, gates: Arc<SwitchGates>) {
+        let gates: Arc<dyn GovernanceGates> = gates;
+        manager.governance = Governance { local_did: LOCAL.into(), gates, ..Governance::default() };
     }
 
     /// Journey (AC-4 table + identity binding): every refusal is typed, then the valid package installs and activation is pinned to it.
@@ -625,16 +1360,71 @@ mod tests {
             .await
             .unwrap_err();
         assert!(matches!(err, LifecycleError::PayloadMismatch(_)), "{err}");
+
+        // R19 (governance.md J6): each row refuses until every row before it passes; the observed
+        // order is the contract's order, with a non-local actor judged before host-off.
+        let gates = Arc::new(SwitchGates::default());
+        gates.set(true, true, true);
+        governed(&mut manager, gates.clone());
+        let hash = payload_hash(&bytes);
+        let verified = PackageCheck::Verified(facts("test-plugin", &hash));
+        let invalid = PackageCheck::Invalid("id-mismatch".into());
+        let untrusted = PackageCheck::Untrusted("no-trust-root".into());
+        let refused = |manager: &PluginManager, actor: &str, verse: &str, package: &PackageCheck| {
+            manager.check_activation(&request(actor, "inst-1", verse, package)).err().map(|r| r.precondition)
+        };
+        let mut observed = Vec::new();
+        manager.admission = false;
+        observed.push(refused(&manager, "did:key:z6MkRemote", "verse-1", &verified));
+        observed.push(refused(&manager, LOCAL, "verse-1", &verified));
+        manager.admission = true;
+        observed.push(refused(&manager, LOCAL, "verse-1", &invalid));
+        observed.push(refused(&manager, LOCAL, "verse-1", &untrusted));
+        manager.set_revocations(RevocationSet::from_entries(&[crate::trust_roots::RevocationEntry {
+            package_id: "original-name".into(),
+            content_hash: hash.clone(),
+            reason: "withdrawn".into(),
+            revoked_at: "2026-11-08T00:00:00Z".into(),
+        }]));
+        // The Owner's override reaches only its own verse.
+        manager.governance_mut().add_kill_list_override("verse-2", &hash);
+        observed.push(refused(&manager, LOCAL, "verse-1", &verified));
+        observed.push(refused(&manager, LOCAL, "verse-2", &verified));
+        manager.set_revocations(RevocationSet::default());
+        gates.set(false, true, true);
+        observed.push(refused(&manager, LOCAL, "verse-1", &verified));
+        gates.set(false, false, true);
+        observed.push(refused(&manager, LOCAL, "verse-1", &verified));
+        gates.set(false, false, false);
+        observed.push(refused(&manager, LOCAL, "verse-1", &verified));
+        use Precondition as P;
+        assert_eq!(
+            observed,
+            [P::NotLocalIdentity, P::HostOff, P::PackageInvalid, P::UntrustedSigner, P::Revoked, P::EntitlementRequired,
+                P::PolicyDenied, P::RoleDenied, P::ConsentMissing]
+                .map(Some)
+                .to_vec()
+        );
+        // Consent covers one exact capability digest: a stale one is still missing, the exact one passes.
+        manager.governance_mut().record_consent(consent("inst-1", "test-plugin", "digest-0"));
+        assert_eq!(refused(&manager, LOCAL, "verse-1", &verified), Some(P::ConsentMissing));
+        manager.governance_mut().record_consent(consent("inst-1", "test-plugin", "digest-1"));
+        assert_eq!(refused(&manager, LOCAL, "verse-1", &verified), None);
+        assert!(ext_disable_all(Some("1")) && !ext_disable_all(Some("true")) && !ext_disable_all(None));
     }
 
-    #[test]
-    fn install_plugin_refuses_revoked_hash_under_any_id() {
+    /// Journey (R23 kill switch, OD-E1): a revoked hash is refused at install under any id; then a running
+    /// governed instance is stopped by policy removal, by an accepted list (unless the Owner overrode it in
+    /// that verse), and by Disable all; a replayed older list and a non-revoker's list are refused.
+    #[tokio::test]
+    async fn kill_switch_journey() {
         let (mut manager, _tmp) = make_test_manager();
         let bytes = wat::parse_str(r#"(module)"#).unwrap();
+        let hash = payload_hash(&bytes);
         // The list names the build under a different package id; the hash alone revokes it.
         manager.set_revocations(RevocationSet::from_entries(&[crate::trust_roots::RevocationEntry {
             package_id: "original-name".into(),
-            content_hash: payload_hash(&bytes),
+            content_hash: hash.clone(),
             reason: "withdrawn".into(),
             revoked_at: "2026-11-08T00:00:00Z".into(),
         }]));
@@ -642,6 +1432,75 @@ mod tests {
             .install_plugin("test-plugin", &bytes, MANIFEST_BYTES, &[sign(&publisher(), "pub", MANIFEST_BYTES, &bytes)])
             .unwrap_err();
         assert!(matches!(err, LifecycleError::Package(PackageError::Revoked { .. })));
+
+        // Two installations of the same build, bound in two verses.
+        manager.set_revocations(RevocationSet::default());
+        manager.trust_roots = trust_roots_with_revoker();
+        let gates = Arc::new(SwitchGates::default());
+        governed(&mut manager, gates.clone());
+        install_signed(&mut manager, "test-plugin", &bytes);
+        install_signed(&mut manager, "other-plugin", &bytes);
+        let first = PackageCheck::Verified(facts("test-plugin", &hash));
+        let second = PackageCheck::Verified(facts("other-plugin", &hash));
+        manager.governance_mut().record_consent(consent("inst-1", "test-plugin", "digest-1"));
+        manager.governance_mut().record_consent(consent("inst-2", "other-plugin", "digest-1"));
+        manager
+            .activate_governed(&request(LOCAL, "inst-1", "verse-1", &first), "test-plugin", &bytes, FuelBudget::default())
+            .await
+            .unwrap();
+        manager
+            .activate_governed(&request(LOCAL, "inst-2", "verse-2", &second), "other-plugin", &bytes, FuelBudget::default())
+            .await
+            .unwrap();
+        assert_eq!(manager.governance().running_in("verse-1"), vec!["test-plugin".to_string()]);
+        let state = |manager: &PluginManager, id: &str| manager.registry.lock().unwrap().get_state(id).cloned();
+
+        // (c) Policy removal stops only that verse's instance; a later Enable re-runs R19 and restarts it.
+        gates.set(false, true, false);
+        assert_eq!(manager.reevaluate_verse_policy("verse-1"), vec!["test-plugin".to_string()]);
+        assert!(!manager.is_running("test-plugin") && manager.is_running("other-plugin"));
+        assert_eq!(state(&manager, "test-plugin"), Some(PluginState::Disabled("policy-denied".into())));
+        gates.set(false, false, false);
+        manager
+            .activate_governed(&request(LOCAL, "inst-1", "verse-1", &first), "test-plugin", &bytes, FuelBudget::default())
+            .await
+            .unwrap();
+
+        // (d) The Owner overrode the kill list in verse-1 on this host: that instance keeps running; verse-2's stops.
+        manager.governance_mut().add_kill_list_override("verse-1", &hash);
+        let list = signed_list(&revoker(), "revoker", "2026-11-08T10:00:00.5Z", &hash);
+        assert_eq!(manager.accept_revocation_list(&list).unwrap(), vec!["other-plugin".to_string()]);
+        assert!(manager.is_running("test-plugin") && !manager.is_running("other-plugin"));
+        assert_eq!(state(&manager, "other-plugin"), Some(PluginState::Revoked("revoked".into())));
+        assert_eq!(
+            manager.check_activation(&request(LOCAL, "inst-2", "verse-2", &second)).unwrap_err().precondition,
+            Precondition::Revoked
+        );
+        // A replayed older list would un-revoke; it is refused (compared by value: .5 s after 10:00:00 is newer).
+        let replay = signed_list(&revoker(), "revoker", "2026-11-08T10:00:00Z", "00".repeat(32).as_str());
+        assert!(matches!(
+            manager.accept_revocation_list(&replay),
+            Err(LifecycleError::Revocation(RevocationIntakeError::Stale { .. }))
+        ));
+        // A key trusted to sign packages can never revoke.
+        let forged = signed_list(&publisher(), "pub", "2026-11-09T00:00:00Z", &hash);
+        assert!(matches!(
+            manager.accept_revocation_list(&forged),
+            Err(LifecycleError::Revocation(RevocationIntakeError::Verify(RevocationError::NotRevocationCapable(_))))
+        ));
+
+        // (b) Disable all stops what is left and answers host-off until cleared.
+        assert_eq!(manager.disable_all(), vec!["test-plugin".to_string()]);
+        assert_eq!(
+            manager.check_activation(&request(LOCAL, "inst-1", "verse-1", &first)).unwrap_err().precondition,
+            Precondition::HostOff
+        );
+        manager.enable_all();
+        assert!(manager.check_activation(&request(LOCAL, "inst-1", "verse-1", &first)).is_ok());
+
+        // OD-8 pulls go to https, or to an exact loopback host (a look-alike host or userinfo is refused).
+        assert!(is_pull_url("https://roots.example/revocations.json") && is_pull_url("http://127.0.0.1:8080/l"));
+        assert!(!is_pull_url("http://127.0.0.1.evil.example/l") && !is_pull_url("http://u@localhost/l"));
     }
 
     #[tokio::test]

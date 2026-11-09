@@ -105,6 +105,9 @@ pub enum AdminVerb {
     Uninstall,
     DisableAll,
     EnableAll,
+    /// The verse Owner's audited kill-list override on this host (governance.md precondition 5);
+    /// params `{verse_id, package_id, content_hash, confirm}` with `confirm` = `package_id`.
+    KillListOverride,
 }
 
 impl AdminVerb {
@@ -121,6 +124,7 @@ impl AdminVerb {
             Self::Uninstall => "uninstall",
             Self::DisableAll => "disable-all",
             Self::EnableAll => "enable-all",
+            Self::KillListOverride => "kill-list-override",
         }
     }
 
@@ -153,9 +157,22 @@ pub struct AdminOp {
 pub struct AdminRefusal {
     /// The stable code: `host-off`, `package-invalid`, `untrusted-signer`, `revoked`,
     /// `entitlement-required`, `policy-denied`, `role-denied`, `consent-missing`, `consent-mismatch`,
-    /// `not-found`, `invalid-input`.
+    /// `invalid-policy`, `confirmation-mismatch`, `not-available`, `not-found`, `invalid-input`.
     pub code: String,
     pub message: String,
+}
+
+/// The eventual answer of a host call that touches the database (policy reads and writes).
+pub type AdminReply = oneshot::Receiver<Result<Value, AdminRefusal>>;
+
+/// A reply for a host that has not wired the call yet.
+fn not_wired(what: &str) -> AdminReply {
+    let (tx, rx) = oneshot::channel();
+    let _ = tx.send(Err(AdminRefusal {
+        code: "not-available".into(),
+        message: format!("{what} is not wired on this host"),
+    }));
+    rx
 }
 
 /// A request on the ingress mount, after bearer auth and credential-header stripping.
@@ -234,6 +251,15 @@ pub trait ExtensionHost: Send + Sync {
     fn take_client_events(&self, client: u64, max: usize) -> Vec<String>;
     /// Close a client and all its subscriptions.
     fn close_client(&self, client: u64);
+    /// The verse's replicated extension policy row (`{"policy": null}` when none: `first-party-only`).
+    fn verse_policy(&self, _verse_id: &str) -> AdminReply {
+        not_wired("the verse extension policy")
+    }
+    /// Write the verse policy AS THE LOCAL DID (fe-database `set_policy_with_replication`); the caller's
+    /// own Manager+ and scope were checked here. One `policy-change` audit entry either way.
+    fn set_verse_policy(&self, _actor_did: &str, _verse_id: &str, _policy: Value) -> AdminReply {
+        not_wired("the verse extension policy")
+    }
 }
 
 /// The host as an axum `Extension`.
@@ -315,7 +341,11 @@ impl From<AdminRefusal> for ExtError {
             "role-denied" => (403, "role-denied"),
             "consent-missing" => (409, "consent-missing"),
             "consent-mismatch" => (409, "consent-mismatch"),
-            "not-found" => return Self::not_found(),
+            "invalid-policy" => (422, "invalid-policy"),
+            "confirmation-mismatch" => (409, "confirmation-mismatch"),
+            "not-available" => (503, "not-available"),
+            // R12: a non-local actor is indistinguishable from an unknown target.
+            "not-found" | "not-local-identity" => return Self::not_found(),
             _ => (400, "invalid-input"),
         };
         Self::new(status, code, refusal.message)
@@ -425,6 +455,54 @@ pub fn administer(
         return Err(ExtError::not_found());
     }
     host.administer(&claims.sub, op).map_err(ExtError::from)
+}
+
+/// Wait for a database-backed host answer under the reply deadline.
+async fn await_admin(reply: AdminReply) -> Result<Value, ExtError> {
+    match tokio::time::timeout(REPLY_TIMEOUT, reply).await {
+        Ok(Ok(result)) => result.map_err(ExtError::from),
+        Ok(Err(_)) => Err(ExtError::new(503, "not-available", "the extension host stopped before answering")),
+        Err(_) => Err(ExtError::new(504, "unknown-outcome", "the extension host did not answer in time")),
+    }
+}
+
+/// `GET /api/v1/verses/{verse_id}/extension-policy`: any token whose scope covers the verse (Viewer+).
+/// `verse_authorized` is that scope check; false is the uniform not-found.
+pub async fn get_verse_policy(
+    host: &dyn ExtensionHost,
+    claims: &ApiClaims,
+    verse_authorized: bool,
+    verse_id: &str,
+) -> Result<Value, ExtError> {
+    gate(host, claims)?;
+    if !verse_authorized {
+        return Err(ExtError::not_found());
+    }
+    await_admin(host.verse_policy(verse_id)).await
+}
+
+/// `PUT /api/v1/verses/{verse_id}/extension-policy` (R18): a Manager+ token in the verse; the host writes the
+/// row as its local DID, which must hold Manager+ there too (the `device_format` rule). A refused role leaves
+/// one `denial` audit entry.
+pub async fn put_verse_policy(
+    host: &dyn ExtensionHost,
+    claims: &ApiClaims,
+    verse_authorized: bool,
+    verse_id: &str,
+    policy: Value,
+) -> Result<Value, ExtError> {
+    gate(host, claims)?;
+    if !verse_authorized {
+        return Err(ExtError::not_found());
+    }
+    if crate::auth::require_role_level(claims, fe_policy::RoleLevel::Manager).is_err() {
+        host.record_denied_admin(&claims.sub, &format!("policy-change@{verse_id}"));
+        return Err(ExtError::new(403, "role-denied", "setting a verse extension policy needs Manager+"));
+    }
+    if !policy.is_object() {
+        return Err(ExtError::invalid("the policy must be a JSON object"));
+    }
+    await_admin(host.set_verse_policy(&claims.sub, verse_id, policy)).await
 }
 
 /// Call `<package_id>/<command>` at a petal. `petal_authorized` is the caller's token-scope check on the
@@ -605,6 +683,11 @@ pub fn routes(host: Arc<dyn ExtensionHost>) -> Router<Arc<ApiState>> {
         .route("/api/v1/extensions", get(get_list).post(post_install))
         .route("/api/v1/extensions/disable-all", post(post_disable_all))
         .route("/api/v1/extensions/enable-all", post(post_enable_all))
+        .route("/api/v1/extensions/kill-list-overrides", post(post_kill_list_override))
+        .route(
+            "/api/v1/verses/{verse_id}/extension-policy",
+            get(get_policy_route).put(put_policy_route),
+        )
         .route("/api/v1/extensions/{installation}", get(get_status).delete(delete_uninstall))
         .route("/api/v1/extensions/{installation}/audit", get(get_audit))
         .route("/api/v1/extensions/{installation}/{verb}", post(post_installation_verb))
@@ -709,6 +792,50 @@ async fn post_enable_all(
     body: axum::body::Bytes,
 ) -> Response {
     admin_response(&host, &claims, AdminVerb::EnableAll, None, &body)
+}
+
+async fn post_kill_list_override(
+    Extension(host): Extension<ExtensionHostHandle>,
+    Extension(claims): Extension<ApiClaims>,
+    body: axum::body::Bytes,
+) -> Response {
+    admin_response(&host, &claims, AdminVerb::KillListOverride, None, &body)
+}
+
+/// Whether the token's scope covers the verse (unknown and foreign collapse to false).
+async fn verse_authorized(state: &ApiState, claims: &ApiClaims, verse_id: &str) -> bool {
+    crate::rest::covered_scope(claims, crate::rest::resolve_verse_scope(state, verse_id).await).is_some()
+}
+
+async fn get_policy_route(
+    State(state): State<Arc<ApiState>>,
+    Extension(host): Extension<ExtensionHostHandle>,
+    Extension(claims): Extension<ApiClaims>,
+    Path(verse_id): Path<String>,
+) -> Response {
+    if let Err(e) = gate(host.0.as_ref(), &claims) {
+        return error_response(e);
+    }
+    let authorized = verse_authorized(&state, &claims, &verse_id).await;
+    respond(get_verse_policy(host.0.as_ref(), &claims, authorized, &verse_id).await)
+}
+
+async fn put_policy_route(
+    State(state): State<Arc<ApiState>>,
+    Extension(host): Extension<ExtensionHostHandle>,
+    Extension(claims): Extension<ApiClaims>,
+    Path(verse_id): Path<String>,
+    body: axum::body::Bytes,
+) -> Response {
+    if let Err(e) = gate(host.0.as_ref(), &claims) {
+        return error_response(e);
+    }
+    let policy = match parse_body(&body) {
+        Ok(policy) => policy,
+        Err(e) => return error_response(e),
+    };
+    let authorized = verse_authorized(&state, &claims, &verse_id).await;
+    respond(put_verse_policy(host.0.as_ref(), &claims, authorized, &verse_id, policy).await)
 }
 
 async fn delete_uninstall(

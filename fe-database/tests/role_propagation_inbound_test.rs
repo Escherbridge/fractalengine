@@ -10,6 +10,7 @@ use std::path::Path;
 use std::sync::{Arc, Mutex, MutexGuard, Once};
 use std::time::Duration;
 
+use fe_database::handlers::extension_policy;
 use fe_database::handlers::inbound_admissions::{
     deferred_admission_drop_count, InboundAdmissions, RowReport,
 };
@@ -100,6 +101,28 @@ async fn verse_db() -> Db {
         .await;
     }
     db
+}
+
+fn wall_ms() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .expect("clock after epoch")
+        .as_millis() as u64
+}
+
+/// A replicated `extension_policy` row (docs/extensions/governance.md §Policy row) by `author`.
+fn policy_row(author: &str, written_at: u64) -> Vec<u8> {
+    serde_json::to_vec(&serde_json::json!({
+        "schema_version": extension_policy::POLICY_SCHEMA_VERSION,
+        "verse_id": VERSE,
+        "author_did": author,
+        "written_at": written_at,
+        "policy": {
+            "mode": "allow-list",
+            "allow": [{ "package_id": "org.example.fleet-sim", "versions": ">=0.1.0, <0.2.0" }],
+        },
+    }))
+    .expect("policy json")
 }
 
 fn manifest_row() -> Vec<u8> {
@@ -357,19 +380,60 @@ async fn promotion_flows() {
             "role statements never enter the content queue"
         );
 
-        match promotion {
+        // E10 (R18): the same not-yet-Manager's extension policy row, written after its promotion on its
+        // own peer, arrives first: deferred on the author's role, never stored.
+        extension_policy::apply_schema(&db).await.expect("policy table");
+        let policy_written_at = (wall_ms() + 60_000) << 16;
+        let reports = queue
+            .apply(&db, VERSE, extension_policy::POLICY_TABLE, VERSE, &policy_row(MANAGER, policy_written_at), MANAGER, None)
+            .await;
+        assert_eq!(reports[0].outcome, author_role(MANAGER), "{promotion:?}");
+        assert!(extension_policy::get_policy(&db, VERSE).await.expect("read policy").is_none());
+
+        let settled = match promotion {
             Promotion::InboundOwnerStatement => {
                 let promote = grant(OWNER, MANAGER, &verse_scope(), "manager", 20);
                 let reports = deliver(&db, &mut queue, &promote).await;
                 assert_eq!(reports[0].outcome, ReplicatedRowOutcome::Applied);
+                reports
             }
             Promotion::LocalAssignRole => {
                 let store: BlobStoreHandle = Arc::new(MockBlobStore::new());
                 assign_role_checked(&db, OWNER, MANAGER, &verse_scope(), "manager", None, &store)
                     .await
                     .expect("owner assigns locally");
+                queue.retry_author_roles(&db, VERSE, None).await
             }
-        }
+        };
+        assert!(
+            applied(&settled, VERSE),
+            "{promotion:?}: the deferred policy row applies on promotion: {settled:?}"
+        );
+        let stored = extension_policy::get_policy(&db, VERSE).await.expect("read policy").expect("policy row");
+        assert_eq!((stored.author_did.as_str(), stored.policy.mode), (MANAGER, extension_policy::PolicyMode::AllowList));
+
+        // The local write path: the node (here the owner) writes as itself, log-first, one audit op per
+        // action; a node below Manager is refused and that refusal is audited too.
+        let local = extension_policy::ExtensionPolicy {
+            mode: extension_policy::PolicyMode::TrustRoot,
+            ..Default::default()
+        };
+        let written = extension_policy::set_policy_with_replication(&db, OWNER, VERSE, local.clone(), None, None)
+            .await
+            .expect("owner writes the policy");
+        assert!(written.written_at > policy_written_at, "{promotion:?}: the local write orders after the row it replaces");
+        assert!(matches!(
+            extension_policy::set_policy_with_replication(&db, PEER, VERSE, local, None, None).await,
+            Err(extension_policy::PolicyWriteError::RoleDenied(_))
+        ));
+        let trail = extension_policy::list_audit(&db, extension_policy::AuditFilter::Verse(VERSE), 10)
+            .await
+            .expect("audit trail");
+        let outcomes: Vec<(&str, &str)> = trail
+            .iter()
+            .map(|entry| (entry["actor_did"].as_str().unwrap(), entry["outcome"].as_str().unwrap()))
+            .collect();
+        assert_eq!(outcomes, vec![(PEER, "refused"), (OWNER, "ok")], "{promotion:?}: newest first");
 
         assert!(
             keys(&admitted(&db).await).contains(&early.record_id),

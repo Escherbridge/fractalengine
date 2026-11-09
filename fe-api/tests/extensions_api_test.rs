@@ -1,16 +1,21 @@
 //! J6: the extensions API surface (spec R11/R12/R15) through the shared core functions REST, MCP and
 //! `/ws` all call, against a recording stand-in for the plugin host (the real broker is proven in
 //! fe-plugin `bus/tests.rs`). Asserts what callers observe: statuses, bodies, and what reached the host.
+//! P2.2 extends it with governance: the R19 refusal statuses, the verse policy judged by fe-database's
+//! real policy rules, and the Owner's kill-list override (the R19 ORDER is fe-plugin's lifecycle journey).
 
+use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
 use fe_api::extensions::{
     administer, caller_of, command, extension_audit, extension_command_tool, extension_status,
-    ingress, list_extensions, AdminOp, AdminRefusal, AdminVerb, ApiCaller, ApiCallerKind,
-    CommandFailure, CommandReply, ExtError, ExtensionHost, ExtensionStreams, HostRefusal,
-    IngressAnswer, IngressCall, IngressRefusal, IngressRequestParts,
+    get_verse_policy, ingress, list_extensions, put_verse_policy, AdminOp, AdminRefusal, AdminReply,
+    AdminVerb, ApiCaller, ApiCallerKind, CommandFailure, CommandReply, ExtError, ExtensionHost,
+    ExtensionStreams, HostRefusal, IngressAnswer, IngressCall, IngressRefusal, IngressRequestParts,
 };
+use fe_database::handlers::extension_policy::{evaluate, ExtensionPolicy, LocalPolicy, PolicyFacts, TrustTier};
 use fe_identity::api_token::ApiClaims;
+use fe_sdk::manifest_v2::ExtensionKind;
 use serde_json::{json, Value};
 use tokio::sync::{oneshot, Notify};
 
@@ -18,6 +23,9 @@ const LOCAL: &str = "did:key:z6MkLocalHost";
 const REMOTE: &str = "did:key:z6MkRemoteEditor";
 const PETAL: &str = "petal-1";
 const PACKAGE: &str = "org.example.fleet-sim";
+const VERSE: &str = "01JVERSEPOLICY0000000000000";
+/// A build's component digest a verse denies (matched under any package id).
+const DENIED_DIGEST: &str = "9f2c000000000000000000000000000000000000000000000000000000000000";
 
 fn claims(sub: &str) -> ApiClaims {
     ApiClaims {
@@ -40,6 +48,28 @@ struct Seen {
     ingress: Vec<IngressCall>,
     closed_clients: Vec<u64>,
     remote_budget: u32,
+    /// Stored verse policies, as the binary's host keeps them in fe-database.
+    policies: HashMap<String, Value>,
+    policy_writers: Vec<String>,
+}
+
+/// Row 7 as the binary's policy gate runs it: fe-database's real `evaluate` over the stored verse policy.
+fn policy_gate(stored: Option<&Value>, params: &Value) -> Result<(), AdminRefusal> {
+    let text = |key: &str| params[key].as_str().unwrap_or_default();
+    let policy = stored.map(|value| serde_json::from_value::<ExtensionPolicy>(value.clone()).expect("stored policy"));
+    let trust = serde_json::from_value::<TrustTier>(params["trust"].clone()).unwrap_or(TrustTier::Publisher);
+    let facts = PolicyFacts {
+        package_id: text("package_id"),
+        version: text("version"),
+        content_hash: text("content_hash"),
+        component_digest: params["component_digest"].as_str(),
+        plaintext_digest: None,
+        trust,
+        kind: ExtensionKind::General,
+        manifest: None,
+    };
+    evaluate(policy.as_ref(), &LocalPolicy::default(), &facts)
+        .map_err(|denial| AdminRefusal { code: "policy-denied".into(), message: denial.to_string() })
 }
 
 struct FakeHost {
@@ -72,9 +102,17 @@ impl ExtensionHost for FakeHost {
         (installation == "inst-1").then(|| vec![json!({"action": "command-call", "limit": limit})])
     }
     fn administer(&self, actor_did: &str, op: AdminOp) -> Result<Value, AdminRefusal> {
-        self.seen.lock().unwrap().admin.push((actor_did.into(), op.verb, op.installation.clone()));
+        let mut seen = self.seen.lock().unwrap();
+        seen.admin.push((actor_did.into(), op.verb, op.installation.clone()));
+        if let Some(code) = op.params["refuse"].as_str() {
+            return Err(AdminRefusal { code: code.into(), message: "scripted refusal".into() });
+        }
         if op.verb == AdminVerb::Consent && op.params["digest"] != "good" {
             return Err(AdminRefusal { code: "consent-mismatch".into(), message: "stale digest".into() });
+        }
+        if op.verb == AdminVerb::Bind && op.params.get("verse_id").is_some() {
+            let verse = op.params["verse_id"].as_str().unwrap_or_default();
+            policy_gate(seen.policies.get(verse), &op.params)?;
         }
         Ok(json!({"done": op.verb.as_str()}))
     }
@@ -123,6 +161,29 @@ impl ExtensionHost for FakeHost {
     }
     fn close_client(&self, client: u64) {
         self.seen.lock().unwrap().closed_clients.push(client);
+    }
+    fn verse_policy(&self, verse_id: &str) -> AdminReply {
+        let (tx, rx) = oneshot::channel();
+        let policy = self.seen.lock().unwrap().policies.get(verse_id).cloned();
+        let _ = tx.send(Ok(json!({"verse_id": verse_id, "policy": policy})));
+        rx
+    }
+    fn set_verse_policy(&self, actor_did: &str, verse_id: &str, policy: Value) -> AdminReply {
+        // The real shape rules the DB thread applies (fe-database `ExtensionPolicy::validate`).
+        let (tx, rx) = oneshot::channel();
+        let parsed = serde_json::from_value::<ExtensionPolicy>(policy)
+            .map_err(|e| e.to_string())
+            .and_then(|policy| policy.validate(verse_id).map(|()| policy));
+        let _ = tx.send(match parsed {
+            Ok(policy) => {
+                let mut seen = self.seen.lock().unwrap();
+                seen.policies.insert(verse_id.into(), serde_json::to_value(&policy).unwrap());
+                seen.policy_writers.push(actor_did.into());
+                Ok(json!({"verse_id": verse_id, "written": true}))
+            }
+            Err(reason) => Err(AdminRefusal { code: "invalid-policy".into(), message: reason }),
+        });
+        rx
     }
 }
 
@@ -216,6 +277,80 @@ async fn extensions_api_journey() {
         extension_status(host.as_ref(), &remote, "inst-1").unwrap_err().status,
     );
     assert_eq!((first, second, third), (404, 404, 429));
+
+    // P2.2 governance on a fresh host (its own remote budget).
+    let host = FakeHost::new(100);
+    let manager = ApiClaims { max_role: "manager".into(), ..claims(LOCAL) };
+    let editor = ApiClaims { max_role: "editor".into(), ..claims(LOCAL) };
+
+    // R19: each precondition's refusal reaches REST with the contract's status and code.
+    for (code, status) in [
+        ("host-off", 503),
+        ("package-invalid", 422),
+        ("untrusted-signer", 422),
+        ("revoked", 409),
+        ("entitlement-required", 403),
+        ("policy-denied", 403),
+        ("role-denied", 403),
+        ("consent-missing", 409),
+    ] {
+        let refused = administer(host.as_ref(), &local, op(AdminVerb::Enable, Some("inst-1"), json!({"refuse": code}))).unwrap_err();
+        assert_eq!((refused.status, refused.code), (status, code));
+    }
+
+    // R18: no row reads as the default; an Editor is refused (one denial row), an out-of-scope caller sees not-found.
+    assert_eq!(get_verse_policy(host.as_ref(), &editor, true, VERSE).await.unwrap()["policy"], Value::Null);
+    let allow_list = json!({
+        "mode": "allow-list",
+        "allow": [
+            {"package_id": PACKAGE, "versions": ">=0.1.0, <0.2.0"},
+            {"package_id": "org.example.renamed", "versions": "*"}
+        ],
+        "deny": [DENIED_DIGEST]
+    });
+    let by_editor = put_verse_policy(host.as_ref(), &editor, true, VERSE, allow_list.clone()).await.unwrap_err();
+    assert_eq!((by_editor.status, by_editor.code), (403, "role-denied"));
+    assert_eq!(host.seen.lock().unwrap().denied, vec![(LOCAL.to_string(), format!("policy-change@{VERSE}"))]);
+    assert_eq!(put_verse_policy(host.as_ref(), &manager, false, VERSE, allow_list.clone()).await.unwrap_err(), ExtError::not_found());
+    // An allow entry carrying both a hash and a range fails the shape rules the DB applies.
+    let both = json!({"mode": "allow-list", "allow": [{"package_id": PACKAGE, "versions": "*", "content_hash": DENIED_DIGEST}]});
+    let malformed = put_verse_policy(host.as_ref(), &manager, true, VERSE, both).await.unwrap_err();
+    assert_eq!((malformed.status, malformed.code), (422, "invalid-policy"));
+    assert!(host.seen.lock().unwrap().policy_writers.is_empty());
+
+    // Before any row the verse is first-party-only: a publisher-signed build is refused, a release one binds.
+    let bind = |package: &str, version: &str, component: &str, trust: &str| {
+        op(AdminVerb::Bind, Some("inst-1"), json!({
+            "verse_id": VERSE, "package_id": package, "version": version,
+            "content_hash": "a".repeat(64), "component_digest": component, "trust": trust,
+        }))
+    };
+    let component = "b".repeat(64);
+    let component = component.as_str();
+    let first_party = administer(host.as_ref(), &local, bind(PACKAGE, "0.1.5", component, "publisher")).unwrap_err();
+    assert_eq!((first_party.status, first_party.code), (403, "policy-denied"));
+    assert!(administer(host.as_ref(), &local, bind(PACKAGE, "0.1.5", component, "release")).is_ok());
+
+    // A Manager sets the allow-list; the host writes it (as its local DID) and binds are judged by it.
+    put_verse_policy(host.as_ref(), &manager, true, VERSE, allow_list).await.unwrap();
+    assert_eq!(get_verse_policy(host.as_ref(), &editor, true, VERSE).await.unwrap()["policy"]["mode"], "allow-list");
+    assert!(administer(host.as_ref(), &local, bind(PACKAGE, "0.1.5", component, "publisher")).is_ok());
+    let out_of_range = administer(host.as_ref(), &local, bind(PACKAGE, "0.2.0", component, "publisher")).unwrap_err();
+    assert_eq!(out_of_range.code, "policy-denied");
+    // governance.md J6: a denied component digest stays denied when the build is re-sealed under a new id.
+    let renamed = administer(host.as_ref(), &local, bind("org.example.renamed", "1.0.0", DENIED_DIGEST, "publisher")).unwrap_err();
+    assert_eq!(renamed.code, "policy-denied");
+    assert!(renamed.message.contains("deny-listed"), "{}", renamed.message);
+
+    // The kill-list override is local-identity only: a remote DID gets the uniform not-found and one denial row.
+    let override_params = json!({"verse_id": VERSE, "package_id": PACKAGE, "content_hash": "a".repeat(64), "confirm": PACKAGE});
+    let remote_override = administer(host.as_ref(), &remote, op(AdminVerb::KillListOverride, None, override_params.clone())).unwrap_err();
+    assert_eq!(remote_override, ExtError::not_found());
+    assert_eq!(host.seen.lock().unwrap().denied.last().unwrap(), &(REMOTE.to_string(), "kill-list-override".to_string()));
+    administer(host.as_ref(), &local, op(AdminVerb::KillListOverride, None, override_params)).unwrap();
+    assert_eq!(host.seen.lock().unwrap().admin.last().unwrap().1, AdminVerb::KillListOverride);
+    let mismatch = administer(host.as_ref(), &local, op(AdminVerb::KillListOverride, None, json!({"refuse": "confirmation-mismatch"}))).unwrap_err();
+    assert_eq!((mismatch.status, mismatch.code), (409, "confirmation-mismatch"));
 }
 
 #[tokio::test]

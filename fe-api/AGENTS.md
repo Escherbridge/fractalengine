@@ -2330,6 +2330,16 @@ No operation_id requires native NONE owner/anchor/provenance and zero complete a
   answer carries `x-content-type-options: nosniff` and `content-security-policy: sandbox`. Credential
   headers are stripped before the host sees the request (`is_credential_header`), a second layer under the
   net broker's own strip.
+- **Governance (E10).** `PUT|GET /api/v1/verses/{verse_id}/extension-policy` is NOT local-only: any token
+  whose scope covers the verse reads it, and a Manager+ token writes it (an Editor gets `role-denied` plus
+  one `denial` audit row). The host then writes the row as its local DID, which must hold Manager+ too
+  (`device_format` rule), so the effective authority is min(token, node). Host calls that touch the DB
+  return an `AdminReply` receiver under `REPLY_TIMEOUT` (no blocking on a tokio worker); the trait's
+  default answers `not-available` (503), so a binary that has not wired them fails closed.
+  `POST /api/v1/extensions/kill-list-overrides` is `AdminVerb::KillListOverride` on the ordinary
+  local-identity path; the Owner and confirmation checks live in fe-database
+  (`handlers/AGENTS.md` §extension-policy). Precondition refusals map to governance.md's suggested statuses
+  in `From<AdminRefusal>`; `not-local-identity` is the uniform not-found.
 - **Not mounted yet.** `routes(host)` is not merged by `build_router`: `ApiConfig` has no extension-host
   field (adding one touches every `ApiConfig` literal: both binaries and two test harnesses), and MCP
   `list_extensions`/`extension_command` and the `/ws` target are not registered. Until then the module is

@@ -124,7 +124,7 @@ and on every policy, trust-root or revocation-list change. The first failure is 
 | 2 | `not-local-identity` | the actor is the host's local DID (R12) | 404 (uniform) |
 | 3 | `package-invalid` | seal, integrity, identity equality (the requested id = the signed `hexon_id` = the manifest v2 `id`; reason `id-mismatch`), component checks, manifest v2 validation (for `kind: web-bundle`, the portal validator, `docs/spec/portal-bundle/README.md` §6, replaces the extension rules) | 422 |
 | 4 | `untrusted-signer` | the package is trusted (signed and rooted; dev flag rules) | 422 |
-| 5 | `revoked` | no accepted revocation entry's `content_hash` equals the package's `content_hash`, `component_digest` or (licensed, body phase) `plaintext_digest`, whatever `package_id` the entry names ([package-format.md](package-format.md#identity)) | 409 |
+| 5 | `revoked` | no accepted revocation entry's `content_hash` equals the package's `content_hash`, `component_digest` or (licensed, body phase) `plaintext_digest`, whatever `package_id` the entry names ([package-format.md](package-format.md#identity)), unless the verse Owner recorded a [kill-list override](#kill-list-override) for this verse and this build on this host | 409 |
 | 6 | `entitlement-required` | a `paid` licence has a valid token through S-ENTITLEMENT's `EntitlementVerifier` (no new verifier code) | 403 |
 | 7 | `policy-denied` | the verse policy and the local policy both admit it, within ceilings | 403 |
 | 8 | `role-denied` | the local DID holds Editor+ at the petal for a writing extension (one that declares `scene.write` or `readings`), Viewer+ for any other | 403 |
@@ -208,6 +208,25 @@ host accepts a list matching an installed package, it refuses activation AND rev
 every running instance within one poll. A commit already admitted completes with its true receipt:
 revocation is not rollback.
 
+### Kill-list override
+
+User decision 2026-11-08 (OD-E1): a kill-listed build is refused by default, at install and at every
+activation. The verse Owner may override that, for one verse, on the Owner's own host only.
+
+- **Who.** The local DID must be the verse's `owner_did` (`verse.created_by`). The request comes over
+  the local-identity surface (`POST /api/v1/extensions/kill-list-overrides`, R12) with a typed
+  confirmation: `confirm` must equal the `package_id` exactly, or the answer is `confirmation-mismatch`
+  (409). Any other local DID gets `role-denied` (403). Both refusals are audited.
+- **Key.** `(verse_id, content_hash)` on that host. With it, row 5 passes there for that build; on every
+  other host, and in every other verse, the build stays `revoked` and a binding naming it stays unresolved.
+- **Arrival.** An accepted list does not stop an instance the Owner overrode in its verse; every other
+  instance of the build stops as above.
+- **Record.** One `ExtensionAudit` entry, action `kill-list-override`, through `op_log::commit_operation`.
+  The override is that entry: the host rebuilds its override set from the trail at startup. It is never
+  replicated, and nothing can make it reach another verse or host. The op log's canonical projection is
+  dormant, so the entry is local today.
+- **No other override.** Consent, local acceptance and policy can never make a kill-listed build pass row 5.
+
 ## Audit
 
 One new op-log type, `OpType::ExtensionAudit`, appended through `op_log::commit_operation` (the
@@ -231,7 +250,8 @@ the Extensions UI.
 
 `action` ∈ `install`, `update`, `consent`, `consent-revoke`, `bind`, `unbind`, `enable`, `disable`,
 `uninstall`, `revocation`, `policy-change`, `bus-subscribe`, `bus-unsubscribe`, `command-call`,
-`denial`. `outcome` ∈ `ok`, `refused`, `denied`. Each listed action yields exactly one entry,
+`denial`, `kill-list-override`. `outcome` ∈ `ok`, `refused`, `denied`. Disable all and Enable all are
+`disable` and `enable` with `target: "*"`; local acceptance in a verse is `bind` with `verse_id` set. Each listed action yields exactly one entry,
 denials included (R21 AC). Stream events and query re-runs are not audited ([bus.md](bus.md#7-audit-and-counters)).
 
 - **Cost.** Each entry is one `commit_operation` on the DB thread, the queue whose starvation
