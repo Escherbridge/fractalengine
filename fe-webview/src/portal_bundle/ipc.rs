@@ -178,6 +178,12 @@ pub struct BindRequest<'a> {
     pub target: &'a BundleTarget,
     pub package_id: &'a str,
     pub content_hash: &'a str,
+    /// BLAKE3 of the whole archive: a kill-list key beside `content_hash` (admission.md §4.2).
+    pub archive_digest: &'a str,
+    /// Member digests: kill-list keys too, so the bind re-check matches by hash under any id.
+    pub member_digests: &'a [String],
+    /// The capability digest the mount was admitted for; consent covers exactly this set.
+    pub capability_digest: &'a str,
     pub publisher_did: &'a str,
     pub portal: &'a PortalSection,
     /// The viewer token's `max_role`; the client's ceiling never exceeds it (steer 2026-11-08 23:40).
@@ -218,7 +224,8 @@ pub trait PortalBroker: Send + Sync + 'static {
     fn unsubscribe(&self, client: u64, subscription: u64);
     /// Up to `max` queued events, in subscription then `seq` order.
     fn take_events(&self, client: u64, max: usize) -> Vec<BrokerEvent>;
-    /// Call `<package_id>/<command_id>` as caller kind `portal`; below the role floor is `NotFound`; the broker audits it.
+    /// Call `<package_id>/<command_id>` as caller kind `portal`, a local caller (bus.md §4): not exposed or below the role
+    /// floor is `CapabilityDenied`, no active instance `Unavailable`; the broker (the bus) audits it.
     fn invoke(&self, client: u64, package_id: &str, command_id: &str, args: &Value) -> Result<PendingReply, IpcError>;
     /// Publish on `<bundle package_id>/<stream_id>`.
     fn emit(&self, client: u64, stream_id: &str, data: &Value) -> Result<(), IpcError>;
@@ -763,6 +770,8 @@ struct BridgeState {
     counters_mount: Option<u64>,
     counters: IpcCounters,
     total: IpcCounters,
+    /// The request being routed was refused by the broker, which audits its own refusals (ipc-v1.md §9: one entry).
+    broker_refused: bool,
 }
 
 impl Drop for BridgeState {
@@ -789,6 +798,7 @@ impl BridgeState {
             counters_mount: None,
             counters: IpcCounters::default(),
             total: IpcCounters::default(),
+            broker_refused: false,
         }
     }
 
@@ -913,6 +923,9 @@ impl BridgeState {
                 target: &mount.target,
                 package_id: &mount.package_id,
                 content_hash: &mount.content_hash,
+                archive_digest: &mount.archive_digest,
+                member_digests: &mount.member_digests,
+                capability_digest: &mount.capability_digest,
                 publisher_did: &publisher_did,
                 portal: &mount.portal,
                 viewer_ceiling,
@@ -1091,6 +1104,7 @@ impl BridgeState {
             PageMessage::Invoke { package, command, .. } => Some(("invoke", format!("{package}/{command}"))),
             _ => None,
         };
+        self.broker_refused = false;
         let outcome = match message {
             PageMessage::Hello {} => Ok(Some(self.hello())),
             PageMessage::Subscribe { stream, params } => self.subscribe(&to, &stream, &params),
@@ -1105,7 +1119,8 @@ impl BridgeState {
             PageMessage::Emit { stream, data } => self.emit(&stream, &data, now).map(Some),
             PageMessage::Intent { intent, node_id } => self.intent(intent, node_id, now, intents).map(Some),
         };
-        if let (Err(IpcError::CapabilityDenied), Some((operation, target))) = (&outcome, &audit) {
+        // Only the bridge's own check-5 refusals: the bus already audited one it returned.
+        if let (Err(IpcError::CapabilityDenied), Some((operation, target)), false) = (&outcome, &audit, self.broker_refused) {
             self.audit_refusal(operation, target, IpcError::CapabilityDenied, now);
         }
         match outcome {
@@ -1119,6 +1134,12 @@ impl BridgeState {
         let binding = self.binding.as_ref().ok_or(IpcError::Unavailable)?;
         let open = binding.client.as_ref().ok_or(IpcError::Unavailable)?;
         Ok((binding, open))
+    }
+
+    /// Mark the request's refusal as the broker's (already audited there) and pass it on.
+    fn broker_refusal(&mut self, error: IpcError) -> IpcError {
+        self.broker_refused = true;
+        error
     }
 
     /// Refusals the bridge decides itself (check 5, and a ceiling below the write floor) are audited within the audit
@@ -1158,7 +1179,7 @@ impl BridgeState {
     }
 
     fn subscribe(&mut self, to: &ReplyTo, stream: &str, params: &Map<String, Value>) -> Result<Option<Value>, IpcError> {
-        let (plan, broker_sub) = {
+        let (plan, subscribed) = {
             let (binding, open) = self.client()?;
             let plan = plan_subscription(&binding.declared, &open.info.petal_id, stream, params)?;
             if !binding.capabilities.contains(&plan.capability) {
@@ -1167,9 +1188,10 @@ impl BridgeState {
             if self.subs.len() >= limits::MAX_LIVE_SUBSCRIPTIONS {
                 return Err(IpcError::TooManySubscriptions);
             }
-            let broker_sub = open.broker.subscribe(open.info.client, &plan.address, &plan.params)?;
-            (plan, broker_sub)
+            let subscribed = open.broker.subscribe(open.info.client, &plan.address, &plan.params);
+            (plan, subscribed)
         };
+        let broker_sub = subscribed.map_err(|error| self.broker_refusal(error))?;
         let sub_id = self.next_sub;
         self.next_sub = self.next_sub.checked_add(1).unwrap_or(1);
         let awaiting = plan.node_filter.is_some().then_some(to.id);
@@ -1221,10 +1243,11 @@ impl BridgeState {
             self.audit_refusal("act", &format!("set_property:{key}"), IpcError::RoleDenied, now);
             return Err(IpcError::RoleDenied);
         }
-        let reply = {
+        let written = {
             let (_, open) = self.client()?;
-            open.broker.set_property(open.info.client, &node_id, &key, value)?
+            open.broker.set_property(open.info.client, &node_id, &key, value)
         };
+        let reply = written.map_err(|error| self.broker_refusal(error))?;
         self.calls.push(PendingCall {
             id: to.id,
             kind: CallKind::Act { node_id, key },
@@ -1254,10 +1277,11 @@ impl BridgeState {
         if !self.buckets(mount_id, now).invoke.try_take(now) {
             return Err(IpcError::RateLimited);
         }
-        let reply = {
+        let invoked = {
             let (_, open) = self.client()?;
-            open.broker.invoke(open.info.client, package, command, args)?
+            open.broker.invoke(open.info.client, package, command, args)
         };
+        let reply = invoked.map_err(|error| self.broker_refusal(error))?;
         self.calls.push(PendingCall {
             id: to.id,
             kind: CallKind::Invoke,

@@ -265,6 +265,10 @@ struct FakeState {
     write_outcome: Option<Result<Value, IpcError>>,
     /// A faulty broker that opens at the scope role whatever the viewer's token allows.
     ignores_viewer: bool,
+    /// The kill-list keys and capability digest of the last bind: the broker's re-check reads these.
+    bound_keys: Vec<String>,
+    /// The next invoke is refused here, as the bus does (and audits) for a target it denies.
+    refuse_invoke: Option<IpcError>,
 }
 
 struct FakeBroker {
@@ -295,6 +299,12 @@ impl FakeBroker {
     fn set_write_outcome(&self, outcome: Result<Value, IpcError>) {
         self.state.lock().unwrap().write_outcome = Some(outcome);
     }
+    fn refuse_next_invoke(&self, refusal: IpcError) {
+        self.state.lock().unwrap().refuse_invoke = Some(refusal);
+    }
+    fn bound_keys(&self) -> Vec<String> {
+        self.state.lock().unwrap().bound_keys.clone()
+    }
     fn record(&self, line: String) {
         self.state.lock().unwrap().log.push(line);
     }
@@ -317,6 +327,10 @@ fn counted_read(reads: &Cell<u32>, body: Option<String>) -> impl FnOnce() -> Opt
 impl PortalBroker for FakeBroker {
     fn open(&self, request: &BindRequest<'_>) -> Result<BrokerClient, IpcError> {
         self.record(format!("open {} {} {}", request.package_id, request.target.anchor(), request.viewer_ceiling));
+        let mut keys = vec![request.content_hash.to_owned(), request.archive_digest.to_owned()];
+        keys.extend(request.member_digests.iter().cloned());
+        keys.push(request.capability_digest.to_owned());
+        self.state.lock().unwrap().bound_keys = keys;
         let scope_role = RoleLevel::Owner;
         let role_ceiling = if self.state.lock().unwrap().ignores_viewer {
             scope_role
@@ -353,6 +367,9 @@ impl PortalBroker for FakeBroker {
     }
     fn invoke(&self, _client: u64, package_id: &str, command_id: &str, _args: &Value) -> Result<PendingReply, IpcError> {
         self.record(format!("invoke {package_id}/{command_id}"));
+        if let Some(refusal) = self.state.lock().unwrap().refuse_invoke.take() {
+            return Err(refusal);
+        }
         Ok(answered(Ok(json!({ "started": 1 }))))
     }
     fn emit(&self, _client: u64, stream_id: &str, _data: &Value) -> Result<(), IpcError> {
@@ -530,6 +547,14 @@ impl Page {
 fn sender_gate_drops_every_unauthorized_post_without_a_reply() {
     let mut page = Page::open();
     assert_eq!(page.broker.log(), vec![format!("open {PACKAGE} node-repo owner")], "the mount binds once");
+    // The bind hands the broker every kill-list key of the build and its capability digest, so the bind-time re-check
+    // matches by hash under any id (admission.md §4.2) and admits only the consented capability set.
+    let mounted = page.mounts.current().expect("mounted");
+    let mut keys = vec![mounted.content_hash.clone(), mounted.archive_digest.clone()];
+    keys.extend(mounted.member_digests.iter().cloned());
+    keys.push(mounted.capability_digest.clone());
+    assert!(!mounted.member_digests.is_empty());
+    assert_eq!(page.broker.bound_keys(), keys);
 
     // Control: the admitted, visible, current document gets a reply.
     let hello = page.send("hello", json!({}));
@@ -867,6 +892,17 @@ fn subscriptions_actions_and_bus_route_through_the_broker() {
     assert!(log.contains(&"emit selection".to_owned()) && !log.contains(&"emit undeclared".to_owned()));
     assert!(log.contains(&"invoke org.example.fleet-sim/start".to_owned()));
     assert!(!log.contains(&"invoke org.example.fleet-sim/stop".to_owned()));
+    // One audit entry per refusal (ipc-v1.md §9): the bridge audits its own check-5 refusal (`stop`, undeclared); a
+    // declared target the bus refuses is audited by the bus, never a second time here.
+    assert!(page.broker.audits().contains(&"invoke org.example.fleet-sim/stop capability_denied".to_owned()));
+    page.broker.refuse_next_invoke(IpcError::CapabilityDenied);
+    let refused_at_bus = page.send("invoke", json!({ "package": "org.example.fleet-sim", "command": "start", "args": {} }));
+    page.pump();
+    assert_eq!(page.error(refused_at_bus), "capability_denied");
+    assert!(
+        !page.broker.audits().iter().any(|line| line.starts_with("invoke org.example.fleet-sim/start")),
+        "the bus's refusal is not audited twice"
+    );
     assert_eq!(
         page.intents,
         vec![PortalIntent {

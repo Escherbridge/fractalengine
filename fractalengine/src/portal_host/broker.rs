@@ -500,7 +500,7 @@ impl PortalBroker for BusPortalBroker {
         let ticket = self
             .bus
             .client_call_command(client, package_id, command_id, args)
-            .map_err(|refusal| invoke_error(&refusal))?;
+            .map_err(|refusal| bus_error(&refusal))?;
         Ok(self.forward(client, Ticket::Call(ticket.reply)))
     }
 
@@ -553,14 +553,17 @@ impl PortalBroker for BusPortalBroker {
     }
 }
 
-/// Governance still admits this exact build for its consented publisher, no un-overridden kill-list entry names its
-/// hash, and Disable all is off.
+/// Governance still admits this exact build for its consented publisher and capability digest, no un-overridden
+/// kill-list entry names any of its digests (hash under any id: content, archive or member), and Disable all is off.
 fn still_admitted(view: &dyn GovernanceView, request: &BindRequest<'_>) -> bool {
-    let admitted = view
-        .record(request.package_id, request.content_hash)
-        .is_some_and(|record| record.state == RecordState::Admitted && record.publisher_did == request.publisher_did);
-    let listed = kill_list_status(view, request.target, &[request.content_hash], request.content_hash)
-        == KillListStatus::Listed;
+    let admitted = view.record(request.package_id, request.content_hash).is_some_and(|record| {
+        record.state == RecordState::Admitted
+            && record.publisher_did == request.publisher_did
+            && record.capability_digest == request.capability_digest
+    });
+    let mut digests = vec![request.content_hash, request.archive_digest];
+    digests.extend(request.member_digests.iter().map(String::as_str));
+    let listed = kill_list_status(view, request.target, &digests, request.content_hash) == KillListStatus::Listed;
     admitted && !listed && !view.host_disabled()
 }
 
@@ -701,7 +704,8 @@ fn scrub_node_event(kind: BusDelivery, data: &mut Value) {
     }
 }
 
-/// ipc-v1.md §7.1 for a bus refusal.
+/// ipc-v1.md §7.1 for a bus refusal; a portal is a local caller, so a command not exposed or below its role floor stays
+/// `capability_denied` (ipc-v1.md §6.2, bus.md §4).
 fn bus_error(refusal: &BusRefusal) -> IpcError {
     match refusal {
         BusRefusal::NotFound => IpcError::NotFound,
@@ -710,14 +714,6 @@ fn bus_error(refusal: &BusRefusal) -> IpcError {
         BusRefusal::RateLimited(_) => IpcError::RateLimited,
         BusRefusal::InvalidInput(_) => IpcError::Invalid,
         BusRefusal::LimitReached(_) => IpcError::TooManySubscriptions,
-    }
-}
-
-/// A declared target the bus denies (not exposed, or below its role floor) is the uniform `not_found` (ipc-v1.md §6.2).
-fn invoke_error(refusal: &BusRefusal) -> IpcError {
-    match refusal {
-        BusRefusal::CapabilityDenied(_) => IpcError::NotFound,
-        other => bus_error(other),
     }
 }
 
@@ -949,12 +945,45 @@ mod tests {
         .expect("console portal section")
     }
 
+    /// Admits CONSOLE at any hash for PUBLISHER and capability digest `DIGEST`; an accepted list names `listed`.
+    struct AdmittedListing {
+        listed: &'static str,
+    }
+
+    impl GovernanceView for AdmittedListing {
+        fn host_disabled(&self) -> bool {
+            false
+        }
+        fn kill_listed(&self, digests: &[&str]) -> bool {
+            digests.contains(&self.listed)
+        }
+        fn record(&self, package_id: &str, _content_hash: &str) -> Option<AdmissionRecord> {
+            (package_id == CONSOLE).then(|| AdmissionRecord {
+                state: RecordState::Admitted,
+                reason: fe_webview::portal_bundle::admission::RecordReason::Consented,
+                publisher_did: PUBLISHER.into(),
+                capability_digest: DIGEST.into(),
+            })
+        }
+        fn can_admit(&self, _target: &BundleTarget, _identity: &BundleIdentity) -> bool {
+            true
+        }
+    }
+
+    const DIGEST: &str = "capability-digest";
+    const ARCHIVE: &str = "archive-digest";
+    const MEMBERS: &[&str] = &["member-a", "member-b"];
+
     fn bind<'a>(target: &'a BundleTarget, portal: &'a PortalSection, hash: &'a str, viewer: RoleLevel) -> BindRequest<'a> {
+        static MEMBER_DIGESTS: std::sync::OnceLock<Vec<String>> = std::sync::OnceLock::new();
         BindRequest {
             mount_id: 1,
             target,
             package_id: CONSOLE,
             content_hash: hash,
+            archive_digest: ARCHIVE,
+            member_digests: MEMBER_DIGESTS.get_or_init(|| MEMBERS.iter().map(|digest| (*digest).to_owned()).collect()),
+            capability_digest: DIGEST,
             publisher_did: PUBLISHER,
             portal,
             viewer_ceiling: viewer,
@@ -1019,6 +1048,19 @@ mod tests {
         let guarded = BusPortalBroker::new(bus.clone(), roles.clone(), audit.clone(), scopes.clone())
             .with_governance(Arc::new(NothingAdmitted));
         assert_eq!(guarded.open(&bind(&node, &section, &hash, RoleLevel::Owner)).unwrap_err(), IpcError::Revoked);
+        // Hash under any id (admission.md §4.2): an entry naming the archive or one member refuses the bind, and a
+        // record for another capability digest admits nothing. Mutation check: matching the content hash alone binds.
+        for listed in [ARCHIVE, MEMBERS[1]] {
+            let listing = BusPortalBroker::new(bus.clone(), roles.clone(), audit.clone(), scopes.clone())
+                .with_governance(Arc::new(AdmittedListing { listed }));
+            assert_eq!(listing.open(&bind(&node, &section, &hash, RoleLevel::Owner)).unwrap_err(), IpcError::Revoked, "{listed}");
+        }
+        let admitted = BusPortalBroker::new(bus.clone(), roles.clone(), audit.clone(), scopes.clone())
+            .with_governance(Arc::new(AdmittedListing { listed: "unrelated" }));
+        let control = admitted.open(&bind(&node, &section, &hash, RoleLevel::Owner)).expect("admitted, unlisted build binds");
+        admitted.close(control.client);
+        let widened = BindRequest { capability_digest: "another-digest", ..bind(&node, &section, &hash, RoleLevel::Owner) };
+        assert_eq!(admitted.open(&widened).unwrap_err(), IpcError::Revoked, "consent covers exactly one capability set");
 
         // read: the node snapshot reaches the page without host-reserved `portal` keys.
         broker.subscribe(editor.client, NODE_CHANGES, &json!({})).unwrap();
@@ -1060,9 +1102,12 @@ mod tests {
         assert_eq!(broker.set_property(editor.client, "node-1", "secret", &json!(1)).unwrap_err(), IpcError::CapabilityDenied);
         assert!(db_rx.try_recv().is_err(), "nothing else reached the database thread");
 
-        // invoke: no running target is `unavailable`; a target the bus denies is the uniform `not_found` (§6.2).
+        // invoke: a portal is a local caller (ipc-v1.md §6.2, bus.md §4): no running target is `unavailable`, a target
+        // the bus denies is `capability_denied`, and the bus audits that refusal itself (one entry, §9).
         assert_eq!(broker.invoke(editor.client, FLEET, "start", &json!({})).unwrap_err(), IpcError::Unavailable);
-        assert_eq!(broker.invoke(editor.client, FLEET, "ping", &json!({})).unwrap_err(), IpcError::NotFound);
+        let audited = audit.0.lock().unwrap().len();
+        assert_eq!(broker.invoke(editor.client, FLEET, "ping", &json!({})).unwrap_err(), IpcError::CapabilityDenied);
+        assert_eq!(audit.0.lock().unwrap().len(), audited + 1, "the bus audits its own invoke refusal");
 
         // The bridge's own refusals are audited as the binding, with page text neutralised.
         broker.audit_refusal(editor.client, "act", "set_property:x\nforged", "capability_denied");

@@ -61,6 +61,15 @@ The old guard/flush command re-write pipeline was removed — it echoed
 `Navigate` commands every frame; `SwitchTab(Config)` role-gating now happens
 inline in `dispatch_commands`.
 
+This lifecycle never mounts a portal bundle, a scope's bound bundle included
+(bindings.md §6 `portal.open`). The one path is fe-ui's `UiAction::OpenBundle`
+(the `binding_offer.rs` Open button), because fe-ui then owns the host-drawn
+badge, Close, and the binary's 500 ms re-judge tick, which only runs while
+fe-ui's `PortalState` is a bundle. B10f's `OpenBoundBundle` message wrote
+`BrowserCommand::OpenBundle` behind fe-ui's back, so a bound bundle would have
+mounted with no badge and no kill-list re-judge. R-POR-IPC removed it
+(R-POR-10).
+
 ## §petal-portal-deferred — validation-phase work
 
 - `position_overlay_system` is a change-detection shell today. Sprint-4 plan:

@@ -174,7 +174,13 @@ below are the rationale for those files; §reviews-and-open lists the gate verdi
   (§ipc "Native ingress"); P-3 is deferred.
 - Per-origin storage clear (SP-6), the revoke listener and `/__fe/feeds.json` landed with S4 (`fc29e431`). The clear is unrun until SP-6 is spiked.
 - "Waiting → bytes arrive → mount" needs a re-Open from the chrome (S3) or S4's listener.
-- The binary must insert `plugin::PortalBundleResolver`. Without it, every Open is Unavailable.
+- The binary inserts `plugin::PortalBundleResolver` and `PortalBrokerRes` (`fractalengine/src/portal_host`, turn 2).
+  Without the resolver every Open is Unavailable; without the broker every call but `hello` is `unavailable`.
+- **Shared-origin token race (SP-3, SP-5).** A protocol request carries no document identity. While a same-origin
+  navigation is in flight, the outgoing document can fetch `portal-v1.js` and receive the incoming generation's token.
+  This includes a reopen of the same `a-` label after a refresh. Both documents are builds of one (publisher, package).
+  The worst case is a build revoked moments earlier, still alive until the unload commits, while the next build of
+  the same package is already mounted. The spikes decide whether a per-document key is needed.
 - **P-4's fallback is not built** (`review-p1.md` P1-05): if the unload navigation is refused or
   never commits (a page-initiated `about:blank` racing the host's can consume the one-shot
   token), the unmounted document keeps running hidden. It has no mount, so no bytes, no IPC and
@@ -286,6 +292,18 @@ resize; a bump there would cut IPC on every reposition.
 **Host-minted binding.** The broker binding is built from the `Mount` alone. Capabilities are the manifest's declared set
 intersected with what the broker grants. Page data never names the node, petal, package or identity.
 
+- `BindRequest` carries every kill-list key of the build (`content_hash`, `archive_digest`, `member_digests`) and its
+  `capability_digest` (R-POR-IPC). The broker's bind-time re-check therefore matches the list by hash under any id, as
+  `prepare` does, and admits only the capability set consent covered. A rebind (a late broker, or a viewer-ceiling
+  change) can never bind a build listed by an archive or member digest in the up-to-500 ms before the re-judge tick
+  unloads it.
+
+**One audit entry per refusal** (ipc-v1.md §9). The bridge audits only its own check-5 refusals (undeclared or not
+granted). A refusal the broker returns (`broker_refusal`, which sets `broker_refused`) was already audited by the bus
+(`client_subscribe` denials, `note_refusal` for invoke, `admit_write` for act), so the bridge never audits it a second
+time. A portal is a local caller, so the bus answers a declared `invoke` target that is not exposed, or is below its role
+floor, with `capability_denied` (ipc-v1.md §6.2, bus.md §4). The broker passes that code through unchanged.
+
 **Broker seam (A-1).** The bridge calls the integration bus through a non-blocking client made on the main thread, once per frame
 (`pump_portal_ipc`). The sibling's `BusRefusal` maps onto `IpcError` codes: not-found, unavailable, capability-denied,
 rate-limited, invalid-input and limit-reached. Writes (`set_property`, `invoke`, `intent`) are judged as the installing identity
@@ -324,7 +342,8 @@ a leave may still reach the new page) and the OD-3 cadence question for the sibl
 The per-gate verdicts are in the track directory, one file per gate, with one verdict line per finding:
 `review-p1.md` (protocol, PASS-WITH-FIXES), `review-p2.md` (IPC, PASS), `review-p3.md` (UX, PASS-WITH-FIXES, blocked on
 P3-01..P3-03), `review-p4.md` (admission, PASS-WITH-FIXES). The consolidated W6 verdict is PASS-WITH-FIXES, merge-blocked
-on NEEDS P1-02, P3-01..P3-03 and P4-06 (`review-p4.md` §W6).
+on NEEDS P1-02, P3-01..P3-03 and P4-06 (`review-p4.md` §W6). Turn 2's security gate over this module, the backend and the
+binary's portal host is `review-turn2/R-POR-IPC.md`.
 
 Desk review only. Nothing in this module has been built or run. SP-1..SP-9 are desk-checked against pinned wry and
 WebView2 sources (protocol.md §12) but not executed on hardware.

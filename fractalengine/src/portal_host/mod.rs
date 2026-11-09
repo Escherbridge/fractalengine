@@ -776,10 +776,12 @@ impl PortalHost {
                     ui.repository_view.invalidate(&node_id);
                 }
                 Outcome::Revoked { node_id, package_id, content_hash, warning } => {
+                    // bus.md §2.4 pairs `consent-revoked` with `disabled` (rule 5, "admission withdrawn", per pair);
+                    // `revoked` is the kill list's alone, which matches by hash under any id.
                     signals.write(AdmissionSignal::Event(AdmissionEvent {
                         package_id,
                         content_hash,
-                        state: RecordState::Revoked,
+                        state: RecordState::Disabled,
                         reason: RecordReason::ConsentRevoked,
                     }));
                     ui.repository_view.invalidate(&node_id);

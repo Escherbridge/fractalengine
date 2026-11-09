@@ -90,23 +90,36 @@ fn decide_navigation(
             }
             true
         }
-        Ok(parsed) => {
-            tracing::warn!("navigation_handler: blocked navigation to '{parsed}'");
-            events.borrow_mut().push(BackendEvent::Error(format!(
-                "Navigation blocked: URL not allowed: {parsed}"
-            )));
+        Ok(_) => {
+            let shown = shown_url(raw_url);
+            tracing::warn!("navigation_handler: blocked navigation to '{shown}'");
+            events
+                .borrow_mut()
+                .push(BackendEvent::Error(format!("Navigation blocked: URL not allowed: {shown}")));
             false
         }
         Err(e) => {
-            tracing::warn!(
-                "navigation_handler: blocked navigation to unparseable URL '{raw_url}': {e}"
-            );
-            events.borrow_mut().push(BackendEvent::Error(format!(
-                "Navigation blocked: invalid URL '{raw_url}': {e}"
-            )));
+            let shown = shown_url(raw_url);
+            tracing::warn!("navigation_handler: blocked navigation to unparseable URL '{shown}': {e}");
+            events
+                .borrow_mut()
+                .push(BackendEvent::Error(format!("Navigation blocked: invalid URL '{shown}': {e}")));
             false
         }
     }
+}
+
+/// Page-chosen URL text echoed into logs and chrome errors: at most 256 bytes, cut on a character boundary.
+fn shown_url(raw: &str) -> &str {
+    const MAX_SHOWN_URL_BYTES: usize = 256;
+    if raw.len() <= MAX_SHOWN_URL_BYTES {
+        return raw;
+    }
+    let mut end = MAX_SHOWN_URL_BYTES;
+    while !raw.is_char_boundary(end) {
+        end -= 1;
+    }
+    &raw[..end]
 }
 
 impl WebViewBackend for TauriBackend {
@@ -1004,6 +1017,11 @@ mod tests {
             &evts[0],
             BackendEvent::Error(msg) if msg.contains("invalid URL")
         ));
+        drop(evts);
+        // A page picks the URL text: a megabyte-long one is echoed into logs and the chrome bounded, never whole.
+        let long = format!("not a url {}", "é".repeat(500_000));
+        assert!(!decide_navigation(&long, &events, false, &fresh_gate()));
+        assert!(matches!(&events.borrow()[1], BackendEvent::Error(msg) if msg.len() < 512));
     }
 
     #[test]

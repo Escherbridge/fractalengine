@@ -26,7 +26,9 @@ use fe_webview::portal_bundle::admission::{
     self, AdmissionEvent, AdmissionRecord, AdmissionSignal, GovernanceView, RecordReason, RecordState,
 };
 use fe_webview::portal_bundle::feeds::FeedSource;
-use fe_webview::portal_bundle::{bundle_max_bytes, BundleIdentity, BundleResolver, BundleSource, BundleTarget};
+use fe_webview::portal_bundle::{
+    bundle_max_bytes, AdmissionVerdict, BundleIdentity, BundleResolver, BundleSource, BundleTarget,
+};
 use serde_json::Value;
 
 use crate::extension_host::governance::ExtensionGovernance;
@@ -297,6 +299,17 @@ impl PortalGovernance {
                 read_lock(&self.petals).get(petal_id.as_str()).map(|verse_id| (petal_id.clone(), verse_id.clone()))
             }
         }
+    }
+
+    /// The scope-free half of may-admit: the host switch on, Disable all off, sealed by a loaded trust root. Verse
+    /// policy and role need a target, so a `true` here is not a promise; the consent dialog judges those.
+    fn may_admit_on_host(&self, identity: &BundleIdentity) -> bool {
+        self.admission_enabled
+            && !self.host_disabled()
+            && identity
+                .publisher_did
+                .as_deref()
+                .is_some_and(|publisher| self.source.tier_of(publisher).is_some())
     }
 
     fn is_admitted(&self, package_id: &str, content_hash: &str) -> bool {
@@ -615,18 +628,24 @@ impl LocalAdmissionSource for LocalAdmission {
         if let Some(publisher) = bundle.sealed_by {
             self.governance.remember_publisher(bundle.content_hash, publisher);
         }
+        // Every committed member digest is a kill-list key too (admission.md §4.2, hash under any id).
         let identity = BundleIdentity {
             package_id: bundle.package_id.to_owned(),
             content_hash: bundle.content_hash.to_owned(),
             archive_digest: bundle.archive_digest.to_owned(),
             publisher_did: bundle.sealed_by.map(str::to_owned),
             capability_digest: bundle.capability_digest.to_owned(),
-            member_digests: Vec::new(),
+            member_digests: bundle.member_digests.to_vec(),
         };
         // No repository node names a verse here, so no Owner override applies (fails closed).
         let view: &dyn GovernanceView = &*self.governance;
         let verdict = admission::record_verdict(view, &BundleTarget::Node(String::new()), &identity);
-        let (state, reason) = admission::summary_codes(&verdict);
+        let (state, mut reason) = admission::summary_codes(&verdict);
+        // A read build (not the archive-only pre-check) the local identity can never admit on this host.
+        let read = !bundle.package_id.is_empty() && !bundle.content_hash.is_empty();
+        if read && matches!(verdict, AdmissionVerdict::Unadmitted { .. }) && !self.governance.may_admit_on_host(&identity) {
+            reason = Some("cannot_admit");
+        }
         Some(AdmissionView { state: state.to_owned(), reason: reason.map(str::to_owned) })
     }
 }
@@ -683,7 +702,6 @@ mod tests {
     use std::sync::Mutex;
 
     use fe_webview::ipc::RevokedReason;
-    use fe_webview::portal_bundle::AdmissionVerdict;
 
     use super::*;
 
@@ -815,10 +833,12 @@ mod tests {
 
         let local = LocalAdmission { governance: view.clone(), client_did: "did:key:z6Mkclient".into() };
         assert_eq!(local.local_did(), "did:key:z6Mkclient");
+        let members = vec!["m1".to_owned()];
         let query = AdmissionQuery {
             package_id: PACKAGE,
             content_hash: "h1",
             archive_digest: "z1",
+            member_digests: &members,
             sealed_by: Some(PUBLISHER),
             capability_digest: "d1",
         };
@@ -827,11 +847,31 @@ mod tests {
             ("revoked".to_owned(), Some("revocation_list".to_owned())),
             "the summary is scope-free, so no Owner override applies"
         );
+        // A member digest is a kill-list key under any id. Mutation check: dropping `member_digests` reads "admitted".
+        fake.list(&["m1"]);
+        assert_eq!(summary(&local, &query), ("revoked".to_owned(), Some("revocation_list".to_owned())));
         fake.list(&[]);
         assert_eq!(summary(&local, &query), ("admitted".to_owned(), None));
-        let archive_only =
-            AdmissionQuery { package_id: "", content_hash: "", archive_digest: "z2", sealed_by: None, capability_digest: "" };
+        let archive_only = AdmissionQuery {
+            package_id: "",
+            content_hash: "",
+            archive_digest: "z2",
+            member_digests: &[],
+            sealed_by: None,
+            capability_digest: "",
+        };
         assert_eq!(summary(&local, &archive_only), ("static_sandbox".to_owned(), None), "the export's pre-check");
+        // README §8.5: a static build the local identity can never admit here says so; a trusted seal leaves it open.
+        let unsealed = AdmissionQuery { content_hash: "h7", sealed_by: None, ..query };
+        let untrusted = AdmissionQuery { content_hash: "h8", sealed_by: Some("did:key:z6Mkother"), ..query };
+        let other_build = AdmissionQuery { content_hash: "h9", ..query };
+        for (row, query, reason) in [
+            ("unsealed", unsealed, Some("cannot_admit".to_owned())),
+            ("sealed by no trust root", untrusted, Some("cannot_admit".to_owned())),
+            ("sealed by a root, not yet consented", other_build, None),
+        ] {
+            assert_eq!(summary(&local, &query), ("static_sandbox".to_owned(), reason), "{row}");
+        }
 
         view.observe(&event(PACKAGE, "h1", RecordState::Disabled, RecordReason::LocalDisable));
         assert_eq!(judge(&at_a, &sealed), AdmissionVerdict::Revoked(RevokedReason::KillSwitch), "locally disabled");

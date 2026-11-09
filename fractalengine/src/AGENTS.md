@@ -1845,6 +1845,13 @@ The worker is an `OwnedService` in `maintenance_services`, so it stops with the 
   state. An `admitted` event alone never creates a record.
 - **Policy per target.** Verse policy is evaluated per target with no manifest, so `ceilings.kinds` never applies to
   a web bundle (E10 default).
+- **fe-api's local read (`LocalAdmission`).** It is scope-free, because no node names a verse, so no Owner override
+  applies there.
+  - Every committed member digest goes to the kill list with the content hash and the archive digest (R-POR-09).
+  - A read build that stays static answers `reason: "cannot_admit"` when the scope-free half of may-admit fails:
+    the host switch is off, Disable all is on, the build is unsealed, or no loaded trust root sealed it.
+  - Verse policy and role need a target, so a static build with no reason may still be refused by the consent dialog.
+  - The archive-only pre-check (empty `package_id` and `content_hash`) carries no reason.
 
 ### Broker (P-BROKER)
 
@@ -1864,6 +1871,14 @@ The worker is an `OwnedService` in `maintenance_services`, so it stops with the 
   ancestry, and it is judged by the DB at write time.
 - **Installations and audit.** The installation id is the package id, which is A-14 and the ops drain's convention.
   Refusals are audited through `ExtensionGovernance::audit_sink`.
+- **Bind-time re-check (`still_admitted`).** Governance must still hold an `Admitted` record for the exact pair, for
+  the same publisher and the same capability digest, with Disable all off. No un-overridden kill-list entry may name
+  any of the build's digests: content hash, archive digest or member digest, under any package id. The bridge hands all
+  of these over in `BindRequest` (R-POR-IPC). The mount verdict already decided this; the re-check guards a rebind
+  inside the re-judge tick's 500 ms window.
+- **Invoke codes.** A portal is a local caller, so `bus_error` passes `CapabilityDenied` through unchanged: a declared
+  target that is not exposed, or below its role floor, answers `capability_denied` (ipc-v1.md §6.2, bus.md §4). It is
+  not the remote callers' uniform `not_found`. The bus audits that refusal itself, and the bridge never audits it again.
 
 ### Admission drains (R-POR-08, P-S4)
 
@@ -1892,8 +1907,12 @@ The worker is an `OwnedService` in `maintenance_services`, so it stops with the 
     plugin manager. Only after it succeeds: `learn_consent` -> `AdmissionSignal::Event(Admitted, Consented)` ->
     `invalidate(node)`. A failed write admits nothing.
 - **Revoke** (OD-E1). One blocking `consent-revoke` audit entry; `load_consents` drops the consent on the next start.
-  - Then `Event(Revoked, ConsentRevoked)`: the open mount unloads, and the broker closes the client after in-flight
-    writes settle. Rows stay.
+  - Then `Event(Disabled, ConsentRevoked)`, the pairing bus.md §2.4 fixes. The open mount unloads as "Revoked —
+    admission withdrawn" (admission.md §2 rule 5, per pair), and the broker closes the client after in-flight writes
+    settle. Rows stay.
+  - `revoked` belongs to the kill list alone (`revocation-list`) and matches by hash under any id. I-POR-BIN's
+    `Event(Revoked, ConsentRevoked)` showed a user Revoke as "revocation list" and kept the record in the list's rule.
+    R-POR-IPC corrected it.
   - Revocation fails closed: it applies in-session even when the durable write is uncertain, and the user sees a warning.
 - **Hydration.** Governance hands hydrated consents only to the plugin manager, so the worker reads
   `LoadExtensionGovernance` once at startup (6 tries) and learns the local DID's consents. A rotated key's consents are
@@ -1917,6 +1936,13 @@ The worker is an `OwnedService` in `maintenance_services`, so it stops with the 
     a `SetNodeProperty portal.bundle_asset` write plus `invalidate`.
   - `local_client_did` is `None`, because `fe_api::dev_token::DevTokenWriter` mints its client DID internally. Trigger:
     it accepts one, and `main.rs` passes the same DID to both.
+  - **Runtime Disable all does not reach the portal yet** (R-POR-IPC, handed off). `PortalGovernance::disabled_all`
+    starts from `FE_EXT_DISABLE_ALL` and follows `host/admission` `disable-all` events. Nothing in either tree posts
+    them: `Bus::feed_admission` has no caller, and `plugin_bridge::administer`'s `DisableAll`/`EnableAll` only flip the
+    plugin manager. Trigger: the merge. The fix is for `administer` to call
+    `PortalResolverRes.view().set_host_disabled(..)` (the view is an `AtomicBool`, safe from the API thread). The open
+    mount then unloads on the next re-judge tick. Relaying `host/admission` itself (a UI bus client in `portal_host`)
+    waits until something calls `feed_admission`.
 
 ## QA Portal evidence
 
