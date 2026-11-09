@@ -223,3 +223,143 @@ SP-8 is new in this contract (the static-sandbox data path depends on it).
 - **Labels (R6):** same package, two publishers → two admitted labels; one publisher and package, two hashes → one admitted label; a static label never equals an admitted one; `origin::parse` over both spellings plus the refused variants (userinfo, port, trailing dot, extra label, uppercase-only variants that normalize, a wrong prefix, 25 or 27 characters).
 - **Requests (R5):** entry `200` with the composed CSP; tampered member `500` then Blocked; `..`, `%2e%2e`, `%2E%2E`, `.%2e`, `\` and `%5c` → `404`; `Service-Worker: script` → `403`; `POST` → `405`; unmounted label → `404`; unmounted mid-flight → `410`; `/__fe/portal-v1.js` on a static mount → `404`.
 - **Navigation (R7):** §6.3 rows 1–13, run against both `decide_navigation` and `qa_navigation::enforce`, extending `backends::tauri::tests::decide_navigation_blocks_localhost_and_emits_error`; `tests/security_test.rs::test_localhost_blocked` gains every bundle spelling as a refused raw URL.
+
+## 12. Spike results
+
+**Run status, 2026-11-08: not run.** Two independent blocks apply:
+- the swarm runs code-first, with no builds or runs until the refine pass;
+- the build gate reads `cargo_allowed: false` (closed 15:46 for memory).
+
+This section is therefore a **desk check** against the pinned sources: wry 0.54.4, webview2-com and webview2-com-sys 0.38.2, and http 1.4.0, with this machine's WebView2 Runtime at 157.0.4341.42. A desk verdict reports only what the source decides, never runtime behaviour. An OD reopens here only when the source alone settles it, and none did. Until the run fills §12.6, every pending decision stays on its recommended default. Paths below are relative to `wry-0.54.4/src/` unless they name another crate or `fe-webview/src/`.
+
+12.1. **Summary.**
+
+| Spike | Desk verdict | Decision now |
+|---|---|---|
+| SP-1 | Routing confirmed; whether the network stays silent is pending | OD-1 stands |
+| SP-2 | **No** on Windows, from source; the run confirms | §6.6's frame rule stays out of the callback; CSP `frame-src` is the frame control |
+| SP-3 | Pending | OD-2 stands |
+| SP-4 | Plumbing confirmed; a runtime without `ICoreWebView2_22` escapes interception | P-1 |
+| SP-5 | Pending; two candidate URLs named | Row 9 waits for the recorded URL; P-4 |
+| SP-6 | API path confirmed; the effect is pending | `admission.md` §9's residual stands; the clear runs after the unload commits |
+| SP-7 | **Fails** on Linux, from source; macOS cannot run on this machine | OD-10 stands (its default) |
+| SP-8 | Pending | OD-6 stands |
+| SP-9 (new) | Crash path confirmed in source | P-2 |
+
+12.2. **Evidence.**
+- **SP-1.**
+  - With `with_https_scheme(true)`, wry registers the filter `https://fe-portal.*` for every resource context. When the `ICoreWebView2_22` cast succeeds, the filter also covers every request source kind (`webview2/mod.rs:933-950`).
+  - wry matches a request to the handler on the URI prefix alone (`custom_protocol_workaround.rs:12-19`). So `https://fe-portal.example.com/` reaches the handler as `fe-portal://example.com/`, and `origin::parse` answers `404` (§1.6).
+  - The filter is https-only, so `http://fe-portal.<label>.localhost` is never intercepted.
+    - A bundle cannot fetch it, because CSP `'self'` does not match the http spelling.
+    - The raw policy refuses it as a top-frame destination.
+    - An external page's subresource fetch to it still reaches loopback port 80, like any `*.localhost` URL today. This is not specific to bundles; the run records it.
+  - Whether Chromium resolves or preconnects a host before `WebResourceRequested` fires is runtime behaviour.
+- **SP-2.**
+  - The production callback is wry's `ICoreWebView2::add_NavigationStarting` (`webview2/mod.rs:674-694`), and the captured-host owner registers the same event (`fe-webview/src/backends/qa_navigation.rs:154`). WebView2 raises `NavigationStarting` for the top frame only.
+  - Child frames raise `FrameNavigationStarting`. Neither layer registers it, although the binding exists (`webview2-com-sys-0.38.2/src/bindings.rs:1195`).
+  - A native `FrameNavigationStarting` guard is optional defence in depth, not a requirement.
+  - Off Windows, wry's callback is expected to see every frame, because neither WebKit decision is filtered to the main frame (`wkwebview/navigation.rs:50-80`, `webkitgtk/mod.rs:548-575`). That matters only once OD-10 lifts.
+- **SP-3.**
+  - `ICoreWebView2::PostWebMessageAsJson` is bound (`bindings.rs:1402`) and reachable through `WebViewExtWindows::webview()`, as `backends/fixture_surface.rs:388` already does.
+  - Delivery order against a cross-origin commit is runtime behaviour. The send-time gate and per-document token of `ipc-v1.md` §1.2 ship either way.
+- **SP-4.**
+  - With `ICoreWebView2_22`, the filter covers service-worker and shared-worker sources (`webview2/mod.rs:941-946`).
+  - wry copies every request header into the handler's request (`:1058-1070`). Any `Service-Worker` header that WebView2 exposes therefore reaches §3.2 step 2.
+  - Without `ICoreWebView2_22`, wry silently falls back to the document-only filter (`:947-949`).
+    - A worker script fetch is then not intercepted. It goes to `fe-portal.<label>.localhost:443`, which is loopback.
+    - Registration still fails, but only after dialling loopback, which §1.3 says a bundle never does.
+- **SP-5.**
+  - `load_html` is `NavigateToString` (`webview2/mod.rs:1400-1403`), so both layers see the unload as a top-frame `NavigationStarting`.
+  - The URI it reports is runtime behaviour. The two candidates are `about:blank` and a `data:text/html…` URI.
+  - Today's guards refuse both. `security::embedded_allowed` admits only http(s) (`fe-runtime/src/portal_url.rs:36-38,70-74`), and `qa_web::allows` admits only a fixture permit's exact URLs. Without row 9, the unload is cancelled and the revoked document keeps running.
+- **SP-6.**
+  - `CallDevToolsProtocolMethod` is bound (`bindings.rs:1455`), with `webview2_com::CallDevToolsProtocolMethodCompletedHandler` (`webview2-com-0.38.2/src/callback.rs:314`).
+  - The call is `Storage.clearDataForOrigin` with `{"origin":"https://fe-portal.<label>.localhost","storageTypes":"all"}`. It uses the https spelling (§1.4), because the browser keys storage on the document's origin, never on `fe-portal://`.
+  - The parameters are built from a parsed label only; no caller supplies text.
+  - Ordering matters. If the clear starts before the unload document commits, the dying document can write again in between, so the clear starts on the unload's `NavigationCompleted`.
+- **SP-7.**
+  - **Linux:** the IPC request URI is `webview.uri()` (`webkitgtk/mod.rs:644-647`). That is the top document when the message is handled, not the document that sent it, which breaks the premise of `ipc-v1.md` §1.1. Lifting OD-10 on Linux needs a wry change that reports the sending frame.
+  - **macOS:** the sender is the frame's request URL (`wkwebview/class/wry_web_view_delegate.rs:50-53`). It is origin-correct but carries no main-frame flag.
+  - Both navigation callbacks receive the URL as `fe-portal://<label>.localhost/…`, without rewriting.
+  - This machine has no macOS or Linux host.
+- **SP-8.**
+  - The pinned SDK names no local-network permission kind (`bindings.rs:572-596`).
+  - wry handles `PermissionRequested` only for clipboard reads, and only when that feature is enabled (`webview2/mod.rs:497-513`).
+  - Any local-network request would therefore arrive unnamed, and the runtime default would decide it.
+  - Chromium has been moving from private-network preflights to a local-network permission prompt. Which of the two runtime 157 applies is what the run records.
+- **SP-9 (new: IPC sender-URL abort).**
+  - wry builds each IPC request with `Request::builder().uri(url).body(js).unwrap()` (`webview2/mod.rs:912`). `http` 1.4.0 refuses any URI longer than 65 534 bytes (`http-1.4.0/src/uri/mod.rs:144,295`).
+  - wry reads the sender only when an IPC handler is registered (`:894-896`), and fe-webview registers none today.
+  - Once S2 registers `with_ipc_handler`, any top-level page can trigger the crash. That includes an external site in the portal and a bundle. The page calls `history.replaceState` to push its own URL past that length, then calls `window.ipc.postMessage`; wry defines `window.ipc` on every document.
+  - The unwrap then panics inside a COM callback, and the process aborts. In release, the abort comes from `panic = "abort"` (`Cargo.toml:112`). In debug, the unwind reaches the `extern "system"` callback boundary, which also aborts.
+  - The run confirms that the replaced URL reaches `Source`.
+
+12.3. **Findings for S1 and S2.** These are not spikes; they surfaced during the desk check and bind the code.
+- **F-1 — headers are silently dropped.**
+  - wry forwards only header values that pass `HeaderValue::to_str()` and drops the rest without an error (`webview2/mod.rs:1117-1124`). A CSP value with one non-ASCII byte would be served with no CSP at all.
+  - S1 composes ASCII only; the validator already holds IDN origins in punycode. S1 builds every value with `HeaderValue::from_str` and treats a failure as Blocked, never as "serve without".
+  - R5 gains a row: every header on every handler response round-trips through `to_str()`.
+- **F-2 — wry can answer `400` itself.**
+  - When `prepare_request` fails, wry answers `400` without calling the handler (`webview2/mod.rs:983-990`, `:1136-1145`). One example is a request URI that `http` refuses.
+  - That response carries none of §4's headers and has an empty body, so nothing runs. It is an accepted residual. §3.3's table describes the handler's responses, not wry's.
+- **F-3 — the revert replaces every match.**
+  - `revert_uri_work_around` uses `str::replace` (`custom_protocol_workaround.rs:30-35`), which rewrites every `https://fe-portal.` in the URI, including the query.
+  - This is benign. A rewritten path gains a `:`, which README §3.1 refuses, and the query is ignored.
+  - `origin::parse` and §3.2 step 5 take the URI exactly as the handler receives it.
+- **F-4 — the navigation callback receives only a URL.**
+  - wry's callback is `Fn(String) -> bool` (`lib.rs:1281`), so production `decide_navigation` has no `is_redirect`. The captured-host owner reads `IsRedirected` natively (`backends/qa_navigation.rs:37`).
+  - Without that flag, row 10 collapses into row 3: the same refusal, with a different reason.
+  - Row 11 holds only if a leaving context outlives the redirect chain. → P-3.
+- **F-5 — responses complete on the UI thread.**
+  - Worker-thread responses reach WebView2 through `PostMessageW` to the UI thread (`webview2/mod.rs:1014-1017`), so they complete only while the Bevy main thread pumps window messages.
+  - The handler answers on every path. A dropped responder never completes the request's deferral.
+
+12.4. **Proposed contract changes.** All are pending the run except P-2, which the source already decides.
+- **P-1 (§3.1; `ux.md` chrome).**
+  - Bundles require the `ICoreWebView2_22` cast at `TauriBackend::create`. Without it, every bundle shows `Blocked — unsupported platform`.
+  - Reason: SP-4's fallback path dials loopback.
+- **P-2 (`ipc-v1.md` §1.1; plan T2.2).**
+  - Page → host uses a native `ICoreWebView2::add_WebMessageReceived` handler, registered the way `qa_navigation.rs:139-185` registers its navigation guard, and never wry's `with_ipc_handler`.
+  - The handler reads `Source` capped at 8 192 bytes (the `qa_navigation.rs:41` bound) and the body capped at 65 536 bytes (`ipc-v1.md` §2 check 3). Anything over either cap is dropped as `dropped_origin` before any parse.
+  - Reason: SP-9.
+- **P-3 (§6.2).**
+  - Production registers the same native `NavigationStarting` owner that captured hosts use, in place of `with_navigation_handler`. Both layers then see `IsRedirected`, and rows 10–11 hold as written.
+  - Reason: F-4.
+- **P-4 (§2.5 step 3; `admission.md` §5 step 4).**
+  - If the unload navigation is refused or never completes, the host takes the `qa_navigation::disable` path (Stop, then controller Close) and recreates the webview. A revoked bundle never keeps running.
+  - If SP-5 shows the `NavigateToString` URI varies from call to call, the unload uses `load_url("about:blank")` instead (`webview2/mod.rs:1391-1394`), whose URI is fixed.
+
+12.5. **Run procedure.** Run once, at gate-open, while the machine is quiet.
+- **Setup.**
+  - Use a throwaway worktree with one example binary, `fe-webview/examples/portal_spikes.rs`. It is never merged.
+  - The binary opens a winit window holding a wry webview built with `with_https_scheme(true)` and an asynchronous `fe-portal` handler. The handler serves fixed in-memory pages for labels A, B and S (static), and answers `404` for an unmounted label C.
+  - Native hooks log JSONL observations for `NavigationStarting` (with `IsRedirected`), `FrameNavigationStarting`, `WebResourceRequested` (URI, headers, source kind), `WebMessageReceived`, `PermissionRequested` and `ServerCertificateErrorDetected`.
+  - The first log line is the runtime version and the result of the `ICoreWebView2_22` cast.
+- **Steps.**
+
+| Spike | Steps | Pass |
+|---|---|---|
+| SP-1 | Start listeners on `127.0.0.1:443` and `[::1]:443` and a `pktmon` capture on port 53. Navigate to and `fetch` C's URL and `https://fe-portal.example.com/`. | Zero accepts and zero DNS packets for both names. |
+| SP-2 | A declares one frame origin and embeds it beside an undeclared one. | Record which callbacks fire; the undeclared frame is blocked by CSP. |
+| SP-3 | B, an external page that A declares in `navigation`, logs every `chrome.webview` message. Post 1 000 envelopes to A, then navigate A to B. Repeat with the posts issued inside the `NavigationStarting` callback. | B logs zero messages. |
+| SP-4 | A registers `/sw.js`; reload A. Repeat with the filter forced to the pre-`_22` call. | The handler saw `Service-Worker: script`, the registration was rejected, and `navigator.serviceWorker.controller` is null after the reload. |
+| SP-5 | While on A, the host calls `load_html` with the fixed document. Then a page-initiated navigation to the recorded URI. Then `history.back()` into A. | Record the URI; the second and third attempts are refused, and nothing restores from the back-forward cache (`Cache-Control: no-store`). |
+| SP-6 | A and B each write a `localStorage` key and an IndexedDB database. After A's unload commits, clear A's origin. Reopen both. | A's data is gone; B's is intact. |
+| SP-7 | On a macOS host and a Linux host, repeat SP-2 and an IPC post from A and from a frame. | Record the navigation-callback and sender URLs. |
+| SP-8 | S's feed is a share URL on the local fe-api. Repeat the fetch from A and from an external page. | S reads the body with no mixed-content error; record any preflight and any permission kind. A and the external page cannot read it. |
+| SP-9 | With `with_ipc_handler` registered, a page replaces its URL with a 70 000-byte one and posts. Repeat with P-2's native handler. | The first run aborts the process; the second survives and drops the message. |
+
+12.6. **Results ledger.** The run fills one row per spike, plus the WebView2 runtime version it used.
+
+| Spike | Runtime | Observed | Verdict | Date |
+|---|---|---|---|---|
+| SP-1 | | not run | pending | |
+| SP-2 | | not run | desk: no (Windows) | |
+| SP-3 | | not run | pending | |
+| SP-4 | | not run | pending | |
+| SP-5 | | not run | pending | |
+| SP-6 | | not run | pending | |
+| SP-7 | | not run | desk: fails on Linux | |
+| SP-8 | | not run | pending | |
+| SP-9 | | not run | desk: crash path confirmed | |
