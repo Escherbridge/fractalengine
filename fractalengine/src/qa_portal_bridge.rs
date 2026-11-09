@@ -5,8 +5,7 @@ use bevy::prelude::*;
 use fe_runtime::bridge::BridgeRequest;
 use fe_runtime::qa_portal::{self as fixture, FixtureCommand, FixtureOutcome, FixtureReceiver};
 use fe_ui::{
-    actions::UiManager, navigation_manager::NavigationManager, node_manager::NodeManager,
-    plugin::LocalUserRole, portal::PortalState,
+    actions::UiManager, navigation_manager::NavigationManager, node_manager::NodeManager, plugin::LocalUserRole,
 };
 use fe_webview::{backend::WebViewBackend, plugin::WebViewBackendRes};
 
@@ -46,13 +45,8 @@ pub(crate) fn context(
         return None;
     }
     let selected = nodes.primary()?;
-    let PortalState::Open {
-        opened_for_entity, ..
-    } = &ui.portal
-    else {
-        return None;
-    };
-    if *opened_for_entity != selected.entity {
+    // A website or a bundle portal; the native surface checks each op's origin (bundle ops never use qa_web).
+    if ui.portal.opened_for_entity() != Some(selected.entity) {
         return None;
     }
     Some(Context {

@@ -532,6 +532,27 @@ fn dialog_title(dialog: &ActiveDialog) -> Option<&'static str> {
     }
 }
 
+/// The open bundle portal's host-drawn badge (ux.md §3) as the QA probe reads it; `null` unless a bundle portal is open.
+fn bundle_portal_block(portal: &fe_ui::portal::PortalState) -> Value {
+    use fe_webview::ipc::BundleState;
+    let (Some(node_id), Some(state)) = (portal.bundle_node_id(), portal.bundle_state()) else {
+        return Value::Null;
+    };
+    let code = match state {
+        BundleState::Admitted { .. } => "admitted",
+        BundleState::StaticSandbox { .. } => "static_sandbox",
+        BundleState::Blocked(_) => "blocked",
+        BundleState::Revoked(_) => "revoked",
+        BundleState::WaitingForBytes => "waiting_for_bytes",
+        BundleState::Unavailable => "unavailable",
+        BundleState::Closed => "closed",
+    };
+    let chrome = fe_ui::portal::chrome::chrome_model(state);
+    json!({"node_id":node_id,"state":code,
+        "badge_text":chrome.as_ref().map(|chrome| chrome.badge_text.as_str()),
+        "badge_name":chrome.as_ref().map(|chrome| chrome.badge_name.as_str())})
+}
+
 impl UiState<'_, '_> {
     fn snapshot(&self, ppp: f32, frame: u32) -> Value {
         let selection = self.nodes.primary().and_then(|selected| {
@@ -554,11 +575,8 @@ impl UiState<'_, '_> {
             self.diagnostic.heights.as_deref(),
             frame,
         );
-        let section = active_section(
-            &self.right,
-            selection.is_some(),
-            matches!(self.ui.portal, fe_ui::portal::PortalState::Open { .. }),
-        );
+        // A bundle portal owns the region exactly as a website portal does.
+        let section = active_section(&self.right, selection.is_some(), self.ui.portal.is_open());
         let mut windows = section.map(|s| vec![section_label(s)]).unwrap_or_default();
         if let Some(title) = dialog_title(&self.ui.active_dialog) {
             windows.push(title);
@@ -584,6 +602,7 @@ impl UiState<'_, '_> {
         json!({"frame":frame,"coordinate_space":"physical_pixels","pixels_per_point":ppp,
             "navigation":{"verse_id":self.nav.active_verse_id,"verse_name":redact(&self.nav.active_verse_name),"fractal_id":self.nav.active_fractal_id,"fractal_name":redact(&self.nav.active_fractal_name),"petal_id":self.nav.active_petal_id,"petal_name":self.nav.active_petal_id.as_ref().and_then(|id| self.verses.find_petal(id)).map(|p| redact(&p.name))},
             "selection":selection,"terrain_diagnostic":terrain_diagnostic,"active_tool":format!("{:?}",self.tool.active_tool).to_ascii_lowercase(),"open_windows":windows,"active_section":section.map(|s| s.slug()),
+            "portal":bundle_portal_block(&self.ui.portal),
             "viewport":{"x":viewport.min.x*ppp,"y":viewport.min.y*ppp,"w":viewport.width()*ppp,"h":viewport.height()*ppp},
             "notice":notice,"status":self.ui.conditions().map(|(key,text)| json!({"key":key,"text":redact(text)})).collect::<Vec<_>>(),
             "pending":{"ui_known":pending,"db":null,"sync":null},"settled":!self.nodes.gesture_active && self.diagnostic.lock.is_none() && pending==0,
