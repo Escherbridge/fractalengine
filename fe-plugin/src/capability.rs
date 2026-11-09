@@ -5,7 +5,12 @@
 //! the host mints a [`CapabilityToken`] from the manifest. All runtime
 //! operations are validated against the token before execution.
 
+use fe_sdk::manifest_v2::{
+    metric_allowed, ExtensionManifest, ExtensionSourceClass, SceneWrite, SourceClassSet,
+};
 use serde::{Deserialize, Serialize};
+
+use crate::tick::TickBudget;
 
 // ---------------------------------------------------------------------------
 // Capability manifest (declared by the plugin author)
@@ -81,9 +86,119 @@ pub struct CapabilityToken {
     pub network_scope: String,
     /// Whether outbound HTTP is allowed.
     pub external_http: bool,
+    /// v2 tokens: an empty scope list grants nothing (v1 treats empty as a wildcard).
+    #[serde(default)]
+    pub strict_scopes: bool,
+    /// Typed v2 grants; `None` on a v1 token.
+    #[serde(default)]
+    pub grants_v2: Option<V2Grants>,
+}
+
+/// Grants a manifest v2 adds on top of the v1 token fields (see src/AGENTS.md §tick-scheduler).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct V2Grants {
+    /// Package id from the manifest.
+    pub package_id: String,
+    /// `scene.read`.
+    pub scene_read: bool,
+    /// Staged write kinds from `scene.write`.
+    pub scene_write: Vec<SceneWrite>,
+    /// Metrics `readings.stage` accepts, or `["*"]`; empty = no readings grant.
+    pub metrics: Vec<String>,
+    /// The ONE source class readings are written as (never inferred, never guest input).
+    pub readings_class: Option<ExtensionSourceClass>,
+    /// `routes` grant.
+    pub routes: bool,
+    /// Effective tick budget; `None` = no ticks and no flushes.
+    pub tick: Option<TickBudget>,
+}
+
+/// The bind-time facts a v2 token needs beyond the manifest itself.
+#[derive(Debug, Clone)]
+pub struct V2Binding {
+    /// Scope pattern of the bound verse (e.g. `VERSE#v1`).
+    pub verse_scope: String,
+    /// Full ancestry scope of the bound petal.
+    pub petal_scope: String,
+    /// The operator's pick when the manifest declares a class set.
+    pub source_class: Option<ExtensionSourceClass>,
 }
 
 impl CapabilityToken {
+    /// Mint a v2 token: scopes come from the binding, an empty property scope grants no property.
+    pub fn mint_v2(
+        plugin_id: &str,
+        manifest: &ExtensionManifest,
+        binding: &V2Binding,
+    ) -> Result<Self, String> {
+        let readings_class = match &manifest.readings {
+            None => None,
+            Some(grant) => {
+                let classes = grant.source_class.classes();
+                match (binding.source_class, classes.as_slice()) {
+                    (Some(pick), set) if set.contains(&pick) => Some(pick),
+                    (Some(_), _) => return Err("source class pick is outside the declared set".into()),
+                    (None, [only]) if matches!(grant.source_class, SourceClassSet::One(_)) => Some(*only),
+                    (None, _) => return Err("a source class set needs the operator's pick at bind time".into()),
+                }
+            }
+        };
+        let scene = manifest.scene.clone().unwrap_or_default();
+        let scene_write = scene.write.clone().unwrap_or_default();
+        let mut capabilities = Vec::new();
+        if scene.read {
+            capabilities.push(fe_sdk::CAP_STORAGE_READ.to_string());
+            capabilities.push(fe_sdk::CAP_QUERY_SELECT.to_string());
+        }
+        if !scene_write.is_empty() {
+            // Writes authorise the petal through the reader, so they need read access to it.
+            for name in [fe_sdk::CAP_STORAGE_READ, fe_sdk::CAP_STORAGE_WRITE] {
+                if !capabilities.iter().any(|c| c == name) {
+                    capabilities.push(name.to_string());
+                }
+            }
+        }
+        Ok(Self {
+            plugin_id: plugin_id.to_string(),
+            verse_scope: vec![binding.verse_scope.clone()],
+            petal_scope: vec![binding.petal_scope.clone()],
+            property_scope: scene.property_scope.clone().unwrap_or_default(),
+            capabilities,
+            network_scope: default_network_scope(),
+            external_http: false,
+            strict_scopes: true,
+            grants_v2: Some(V2Grants {
+                package_id: manifest.id.clone(),
+                scene_read: scene.read,
+                scene_write,
+                metrics: manifest.readings.as_ref().map(|r| r.metrics.clone()).unwrap_or_default(),
+                readings_class,
+                routes: manifest.routes.unwrap_or(false),
+                tick: manifest.tick.as_ref().map(|budget| crate::tick::TickBudget::from_manifest(budget, manifest)),
+            }),
+        })
+    }
+
+    /// Whether a v2 token allows staging this scene write kind; v1 tokens defer to `storage.write`.
+    pub fn allows_scene_write(&self, kind: SceneWrite) -> bool {
+        match &self.grants_v2 {
+            Some(grants) => grants.scene_write.contains(&kind),
+            None => self.has_capability(fe_sdk::CAP_STORAGE_WRITE),
+        }
+    }
+
+    /// Whether a v2 token may stage a reading of `metric`; v1 tokens have no readings path.
+    pub fn allows_reading(&self, metric: &str) -> bool {
+        self.grants_v2.as_ref().is_some_and(|grants| {
+            grants.readings_class.is_some() && metric_allowed(&grants.metrics, metric)
+        })
+    }
+
+    /// The v2 effective tick budget, if the manifest declared one.
+    pub fn tick_budget(&self) -> Option<&crate::tick::TickBudget> {
+        self.grants_v2.as_ref().and_then(|grants| grants.tick.as_ref())
+    }
+
     /// Mint a token from a validated manifest.
     pub fn mint(plugin_id: &str, manifest: &CapabilityManifest) -> Self {
         Self {
@@ -94,6 +209,8 @@ impl CapabilityToken {
             capabilities: manifest.capabilities.clone(),
             network_scope: manifest.network_scope.clone(),
             external_http: manifest.external_http,
+            strict_scopes: false,
+            grants_v2: None,
         }
     }
 
@@ -138,8 +255,8 @@ pub fn validate_access(
 ) -> Result<(), CapabilityError> {
     match operation {
         CapabilityOperation::PropertyAccess { key } => {
-            if token.property_scope.is_empty() {
-                // Empty = wildcard (all properties allowed)
+            if token.property_scope.is_empty() && !token.strict_scopes {
+                // v1: empty = wildcard (all properties allowed); v2: empty grants nothing
                 return Ok(());
             }
             if token.property_scope.iter().any(|p| pattern_matches(p, key)) {
@@ -152,7 +269,7 @@ pub fn validate_access(
             }
         }
         CapabilityOperation::PetalAccess { scope } => {
-            if token.petal_scope.is_empty() {
+            if token.petal_scope.is_empty() && !token.strict_scopes {
                 return Ok(());
             }
             if token.petal_scope.iter().any(|p| pattern_matches(p, scope)) {
@@ -165,7 +282,7 @@ pub fn validate_access(
             }
         }
         CapabilityOperation::VerseAccess { scope } => {
-            if token.verse_scope.is_empty() {
+            if token.verse_scope.is_empty() && !token.strict_scopes {
                 return Ok(());
             }
             if token.verse_scope.iter().any(|p| pattern_matches(p, scope)) {
@@ -234,6 +351,32 @@ mod tests {
         assert!(manifest.verse_scope.is_empty());
         assert_eq!(manifest.network_scope, "none");
         assert!(!manifest.external_http);
+
+        // v2 table: the shipped fleet manifest mints a strict token; an empty scope grants nothing.
+        const FLEET: &str = include_str!("../../fe-sdk/schema/examples/fleet-sim.extension.json");
+        let validated = fe_sdk::manifest_v2::parse_and_validate(FLEET.as_bytes()).unwrap();
+        let binding = V2Binding { verse_scope: "VERSE#v1".into(), petal_scope: "VERSE#v1-FRACTAL#f1-PETAL#p1".into(), source_class: None };
+        let token = CapabilityToken::mint_v2("fleet", &validated.manifest, &binding).unwrap();
+        let key = |k: &str| CapabilityOperation::PropertyAccess { key: k.into() };
+        assert!(validate_access(&token, &key("fleet.speed")).is_ok());
+        assert!(validate_access(&token, &key("other")).is_err());
+        assert!(token.allows_scene_write(SceneWrite::SetTransform) && !token.allows_scene_write(SceneWrite::DeleteNode));
+        assert!(token.allows_reading("altitude_m") && !token.allows_reading("pressure"));
+        assert_eq!(token.tick_budget().map(|b| (b.cadence_ms, b.max_readings, b.fuel)), Some((500, 256, 200_000)));
+        let mut bare = validated.manifest.clone();
+        bare.scene = None;
+        bare.readings = None;
+        bare.tick = None;
+        let nothing = CapabilityToken::mint_v2("bare", &bare, &binding).unwrap();
+        assert!(validate_access(&nothing, &key("anything")).is_err(), "no property_scope grants no property");
+        assert!(!nothing.has_capability(fe_sdk::CAP_STORAGE_READ) && !nothing.allows_scene_write(SceneWrite::CreateNode));
+        let mut pick = validated.manifest.clone();
+        pick.readings.as_mut().unwrap().source_class = SourceClassSet::Many(vec![ExtensionSourceClass::Device, ExtensionSourceClass::Connector]);
+        assert!(CapabilityToken::mint_v2("p", &pick, &binding).is_err(), "a class set needs the operator's pick");
+        let picked = V2Binding { source_class: Some(ExtensionSourceClass::Device), ..binding.clone() };
+        assert!(CapabilityToken::mint_v2("p", &pick, &picked).is_ok());
+        let outside = V2Binding { source_class: Some(ExtensionSourceClass::Simulation), ..binding };
+        assert!(CapabilityToken::mint_v2("p", &pick, &outside).is_err());
     }
 
     #[test]

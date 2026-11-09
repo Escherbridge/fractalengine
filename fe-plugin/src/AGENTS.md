@@ -302,3 +302,47 @@ The consent modal lives in fe-ui (`fe-ui/src/AGENTS.md` §plugin-consent). fe-pl
 shows: `CapabilityManifest` carries the verse, petal and property scope, the named capabilities and the
 network posture. `validate_access` enforces an empty scope as a wildcard, and the modal must render that as
 "All". Nothing requests an install yet (review.md #17), because neither binary builds a `PluginManager`.
+
+## §tick-scheduler (extension_platform P1.3, R4/R5)
+
+`tick.rs` owns time. The plugin worker (`plugin_thread_loop`) waits on its command channel no longer than
+`TickHost::next_wait` (earliest deadline, capped at 100 ms), then calls `TickHost::poll`; ticking is never a Bevy
+system, so the reactive render loop wakes only for the DB results writes produce. `apply_tick_events` (Update) is the
+only Bevy side: it maps `Degraded`/`Stopped` events onto `PluginRegistry`.
+
+- **One scheduler per instance** (`TickScheduler`): the first tick is due one cadence after start. When behind, it
+  skips to the latest due instant and counts the rest (`ticks_skipped`); ticks never queue. Invariant:
+  `ticks_run + ticks_skipped` = due instants elapsed (the 500 ms x 60 s acceptance reads 120 +/- 1).
+- **One flush in flight.** A due instant while the previous flush is unanswered is skipped (backpressure, not a
+  queue). A flush silent for `FLUSH_TIMEOUT_MS` is reported `unknown` in the next `tick-info` and never retried.
+- **Injected `Clock`.** `WallClock` in production; `ManualClock` in the journey; fe-sim hosts its `SimClock` behind the
+  same trait by pre-inserting a `TickHost` before `PluginHostPlugin` (build reuses an existing one).
+- **Fuel.** `TickInstance::refuel(budget.fuel)` runs before every hook (each hook gets its own refill). A fault
+  (`FuelExhausted` or a trap) discards the window unflushed, stops ticking, unbinds the context (the lease is gone, so
+  no final flush) and reports `Degraded`.
+- **`StagedWindow`** (`transaction.rs`) is the per-instance write window the guest imports stage into, shared with
+  the scheduler as `SharedWindow`. Limits come from the effective `TickBudget`; the window holds ops and readings and
+  flushes as ONE `StagedFlush`. `PluginContext::authorize_op` / `authorize_reading` check the token at stage time and
+  `commit_staged` re-checks at flush through `StagedCommitSink` (ops + readings atomic); with no readings and no staged
+  sink it falls back to the legacy `TransactionSink`.
+- **Deactivation.** `TickScheduler::stop(reason)` runs `on-deactivate`, then one final flush unless the reason is
+  `RoleLost`, `PolicyDenied`, `Revoked` or `Degraded` (lease already gone). `TickHost::stop` then unbinds the context.
+- **Seams for others.** E1 implements `TickInstance` over the component store and stages through the shared window;
+  E4 implements `StagedCommitSink` over `PluginCommit`; E7 builds the `TickScheduler` with a `ContextTickSink` and
+  `TickHost::add`. `ContextTickSink` commits on a short-lived thread so the worker never blocks on the DB.
+
+### Manifest v2 to token
+
+`CapabilityToken::mint_v2(plugin_id, &ExtensionManifest, &V2Binding)` is the only v2 constructor. Scopes come from
+the binding (verse and petal), never from the manifest; `strict_scopes = true` makes an EMPTY scope list grant nothing
+(v1 keeps empty = wildcard). `scene.read` grants `storage.read` + `query.select`; any `scene.write` kind grants
+`storage.write` (and `storage.read`, since writes authorise the petal through the reader) and the exact kinds live in
+`V2Grants::scene_write`. Readings are allowed only for declared metrics, and the source class is fixed at bind time
+(a class set without the operator's pick refuses to mint). `V2Grants::tick` carries the effective budget
+(defaults and host ceilings from `TickBudget::from_manifest`).
+
+### Registry states
+
+`PluginState` gains `Disabled(reason)` (operator, policy, role loss; only `enable` leaves it, landing in
+`Deactivated`) and `Revoked(reason)` (terminal: `activate`, `enable` and `disable` refuse; only `unregister`).
+`degrade` moves Active to `Degraded` and leaves other states alone.

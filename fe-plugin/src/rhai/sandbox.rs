@@ -151,6 +151,8 @@ mod tests {
             .is_err());
         assert!(engine.eval::<()>(r#"query_nodes("other","all");"#).is_err());
         engine.eval::<()>(r#"let receipt=commit_transaction("p1",`[{"SetProperty":{"node_id":"n1","key":"calibration","value":{"gain":3}}},{"CreateNode":{"petal_id":"p1","name":"created"}}]`); assert(receipt.op_count==2); assert(get_node("n1").properties.calibration.gain==3);"#).unwrap();
+        // A v2 SetTransform batch rides the same atomic path through PluginContexts (needs the mock SetTransform arm).
+        engine.eval::<()>(r#"let receipt=commit_transaction("p1",`[{"SetTransform":{"node_id":"n1","position":[4.0,5.0,6.0]}},{"SetTransform":{"node_id":"n1","scale":[2.0,2.0,2.0]}}]`); assert(receipt.op_count==2);"#).unwrap();
         let count = host.lock().unwrap().transactions.len();
         assert!(engine.eval::<()>(r#"commit_transaction("p1",`[{"SetProperty":{"node_id":"n1","key":"calibration","value":{"gain":999}}},{"DeleteNode":{"node_id":"missing"}}]`);"#).is_err());
         assert_eq!(host.lock().unwrap().transactions.len(), count);
