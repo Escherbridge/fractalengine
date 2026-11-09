@@ -920,6 +920,22 @@ fn render_target_menu(
             }
         }
     }
+
+    // Extension entries for a node-backed target (their `when` reads the node `id` and `name`).
+    if let (HitTarget::Node(_), Some(id), true) = (
+        &target.hit,
+        &node_backed,
+        target_is_current(target, hierarchy, path_state, active_petal, point_origin, nav),
+    ) {
+        let name = hierarchy
+            .all_nodes()
+            .find(|n| n.id == *id)
+            .map(|n| n.name.clone())
+            .unwrap_or_else(|| id.clone());
+        if crate::extensions::draw_context_slot(ui, id, &name) {
+            outcome.close = true;
+        }
+    }
 }
 
 /// The two-step delete confirm (Q-2): cascade copy with the live descendant

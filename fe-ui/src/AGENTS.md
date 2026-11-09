@@ -1576,3 +1576,10 @@ empty scope as "None" understated the grant (S6 finding). The window is drawn by
 so `gardener_console`'s signature is untouched. Nothing requests installs yet: fe-ui has no fe-plugin dependency
 and no `PluginManager` is built in the binary; the request/decision wiring lands with extension_platform P2.4
 (consent v2 at `fe-ui/src/extensions/consent.rs`) and P1.7.
+
+## §extension-mounting (I-UI, extension_platform_20261107)
+
+`plugin.rs` adds `ExtensionSlotsPlugin` + `ExtensionsPanelPlugin` and orders `lend_slots_to_surfaces` before and
+`extension_overlay_system` / `extensions_window_system` / `reclaim_slots_from_surfaces` after `gardener_ui_system`; the slot
+surfaces reach the lent state through the egui context (`extensions/AGENTS.md` section host-handle). `UiAction::ToggleTerrainVisibility`
+(actions/mod.rs) flips the stored `terrain` layer's `visible` via `gis::set_layer`, advising when the petal has no terrain document.

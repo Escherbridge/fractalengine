@@ -674,6 +674,9 @@ fn section_buttons(
     {
         right.toggle(RightSidebarSection::Maps);
     }
+
+    // Extensions window toggle (extensions/AGENTS.md section host-handle).
+    crate::extensions::topbar_toggle(ui);
 }
 
 fn help_button(ui: &mut egui::Ui, keyboard_toggle: bool) {
@@ -831,6 +834,8 @@ pub fn render_topbar(
                     },
                 );
 
+                // Toolbar actions contributed by unbound extensions.
+                crate::extensions::draw_topbar_controls(ui);
                 ui.separator();
 
                 if !compact

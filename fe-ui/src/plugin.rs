@@ -1047,6 +1047,26 @@ impl Plugin for GardenerConsolePlugin {
         );
         app.add_systems(EguiPrimaryContextPass, gardener_ui_system.in_set(GardenerUiSet::GeometryReady));
         app.add_systems(EguiPrimaryContextPass, plugin_install_dialog_system.after(gardener_ui_system));
+        // Extension slot host + Extensions window + consent modal (extensions/AGENTS.md section host-handle):
+        // the resources are lent to the surfaces around gardener_ui_system and returned after the overlay/window draw.
+        app.add_plugins((
+            crate::extensions::ExtensionSlotsPlugin,
+            crate::extensions::ExtensionsPanelPlugin,
+        ));
+        app.add_systems(
+            EguiPrimaryContextPass,
+            (
+                crate::extensions::lend_slots_to_surfaces.before(gardener_ui_system),
+                (
+                    crate::extensions::extension_overlay_system,
+                    crate::extensions::extensions_window_system,
+                )
+                    .after(gardener_ui_system),
+                crate::extensions::reclaim_slots_from_surfaces
+                    .after(crate::extensions::extension_overlay_system)
+                    .after(crate::extensions::extensions_window_system),
+            ),
+        );
         // The title bar's window request (move/resize/min/max/close) applies
         // the same frame it was raised — ui_shell/AGENTS.md §window-chrome.
         app.add_systems(

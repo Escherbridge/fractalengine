@@ -325,6 +325,9 @@ fn inspector_tab_body(
             }
             inspector_properties_section(ui, inspector, node_mgr, ui_mgr);
             ui.add_space(2.0);
+            if !inspector.node_properties_loading {
+                crate::extensions::draw_inspector_slot(ui, &inspector.node_properties);
+            }
             inspector_schema_section(ui, inspector, node_mgr, local_role, db_tx, nav, ui_mgr);
         }
         InspectorTab::ApiAccess => {

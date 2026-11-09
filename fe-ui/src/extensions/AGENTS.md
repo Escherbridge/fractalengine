@@ -22,10 +22,29 @@ this module draws them and the guest draws no pixels.
 Slot call sites (owned elsewhere, one line each): `ui_shell::topbar` toolbar, `panels/sidebar.rs`, `panels/inspector.rs`,
 `dialogs/context_menu.rs`, the viewport overlay pass, and the dashboard.
 
-## §modules (G6, 2026-11-09)
+## §modules (G6, 2026-11-09; mounted by I-UI)
 
-`mod.rs` declares every module: `slots` (P1.8), `panel` + `browse` + `details` + `permissions` (P4, design in
-`docs/extensions/extensions-ui.md`), `consent` (P2.4) and `builtin` (P5.5). Declared means compiled and reachable by the
-`extensions::` test filter (J9, the consent and slot journeys), not yet mounted: `ExtensionSlotsPlugin` and
-`ExtensionsPanelPlugin` are not added to the app, no surface calls `panel::draw` / `consent::render` or a slot draw function,
-and the binary drains neither `take_ops` nor `take_commands`. That wiring is the integration wave's (review.md G1-A7, G4-A9/A10).
+`mod.rs` declares every module: `slots` (P1.8), `bound_slots` (B10c), `bindings` + `install_offer` (B9), `panel` + `browse` +
+`details` + `permissions` (P4, design in `docs/extensions/extensions-ui.md`), `consent` (P2.4) and `builtin` (P5.5). All are
+compiled and reachable by the `extensions::` test filter.
+
+## §host-handle (I-UI)
+
+Surfaces (topbar, sidebar, inspector, context menu, egress card) are deep egui functions with long signatures, so the slot data
+reaches them through the egui context instead of new parameters: `ExtensionSlotHost` (Arc<Mutex<HostInner>>) is stored in egui
+temp data each pass. `plugin.rs` orders three systems around `gardener_ui_system` in `EguiPrimaryContextPass`:
+`lend_slots_to_surfaces` swaps the `UiExtensions` registry, `ExtensionSlotState` and `BoundSlotsState` INTO the host (a `mem::swap`,
+no clone, change detection bypassed), the surfaces draw, then `extension_overlay_system` / `extensions_window_system` draw,
+and `reclaim_slots_from_surfaces` swaps everything back so the binary's Update systems drain `take_commands()` / `take_ops()`
+unchanged. A surface that finds no handle draws nothing (tests that call a draw function directly are unaffected).
+
+- **Bound vs unbound**: a package with a bound `ui.panel` at the active petal renders only inside that panel
+  (`draw_bound_panels`); its toolbar/sidebar/overlay contributions are skipped elsewhere. Unbound packages (the built-in terrain
+  extension) render in the plain slots.
+- **Surfaces**: `draw_topbar_controls` + `topbar_toggle` (topbar.rs), `draw_sidebar_slot` (sidebar.rs, after Groups),
+  `draw_inspector_slot` (inspector Properties tab, after the property table), `draw_context_slot` (node targets only),
+  `bound_snippet_rows` (egress card), `extension_overlay_system` (stream slots, top-left of the free viewport, non-interactive).
+- **Extensions window**: opened by the topbar "Extensions" toggle; `panel::draw` runs only while open (so the first
+  `Refresh` op is queued on first open). `consent::render` runs every pass.
+- **Limits**: the context menu `when` can read only node `id` and `name` (no per-node property cache in the menu); the inspector
+  rows read the loaded `node_properties`, with declared property-scope filtering left to the binary (see section slot-host).
