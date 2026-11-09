@@ -1283,6 +1283,73 @@ mod tests {
             size_bytes: glb.len() as u64,
             asset_fingerprint: "controlled-admission-fixture".into(),
         };
+        // Portal-bundle MIME row: a stored-ZIP sealed bundle replicates like any scene asset (inert bytes).
+        let bundle_bytes = {
+            let members: [(&str, &[u8]); 2] = [
+                ("manifest.json", br#"{"hexon_type":"plugin","integrity":{"root":"fixture"}}"#),
+                ("plugin/extension.json", b"{}"),
+            ];
+            let (mut zip, mut directory) = (Vec::<u8>::new(), Vec::<u8>::new());
+            for (name, data) in members {
+                let offset = zip.len() as u32;
+                let (name_len, data_len) = (name.len() as u16, data.len() as u32);
+                zip.extend_from_slice(&[0x50, 0x4B, 0x03, 0x04]);
+                zip.extend_from_slice(&20u16.to_le_bytes());
+                zip.extend_from_slice(&[0; 8]); // flags, method 0 (stored), time, date
+                zip.extend_from_slice(&0u32.to_le_bytes()); // crc is not checked by the structural gate
+                zip.extend_from_slice(&data_len.to_le_bytes());
+                zip.extend_from_slice(&data_len.to_le_bytes());
+                zip.extend_from_slice(&name_len.to_le_bytes());
+                zip.extend_from_slice(&0u16.to_le_bytes());
+                zip.extend_from_slice(name.as_bytes());
+                zip.extend_from_slice(data);
+                directory.extend_from_slice(&[0x50, 0x4B, 0x01, 0x02]);
+                directory.extend_from_slice(&20u16.to_le_bytes());
+                directory.extend_from_slice(&20u16.to_le_bytes());
+                directory.extend_from_slice(&[0; 8]);
+                directory.extend_from_slice(&0u32.to_le_bytes());
+                directory.extend_from_slice(&data_len.to_le_bytes());
+                directory.extend_from_slice(&data_len.to_le_bytes());
+                directory.extend_from_slice(&name_len.to_le_bytes());
+                directory.extend_from_slice(&[0; 12]); // extra, comment, disk, internal attrs
+                directory.extend_from_slice(&0u32.to_le_bytes()); // external attrs
+                directory.extend_from_slice(&offset.to_le_bytes());
+                directory.extend_from_slice(name.as_bytes());
+            }
+            let directory_offset = zip.len() as u32;
+            zip.extend_from_slice(&directory);
+            zip.extend_from_slice(&[0x50, 0x4B, 0x05, 0x06, 0, 0, 0, 0]);
+            zip.extend_from_slice(&(members.len() as u16).to_le_bytes());
+            zip.extend_from_slice(&(members.len() as u16).to_le_bytes());
+            zip.extend_from_slice(&(directory.len() as u32).to_le_bytes());
+            zip.extend_from_slice(&directory_offset.to_le_bytes());
+            zip.extend_from_slice(&0u16.to_le_bytes());
+            zip
+        };
+        let bundle_hash = provider_files.add_blob(&bundle_bytes).unwrap();
+        let bundle_asset_id = ulid::Ulid::new().to_string();
+        fe_runtime::scene_asset::verify_scene_asset_bytes(
+            &bundle_bytes,
+            &bundle_hash,
+            fe_runtime::scene_asset::PORTAL_BUNDLE_MIME,
+            bundle_bytes.len() as u64,
+        )
+        .expect("the fixture bundle passes the structural gate");
+        let bundle_permit = SceneAssetTransferPermit {
+            asset_id: bundle_asset_id.clone(),
+            content_hash: bundle_hash,
+            content_type: fe_runtime::scene_asset::PORTAL_BUNDLE_MIME.into(),
+            size_bytes: bundle_bytes.len() as u64,
+            asset_fingerprint: "portal-bundle-fixture".into(),
+            ..permit.clone()
+        };
+        let bundle_row_hash = provider_files
+            .add_blob(&serde_json::to_vec(&serde_json::json!({"_fe_scene_asset":1,"asset_id":bundle_asset_id,"petal_id":"scene-p","content_hash":fe_runtime::blob_store::hash_to_hex(&bundle_hash),"content_type":fe_runtime::scene_asset::PORTAL_BUNDLE_MIME,"size_bytes":bundle_bytes.len()})).unwrap())
+            .unwrap();
+        assert!(
+            crate::scene_assets::is_scene_row(&provider_files, bundle_row_hash).await.unwrap(),
+            "a portal-bundle MIME row arrives as a scene row"
+        );
         let allowed = Arc::new(std::sync::atomic::AtomicBool::new(false));
         let stalled = Arc::new(std::sync::atomic::AtomicBool::new(false));
         let admission_stop = fe_runtime::service_lifecycle::StopSignal::default();
@@ -1291,6 +1358,7 @@ mod tests {
         let (requester_db, requester_rx) = crossbeam::channel::bounded::<DbCommand>(16);
         let spawn_admissions = |rx: crossbeam::channel::Receiver<DbCommand>, source: bool| {
             let permit = permit.clone();
+            let bundle_permit = bundle_permit.clone();
             let second_asset_id = second_asset_id.clone();
             let allowed = allowed.clone();
             let stalled = stalled.clone();
@@ -1309,8 +1377,12 @@ mod tests {
                                 continue;
                             }
                             assert_eq!(request.verse_id, "scene-v");
-                            assert_eq!(request.hash, permit.content_hash);
-                            let mut selected = permit.clone();
+                            let mut selected = if request.hash == bundle_permit.content_hash {
+                                bundle_permit.clone()
+                            } else {
+                                assert_eq!(request.hash, permit.content_hash);
+                                permit.clone()
+                            };
                             if let SceneAssetTransferPurpose::Publish { asset_id, petal_id } = &request.purpose {
                                 if asset_id == &second_asset_id && petal_id == "scene-p2" {
                                     selected.asset_id=second_asset_id.clone(); selected.petal_id="scene-p2".into();
@@ -1553,6 +1625,19 @@ mod tests {
         }
         assert_eq!(std::fs::read(&canonical).unwrap(), glb);
         assert!(!receiver_jobs.pump_prefetches(), "a delivered blob leaves the re-arm set");
+        // The portal-bundle row's blob is fetched through the same admitted path and lands byte-identical.
+        receiver_jobs.fetch_owned("scene-v", bundle_hash, Some("portal-bundle".into()));
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(20);
+        loop {
+            assert!(std::time::Instant::now() < deadline, "portal-bundle fetch did not settle");
+            match events_rx.try_recv() {
+                Ok(SyncEvent::BlobReady { hash }) if hash == bundle_hash => break,
+                Ok(SyncEvent::SceneAssetFetchFailed { reason, .. }) => panic!("portal-bundle fetch failed: {reason}"),
+                Ok(_) => {}
+                Err(_) => tokio::time::sleep(std::time::Duration::from_millis(5)).await,
+            }
+        }
+        assert_eq!(std::fs::read(requester_files.get_blob_path(&bundle_hash).unwrap()).unwrap(), bundle_bytes);
         receiver_jobs.fetch_owned("scene-v", scene_hash, Some("scene-old-generation".into()));
         receiver_jobs.close("scene-v");
         owner_replica.close().await.unwrap();

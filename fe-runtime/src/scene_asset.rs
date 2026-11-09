@@ -150,6 +150,22 @@ fn le32(bytes: &[u8], at: usize) -> u64 {
     u32::from_le_bytes([bytes[at], bytes[at + 1], bytes[at + 2], bytes[at + 3]]) as u64
 }
 
+/// Inflates one header member, reading at most `BUNDLE_HEADER_MEMBER_MAX` bytes whatever the directory claims.
+fn inflate_bundle_member(bytes: &[u8], name: &str) -> anyhow::Result<Vec<u8>> {
+    use std::io::Read;
+    let mut archive = zip::ZipArchive::new(std::io::Cursor::new(bytes))?;
+    let member = archive.by_name(name)?;
+    let mut inflated = Vec::new();
+    member
+        .take(BUNDLE_HEADER_MEMBER_MAX + 1)
+        .read_to_end(&mut inflated)?;
+    anyhow::ensure!(
+        inflated.len() as u64 <= BUNDLE_HEADER_MEMBER_MAX,
+        "bundle header member {name} inflates past its cap"
+    );
+    Ok(inflated)
+}
+
 /// Bounded structural check of a sealed portal bundle: ZIP magic, central directory, header members.
 /// Signature and digest verification stay in the admission pipeline (`verify_sealed_header`).
 pub fn verify_portal_bundle_bytes(bytes: &[u8]) -> anyhow::Result<()> {
@@ -248,18 +264,22 @@ pub fn verify_portal_bundle_bytes(bytes: &[u8]) -> anyhow::Result<()> {
             );
         }
     }
-    // A stored manifest is readable without inflating: it must name a plugin hexon with an integrity root.
+    // The manifest must name a plugin hexon with an integrity root: stored members are read in place,
+    // deflated ones are inflated through a hard-capped reader (see AGENTS.md scene-asset-transfer).
     let (method, compressed, _, local_offset) = names["manifest.json"];
-    if method == 0 {
+    let manifest_bytes = if method == 0 {
         let start = local_offset + 30 + le16(bytes, local_offset + 26) + le16(bytes, local_offset + 28);
         let end = start + compressed as usize;
         anyhow::ensure!(end <= directory_offset as usize, "bundle manifest is truncated");
-        let manifest: serde_json::Value = serde_json::from_slice(&bytes[start..end])?;
-        anyhow::ensure!(
-            manifest["hexon_type"] == "plugin" && manifest["integrity"].is_object(),
-            "bundle is not a sealed plugin hexon"
-        );
-    }
+        bytes[start..end].to_vec()
+    } else {
+        inflate_bundle_member(bytes, "manifest.json")?
+    };
+    let manifest: serde_json::Value = serde_json::from_slice(&manifest_bytes)?;
+    anyhow::ensure!(
+        manifest["hexon_type"] == "plugin" && manifest["integrity"].is_object(),
+        "bundle is not a sealed plugin hexon"
+    );
     Ok(())
 }
 
