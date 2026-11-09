@@ -21,6 +21,9 @@ BARRIER_TIMEOUT_S = 120.0
 NEEDS_WAIT_S = 90.0  # longest a dependent waits for a same-step dependency still in flight before it counts as unmet
 LIVE_POLL_S = 0.25
 FINGERPRINT_NODE_CAP = 400
+# Extension-platform REST ops (scenario.VIAS["rest"]); each dispatches to Driver._ext_<op>.
+EXTENSION_OPS = {"install_extension", "consent_extension", "bind_extension", "set_extension_policy", "extension_command",
+                 "ingress_post", "mqtt_publish", "publish_revocation", "set_binding", "accept_extension"}
 REF_NAME = re.compile(r"\$\{?([A-Za-z_][A-Za-z0-9_]*)")
 
 
@@ -154,7 +157,10 @@ class Driver:
     """Runs scenario steps against live peers and records events/expectations/steps JSONL."""
 
     def __init__(self, scenario, clients, ctx, clock, recorder, store, cadence, run_dir, host=None,
-                 steps=None, log=print):
+                 steps=None, log=print, loopback=None):
+        self.loopback = loopback  # loopback.Loopback (MQTT broker, signed revocation list) when run.py started one
+        self.installs = {}  # installation id -> package id, from install_extension results
+        self.device_nodes = {}  # (petal id, device id) -> node id, for ingress_post / ingest_readings by device
         self.scenario = scenario
         self.clients = clients
         self.ctx = ctx
@@ -417,6 +423,10 @@ class Driver:
 
     def rest(self, client, op, args):
         verse = args.get("verse_id") or self.ctx.try_resolve("$fixture.verse_id")
+        if op in EXTENSION_OPS:
+            return getattr(self, "_ext_" + op)(client, args, verse)
+        if op == "ingest_readings" and "device" in args and "readings" not in args:
+            return self._ingest_device(client, args)
         if op == "request":
             return client.rest(args["method"].upper(), args["path"], args.get("body"))
         if op == "create_fractal":
@@ -480,6 +490,180 @@ class Driver:
             return self._poll_lookup(client, lambda: client.rest(
                 "GET", "/api/v1/petals/%s/visibility-groups" % args["petal_id"]), find_group, float(args.get("wait_s", 10)))
         raise ValueError("unknown rest op " + op)
+
+    # -- extension platform ops (E19, BND-11): thin wrappers over the REST doors, bindings.md section 9 --------
+    @staticmethod
+    def _refused(code, error, status=0):
+        return Outcome(status=status, ok=False, refused=True, code=code, error=error)
+
+    def _installation_of(self, args):
+        return args.get("installation") or ""
+
+    def _package_of(self, args):
+        return args.get("package_id") or self.installs.get(self._installation_of(args)) or "org.example.%s" % args.get("package", "")
+
+    def _ext_install_extension(self, client, args, verse):
+        out = client.rest("POST", "/api/v1/extensions", {k: v for k, v in args.items() if k != "verse_id"} | {"verse_id": verse})
+        data = out.get("data")
+        if out.ok and isinstance(data, dict):
+            installation = data.get("installation") or data.get("id")
+            data.setdefault("installation", installation)
+            if installation:
+                self.installs[installation] = data.get("package_id") or "org.example.%s" % args.get("package", "")
+        return out
+
+    def _ext_consent_extension(self, client, args, verse):
+        body = {k: v for k, v in args.items() if k != "installation"}
+        return client.rest("POST", "/api/v1/extensions/%s/consent" % args["installation"], body)
+
+    def _ext_accept_extension(self, client, args, verse):
+        """Local acceptance of an installation in a verse (bindings.md 5.3): POST /extensions/{installation}/accept."""
+        return client.rest("POST", "/api/v1/extensions/%s/accept" % args["installation"], {"verse_id": verse})
+
+    def _ext_bind_extension(self, client, args, verse):
+        body = {k: v for k, v in args.items() if k not in ("installation", "discover")}
+        out = client.rest("POST", "/api/v1/extensions/%s/bind" % args["installation"], body)
+        prefix = args.get("discover")
+        if out.ok and prefix and args.get("petal_id"):  # name the nodes the instance made: movers, mover0.. (probe targets)
+            sql = "SELECT node_id, display_name FROM node WHERE petal_id = %s AND tombstone = NONE" % surreal_string(args["petal_id"])
+            found = self._poll_lookup(client, lambda: client.rest("POST", "/api/v1/query", {"sql": sql}),
+                                      lambda rows: [r for r in rows if str(r.get("display_name", "")).startswith(prefix)]
+                                      if isinstance(rows, list) else None, float(args.get("wait_s", 20)))
+            data = out.get("data") if isinstance(out.get("data"), dict) else {}
+            if found.ok:
+                nodes = sorted(found["data"].get("id") or [], key=lambda r: str(r.get("display_name")))
+                data["movers"] = [n.get("node_id") for n in nodes]
+                for index, node in enumerate(nodes):
+                    data["%s%d" % (prefix, index)] = node.get("node_id")
+            out["data"] = data
+        return out
+
+    def _ext_set_extension_policy(self, client, args, verse):
+        body = {k: v for k, v in args.items() if k != "verse_id"}
+        return client.rest("PUT", "/api/v1/verses/%s/extension-policy" % verse, body)
+
+    def _ext_extension_command(self, client, args, verse):
+        path = "/api/v1/petals/%s/extensions/%s/commands/%s" % (args["petal_id"], self._package_of(args), args["command"])
+        out = client.rest("POST", path, {"args": args.get("args", {})})
+        if args.get("door") == "ws":  # no WS client in the simulator yet: the REST door answers for it, and the record says so
+            out["door"] = "rest-standing-in-for-ws"
+        return out
+
+    def _ext_set_binding(self, client, args, verse):
+        body = {k: v for k, v in args.items() if k not in ("clear",)}
+        body.setdefault("verse_id", verse)
+        if args.get("clear"):
+            return client.rest("DELETE", "/api/v1/bindings", {k: body[k] for k in ("verse_id", "fractal_id", "petal_id", "hook", "key") if k in body})
+        return client.rest("PUT", "/api/v1/bindings", body)
+
+    def _ext_publish_revocation(self, client, args, verse):
+        if self.loopback is None:
+            return self._refused("no_loopback", "publish_revocation needs run.py's loopback services")
+        entries = [{k: v for k, v in e.items()} for e in args.get("entries", [])]
+        return Outcome(status=200, ok=True, refused=False, data=self.loopback.publish_revocation(entries))
+
+    @staticmethod
+    def _frame_value(index):
+        return round(20 + 4 * math.sin(index / 4.0) + 0.01 * (index % 7), 3)  # the same series for every device: parity compares like with like
+
+    def _frame(self, index, metric):
+        at_ms = 1700000000000 + (self.scenario["seed"] % 1000) * 1000 + index * 1000
+        return {"readings": [{"metric": metric, "value": self._frame_value(index), "units": "C", "at_ms": at_ms}]}
+
+    def _device_node(self, client, petal, device):
+        """The node named by the device id (device.id property set), created once through the owner when absent."""
+        key = (petal, device)
+        if key in self.device_nodes:
+            return self.device_nodes[key]
+        provisioner = self.clients.get("owner", client)
+        found = self.rest(provisioner, "lookup_node", {"petal_id": petal, "name": device, "wait_s": 0})
+        node_id = found["data"].get("id") if found.ok else None
+        if not node_id:
+            made = self.rest(provisioner, "create_node", {"fractal_id": self.ctx.try_resolve("$fixture.fractal_id"),
+                                                          "petal_id": petal, "name": device, "position": [0, 0, 0]})
+            node_id = extract_id(made.get("data")) if made.ok else None
+            if node_id:
+                self.rest(provisioner, "set_property", {"node_id": node_id, "key": "device.id", "value": device})
+        if node_id:
+            self.device_nodes[key] = node_id
+        return node_id
+
+    def _ext_ingress_post(self, client, args, verse):
+        petal, endpoint = args["petal_id"], args.get("endpoint", "telemetry")
+        path = "/api/v1/petals/%s/extensions/%s/ingress/%s" % (petal, self._package_of(args), endpoint)
+        devices, count, period = args.get("devices", []), int(args.get("count", 1)), float(args.get("period_s", 1))
+        for device in devices:
+            if not self._device_node(client, petal, device):
+                return self._refused("device_node_unavailable", "no node could be made for %s" % device)
+        token, _source = client.verse_token(verse)
+
+        def post(device, index):
+            frame = self._frame(index, args.get("metric", "temp_c"))
+            frame["device_id"] = device
+            return client.send("POST", path, None, token, 15.0, raw=json.dumps(frame).encode("utf-8"), content_type="application/json")
+
+        first = post(devices[0], 0) if devices else self._refused("no_devices", "ingress_post needs devices")
+        if not first.ok:  # a refusal (role floor, disabled) is the answer; nothing more is sent
+            return first
+        failures = [0]
+
+        def run_device(device):
+            start = self.clock.now()
+            for index in range(0 if device != devices[0] else 1, count):
+                if index and period:
+                    self.clock.sleep_until(start + index * period)
+                if self.abort.is_set():
+                    break
+                if not post(device, index).ok:
+                    failures[0] += 1
+        with ThreadPoolExecutor(max_workers=max(1, len(devices))) as pool:
+            list(pool.map(run_device, devices))
+        return Outcome(status=200, ok=failures[0] == 0, refused=failures[0] > 0, code=None if not failures[0] else "partial",
+                       data={"devices": devices, "frames": count * len(devices), "failed": failures[0]})
+
+    def _ext_mqtt_publish(self, client, args, verse):
+        if self.loopback is None:
+            return self._refused("no_loopback", "mqtt_publish needs run.py's loopback broker")
+        broker = self.loopback.broker
+        if args.get("start_broker"):
+            self.loopback.start()
+        devices, topic = args.get("devices"), args["topic"]
+        qos = int(args.get("qos", 1))
+        if not devices:
+            delivered = broker.inject(topic, args.get("payload", "{}"), qos)
+            return Outcome(status=200, ok=True, refused=False, data={"delivered": delivered, "topic": topic})
+        deadline = time.monotonic() + float(args.get("subscriber_wait_s", 30))
+        while not broker.subscribers(topic.replace("{device}", devices[0])) and time.monotonic() < deadline:
+            time.sleep(0.25)  # the host dials the broker after bind; a frame sent before its SUBSCRIBE would be lost
+        if not broker.subscribers(topic.replace("{device}", devices[0])):
+            return self._refused("no_subscriber", "no session subscribed to %s within the wait" % topic)
+        count, period = int(args.get("count", 1)), float(args.get("period_s", 1))
+        for device in devices:
+            self._device_node(client, args.get("petal_id") or self.ctx.try_resolve("$fixture.petal_a_id"), device)
+        start, sent = self.clock.now(), 0
+        for index in range(count):
+            if index and period:
+                self.clock.sleep_until(start + index * period)
+            if self.abort.is_set():
+                break
+            for device in devices:
+                sent += broker.inject(topic.replace("{device}", device), json.dumps(self._frame(index, args.get("metric", "temp_c"))), qos)
+        return Outcome(status=200, ok=sent > 0, refused=sent == 0, code=None if sent else "undelivered", data={"delivered": sent})
+
+    def _ingest_device(self, client, args):
+        """The REST readings door for one device: same series as ingress_post, so adapter and door rows can be compared."""
+        petal, device = args["petal_id"], args["device"]
+        node_id = self._device_node(client, petal, device)
+        if not node_id:
+            return self._refused("device_node_unavailable", "no node for %s" % device)
+        base = 1700000000000 + (self.scenario["seed"] % 1000) * 1000
+        readings = []
+        for index in range(int(args.get("count", 1))):
+            at_ms = base + index * 1000
+            stamp = time.strftime("%Y-%m-%dT%H:%M:%S", time.gmtime(at_ms // 1000)) + ".%03dZ" % (at_ms % 1000)
+            readings.append({"node_id": node_id, "metric": args.get("metric", "temp_c"), "value": self._frame_value(index),
+                             "units": "C", "recorded_at": stamp})
+        return client.rest("POST", "/api/v1/petals/%s/iot/readings" % petal, {"readings": readings})
 
     @staticmethod
     def _poll_lookup(client, request, pick, wait_s, interval=0.5):

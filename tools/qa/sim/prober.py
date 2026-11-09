@@ -9,6 +9,7 @@ import threading
 import time
 
 import predicates
+from client import Outcome
 from runtime import small
 from scenario import source_probe, target_key
 
@@ -26,6 +27,9 @@ QUERY_BURST_BUDGET = 6
 TIMESERIES_BURST_BUDGET = 8
 # Refusals that say nothing about the state (rate limit, busy, timeout): counted as prober errors,
 # never recorded as an observation (an {"absent": true} here would fake a deletion or a divergence).
+# Named queries are shaped by the prober, never sent as verbatim SQL from a scenario (E19).
+NAMED_QUERIES = ("fleet_readings", "device_readings")
+FLEET_PACKAGE_ID = "org.example.fleet-sim"
 TRANSIENT_TEXT = re.compile(r"rate limit|timed out|timeout|unavailable|try again|busy", re.I)
 
 HOST_SAMPLER_PS1 = r"""
@@ -254,6 +258,9 @@ class Prober:
             jobs.append(("get", key, submit(get, "get", str(target))))
         for target, key in targets.get("terrain", []):
             jobs.append(("terrain", key, submit(get, "terrain", "/api/v1/petals/%s/terrain" % target)))
+        for target, key in targets.get("extension", []):
+            path = "/api/v1/extensions" if target == "list" else "/api/v1/extensions/%s" % target
+            jobs.append(("extension", key, submit(get, "extension", path)))
         if targets.get("hierarchy") and self._is_due(due, "hierarchy", "hierarchy_ms", now):
             jobs.append(("hierarchy", None, submit(get, "hierarchy", "/api/v1/hierarchy")))
         if (targets.get("nav") or targets.get("ui")) and self._is_due(due, "ui", "ui_ms", now):
@@ -263,7 +270,10 @@ class Prober:
         if (targets.get("query") or targets.get("timeseries")) and self._is_due(due, "query", "query_ms", now):
             for target, key in targets.get("query", []):
                 counts["query"] = counts.get("query", 0) + 1
-                jobs.append(("query", key, submit(client.send, "POST", "/api/v1/query", {"sql": target}, token, 15.0)))
+                if target in NAMED_QUERIES:
+                    jobs.append(("query", key, submit(self._named_query, client, token, target)))
+                else:
+                    jobs.append(("query", key, submit(client.send, "POST", "/api/v1/query", {"sql": target}, token, 15.0)))
             for target, key in targets.get("timeseries", []):
                 counts["timeseries"] = counts.get("timeseries", 0) + 1
                 jobs.append(("timeseries", key, submit(client.mcp, "query_timeseries", target, 20.0)))
@@ -309,6 +319,10 @@ class Prober:
                     for target, ukey in targets.get("ui", []):
                         self._emit(name, previous, "ui", ukey, {"notice": data.get("notice"), "status": data.get("status"),
                                                                "open_windows": data.get("open_windows")}, t)
+            elif kind == "extension":
+                self._emit(name, previous, "extension", key, self._extension_view(key, outcome), t)
+            elif kind == "query" and "named_value" in outcome:
+                self._emit(name, previous, "query", key, outcome["named_value"], t)
             elif kind == "query":
                 rows = outcome.get("data") if outcome.ok else None
                 value = {"count": len(rows), "digest": predicates.digest(rows), "rows": small(rows, 2048)} if isinstance(rows, list) else {"absent": True, "status": outcome.get("status"), "code": outcome.get("code")}
@@ -334,6 +348,75 @@ class Prober:
         if alive is not None or targets.get("alive"):
             self._emit(name, previous, "alive", "peer", {"alive": bool(alive)} if alive is not None else {"alive": True}, t)
         return errors
+
+    @staticmethod
+    def _extension_view(key, outcome):
+        """`list` -> {count, items}; an installation -> {state, package_id, counters} with derived commit, ops and refusal fields."""
+        status = outcome.get("status")
+        if not outcome.ok:
+            if key == "list" and status == 404:  # a non-local identity sees the uniform not-found: nothing installed for it
+                return {"count": 0, "items": []}
+            return {"absent": True, "status": status, "code": outcome.get("code")}
+        data = outcome.get("data")
+        if key == "list":
+            rows = data.get("extensions") if isinstance(data, dict) else data
+            rows = [r for r in rows or [] if isinstance(r, dict)]
+            items = sorted(({"installation": r.get("installation") or r.get("id"), "package_id": r.get("package_id"),
+                             "state": r.get("state")} for r in rows), key=lambda r: str(r["installation"]))
+            return {"count": len(items), "items": items}
+        if not isinstance(data, dict):
+            return {"absent": True, "status": status}
+        counters = dict(data.get("counters") or {})
+        for field in ("ticks_run", "ticks_skipped", "commits", "refusals", "ops", "ops_committed", "ingress_frames", "commands_refused"):
+            if field in data and field not in counters:
+                counters[field] = data[field]
+        ticks, commits = counters.get("ticks_run"), counters.get("commits")
+        if isinstance(ticks, int) and isinstance(commits, int):
+            counters["commits_within_ticks"] = commits <= ticks
+        ops = counters.get("ops_committed", counters.get("ops"))
+        if "ops_per_commit" not in counters and isinstance(ops, int) and isinstance(commits, int) and commits > 0:
+            counters["ops_per_commit"] = round(ops / commits, 3)
+        if isinstance(counters.get("commands_refused"), dict):  # the broker counts per refusal code; scenarios compare the total
+            counters["commands_refused"] = sum(v for v in counters["commands_refused"].values() if isinstance(v, int))
+        return {"state": data.get("state"), "package_id": data.get("package_id"), "counters": counters}
+
+    def _named_query(self, client, token, name):
+        """Run the SQL behind a named query and shape it; the outcome carries `named_value` (or is the failed outcome)."""
+        petal = self.ctx.try_resolve("$fixture.petal_a_id")
+
+        def sql(text):
+            return client.send("POST", "/api/v1/query", {"sql": text}, token, 15.0)
+
+        if name == "fleet_readings":
+            out = sql("SELECT reading_id, node_id, metric, value, recorded_at_ms, ext_package_id, ext_content_hash FROM iot_reading "
+                      "WHERE ext_package_id = '%s' ORDER BY reading_id" % FLEET_PACKAGE_ID)
+            rows = out.get("data") if out.ok else None
+            if not isinstance(rows, list):
+                return out
+            keyed = [[r.get("reading_id"), r.get("node_id"), r.get("metric"), r.get("value"), r.get("recorded_at_ms")] for r in rows]
+            out["named_value"] = {"count": len(rows), "digest": predicates.digest(keyed), "rows": small(keyed, 4096),
+                                  "stamped": all(r.get("ext_package_id") and r.get("ext_content_hash") for r in rows)}
+            return out
+        if not petal:
+            return Outcome(status=0, ok=False, refused=True, code="unresolved_petal")
+        out = sql("SELECT reading_id, node_id, metric, value, units, recorded_at_ms FROM iot_reading WHERE petal_id = '%s' "
+                  "ORDER BY reading_id" % petal)
+        nodes = sql("SELECT node_id, display_name FROM node WHERE petal_id = '%s' AND tombstone = NONE" % petal)
+        rows, node_rows = (out.get("data") if out.ok else None), (nodes.get("data") if nodes.ok else None)
+        if not isinstance(rows, list) or not isinstance(node_rows, list):
+            return out if not out.ok else nodes
+        device_of = {n.get("node_id"): n.get("display_name") for n in node_rows}  # a device node is named by its device id
+        by_device = {}
+        for r in rows:
+            device = device_of.get(r.get("node_id"))
+            if device:
+                by_device.setdefault(device, []).append((r.get("metric"), r.get("value"), r.get("units")))
+        shapes = {d: sorted(map(list, v)) for d, v in by_device.items()}
+        names = sorted(shapes)
+        parity = {"%s~%s" % (a, b): shapes[a] == shapes[b] for i, a in enumerate(names) for b in names[i + 1:]}
+        out["named_value"] = {"count": len(rows), "digest": predicates.digest([[r.get("reading_id"), r.get("node_id"), r.get("value")] for r in rows]),
+                              "count_by_device": {d: len(v) for d, v in by_device.items()}, "parity": parity}
+        return out
 
     @staticmethod
     def _node(get, node_id):

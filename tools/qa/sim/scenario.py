@@ -14,14 +14,17 @@ SEARCH_DIRS = (os.path.join(REPO_ROOT, "qa", "sim", "scenarios"), os.path.join(H
 VIAS = {
     "rest": {"request", "create_fractal", "create_petal", "create_node", "set_transform", "set_property",
              "delete_property", "delete_node", "upsert_group", "delete_group", "upload_asset", "query",
-             "lookup_node", "lookup_petal", "lookup_group", "ingest_readings"},
+             "lookup_node", "lookup_petal", "lookup_group", "ingest_readings",
+             # extension platform (E19) and scoped bindings (BND-11, bindings.md section 9); driver.py EXTENSION_OPS
+             "install_extension", "consent_extension", "bind_extension", "set_extension_policy", "extension_command",
+             "ingress_post", "mqtt_publish", "publish_revocation", "set_binding", "accept_extension"},
     "mcp": None,  # any MCP tool name; args are the tool arguments
     "gui": {"click", "click_until", "type", "key", "scroll", "scroll_until", "wait_for", "click_at"},
     "host": {"restart", "stop_peer", "sleep", "wait_role", "fingerprint"},
     "macro": {"place_grid", "drone_flight", "freeplay"},
 }
 PROBES = ("node", "transform", "properties", "hierarchy", "groups", "terrain", "role", "nav", "ui",
-          "asset_blob", "query", "timeseries", "get", "alive")
+          "asset_blob", "query", "timeseries", "get", "alive", "extension")
 CADENCE_KEYS = {"rest_ms": (250, 60000), "hierarchy_ms": (2000, 600000), "ui_ms": (500, 60000),
                 "query_ms": (1000, 600000), "host_ms": (1000, 60000)}
 DEFAULT_CADENCE = {"rest_ms": 500, "hierarchy_ms": 2000, "ui_ms": 1000, "query_ms": 5000, "host_ms": 2000}

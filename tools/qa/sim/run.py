@@ -23,6 +23,7 @@ import analyze  # noqa: E402
 import scenario as scenario_mod  # noqa: E402
 from client import PeerClient  # noqa: E402
 from driver import Driver, select_steps  # noqa: E402
+from loopback import Loopback  # noqa: E402
 from prober import HostSampler, Prober  # noqa: E402
 from runtime import Cadence, Clock, LiveStore, Recorder  # noqa: E402
 
@@ -550,7 +551,15 @@ def namespaces(host, run_dir):
     return {"fixture": fixture, "peers": peers, "assets": load_assets(), "run": {"dir": run_dir}}
 
 
+LOOPBACK_OPS = {"mqtt_publish", "publish_revocation"}
+
+
 # -- main ---------------------------------------------------------------------------------------------
+def uses_loopback(scenario):
+    """True when a step fires an op that needs the loopback broker or the signed revocation list."""
+    return any(a.get("op") in LOOPBACK_OPS for step in scenario["steps"] for g in ("prepare", "actions") for a in step.get(g, []))
+
+
 def run(args):
     scenario = scenario_mod.load(args.scenario)
     steps = select_steps(scenario["steps"], args.steps)
@@ -578,10 +587,14 @@ def run(args):
             "firewall": firewall,
             "cpu_note": None if args.reactive else "--no-reactive (pre-QA-0119 CPU cap): latencies are upper bounds under host contention; read them with the CPU table.",
             "clock": {"perf0": clock.perf0, "wall0": clock.wall0}, "argv": sys.argv[1:]}
-    prober = sampler = None
+    prober = sampler = loopback = None
     started = False
     failure = None
     try:
+        if uses_loopback(scenario):  # bound before the peers start: fixture builds and the trust file name its ports and key
+            loopback = Loopback(run_dir, "%s:%s" % (scenario["name"], scenario["seed"]))
+            meta["loopback"] = loopback.start()
+            log("loopback up: mqtt %s, revocation %s, sink %s" % (loopback.mqtt_url, loopback.revocation_url, loopback.sink_url))
         if args.attach:
             host.attach()
             attached_exe = host.record["members"][0]["process_identity"].get("exe_path")
@@ -617,7 +630,7 @@ def run(args):
         sampler.start(host.pids())
         prober = Prober(scenario, clients, ctx, clock, recorder, store, cadence, steps)
         prober.start()
-        driver = Driver(scenario, clients, ctx, clock, recorder, store, cadence, run_dir, host=host, steps=steps, log=log)
+        driver = Driver(scenario, clients, ctx, clock, recorder, store, cadence, run_dir, host=host, steps=steps, log=log, loopback=loopback)
         watchdog = threading.Timer(args.max_uptime_s, lambda: (log("max uptime reached: aborting the driver"), driver.abort.set()))
         watchdog.daemon = True
         watchdog.start()
@@ -640,6 +653,8 @@ def run(args):
             except BaseException as error:  # noqa: BLE001
                 log("cleanup error (%s): %s: %s" % (label, type(error).__name__, error))
                 failure = failure or error
+        if loopback is not None:
+            loopback.stop()
         if started or (host.owner_dir and not args.attach):
             try:
                 host.stop()
