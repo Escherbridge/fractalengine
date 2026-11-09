@@ -11,7 +11,8 @@ use fe_sdk::ui::{UiContribution, UiExtensionRegistry, UiWhen};
 pub const TERRAIN_EXTENSION_ID: &str = "org.fractalengine.terrain";
 
 /// Manifest v2 of the terrain extension. Its UI entries bind to host commands, not to
-/// hard-wired actions. Hook provision (`petal.map`) is specified in docs/extensions/bindings.md.
+/// hard-wired actions. It is the first `petal.map` provider (docs/extensions/bindings.md section 6): native, so
+/// a binding to it serves its `config` (a `TerrainConfig`) through the host, with no guest call.
 pub const TERRAIN_MANIFEST_V2_JSON: &str = r#"{
   "manifest_version": 2,
   "id": "org.fractalengine.terrain",
@@ -22,6 +23,7 @@ pub const TERRAIN_MANIFEST_V2_JSON: &str = r#"{
   "contract": "fractalengine:plugin@2.0.0",
   "binding": "petal",
   "scene": { "read": true },
+  "provides": [{ "hook": "petal.map" }],
   "bus": {
     "expose": {
       "commands": [
@@ -138,6 +140,14 @@ mod tests {
         assert_eq!(toolbar[0].label, "Toggle Terrain");
         assert_eq!(toolbar[0].plugin_id, TERRAIN_EXTENSION_ID);
         assert_eq!(toolbar[0].command.as_deref(), Some("terrain-toggle"));
+    }
+
+    #[test]
+    fn terrain_provides_petal_map_and_keeps_its_digest_distinct() {
+        let validated = parse_and_validate(TERRAIN_MANIFEST_V2_JSON.as_bytes()).expect("terrain manifest is valid v2");
+        assert_eq!(validated.manifest.provides.len(), 1);
+        assert_eq!(validated.manifest.provides[0].hook, "petal.map");
+        assert!(fe_sdk::manifest_v2::KNOWN_HOOKS.contains(&"petal.map"));
     }
 
     #[test]
