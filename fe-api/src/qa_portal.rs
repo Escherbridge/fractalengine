@@ -106,8 +106,13 @@ async fn admitted(
             error.message,
         )
     })?;
+    let url_ok = if is_bundle_operation(operation) {
+        is_bundle_origin_url(&result.receipt.url)
+    } else {
+        fe_runtime::qa_web::allows(&result.receipt.url)
+    };
     if crate::auth::require_scope(claims, &result.receipt.scope).is_err()
-        || !fe_runtime::qa_web::allows(&result.receipt.url)
+        || !url_ok
         || !command.is_current()
     {
         return Err(refusal(
@@ -249,5 +254,115 @@ async fn reject_arguments(state: &ApiState, claims: &ApiClaims) -> Response {
             "invalid_fixture_operation",
             "This fixed fixture endpoint accepts no additional arguments",
         ),
+    }
+}
+
+/// The bundle operations: fixed observe, numbered slot and IPC counters (protocol.md section 9).
+fn is_bundle_operation(operation: FixtureOp) -> bool {
+    matches!(
+        operation,
+        FixtureOp::PortalObserve | FixtureOp::PortalSlot(_) | FixtureOp::PortalIpcStats
+    )
+}
+
+/// True for `https://fe-portal.<label>.localhost[/...]` (or the non-Windows `fe-portal://` spelling) with a 28-char label.
+fn is_bundle_origin_url(raw: &str) -> bool {
+    let Some(rest) = raw
+        .strip_prefix("https://fe-portal.")
+        .or_else(|| raw.strip_prefix("fe-portal://"))
+    else {
+        return false;
+    };
+    let Some((label, tail)) = rest.split_once(".localhost") else {
+        return false;
+    };
+    let label_ok = label.len() == 28
+        && matches!(label.as_bytes()[0], b'a' | b's')
+        && label.as_bytes()[1] == b'-'
+        && label.as_bytes()[2..]
+            .iter()
+            .all(|c| c.is_ascii_lowercase() || (b'2'..=b'7').contains(c));
+    label_ok && (tail.is_empty() || tail.starts_with('/'))
+}
+
+fn bundle_reply(result: FixtureResult) -> Response {
+    let Some(portal) = result.receipt.portal else {
+        return refusal(
+            StatusCode::CONFLICT,
+            "portal_fixture_document_mismatch",
+            "Native bundle evidence unavailable",
+        );
+    };
+    Json(json!({"ok":true,"data":{
+        "url": result.receipt.url,
+        "popup_session": result.receipt.popup_session,
+        "page_generation": result.receipt.page_generation,
+        "portal": portal,
+    }}))
+    .into_response()
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SlotRequest {
+    slot: u8,
+}
+
+/// GET /api/v1/debug/portal/observe: title, probe digest and named probe texts of the mounted bundle.
+pub async fn portal_observe(
+    State(state): State<Arc<ApiState>>,
+    Extension(claims): Extension<ApiClaims>,
+    uri: Uri,
+) -> Response {
+    if uri.query().is_some() {
+        return reject_arguments(&state, &claims).await;
+    }
+    match run(&state, &claims, FixtureOp::PortalObserve).await {
+        Ok(result) => bundle_reply(result),
+        Err(error) => error,
+    }
+}
+
+/// GET /api/v1/debug/portal/ipc-stats: the host's IPC outcome counters.
+pub async fn portal_ipc_stats(
+    State(state): State<Arc<ApiState>>,
+    Extension(claims): Extension<ApiClaims>,
+    uri: Uri,
+) -> Response {
+    if uri.query().is_some() {
+        return reject_arguments(&state, &claims).await;
+    }
+    match run(&state, &claims, FixtureOp::PortalIpcStats).await {
+        Ok(result) => bundle_reply(result),
+        Err(error) => error,
+    }
+}
+
+/// POST /api/v1/debug/portal/action: activate `data-fe-slot` number 1..32; the only input is the number.
+pub async fn portal_action(
+    State(state): State<Arc<ApiState>>,
+    Extension(claims): Extension<ApiClaims>,
+    uri: Uri,
+    body: axum::body::Bytes,
+) -> Response {
+    if let Err(error) = crate::qa_debug::QA_GATE
+        .admit(state.input.allowed, &state, &claims)
+        .await
+    {
+        return refusal(error.status(), "qa_gate_refused", &error.message());
+    }
+    let request = match serde_json::from_slice::<SlotRequest>(&body) {
+        Ok(request) if uri.query().is_none() && (1..=32).contains(&request.slot) => request,
+        _ => {
+            return refusal(
+                StatusCode::BAD_REQUEST,
+                "invalid_fixture_operation",
+                "Only a slot number 1..32 is accepted",
+            )
+        }
+    };
+    match admitted(&state, &claims, FixtureOp::PortalSlot(request.slot)).await {
+        Ok(result) => bundle_reply(result),
+        Err(error) => error,
     }
 }
