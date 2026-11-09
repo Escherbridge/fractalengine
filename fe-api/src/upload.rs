@@ -610,6 +610,7 @@ pub async fn upload_petal_asset(
     State(state): State<Arc<ApiState>>,
     Extension(claims): Extension<ApiClaims>,
     Path(petal_id): Path<String>,
+    parts: axum::http::request::Parts,
     mut multipart: Multipart,
 ) -> Response {
     if require_role(&claims, "editor").is_err() {
@@ -628,15 +629,16 @@ pub async fn upload_petal_asset(
         return upload_error_response(&UploadError::StoreNotConfigured);
     }
 
-    let mut file: Option<(Vec<u8>, Option<String>)> = None;
+    let mut file: Option<(Vec<u8>, Option<String>, Option<String>)> = None;
     let mut name_field: Option<String> = None;
     loop {
         match multipart.next_field().await {
             Ok(Some(field)) => match field.name() {
                 Some("file") => {
                     let file_name = field.file_name().map(str::to_string);
+                    let mime = field.content_type().map(str::to_string);
                     match field.bytes().await {
-                        Ok(bytes) => file = Some((bytes.to_vec(), file_name)),
+                        Ok(bytes) => file = Some((bytes.to_vec(), file_name, mime)),
                         Err(e) => {
                             return deny(
                                 StatusCode::BAD_REQUEST,
@@ -652,18 +654,46 @@ pub async fn upload_petal_asset(
             Err(e) => return deny(StatusCode::BAD_REQUEST, &format!("multipart error: {e}")),
         }
     }
-    let Some((bytes, file_name)) = file else {
+    let Some((mut bytes, file_name, mime)) = file else {
         return deny(
             StatusCode::BAD_REQUEST,
             "missing 'file' field in multipart upload",
         );
     };
+    // asset.import (bindings.md §6): a non-GLB whose MIME has a bound key is converted first; the result
+    // takes the same validate_glb + store path as a direct GLB. Without a binding it is refused as before.
+    let mut hook_name: Option<String> = None;
+    let mut max_len = MAX_ASSET_BYTES;
+    if !bytes.starts_with(b"glTF") {
+        let hooks = parts.extensions.get::<crate::import_hooks::ImportHooksHandle>();
+        let mime = mime.as_deref().and_then(crate::import_hooks::normalize_mime);
+        if let (Some(hooks), Some(mime)) = (hooks, mime) {
+            if hooks.0.is_bound(&petal_id, &mime) {
+                let call = crate::import_hooks::ImportCall {
+                    petal_id: petal_id.clone(),
+                    file_name: file_name.clone().unwrap_or_default(),
+                    mime,
+                    body: std::mem::take(&mut bytes),
+                    caller_did: claims.sub.clone(),
+                };
+                match crate::import_hooks::run_import(hooks.0.as_ref(), call).await {
+                    Ok(output) => {
+                        bytes = output.glb;
+                        hook_name = output.name;
+                        max_len = crate::import_hooks::MAX_IMPORT_BYTES;
+                    }
+                    Err(e) => return deny(e.status, &e.message),
+                }
+            }
+        }
+    }
     let name = name_field
+        .or(hook_name)
         .or(file_name)
         .unwrap_or_else(|| "asset.glb".to_string());
 
     let owner = UploadOwner::new(&claims, &petal_id);
-    match ingest_glb(&state, &owner, &name, GlbPayload::Bytes(bytes)).await {
+    match ingest_glb_with_limit(&state, &owner, &name, GlbPayload::Bytes(bytes), max_len).await {
         Ok(asset) => (
             StatusCode::CREATED,
             Json(ApiResponse::success(
