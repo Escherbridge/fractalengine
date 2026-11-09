@@ -296,7 +296,10 @@ fn contract_supported(contract: &str) -> bool {
     let mut parts = rest.split('.');
     match (parts.next(), parts.next(), parts.next()) {
         (Some(minor), Some(patch), None) => {
-            patch.parse::<u64>().is_ok() && minor.parse::<u64>().is_ok_and(|minor| minor <= HOST_CONTRACT_MINOR)
+            // Ceiling that rises with the host contract; keep `<=` though it is `== 0` today.
+            #[allow(clippy::absurd_extreme_comparisons)]
+            let supported = minor.parse::<u64>().is_ok_and(|minor| minor <= HOST_CONTRACT_MINOR);
+            patch.parse::<u64>().is_ok() && supported
         }
         _ => false,
     }
@@ -419,7 +422,7 @@ pub fn verify_plugin_package(
         }
     }
 
-    let unsigned = manifest.signature.as_deref().map_or(true, str::is_empty);
+    let unsigned = manifest.signature.as_deref().is_none_or(str::is_empty);
     if unsigned {
         if !trust.allow_unsigned_dev || manifest.integrity.is_some() {
             return Err(PluginPackageError::UntrustedSigner("unsigned".into()));
@@ -1232,9 +1235,8 @@ mod tests {
                 .expect("plugin builds")
         };
         // Rewrite a sealed package: `edit` maps (member, bytes) to new bytes or None to drop it.
-        let rezip = |bytes: &[u8],
-                     edit: &dyn Fn(&str, Vec<u8>) -> Option<Vec<u8>>,
-                     extra: Option<(&str, Vec<u8>)>| {
+        type MemberEdit<'a> = &'a dyn Fn(&str, Vec<u8>) -> Option<Vec<u8>>;
+        let rezip = |bytes: &[u8], edit: MemberEdit<'_>, extra: Option<(&str, Vec<u8>)>| {
             let mut source = zip::ZipArchive::new(Cursor::new(bytes)).unwrap();
             let mut out = zip::ZipWriter::new(Cursor::new(Vec::new()));
             let options = zip::write::FileOptions::default();
@@ -1303,7 +1305,8 @@ mod tests {
         };
 
         type Refusal = PluginPackageError;
-        let rows: Vec<(&str, Vec<u8>, Option<&str>, &PluginTrust<'_>, Refusal)> = vec![
+        type RefusalRow<'a> = (&'a str, Vec<u8>, Option<&'a str>, &'a PluginTrust<'a>, Refusal);
+        let rows: Vec<RefusalRow<'_>> = vec![
             (
                 "flipped component byte",
                 rezip(&sealed, &flip, None),

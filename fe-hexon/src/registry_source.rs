@@ -137,13 +137,16 @@ pub trait RegistrySource: Send + Sync {
     fn fetch(&self, entry: &RegistryEntry) -> Result<FetchedPackage, RegistryError>;
 }
 
+type KeyPredicate = Arc<dyn Fn(&str) -> bool + Send + Sync>;
+type KeyLookup = Arc<dyn Fn(&str) -> Option<VerifyingKey> + Send + Sync>;
+
 /// Who a source trusts; closures keep fe-hexon free of fe-plugin's trust-root file.
 #[derive(Clone)]
 pub struct SourceTrust {
     /// True when a `did:key` is a configured package trust root.
-    pub is_trust_root: Arc<dyn Fn(&str) -> bool + Send + Sync>,
+    pub is_trust_root: KeyPredicate,
     /// This source's pinned index keys by key id (built per endpoint; never a package or revocation signer).
-    pub index_signer: Arc<dyn Fn(&str) -> Option<VerifyingKey> + Send + Sync>,
+    pub index_signer: KeyLookup,
     /// Dev escape hatch for unsigned packages; never set in release builds.
     pub allow_unsigned_dev: bool,
 }
@@ -580,7 +583,7 @@ fn encode_hex(bytes: &[u8]) -> String {
 }
 
 fn decode_hex(text: &str) -> Option<Vec<u8>> {
-    if text.len() % 2 != 0 || !text.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+    if !text.len().is_multiple_of(2) || !text.bytes().all(|byte| byte.is_ascii_hexdigit()) {
         return None;
     }
     (0..text.len()).step_by(2).map(|at| u8::from_str_radix(&text[at..at + 2], 16).ok()).collect()
@@ -982,8 +985,6 @@ impl ProtocolV1Source {
 #[cfg(test)]
 mod tests {
     use std::io::Read as _;
-
-    use base64::Engine as _;
 
     use super::*;
     use crate::publisher::PluginHexonBuilder;
