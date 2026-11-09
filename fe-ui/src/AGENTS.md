@@ -1563,6 +1563,12 @@ and native_accessibility/AGENTS.md for the separately audited painter contract.
   DID plus trust-root name.
 - **Open flow.** `UiAction::OpenBundle { node_id }` becomes `BrowserCommand::OpenBundle { node_id }`. The state change comes
   from `actions::portal::OpenBundleOutcome`, so a bundle origin never enters the persisted-URL field (`validate_url` refuses it).
-- **Not wired yet.** The Repository inspector call site is not connected in `panels/inspector.rs`: review P3-03 is a NEEDS and
-  the section has no caller. Open is reachable only through the action.
+- **Wired (I-POR-UI).** `PortalState::{is_open,url,hostname}` cover Bundle and `UiManager::portal_*` delegate to them, so a bundle
+  portal gets its toolbar. `ClosePortal` sends `CloseBundle` for a bundle. The Repository section is composed in
+  `panels/inspector.rs::repository_section` (Properties tab, under the entity section); it shows only once the binary has fed a
+  summary into `UiManager::repository_view` (it requests one when the primary selection changes). Clicks queue `UiAction`s;
+  Admit/Revoke push `portal::BundleAdmissionRequest` onto `UiManager::bundle_admission_requests`, and Replace sets
+  `bundle_asset_pick`; the binary drains both (rows already written stay after a revoke, OD-E1).
+- **Not wired yet.** `portal/binding_offer.rs::show_offer` has no caller: the binding host feed (`PortalBindingPoint`) and a
+  package-id to node lookup do not exist in fe-ui yet.
 - **Reviews.** `conductor/tracks/portal_surface_20261107/review-p3.md` (PASS-WITH-FIXES, blocked on P3-01..P3-03).

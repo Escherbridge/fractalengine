@@ -51,6 +51,10 @@ pub enum UiAction {
     },
     /// Close the portal webview (replaces PortalPanelState.close).
     ClosePortal,
+    /// Ask the host to admit the open bundle portal's bundle on this peer.
+    PortalAdmitBundle,
+    /// Ask the host to revoke the open bundle portal's bundle on this peer (rows already written stay).
+    PortalRevokeBundle,
     /// Navigate back in portal history (replaces PortalPanelState.go_back).
     PortalGoBack,
     PortalGoForward,
@@ -626,6 +630,14 @@ pub struct UiManager {
     pub(crate) earthwork_volumes: earthwork_volumes::VolumeView,
     pub(crate) scene_asset_view: crate::scene_assets::PanelView,
     pub(crate) portal_feedback: portal::PortalFeedback,
+    /// Summary cache behind the inspector Repository section; the binary feeds it.
+    pub repository_view: crate::portal::repository_view::RepositoryViewState,
+    /// Node whose summary was last requested; re-requests only when the primary selection changes.
+    pub(crate) repository_probe_node: Option<String>,
+    /// Admit/Revoke requests for the binary to execute against the host.
+    pub bundle_admission_requests: Vec<crate::portal::BundleAdmissionRequest>,
+    /// Node whose `portal.bundle_asset` the user wants to replace; the binary opens the asset picker.
+    pub bundle_asset_pick: Option<String>,
     pub(crate) portal_content_rect: Option<bevy_egui::egui::Rect>,
     pub(crate) context_point_origin: Option<crate::undo::PointEditOrigin>,
     /// Sidebar open state — derived from portal/inspector each frame.
@@ -676,6 +688,10 @@ impl Default for UiManager {
             earthwork_volumes: Default::default(),
             scene_asset_view: Default::default(),
             portal_feedback: portal::PortalFeedback::default(),
+            repository_view: Default::default(),
+            repository_probe_node: None,
+            bundle_admission_requests: Vec::new(),
+            bundle_asset_pick: None,
             portal_content_rect: None,
             context_point_origin: None,
             sidebar_open: true,
@@ -718,23 +734,15 @@ impl UiManager {
     }
 
     pub fn portal_is_open(&self) -> bool {
-        matches!(self.portal, PortalState::Open { .. })
+        self.portal.is_open()
     }
 
     pub fn portal_url(&self) -> &str {
-        match &self.portal {
-            PortalState::Open { current_url, .. } => current_url,
-            PortalState::Closed => "",
-        }
+        self.portal.url()
     }
 
     pub fn portal_hostname(&self) -> &str {
-        match &self.portal {
-            PortalState::Open {
-                cached_hostname, ..
-            } => cached_hostname,
-            PortalState::Closed => "",
-        }
+        self.portal.hostname()
     }
 
     /// Whether the active target Access controller has queued or in-flight work.
@@ -1337,8 +1345,19 @@ pub(crate) fn process_ui_actions(
                 }
             }
             UiAction::ClosePortal => {
+                let was_bundle = ui_mgr.portal.is_bundle();
                 ui_mgr.portal = PortalState::Closed;
-                browser_commands.write(BrowserCommand::Close);
+                browser_commands.write(if was_bundle { BrowserCommand::CloseBundle } else { BrowserCommand::Close });
+            }
+            UiAction::PortalAdmitBundle => {
+                if let Some(node_id) = portal::open_bundle_node(&ui_mgr.portal).map(str::to_owned) {
+                    ui_mgr.bundle_admission_requests.push(crate::portal::BundleAdmissionRequest::Admit { node_id });
+                }
+            }
+            UiAction::PortalRevokeBundle => {
+                if let Some(node_id) = portal::open_bundle_node(&ui_mgr.portal).map(str::to_owned) {
+                    ui_mgr.bundle_admission_requests.push(crate::portal::BundleAdmissionRequest::Revoke { node_id });
+                }
             }
             UiAction::PortalGoBack => {
                 if ui_mgr.portal_is_open() { browser_commands.write(BrowserCommand::GoBack); }

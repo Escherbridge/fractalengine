@@ -4,8 +4,17 @@
 use bevy::prelude::Entity;
 use fe_webview::ipc::BundleState;
 
+pub mod binding_offer;
 pub mod chrome;
 pub mod repository;
+pub mod repository_view;
+
+/// A host-bound bundle admission change requested from the chrome or inspector; the binary drains these.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum BundleAdmissionRequest {
+    Admit { node_id: String },
+    Revoke { node_id: String },
+}
 
 /// Portal webview lifecycle state (owned by [`crate::actions::UiManager`]).
 #[derive(Debug, Clone, Default)]
