@@ -599,8 +599,8 @@ fn sender_gate_drops_every_unauthorized_post_without_a_reply() {
     assert_eq!(static_mount.mode, MountMode::Static);
     let csp = static_mount.csp().to_str().unwrap().to_owned();
     assert!(
-        csp.contains(&format!("connect-src 'self' {local_api} {relay};")),
-        "connect-src gains exactly the kept feed origins: {csp}"
+        csp.contains(&format!("connect-src 'self' {local_api}/api/v1/shared/ {relay}/api/v1/shared/;")),
+        "connect-src gains exactly the kept feeds' share routes, never the rest of either API: {csp}"
     );
     let static_label = static_mount.label.to_string();
     let static_sender = static_mount.entry_url.clone();

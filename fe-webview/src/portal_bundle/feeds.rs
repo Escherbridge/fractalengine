@@ -37,15 +37,15 @@ pub struct FeedSource {
 pub struct Feeds {
     /// The `/__fe/feeds.json` body.
     pub document: Vec<u8>,
-    /// Exact origins of the kept feeds: the static CSP's `connect-src` gains these and nothing else.
-    pub origins: Vec<String>,
+    /// `<origin>/api/v1/shared/` of each kept feed: the static CSP's `connect-src` gains these and nothing else.
+    pub sources: Vec<String>,
 }
 
 /// Keep only feeds that are exactly `<origin>/api/v1/shared/<token>` on this peer's fe-api or an allowed https origin (§7.4).
 pub fn admit(source: &FeedSource) -> Feeds {
     let local = source.local_api_origin.as_deref().and_then(local_origin);
     let mut kept = Map::new();
-    let mut origins = BTreeSet::new();
+    let mut sources = BTreeSet::new();
     for (name, raw) in &source.feeds {
         if kept.len() == MAX_FEEDS {
             break;
@@ -60,12 +60,13 @@ pub fn admit(source: &FeedSource) -> Feeds {
             name.clone(),
             json!({ "url": format!("{origin}{SHARE_ROUTE}{token}"), "expires_at": token_expiry(&token) }),
         );
-        origins.insert(origin);
+        // Path-scoped source: the static page reaches the share route only, never the rest of that API.
+        sources.insert(format!("{origin}{SHARE_ROUTE}"));
     }
     let document = serde_json::to_vec(&json!({ "v": 1, "feeds": Value::Object(kept) })).unwrap_or_default();
     Feeds {
         document,
-        origins: origins.into_iter().collect(),
+        sources: sources.into_iter().collect(),
     }
 }
 
@@ -128,7 +129,9 @@ fn share_url(raw: &str, local: Option<&str>) -> Option<(String, String)> {
     let origin = url.origin().ascii_serialization();
     let admissible =
         local == Some(origin.as_str()) || (url.scheme() == "https" && fe_runtime::portal_url::is_url_allowed(&url));
-    (admissible && is_host_source(&origin)).then(|| (origin, token.to_owned()))
+    // An over-long source is left out here rather than Blocking the whole mount at CSP composition.
+    let fits = origin.len() + SHARE_ROUTE.len() <= super::csp::MAX_SOURCE_BYTES;
+    (admissible && fits && is_host_source(&origin)).then(|| (origin, token.to_owned()))
 }
 
 /// `[a-z][a-z0-9_]{0,47}`.

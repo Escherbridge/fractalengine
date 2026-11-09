@@ -410,10 +410,10 @@ pub fn prepare(resolver: &dyn BundleResolver, node_id: &str, max_bytes: u64) -> 
         (MountMode::Admitted, Some(publisher)) => admitted_label(publisher, &validated.package_id),
         _ => static_label(&content_hash).ok_or_else(|| blocked(BlockedReason::Integrity))?,
     };
-    // Only a Static mount reads feeds; its `connect-src` gains exactly the kept feed origins.
+    // Only a Static mount reads feeds; its `connect-src` gains exactly the kept feeds' share-route sources.
     let kept_feeds = (mode == MountMode::Static).then(|| feeds::admit(&resolver.feeds(node_id)));
-    let feed_origins = kept_feeds.as_ref().map_or(&[][..], |kept| kept.origins.as_slice());
-    let policy = super::csp::compose(&validated.portal.csp, mode, feed_origins)
+    let feed_sources = kept_feeds.as_ref().map_or(&[][..], |kept| kept.sources.as_slice());
+    let policy = super::csp::compose(&validated.portal.csp, mode, feed_sources)
         .map_err(|_| blocked(BlockedReason::MalformedManifest))?;
     let csp = http::HeaderValue::from_str(&policy).map_err(|_| blocked(BlockedReason::MalformedManifest))?;
     let entry_url = label

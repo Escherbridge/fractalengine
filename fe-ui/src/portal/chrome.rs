@@ -41,7 +41,7 @@ impl ChromeAction {
 /// What the toolbar shows for one bundle state.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ChromeModel {
-    /// ASCII accessible name, e.g. "Admitted - did:key:z6Mk…ab12".
+    /// ASCII accessible name, e.g. "Admitted - z6Mkha...ab12".
     pub badge_name: String,
     /// Visible text (em dash spelling).
     pub badge_text: String,
@@ -52,7 +52,7 @@ pub struct ChromeModel {
     pub secondary: Option<ChromeAction>,
 }
 
-/// Short display form of a DID: scheme-less, first 6 and last 4 characters.
+/// Short display form of a DID: scheme-less, first 6 and last 4 characters, joined by an ASCII "..." (it lands in locators).
 pub fn short_did(did: &str) -> String {
     let body = did.rsplit(':').next().unwrap_or(did);
     let chars: Vec<char> = body.chars().collect();
@@ -61,7 +61,7 @@ pub fn short_did(did: &str) -> String {
     }
     let head: String = chars[..6].iter().collect();
     let tail: String = chars[chars.len() - 4..].iter().collect();
-    format!("{head}…{tail}")
+    format!("{head}...{tail}")
 }
 
 fn model(
@@ -171,7 +171,8 @@ mod tests {
         let admitted = chrome_model(&BundleState::Admitted { publisher: "did:key:z6MkhaXgBZDvotDkL5257faiztiGiC2QtKLGpbnnEGta2doK".into() }).unwrap();
         assert!(admitted.rendered && admitted.ipc);
         assert_eq!(admitted.secondary, Some(ChromeAction::RevokeLocal));
-        assert!(admitted.badge_name.starts_with("Admitted - z6Mkha…"));
+        assert!(admitted.badge_name.is_ascii(), "locators are plain ASCII (ux.md §5)");
+        assert!(admitted.badge_name.starts_with("Admitted - z6Mkha..."));
         assert!(admitted.badge_text.contains(" — "));
         let can = chrome_model(&BundleState::StaticSandbox { can_admit: true }).unwrap();
         assert_eq!((can.primary, can.secondary), (ChromeAction::Admit, Some(ChromeAction::Close)));

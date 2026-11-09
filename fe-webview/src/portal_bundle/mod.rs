@@ -1,6 +1,8 @@
 //! Signed web bundles in the Petal Portal: origins, mounts, `fe-portal` protocol, CSP, navigation and the IPC bridge; see `AGENTS.md` here.
 
+pub mod admission;
 pub mod csp;
+pub mod feeds;
 pub mod ipc;
 pub mod limits;
 pub mod mount;

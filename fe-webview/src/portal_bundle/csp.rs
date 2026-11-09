@@ -9,19 +9,19 @@ pub const REFUSAL_POLICY: &str =
     "default-src 'none'; form-action 'none'; base-uri 'none'; object-src 'none'; frame-ancestors 'none'";
 
 /// Longest source expression accepted from a manifest or feed.
-const MAX_SOURCE_BYTES: usize = 255;
+pub(crate) const MAX_SOURCE_BYTES: usize = 255;
 
 /// A manifest or feed origin that cannot appear in a header as one source expression.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct UnsafeSource(pub String);
 
-/// Compose the mount's policy from the validated vocabulary; feed origins count only on Static mounts.
+/// Compose the mount's policy from the validated vocabulary; feed sources count only on Static mounts.
 ///
-/// Every source is re-checked to be one ASCII origin token, so a header can never gain a directive
+/// Every source is re-checked to be one ASCII source token, so a header can never gain a directive
 /// or a non-ASCII byte (wry silently drops a header whose value is not visible ASCII: SP desk check F-1).
-pub fn compose(csp: &PortalCsp, mode: MountMode, feed_origins: &[String]) -> Result<String, UnsafeSource> {
+pub fn compose(csp: &PortalCsp, mode: MountMode, feed_sources: &[String]) -> Result<String, UnsafeSource> {
     let feeds: &[String] = match mode {
-        MountMode::Static => feed_origins,
+        MountMode::Static => feed_sources,
         MountMode::Admitted => &[],
     };
     let mut directives: Vec<String> = Vec::with_capacity(13);
@@ -56,7 +56,7 @@ fn with_flag(base: &str, enabled: bool, keyword: &str) -> String {
 fn with_sources(base: &str, lists: &[&[String]]) -> Result<String, UnsafeSource> {
     let mut out = base.to_owned();
     for source in lists.iter().flat_map(|list| list.iter()) {
-        if !is_origin_token(source) {
+        if !is_source_token(source) {
             return Err(UnsafeSource(source.clone()));
         }
         out.push(' ');
@@ -65,17 +65,21 @@ fn with_sources(base: &str, lists: &[&[String]]) -> Result<String, UnsafeSource>
     Ok(out)
 }
 
-/// `https://…` or `http://…` made only of lowercase host/port characters: one CSP host-source.
-fn is_origin_token(source: &str) -> bool {
+/// `http(s)://` + lowercase host/port characters + an optional `[a-z0-9/_-]` path (a feed's share route): one CSP host-source.
+fn is_source_token(source: &str) -> bool {
     let Some(rest) = source
         .strip_prefix("https://")
         .or_else(|| source.strip_prefix("http://"))
     else {
         return false;
     };
-    !rest.is_empty()
+    let (host, path) = rest.split_at(rest.find('/').unwrap_or(rest.len()));
+    !host.is_empty()
         && source.len() <= MAX_SOURCE_BYTES
-        && rest
+        && host
             .bytes()
             .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || matches!(c, b'.' | b'-' | b':' | b'[' | b']'))
+        && path
+            .bytes()
+            .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || matches!(c, b'/' | b'_' | b'-'))
 }

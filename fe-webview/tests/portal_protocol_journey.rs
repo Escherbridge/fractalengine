@@ -285,7 +285,7 @@ fn bundle_origins_and_csp_follow_the_contract() {
         wasm: true,
         inline_styles: true,
     };
-    let feed = vec!["http://127.0.0.1:8765".to_owned()];
+    let feed = vec!["http://127.0.0.1:8765/api/v1/shared/".to_owned()];
     let tail = "worker-src 'self'; form-action 'none'; base-uri 'none'; object-src 'none'; frame-ancestors 'none'";
     for (csp, mode, feeds, expected) in [
         (&empty, MountMode::Static, &[][..], format!(
@@ -298,7 +298,7 @@ fn bundle_origins_and_csp_follow_the_contract() {
              frame-src https://maps.example.org; {tail}")),
         (&empty, MountMode::Static, &feed[..], format!(
             "default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self' data: blob:; font-src 'self'; \
-             media-src 'self'; connect-src 'self' http://127.0.0.1:8765; frame-src 'none'; {tail}")),
+             media-src 'self'; connect-src 'self' http://127.0.0.1:8765/api/v1/shared/; frame-src 'none'; {tail}")),
     ] {
         assert_eq!(compose(csp, mode, feeds).unwrap(), expected);
     }

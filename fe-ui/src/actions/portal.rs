@@ -42,7 +42,18 @@ pub(crate) fn receive_browser_event(
         BrowserEvent::UrlChanged { url }
             if fe_webview::security::embedded_preview_allowed(url.as_str()) =>
         {
-            if let PortalState::Open {
+            // A mounted bundle left for a declared origin (protocol.md §2.6): the page is now an external website,
+            // still shown, so it gets the website chrome; the host's `Closed` for the bundle then finds no Bundle.
+            // Before the first mounted state (`label` is None) a URL change is the previous page's, so it is ignored.
+            let mounted = matches!(&ui.portal, PortalState::Bundle { label: Some(_), .. });
+            let left_bundle = mounted.then(|| ui.portal.opened_for_entity()).flatten();
+            if let Some(opened_for_entity) = left_bundle {
+                ui.portal = PortalState::Open {
+                    current_url: url.to_string(),
+                    cached_hostname: url.host_str().unwrap_or_default().to_owned(),
+                    opened_for_entity,
+                };
+            } else if let PortalState::Open {
                 current_url,
                 cached_hostname,
                 ..
@@ -619,6 +630,20 @@ mod tests {
         let closed = BrowserEvent::BundleState { node_id: "node-1".into(), label: None, state: fe_webview::ipc::BundleState::Closed };
         receive_browser_event(&mut bundle_ui, &nodes, &closed, 0.0);
         assert!(!bundle_ui.portal.is_open());
+        // Leave (protocol.md §2.6): a mounted bundle navigates to a declared origin; the shown page keeps chrome.
+        let docs = BrowserEvent::UrlChanged { url: "https://docs.example.org/guide".parse().unwrap() };
+        assert_eq!(open_bundle(&mut bundle_ui, &nodes, "node-1", 0.0).as_deref(), Some("node-1"));
+        receive_browser_event(&mut bundle_ui, &nodes, &docs, 0.0);
+        assert!(bundle_ui.portal.is_bundle(), "a URL change before the first mounted state is the previous page's");
+        let mounted = BrowserEvent::BundleState {
+            node_id: "node-1".into(),
+            label: Some("s-aaaaaaaaaaaaaaaaaaaaaaaaaa".into()),
+            state: fe_webview::ipc::BundleState::StaticSandbox { can_admit: false },
+        };
+        receive_browser_event(&mut bundle_ui, &nodes, &mounted, 0.0);
+        receive_browser_event(&mut bundle_ui, &nodes, &docs, 0.0);
+        receive_browser_event(&mut bundle_ui, &nodes, &closed, 0.0);
+        assert_eq!(bundle_ui.portal.url(), "https://docs.example.org/guide", "the left-for page is an open website");
 
         nodes.deselect();
         receive_browser_event(

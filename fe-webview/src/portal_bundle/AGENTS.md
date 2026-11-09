@@ -97,9 +97,15 @@ Ownership: S1 wrote `origin`, `mount`, `protocol`, `csp`, `navigation`. S2 adds 
 
 ## §csp — csp.rs
 
-- **Typed input only** (`PortalCsp` plus mode plus feed origins). Each source is re-checked to be
-  one lowercase origin token, so `;`, spaces and non-ASCII can never add a directive.
-- Feed origins count only on Static mounts; an Admitted mount's data path is IPC.
+- **Typed input only** (`PortalCsp` plus mode plus feed sources). Each source is re-checked to be
+  one lowercase source token (host, then an optional `[a-z0-9/_-]` path), so `;`, spaces and
+  non-ASCII can never add a directive.
+- Feed sources count only on Static mounts; an Admitted mount's data path is IPC.
+- **Feeds are path-scoped** (R-P4 fix, `review-p4.md` P4-02): a kept feed adds
+  `<origin>/api/v1/shared/` to `connect-src`, not the bare origin. CSP path matching then keeps
+  an unsigned static page off every other route of this peer's loopback fe-api (simple
+  cross-origin requests need no preflight, so CORS alone would not stop the send). This narrows
+  admission.md §7.4's "exact origins".
 - These deviate from spec §6.2, as protocol.md §5.4 records: `worker-src 'self'` (no `blob:`) and
   no `upgrade-insecure-requests`.
 
@@ -152,3 +158,9 @@ Ownership: S1 wrote `origin`, `mount`, `protocol`, `csp`, `navigation`. S2 adds 
 - Per-origin storage clear (SP-6), the revoke listener and `/__fe/feeds.json` belong to S4.
 - "Waiting → bytes arrive → mount" needs a re-Open from the chrome (S3) or S4's listener.
 - The binary must insert `plugin::PortalBundleResolver`. Without it, every Open is Unavailable.
+- **P-4's fallback is not built** (`review-p1.md` P1-05): if the unload navigation is refused or
+  never commits (a page-initiated `about:blank` racing the host's can consume the one-shot
+  token), the unmounted document keeps running hidden. It has no mount, so no bytes, no IPC and
+  no storage clear; Stop + controller Close + recreate is the cure once SP-5 records the URI.
+- **SP-3** decides whether an envelope posted just before a leave can reach the declared page.
+  The send-time gate and the page API's token check ship either way (`review-p2.md` P2-03).

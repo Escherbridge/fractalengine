@@ -8,8 +8,25 @@ use crate::actions::{UiAction, UiManager};
 use crate::portal::chrome::{chrome_model, ChromeAction, ChromeTone};
 use crate::theme;
 
-/// Host-drawn admission badge plus the Admit / Revoke actions the state allows (ux.md §3).
+/// Host-drawn admission badge plus the Admit / Revoke action the state allows (ux.md §3).
+///
+/// Drawn in a fixed-height band for every bundle state, so the native viewport below never moves
+/// when the first state arrives or the badge changes.
 fn render_bundle_chrome(ui: &mut egui::Ui, ui_mgr: &mut UiManager) {
+    if !ui_mgr.portal.is_bundle() {
+        return;
+    }
+    let control = crate::ui_shell::layout_policy::control_size(ui.ctx(), [28.0, 24.0]);
+    let height = ui.text_style_height(&egui::TextStyle::Body) + ui.spacing().item_spacing.y + control.y;
+    let (rect, _) = ui.allocate_exact_size(egui::vec2(ui.available_width(), height), egui::Sense::hover());
+    let mut band = ui.new_child(
+        egui::UiBuilder::new()
+            .id_salt("portal-bundle-chrome")
+            .max_rect(rect)
+            .layout(egui::Layout::top_down(egui::Align::Min)),
+    );
+    band.set_clip_rect(rect.intersect(ui.clip_rect()));
+    let ui = &mut band;
     let Some(model) = ui_mgr.portal.bundle_state().and_then(chrome_model) else {
         return;
     };
@@ -130,6 +147,8 @@ pub(crate) fn right_portal_toolbar(ctx: &egui::Context, ui_mgr: &mut UiManager) 
                     ui_mgr.push_action(UiAction::ClosePortal);
                 }
             });
+            // ux.md §3: the badge sits below the action buttons and above the hostname line.
+            render_bundle_chrome(ui, ui_mgr);
             ui.add(
                 egui::Label::new(
                     egui::RichText::new(ui_mgr.portal.hostname()).color(theme::TEXT_DIM),
@@ -137,7 +156,6 @@ pub(crate) fn right_portal_toolbar(ctx: &egui::Context, ui_mgr: &mut UiManager) 
                 .truncate(),
             )
             .on_hover_text(ui_mgr.portal.url());
-            render_bundle_chrome(ui, ui_mgr);
             render_feedback(ui, ui_mgr);
             ui.separator();
 
