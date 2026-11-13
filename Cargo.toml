@@ -103,6 +103,10 @@ redb_v2 = { package = "redb", version = "2.6.4" }
 socket2 = { version = "0.5", features = ["all"] }
 ed25519-dalek = { version = "2.2", features = ["rand_core", "pkcs8"] }
 jsonwebtoken = { version = "10.3", features = ["rust_crypto"] }
+# Entitlement primitives (fe-format feature `entitlement`): X25519 content-key wrap + XChaCha20-Poly1305 paid entries.
+x25519-dalek = { version = "2", features = ["static_secrets"] }
+chacha20poly1305 = "0.10"
+async-trait = "0.1"
 keyring = "3"
 blake3 = "1"
 bytes = "1"

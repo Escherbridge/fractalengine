@@ -19,6 +19,7 @@ tracing = { workspace = true }
 tracing-subscriber = { workspace = true }
 zip = { version = "2", default-features = false, features = ["deflate"] }
 semver = "1"
+async-trait = { workspace = true }
 # default-features = false: the only reason this was a dev-only duplicate
 # (fe-runtime -> bevy) is gone since PAS-P5 S1 made `runtime` opt-in (S3 §1).
 fe-format = { path = "../fe-format", default-features = false }

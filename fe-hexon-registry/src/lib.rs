@@ -4,6 +4,7 @@ pub mod config;
 pub mod index;
 pub mod limits;
 pub mod routes;
+pub mod store;
 
 pub use config::RegistryConfig;
 pub use index::{scan_dir, HexonIndexEntry};

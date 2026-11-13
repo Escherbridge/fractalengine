@@ -1,6 +1,6 @@
 # Hexon Format Specification
 
-**Version:** 1.0.0
+**Version:** 1.1.0
 **Status:** Draft
 **Extension:** `.hexon`
 **MIME Type:** `application/x-hexon+zip`
@@ -577,3 +577,39 @@ Every `asset_hash` is BLAKE3 hex of the blob at `assets/{hash}`. Verify on extra
 | `POST` | `/api/v1/petals/:id/import` | Editor+ | Import `.hexon` into petal |
 | `POST` | `/api/v1/petals/:id/import/gpx` | Editor+ | Import GPX |
 | `GET` | `/api/v1/petals/:id/export/gpx` | Viewer+ | Export GPX |
+
+---
+
+## Registry Protocol v1 and Entitlements (since 1.1.0)
+
+**Spec version 1.1.0.** The archive format of 1.0.0 is unchanged. 1.1.0 adds the catalogue protocol a registry serves and the
+entitlement wire formats a licensed package uses. The normative text of the catalogue protocol is
+`docs/spec/store-client/contract-v1.md` (`fe-store-client/1`, advertised as `registry_protocol: 1`); this section summarises it.
+
+### Catalogue endpoint
+
+Every endpoint serves, under `{base}/api/v1/catalog/`: `config.json` (protocol, kinds, `features`), a signed `index.json`,
+`packages/{package_id}.json` (detail, pinned by the index entry's `detail_hash`), and
+`packages/{package_id}/{version}/attestation.json`. Optional features: `search`, `revocations`, `entitlements`. Catalogue reads and
+downloads carry no credentials; a directory of static files is a complete endpoint. The index is signed over
+`fractalengine/catalog-index/v1 \n canonical JSON minus signature`. Responses may carry `X-Hexon-Registry-Protocol: 1`;
+`config.json` is the authority. The existing `/api/v1/hexons/*` routes are unchanged and remain behind the bearer token when one
+is configured.
+
+### Entitlement wire (licensed packages)
+
+A package whose `license.json` is licensed lists `free_entries` in plaintext; every other entry is sealed with
+XChaCha20-Poly1305 under a 32-byte content key, with the entry id as associated data (`version(1) | nonce(24) | ciphertext+tag`).
+
+- **Token request**: `POST {base}/api/v1/catalog/entitlements/token` with `{package_id, content_hash, licensee_did,
+  device_x25519_did, iat, proof}`. `proof` is the licensee's ed25519 signature over
+  `fractalengine/entitlement-token-request/v1 \n canonical JSON minus proof`; `iat` must be within 300 seconds of server time.
+- **Token**: an EdDSA JWT with claims `sub, package_id, content_hash, iat, exp, jti, kid, wrapped_content_key`, verified offline
+  against issuer keys the client pinned locally. A token covers exactly one `content_hash` and lives at most 30 days.
+- **Key wrap**: `wrapped_content_key` is base64 of `version(1) | ephemeral X25519 public(32) | nonce(24) | sealed key(48)`,
+  wrapped to the licensee's X25519 device key.
+- **Errors**: `invalid_request` (400), `proof_invalid` (401), `not_entitled`, `reissue_refused`, `device_limit_reached` (403),
+  `unknown_package` (404), `rate_limited` (429).
+
+A client without a valid token still loads the free entries; it never persists decrypted paid content. Reference code:
+`fe-format/src/entitlement.rs` (feature `entitlement`), `fe-hexon/src/{entitlement_client,entitlement_gate}.rs`.

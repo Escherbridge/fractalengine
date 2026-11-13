@@ -1,6 +1,8 @@
 #![allow(dead_code)]
 
 pub mod authz;
+pub mod entitlement_client;
+pub mod entitlement_gate;
 pub mod handlers;
 pub mod manifest;
 pub mod p2p;

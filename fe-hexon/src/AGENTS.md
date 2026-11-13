@@ -235,3 +235,34 @@ transport crate (plan §3.5, assumption A1).
 - Protocol 1 check (store-client contract v1): `config.json` carries `registry_protocol: 1` and is the authority; the `X-Hexon-Registry-Protocol` header is optional and refused only when present and different. The in-repo `fe-hexon-registry` now stamps that header on every response (R-REG-22). An unsigned `index_key_id` never widens trust; the index key is pinned per endpoint and is never a package or revocation signer. A registry advertising neither is refused with `ProtocolMismatch` before any list or download (fail closed); `remote_registry_test.rs` pins that refusal with a silent registry.
 - Every download is capped at the listed `size` (or `PACKAGE_MAX_BYTES` when the registry lists none) while it streams, then goes through `verify_fetched`: seal and trust roots, expected package id (so a mirror cannot serve a revoked package under a new id), listed version, listed `content_hash` (BLAKE3 of the manifest with the signature blanked). `entry.url` must be the registry uri `id[@version]` of that same entry (`requested_uri_matches`, R-REG-11), in the store-client contract v1 grammar (id `^[A-Za-z0-9][A-Za-z0-9_.-]{0,127}$`, not ending `.json`; version without build metadata). Extension sources send no credentials at all; the tileset path sends the operator's token only to URLs built from the configured base.
 - Listings carry each build's `content_hash` (the registry hashes the canonical manifest in `index_one`), so `fetch` compares against a real value; an uncanonicalisable manifest lists an empty hash and is refused `ContentHashMismatch` (R-REG-25).
+
+## §entitlement (`entitlement_client.rs`, `entitlement_gate.rs`; needs fe-format feature `entitlement`)
+
+fe-hexon's Cargo.toml turns the `fe-format/entitlement` feature on; the primitives live in `fe-format/src/AGENTS.md` §entitlement.
+
+- **Gate** (`EntitlementGate::open`): an unlicensed package never consults the verifier. A licensed one is `Entitled` only when
+  the token verifies for this package, the locally recomputed `content_hash` (`archive_content_hash`), the licensee DID and the
+  device key; otherwise it is `Preview` and only `free_entries` load. `load_at` opens a paid entry in memory per load and the
+  caller must never persist the plaintext. A sealed entry that fails to open is `OpenFailed`, never a plaintext fallback.
+  Status labels for the Hexon Manager: `installed`, `installed-preview`, `entitlement-required`, `entitled`.
+- **Client** (`EntitlementClient::token_for`): returns the held token while it is valid, renews it before `exp` (margin bounded
+  by `RENEW_MARGIN_BOUNDS_SECS`), and asks the endpoint only when its `config.json` advertises `entitlements` (never probes).
+  The `TokenTransport` seam keeps HTTP out of the logic; refusals map to `TokenRequestError` by envelope code, then status.
+  Every issued token is verified before it is stored, so a forged answer is never kept. Refusals such as `not_entitled` are
+  definitive (`is_definitive`); `429` honours `Retry-After` clamped to `MAX_RATE_LIMIT_BACKOFF_SECS`.
+- **Store**: `FileTokenStore` keeps one record per (licensee, package); `MemoryTokenStore` is for tests.
+  Tokens are bound to one `content_hash`, so an update asks again.
+- **Credentials**: the token request is the only call that signs anything; catalogue GETs and downloads send no credentials
+  (docs/spec/store-client/contract-v1.md rule 1.3).
+
+## §store-client (`registry_source.rs`, `remote.rs`)
+
+Contract v1 text: `docs/spec/store-client/contract-v1.md`. `registry_source` owns config/index/detail/attestation verification,
+the pinned index key and the `RegistrySource` seam; `remote` (feature `remote`) is the HTTP transport. The rules are summarised in
+§registry-source-remote above; this section records only the crate wiring: `entitlement_client` and `entitlement_gate` are declared
+in `lib.rs` and reuse `registry_source::{resolve_location, CatalogConfig, CATALOG_PREFIX, FEATURE_ENTITLEMENTS}`.
+
+## §auth
+
+Extension sources send no credentials; the tileset path sends the operator's bearer token only to URLs built from the
+configured base (`FE_HEXON_REGISTRY_TOKEN`, env-only, never persisted). The token endpoint is the sole signed request.

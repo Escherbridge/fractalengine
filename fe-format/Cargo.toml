@@ -13,6 +13,8 @@ description = "Canonical data formats and scope strings for FractalEngine"
 # (see src/AGENTS.md §features).
 default = ["runtime"]
 runtime = ["dep:fe-runtime"]
+# EdDSA entitlement tokens, X25519 content-key wrap and paid-entry sealing (src/AGENTS.md §entitlement).
+entitlement = ["dep:jsonwebtoken", "dep:x25519-dalek", "dep:chacha20poly1305"]
 
 [dependencies]
 fe-runtime = { path = "../fe-runtime", optional = true }
@@ -26,6 +28,9 @@ chrono = { version = "0.4", features = ["serde"] }
 ed25519-dalek = { workspace = true }
 base64 = "0.22"
 bs58 = "0.5"
+jsonwebtoken = { workspace = true, optional = true }
+x25519-dalek = { workspace = true, optional = true }
+chacha20poly1305 = { workspace = true, optional = true }
 
 [dev-dependencies]
 rand = "0.8"

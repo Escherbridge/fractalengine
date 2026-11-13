@@ -359,3 +359,27 @@ Pure validator for signed web bundles: `validate_portal_bundle` decides refusal 
 surfaces and never re-implement the checks. Bundles are `.hexon` archives read through `HexonArchiveIndex`, so the seal
 and integrity rules in §archive-index and §integrity apply unchanged. See `fe-api/src/AGENTS.md` §portal-bundles and
 `fe-webview/src/portal_bundle/AGENTS.md`.
+
+## §entitlement (`entitlement.rs`, feature `entitlement`)
+
+Off by default; `fe-hexon` enables it (`entitlement = ["dep:jsonwebtoken", "dep:x25519-dalek", "dep:chacha20poly1305"]`),
+so the bevy-free consumers (hosted registry) never compile the crypto. Pure primitives, no I/O, no network.
+
+- **Token**: EdDSA JWT carrying `EntitlementClaims` (`sub` licensee identity DID, `package_id`, `content_hash`, `iat`, `exp`,
+  `jti`, `kid`, `wrapped_content_key`). `KeyringVerifier` verifies offline against an `IssuerKeyring` of pinned `(kid, key)`
+  pairs (never a key taken from the token), checks package, build hash and licensee, applies `TOKEN_CLOCK_LEEWAY_SECS`, and
+  caps lifetime at `MAX_ENTITLEMENT_TTL_SECS`. The expected `content_hash` is recomputed locally by the caller.
+- **Wrap**: the issuer wraps a 32-byte `ContentKey` to the licensee's X25519 device key (ephemeral-static ECDH, BLAKE3
+  `derive_key` over shared + both public keys, XChaCha20-Poly1305 with an AAD naming both keys). Wire form is base64 of
+  `version(1) | ephemeral public(32) | nonce(24) | sealed key(48)`. `ContentKey` redacts `Debug`, compares in constant time and
+  zeroizes on drop.
+- **Paid entries**: `seal_paid_entry` / `open_paid_entry` seal one entry under the content key with the entry id in the AAD
+  (a sealed entry cannot be swapped to another entry id). Free entries stay plaintext.
+- **Token request**: `TokenRequest` + `token_request_proof` / `verify_token_request` implement contract v1 section 4.9; the proof signs
+  `fractalengine/entitlement-token-request/v1 \n canonical JSON minus proof` (domain separation from gossip and API tokens),
+  `iat` within `TOKEN_REQUEST_IAT_WINDOW_SECS`, body at most `MAX_TOKEN_REQUEST_BYTES`.
+- **Errors**: `EntitlementError::wire_code` maps request failures to the contract codes `proof_invalid` / `invalid_request`.
+- **`LocalIssuer`** is the reference issuer used by tests and the private service; it mints, it does not decide who is entitled.
+- **Open finding (R-STORE)**: the wrap AAD binds the two public keys only, not the package. Bind `package_id` and `content_hash`
+  into the AAD / KDF input and `paid_entry_aad`, and have issuers take `encrypted_key` only from their own catalogue record for
+  the requested package. Tracked in the extension_platform checkpoint steer; not changed here (file owned by S-ENT).

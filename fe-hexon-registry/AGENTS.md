@@ -189,3 +189,34 @@ never inside `install_from_registry` or the pure `fetch_and_install_from_registr
 core — those just take an already-resolved `Option<String>`. A registry that
 sets its own `FE_REGISTRY_TOKEN` (`require_token` above) gates ALL `/api/v1`
 reads, so S7b could not reach any non-dev registry before this.
+
+## §store (`src/store.rs`)
+
+`PackageStore` (async-trait, dyn-safe) is the storage seam: `list()` (every stored package with a locally readable `path`),
+`put(id, version, bytes)` (create-new, `AlreadyExists` rather than overwrite) and `catalog_doc(path)` (one catalogue document
+byte-for-byte). `FsPackageStore` keeps archives as `{dir}/{id}@{version}.hexon` and documents as plain files under
+`{dir}/catalog/`; `valid_catalog_path` restricts requests to portable segments at most `packages/{id}/{version}/attestation.json`
+deep. `RegistryState::with_store` takes any store, `RegistryState::new` stays the filesystem constructor. A hosted backend
+(object store, database) implements the trait without touching `routes.rs`. `async-trait` comes from the workspace dependencies.
+
+## §auth
+
+Default-deny: `RegistryConfig::validate` refuses to start without `FE_REGISTRY_TOKEN` unless `FE_REGISTRY_ALLOW_OPEN=1`.
+`require_token` guards the `/api/v1/hexons/*` routes (bearer compare); `/health`, `/config.json`, `/api/v1/catalog/*` and
+`/blobs/*` sit outside it because contract v1 rule 1.3 makes catalogue reads and downloads credential-free. Every response
+carries `X-Hexon-Registry-Protocol: 1`.
+
+NEEDS (F-REG / R-REG, owner of `src/routes.rs`): `GET /blobs/{hash}.hexon` currently streams any indexed archive by hash.
+Serve it only for packages present in the published catalogue index, or gate it behind the token unless the operator opts in to
+public blobs by flag; answer the same uniform 404 for unknown and unlisted hashes (no existence oracle).
+
+## §routes (catalogue additions, contract v1)
+
+| Method | Path | Notes |
+|--------|------|-------|
+| GET | `/config.json` | store document if present, else a minimal v1 config (`features` lists index/detail/attestations only when `catalog/index.json` exists) |
+| GET | `/api/v1/catalog/config.json` | same document as `/config.json` |
+| GET | `/api/v1/catalog/{*path}` | one stored catalogue document, public; unknown or invalid paths answer `404 not_found` |
+| GET | `/blobs/{content_hash}.hexon` | static-tree download path, public (see NEEDS above) |
+
+Errors on these routes use `{ ok: false, data: null, error: "<code>" }` with stable snake_case codes.

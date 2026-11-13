@@ -16,7 +16,7 @@ conformance = []
 fe-runtime = { path = "../fe-runtime" }
 fe-identity = { path = "../fe-identity" }
 fe-policy = { path = "../fe-policy" }
-fe-format = { path = "../fe-format" }
+fe-format = { path = "../fe-format", features = ["entitlement"] }
 serde = { workspace = true }
 serde_json = { workspace = true }
 anyhow = { workspace = true }
