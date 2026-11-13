@@ -82,10 +82,11 @@ fn j8_new_validate_pack_inspect_countersign_and_sandbox() {
     let project = root.join("gen-one");
     let manifest_path = project.join("extension.json");
     let good: serde_json::Value = serde_json::from_slice(&std::fs::read(&manifest_path).unwrap()).unwrap();
-    let refusals = [
-        ("empty-scope", |m: &mut serde_json::Value| m["scene"]["property_scope"] = serde_json::json!([])),
-        ("cadence-below-floor", |m: &mut serde_json::Value| m["tick"]["cadence_ms"] = serde_json::json!(1)),
-        ("unsupported-contract", |m: &mut serde_json::Value| m["contract"] = serde_json::json!("fractalengine:plugin@1.0.0")),
+    type Edit = fn(&mut serde_json::Value);
+    let refusals: [(&str, Edit); 3] = [
+        ("empty-scope", |m| m["scene"]["property_scope"] = serde_json::json!([])),
+        ("cadence-below-floor", |m| m["tick"]["cadence_ms"] = serde_json::json!(1)),
+        ("unsupported-contract", |m| m["contract"] = serde_json::json!("fractalengine:plugin@1.0.0")),
     ];
     let mut reasons = std::collections::BTreeSet::new();
     for (expected, edit) in refusals {
