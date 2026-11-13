@@ -73,7 +73,7 @@ pub fn portal_offer(
 }
 
 /// What a click on the offer's Open asks of the caller (R-POR-11): `UiAction::OpenBundle` mounts only the selected node.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone)]
 pub struct OfferClick {
     /// The repository node to select first; `None` when it is already the single selected node.
     pub select_node_id: Option<String>,
