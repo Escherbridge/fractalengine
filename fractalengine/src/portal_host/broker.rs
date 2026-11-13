@@ -292,6 +292,12 @@ impl BusPortalBroker {
         }
     }
 
+    /// A broker over the bus, role source and audit sink the extension host built (`plugin_bridge::ExtensionBusParts`),
+    /// so portal grants, audit rows and role reads share the extension path's services.
+    pub(crate) fn from_parts(parts: &crate::plugin_bridge::ExtensionBusParts, scopes: PortalScopeIndex) -> Self {
+        Self::new(parts.bus.clone(), Arc::clone(&parts.roles), Arc::clone(&parts.audit), scopes)
+    }
+
     /// Re-check governance at bind: the exact build still admitted, its hash not kill-listed, no host-wide disable.
     pub fn with_governance(mut self, view: Arc<dyn GovernanceView>) -> Self {
         self.governance = Some(view);

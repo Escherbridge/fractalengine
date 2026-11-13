@@ -3,7 +3,7 @@
 //! Rationale: src/AGENTS.md §portal-resolver.
 
 use std::borrow::Borrow;
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::future::Future;
 use std::hash::Hash;
 use std::path::Path;
@@ -115,6 +115,11 @@ pub(crate) trait GovernanceSource: Send + Sync + 'static {
     fn policy_admits(&self, verse_id: &str, facts: &PackageFacts) -> Result<(), String>;
     /// Row 8 for a build that does not write as an extension: the node DID holds Viewer+ at the petal.
     fn may_read(&self, petal_id: &str) -> Result<(), String>;
+    /// Governance's change generation (kill list, policy, overrides); `None` until the source exposes one, when callers
+    /// keep their timed re-judge.
+    fn generation(&self) -> Option<u64> {
+        None
+    }
 }
 
 impl GovernanceSource for ExtensionGovernance {
@@ -198,7 +203,8 @@ fn record_key(package_id: &str, content_hash: &str) -> (String, String) {
 pub(crate) struct PortalGovernance {
     source: Arc<dyn GovernanceSource>,
     admission_enabled: bool,
-    disabled_all: AtomicBool,
+    /// Shared with `plugin_bridge` so Disable all / Enable all reach the portal (R-X-33).
+    disabled_all: Arc<AtomicBool>,
     records: RwLock<Bounded<(String, String), RecordEntry>>,
     nodes: RwLock<Bounded<String, NodeScope>>,
     /// petal id -> verse id.
@@ -213,7 +219,7 @@ impl PortalGovernance {
         Self {
             source,
             admission_enabled: config.admission_enabled,
-            disabled_all: AtomicBool::new(config.disable_all),
+            disabled_all: Arc::new(AtomicBool::new(config.disable_all)),
             records: RwLock::new(Bounded::new(RECORD_ENTRIES)),
             nodes: RwLock::new(Bounded::new(CACHE_ENTRIES)),
             petals: RwLock::new(Bounded::new(CACHE_ENTRIES)),
@@ -232,6 +238,46 @@ impl PortalGovernance {
             capability_digest: capability_digest.to_owned(),
         };
         write_lock(&self.records).insert(record_key(package_id, content_hash), entry);
+    }
+
+    /// Forget a consent (the pair's record), so an Admit is needed again.
+    pub(crate) fn forget_consent(&self, package_id: &str, content_hash: &str) {
+        write_lock(&self.records).entries.remove(&record_key(package_id, content_hash));
+    }
+
+    /// Every `(package_id, content_hash)` consented and admitted on this host (feeds `LocalFacts.admitted_bundles`, R-X-04).
+    /// Empty while the host switch is off or Disable all is on; a pair the kill list names under any digest is left out.
+    pub(crate) fn admitted_set(&self) -> BTreeSet<(String, String)> {
+        if !self.admission_enabled || self.host_disabled() {
+            return BTreeSet::new();
+        }
+        let admitted: Vec<(String, String)> = read_lock(&self.records)
+            .entries
+            .iter()
+            .filter(|(_, (_, entry))| entry.state == RecordState::Admitted)
+            .map(|(key, _)| key.clone())
+            .collect();
+        admitted.into_iter().filter(|(_, content_hash)| !self.source.listed(&[content_hash.as_str()])).collect()
+    }
+
+    /// The shared Disable all flag: `plugin_bridge` stores into it (R-X-33), the portal view reads it.
+    pub(crate) fn host_disabled_handle(&self) -> Arc<AtomicBool> {
+        Arc::clone(&self.disabled_all)
+    }
+
+    /// Governance's change generation, when the source exposes one; a change means re-judge open portals now.
+    pub(crate) fn generation(&self) -> Option<u64> {
+        self.source.generation()
+    }
+
+    /// `true` once when the generation moved past `seen` (which is then updated); always `false` without a generation.
+    pub(crate) fn changed_since(&self, seen: &mut Option<u64>) -> bool {
+        let Some(now) = self.generation() else {
+            return false;
+        };
+        let changed = seen.is_some_and(|before| before != now);
+        *seen = Some(now);
+        changed
     }
 
     /// One `host/admission` delta; an `admitted` event alone never creates a record (it carries no capability digest).
@@ -458,6 +504,16 @@ impl PortalResolver {
     /// fe-api's local admission read; `client_did` is the client DID of this host's own API tokens.
     pub(crate) fn local_admission(&self, client_did: Option<String>) -> LocalAdmission {
         LocalAdmission { governance: Arc::clone(&self.governance), client_did: client_did.unwrap_or_default() }
+    }
+
+    /// The consented, admitted web-bundle pairs (see [`PortalGovernance::admitted_set`]).
+    pub(crate) fn admitted_set(&self) -> BTreeSet<(String, String)> {
+        self.governance.admitted_set()
+    }
+
+    /// The shared Disable all flag (see [`PortalGovernance::host_disabled_handle`]).
+    pub(crate) fn host_disabled_handle(&self) -> Arc<AtomicBool> {
+        self.governance.host_disabled_handle()
     }
 
     fn set_api_origin(&self, origin: Option<String>) {
@@ -714,10 +770,12 @@ mod tests {
         listed: Mutex<Vec<String>>,
         overrides: Vec<(String, String)>,
         refusing_verses: Vec<String>,
+        generation: std::sync::atomic::AtomicU64,
     }
 
     impl FakeGovernance {
         fn list(&self, digests: &[&str]) {
+            self.generation.fetch_add(1, Ordering::SeqCst);
             *self.listed.lock().unwrap_or_else(PoisonError::into_inner) =
                 digests.iter().map(|digest| (*digest).to_owned()).collect();
         }
@@ -744,6 +802,9 @@ mod tests {
         }
         fn may_read(&self, _petal_id: &str) -> Result<(), String> {
             Ok(())
+        }
+        fn generation(&self) -> Option<u64> {
+            Some(self.generation.load(Ordering::SeqCst))
         }
     }
 
@@ -873,7 +934,23 @@ mod tests {
             assert_eq!(summary(&local, &query), ("static_sandbox".to_owned(), reason), "{row}");
         }
 
+        // The admitted set feeds the binding facts: consented pairs, minus kill-listed hashes, empty under Disable all.
+        let mut seen = None;
+        assert!(!view.changed_since(&mut seen), "the first read only records the generation");
+        assert_eq!(view.admitted_set(), BTreeSet::from([(PACKAGE.to_owned(), "h1".to_owned())]));
+        fake.list(&["h1"]);
+        assert!(view.changed_since(&mut seen), "a kill-list change moves the generation");
+        assert!(!view.changed_since(&mut seen), "and is reported once");
+        assert!(view.admitted_set().is_empty(), "a kill-listed hash is never in the admitted set");
+        fake.list(&[]);
+        let handle = view.host_disabled_handle();
+        handle.store(true, Ordering::Release);
+        assert!(view.host_disabled() && view.admitted_set().is_empty(), "the shared handle is Disable all");
+        handle.store(false, Ordering::Release);
+        assert_eq!(view.admitted_set().len(), 1);
+
         view.observe(&event(PACKAGE, "h1", RecordState::Disabled, RecordReason::LocalDisable));
+        assert!(view.admitted_set().is_empty(), "a locally disabled pair leaves the admitted set");
         assert_eq!(judge(&at_a, &sealed), AdmissionVerdict::Revoked(RevokedReason::KillSwitch), "locally disabled");
         view.observe(&event(PACKAGE, "h1", RecordState::Admitted, RecordReason::Restored));
         assert_eq!(judge(&at_a, &sealed), admitted, "the consented record is restored");
