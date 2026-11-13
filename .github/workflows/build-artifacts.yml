@@ -389,6 +389,9 @@ jobs:
         env:
           # Env-backed keystore: no OS keychain / Secret Service on runners.
           FE_KEYSTORE_BACKEND: env
+          # --release has no debug_assertions, so the development-reset permit
+          # (fe-database/src/admin.rs) is closed unless FE_DEV_TOOLS=1 is captured.
+          FE_DEV_TOOLS: "1"
         run: cargo test --release -p fe-ui -p fe-terrain -p fractalengine
 
       # iroh 0.35 -> 1.x store-migration proof (fe-sync/src/AGENTS.md
@@ -463,6 +466,12 @@ jobs:
     name: Windows (build + package)
     runs-on: windows-latest
     timeout-minutes: 120
+    env:
+      # Optional Authenticode signing (docs/release-signing.md). Secrets cannot
+      # be read in `if:`, so the flag is derived here. Never on pull_request.
+      SIGNING_CONFIGURED: ${{ secrets.AZURE_TENANT_ID != '' && github.event_name != 'pull_request' }}
+    outputs:
+      signed: ${{ env.SIGNING_CONFIGURED }}
     steps:
       - uses: actions/checkout@v4
 
@@ -476,6 +485,41 @@ jobs:
 
       - name: Build release binaries
         run: cargo build --release --bin fractalengine --bin fe-relay
+
+      # Signing sits between build and packaging so SHA256SUMS cover signed
+      # files. To change provider (SignPath, signtool + cloud HSM) replace ONLY
+      # the "Sign" step; keep its `if:` and the verify step. See docs/release-signing.md.
+      - name: Sign Windows binaries (Azure Trusted Signing)
+        if: env.SIGNING_CONFIGURED == 'true'
+        uses: Azure/artifact-signing-action@v2
+        env:
+          AZURE_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
+          AZURE_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
+          AZURE_CLIENT_SECRET: ${{ secrets.AZURE_CLIENT_SECRET }}
+        with:
+          endpoint: ${{ vars.AZURE_SIGNING_ENDPOINT }}
+          signing-account-name: ${{ vars.AZURE_SIGNING_ACCOUNT }}
+          certificate-profile-name: ${{ vars.AZURE_SIGNING_PROFILE }}
+          files-folder: target/release
+          files-folder-filter: exe
+          file-digest: SHA256
+          timestamp-rfc3161: http://timestamp.acs.microsoft.com
+          timestamp-digest: SHA256
+
+      - name: Verify Authenticode signatures
+        if: env.SIGNING_CONFIGURED == 'true'
+        shell: pwsh
+        run: |
+          foreach ($exe in 'target/release/fractalengine.exe', 'target/release/fe-relay.exe') {
+            $sig = Get-AuthenticodeSignature $exe
+            Write-Host "$exe : $($sig.Status)"
+            if ($sig.Status -ne 'Valid') { throw "$exe is not validly signed ($($sig.Status))" }
+          }
+
+      - name: Note unsigned Windows binaries
+        if: env.SIGNING_CONFIGURED != 'true'
+        shell: bash
+        run: echo "::notice title=Unsigned Windows binaries::Signing is not configured (or this is a pull request); the Windows binaries are unsigned and SmartScreen will warn. See docs/release-signing.md."
 
       # Pin the interpreter the packaging script runs on rather than relying on
       # whatever `python` Git Bash happens to find on the runner PATH.
@@ -531,6 +575,7 @@ jobs:
     # checked -- every other lint finding is warn-only. A cancelled/skipped lint
     # job leaves the output empty, which counts as "no crash" (warned below).
     needs: [lint, linux, windows]
+    # (needs.windows.outputs.signed feeds the release notes.)
     # `main` only -- a PR run must never move the public rolling channel.
     if: ${{ !cancelled() && github.ref == 'refs/heads/main' && needs.linux.result == 'success' && needs.windows.result == 'success' && needs.lint.outputs.fuzz_crash != 'true' }}
     permissions:
@@ -578,7 +623,14 @@ jobs:
           cat SHA256SUMS
 
       - name: Write release notes
+        env:
+          WINDOWS_SIGNED: ${{ needs.windows.outputs.signed }}
         run: |
+          if [ "$WINDOWS_SIGNED" = "true" ]; then
+            signing="Windows binaries are Authenticode-signed (verify with \`Get-AuthenticodeSignature\`)."
+          else
+            signing="Windows binaries are **unsigned**: SmartScreen will warn (More info > Run anyway). Verify the download against \`SHA256SUMS\`."
+          fi
           {
             echo "Rolling build of \`main\` -- **not a stable release.** This release is"
             echo "republished and its assets replaced on every commit whose Linux and"
@@ -595,6 +647,8 @@ jobs:
             echo "Extract the whole archive and read \`QUICKSTART.txt\` inside it. Keep the"
             echo "\`assets\` folder next to the program: the app keeps its \`data\` folder there."
             echo "Verify downloads with \`sha256sum -c SHA256SUMS --ignore-missing\`."
+            echo
+            echo "$signing"
             echo
             echo "Built from \`${GITHUB_SHA}\` by [run ${GITHUB_RUN_ID}](${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID})."
           } > NOTES.md

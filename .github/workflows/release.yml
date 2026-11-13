@@ -73,6 +73,11 @@ jobs:
     name: Windows x86_64 (GUI + relay)
     runs-on: windows-latest
     timeout-minutes: 150
+    env:
+      # Optional Authenticode signing (docs/release-signing.md); secrets cannot be read in `if:`.
+      SIGNING_CONFIGURED: ${{ secrets.AZURE_TENANT_ID != '' }}
+    outputs:
+      signed: ${{ env.SIGNING_CONFIGURED }}
     steps:
       - uses: actions/checkout@v4
 
@@ -86,6 +91,40 @@ jobs:
 
       - name: Build release binaries
         run: cargo build --release --bin fractalengine --bin fe-relay
+
+      # Between build and packaging so SHA256SUMS cover signed files. To change
+      # provider (SignPath, signtool + cloud HSM) replace ONLY the "Sign" step.
+      - name: Sign Windows binaries (Azure Trusted Signing)
+        if: env.SIGNING_CONFIGURED == 'true'
+        uses: Azure/artifact-signing-action@v2
+        env:
+          AZURE_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
+          AZURE_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
+          AZURE_CLIENT_SECRET: ${{ secrets.AZURE_CLIENT_SECRET }}
+        with:
+          endpoint: ${{ vars.AZURE_SIGNING_ENDPOINT }}
+          signing-account-name: ${{ vars.AZURE_SIGNING_ACCOUNT }}
+          certificate-profile-name: ${{ vars.AZURE_SIGNING_PROFILE }}
+          files-folder: target/release
+          files-folder-filter: exe
+          file-digest: SHA256
+          timestamp-rfc3161: http://timestamp.acs.microsoft.com
+          timestamp-digest: SHA256
+
+      - name: Verify Authenticode signatures
+        if: env.SIGNING_CONFIGURED == 'true'
+        shell: pwsh
+        run: |
+          foreach ($exe in 'target/release/fractalengine.exe', 'target/release/fe-relay.exe') {
+            $sig = Get-AuthenticodeSignature $exe
+            Write-Host "$exe : $($sig.Status)"
+            if ($sig.Status -ne 'Valid') { throw "$exe is not validly signed ($($sig.Status))" }
+          }
+
+      - name: Note unsigned Windows binaries
+        if: env.SIGNING_CONFIGURED != 'true'
+        shell: bash
+        run: echo "::notice title=Unsigned Windows binaries::Signing is not configured; the Windows binaries are unsigned and SmartScreen will warn. See docs/release-signing.md."
 
       # Pin the interpreter the packaging script runs on rather than relying on
       # whatever `python` Git Bash happens to find on the runner PATH.
@@ -111,6 +150,10 @@ jobs:
     name: Windows ARM64 (GUI, MSVC cross)
     runs-on: windows-latest
     timeout-minutes: 150
+    env:
+      SIGNING_CONFIGURED: ${{ secrets.AZURE_TENANT_ID != '' }}
+    outputs:
+      signed: ${{ env.SIGNING_CONFIGURED }}
     steps:
       - uses: actions/checkout@v4
 
@@ -126,6 +169,38 @@ jobs:
 
       - name: Build release binary
         run: cargo build --release --target aarch64-pc-windows-msvc --bin fractalengine
+
+      # Same provider-swappable signing step as windows-x86_64 above.
+      - name: Sign Windows binaries (Azure Trusted Signing)
+        if: env.SIGNING_CONFIGURED == 'true'
+        uses: Azure/artifact-signing-action@v2
+        env:
+          AZURE_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
+          AZURE_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
+          AZURE_CLIENT_SECRET: ${{ secrets.AZURE_CLIENT_SECRET }}
+        with:
+          endpoint: ${{ vars.AZURE_SIGNING_ENDPOINT }}
+          signing-account-name: ${{ vars.AZURE_SIGNING_ACCOUNT }}
+          certificate-profile-name: ${{ vars.AZURE_SIGNING_PROFILE }}
+          files-folder: target/aarch64-pc-windows-msvc/release
+          files-folder-filter: exe
+          file-digest: SHA256
+          timestamp-rfc3161: http://timestamp.acs.microsoft.com
+          timestamp-digest: SHA256
+
+      - name: Verify Authenticode signatures
+        if: env.SIGNING_CONFIGURED == 'true'
+        shell: pwsh
+        run: |
+          $exe = 'target/aarch64-pc-windows-msvc/release/fractalengine.exe'
+          $sig = Get-AuthenticodeSignature $exe
+          Write-Host "$exe : $($sig.Status)"
+          if ($sig.Status -ne 'Valid') { throw "$exe is not validly signed ($($sig.Status))" }
+
+      - name: Note unsigned Windows binaries
+        if: env.SIGNING_CONFIGURED != 'true'
+        shell: bash
+        run: echo "::notice title=Unsigned Windows binaries::Signing is not configured; the Windows binaries are unsigned and SmartScreen will warn. See docs/release-signing.md."
 
       # Pin the interpreter the packaging script runs on rather than relying on
       # whatever `python` Git Bash happens to find on the runner PATH.
@@ -289,5 +364,7 @@ jobs:
             Extract the whole archive and read `QUICKSTART.txt` inside it. Keep the
             `assets` folder next to the desktop app: the app keeps its `data` folder there.
             Verify downloads with `sha256sum -c SHA256SUMS --ignore-missing`.
+
+            Windows binaries signed: ${{ needs.windows-x86_64.outputs.signed == 'true' && needs.windows-arm64.outputs.signed == 'true' && 'yes (Authenticode)' || 'no (SmartScreen will warn: More info, then Run anyway)' }}
 
             Docker: `docker pull ghcr.io/${{ github.repository_owner }}/fractalengine-relay:${{ github.ref_name }}`

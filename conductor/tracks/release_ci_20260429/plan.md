@@ -239,7 +239,11 @@ the first real `v*` tag is cut. Distribution-trust scope only.
 
 ---
 
-### Task 3.1 — Windows Authenticode signing [ ]
+### Task 3.1 — Windows Authenticode signing [~] (wired 2026-11-13, provider choice open)
+
+Status: optional signing step + verify wired in `build-artifacts.yml` and `release.yml`
+(Azure Trusted Signing, gated on the `AZURE_TENANT_ID` secret; unsigned builds stay green with
+a notice). Remaining: pick the provider, add secrets/variables, confirm a signed run. See `docs/release-signing.md`.
 
 Sign `fractalengine.exe` and `fe-relay.exe` in every Windows job
 (`windows-x86_64`, `windows-arm64`) in `release.yml` before packaging.
