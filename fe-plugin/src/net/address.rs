@@ -73,7 +73,7 @@ fn canonical(ip: IpAddr) -> IpAddr {
 }
 
 /// Why a declared host is refused before any lookup: an IP literal it may never reach (`None` for names and admitted literals).
-pub(super) fn literal_refusal(host: &str) -> Option<String> {
+pub fn literal_refusal(host: &str) -> Option<String> {
     let ip = host.parse::<IpAddr>().ok()?;
     (!admits(host, ip)).then(|| format!("{host} is not a public address"))
 }
@@ -98,7 +98,7 @@ pub(super) async fn resolve_checked(host: &str, port: u16) -> Result<Vec<SocketA
 }
 
 /// The egress clients' resolver: reqwest connects to exactly the addresses checked here (IP literals were checked at build).
-pub(super) struct CheckedResolver;
+pub struct CheckedResolver;
 
 impl reqwest::dns::Resolve for CheckedResolver {
     fn resolve(&self, name: reqwest::dns::Name) -> reqwest::dns::Resolving {

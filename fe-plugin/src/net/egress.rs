@@ -15,6 +15,7 @@ use super::{
     auth_header, host_rate, host_size, is_credential_header, is_host_owned_header, Delivery, EndpointState, Net, NetState,
     HOST_RATE_CEILING_HZ, MAX_EGRESS_IN_FLIGHT,
 };
+use crate::bindings::egress::take_egress_token;
 use crate::bus::rate::TokenBucket;
 use crate::bus::{HostError, InstanceKey};
 
@@ -115,11 +116,9 @@ impl Net {
         if request.body.len() as u64 > max_request {
             return Err(plain(HostError::BudgetExceeded(format!("request body is over max_request_bytes ({max_request})"))));
         }
-        let allowed = instance
-            .egress_buckets
-            .entry(endpoint.to_string())
-            .or_insert_with(|| TokenBucket::new(host_rate(declared.rate_hz, MAX_EGRESS_RATE_HZ), now))
-            .try_take(now);
+        let rate_hz = host_rate(declared.rate_hz, MAX_EGRESS_RATE_HZ);
+        let own = instance.egress_buckets.entry(endpoint.to_string()).or_insert_with(|| TokenBucket::new(rate_hz, now));
+        let allowed = take_egress_token(&self.sources.shared_egress, key, endpoint, rate_hz, now, own);
         if !allowed {
             return Err(plain(HostError::RateLimited(format!("{endpoint} is over rate_hz"))));
         }
@@ -234,11 +233,9 @@ impl Net {
         if retain && declared.retain != Some(true) {
             return Err(plain(HostError::InvalidInput("retain was not declared for this endpoint".into())));
         }
-        let allowed = instance
-            .egress_buckets
-            .entry(endpoint.to_string())
-            .or_insert_with(|| TokenBucket::new(host_rate(declared.rate_hz, HOST_RATE_CEILING_HZ), now))
-            .try_take(now);
+        let rate_hz = host_rate(declared.rate_hz, HOST_RATE_CEILING_HZ);
+        let own = instance.egress_buckets.entry(endpoint.to_string()).or_insert_with(|| TokenBucket::new(rate_hz, now));
+        let allowed = take_egress_token(&self.sources.shared_egress, key, endpoint, rate_hz, now, own);
         if !allowed {
             return Err(plain(HostError::RateLimited(format!("{endpoint} is over rate_hz"))));
         }

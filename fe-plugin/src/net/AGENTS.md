@@ -251,3 +251,17 @@ at the point of use:
   `unregister_instance` is the stop step and drops queued frames (their HTTP callers see 404). The
   dependencies `fe-plugin/Cargo.toml` needs for this directory are listed in the N1 result (NEEDS).
 - **F-DEVADAPT** (device adapter) and **P6** (loopback MQTT broker, loopback HTTP sink) exercise the dial-outs live.
+
+## §shared-egress — one budget per installation (B10d)
+
+`NetSources.shared_egress` is the binding activator's `SharedEgressBuckets` (the binary passes the same handle to
+both). HTTP and MQTT egress draw through `bindings::egress::take_egress_token`: an instance a binding keeps uses its
+installation's bucket for the endpoint, any other instance its own per-instance bucket. `Default` joins nothing, so
+a host without bindings behaves as before.
+
+## §registry-addresses — R-NET-30
+
+`registry_client::RegistryClient` uses the same `CheckedResolver` (exported from `net`) so a registry name resolves
+once and connects to exactly the checked addresses. IP-literal base URLs and every redirect hop go through
+`literal_refusal`; the documented loopback rule applies (`127.0.0.1`, `::1`, `localhost` reach loopback only, any
+other host global unicast only). R-NET-18 stays deferred.

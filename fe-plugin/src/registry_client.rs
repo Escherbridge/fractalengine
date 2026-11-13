@@ -5,6 +5,7 @@ use std::time::Duration;
 use fe_format::license::{License, LicenseType};
 use fe_format::HexonArchive;
 
+use crate::net::{literal_refusal, CheckedResolver};
 use crate::package::{payload_hash, SignatureEntry};
 
 /// Registry protocol version this client speaks.
@@ -23,6 +24,7 @@ const MAX_JSON_BYTES: u64 = 1024 * 1024;
 const MAX_HEALTH_BYTES: u64 = 64 * 1024;
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(120);
+const MAX_REDIRECTS: usize = 5;
 
 /// Typed registry install failures.
 #[derive(Debug, thiserror::Error)]
@@ -72,24 +74,39 @@ pub struct RegistryClient {
     base_url: String,
     token: Option<String>,
     http: reqwest::Client,
+    /// Why the base URL's host may never be dialled (a non-public IP literal); every request fails with it.
+    refusal: Option<String>,
 }
 
 impl RegistryClient {
     /// Client for `base_url` (trailing slash tolerated) with an optional bearer token.
     pub fn new(base_url: impl Into<String>, token: Option<String>) -> Self {
+        let base_url: String = base_url.into();
+        let refusal = host_refusal(&base_url);
+        // Names resolve once through the checked resolver; IP literals (never resolved) and redirect hops are checked here.
         let http = reqwest::Client::builder()
             .connect_timeout(CONNECT_TIMEOUT)
             .timeout(REQUEST_TIMEOUT)
-            .build()
-            .unwrap_or_else(|error| {
-                tracing::warn!(%error, "registry client: timeouts unavailable, using the default client");
-                reqwest::Client::new()
-            });
-        Self {
-            base_url: base_url.into().trim_end_matches('/').to_string(),
-            token,
-            http,
-        }
+            .dns_resolver(std::sync::Arc::new(CheckedResolver))
+            .redirect(reqwest::redirect::Policy::custom(|attempt| {
+                if attempt.previous().len() >= MAX_REDIRECTS {
+                    attempt.error("too many redirects")
+                } else if let Some(reason) = host_refusal(attempt.url().as_str()) {
+                    attempt.error(reason)
+                } else {
+                    attempt.follow()
+                }
+            }))
+            .build();
+        // A client that failed to build is never used: the default one would dial unchecked addresses.
+        let (http, refusal) = match http {
+            Ok(http) => (http, refusal),
+            Err(error) => {
+                tracing::warn!(%error, "registry client: hardened client unavailable, requests are refused");
+                (reqwest::Client::new(), refusal.or_else(|| Some(format!("registry client unavailable: {error}"))))
+            }
+        };
+        Self { base_url: base_url.trim_end_matches('/').to_string(), token, http, refusal }
     }
 
     fn get(&self, url: reqwest::Url) -> reqwest::RequestBuilder {
@@ -100,6 +117,9 @@ impl RegistryClient {
     }
 
     fn url(&self, segments: &[&str]) -> Result<reqwest::Url, RegistryInstallError> {
+        if let Some(reason) = &self.refusal {
+            return Err(RegistryInstallError::Transport(reason.clone()));
+        }
         let mut url = reqwest::Url::parse(&self.base_url)
             .map_err(|e| RegistryInstallError::Transport(format!("bad registry url: {e}")))?;
         url.path_segments_mut()
@@ -201,6 +221,14 @@ impl RegistryClient {
     }
 }
 
+/// Why `url`'s host is refused before any lookup: a non-public IP literal other than the declared loopback names
+/// (net/AGENTS.md §addresses); names are checked by the resolver at connect time.
+fn host_refusal(url: &str) -> Option<String> {
+    let parsed = reqwest::Url::parse(url).ok()?;
+    let host = parsed.host_str()?.trim_start_matches('[').trim_end_matches(']').to_ascii_lowercase();
+    literal_refusal(&host)
+}
+
 /// Reads a response body, refusing it past `cap` bytes.
 async fn read_capped(mut response: reqwest::Response, cap: u64) -> Result<Vec<u8>, RegistryInstallError> {
     let mut body = Vec::new();
@@ -275,6 +303,24 @@ pub fn unwrap_package(archive_bytes: &[u8]) -> Result<FetchedPackage, RegistryIn
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn registry_hosts_follow_the_address_policy() {
+        for (url, refused) in [
+            ("https://store.example.org/", false),
+            ("http://127.0.0.1:8080/", false),
+            ("http://[::1]:8080/", false),
+            ("http://localhost:8080/", false),
+            ("https://8.8.8.8/", false),
+            ("http://10.0.0.5/", true),
+            ("http://169.254.169.254/", true),
+            ("http://[fd00::1]/", true),
+        ] {
+            assert_eq!(host_refusal(url).is_some(), refused, "{url}");
+            let client = RegistryClient::new(url, None);
+            assert_eq!(client.url(&["health"]).is_err(), refused, "{url}");
+        }
+    }
 
     #[test]
     fn protocol_header_table() {

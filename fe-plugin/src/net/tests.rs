@@ -165,7 +165,8 @@ fn net_journey_ingress_table_credentials_and_egress_refusals() {
     roles.set(EDITOR, RoleLevel::Editor);
     roles.set(VIEWER, RoleLevel::Viewer);
     let audit = Arc::new(Audit::default());
-    let sources = NetSources { roles: roles.clone(), audit: audit.clone(), credentials: Arc::new(NoCredentials), runtime: None };
+    let shared = crate::bindings::activation::SharedEgressBuckets::default();
+    let sources = NetSources { roles: roles.clone(), audit: audit.clone(), credentials: Arc::new(NoCredentials), runtime: None, shared_egress: shared.clone() };
     let net = Net::new(Arc::new(clock.clone()), sources);
     let spec = instance(PETAL, "inst-adapter");
     let key = spec.key();
@@ -318,7 +319,7 @@ fn net_journey_ingress_table_credentials_and_egress_refusals() {
         // Another package's slot under a name this manifest could declare too (P2P-QA steer 2026-11-09 01:50).
         (("org.example.vault-client".to_string(), "vault-token".to_string()), filled(None, "not-yours")),
     ]));
-    let operator = Net::new(Arc::new(clock.clone()), NetSources { roles: roles.clone(), audit: audit.clone(), credentials: Arc::new(store), runtime: None });
+    let operator = Net::new(Arc::new(clock.clone()), NetSources { roles: roles.clone(), audit: audit.clone(), credentials: Arc::new(store), runtime: None, shared_egress: Default::default() });
     for (rule, auth, expected) in [
         ("an unfilled slot", slot(AuthScheme::Bearer, "absent", None), None),
         ("an empty secret", slot(AuthScheme::Bearer, "blank", None), None),
@@ -460,6 +461,13 @@ fn net_journey_ingress_table_credentials_and_egress_refusals() {
         assert_eq!((error.code(), audit.denials() - before), (code, audited), "{rule}");
     }
     assert_eq!(net.counters_for_installation("inst-adapter").unwrap().egress_refused - refused_before, egress_calls);
+
+    // B10d: a binding-kept instance draws from its installation's shared bucket, not the drained per-instance one.
+    shared.join(&key, "inst-adapter");
+    let shared_codes: Vec<&str> =
+        (0..2).map(|_| net.http_request(&key, "sink", request(Method::Post, "v1", vec![], b"{}")).unwrap_err().code()).collect();
+    assert_eq!(shared_codes, ["not-available", "rate-limited"], "one shared token, then the shared limit");
+    shared.leave(&key);
 
     // §egress MQTT: a declared filter, no wildcard publish, size, QoS and retain as declared, then rate.
     let topic = "site-a/d1/command";

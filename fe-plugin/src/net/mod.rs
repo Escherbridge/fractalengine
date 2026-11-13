@@ -20,12 +20,13 @@ use fe_sdk::manifest_v2::{AuthScheme, AuthSlot, Egress, Ingress, ReconnectMs};
 use serde::Serialize;
 use tokio::sync::{mpsc, oneshot, watch};
 
+use crate::bindings::activation::SharedEgressBuckets;
 use crate::bus::rate::TokenBucket;
 use crate::bus::sources::{AuditAction, AuditEntry, AuditSink, RoleSource};
 use crate::bus::{HostError, InstanceKey, InstanceSpec};
 use crate::tick::Clock;
 
-pub use address::is_public_unicast;
+pub use address::{is_public_unicast, literal_refusal, CheckedResolver};
 pub use egress::{IncomingResponse, OutgoingRequest};
 pub use ingress::{HttpIngressRequest, IngressRefusal, WsAcceptRequest, WsSession};
 
@@ -104,6 +105,8 @@ pub struct NetSources {
     pub audit: Arc<dyn AuditSink>,
     pub credentials: Arc<dyn CredentialStore>,
     pub runtime: Option<tokio::runtime::Handle>,
+    /// The binding activator's shared egress buckets (bindings.md §5.6); `Default` keeps per-instance buckets only.
+    pub shared_egress: SharedEgressBuckets,
 }
 
 /// One endpoint's state in extension status.
