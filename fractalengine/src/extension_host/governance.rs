@@ -1832,7 +1832,7 @@ mod tests {
             let content_key = ContentKey::from_bytes([35; 32]);
             let build_hash = licensed.content_hash.clone();
             let mint = |by: &LocalIssuer, device_did: &str, now: u64| {
-                let encrypted_key = by.encrypted_key_for(&content_key).unwrap();
+                let encrypted_key = by.encrypted_key_for(&content_key, &licensed.package_id).unwrap();
                 by.mint(
                     &MintRequest {
                         licensee_did: &licensee,

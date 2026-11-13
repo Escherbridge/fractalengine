@@ -72,12 +72,16 @@ Extensions window open via `Toggle Extensions panel`). Expected state follows ea
    A start failure reads `update failed, previous version kept: <reason>` and the button is live again.
 5. **Uninstall**: `Uninstall <id>` -> `Confirm uninstall <id>` / `Keep <id>`; confirm -> back on the list, the row is gone and
    none of its toolbar, sidebar or context entries draw.
-6. **Local admin channel leg**: `fe-ext admin --json disable <installation>` against the running app -> the row reads `Disabled`
+6. **Disable all**: with one row `Enabled`, `Disable all extensions` -> `Confirm disable all extensions` / `Keep extensions
+   running`; confirm -> every row `Disabled`, and `Enable all extensions` replaces the control (it answers `host-off` while
+   `FE_EXT_DISABLE_ALL=1` was set at startup). Same `SetHostSwitch` path as the CLI's `disable-all`, audited `channel: gui`
+   (C-EXT closed R-BIN-20; governance.md host-switch row names "the Extensions panel or `fe-ext admin`").
+7. **Local admin channel leg**: `fe-ext admin --json disable <installation>` against the running app -> the row reads `Disabled`
    without any GUI click; an install verb over the channel still opens the consent dialog here and waits for its button.
-7. **Failure states**: a tampered index shows its refusal verbatim in Browse with `Refresh extension list` live; a refused detail
+8. **Failure states**: a tampered index shows its refusal verbatim in Browse with `Refresh extension list` live; a refused detail
    shows `Details are unavailable: <reason>` and `Back to extension results` returns to the intact list; `Dismiss extension error`
    clears the red line.
-8. **Context menu**: inspect a fleet-sim node once (so its properties load), right-click it -> `ext:org.example.fleet-sim/start-this`
+9. **Context menu**: inspect a fleet-sim node once (so its properties load), right-click it -> `ext:org.example.fleet-sim/start-this`
    shows; pressing it closes the menu and sends `{"node_id": <id>}`.
 
 ## §host-handle (I-UI, R-UI)

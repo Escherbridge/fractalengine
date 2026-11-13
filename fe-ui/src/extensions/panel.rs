@@ -168,6 +168,8 @@ pub enum ExtensionOp {
     RevokeConsent { installation_id: String },
     /// Remove the installation.
     Uninstall { installation_id: String },
+    /// Disable all (`true`) stops every instance on this host; `false` clears it (governance.md §host switch).
+    SetHostSwitch { disabled: bool },
     /// Ask the bridge for a fresh `ExtensionEvent::Bindings` snapshot of the active petal.
     RefreshBindings,
     /// Write one binding row at `target` (Manager+ is judged by the DB plane); the bridge answers with a fresh snapshot.
@@ -238,6 +240,8 @@ pub enum PendingConfirm {
     Uninstall(String),
     /// Revoke consent.
     Revoke(String),
+    /// Stop every extension on this host.
+    DisableAll,
 }
 
 /// Panel state; the only thing fe-ui code mutates.
@@ -332,6 +336,11 @@ impl ExtensionsPanelState {
         self.queue(op, if enable { "Enabling" } else { "Disabling" });
     }
 
+    /// Clear Disable all; each installation starts again when enabled.
+    pub fn request_enable_all(&mut self) {
+        self.queue(ExtensionOp::SetHostSwitch { disabled: false }, "Enabling all extensions");
+    }
+
     /// First click of a destructive action.
     pub fn ask_confirm(&mut self, confirm: PendingConfirm) {
         self.confirm = Some(confirm);
@@ -353,6 +362,9 @@ impl ExtensionsPanelState {
             }
             Some(PendingConfirm::Revoke(installation_id)) => {
                 self.queue(ExtensionOp::RevokeConsent { installation_id }, "Revoking consent");
+            }
+            Some(PendingConfirm::DisableAll) => {
+                self.queue(ExtensionOp::SetHostSwitch { disabled: true }, "Disabling all extensions");
             }
             None => {}
         }
@@ -560,6 +572,42 @@ fn draw_installed(ui: &mut egui::Ui, state: &mut ExtensionsPanelState) {
     if let Some(id) = open {
         state.open_details(&id);
     }
+    host_switch_row(ui, state);
+}
+
+/// Disable all (confirmed) while anything runs, else Enable all; the CLI's `disable-all` / `enable-all` twin.
+fn host_switch_row(ui: &mut egui::Ui, state: &mut ExtensionsPanelState) {
+    let idle = !state.busy();
+    let running = state.rows.iter().any(|row| row.status == RowStatus::Enabled);
+    ui.horizontal(|ui| {
+        if state.pending_confirm() == Some(&PendingConfirm::DisableAll) {
+            ui.label(egui::RichText::new("Stop every extension on this computer?").small());
+            if ui
+                .add_enabled(idle, egui::Button::new("Disable all"))
+                .button_named(ui, "Confirm disable all extensions")
+                .clicked()
+            {
+                state.accept_confirm();
+            }
+            if ui.button("Keep running").button_named(ui, "Keep extensions running").clicked() {
+                state.cancel_confirm();
+            }
+        } else if running {
+            if ui
+                .add_enabled(idle, egui::Button::new("Disable all"))
+                .button_named(ui, "Disable all extensions")
+                .clicked()
+            {
+                state.ask_confirm(PendingConfirm::DisableAll);
+            }
+        } else if ui
+            .add_enabled(idle, egui::Button::new("Enable all"))
+            .button_named(ui, "Enable all extensions")
+            .clicked()
+        {
+            state.request_enable_all();
+        }
+    });
 }
 
 fn status_color(status: &RowStatus) -> egui::Color32 {
@@ -699,6 +747,21 @@ mod tests {
         assert!(!state.stopped_packages().contains("org.example.fleet-sim"));
         state.apply_event(ExtensionEvent::Rows(vec![row("1.0.0", RowStatus::Disabled, Some("1.1.0"))]), &mut consent);
         assert!(state.stopped_packages().contains("org.example.fleet-sim"));
+
+        // Disable all takes two clicks while anything runs; Enable all clears it (the CLI's disable-all twin).
+        let view = std::mem::replace(&mut state.view, PanelView::Installed);
+        state.apply_event(ExtensionEvent::Rows(vec![row("1.0.0", RowStatus::Enabled, Some("1.1.0"))]), &mut consent);
+        assert!(enabled(&frame(&mut state), "Disable all extensions"));
+        state.ask_confirm(PendingConfirm::DisableAll);
+        assert!(enabled(&frame(&mut state), "Confirm disable all extensions"));
+        state.accept_confirm();
+        assert_eq!(state.take_ops(), vec![ExtensionOp::SetHostSwitch { disabled: true }]);
+        state.apply_event(ExtensionEvent::Rows(vec![row("1.0.0", RowStatus::Disabled, Some("1.1.0"))]), &mut consent);
+        assert!(enabled(&frame(&mut state), "Enable all extensions"));
+        state.request_enable_all();
+        assert_eq!(state.take_ops(), vec![ExtensionOp::SetHostSwitch { disabled: false }]);
+        state.apply_event(ExtensionEvent::Rows(vec![row("1.0.0", RowStatus::Disabled, Some("1.1.0"))]), &mut consent);
+        state.view = view;
 
         // Update with a delta: re-prompt; the previous version stays until the new one is active; a failed start rolls back.
         details::begin_update(&mut state, "inst-1");

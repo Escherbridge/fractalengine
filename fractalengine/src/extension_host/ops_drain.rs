@@ -491,6 +491,10 @@ fn grant_sections(raw: &Value) -> Vec<ConsentSection> {
 
 /// Read a package file under the package cap.
 fn read_package_file(path: &str) -> Result<Vec<u8>, String> {
+    // Checked before the open: opening a FIFO or device path would block the single ops worker (R-ADMIN-06).
+    if !std::fs::metadata(path).map_err(|error| format!("{path}: {error}"))?.is_file() {
+        return Err(format!("{path}: not a file"));
+    }
     let file = std::fs::File::open(path).map_err(|error| format!("{path}: {error}"))?;
     let metadata = file.metadata().map_err(|error| format!("{path}: {error}"))?;
     if !metadata.is_file() {
@@ -653,6 +657,10 @@ impl OpsWorker {
             }
             ExtensionOp::RevokeConsent { installation_id } => self.revoke_consent(&installation_id, scope),
             ExtensionOp::Uninstall { installation_id } => self.uninstall(&installation_id, scope),
+            ExtensionOp::SetHostSwitch { disabled } => {
+                self.set_host_switch(disabled, CHANNEL_GUI).map_err(|message| format!("host-off: {message}"))?;
+                Ok(vec![self.rows_event(scope)])
+            }
             ExtensionOp::RefreshBindings => Ok(vec![self.bindings_event(scope)?]),
             ExtensionOp::SetBinding { target, hook, key, mode, package_id, version_req, config, runs_on } => {
                 let template = BindingWrite { target, hook, key, mode, package_id, version_req, config, runs_on };
@@ -1687,26 +1695,38 @@ impl OpsWorker {
                     Err(AdminRefusal::new(RefusalCode::NotFound, format!("{installation_id} is not installed")))
                 }
             }
-            AdminVerb::DisableAll {} => {
-                let stopped = lock(&self.manager).disable_all();
-                self.ports.host_switch_changed(true, CHANNEL_CLI);
-                Ok(self.admin_result(scope, None, Some(format!("Disabled all extensions ({} stopped)", stopped.len()))))
-            }
-            AdminVerb::EnableAll {} => {
-                if std::env::var(EXT_DISABLE_ALL_ENV).is_ok_and(|value| value == "1") {
-                    Err(AdminRefusal::new(RefusalCode::HostOff, format!("{EXT_DISABLE_ALL_ENV}=1 was set at startup and still wins")))
-                } else {
-                    lock(&self.manager).enable_all();
-                    self.ports.host_switch_changed(false, CHANNEL_CLI);
+            AdminVerb::DisableAll {} => match self.set_host_switch(true, CHANNEL_CLI) {
+                Ok(stopped) => Ok(self.admin_result(scope, None, Some(format!("Disabled all extensions ({stopped} stopped)")))),
+                Err(message) => Err(AdminRefusal::new(RefusalCode::HostOff, message)),
+            },
+            AdminVerb::EnableAll {} => match self.set_host_switch(false, CHANNEL_CLI) {
+                Ok(_) => {
                     let message = "Cleared Disable all; each installation starts again when enabled".to_owned();
                     Ok(self.admin_result(scope, None, Some(message)))
                 }
-            }
+                Err(message) => Err(AdminRefusal::new(RefusalCode::HostOff, message)),
+            },
         };
         match result {
             Ok(result) => AdminOutcome::Done(result),
             Err(refusal) => AdminOutcome::Refused(refusal),
         }
+    }
+
+    /// Disable all (`true`) or Enable all from the panel or the CLI; returns how many instances stopped.
+    /// `FE_EXT_DISABLE_ALL=1` at startup keeps the host off, so Enable all is refused while it is set.
+    fn set_host_switch(&mut self, disabled: bool, channel: &str) -> Result<usize, String> {
+        if !disabled && std::env::var(EXT_DISABLE_ALL_ENV).is_ok_and(|value| value == "1") {
+            return Err(format!("{EXT_DISABLE_ALL_ENV}=1 was set at startup and still wins"));
+        }
+        let stopped = if disabled {
+            lock(&self.manager).disable_all().len()
+        } else {
+            lock(&self.manager).enable_all();
+            0
+        };
+        self.ports.host_switch_changed(disabled, channel);
+        Ok(stopped)
     }
 
     /// Every installation (or one) as the CLI shows it.

@@ -35,7 +35,7 @@ Every view renders each state from data, never from copy that explains the layou
 
 Names are stable and carry the package id so an agent or screen reader can address one row among many.
 
-`Installed extensions`, `Browse extensions`, `Package file path`, `Install from file`, `Open <package_id>`, `Back to installed extensions`, `Overview of <id>`, `Permissions of <id>`, `Enable|Disable <binding label> for <id>`, `Update <id> to <version>`, `Uninstall <id>` then `Confirm uninstall <id>` / `Keep <id>`, `Revoke consent for <id>` then `Confirm revoke consent for <id>` / `Keep consent for <id>`, `Extension source`, `Search extensions`, `Refresh extension list`, `Install <id> <version>`, `Dismiss extension error`, `Sort extensions`, `Details of <id>`, `Get licence for <id>`, `Check licence for <id>`, `Toggle Extensions panel`, `Extension bindings`, `Refresh bindings`. Binding names are in the next section. J9 (`panel.rs::extensions_panel_journey`) asserts them through the accessibility tree.
+`Installed extensions`, `Browse extensions`, `Package file path`, `Install from file`, `Open <package_id>`, `Back to installed extensions`, `Overview of <id>`, `Permissions of <id>`, `Enable|Disable <binding label> for <id>`, `Update <id> to <version>`, `Uninstall <id>` then `Confirm uninstall <id>` / `Keep <id>`, `Revoke consent for <id>` then `Confirm revoke consent for <id>` / `Keep consent for <id>`, `Extension source`, `Search extensions`, `Refresh extension list`, `Install <id> <version>`, `Dismiss extension error`, `Sort extensions`, `Load more extensions`, `Details of <id>`, `Back to extension results`, `Reviewed <id>`, `Get licence for <id>`, `Check licence for <id>`, `Disable all extensions` then `Confirm disable all extensions` / `Keep extensions running`, `Enable all extensions`, `Toggle Extensions panel`, `Extension bindings`, `Refresh bindings`. Binding names are in the next section. J9 (`panel.rs::extensions_panel_journey`) asserts them through the accessibility tree.
 
 ## Bindings view and its names
 
@@ -51,7 +51,7 @@ The view lists the hook points at the active petal, grouped by family, with the 
 A Browse source that speaks the store contract adds three steps, all read-only until the operator acts:
 
 1. **Details.** `Details of <id>` asks the bridge to verify the package's detail document and header (counter-signature, review state). The result shows `Reviewed <id>` or `Unavailable: <reason>` verbatim.
-2. **Licence.** A licensed package shows `Licence not checked`. `Get licence for <id>` asks the issuer for a token and the bridge verifies it; the row then reads `Licensed until <date>`, `Licensed` or `Licence refused: <reason>`. `Check licence for <id>` re-verifies the token on record.
+2. **Licence.** A licensed package shows `Licence not checked`. `Get licence for <id>` opens the package's licence page in the system browser (the bridge appends the licensee and device ids). `Check licence for <id>` asks the issuer for a token and the bridge verifies and keeps it; the row then reads `Licensed until <date>`, `Licensed` or `Licence refused: <reason>`.
 3. **Install.** `Install <id> <version>` follows the normal consent path. A paid package installs only with a verified token; a source only moves sealed bytes.
 
 Credentials never reach a source: catalogue reads are anonymous, and only the token request authenticates, by its own proof.
@@ -69,7 +69,9 @@ fe-ui never touches the host. Buttons queue an `ExtensionOp`; the binary bridge 
 
 Install from file: `InstallFromFile{path}` -> bridge verifies sealed bytes (`verify_plugin_package`), stages, answers `ConsentNeeded{is_update: false}` -> dialog -> `Consent{digest}` -> `Rows` snapshot. Nothing runs before the consent op, and consent is recorded against the digest the dialog displayed.
 
-Bridge contract (the drain in `fractalengine/src/plugin_bridge.rs` is not written yet; these are its obligations):
+Disable all: below the installed list, `Disable all extensions` (two-step, shown while any row is Enabled) queues `SetHostSwitch{disabled: true}`; otherwise `Enable all extensions` queues `SetHostSwitch{disabled: false}`, which the bridge refuses with `host-off` while `FE_EXT_DISABLE_ALL=1` was set at startup. Both are audited with `channel: gui`, exactly like `fe-ext admin disable-all|enable-all` (`channel: cli`), and reach the portal resolver.
+
+Bridge contract (the drain is `fractalengine/src/extension_host/ops_drain.rs` `OpsWorker::dispatch`; these are its obligations):
 
 - `Refresh` answers `Rows` and `Browse(Sources)`.
 - `InstallFromRegistry` for a package id that is already installed stages an update of that installation (`ConsentNeeded{is_update: true}`, previous version kept), never a second installation.
