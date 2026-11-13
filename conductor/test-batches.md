@@ -75,6 +75,7 @@ Selection, gimbal, transforms, snapping, viewport camera, GLTF asset import, rig
 | `fe-ui/src/panels/annotation_card.rs` | 12 |
 | `fe-renderer/src/{camera,axis_gizmo,addressing,grid,instancing}.rs`, `fe-renderer/tests/renderer_test.rs` | 76 |
 | `fractalengine/src/asset_bridge.rs` | 11 |
+| `fe-runtime/src/scene_write.rs` (shared scene door: GUI and REST verdicts, `scene_write::tests::`; turn 3) | new |
 
 **Total ≈ 331**
 
@@ -82,6 +83,8 @@ Selection, gimbal, transforms, snapping, viewport camera, GLTF asset import, rig
 cargo test -p fe-ui --lib -- node_manager::tests:: node_manager::context_pick node_manager::viewport_pick node_manager::selection node_manager::shortcuts node_manager::sidebar_sync node_manager::inspector_sync node_manager::transform_broadcast node_manager::dispatch node_manager::router node_manager::pointer node_manager::measure gimbal:: geometry:: actions::transform actions::node:: actions::node_props actions::dimension_callout actions::asset dialogs::gltf_import dialogs::context_menu dialogs::node_options panels::annotation_card
 cargo test -p fe-renderer
 cargo test -p fractalengine --bin fractalengine -- asset_bridge::
+# GUI gate journey (turn 3): the shared scene door's verdict and stage journey; R9 door parity points here
+cargo test -p fe-runtime --lib -- scene_write::tests::
 ```
 
 ---
@@ -142,13 +145,13 @@ missing `reqwest`/`tokio` symbols.
 | `fe-sim/src/**` | 43 |
 | `fe-database/tests/{device_enrolment_test,device_payload_test,iot_reading_test,observation_plane_test}.rs` | 60 |
 | `fe-api/tests/{device_ingest_test,iot_ingest_test,sim_control_test}.rs`, `fe-api/src/sim.rs` | 23 |
-| `fe-database/tests/db_test.rs` (J3 flush fn only: `test_rename_entity_omits_node_scene_change`, body at ~L1138) | 1 |
+| `fe-database/tests/db_test.rs` (J3 flush fn only: `test_rename_entity_omits_node_scene_change`, body at ~L785; turn 3 added the decode-provenance leg at ~L1240 (R-X-29) and the mixed-class all-or-nothing flush leg at ~L1325) | 1 |
 
 **IoT subtotal ≈ 149** — **region total ≈ 760**
 
 ```bash
 cargo test -p fe-terrain --features render
-cargo test -p fe-ui --lib -- terrain_map:: terrain_preview terrain_proposal_state sculpt_cursor node_manager::brush_interaction panels::terrain_tools_panel panels::proposal_report_panel panels::volume_report_panel actions::terrain_proposal verse_manager::db_results::terrain
+cargo test -p fe-ui --lib -- terrain_map:: terrain_preview terrain_proposal_state sculpt_cursor node_manager::brush_interaction panels::terrain_tools_panel panels::proposal_report_panel panels::volume_report_panel actions::terrain_proposal verse_manager::db_results::terrain actions::earthwork_volumes::tests::
 cargo test -p fe-database --lib -- handlers::petal_terrain handlers::petal_render_distance
 cargo test -p fe-database --test petal_render_distance_test
 cargo test -p fe-api --test terrain_mutation_test --test petal_render_distance_api_test --test hexon_tileset_test
@@ -271,6 +274,11 @@ cargo test -p fractalengine-relay
 cargo test -p fe-runtime --lib -- peer_registry distributed_query blob_transport blob_store bevy_blob_reader
 ```
 
+**Binding and scene-asset legs (turn 3):** the all-authors binding wait lives in
+`doc_replicator_replicates_row_over_real_transport` (`fe-sync/src/replicator.rs`, `wait_for_binding`); the scene-asset
+source fallback is `scene_assets::transfer::tests::blob_source_serves_scene_bytes_only_when_exact`
+(`fe-sync/src/scene_assets/transfer.rs`). Both run inside the `fe-sync` line above; no separate filter is needed.
+
 **Docs-engine row (QA-0118):** the `fe-sync` line skips `docs_engine::tests::a_hash_with_no_tileset_context_is_unaffected_by_the_filter`,
 and the next line runs it alone. That test carries the QA-0118 re-arm assertion (a refused scene fetch is retried once the
 provider admits again) and the portal-bundle prefetch check. Its name predates QA-0118; renaming it is a separate change.
@@ -296,6 +304,10 @@ REST, MCP tools, operator gate, screenshot/vision/input, egress/export, elevated
 | `fe-api/src/{bindings,bound_routes}.rs`, `fe-api/tests/{bindings_api_test,extensions_api_test}.rs` (already inside `fe-api/**`; listed for the batch filter) | 4 |
 
 **Total ≈ 297**
+
+**Door parity (turn 3):** REST and MCP refusal of admin verbs and the door parity rows are `extensions_api_test`,
+`portal_bundle_test` and `mcp_integration`, all in the fence below. The shared scene-door verdict journey
+(`scene_write::tests::`) runs once under R2, not here.
 
 ```bash
 cargo test -p fe-api --test api_integration --test api_harness_smoke --test mcp_integration --test screenshot_test --test vision_test --test vision_scope_test --test token_lifecycle_test --test namespace_capability_test --test existence_oracle_test --test record_id_read_test --test gis_test --test export_share_test --test share_signer_persistence_test --test analytics_scope_test --test portal_bundle_test --test ws_integration
@@ -360,29 +372,78 @@ fe-plugin, fe-plugin-test, fe-hexon, fe-hexon-registry, fe-format, fe-sdk, Atlas
 **Total ≈ 335**
 
 ```bash
-cargo test -p fe-plugin
+cargo test -p fe-plugin -- --skip admin::tests:: --skip registry_client::tests::
 cargo test -p fe-plugin-test
-cargo test -p fe-hexon
-cargo test -p fe-hexon-registry
+cargo test -p fe-hexon -- --skip entitlement_client::tests:: --skip entitlement_gate::tests::
 cargo test -p fe-format -- --skip portal_bundle::
 cargo test -p fe-format --lib -- portal_bundle::
 cargo test -p fe-sdk
-cargo test -p fe-ext -- j8
-cargo test --manifest-path tools/fe-ext/guest/Cargo.toml
-cargo test --manifest-path extensions/fleet-sim/Cargo.toml
-cargo test --manifest-path extensions/device-adapter/Cargo.toml
-cargo test --manifest-path extensions/bi-push/Cargo.toml
-cargo test -p fe-plugin -- net::tests:: bindings::resolver::tests:: tick::tests::tick_journey_skips_counts_and_degrades_without_flushing
-cargo test -p fe-hexon --features remote -- registry_source::tests::
 cargo test -p fe-runtime --lib -- extension_binding::tests:: scene_hook_gate::tests::
 cargo test -p fe-ui --lib -- atlas::dashboard atlas::model_editor atlas::search_bar atlas::tag_panel atlas::room_editor actions::hexon
 cargo test -p fe-ui --lib -- extensions::
-cargo test -p fractalengine --bin fractalengine -- extension_host:: plugin_bridge::
+cargo test -p fe-plugin -- net::tests:: bindings::resolver::tests:: tick::tests::tick_journey_skips_counts_and_degrades_without_flushing
+cargo test -p fractalengine --bin fractalengine -- --skip extension_host::admin_channel::tests:: extension_host:: plugin_bridge::
 ```
 
 **Portal bundle validator (fe-format):** `fe-format/src/portal_bundle.rs` tests (`portal_bundle::tests::`) run in the second line,
 and the first line skips them so they run once. Their coverage: validator refusal classes, capability digest, and the capability
 increase rule.
+
+**Partition rule (turn 3):** the three sub-batches below own the admin, store and entitlement tests. The lines above
+`--skip` those module paths so every test runs exactly once when R11 runs. Keep each new skip in step with its
+sub-batch filter, or a test runs twice (or never).
+
+### R11-ADMIN — local admin channel (GUI and `fe-ext admin` only, never REST or MCP)
+
+| Source paths | Note |
+|---|---|
+| `fe-plugin/src/admin/**` (verb table, frame cap, OS-user pipe or socket transport, channel journey) | new in turn 3; `admin::tests::` |
+| `fractalengine/src/extension_host/admin_channel.rs` | new; listener admission, consent relay, busy and shutdown journey |
+| `tools/fe-ext/src/admin.rs` | new; `fe-ext admin` argument mapping, install-file path, consent stream |
+
+```bash
+cargo test -p fe-plugin -- admin::tests::
+cargo test -p fe-ext --lib -- admin::tests::
+cargo test -p fractalengine --bin fractalengine -- extension_host::admin_channel::tests::
+```
+
+### R11-STORE — public store client, registry service, static index, examples
+
+| Source paths | Note |
+|---|---|
+| `fe-plugin/src/registry_client.rs` | registry host address policy (no proxy, same-origin redirects, https only) |
+| `fe-hexon/src/registry_source.rs` | store client rules table; needs the `remote` feature |
+| `fe-hexon-registry/**` | catalogue public and verbatim, the rest behind a token (`tests/registry_test.rs`) |
+| `tools/fe-ext/src/index.rs`, `tools/fe-ext/tests/j8_cli.rs` | index build then verify journey (`index::tests::`); the `j8` legs include the index legs |
+| `tools/fe-ext/guest/**`, `extensions/{fleet-sim,device-adapter,bi-push}/**` | standalone crates, own `[workspace]`; run via `--manifest-path` |
+
+```bash
+cargo test -p fe-plugin -- registry_client::tests::
+cargo test -p fe-hexon --features remote -- registry_source::tests::
+cargo test -p fe-hexon-registry
+cargo test -p fe-ext -- j8
+cargo test -p fe-ext --lib -- index::tests::
+cargo test --manifest-path tools/fe-ext/guest/Cargo.toml
+cargo test --manifest-path extensions/fleet-sim/Cargo.toml
+cargo test --manifest-path extensions/device-adapter/Cargo.toml
+cargo test --manifest-path extensions/bi-push/Cargo.toml
+```
+
+### R11-ENT — entitlements (licence tokens, key wrap, paid-entry gate, token client)
+
+| Source paths | Note |
+|---|---|
+| `fe-format/src/entitlement.rs` | EdDSA token round-trip, every forged token refused, token-request proof; needs feature `entitlement` |
+| `fe-hexon/src/entitlement_client.rs`, `fe-hexon/src/entitlement_gate.rs` | token request and renewal, contract refusal codes, licensed package gate (`fe-hexon` always enables the feature) |
+
+```bash
+cargo test -p fe-format --features entitlement --lib -- entitlement::tests::
+cargo test -p fe-hexon -- entitlement_client::tests:: entitlement_gate::tests::
+```
+
+**Runner note:** `tools/qa/test_batches.ps1` assigns every `cargo test` line under `## R11` to R11, so `-Batches R11`
+runs all four blocks above. A standalone `-Batches R11-ADMIN` needs the runner to read `### (R\d+-[A-Za-z]+)` headings
+(a NEEDS for `tools/qa/test_batches.ps1`, not this file). Until then, run one sub-batch by pasting its lines.
 
 ## Portal QA lane (not cargo)
 
@@ -390,6 +451,17 @@ The portal QA journeys PJ1-PJ10 (`tools/qa/portal/journeys.md`) run as sim scena
 `portal-replication.json`, `portal-load.json`), not as `cargo test`, so this section has no runner chunks. PJ10 (static export, R17)
 is registered for P6 and runs only once P6 lands its export route in `fe-api/src/portal_bundles.rs`; it extends
 `fe-api/tests/portal_bundle_test.rs`, which the R9 row already runs.
+
+**Kill switch (P-KILL):** `portal-core.json` calls the `portal_killswitch` op twice (engage, then disengage; the
+op posts `POST /api/v1/debug/portal/killswitch {engage}`, routed in `fe-api/src/server.rs` and handled by
+`fe-api/src/qa_portal.rs`). Structural check: `python tools/qa/sim/run.py validate portal-core`. The live
+engage/disengage run is a sim run (flags in `tools/qa/AGENTS.md` §sim), not a cargo chunk.
+
+**Extension sim lane (not cargo):** `ext-fleet`, `ext-device`, `ext-bindings` and `ext-install-gui` drive administration
+through the GUI surface or the `fe-ext admin` channel, never REST (user decision 2026-11-09). Structural check:
+`python tools/qa/sim/run.py validate ext-fleet ext-device ext-bindings ext-install-gui`. The GUI QA path (install from
+file and from the static index, consent, enable, disable, update with a delta, uninstall, plus one `fe-ext admin` leg)
+is `ext-install-gui.json`, run as a sim scenario.
 
 ---
 
@@ -448,6 +520,13 @@ cargo test -p fe-ui --lib -- plugin::
 | `fe-ui/src/actions/query.rs` | R3 |
 | `fe-ui/src/actions/hexon.rs` | R11 |
 | `fe-ui/src/extensions/**` | R11 |
+| `fe-plugin/src/admin/**`, `fractalengine/src/extension_host/admin_channel.rs`, `tools/fe-ext/src/admin.rs` | R11-ADMIN |
+| `fe-plugin/src/registry_client.rs`, `fe-hexon/src/registry_source.rs`, `fe-hexon-registry/**`, `tools/fe-ext/src/index.rs` | R11-STORE |
+| `fe-format/src/entitlement.rs`, `fe-hexon/src/entitlement_client.rs`, `fe-hexon/src/entitlement_gate.rs` | R11-ENT |
+| `fe-runtime/src/scene_write.rs` | R2 (shared scene door; R9 points here) |
+| `fe-sync/src/scene_assets/**` | R8 |
+| `fe-database/src/handlers/{plugin_host,iot_reading}.rs` | R4 (IoT; no unit tests, exercised by the J3 fn and the device journeys) |
+| `tools/qa/sim/scenarios/{portal-core,ext-fleet,ext-device,ext-bindings,ext-install-gui}.json` | sim lanes (Portal QA lane, not cargo) |
 | `fe-ui/src/dialogs/` (excl. `join.rs`) | R2/R6 (split by file — see R2, R6 tables) |
 | `fe-ui/src/dialogs/join.rs` | R6, R8 |
 | `fe-ui/src/panels/` (split per R2/R3/R4/R5/R6 tables) | see region tables |
