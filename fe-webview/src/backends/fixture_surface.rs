@@ -129,8 +129,10 @@ impl Surface {
             .as_ref()
             .is_some_and(|portal| portal.get("mounted") == Some(&serde_json::Value::Bool(false)))
         {
-            // Process totals while unmounted (R-POR-31): no mount to compare against.
-            return self.ipc_stats.is_some();
+            // Process totals while unmounted (R-POR-31): only ipc-stats, with no page URL, may skip the mount compare.
+            return matches!(receipt.operation, FixtureOp::PortalIpcStats)
+                && receipt.url.is_empty()
+                && self.ipc_stats.is_some();
         }
         if receipt.portal.is_some() {
             let Some(mounts) = &self.mounts else {

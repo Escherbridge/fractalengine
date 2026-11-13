@@ -142,6 +142,10 @@ impl GovernanceSource for ExtensionGovernance {
     fn may_read(&self, petal_id: &str) -> Result<(), String> {
         GovernanceGates::role(self, petal_id, false)
     }
+
+    fn generation(&self) -> Option<u64> {
+        Some(ExtensionGovernance::generation(self))
+    }
 }
 
 /// Host switches the view starts from.
@@ -205,6 +209,8 @@ pub(crate) struct PortalGovernance {
     admission_enabled: bool,
     /// Shared with `plugin_bridge` so Disable all / Enable all reach the portal (R-X-33).
     disabled_all: Arc<AtomicBool>,
+    /// The QA lane's native kill switch: read through the same host-disabled check, cleared only by its own disengage.
+    kill_switch: AtomicBool,
     records: RwLock<Bounded<(String, String), RecordEntry>>,
     nodes: RwLock<Bounded<String, NodeScope>>,
     /// petal id -> verse id.
@@ -220,6 +226,7 @@ impl PortalGovernance {
             source,
             admission_enabled: config.admission_enabled,
             disabled_all: Arc::new(AtomicBool::new(config.disable_all)),
+            kill_switch: AtomicBool::new(false),
             records: RwLock::new(Bounded::new(RECORD_ENTRIES)),
             nodes: RwLock::new(Bounded::new(CACHE_ENTRIES)),
             petals: RwLock::new(Bounded::new(CACHE_ENTRIES)),
@@ -307,6 +314,12 @@ impl PortalGovernance {
     /// Layer (b) at runtime: Disable all sets it, Enable all clears it.
     pub(crate) fn set_host_disabled(&self, disabled: bool) {
         self.disabled_all.store(disabled, Ordering::Release);
+    }
+
+    /// The native kill switch (QA lane): engaged, the view is host-disabled exactly as under Disable all; disengaging
+    /// never clears an operator's Disable all.
+    pub(crate) fn set_kill_switch(&self, engaged: bool) {
+        self.kill_switch.store(engaged, Ordering::Release);
     }
 
     fn remember_node(&self, node_id: &str, scope: NodeScope) {
@@ -397,7 +410,7 @@ impl PortalGovernance {
 
 impl GovernanceView for PortalGovernance {
     fn host_disabled(&self) -> bool {
-        self.disabled_all.load(Ordering::Acquire)
+        self.disabled_all.load(Ordering::Acquire) || self.kill_switch.load(Ordering::Acquire)
     }
 
     fn kill_listed(&self, digests: &[&str]) -> bool {
@@ -959,6 +972,15 @@ mod tests {
         assert_eq!(admission::revoked_before_bytes(&*view, &at_a, Some("z1")), Some(RevokedReason::KillSwitch));
         view.set_host_disabled(false);
         assert_eq!(judge(&at_a, &sealed), admitted, "Enable all");
+        // The QA kill switch reads as Disable all, and its disengage never clears an operator's Disable all.
+        view.set_kill_switch(true);
+        assert_eq!(judge(&at_a, &sealed), AdmissionVerdict::Revoked(RevokedReason::KillSwitch), "kill switch engaged");
+        assert!(view.admitted_set().is_empty());
+        view.set_host_disabled(true);
+        view.set_kill_switch(false);
+        assert!(view.host_disabled(), "Disable all outlives the kill switch's disengage");
+        view.set_host_disabled(false);
+        assert_eq!(judge(&at_a, &sealed), admitted);
 
         // The plugin host switch off: nothing is admitted, refusals still apply.
         let off = view_over(&fake, false);

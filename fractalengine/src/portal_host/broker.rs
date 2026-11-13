@@ -292,10 +292,14 @@ impl BusPortalBroker {
         }
     }
 
-    /// A broker over the bus, role source and audit sink the extension host built (`plugin_bridge::ExtensionBusParts`),
-    /// so portal grants, audit rows and role reads share the extension path's services.
-    pub(crate) fn from_parts(parts: &crate::plugin_bridge::ExtensionBusParts, scopes: PortalScopeIndex) -> Self {
-        Self::new(parts.bus.clone(), Arc::clone(&parts.roles), Arc::clone(&parts.audit), scopes)
+    /// A governed broker over the bus, role source and audit sink the extension host built
+    /// (`plugin_bridge::ExtensionBusParts`), so portal grants, audit rows and role reads share the extension path's services.
+    pub(crate) fn from_parts(
+        parts: &crate::plugin_bridge::ExtensionBusParts,
+        scopes: PortalScopeIndex,
+        governance: Arc<dyn GovernanceView>,
+    ) -> Self {
+        Self::new(parts.bus.clone(), Arc::clone(&parts.roles), Arc::clone(&parts.audit), scopes).with_governance(governance)
     }
 
     /// Re-check governance at bind: the exact build still admitted, its hash not kill-listed, no host-wide disable.
@@ -395,7 +399,11 @@ impl PortalBroker for BusPortalBroker {
             }
         }
         let scope = self.scopes.scope_of(request.target).ok_or(IpcError::NotFound)?;
-        if self.governance.as_deref().is_some_and(|view| !still_admitted(view, request)) {
+        // Fail closed: a broker built without governance binds nothing.
+        let Some(view) = self.governance.as_deref() else {
+            return Err(IpcError::Unavailable);
+        };
+        if !still_admitted(view, request) {
             return Err(IpcError::Revoked);
         }
         let installing_did = self.bus.local_did().to_owned();
@@ -1017,7 +1025,8 @@ mod tests {
         };
         let bus = Bus::new(Arc::new(clock.clone()), sources, LOCAL);
         let scopes = PortalScopeIndex::default();
-        let broker = BusPortalBroker::new(bus.clone(), roles.clone(), audit.clone(), scopes.clone());
+        let ungoverned = BusPortalBroker::new(bus.clone(), roles.clone(), audit.clone(), scopes.clone());
+        let broker = ungoverned.clone().with_governance(Arc::new(AdmittedListing { listed: "unrelated" }));
         let (db_tx, db_rx) = crossbeam::channel::unbounded();
         assert!(bus.install_portal_writes(Arc::new(broker.write_sink(db_tx))));
         let section = console_section();
@@ -1042,6 +1051,8 @@ mod tests {
         // ...and never above the viewer's token.
         let viewer = broker.open(&bind(&node, &section, &hash, RoleLevel::Viewer)).unwrap();
         assert_eq!(viewer.role_ceiling, RoleLevel::Viewer);
+        // A broker built without governance binds nothing (fail closed).
+        assert_eq!(ungoverned.open(&bind(&node, &section, &hash, RoleLevel::Owner)).unwrap_err(), IpcError::Unavailable);
 
         // A scope's bound bundle binds at that petal for its own package only (B10f).
         let bound = BundleTarget::Bound { petal_id: PETAL.into(), package_id: CONSOLE.into() };

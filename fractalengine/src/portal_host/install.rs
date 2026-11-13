@@ -154,6 +154,13 @@ fn classify(refusal: BundleRefusal) -> Refusal {
 
 /// Run the portal verifier over in-memory bytes (it reads from a path, so a scratch file stands in).
 fn inspect_bytes(bytes: &[u8], max_bytes: u64) -> Result<InspectedBundle, BundleRefusal> {
+    // The cap before any disk write: an over-cap download never reaches the scratch file.
+    if bytes.len() as u64 > max_bytes {
+        return Err(BundleRefusal {
+            class: RefusalClass::TooLarge,
+            detail: format!("{} bytes over cap {max_bytes}", bytes.len()),
+        });
+    }
     let scratch = ScratchFile::write(bytes).map_err(|e| BundleRefusal {
         class: RefusalClass::Integrity,
         detail: format!("scratch file: {e}"),

@@ -61,20 +61,11 @@ pub(crate) fn context(
     })
 }
 
-/// Engage sets host-disabled (the Disable all state); disengage restores what it was before the first engage.
-fn kill_switch(
-    resolver: &crate::portal_host::resolver::PortalResolver,
-    engage: bool,
-    restore_to: &mut Option<bool>,
-    scope: String,
-) -> FixtureResult {
+/// Engage makes the view host-disabled (the Disable all check); disengage clears only the kill switch, never an
+/// operator's Disable all.
+fn kill_switch(resolver: &crate::portal_host::resolver::PortalResolver, engage: bool, scope: String) -> FixtureResult {
     let view = resolver.view();
-    if engage {
-        restore_to.get_or_insert_with(|| view.host_disabled());
-        view.set_host_disabled(true);
-    } else {
-        view.set_host_disabled(restore_to.take().unwrap_or(false));
-    }
+    view.set_kill_switch(engage);
     let disabled = view.host_disabled();
     FixtureResult {
         receipt: FixtureReceipt {
@@ -116,7 +107,6 @@ fn serve(
     backend: Option<NonSendMut<WebViewBackendRes>>,
     markers: Query<&fe_ui::plugin::SpawnedNodeMarker>,
     resolver: Option<Res<PortalResolverRes>>,
-    mut restore_to: Local<Option<bool>>,
 ) {
     let mut backend = backend;
     if host.active.is_none() && host.rx.is_empty() {
@@ -171,7 +161,7 @@ fn serve(
                 Err(fixture::stale())
             } else {
                 match (resolver.as_deref(), nav.active_scope()) {
-                    (Some(resolver), Some(scope)) => Ok(kill_switch(&resolver.0, engage, &mut restore_to, scope)),
+                    (Some(resolver), Some(scope)) => Ok(kill_switch(&resolver.0, engage, scope)),
                     _ => Err(fixture::unavailable()),
                 }
             };
