@@ -153,21 +153,28 @@ fn install_broker(app: &mut App, resolver: &Arc<PortalResolver>, governance: Opt
     let scopes = PortalScopeIndex::default();
     app.insert_resource(scopes.clone());
     app.add_systems(Update, broker::track_portal_scopes.before(apply_portal_admission));
-    let Some(bus) = app.world().get_resource::<fe_plugin::BusHandle>().map(|handle| handle.0.clone()) else {
-        tracing::error!("portal host: no integration bus; admitted bundles answer every call `unavailable`");
-        return;
-    };
-    let roles: Arc<dyn RoleSource> = Arc::new(NodeDidRoles(bus.local_did().to_owned()));
-    let audit: Arc<dyn AuditSink> = match governance {
-        Some(governance) => governance.audit_sink(),
-        None => Arc::new(TracingAudit),
-    };
     let view: Arc<dyn GovernanceView> = resolver.view().clone();
+    // P-BROKER: share the extension host's bus, role source and audit sink when it built them.
+    let shared = app.world().get_resource::<crate::plugin_bridge::ExtensionBusParts>().cloned();
+    let (bus, broker) = match shared {
+        Some(parts) => (parts.bus.clone(), BusPortalBroker::from_parts(&parts, scopes, view)),
+        None => {
+            let Some(bus) = app.world().get_resource::<fe_plugin::BusHandle>().map(|handle| handle.0.clone()) else {
+                tracing::error!("portal host: no integration bus; admitted bundles answer every call `unavailable`");
+                return;
+            };
+            let roles: Arc<dyn RoleSource> = Arc::new(NodeDidRoles(bus.local_did().to_owned()));
+            let audit: Arc<dyn AuditSink> = match governance {
+                Some(governance) => governance.audit_sink(),
+                None => Arc::new(TracingAudit),
+            };
+            let broker = BusPortalBroker::new(bus.clone(), roles, audit, scopes).with_governance(view);
+            (bus, broker)
+        }
+    };
     // A-14: an admitted bundle is the installation keyed by its package id (the ops drain's convention).
     let installations: Arc<InstallationLookup> = Arc::new(|package_id: &str, _content_hash: &str| Some(package_id.to_owned()));
-    let broker = BusPortalBroker::new(bus.clone(), roles, audit, scopes)
-        .with_governance(view)
-        .with_installations(installations);
+    let broker = broker.with_installations(installations);
     let db = app.world().resource::<fe_runtime::app::DbCommandSender>().0.clone();
     // Before `into_resource`: the sink shares the broker's binding table.
     if !bus.install_portal_writes(Arc::new(broker.write_sink(db))) {
