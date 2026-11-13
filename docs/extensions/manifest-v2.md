@@ -131,10 +131,20 @@ dropped and counted. An undeclared or disabled endpoint answers the uniform not-
 **Loopback** means exactly `127.0.0.1`, `[::1]` or `localhost`. Hosts are exact names (no
 wildcards). The host connects only to the declared host and port.
 
+Every other destination must resolve to **global unicast** addresses only (an allow-list, not a
+denylist): `0.0.0.0/8`, private, shared, link-local, `198.18/15`, `240/4`, multicast, `::/96`,
+NAT64 (`64:ff9b::/96`, `64:ff9b:1::/48`), `2002::/16` (the embedded v4 is checked), `fec0::/10`
+and `ff00::/8` are all refused. The host resolves once, checks every resolved address and connects
+to the checked address, so a rebinding DNS answer cannot change the target. Environment proxies are
+not used. One shared predicate serves ingress, egress and dial-outs.
+
 ### `auth` — host-side credentials
 
 `{ "scheme": "bearer" | "basic" | "header" | "mqtt-password", "credential": "<slot>", "header"? }`
-names a slot in the host's local credential store. The operator fills the slot locally; the value
+names a slot in the host's local credential store. Slots are **per package**: the store is keyed
+`{package_id: {slot: value}}` and the host looks up `get(package_id, slot)` with the instance's own
+package id. Two packages that declare the same slot name never share a value, and there is no
+fallback to an unscoped slot (R-NET-29). The operator fills the slot locally; the value
 never enters the manifest, the package, the replicated store or the guest. An endpoint whose slot
 is empty stays down and reports `credential-missing` in status.
 

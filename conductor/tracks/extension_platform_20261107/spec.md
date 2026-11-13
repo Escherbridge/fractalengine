@@ -164,7 +164,7 @@ Acceptance criteria are observable through public seams: REST, MCP, the GUI (age
 - **Identity.** `package_id` = `hexon_id`. `content_hash` = blake3 over the canonical signed manifest bytes (signature blanked). Those bytes commit the integrity root and therefore every member, so there is one value per sealed build.
 - **Signatures.** The publisher signature IS the hexon manifest signature. Counter-signatures — plugin_host_revival Phase 2's `{key_id, signature}` list — sign the same canonical bytes.
 
-*AC:* after `fe-ext pack`, installing either example package over REST succeeds. A table of post-seal tampering (a flipped component byte, an edited `extension.json`, an uncommitted extra member) is refused at install with a typed reason, and the package store holds nothing new afterwards.
+*AC:* after `fe-ext pack`, installing either example package from the GUI (or `fe-ext admin install-file`) succeeds. A table of post-seal tampering (a flipped component byte, an edited `extension.json`, an uncommitted extra member) is refused at install with a typed reason, and the package store holds nothing new afterwards.
 
 **R2 — WIT `fractalengine:plugin@2.0.0` is the only third-party contract.**
 - The host binds it with component-model bindgen, so no hand-written ABI faces third parties. This closes plugin_host_revival OD-2 through the second branch of its AC-8 ("bindgen now wires the two together").
@@ -246,9 +246,9 @@ Accessible names are `ext:<package_id>/<contribution_id>`. fe-ui finally consume
 
 *AC:* every other AC in this spec reads its numbers from these routes. On the relay the routes behave identically, and `ui` contributions are reported as `headless`.
 
-**R12 — Only the host's local identity administers extensions.** Install, consent, bind, enable or disable, update and uninstall are accepted only from the host's local DID — the identity the extension will write as — over REST or the GUI. Any other DID gets the uniform not-found. Otherwise a remote token holder could make the host write as the host.
+**R12 — Only the host's local identity administers extensions.** Install, consent, bind, enable or disable, update and uninstall are accepted only from the host's local DID — the identity the extension will write as — through the GUI, or through the local admin channel (`fe-ext admin`, an OS-user-only pipe or socket to the running app; `docs/extensions/admin-channel.md`). **REST and MCP refuse every administration verb for every caller** (user decision 2026-11-09 06:30), so a remote token holder cannot make the host write as the host and a local token cannot skip consent. Every capability grant is confirmed in the GUI consent dialog; the channel can raise it, never answer it. A REST or MCP caller gets the uniform not-found.
 
-*AC:* the same install call made with a remote editor's token returns not-found and leaves no trace except one `denied` audit entry.
+*AC:* the same install call made over REST or MCP, with a remote editor's token or the local one, returns the uniform not-found and leaves no trace except one `denied` audit entry; the same install through the local channel raises the consent dialog and installs nothing until the operator confirms.
 
 ### 6.3 Integration bus (D-X6; P0 contract, P1 broker)
 
@@ -314,14 +314,14 @@ Commands reach `on-command` with the caller's identity and kind (ui | rest | mcp
 
 Every later write is re-checked at use (§4.4).
 
-*AC:* one table journey drives each refusal through REST and asserts its reason. The GUI shows the same reason text.
+*AC:* one table journey drives each refusal through the local admin channel and asserts its reason. The GUI shows the same reason text.
 
 **R20 — Capability prompts (plugin_host_revival S3, extended).** S3's blocking consent modal renders manifest v2: the binding, scene scopes, the readings class, every ingress and egress endpoint, bus exposure and consumption, UI contributions, signer and trust state, the policy verdict and the licence state.
 - Enable stays disabled until the full list has rendered once (S3's AC-5).
 - An update whose capability digest differs re-prompts, and the old version keeps running until consent is given. An update with no delta does not prompt.
-- REST consent (for headless hosts and QA) must echo the exact capability digest.
+- Consent is GUI-only: there is no REST consent, and a headless host cannot consent. The dialog records the digest it displayed; a stale digest is refused with `consent-mismatch`.
 
-*AC:* updating to a build that adds one egress host re-prompts. A REST consent carrying a stale digest is refused.
+*AC:* updating to a build that adds one egress host re-prompts. A consent carrying a stale digest is refused.
 
 **R21 — Audit through the log.** Each of these actions appends one op-log operation: install, update, consent, bind, unbind, enable, disable, uninstall, revocation, policy change, bus grant, command call and denial.
 - **Path.** Entries go through `op_log::commit_operation`, the live log-first path (fe-database `src/AGENTS.md:580` §log-first-commit).
@@ -468,7 +468,7 @@ The egress API itself — `/api/v1/query`, export and share — stays core and u
 
 **R35 — Cross-peer scenarios.**
 - **`tools/qa/sim/scenarios/ext-fleet.json`** — three peers, in order:
-  1. policy → install → consent → bind;
+  1. policy → install → consent → bind, driven through the GUI surface (fe.py / ui-tree) or `fe-ext admin`, never REST;
   2. four movers at 2 Hz for 3 minutes;
   3. bus command floors through REST and WS;
   4. demote, then re-grant, the installing editor mid-flight;

@@ -27,19 +27,26 @@ Three facts shape everything below:
 | Switch | Effect |
 |---|---|
 | plugin_host_revival OD-4's Cargo feature + runtime flag `FE_PLUGIN_HOST_ALLOW=1` (S1 fixed the name: `fe_plugin::PLUGIN_HOST_ENV`; exactly `"1"` opts in) | Off: no package is admitted, install answers `host-off`, the Extensions UI shows the off state. The plugin host thread still runs (it has since `2cc05f27`); the flag gates admission, not the thread. |
-| `FE_EXT_DISABLE_ALL=1` at startup, or the local administrator's **Disable all** at runtime (REST + Extensions UI, slices E6/E13) | Every installation is `disabled` within one tick; activation answers `host-off` until it is cleared. |
+| `FE_EXT_DISABLE_ALL=1` at startup, or the local administrator's **Disable all** at runtime (the Extensions panel or `fe-ext admin`; never REST) | Every installation is `disabled` within one tick; activation answers `host-off` until it is cleared. |
 
 Flipping the default to on is a later decision, after plugin_host_revival S6's security review.
 
 ## Local identity (R12)
 
-Install, consent, bind, unbind, enable, disable, update and uninstall are accepted only from the
-host's local DID — the identity the extension will write as — over REST or the GUI. Any other DID
-gets the uniform not-found and one `denial` audit entry. Otherwise a remote token holder could make
-the host write as the host.
+Install, consent, bind (acceptance), unbind, enable, disable, update and uninstall are
+administration verbs. They are a **GUI surface** (the Extensions panel), optionally driven from a
+terminal by `fe-ext admin` through the **local admin channel** ([admin-channel.md](admin-channel.md)):
+a named pipe or Unix socket bound to this OS user, never the network API. Both paths act as the
+host's local DID, the identity the extension will write as (user decision 2026-11-09 06:30).
 
-For a non-local actor this check runs before every other precondition, `host-off` included: a
-remote DID always sees the uniform not-found, so it cannot learn whether this host admits
+REST and MCP refuse every one of these verbs for every caller, local DID included: a remote
+token holder must not be able to make the host write as the host, and a local token must not skip
+the consent click. Every capability grant needs the operator's confirmation in the GUI consent
+dialog. The local channel can raise that dialog; it can never answer it. Read-only status and audit
+routes stay on REST and keep their own role checks.
+
+For a REST or MCP caller this refusal runs before every other precondition, `host-off` included:
+a remote DID always sees the uniform not-found, so it cannot learn whether this host admits
 extensions (fe-api §existence-oracle; R12's AC holds whatever the host switch says). Before even
 that, every extension route applies a remote caller's per-DID request rate (10/s, 429, not
 audited), so denied calls cannot be turned into a flood of audit appends ([bus.md](bus.md#4-commands) check 0).
@@ -118,7 +125,7 @@ on every peer, within one tick of the row's arrival.
 Checked in this order at install, bind, enable, every activation (including restarts and updates)
 and on every policy, trust-root or revocation-list change. The first failure is the refusal (R19).
 
-| # | Code | Check | Suggested REST status |
+| # | Code | Check | Suggested status (read-only routes; the GUI and the local channel show the code) |
 |---|---|---|---|
 | 1 | `host-off` | the host switch is on and Disable all is clear | 503 |
 | 2 | `not-local-identity` | the actor is the host's local DID (R12) | 404 (uniform) |
@@ -161,8 +168,10 @@ A local record per installation, never replicated (R20; plugin_host_revival S3's
   rendered once (S3 AC-5).
 - **Updates.** Same digest: no prompt. Different digest: re-prompt, and the old version keeps
   running until consent is given.
-- **REST consent** (headless hosts, QA) must echo the exact digest; a stale digest is refused with
-  `consent-mismatch`.
+- **Consent is GUI-only.** There is no REST consent. The dialog records the digest it displayed, and
+  a stale digest is refused with `consent-mismatch` wherever it comes from (the panel, or the local
+  channel's request for the dialog). A headless host cannot consent: its channel is off
+  ([admin-channel.md](admin-channel.md) §1).
 - **Bind** is a separate local-DID action per petal; for a `source_class` list it names exactly
   one class, recorded with the binding.
 - **Revoking consent** deactivates every instance of the installation (`ended` reason
@@ -349,8 +358,9 @@ Owner override are in. In this track R24 shrinks to stamp-and-stop: §Provenance
 ## Journeys
 
 - **J6** (P1.6 creates `fe-api/tests/extensions_api_test.rs`; P2.2 extends): drive each
-  precondition refusal above through REST, in order, and assert the reason; the GUI shows the same
-  text. Then the audit trail holds exactly one entry per action, denials included. Same table:
+  precondition refusal above through the local admin channel (or the GUI), in order, and assert the
+  reason; the other surface shows the same text. REST and MCP are asserted to refuse every
+  administration verb uniformly. Then the audit trail holds exactly one entry per action, denials included. Same table:
   a remote DID's install on a host-off host answers the uniform not-found (not `host-off`); its
   11th call inside one second answers 429 and adds no audit entry; a verse `deny` naming a build's
   `component_digest` refuses that build re-sealed under a new id with `policy-denied`.

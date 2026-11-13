@@ -57,7 +57,7 @@ Only an explicit local **Open** ever mounts. A replicated repository-node row, a
 | Admitted or Static | top-frame navigation to a declared `navigation` origin | external website | unmount (`protocol.md` §2.6) |
 | any mounted | **Close** | closed | unmount and unload (`protocol.md` §2.5) |
 
-Every revocation path withdraws the admission record, so lifting a cause never silently restores IPC: the user re-admits. A bundle that was never admitted has no record to withdraw, so once (b) lifts it opens in the static sandbox again.
+Every revocation path withdraws the admission record (the record only, never the rows the bundle wrote: OD-E1), so lifting a cause never silently restores IPC: the user re-admits. A bundle that was never admitted has no record to withdraw, so once (b) lifts it opens in the static sandbox again.
 
 ## 4. The kill list
 

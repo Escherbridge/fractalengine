@@ -28,6 +28,8 @@ Reference contracts (normative; the guides above explain them, they do not repla
 | Integration bus | [bus.md](bus.md) | Streams, commands, hooks, delivery and limits |
 | Package format | [package-format.md](package-format.md) | Sealed members, identity, signatures |
 | Governance | [governance.md](governance.md) | Consent, trust roots, policy, kill switches, audit |
+| Local admin channel | [admin-channel.md](admin-channel.md) | `fe-ext admin`: the local, OS-user-only route to the Extensions panel's operations; consent stays in the GUI |
+| Extensions panel | [extensions-ui.md](extensions-ui.md) | Views, states, names, Browse and store flows, registry sources |
 | Scoped bindings | [bindings.md](bindings.md) | Which installed extension serves a hook point at a verse, fractal or petal, resolved per peer |
 
 ## Kinds
@@ -56,4 +58,5 @@ track and is refused for extensions (`reserved-kind`).
 - The CLI, the guest SDK and the examples are written but not yet built or run (code-first swarm,
   2026-11-08); J8 (`cargo test -p fe-ext -- j8`) is their journey once the build gate opens.
 - `fe-ext run --lab` (multi-peer runs through fe-sim) hosts the first-party simulation package (R30); other kinds run in `--sandbox` only.
-- Scoped bindings ([bindings.md](bindings.md)) are contract-only: the binding table, resolver and hook catalogue are the next turn (spec R37). Terrain is the first `petal.map` provider.
+- Scoped bindings ([bindings.md](bindings.md)) are implemented in code at turn 2 and untested; the build gate and refine pass verify them (spec R37). Terrain is the first `petal.map` provider.
+- Extension administration is GUI-only plus the local admin channel; REST and MCP refuse it (governance.md §Local identity).

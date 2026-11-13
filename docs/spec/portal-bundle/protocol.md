@@ -36,7 +36,7 @@ The design has one idea: **a bundle origin is admitted only by exact match again
 2.3. **One mount.** One webview means one live mount (A-7). Opening a bundle while another is mounted closes the first (§2.5) before mounting the second.
 2.4. **Open.**
   1. fe-ui writes `BrowserCommand::OpenBundle { node_id }` (§8). The command carries no URL, path or hash. Only the typed path mints bundle URLs; `validate_url` (`fe-ui/src/actions/portal.rs`) and `BrowserCommand::Navigate` keep refusing every bundle spelling.
-  2. A binary-injected resolver (the `HostEnv` injection idiom) reads the node's `portal.bundle_asset`, the `asset` row, the local blob path and the admission view (`admission.md` §2; Static until S4 lands). Missing bytes resolve to Waiting; a kill-listed or revoked pair resolves to Revoked and stops here (`admission.md` §4).
+  2. A binary-injected resolver (the `HostEnv` injection idiom) reads the node's `portal.bundle_asset`, the `asset` row, the local blob path and the admission view (`admission.md` §2; Static until S4 lands). Missing bytes resolve to Waiting; a kill-listed or revoked pair resolves to Revoked and stops here (`admission.md` §4), unless this peer's verse Owner has recorded the audited kill-list override (`admission.md` §4.7). Revocation of a mounted bundle unloads it after in-flight writes complete; rows it wrote stay (OD-E1).
   3. The archive opens under §2.1's policy and the validator runs (README §6). A refusal resolves to Blocked with its chrome reason.
   4. The mount is inserted, the CSP composed and a one-shot **entry token** minted for exactly the entry URL (§6.7).
   5. The host loads the entry URL (§1.7) and shows the portal.

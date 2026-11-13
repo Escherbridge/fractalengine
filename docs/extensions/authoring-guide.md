@@ -116,7 +116,7 @@ fe-ext validate --project my-ext   # the manifest table plus host ceilings; the 
 fe-ext build --project my-ext      # needs `rustup target add wasm32-wasip2`; writes my-ext/dist/component.wasm
 ```
 
-`validate` prints the failing row's reason and exits non-zero. REST install gives the same answer,
+`validate` prints the failing row's reason and exits non-zero. Installing on a host gives the same answer,
 because both use one validator (`fe_sdk::manifest_v2::parse_and_validate`). A reason such as
 `source-class-mismatch` means the manifest and the kind disagree; fix the manifest rather than the
 code. `build` then runs the component through the host's install admission, so a missing export or
@@ -175,6 +175,9 @@ which gives it a new `content_hash`; `countersign` adds a second signature witho
 member, so the `content_hash` stays the same.
 
 Install only succeeds if the publisher key (or a counter-signing key) is a trust root on the host.
+The operator installs from the Extensions panel (Install from file, or Browse), or from a terminal with
+`fe-ext admin install-file <path>`, which talks to the running app over a local channel and still
+opens the consent dialog in the app ([admin-channel.md](admin-channel.md)). REST and MCP never install.
 The consent dialog then shows the **capability digest**. Consent covers exactly that digest; if you
 change any grant, the operator is asked again. Reordering a list also changes the digest, so keep
 lists stable across versions.

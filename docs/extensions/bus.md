@@ -408,6 +408,19 @@ With a fake query source, a fake scene feed and a fake readings feed:
   flood of denied calls cannot become a flood of audit appends on the DB thread (spec §4.10); the
   local DID's command budget is split per caller so an extension cannot starve the UI.
 
+- **Administration is not on the bus (2026-11-09 06:30, user decision).** Install, consent, accept,
+  enable, update, unbind and uninstall are GUI operations, also reachable through the local admin
+  channel ([admin-channel.md](admin-channel.md)). REST, MCP, WS and portal IPC never carry them, and
+  no stream or command exposes them. The bus only moves data between running instances.
+- **Credential headers are stripped in both directions (2026-11-08 20:00, user decision).** The host
+  removes `authorization`, `proxy-authorization`, `cookie`, `set-cookie`, `x-api-key` and every
+  `x-fe-*` header from a request before a guest sees it (ingress) and from anything a guest sets
+  before it leaves (egress), whatever the manifest says. A guest never receives or emits a credential.
+- **Credential slots are per package (R-NET-29).** An egress or dial-out `auth` slot resolves as
+  `(package_id, slot)`; one package can never read another's value ([manifest-v2.md](manifest-v2.md#auth--host-side-credentials)).
+- **Revocation stops, it does not withdraw (OD-E1).** A subscription of a revoked instance ends with
+  `ended` after its in-flight write completes. Rows it published stay, with provenance.
+
 ## 12. Scoped bindings and hooks
 
 Two terms share a word.

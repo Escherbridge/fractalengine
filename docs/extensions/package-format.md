@@ -148,6 +148,13 @@ Unchanged registry protocol v1 (`X-Hexon-Registry-Protocol: 1`). A registry serv
 members for consent before download (spec R29 `header`), and the sealed bytes for `fetch`; the host
 always re-verifies locally.
 
+The header is **optional**: a static endpoint or a registry without an attestation answers
+`HeaderUnavailable`, and consent then renders after download from the verified package. Where a
+header is served it must verify (`verify_sealed_header`) and its `plugin/extension.json` must hash to
+the vouched `content_hash` before it is shown. A hosted registry serves `/blobs/{file}` only for
+packages in its published index (an unknown and an unlisted hash answer the same not-found), or
+behind a token when the operator configures one.
+
 ## Journey J5 (P2.1, extends `fe-hexon/src/package.rs::test_tampered_package_fails_signature`)
 
 Pack and sign the fleet-sim example, then install each variant through the real install path.

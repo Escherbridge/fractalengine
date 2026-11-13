@@ -233,7 +233,7 @@ One pure admission function, `portal_bundle::navigation::admits(raw, mount_table
   - Capabilities are the manifest's declarations intersected with that identity's role **at write time**, rechecked by the DB at use, exactly like the plugin bridge (`fractalengine/src/AGENTS.md:1706-1707`).
   - The host mints the binding per mount, following the `PluginAdmission` pattern (`fe-runtime/src/plugin_host.rs:6`). It is never taken from page data.
   - Replicas judge the resulting rows by the author's role when written (QA-0131).
-  - Portal writes ride the sibling's extension write path. They therefore carry host-stamped provenance `{package_id, content_hash}` (sibling draft R24), and the same revocation withdraws them.
+  - Portal writes ride the sibling's extension write path. They therefore carry host-stamped provenance `{package_id, content_hash}` (sibling draft R24), and revocation stops the bundle after in-flight writes complete; the rows stay (OD-E1, user decision 2026-11-08 22:00; `docs/spec/portal-bundle/admission.md` §4.7, §5).
 - **Rate limits (OD-8).**
 
   | Limit | Value |

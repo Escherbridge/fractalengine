@@ -11,7 +11,11 @@ Code: `fe-ui/src/extensions/{panel,details,permissions,browse}.rs` (UI), `fe-hex
 | Installed | See what is installed and its state | Install from file | Open a row |
 | Details > Overview | Understand one extension and run it | Enable / Disable a binding (Update when one is offered) | Uninstall (two-step) |
 | Details > Permissions | See what it was allowed to do | none (read-only record) | Revoke consent (two-step) |
-| Browse | Find a package in a source | Install on a row | Source picker, search, Refresh |
+| Browse | Find a package in a source | Install on a row | Source picker, search, sort, Refresh |
+| Store details (a Browse row) | Review one catalogue package: publisher, review state, licence | Install, or Get licence when it is licensed | Check licence, Back |
+| Bindings | See which extension serves each hook point at the active petal, and where each binding comes from | Edit (Manager+) on a row; Install when a binding offers one | Refresh bindings, Clear |
+
+Administration is GUI-only. The same operations are reachable from a terminal through `fe-ext admin` over the local admin channel ([admin-channel.md](admin-channel.md)); it never uses REST or MCP, and every grant is still confirmed in the consent dialog this panel owns. A request that arrives over the channel raises the dialog and waits for the operator.
 
 The consent dialog is not a view: it opens over the panel whenever the bridge reports `ConsentNeeded`.
 
@@ -31,7 +35,26 @@ Every view renders each state from data, never from copy that explains the layou
 
 Names are stable and carry the package id so an agent or screen reader can address one row among many.
 
-`Installed extensions`, `Browse extensions`, `Package file path`, `Install from file`, `Open <package_id>`, `Back to installed extensions`, `Overview of <id>`, `Permissions of <id>`, `Enable|Disable <binding label> for <id>`, `Update <id> to <version>`, `Uninstall <id>` then `Confirm uninstall <id>` / `Keep <id>`, `Revoke consent for <id>` then `Confirm revoke consent for <id>` / `Keep consent for <id>`, `Extension source`, `Search extensions`, `Refresh extension list`, `Install <id> <version>`, `Dismiss extension error`. J9 (`panel.rs::extensions_panel_journey`) asserts them through the accessibility tree.
+`Installed extensions`, `Browse extensions`, `Package file path`, `Install from file`, `Open <package_id>`, `Back to installed extensions`, `Overview of <id>`, `Permissions of <id>`, `Enable|Disable <binding label> for <id>`, `Update <id> to <version>`, `Uninstall <id>` then `Confirm uninstall <id>` / `Keep <id>`, `Revoke consent for <id>` then `Confirm revoke consent for <id>` / `Keep consent for <id>`, `Extension source`, `Search extensions`, `Refresh extension list`, `Install <id> <version>`, `Dismiss extension error`, `Sort extensions`, `Details of <id>`, `Get licence for <id>`, `Check licence for <id>`, `Toggle Extensions panel`, `Extension bindings`, `Refresh bindings`. Binding names are in the next section. J9 (`panel.rs::extensions_panel_journey`) asserts them through the accessibility tree.
+
+## Bindings view and its names
+
+The view lists the hook points at the active petal, grouped by family, with the winning scope and this peer's state ([bindings.md](bindings.md) §5, §9). Names come from `fe-ui/src/extensions/bindings.rs` and `bound_slots.rs`:
+
+- `binding:<hook>` or `binding:<hook>:<key>` names a state row. The same name plus `:action` names its one action (Install, Allow, Edit).
+- Edit-form controls take suffixes on the row name: `:edit`, `:scope:<petal|fractal|verse>`, `:mode:<extension|builtin>`, `:provider`, `:version`, `:field:<name>`, `:save`, `:cancel`, `:clear`.
+- Surfaces a binding fills are named `binding:ui.panel:<key>` (extension panel) and `binding:egress.snippet:<key>` (egress card).
+- `Remove binding at <scope>` is the two-step Clear. An unresolved binding keeps the built-in behaviour and shows its reason; the install offer opens the normal consent dialog (`Offered by the binding at <scope>`) and never installs by itself.
+
+## Store flows
+
+A Browse source that speaks the store contract adds three steps, all read-only until the operator acts:
+
+1. **Details.** `Details of <id>` asks the bridge to verify the package's detail document and header (counter-signature, review state). The result shows `Reviewed <id>` or `Unavailable: <reason>` verbatim.
+2. **Licence.** A licensed package shows `Licence not checked`. `Get licence for <id>` asks the issuer for a token and the bridge verifies it; the row then reads `Licensed until <date>`, `Licensed` or `Licence refused: <reason>`. `Check licence for <id>` re-verifies the token on record.
+3. **Install.** `Install <id> <version>` follows the normal consent path. A paid package installs only with a verified token; a source only moves sealed bytes.
+
+Credentials never reach a source: catalogue reads are anonymous, and only the token request authenticates, by its own proof.
 
 ## Copy rules
 
@@ -79,6 +102,7 @@ The UI only presents; the host decides. These hold whatever the UI sends:
 |---|---|---|
 | `LocalSource` | one `.hexon` or a folder of them | packages verified at list time; unverifiable files are shown under their file name with the reason, not dropped |
 | `StaticIndexSource` | a static endpoint (folder or http(s) prefix) through a `BytesFetcher`: `config.json`, `index.json`, `packages/{id}.json`, `packages/{id}/{version}/attestation.json` and the download | index signed by a key pinned for this endpoint; detail documents pinned by hash; offline cache re-verified on every use |
+| `StaticIndexSource` over a hosted store | the same documents plus `search` and entitlement operations when `config.json` `features` advertise them | a missing feature means search runs locally and no licence is offered; the client never probes |
 | `ProtocolV1Source` | a protocol-v1 registry through `ProtocolV1Transport` (`fe-hexon/src/remote.rs`, E16) | `X-Hexon-Registry-Protocol` (or `/health`) checked before every operation |
 
 ### Static signed index (registry contract v1)

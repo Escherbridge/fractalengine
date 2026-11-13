@@ -632,9 +632,16 @@ Bound routes live under `/api/v1/petals/{petal_id}/apis/{key}/…` (§6).
 
 **MCP:** `list_bindings`, `set_binding` and `clear_binding`, with the same checks.
 
+These routes write binding rows only (Manager+, judged by role). They never install, accept, consent to or enable a package: those administration verbs are GUI-only, plus the local channel, and REST and MCP refuse them ([governance.md](governance.md#local-identity-r12)). The install offer a binding raises opens the GUI consent dialog.
+
 **GUI:**
 - **Accessible names.** `binding:<hook>` or `binding:<hook>:<key>` names a state row; the same
   name plus `:action` names its one action.
+  - Edit-form controls add a suffix to the row name: `:edit`, `:scope:<petal|fractal|verse>`,
+    `:mode:<extension|builtin>`, `:provider`, `:version`, `:field:<name>`, `:save`, `:cancel`, `:clear`.
+  - Bound surfaces are named `binding:ui.panel:<key>` and `binding:egress.snippet:<key>`.
+  - Panel-level names are `Extension bindings`, `Refresh bindings` and `Toggle Extensions panel`
+    (R-UI-16; [extensions-ui.md](extensions-ui.md#bindings-view-and-its-names)).
 - **The Bindings view.** It sits in E13's Extensions panel and lists the points at the active
   petal, grouped by family, each with its winning scope and state.
 - **Editing.** A Manager+ edits through a form generated from `config_schema`. The args_schema
