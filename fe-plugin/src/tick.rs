@@ -1206,7 +1206,7 @@ mod tests {
 
         // Staged-window bounds hold at the seam the host imports use.
         let mut small = StagedWindow::new(1, 1);
-        let reading = StagedReading { node_id: "n1".into(), metric: "temperature_c".into(), value: 1.0, units: String::new(), recorded_at: None };
+        let reading = StagedReading { node_id: "n1".into(), metric: "temperature_c".into(), value: 1.0, units: String::new(), recorded_at: None, provenance: None };
         small.stage_op(PendingOp::DeleteNode { node_id: "n1".into() }).unwrap();
         assert!(small.stage_op(PendingOp::DeleteNode { node_id: "n2".into() }).is_err());
         small.stage_reading(reading.clone()).unwrap();

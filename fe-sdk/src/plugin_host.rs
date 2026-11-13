@@ -111,6 +111,18 @@ pub struct StagedReading {
     /// Sensor time; the flushing tick's clock when absent.
     #[serde(default)]
     pub recorded_at: Option<StagedTimestamp>,
+    /// Host-only decode provenance; never read from guest input (R-X-29).
+    #[serde(default, skip_deserializing)]
+    pub provenance: Option<ReadingProvenance>,
+}
+
+/// Host-stamped origin of a decoded reading: the device payload and the decoder source class.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ReadingProvenance {
+    /// The `device_payload` row this reading was decoded from.
+    pub payload_id: String,
+    /// The class the reading lands under (the decoder class).
+    pub source_class: crate::source_class::SourceClass,
 }
 
 /// An exact property predicate, compared without numeric coercion.

@@ -1173,6 +1173,7 @@ fn test_rename_entity_omits_node_scene_change() {
         value: index as f64,
         units: "C".into(),
         recorded_at: Some(StagedTimestamp::EpochMs(1_700_000_000_000 + index as i64)),
+        provenance: None,
     };
     let moves: Vec<PendingOp> = anchors
         .iter()
@@ -1227,7 +1228,7 @@ fn test_rename_entity_omits_node_scene_change() {
     let (reply, rx) = crossbeam::channel::bounded(1);
     db.cmd_tx
         .send(DbCommand::PluginCommit {
-            admission: sensor_admission,
+            admission: sensor_admission.clone(),
             ops: moves,
             readings,
             reply,
@@ -1239,5 +1240,100 @@ fn test_rename_entity_omits_node_scene_change() {
             assert_eq!(receipt.reading_count, 8);
         }
         other => panic!("unexpected J3 reply: {other:?}"),
+    }
+    // R-X-29: a decoded reading lands linked to its device payload and filed under the decoder class.
+    let request = |command: DbCommand| {
+        db.cmd_tx.send(command).unwrap();
+        db.res_rx.recv_timeout(Duration::from_secs(5)).expect("decode provenance reply")
+    };
+    let verse_id = match request(DbCommand::GetEntityDetails {
+        entity_type: EntityType::Petal,
+        entity_id: sibling.clone(),
+        request_id: 77,
+    }) {
+        DbResult::EntityDetailsLoaded { details: Ok(details), .. } => details.verse_id,
+        other => panic!("expected the sibling petal's details, got {other:?}"),
+    };
+    assert!(matches!(
+        request(DbCommand::RegisterDeviceFormat {
+            verse_id: verse_id.clone(),
+            descriptor: fe_sdk::device_format::DeviceFormatDescriptor {
+                format_id: "acme.thermo/frame@1".into(),
+                mime: "application/octet-stream".into(),
+                schema: None,
+                description: String::new(),
+            },
+            declared_by: "did:key:z6MkDecoderTest".into(),
+            correlation_id: None,
+        }),
+        DbResult::DeviceFormatRegistered { .. }
+    ));
+    let payload_id = match request(DbCommand::InsertDevicePayloads {
+        petal_id: sibling.clone(),
+        verse_id: Some(verse_id),
+        source_did: "did:key:z6MkDecoderTest".into(),
+        source_class: SourceClass::Device,
+        payload: fe_runtime::messages::DevicePayloadInput {
+            node_id: anchors[0].clone(),
+            format_id: "acme.thermo/frame@1".into(),
+            asset_ids: vec![],
+            recorded_at: None,
+            payload_id: None,
+        },
+        files: vec![fe_runtime::messages::PayloadFile {
+            name: "frame.bin".into(),
+            content_type: "application/octet-stream".into(),
+            size_bytes: 8,
+            content_hash: "ab".repeat(32),
+            owner_did: "did:key:z6MkDecoderTest".into(),
+        }],
+        correlation_id: None,
+    }) {
+        DbResult::DevicePayloadsInserted { payload_id, .. } => payload_id,
+        other => panic!("expected the payload to land, got {other:?}"),
+    };
+    let decoded = StagedReading {
+        provenance: Some(fe_sdk::plugin_host::ReadingProvenance {
+            payload_id: payload_id.clone(),
+            source_class: SourceClass::Decoder,
+        }),
+        ..reading_for(&anchors[0], 20)
+    };
+    let (reply, rx) = crossbeam::channel::bounded(1);
+    db.cmd_tx
+        .send(DbCommand::PluginCommit {
+            admission: sensor_admission,
+            ops: vec![],
+            readings: vec![decoded],
+            reply,
+        })
+        .unwrap();
+    match rx.recv_timeout(Duration::from_secs(5)).unwrap().unwrap() {
+        PluginReply::Committed(receipt) => assert_eq!(receipt.reading_count, 1),
+        other => panic!("unexpected decoded-reading reply: {other:?}"),
+    }
+    let mut vars = std::collections::HashMap::new();
+    vars.insert("payload".to_string(), serde_json::json!(payload_id));
+    match request(DbCommand::RawQuery {
+        correlation_id: None,
+        sql: "SELECT reading_id, payload_id FROM iot_reading WHERE payload_id = $payload".into(),
+        vars,
+    }) {
+        DbResult::QueryResult { data, .. } => {
+            assert_eq!(data.len(), 1, "the decoded reading carries its payload link, got {data:?}");
+            let mut member_vars = std::collections::HashMap::new();
+            member_vars.insert("row".to_string(), data[0]["reading_id"].clone());
+            // Window membership is recorded only in the shadow migration modes; when present it names the decoder.
+            if let DbResult::QueryResult { data: members, .. } = request(DbCommand::RawQuery {
+                correlation_id: None,
+                sql: "SELECT source_class FROM observation_window_member WHERE row_id = $row".into(),
+                vars: member_vars,
+            }) {
+                for member in members {
+                    assert_eq!(member["source_class"], serde_json::json!(SourceClass::Decoder.to_string()));
+                }
+            }
+        }
+        other => panic!("expected the decoded reading row, got {other:?}"),
     }
 }

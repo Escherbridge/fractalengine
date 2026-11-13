@@ -3,7 +3,7 @@
 
 use std::collections::BTreeMap;
 
-use fe_sdk::plugin_host::{NodeQuery, PendingOp, StagedReading, StagedTimestamp};
+use fe_sdk::plugin_host::{NodeQuery, PendingOp, ReadingProvenance, StagedReading, StagedTimestamp};
 
 use super::bindings::fractalengine::plugin::types::{Binding, HostError, Json, NodeId, Quat, Vec3};
 use super::bindings::fractalengine::plugin::{context, kv, log as guest_log, readings, scene, txn, types};
@@ -157,6 +157,11 @@ impl readings::Host for InstanceState {
         if batch.len() > room {
             return Err(HostError::BudgetExceeded("staged window is full: max_readings".into()));
         }
+        // Host-stamped from the in-flight decode call; a guest has no way to supply it.
+        let provenance = self.decode_stamp().map(|stamp| ReadingProvenance {
+            payload_id: stamp.payload_id.clone(),
+            source_class: stamp.source_class,
+        });
         let staged: Vec<StagedReading> = batch
             .into_iter()
             .map(|reading| StagedReading {
@@ -168,6 +173,7 @@ impl readings::Host for InstanceState {
                     readings::Timestamp::Rfc3339(text) => StagedTimestamp::Rfc3339(text),
                     readings::Timestamp::EpochMs(ms) => StagedTimestamp::EpochMs(ms),
                 }),
+                provenance: provenance.clone(),
             })
             .collect();
         for reading in &staged {

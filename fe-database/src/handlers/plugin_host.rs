@@ -707,7 +707,8 @@ async fn door_readings(
             value: reading.value,
             units: reading.units.clone(),
             recorded_at,
-            payload_id: None,
+            // Host-stamped decode link; `insert_readings_with_provenance` verifies it names a payload of this petal.
+            payload_id: reading.provenance.as_ref().map(|stamp| stamp.payload_id.clone()),
         });
     }
     // The door's anchor rule: an existing node row of the bound petal.
@@ -811,28 +812,50 @@ pub(crate) async fn flush(
             let verse_id = crate::parse_scope(&outcome.scope)
                 .map_err(|error| PluginRefusal::UnknownOutcome(format!("flush scope unusable: {error}")))?
                 .verse_id;
-            super::iot_reading::insert_readings_with_provenance(
-                db,
-                admission.petal_id(),
-                Some(verse_id.as_str()),
-                local_did,
-                grant.source_class(),
-                admission.package(),
-                &door,
-                Some(sinks.blobs),
-                sinks.replication,
-            )
-            .await
-            .map_err(|error| {
-                // The door validates before it writes; only a scene batch already committed makes this partial.
-                if ops.is_empty() && error.validation_rejection().is_some() {
+            // A decoded reading lands under its decoder class, the rest under the grant's class; one
+            // door call per class so each row's window-membership fact carries its own class.
+            let mut by_class = std::collections::BTreeMap::<fe_sdk::source_class::SourceClass, Vec<IotReadingInput>>::new();
+            for (reading, input) in readings.iter().zip(door) {
+                let class = reading
+                    .provenance
+                    .as_ref()
+                    .map_or_else(|| grant.source_class(), |stamp| stamp.source_class);
+                by_class.entry(class).or_default().push(input);
+            }
+            let mut total = 0usize;
+            let mut failure = None;
+            for (class, group) in &by_class {
+                match super::iot_reading::insert_readings_with_provenance(
+                    db,
+                    admission.petal_id(),
+                    Some(verse_id.as_str()),
+                    local_did,
+                    *class,
+                    admission.package(),
+                    group,
+                    Some(sinks.blobs),
+                    sinks.replication,
+                )
+                .await
+                {
+                    Ok(written) => total += written,
+                    Err(error) => {
+                        failure = Some(error);
+                        break;
+                    }
+                }
+            }
+            if let Some(error) = failure {
+                // The door validates before it writes; a committed scene batch or an earlier class group makes it partial.
+                return Err(if ops.is_empty() && total == 0 && error.validation_rejection().is_some() {
                     PluginRefusal::InvalidInput(error.to_string())
                 } else {
                     PluginRefusal::UnknownOutcome(format!(
                         "the flush was admitted but its readings did not all land: {error}"
                     ))
-                }
-            })?
+                });
+            }
+            total
         }
         _ => 0,
     };
