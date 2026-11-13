@@ -61,6 +61,8 @@ pub struct RegistryState {
     pub token: Option<String>,
     pub readonly: bool,
     pub index: tokio::sync::RwLock<Vec<HexonIndexEntry>>,
+    /// Operator opt-in: `/blobs` serves every stored archive, listed in the catalogue or not.
+    pub public_blobs: bool,
     /// Serializes publish's check → write → reindex (no continuity TOCTOU).
     publish_lock: tokio::sync::Mutex<()>,
 }
@@ -88,13 +90,29 @@ impl RegistryState {
             token,
             readonly,
             index: tokio::sync::RwLock::new(entries),
+            public_blobs: false,
             publish_lock: tokio::sync::Mutex::new(()),
         }
     }
+
+    /// Serve every stored archive on `/blobs` (default off: only catalogue-listed builds are anonymous).
+    pub fn with_public_blobs(mut self, public_blobs: bool) -> Self {
+        self.public_blobs = public_blobs;
+        self
+    }
+
+    /// True when the request carries this registry's bearer token (never true without one).
+    fn bearer_matches(&self, headers: &header::HeaderMap) -> bool {
+        let presented = headers
+            .get(header::AUTHORIZATION)
+            .and_then(|v| v.to_str().ok())
+            .and_then(|v| v.strip_prefix("Bearer "));
+        self.token.as_deref().is_some_and(|expected| presented == Some(expected))
+    }
 }
 
-/// Build the registry router; `/health`, the catalogue (`/config.json` alias, `/api/v1/catalog/*`) and
-/// `/blobs/*` are public, `/api/v1/hexons/*` is token-gated when configured.
+/// Build the registry router; `/health` and the catalogue (`/config.json` alias, `/api/v1/catalog/*`)
+/// are public, `/blobs/*` is public only for catalogue-listed builds, `/api/v1/hexons/*` is token-gated.
 pub fn build_router(state: Arc<RegistryState>) -> Router {
     let api = Router::new()
         .route("/hexons/search", get(search))
@@ -228,25 +246,74 @@ async fn catalog_doc(
     }
 }
 
-/// GET /blobs/{content_hash}.hexon — the static tree's blob path, public so a catalogue `download_url` needs no credentials.
-async fn blob(State(state): State<Arc<RegistryState>>, Path(file): Path<String>) -> Response {
+/// GET /blobs/{content_hash}.hexon — anonymous only for a build the published catalogue lists (or
+/// with the operator's `public_blobs` opt-in); otherwise the bearer token is required. Unknown,
+/// unlisted and unauthorised hashes all get the same 404 (no existence oracle).
+async fn blob(
+    State(state): State<Arc<RegistryState>>,
+    Path(file): Path<String>,
+    headers: header::HeaderMap,
+) -> Response {
+    let not_found = || coded_err(StatusCode::NOT_FOUND, "not_found");
     let hash = file.strip_suffix(".hexon").unwrap_or("");
     let well_formed =
         hash.len() == 64 && hash.bytes().all(|b| matches!(b, b'0'..=b'9' | b'a'..=b'f'));
     if !well_formed {
-        return coded_err(StatusCode::NOT_FOUND, "not_found");
+        return not_found();
     }
-    let path = state
+    let found = state
         .index
         .read()
         .await
         .iter()
         .find(|e| e.content_hash == hash)
-        .map(|e| e.path.clone());
-    match path {
-        Some(path) => stream_hexon(&path, &file).await,
-        None => coded_err(StatusCode::NOT_FOUND, "not_found"),
+        .map(|e| (e.path.clone(), e.hexon_id.clone()));
+    let Some((path, hexon_id)) = found else {
+        return not_found();
+    };
+    let admitted = state.public_blobs
+        || state.bearer_matches(&headers)
+        || match catalog_lists_build(state.store.as_ref(), &hexon_id, hash).await {
+            Ok(listed) => listed,
+            Err(e) => return store_failure(e),
+        };
+    if admitted {
+        stream_hexon(&path, &file).await
+    } else {
+        not_found()
     }
+}
+
+/// True when `index.json` lists `package_id` and its detail document lists a version with `content_hash`.
+async fn catalog_lists_build(
+    store: &dyn PackageStore,
+    package_id: &str,
+    content_hash: &str,
+) -> Result<bool, StoreError> {
+    let parse = |bytes: Option<Bytes>| {
+        bytes.and_then(|b| serde_json::from_slice::<serde_json::Value>(&b).ok())
+    };
+    let listed_in_index = parse(store.catalog_doc("index.json").await?)
+        .and_then(|doc| doc.get("entries")?.as_array().cloned())
+        .is_some_and(|entries| {
+            entries
+                .iter()
+                .any(|e| e.get("package_id").and_then(|v| v.as_str()) == Some(package_id))
+        });
+    if !listed_in_index {
+        return Ok(false);
+    }
+    let detail_path = format!("packages/{package_id}.json");
+    if !store::valid_catalog_path(&detail_path) {
+        return Ok(false);
+    }
+    Ok(parse(store.catalog_doc(&detail_path).await?)
+        .and_then(|doc| doc.get("versions")?.as_array().cloned())
+        .is_some_and(|versions| {
+            versions
+                .iter()
+                .any(|v| v.get("content_hash").and_then(|h| h.as_str()) == Some(content_hash))
+        }))
 }
 
 #[derive(Debug, Deserialize)]

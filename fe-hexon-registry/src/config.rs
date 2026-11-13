@@ -15,6 +15,8 @@ pub struct RegistryConfig {
     pub readonly: bool,
     /// Explicit opt-in to run with no token (`FE_REGISTRY_ALLOW_OPEN=1`); without it a tokenless registry refuses to start.
     pub allow_open: bool,
+    /// Serve every stored archive on `/blobs`, catalogue-listed or not (`FE_REGISTRY_PUBLIC_BLOBS=1`, default off).
+    pub public_blobs: bool,
 }
 
 impl RegistryConfig {
@@ -32,6 +34,9 @@ impl RegistryConfig {
                 .map(|v| matches!(v.to_ascii_lowercase().as_str(), "1" | "true" | "yes"))
                 .unwrap_or(false),
             allow_open: std::env::var("FE_REGISTRY_ALLOW_OPEN")
+                .map(|v| matches!(v.to_ascii_lowercase().as_str(), "1" | "true" | "yes"))
+                .unwrap_or(false),
+            public_blobs: std::env::var("FE_REGISTRY_PUBLIC_BLOBS")
                 .map(|v| matches!(v.to_ascii_lowercase().as_str(), "1" | "true" | "yes"))
                 .unwrap_or(false),
         }

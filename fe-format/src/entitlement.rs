@@ -30,13 +30,13 @@ pub const TOKEN_CLOCK_LEEWAY_SECS: u64 = 60;
 pub const CONTENT_KEY_LENGTH: usize = 32;
 
 /// BLAKE3 derive-key context of the wrap key.
-const WRAP_KDF_CONTEXT: &str = "fractalengine 2026-11 entitlement content-key wrap v1";
+const WRAP_KDF_CONTEXT: &str = "fractalengine 2026-11 entitlement content-key wrap v2";
 /// Associated-data prefix of a wrapped content key.
-const WRAP_AAD_DOMAIN: &[u8] = b"fractalengine/entitlement-wrap/v1";
+const WRAP_AAD_DOMAIN: &[u8] = b"fractalengine/entitlement-wrap/v2";
 /// Associated-data prefix of a sealed paid entry.
-const PAID_ENTRY_AAD_DOMAIN: &[u8] = b"fractalengine/entitlement-paid-entry/v1";
-/// Format byte leading every wrapped key and sealed entry.
-const FORMAT_VERSION: u8 = 1;
+const PAID_ENTRY_AAD_DOMAIN: &[u8] = b"fractalengine/entitlement-paid-entry/v2";
+/// Format byte leading every wrapped key and sealed entry (2 = package-bound, R-STORE).
+const FORMAT_VERSION: u8 = 2;
 /// XChaCha20 nonce length.
 const NONCE_LENGTH: usize = 24;
 /// Poly1305 tag length.
@@ -79,8 +79,9 @@ pub enum EntitlementError {
     /// The token was issued to another licensee.
     #[error("token was issued to another licensee")]
     LicenseeMismatch,
-    /// The wrapped key does not open with this device key (wrong device or tampered wrap).
-    #[error("content key does not unwrap with this device key")]
+    /// The wrapped key does not open with this key and binding (wrong device, another package or
+    /// build, or a tampered wrap).
+    #[error("content key does not unwrap with this device key for this package")]
     WrongDevice,
     /// A paid entry does not open under this key and entry id.
     #[error("paid entry does not open with this content key")]
@@ -281,34 +282,74 @@ impl Drop for ContentKey {
 
 // ---- X25519 wrap ------------------------------------------------------------
 
-/// Wrap key = BLAKE3-derive(shared ‖ ephemeral public ‖ recipient public).
-fn derive_wrap_key(shared: &[u8; 32], ephemeral_public: &[u8; 32], recipient_public: &[u8; 32]) -> ContentKey {
-    let mut material = [0u8; 96];
-    material[..32].copy_from_slice(shared);
-    material[32..64].copy_from_slice(ephemeral_public);
-    material[64..].copy_from_slice(recipient_public);
+/// What a wrapped content key is bound to; a wrap opens only under the binding it was made for.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum WrapBinding<'a> {
+    /// `license.json` `encrypted_key` (wrapped to the issuer): the package only, because the
+    /// manifest's `content_hash` itself covers this wrap.
+    Archive { package_id: &'a str },
+    /// A token's `wrapped_content_key` (wrapped to a licensee device): package and build.
+    Device { package_id: &'a str, content_hash: &'a str },
+}
+
+impl WrapBinding<'_> {
+    /// Tagged, length-prefixed encoding fed to both the KDF and the AAD.
+    fn encode(&self) -> Result<Vec<u8>, EntitlementError> {
+        let (tag, package_id, content_hash) = match *self {
+            Self::Archive { package_id } => (b'A', package_id, None),
+            Self::Device { package_id, content_hash } => (b'D', package_id, Some(content_hash)),
+        };
+        check_identifier("package_id", package_id)?;
+        let mut out = vec![tag];
+        push_length_prefixed(&mut out, package_id.as_bytes());
+        if let Some(content_hash) = content_hash {
+            check_content_hash(content_hash)?;
+            push_length_prefixed(&mut out, content_hash.as_bytes());
+        }
+        Ok(out)
+    }
+}
+
+/// Append `bytes` behind a big-endian u16 length (fields are at most 128 bytes).
+fn push_length_prefixed(out: &mut Vec<u8>, bytes: &[u8]) {
+    out.extend_from_slice(&(bytes.len() as u16).to_be_bytes());
+    out.extend_from_slice(bytes);
+}
+
+/// Wrap key = BLAKE3-derive(shared ‖ ephemeral public ‖ recipient public ‖ binding).
+fn derive_wrap_key(shared: &[u8; 32], ephemeral_public: &[u8; 32], recipient_public: &[u8; 32], binding: &[u8]) -> ContentKey {
+    let mut material = Vec::with_capacity(96 + binding.len());
+    material.extend_from_slice(shared);
+    material.extend_from_slice(ephemeral_public);
+    material.extend_from_slice(recipient_public);
+    material.extend_from_slice(binding);
     let key = ContentKey(blake3::derive_key(WRAP_KDF_CONTEXT, &material));
     wipe(&mut material);
     key
 }
 
-/// Associated data binding a wrap to both public keys.
-fn wrap_aad(ephemeral_public: &[u8; 32], recipient_public: &[u8; 32]) -> Vec<u8> {
-    [WRAP_AAD_DOMAIN, ephemeral_public, recipient_public].concat()
+/// Associated data binding a wrap to both public keys and to its package (and build).
+fn wrap_aad(ephemeral_public: &[u8; 32], recipient_public: &[u8; 32], binding: &[u8]) -> Vec<u8> {
+    [WRAP_AAD_DOMAIN, ephemeral_public, recipient_public, binding].concat()
 }
 
-/// Wrap `content_key` to a recipient X25519 public key (ephemeral-static ECDH); base64 out.
-pub fn wrap_content_key(content_key: &ContentKey, recipient_public: &[u8; 32]) -> Result<String, EntitlementError> {
+/// Wrap `content_key` to a recipient X25519 public key (ephemeral-static ECDH) under `binding`; base64 out.
+pub fn wrap_content_key(
+    content_key: &ContentKey,
+    recipient_public: &[u8; 32],
+    binding: &WrapBinding<'_>,
+) -> Result<String, EntitlementError> {
+    let binding = binding.encode()?;
     let ephemeral = EphemeralSecret::random_from_rng(OsRng);
     let ephemeral_public = PublicKey::from(&ephemeral).to_bytes();
     let shared = ephemeral.diffie_hellman(&PublicKey::from(*recipient_public));
     if !shared.was_contributory() {
         return Err(malformed("recipient key is a low-order point"));
     }
-    let wrap_key = derive_wrap_key(shared.as_bytes(), &ephemeral_public, recipient_public);
+    let wrap_key = derive_wrap_key(shared.as_bytes(), &ephemeral_public, recipient_public, &binding);
     let mut nonce = [0u8; NONCE_LENGTH];
     fill_random(&mut nonce)?;
-    let aad = wrap_aad(&ephemeral_public, recipient_public);
+    let aad = wrap_aad(&ephemeral_public, recipient_public, &binding);
     let sealed = wrap_key
         .cipher()
         .encrypt(XNonce::from_slice(&nonce), Payload { msg: content_key.expose_bytes(), aad: &aad })
@@ -321,8 +362,13 @@ pub fn wrap_content_key(content_key: &ContentKey, recipient_public: &[u8; 32]) -
     Ok(BASE64.encode(out))
 }
 
-/// Unwrap a base64 wrapped key with the recipient's X25519 static secret.
-pub fn unwrap_content_key(wrapped: &str, recipient_secret: &[u8; 32]) -> Result<ContentKey, EntitlementError> {
+/// Unwrap a base64 wrapped key with the recipient's X25519 static secret; the binding must match the wrap's.
+pub fn unwrap_content_key(
+    wrapped: &str,
+    recipient_secret: &[u8; 32],
+    binding: &WrapBinding<'_>,
+) -> Result<ContentKey, EntitlementError> {
+    let binding = binding.encode()?;
     let bytes = BASE64.decode(wrapped).map_err(|_| malformed("wrapped key is not base64"))?;
     if bytes.len() != WRAPPED_KEY_LENGTH || bytes[0] != FORMAT_VERSION {
         return Err(malformed("wrapped key has the wrong length or version"));
@@ -337,8 +383,8 @@ pub fn unwrap_content_key(wrapped: &str, recipient_secret: &[u8; 32]) -> Result<
     if !shared.was_contributory() {
         return Err(malformed("ephemeral key is a low-order point"));
     }
-    let wrap_key = derive_wrap_key(shared.as_bytes(), &ephemeral_public, &recipient_public);
-    let aad = wrap_aad(&ephemeral_public, &recipient_public);
+    let wrap_key = derive_wrap_key(shared.as_bytes(), &ephemeral_public, &recipient_public, &binding);
+    let aad = wrap_aad(&ephemeral_public, &recipient_public, &binding);
     let mut opened = wrap_key
         .cipher()
         .decrypt(XNonce::from_slice(nonce), Payload { msg: sealed, aad: &aad })
@@ -354,16 +400,26 @@ pub fn unwrap_content_key(wrapped: &str, recipient_secret: &[u8; 32]) -> Result<
 
 // ---- paid entries -----------------------------------------------------------
 
-/// Associated data binding a sealed entry to its entry id.
-fn paid_entry_aad(entry_id: &str) -> Vec<u8> {
-    [PAID_ENTRY_AAD_DOMAIN, b"\n", entry_id.as_bytes()].concat()
+/// Associated data binding a sealed entry to its package and entry id (not the build: the
+/// manifest's `content_hash` covers the sealed bytes).
+fn paid_entry_aad(package_id: &str, entry_id: &str) -> Result<Vec<u8>, EntitlementError> {
+    check_identifier("package_id", package_id)?;
+    let mut aad = PAID_ENTRY_AAD_DOMAIN.to_vec();
+    push_length_prefixed(&mut aad, package_id.as_bytes());
+    aad.extend_from_slice(entry_id.as_bytes());
+    Ok(aad)
 }
 
-/// Seal one non-free entry's bytes under the content key, bound to `entry_id`.
-pub fn seal_paid_entry(content_key: &ContentKey, entry_id: &str, plaintext: &[u8]) -> Result<Vec<u8>, EntitlementError> {
+/// Seal one non-free entry's bytes under the content key, bound to `package_id` and `entry_id`.
+pub fn seal_paid_entry(
+    content_key: &ContentKey,
+    package_id: &str,
+    entry_id: &str,
+    plaintext: &[u8],
+) -> Result<Vec<u8>, EntitlementError> {
     let mut nonce = [0u8; NONCE_LENGTH];
     fill_random(&mut nonce)?;
-    let aad = paid_entry_aad(entry_id);
+    let aad = paid_entry_aad(package_id, entry_id)?;
     let sealed = content_key
         .cipher()
         .encrypt(XNonce::from_slice(&nonce), Payload { msg: plaintext, aad: &aad })
@@ -376,12 +432,17 @@ pub fn seal_paid_entry(content_key: &ContentKey, entry_id: &str, plaintext: &[u8
 }
 
 /// Open a sealed entry in memory; the caller never persists the plaintext.
-pub fn open_paid_entry(content_key: &ContentKey, entry_id: &str, sealed: &[u8]) -> Result<Vec<u8>, EntitlementError> {
+pub fn open_paid_entry(
+    content_key: &ContentKey,
+    package_id: &str,
+    entry_id: &str,
+    sealed: &[u8],
+) -> Result<Vec<u8>, EntitlementError> {
     if sealed.len() < 1 + NONCE_LENGTH + TAG_LENGTH || sealed[0] != FORMAT_VERSION {
         return Err(malformed("sealed entry has the wrong length or version"));
     }
     let nonce = &sealed[1..1 + NONCE_LENGTH];
-    let aad = paid_entry_aad(entry_id);
+    let aad = paid_entry_aad(package_id, entry_id)?;
     content_key
         .cipher()
         .decrypt(XNonce::from_slice(nonce), Payload { msg: &sealed[1 + NONCE_LENGTH..], aad: &aad })
@@ -565,7 +626,8 @@ impl EntitlementVerifier for KeyringVerifier {
         now: u64,
     ) -> Result<VerifiedEntitlement, EntitlementError> {
         let claims = self.verify_claims(token, expected, now)?;
-        let content_key = unwrap_content_key(&claims.wrapped_content_key, device_secret)?;
+        let binding = WrapBinding::Device { package_id: &claims.package_id, content_hash: &claims.content_hash };
+        let content_key = unwrap_content_key(&claims.wrapped_content_key, device_secret, &binding)?;
         Ok(VerifiedEntitlement { claims, content_key })
     }
 }
@@ -583,7 +645,8 @@ pub struct MintRequest<'a> {
     pub package_id: &'a str,
     /// The build's content hash.
     pub content_hash: &'a str,
-    /// `license.json` `encrypted_key`: the content key wrapped to this issuer.
+    /// `license.json` `encrypted_key`: the content key wrapped to this issuer for `package_id`.
+    /// Issuers take it from their own catalogue record for the requested package, never from a request.
     pub encrypted_key: &'a str,
     /// Token lifetime in seconds (1..=[`MAX_ENTITLEMENT_TTL_SECS`]).
     pub ttl_secs: u64,
@@ -658,12 +721,13 @@ impl LocalIssuer {
         x25519_public_key(&self.wrap_secret)
     }
 
-    /// The `encrypted_key` value for an archive sealed under `content_key`.
-    pub fn encrypted_key_for(&self, content_key: &ContentKey) -> Result<String, EntitlementError> {
-        wrap_content_key(content_key, &self.wrap_public_key())
+    /// The `encrypted_key` value for `package_id`'s archive sealed under `content_key`.
+    pub fn encrypted_key_for(&self, content_key: &ContentKey, package_id: &str) -> Result<String, EntitlementError> {
+        wrap_content_key(content_key, &self.wrap_public_key(), &WrapBinding::Archive { package_id })
     }
 
-    /// Mint a token: unwrap the archive key with the issuer secret, re-wrap it to the device, sign.
+    /// Mint a token: unwrap the package-bound archive key with the issuer secret (a wrap made for
+    /// another package does not open), re-wrap it to the device for this build, sign.
     pub fn mint(&self, request: &MintRequest<'_>, now: u64) -> Result<String, EntitlementError> {
         ensure_crypto_provider();
         ed25519_key_from_did(request.licensee_did)?;
@@ -684,7 +748,9 @@ impl LocalIssuer {
                 URL_SAFE_NO_PAD.encode(raw)
             }
         };
-        let content_key = unwrap_content_key(request.encrypted_key, &self.wrap_secret)?;
+        let archive_binding = WrapBinding::Archive { package_id: request.package_id };
+        let content_key = unwrap_content_key(request.encrypted_key, &self.wrap_secret, &archive_binding)?;
+        let device_binding = WrapBinding::Device { package_id: request.package_id, content_hash: request.content_hash };
         let claims = EntitlementClaims {
             sub: request.licensee_did.to_string(),
             package_id: request.package_id.to_string(),
@@ -693,7 +759,7 @@ impl LocalIssuer {
             exp: now.saturating_add(request.ttl_secs),
             jti,
             kid: self.kid.clone(),
-            wrapped_content_key: wrap_content_key(&content_key, &device_public)?,
+            wrapped_content_key: wrap_content_key(&content_key, &device_public, &device_binding)?,
         };
         let mut header = Header::new(Algorithm::EdDSA);
         header.kid = Some(self.kid.clone());
@@ -832,8 +898,8 @@ mod tests {
 
         // Publisher side: seal one paid entry, wrap the key to the issuer for license.json.
         let content_key = ContentKey::generate().unwrap();
-        let sealed = seal_paid_entry(&content_key, "terrain_full", b"full-resolution tiles").unwrap();
-        let encrypted_key = issuer.encrypted_key_for(&content_key).unwrap();
+        let sealed = seal_paid_entry(&content_key, "pkg.terrain", "terrain_full", b"full-resolution tiles").unwrap();
+        let encrypted_key = issuer.encrypted_key_for(&content_key, "pkg.terrain").unwrap();
 
         let licensee = identity();
         let licensee_did = ed25519_key_to_did(&licensee.verifying_key());
@@ -861,11 +927,32 @@ mod tests {
         let good = mint(&issuer, HASH, NOW);
         let verified = verifier.verify(&good, &expected, &device, NOW + 10).unwrap();
         assert_eq!(verified.content_key, content_key);
-        assert_eq!(open_paid_entry(&verified.content_key, "terrain_full", &sealed).unwrap(), b"full-resolution tiles");
+        assert_eq!(open_paid_entry(&verified.content_key, "pkg.terrain", "terrain_full", &sealed).unwrap(), b"full-resolution tiles");
+        for (why, package, entry) in [("entry id", "pkg.terrain", "preview_1"), ("package", "pkg.other", "terrain_full")] {
+            assert_eq!(
+                open_paid_entry(&verified.content_key, package, entry, &sealed),
+                Err(EntitlementError::EntryOpenFailed),
+                "a sealed entry is bound to its {why}"
+            );
+        }
+
+        // Cross-package wrap (key-unwrap oracle): package A's archive wrap presented in a mint for
+        // package B never opens, so the issuer cannot be made to re-wrap A's key to the caller.
+        let lifted = MintRequest {
+            licensee_did: &licensee_did,
+            device_x25519_did: &device_did,
+            package_id: "pkg.other",
+            content_hash: HASH,
+            encrypted_key: &encrypted_key,
+            ttl_secs: 3600,
+            jti: None,
+        };
+        assert_eq!(issuer.mint(&lifted, NOW), Err(EntitlementError::WrongDevice));
+        // A device wrap is bound to its build too: re-labelling the build cannot open it.
+        let other_build = WrapBinding::Device { package_id: "pkg.terrain", content_hash: OTHER_HASH };
         assert_eq!(
-            open_paid_entry(&verified.content_key, "preview_1", &sealed),
-            Err(EntitlementError::EntryOpenFailed),
-            "a sealed entry is bound to its entry id"
+            unwrap_content_key(&verified.claims.wrapped_content_key, &device, &other_build).map(|_| ()),
+            Err(EntitlementError::WrongDevice)
         );
 
         // The attacker cannot mint against the issuer's archive key (it is wrapped to the issuer).
@@ -912,7 +999,7 @@ mod tests {
 
     /// A token from an unpinned issuer that wraps its own key (the attacker controls everything but the pin).
     fn mint_rogue(attacker: &LocalIssuer, licensee_did: &str, device_did: &str, content_key: &ContentKey) -> String {
-        let encrypted_key = attacker.encrypted_key_for(content_key).unwrap();
+        let encrypted_key = attacker.encrypted_key_for(content_key, "pkg.terrain").unwrap();
         attacker
             .mint(
                 &MintRequest {

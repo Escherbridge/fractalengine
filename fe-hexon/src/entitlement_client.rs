@@ -472,6 +472,8 @@ pub(crate) mod test_endpoint {
     /// Verifies each request like a hosted registry and mints with the issuer, unless a script is queued.
     pub(crate) struct FakeEndpoint {
         pub(crate) issuer: LocalIssuer,
+        /// The one package this endpoint's catalogue holds a record for.
+        package_id: String,
         encrypted_key: String,
         pub(crate) now: AtomicU64,
         pub(crate) posts: AtomicUsize,
@@ -481,12 +483,13 @@ pub(crate) mod test_endpoint {
     }
 
     impl FakeEndpoint {
-        /// An endpoint whose catalogue record wraps `content_key` to its issuer.
-        pub(crate) fn new(kid: &str, content_key: &ContentKey, now: u64) -> Arc<Self> {
+        /// An endpoint whose catalogue record for `package_id` wraps `content_key` to its issuer.
+        pub(crate) fn new(kid: &str, package_id: &str, content_key: &ContentKey, now: u64) -> Arc<Self> {
             let issuer = LocalIssuer::generate(kid).unwrap();
-            let encrypted_key = issuer.encrypted_key_for(content_key).unwrap();
+            let encrypted_key = issuer.encrypted_key_for(content_key, package_id).unwrap();
             Arc::new(Self {
                 issuer,
+                package_id: package_id.to_owned(),
                 encrypted_key,
                 now: AtomicU64::new(now),
                 posts: AtomicUsize::new(0),
@@ -541,7 +544,11 @@ pub(crate) mod test_endpoint {
                     return Ok(Self::envelope(status, error.wire_code(), None));
                 }
             };
-            // The issuer takes `encrypted_key` from its own catalogue record, never from the request.
+            // The issuer takes `encrypted_key` from its own catalogue record for the requested
+            // package, never from the request; a package it holds no record for is unknown.
+            if request.package_id != self.package_id {
+                return Ok(Self::envelope(404, "unknown_package", None));
+            }
             let token = self
                 .issuer
                 .mint(&MintRequest::for_request(&request, &self.encrypted_key, self.ttl_secs), now)
@@ -582,7 +589,7 @@ mod tests {
     #[test]
     fn token_is_requested_only_when_offered_held_per_package_and_renewed_before_exp() {
         let content_key = ContentKey::generate().unwrap();
-        let endpoint = FakeEndpoint::new("issuer-1", &content_key, NOW);
+        let endpoint = FakeEndpoint::new("issuer-1", "org.example.analytics-pack", &content_key, NOW);
         let directory = tempfile::tempdir().unwrap();
         let store: Arc<dyn TokenStore> = Arc::new(FileTokenStore::new(directory.path()));
         let client = EntitlementClient::new(endpoint.clone(), endpoint.verifier(), store.clone());
@@ -638,7 +645,7 @@ mod tests {
                     device_x25519_did: &licensee.device_did(),
                     package_id: "org.example.other",
                     content_hash: HASH,
-                    encrypted_key: &endpoint.issuer.encrypted_key_for(&content_key).unwrap(),
+                    encrypted_key: &endpoint.issuer.encrypted_key_for(&content_key, "org.example.other").unwrap(),
                     ttl_secs: 3600,
                     jti: None,
                 },

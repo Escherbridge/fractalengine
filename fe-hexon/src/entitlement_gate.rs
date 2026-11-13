@@ -191,9 +191,11 @@ impl EntitlementGate {
         match &self.access {
             Access::NotRequired => Ok(Cow::Borrowed(stored)),
             _ if self.terms.is_free_entry(entry_id) => Ok(Cow::Borrowed(stored)),
-            Access::Entitled { claims, content_key } if !Self::expired(claims, now) => open_paid_entry(content_key, entry_id, stored)
-                .map(Cow::Owned)
-                .map_err(|error| GateRefusal::OpenFailed { entry_id: entry_id.to_owned(), error }),
+            Access::Entitled { claims, content_key } if !Self::expired(claims, now) => {
+                open_paid_entry(content_key, &claims.package_id, entry_id, stored)
+                    .map(Cow::Owned)
+                    .map_err(|error| GateRefusal::OpenFailed { entry_id: entry_id.to_owned(), error })
+            }
             _ => Err(GateRefusal::EntitlementRequired { entry_id: entry_id.to_owned() }),
         }
     }
@@ -265,7 +267,7 @@ mod tests {
     #[test]
     fn licensed_package_loads_free_entries_without_a_token_and_opens_sealed_ones_only_when_entitled() {
         let content_key = ContentKey::generate().unwrap();
-        let sealed = seal_paid_entry(&content_key, "terrain_full", b"full-resolution tiles").unwrap();
+        let sealed = seal_paid_entry(&content_key, PACKAGE, "terrain_full", b"full-resolution tiles").unwrap();
         let preview = b"low-resolution preview".to_vec();
         let identity = SigningKey::from_bytes(&random_bytes());
         let device = random_bytes();
@@ -285,7 +287,7 @@ mod tests {
         assert_eq!(open.load_at("terrain_full", &sealed, NOW).unwrap(), Cow::Borrowed(&sealed[..]));
 
         // AC-2: no token → preview; the free entry loads, the sealed one is a distinct refusal.
-        let endpoint = FakeEndpoint::new("issuer-1", &content_key, NOW);
+        let endpoint = FakeEndpoint::new("issuer-1", PACKAGE, &content_key, NOW);
         let verifier: Arc<KeyringVerifier> = endpoint.verifier();
         let preview_gate = EntitlementGate::open(terms.clone(), PACKAGE, HASH, &licensee, None, verifier.as_ref(), NOW);
         assert_eq!(preview_gate.status_label_at(NOW), "installed-preview");

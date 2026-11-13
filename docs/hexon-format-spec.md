@@ -599,15 +599,18 @@ is configured.
 ### Entitlement wire (licensed packages)
 
 A package whose `license.json` is licensed lists `free_entries` in plaintext; every other entry is sealed with
-XChaCha20-Poly1305 under a 32-byte content key, with the entry id as associated data (`version(1) | nonce(24) | ciphertext+tag`).
+XChaCha20-Poly1305 under a 32-byte content key, with the package id and entry id as associated data
+(`version(1)=2 | nonce(24) | ciphertext+tag`).
 
 - **Token request**: `POST {base}/api/v1/catalog/entitlements/token` with `{package_id, content_hash, licensee_did,
   device_x25519_did, iat, proof}`. `proof` is the licensee's ed25519 signature over
   `fractalengine/entitlement-token-request/v1 \n canonical JSON minus proof`; `iat` must be within 300 seconds of server time.
 - **Token**: an EdDSA JWT with claims `sub, package_id, content_hash, iat, exp, jti, kid, wrapped_content_key`, verified offline
   against issuer keys the client pinned locally. A token covers exactly one `content_hash` and lives at most 30 days.
-- **Key wrap**: `wrapped_content_key` is base64 of `version(1) | ephemeral X25519 public(32) | nonce(24) | sealed key(48)`,
-  wrapped to the licensee's X25519 device key.
+- **Key wrap**: `wrapped_content_key` is base64 of `version(1)=2 | ephemeral X25519 public(32) | nonce(24) | sealed key(48)`,
+  wrapped to the licensee's X25519 device key and bound to `package_id` and `content_hash` (KDF input and AAD). `license.json`
+  `encrypted_key` has the same form, wrapped to the issuer and bound to `package_id`; an issuer takes it only from its own
+  catalogue record for the requested package (`fe-format/src/AGENTS.md` §entitlement).
 - **Errors**: `invalid_request` (400), `proof_invalid` (401), `not_entitled`, `reissue_refused`, `device_limit_reached` (403),
   `unknown_package` (404), `rate_limited` (429).
 

@@ -73,7 +73,7 @@ A client skips versions it cannot satisfy. `requires` only filters: the host re-
 | kill-list | `GET` the `revocation_url` configured locally beside a `revocation = true` trust root | revocation list (§4.7) | S-PLUGIN | feature `revocations`, at `{base}/api/v1/catalog/revocations.json` |
 | entitlement check | `POST {base}/api/v1/catalog/entitlements/token` | TokenResponse (§4.10) | S-ENTITLEMENT | feature `entitlements` |
 
-fe-hexon-registry's `/api/v1/hexons/*` routes, `/download` included, sit behind its bearer-token middleware whenever a token is configured, so a hosted `download_url` MUST name a path served without one (rule 1.3).
+fe-hexon-registry's `/api/v1/hexons/*` routes, `/download` included, sit behind its bearer-token middleware whenever a token is configured, so a hosted `download_url` MUST name a path served without one (rule 1.3). Its `/blobs/{content_hash}.hexon` serves anonymously only builds the published catalogue lists (in `index.json` and in that package's detail `versions`); an unlisted build needs the operator token unless the operator opts in to public blobs, and unknown, unlisted and unauthorised hashes answer the same `404 not_found`.
 
 **Search semantics** (server and local fallback alike):
 - `q`: case-insensitive (Unicode lowercase) substring over `package_id`, `name` and `summary`, mirroring v1 search (`fe-hexon-registry/src/routes.rs`). Empty or absent matches everything.
@@ -250,7 +250,7 @@ This contract redefines none of its fields. Its signature is the S-PLUGIN form, 
 | 404 | `unknown_package` | no such `(package_id, content_hash)` |
 | 429 | `rate_limited` | too many requests |
 
-Error bodies use the envelope of rule 1.5. A token covers exactly one `content_hash`, so after an update the client asks again. A client verifies every token locally with `EntitlementVerifier` against its pinned issuer keyring; the response status is never trust.
+Error bodies use the envelope of rule 1.5. A token covers exactly one `content_hash`, so after an update the client asks again. An issuer mints from the `encrypted_key` of its own catalogue record for the requested `(package_id, content_hash)`, never from anything in the request; that key and the token's `wrapped_content_key` are package-bound wraps (`fe-format/src/AGENTS.md` §entitlement), so a wrap from one package never opens for another. A client verifies every token locally with `EntitlementVerifier` against its pinned issuer keyring; the response status is never trust.
 
 ### 4.11 Field rules
 

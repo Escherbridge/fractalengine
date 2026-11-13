@@ -82,7 +82,7 @@ fallback otherwise.
 All config is env-driven for container parity with the relay:
 `FE_REGISTRY_DIR` (default `/data/hexons`), `FE_REGISTRY_BIND`
 (default `0.0.0.0:8790`), `FE_REGISTRY_TOKEN` (optional),
-`FE_REGISTRY_READONLY` (`1`/`true`/`yes`). No config files.
+`FE_REGISTRY_READONLY` (`1`/`true`/`yes`), `FE_REGISTRY_ALLOW_OPEN`, `FE_REGISTRY_PUBLIC_BLOBS` (§auth). No config files.
 
 ### Auth model
 
@@ -206,9 +206,12 @@ Default-deny: `RegistryConfig::validate` refuses to start without `FE_REGISTRY_T
 `/blobs/*` sit outside it because contract v1 rule 1.3 makes catalogue reads and downloads credential-free. Every response
 carries `X-Hexon-Registry-Protocol: 1`.
 
-NEEDS (F-REG / R-REG, owner of `src/routes.rs`): `GET /blobs/{hash}.hexon` currently streams any indexed archive by hash.
-Serve it only for packages present in the published catalogue index, or gate it behind the token unless the operator opts in to
-public blobs by flag; answer the same uniform 404 for unknown and unlisted hashes (no existence oracle).
+`/blobs/{hash}.hexon` is anonymous only for a **catalogue-listed build** (R-STORE, steer 2026-11-13): `routes::catalog_lists_build`
+admits the hash when the store's `index.json` lists the archive's `hexon_id` and that package's detail document
+(`packages/{id}.json`) names a version with this `content_hash`. Anything else needs the bearer token, or the operator's
+explicit `FE_REGISTRY_PUBLIC_BLOBS=1` (`RegistryState::with_public_blobs`). Unknown, unlisted and unauthorised hashes all answer
+the same `404 not_found`, so the route is no oracle for unlisted packages. A token-less registry (dev `ALLOW_OPEN`, or a wrapper
+that authenticates in front) is still default-deny for unlisted blobs; the `/api/v1/hexons/*` download stays its open path.
 
 ## §routes (catalogue additions, contract v1)
 
@@ -217,6 +220,6 @@ public blobs by flag; answer the same uniform 404 for unknown and unlisted hashe
 | GET | `/config.json` | store document if present, else a minimal v1 config (`features` lists index/detail/attestations only when `catalog/index.json` exists) |
 | GET | `/api/v1/catalog/config.json` | same document as `/config.json` |
 | GET | `/api/v1/catalog/{*path}` | one stored catalogue document, public; unknown or invalid paths answer `404 not_found` |
-| GET | `/blobs/{content_hash}.hexon` | static-tree download path, public (see NEEDS above) |
+| GET | `/blobs/{content_hash}.hexon` | static-tree download path; public for catalogue-listed builds, else token or `FE_REGISTRY_PUBLIC_BLOBS` (§auth); uniform `404 not_found` |
 
 Errors on these routes use `{ ok: false, data: null, error: "<code>" }` with stable snake_case codes.

@@ -898,7 +898,7 @@ async fn catalogue_is_public_and_verbatim_behind_a_token() {
         assert_eq!(error_text(&body), "not_found");
     }
 
-    // The content routes stay behind the token, but a blob named by content hash is public.
+    // The content routes stay behind the token; a blob is public only once the catalogue lists its build.
     let (status, _) = get(&router, "/api/v1/hexons/search").await;
     assert_eq!(status, StatusCode::UNAUTHORIZED);
     let resp = router
@@ -914,13 +914,42 @@ async fn catalogue_is_public_and_verbatim_behind_a_token() {
         .unwrap();
     let hits = json_data(&resp.into_body().collect().await.unwrap().to_bytes());
     let hash = hits[0]["content_hash"].as_str().unwrap().to_string();
-    let (status, bytes) = get(&router, &format!("/blobs/{hash}.hexon")).await;
-    assert_eq!(status, StatusCode::OK);
-    assert_eq!(bytes.len() as u64, hits[0]["size_bytes"].as_u64().unwrap());
-    let (status, _) = get(&router, &format!("/blobs/{}.hexon", "0".repeat(64))).await;
-    assert_eq!(status, StatusCode::NOT_FOUND);
+    let hexon_id = hits[0]["hexon_id"].as_str().unwrap().to_string();
+    let blob_uri = format!("/blobs/{hash}.hexon");
+    // Stored but unlisted: the same coded 404 as an unknown hash (no existence oracle).
+    let unknown = get(&router, &format!("/blobs/{}.hexon", "0".repeat(64))).await;
+    let unlisted = get(&router, &blob_uri).await;
+    assert_eq!(unknown.0, StatusCode::NOT_FOUND);
+    assert_eq!((unlisted.0, error_text(&unlisted.1)), (StatusCode::NOT_FOUND, error_text(&unknown.1)));
     let (status, _) = get(&router, "/blobs/not-a-hash.hexon").await;
     assert_eq!(status, StatusCode::NOT_FOUND);
+    // The operator's token still reaches an unlisted build.
+    let resp = router
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri(&blob_uri)
+                .header(header::AUTHORIZATION, "Bearer s3cret")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    // Once index.json lists the package and its detail lists the build, anyone can fetch it.
+    std::fs::write(
+        catalog.join("index.json"),
+        serde_json::to_vec(&serde_json::json!({"schema_version": 1, "entries": [{"package_id": hexon_id}]})).unwrap(),
+    )
+    .unwrap();
+    std::fs::write(
+        catalog.join(format!("packages/{hexon_id}.json")),
+        serde_json::to_vec(&serde_json::json!({"package_id": hexon_id, "versions": [{"content_hash": hash}]})).unwrap(),
+    )
+    .unwrap();
+    let (status, bytes) = get(&router, &blob_uri).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(bytes.len() as u64, hits[0]["size_bytes"].as_u64().unwrap());
 
     // Publishing runs through the injected store.
     let (status, _) = post_publish(&router, night_sky_hexon(), Some("s3cret")).await;
@@ -934,6 +963,7 @@ async fn catalogue_is_public_and_verbatim_behind_a_token() {
         token: None,
         readonly: false,
         allow_open: false,
+        public_blobs: false,
     };
     assert!(cfg.validate().is_err());
     cfg.allow_open = true;

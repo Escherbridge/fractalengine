@@ -369,17 +369,21 @@ so the bevy-free consumers (hosted registry) never compile the crypto. Pure prim
   `jti`, `kid`, `wrapped_content_key`). `KeyringVerifier` verifies offline against an `IssuerKeyring` of pinned `(kid, key)`
   pairs (never a key taken from the token), checks package, build hash and licensee, applies `TOKEN_CLOCK_LEEWAY_SECS`, and
   caps lifetime at `MAX_ENTITLEMENT_TTL_SECS`. The expected `content_hash` is recomputed locally by the caller.
-- **Wrap**: the issuer wraps a 32-byte `ContentKey` to the licensee's X25519 device key (ephemeral-static ECDH, BLAKE3
-  `derive_key` over shared + both public keys, XChaCha20-Poly1305 with an AAD naming both keys). Wire form is base64 of
-  `version(1) | ephemeral public(32) | nonce(24) | sealed key(48)`. `ContentKey` redacts `Debug`, compares in constant time and
+- **Wrap**: a 32-byte `ContentKey` is wrapped to an X25519 key (ephemeral-static ECDH, BLAKE3 `derive_key` over shared + both
+  public keys + the `WrapBinding`, XChaCha20-Poly1305 with an AAD naming both keys and the binding). Wire form is base64 of
+  `version(1)=2 | ephemeral public(32) | nonce(24) | sealed key(48)`. `ContentKey` redacts `Debug`, compares in constant time and
   zeroizes on drop.
-- **Paid entries**: `seal_paid_entry` / `open_paid_entry` seal one entry under the content key with the entry id in the AAD
-  (a sealed entry cannot be swapped to another entry id). Free entries stay plaintext.
+- **Package-bound wraps (R-STORE, closes the key-unwrap oracle)**: `WrapBinding::Archive { package_id }` binds `license.json`
+  `encrypted_key` (wrapped to the issuer) to its package; `WrapBinding::Device { package_id, content_hash }` binds a token's
+  `wrapped_content_key` to package and build. The archive wrap cannot name the build: the manifest's `content_hash` commits
+  `license.json`, so it would hash itself. `LocalIssuer::mint` unwraps under the requested `package_id`, so a wrap lifted from
+  package A and presented for package B never opens, and issuers still take `encrypted_key` only from their own catalogue record
+  for the requested package, never from a request. Format byte 2 refuses any version-1 wrap outright.
+- **Paid entries**: `seal_paid_entry` / `open_paid_entry` seal one entry under the content key with the package id
+  (length-prefixed) and the entry id in the AAD, so a sealed entry cannot move to another entry or package. Not the build, for the
+  same self-hash reason. Free entries stay plaintext.
 - **Token request**: `TokenRequest` + `token_request_proof` / `verify_token_request` implement contract v1 section 4.9; the proof signs
   `fractalengine/entitlement-token-request/v1 \n canonical JSON minus proof` (domain separation from gossip and API tokens),
   `iat` within `TOKEN_REQUEST_IAT_WINDOW_SECS`, body at most `MAX_TOKEN_REQUEST_BYTES`.
 - **Errors**: `EntitlementError::wire_code` maps request failures to the contract codes `proof_invalid` / `invalid_request`.
 - **`LocalIssuer`** is the reference issuer used by tests and the private service; it mints, it does not decide who is entitled.
-- **Open finding (R-STORE)**: the wrap AAD binds the two public keys only, not the package. Bind `package_id` and `content_hash`
-  into the AAD / KDF input and `paid_entry_aad`, and have issuers take `encrypted_key` only from their own catalogue record for
-  the requested package. Tracked in the extension_platform checkpoint steer; not changed here (file owned by S-ENT).

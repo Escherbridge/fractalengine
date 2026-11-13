@@ -25,12 +25,10 @@ async fn main() -> anyhow::Result<()> {
     let entries = store.list().await?;
     tracing::info!(count = entries.len(), dir = %cfg.dir.display(), "indexed hexon packages");
 
-    let state = Arc::new(RegistryState::with_store(
-        store,
-        cfg.token,
-        cfg.readonly,
-        entries,
-    ));
+    let state = Arc::new(
+        RegistryState::with_store(store, cfg.token, cfg.readonly, entries)
+            .with_public_blobs(cfg.public_blobs),
+    );
     let listener = tokio::net::TcpListener::bind(&cfg.bind).await?;
     tracing::info!(bind = %cfg.bind, "fe-hexon-registry listening");
     axum::serve(listener, build_router(state)).await?;

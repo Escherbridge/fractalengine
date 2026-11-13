@@ -14,7 +14,7 @@ use ed25519_dalek::{SigningKey, VerifyingKey};
 use fe_format::integrity::{self, MANIFEST_PATH, PLUGIN_COUNTERSIGNATURES_PATH, PLUGIN_EXTENSION_PATH};
 use fe_format::{HexonArchive, HexonManifest, IntegrityPolicy, IntegrityStatus, SealCheck};
 use fe_hexon::registry_source::{
-    sign_index, valid_package_id, valid_version, BytesFetcher, FileFetcher, RegistryEntry, RegistryError, RegistrySource,
+    no_kill_list, sign_index, valid_package_id, valid_version, BytesFetcher, FileFetcher, RegistryEntry, RegistryError, RegistrySource,
     SourceTrust, StaticIndexSource, DOC_MAX_BYTES, HEADER_MAX_BYTES, INDEX_MAX_BYTES, PACKAGE_MAX_BYTES,
 };
 use serde_json::{json, Map, Value};
@@ -586,6 +586,8 @@ pub fn verify_tree(target: &str, index_key_did: &str, http: Option<Arc<dyn Bytes
             move |did: &str| did != pinned
         }),
         index_signer: Arc::new(move |key_id: &str| (key_id == pinned).then_some(index_key)),
+        // Publisher tooling checks the tree's own chain; the host applies the kill list at install.
+        is_killed: no_kill_list(),
         allow_unsigned_dev: false,
     };
     let source = StaticIndexSource::new(base.clone(), fetcher.clone(), trust.clone());
