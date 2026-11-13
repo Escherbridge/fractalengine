@@ -1,5 +1,5 @@
-//! Drains the Extensions panel's queued `ExtensionOp`s on a worker thread against the `PluginManager` and
-//! answers with `ExtensionEvent`s (docs/extensions/extensions-ui.md §Operations seam, §Consent cannot be bypassed).
+//! Drains the Extensions panel's queued `ExtensionOp`s and the admin channel's `AdminJob`s on one worker thread against
+//! the `PluginManager` (docs/extensions/extensions-ui.md §Operations seam, docs/extensions/admin-channel.md §4-§7).
 
 use std::collections::HashMap;
 use std::io::Read as _;
@@ -9,10 +9,16 @@ use bevy::prelude::*;
 use crossbeam::channel::{unbounded, Receiver, Sender};
 use fe_database::handlers::extension_policy::{version_matches, AuditAction};
 use fe_hexon::package::{verify_plugin_package, PluginPackage, PluginPackageError, PluginPackageStore, PluginTrust};
-use fe_hexon::registry_source::{RegistryEntry, SourceTrust, PACKAGE_MAX_BYTES};
+use fe_hexon::registry_source::{
+    acquire_link, FetchedPackage, RegistryEntry, RegistryError, SearchQuery, SourceTrust, EXTENSION_KIND,
+    PACKAGE_MAX_BYTES, WEB_BUNDLE_KIND,
+};
+use fe_plugin::admin::protocol::{
+    AdminReply, AdminRequest, AdminResult, AdminVerb, BindingSummary, InstallationSummary, PendingConsent, RefusalCode,
+};
 use fe_plugin::lifecycle::{
     ActivationRefusal, ActivationRequest, ConsentRecord, LifecycleError, PackageCheck, PackageFacts, PluginManager,
-    Precondition, StagedInstance, TrustTier,
+    Precondition, StagedInstance, TrustTier, EXT_DISABLE_ALL_ENV,
 };
 use fe_runtime::extension_binding::{
     hook_spec, key_allowed, served_hook_ids, BindingMode, BindingOffer, BindingRecord, BindingResolution, HookKeyKind,
@@ -22,7 +28,7 @@ use fe_sdk::manifest_v2::{parse_and_validate, ValidatedManifest};
 use fe_ui::extensions::bindings::{BindingPointRow, BindingsSnapshot, ProviderOption, ScopeTarget};
 use fe_ui::extensions::browse::BrowseEvent;
 use fe_ui::extensions::consent::{ConsentOrigin, ConsentRequest, ConsentSection, ConsentState, KillListOverrideOffer};
-use fe_ui::extensions::details::UpdateStage;
+use fe_ui::extensions::details::{EntitlementState, StoreDetail, UpdateStage};
 use fe_ui::extensions::panel::{
     AuditLine, BindingRow, ConsentSummary, ExtensionEvent, ExtensionOp, ExtensionsPanelState, InstalledRow, RowStatus,
     TrustState,
@@ -30,8 +36,14 @@ use fe_ui::extensions::panel::{
 use fe_ui::navigation_manager::NavigationManager;
 use fe_ui::verse_manager::VerseManager;
 use serde_json::Value;
+use tokio::sync::mpsc::UnboundedSender;
 
 use super::sources::SourceSet;
+
+/// Audit `channel` of an action taken in the app window.
+pub const CHANNEL_GUI: &str = "gui";
+/// Audit `channel` of an action that arrived over the local admin channel (`fe_plugin::admin::protocol::AUDIT_CHANNEL`).
+pub const CHANNEL_CLI: &str = fe_plugin::admin::protocol::AUDIT_CHANNEL;
 
 /// The verse and petal an op runs in: the navigation cursor when the op was queued.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -91,6 +103,202 @@ pub trait OpsPorts: Send {
     /// Audit lines for the details view, newest first.
     fn audit(&self, _installation_id: &str) -> Vec<AuditLine> {
         Vec::new()
+    }
+    /// [`Self::audit_change`] recorded with its audit `channel` (`gui` or `cli`, admin-channel.md §7).
+    fn audit_change_via(&self, action: AuditAction, installation_id: &str, _channel: &str) {
+        self.audit_change(action, installation_id);
+    }
+    /// One refused admin-channel verb (`outcome: refused`, `channel: "cli"`): every mutating verb is audited, denials included.
+    fn audit_admin_refusal(&self, action: AuditAction, target: &str, code: &str, message: &str) {
+        tracing::info!(?action, %target, %code, %message, "extension admin request refused");
+    }
+    /// The installation is gone (uninstalled, consent or not): the binding activator drops what it held for it.
+    fn forget_installation(&self, _installation_id: &str) {}
+    /// Durable `unbind` entry with the verse (withdrawn "Allow in <verse>"); must succeed before the in-memory change.
+    fn persist_withdrawal(&self, _installation_id: &str, _verse_id: &str, _package_id: &str) -> Result<(), String> {
+        Err("not-available: withdrawing an acceptance is not wired on this host".into())
+    }
+    /// Disable all switched on or off: audit `target: "*"` and tell every other kill-switch reader (the portal resolver).
+    fn host_switch_changed(&self, disabled: bool, channel: &str) {
+        let action = if disabled { AuditAction::Disable } else { AuditAction::Enable };
+        self.audit_change_via(action, "*", channel);
+    }
+    /// `(licensee DID, device X25519 did:key)` an acquire link and a token request name.
+    fn licence_identity(&self) -> Result<(String, String), String> {
+        Err("not-available: licences need the entitlement feature on this host".into())
+    }
+    /// Ask a source's issuer for a licence token, verify it and keep it; `Missing` is "no licence yet".
+    fn request_licence_token(&self, _request: &LicenceRequest<'_>) -> Result<LicenceAnswer, String> {
+        Err("not-available: licences need the entitlement feature on this host".into())
+    }
+    /// Open an https page in the system browser.
+    fn open_external(&self, url: &str) -> Result<(), String> {
+        open_in_system_browser(url)
+    }
+}
+
+/// One licence token request (store-client contract v1 §entitlements).
+pub struct LicenceRequest<'a> {
+    pub source_id: &'a str,
+    /// The endpoint base the issuer is reached under.
+    pub base: &'a str,
+    pub package_id: &'a str,
+    /// The listed build the token must cover.
+    pub content_hash: &'a str,
+}
+
+/// What the issuer answered once the token verified.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum LicenceAnswer {
+    Held { expires: Option<String> },
+    Missing,
+}
+
+/// Hand an https URL to the platform opener as one argument (no shell, so nothing in the URL is interpreted).
+fn open_in_system_browser(url: &str) -> Result<(), String> {
+    let parsed = reqwest::Url::parse(url).map_err(|error| format!("invalid-input: {error}"))?;
+    if parsed.scheme() != "https" {
+        return Err("invalid-input: only https pages are opened".into());
+    }
+    let url = parsed.as_str();
+    #[cfg(windows)]
+    let opened = std::process::Command::new("explorer").arg(url).spawn().map(drop);
+    #[cfg(target_os = "macos")]
+    let opened = std::process::Command::new("open").arg(url).status().map(drop);
+    #[cfg(all(unix, not(target_os = "macos")))]
+    let opened = std::process::Command::new("xdg-open").arg(url).status().map(drop);
+    opened.map_err(|error| format!("could not open the browser: {error}"))
+}
+
+// ---- Admin channel jobs (admin-channel.md §4-§7) ----------------------------------------------------
+
+/// One admin-channel request and where its replies go (at most one `pending-consent`, then one final reply).
+pub struct AdminJob {
+    pub request: AdminRequest,
+    pub replies: UnboundedSender<AdminReply>,
+}
+
+/// The admin channel's queue into the ops worker (pinned for `admin_channel::spawn`).
+#[derive(Resource, Clone)]
+pub struct AdminJobSender(Sender<WorkerInput>);
+
+impl AdminJobSender {
+    /// Queue one job; gives it back when the worker is gone.
+    pub fn send(&self, job: AdminJob) -> Result<(), AdminJob> {
+        self.0.send(WorkerInput::Admin(job)).map_err(|error| match error.into_inner() {
+            WorkerInput::Admin(job) => job,
+            WorkerInput::Panel(_) => unreachable!("only admin jobs are sent here"),
+        })
+    }
+}
+
+/// Everything the worker serves, in arrival order.
+pub enum WorkerInput {
+    Panel(OpsJob),
+    Admin(AdminJob),
+}
+
+/// A CLI request waiting on the GUI consent dialog for one staged build.
+struct PendingAdmin {
+    replies: UnboundedSender<AdminReply>,
+    action: AuditAction,
+}
+
+/// A final admin reply (refused) carrying its stable code.
+struct AdminRefusal {
+    code: RefusalCode,
+    message: String,
+}
+
+impl AdminRefusal {
+    fn new(code: RefusalCode, message: impl Into<String>) -> Self {
+        Self { code, message: message.into() }
+    }
+}
+
+/// Stable code of a worker message: the governance code it starts with (`revoked: …`, `package-invalid (…)`), if any.
+fn refusal_of(message: String) -> AdminRefusal {
+    let head: String = message.chars().take_while(|c| c.is_ascii_lowercase() || *c == '-').collect();
+    let code = match RefusalCode::from(head) {
+        RefusalCode::Other(_) => {
+            if message.contains("is not installed") || message.contains("unknown extension source") {
+                RefusalCode::NotFound
+            } else if message.starts_with("stale-capability-digest") {
+                RefusalCode::ConsentMissing
+            } else {
+                RefusalCode::NotAvailable
+            }
+        }
+        known => known,
+    };
+    AdminRefusal { code, message }
+}
+
+/// Stable code of a store-client refusal.
+fn registry_refusal(error: RegistryError) -> AdminRefusal {
+    let code = match &error {
+        RegistryError::Revoked { .. } => RefusalCode::Revoked,
+        RegistryError::NotFound(_) | RegistryError::Yanked(..) => RefusalCode::NotFound,
+        RegistryError::PackageUntrusted(_) => RefusalCode::UntrustedSigner,
+        RegistryError::PackageInvalid(_)
+        | RegistryError::PackageContract
+        | RegistryError::PublisherMismatch { .. }
+        | RegistryError::KindMismatch { .. }
+        | RegistryError::VersionMismatch { .. }
+        | RegistryError::ContentHashMismatch { .. }
+        | RegistryError::TooLarge { .. } => RefusalCode::PackageInvalid,
+        RegistryError::AccessUnknown { .. } => RefusalCode::NotAvailable,
+        _ => RefusalCode::NotAvailable,
+    };
+    AdminRefusal::new(code, error.to_string())
+}
+
+/// The governance audit action a verb records (admin-channel.md §4).
+fn verb_action(verb: &AdminVerb) -> Option<AuditAction> {
+    Some(match verb {
+        AdminVerb::List {} | AdminVerb::Status { .. } => return None,
+        AdminVerb::InstallFile { .. } | AdminVerb::InstallRegistry { .. } => AuditAction::Install,
+        AdminVerb::Enable { .. } | AdminVerb::EnableAll {} => AuditAction::Enable,
+        AdminVerb::Disable { .. } | AdminVerb::DisableAll {} => AuditAction::Disable,
+        AdminVerb::Update { .. } => AuditAction::Update,
+        AdminVerb::Unbind { .. } => AuditAction::Unbind,
+        AdminVerb::Uninstall { .. } => AuditAction::Uninstall,
+    })
+}
+
+/// What an admin verb ended in.
+enum AdminOutcome {
+    Done(AdminResult),
+    Refused(AdminRefusal),
+    /// The GUI dialog is open for this staged build; the reply waits for the operator.
+    Pending(PendingConsent),
+}
+
+/// How a panel op settles a CLI request waiting on the same installation.
+enum Settle {
+    /// Consent or a consented update activation: done when the staged build was promoted.
+    Promote,
+    /// The operator declined or discarded.
+    Declined,
+    /// An override answers with a fresh dialog; only a failure settles.
+    Override,
+    /// The installation was removed while the dialog was open.
+    Removed,
+}
+
+fn summary_of(row: InstalledRow) -> InstallationSummary {
+    InstallationSummary {
+        installation_id: row.installation_id,
+        package_id: row.package_id,
+        name: row.name,
+        version: row.version,
+        status: row.status.label(),
+        update_available: row.update_available,
+        bindings: row
+            .bindings
+            .into_iter()
+            .map(|binding| BindingSummary { binding_id: binding.binding_id, label: binding.label, enabled: binding.enabled })
+            .collect(),
     }
 }
 
@@ -171,6 +379,14 @@ pub struct OpsWorker {
     staged: HashMap<String, StagedBuild>,
     /// Newer versions seen in listings, by package id: `(source_id, entry)`.
     offers: HashMap<String, (String, RegistryEntry)>,
+    /// CLI requests whose consent dialog is open in the GUI, by installation id.
+    pending_admin: HashMap<String, PendingAdmin>,
+    /// Licence state per `(source_id, package_id)` from this session's token requests.
+    entitlements: HashMap<(String, String), EntitlementState>,
+    /// The GUI's navigation cursor, kept current by the pump; admin jobs run in it.
+    gui_scope: Arc<Mutex<ActiveScope>>,
+    /// Audit channel of the job being served.
+    audit_channel: &'static str,
 }
 
 fn lock(manager: &Mutex<PluginManager>) -> MutexGuard<'_, PluginManager> {
@@ -303,7 +519,16 @@ impl OpsWorker {
             installed: HashMap::new(),
             staged: HashMap::new(),
             offers: HashMap::new(),
+            pending_admin: HashMap::new(),
+            entitlements: HashMap::new(),
+            gui_scope: Arc::new(Mutex::new(ActiveScope::default())),
+            audit_channel: CHANNEL_GUI,
         }
+    }
+
+    /// One local lifecycle change, audited on the channel of the job being served.
+    fn audit(&self, action: AuditAction, installation_id: &str) {
+        self.ports.audit_change_via(action, installation_id, self.audit_channel);
     }
 
     fn plugin_trust(&self) -> PluginTrust<'_> {
@@ -337,22 +562,40 @@ impl OpsWorker {
         }
     }
 
-    /// Serve jobs until the bridge drops its sender.
-    pub fn run(mut self, jobs: Receiver<OpsJob>, events: Sender<ExtensionEvent>) {
-        while let Ok(job) = jobs.recv() {
-            for op in job.ops {
-                for event in self.handle(op, &job.scope) {
-                    if events.send(event).is_err() {
-                        return;
-                    }
+    /// Serve panel ops and admin jobs, in arrival order, until every sender is gone.
+    pub fn run(mut self, jobs: Receiver<WorkerInput>, events: Sender<ExtensionEvent>) {
+        while let Ok(input) = jobs.recv() {
+            let produced = match input {
+                WorkerInput::Panel(job) => {
+                    job.ops.into_iter().flat_map(|op| self.handle(op, &job.scope)).collect::<Vec<_>>()
+                }
+                WorkerInput::Admin(job) => self.handle_admin(job),
+            };
+            for event in produced {
+                if events.send(event).is_err() {
+                    return;
                 }
             }
         }
     }
 
-    /// Execute one op; every outcome ends in an event that clears the panel's working state.
+    /// Execute one panel op; every outcome ends in an event that clears the panel's working state.
+    /// An op answering a CLI request's dialog also settles that request.
     pub fn handle(&mut self, op: ExtensionOp, scope: &ActiveScope) -> Vec<ExtensionEvent> {
-        match self.dispatch(op, scope) {
+        let settles = match &op {
+            ExtensionOp::Consent { installation_id, .. } | ExtensionOp::ActivateUpdate { installation_id, .. } => {
+                Some((installation_id.clone(), Settle::Promote))
+            }
+            ExtensionOp::DiscardStaged { installation_id } => Some((installation_id.clone(), Settle::Declined)),
+            ExtensionOp::KillListOverride { installation_id, .. } => Some((installation_id.clone(), Settle::Override)),
+            ExtensionOp::Uninstall { installation_id } => Some((installation_id.clone(), Settle::Removed)),
+            _ => None,
+        };
+        let result = self.dispatch(op, scope);
+        if let Some((installation_id, settle)) = settles {
+            self.settle_admin(&installation_id, settle, &result, scope);
+        }
+        match result {
             Ok(events) => events,
             Err(message) => vec![ExtensionEvent::Failed { message }],
         }
@@ -365,6 +608,12 @@ impl OpsWorker {
                 self.rows_event(scope),
             ]),
             ExtensionOp::BrowseList { source_id, query } => Ok(self.browse_list(source_id, &query, scope)),
+            ExtensionOp::Search { source_id, query } => Ok(self.search(source_id, &query, scope)),
+            ExtensionOp::LoadDetail { source_id, entry } => Ok(vec![self.load_detail(source_id, &entry)]),
+            ExtensionOp::OpenAcquire { source_id, package_id } => Ok(vec![self.open_acquire(source_id, package_id)]),
+            ExtensionOp::RequestLicenceToken { source_id, package_id } => {
+                Ok(vec![self.request_licence(source_id, package_id)])
+            }
             ExtensionOp::InstallFromFile { path } => {
                 let bytes = read_package_file(&path)?;
                 self.stage(bytes, None, scope)
@@ -381,7 +630,7 @@ impl OpsWorker {
             ExtensionOp::Enable { installation_id, binding_id } => self.enable(&installation_id, &binding_id, scope),
             ExtensionOp::Disable { installation_id, .. } => {
                 lock(&self.manager).disable_instance(&installation_id);
-                self.ports.audit_change(AuditAction::Disable, &installation_id);
+                self.audit(AuditAction::Disable, &installation_id);
                 Ok(vec![self.rows_event(scope)])
             }
             ExtensionOp::ActivateUpdate { installation_id, capability_digest } => {
@@ -439,6 +688,94 @@ impl OpsWorker {
                 vec![ExtensionEvent::Browse(BrowseEvent::Failed { source_id, reason: error.to_string() })]
             }
         }
+    }
+
+    /// Search a catalogue endpoint (hosted when advertised, else the verified index); other sources answer a listing.
+    fn search(&mut self, source_id: String, query: &SearchQuery, scope: &ActiveScope) -> Vec<ExtensionEvent> {
+        let Some(catalog) = self.sources.catalog(&source_id).cloned() else {
+            return self.browse_list(source_id, query.q.as_deref().unwrap_or_default(), scope);
+        };
+        match catalog.search(query) {
+            Ok(results) => {
+                // Only verified, unrevoked extension builds become update offers (kill list at offer).
+                let offered: Vec<RegistryEntry> = results
+                    .hits
+                    .iter()
+                    .filter(|hit| hit.verified && !hit.revoked && hit.entry.kind == EXTENSION_KIND)
+                    .map(|hit| hit.entry.to_registry_entry())
+                    .collect();
+                self.note_offers(&source_id, &offered);
+                vec![ExtensionEvent::Browse(BrowseEvent::Results { source_id, results }), self.rows_event(scope)]
+            }
+            Err(error) => vec![ExtensionEvent::Browse(BrowseEvent::Failed { source_id, reason: error.to_string() })],
+        }
+    }
+
+    /// One package's hash-pinned detail plus its attestation (the "Reviewed" badge only from a verified counter-signature).
+    fn load_detail(&self, source_id: String, entry: &RegistryEntry) -> ExtensionEvent {
+        let Some(catalog) = self.sources.catalog(&source_id) else {
+            let reason = "this source publishes no package details".to_owned();
+            return ExtensionEvent::Browse(BrowseEvent::Failed { source_id, reason });
+        };
+        let verified = match catalog.detail(&entry.package_id) {
+            Ok(verified) => verified,
+            Err(error) => return ExtensionEvent::Browse(BrowseEvent::Failed { source_id, reason: error.to_string() }),
+        };
+        let latest = verified.listed.to_registry_entry();
+        let attestation = match catalog.attest(&latest) {
+            Ok(attestation) => Some(attestation),
+            Err(error) => {
+                tracing::debug!(package_id = %entry.package_id, %error, "no verified attestation for the details view");
+                None
+            }
+        };
+        let entitlement = self.entitlement(&source_id, &entry.package_id);
+        let detail = StoreDetail::from_verified(&verified, attestation.as_ref(), entitlement);
+        ExtensionEvent::Browse(BrowseEvent::Detail { source_id, detail: Box::new(detail) })
+    }
+
+    fn entitlement(&self, source_id: &str, package_id: &str) -> EntitlementState {
+        self.entitlements.get(&(source_id.to_owned(), package_id.to_owned())).cloned().unwrap_or_default()
+    }
+
+    /// Open the checked acquire page with the licensee and device ids appended; the client sends no credential itself.
+    fn open_acquire(&self, source_id: String, package_id: String) -> ExtensionEvent {
+        let opened = (|| -> Result<(), String> {
+            let catalog = self.sources.catalog(&source_id).ok_or("this source sells no licences")?;
+            let verified = catalog.detail(&package_id).map_err(|error| error.to_string())?;
+            let acquire_url = verified.acquire_url.as_deref().ok_or("this package has no licence page")?;
+            let (licensee, device) = self.ports.licence_identity()?;
+            let link = acquire_link(acquire_url, &licensee, &device).map_err(|error| error.to_string())?;
+            self.ports.open_external(&link)
+        })();
+        let state = match opened {
+            Ok(()) => self.entitlement(&source_id, &package_id),
+            Err(reason) => EntitlementState::Refused(reason),
+        };
+        ExtensionEvent::Browse(BrowseEvent::Entitlement { source_id, package_id, state })
+    }
+
+    /// Ask the issuer for a token over the listed build; every outcome answers so the view leaves "Checking".
+    fn request_licence(&mut self, source_id: String, package_id: String) -> ExtensionEvent {
+        let answer = (|| -> Result<LicenceAnswer, String> {
+            let catalog = self.sources.catalog(&source_id).ok_or("this source sells no licences")?;
+            let base = self.sources.base(&source_id).ok_or("this source sells no licences")?;
+            let verified = catalog.detail(&package_id).map_err(|error| error.to_string())?;
+            let request = LicenceRequest {
+                source_id: &source_id,
+                base,
+                package_id: &package_id,
+                content_hash: &verified.listed.latest_content_hash,
+            };
+            self.ports.request_licence_token(&request)
+        })();
+        let state = match answer {
+            Ok(LicenceAnswer::Held { expires }) => EntitlementState::Held { expires },
+            Ok(LicenceAnswer::Missing) => EntitlementState::Missing,
+            Err(reason) => EntitlementState::Refused(reason),
+        };
+        self.entitlements.insert((source_id.clone(), package_id.clone()), state.clone());
+        ExtensionEvent::Browse(BrowseEvent::Entitlement { source_id, package_id, state })
     }
 
     /// Remember listed versions newer than the installed ones (an update is offered from the source that listed it).
@@ -511,7 +848,8 @@ impl OpsWorker {
         self.fetch_and_stage_with(source_id, entry, scope, ConsentOrigin::Direct)
     }
 
-    /// Fetch through a configured source (anonymous, verified), then stage with the dialog's origin.
+    /// Fetch through a configured source (anonymous, verified); a web bundle installs through the portal path, an
+    /// extension is staged with the dialog's origin.
     fn fetch_and_stage_with(
         &mut self,
         source_id: &str,
@@ -519,9 +857,39 @@ impl OpsWorker {
         scope: &ActiveScope,
         origin: ConsentOrigin,
     ) -> Result<Vec<ExtensionEvent>, String> {
-        let source = self.sources.get(source_id).cloned().ok_or_else(|| "unknown extension source".to_owned())?;
-        let fetched = source.fetch(entry).map_err(|error| error.to_string())?;
+        let fetched = self.fetch_entry(source_id, entry).map_err(|error| error.to_string())?;
+        if fetched.kind() == WEB_BUNDLE_KIND {
+            self.install_web_bundle(&fetched)?;
+            return Ok(vec![self.rows_event(scope)]);
+        }
         self.stage_with(fetched.bytes, Some(&entry.package_id), scope, origin)
+    }
+
+    /// Verified bytes of `entry` from a configured source (kill list at fetch, anonymous, capped).
+    fn fetch_entry(&self, source_id: &str, entry: &RegistryEntry) -> Result<FetchedPackage, RegistryError> {
+        let source = self
+            .sources
+            .get(source_id)
+            .cloned()
+            .ok_or_else(|| RegistryError::NotFound(format!("unknown extension source {source_id}")))?;
+        source.fetch(entry)
+    }
+
+    /// A verified web bundle into the local blob store (P-STORE); nothing starts, admission stays per peer.
+    fn install_web_bundle(&self, fetched: &FetchedPackage) -> Result<String, String> {
+        use crate::portal_host::install::{install_from_registry, Refusal};
+        let installed = install_from_registry(fetched).map_err(|refusal| {
+            let code = match &refusal {
+                Refusal::KillListed { .. } => "revoked",
+                Refusal::NotConfigured => "not-available",
+                Refusal::Store(_) => "internal",
+                _ => "package-invalid",
+            };
+            format!("{code}: {refusal}")
+        })?;
+        self.audit(AuditAction::Install, &installed.package_id);
+        tracing::info!(package_id = %installed.package_id, version = %installed.version, "web bundle installed");
+        Ok(format!("Installed web bundle {} {}; admit it in a petal before it runs", installed.package_id, installed.version))
     }
 
     /// Verify, hold the build and ask for consent; an installed id stages an update of that installation.
@@ -538,6 +906,18 @@ impl OpsWorker {
         origin: ConsentOrigin,
     ) -> Result<Vec<ExtensionEvent>, String> {
         let (package, info) = self.verify(&bytes, expected_id)?;
+        self.stage_verified(bytes, package, info, scope, origin)
+    }
+
+    /// Hold a verified build and build its consent request.
+    fn stage_verified(
+        &mut self,
+        bytes: Vec<u8>,
+        package: PluginPackage,
+        info: BuildInfo,
+        scope: &ActiveScope,
+        origin: ConsentOrigin,
+    ) -> Result<Vec<ExtensionEvent>, String> {
         let installation_id = package.package_id.clone();
         let is_update = match self.installed.get(&installation_id) {
             Some(installed) if installed.info.facts.content_hash.eq_ignore_ascii_case(&package.content_hash) => {
@@ -703,7 +1083,9 @@ impl OpsWorker {
 
     /// Store the consented build and run it: update beside a running version, start otherwise.
     fn promote(&mut self, staged: StagedBuild, accept_in_verse: Option<String>, scope: &ActiveScope) -> Result<Vec<ExtensionEvent>, String> {
-        let StagedBuild { bytes, package, info, is_update, .. } = staged;
+        let StagedBuild { bytes, package, info, is_update, origin } = staged;
+        // The install or update a CLI asked for is audited on its channel; the consent itself was a GUI click.
+        let channel = if origin == ConsentOrigin::Cli { CHANNEL_CLI } else { self.audit_channel };
         let installation_id = info.facts.package_id.clone();
         // R19 already decided revocation (including the Owner's override), so the store takes no second opinion.
         self.store
@@ -762,7 +1144,7 @@ impl OpsWorker {
             Some(_) => None,
         };
         if let Some(action) = change {
-            self.ports.audit_change(action, &installation_id);
+            self.ports.audit_change_via(action, &installation_id, channel);
         }
         self.offers.remove(&installation_id);
         self.installed.insert(installation_id, InstalledBuild { info, activated_once: activated });
@@ -886,7 +1268,7 @@ impl OpsWorker {
         if let Some(installed) = self.installed.get_mut(installation_id) {
             installed.activated_once = true;
         }
-        self.ports.audit_change(AuditAction::Enable, installation_id);
+        self.audit(AuditAction::Enable, installation_id);
         Ok(vec![self.rows_event(scope)])
     }
 
@@ -920,10 +1302,12 @@ impl OpsWorker {
                 tracing::warn!(%installation_id, %error, "consent revoke not recorded on uninstall");
             }
         }
+        // A never-consented build skips the revoke above, so the activator is told directly.
+        self.ports.forget_installation(installation_id);
         if let Err(error) = self.store.remove(&build.info.facts.package_id, &build.info.facts.content_hash) {
             tracing::warn!(%installation_id, %error, "uninstalled extension build not removed");
         }
-        self.ports.audit_change(AuditAction::Uninstall, installation_id);
+        self.audit(AuditAction::Uninstall, installation_id);
         Ok(vec![self.rows_event(scope)])
     }
 
@@ -1142,7 +1526,7 @@ impl OpsWorker {
                     return Err(format!("{package_id} is not installed"));
                 }
                 lock(&self.manager).enable_installation(package_id);
-                self.ports.audit_change(AuditAction::Enable, package_id);
+                self.audit(AuditAction::Enable, package_id);
                 Ok(vec![self.rows_event(scope), self.bindings_event(scope)?])
             }
             BindingOffer::EditBinding => Err("Edit binding opens the form in the Bindings view".into()),
@@ -1152,6 +1536,11 @@ impl OpsWorker {
     // ---- Rows -------------------------------------------------------------------------------
 
     fn rows_event(&self, scope: &ActiveScope) -> ExtensionEvent {
+        ExtensionEvent::Rows(self.rows(scope, true))
+    }
+
+    /// The installed list in `scope`; `details` adds counters and audit lines (the panel's details view only).
+    fn rows(&self, scope: &ActiveScope, details: bool) -> Vec<InstalledRow> {
         let manager = lock(&self.manager);
         let running = manager.governance().running_in(&scope.verse_id);
         let mut rows: Vec<InstalledRow> = self
@@ -1200,14 +1589,370 @@ impl OpsWorker {
                     update_available: self.offers.get(installation_id).map(|(_, entry)| entry.version.clone()),
                     description: info.description.clone(),
                     bindings,
-                    counters: self.ports.counters(installation_id),
-                    audit: self.ports.audit(installation_id),
+                    counters: if details { self.ports.counters(installation_id) } else { Vec::new() },
+                    audit: if details { self.ports.audit(installation_id) } else { Vec::new() },
                     consent,
                 }
             })
             .collect();
         rows.sort_by(|a, b| a.package_id.cmp(&b.package_id));
-        ExtensionEvent::Rows(rows)
+        rows
+    }
+
+    // ---- Admin channel (admin-channel.md §4-§7) -----------------------------------------------
+
+    /// Serve one CLI request in the GUI's current scope; nothing here can record consent or an acceptance.
+    fn handle_admin(&mut self, job: AdminJob) -> Vec<ExtensionEvent> {
+        let AdminJob { request, replies } = job;
+        let scope = self.gui_scope.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).clone();
+        let action = verb_action(&request.verb);
+        let target = match &request.verb {
+            AdminVerb::InstallFile { path } => path.clone(),
+            AdminVerb::InstallRegistry { package_id, .. } => package_id.clone(),
+            verb => verb.installation_id().unwrap_or("*").to_owned(),
+        };
+        self.audit_channel = CHANNEL_CLI;
+        let mut events = Vec::new();
+        let outcome = self.admin(request.verb, &scope, &mut events);
+        self.audit_channel = CHANNEL_GUI;
+        let reply = match outcome {
+            AdminOutcome::Done(result) => AdminReply::ok(&request.id, result),
+            AdminOutcome::Pending(consent) => {
+                let installation_id = consent.installation_id.clone();
+                self.pending_admin.insert(
+                    installation_id,
+                    PendingAdmin { replies: replies.clone(), action: action.unwrap_or(AuditAction::Install) },
+                );
+                AdminReply::pending_consent(&request.id, consent)
+            }
+            AdminOutcome::Refused(refusal) => {
+                if let Some(action) = action {
+                    self.ports.audit_admin_refusal(action, &target, refusal.code.as_str(), &refusal.message);
+                }
+                AdminReply::refused(&request.id, refusal.code, refusal.message)
+            }
+        };
+        // A CLI that already left is no error: the job and any dialog belong to the app now.
+        let _ = replies.send(reply);
+        if action.is_some() {
+            events.push(self.rows_event(&scope));
+        }
+        events
+    }
+
+    fn admin(&mut self, verb: AdminVerb, scope: &ActiveScope, events: &mut Vec<ExtensionEvent>) -> AdminOutcome {
+        let result = match verb {
+            AdminVerb::List {} => Ok(self.admin_result(scope, None, None)),
+            AdminVerb::Status { installation_id } => {
+                if self.installed.contains_key(&installation_id) {
+                    Ok(self.admin_result(scope, Some(installation_id.as_str()), None))
+                } else {
+                    Err(AdminRefusal::new(RefusalCode::NotFound, format!("{installation_id} is not installed")))
+                }
+            }
+            AdminVerb::InstallFile { path } => {
+                return match read_package_file(&path) {
+                    Ok(bytes) => self.admin_stage(bytes, None, scope, events),
+                    Err(message) => AdminOutcome::Refused(AdminRefusal::new(RefusalCode::InvalidInput, message)),
+                };
+            }
+            AdminVerb::InstallRegistry { source_id, package_id, version } => {
+                return self.admin_install_registry(&source_id, &package_id, version.as_deref(), scope, events);
+            }
+            AdminVerb::Enable { installation_id, binding_id } => self.admin_enable(&installation_id, binding_id, scope),
+            AdminVerb::Disable { installation_id, .. } => {
+                // Every binding row of an installation is its one local instance, so either form stops the installation.
+                if self.installed.contains_key(&installation_id) {
+                    lock(&self.manager).disable_instance(&installation_id);
+                    self.audit(AuditAction::Disable, &installation_id);
+                    Ok(self.admin_result(scope, Some(installation_id.as_str()), None))
+                } else {
+                    Err(AdminRefusal::new(RefusalCode::NotFound, format!("{installation_id} is not installed")))
+                }
+            }
+            AdminVerb::Update { installation_id } => return self.admin_update(&installation_id, scope, events),
+            AdminVerb::Unbind { installation_id, verse_id } => self.admin_unbind(&installation_id, &verse_id, scope),
+            AdminVerb::Uninstall { installation_id } => {
+                if self.installed.contains_key(&installation_id) {
+                    self.uninstall(&installation_id, scope).map_err(refusal_of).map(|_| {
+                        self.settle_removed(&installation_id);
+                        AdminResult { installations: Vec::new(), message: Some(format!("Uninstalled {installation_id}")) }
+                    })
+                } else {
+                    Err(AdminRefusal::new(RefusalCode::NotFound, format!("{installation_id} is not installed")))
+                }
+            }
+            AdminVerb::DisableAll {} => {
+                let stopped = lock(&self.manager).disable_all();
+                self.ports.host_switch_changed(true, CHANNEL_CLI);
+                Ok(self.admin_result(scope, None, Some(format!("Disabled all extensions ({} stopped)", stopped.len()))))
+            }
+            AdminVerb::EnableAll {} => {
+                if std::env::var(EXT_DISABLE_ALL_ENV).is_ok_and(|value| value == "1") {
+                    Err(AdminRefusal::new(RefusalCode::HostOff, format!("{EXT_DISABLE_ALL_ENV}=1 was set at startup and still wins")))
+                } else {
+                    lock(&self.manager).enable_all();
+                    self.ports.host_switch_changed(false, CHANNEL_CLI);
+                    let message = "Cleared Disable all; each installation starts again when enabled".to_owned();
+                    Ok(self.admin_result(scope, None, Some(message)))
+                }
+            }
+        };
+        match result {
+            Ok(result) => AdminOutcome::Done(result),
+            Err(refusal) => AdminOutcome::Refused(refusal),
+        }
+    }
+
+    /// Every installation (or one) as the CLI shows it.
+    fn admin_result(&self, scope: &ActiveScope, only: Option<&str>, message: Option<String>) -> AdminResult {
+        let installations = self
+            .rows(scope, false)
+            .into_iter()
+            .filter(|row| only.is_none_or(|id| row.installation_id == id))
+            .map(summary_of)
+            .collect();
+        AdminResult { installations, message }
+    }
+
+    /// Resolve the build a CLI names: the catalogue's pinned detail, else the source's listing (kill list at offer).
+    fn resolve_entry(&self, source_id: &str, package_id: &str, version: Option<&str>) -> Result<RegistryEntry, AdminRefusal> {
+        let not_found = |what: String| AdminRefusal::new(RefusalCode::NotFound, what);
+        if let Some(catalog) = self.sources.catalog(source_id) {
+            let verified = catalog.detail(package_id).map_err(registry_refusal)?;
+            if verified.revoked && version.is_none() {
+                return Err(AdminRefusal::new(RefusalCode::Revoked, format!("{package_id}: the listed build is on a kill list")));
+            }
+            let wanted = version.unwrap_or(&verified.listed.latest_version).to_owned();
+            let found = verified
+                .detail
+                .versions
+                .iter()
+                .find(|candidate| candidate.version == wanted && !candidate.yanked)
+                .ok_or_else(|| not_found(format!("{package_id} {wanted} is not offered by {source_id}")))?;
+            return Ok(RegistryEntry {
+                version: found.version.clone(),
+                content_hash: found.content_hash.clone(),
+                url: found.download_url.clone(),
+                size: found.size_bytes,
+                ..verified.listed.to_registry_entry()
+            });
+        }
+        let source = self.sources.get(source_id).ok_or_else(|| not_found(format!("unknown extension source {source_id}")))?;
+        let listing = source.list(Some(package_id)).map_err(registry_refusal)?;
+        let listed = listing.entries.iter().any(|entry| entry.package_id == package_id);
+        if let Some(refused) = listing.refused.iter().find(|refused| refused.what == package_id).filter(|_| !listed) {
+            let code = if refused.reason.contains("revoked") { RefusalCode::Revoked } else { RefusalCode::NotAvailable };
+            return Err(AdminRefusal::new(code, format!("{package_id}: {}", refused.reason)));
+        }
+        let mut best: Option<RegistryEntry> = None;
+        for entry in listing.entries.into_iter().filter(|entry| entry.package_id == package_id) {
+            let fits = version.is_none_or(|wanted| entry.version == wanted);
+            if fits && best.as_ref().is_none_or(|known| is_newer(&entry.version, &known.version)) {
+                best = Some(entry);
+            }
+        }
+        best.ok_or_else(|| not_found(format!("{package_id} is not offered by {source_id}")))
+    }
+
+    fn admin_install_registry(
+        &mut self,
+        source_id: &str,
+        package_id: &str,
+        version: Option<&str>,
+        scope: &ActiveScope,
+        events: &mut Vec<ExtensionEvent>,
+    ) -> AdminOutcome {
+        let entry = match self.resolve_entry(source_id, package_id, version) {
+            Ok(entry) => entry,
+            Err(refusal) => return AdminOutcome::Refused(refusal),
+        };
+        let fetched = match self.fetch_entry(source_id, &entry) {
+            Ok(fetched) => fetched,
+            Err(error) => return AdminOutcome::Refused(registry_refusal(error)),
+        };
+        if fetched.kind() == WEB_BUNDLE_KIND {
+            return match self.install_web_bundle(&fetched) {
+                Ok(message) => AdminOutcome::Done(AdminResult { installations: Vec::new(), message: Some(message) }),
+                Err(message) => AdminOutcome::Refused(refusal_of(message)),
+            };
+        }
+        self.admin_stage(fetched.bytes, Some(package_id), scope, events)
+    }
+
+    /// Stage for consent in the GUI (never here): a blocked build is refused at once, a review already open is not replaced,
+    /// and an update whose digest and publisher are already consented activates with no prompt.
+    fn admin_stage(
+        &mut self,
+        bytes: Vec<u8>,
+        expected_id: Option<&str>,
+        scope: &ActiveScope,
+        events: &mut Vec<ExtensionEvent>,
+    ) -> AdminOutcome {
+        let (package, info) = match self.verify(&bytes, expected_id) {
+            Ok(verified) => verified,
+            Err(message) => return AdminOutcome::Refused(refusal_of(message)),
+        };
+        let installation_id = package.package_id.clone();
+        if self.staged.contains_key(&installation_id) || self.pending_admin.contains_key(&installation_id) {
+            return AdminOutcome::Refused(AdminRefusal::new(
+                RefusalCode::NotAvailable,
+                format!("a review of {installation_id} is already open in the app; finish it there first"),
+            ));
+        }
+        let staged_events = match self.stage_verified(bytes, package, info, scope, ConsentOrigin::Cli) {
+            Ok(staged_events) => staged_events,
+            Err(message) => return AdminOutcome::Refused(refusal_of(message)),
+        };
+        let Some((request, is_update)) = staged_events.iter().find_map(|event| match event {
+            ExtensionEvent::ConsentNeeded { request, is_update } => Some((request.clone(), *is_update)),
+            _ => None,
+        }) else {
+            return AdminOutcome::Refused(AdminRefusal::new(RefusalCode::Internal, "staging produced no review"));
+        };
+        if let Some(reason) = &request.blocked {
+            // The dialog could only decline: refuse here and drop the staged build.
+            self.staged.remove(&installation_id);
+            return AdminOutcome::Refused(refusal_of(reason.clone()));
+        }
+        let consented = request.consented_digest.as_deref() == Some(request.capability_digest.as_str());
+        if is_update && consented && request.kill_list.is_none() {
+            return match self.activate_update(&installation_id, &request.capability_digest, scope) {
+                Ok(update_events) => {
+                    let outcome = self.promoted_outcome(&installation_id, scope, &update_events);
+                    events.extend(update_events);
+                    outcome
+                }
+                Err(message) => {
+                    self.staged.remove(&installation_id);
+                    AdminOutcome::Refused(refusal_of(message))
+                }
+            };
+        }
+        events.extend(staged_events);
+        AdminOutcome::Pending(PendingConsent {
+            installation_id,
+            package_id: request.package_id,
+            name: request.name,
+            version: request.version,
+            capability_digest: request.capability_digest,
+            is_update,
+        })
+    }
+
+    /// The final answer once a staged build was promoted: a rolled-back update or a refused start is said plainly.
+    fn promoted_outcome(&self, installation_id: &str, scope: &ActiveScope, events: &[ExtensionEvent]) -> AdminOutcome {
+        let mut message = None;
+        for event in events {
+            match event {
+                ExtensionEvent::UpdateStage { stage: UpdateStage::RolledBack { reason }, .. } => {
+                    return AdminOutcome::Refused(AdminRefusal::new(
+                        RefusalCode::NotAvailable,
+                        format!("the update failed to start, the previous version kept running: {reason}"),
+                    ));
+                }
+                ExtensionEvent::Failed { message: failure } => message = Some(format!("Installed; not started: {failure}")),
+                _ => {}
+            }
+        }
+        AdminOutcome::Done(self.admin_result(scope, Some(installation_id), message))
+    }
+
+    fn admin_update(&mut self, installation_id: &str, scope: &ActiveScope, events: &mut Vec<ExtensionEvent>) -> AdminOutcome {
+        let Some(installed) = self.installed.get(installation_id) else {
+            return AdminOutcome::Refused(AdminRefusal::new(RefusalCode::NotFound, format!("{installation_id} is not installed")));
+        };
+        let package_id = installed.info.facts.package_id.clone();
+        let offer = self.offers.get(installation_id).cloned().or_else(|| self.find_build(&package_id, None, true));
+        let Some((source_id, entry)) = offer else {
+            return AdminOutcome::Refused(AdminRefusal::new(
+                RefusalCode::NotFound,
+                format!("no configured source offers a newer version of {installation_id}"),
+            ));
+        };
+        let fetched = match self.fetch_entry(&source_id, &entry) {
+            Ok(fetched) => fetched,
+            Err(error) => return AdminOutcome::Refused(registry_refusal(error)),
+        };
+        self.admin_stage(fetched.bytes, Some(&package_id), scope, events)
+    }
+
+    /// Enable never raises the dialog: no consent in force answers `consent-missing`.
+    fn admin_enable(&mut self, installation_id: &str, binding_id: Option<String>, scope: &ActiveScope) -> Result<AdminResult, AdminRefusal> {
+        let Some(installed) = self.installed.get(installation_id) else {
+            return Err(AdminRefusal::new(RefusalCode::NotFound, format!("{installation_id} is not installed")));
+        };
+        let digest = installed.info.facts.capability_digest.clone();
+        let consented = lock(&self.manager)
+            .governance()
+            .consent(installation_id)
+            .is_some_and(|record| record.capability_digest == digest);
+        if !consented {
+            return Err(AdminRefusal::new(
+                RefusalCode::ConsentMissing,
+                format!("{installation_id} has no consent in force; review it in the app"),
+            ));
+        }
+        let binding_id = binding_id.unwrap_or_else(|| scope.petal_id.clone());
+        if binding_id.is_empty() {
+            return Err(AdminRefusal::new(RefusalCode::InvalidInput, "open a petal in the app, or name its binding_id"));
+        }
+        self.enable(installation_id, &binding_id, scope).map_err(refusal_of)?;
+        Ok(self.admin_result(scope, Some(installation_id), None))
+    }
+
+    /// Withdraw "Allow in <verse>": durable `unbind` first, then the manager stops the binding instances there.
+    fn admin_unbind(&mut self, installation_id: &str, verse_id: &str, scope: &ActiveScope) -> Result<AdminResult, AdminRefusal> {
+        let Some(installed) = self.installed.get(installation_id) else {
+            return Err(AdminRefusal::new(RefusalCode::NotFound, format!("{installation_id} is not installed")));
+        };
+        let package_id = installed.info.facts.package_id.clone();
+        let accepted = lock(&self.manager)
+            .governance()
+            .acceptances()
+            .contains(&(installation_id.to_owned(), verse_id.to_owned()));
+        if !accepted {
+            let message = format!("{installation_id} was not allowed in {verse_id}; nothing changed");
+            return Ok(self.admin_result(scope, Some(installation_id), Some(message)));
+        }
+        self.ports.persist_withdrawal(installation_id, verse_id, &package_id).map_err(refusal_of)?;
+        let stopped = lock(&self.manager).withdraw_acceptance(installation_id, verse_id);
+        let message = format!("Withdrew {installation_id} from {verse_id} ({} stopped)", stopped.len());
+        Ok(self.admin_result(scope, Some(installation_id), Some(message)))
+    }
+
+    /// A panel op answered (or ended) the dialog a CLI request is waiting on.
+    fn settle_admin(&mut self, installation_id: &str, settle: Settle, result: &Result<Vec<ExtensionEvent>, String>, scope: &ActiveScope) {
+        if !self.pending_admin.contains_key(installation_id) {
+            return;
+        }
+        let outcome = match (settle, result) {
+            (Settle::Promote, Ok(events)) => self.promoted_outcome(installation_id, scope, events),
+            (Settle::Promote | Settle::Override, Err(message)) => AdminOutcome::Refused(refusal_of(message.clone())),
+            (Settle::Override, Ok(_)) => return,
+            (Settle::Declined, _) => AdminOutcome::Refused(AdminRefusal::new(RefusalCode::ConsentDeclined, "Declined in the app")),
+            (Settle::Removed, _) => {
+                AdminOutcome::Refused(AdminRefusal::new(RefusalCode::NotFound, "the installation was removed in the app"))
+            }
+        };
+        let Some(pending) = self.pending_admin.remove(installation_id) else { return };
+        let reply = match outcome {
+            AdminOutcome::Done(result) => AdminReply::ok("", result),
+            AdminOutcome::Refused(refusal) => {
+                self.ports.audit_admin_refusal(pending.action, installation_id, refusal.code.as_str(), &refusal.message);
+                AdminReply::refused("", refusal.code, refusal.message)
+            }
+            AdminOutcome::Pending(_) => return,
+        };
+        // The listener stamps the request id; a CLI that left is no error.
+        let _ = pending.replies.send(reply);
+    }
+
+    /// A CLI uninstall removed a build another CLI request was reviewing.
+    fn settle_removed(&mut self, installation_id: &str) {
+        if let Some(pending) = self.pending_admin.remove(installation_id) {
+            let _ = pending.replies.send(AdminReply::refused("", RefusalCode::NotFound, "the installation was removed"));
+        }
     }
 }
 
@@ -1222,8 +1967,10 @@ pub struct OpsJob {
 /// Channels between the Bevy world and the ops worker thread.
 #[derive(Resource)]
 pub struct ExtensionOpsBridge {
-    jobs: Sender<OpsJob>,
+    jobs: Sender<WorkerInput>,
     events: Receiver<ExtensionEvent>,
+    /// The navigation cursor admin jobs run in (written here, read by the worker).
+    scope: Arc<Mutex<ActiveScope>>,
 }
 
 type WorkerInit = Box<dyn FnOnce() -> OpsWorker + Send>;
@@ -1231,12 +1978,20 @@ type WorkerInit = Box<dyn FnOnce() -> OpsWorker + Send>;
 /// Spawns the ops worker (built on its own thread) and pumps the panel's ops to it and its events back.
 pub struct ExtensionOpsPlugin {
     init: Mutex<Option<WorkerInit>>,
+    jobs: Sender<WorkerInput>,
+    inbox: Mutex<Option<Receiver<WorkerInput>>>,
 }
 
 impl ExtensionOpsPlugin {
     /// `init` runs on the worker thread: build the sources, hydrate, return the worker.
     pub fn new(init: impl FnOnce() -> OpsWorker + Send + 'static) -> Self {
-        Self { init: Mutex::new(Some(Box::new(init))) }
+        let (jobs, inbox) = unbounded::<WorkerInput>();
+        Self { init: Mutex::new(Some(Box::new(init))), jobs, inbox: Mutex::new(Some(inbox)) }
+    }
+
+    /// The admin channel's queue into this worker; take it before `add_plugins` to spawn the listener.
+    pub fn admin_jobs(&self) -> AdminJobSender {
+        AdminJobSender(self.jobs.clone())
     }
 }
 
@@ -1245,52 +2000,68 @@ impl Plugin for ExtensionOpsPlugin {
         let Some(init) = self.init.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).take() else {
             return;
         };
-        let (job_tx, job_rx) = unbounded::<OpsJob>();
+        let Some(inbox) = self.inbox.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).take() else {
+            return;
+        };
         let (event_tx, event_rx) = unbounded::<ExtensionEvent>();
+        let scope = Arc::new(Mutex::new(ActiveScope::default()));
+        let worker_scope = scope.clone();
         let spawned = std::thread::Builder::new().name("extension-ops".into()).spawn(move || {
             let mut worker = init();
+            worker.gui_scope = worker_scope;
             worker.hydrate();
-            worker.run(job_rx, event_tx);
+            worker.run(inbox, event_tx);
         });
         if let Err(error) = spawned {
             warn!(%error, "extension ops worker did not start; the Extensions panel stays inert");
         }
-        app.insert_resource(ExtensionOpsBridge { jobs: job_tx, events: event_rx })
+        app.insert_resource(ExtensionOpsBridge { jobs: self.jobs.clone(), events: event_rx, scope })
+            .insert_resource(self.admin_jobs())
             .add_systems(Update, pump_extension_ops);
     }
 }
 
+/// The navigation cursor as the worker judges it.
+fn current_scope(navigation: Option<&NavigationManager>, verses: Option<&VerseManager>) -> ActiveScope {
+    navigation
+        .map(|nav| {
+            let petal_id = nav.active_petal_id.clone().unwrap_or_default();
+            let petal_name = verses
+                .and_then(|verses| verses.find_petal(&petal_id))
+                .map(|petal| petal.name.clone())
+                .unwrap_or_default();
+            ActiveScope {
+                verse_id: nav.active_verse_id.clone().unwrap_or_default(),
+                verse_name: nav.active_verse_name.clone(),
+                petal_id,
+                fractal_name: nav.active_fractal_name.clone(),
+                petal_name,
+            }
+        })
+        .unwrap_or_default()
+}
+
 /// Hand queued ops to the worker and apply its answers; a dead worker answers `Failed` so the panel never hangs.
+/// The cursor admin jobs run in is refreshed only when navigation changed or ops were queued (no per-frame allocation).
 fn pump_extension_ops(
     mut panel: ResMut<ExtensionsPanelState>,
     mut consent: ResMut<ConsentState>,
     bridge: Res<ExtensionOpsBridge>,
     navigation: Option<Res<NavigationManager>>,
     verses: Option<Res<VerseManager>>,
+    mut seeded: Local<bool>,
 ) {
     let ops = panel.take_ops();
-    if !ops.is_empty() {
-        let scope = navigation
-            .as_deref()
-            .map(|nav| {
-                let petal_id = nav.active_petal_id.clone().unwrap_or_default();
-                let petal_name = verses
-                    .as_deref()
-                    .and_then(|verses| verses.find_petal(&petal_id))
-                    .map(|petal| petal.name.clone())
-                    .unwrap_or_default();
-                ActiveScope {
-                    verse_id: nav.active_verse_id.clone().unwrap_or_default(),
-                    verse_name: nav.active_verse_name.clone(),
-                    petal_id,
-                    fractal_name: nav.active_fractal_name.clone(),
-                    petal_name,
-                }
-            })
-            .unwrap_or_default();
-        if let Err(error) = bridge.jobs.send(OpsJob { ops, scope }) {
-            warn!(%error, "extension ops worker is gone");
-            panel.apply_event(ExtensionEvent::Failed { message: "the extension host is not running".into() }, &mut consent);
+    let moved = navigation.as_ref().is_some_and(|nav| nav.is_changed());
+    if !ops.is_empty() || moved || !*seeded {
+        *seeded = true;
+        let scope = current_scope(navigation.as_deref(), verses.as_deref());
+        *bridge.scope.lock().unwrap_or_else(|poisoned| poisoned.into_inner()) = scope.clone();
+        if !ops.is_empty() {
+            if let Err(error) = bridge.jobs.send(WorkerInput::Panel(OpsJob { ops, scope })) {
+                warn!(%error, "extension ops worker is gone");
+                panel.apply_event(ExtensionEvent::Failed { message: "the extension host is not running".into() }, &mut consent);
+            }
         }
     }
     while let Ok(event) = bridge.events.try_recv() {

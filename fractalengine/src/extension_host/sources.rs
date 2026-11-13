@@ -78,38 +78,75 @@ fn cache_file_name(source_id: &str) -> String {
     format!("index-{safe}.json")
 }
 
+/// One built source: the picker row, the generic source, and the catalogue view when it is a contract v1 endpoint.
+struct SourceEntry {
+    browse: BrowseSource,
+    source: Arc<dyn RegistrySource>,
+    /// Search, details, attestation and licences (static signed-index endpoints only).
+    catalog: Option<Arc<StaticIndexSource>>,
+    /// The endpoint base the licence issuer sits under.
+    base: Option<String>,
+}
+
+/// What [`build_one`] produces for a usable source.
+struct Built {
+    source: Arc<dyn RegistrySource>,
+    catalog: Option<Arc<StaticIndexSource>>,
+    base: Option<String>,
+}
+
 /// The sources Browse offers, in configured order.
 pub struct SourceSet {
-    entries: Vec<(BrowseSource, Arc<dyn RegistrySource>)>,
+    entries: Vec<SourceEntry>,
 }
 
 impl SourceSet {
     /// Build every source; one that cannot be built stays in the picker and reports why when listed.
     /// Call on the ops worker thread: protocol-v1 and http sources own a private runtime.
     pub fn build(configs: &[SourceConfig], shared: &SourceTrust) -> Self {
-        let mut entries: Vec<(BrowseSource, Arc<dyn RegistrySource>)> = Vec::new();
+        let mut entries: Vec<SourceEntry> = Vec::new();
         for config in configs {
-            if entries.iter().any(|(known, _)| known.id == config.id) {
+            if entries.iter().any(|known| known.browse.id == config.id) {
                 tracing::warn!(source = %config.id, "duplicate extension source id ignored");
                 continue;
             }
-            let source = build_one(config, shared).unwrap_or_else(|reason| {
+            let built = build_one(config, shared).unwrap_or_else(|reason| {
                 tracing::warn!(source = %config.id, %reason, "extension source unusable");
-                Arc::new(UnusableSource { label: config.label.clone(), reason }) as Arc<dyn RegistrySource>
+                let source = Arc::new(UnusableSource { label: config.label.clone(), reason }) as Arc<dyn RegistrySource>;
+                Built { source, catalog: None, base: None }
             });
-            entries.push((BrowseSource { id: config.id.clone(), label: config.label.clone() }, source));
+            entries.push(SourceEntry {
+                browse: BrowseSource { id: config.id.clone(), label: config.label.clone() },
+                source: built.source,
+                catalog: built.catalog,
+                base: built.base,
+            });
         }
         Self { entries }
     }
 
+    fn entry(&self, id: &str) -> Option<&SourceEntry> {
+        self.entries.iter().find(|entry| entry.browse.id == id)
+    }
+
     /// The picker rows.
     pub fn browse_sources(&self) -> Vec<BrowseSource> {
-        self.entries.iter().map(|(browse, _)| browse.clone()).collect()
+        self.entries.iter().map(|entry| entry.browse.clone()).collect()
     }
 
     /// The source behind a picker id.
     pub fn get(&self, id: &str) -> Option<&Arc<dyn RegistrySource>> {
-        self.entries.iter().find(|(browse, _)| browse.id == id).map(|(_, source)| source)
+        self.entry(id).map(|entry| &entry.source)
+    }
+
+    /// The catalogue view (search, details, attestation) of a contract v1 endpoint; `None` for local and v1 registries.
+    pub fn catalog(&self, id: &str) -> Option<&Arc<StaticIndexSource>> {
+        self.entry(id).and_then(|entry| entry.catalog.as_ref())
+    }
+
+    /// The endpoint base of a contract v1 source (where its licence issuer is reached).
+    pub fn base(&self, id: &str) -> Option<&str> {
+        self.entry(id).and_then(|entry| entry.base.as_deref())
     }
 }
 
@@ -140,9 +177,12 @@ impl RegistrySource for UnusableSource {
     }
 }
 
-fn build_one(config: &SourceConfig, shared: &SourceTrust) -> Result<Arc<dyn RegistrySource>, String> {
+fn build_one(config: &SourceConfig, shared: &SourceTrust) -> Result<Built, String> {
+    fn plain(source: Arc<dyn RegistrySource>) -> Built {
+        Built { source, catalog: None, base: None }
+    }
     match &config.kind {
-        SourceKind::Local { path } => Ok(Arc::new(LocalSource::new(path.clone(), shared.clone()))),
+        SourceKind::Local { path } => Ok(plain(Arc::new(LocalSource::new(path.clone(), shared.clone())))),
         SourceKind::Static { base, index_keys, cache } => {
             let base = base.trim();
             if base.is_empty() {
@@ -162,10 +202,11 @@ fn build_one(config: &SourceConfig, shared: &SourceTrust) -> Result<Arc<dyn Regi
                 Arc::new(FileFetcher)
             };
             let source = StaticIndexSource::new(base, fetcher, trust);
-            Ok(match cache {
-                Some(path) => Arc::new(source.with_cache(path.clone())),
-                None => Arc::new(source),
-            })
+            let catalog = Arc::new(match cache {
+                Some(path) => source.with_cache(path.clone()),
+                None => source,
+            });
+            Ok(Built { source: catalog.clone(), catalog: Some(catalog), base: Some(base.to_owned()) })
         }
         SourceKind::ProtocolV1 { base_url } => {
             let url = reqwest::Url::parse(base_url.trim()).map_err(|error| format!("base_url: {error}"))?;
@@ -178,7 +219,7 @@ fn build_one(config: &SourceConfig, shared: &SourceTrust) -> Result<Arc<dyn Regi
             // Anonymous by construction (no token parameter), listing plugin packages only.
             let source = fe_hexon::remote::remote_extension_source(config.label.clone(), url.as_str(), shared.clone())
                 .map_err(|error| format!("registry client: {error}"))?;
-            Ok(Arc::new(source))
+            Ok(plain(Arc::new(source)))
         }
     }
 }
@@ -205,13 +246,9 @@ fn parse_pins(pins: &[IndexKeyPin]) -> Result<Vec<(String, VerifyingKey)>, Strin
     Ok(parsed)
 }
 
-/// The shared package trust plus this endpoint's own pinned index keys (an index key never signs packages).
+/// The shared package trust and kill list plus this endpoint's own pinned index keys (an index key never signs packages).
 fn endpoint_trust(shared: &SourceTrust, pins: Vec<(String, VerifyingKey)>) -> SourceTrust {
-    SourceTrust {
-        is_trust_root: shared.is_trust_root.clone(),
-        index_signer: Arc::new(move |key_id| pins.iter().find(|(id, _)| id == key_id).map(|(_, key)| *key)),
-        allow_unsigned_dev: shared.allow_unsigned_dev,
-    }
+    shared.clone().with_index_pin(pins)
 }
 
 /// Not a globally routable unicast address: the one predicate extension egress and dial-outs use
