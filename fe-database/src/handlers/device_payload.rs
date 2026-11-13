@@ -17,17 +17,8 @@ use crate::query_helpers::exec_query;
 use crate::repo::Db;
 use crate::{BlobStoreHandle, ReplicationSender};
 
-/// An accepted-payload event (BND-10b); mirrors the pinned `fe_runtime::messages::AcceptedPayload` plus `asset_ids`.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct AcceptedPayloadEvent {
-    pub payload_id: String,
-    pub format_id: String,
-    pub mime: String,
-    pub node_id: String,
-    pub petal_id: String,
-    pub recorded_at_ms: i64,
-    pub asset_ids: Vec<String>,
-}
+/// An accepted-payload event (BND-10b): the pinned `ingest.decode` trigger, one type on both sides of the sink.
+pub type AcceptedPayloadEvent = fe_runtime::messages::AcceptedPayload;
 
 /// Receiver of accepted-payload events, set once by the host at startup.
 pub type AcceptedPayloadSink = Box<dyn Fn(AcceptedPayloadEvent) + Send + Sync>;

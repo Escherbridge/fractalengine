@@ -1846,6 +1846,11 @@ answers with the handler error's `Display` (`invalid-policy: …`, `role-denied:
 `confirmation-mismatch: …`, `invalid-input: …`). They act as the DB thread's own `local_did`:
 the policy row's author and the override's Owner check both use it.
 
+- **`SetExtensionPolicy` audits who asked** (R-X-27). The command's `actor_did` (the API token `sub`, or the
+  local DID for the GUI and the admin channel) is the `policy-change` entry's actor, for the ok and the
+  refused outcome alike, through `extension_policy::set_policy_as`. The row is still authored by
+  `local_did`; an empty `actor_did` is recorded as `local_did`.
+
 - **`AppendExtensionAudit` refuses `kill-list-override` entries.** `load_kill_list_overrides`
   rebuilds overrides from ok audit entries at startup, so an appended one would hydrate as an
   override without `record_kill_list_override`'s Owner and confirmation checks. The arm logs
@@ -1858,7 +1863,9 @@ the policy row's author and the override's Owner check both use it.
   acceptance older than the window reads as not accepted.
 - **`LoadExtensionGovernance` answers `{policies, consents, overrides, acceptances}`.**
   Consents are sorted by installation. `acceptances` is the lossless `load_acceptances` replay,
-  so the host can hydrate "Allow in verse" without the whole-trail scan.
+  so the host can hydrate "Allow in verse" without the whole-trail scan. Each acceptance carries
+  its `actor_did` (R-GOV-31), keyed per actor, so the host keeps only its own DID's records the
+  way the 10,000-row replay did; the list is sorted by (installation, verse, actor).
 
 ## §extension-binding
 
@@ -1895,7 +1902,8 @@ the policy row's author and the override's Owner check both use it.
   admissible. The same rule withdraws a version backdated into the author's old window. The
   current-role half is what stops a demoted author from backdating while still demoted (an author
   stamps its own HLC). Keep binding (`keep_binding`, `kept_template`) re-authors a withdrawn version
-  as the clicking Manager with its effective `runs_on` pinned; it has no DB command yet (R-BND).
+  as the clicking Manager with its effective `runs_on` pinned. It needs no DB command (R-BND-24): a
+  caller sends `PutBinding` with `kept_template(&stored.record)`, so every write check runs.
 - **Re-emit.** The DB thread re-publishes this node's own live versions at startup (with every verse)
   and on `ReemitLocalRoleStatements` (per verse), beside the role-statement re-emit. That is the
   second chance for a publish dropped on a full bridge.

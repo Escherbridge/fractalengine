@@ -1253,13 +1253,55 @@ written.
 - **Door parity (steer 2026-11-09 02:45).** Every door that creates, transforms or sets a property calls
   the gate with its own `SceneCallerKind` and stages the augment the same way. That covers REST, MCP
   tools, WS entity commands and the GUI. A door that skips the gate is a bypass, not an optimisation.
+- **Caller kinds.** `SceneCallerKind` is `Ui`, `Rest`, `Mcp` or `Ws` (the `/ws` entity commands, fe-api
+  `WS_SCENE_CALLER`); it reaches the guest as `caller.kind` (`ui`, `rest`, `mcp`, `ws`).
 - **Fail-open has limits.** A guest crash, trap, fuel exhaustion or missed deadline proceeds, and the
-  gate counts it (OQ-B4). An input over `MAX_HOOK_INPUT_BYTES` while a binding exists must REFUSE with
-  `input-too-large`, because the caller controls that size (steer 02:45, owned by R-HOOKS). Only keys in
-  the build's `property_scope` reach the guest; any other key proceeds and counts as `skipped`.
+  gate counts it (OQ-B4). An input over `MAX_HOOK_INPUT_BYTES` while a binding exists REFUSES with
+  `SceneVerdict::InputTooLarge` (`input-too-large`), because the caller controls that size (steer 02:45).
+  The API doors answer it 413 (`SceneRefusal::http_status`); a plain refusal is 409; the GUI shows the
+  `Refused by <package>` advisory and sends nothing. With no binding the size is never checked here.
+  Only keys in the build's `property_scope` reach the guest; any other key proceeds and counts as `skipped`.
 - An allowing guest may augment the write with `set_property` ops on the subject node. Those ops stage
   in the instance's tick window through `SceneHookBackend::stage_augment`, are capped at
   `MAX_AUGMENT_OPS`, and flush as an ordinary `PluginCommit`.
+
+## §scene-write
+
+`scene_write.rs` is the ONE scene write door (R-X-13, slice X-GATE): every door builds a `SceneWrite` from
+the `DbCommand` it would send and calls `SceneWriteDoor::submit(caller_kind, write)` (the API doors use the
+free `scene_write::submit` over the installed process gate). Per-door gate calls are gone, so a new door
+cannot forget a hook: it either goes through the door or its command is not in the census.
+
+- **Unbound = plain send.** With no binding covering an input the ticket settles at once and the command
+  goes out unchanged. **Bound** = every hook input is checked; any refusal refuses the whole write (nothing
+  is sent), and every allowing augment is returned with the admitted write for `SceneAugments::stage`.
+- **Two ways to wait.** The GUI polls the non-blocking ticket (`SceneWriteTicket::poll(now)`) in a frame
+  system and sends with `try_send`; it must never block the frame. The API awaits `ticket.wait()` within
+  the hook deadline. Dropping a ticket abandons its outstanding calls and sends nothing.
+- **Caller-sized input refuses.** One input over `MAX_HOOK_INPUT_BYTES`, or a write that would dispatch
+  more than `MAX_HOOK_CALLS_PER_WRITE` hook calls, refuses `input-too-large` (413) before any guest runs.
+- **Petal binding.** `SceneWrite::new(petal_id, command)` takes the petal the door authorized; a command
+  carrying another petal is `PetalMismatch`, a non-scene command `NotASceneWrite` (send it on its own path).
+
+**Door census** (`SCENE_WRITE_CENSUS`, kept in step with `census()`; anything else is refused by `new`):
+
+| Variant | Hooks | Note |
+|---|---|---|
+| `CreateNode`, `CreateNodeWithAsset`, `ImportGltf` | `scene.create` | name, position |
+| `CreateObject` | `scene.create` + `scene.property` | one property call per initial key, node null |
+| `DuplicateNode` | `scene.create` | `proposed.source` = the copied node |
+| `PromoteInstance`, `PromoteCheckedStamp` | `scene.create` | `proposed.source` = `{path}#inst-{i}` |
+| `UpdateNodeTransform` | `scene.transform` | |
+| `SetNodeProperty` | `scene.property` | |
+| `DeleteNodeProperty`, `ClearNodeProperties` | `scene.property` | value null (one call per key for clear) |
+| `CommitNodeMutation`, `CommitCheckedNodeMutation` | `scene.property` or `scene.transform` | by mutation; delete = value null |
+| `CommitCheckedEditorBatch` | `scene.transform` + `scene.property` | per target; path, stamp and group edits plain |
+| `CommitStampOverrides`, `RenameNode`, `SetNodeView`, `UpdateNodeUrl` | none (plain) | no `scene.*` hook covers them |
+| `DeleteNode`, `TombstoneNode`, `CascadeTombstoneNode` | none (plain) | no `scene.delete` hook in v1 |
+
+Doors that must go through it: GUI node actions (fe-ui `actions/node.rs`), inspector edits, the gimbal commit
+(`node_manager/transform_broadcast.rs`), REST, MCP tools, WS entity commands, mutations, objects, waypoints,
+GPX and promote (fe-api). `ApplyReplicatedRow` and `PluginCommit` never pass it (judged where written).
 
 ## §blob-fallback
 
@@ -1283,7 +1325,10 @@ pending-family entry, so an extension reply can never satisfy an unrelated API w
 
 - **Governance.** The governance commands are `SetExtensionPolicy`, `GetExtensionPolicy`,
   `AppendExtensionAudit`, `ListExtensionAudit`, `RecordKillListOverride` and `LoadExtensionGovernance`.
-  - They carry no DID: the DB thread acts as its own node DID, the row author peers judge.
+  - Rows are written as the DB thread's own node DID, the row author peers judge. `SetExtensionPolicy`
+    also carries `actor_did` (R-X-27): who asked (the API token `sub`, the local DID for the GUI or the
+    admin channel). The `policy-change` audit entry records it, so a remote Manager's write is no longer
+    audited as the node; an empty `actor_did` falls back to the node DID.
   - Payloads cross as `serde_json::Value` because fe-runtime cannot name fe-database's `PolicyRow` or
     `AuditEntry`. The DB arm parses them strictly.
   - An `Err` string starts with the refusal code (`invalid-policy:`, `role-denied:`,
@@ -1294,9 +1339,12 @@ pending-family entry, so an extension reply can never satisfy an unrelated API w
 - **Accepted payloads.** `AcceptedPayload` is the `ingest.decode` trigger. It carries the pinned six
   fields plus `asset_ids`, which the decoder needs to read the files. On the accepting peer only, the
   DB thread hands the event to the sink the host installed with fe-database
-  `handlers::device_payload::set_accepted_payload_sink`; a replicated payload never fires it. That
-  module still declares its own field-identical `AcceptedPayloadEvent` until it becomes an alias of
-  this type.
+  `handlers::device_payload::set_accepted_payload_sink`; a replicated payload never fires it.
+  fe-database's `AcceptedPayloadEvent` is a type alias of this struct, so the two cannot drift.
+- **Acceptances.** Each `LoadExtensionGovernance` acceptance carries its `actor_did` (R-GOV-31); the host
+  keeps only its own DID's (an identity's "Allow in <verse>" never carries over a key rotation).
+- **Keep binding** (bindings.md §4.5, R-BND-24) has no command of its own: the caller sends `PutBinding`
+  with `fe_database::handlers::extension_binding::kept_template(&stored.record)`, so every §4.2 check runs.
 ## Portal bundle header reads
 
 `scene_asset::inflate_bundle_member` reads one named zip member of a bundle header, capped at `BUNDLE_HEADER_MEMBER_MAX`

@@ -498,11 +498,14 @@ async fn extension_governance_snapshot(db: &repo::Db) -> anyhow::Result<serde_js
     use handlers::extension_policy as policy;
     let mut consents: Vec<policy::ConsentRecord> = policy::load_consents(db).await?.into_values().collect();
     consents.sort_by(|a, b| a.installation_id.cmp(&b.installation_id));
+    // Each acceptance carries its `actor_did` (R-GOV-31): the host keeps only its own DID's.
+    let mut acceptances = policy::load_acceptances(db).await?;
+    acceptances.sort_by(|a, b| (&a.installation_id, &a.verse_id, &a.actor_did).cmp(&(&b.installation_id, &b.verse_id, &b.actor_did)));
     Ok(serde_json::json!({
         "policies": serde_json::to_value(policy::all_policies(db).await?)?,
         "consents": serde_json::to_value(consents)?,
         "overrides": serde_json::to_value(policy::load_kill_list_overrides(db).await?)?,
-        "acceptances": serde_json::to_value(policy::load_acceptances(db).await?)?,
+        "acceptances": serde_json::to_value(acceptances)?,
     }))
 }
 
@@ -792,9 +795,10 @@ pub fn spawn_db_thread_shared(
                             .map(fe_runtime::plugin_host::PluginReply::Committed);
                         if let Err(error)=reply.send(result) {tracing::warn!(%error,"plugin commit receiver closed; outcome may require reconciliation");}
                     }
-                    Ok(DbCommand::SetExtensionPolicy {verse_id,policy,reply}) => {
+                    Ok(DbCommand::SetExtensionPolicy {verse_id,policy,actor_did,reply}) => {
+                        // R-X-27: the row is written as the node DID, the `policy-change` audit names who asked.
                         let result=match serde_json::from_value::<handlers::extension_policy::ExtensionPolicy>(policy) {
-                            Ok(policy)=>handlers::extension_policy::set_policy_with_replication(&db,&local_did,&verse_id,policy,Some(&blob_store),repl_tx.as_ref()).await
+                            Ok(policy)=>handlers::extension_policy::set_policy_as(&db,&local_did,&actor_did,&verse_id,policy,Some(&blob_store),repl_tx.as_ref()).await
                                 .map_err(|error|error.to_string())
                                 .and_then(|row|serde_json::to_value(&row).map_err(|error|format!("written policy row: {error}"))),
                             Err(error)=>Err(format!("invalid-policy: {error}")),

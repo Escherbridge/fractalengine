@@ -545,27 +545,42 @@ pub async fn all_policies(db: &Db) -> anyhow::Result<Vec<PolicyRow>> {
     Ok(rows.into_iter().filter_map(|row| serde_json::from_value(row).ok()).collect())
 }
 
-/// Write the verse policy as `local_did` (log-first, one `policy-change` audit op and the row in ONE
-/// transaction), then publish the row. The API already checked the caller's own Manager+ and scope.
+/// [`set_policy_as`] with the node itself as the actor (local callers and tests).
 pub async fn set_policy_with_replication(
     db: &Db,
     local_did: &str,
+    verse_id: &str,
+    policy: ExtensionPolicy,
+    blob_store: Option<&BlobStoreHandle>,
+    repl_tx: Option<&ReplicationSender>,
+) -> Result<PolicyRow, PolicyWriteError> {
+    set_policy_as(db, local_did, local_did, verse_id, policy, blob_store, repl_tx).await
+}
+
+/// Write the verse policy as `local_did` (log-first, one `policy-change` audit op and the row in ONE
+/// transaction), then publish the row. The API already checked the caller's own Manager+ and scope;
+/// the audit names `actor_did` (who asked), the row names `local_did` (who wrote). Empty actor = `local_did`.
+pub async fn set_policy_as(
+    db: &Db,
+    local_did: &str,
+    actor_did: &str,
     verse_id: &str,
     mut policy: ExtensionPolicy,
     blob_store: Option<&BlobStoreHandle>,
     repl_tx: Option<&ReplicationSender>,
 ) -> Result<PolicyRow, PolicyWriteError> {
+    let actor_did = if actor_did.is_empty() { local_did } else { actor_did };
     policy.validate(verse_id).map_err(PolicyWriteError::Invalid)?;
     policy.verse_id = None;
     let verse_scope = crate::scope::build_scope(verse_id, None, None);
     let role = crate::role_manager::resolve_role(db, local_did, &verse_scope).await?;
     if !role.is_at_least(RoleLevel::Manager) {
         let reason = format!("this node holds {role} at {verse_scope}; the policy row needs Manager+");
-        append_audit(db, &AuditEntry::verse(AuditAction::PolicyChange, local_did, verse_id, AuditOutcome::Refused, Some(reason.clone()))).await?;
+        append_audit(db, &AuditEntry::verse(AuditAction::PolicyChange, actor_did, verse_id, AuditOutcome::Refused, Some(reason.clone()))).await?;
         return Err(PolicyWriteError::RoleDenied(reason));
     }
 
-    let mut audit = AuditEntry::verse(AuditAction::PolicyChange, local_did, verse_id, AuditOutcome::Ok, None);
+    let mut audit = AuditEntry::verse(AuditAction::PolicyChange, actor_did, verse_id, AuditOutcome::Ok, None);
     audit.at = now_rfc3339();
     let entry = audit_op(&audit)?;
     // The row's `written_at` is the op's own HLC, so the closure builds it from the stamped clock.
@@ -954,6 +969,9 @@ pub struct AcceptanceRecord {
     /// The readings class picked when the manifest lists several (governance Consent "Bind").
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub source_class: Option<String>,
+    /// The identity that accepted (R-GOV-31); the host honours only its own DID's records (R12).
+    #[serde(default)]
+    pub actor_did: String,
 }
 
 const SOURCE_CLASS_PREFIX: &str = "source_class=";
@@ -980,20 +998,21 @@ pub async fn revoke_acceptance(db: &Db, actor_did: &str, record: &AcceptanceReco
     append_audit(db, &acceptance_entry(AuditAction::Unbind, actor_did, record, None)).await
 }
 
-/// Every acceptance in force: the latest `bind` per (installation, verse) not followed by an `unbind`.
+/// Every acceptance in force: the latest `bind` per (installation, verse, actor) not followed by that actor's
+/// `unbind`; the caller keeps only its own DID's records (an identity's word never carries over, R12).
 pub async fn load_acceptances(db: &Db) -> anyhow::Result<Vec<AcceptanceRecord>> {
-    let mut accepted: HashMap<(String, String), AcceptanceRecord> = HashMap::new();
+    let mut accepted: HashMap<(String, String, String), AcceptanceRecord> = HashMap::new();
     for entry in ok_entries(db, &[AuditAction::Bind, AuditAction::Unbind]).await? {
         let (Some(installation_id), Some(verse_id)) = (entry.installation.clone(), entry.verse_id.clone()) else {
             continue; // a per-petal bind without a verse is not an acceptance
         };
-        let key = (installation_id.clone(), verse_id.clone());
+        let key = (installation_id.clone(), verse_id.clone(), entry.actor_did.clone());
         if entry.action == AuditAction::Unbind {
             accepted.remove(&key);
             continue;
         }
         let source_class = entry.reason.as_deref().and_then(|reason| reason.strip_prefix(SOURCE_CLASS_PREFIX)).map(str::to_string);
-        accepted.insert(key, AcceptanceRecord { installation_id, verse_id, source_class });
+        accepted.insert(key, AcceptanceRecord { installation_id, verse_id, source_class, actor_did: entry.actor_did });
     }
     Ok(accepted.into_values().collect())
 }
@@ -1034,6 +1053,7 @@ pub async fn record_offer_confirmation(db: &Db, actor_did: &str, confirmation: &
         installation_id: confirmation.installation_id.clone(),
         verse_id: confirmation.verse_id.clone(),
         source_class: confirmation.source_class.clone(),
+        actor_did: actor_did.to_string(),
     };
     record_acceptance(db, actor_did, &record, &confirmation.package_id).await?;
     Ok(())

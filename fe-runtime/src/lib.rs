@@ -31,6 +31,7 @@ pub mod scene_asset;
 pub mod scene_hook_gate;
 pub mod scene_materials;
 pub mod scene_replication;
+pub mod scene_write;
 pub mod service_lifecycle;
 pub mod screenshot;
 pub mod shared_node;

@@ -573,8 +573,11 @@ This node-bound audit cannot observe an initial zero-reference instant. Seed log
 R18/R21/R23; slice E10). Three things live here, and nothing else in fe-database knows about extensions.
 
 - **The verse policy row** (`extension_policy` table, one row per verse, `PolicyRow`). Written locally by
-  `set_policy_with_replication` AS THE LOCAL DID, which must hold Manager+ at the verse (the API checked the
-  caller's own Manager+ first: the `device_format` rule, effective role = min(token, node)). The write is
+  `set_policy_as` AS THE LOCAL DID, which must hold Manager+ at the verse (the API checked the
+  caller's own Manager+ first: the `device_format` rule, effective role = min(token, node)). The audit entry
+  names `actor_did`, the identity that asked (`DbCommand::SetExtensionPolicy.actor_did`, R-X-27), while the
+  row's `author_did` stays the node: peers judge the writer, the local trail answers who asked.
+  `set_policy_with_replication` is the actor = node shorthand. The write is
   log-first and atomic: ONE `ExtensionAudit` op (`policy-change`) and the DELETE+CREATE of the row share one
   transaction (`commit_operation_atomic_with`), and the row's `written_at` is that op's own HLC. Durable
   first, then `replicate_row`. Inbound rows: `confine_inbound` is the structural check for
@@ -605,9 +608,37 @@ R18/R21/R23; slice E10). Three things live here, and nothing else in fe-database
 - **Kill-list override** (bindings.md §5.7, governance.md §Kill-list override): `record_kill_list_override`
   requires the typed confirmation (`confirm` = `package_id`) and local DID = `verse.created_by`, keyed
   `(verse_id, content_hash)`.
+- **Local acceptance** (bindings.md §5.3, "Allow in <verse>"): also audit entries, never a table and never
+  replicated (R12). `record_acceptance` is one `bind` op with `verse_id` (the picked readings class rides in
+  `reason` as `source_class=<class>`); `revoke_acceptance` one `unbind`. `load_acceptances` replays them per
+  `(installation, verse, actor_did)` over the whole trail (no row limit, unlike a listing), and every
+  `AcceptanceRecord` carries its `actor_did` (R-GOV-31) so the host keeps only its own DID's records: an
+  acceptance given under a rotated key never carries over, and audit volume can never push one out.
+- **Install offer confirmation** (bindings.md §5.5 step 3): `record_offer_confirmation` writes three audit
+  entries in order, `install`, `consent`, `bind`, all by the confirming actor. The offer is confirmed in the
+  GUI only; this function records the click, it never decides it.
 
 `SCHEMA_STATEMENTS`/`apply_schema` define the table; `schema::apply_all` calls it and
 `DEVELOPMENT_RESET_TABLE_NAMES` lists `extension_policy` (the development reset refuses unknown tables).
 `replicated_row` routes the table: `is_applied_table`, `confine` (`confine_inbound`, then
-`Floor::ManageVerse`) and `apply_row_mode` (`apply_replicated_policy_row`). The module itself is declared
-in `handlers/mod.rs` (G2 hand-off: until that line lands none of this compiles).
+`Floor::ManageVerse`) and `apply_row_mode` (`apply_replicated_policy_row`). `handlers/mod.rs` declares the
+module.
+
+## extension-binding
+
+`extension_binding.rs` is the bindings DB plane (rationale in `../AGENTS.md` §extension-binding). Handler
+notes:
+
+- `DbCommand::{PutBinding, ListBindings, LoadBindingSnapshot}` arms (`lib.rs`) map errors with
+  `BindingCommandError::refusal()`; a snapshot read failure is `Db(..)`, code `failed`.
+- `reemit_local_bindings` runs once after startup (`verse_id = None`) and on each
+  `ReemitLocalRoleStatements` (`Some(verse)`), beside the role-statement re-emit.
+- **Keep binding** (§4.5, R-BND-24) has no command: a caller sends `PutBinding` with
+  `kept_template(&stored.record)` (re-authored as the clicking Manager, `runs_on` pinned to the version's
+  effective placement), so every §4.2 check runs exactly as for a new binding. `keep_binding` is the same
+  path for DB-side callers and tests.
+
+## device-payload sink
+
+`device_payload::AcceptedPayloadEvent` is a type alias of `fe_runtime::messages::AcceptedPayload` (the pinned
+`ingest.decode` trigger), so the sink and the host's decode job read one struct.

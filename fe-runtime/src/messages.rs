@@ -640,7 +640,9 @@ pub enum DbCommand {
     SetExtensionPolicy {
         verse_id: String,
         policy: serde_json::Value,
-        reply: crossbeam::channel::Sender<Result<serde_json::Value, String>>,
+        /// Who asked (the API token `sub`, or the local DID for the GUI); the `policy-change` audit records it.
+        actor_did: String,
+        reply:crossbeam::channel::Sender<Result<serde_json::Value, String>>,
     },
     /// The verse's stored `PolicyRow` JSON, `None` when no row (first-party-only).
     GetExtensionPolicy {
