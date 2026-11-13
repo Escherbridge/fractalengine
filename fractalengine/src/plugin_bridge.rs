@@ -4,11 +4,11 @@
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::io::Read as _;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, OnceLock, PoisonError, RwLock};
 use std::time::{Duration, Instant};
 
-use bevy::prelude::{App, Local, MessageReader, Res, ResMut, Resource, Time, Update};
+use bevy::prelude::{App, Local, MessageReader, Res, ResMut, Resource, Update};
 use crossbeam::channel::{Receiver, RecvTimeoutError, Sender};
 use fe_api::bindings::{BindingHost, BindingListReply, BindingWriteReply, EffectivePoint};
 use fe_api::extensions::{
@@ -29,12 +29,14 @@ use fe_plugin::bindings::activation::{
     ActivationPlan, BindingActivator, BindingLauncher, CallTarget, ConfigurePlan, InstancePlan,
     Need, Trigger,
 };
+use fe_plugin::bindings::blob_source::{blob_source_channel, BlobSourceService, HookCaller};
+use fe_plugin::bindings::egress::{blob_mirror_channel, BlobMirror, MirrorQueue};
 use fe_plugin::bindings::decode::{
     decode_payload, DecodeCall, DecodeCallError, DecodeFile, DecodeHost, DecodeJob, DecodeOutcome,
     DecodeReply, DecodeStamp, DECODE_HOOK, MAX_DECODE_BODY_BYTES,
 };
 use fe_plugin::bindings::resolver::{
-    effective_binding, BindingSnapshot, BuildFacts, BuildIntegrity, LocalFacts, PackagePolicy,
+    deciding_binding, BindingSnapshot, BuildFacts, BuildIntegrity, LocalFacts, PackagePolicy,
     PetalAddress, PolicyVerdict, ResolvedPoint, StoredRow,
 };
 use fe_plugin::bus::{
@@ -75,6 +77,7 @@ use fe_runtime::extension_binding::{
 use fe_runtime::messages::{
     BindingRefusal, DbCommand, DbResult, ReplicatedRowOutcome, StoredBinding, VerseBindings,
 };
+use fe_runtime::bevy_blob_reader::BlobFallbackSlot;
 use fe_runtime::plugin_host::{
     PackageIdentity, PluginAdmission, PluginRead, PluginRefusal, PluginReply, PluginResult,
     ReadingsAdmission,
@@ -90,19 +93,26 @@ use fe_sdk::source_class::SourceClass;
 use fe_terrain::extension::TERRAIN_EXTENSION_ID;
 use fe_ui::extensions::bindings::{BindingPointRow, BindingsSnapshot, ScopeOption, ScopeTarget};
 use fe_ui::extensions::panel::{AuditLine, ExtensionEvent, ExtensionsPanelState};
-use fe_ui::extensions::{BoundPanel, BoundSlotsState, ConsentState, SnippetRequest, SnippetTarget};
+use fe_ui::extensions::{
+    BoundPanel, BoundSlotsState, ConsentState, ExtensionSlotState, SnippetCallArgs, SnippetRequest,
+    SnippetTarget,
+};
 use fe_ui::navigation_manager::NavigationManager;
 use fe_ui::verse_manager::VerseManager;
 use serde_json::{json, Value};
 
+use crate::extension_host::admin_channel::{self, AdminChannelPorts};
 use crate::extension_host::governance::{
     self, ExtensionGovernance, GovernanceConfig, ManagerControl,
 };
+use crate::extension_host::import_hooks::{ImportHostAdapter, ImportWorkerPort, WorkerAnswer};
 use crate::extension_host::ops_drain::{
-    ActiveScope, BuildToRun, ExtensionOpsPlugin, OpsPorts, OpsWorker,
+    ActiveScope, BuildToRun, ExtensionOpsPlugin, OpsPorts, OpsWorker, CHANNEL_GUI,
 };
+use crate::extension_host::slot_drain::{BusSlotCaller, SlotCommand, SlotDrain, SlotReport};
 use crate::extension_host::sources::{load_source_configs, SourceSet};
-use crate::extension_host::{net_sources, revocation_pull};
+use crate::extension_host::{net_sources, revocation_pull, ui_registry};
+use crate::portal_host::resolver::PortalGovernance;
 
 /// Bound on enqueueing one DB command from a host thread.
 const DB_SEND_TIMEOUT: Duration = Duration::from_secs(1);
@@ -128,8 +138,6 @@ const OWNER_LOOKUP_TIMEOUT: Duration = Duration::from_secs(3);
 const SNAPSHOT_RETRY: Duration = Duration::from_secs(5);
 /// Accepted payloads queued for decode before new ones are dropped.
 const MAX_PAYLOAD_BACKLOG: usize = 256;
-/// Audit entries one acceptance hydration reads.
-const ACCEPTANCE_SCAN_LIMIT: usize = 10_000;
 /// Audit lines the details view shows.
 const DETAILS_AUDIT_LINES: usize = 10;
 /// Sealed builds in the extension data dir.
@@ -143,6 +151,10 @@ const ROLE_TABLE: &str = "role";
 /// Catalogue ids the bound-slot cache reads.
 const PANEL_HOOK: &str = "ui.panel";
 const SNIPPET_HOOK: &str = "egress.snippet";
+/// Hook id of the upload converter (fe-api `import_hooks::IMPORT_HOOK`).
+const IMPORT_HOOK: &str = fe_api::import_hooks::IMPORT_HOOK;
+/// Web-bundle consents kept while the portal has not linked yet.
+const MAX_PENDING_BUNDLE_CONSENTS: usize = 1024;
 
 fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
     mutex.lock().unwrap_or_else(PoisonError::into_inner)
@@ -403,6 +415,64 @@ pub(crate) struct ExtensionBridgeConfig {
     pub api_cmd_tx: Option<Sender<fe_runtime::messages::ApiCommand>>,
     /// The committed-scene change broadcast (`entity_change_tx`) feeding `host/node-changes`.
     pub scene_changes: Option<tokio::sync::broadcast::Receiver<fe_runtime::messages::SceneChange>>,
+    /// The `blob.source` slot the sync thread and the `blob://` reader ask; the bridge installs and pumps the source.
+    pub blob_fallback: Option<BlobFallbackSlot>,
+}
+
+// ---------------------------------------------------------------------------
+// Portal link: Disable all and the admitted bundle set (R-X-33, R-X-04)
+// ---------------------------------------------------------------------------
+
+/// The portal's governance view, linked once `portal_host::install` built it (after this bridge).
+static PORTAL_VIEW: RwLock<Option<Arc<PortalGovernance>>> = RwLock::new(None);
+/// The last Disable all state this bridge applied, replayed onto a view linked later.
+static HOST_DISABLED: AtomicBool = AtomicBool::new(false);
+/// Web-bundle consents seen before the portal linked: `(package_id, content_hash, capability_digest)`.
+static PENDING_BUNDLE_CONSENTS: Mutex<Vec<(String, String, String)>> = Mutex::new(Vec::new());
+
+fn portal_view() -> Option<Arc<PortalGovernance>> {
+    PORTAL_VIEW.read().unwrap_or_else(PoisonError::into_inner).clone()
+}
+
+/// `main.rs` / `portal_host::install`: the bridge now feeds `view` its Disable all state and web-bundle consents.
+pub(crate) fn link_portal_resolver(view: Arc<PortalGovernance>) {
+    if HOST_DISABLED.load(Ordering::Acquire) {
+        view.set_host_disabled(true);
+    }
+    for (package_id, content_hash, digest) in lock(&PENDING_BUNDLE_CONSENTS).drain(..) {
+        view.learn_consent(&package_id, &content_hash, &digest);
+    }
+    *PORTAL_VIEW.write().unwrap_or_else(PoisonError::into_inner) = Some(view);
+}
+
+/// Disable all (layer b) for every kill-switch reader: the plugin manager's caller already switched; this tells the portal.
+fn portal_host_switch(disabled: bool) {
+    HOST_DISABLED.store(disabled, Ordering::Release);
+    if let Some(view) = portal_view() {
+        view.set_host_disabled(disabled);
+    }
+}
+
+/// A web-bundle consent (hydrated or fresh) admits its exact pair at the portal.
+fn portal_learn_consent(record: &ConsentRecord) {
+    match portal_view() {
+        Some(view) => view.learn_consent(&record.package_id, &record.content_hash, &record.capability_digest),
+        None => {
+            let mut pending = lock(&PENDING_BUNDLE_CONSENTS);
+            if pending.len() < MAX_PENDING_BUNDLE_CONSENTS {
+                pending.push((
+                    record.package_id.clone(),
+                    record.content_hash.clone(),
+                    record.capability_digest.clone(),
+                ));
+            }
+        }
+    }
+}
+
+/// `LocalFacts.admitted_bundles`: the portal's admitted pairs; empty until it links (portal.open fails closed).
+fn portal_admitted_bundles() -> BTreeSet<(String, String)> {
+    portal_view().map(|view| view.admitted_set()).unwrap_or_default()
 }
 
 /// Late-bound API command channel; the bus sources answer `not-available` until it is set.
@@ -994,6 +1064,30 @@ impl LiveInstances {
             window.stage_op(op).map_err(|error| error.to_string())?;
         }
         Ok(())
+    }
+}
+
+/// `blob.source` / `blob.mirror` calls on the serving builds, made off the worker on the services' call threads.
+struct LiveHookCaller(LiveInstances);
+
+impl HookCaller for LiveHookCaller {
+    fn call(&self, target: &CallTarget, request: &HookRequest) -> Result<HookReply, HookCallError> {
+        // No serving build (stopped between resolution and call): counted as a failed call, never a pass.
+        let handle = self.0.handle(&target.plugin_id).ok_or_else(|| {
+            HookCallError::NotServed(format!("{} is not running", target.plugin_id))
+        })?;
+        handle.call_hook(request, None)
+    }
+}
+
+/// The `blob.mirror` after-commit queue, set once the blob store is bound (the worker builds the mirror then).
+#[derive(Resource, Clone, Default)]
+pub(crate) struct ExtensionBlobMirror(Arc<OnceLock<MirrorQueue>>);
+
+impl ExtensionBlobMirror {
+    /// The queue a blob-commit tap feeds; `None` until the plugin worker built the mirror.
+    pub(crate) fn queue(&self) -> Option<&MirrorQueue> {
+        self.0.get()
     }
 }
 
@@ -1775,6 +1869,17 @@ impl BindingView {
         })
     }
 
+    /// Whether `point` resolves to an extension at `petal_id` in the published cache; never blocks.
+    fn is_resolved(&self, petal_id: &str, point: &BindingPoint) -> bool {
+        let inner = self.0.read().unwrap_or_else(PoisonError::into_inner);
+        inner.petals.get(petal_id).is_some_and(|petal| {
+            petal.points.iter().any(|published| {
+                published.point == *point
+                    && matches!(published.resolved.resolution, BindingResolution::Resolved { .. })
+            })
+        })
+    }
+
     fn status_rows(&self) -> Vec<(String, u64)> {
         self.0
             .read()
@@ -1831,13 +1936,21 @@ struct IndexRow {
     disabled: bool,
     consented: bool,
     instances: Vec<RunningInstance>,
+    /// The installed build (the ui registry re-registers when it changes).
+    content_hash: String,
+    manifest: Option<Arc<ExtensionManifest>>,
 }
 
 /// Installations and their instances, refreshed by the worker; status reads never take the manager lock.
 #[derive(Clone, Default)]
-struct InstallationIndex(Arc<RwLock<BTreeMap<String, IndexRow>>>);
+struct InstallationIndex(Arc<RwLock<BTreeMap<String, IndexRow>>>, Arc<AtomicU64>);
 
 impl InstallationIndex {
+    /// Moves when a refresh changed which builds are installed or running (the ui registry's cheap check).
+    fn generation(&self) -> u64 {
+        self.1.load(Ordering::Acquire)
+    }
+
     fn rows(&self) -> BTreeMap<String, IndexRow> {
         self.0
             .read()
@@ -1854,48 +1967,84 @@ impl InstallationIndex {
     }
 
     fn replace(&self, rows: BTreeMap<String, IndexRow>) {
-        *self.0.write().unwrap_or_else(PoisonError::into_inner) = rows;
+        let fingerprint = |rows: &BTreeMap<String, IndexRow>| -> Vec<(String, String, Vec<(String, bool)>)> {
+            rows.values()
+                .map(|row| {
+                    let running = row
+                        .instances
+                        .iter()
+                        .map(|instance| (instance.plugin_id.clone(), instance.degraded))
+                        .collect();
+                    (row.package_id.clone(), row.content_hash.clone(), running)
+                })
+                .collect()
+        };
+        let mut current = self.0.write().unwrap_or_else(PoisonError::into_inner);
+        if fingerprint(&current) != fingerprint(&rows) {
+            self.1.fetch_add(1, Ordering::AcqRel);
+        }
+        *current = rows;
     }
 }
 
-/// Whether the local DID is a verse's Owner (`verse.created_by`), cached; offers only, the DB re-checks overrides.
+/// What one verse row says about this host: whether the local DID owns it and its `default_access`.
+#[derive(Clone, Copy)]
+struct VerseFacts {
+    owner: bool,
+    default_access: RoleLevel,
+}
+
+/// Whether the local DID is a verse's Owner (`verse.created_by`) and the verse default access, cached; offers and
+/// row 10's fallback only, the DB re-checks overrides and writes.
 #[derive(Clone)]
 struct VerseOwners {
     api: ExtensionApiSlot,
     local_did: String,
-    cache: Arc<Mutex<HashMap<String, (bool, Instant)>>>,
+    cache: Arc<Mutex<HashMap<String, (VerseFacts, Instant)>>>,
 }
 
 impl VerseOwners {
     /// Never takes the manager lock: callers may hold it (ops drain `consent_request`).
     fn is_owner(&self, verse_id: &str) -> bool {
-        if let Some((owner, at)) = lock(&self.cache).get(verse_id).copied() {
+        self.facts(verse_id).owner
+    }
+
+    /// The verse `default_access` (`viewer` or `none`); `None` when unknown (fail closed, R-X-30).
+    fn default_access(&self, verse_id: &str) -> RoleLevel {
+        self.facts(verse_id).default_access
+    }
+
+    fn facts(&self, verse_id: &str) -> VerseFacts {
+        const UNKNOWN: VerseFacts = VerseFacts { owner: false, default_access: RoleLevel::None };
+        if let Some((facts, at)) = lock(&self.cache).get(verse_id).copied() {
             if at.elapsed() < OWNER_CACHE {
-                return owner;
+                return facts;
             }
         }
         let Ok(api) = self.api.get().cloned() else {
-            return false;
+            return UNKNOWN;
         };
         let mut vars = HashMap::new();
         vars.insert("v".to_string(), json!(verse_id));
         let sql = fe_api::query_guard::with_statement_timeout(
-            "SELECT created_by FROM verse WHERE verse_id = $v LIMIT 1",
+            "SELECT created_by, default_access FROM verse WHERE verse_id = $v LIMIT 1",
         );
-        let owner = match db_rows_within(&api, sql, vars, OWNER_LOOKUP_TIMEOUT) {
+        let facts = match db_rows_within(&api, sql, vars, OWNER_LOOKUP_TIMEOUT) {
             Ok(rows) => {
-                rows.first()
-                    .and_then(|row| row.get("created_by"))
-                    .and_then(Value::as_str)
-                    == Some(self.local_did.as_str())
+                let row = rows.first();
+                let text = |name: &str| row.and_then(|row| row.get(name)).and_then(Value::as_str);
+                VerseFacts {
+                    owner: text("created_by") == Some(self.local_did.as_str()),
+                    default_access: text("default_access").map_or(RoleLevel::None, RoleLevel::from),
+                }
             }
             Err(error) => {
                 tracing::debug!(verse_id, %error, "verse owner lookup failed");
-                return false;
+                return UNKNOWN;
             }
         };
-        lock(&self.cache).insert(verse_id.to_string(), (owner, Instant::now()));
-        owner
+        lock(&self.cache).insert(verse_id.to_string(), (facts, Instant::now()));
+        facts
     }
 }
 
@@ -1945,12 +2094,21 @@ enum BindingSignal {
         call: SceneHookCall,
         reply: SceneHookReplySender,
     },
+    /// One `asset.import` call carrying the uploaded bytes; the GLB comes back in the reply body.
+    Import {
+        petal_id: String,
+        mime: String,
+        input: Value,
+        body: Vec<u8>,
+        reply: Sender<WorkerAnswer>,
+    },
     Manager(ManagerWork),
 }
 
-/// A provider answer for the bound snippet cache.
+/// A provider answer for the bound snippet cache, keyed by the request args it answers (R-UI-27).
 struct SnippetAnswer {
     target: SnippetTarget,
+    args: SnippetCallArgs,
     label: String,
     text: String,
 }
@@ -2051,6 +2209,17 @@ struct BindingWorker {
     changed: bool,
     /// `(instance id, degraded)` of every governed instance at the last publish.
     running: Vec<(String, bool)>,
+    /// The active petal (an ask naming none resolves there).
+    active_petal: Option<String>,
+    /// `blob.source`: the service half of the queue installed in `blob_slot`.
+    blob_source: Option<BlobSourceService>,
+    /// The slot the sync thread and the `blob://` reader ask; cleared when this worker stops.
+    blob_slot: Option<BlobFallbackSlot>,
+    /// `blob.mirror`: built once the blob store is bound; its queue is published in `mirror_queue`.
+    blob_mirror: Option<BlobMirror>,
+    mirror_queue: ExtensionBlobMirror,
+    /// Off-worker calls the blob services make on the serving builds.
+    hook_caller: Arc<dyn HookCaller>,
 }
 
 /// One `LoadBindingSnapshot` round trip (pinned I-DB command).
@@ -2098,7 +2267,116 @@ impl BindingWorker {
             }
             self.turn();
         }
+        // Back to peers only: no ask may wait on a worker that is gone.
+        if let Some(slot) = &self.blob_slot {
+            slot.clear();
+        }
         tracing::info!("extension binding worker stopped");
+    }
+
+    /// `blob.source` and `blob.mirror`: hand waiting asks and committed blobs to their bound builds (off-worker calls).
+    fn pump_blob_services(&mut self) {
+        if self.blob_mirror.is_none() {
+            if let Some(store) = self.reader.blobs.0.get() {
+                let (queue, mirror) = blob_mirror_channel(store.clone());
+                if self.mirror_queue.0.set(queue).is_ok() {
+                    self.blob_mirror = Some(mirror);
+                }
+            }
+        }
+        let Self {
+            activator,
+            manager,
+            catalog,
+            stager,
+            live,
+            blob_source,
+            blob_mirror,
+            hook_caller,
+            active_petal,
+            ..
+        } = self;
+        let mut launcher = BridgeLauncher {
+            catalog: &*catalog,
+            stager: &*stager,
+            live: &*live,
+        };
+        let mut taken = 0;
+        if let Some(source) = blob_source.as_ref() {
+            taken += source.pump(activator, &**manager, &mut launcher, hook_caller, active_petal.as_deref());
+        }
+        if let Some(mirror) = blob_mirror.as_ref() {
+            taken += mirror.pump(activator, &**manager, &mut launcher, hook_caller);
+        }
+        // A lazily started instance changes what the resolution cache publishes.
+        if taken > 0 {
+            self.changed = true;
+        }
+    }
+
+    /// Resolve the `asset.import` target on the worker, then convert on a call thread so a 30 s guest never stalls it.
+    fn import_call(
+        &mut self,
+        petal_id: &str,
+        mime: &str,
+        input: Value,
+        body: Vec<u8>,
+        reply: Sender<WorkerAnswer>,
+    ) {
+        let point = BindingPoint::new(IMPORT_HOOK, mime);
+        let target = {
+            let Self {
+                activator,
+                manager,
+                catalog,
+                stager,
+                live,
+                ..
+            } = self;
+            let mut launcher = BridgeLauncher {
+                catalog: &*catalog,
+                stager: &*stager,
+                live: &*live,
+            };
+            activator.ensure_call_target(petal_id, &point, &**manager, &mut launcher)
+        };
+        self.changed = true;
+        let Ok(target) = target else {
+            let _ = reply.send(WorkerAnswer::Unbound);
+            return;
+        };
+        let request = HookRequest {
+            hook: IMPORT_HOOK.to_string(),
+            key: mime.to_string(),
+            binding_scope: target.binding_scope.clone(),
+            config: target.config.to_string(),
+            input: input.to_string(),
+            body,
+        };
+        let live = self.live.clone();
+        let answer_tx = reply.clone();
+        let spawned = std::thread::Builder::new()
+            .name("fe-ext-import".into())
+            .spawn(move || {
+                let answer = match live.call(&target.plugin_id, &request, None) {
+                    Ok(reply) => WorkerAnswer::Output {
+                        output: reply.output,
+                        body: reply.body,
+                    },
+                    Err(HookFailure::Refused(reason) | HookFailure::Declined(reason)) => {
+                        WorkerAnswer::Refused(reason)
+                    }
+                    Err(HookFailure::Fault(reason)) => {
+                        tracing::warn!(%reason, "asset.import call failed");
+                        WorkerAnswer::Failed
+                    }
+                };
+                let _ = answer_tx.send(answer);
+            });
+        if let Err(error) = spawned {
+            tracing::warn!(%error, "asset.import call thread did not start");
+            let _ = reply.send(WorkerAnswer::Failed);
+        }
     }
 
     /// Periodic work: store scan, acceptance hydration, due retries, dirty verses, idle sweep, publication.
@@ -2124,6 +2402,7 @@ impl BindingWorker {
             let plan = self.activator.sweep_idle();
             self.apply(plan);
         }
+        self.pump_blob_services();
         self.live.prune();
         self.publish();
     }
@@ -2135,6 +2414,7 @@ impl BindingWorker {
             }
             BindingSignal::AllDirty(trigger) => self.activator.mark_all_dirty(trigger),
             BindingSignal::Navigate(active) => {
+                self.active_petal = active.as_ref().map(|address| address.petal_id.clone());
                 let plan = self.activator.navigate(active);
                 self.apply(plan);
             }
@@ -2159,6 +2439,13 @@ impl BindingWorker {
                 let _ = reply.send(answer);
             }
             BindingSignal::Scene { call, reply } => self.scene_call(call, reply),
+            BindingSignal::Import {
+                petal_id,
+                mime,
+                input,
+                body,
+                reply,
+            } => self.import_call(&petal_id, &mime, input, body, reply),
             BindingSignal::Manager(work) => self.manager_work(work),
         }
     }
@@ -2167,8 +2454,17 @@ impl BindingWorker {
         let mut manager = lock(&self.manager);
         match work {
             ManagerWork::Consent(record) => {
-                manager.governance_mut().record_consent(record);
+                manager.governance_mut().record_consent(record.clone());
                 drop(manager);
+                // A consent no installed extension build carries is a web bundle's (P-RESOLVE): the portal learns it.
+                self.catalog.refresh_if_due();
+                let extension = self.catalog.builds.values().any(|build| {
+                    build.facts.package_id == record.package_id
+                        && build.facts.content_hash.eq_ignore_ascii_case(&record.content_hash)
+                });
+                if !extension {
+                    portal_learn_consent(&record);
+                }
                 self.activator.mark_all_dirty(Trigger::Lifecycle);
             }
             ManagerWork::Override {
@@ -2192,51 +2488,13 @@ impl BindingWorker {
         }
     }
 
-    /// "Allow in <verse>" records live in the audit trail (Bind/Unbind with a verse); replay them oldest first.
+    /// "Allow in <verse>" from governance's lossless, actor-keyed replay (R-GOV-31); only the local DID's word counts.
     fn hydrate_acceptances(&mut self) {
         // Until this lands no binding instance starts (row 12 refuses), so retry on the snapshot spacing.
         self.acceptance_retry = Some(Instant::now() + SNAPSHOT_RETRY);
-        let (reply, receiver) = crossbeam::channel::bounded(1);
-        let command = DbCommand::ListExtensionAudit {
-            installation: None,
-            verse_id: None,
-            limit: ACCEPTANCE_SCAN_LIMIT,
-            reply,
-        };
-        if self.db.send_timeout(command, DB_SEND_TIMEOUT).is_err() {
+        let Some(accepted) = self.governance.local_acceptances() else {
             return;
-        }
-        let rows: Vec<Value> = match receiver.recv_timeout(DB_REPLY_TIMEOUT) {
-            Ok(Ok(rows)) => rows,
-            Ok(Err(error)) => {
-                tracing::warn!(%error, "extension acceptances did not load; retrying");
-                return;
-            }
-            Err(_) => return,
         };
-        let mut accepted: BTreeSet<(String, String)> = BTreeSet::new();
-        for entry in rows
-            .into_iter()
-            .rev()
-            .filter_map(|row| serde_json::from_value::<PolicyEntry>(row).ok())
-        {
-            // Acceptance is this identity's word only (R12): a rotated key's "Allow in <verse>" never carries over.
-            if entry.outcome != PolicyOutcome::Ok || entry.actor_did != self.local_did {
-                continue;
-            }
-            let (Some(installation), Some(verse_id)) = (entry.installation, entry.verse_id) else {
-                continue;
-            };
-            match entry.action {
-                PolicyAction::Bind => {
-                    accepted.insert((installation, verse_id));
-                }
-                PolicyAction::Unbind => {
-                    accepted.remove(&(installation, verse_id));
-                }
-                _ => {}
-            }
-        }
         {
             let mut manager = lock(&self.manager);
             for (installation_id, verse_id) in &accepted {
@@ -2251,6 +2509,15 @@ impl BindingWorker {
 
     fn local_facts(&self, verse_id: &str, petals: &[PetalAddress]) -> LocalFacts {
         let is_owner = self.owners.is_owner(verse_id);
+        let default_access = self.owners.default_access(verse_id);
+        // Portal pairs only: an installed extension build is never a web bundle `portal.open` may name.
+        let mut admitted_bundles = portal_admitted_bundles();
+        admitted_bundles.retain(|(package_id, content_hash)| {
+            !self.catalog.builds.values().any(|build| {
+                build.facts.package_id == *package_id
+                    && build.facts.content_hash.eq_ignore_ascii_case(content_hash)
+            })
+        });
         let manager = lock(&self.manager);
         let local = manager.governance();
         LocalFacts {
@@ -2264,8 +2531,11 @@ impl BindingWorker {
                 .map(|build| build_facts(build, verse_id, petals, local, &self.governance))
                 .collect(),
             accepted: local.acceptances(),
+            // No listing carries `provides` on this worker yet: nothing is offered from a registry (fail closed).
             registry: Vec::new(),
             package_policy: PackagePolicy::default(),
+            default_access,
+            admitted_bundles,
         }
     }
 
@@ -2485,6 +2755,7 @@ impl BindingWorker {
                 .answers
                 .send(SnippetAnswer {
                     target: request.target,
+                    args: request.args,
                     label,
                     text,
                 })
@@ -2508,16 +2779,15 @@ impl BindingWorker {
                     .resolutions_at(&petal.petal_id)
                     .into_iter()
                     .map(|(point, resolved)| {
-                        // OQ-B6: the petal's own terrain column decided, so no outer row wins here (R-BND-13).
-                        let winner: Option<BindingRecord> = if resolved.detail.implicit_terrain {
-                            None
-                        } else {
-                            resolution_scopes(&petal.verse_id, &petal.fractal_id, &petal.petal_id)
-                                .iter()
-                                .find_map(|scope| {
-                                    effective_binding(&rows, &roles, scope, &point).cloned()
-                                })
-                        };
+                        // The resolver's own deciding row: none when the petal's terrain column decides (R-BND-13).
+                        let winner: Option<BindingRecord> = deciding_binding(
+                            &rows,
+                            &roles,
+                            &bindings.stored_terrain_petals,
+                            &petal,
+                            &point,
+                        )
+                        .cloned();
                         let manifest = match &resolved.resolution {
                             BindingResolution::Resolved { package_id, .. } => self
                                 .catalog
@@ -2604,14 +2874,22 @@ impl BindingWorker {
                         .filter(|instance| instance.installation_id == id)
                         .cloned()
                         .collect(),
+                    content_hash: build.facts.content_hash.clone(),
+                    manifest: build.facts.manifest.clone(),
                 };
                 (id, row)
             })
             .collect();
         self.index.replace(rows);
         if std::mem::take(&mut self.changed) {
-            self.view
-                .replace(self.published_petals(), self.activator.status_rows());
+            let mut status = self.activator.status_rows();
+            if let Some(source) = &self.blob_source {
+                status.extend(source.status_rows());
+            }
+            if let Some(mirror) = &self.blob_mirror {
+                status.extend(mirror.status_rows());
+            }
+            self.view.replace(self.published_petals(), status);
         }
     }
 }
@@ -2619,6 +2897,11 @@ impl BindingWorker {
 // ---------------------------------------------------------------------------
 // Ops drain ports (F-OPS)
 // ---------------------------------------------------------------------------
+
+/// The audit channel note (`gui` or `cli`, admin-channel.md §7) until fe-database's entry gains a `channel` member.
+fn channel_note(channel: &str) -> Option<String> {
+    Some(format!("channel={channel}"))
+}
 
 /// What the ops worker needs from the binary. No method takes the manager lock: the drain calls several of them
 /// while it holds it (`rows_event`, `consent_request`).
@@ -2756,17 +3039,66 @@ impl OpsPorts for BridgeOpsPorts {
         entry.package_id = Some(package_id.to_string());
         entry.verse_id = Some(verse_id.to_string());
         self.append_audit_blocking(entry)?;
+        self.governance
+            .note_acceptance(self.governance.local_did(), installation_id, verse_id, true);
+        self.signals.dirty(verse_id, Trigger::Lifecycle);
+        Ok(())
+    }
+
+    fn persist_withdrawal(
+        &self,
+        installation_id: &str,
+        verse_id: &str,
+        package_id: &str,
+    ) -> Result<(), String> {
+        // The `unbind`-with-verse twin of `persist_acceptance`; governance's replay reads both.
+        let mut entry = self.local_entry(PolicyAction::Unbind, format!("{installation_id}@{verse_id}"));
+        entry.installation = Some(installation_id.to_string());
+        entry.package_id = Some(package_id.to_string());
+        entry.verse_id = Some(verse_id.to_string());
+        self.append_audit_blocking(entry)?;
+        self.governance
+            .note_acceptance(self.governance.local_did(), installation_id, verse_id, false);
         self.signals.dirty(verse_id, Trigger::Lifecycle);
         Ok(())
     }
 
     fn audit_change(&self, action: PolicyAction, installation_id: &str) {
+        self.audit_change_via(action, installation_id, CHANNEL_GUI);
+    }
+
+    fn audit_change_via(&self, action: PolicyAction, installation_id: &str, channel: &str) {
         let mut entry = self.local_entry(action, installation_id.to_string());
-        entry.installation = Some(installation_id.to_string());
-        entry.package_id = Some(installation_id.to_string());
+        if installation_id != "*" {
+            entry.installation = Some(installation_id.to_string());
+            entry.package_id = Some(installation_id.to_string());
+        }
+        entry.reason = channel_note(channel);
         self.governance.append_audit(entry);
         self.signals
             .send(BindingSignal::AllDirty(Trigger::Lifecycle));
+    }
+
+    fn audit_admin_refusal(&self, action: PolicyAction, target: &str, code: &str, message: &str) {
+        // Every refused admin-channel verb is a durable row (admin-channel.md §7), denials included.
+        let mut entry = self.local_entry(action, target.to_string());
+        entry.outcome = PolicyOutcome::Refused;
+        entry.reason = Some(format!("channel=cli; {code}: {message}"));
+        self.governance.append_audit(entry);
+    }
+
+    fn forget_installation(&self, installation_id: &str) {
+        self.signals
+            .send(BindingSignal::Forget(installation_id.to_string()));
+        self.signals
+            .send(BindingSignal::AllDirty(Trigger::Lifecycle));
+    }
+
+    fn host_switch_changed(&self, disabled: bool, channel: &str) {
+        let action = if disabled { PolicyAction::Disable } else { PolicyAction::Enable };
+        self.audit_change_via(action, "*", channel);
+        // Disable all reaches the portal too (R-X-33): a mounted bundle unloads, rows it wrote stay (OD-E1).
+        portal_host_switch(disabled);
     }
 
     fn bindings_snapshot(&self, scope: &ActiveScope) -> Result<BindingsSnapshot, String> {
@@ -2856,9 +3188,8 @@ impl OpsPorts for BridgeOpsPorts {
                     .iter()
                     .find(|candidate| candidate.hook == point.hook && candidate.key == point.key)
                     .and_then(|candidate| candidate.resolution.clone());
-                let winner = chain
-                    .iter()
-                    .find_map(|scope_string| effective_binding(&rows, &roles, scope_string, &point).cloned());
+                let winner =
+                    deciding_binding(&rows, &roles, &plane.stored_terrain_petals, &petal, &point).cloned();
                 match winner {
                     Some(record) => {
                         let (scope_label, target) = at_scope(&record.scope).unzip();
@@ -3338,12 +3669,23 @@ impl ExtensionHost for BusExtensionHost {
         match op.verb {
             AdminVerb::DisableAll => {
                 let stopped = lock(manager).disable_all();
+                // Layer b covers portals too (R-X-33): a mounted bundle unloads, rows it wrote stay (OD-E1).
+                portal_host_switch(true);
                 self.admin_audit(PolicyAction::Disable, "*", None, PolicyOutcome::Ok, None);
                 self.parts.signal(BindingSignal::AllDirty(Trigger::Lifecycle));
                 Ok(json!({ "disabled_all": true, "stopped": stopped }))
             }
             AdminVerb::EnableAll => {
+                if fe_plugin::lifecycle::ext_disable_all(
+                    std::env::var(fe_plugin::lifecycle::EXT_DISABLE_ALL_ENV).ok().as_deref(),
+                ) {
+                    return Err(admin_refusal(
+                        "host-off",
+                        format!("{}=1 was set at startup and still wins", fe_plugin::lifecycle::EXT_DISABLE_ALL_ENV),
+                    ));
+                }
                 lock(manager).enable_all();
+                portal_host_switch(false);
                 self.admin_audit(PolicyAction::Enable, "*", None, PolicyOutcome::Ok, None);
                 self.parts.signal(BindingSignal::AllDirty(Trigger::Lifecycle));
                 Ok(json!({ "disabled_all": false }))
@@ -3590,6 +3932,11 @@ impl ExtensionBindings {
         receiver
     }
 
+    /// Moves each time the worker republishes the resolution cache (bound portals reload on a change).
+    pub(crate) fn generation(&self) -> u64 {
+        self.view.generation()
+    }
+
     /// `petal.map` at `petal_id` as `PetalMapResolver::decide` reads it; never blocks, never touches the activator.
     pub(crate) fn petal_map_need(&self, petal_id: &str) -> Need {
         self.view
@@ -3736,6 +4083,41 @@ pub(crate) fn api_extension_host(app: &App) -> Option<Arc<dyn ExtensionHost>> {
 pub(crate) fn api_binding_host(app: &App) -> Option<Arc<dyn BindingHost>> {
     let bindings = app.world().get_resource::<ExtensionBindings>()?;
     Some(Arc::new(bindings.clone()))
+}
+
+/// `asset.import` over the binding worker: the published cache answers `bound`, the worker resolves and converts.
+struct ImportPort {
+    view: BindingView,
+    signals: BindingSignals,
+}
+
+impl ImportWorkerPort for ImportPort {
+    fn bound(&self, petal_id: &str, mime: &str) -> bool {
+        self.view.is_resolved(petal_id, &BindingPoint::new(IMPORT_HOOK, mime))
+    }
+
+    fn convert(&self, petal_id: &str, mime: &str, input: Value, body: Vec<u8>) -> Receiver<WorkerAnswer> {
+        let (reply, receiver) = crossbeam::channel::bounded(1);
+        self.signals.send(BindingSignal::Import {
+            petal_id: petal_id.to_string(),
+            mime: mime.to_string(),
+            input,
+            body,
+            reply,
+        });
+        receiver
+    }
+}
+
+/// Present only when the plugin manager started: the upload route's `asset.import` seam.
+#[derive(Resource, Clone)]
+struct ExtensionImportHooks(Arc<ImportPort>);
+
+/// The `asset.import` seam fe-api layers onto the upload route (`ApiConfig::import_hooks`); `None` keeps non-GLB refused.
+pub(crate) fn import_hooks_handle(app: &App) -> Option<fe_api::import_hooks::ImportHooksHandle> {
+    let hooks = app.world().get_resource::<ExtensionImportHooks>()?;
+    let port: Arc<dyn ImportWorkerPort> = hooks.0.clone();
+    Some(ImportHostAdapter::new(port).handle())
 }
 
 /// The `scene.*` gate's backend (BND-10a): the published cache answers `bound`, the binding worker runs calls,
@@ -3888,7 +4270,6 @@ fn feed_bound_slots(
     nav: Option<Res<NavigationManager>>,
     bindings: Res<ExtensionBindings>,
     mut feed: ResMut<BoundSlotFeed>,
-    time: Res<Time>,
 ) {
     let (Some(mut slots), Some(nav)) = (slots, nav) else {
         return;
@@ -3912,9 +4293,9 @@ fn feed_bound_slots(
             requests,
         });
     }
-    let now = time.elapsed_secs_f64();
+    // Each answer is stored only against the args it was computed for: a stale one never shows for a newer query.
     while let Ok(answer) = feed.answers.try_recv() {
-        slots.store_snippet(&answer.target, &answer.label, &answer.text, now);
+        slots.store_snippet_answer(&answer.target, &answer.args, &answer.label, &answer.text);
     }
 }
 
@@ -3953,11 +4334,14 @@ fn unsigned_policy(_allow_dev: bool) -> UnsignedPolicy {
     UnsignedPolicy::Refuse
 }
 
-/// The shared source trust: every loaded root (revocation-capable included, R-REG), no shared index key.
+/// The shared source trust: every loaded root (revocation-capable included, R-REG), no shared index key, and the
+/// accepted kill list matched by hash under any package id (the listing's id never narrows it).
 fn source_trust(governance: &ExtensionGovernance, allow_dev: bool) -> SourceTrust {
+    let kill_list = governance.clone();
     SourceTrust {
         is_trust_root: governance.trust_root_predicate(),
         index_signer: Arc::new(|_: &str| None),
+        is_killed: Arc::new(move |_package_id: &str, hash: &str| kill_list.is_revoked_any(&[hash])),
         allow_unsigned_dev: allow_dev,
     }
 }
@@ -4061,6 +4445,9 @@ pub(crate) fn install_with(app: &mut App, config: ExtensionBridgeConfig) {
     let blobs = ExtensionBlobSlot::default();
     app.insert_resource(blobs.clone());
 
+    // The binding activator exists before the broker: bound connectors draw from its shared egress buckets (B10d).
+    let activator = BindingActivator::new(ticks.clock());
+    let shared_egress = activator.egress_buckets();
     // The network broker owns a small runtime for dial-outs and egress (net_sources builds inside it).
     let net_runtime = tokio::runtime::Builder::new_multi_thread()
         .worker_threads(2)
@@ -4071,7 +4458,13 @@ pub(crate) fn install_with(app: &mut App, config: ExtensionBridgeConfig) {
         Ok(runtime) => {
             let net = {
                 let _entered = runtime.enter();
-                net_sources::build_net(ticks.clock(), role_source.clone(), audit.clone(), &data_dir)
+                net_sources::build_net(
+                    ticks.clock(),
+                    role_source.clone(),
+                    audit.clone(),
+                    &data_dir,
+                    shared_egress.clone(),
+                )
             };
             let handle = runtime.handle().clone();
             app.insert_resource(ExtensionNetRuntime(runtime));
@@ -4085,6 +4478,7 @@ pub(crate) fn install_with(app: &mut App, config: ExtensionBridgeConfig) {
                     role_source.clone(),
                     audit.clone(),
                     &data_dir,
+                    shared_egress,
                 ),
                 None,
             )
@@ -4171,6 +4565,8 @@ pub(crate) fn install_with(app: &mut App, config: ExtensionBridgeConfig) {
         app.add_systems(Update, refuse_extension_ops);
         return;
     };
+    // Disable all from `FE_EXT_DISABLE_ALL=1` (the manager starts from it) reaches the portal once it links.
+    portal_host_switch(lock(&manager).governance().is_disabled_all());
     governance.attach_manager(Arc::new(ManagerControlHandle {
         manager: manager.clone(),
         signals: signals.clone(),
@@ -4239,12 +4635,39 @@ pub(crate) fn install_with(app: &mut App, config: ExtensionBridgeConfig) {
     });
     app.add_systems(Update, feed_bound_slots);
 
+    // Third-party ui entries follow activation (R-UI-03); other packages' slot commands go to the bus (R-HOOKS-33).
+    app.insert_resource(ExtensionUiSync {
+        index: index.clone(),
+        seen: u64::MAX,
+        applied: BTreeMap::new(),
+    });
+    app.insert_resource(ExtensionSlotDrain(Mutex::new(SlotDrain::new(BusSlotCaller::new(
+        Arc::new(stager.bus.clone()),
+    )))));
+    app.add_systems(Update, (sync_extension_ui, drain_slot_commands));
+
+    app.insert_resource(ExtensionImportHooks(Arc::new(ImportPort {
+        view: view.clone(),
+        signals: signals.clone(),
+    })));
+
+    // `blob.source`: the sync thread's scene transfers and the `blob://` reader ask the worker after peers miss.
+    let blob_slot = config.blob_fallback;
+    let blob_source = blob_slot.as_ref().map(|slot| {
+        let (queue, service) = blob_source_channel();
+        slot.install(Arc::new(queue));
+        service
+    });
+    let mirror_queue = ExtensionBlobMirror::default();
+    app.insert_resource(mirror_queue.clone());
+
     let worker = BindingWorker {
         manager: manager.clone(),
         governance: governance.clone(),
-        activator: BindingActivator::new(ticks.clock()),
+        activator,
         catalog: InstalledCatalog::new(&data_dir, governance.clone(), allow_dev),
         stager: stager.clone(),
+        hook_caller: Arc::new(LiveHookCaller(live.clone())),
         live,
         petals,
         db: db.clone(),
@@ -4262,6 +4685,11 @@ pub(crate) fn install_with(app: &mut App, config: ExtensionBridgeConfig) {
         last_sweep: Instant::now(),
         changed: true,
         running: Vec::new(),
+        active_petal: None,
+        blob_source,
+        blob_slot,
+        blob_mirror: None,
+        mirror_queue,
     };
     let service = OwnedService::spawn("ext-bindings", move |stop| worker.run(signal_rx, stop));
     app.insert_resource(ExtensionBindingService(Mutex::new(Some(service))));
@@ -4278,7 +4706,7 @@ pub(crate) fn install_with(app: &mut App, config: ExtensionBridgeConfig) {
     };
     let ops_trust = source_trust(&governance, allow_dev);
     let worker_trust = source_trust(&governance, allow_dev);
-    app.add_plugins(ExtensionOpsPlugin::new(move || {
+    let ops = ExtensionOpsPlugin::new(move || {
         let configs = load_source_configs(&data_dir.join(SOURCES_FILE)).unwrap_or_else(|reason| {
             tracing::warn!(%reason, "extension sources unreadable: Browse lists none");
             Vec::new()
@@ -4291,7 +4719,118 @@ pub(crate) fn install_with(app: &mut App, config: ExtensionBridgeConfig) {
             sources,
             Box::new(ports),
         )
-    }));
+    });
+    let admin_jobs = ops.admin_jobs();
+    app.add_plugins(ops);
+    // `fe-ext admin` over this OS user's local channel only (never REST/MCP); this binary always has a window, so
+    // consent can be shown. `FE_EXT_ADMIN_CHANNEL=0` keeps it off (fe-plugin/src/admin/AGENTS.md).
+    app.insert_resource(admin_channel::spawn(AdminChannelPorts::new(admin_jobs, true)));
+}
+
+// ---------------------------------------------------------------------------
+// UI wiring: manifest ui entries and other packages' slot commands
+// ---------------------------------------------------------------------------
+
+/// What the ui registry last applied per package: the build's content hash.
+#[derive(Resource)]
+struct ExtensionUiSync {
+    index: InstallationIndex,
+    seen: u64,
+    applied: BTreeMap<String, String>,
+}
+
+/// Register a running build's manifest `ui` entries and panel content set; forget them when it stops (disable,
+/// revoke, uninstall). Idle frames compare one counter.
+fn sync_extension_ui(
+    mut sync: ResMut<ExtensionUiSync>,
+    registry: Option<ResMut<fe_ui::plugin::UiExtensions>>,
+    bound: Option<ResMut<BoundSlotsState>>,
+    slots: Option<ResMut<ExtensionSlotState>>,
+) {
+    let (Some(mut registry), Some(mut bound), Some(mut slots)) = (registry, bound, slots) else {
+        return;
+    };
+    let generation = sync.index.generation();
+    if generation == sync.seen {
+        return;
+    }
+    sync.seen = generation;
+    let active: BTreeMap<String, (String, Arc<ExtensionManifest>)> = sync
+        .index
+        .rows()
+        .into_values()
+        .filter(|row| row.instances.iter().any(|instance| !instance.degraded))
+        .filter_map(|row| Some((row.package_id, (row.content_hash, row.manifest?))))
+        .collect();
+    let gone: Vec<String> = sync
+        .applied
+        .keys()
+        .filter(|package_id| !active.contains_key(*package_id))
+        .cloned()
+        .collect();
+    for package_id in gone {
+        ui_registry::deactivate_package(&mut registry.0, &mut bound, &mut slots, &package_id);
+        sync.applied.remove(&package_id);
+    }
+    for (package_id, (content_hash, manifest)) in active {
+        if sync.applied.get(&package_id) != Some(&content_hash) {
+            ui_registry::activate_build(&mut registry.0, &mut bound, &manifest);
+            sync.applied.insert(package_id, content_hash);
+        }
+    }
+}
+
+/// The slot drain over the host bus (local user, kind `ui`).
+#[derive(Resource)]
+struct ExtensionSlotDrain(Mutex<SlotDrain<BusSlotCaller>>);
+
+/// Send other packages' pressed slot commands to the bus with their args; the terrain package's stay queued for
+/// `terrain_commands`. A refusal or failure shows as an error notice.
+fn drain_slot_commands(
+    drain: Res<ExtensionSlotDrain>,
+    slots: Option<ResMut<ExtensionSlotState>>,
+    nav: Option<Res<NavigationManager>>,
+    ui: Option<ResMut<fe_ui::actions::UiManager>>,
+    clock: Option<Res<fe_ui::notice::NoticeClock>>,
+) {
+    let mut drain = lock(&drain.0);
+    let commands = match slots {
+        Some(mut slots) if slots.pending_commands.iter().any(|request| !slot_drain_is_host(request)) => {
+            let (host, foreign): (Vec<_>, Vec<_>) =
+                slots.take_commands().into_iter().partition(slot_drain_is_host);
+            slots.pending_commands = host;
+            foreign
+                .into_iter()
+                .map(|request| SlotCommand {
+                    package_id: request.plugin_id,
+                    command: request.command,
+                    args: request.args,
+                })
+                .collect()
+        }
+        _ if drain.in_flight() == 0 => return,
+        _ => Vec::new(),
+    };
+    let petal_id = nav.as_ref().and_then(|nav| nav.active_petal_id.clone());
+    let reports = drain.run(petal_id.as_deref(), commands);
+    let Some(mut ui) = ui else { return };
+    let now = clock.map_or(0.0, |clock| clock.elapsed_secs_f64());
+    for report in reports {
+        match report {
+            SlotReport::Done { package_id, command } => {
+                tracing::debug!(%package_id, %command, "extension slot command answered");
+            }
+            SlotReport::Refused { package_id, command, message, .. }
+            | SlotReport::Failed { package_id, command, message } => {
+                ui.show_error(format!("{package_id}: {command} did not run ({message})"), now);
+            }
+        }
+    }
+}
+
+/// True for a queued command another dispatcher owns (read-only scan, no take).
+fn slot_drain_is_host(request: &fe_ui::extensions::ExtensionCommandRequest) -> bool {
+    crate::extension_host::slot_drain::is_host_command(&request.plugin_id)
 }
 
 #[cfg(test)]

@@ -908,6 +908,8 @@ fn install_from_registry(
     let trust = fe_hexon::registry_source::SourceTrust {
         is_trust_root: std::sync::Arc::new(|_: &str| true),
         index_signer: std::sync::Arc::new(|_: &str| None),
+        // Tilesets carry no extension kill list (operator registry trust, steer 2026-11-13).
+        is_killed: fe_hexon::registry_source::no_kill_list(),
         allow_unsigned_dev: false,
     };
     let source = match fe_hexon::remote::remote_source("hexon registry", registry_url, token, trust) {
