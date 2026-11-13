@@ -96,7 +96,7 @@ jobs:
       # provider (SignPath, signtool + cloud HSM) replace ONLY the "Sign" step.
       - name: Sign Windows binaries (Azure Trusted Signing)
         if: env.SIGNING_CONFIGURED == 'true'
-        uses: Azure/artifact-signing-action@v2
+        uses: Azure/artifact-signing-action@c7ab2a863ab5f9a846ddb8265964877ef296ee82 # v2.0.0
         env:
           AZURE_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
           AZURE_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
@@ -173,7 +173,7 @@ jobs:
       # Same provider-swappable signing step as windows-x86_64 above.
       - name: Sign Windows binaries (Azure Trusted Signing)
         if: env.SIGNING_CONFIGURED == 'true'
-        uses: Azure/artifact-signing-action@v2
+        uses: Azure/artifact-signing-action@c7ab2a863ab5f9a846ddb8265964877ef296ee82 # v2.0.0
         env:
           AZURE_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
           AZURE_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}

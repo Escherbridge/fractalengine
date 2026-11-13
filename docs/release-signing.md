@@ -46,3 +46,8 @@ removes the "unknown publisher" warning; reputation with SmartScreen builds over
   and compare with the `SHA256SUMS` line).
 - Signature (after extracting the zip): `Get-AuthenticodeSignature .\fractalengine.exe`
   must report `Status : Valid` and the expected publisher.
+
+## Hardening notes
+
+- The signing action is pinned to a full commit SHA (v2.0.0); bump it deliberately.
+- Prefer OIDC workload identity federation (azure/login with `id-token: write`, subject scoped to `main` and release tags) over a long-lived `AZURE_CLIENT_SECRET` when the signing account is set up.
