@@ -2,7 +2,9 @@
 
 use std::sync::Arc;
 
-use fe_hexon_registry::{build_router, scan_dir, RegistryConfig, RegistryState};
+use fe_hexon_registry::{
+    build_router, FsPackageStore, PackageStore, RegistryConfig, RegistryState,
+};
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
@@ -13,16 +15,18 @@ async fn main() -> anyhow::Result<()> {
         .init();
 
     let cfg = RegistryConfig::from_env();
+    cfg.validate()?;
     if cfg.token.is_none() {
-        tracing::warn!("FE_REGISTRY_TOKEN not set — registry is open access");
+        tracing::warn!("FE_REGISTRY_ALLOW_OPEN set and no token: /api/v1/hexons is open access");
     }
     std::fs::create_dir_all(&cfg.dir)?;
 
-    let entries = scan_dir(&cfg.dir);
+    let store: Arc<dyn PackageStore> = Arc::new(FsPackageStore::new(cfg.dir.clone()));
+    let entries = store.list().await?;
     tracing::info!(count = entries.len(), dir = %cfg.dir.display(), "indexed hexon packages");
 
-    let state = Arc::new(RegistryState::new(
-        cfg.dir,
+    let state = Arc::new(RegistryState::with_store(
+        store,
         cfg.token,
         cfg.readonly,
         entries,

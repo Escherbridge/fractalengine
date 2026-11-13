@@ -18,6 +18,7 @@ use tower_http::trace::TraceLayer;
 
 use crate::index::{self, HexonIndexEntry};
 use crate::limits;
+use crate::store::{self, FsPackageStore, PackageStore, StoreError};
 
 /// Max accepted publish body (1 GiB — tilesets are large).
 const MAX_PUBLISH_BYTES: usize = 1 << 30;
@@ -55,7 +56,8 @@ impl<T: Serialize> ApiResponse<T> {
 
 /// Shared handler state: config + rescannable in-memory index.
 pub struct RegistryState {
-    pub dir: PathBuf,
+    /// Where archives and catalogue documents live.
+    pub store: Arc<dyn PackageStore>,
     pub token: Option<String>,
     pub readonly: bool,
     pub index: tokio::sync::RwLock<Vec<HexonIndexEntry>>,
@@ -64,14 +66,25 @@ pub struct RegistryState {
 }
 
 impl RegistryState {
+    /// Filesystem-backed state over `dir` (the original constructor; callers keep working).
     pub fn new(
         dir: PathBuf,
         token: Option<String>,
         readonly: bool,
         entries: Vec<HexonIndexEntry>,
     ) -> Self {
+        Self::with_store(Arc::new(FsPackageStore::new(dir)), token, readonly, entries)
+    }
+
+    /// State over any [`PackageStore`]; `entries` is its initial `list()`.
+    pub fn with_store(
+        store: Arc<dyn PackageStore>,
+        token: Option<String>,
+        readonly: bool,
+        entries: Vec<HexonIndexEntry>,
+    ) -> Self {
         Self {
-            dir,
+            store,
             token,
             readonly,
             index: tokio::sync::RwLock::new(entries),
@@ -80,7 +93,8 @@ impl RegistryState {
     }
 }
 
-/// Build the registry router; `/health` is public, `/api/v1/*` is token-gated when configured.
+/// Build the registry router; `/health`, the catalogue (`/config.json` alias, `/api/v1/catalog/*`) and
+/// `/blobs/*` are public, `/api/v1/hexons/*` is token-gated when configured.
 pub fn build_router(state: Arc<RegistryState>) -> Router {
     let api = Router::new()
         .route("/hexons/search", get(search))
@@ -100,6 +114,8 @@ pub fn build_router(state: Arc<RegistryState>) -> Router {
     Router::new()
         .route("/health", get(health))
         .route("/config.json", get(config_doc))
+        .route("/api/v1/catalog/{*path}", get(catalog_doc))
+        .route("/blobs/{file}", get(blob))
         .nest("/api/v1", api)
         .layer(middleware::map_response(stamp_protocol))
         .layer(TraceLayer::new_for_http())
@@ -147,13 +163,90 @@ async fn health(State(state): State<Arc<RegistryState>>) -> Response {
     .into_response()
 }
 
-/// GET /config.json — public store-client contract v1 config; `registry_protocol` is what clients check.
-async fn config_doc() -> Response {
+/// Raw JSON document response (catalogue documents are served byte-for-byte, never re-serialised).
+fn json_doc(bytes: Bytes) -> Response {
+    Response::builder()
+        .status(StatusCode::OK)
+        .header(header::CONTENT_TYPE, "application/json")
+        .header(header::X_CONTENT_TYPE_OPTIONS, "nosniff")
+        .body(Body::from(bytes))
+        .unwrap_or_else(|e| json_err(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))
+}
+
+/// Contract v1 error envelope with a stable snake_case code.
+fn coded_err(status: StatusCode, code: &'static str) -> Response {
+    json_err(status, code)
+}
+
+fn store_failure(e: StoreError) -> Response {
+    tracing::warn!(error = %e, "catalogue store read failed");
+    coded_err(StatusCode::INTERNAL_SERVER_ERROR, "internal_error")
+}
+
+/// GET /config.json and /api/v1/catalog/config.json — the store's own `config.json` when it has one,
+/// else a generated bootstrap that advertises catalogue features only while an `index.json` exists.
+async fn config_doc(State(state): State<Arc<RegistryState>>) -> Response {
+    match state.store.catalog_doc("config.json").await {
+        Ok(Some(bytes)) => return json_doc(bytes),
+        Ok(None) => {}
+        Err(e) => return store_failure(e),
+    }
+    let has_index = match state.store.catalog_doc("index.json").await {
+        Ok(doc) => doc.is_some(),
+        Err(e) => return store_failure(e),
+    };
+    let features: &[&str] = if has_index {
+        &["index", "detail", "attestations"]
+    } else {
+        &[]
+    };
     Json(serde_json::json!({
         "schema_version": 1,
         "registry_protocol": REGISTRY_PROTOCOL,
+        "kinds": ["extension", "web-bundle"],
+        "features": features,
     }))
     .into_response()
+}
+
+/// GET /api/v1/catalog/{*path} — one catalogue document from the store, outside the token gate
+/// (contract v1 rule 1.3: catalogue GETs carry no credentials).
+async fn catalog_doc(
+    State(state): State<Arc<RegistryState>>,
+    Path(path): Path<String>,
+) -> Response {
+    if path == "config.json" {
+        return config_doc(State(state)).await;
+    }
+    if !store::valid_catalog_path(&path) {
+        return coded_err(StatusCode::NOT_FOUND, "not_found");
+    }
+    match state.store.catalog_doc(&path).await {
+        Ok(Some(bytes)) => json_doc(bytes),
+        Ok(None) => coded_err(StatusCode::NOT_FOUND, "not_found"),
+        Err(e) => store_failure(e),
+    }
+}
+
+/// GET /blobs/{content_hash}.hexon — the static tree's blob path, public so a catalogue `download_url` needs no credentials.
+async fn blob(State(state): State<Arc<RegistryState>>, Path(file): Path<String>) -> Response {
+    let hash = file.strip_suffix(".hexon").unwrap_or("");
+    let well_formed =
+        hash.len() == 64 && hash.bytes().all(|b| matches!(b, b'0'..=b'9' | b'a'..=b'f'));
+    if !well_formed {
+        return coded_err(StatusCode::NOT_FOUND, "not_found");
+    }
+    let path = state
+        .index
+        .read()
+        .await
+        .iter()
+        .find(|e| e.content_hash == hash)
+        .map(|e| e.path.clone());
+    match path {
+        Some(path) => stream_hexon(&path, &file).await,
+        None => coded_err(StatusCode::NOT_FOUND, "not_found"),
+    }
 }
 
 #[derive(Debug, Deserialize)]
@@ -409,7 +502,12 @@ async fn download(State(state): State<Arc<RegistryState>>, Path(uri): Path<Strin
     let Some(entry) = resolve_entry(&state, &uri).await else {
         return json_err(StatusCode::NOT_FOUND, format!("hexon not found: {uri}"));
     };
-    let file = match tokio::fs::File::open(&entry.path).await {
+    stream_hexon(&entry.path, &format!("{uri}.hexon")).await
+}
+
+/// Stream a `.hexon` file with nosniff + attachment (W2b F6; streamed, so the buffering `octet_response` is not reused).
+async fn stream_hexon(path: &std::path::Path, filename: &str) -> Response {
+    let file = match tokio::fs::File::open(path).await {
         Ok(f) => f,
         Err(e) => return json_err(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()),
     };
@@ -417,9 +515,7 @@ async fn download(State(state): State<Arc<RegistryState>>, Path(uri): Path<Strin
         Ok(m) => m.len(),
         Err(e) => return json_err(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()),
     };
-    // W2b F6: nosniff+attachment (S3 deferral) — streamed, so `octet_response`
-    // (which buffers) isn't reused; the two headers are cheap to add directly.
-    let filename = safe_filename(&format!("{uri}.hexon"));
+    let filename = safe_filename(filename);
     Response::builder()
         .status(StatusCode::OK)
         .header(header::CONTENT_TYPE, "application/x-hexon+zip")
@@ -447,23 +543,6 @@ fn contract_package_id(id: &str) -> bool {
         && id.starts_with(|c: char| c.is_ascii_alphanumeric())
         && safe_component(id, &[])
         && !id.to_ascii_lowercase().ends_with(".json")
-}
-
-/// Create `dest` with `bytes`, refusing (AlreadyExists) to overwrite a file
-/// that appeared after the duplicate check.
-async fn write_new(dest: &std::path::Path, bytes: Bytes) -> std::io::Result<()> {
-    let dest = dest.to_path_buf();
-    tokio::task::spawn_blocking(move || {
-        use std::io::Write;
-        let mut file = std::fs::OpenOptions::new()
-            .write(true)
-            .create_new(true)
-            .open(&dest)?;
-        file.write_all(&bytes)?;
-        file.sync_all()
-    })
-    .await
-    .map_err(std::io::Error::other)?
 }
 
 /// POST /api/v1/hexons/publish — validate, persist as `{id}@{version}.hexon`, reindex.
@@ -504,10 +583,13 @@ async fn publish(State(state): State<Arc<RegistryState>>, body: Bytes) -> Respon
             "manifest missing hexon_type or publisher_did",
         );
     }
-    if !contract_package_id(&id) || !safe_component(&version, &['+']) {
+    if !contract_package_id(&id)
+        || !safe_component(&version, &[])
+        || !index::valid_release_version(&version)
+    {
         return json_err(
             StatusCode::BAD_REQUEST,
-            "invalid hexon_id or version characters",
+            "invalid hexon_id, or version is not SemVer without build metadata",
         );
     }
 
@@ -541,13 +623,11 @@ async fn publish(State(state): State<Arc<RegistryState>>, body: Bytes) -> Respon
     // Held until the reindex below: two concurrent publishes of one id can
     // never both pass the duplicate/continuity check (see AGENTS.md §Publish validation).
     let _publishing = state.publish_lock.lock().await;
-    let dest = state.dir.join(format!("{id}@{version}.hexon"));
     let conflict = {
         let index = state.index.read().await;
-        if dest.exists()
-            || index
-                .iter()
-                .any(|e| e.hexon_id == id && e.version == version)
+        if index
+            .iter()
+            .any(|e| e.hexon_id == id && e.version == version)
         {
             Some(format!("already published: {id}@{version}"))
         } else if let Some(other) = index
@@ -571,22 +651,24 @@ async fn publish(State(state): State<Arc<RegistryState>>, body: Bytes) -> Respon
     if let Some(msg) = conflict {
         return json_err(StatusCode::CONFLICT, msg);
     }
-    if let Err(e) = write_new(&dest, body.clone()).await {
-        if e.kind() == std::io::ErrorKind::AlreadyExists {
+    match state.store.put(&id, &version, body.clone()).await {
+        Ok(()) => {}
+        Err(StoreError::AlreadyExists) => {
             return json_err(
                 StatusCode::CONFLICT,
                 format!("already published: {id}@{version}"),
             );
         }
-        return json_err(
-            StatusCode::INTERNAL_SERVER_ERROR,
-            format!("write failed: {e}"),
-        );
+        Err(e) => {
+            return json_err(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                format!("write failed: {e}"),
+            );
+        }
     }
 
-    // Full rescan keeps the index consistent with the directory contents.
-    let dir = state.dir.clone();
-    match tokio::task::spawn_blocking(move || index::scan_dir(&dir)).await {
+    // Full relist keeps the index consistent with the store contents.
+    match state.store.list().await {
         Ok(entries) => {
             tracing::info!(count = entries.len(), published = %format!("{id}@{version}"), "reindexed");
             *state.index.write().await = entries;

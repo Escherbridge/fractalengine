@@ -13,7 +13,11 @@ use fe_format::{EntryKind, HexonArchive, HexonType};
 use http_body_util::BodyExt;
 use tower::util::ServiceExt;
 
-use fe_hexon_registry::{build_router, scan_dir, RegistryState};
+use fe_hexon_registry::store::StoreError;
+use fe_hexon_registry::{
+    build_router, scan_dir, FsPackageStore, HexonIndexEntry, PackageStore, RegistryConfig,
+    RegistryState,
+};
 
 fn router_for(dir: &Path, token: Option<&str>, readonly: bool) -> Router {
     let entries = scan_dir(dir);
@@ -467,6 +471,21 @@ async fn publish_outcomes() {
         error_text(&body)
     );
 
+    // a version with build metadata is outside the contract (SemVer without build metadata) -> 400.
+    let build_meta = fixtures::seal(fixtures::build_hexon(
+        "night-sky-build",
+        "1.0.0+b1",
+        HexonType::Skybox,
+        "Night Sky",
+        "Starfield skybox",
+        &["skybox"],
+        "starfield",
+        EntryKind::Skybox,
+        b"a build-metadata starfield",
+    ));
+    let (status, body) = post_publish(&router, build_meta, None).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{}", error_text(&body));
+
     // an id outside the store-client contract grammar (here ending `.json`) -> 400.
     let off_grammar = fixtures::seal(fixtures::build_hexon(
         "night-sky.json",
@@ -795,4 +814,131 @@ async fn reads_of_a_bomb_already_on_disk_fail_bounded() {
             error_text(&body)
         );
     }
+}
+
+/// Filesystem store that counts writes, proving `RegistryState` runs on any `dyn PackageStore`.
+struct CountingStore {
+    inner: FsPackageStore,
+    puts: std::sync::atomic::AtomicUsize,
+}
+
+#[async_trait::async_trait]
+impl PackageStore for CountingStore {
+    async fn list(&self) -> Result<Vec<HexonIndexEntry>, StoreError> {
+        self.inner.list().await
+    }
+
+    async fn put(
+        &self,
+        id: &str,
+        version: &str,
+        bytes: axum::body::Bytes,
+    ) -> Result<(), StoreError> {
+        self.puts.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        self.inner.put(id, version, bytes).await
+    }
+
+    async fn catalog_doc(&self, path: &str) -> Result<Option<axum::body::Bytes>, StoreError> {
+        self.inner.catalog_doc(path).await
+    }
+}
+
+/// Store-client contract v1 on a hosted registry: catalogue + blobs are public and byte-exact behind a
+/// token, reserved and traversal paths 404, publish goes through the store, an open registry is opt-in.
+#[tokio::test]
+async fn catalogue_is_public_and_verbatim_behind_a_token() {
+    let tmp = tempfile::tempdir().unwrap();
+    fixtures::write_fixture_set(tmp.path());
+    let catalog = tmp.path().join("catalog");
+    std::fs::create_dir_all(catalog.join("packages/alpine-terrain")).unwrap();
+    // Odd spacing on purpose: the index is pinned by hash, so the registry must never re-serialise it.
+    let index_doc: &[u8] = b"{ \"schema_version\" : 1,\n \"entries\":[] }";
+    std::fs::write(catalog.join("index.json"), index_doc).unwrap();
+    std::fs::write(catalog.join("packages/alpine-terrain.json"), b"{\"package_id\":\"alpine-terrain\"}").unwrap();
+    std::fs::write(catalog.join("featured.json"), b"{}").unwrap();
+    std::fs::write(catalog.join("packages/alpine-terrain/ratings.json"), b"{}").unwrap();
+
+    let store = Arc::new(CountingStore {
+        inner: FsPackageStore::new(tmp.path()),
+        puts: std::sync::atomic::AtomicUsize::new(0),
+    });
+    let entries = store.list().await.unwrap();
+    let router = build_router(Arc::new(RegistryState::with_store(
+        store.clone(),
+        Some("s3cret".to_string()),
+        false,
+        entries,
+    )));
+
+    // Catalogue documents need no bearer token and come back byte-for-byte.
+    let (status, body) = get(&router, "/api/v1/catalog/index.json").await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(body, index_doc);
+    let (status, _) = get(&router, "/api/v1/catalog/packages/alpine-terrain.json").await;
+    assert_eq!(status, StatusCode::OK);
+
+    // config.json: same document at the catalogue path and the root alias; features follow the store's index.
+    for uri in ["/api/v1/catalog/config.json", "/config.json"] {
+        let (status, body) = get(&router, uri).await;
+        assert_eq!(status, StatusCode::OK, "{uri}");
+        let config: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(config["registry_protocol"], 1);
+        assert_eq!(config["features"], serde_json::json!(["index", "detail", "attestations"]));
+    }
+
+    // Absent, reserved and traversal paths all 404 with the coded envelope.
+    for uri in [
+        "/api/v1/catalog/revocations.json",
+        "/api/v1/catalog/featured.json",
+        "/api/v1/catalog/packages/alpine-terrain/ratings.json",
+        "/api/v1/catalog/packages/..%2F..%2Findex.json",
+    ] {
+        let (status, body) = get(&router, uri).await;
+        assert_eq!(status, StatusCode::NOT_FOUND, "{uri}");
+        assert_eq!(error_text(&body), "not_found");
+    }
+
+    // The content routes stay behind the token, but a blob named by content hash is public.
+    let (status, _) = get(&router, "/api/v1/hexons/search").await;
+    assert_eq!(status, StatusCode::UNAUTHORIZED);
+    let resp = router
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri("/api/v1/hexons/search?q=morning")
+                .header(header::AUTHORIZATION, "Bearer s3cret")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    let hits = json_data(&resp.into_body().collect().await.unwrap().to_bytes());
+    let hash = hits[0]["content_hash"].as_str().unwrap().to_string();
+    let (status, bytes) = get(&router, &format!("/blobs/{hash}.hexon")).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(bytes.len() as u64, hits[0]["size_bytes"].as_u64().unwrap());
+    let (status, _) = get(&router, &format!("/blobs/{}.hexon", "0".repeat(64))).await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+    let (status, _) = get(&router, "/blobs/not-a-hash.hexon").await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+
+    // Publishing runs through the injected store.
+    let (status, _) = post_publish(&router, night_sky_hexon(), Some("s3cret")).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(store.puts.load(std::sync::atomic::Ordering::SeqCst), 1);
+
+    // Default-deny: no token refuses to start unless open access is explicit.
+    let mut cfg = RegistryConfig {
+        dir: tmp.path().to_path_buf(),
+        bind: "127.0.0.1:0".to_string(),
+        token: None,
+        readonly: false,
+        allow_open: false,
+    };
+    assert!(cfg.validate().is_err());
+    cfg.allow_open = true;
+    assert!(cfg.validate().is_ok());
+    cfg.allow_open = false;
+    cfg.token = Some("s3cret".to_string());
+    assert!(cfg.validate().is_ok());
 }

@@ -13,6 +13,8 @@ pub struct RegistryConfig {
     pub token: Option<String>,
     /// When true, `publish` is rejected (`FE_REGISTRY_READONLY`, default false).
     pub readonly: bool,
+    /// Explicit opt-in to run with no token (`FE_REGISTRY_ALLOW_OPEN=1`); without it a tokenless registry refuses to start.
+    pub allow_open: bool,
 }
 
 impl RegistryConfig {
@@ -29,6 +31,19 @@ impl RegistryConfig {
             readonly: std::env::var("FE_REGISTRY_READONLY")
                 .map(|v| matches!(v.to_ascii_lowercase().as_str(), "1" | "true" | "yes"))
                 .unwrap_or(false),
+            allow_open: std::env::var("FE_REGISTRY_ALLOW_OPEN")
+                .map(|v| matches!(v.to_ascii_lowercase().as_str(), "1" | "true" | "yes"))
+                .unwrap_or(false),
         }
+    }
+
+    /// Default-deny: a registry with no bearer token must be opened on purpose.
+    pub fn validate(&self) -> anyhow::Result<()> {
+        if self.token.is_none() && !self.allow_open {
+            anyhow::bail!(
+                "FE_REGISTRY_TOKEN is not set; set a token, or FE_REGISTRY_ALLOW_OPEN=1 to serve open access"
+            );
+        }
+        Ok(())
     }
 }

@@ -210,3 +210,8 @@ pub fn cmp_version(a: &str, b: &str) -> Ordering {
         (Err(_), Err(_)) => a.cmp(b),
     }
 }
+
+/// A releasable version per store-client contract v1: SemVer 2.0.0 without build metadata.
+pub fn valid_release_version(version: &str) -> bool {
+    semver::Version::parse(version).is_ok_and(|v| v.build.is_empty())
+}
