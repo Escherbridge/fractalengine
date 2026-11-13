@@ -72,12 +72,35 @@ pub fn portal_offer(
     }
 }
 
+/// What a click on the offer's Open asks of the caller (R-POR-11): `UiAction::OpenBundle` mounts only the selected node.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct OfferClick {
+    /// The repository node to select first; `None` when it is already the single selected node.
+    pub select_node_id: Option<String>,
+    /// Dispatch once the selection has landed (same frame if selection sync runs before the action drain, else next).
+    pub action: UiAction,
+}
+
+impl PortalOffer {
+    /// The click for this offer given the currently selected node id; `None` when there is nothing to open.
+    pub fn click(&self, selected_node_id: Option<&str>) -> Option<OfferClick> {
+        let action = self.open_action()?;
+        let Self::Open { node_id, .. } = self else { return None };
+        let select_node_id = (selected_node_id != Some(node_id.as_str())).then(|| node_id.clone());
+        Some(OfferClick { select_node_id, action })
+    }
+}
+
 /// Inspector section: the offer's Open button (stable accessible name "Open bound bundle") or its state line; returns
-/// the clicked action.
-pub fn show_offer(ui: &mut bevy_egui::egui::Ui, offer: &PortalOffer) -> Option<UiAction> {
+/// the click, which names the repository node to select before its action is dispatched.
+pub fn show_offer(
+    ui: &mut bevy_egui::egui::Ui,
+    offer: &PortalOffer,
+    selected_node_id: Option<&str>,
+) -> Option<OfferClick> {
     use crate::accessibility::ResponseExt;
-    match offer.open_action() {
-        Some(action) => ui.button(offer.label()).named(ui, "Open bound bundle").clicked().then_some(action),
+    match offer.click(selected_node_id) {
+        Some(click) => ui.button(offer.label()).named(ui, "Open bound bundle").clicked().then_some(click),
         None => {
             ui.weak(offer.label());
             None
@@ -103,5 +126,11 @@ mod tests {
         assert!(portal_offer(Some(&point(OfferResolution::Builtin)), node).is_none());
         assert!(portal_offer(Some(&point(OfferResolution::Elsewhere)), node).is_none());
         assert!(portal_offer(Some(&point(OfferResolution::Resolved)), |_| None).unwrap().open_action().is_none());
+        // The click selects the repository node first unless it is already the selection (R-POR-11).
+        let click = open.click(Some("other")).unwrap();
+        assert_eq!(click.select_node_id.as_deref(), Some("node-1"));
+        assert!(matches!(click.action, UiAction::OpenBundle { ref node_id } if node_id == "node-1"));
+        assert_eq!(open.click(Some("node-1")).unwrap().select_node_id, None);
+        assert!(blocked.click(None).is_none());
     }
 }

@@ -1050,6 +1050,10 @@ fn subscriptions_actions_and_bus_route_through_the_broker() {
     let bound_mount = mounts.current().expect("bound bundle");
     assert_eq!((&bound_mount.target, bound_mount.node_id.as_str()), (&bound, format!("binding:{PETAL}:{PACKAGE}").as_str()));
     assert_eq!(bound_mount.label, admitted_origin, "one origin per (publisher, package), whatever the scope");
+    // The by-name command carries no URL, path or hash and keys its chrome events by the same anchor the mount reports.
+    let open_bound = fe_webview::ipc::BrowserCommand::OpenBoundBundle { petal_id: PETAL.into(), package_id: PACKAGE.into() };
+    assert_eq!(open_bound.bundle_anchor().as_deref(), Some(bound_mount.node_id.as_str()));
+    assert!(!serde_json::to_string(&open_bound).unwrap().contains("url"));
     let bound_broker = FakeBroker::new();
     let bound_bridge = PortalBridge::new();
     let dyn_bound_broker: Arc<dyn PortalBroker> = bound_broker.clone();

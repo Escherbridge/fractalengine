@@ -11,8 +11,25 @@ pub enum BrowserCommand {
     SwitchTab { tab: BrowserTab },
     /// Mount and show a repository node's bundle; carries no URL, path or hash (protocol.md §2.4).
     OpenBundle { node_id: String },
+    /// Mount the build a `portal.open` binding selects at `petal_id`'s nearest scope (bindings.md §6); carries no URL,
+    /// path or hash. Written only behind fe-ui's `UiAction::OpenBundle` path so the host chrome and re-judge tick
+    /// own the mount (R-POR-10); the host refuses bytes whose package id is not `package_id`.
+    OpenBoundBundle { petal_id: String, package_id: String },
     /// Unmount and unload the open bundle, if any.
     CloseBundle,
+}
+
+impl BrowserCommand {
+    /// The chrome anchor a bundle command's `BundleState` events carry; `None` for non-bundle commands.
+    pub fn bundle_anchor(&self) -> Option<String> {
+        match self {
+            Self::OpenBundle { node_id } => Some(node_id.clone()),
+            Self::OpenBoundBundle { petal_id, package_id } => {
+                Some(crate::portal_bundle::BundleTarget::Bound { petal_id: petal_id.clone(), package_id: package_id.clone() }.anchor())
+            }
+            _ => None,
+        }
+    }
 }
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize, bevy::prelude::Message)]

@@ -341,7 +341,8 @@ impl Plugin for PetalPortalPlugin {
         app.add_message::<SelectionCleared>();
         app.add_message::<UrlEditorSaved>();
         // A bound bundle (bindings.md §6) opens only through fe-ui's `UiAction::OpenBundle`, which also owns its
-        // host-drawn badge and Close; this lifecycle never mounts one (src/AGENTS.md §portal-lifecycle).
+        // host-drawn badge and Close; this lifecycle never mounts one nor writes `BrowserCommand::OpenBoundBundle`
+        // (src/AGENTS.md §portal-lifecycle).
 
         // NOTE: The guard/flush systems (tab_switch_guard_system +
         // flush_browser_commands_system) were removed to fix a feedback loop

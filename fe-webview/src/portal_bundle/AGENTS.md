@@ -38,6 +38,10 @@ below are the rationale for those files; §reviews-and-open lists the gate verdi
   calls it, so a replicated binding row never mounts anything (D-X5).
   - `Mount::node_id` is the target's **anchor**: the node id, or `binding:<petal_id>:<package_id>`,
     which no page can name (`ipc::is_node_id` refuses `:`). Chrome events carry it.
+  - **`BrowserCommand::OpenBoundBundle { petal_id, package_id }`** (P-BOUND) is the by-name Open of a bound
+    target: no URL, path or hash. `BrowserCommand::bundle_anchor` gives the chrome anchor both Open commands'
+    events carry. It is written only behind fe-ui's `UiAction::OpenBundle` path, never by a replicated row or the
+    petal lifecycle (R-POR-10); `dispatch_commands` mounts it with `BundleHost::open_target(BundleTarget::Bound ..)`.
   - A bound target reads no feeds and reports `repository_node_id: null` in `hello`; the broker
     derives the petal from `BindRequest::target`. One origin per (publisher, package), so a bundle
     bound at two scopes shares storage, like any admitted update.
