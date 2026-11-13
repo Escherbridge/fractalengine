@@ -133,6 +133,10 @@ pub struct BrowseState {
     pub stale: bool,
     /// Detail of the package the Details view shows.
     pub detail: Option<StoreDetail>,
+    /// Package whose detail is in flight: a failure then belongs to Details and leaves the result rows alone.
+    pub detail_requested: Option<String>,
+    /// Why the last detail request failed, shown verbatim on the Details view.
+    pub detail_error: Option<String>,
 }
 
 impl BrowseState {
@@ -164,6 +168,8 @@ impl BrowseState {
             }
             BrowseEvent::Detail { source_id, detail } => {
                 if self.is_selected(&source_id) {
+                    self.detail_requested = None;
+                    self.detail_error = None;
                     self.detail = Some(*detail);
                 }
             }
@@ -175,7 +181,13 @@ impl BrowseState {
                 }
             }
             BrowseEvent::Failed { source_id, reason } => {
-                if self.is_selected(&source_id) {
+                if !self.is_selected(&source_id) {
+                    return;
+                }
+                if self.detail_requested.take().is_some() {
+                    // A refused detail document is that package's failure, not the listing's: the results stay.
+                    self.detail_error = Some(reason);
+                } else {
                     self.rows.clear();
                     self.refused.clear();
                     self.next_cursor = None;
@@ -228,6 +240,8 @@ impl ExtensionsPanelState {
     pub fn open_store_details(&mut self, entry: &RegistryEntry) {
         let Some(source_id) = self.browse.selected.clone() else { return };
         self.browse.detail = None;
+        self.browse.detail_error = None;
+        self.browse.detail_requested = Some(entry.package_id.clone());
         self.view = PanelView::StoreDetails { package_id: entry.package_id.clone() };
         self.queue(ExtensionOp::LoadDetail { source_id, entry: entry.clone() }, "Loading details");
     }
@@ -236,7 +250,9 @@ impl ExtensionsPanelState {
 /// Draw the Browse view.
 pub fn draw(ui: &mut egui::Ui, state: &mut ExtensionsPanelState) {
     if state.browse.sources.is_empty() {
-        ui.label(egui::RichText::new("No extension sources are configured").color(theme::TEXT_MUTED));
+        // Sources arrive with the first Refresh; until then this is loading, not empty.
+        let text = if state.working.is_some() { "Loading extensions" } else { "No extension sources are configured" };
+        ui.label(egui::RichText::new(text).color(theme::TEXT_MUTED));
         return;
     }
     let mut refresh = false;
@@ -259,6 +275,8 @@ pub fn draw(ui: &mut egui::Ui, state: &mut ExtensionsPanelState) {
                         state.browse.rows.clear();
                         state.browse.next_cursor = None;
                         state.browse.detail = None;
+                        state.browse.detail_requested = None;
+                        state.browse.detail_error = None;
                         refresh = true;
                     }
                 }
@@ -337,7 +355,8 @@ fn draw_rows(ui: &mut egui::Ui, state: &mut ExtensionsPanelState) {
                 details = Some(entry.clone());
             }
             if row.licensed() {
-                ui.label(egui::RichText::new("Licensed").small().color(theme::TEXT_MUTED));
+                // Not "Licensed": Details uses that word for a held licence.
+                ui.label(egui::RichText::new("Licence required").small().color(theme::TEXT_MUTED));
                 return;
             }
             let label = if installed { "Installed" } else if newer { "Install this version" } else { "Install" };

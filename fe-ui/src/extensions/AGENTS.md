@@ -9,9 +9,15 @@ this module draws them and the guest draws no pixels.
   `ext:<package>/<id>` (`UiContribution::accessible_name`) through `ResponseExt::button_named`, so the agent input surface finds it.
   A press only queues an `ExtensionCommandRequest` in `ExtensionSlotState`; the binary drains `take_commands()` and dispatches to the
   package. fe-ui has no fe-plugin dependency.
-- **Context menu** entries honour `when` (property present, or equal to a value) against a `SlotContext` over the clicked node.
-  `ExtensionCommandRequest` carries no args yet, so the manifest's `{"node_id"}` for a ContextMenu command cannot reach the
-  package (handed off; see R-UI review).
+- **Context menu** entries honour `when` (property present, or equal to a value) against a `SlotContext` over the clicked node:
+  `id` and `name` first, then the node's cached property bag (`slots::with_cached_properties`). A press carries
+  `{"node_id": <clicked>}` in `ExtensionCommandRequest::args` (R-UI-04); every other slot sends `Null`.
+- **Property cache**: `mirror_inspected_node_properties` (PostUpdate, `ExtensionSlotsPlugin`) copies the inspector's loaded
+  `node_properties` for the primary selection into `ExtensionSlotState::node_properties` (at most 256 nodes; the cache restarts
+  past that). PostUpdate so the inspector sync of this frame has run: a bag is never filed under a newly selected node's id. Only
+  nodes that were inspected at least once can match a property-keyed `when`; a node never selected shows only `id`/`name`
+  entries. `draw_context_slot` pre-filters with the same layered node as the draw (R-UI turn 3: it used `id`/`name` only, which
+  hid every property-keyed entry such as fleet-sim's `start-this`).
 - **Property rows** (InspectorSection): read-only rows for the declared keys. The declared property scope is enforced by whoever
   supplies the `SlotContext` (the binary), not here; an absent key shows a dash.
 - **Stream values** (DashboardWidget, ViewportOverlay): label plus the latest event of `(plugin_id, stream)`, narrowed by the
@@ -40,6 +46,40 @@ is needed. J9 (`extensions_panel_journey`) drives Browse and Details by accessib
 `UiManager::portal_binding_point` for the inspector offer (`fe-ui/src/AGENTS.md` section portal); it only runs when the
 panel state changed.
 
+States (R-UI turn 3): Browse reads `Loading extensions` until the first `Refresh` brings the sources (only then is "no sources"
+true). A failed detail load is routed by `BrowseState::detail_requested`: the bridge answers `BrowseEvent::Failed` for both a
+listing and a detail, so without that marker a refused detail document wiped the result list and Details showed a reason-less
+line. Now Details shows `Details are unavailable: <reason>` and Back returns to the intact results. A licensed row in Browse
+reads `Licence required`, because Details uses `Licensed` for a held licence.
+
+## §gui-qa-path (R-UI turn 3, for the refine pass)
+
+Run by hand or by the sim's `ext-install-gui` scenario; every step addresses a control by its accessible name (one Owner host,
+Extensions window open via `Toggle Extensions panel`). Expected state follows each arrow.
+
+1. **Install from file**: type the packed `.hexon` path into `Package file path`, press `Install from file` -> spinner
+   `Verifying package...`, then the consent dialog. The dialog's `Enable <id>` stays disabled until the grant list was drawn;
+   press it -> the row `Open <id>` lists `Disabled` (or `Enabled`).
+2. **Install from the static index**: `Browse extensions` -> `Loading extensions`, then the source picker (`Extension source`)
+   and rows. `Search extensions` + Enter filters; `Sort extensions` re-lists. `Details of <id>` -> publisher, versions,
+   `Reviewed <id>` only with a verified counter-signature. `Install <id> <version>` (row or Details) -> consent -> `Enable <id>`.
+   A kill-listed row reads `Unavailable: revoked by the registry` and has no control; a licensed one reads `Licence required`
+   and installs from Details only after `Check licence for <id>` reports `Licensed`.
+3. **Enable / disable**: `Open <id>` -> `Enable <binding> for <id>` -> `Enabled`; `Disable <binding> for <id>` -> `Disabled`.
+   Every state-changing button is disabled while the spinner shows.
+4. **Update with a delta**: with a newer build in the index, `Update <id> to <version>` -> consent dialog titled for the update
+   with the `+ / -` delta; `Update <id>` -> `starting <version>, previous version still runs`, then `updated to <version>`.
+   A start failure reads `update failed, previous version kept: <reason>` and the button is live again.
+5. **Uninstall**: `Uninstall <id>` -> `Confirm uninstall <id>` / `Keep <id>`; confirm -> back on the list, the row is gone and
+   none of its toolbar, sidebar or context entries draw.
+6. **Local admin channel leg**: `fe-ext admin --json disable <installation>` against the running app -> the row reads `Disabled`
+   without any GUI click; an install verb over the channel still opens the consent dialog here and waits for its button.
+7. **Failure states**: a tampered index shows its refusal verbatim in Browse with `Refresh extension list` live; a refused detail
+   shows `Details are unavailable: <reason>` and `Back to extension results` returns to the intact list; `Dismiss extension error`
+   clears the red line.
+8. **Context menu**: inspect a fleet-sim node once (so its properties load), right-click it -> `ext:org.example.fleet-sim/start-this`
+   shows; pressing it closes the menu and sends `{"node_id": <id>}`.
+
 ## §host-handle (I-UI, R-UI)
 
 Surfaces (topbar, sidebar, inspector, context menu, egress card) are deep egui functions with long signatures, so the slot data
@@ -65,8 +105,8 @@ bindings snapshot describe the petal they were read in, so the next draw asks ag
   viewport, non-interactive).
 - **Extensions window**: opened by the topbar "Extensions" toggle; `panel::draw` runs only while open (so the first
   `Refresh` op is queued on first open). `consent::render` runs every pass.
-- **Limits**: the context menu `when` can read only node `id` and `name` (no per-node property cache in the menu); the inspector
-  rows read the loaded `node_properties`, with declared property-scope filtering left to the binary (see section slot-host).
+- **Limits**: the context menu `when` reads node `id`, `name` and the inspected-node cache (section slot-host); the inspector
+  rows read the loaded `node_properties`, with declared property-scope filtering left to the binary.
 
 ## §bound-slots (B10c, R-UI)
 
@@ -76,9 +116,9 @@ bindings snapshot describe the petal they were read in, so the next draw asks ag
 - **Snippet cache**: the card's arguments `{sql, query_url, export_urls}` key the cache. A row shows only for the arguments it was
   computed for, so changing the export source hides the old snippet at once and asks again without waiting for the 1 s TTL. One
   request per target per arguments per TTL, measured on the UI clock (`egui` input time); `store_snippet` ignores the feed's clock
-  because the binary passes Bevy virtual time, which lags real time after a hitch. An answer is attributed to the latest request
-  of its target, so a provider answer still in flight when the query changes can show for at most one provider deadline (1 s);
-  carrying the request's arguments in the feed's answer would close that (handed off).
+  because the binary passes Bevy virtual time, which lags real time after a hitch. The binary answers through
+  `store_snippet_answer(target, args, ..)` (R-UI-27), which is refused unless `args` are the target's latest request, so a slow
+  answer never shows for another query; `store_snippet` (attribute to the latest request) remains for older callers.
 - **Rows**: the egress card draws the compiled-in Copy-for-BI targets first, unconditionally (R33), then `bound_rows`. A bound
   row is labelled `<provider label> · <package id>` (first line, control characters stripped, 48 characters) and named
   `binding:egress.snippet:<key>`, so a provider can never pass its row off as a built-in target.

@@ -832,6 +832,15 @@ mod tests {
         }
         assert!(!frame(&mut state).iter().any(|(name, _)| name.starts_with("Install org.a.paid")));
         state.working = None;
+        // A refused detail document keeps its reason on Details; the listing it was opened from survives untouched.
+        let free = state.browse.rows[0].entry.clone();
+        state.open_store_details(&free);
+        state.take_ops();
+        state.apply_event(ExtensionEvent::Browse(BrowseEvent::Failed { source_id: "s1".into(), reason: "DetailMismatch".into() }), &mut consent);
+        assert_eq!(state.browse.detail_error.as_deref(), Some("DetailMismatch"));
+        assert!(enabled(&frame(&mut state), "Back to extension results"));
+        state.view = PanelView::Browse;
+        assert!(state.browse.rows.len() == 4 && enabled(&frame(&mut state), "Install org.a.free 1.0.0"), "a detail failure never clears the results");
 
         // Bindings view (bindings.md section 9): a state row per point, `:action` for its one offer, Manager+ edit, Owner override.
         use super::super::bindings::{BindingPointRow, BindingsSnapshot, ProviderOption, ScopeOption, ScopeTarget};

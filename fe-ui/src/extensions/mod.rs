@@ -96,7 +96,25 @@ impl Plugin for ExtensionSlotsPlugin {
         app.init_resource::<ExtensionSlotState>()
             .init_resource::<BoundSlotsState>()
             .init_resource::<ExtensionSlotHost>()
-            .add_systems(Update, feed_portal_offer_point);
+            .add_systems(Update, feed_portal_offer_point)
+            // After every Update system: the inspector's bag then belongs to the current selection.
+            .add_systems(PostUpdate, mirror_inspected_node_properties);
+    }
+}
+
+/// Feeds the context-menu `when` cache with the inspected node's loaded property bag (see `extensions/AGENTS.md` section slot-host).
+fn mirror_inspected_node_properties(
+    node_manager: Option<Res<crate::node_manager::NodeManager>>,
+    inspector: Option<Res<crate::plugin::InspectorFormState>>,
+    mut slots: ResMut<ExtensionSlotState>,
+) {
+    let (Some(node_manager), Some(inspector)) = (node_manager, inspector) else { return };
+    if !inspector.is_changed() || inspector.node_properties_loading {
+        return;
+    }
+    let Some(selection) = node_manager.primary() else { return };
+    if slots.node_properties.get(&selection.node_id) != Some(&inspector.node_properties) {
+        slots.set_node_properties(&selection.node_id, inspector.node_properties.clone());
     }
 }
 
@@ -258,7 +276,7 @@ pub fn draw_inspector_slot(ui: &mut egui::Ui, node_properties: &serde_json::Valu
     draw_inspector_rows(ui, &items, &node);
 }
 
-/// Context menu: entries whose `when` admits the clicked node (`id` and `name` are the readable keys); true when one was pressed.
+/// Context menu: entries whose `when` admits the clicked node (`id`, `name`, then its cached properties); true when one was pressed.
 pub fn draw_context_slot(ui: &mut egui::Ui, node_id: &str, node_name: &str) -> bool {
     let Some(host) = ExtensionSlotHost::from_ctx(ui.ctx()) else { return false };
     let mut guard = host.lock();
@@ -268,11 +286,13 @@ pub fn draw_context_slot(ui: &mut egui::Ui, node_id: &str, node_name: &str) -> b
         "name" => Some(serde_json::Value::String(node_name.to_owned())),
         _ => None,
     };
+    // The pre-filter reads the same layered node as the draw, or a property-keyed `when` would never show.
+    let layered = slots::with_cached_properties(&node, &inner.slots);
     let items: Vec<&UiContribution> = inner
         .registry
         .context_items
         .iter()
-        .filter(|c| c.command.is_some() && inner.in_node_slot(c) && slots::when_matches(c.when.as_ref(), &node))
+        .filter(|c| c.command.is_some() && inner.in_node_slot(c) && slots::when_matches(c.when.as_ref(), &layered))
         .collect();
     if items.is_empty() {
         return false;

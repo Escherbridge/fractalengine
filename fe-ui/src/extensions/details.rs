@@ -156,8 +156,18 @@ pub fn draw_store(ui: &mut egui::Ui, state: &mut ExtensionsPanelState, package_i
     }
     ui.add_space(4.0);
     let Some(detail) = state.browse.detail.clone().filter(|detail| detail.entry.package_id == package_id) else {
-        let text = if state.working.is_some() { "Loading details" } else { "Details are unavailable" };
-        ui.label(egui::RichText::new(text).color(theme::TEXT_MUTED));
+        // The bridge's refusal is shown verbatim (a tampered or mismatched detail document), never a generic line.
+        match (&state.browse.detail_error, state.working.is_some()) {
+            (Some(reason), _) => {
+                ui.label(egui::RichText::new(format!("Details are unavailable: {reason}")).color(theme::STATUS_OFFLINE));
+            }
+            (None, true) => {
+                ui.label(egui::RichText::new("Loading details").color(theme::TEXT_MUTED));
+            }
+            (None, false) => {
+                ui.label(egui::RichText::new("Details are unavailable").color(theme::TEXT_MUTED));
+            }
+        }
         return;
     };
     let title = if detail.name.is_empty() { package_id } else { detail.name.as_str() };

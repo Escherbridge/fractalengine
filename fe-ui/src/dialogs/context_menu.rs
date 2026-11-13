@@ -921,7 +921,7 @@ fn render_target_menu(
         }
     }
 
-    // Extension entries for a node-backed target (their `when` reads the node `id` and `name`).
+    // Extension entries for a node-backed target (their `when` reads `id`, `name`, then the node's cached properties).
     if let (HitTarget::Node(_), Some(id), true) = (
         &target.hit,
         &node_backed,
