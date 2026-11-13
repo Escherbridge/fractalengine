@@ -9,3 +9,4 @@ pub mod store;
 pub use config::RegistryConfig;
 pub use index::{scan_dir, HexonIndexEntry};
 pub use routes::{build_router, ApiResponse, RegistryState};
+pub use store::{FsPackageStore, PackageStore};
