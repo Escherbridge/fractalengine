@@ -15,6 +15,8 @@ use std::future::Future;
 use std::path::Path;
 use std::pin::Pin;
 use std::sync::{Arc, RwLock};
+use std::task::Poll;
+use std::time::{Duration, Instant};
 
 use crate::blob_store::{hash_from_hex, hash_to_hex, BlobHash, BlobStoreHandle};
 
@@ -162,6 +164,34 @@ fn accept(hook: &str, hash: &BlobHash, expected_size: Option<u64>, max_bytes: u6
     }
 }
 
+/// Longest an asset-IO task waits on the bound source, so an unpumped slot cannot park it.
+pub const READER_SOURCE_TIMEOUT: Duration = Duration::from_secs(35);
+
+/// `future` or `None` after `limit`; executor-agnostic (one parked thread wakes the task), for Bevy IO tasks that have no tokio timer.
+async fn with_deadline(future: impl Future<Output = Option<Bytes>>, limit: Duration) -> Option<Bytes> {
+    let mut future = Box::pin(future);
+    let deadline = Instant::now() + limit;
+    let mut timer_started = false;
+    std::future::poll_fn(move |cx| {
+        if let Poll::Ready(answer) = future.as_mut().poll(cx) {
+            return Poll::Ready(answer);
+        }
+        if Instant::now() >= deadline {
+            return Poll::Ready(None);
+        }
+        if !timer_started {
+            timer_started = true;
+            let waker = cx.waker().clone();
+            std::thread::spawn(move || {
+                std::thread::sleep(limit);
+                waker.wake();
+            });
+        }
+        Poll::Pending
+    })
+    .await
+}
+
 /// An [`AssetReader`] that reads files from a content-addressed blob store.
 ///
 /// Register with Bevy via:
@@ -238,7 +268,7 @@ impl BlobAssetReader {
             return None;
         }
         let request = BlobSourceRequest { hash, expected_size: None, asset_id: None, petal_id: None };
-        let bytes = self.fallback.source_blob(request).await?;
+        let bytes = with_deadline(self.fallback.source_blob(request), READER_SOURCE_TIMEOUT).await?;
         if let Err(error) = self.blob_store.add_blob(&bytes) {
             tracing::warn!(hash = %stem, "BlobAssetReader: verified source bytes not stored: {error:#}");
         }

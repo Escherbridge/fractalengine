@@ -11,6 +11,7 @@ use crate::{
 use crate::scene_asset_gate::ServeDecision;
 use admission::{admit, admit_job, is_busy};
 use fe_runtime::{
+    bevy_blob_reader::BlobFallbackSlot,
     blob_store::{BlobHash, BlobStoreHandle},
     blob_transport::ProviderRef,
     messages::DbCommand,
@@ -246,6 +247,7 @@ pub(crate) struct SceneAssetJobs {
     prefetch_backlog: std::collections::VecDeque<(String, BlobHash)>,
     unavailable: Unavailable,
     wakes: Wakes,
+    source: BlobFallbackSlot,
 }
 
 impl SceneAssetJobs {
@@ -306,7 +308,14 @@ impl SceneAssetJobs {
             prefetch_backlog: Default::default(),
             unavailable: Default::default(),
             wakes: Default::default(),
+            source: BlobFallbackSlot::default(),
         }
+    }
+
+    /// Ask this extension byte source after every provider missed (bindings.md §6 `blob.source`).
+    pub(crate) fn with_blob_source(mut self, source: BlobFallbackSlot) -> Self {
+        self.source = source;
+        self
     }
 
     #[cfg(test)]
@@ -669,6 +678,7 @@ impl SceneAssetJobs {
         let events = self.events.clone();
         let gate = self.gate.clone();
         let slots = self.slots.clone();
+        let source = self.source.clone();
         let unavailable = self.unavailable.clone();
         let wake = match &key {
             Job::Fetch { verse, hash, .. } => Some(WakeRegistration::new(&self.wakes, verse, *hash)),
@@ -706,7 +716,7 @@ impl SceneAssetJobs {
                                     if attempt < 19 { tokio::time::sleep(Duration::from_millis(100)).await; }
                                 }
                                 let providers = lease.providers()?;
-                                let bytes = fetch(&transport, &gate, verse, *hash, &permit, &providers, &job_lease).await?;
+                                let bytes = fetch(&transport, &gate, verse, *hash, &permit, &providers, &source, &job_lease).await?;
                                 Ok::<_, anyhow::Error>((permit, bytes))
                             }.await;
                             match tried {

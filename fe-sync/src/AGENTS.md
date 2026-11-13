@@ -1912,6 +1912,14 @@ exactly as before. Closing THAT needs a membership-keyed filter for every
 hash this ALPN serves, or namespace rotation — out of this item's scope;
 it is a separate, still-open trigger.
 
+**Extension byte source (`blob.source`, bindings.md section 6).** `TilesetTransfer::with_child_source`
+and `SceneAssetJobs::with_blob_source` take the same `BlobFallbackSlot` (sync_thread passes
+`blob_fallback.clone()`). It is asked only after every provider missed: scene blobs in
+`scene_assets/transfer.rs::fetch` (35 s `SOURCE_TIMEOUT`; an empty provider list also falls through),
+then `verify_scene_asset_bytes`, and `finish_fetch` is unchanged. The slot already checks cap, exact size
+and BLAKE3, so a source never chooses a transport, relay or peer. The reader side (`BevyHandles.blob_fallback`,
+`BlobAssetReader::with_fallback`) asks only when no `on_miss` peer layer is wired and bounds the wait
+(`READER_SOURCE_TIMEOUT`) so an unpumped slot cannot park an asset-IO task.
 
 ## distributed-catalog-restart
 

@@ -857,7 +857,7 @@ pub fn spawn_sync_thread_with_sources(
             });
             let scene_gate=docs_stack.as_ref().map(|stack|stack.blob_access_gate().scene_assets()).unwrap_or_default();
             let (scene_publication_tx,mut scene_publication_rx)=tokio::sync::mpsc::channel(128);
-            let mut scene_assets=crate::scene_assets::SceneAssetJobs::new(blob_store.clone(),scene_transport,scene_gate,db_cmd_tx.clone(),evt_tx.clone(),scene_publication_tx);
+            let mut scene_assets=crate::scene_assets::SceneAssetJobs::new(blob_store.clone(),scene_transport,scene_gate,db_cmd_tx.clone(),evt_tx.clone(),scene_publication_tx).with_blob_source(blob_fallback.clone());
 
             // Gossip lives inside the stack (one instance, routed by the
             // Router) — a second instance here would never see inbound

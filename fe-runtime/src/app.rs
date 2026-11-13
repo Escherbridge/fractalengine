@@ -50,6 +50,8 @@ pub struct BevyHandles {
     /// tombstone/reflow), pumped into `Messages<LifecycleEvent>`. The GUI binary
     /// passes `Some`; headless relay/tests pass `None`.
     pub lifecycle_rx: Option<crossbeam::channel::Receiver<LifecycleEvent>>,
+    /// Extension `blob.source` slot shared with the sync thread; empty (peers only) until the plugin host installs one.
+    pub blob_fallback: crate::bevy_blob_reader::BlobFallbackSlot,
 }
 
 /// Register ECS resources and drain systems shared by both GUI and headless
@@ -172,16 +174,18 @@ pub fn build_app_with_options(
     if let Some(ref blob_store) = handles.blob_store {
         let blob_store = blob_store.clone();
         let on_miss = handles.on_blob_miss.clone();
+        let blob_fallback = handles.blob_fallback.clone();
         app.register_asset_source(
             "blob",
             AssetSourceBuilder::new(move || match on_miss.clone() {
-                Some(cb) => Box::new(crate::bevy_blob_reader::BlobAssetReader::with_on_miss(
-                    blob_store.clone(),
-                    cb,
-                )),
-                None => Box::new(crate::bevy_blob_reader::BlobAssetReader::new(
-                    blob_store.clone(),
-                )),
+                Some(cb) => Box::new(
+                    crate::bevy_blob_reader::BlobAssetReader::with_on_miss(blob_store.clone(), cb)
+                        .with_fallback(blob_fallback.clone()),
+                ),
+                None => Box::new(
+                    crate::bevy_blob_reader::BlobAssetReader::new(blob_store.clone())
+                        .with_fallback(blob_fallback.clone()),
+                ),
             }),
         );
         tracing::info!("Registered 'blob' asset source (BlobAssetReader)");
@@ -1078,6 +1082,7 @@ mod tests {
                 blob_store: None,
                 on_blob_miss: None,
                 lifecycle_rx: None,
+                blob_fallback: Default::default(),
             },
         );
         app.update(); // should not panic (lifecycle pump is a no-op without rx)
@@ -1107,6 +1112,7 @@ mod tests {
                 blob_store: None,
                 on_blob_miss: None,
                 lifecycle_rx: Some(lifecycle_rx),
+                blob_fallback: Default::default(),
             },
         );
         lifecycle_tx

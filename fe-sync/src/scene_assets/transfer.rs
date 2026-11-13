@@ -4,13 +4,17 @@ use super::admission::{admit, admit_job};
 use crate::{blob_transport::IrohBlobTransport, scene_asset_gate::SceneAssetGate};
 use bytes::Bytes;
 use fe_runtime::{
+    bevy_blob_reader::{BlobFallbackSlot, BlobSourceRequest},
     blob_store::{hash_from_hex, hash_to_hex, BlobHash, BlobStoreHandle},
     blob_transport::{hash_seq_root, BlobTransport, ProviderRef},
     messages::DbCommand,
     scene_asset::{verify_scene_asset_bytes, SceneAssetTransferPermit, SceneAssetTransferPurpose},
     service_lifecycle::StopSignal,
 };
-use std::{sync::Arc, time::Instant};
+use std::{sync::Arc, time::{Duration, Instant}};
+
+/// How long the bound `blob.source` hook may take after every provider missed.
+pub(super) const SOURCE_TIMEOUT: Duration = Duration::from_secs(35);
 
 pub(super) struct JobLease {
     pub(super) stop: StopSignal,
@@ -139,14 +143,16 @@ pub(super) async fn fetch(
     hash: BlobHash,
     permit: &SceneAssetTransferPermit,
     providers: &[ProviderRef],
+    source: &BlobFallbackSlot,
     lease: &JobLease,
 ) -> anyhow::Result<Bytes> {
-    anyhow::ensure!(
-        !providers.is_empty(),
-        "No native provider is known for this opened Verse"
-    );
+    // No provider is not final: a bound blob.source may still serve (asked below).
     gate.classify(verse, hash, lease.io_owner.clone()).await?;
-    let mut last = "No provider returned the scene blob".to_owned();
+    let mut last = if providers.is_empty() {
+        "No native provider is known for this opened Verse".to_owned()
+    } else {
+        "No provider returned the scene blob".to_owned()
+    };
     for provider in providers {
         let result = async {
             let size = transport
@@ -166,7 +172,36 @@ pub(super) async fn fetch(
             Err(error) => last = error.to_string(),
         }
     }
-    anyhow::bail!("{last}")
+    match source_fallback(source, hash, permit, lease).await {
+        Ok(Some(bytes)) => Ok(bytes),
+        Ok(None) => anyhow::bail!("{last}"),
+        Err(error) => anyhow::bail!("{last}; blob.source bytes refused: {error:#}"),
+    }
+}
+
+/// Ask the extension `blob.source` after every provider missed; the slot already hash- and size-checked the bytes.
+async fn source_fallback(
+    source: &BlobFallbackSlot,
+    hash: BlobHash,
+    permit: &SceneAssetTransferPermit,
+    lease: &JobLease,
+) -> anyhow::Result<Option<Bytes>> {
+    if !source.is_installed() || lease.stop.is_requested() {
+        return Ok(None);
+    }
+    let request = BlobSourceRequest {
+        hash,
+        expected_size: Some(permit.size_bytes),
+        asset_id: Some(permit.asset_id.clone()),
+        petal_id: Some(permit.petal_id.clone()),
+    };
+    let Ok(answer) = tokio::time::timeout(SOURCE_TIMEOUT, source.source_blob(request)).await else {
+        tracing::info!(hash = %hash_to_hex(&hash), "scene blob.source timed out");
+        return Ok(None);
+    };
+    let Some(bytes) = answer else { return Ok(None) };
+    verify_scene_asset_bytes(&bytes, &hash, &permit.content_type, permit.size_bytes)?;
+    Ok(Some(bytes))
 }
 
 pub(super) async fn finish_fetch(
@@ -275,4 +310,52 @@ pub(crate) async fn is_scene_row(
     Ok(row
         .get(fe_runtime::scene_asset::SCENE_ASSET_ROW_MARKER)
         .is_some())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use fe_runtime::bevy_blob_reader::{BlobFallback, FallbackFuture, TilesetChildRequest};
+
+    /// A bound source answering every blob ask with fixed bytes.
+    struct FixedSource(Option<&'static [u8]>);
+    impl BlobFallback for FixedSource {
+        fn source_blob(&self, _request: BlobSourceRequest) -> FallbackFuture<'_> {
+            let answer = self.0.map(Bytes::from_static);
+            Box::pin(async move { answer })
+        }
+        fn source_tileset_child(&self, _request: TilesetChildRequest) -> FallbackFuture<'_> {
+            Box::pin(async { None })
+        }
+    }
+
+    /// Source-fallback leg of the scene-asset fetch: a bound source serves only exact, hash-true bytes after the peers missed.
+    #[tokio::test]
+    async fn blob_source_serves_scene_bytes_only_when_exact() {
+        let body: &'static [u8] = b"scene asset bytes";
+        let hash = *blake3::hash(body).as_bytes();
+        let permit = SceneAssetTransferPermit {
+            verse_id: "verse".into(),
+            petal_id: "petal".into(),
+            node_id: None,
+            asset_id: "asset".into(),
+            content_hash: hash,
+            content_type: "application/octet-stream".into(),
+            size_bytes: body.len() as u64,
+            asset_fingerprint: String::new(),
+        };
+        let lease = JobLease {
+            stop: StopSignal::default(),
+            io_owner: Arc::new(Arc::new(tokio::sync::Semaphore::new(1)).acquire_owned().await.unwrap()),
+        };
+        let slot = BlobFallbackSlot::default();
+        assert!(source_fallback(&slot, hash, &permit, &lease).await.unwrap().is_none(), "no source installed");
+        slot.install(Arc::new(FixedSource(Some(b"forged asset bytes!"))));
+        assert!(source_fallback(&slot, hash, &permit, &lease).await.unwrap().is_none(), "forged bytes never pass");
+        slot.install(Arc::new(FixedSource(Some(body))));
+        let served = source_fallback(&slot, hash, &permit, &lease).await.unwrap();
+        assert_eq!(served.as_deref(), Some(body), "exact bytes are served");
+        lease.stop.request();
+        assert!(source_fallback(&slot, hash, &permit, &lease).await.unwrap().is_none(), "a closed verse asks nothing");
+    }
 }
