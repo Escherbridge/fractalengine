@@ -7,7 +7,8 @@ frames in, readings and transforms out, MQTT actuation back. The manifest is a b
 ## Build and run
 
 Standalone crate (own `[workspace]`), built for `wasm32-wasip2` by `fe-ext build`. Root `Cargo.toml`
-lists it under `exclude` for clarity (see the track findings).
+lists it under `exclude` for clarity (see the track findings). It tracks its own `Cargo.lock`, created by the
+first `cargo check --manifest-path` (never hand-written; see `.gitignore`).
 
     fe-ext build --project extensions/device-adapter
     fe-ext run --sandbox --project extensions/device-adapter --fixture extensions/device-adapter/fixtures/basic.json
@@ -18,6 +19,41 @@ for the same reasons as fleet-sim's (extensions/fleet-sim/AGENTS.md §build-and-
 ingress checks before the guest sees a frame: an undeclared endpoint or sub-path is 404, then method 405, size 413
 (websocket and mqtt: dropped), media type 415, and only the declared `forward_headers` minus credential headers
 arrive, as in fe-plugin `net/ingress.rs`.
+
+## §package-and-install
+
+Recipe the GUI QA path uses (key files stay outside the repo; `fe-ext keygen` never overwrites):
+
+    fe-ext keygen publisher.key                      # publisher key; a second `keygen index.key` is the index key
+    fe-ext build --project extensions/device-adapter
+    fe-ext validate --project extensions/device-adapter
+    fe-ext pack --project extensions/device-adapter --key publisher.key --out packages/   # sealed, signed .hexon
+    fe-ext inspect packages/<id>-0.1.0.hexon          # ids, content hash, capability digest, signer
+    fe-ext index build --packages packages --base-url <public-root> --key index.key --out site
+    fe-ext index verify site --index-key <did:key of index.key>
+    fe-ext admin ...                                  # install-file verb on the running app's local channel
+
+- `pack` is the only step that needs the publisher key; `sign` re-seals under another key, `countersign` adds a
+  signer without moving `content_hash`.
+- Install is GUI-only plus the local `fe-ext admin` channel, never REST or MCP; the GUI consent dialog always
+  confirms the capability grants (governance.md). A registry install names the source and package instead of a file.
+- `fe-ext index` and `fe-ext admin` are wired by I-FEXT/A-CLI; exact flag spelling is in `tools/fe-ext/AGENTS.md`.
+
+## §ingress-plan
+
+What each declared endpoint needs from the host and from the operator (manifest-v2.md §ingress):
+
+| Endpoint | Transport | Host behaviour | Operator input |
+|---|---|---|---|
+| `telemetry` | `http-server` | Mounted at `/api/v1/petals/{petal_id}/extensions/{package_id}/ingress/telemetry`; Editor floor, 64 KiB body, JSON only, 10 req/s per caller; only `x-device-id` is forwarded (credential headers are stripped by the host both ways). | none |
+| `live` | `websocket-accept` | Upgrades on the same mount; 16 KiB frames, 20 frames/s per connection, at most 16 connections. | none |
+| `feed` | `websocket-dial` | The host dials `wss://` (loopback may use `ws://`) and redials with jittered backoff 1 s to 60 s; frames dropped and counted over 16 KiB or 50/s. | credential `device-feed` (bearer), entered at bind and held by the host |
+| `site-broker` | `mqtt` | The host subscribes to `site-a/+/telemetry` at-least-once over `mqtts://`; payloads over 16 KiB are dropped and counted. | credential `site-a-broker` (mqtt-password) |
+
+- The `egress` endpoint `actuate` publishes to `site-a/+/command` through the same broker credential.
+- The guest never sees a credential or a socket: it receives frames in `on_ingress` and queues publishes.
+- Hosts refuse LAN egress targets, so the example hostnames are placeholders to replace at bind; the sandbox
+  fixture feeds frames directly and needs none of this.
 
 ## §frame
 

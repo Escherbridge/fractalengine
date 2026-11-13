@@ -7,7 +7,8 @@ Example simulation extension (`kind: simulation`, track extension_platform P3.3)
 ## Build and run
 
 Standalone crate (own `[workspace]`), built for `wasm32-wasip2` by `fe-ext build`, never a host workspace member.
-Root `Cargo.toml` lists it under `exclude` for clarity (see the track findings).
+Root `Cargo.toml` lists it under `exclude` for clarity (see the track findings). It tracks its own `Cargo.lock`,
+created by the first `cargo check --manifest-path` (never hand-written; see `.gitignore`).
 
     fe-ext build --project extensions/fleet-sim
     fe-ext run --sandbox --project extensions/fleet-sim --fixture extensions/fleet-sim/fixtures/basic.json
@@ -17,6 +18,25 @@ The sandbox journey is the fleet-sim leg of J8 (`tools/fe-ext/tests/j8_cli.rs`, 
 once `dist/component.wasm` exists and checks the fixture outcomes below plus `pack` and `inspect`. It lives there, not
 in this crate, so the example never pulls the host stack (fe-plugin, wasmtime) into its own target directory and
 lock file, and so a batch filter reaches it (G3, 2026-11-08).
+
+## §package-and-install
+
+Recipe the GUI QA path uses (key files stay outside the repo; `fe-ext keygen` never overwrites):
+
+    fe-ext keygen publisher.key                      # publisher key; a second `keygen index.key` is the index key
+    fe-ext build --project extensions/fleet-sim
+    fe-ext validate --project extensions/fleet-sim
+    fe-ext pack --project extensions/fleet-sim --key publisher.key --out packages/   # sealed, signed .hexon
+    fe-ext inspect packages/<id>-0.1.0.hexon          # ids, content hash, capability digest, signer
+    fe-ext index build --packages packages --base-url <public-root> --key index.key --out site
+    fe-ext index verify site --index-key <did:key of index.key>
+    fe-ext admin ...                                  # install-file verb on the running app's local channel
+
+- `pack` is the only step that needs the publisher key; `sign` re-seals under another key, `countersign` adds a
+  signer without moving `content_hash`.
+- Install is GUI-only plus the local `fe-ext admin` channel, never REST or MCP; the GUI consent dialog always
+  confirms the capability grants (governance.md). A registry install names the source and package instead of a file.
+- `fe-ext index` and `fe-ext admin` are wired by I-FEXT/A-CLI; exact flag spelling is in `tools/fe-ext/AGENTS.md`.
 
 ## §driver
 

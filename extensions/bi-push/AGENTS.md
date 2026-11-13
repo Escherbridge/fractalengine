@@ -7,14 +7,34 @@ First-party push connector (`kind: bi-connector`, track extension_platform P5.5,
 ## Build and run
 
 Standalone crate (own `[workspace]`), built for `wasm32-wasip2` by `fe-ext build`; its own `[workspace]` table keeps it
-out of the root workspace without an `exclude` entry.
+out of the root workspace without an `exclude` entry. It tracks its own `Cargo.lock`, created by the first
+`cargo check --manifest-path` (never hand-written; see `.gitignore`).
 
     fe-ext build --project extensions/bi-push
     cargo test --manifest-path extensions/bi-push/Cargo.toml     # payload unit test (src/payload.rs)
 
 The sandbox leg belongs in J8 (`tools/fe-ext/tests/j8_cli.rs`), like the other examples, so this crate never pulls the
-host stack into its own target directory (G3-C12, G5). Until BND-3 teaches the Rust validator `provides`, `fe-ext
-validate`/`pack` refuse this manifest as `schema` (unknown field), so that J8 leg waits for BND-3.
+host stack into its own target directory (G3-C12, G5). The Rust validator parses `provides` (`fe-sdk/src/manifest_v2.rs`, V17/V18), so `fe-ext validate`/`pack` accept this
+manifest: `egress.connector` needs the `sink` egress id and the `latest` `host/query` consume it declares.
+
+## §package-and-install
+
+Recipe the GUI QA path uses (key files stay outside the repo; `fe-ext keygen` never overwrites):
+
+    fe-ext keygen publisher.key                      # publisher key; a second `keygen index.key` is the index key
+    fe-ext build --project extensions/bi-push
+    fe-ext validate --project extensions/bi-push
+    fe-ext pack --project extensions/bi-push --key publisher.key --out packages/   # sealed, signed .hexon
+    fe-ext inspect packages/<id>-0.1.0.hexon          # ids, content hash, capability digest, signer
+    fe-ext index build --packages packages --base-url <public-root> --key index.key --out site
+    fe-ext index verify site --index-key <did:key of index.key>
+    fe-ext admin ...                                  # install-file verb on the running app's local channel
+
+- `pack` is the only step that needs the publisher key; `sign` re-seals under another key, `countersign` adds a
+  signer without moving `content_hash`.
+- Install is GUI-only plus the local `fe-ext admin` channel, never REST or MCP; the GUI consent dialog always
+  confirms the capability grants (governance.md). A registry install names the source and package instead of a file.
+- `fe-ext index` and `fe-ext admin` are wired by I-FEXT/A-CLI; exact flag spelling is in `tools/fe-ext/AGENTS.md`.
 
 ## §payload
 

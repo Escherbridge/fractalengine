@@ -1,0 +1,3 @@
+# Standalone workspace root (wasm32-wasip2 guest SDK): it tracks its own Cargo.lock, created by the first
+# `cargo check --manifest-path tools/fe-ext/guest/Cargo.toml` and never hand-written.
+target/

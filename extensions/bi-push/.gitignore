@@ -1,0 +1,4 @@
+# Standalone workspace root: it tracks its own Cargo.lock (leaf crate), created by the first
+# `cargo check --manifest-path extensions/bi-push/Cargo.toml` and never hand-written.
+target/
+dist/

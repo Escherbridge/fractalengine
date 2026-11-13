@@ -1,2 +1,2 @@
-# Standalone workspace build artifacts. Cargo.lock stays tracked (binary/leaf crate).
+# Root workspace member: the repo-root Cargo.lock governs it; this crate never tracks a lock of its own.
 /target
