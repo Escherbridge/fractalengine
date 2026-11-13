@@ -647,23 +647,30 @@ impl VolumePersistence {
                 if now < write.at {
                     return;
                 }
-                match db.try_send(DbCommand::CommitCheckedEditorBatch {
-                    request: request(write),
-                    correlation_id: write.id.clone(),
-                }) {
-                    Ok(()) => {
+                // Scene write door: Waiting/Sent are owned by the door queue (its full-channel retry replaces the local backoff).
+                match crate::actions::node::try_submit_scene_write_on(
+                    db,
+                    DbCommand::CommitCheckedEditorBatch {
+                        request: request(write),
+                        correlation_id: write.id.clone(),
+                    },
+                ) {
+                    crate::actions::node::GuiSend::Sent
+                    | crate::actions::node::GuiSend::Waiting => {
                         write.accepted = true;
                         write.at = now;
                         self.status.insert(write.demand.node.clone(), "Complete volume pair save pending; channel acceptance is not confirmation.");
                     }
-                    Err(crossbeam::channel::TrySendError::Full(_)) => {
-                        write.at = now + 0.5;
+                    crate::actions::node::GuiSend::Refused(_) => {
+                        // Never sent: the door already queued the refusal advisory; drop the write and retry reads later.
                         self.status.insert(
                             write.demand.node.clone(),
-                            "Volume save queued: DB channel is full; no write accepted yet.",
+                            "Volume was not saved: a scene hook refused the write.",
                         );
+                        self.write = None;
+                        self.next_read = now + RETRY_READ;
                     }
-                    Err(crossbeam::channel::TrySendError::Disconnected(_)) => {
+                    crate::actions::node::GuiSend::Closed => {
                         self.status.insert(
                             write.demand.node.clone(),
                             "Volume was not saved: DB channel disconnected before acceptance.",

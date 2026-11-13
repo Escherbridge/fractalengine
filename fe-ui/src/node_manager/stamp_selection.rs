@@ -589,12 +589,21 @@ fn dispatch_selections(
             continue;
         }
         let request = format!("ui-stamp-promotion-{}", ulid::Ulid::new());
-        match db.0.send(DbCommand::PromoteCheckedStamp {
-            capture,
-            correlation_id: request.clone(),
-        }) {
-            Ok(()) => state.selection_promotion = Some(request),
-            Err(_) => state
+        // Scene write door: Waiting is owned by the door queue; a late refusal answers `request` as RequestFailed.
+        match crate::actions::node::try_submit_scene_write_on(
+            &db.0,
+            DbCommand::PromoteCheckedStamp {
+                capture,
+                correlation_id: request.clone(),
+            },
+        ) {
+            crate::actions::node::GuiSend::Sent | crate::actions::node::GuiSend::Waiting => {
+                state.selection_promotion = Some(request)
+            }
+            crate::actions::node::GuiSend::Refused(message) => {
+                state.selection_error(format!("Stamp was not promoted: {message}"))
+            }
+            crate::actions::node::GuiSend::Closed => state
                 .selection_error("Database connection closed; stamp selection was not promoted"),
         }
     }

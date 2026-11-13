@@ -752,18 +752,20 @@ impl EditorBatchState {
     ) -> Result<(), String> {
         validation::edit(&request)?;
         let request_id = id();
-        db.try_send(DbCommand::CommitCheckedEditorBatch {
-            request: request.clone(),
-            correlation_id: request_id.clone(),
-        })
-        .map_err(|error| match error {
-            crossbeam::channel::TrySendError::Full(_) => {
-                "Database queue is busy; no selection edit was queued. Apply again when ready."
+        // Scene write door: a refusal queues nothing and leaves no pending owner.
+        match crate::actions::node::try_submit_scene_write_on(
+            db,
+            DbCommand::CommitCheckedEditorBatch {
+                request: request.clone(),
+                correlation_id: request_id.clone(),
+            },
+        ) {
+            crate::actions::node::GuiSend::Sent | crate::actions::node::GuiSend::Waiting => {}
+            crate::actions::node::GuiSend::Refused(message) => return Err(message),
+            crate::actions::node::GuiSend::Closed => {
+                return Err("Database connection closed; no selection edit was queued".into())
             }
-            crossbeam::channel::TrySendError::Disconnected(_) => {
-                "Database connection closed; no selection edit was queued"
-            }
-        })?;
+        }
         self.pending = Some(PendingWrite {
             id: request_id,
             request,

@@ -555,17 +555,26 @@ impl UndoState {
         } else {
             (&entry.before, &entry.after)
         };
-        db.send(DbCommand::CommitCheckedNodeMutation {
-            node_id: entry.node_id.clone(),
-            mutation: target.mutation(),
-            expected: NodeEditPrecondition {
-                scope: entry.scope.clone(),
-                history_version: entry.expected_version(origin),
-                before: expected.expected(),
+        // Scene write door: a refusal leaves the stack and pending state untouched.
+        match crate::actions::node::try_submit_scene_write_on(
+            db,
+            DbCommand::CommitCheckedNodeMutation {
+                node_id: entry.node_id.clone(),
+                mutation: target.mutation(),
+                expected: NodeEditPrecondition {
+                    scope: entry.scope.clone(),
+                    history_version: entry.expected_version(origin),
+                    before: expected.expected(),
+                },
+                correlation_id: id.clone(),
             },
-            correlation_id: id.clone(),
-        })
-        .map_err(|_| "Database connection closed; edit was not queued")?;
+        ) {
+            crate::actions::node::GuiSend::Sent | crate::actions::node::GuiSend::Waiting => {}
+            crate::actions::node::GuiSend::Refused(message) => return Err(message),
+            crate::actions::node::GuiSend::Closed => {
+                return Err("Database connection closed; edit was not queued".into())
+            }
+        }
         self.pending = Some(Pending {
             request_id: id.clone(),
             resolve_id: None,
@@ -854,17 +863,26 @@ impl UndoState {
             before_version: draft.version,
             after_version: None,
         };
-        db.send(DbCommand::CommitCheckedNodeMutation {
-            node_id: entry.node_id.clone(),
-            mutation: entry.after.mutation(),
-            expected: NodeEditPrecondition {
-                scope: entry.scope.clone(),
-                history_version: entry.before_version,
-                before: entry.before.expected(),
+        // Refused here keeps the path reservation; the caller cancels it via `cancel_path`.
+        match crate::actions::node::try_submit_scene_write_on(
+            db,
+            DbCommand::CommitCheckedNodeMutation {
+                node_id: entry.node_id.clone(),
+                mutation: entry.after.mutation(),
+                expected: NodeEditPrecondition {
+                    scope: entry.scope.clone(),
+                    history_version: entry.before_version,
+                    before: entry.before.expected(),
+                },
+                correlation_id: id.into(),
             },
-            correlation_id: id.into(),
-        })
-        .map_err(|_| "Database connection closed; point edit was not queued")?;
+        ) {
+            crate::actions::node::GuiSend::Sent | crate::actions::node::GuiSend::Waiting => {}
+            crate::actions::node::GuiSend::Refused(message) => return Err(message),
+            crate::actions::node::GuiSend::Closed => {
+                return Err("Database connection closed; point edit was not queued".into())
+            }
+        }
         self.pending.as_mut().unwrap().entry = Some(entry);
         Ok(())
     }
