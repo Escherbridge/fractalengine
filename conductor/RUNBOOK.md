@@ -129,7 +129,7 @@ trusting "pure efficiency" claims; push control; a board that silently drifts st
   after_commit caller; AC-6 real-registry plugin journey; portal PJ1-PJ9 runs + WebView2 spikes; the six analytics
   findings (`.omc/state/turn3-extra-findings.md`). Records: `conductor/tracks/*/completeness-turn3.md`,
   `review-turn3/`, `.omc/plans/turn3-plan.md` (refine checklist + test batch ids), `.omc/state/swarm-ledger.md`.
-  **Next:** user names test batches (`tools\qa	est_batches.ps1 -Batches <ids>`; private batches need a runner
+  **Next:** user names test batches (`tools/qa/test_batches.ps1 -Batches <ids>`; private batches need a runner
   decision) -> fix failures -> turn 4 for the NOT-done list -> signing provider decision.
 - **2026-11-09 ~07:15 — BOTH TRACKS MERGED INTO MAIN AND PUSHED (user: secure the work before usage runs
   out).** origin/main = `6fdbd951` (merges `0b579b64` ext-platform, `f2adc8f0` portal — 9 conflicts resolved as
