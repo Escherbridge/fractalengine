@@ -1,0 +1,53 @@
+{
+  "items": [
+    {
+      "package_id": "org.example.fleet-sim",
+      "kind": "extension",
+      "name": "Fleet simulator",
+      "summary": "Simulated vehicle fleets that write readings into a petal.",
+      "publisher": {
+        "did": "{{did:publisher-a}}",
+        "name": "Example Labs",
+        "verified": false
+      },
+      "latest_version": "1.1.0",
+      "latest_content_hash": "{{content_hash:org.example.fleet-sim@1.1.0}}",
+      "detail_hash": "{{detail_hash:org.example.fleet-sim}}",
+      "access": "free",
+      "categories": [
+        "simulation"
+      ],
+      "tags": [
+        "fleet",
+        "readings"
+      ],
+      "icon_url": null,
+      "updated_at": "2026-11-06T12:00:00Z"
+    },
+    {
+      "package_id": "org.example.analytics-pack",
+      "kind": "extension",
+      "name": "Analytics pack",
+      "summary": "Licensed analytics connector with a free preview entry.",
+      "publisher": {
+        "did": "{{did:publisher-a}}",
+        "name": "Example Labs",
+        "verified": false
+      },
+      "latest_version": "1.0.0",
+      "latest_content_hash": "{{content_hash:org.example.analytics-pack@1.0.0}}",
+      "detail_hash": "{{detail_hash:org.example.analytics-pack}}",
+      "access": "licensed",
+      "categories": [
+        "analytics"
+      ],
+      "tags": [
+        "bi",
+        "readings"
+      ],
+      "icon_url": null,
+      "updated_at": "2026-11-04T08:00:00Z"
+    }
+  ],
+  "next_cursor": null
+}

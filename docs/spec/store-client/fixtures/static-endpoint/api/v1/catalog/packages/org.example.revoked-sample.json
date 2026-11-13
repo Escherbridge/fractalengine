@@ -1,0 +1,36 @@
+{
+  "schema_version": 1,
+  "package_id": "org.example.revoked-sample",
+  "kind": "extension",
+  "name": "Revoked sample",
+  "description": "revocations.json names this build's content_hash as org.example.renamed-copy.",
+  "publisher": {
+    "did": "{{did:publisher-a}}",
+    "name": "Example Labs",
+    "verified": false
+  },
+  "access": "free",
+  "acquire_url": null,
+  "categories": [
+    "general"
+  ],
+  "tags": [],
+  "links": {
+    "homepage": null,
+    "source": null,
+    "issues": null
+  },
+  "versions": [
+    {
+      "version": "1.0.0",
+      "content_hash": "{{content_hash:org.example.revoked-sample@1.0.0}}",
+      "size_bytes": "{{size_bytes:org.example.revoked-sample@1.0.0}}",
+      "published_at": "2026-11-01T08:00:00Z",
+      "requires": {
+        "fractalengine:plugin": "2.0"
+      },
+      "download_url": "../../../../blobs/{{content_hash:org.example.revoked-sample@1.0.0}}.hexon",
+      "yanked": false
+    }
+  ]
+}

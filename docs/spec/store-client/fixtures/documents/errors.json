@@ -1,0 +1,58 @@
+[
+  {
+    "status": 400,
+    "body": {
+      "ok": false,
+      "data": null,
+      "error": "invalid_request"
+    }
+  },
+  {
+    "status": 401,
+    "body": {
+      "ok": false,
+      "data": null,
+      "error": "proof_invalid"
+    }
+  },
+  {
+    "status": 403,
+    "body": {
+      "ok": false,
+      "data": null,
+      "error": "not_entitled"
+    }
+  },
+  {
+    "status": 403,
+    "body": {
+      "ok": false,
+      "data": null,
+      "error": "reissue_refused"
+    }
+  },
+  {
+    "status": 403,
+    "body": {
+      "ok": false,
+      "data": null,
+      "error": "device_limit_reached"
+    }
+  },
+  {
+    "status": 404,
+    "body": {
+      "ok": false,
+      "data": null,
+      "error": "unknown_package"
+    }
+  },
+  {
+    "status": 429,
+    "body": {
+      "ok": false,
+      "data": null,
+      "error": "rate_limited"
+    }
+  }
+]

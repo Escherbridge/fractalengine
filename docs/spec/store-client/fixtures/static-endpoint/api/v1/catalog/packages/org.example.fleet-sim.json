@@ -1,0 +1,50 @@
+{
+  "schema_version": 1,
+  "package_id": "org.example.fleet-sim",
+  "kind": "extension",
+  "name": "Fleet simulator",
+  "description": "Drives simulated vehicles along paths and writes their readings as rows.",
+  "publisher": {
+    "did": "{{did:publisher-a}}",
+    "name": "Example Labs",
+    "verified": false
+  },
+  "access": "free",
+  "acquire_url": null,
+  "categories": [
+    "simulation"
+  ],
+  "tags": [
+    "fleet",
+    "readings"
+  ],
+  "links": {
+    "homepage": null,
+    "source": null,
+    "issues": null
+  },
+  "versions": [
+    {
+      "version": "1.1.0",
+      "content_hash": "{{content_hash:org.example.fleet-sim@1.1.0}}",
+      "size_bytes": "{{size_bytes:org.example.fleet-sim@1.1.0}}",
+      "published_at": "2026-11-06T12:00:00Z",
+      "requires": {
+        "fractalengine:plugin": "2.0"
+      },
+      "download_url": "../../../../blobs/{{content_hash:org.example.fleet-sim@1.1.0}}.hexon",
+      "yanked": false
+    },
+    {
+      "version": "1.0.0",
+      "content_hash": "{{content_hash:org.example.fleet-sim@1.0.0}}",
+      "size_bytes": "{{size_bytes:org.example.fleet-sim@1.0.0}}",
+      "published_at": "2026-11-01T12:00:00Z",
+      "requires": {
+        "fractalengine:plugin": "2.0"
+      },
+      "download_url": "../../../../blobs/{{content_hash:org.example.fleet-sim@1.0.0}}.hexon",
+      "yanked": false
+    }
+  ]
+}

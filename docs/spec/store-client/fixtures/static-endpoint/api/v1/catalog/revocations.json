@@ -1,0 +1,14 @@
+{
+  "schema_version": 1,
+  "issued_at": "2026-11-07T00:00:00Z",
+  "entries": [
+    {
+      "package_id": "org.example.renamed-copy",
+      "content_hash": "{{content_hash:org.example.revoked-sample@1.0.0}}",
+      "reason": "test vector: revoked build, listed under another id",
+      "revoked_at": "2026-11-07T00:00:00Z"
+    }
+  ],
+  "signer_key_id": "revocation-test-1",
+  "signature": "{{signature:revocation-test-1}}"
+}

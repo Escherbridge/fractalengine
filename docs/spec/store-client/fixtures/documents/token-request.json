@@ -1,0 +1,8 @@
+{
+  "package_id": "org.example.analytics-pack",
+  "content_hash": "{{content_hash:org.example.analytics-pack@1.0.0}}",
+  "licensee_did": "{{did:licensee}}",
+  "device_x25519_did": "{{x25519_did:device}}",
+  "iat": 1762473600,
+  "proof": "{{proof:licensee}}"
+}

@@ -1,0 +1,38 @@
+{
+  "schema_version": 1,
+  "package_id": "org.example.site-viewer",
+  "kind": "web-bundle",
+  "name": "Site viewer",
+  "description": "Web bundle rendered in the portal surface.",
+  "publisher": {
+    "did": "{{did:operator-publisher}}",
+    "name": "Endpoint Operator",
+    "verified": true
+  },
+  "access": "free",
+  "acquire_url": null,
+  "categories": [
+    "viewer"
+  ],
+  "tags": [
+    "portal"
+  ],
+  "links": {
+    "homepage": null,
+    "source": null,
+    "issues": null
+  },
+  "versions": [
+    {
+      "version": "1.0.0",
+      "content_hash": "{{content_hash:org.example.site-viewer@1.0.0}}",
+      "size_bytes": "{{size_bytes:org.example.site-viewer@1.0.0}}",
+      "published_at": "2026-11-05T09:30:00Z",
+      "requires": {
+        "fractalengine:portal-bundle": "1"
+      },
+      "download_url": "../../../../blobs/{{content_hash:org.example.site-viewer@1.0.0}}.hexon",
+      "yanked": false
+    }
+  ]
+}

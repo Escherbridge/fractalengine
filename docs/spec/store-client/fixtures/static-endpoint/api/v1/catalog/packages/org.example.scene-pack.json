@@ -1,0 +1,32 @@
+{
+  "schema_version": 1,
+  "package_id": "org.example.scene-pack",
+  "kind": "scene-pack",
+  "name": "Scene pack",
+  "description": "Forward-compatibility fixture.",
+  "publisher": {
+    "did": "{{did:publisher-a}}",
+    "name": "Example Labs",
+    "verified": false
+  },
+  "access": "free",
+  "acquire_url": null,
+  "categories": [],
+  "tags": [],
+  "links": {
+    "homepage": null,
+    "source": null,
+    "issues": null
+  },
+  "versions": [
+    {
+      "version": "1.0.0",
+      "content_hash": "{{content_hash:org.example.scene-pack@1.0.0}}",
+      "size_bytes": "{{size_bytes:org.example.scene-pack@1.0.0}}",
+      "published_at": "2026-11-03T08:00:00Z",
+      "requires": {},
+      "download_url": "../../../../blobs/{{content_hash:org.example.scene-pack@1.0.0}}.hexon",
+      "yanked": false
+    }
+  ]
+}

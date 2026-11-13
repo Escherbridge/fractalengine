@@ -1,0 +1,16 @@
+{
+  "schema_version": 1,
+  "registry_protocol": 1,
+  "kinds": [
+    "extension",
+    "web-bundle"
+  ],
+  "features": [
+    "index",
+    "detail",
+    "attestations",
+    "revocations"
+  ],
+  "index_key_id": "index-test-1",
+  "revocation_url": "revocations.json"
+}

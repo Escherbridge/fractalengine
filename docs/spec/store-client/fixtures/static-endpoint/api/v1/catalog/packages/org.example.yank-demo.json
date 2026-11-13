@@ -1,0 +1,47 @@
+{
+  "schema_version": 1,
+  "package_id": "org.example.yank-demo",
+  "kind": "extension",
+  "name": "Yank demo",
+  "description": "2.0.0 is yanked, so latest_version names 1.0.0.",
+  "publisher": {
+    "did": "{{did:publisher-a}}",
+    "name": "Example Labs",
+    "verified": false
+  },
+  "access": "free",
+  "acquire_url": null,
+  "categories": [
+    "general"
+  ],
+  "tags": [],
+  "links": {
+    "homepage": null,
+    "source": null,
+    "issues": null
+  },
+  "versions": [
+    {
+      "version": "2.0.0",
+      "content_hash": "{{content_hash:org.example.yank-demo@2.0.0}}",
+      "size_bytes": "{{size_bytes:org.example.yank-demo@2.0.0}}",
+      "published_at": "2026-11-02T08:00:00Z",
+      "requires": {
+        "fractalengine:plugin": "2.0"
+      },
+      "download_url": "../../../../blobs/{{content_hash:org.example.yank-demo@2.0.0}}.hexon",
+      "yanked": true
+    },
+    {
+      "version": "1.0.0",
+      "content_hash": "{{content_hash:org.example.yank-demo@1.0.0}}",
+      "size_bytes": "{{size_bytes:org.example.yank-demo@1.0.0}}",
+      "published_at": "2026-10-30T08:00:00Z",
+      "requires": {
+        "fractalengine:plugin": "2.0"
+      },
+      "download_url": "../../../../blobs/{{content_hash:org.example.yank-demo@1.0.0}}.hexon",
+      "yanked": false
+    }
+  ]
+}

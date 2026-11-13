@@ -1,0 +1,141 @@
+{
+  "schema_version": 1,
+  "issued_at": "2026-11-07T00:00:00Z",
+  "expires_at": "2026-11-14T00:00:00Z",
+  "entries": [
+    {
+      "package_id": "org.example.fleet-sim",
+      "kind": "extension",
+      "name": "Fleet simulator",
+      "summary": "Simulated vehicle fleets that write readings into a petal.",
+      "publisher": {
+        "did": "{{did:publisher-a}}",
+        "name": "Example Labs",
+        "verified": false
+      },
+      "latest_version": "1.1.0",
+      "latest_content_hash": "{{content_hash:org.example.fleet-sim@1.1.0}}",
+      "detail_hash": "{{detail_hash:org.example.fleet-sim}}",
+      "access": "free",
+      "categories": [
+        "simulation"
+      ],
+      "tags": [
+        "fleet",
+        "readings"
+      ],
+      "icon_url": null,
+      "updated_at": "2026-11-06T12:00:00Z"
+    },
+    {
+      "package_id": "org.example.site-viewer",
+      "kind": "web-bundle",
+      "name": "Site viewer",
+      "summary": "A static web page that shows a petal's site plan.",
+      "publisher": {
+        "did": "{{did:operator-publisher}}",
+        "name": "Endpoint Operator",
+        "verified": true
+      },
+      "latest_version": "1.0.0",
+      "latest_content_hash": "{{content_hash:org.example.site-viewer@1.0.0}}",
+      "detail_hash": "{{detail_hash:org.example.site-viewer}}",
+      "access": "free",
+      "categories": [
+        "viewer"
+      ],
+      "tags": [
+        "portal"
+      ],
+      "icon_url": null,
+      "updated_at": "2026-11-05T09:30:00Z"
+    },
+    {
+      "package_id": "org.example.analytics-pack",
+      "kind": "extension",
+      "name": "Analytics pack",
+      "summary": "Licensed analytics connector with a free preview entry.",
+      "publisher": {
+        "did": "{{did:publisher-a}}",
+        "name": "Example Labs",
+        "verified": false
+      },
+      "latest_version": "1.0.0",
+      "latest_content_hash": "{{content_hash:org.example.analytics-pack@1.0.0}}",
+      "detail_hash": "{{detail_hash:org.example.analytics-pack}}",
+      "access": "licensed",
+      "categories": [
+        "analytics"
+      ],
+      "tags": [
+        "bi",
+        "readings"
+      ],
+      "icon_url": null,
+      "updated_at": "2026-11-04T08:00:00Z"
+    },
+    {
+      "package_id": "org.example.scene-pack",
+      "kind": "scene-pack",
+      "name": "Scene pack",
+      "summary": "A kind this contract version does not define; clients skip it.",
+      "publisher": {
+        "did": "{{did:publisher-a}}",
+        "name": "Example Labs",
+        "verified": false
+      },
+      "latest_version": "1.0.0",
+      "latest_content_hash": "{{content_hash:org.example.scene-pack@1.0.0}}",
+      "detail_hash": "{{detail_hash:org.example.scene-pack}}",
+      "access": "free",
+      "categories": [],
+      "tags": [],
+      "icon_url": null,
+      "updated_at": "2026-11-03T08:00:00Z"
+    },
+    {
+      "package_id": "org.example.yank-demo",
+      "kind": "extension",
+      "name": "Yank demo",
+      "summary": "Newest version yanked; the previous one stays installable.",
+      "publisher": {
+        "did": "{{did:publisher-a}}",
+        "name": "Example Labs",
+        "verified": false
+      },
+      "latest_version": "1.0.0",
+      "latest_content_hash": "{{content_hash:org.example.yank-demo@1.0.0}}",
+      "detail_hash": "{{detail_hash:org.example.yank-demo}}",
+      "access": "free",
+      "categories": [
+        "general"
+      ],
+      "tags": [],
+      "icon_url": null,
+      "updated_at": "2026-11-02T08:00:00Z"
+    },
+    {
+      "package_id": "org.example.revoked-sample",
+      "kind": "extension",
+      "name": "Revoked sample",
+      "summary": "Listed and verifiable, but kill-listed by hash under another id.",
+      "publisher": {
+        "did": "{{did:publisher-a}}",
+        "name": "Example Labs",
+        "verified": false
+      },
+      "latest_version": "1.0.0",
+      "latest_content_hash": "{{content_hash:org.example.revoked-sample@1.0.0}}",
+      "detail_hash": "{{detail_hash:org.example.revoked-sample}}",
+      "access": "free",
+      "categories": [
+        "general"
+      ],
+      "tags": [],
+      "icon_url": null,
+      "updated_at": "2026-11-01T08:00:00Z"
+    }
+  ],
+  "signer_key_id": "index-test-1",
+  "signature": "{{signature:index-test-1}}"
+}

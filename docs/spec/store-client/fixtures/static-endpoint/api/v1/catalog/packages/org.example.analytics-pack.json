@@ -1,0 +1,39 @@
+{
+  "schema_version": 1,
+  "package_id": "org.example.analytics-pack",
+  "kind": "extension",
+  "name": "Analytics pack",
+  "description": "Licensed package: free_entries load without a token, the rest need an entitlement.",
+  "publisher": {
+    "did": "{{did:publisher-a}}",
+    "name": "Example Labs",
+    "verified": false
+  },
+  "access": "licensed",
+  "acquire_url": null,
+  "categories": [
+    "analytics"
+  ],
+  "tags": [
+    "bi",
+    "readings"
+  ],
+  "links": {
+    "homepage": null,
+    "source": null,
+    "issues": null
+  },
+  "versions": [
+    {
+      "version": "1.0.0",
+      "content_hash": "{{content_hash:org.example.analytics-pack@1.0.0}}",
+      "size_bytes": "{{size_bytes:org.example.analytics-pack@1.0.0}}",
+      "published_at": "2026-11-04T08:00:00Z",
+      "requires": {
+        "fractalengine:plugin": "2.0"
+      },
+      "download_url": "../../../../blobs/{{content_hash:org.example.analytics-pack@1.0.0}}.hexon",
+      "yanked": false
+    }
+  ]
+}

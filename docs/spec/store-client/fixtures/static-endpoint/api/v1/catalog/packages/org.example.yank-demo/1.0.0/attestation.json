@@ -1,0 +1,12 @@
+{
+  "schema_version": 1,
+  "package_id": "org.example.yank-demo",
+  "version": "1.0.0",
+  "content_hash": "{{content_hash:org.example.yank-demo@1.0.0}}",
+  "manifest_b64": "{{manifest_b64:org.example.yank-demo@1.0.0}}",
+  "header_members_b64": {
+    "plugin/extension.json": "{{member_b64:org.example.yank-demo@1.0.0:plugin/extension.json}}",
+    "members.json": "{{member_b64:org.example.yank-demo@1.0.0:members.json}}"
+  },
+  "signatures": []
+}

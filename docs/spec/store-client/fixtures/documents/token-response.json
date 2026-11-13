@@ -1,0 +1,3 @@
+{
+  "token": "{{jwt:issuer-test-1:org.example.analytics-pack@1.0.0}}"
+}
