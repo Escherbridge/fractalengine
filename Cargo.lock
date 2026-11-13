@@ -5406,6 +5406,8 @@ dependencies = [
  "anyhow",
  "base64 0.22.1",
  "blake3",
+ "bs58",
+ "chrono",
  "clap",
  "crossbeam",
  "ed25519-dalek 2.2.0",
@@ -5421,6 +5423,7 @@ dependencies = [
  "serde",
  "serde_json",
  "tempfile",
+ "tokio",
  "toml 0.8.23",
  "zip 0.6.6",
 ]
@@ -5433,13 +5436,16 @@ dependencies = [
  "base64 0.22.1",
  "blake3",
  "bs58",
+ "chacha20poly1305",
  "chrono",
  "ed25519-dalek 2.2.0",
  "fe-runtime",
+ "jsonwebtoken",
  "rand 0.8.6",
  "serde",
  "serde_json",
  "thiserror 1.0.69",
+ "x25519-dalek",
  "zip 2.4.2",
 ]
 
@@ -5484,6 +5490,7 @@ name = "fe-hexon-registry"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "async-trait",
  "axum",
  "blake3",
  "ed25519-dalek 2.2.0",
@@ -5559,6 +5566,7 @@ dependencies = [
  "fe-sdk",
  "futures-util",
  "hex",
+ "libc",
  "reqwest 0.12.28",
  "rhai",
  "semver",
@@ -5576,6 +5584,7 @@ dependencies = [
  "wasmtime-wasi",
  "wat",
  "webpki-roots 1.0.7",
+ "windows-sys 0.61.2",
  "wit-component 0.244.0",
  "wit-parser 0.244.0",
 ]
