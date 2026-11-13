@@ -129,8 +129,7 @@ the lease and the 64 KiB JSON bound.
 `bus.dispatch(&key, &mut *handle.lock()?, n)`. Bus mirror types convert 1:1 to the generated WIT
 types; a hook fault answers a command `failed` and is otherwise only logged, because the instance
 already degraded and the scheduler stops it on its next tick. The matching bridge for E5's
-`net::NetHooks` (ingress/egress) is not written yet: `net/` was still being authored when this
-landed.
+`net::NetHooks` (ingress/egress) is `component/net_bridge.rs` (§net-bridge).
 
 ## §instance
 
@@ -203,4 +202,21 @@ looping on them inside one hook could hold the one worker, and the DB lane, for 
 other instance's ticks. `InstanceState::take_read` caps them at `MAX_SCENE_READS_PER_HOOK` (64) per hook
 call; `ExtensionInstance::call` resets the count on every guest entry. Over budget is `budget-exceeded`,
 which the guest can handle (read less per tick, or subscribe to `host/node-changes` instead).
-`query-nodes` results are not row-capped here; the DB read path's own limit applies (DEFERRED, G1 review).
+`query-nodes` is capped in `context.rs::query_nodes`: `NodeQuery::validate` bounds `limit` to
+`MAX_NODE_QUERY_ROWS` (200) and a page over `MAX_HOST_BYTES` (64 KiB serialized) is refused, so one read
+cannot return an unbounded result.
+
+## §hooks
+
+`component/hooks.rs` binds the optional `hooks` export of world `extension-with-hooks` on the same raw
+instance `instantiate` creates; plain 2.0 components stay on world `extension` and keep working. A component
+that declares `provides` must export it (`check_provides`). Each call has a catalogue deadline and byte caps
+(`hook_limits`, 64 KiB JSON), its own fuel refill and a frozen clock; a trap or timeout degrades the instance.
+Host-initiated calls and decode stamping: src/AGENTS.md §hook-calls.
+
+## §net-bridge
+
+`component/net_bridge.rs` is the N3 seam from src/net/AGENTS.md: it implements `NetHooks` over the component
+and routes the `ingress`/`egress` imports to `Net`. Credential-bearing headers are stripped in both directions
+before a guest sees or sets them. The worker drives it per instance with `Net::dispatch(key, &mut handle, n)`
+through the `HostBroker` that pairs the bus and net brokers (§broker-seam).

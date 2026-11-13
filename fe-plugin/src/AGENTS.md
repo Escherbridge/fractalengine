@@ -35,7 +35,16 @@ pre-inserts a `TickHost` on its `SimClock`. Exit stops every seat `host-stopping
 ABI is retired, so `WasmEngine` links no imports. The integration bus is `bus/` (src/bus/AGENTS.md), the extension
 network client is `net/` (src/net/AGENTS.md), and scoped bindings are `bindings/` (src/bindings/AGENTS.md).
 Governance and the instance lifecycle are `lifecycle.rs` (§governance, §update), time is `tick.rs`
-(§tick-scheduler, §bus-seat) and the write window is `transaction.rs` (§write-window).
+(§tick-scheduler, §bus-seat) and the write window is `transaction.rs` (§write-window). The local administration
+channel for `fe-ext admin` is `admin/` (§admin).
+
+## §admin
+
+`admin/` is the shared half of the local extension-administration channel: wire protocol and OS-user transport,
+used by the app's listener and by `fe-ext`. It is not an API surface and never mounts on the network listener
+(extension administration is GUI plus this local channel only; consent is always confirmed in the GUI). Platform
+deps are target-gated in `Cargo.toml` (`windows-sys` 0.61 for the pipe DACL and SID checks, `libc` for `geteuid`).
+Contract `docs/extensions/admin-channel.md`; rationale in `src/admin/AGENTS.md`.
 
 ## §lifecycle
 

@@ -31,6 +31,16 @@ IO, no clock, no DB; the binary builds the snapshot on each re-resolution trigge
   existing per-petal local bind (§5.3).
 
 Instance caps (§5.6): only lazy hooks resolve `capacity`; an eager hook or a petal that already runs an instance never does.
+In `activation.rs` the cap counts every binding-started instance of an installation, eager ones included: an eager
+instance is never idle-stopped or evicted, but a start past the cap is held at `capacity` until a stop frees room.
+
+## §decode
+
+`decode.rs::read_within_cap` fixes the order: `DecodeHost::declared_files` reports each asset row (size, type,
+BLAKE3) without reading a blob; the declared sum is checked against the 1 MiB hook cap (`TooLarge`, no read at all);
+each file is then read through `read_bounded(file, size + 1)` and kept only when length and BLAKE3 match the row
+(`Mismatch`). Every failure leaves the payload opaque and fails open; readings staged by the call carry a host-set
+`DecodeStamp` (payload id, source class decoder) the guest cannot choose.
 
 - **Kill-list override (§5.7, R-BND).** Row 6 passes a revoked build only when `kill_override` is set AND
   `LocalFacts.is_verse_owner_host`: the override is the Owner's, for the Owner's own host. An override record on any

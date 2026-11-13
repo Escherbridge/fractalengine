@@ -1,6 +1,7 @@
 //! fe-plugin — plugin host: [`PluginHostPlugin`] spawns the plugin runtime thread (thread 7).
 //! Thread/channel architecture and the module map: src/AGENTS.md §architecture.
 
+pub mod admin;
 pub mod bindings;
 pub mod bus;
 pub mod capability;

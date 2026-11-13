@@ -104,6 +104,9 @@ ignore = [
     { id = "RUSTSEC-2023-0071", reason = "rsa 0.9 (via jsonwebtoken; FE signs/verifies EdDSA only, RSA never used): no upstream fix exists" },
 ]
 
+# fe-plugin's admin channel (src/admin/pipe_windows.rs) adds windows-sys 0.61 (MIT OR Apache-2.0) and, on Unix,
+# libc: both are already in Cargo.lock and both licences are on the allow-list above, so no new entry is needed.
+
 [bans]
 multiple-versions = "allow"
 

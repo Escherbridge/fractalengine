@@ -45,6 +45,20 @@ semver = "1"
 # lands it; until then licensed packages are refused (src/AGENTS.md §registry-install).
 fe-format = { path = "../fe-format", default-features = false }
 
+# Local admin channel (src/admin/AGENTS.md): owner-SID-only named pipe on Windows, uid-checked socket on Unix.
+# 0.61 is the line already in Cargo.lock (pointer-typed HANDLE, which pipe_windows.rs assumes).
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.61", features = [
+    "Win32_Foundation",
+    "Win32_Security",
+    "Win32_Security_Authorization",
+    "Win32_System_Pipes",
+    "Win32_System_Threading",
+] }
+
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
+
 [dev-dependencies]
 fe-plugin-test = { path = "../fe-plugin-test" }
 tokio = { workspace = true }

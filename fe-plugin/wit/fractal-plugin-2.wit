@@ -403,8 +403,9 @@ interface lifecycle {
     on-install: func(binding: binding) -> result<_, string>;
     /// Every activation, including after restarts and updates. An error refuses activation.
     on-activate: func(binding: binding) -> result<_, string>;
-    /// The instance stops. Writes staged here get one final flush unless the reason is
-    /// role-lost, policy-denied, revoked or degraded (the lease is already gone).
+    /// The instance stops. Staged writes are discarded unless the stop gets its final flush (it does not
+    /// for role-lost, policy-denied, revoked or degraded). A commit already in flight settles first, and
+    /// the write lease is revoked only after this call returns, so no write is withdrawn mid-flight.
     on-deactivate: func(reason: deactivate-reason);
     /// The binding is removed or the package uninstalled; one final flush follows (for cleanup).
     on-uninstall: func(binding: binding);
