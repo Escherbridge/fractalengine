@@ -1934,14 +1934,11 @@ The worker is an `OwnedService` in `maintenance_services`, so it stops with the 
 - **Deferred.**
   - Replace (`bundle_asset_pick`) needs a bundle-asset picker in fe-ui. Trigger: P-UI ships it; the binary half is then
     a `SetNodeProperty portal.bundle_asset` write plus `invalidate`.
-  - `local_client_did` is `None`, because `fe_api::dev_token::DevTokenWriter` mints its client DID internally. Trigger:
-    it accepts one, and `main.rs` passes the same DID to both.
-  - **Runtime Disable all does not reach the portal yet** (R-POR-IPC, handed off). `PortalGovernance::disabled_all`
-    starts from `FE_EXT_DISABLE_ALL` and follows `host/admission` `disable-all` events. Nothing in either tree posts
-    them: `Bus::feed_admission` has no caller, and `plugin_bridge::administer`'s `DisableAll`/`EnableAll` only flip the
-    plugin manager. Trigger: the merge. The fix is for `administer` to call
-    `PortalResolverRes.view().set_host_disabled(..)` (the view is an `AtomicBool`, safe from the API thread). The open
-    mount then unloads on the next re-judge tick. Relaying `host/admission` itself (a UI bus client in `portal_host`)
+  - Closed in turn 3 (R-BIN): `main.rs` mints one client DID when dev tokens are on and passes it to both
+    `spawn_dev_token_service_as` and `local_client_did`, so the dev tokens count as local for the summary read.
+  - Closed in turn 3 (R-X-33): runtime Disable all / Enable all reach the portal through
+    `plugin_bridge::link_portal_resolver` + `OpsPorts::host_switch_changed` (the ops worker's GUI/CLI verbs); the open
+    mount unloads on the next re-judge tick. Relaying `host/admission` itself (a UI bus client in `portal_host`) still
     waits until something calls `feed_admission`.
 
 ## QA Portal evidence
@@ -2239,8 +2236,14 @@ How `main.rs` and `portal_host/mod.rs` hand governance state to the rest of the 
   `spawn_sync_thread_with_sources`, `BevyHandles.blob_fallback` (the `blob://` reader) and
   `ExtensionBridgeConfig.blob_fallback` (the bridge installs and pumps the source). An empty slot is peers only.
 - **Bound portal reloads.** `follow_binding_changes` compares `ExtensionBindings::generation()` once per frame and,
-  while a `binding:<petal>:<package>` portal is open, writes `fe_webview::plugin::PortalBindingChanged`; the revoke
-  listener then calls `BundleHost::refresh_target`. `OpenBoundBundle` is written by fe-ui and mounted by fe-webview.
+  while a `binding:<petal>:<package>` portal is open, re-reads that petal's `portal.open` points; only when they
+  differ from the last frame it saw for the same anchor does it write `fe_webview::plugin::PortalBindingChanged`
+  (the revoke listener then calls `BundleHost::refresh_target`, which reloads the page). The view republishes for many
+  unrelated reasons (lazy starts, blob pumping, navigation), so reloading on every generation would drop page state.
+  A newly opened anchor records a baseline only; the anchor splits on the LAST ':' because petal ids may hold one.
+  `OpenBoundBundle` is mounted by fe-webview; at turn-3 HEAD no fe-ui action writes it yet (`UiAction::OpenBoundBundle`
+  only selects the node and opens the offer), so this path is idle until fe-ui does (R-BIN hand-off). A re-installed build under an unchanged binding is
+  the admission flow's business (new consent, `AdmissionSignal`), not this one.
 
 ## §admin-channel (turn 3)
 
@@ -2248,6 +2251,24 @@ The local CLI channel (`extension_host/admin_channel.rs`, protocol in `fe-plugin
 `plugin_bridge`, never by `main.rs`, and never touches REST/MCP or tokens. Every request becomes an `AdminJob` on the
 ops worker; consent-needing verbs wait for the GUI dialog. `main.rs` holds no channel state. Setup and env
 switches: `fe-plugin/src/admin/AGENTS.md`.
+
+- **The bound offer's node list.** fe-ui opens a bound `portal.open` bundle by selecting its repository node and
+  sending `OpenBundle` (node-anchored), so it needs `UiManager::portal_bundle_nodes`. `portal_host::feed_bundle_node`
+  fills it from each summary read: a node whose summary says `admitted` (local identity only) is listed under its
+  package id; any other answer drops it. Only nodes the inspector has read are known (a petal-wide index is future work).
+- **Row 6 wiring.** `main.rs` reads (never generates) the device X25519 key the DB thread's device enrolment owns and
+  hands it to `ExtensionBridgeConfig.device_key`; `GovernanceConfig::with_device_entitlement` builds the real verifier
+  only with the crate feature `entitlement` (off by default). Without the feature or the key every licensed build is
+  refused, and the licence-request ports (`licence_identity`, `request_licence_token`) still answer `not-available`.
+- **The API door refuses at both ends (R-BIN).** fe-api's `extensions::administer` refuses every verb before the
+  host is reached; the binary's `BusExtensionHost::administer` refuses too (`admin-gui-only`), so a future door that
+  forgets the fe-api check still cannot install, enable, override or switch Disable all. Disable all reaches the
+  portal only through the ops worker's `OpsPorts::host_switch_changed` (and the startup state in `install_with`).
+- **`asset.import` is bounded.** `ImportPort::convert` takes one of `MAX_IMPORTS_IN_FLIGHT` slots before the upload
+  body enters the (unbounded) binding-worker queue; the slot rides the signal into the call thread and frees on drop,
+  so a burst of 16 MiB uploads is answered `Failed` (502) instead of queueing bytes and threads.
+- **First-party ui stays first-party.** `sync_extension_ui` skips the terrain package (`slot_drain::is_host_command`):
+  `main.rs` registers its entries at startup, and an activation-driven unregister would remove the built-in toolbar.
 
 ## §store-client (turn 3)
 

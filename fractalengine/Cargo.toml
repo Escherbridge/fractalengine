@@ -87,3 +87,6 @@ default = []
 # Third-party package admission: needs this feature AND FE_PLUGIN_HOST_ALLOW=1; the host thread
 # itself always runs, inert (src/AGENTS.md §plugin-host).
 plugin-host = []
+# Licensed extensions: R19 row 6 verifies a stored licence token offline (extension_host/governance.rs). Off by
+# default: every licensed build is refused until a release turns it on (src/AGENTS.md §extension-governance).
+entitlement = ["fe-format/entitlement"]

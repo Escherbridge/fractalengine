@@ -12,7 +12,7 @@ use bevy::prelude::{App, Local, MessageReader, Res, ResMut, Resource, Update};
 use crossbeam::channel::{Receiver, RecvTimeoutError, Sender};
 use fe_api::bindings::{BindingHost, BindingListReply, BindingWriteReply, EffectivePoint};
 use fe_api::extensions::{
-    AdminOp, AdminRefusal, AdminReply, AdminVerb, ApiCaller, ApiCallerKind, CommandFailure,
+    AdminOp, AdminRefusal, AdminReply, ApiCaller, ApiCallerKind, CommandFailure,
     CommandReply, ExtensionHost, HostRefusal, IngressAnswer, IngressCall, IngressRefusal,
     WsAcceptCall, WsData, WsHostSession, WsOut, MAX_AUDIT_ROWS,
 };
@@ -417,6 +417,8 @@ pub(crate) struct ExtensionBridgeConfig {
     pub scene_changes: Option<tokio::sync::broadcast::Receiver<fe_runtime::messages::SceneChange>>,
     /// The `blob.source` slot the sync thread and the `blob://` reader ask; the bridge installs and pumps the source.
     pub blob_fallback: Option<BlobFallbackSlot>,
+    /// This device's X25519 key (R19 row 6 opens a licensed build's content key with it); `None` refuses licensed builds.
+    pub device_key: Option<fe_identity::x25519::DeviceKeypair>,
 }
 
 // ---------------------------------------------------------------------------
@@ -2101,8 +2103,34 @@ enum BindingSignal {
         input: Value,
         body: Vec<u8>,
         reply: Sender<WorkerAnswer>,
+        /// Held until the call thread ends; caps concurrent conversions (each carries up to 16 MiB).
+        slot: ImportSlot,
     },
     Manager(ManagerWork),
+}
+
+/// Concurrent `asset.import` conversions in flight on this host; past it an upload is answered `Failed` at once.
+const MAX_IMPORTS_IN_FLIGHT: usize = 4;
+
+/// One taken import slot; dropping it frees the slot.
+struct ImportSlot(Arc<AtomicUsize>);
+
+impl ImportSlot {
+    /// A slot when fewer than [`MAX_IMPORTS_IN_FLIGHT`] are taken.
+    fn take(in_flight: &Arc<AtomicUsize>) -> Option<Self> {
+        in_flight
+            .fetch_update(Ordering::AcqRel, Ordering::Acquire, |taken| {
+                (taken < MAX_IMPORTS_IN_FLIGHT).then_some(taken + 1)
+            })
+            .ok()?;
+        Some(Self(Arc::clone(in_flight)))
+    }
+}
+
+impl Drop for ImportSlot {
+    fn drop(&mut self) {
+        self.0.fetch_sub(1, Ordering::AcqRel);
+    }
 }
 
 /// A provider answer for the bound snippet cache, keyed by the request args it answers (R-UI-27).
@@ -2322,6 +2350,7 @@ impl BindingWorker {
         input: Value,
         body: Vec<u8>,
         reply: Sender<WorkerAnswer>,
+        slot: ImportSlot,
     ) {
         let point = BindingPoint::new(IMPORT_HOOK, mime);
         let target = {
@@ -2358,6 +2387,7 @@ impl BindingWorker {
         let spawned = std::thread::Builder::new()
             .name("fe-ext-import".into())
             .spawn(move || {
+                let _slot = slot;
                 let answer = match live.call(&target.plugin_id, &request, None) {
                     Ok(reply) => WorkerAnswer::Output {
                         output: reply.output,
@@ -2445,7 +2475,8 @@ impl BindingWorker {
                 input,
                 body,
                 reply,
-            } => self.import_call(&petal_id, &mime, input, body, reply),
+                slot,
+            } => self.import_call(&petal_id, &mime, input, body, reply, slot),
             BindingSignal::Manager(work) => self.manager_work(work),
         }
     }
@@ -3375,7 +3406,6 @@ pub(crate) struct ExtensionHostParts {
     runtime: Option<tokio::runtime::Handle>,
     ticks: TickHost,
     governance: ExtensionGovernance,
-    manager: Option<Arc<Mutex<PluginManager>>>,
     index: InstallationIndex,
     view: BindingView,
     live: LiveInstances,
@@ -3539,30 +3569,6 @@ impl BusExtensionHost {
             "bindings": bindings,
         })
     }
-
-    fn admin_audit(
-        &self,
-        action: PolicyAction,
-        target: &str,
-        installation: Option<&str>,
-        outcome: PolicyOutcome,
-        reason: Option<String>,
-    ) {
-        self.parts.governance.append_audit(PolicyEntry {
-            action,
-            installation: installation.map(str::to_string),
-            package_id: None,
-            content_hash: None,
-            actor_did: self.parts.local_did.clone(),
-            target: target.to_string(),
-            outcome,
-            reason,
-            args_digest: None,
-            verse_id: None,
-            capability_digest: None,
-            at: String::new(),
-        });
-    }
 }
 
 fn host_refusal(refusal: BusRefusal) -> HostRefusal {
@@ -3647,64 +3653,13 @@ impl ExtensionHost for BusExtensionHost {
             .audit_rows(installation, limit.min(MAX_AUDIT_ROWS))
     }
 
-    fn administer(&self, actor_did: &str, op: AdminOp) -> Result<Value, AdminRefusal> {
-        if self.parts.local_did.is_empty() || actor_did != self.parts.local_did {
-            return Err(admin_refusal(
-                "not-local-identity",
-                "only the host's local identity administers extensions",
-            ));
-        }
-        if op.verb == AdminVerb::KillListOverride {
-            let recorded = self
-                .parts
-                .governance
-                .kill_list_override(actor_did, &op.params)?;
-            self.parts
-                .signal(BindingSignal::AllDirty(Trigger::KillList));
-            return Ok(recorded);
-        }
-        let manager = self.parts.manager.as_ref().ok_or_else(|| {
-            admin_refusal("host-off", "the plugin manager did not start on this host")
-        })?;
-        match op.verb {
-            AdminVerb::DisableAll => {
-                let stopped = lock(manager).disable_all();
-                // Layer b covers portals too (R-X-33): a mounted bundle unloads, rows it wrote stay (OD-E1).
-                portal_host_switch(true);
-                self.admin_audit(PolicyAction::Disable, "*", None, PolicyOutcome::Ok, None);
-                self.parts.signal(BindingSignal::AllDirty(Trigger::Lifecycle));
-                Ok(json!({ "disabled_all": true, "stopped": stopped }))
-            }
-            AdminVerb::EnableAll => {
-                if fe_plugin::lifecycle::ext_disable_all(
-                    std::env::var(fe_plugin::lifecycle::EXT_DISABLE_ALL_ENV).ok().as_deref(),
-                ) {
-                    return Err(admin_refusal(
-                        "host-off",
-                        format!("{}=1 was set at startup and still wins", fe_plugin::lifecycle::EXT_DISABLE_ALL_ENV),
-                    ));
-                }
-                lock(manager).enable_all();
-                portal_host_switch(false);
-                self.admin_audit(PolicyAction::Enable, "*", None, PolicyOutcome::Ok, None);
-                self.parts.signal(BindingSignal::AllDirty(Trigger::Lifecycle));
-                Ok(json!({ "disabled_all": false }))
-            }
-            AdminVerb::Disable => {
-                let installation = op
-                    .installation
-                    .as_deref()
-                    .ok_or_else(|| admin_refusal("invalid-input", "disable needs an installation"))?;
-                let stopped = lock(manager).disable_instance(installation);
-                self.admin_audit(PolicyAction::Disable, installation, Some(installation), PolicyOutcome::Ok, None);
-                self.parts.signal(BindingSignal::AllDirty(Trigger::Lifecycle));
-                Ok(json!({ "installation_id": installation, "stopped": stopped }))
-            }
-            verb => Err(admin_refusal(
-                "not-available",
-                format!("{} runs through the Extensions panel on this host (it needs the consent dialog)", verb.as_str()),
-            )),
-        }
+    fn administer(&self, _actor_did: &str, op: AdminOp) -> Result<Value, AdminRefusal> {
+        // Fail closed even if a door ever reaches here: administration is the Extensions panel and the local
+        // `fe-ext admin` channel only, both through the ops worker (user decision 2026-11-09; src/AGENTS.md §admin-channel).
+        Err(admin_refusal(
+            "admin-gui-only",
+            format!("{} runs through the Extensions panel or fe-ext admin on this host", op.verb.as_str()),
+        ))
     }
 
     fn record_denied_admin(&self, actor_did: &str, target: &str) {
@@ -4089,6 +4044,8 @@ pub(crate) fn api_binding_host(app: &App) -> Option<Arc<dyn BindingHost>> {
 struct ImportPort {
     view: BindingView,
     signals: BindingSignals,
+    /// Conversions in flight ([`MAX_IMPORTS_IN_FLIGHT`]).
+    in_flight: Arc<AtomicUsize>,
 }
 
 impl ImportWorkerPort for ImportPort {
@@ -4098,12 +4055,19 @@ impl ImportWorkerPort for ImportPort {
 
     fn convert(&self, petal_id: &str, mime: &str, input: Value, body: Vec<u8>) -> Receiver<WorkerAnswer> {
         let (reply, receiver) = crossbeam::channel::bounded(1);
+        // Bounded before the 16 MiB body reaches the unbounded worker queue: an upload burst cannot pile up bytes or threads.
+        let Some(slot) = ImportSlot::take(&self.in_flight) else {
+            tracing::warn!(petal_id, mime, "asset.import busy: {MAX_IMPORTS_IN_FLIGHT} conversions already running");
+            let _ = reply.send(WorkerAnswer::Failed);
+            return receiver;
+        };
         self.signals.send(BindingSignal::Import {
             petal_id: petal_id.to_string(),
             mime: mime.to_string(),
             input,
             body,
             reply,
+            slot,
         });
         receiver
     }
@@ -4405,7 +4369,9 @@ pub(crate) fn install_with(app: &mut App, config: ExtensionBridgeConfig) {
 
     // Governance reads the role view and external policy just inserted; its sink is the bus's durable audit.
     let qa_root = fe_identity::file_fallback::qa_storage_root().ok().flatten();
-    let governance_config = GovernanceConfig::from_env(local_did.clone(), qa_root.as_deref());
+    // Row 6 is the real verifier only with feature `entitlement`; without it (or a device key) licensed builds are refused.
+    let governance_config =
+        GovernanceConfig::from_env(local_did.clone(), qa_root.as_deref()).with_device_entitlement(config.device_key);
     let data_dir: PathBuf = governance_config.config_dir.clone();
     let governance = governance::install(app, governance_config);
     let audit = governance.audit_sink();
@@ -4547,7 +4513,6 @@ pub(crate) fn install_with(app: &mut App, config: ExtensionBridgeConfig) {
         runtime: runtime_handle,
         ticks: ticks.clone(),
         governance: governance.clone(),
-        manager: manager.clone(),
         index: index.clone(),
         view: view.clone(),
         live: live.clone(),
@@ -4649,6 +4614,7 @@ pub(crate) fn install_with(app: &mut App, config: ExtensionBridgeConfig) {
     app.insert_resource(ExtensionImportHooks(Arc::new(ImportPort {
         view: view.clone(),
         signals: signals.clone(),
+        in_flight: Arc::new(AtomicUsize::new(0)),
     })));
 
     // `blob.source`: the sync thread's scene transfers and the `blob://` reader ask the worker after peers miss.
@@ -4759,6 +4725,8 @@ fn sync_extension_ui(
         .index
         .rows()
         .into_values()
+        // The terrain package's entries are first-party (main.rs registers them); this sync never owns them.
+        .filter(|row| !crate::extension_host::slot_drain::is_host_command(&row.package_id))
         .filter(|row| row.instances.iter().any(|instance| !instance.degraded))
         .filter_map(|row| Some((row.package_id, (row.content_hash, row.manifest?))))
         .collect();

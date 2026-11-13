@@ -536,6 +536,13 @@ fn main() {
             api_cmd_tx: None,
             scene_changes: Some(entity_change_tx.subscribe()),
             blob_fallback: Some(blob_fallback),
+            // Read only, never generated here: the DB thread's device enrolment owns creating it (a second writer
+            // could race it). Absent on a first run, so licensed builds wait for the next start (fail closed).
+            device_key: fe_identity::load_device_keypair(
+                &secret_store,
+                fe_database::canon_log::device_enrolment::LOCAL_DEVICE_KEY_ACCOUNT,
+            )
+            .ok(),
         },
     );
     // ingest.decode reads accepted payload files from the same content-addressed store.
@@ -803,16 +810,20 @@ fn main() {
 
     // Agent QA: write loopback-only API tokens for every local verse once the
     // API is listening, and rewrite on verse-set changes (src/AGENTS.md §qa-dev-token).
-    if let (Some(path), Some(db), Some(keypair)) = (dev_token_out, dev_token_db, dev_token_keypair)
+    // One client DID for this host's own tokens, shared with the portal host (R-API: one upload bucket, one `client`).
+    let local_client_did = dev_token_out.as_ref().map(|_| fe_identity::new_client_did());
+    if let (Some(path), Some(db), Some(keypair), Some(client_did)) =
+        (dev_token_out, dev_token_db, dev_token_keypair, local_client_did.clone())
     {
         let (verse_ids_tx, verse_ids_rx) = crossbeam::channel::unbounded();
-        match fe_api::dev_token::spawn_dev_token_service(fe_api::dev_token::DevTokenWriter {
+        let writer = fe_api::dev_token::DevTokenWriter {
             path,
             db,
             keypair,
             listening_rx: dev_listening_rx,
             verse_ids_rx,
-        }) {
+        };
+        match fe_api::dev_token::spawn_dev_token_service_as(writer, client_did) {
             Ok(service) => maintenance_services.push(service),
             Err(error) => tracing::error!(%error, "dev-token service could not start"),
         }
@@ -1049,8 +1060,8 @@ fn main() {
             db: portal_db,
             blobs: blob_store_for_portal,
             scene_changes: entity_change_tx.subscribe(),
-            // fe-api's dev-token writer mints its own client DID, so no token is local for the summary read yet.
-            local_client_did: None,
+            // The dev tokens' client DID: those tokens are this host's own for the summary read.
+            local_client_did: local_client_did.clone(),
         },
         &render_work,
     ));

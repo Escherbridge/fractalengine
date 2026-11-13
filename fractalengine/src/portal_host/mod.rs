@@ -128,6 +128,7 @@ pub(crate) fn install(app: &mut App, config: PortalHostConfig, render_work: &Pen
         stale: HashSet::new(),
         retry: Vec::new(),
         next_tick: None,
+        governance_seen: None,
     });
     app.init_resource::<PortalConsent>();
     app.add_systems(Update, (drive_portal_host, follow_binding_changes).in_set(AdmissionWriters));
@@ -622,6 +623,8 @@ struct PortalHost {
     /// Summary reads a full queue turned away.
     retry: Vec<String>,
     next_tick: Option<Instant>,
+    /// Governance's change generation at the last re-judge; a move re-judges before the timer (R-POR-T3-08).
+    governance_seen: Option<u64>,
 }
 
 impl PortalHost {
@@ -753,6 +756,7 @@ impl PortalHost {
                         changes.write(PortalBundleChanged { node_id: node_id.clone() });
                     }
                     if let Some(summary) = parse_summary(&data) {
+                        feed_bundle_node(&mut ui.portal_bundle_nodes, &node_id, &summary);
                         ui.repository_view.ingest(&node_id, summary);
                     }
                     self.read_done(&node_id);
@@ -868,7 +872,9 @@ impl PortalHost {
             return;
         }
         let now = Instant::now();
-        if self.next_tick.is_some_and(|at| now < at) {
+        // A governance change (kill list, policy row, acceptance) re-judges now; the timer stays the fallback.
+        let governance_moved = self.resolver.view().changed_since(&mut self.governance_seen);
+        if !governance_moved && self.next_tick.is_some_and(|at| now < at) {
             return;
         }
         self.next_tick = Some(now + REJUDGE_EVERY);
@@ -917,25 +923,63 @@ fn drive_portal_host(
     host.tick(ui, &mut signals, &mut changes);
 }
 
-/// Update, in `AdmissionWriters`: the binding view moved while a bound portal is open, so it re-resolves and reloads
-/// (the host decides whether the build changed, `BundleHost::refresh_target`). Idle frames compare one counter.
+/// `UiManager::portal_bundle_nodes` from one summary read (R-UI3-09): a node whose bundle this host admitted is where
+/// the inspector's bound `portal.open` offer opens; any other answer for the node drops it.
+fn feed_bundle_node(
+    nodes: &mut Vec<(String, String)>,
+    node_id: &str,
+    summary: &fe_ui::portal::repository_view::BundleSummary,
+) {
+    nodes.retain(|(_, known)| known != node_id);
+    let admitted = summary.admission.as_ref().is_some_and(|(state, _)| state == "admitted");
+    if admitted && nodes.len() < MAX_TRACKED_NODES {
+        nodes.push((summary.package_id.clone(), node_id.to_owned()));
+    }
+}
+
+/// The bound portal `follow_binding_changes` last looked at: the view generation, then the open anchor's
+/// `(petal_id, package_id)` and its `portal.open` points.
+#[derive(Default)]
+struct BoundPortalSeen {
+    generation: u64,
+    anchor: Option<(String, String, Vec<fe_api::bindings::EffectivePoint>)>,
+}
+
+/// Update, in `AdmissionWriters`: an open bound portal reloads only when its petal's `portal.open` resolution moved
+/// (`BundleHost::refresh_target`); other republishes of the binding view leave the page alone. Idle frames compare
+/// one counter and two strings.
 fn follow_binding_changes(
     bindings: Option<Res<crate::plugin_bridge::ExtensionBindings>>,
     ui: Res<UiManager>,
-    mut seen: Local<u64>,
+    mut seen: Local<BoundPortalSeen>,
     mut changes: MessageWriter<PortalBindingChanged>,
 ) {
     let Some(bindings) = bindings else { return };
     let generation = bindings.generation();
-    if generation == *seen {
+    // `binding:<petal>:<package>`: a package id never holds ':', a petal id may.
+    let open = ui.portal.bundle_node_id().and_then(|anchor| anchor.strip_prefix("binding:")?.rsplit_once(':'));
+    let Some((petal_id, package_id)) = open else {
+        seen.anchor = None;
+        seen.generation = generation;
+        return;
+    };
+    let same_anchor = seen.anchor.as_ref().is_some_and(|(petal, package, _)| petal == petal_id && package == package_id);
+    if same_anchor && generation == seen.generation {
         return;
     }
-    *seen = generation;
-    let Some(anchor) = ui.portal.bundle_node_id().and_then(|anchor| anchor.strip_prefix("binding:")) else { return };
-    if let Some((petal_id, package_id)) = anchor.split_once(':') {
+    seen.generation = generation;
+    let points: Vec<_> =
+        bindings.effective_at(petal_id).into_iter().filter(|point| point.hook == PORTAL_OPEN_HOOK).collect();
+    // A newly opened anchor only records its baseline; a reload needs a moved resolution for the same anchor.
+    let moved = same_anchor && seen.anchor.as_ref().is_some_and(|(_, _, before)| *before != points);
+    seen.anchor = Some((petal_id.to_owned(), package_id.to_owned(), points));
+    if moved {
         changes.write(PortalBindingChanged { petal_id: petal_id.to_owned(), package_id: package_id.to_owned() });
     }
 }
+
+/// The binding hook a petal's portal surface resolves through (bindings.md §6).
+const PORTAL_OPEN_HOOK: &str = "portal.open";
 
 /// The portal consent dialog, drawn only while an Admit awaits an answer.
 fn render_portal_consent(mut contexts: EguiContexts, mut dialog: ResMut<PortalConsent>) {
