@@ -140,8 +140,16 @@ pub enum ExtensionOp {
     InstallFromFile { path: String },
     /// Fetch, verify and stage a package from a registry source.
     InstallFromRegistry { source_id: String, entry: fe_hexon::registry_source::RegistryEntry },
-    /// List a registry source.
+    /// List a registry source without search (kept for sources that only list).
     BrowseList { source_id: String, query: String },
+    /// Search a source: its hosted search when it advertises one, else the local filter over the verified index.
+    Search { source_id: String, query: fe_hexon::registry_source::SearchQuery },
+    /// Verify one package's detail document and header (counter-signature); the bridge answers with `BrowseEvent::Detail`.
+    LoadDetail { source_id: String, entry: fe_hexon::registry_source::RegistryEntry },
+    /// Open the package's licence page in the system browser (the bridge appends the licensee and device ids).
+    OpenAcquire { source_id: String, package_id: String },
+    /// Ask the issuer for a licence token and verify it; the bridge answers with `BrowseEvent::Entitlement`.
+    RequestLicenceToken { source_id: String, package_id: String },
     /// Switch one binding on.
     Enable { installation_id: String, binding_id: String },
     /// Switch one binding off.
@@ -207,6 +215,8 @@ pub enum PanelView {
     Browse,
     /// Hook points at the active petal.
     Bindings,
+    /// One catalogue package of the selected Browse source.
+    StoreDetails { package_id: String },
     /// One installation.
     Details { installation_id: String, tab: DetailsTab },
 }
@@ -490,6 +500,7 @@ pub fn draw(ui: &mut egui::Ui, state: &mut ExtensionsPanelState) {
     match state.view.clone() {
         PanelView::Installed => draw_installed(ui, state),
         PanelView::Browse => browse::draw(ui, state),
+        PanelView::StoreDetails { package_id } => details::draw_store(ui, state, &package_id),
         PanelView::Bindings => bindings::draw(ui, state),
         PanelView::Details { installation_id, tab } => details::draw(ui, state, &installation_id, tab),
     }
@@ -501,7 +512,8 @@ fn tab_strip(ui: &mut egui::Ui, state: &mut ExtensionsPanelState) {
         if ui.selectable_label(installed, "Installed").button_named(ui, "Installed extensions").clicked() {
             state.view = PanelView::Installed;
         }
-        if ui.selectable_label(state.view == PanelView::Browse, "Browse").button_named(ui, "Browse extensions").clicked() {
+        let browsing = matches!(state.view, PanelView::Browse | PanelView::StoreDetails { .. });
+        if ui.selectable_label(browsing, "Browse").button_named(ui, "Browse extensions").clicked() {
             state.view = PanelView::Browse;
         }
         if ui.selectable_label(state.view == PanelView::Bindings, "Bindings").button_named(ui, "Extension bindings").clicked() {
@@ -741,6 +753,85 @@ mod tests {
         state.apply_event(ExtensionEvent::Rows(Vec::new()), &mut consent);
         assert!(!frame(&mut state).iter().any(|(name, _)| name == "Open org.example.fleet-sim"));
         assert!(state.stopped_packages().contains("org.example.fleet-sim"), "an uninstalled package's contributions never draw again");
+
+        // Browse (store client): search on first draw, free hits install, licensed hits open details, a kill-listed hit is unavailable.
+        use super::super::browse::{BrowseEvent, BrowseSource};
+        use super::super::details::{EntitlementState, StoreDetail};
+        use fe_hexon::registry_source::{IndexEntry, Publisher, SearchHit, SearchResults};
+        let hit = |id: &str, access: &str, revoked: bool| SearchHit {
+            entry: IndexEntry {
+                package_id: id.into(),
+                kind: "extension".into(),
+                name: id.into(),
+                summary: "Fleet".into(),
+                publisher: Publisher { did: "did:key:zAcme".into(), name: "Acme".into(), verified: true },
+                latest_version: "1.0.0".into(),
+                latest_content_hash: "h1".into(),
+                detail_hash: "d1".into(),
+                access: access.into(),
+                categories: Vec::new(),
+                tags: Vec::new(),
+                icon_url: None,
+                updated_at: None,
+            },
+            verified: true,
+            revoked,
+        };
+        let results = |hits: Vec<SearchHit>, next_cursor: Option<&str>| {
+            ExtensionEvent::Browse(BrowseEvent::Results {
+                source_id: "s1".into(),
+                results: SearchResults { hits, next_cursor: next_cursor.map(str::to_owned), ..SearchResults::default() },
+            })
+        };
+        state.view = PanelView::Browse;
+        state.apply_event(ExtensionEvent::Browse(BrowseEvent::Sources(vec![BrowseSource { id: "s1".into(), label: "Registry".into() }])), &mut consent);
+        frame(&mut state);
+        assert!(matches!(state.take_ops().as_slice(), [ExtensionOp::Search { source_id, query }] if source_id == "s1" && query.q.is_none()));
+        state.apply_event(results(vec![hit("org.a.free", "free", false), hit("org.a.paid", "licensed", false), hit("org.a.gone", "free", true)], Some("c2")), &mut consent);
+        let names = frame(&mut state);
+        assert!(enabled(&names, "Install org.a.free 1.0.0") && enabled(&names, "Details of org.a.paid") && enabled(&names, "Load more extensions"));
+        assert!(!names.iter().any(|(name, _)| name.starts_with("Install org.a.paid") || name.ends_with("org.a.gone")), "licensed installs from details; revoked has no action");
+        // The next page appends instead of replacing.
+        state.request_more_results();
+        assert!(matches!(state.take_ops().as_slice(), [ExtensionOp::Search { query, .. }] if query.cursor.as_deref() == Some("c2")));
+        state.apply_event(results(vec![hit("org.a.more", "free", false)], None), &mut consent);
+        assert_eq!(state.browse.rows.len(), 4);
+        // Licensed details: Install waits for a verified token; Reviewed shows only from a verified counter-signature.
+        let paid = state.browse.rows[1].entry.clone();
+        state.open_store_details(&paid);
+        assert!(matches!(state.take_ops().as_slice(), [ExtensionOp::LoadDetail { entry, .. }] if entry.package_id == "org.a.paid"));
+        let detail = StoreDetail {
+            entry: paid,
+            name: "Paid".into(),
+            description: String::new(),
+            publisher: "Acme".into(),
+            access: "licensed".into(),
+            categories: Vec::new(),
+            versions: Vec::new(),
+            unavailable: None,
+            reviewed: false,
+            can_acquire: true,
+            entitlement: EntitlementState::Unknown,
+            notes: Vec::new(),
+        };
+        state.apply_event(ExtensionEvent::Browse(BrowseEvent::Detail { source_id: "s1".into(), detail: Box::new(detail) }), &mut consent);
+        let names = frame(&mut state);
+        assert!(enabled(&names, "Get licence for org.a.paid") && disabled(&names, "Install org.a.paid 1.0.0"));
+        assert!(!names.iter().any(|(name, _)| name.starts_with("Reviewed")));
+        let held = EntitlementState::Held { expires: None };
+        state.apply_event(ExtensionEvent::Browse(BrowseEvent::Entitlement { source_id: "s1".into(), package_id: "org.a.paid".into(), state: held }), &mut consent);
+        if let Some(detail) = state.browse.detail.as_mut() {
+            detail.reviewed = true;
+        }
+        let names = frame(&mut state);
+        assert!(enabled(&names, "Install org.a.paid 1.0.0") && enabled(&names, "Reviewed org.a.paid"));
+        assert!(!names.iter().any(|(name, _)| name.starts_with("Get licence")));
+        // A kill-listed package offers no action at all.
+        if let Some(detail) = state.browse.detail.as_mut() {
+            detail.unavailable = Some("Revoked by the registry".into());
+        }
+        assert!(!frame(&mut state).iter().any(|(name, _)| name.starts_with("Install org.a.paid")));
+        state.working = None;
 
         // Bindings view (bindings.md section 9): a state row per point, `:action` for its one offer, Manager+ edit, Owner override.
         use super::super::bindings::{BindingPointRow, BindingsSnapshot, ProviderOption, ScopeOption, ScopeTarget};
