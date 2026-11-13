@@ -14,8 +14,8 @@ use bytes::Bytes;
 use std::future::Future;
 use std::path::Path;
 use std::pin::Pin;
-use std::sync::{Arc, RwLock};
-use std::task::Poll;
+use std::sync::{mpsc, Arc, OnceLock, RwLock};
+use std::task::{Poll, Waker};
 use std::time::{Duration, Instant};
 
 use crate::blob_store::{hash_from_hex, hash_to_hex, BlobHash, BlobStoreHandle};
@@ -167,11 +167,12 @@ fn accept(hook: &str, hash: &BlobHash, expected_size: Option<u64>, max_bytes: u6
 /// Longest an asset-IO task waits on the bound source, so an unpumped slot cannot park it.
 pub const READER_SOURCE_TIMEOUT: Duration = Duration::from_secs(35);
 
-/// `future` or `None` after `limit`; executor-agnostic (one parked thread wakes the task), for Bevy IO tasks that have no tokio timer.
+/// `future` or `None` after `limit`; executor-agnostic (the shared deadline thread wakes the task), for Bevy IO tasks
+/// that have no tokio timer.
 async fn with_deadline(future: impl Future<Output = Option<Bytes>>, limit: Duration) -> Option<Bytes> {
     let mut future = Box::pin(future);
     let deadline = Instant::now() + limit;
-    let mut timer_started = false;
+    let mut registered: Option<Waker> = None;
     std::future::poll_fn(move |cx| {
         if let Poll::Ready(answer) = future.as_mut().poll(cx) {
             return Poll::Ready(answer);
@@ -179,17 +180,71 @@ async fn with_deadline(future: impl Future<Output = Option<Bytes>>, limit: Durat
         if Instant::now() >= deadline {
             return Poll::Ready(None);
         }
-        if !timer_started {
-            timer_started = true;
-            let waker = cx.waker().clone();
-            std::thread::spawn(move || {
-                std::thread::sleep(limit);
-                waker.wake();
-            });
+        // Register once per distinct waker, so a task moved to another worker is still woken at the deadline.
+        if !registered.as_ref().is_some_and(|waker| waker.will_wake(cx.waker())) {
+            registered = Some(cx.waker().clone());
+            wake_at(deadline, cx.waker().clone());
         }
         Poll::Pending
     })
     .await
+}
+
+/// Wake `waker` at `deadline` from one shared timer thread (never a thread per read: a burst of misses would
+/// otherwise park one sleeping OS thread each for the whole timeout).
+fn wake_at(deadline: Instant, waker: Waker) {
+    static TIMER: OnceLock<Option<mpsc::Sender<(Instant, Waker)>>> = OnceLock::new();
+    let timer = TIMER.get_or_init(|| {
+        let (sender, receiver) = mpsc::channel();
+        std::thread::Builder::new()
+            .name("fe-blob-deadline".into())
+            .spawn(move || run_deadline_timer(receiver))
+            .map_err(|error| tracing::warn!("blob reader deadline timer unavailable: {error}"))
+            .ok()
+            .map(|_| sender)
+    });
+    let unsent = match timer {
+        Some(sender) => sender.send((deadline, waker)).err().map(|mpsc::SendError((_, waker))| waker),
+        None => Some(waker),
+    };
+    // No shared timer: fall back to one sleeping thread for this read, so the deadline still holds.
+    if let Some(waker) = unsent {
+        let limit = deadline.saturating_duration_since(Instant::now());
+        let spawned = std::thread::Builder::new().name("fe-blob-deadline-1".into()).spawn({
+            let waker = waker.clone();
+            move || {
+                std::thread::sleep(limit);
+                waker.wake();
+            }
+        });
+        if spawned.is_err() {
+            waker.wake();
+        }
+    }
+}
+
+/// The deadline thread: wakes every registered task whose deadline passed, sleeping until the next one.
+fn run_deadline_timer(receiver: mpsc::Receiver<(Instant, Waker)>) {
+    let mut pending: Vec<(Instant, Waker)> = Vec::new();
+    loop {
+        let now = Instant::now();
+        pending.retain(|(at, waker)| {
+            let due = *at <= now;
+            if due {
+                waker.wake_by_ref();
+            }
+            !due
+        });
+        let received = match pending.iter().map(|(at, _)| *at).min() {
+            Some(next) => receiver.recv_timeout(next.saturating_duration_since(Instant::now())),
+            None => receiver.recv().map_err(|_| mpsc::RecvTimeoutError::Disconnected),
+        };
+        match received {
+            Ok(entry) => pending.push(entry),
+            Err(mpsc::RecvTimeoutError::Timeout) => {}
+            Err(mpsc::RecvTimeoutError::Disconnected) => return,
+        }
+    }
 }
 
 /// An [`AssetReader`] that reads files from a content-addressed blob store.
@@ -459,6 +514,11 @@ mod tests {
             verify_fallback_bytes(&sourced_hash, None, 8, &sourced),
             Err(FallbackRejection::TooLarge { len: sourced.len() as u64, max: 8 })
         );
+        // A source nobody pumps cannot park the IO task: the shared deadline thread ends both waits.
+        let parked = [20, 40].map(|ms| {
+            bevy::tasks::block_on(with_deadline(std::future::pending(), Duration::from_millis(ms)))
+        });
+        assert_eq!(parked, [None, None], "an unanswered source ends at the reader deadline");
     }
 
     fn nanos_suffix() -> u128 {

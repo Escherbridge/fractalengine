@@ -195,6 +195,7 @@ async fn source_fallback(
         asset_id: Some(permit.asset_id.clone()),
         petal_id: Some(permit.petal_id.clone()),
     };
+    // A verse closing mid-ask is handled by the job's outer `select!` on the stop signal, which drops this future.
     let Ok(answer) = tokio::time::timeout(SOURCE_TIMEOUT, source.source_blob(request)).await else {
         tracing::info!(hash = %hash_to_hex(&hash), "scene blob.source timed out");
         return Ok(None);
@@ -329,10 +330,11 @@ mod tests {
         }
     }
 
-    /// Source-fallback leg of the scene-asset fetch: a bound source serves only exact, hash-true bytes after the peers missed.
+    /// Source-fallback leg of the scene-asset fetch: a bound source serves only exact, hash-true bytes that also pass
+    /// the scene-asset intake (MIME container check) after the peers missed.
     #[tokio::test]
     async fn blob_source_serves_scene_bytes_only_when_exact() {
-        let body: &'static [u8] = b"scene asset bytes";
+        let body: &'static [u8] = br#"{"asset":{"version":"2.0"}}"#;
         let hash = *blake3::hash(body).as_bytes();
         let permit = SceneAssetTransferPermit {
             verse_id: "verse".into(),
@@ -340,7 +342,7 @@ mod tests {
             node_id: None,
             asset_id: "asset".into(),
             content_hash: hash,
-            content_type: "application/octet-stream".into(),
+            content_type: "model/gltf+json".into(),
             size_bytes: body.len() as u64,
             asset_fingerprint: String::new(),
         };
@@ -355,6 +357,9 @@ mod tests {
         slot.install(Arc::new(FixedSource(Some(body))));
         let served = source_fallback(&slot, hash, &permit, &lease).await.unwrap();
         assert_eq!(served.as_deref(), Some(body), "exact bytes are served");
+        // Hash-true bytes still meet the scene intake: a JSON document under a GLB MIME is refused, never stored.
+        let glb_permit = SceneAssetTransferPermit { content_type: "model/gltf-binary".into(), ..permit.clone() };
+        assert!(source_fallback(&slot, hash, &glb_permit, &lease).await.is_err(), "the intake check runs on source bytes");
         lease.stop.request();
         assert!(source_fallback(&slot, hash, &permit, &lease).await.unwrap().is_none(), "a closed verse asks nothing");
     }

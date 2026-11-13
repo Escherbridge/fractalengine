@@ -262,6 +262,13 @@ a host without bindings behaves as before.
 ## §registry-addresses — R-NET-30
 
 `registry_client::RegistryClient` uses the same `CheckedResolver` (exported from `net`) so a registry name resolves
-once and connects to exactly the checked addresses. IP-literal base URLs and every redirect hop go through
-`literal_refusal`; the documented loopback rule applies (`127.0.0.1`, `::1`, `localhost` reach loopback only, any
-other host global unicast only). R-NET-18 stays deferred.
+once and connects to exactly the checked addresses. IP-literal base URLs go through `literal_refusal`; the
+documented loopback rule applies (`127.0.0.1`, `::1`, `localhost` reach loopback only, any other host global unicast
+only). R-NET-18 stays deferred.
+
+R-PLUG hardening (P2P-QA steer 2026-11-13): the base must be `https`, or `http` only to a loopback name (a bearer
+token never travels in clear); the client sets `.no_proxy()` (an `HTTP(S)_PROXY` would take the connection and the
+resolver would never see the target) and follows redirects **only within the first request's origin** (same scheme,
+host and port), so a redirect can neither downgrade https to http nor reach loopback from a public base. A
+cross-origin redirect is not followed: the 3xx answer comes back and the read fails on its status. This is the same
+rule as `fe_hexon::remote::store_client_builder` (fe-plugin cannot depend on fe-hexon, hence the local copy).

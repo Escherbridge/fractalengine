@@ -5,7 +5,7 @@ use std::time::Duration;
 use fe_format::license::{License, LicenseType};
 use fe_format::HexonArchive;
 
-use crate::net::{literal_refusal, CheckedResolver};
+use crate::net::{is_loopback, literal_refusal, CheckedResolver};
 use crate::package::{payload_hash, SignatureEntry};
 
 /// Registry protocol version this client speaks.
@@ -83,18 +83,24 @@ impl RegistryClient {
     pub fn new(base_url: impl Into<String>, token: Option<String>) -> Self {
         let base_url: String = base_url.into();
         let refusal = host_refusal(&base_url);
-        // Names resolve once through the checked resolver; IP literals (never resolved) and redirect hops are checked here.
+        // Names resolve once through the checked resolver; IP literals (never resolved) are checked by `host_refusal`.
+        // No environment proxy (the resolver must see the real target) and same-origin redirects only (net/AGENTS.md
+        // §registry-addresses).
         let http = reqwest::Client::builder()
             .connect_timeout(CONNECT_TIMEOUT)
             .timeout(REQUEST_TIMEOUT)
             .dns_resolver(std::sync::Arc::new(CheckedResolver))
+            .no_proxy()
+            .referer(false)
             .redirect(reqwest::redirect::Policy::custom(|attempt| {
+                let same_origin =
+                    attempt.previous().first().is_some_and(|first| first.origin() == attempt.url().origin());
                 if attempt.previous().len() >= MAX_REDIRECTS {
                     attempt.error("too many redirects")
-                } else if let Some(reason) = host_refusal(attempt.url().as_str()) {
-                    attempt.error(reason)
-                } else {
+                } else if same_origin {
                     attempt.follow()
+                } else {
+                    attempt.stop()
                 }
             }))
             .build();
@@ -221,11 +227,21 @@ impl RegistryClient {
     }
 }
 
-/// Why `url`'s host is refused before any lookup: a non-public IP literal other than the declared loopback names
-/// (net/AGENTS.md §addresses); names are checked by the resolver at connect time.
+/// Why the base `url` is refused before any lookup: unparseable, plaintext beyond loopback (the bearer token would
+/// travel in clear), or a non-public IP literal other than the loopback names (net/AGENTS.md §registry-addresses);
+/// names are checked by the resolver at connect time.
 fn host_refusal(url: &str) -> Option<String> {
-    let parsed = reqwest::Url::parse(url).ok()?;
-    let host = parsed.host_str()?.trim_start_matches('[').trim_end_matches(']').to_ascii_lowercase();
+    let parsed = match reqwest::Url::parse(url) {
+        Ok(parsed) => parsed,
+        Err(error) => return Some(format!("bad registry url: {error}")),
+    };
+    let Some(host) = parsed.host_str() else { return Some("registry url has no host".into()) };
+    let host = host.trim_start_matches('[').trim_end_matches(']').to_ascii_lowercase();
+    match parsed.scheme() {
+        "https" => {}
+        "http" if is_loopback(&host) => {}
+        scheme => return Some(format!("registry url must be https ({scheme} only to loopback)")),
+    }
     literal_refusal(&host)
 }
 
@@ -315,6 +331,10 @@ mod tests {
             ("http://10.0.0.5/", true),
             ("http://169.254.169.254/", true),
             ("http://[fd00::1]/", true),
+            // Plaintext beyond loopback would carry the bearer token in clear.
+            ("http://store.example.org/", true),
+            ("ftp://store.example.org/", true),
+            ("not a url", true),
         ] {
             assert_eq!(host_refusal(url).is_some(), refused, "{url}");
             let client = RegistryClient::new(url, None);

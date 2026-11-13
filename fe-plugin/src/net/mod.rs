@@ -27,6 +27,7 @@ use crate::bus::{HostError, InstanceKey, InstanceSpec};
 use crate::tick::Clock;
 
 pub use address::{is_public_unicast, literal_refusal, CheckedResolver};
+pub(crate) use connect::is_loopback;
 pub use egress::{IncomingResponse, OutgoingRequest};
 pub use ingress::{HttpIngressRequest, IngressRefusal, WsAcceptRequest, WsSession};
 

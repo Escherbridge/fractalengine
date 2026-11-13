@@ -1919,7 +1919,12 @@ and `SceneAssetJobs::with_blob_source` take the same `BlobFallbackSlot` (sync_th
 then `verify_scene_asset_bytes`, and `finish_fetch` is unchanged. The slot already checks cap, exact size
 and BLAKE3, so a source never chooses a transport, relay or peer. The reader side (`BevyHandles.blob_fallback`,
 `BlobAssetReader::with_fallback`) asks only when no `on_miss` peer layer is wired and bounds the wait
-(`READER_SOURCE_TIMEOUT`) so an unpumped slot cannot park an asset-IO task.
+(`READER_SOURCE_TIMEOUT`) so an unpumped slot cannot park an asset-IO task. R-PLUG: the reader deadline runs on
+ONE shared `fe-blob-deadline` timer thread (a per-read sleeping thread would park one OS thread per miss for the
+whole timeout); a verse closing mid-ask is ended by the fetch job's outer `select!` on the stop signal. Source bytes
+are only as large as the 16 MiB hook body cap (`BLOB_SOURCE_MAX_BYTES`), so a scene asset above it is never served
+by a source. The binary must thread ONE slot into `spawn_sync_thread_with_sources`, `BevyHandles.blob_fallback` and
+the plugin host's `install` (handed off to I-MAIN/C-EXT; until then both stay peers-only).
 
 ## distributed-catalog-restart
 

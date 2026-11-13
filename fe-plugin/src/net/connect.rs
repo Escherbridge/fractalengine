@@ -34,7 +34,7 @@ pub(super) struct Target {
 }
 
 /// Exactly `127.0.0.1`, `::1` or `localhost` (manifest-v2.md §egress "Loopback"); callers pass the host unbracketed.
-pub(super) fn is_loopback(host: &str) -> bool {
+pub(crate) fn is_loopback(host: &str) -> bool {
     matches!(host, "127.0.0.1" | "::1" | "localhost")
 }
 
