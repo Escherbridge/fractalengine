@@ -126,6 +126,24 @@ impl SceneWrite {
     pub fn hook_inputs(&self) -> &[SceneHookInput] {
         &self.inputs
     }
+
+    /// The id a `RequestFailed` reply for this command carries, when it has one.
+    pub fn correlation_id(&self) -> Option<&str> {
+        match &self.command {
+            DbCommand::CreateNode { correlation_id, .. }
+            | DbCommand::CreateNodeWithAsset { correlation_id, .. }
+            | DbCommand::CreateObject { correlation_id, .. }
+            | DbCommand::SetNodeProperty { correlation_id, .. }
+            | DbCommand::DeleteNodeProperty { correlation_id, .. }
+            | DbCommand::CommitNodeMutation { correlation_id, .. }
+            | DbCommand::SetNodeView { correlation_id, .. } => correlation_id.as_deref(),
+            DbCommand::PromoteCheckedStamp { correlation_id, .. }
+            | DbCommand::CommitCheckedNodeMutation { correlation_id, .. }
+            | DbCommand::CommitCheckedEditorBatch { correlation_id, .. }
+            | DbCommand::CommitStampOverrides { correlation_id, .. } => Some(correlation_id),
+            _ => None,
+        }
+    }
 }
 
 /// A gate refusal; the write is never sent.
@@ -292,21 +310,23 @@ impl SceneWriteTicket {
             TicketState::Settled(outcome) => return Ok(outcome),
             TicketState::Pending(pending) => pending,
         };
-        let mut open = Vec::new();
-        for mut check in std::mem::take(&mut pending.checks) {
-            match check.poll(now) {
-                None => open.push(check),
-                Some(verdict) => match SceneRefusal::from_verdict(verdict) {
-                    Ok(augment) => pending.augments.extend(augment),
-                    // The first refusal settles the write; the other calls are abandoned with it.
-                    Err(refusal) => return Ok(SceneWriteOutcome::Refused(refusal)),
-                },
+        // In place: a ticket polled every frame while a guest answers allocates nothing.
+        let mut index = 0;
+        while index < pending.checks.len() {
+            let Some(verdict) = pending.checks[index].poll(now) else {
+                index += 1;
+                continue;
+            };
+            pending.checks.remove(index);
+            match SceneRefusal::from_verdict(verdict) {
+                Ok(augment) => pending.augments.extend(augment),
+                // The first refusal settles the write; the other calls are abandoned with it.
+                Err(refusal) => return Ok(SceneWriteOutcome::Refused(refusal)),
             }
         }
-        if open.is_empty() {
+        if pending.checks.is_empty() {
             return Ok((*pending).admit());
         }
-        pending.checks = open;
         Err(Self(TicketState::Pending(pending)))
     }
 
@@ -865,6 +885,14 @@ mod tests {
             SceneWrite::new("p1", create_node("p2")),
             Err(SceneWriteError::PetalMismatch { .. })
         ));
+        // A GUI door that refuses a queued write later answers its owner by this id.
+        let tagged = DbCommand::CreateNode {
+            petal_id: "p1".into(),
+            name: "kiosk".into(),
+            position: [0.0; 3],
+            correlation_id: Some("req-1".into()),
+        };
+        assert_eq!(SceneWrite::new("p1", tagged).unwrap().correlation_id(), Some("req-1"));
         let census: Vec<_> = SCENE_WRITE_CENSUS.iter().map(|row| row.variant).collect();
         let mut unique = census.clone();
         unique.sort_unstable();

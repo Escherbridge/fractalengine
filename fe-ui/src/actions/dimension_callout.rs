@@ -347,8 +347,16 @@ pub(crate) fn save_measure_as_callout(
         position,
         correlation_id: Some(format!("{CALLOUT_CORRELATION_PREFIX}{callout_id}")),
     };
-    if super::node::submit_scene_write(db_sender, command) == super::node::GuiSend::Closed {
-        bevy::log::warn!("db_sender channel closed — dimension callout node not created");
+    match super::node::submit_scene_write(db_sender, command) {
+        super::node::GuiSend::Closed => {
+            bevy::log::warn!("db_sender channel closed — dimension callout node not created");
+            map.take_pending(&callout_id);
+        }
+        // Refused at the door: no NodeCreated will claim the stash.
+        super::node::GuiSend::Refused(_) => {
+            map.take_pending(&callout_id);
+        }
+        super::node::GuiSend::Sent | super::node::GuiSend::Waiting => {}
     }
 }
 

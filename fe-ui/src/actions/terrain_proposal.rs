@@ -538,8 +538,16 @@ fn create_region_node(
         position: [cx, 0.0, cz],
         correlation_id: Some(format!("{EARTHWORK_CORRELATION_PREFIX}{region_id}")),
     };
-    if super::node::submit_scene_write(db_sender, command) == super::node::GuiSend::Closed {
-        bevy::log::warn!("db_sender channel closed — earthwork region node not created");
+    match super::node::submit_scene_write(db_sender, command) {
+        super::node::GuiSend::Closed => {
+            bevy::log::warn!("db_sender channel closed — earthwork region node not created");
+            map.take_pending_material(petal_id, region_id);
+        }
+        // Refused at the door: no NodeCreated will claim the stashed material.
+        super::node::GuiSend::Refused(_) => {
+            map.take_pending_material(petal_id, region_id);
+        }
+        super::node::GuiSend::Sent | super::node::GuiSend::Waiting => {}
     }
 }
 

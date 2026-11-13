@@ -420,7 +420,11 @@ impl Plugin for NodeManagerPlugin {
         app.init_resource::<path_gimbal_drag::PathGimbalDrag>();
         app.init_resource::<selection::SelectionState>();
         stamp_selection::register(app);
-        app.add_systems(Update, crate::actions::node::drain_gui_scene_writes);
+        // Before the action handlers, so a node write is authorized against this frame's active petal.
+        app.add_systems(
+            Update,
+            crate::actions::node::drain_gui_scene_writes.before(crate::actions::process_ui_actions),
+        );
         app.add_systems(Startup, crate::gimbal::configure_gimbal_gizmos);
         app.add_systems(
             Update,

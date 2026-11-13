@@ -3,15 +3,17 @@
 //! Also homes the contextual-controls verb handlers (delete/duplicate/rename/copy-API/report)
 //! and the GUI scene write door (`submit_scene_write`; see `actions/AGENTS.md` §scene-write-door).
 
+use std::collections::VecDeque;
 use std::sync::{Mutex, MutexGuard};
 use std::time::Instant;
 
-use crossbeam::channel::Sender;
+use crossbeam::channel::{Sender, TrySendError};
 use fe_runtime::app::DbCommandSender;
-use fe_runtime::messages::{CallerAuth, DbCommand};
+use fe_runtime::messages::{CallerAuth, DbCommand, DbResult};
 use fe_runtime::scene_hook_gate::SceneCallerKind;
 use fe_runtime::scene_write::{
-    SceneWrite, SceneWriteDoor, SceneWriteError, SceneWriteOutcome, SceneWriteTicket,
+    SceneAugments, SceneWrite, SceneWriteDoor, SceneWriteError, SceneWriteOutcome,
+    SceneWriteTicket,
 };
 
 use crate::actions::UiManager;
@@ -21,7 +23,7 @@ use crate::actions::UiManager;
 pub enum GuiSend {
     /// Sent to the DB thread.
     Sent,
-    /// A bound extension is still answering; the frame drain sends or refuses it.
+    /// Queued behind a gate answer (its own or an earlier write's); the frame drain sends or refuses it.
     Waiting,
     /// The gate refused; the advisory text is queued for the player.
     Refused(String),
@@ -29,20 +31,43 @@ pub enum GuiSend {
     Closed,
 }
 
+/// Where a queued write stands.
+enum Queued {
+    /// The gate is still answering.
+    Gating(SceneWriteTicket),
+    /// Admitted, but the DB channel was full; retried next frame.
+    Admitted(DbCommand, SceneAugments),
+}
+
 struct WaitingWrite {
-    ticket: SceneWriteTicket,
+    state: Queued,
     sender: Sender<DbCommand>,
+    /// The owner's reply id; a later refusal or a closed channel answers it with `RequestFailed`.
+    correlation_id: Option<String>,
+}
+
+/// A settled queue head, handled once the queue lock is released.
+enum Settled {
+    Sent(SceneAugments),
+    Refused {
+        message: String,
+        correlation_id: Option<String>,
+    },
+    Closed {
+        correlation_id: Option<String>,
+    },
 }
 
 struct GuiDoorQueue {
     active_petal: Option<String>,
-    waiting: Vec<WaitingWrite>,
+    /// FIFO: writes leave in submit order, so a later write never overtakes a gated one.
+    waiting: VecDeque<WaitingWrite>,
     refusals: Vec<String>,
 }
 
 static GUI_DOOR: Mutex<GuiDoorQueue> = Mutex::new(GuiDoorQueue {
     active_petal: None,
-    waiting: Vec::new(),
+    waiting: VecDeque::new(),
     refusals: Vec::new(),
 });
 
@@ -87,16 +112,27 @@ fn submit_with(
             return GuiSend::Refused(message);
         }
     };
-    match door.submit(SceneCallerKind::Ui, write).poll(Instant::now()) {
-        Ok(outcome) => settle(outcome, sender, blocking),
-        Err(ticket) => {
-            door_queue().waiting.push(WaitingWrite {
-                ticket,
-                sender: sender.clone(),
-            });
-            GuiSend::Waiting
+    let correlation_id = write.correlation_id().map(str::to_owned);
+    let ticket = door.submit(SceneCallerKind::Ui, write);
+    let mut queue = door_queue();
+    // Behind a queued write this one queues too, even when it settles at once (send order).
+    let ticket = if queue.waiting.is_empty() {
+        match ticket.poll(Instant::now()) {
+            Ok(outcome) => {
+                drop(queue);
+                return settle(outcome, sender, blocking);
+            }
+            Err(ticket) => ticket,
         }
-    }
+    } else {
+        ticket
+    };
+    queue.waiting.push_back(WaitingWrite {
+        state: Queued::Gating(ticket),
+        sender: sender.clone(),
+        correlation_id,
+    });
+    GuiSend::Waiting
 }
 
 fn send_plain(sender: &Sender<DbCommand>, command: DbCommand, blocking: bool) -> GuiSend {
@@ -108,17 +144,14 @@ fn send_plain(sender: &Sender<DbCommand>, command: DbCommand, blocking: bool) ->
     if sent { GuiSend::Sent } else { GuiSend::Closed }
 }
 
-/// Send an admitted write, or queue the refusal advisory.
+/// Send an admitted write at once, or queue the refusal advisory (the caller also gets it back).
 fn settle(outcome: SceneWriteOutcome, sender: &Sender<DbCommand>, blocking: bool) -> GuiSend {
     match outcome {
         SceneWriteOutcome::Admitted(admitted) => {
             let (command, augments) = admitted.into_parts();
             let sent = send_plain(sender, command, blocking);
             if sent == GuiSend::Sent {
-                // A create's node id is unknown here, so a create augment is dropped with a warning.
-                for error in augments.stage(None) {
-                    bevy::log::warn!(%error, "scene hook augment was not staged");
-                }
+                stage_logged(augments);
             }
             sent
         }
@@ -127,6 +160,53 @@ fn settle(outcome: SceneWriteOutcome, sender: &Sender<DbCommand>, blocking: bool
             door_queue().refusals.push(message.clone());
             GuiSend::Refused(message)
         }
+    }
+}
+
+/// A create's node id is unknown here, so a create augment is dropped with a warning.
+fn stage_logged(augments: SceneAugments) {
+    if augments.is_empty() {
+        return;
+    }
+    for error in augments.stage(None) {
+        bevy::log::warn!(%error, "scene hook augment was not staged");
+    }
+}
+
+/// Move the queue head one step without blocking; `Err` keeps it at the head (gating, or channel full).
+fn advance(write: WaitingWrite, now: Instant) -> Result<Settled, WaitingWrite> {
+    let WaitingWrite {
+        state,
+        sender,
+        correlation_id,
+    } = write;
+    let (command, augments) = match state {
+        Queued::Gating(ticket) => match ticket.poll(now) {
+            Err(ticket) => {
+                return Err(WaitingWrite {
+                    state: Queued::Gating(ticket),
+                    sender,
+                    correlation_id,
+                });
+            }
+            Ok(SceneWriteOutcome::Refused(refusal)) => {
+                return Ok(Settled::Refused {
+                    message: refusal.message(),
+                    correlation_id,
+                });
+            }
+            Ok(SceneWriteOutcome::Admitted(admitted)) => admitted.into_parts(),
+        },
+        Queued::Admitted(command, augments) => (command, augments),
+    };
+    match sender.try_send(command) {
+        Ok(()) => Ok(Settled::Sent(augments)),
+        Err(TrySendError::Full(command)) => Err(WaitingWrite {
+            state: Queued::Admitted(command, augments),
+            sender,
+            correlation_id,
+        }),
+        Err(TrySendError::Disconnected(_)) => Ok(Settled::Closed { correlation_id }),
     }
 }
 
@@ -145,31 +225,64 @@ pub fn try_submit_scene_write_on(sender: &Sender<DbCommand>, command: DbCommand)
     submit_with(&SceneWriteDoor::installed(), sender, command, false)
 }
 
-/// Frame drain: track the active petal, settle waiting writes, show refusals as advisories.
+/// Frame drain: track the active petal, send or refuse queued writes in submit order, show refusals.
+/// A queued write's owner learns a refusal or a closed channel as `RequestFailed` on its id.
 pub fn drain_gui_scene_writes(
     nav: bevy::prelude::Res<crate::navigation_manager::NavigationManager>,
     clock: bevy::prelude::Res<crate::notice::NoticeClock>,
     mut ui_mgr: bevy::prelude::ResMut<UiManager>,
+    mut results: Option<bevy::prelude::ResMut<bevy::prelude::Messages<DbResult>>>,
 ) {
-    let settled = {
+    let now = Instant::now();
+    let mut settled = Vec::new();
+    let refusals = {
         let mut queue = door_queue();
-        queue.active_petal = nav.active_petal_id.clone();
-        let mut settled = Vec::new();
-        for waiting in std::mem::take(&mut queue.waiting) {
-            let WaitingWrite { ticket, sender } = waiting;
-            match ticket.poll(Instant::now()) {
-                Ok(outcome) => settled.push((outcome, sender)),
-                Err(ticket) => queue.waiting.push(WaitingWrite { ticket, sender }),
+        // Compare first: cloning every frame would allocate on the hot path.
+        if queue.active_petal != nav.active_petal_id {
+            queue.active_petal.clone_from(&nav.active_petal_id);
+        }
+        while let Some(head) = queue.waiting.pop_front() {
+            match advance(head, now) {
+                Ok(done) => settled.push(done),
+                Err(held) => {
+                    queue.waiting.push_front(held);
+                    break;
+                }
             }
         }
-        settled
+        std::mem::take(&mut queue.refusals)
     };
-    for (outcome, sender) in settled {
-        settle(outcome, &sender, false);
-    }
-    let refusals = std::mem::take(&mut door_queue().refusals);
+    let now_secs = clock.elapsed_secs_f64();
     for message in refusals {
-        ui_mgr.show_advisory(message, clock.elapsed_secs_f64());
+        ui_mgr.show_advisory(message, now_secs);
+    }
+    for done in settled {
+        let (error, correlation_id) = match done {
+            Settled::Sent(augments) => {
+                stage_logged(augments);
+                continue;
+            }
+            Settled::Refused {
+                message,
+                correlation_id,
+            } => {
+                ui_mgr.show_advisory(message.clone(), now_secs);
+                (message, correlation_id)
+            }
+            Settled::Closed { correlation_id } => {
+                bevy::log::warn!("db_sender channel closed — a queued scene write was not sent");
+                (
+                    "Database connection closed; edit was not saved".to_owned(),
+                    correlation_id,
+                )
+            }
+        };
+        if let (Some(correlation_id), Some(results)) = (correlation_id, results.as_mut()) {
+            results.write(DbResult::RequestFailed {
+                error,
+                correlation_id,
+            });
+        }
     }
 }
 
