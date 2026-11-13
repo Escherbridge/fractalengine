@@ -1609,8 +1609,12 @@ unconditionally (R33), then the bound `egress.snippet` rows (`extensions/AGENTS.
 - **Admit… is offered, governance decides.** The section offers Admit… for a static, sealed build whose summary does not
   carry `reason: "cannot_admit"`; the binary's consent dialog applies the may-admit verdict. A host state change into or out
   of Admitted/Revoked under an open portal invalidates that node's cached summary, so the section never shows a stale badge.
-- **Not wired yet.** `portal/binding_offer.rs::show_offer` has no caller: the binding host feed (`PortalBindingPoint`) and a
-  package-id to node lookup do not exist in fe-ui yet. Its Open is `UiAction::OpenBundle`, which mounts only the *selected*
-  node, so the caller must select the repository node first (or the advisory fires).
+- **Bound-bundle offer (I-UI).** `panels/inspector.rs::bound_bundle_offer_section` is the `show_offer` caller (Properties tab,
+  under the Repository section). Input: `UiManager::portal_binding_point`, copied from the bindings snapshot's `portal.open`
+  row by `extensions::feed_portal_offer_point`, and `UiManager::portal_bundle_nodes` (`(package_id, node_id)`, fed by the
+  binary). Open is `UiAction::OpenBundle`, which mounts only the *selected* node: for an unselected bundle node the click
+  queues `UiAction::OpenBoundBundle`, whose drain arm sets `pending_sidebar_select` and `pending_offer_open` (3 s lease,
+  lapses in the drain), and the section fires `OpenBundle` once that node is the primary selection. NEEDS the binary to fill
+  `portal_bundle_nodes` (until then a Resolved point shows "bundle not on this peer", never a dead Open).
 - **Reviews.** `conductor/tracks/portal_surface_20261107/review-p3.md` (PASS-WITH-FIXES, blocked on P3-01..P3-03);
   turn-2 gate `review-turn2/R-POR.md`.

@@ -332,6 +332,11 @@ fn render_installed_map_card(
                 .small()
                 .color(theme::TEXT_MUTED),
             );
+            if petal_map.tileset_ids.iter().any(|id| id == &ts.hexon_id) {
+                if let Some(line) = map_source_line(&petal_map.effective_source()) {
+                    ui.label(egui::RichText::new(line).small().color(theme::TEXT_MUTED));
+                }
+            }
             ui.add_space(4.0);
 
             ui.horizontal(|ui| {
@@ -410,6 +415,32 @@ fn render_installed_map_card(
                 }
             });
         });
+}
+
+/// Pure: "name \u{00b7} scope" for where the active map comes from (B5); `None` when no map is set.
+fn map_source_line(source: &crate::terrain_map::EffectiveMapSource) -> Option<String> {
+    use crate::terrain_map::{EffectiveMapSource, MapSource};
+    let (name, scope) = match source {
+        EffectiveMapSource::None => return None,
+        EffectiveMapSource::Stored => ("Built-in".to_owned(), "petal".to_owned()),
+        EffectiveMapSource::Bound(MapSource::Builtin { scope }) => ("Built-in".to_owned(), scope_label(scope)),
+        EffectiveMapSource::Bound(MapSource::Extension { package_id, scope }) => (package_id.clone(), scope_label(scope)),
+        EffectiveMapSource::Bound(MapSource::Degraded { package_id, scope }) => {
+            (format!("{package_id} (degraded)"), scope_label(scope))
+        }
+        EffectiveMapSource::Bound(MapSource::Unresolved { package_id, scope, .. }) => {
+            (format!("{package_id} (unavailable)"), scope_label(scope))
+        }
+    };
+    Some(format!("{name} \u{00b7} {scope}"))
+}
+
+/// The innermost level of a scope string such as `VERSE#v-FRACTAL#f-PETAL#p`, lowercased (`petal`).
+fn scope_label(scope: &str) -> String {
+    ["PETAL#", "FRACTAL#", "VERSE#"]
+        .iter()
+        .find(|prefix| scope.contains(**prefix))
+        .map_or_else(|| scope.to_owned(), |prefix| prefix.trim_end_matches('#').to_lowercase())
 }
 
 /// The Map action's disabled-hover reason: "navigate to a petal first" when

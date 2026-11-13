@@ -31,6 +31,15 @@ Slot call sites (owned elsewhere, one line each): `ui_shell::topbar` toolbar (th
 `panel` + `browse` + `details` + `permissions` (P4, design in `docs/extensions/extensions-ui.md`) and `builtin` (P5.5). All are
 compiled and reachable by the `extensions::` test filter.
 
+## §store-flows (I-UI)
+
+Browse, store Details (licence, entitlement, counter-signature) and installed Details are tabs of `panel::draw`
+(`PanelView::{Browse, StoreDetails, Details}`), mounted in the Extensions window by `extensions_window_system`; no extra mount
+is needed. J9 (`extensions_panel_journey`) drives Browse and Details by accessible name and the bindings snapshot.
+`feed_portal_offer_point` (Update, `ExtensionSlotsPlugin`) copies the winning `portal.open` row to
+`UiManager::portal_binding_point` for the inspector offer (`fe-ui/src/AGENTS.md` section portal); it only runs when the
+panel state changed.
+
 ## §host-handle (I-UI, R-UI)
 
 Surfaces (topbar, sidebar, inspector, context menu, egress card) are deep egui functions with long signatures, so the slot data

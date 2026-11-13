@@ -49,6 +49,10 @@ pub enum UiAction {
     OpenBundle {
         node_id: String,
     },
+    /// Inspector offer Open for a bundle node that is not selected: select it, then open it once the selection lands.
+    OpenBoundBundle {
+        node_id: String,
+    },
     /// Close the portal webview (replaces PortalPanelState.close).
     ClosePortal,
     /// Ask the host to admit this repository node's bundle on this peer (governance's consent dialog decides).
@@ -636,6 +640,12 @@ pub struct UiManager {
     pub repository_view: crate::portal::repository_view::RepositoryViewState,
     /// Node whose summary was last requested; re-requests only when the primary selection changes.
     pub(crate) repository_probe_node: Option<String>,
+    /// The active petal's effective `portal.open` binding point; `extensions::feed_portal_offer_point` fills it.
+    pub portal_binding_point: Option<crate::portal::binding_offer::PortalBindingPoint>,
+    /// `(package_id, node_id)` of the admitted bundle nodes on this peer; the binary feeds it.
+    pub portal_bundle_nodes: Vec<(String, String)>,
+    /// A bound-bundle Open waiting for its repository node to become the selection: `(node_id, expires_at_secs)`.
+    pub(crate) pending_offer_open: Option<(String, f64)>,
     /// Admit/Revoke requests for the binary to execute against the host.
     pub bundle_admission_requests: Vec<crate::portal::BundleAdmissionRequest>,
     /// Node whose `portal.bundle_asset` the user wants to replace; the binary opens the asset picker.
@@ -692,6 +702,9 @@ impl Default for UiManager {
             portal_feedback: portal::PortalFeedback::default(),
             repository_view: Default::default(),
             repository_probe_node: None,
+            portal_binding_point: None,
+            portal_bundle_nodes: Vec::new(),
+            pending_offer_open: None,
             bundle_admission_requests: Vec::new(),
             bundle_asset_pick: None,
             portal_content_rect: None,
@@ -1256,6 +1269,10 @@ pub(crate) fn process_ui_actions(
     }
     // `NoticeClock` is the clock egui renders notices against.
     let now_secs = time.elapsed_secs_f64();
+    // A bound-bundle Open whose selection never landed lapses instead of firing on a later, unrelated selection.
+    if ui_mgr.pending_offer_open.as_ref().is_some_and(|(_, expires_at)| now_secs > *expires_at) {
+        ui_mgr.pending_offer_open = None;
+    }
     for event in browser_events.read() {
         portal::receive_browser_event(&mut ui_mgr, &node_mgr, event, now_secs);
     }
@@ -1345,6 +1362,10 @@ pub(crate) fn process_ui_actions(
                 if let Some(node_id) = portal::open_bundle(&mut ui_mgr, &node_mgr, &node_id, now_secs) {
                     browser_commands.write(BrowserCommand::OpenBundle { node_id });
                 }
+            }
+            UiAction::OpenBoundBundle { node_id } => {
+                node_mgr.pending_sidebar_select = Some(node_id.clone());
+                ui_mgr.pending_offer_open = Some((node_id, now_secs + 3.0));
             }
             UiAction::ClosePortal => {
                 let was_bundle = ui_mgr.portal.is_bundle();

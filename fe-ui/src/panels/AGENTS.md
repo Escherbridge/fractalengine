@@ -1035,3 +1035,11 @@ scroll, expanded-value identity, draft retention, delete confirmation, guards an
 mutation callbacks remain unchanged. Inspector token dismissal reuses the same
 Close presentation without changing token handling. See ../ui_shell/AGENTS.md
 section Painted core control icons for adapter geometry and verification limits.
+
+## Inspector scene writes (I-UI, R-X-13)
+
+The inspector sends no scene write itself: property, transform, URL and schema edits queue `UiAction`s whose handlers (`actions/node_props.rs`, `actions/node.rs`) go through `submit_scene_write`, the one GUI door. Its only direct `DbCommand` sends are API tokens and field definitions, which are not scene writes. A new inspector control that creates, moves or edits a node must queue a `UiAction` too, never call `db_tx` (see `actions/AGENTS.md` section scene-write-door).
+
+## Bound bundle offer (I-UI)
+
+`bound_bundle_offer_section` in `inspector.rs` calls `portal::binding_offer::show_offer` under the Repository section; see `fe-ui/src/AGENTS.md` section portal for the feed and the select-then-open flow.

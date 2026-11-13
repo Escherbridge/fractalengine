@@ -897,6 +897,15 @@ mod tests {
                 package_id: "org.example.city-map".into(),
             }]
         );
+        // The inspector's bound-bundle offer reads the winning `portal.open` row of this snapshot, nothing else.
+        assert_eq!(super::super::portal_point_from_snapshot(&snapshot), None);
+        let mut with_portal = snapshot.clone();
+        with_portal.points.push(point("portal.open", "", unresolved(UnresolvedReason::NotInstalled)));
+        assert!(matches!(
+            super::super::portal_point_from_snapshot(&with_portal),
+            Some(found) if found.package_id.as_deref() == Some("org.example.city-map")
+                && found.resolution == crate::portal::binding_offer::OfferResolution::Unresolved { reason: "not installed".into() }
+        ));
         state.working = None;
         // Only the exact typed package id sends the audited override; anything else only discards the staged build.
         let override_decision = |confirm: &str| ConsentDecision::KillListOverride {

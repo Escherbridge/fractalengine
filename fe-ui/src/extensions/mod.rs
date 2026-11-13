@@ -20,6 +20,7 @@ use bevy_egui::{egui, EguiContexts};
 use fe_sdk::{UiContribution, UiExtensionRegistry};
 
 use crate::accessibility::ResponseExt;
+use crate::portal::binding_offer::{OfferResolution, PortalBindingPoint};
 use crate::theme;
 
 pub use bound_slots::{BoundPanel, BoundSlotsState, SnippetCallArgs, SnippetRequest, SnippetTarget};
@@ -94,7 +95,45 @@ impl Plugin for ExtensionSlotsPlugin {
     fn build(&self, app: &mut App) {
         app.init_resource::<ExtensionSlotState>()
             .init_resource::<BoundSlotsState>()
-            .init_resource::<ExtensionSlotHost>();
+            .init_resource::<ExtensionSlotHost>()
+            .add_systems(Update, feed_portal_offer_point);
+    }
+}
+
+/// Pure: the winning `portal.open` row of the bindings snapshot as the inspector offer's input.
+pub fn portal_point_from_snapshot(snapshot: &bindings::BindingsSnapshot) -> Option<PortalBindingPoint> {
+    use fe_runtime::extension_binding::BindingResolution;
+    let row = snapshot.points.iter().find(|row| row.hook == "portal.open")?;
+    let resolution = match row.resolution.as_ref()? {
+        BindingResolution::Resolved { .. } => OfferResolution::Resolved,
+        BindingResolution::Builtin { .. } => OfferResolution::Builtin,
+        BindingResolution::Elsewhere { .. } => OfferResolution::Elsewhere,
+        BindingResolution::Unresolved { reason, .. } => OfferResolution::Unresolved {
+            reason: serde_json::to_value(reason)
+                .ok()
+                .and_then(|value| value.as_str().map(|text| text.replace('-', " ")))
+                .unwrap_or_else(|| "not runnable here".to_owned()),
+        },
+    };
+    Some(PortalBindingPoint {
+        scope: row.scope_label.clone(),
+        package_id: row.package_id.clone(),
+        resolution,
+    })
+}
+
+/// Copies the active petal's `portal.open` point from the bindings snapshot to the UI manager (the inspector offer reads it).
+fn feed_portal_offer_point(
+    panel: Option<Res<ExtensionsPanelState>>,
+    ui_manager: Option<ResMut<crate::actions::UiManager>>,
+) {
+    let (Some(panel), Some(mut ui_manager)) = (panel, ui_manager) else { return };
+    if !panel.is_changed() {
+        return;
+    }
+    let point = panel.bindings.snapshot.as_ref().and_then(portal_point_from_snapshot);
+    if ui_manager.portal_binding_point != point {
+        ui_manager.portal_binding_point = point;
     }
 }
 

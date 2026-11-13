@@ -289,6 +289,7 @@ fn inspector_tab_body(
             inspector_entity_section(ui, node_mgr, ui_mgr);
             ui.add_space(2.0);
             repository_section(ui, node_mgr, ui_mgr, local_role);
+            bound_bundle_offer_section(ui, node_mgr, ui_mgr);
             crate::panels::asset_card::asset_card_section(
                 ui,
                 node_mgr,
@@ -2465,6 +2466,28 @@ fn inspector_schema_section(
 // ---------------------------------------------------------------------------
 // Tests — pure real-unit conversion helpers (FR-2). No Bevy App / egui context.
 // ---------------------------------------------------------------------------
+
+/// Bound `portal.open` bundle: one Open button (or its state line); a click selects the bundle node first, then opens it.
+fn bound_bundle_offer_section(ui: &mut egui::Ui, node_mgr: &NodeManager, ui_mgr: &mut UiManager) {
+    use crate::portal::binding_offer::{portal_offer, show_offer};
+    if let Some((node_id, _)) = ui_mgr.pending_offer_open.clone() {
+        if node_mgr.primary().is_some_and(|selection| selection.node_id == node_id) {
+            ui_mgr.pending_offer_open = None;
+            ui_mgr.push_action(UiAction::OpenBundle { node_id });
+        }
+    }
+    let nodes = &ui_mgr.portal_bundle_nodes;
+    let node_for = |package_id: &str| nodes.iter().find(|(id, _)| id == package_id).map(|(_, node_id)| node_id.clone());
+    let Some(offer) = portal_offer(ui_mgr.portal_binding_point.as_ref(), node_for) else { return };
+    let selected = node_mgr.primary().map(|selection| selection.node_id.clone());
+    if let Some(click) = show_offer(ui, &offer, selected.as_deref()) {
+        match click.select_node_id {
+            Some(node_id) => ui_mgr.push_action(UiAction::OpenBoundBundle { node_id }),
+            None => ui_mgr.push_action(click.action),
+        }
+    }
+    ui.add_space(2.0);
+}
 
 /// Repository section for a node whose bundle summary the binary has fed; nothing otherwise.
 fn repository_section(ui: &mut egui::Ui, node_mgr: &NodeManager, ui_mgr: &mut UiManager, local_role: &LocalUserRole) {
