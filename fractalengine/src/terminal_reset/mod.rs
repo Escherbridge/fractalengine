@@ -199,6 +199,12 @@ fn freeze_editor(world: &mut World, supervisor: &mut Supervisor) -> Result<(), &
     for service in &supervisor.services {
         service.request_stop();
     }
+    // The extension admin channel stops accepting CLI verbs too (joins its listener thread).
+    if let Some(mut admin) =
+        world.get_resource_mut::<crate::extension_host::admin_channel::AdminChannelHandle>()
+    {
+        admin.shutdown();
+    }
     {
         let mut schedules = world.resource_mut::<Schedules>();
         drop(schedules.remove(Update));

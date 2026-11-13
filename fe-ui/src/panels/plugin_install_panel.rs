@@ -1,5 +1,7 @@
-//! Plugin install consent modal: lists what a package asks for before Install enables.
+//! Plugin install consent modal (v1): lists what a package asks for before Install enables.
 //! Pure state in [`PluginInstallState`]; egui in [`render`]. See `fe-ui/src/AGENTS.md` §plugin-consent.
+//! SUPERSEDED: nothing opens this modal any more; v2 consent lives in `fe-ui/src/extensions/` (Extensions panel).
+//! Kept while its journey test still exercises it.
 
 use bevy::prelude::Resource;
 use bevy_egui::egui;

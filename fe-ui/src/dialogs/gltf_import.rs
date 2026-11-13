@@ -6,7 +6,8 @@ use bevy_egui::egui;
 use crate::accessibility::ResponseExt;
 
 use super::ActiveDialog;
-use crate::actions::{UiManager, send_or_toast};
+use crate::actions::UiManager;
+use crate::actions::node::{GuiSend, try_submit_scene_write_on};
 use crate::navigation_manager::NavigationManager;
 use crate::panels::widgets;
 use crate::theme;
@@ -36,11 +37,25 @@ pub(crate) fn submit_import(
         return false;
     };
     let owner = owner.clone();
-    if send_or_toast(db_tx, cmd, ui_mgr, now, "import the model") {
-        ui_mgr.gltf_import_request.start(owner, now);
-        true
-    } else {
-        false
+    // Through the scene write door so a bound `scene.create` hook sees GUI imports (actions/AGENTS.md §scene-write-door).
+    match try_submit_scene_write_on(db_tx, cmd) {
+        GuiSend::Sent | GuiSend::Waiting => {
+            ui_mgr.gltf_import_request.start(owner, now);
+            true
+        }
+        GuiSend::Refused(reason) => {
+            // The door also queues the advisory; the dialog keeps the reason inline beside the form.
+            ui_mgr.gltf_import_request.reset();
+            ui_mgr.gltf_import_request.error = Some(reason);
+            false
+        }
+        GuiSend::Closed => {
+            // The door reports full and disconnected alike; the channel tells them apart for the toast.
+            let why = if db_tx.is_full() { "database busy" } else { "not connected" };
+            bevy::log::warn!("Database queue {why}; glTF import was not sent");
+            ui_mgr.show_error(format!("Couldn't import the model: {why}; action was not sent"), now);
+            false
+        }
     }
 }
 
@@ -56,7 +71,7 @@ pub fn render_gltf_import_dialog(
     // Read before the `active_dialog` sub-borrow below, same reasoning as
     // `join.rs::render_join_dialog` (the borrow of `ui_mgr.active_dialog`
     // through `file_path_buf`/`name_buf`/`position` must end before `ui_mgr`
-    // as a whole can be passed to `send_or_toast`/`close_dialog` again).
+    // as a whole can be passed to `submit_import`/`close_dialog` again).
     let now = ctx.input(|i| i.time);
     ui_mgr
         .gltf_import_request

@@ -66,15 +66,16 @@ pub(super) fn handle_node_created(
         for (key, value) in
             crate::actions::terrain_proposal::earthwork_node_properties(region_id, &material)
         {
-            if db_sender
-                .0
-                .send(fe_runtime::messages::DbCommand::SetNodeProperty {
+            // Through the scene write door so a bound scene hook sees the follow-up writes too.
+            if crate::actions::node::submit_scene_write(
+                db_sender,
+                fe_runtime::messages::DbCommand::SetNodeProperty {
                     node_id: id.to_string(),
                     key: key.to_string(),
                     value,
                     correlation_id: None,
-                })
-                .is_err()
+                },
+            ) == crate::actions::node::GuiSend::Closed
             {
                 bevy::log::warn!(
                     "db_sender channel closed — earthwork node contract keys not written"

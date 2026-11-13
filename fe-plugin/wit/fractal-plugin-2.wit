@@ -1,5 +1,5 @@
-// UNSTABLE - not yet bound. No host binds this world until extension_platform P1.1 (E1)
-// lands component-model bindgen; every later edit needs a matching host change.
+// BOUND - fe-plugin binds world `extension` with wasmtime::component::bindgen! on this FILE
+// (fe-plugin/src/wasm/AGENTS.md); every edit here needs a matching host change.
 //
 // fractalengine:plugin@2.0.0 - the ONE third-party extension contract (D-X1, spec R2).
 // Manifest: fe-sdk/schema/extension-manifest-v2.schema.json + docs/extensions/manifest-v2.md.

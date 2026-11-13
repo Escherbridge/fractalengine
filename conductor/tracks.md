@@ -112,7 +112,8 @@ Order: signing and release first, then agent QA, then the operator seams.
 - [ ] **plugin_host_revival** (P2) — **S-PLUGIN**: the `fe-plugin` host is live behind an opt-in admission gate,
   with publisher-signed packages, a signed revocation list, wasmtime 49 and `network_scope` denied at parse and
   use. Code landed 2026-11-08 (S0–S6, `c519111f`..`5ed08447`). Open: the workspace sweep and the user's in-app
-  consent check; no package can be installed in-app until P1.7 — [./tracks/plugin_host_revival_20261031/](./tracks/plugin_host_revival_20261031/)
+  consent check; in-app install now runs through extension_platform's Extensions panel (Install from file, Browse)
+  over the `plugin_bridge` ops drain — [./tracks/plugin_host_revival_20261031/](./tracks/plugin_host_revival_20261031/)
 
 ---
 

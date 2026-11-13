@@ -419,6 +419,8 @@ pub(crate) struct ExtensionBridgeConfig {
     pub blob_fallback: Option<BlobFallbackSlot>,
     /// This device's X25519 key (R19 row 6 opens a licensed build's content key with it); `None` refuses licensed builds.
     pub device_key: Option<fe_identity::x25519::DeviceKeypair>,
+    /// The node's Ed25519 identity key: the licensee (`sub`) a licence token request signs as; `None` refuses requests.
+    pub identity_key: Option<ed25519_dalek::SigningKey>,
 }
 
 // ---------------------------------------------------------------------------
@@ -2945,6 +2947,27 @@ struct BridgeOpsPorts {
     signals: BindingSignals,
     /// This host's last resolution per petal (the Bindings view's states and offers).
     view: BindingView,
+    /// Identity key and device X25519 secret a licence request names; `None` answers `not-available`.
+    licence_keys: Option<LicenceKeys>,
+}
+
+/// The licensee's keys, held only for the ops worker's licence ports.
+struct LicenceKeys {
+    identity: ed25519_dalek::SigningKey,
+    device_secret: [u8; 32],
+}
+
+impl LicenceKeys {
+    fn licensee(&self) -> fe_hexon::entitlement_client::Licensee<'_> {
+        fe_hexon::entitlement_client::Licensee { identity: &self.identity, device_secret: &self.device_secret }
+    }
+}
+
+impl Drop for LicenceKeys {
+    fn drop(&mut self) {
+        // SigningKey zeroizes itself; the raw device secret is wiped here.
+        self.device_secret = [0; 32];
+    }
 }
 
 impl BridgeOpsPorts {
@@ -3364,6 +3387,28 @@ impl OpsPorts for BridgeOpsPorts {
                 }
             })
             .collect()
+    }
+    /// `(licensee DID, device X25519 did:key)` an acquire link and a token request name (R-BIN-19).
+    fn licence_identity(&self) -> Result<(String, String), String> {
+        if !cfg!(feature = "entitlement") {
+            return Err("not-available: licences need the entitlement feature on this host".into());
+        }
+        let keys = self
+            .licence_keys
+            .as_ref()
+            .ok_or("not-available: this host has no device key yet; restart once enrolment has created it")?;
+        let licensee = keys.licensee();
+        Ok((licensee.did(), licensee.device_did()))
+    }
+    /// The keys are wired; the token client (transport, pinned verifier, token store) is not yet (R-BIN-19).
+    fn request_licence_token(
+        &self,
+        _request: &crate::extension_host::ops_drain::LicenceRequest<'_>,
+    ) -> Result<crate::extension_host::ops_drain::LicenceAnswer, String> {
+        if !cfg!(feature = "entitlement") || self.licence_keys.is_none() {
+            return Err("not-available: licences need the entitlement feature on this host".into());
+        }
+        Err("not-available: licence token requests are not wired on this host yet".into())
     }
 }
 
@@ -4370,6 +4415,10 @@ pub(crate) fn install_with(app: &mut App, config: ExtensionBridgeConfig) {
     // Governance reads the role view and external policy just inserted; its sink is the bus's durable audit.
     let qa_root = fe_identity::file_fallback::qa_storage_root().ok().flatten();
     // Row 6 is the real verifier only with feature `entitlement`; without it (or a device key) licensed builds are refused.
+    let licence_keys = config
+        .identity_key
+        .zip(config.device_key.as_ref().map(|device| device.secret_bytes()))
+        .map(|(identity, device_secret)| LicenceKeys { identity, device_secret });
     let governance_config =
         GovernanceConfig::from_env(local_did.clone(), qa_root.as_deref()).with_device_entitlement(config.device_key);
     let data_dir: PathBuf = governance_config.config_dir.clone();
@@ -4669,6 +4718,7 @@ pub(crate) fn install_with(app: &mut App, config: ExtensionBridgeConfig) {
         index,
         signals,
         view,
+        licence_keys,
     };
     let ops_trust = source_trust(&governance, allow_dev);
     let worker_trust = source_trust(&governance, allow_dev);

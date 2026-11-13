@@ -1858,9 +1858,10 @@ The worker is an `OwnedService` in `maintenance_services`, so it stops with the 
 - **The ceiling.** A binding's ceiling is the minimum of three roles: the bus role view, fe-ui's `LocalUserRole` at the
   active petal (Viewer until it resolves) and the viewer token. A bind below Viewer is refused, and the ceiling rides on
   `Bus::open_portal_client`, never on a `Caller` literal (steer 23:40).
-- **The role source.** `NodeDidRoles` answers Owner for the node DID and None for everyone else. That is identical to
-  `plugin_bridge`'s bus roles for the only DID a portal binding names (`bus.local_did()`), and it avoids reaching into
-  that module's private role view.
+- **The role source.** The broker shares the extension host's bus, role source and audit sink: `plugin_bridge` inserts
+  `ExtensionBusParts` and `portal_host::install_broker` builds the broker with `BusPortalBroker::from_parts`, so portal
+  role reads, grants and audit rows go through the same services as the extension path. `NodeDidRoles` (Owner for the
+  node DID, None for everyone else) is only the fallback when no `ExtensionBusParts` resource exists.
 - **Scope pinning.** The scope is pinned from `BrowserCommand::OpenBundle` (`track_portal_scopes`, before
   `apply_portal_admission`). It is event-driven: `VerseManager` mutates every frame, so there is no tree mirror. Write
   ancestry is pinned at Open.

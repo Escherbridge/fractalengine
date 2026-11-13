@@ -92,13 +92,17 @@ fn carried_petal(command: &DbCommand) -> Option<String> {
 }
 
 /// Submit one scene write through `door` as caller `Ui`; admitted writes go to `sender`.
+/// The petal is the command's own, else `petal_hint` (the caller's known petal), else the active one.
 fn submit_with(
     door: &SceneWriteDoor,
     sender: &Sender<DbCommand>,
     command: DbCommand,
     blocking: bool,
+    petal_hint: Option<&str>,
 ) -> GuiSend {
-    let petal = carried_petal(&command).or_else(|| door_queue().active_petal.clone());
+    let petal = carried_petal(&command)
+        .or_else(|| petal_hint.map(str::to_owned))
+        .or_else(|| door_queue().active_petal.clone());
     let Some(petal) = petal else {
         // No petal to authorize against: nothing bound can resolve, so the write is plain.
         return send_plain(sender, command, blocking);
@@ -212,17 +216,28 @@ fn advance(write: WaitingWrite, now: Instant) -> Result<Settled, WaitingWrite> {
 
 /// Submit through the installed process gate; blocks like `Sender::send` once admitted.
 pub fn submit_scene_write(db_sender: &DbCommandSender, command: DbCommand) -> GuiSend {
-    submit_with(&SceneWriteDoor::installed(), &db_sender.0, command, true)
+    submit_with(&SceneWriteDoor::installed(), &db_sender.0, command, true, None)
 }
 
 /// As [`submit_scene_write`] for frame systems that must not block on a full channel.
 pub fn try_submit_scene_write(db_sender: &DbCommandSender, command: DbCommand) -> GuiSend {
-    submit_with(&SceneWriteDoor::installed(), &db_sender.0, command, false)
+    submit_with(&SceneWriteDoor::installed(), &db_sender.0, command, false, None)
 }
 
 /// As [`try_submit_scene_write`] for doors that hold the raw sender (dialogs).
 pub fn try_submit_scene_write_on(sender: &Sender<DbCommand>, command: DbCommand) -> GuiSend {
-    submit_with(&SceneWriteDoor::installed(), sender, command, false)
+    submit_with(&SceneWriteDoor::installed(), sender, command, false, None)
+}
+
+/// As [`try_submit_scene_write_on`] through an explicit door (an app-provided `SceneWriteDoor` resource),
+/// authorized against `petal_id` when the command names no petal itself.
+pub fn try_submit_scene_write_through(
+    door: &SceneWriteDoor,
+    sender: &Sender<DbCommand>,
+    petal_id: &str,
+    command: DbCommand,
+) -> GuiSend {
+    submit_with(door, sender, command, false, Some(petal_id))
 }
 
 /// Frame drain: track the active petal, send or refuse queued writes in submit order, show refusals.

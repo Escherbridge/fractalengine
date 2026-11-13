@@ -543,6 +543,8 @@ fn main() {
                 fe_database::canon_log::device_enrolment::LOCAL_DEVICE_KEY_ACCOUNT,
             )
             .ok(),
+            // The licensee a licence token request signs as (R-BIN-19); the same key as `local_did`.
+            identity_key: Some(ed25519_dalek::SigningKey::from_bytes(&node_kp.seed_bytes())),
         },
     );
     // ingest.decode reads accepted payload files from the same content-addressed store.

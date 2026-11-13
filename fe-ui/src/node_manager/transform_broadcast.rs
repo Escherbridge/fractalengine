@@ -1,13 +1,7 @@
 //! Commit gimbal transforms locally and apply inbound API transforms.
 
-use std::time::Instant;
-
 use bevy::prelude::*;
-use fe_runtime::messages::DbCommand;
-use fe_runtime::scene_hook_gate::SceneCallerKind;
-use fe_runtime::scene_write::{
-    SceneWrite, SceneWriteDoor, SceneWriteOutcome, SceneWriteTicket,
-};
+use fe_runtime::scene_write::SceneWriteDoor;
 
 use super::NodeManager;
 use crate::plugin::SpawnedNodeMarker;
@@ -19,27 +13,6 @@ pub(super) struct CommittedTransform {
     petal_id: String,
     before: Transform,
     after: Transform,
-}
-
-impl CommittedTransform {
-    /// The door write that asks the `scene.transform` hook; rotation as stored (Euler XYZ radians).
-    /// The checked commit itself is sent by `UndoState::transform`; only the verdict is taken here.
-    fn door_write(&self) -> Option<SceneWrite> {
-        let (x, y, z) = self.after.rotation.to_euler(EulerRot::XYZ);
-        let command = DbCommand::UpdateNodeTransform {
-            node_id: self.node_id.clone(),
-            position: self.after.translation.to_array(),
-            rotation: [x, y, z],
-            scale: self.after.scale.to_array(),
-        };
-        SceneWrite::new(self.petal_id.clone(), command).ok()
-    }
-}
-
-/// A commit held while the `scene.transform` gate answers (at most its 250 ms deadline).
-pub(super) struct GatedTransform {
-    commit: CommittedTransform,
-    ticket: SceneWriteTicket,
 }
 
 /// FR-4 (path_interaction_20260716): bake the whole-path gimbal into one point.
@@ -61,35 +34,11 @@ pub(super) fn broadcast_transform(
     nav: Res<crate::navigation_manager::NavigationManager>,
     clock: Res<crate::notice::NoticeClock>,
     scene_door: Option<Res<SceneWriteDoor>>,
-    mut gated: Local<Option<GatedTransform>>,
 ) {
     for (entity, restore) in manager.take_cancelled_restores() {
         if let Ok((mut transform, _)) = transform_query.get_mut(entity) {
             restore.apply(&mut transform);
         }
-    }
-    // A gated commit settles before any newer commit is read; the gate's deadline bounds the wait.
-    if let Some(mut held) = gated.take() {
-        let outcome = match held.ticket.poll(Instant::now()) {
-            Ok(outcome) => outcome,
-            Err(ticket) => {
-                held.ticket = ticket;
-                *gated = Some(held);
-                return;
-            }
-        };
-        settle_transform(
-            outcome,
-            &held.commit,
-            &mut manager,
-            &mut transform_query,
-            &mut verse_mgr,
-            &mut ui_mgr,
-            &mut undo,
-            &nav,
-            &db_sender.0,
-            clock.elapsed_secs_f64(),
-        );
     }
     if manager.selection_count() > 1 {
         return;
@@ -156,48 +105,29 @@ pub(super) fn broadcast_transform(
         before,
         after,
     };
-    let unchanged =
-        crate::undo::transform_value(&before).matches(&crate::undo::transform_value(&after));
-    // scene.transform (bindings.md §6): only a real move asks the bound extension, through the one door.
-    let door = if unchanged {
-        SceneWriteDoor::default()
-    } else {
-        scene_door
-            .as_deref()
-            .cloned()
-            .unwrap_or_else(SceneWriteDoor::installed)
-    };
-    let Some(write) = commit.door_write() else {
-        rollback_transform(&commit, &mut transform_query, &mut verse_mgr);
-        ui_mgr.show_advisory(
-            "Transform was not saved: the object has no petal",
-            clock.elapsed_secs_f64(),
-        );
-        return;
-    };
-    let outcome = door.submit(SceneCallerKind::Ui, write).poll(Instant::now());
-    match outcome {
-        Ok(outcome) => settle_transform(
-            outcome,
-            &commit,
-            &mut manager,
-            &mut transform_query,
-            &mut verse_mgr,
-            &mut ui_mgr,
-            &mut undo,
-            &nav,
-            &db_sender.0,
-            clock.elapsed_secs_f64(),
-        ),
-        Err(ticket) => *gated = Some(GatedTransform { commit, ticket }),
-    }
+    // scene.transform (bindings.md §6): `UndoState::transform` submits the checked commit through the one
+    // scene write door, so the bound extension is asked exactly once per gimbal move.
+    let door = scene_door
+        .as_deref()
+        .cloned()
+        .unwrap_or_else(SceneWriteDoor::installed);
+    commit_transform(
+        &commit,
+        &door,
+        &mut transform_query,
+        &mut verse_mgr,
+        &mut ui_mgr,
+        &mut undo,
+        &nav,
+        &db_sender.0,
+        clock.elapsed_secs_f64(),
+    );
 }
 
-/// Apply a settled door outcome: submit the commit, or roll back a refused one like `transform_failed`.
-fn settle_transform(
-    outcome: SceneWriteOutcome,
+/// Submit the commit through the door; a refusal or failure rolls back like `transform_failed`.
+fn commit_transform(
     commit: &CommittedTransform,
-    manager: &mut NodeManager,
+    door: &SceneWriteDoor,
     transform_query: &mut Query<(&mut Transform, &SpawnedNodeMarker)>,
     verse_mgr: &mut crate::verse_manager::VerseManager,
     ui_mgr: &mut crate::actions::UiManager,
@@ -206,23 +136,6 @@ fn settle_transform(
     db: &crossbeam::channel::Sender<fe_runtime::messages::DbCommand>,
     now_secs: f64,
 ) {
-    let augments = match outcome {
-        SceneWriteOutcome::Admitted(admitted) => admitted.into_parts().1,
-        SceneWriteOutcome::Refused(refusal) => {
-            rollback_transform(commit, transform_query, verse_mgr);
-            // A drag released while this one was gated started from the refused pose: drop it too.
-            if let Some(sel) = manager
-                .selected
-                .as_mut()
-                .filter(|sel| sel.entity == commit.entity && sel.drag_committed)
-            {
-                sel.drag_committed = false;
-                manager.pending_transform_before = None;
-            }
-            ui_mgr.show_advisory(refusal.message(), now_secs);
-            return;
-        }
-    };
     match undo.transform(
         nav,
         &commit.node_id,
@@ -230,10 +143,10 @@ fn settle_transform(
         commit.before,
         commit.after,
         verse_mgr.committed_versions.get(&commit.node_id).copied(),
+        door,
         db,
     ) {
         Ok(true) => {
-            stage_augments(augments);
             ui_mgr.show_toast("Saving transform...", now_secs);
         }
         Ok(false) => {}
@@ -253,13 +166,6 @@ fn rollback_transform(
     verse_mgr.update_node_transform(&commit.node_id, commit.before);
     if let Ok((mut target, _)) = transform_query.get_mut(commit.entity) {
         *target = commit.before;
-    }
-}
-
-/// Stage allowed augments once the transform is queued; they never block or fail the edit.
-fn stage_augments(augments: fe_runtime::scene_write::SceneAugments) {
-    for error in augments.stage(None) {
-        bevy::log::warn!(%error, "scene.transform augment was not staged");
     }
 }
 

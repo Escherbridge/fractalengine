@@ -95,9 +95,13 @@ merely restate them will be deduplicated against this list.
   feature and starts with `FE_PLUGIN_HOST_ALLOW=1`. An admitted package must
   carry an ed25519 publisher signature from a configured trust root. The
   unsigned-package dev escape exists only in debug builds. Paid (licensed)
-  packages are refused until the entitlement verifier ships. The automatic
-  revocation-list pull is not built yet. Once enabled the host runs plugin
-  code, so only install plugins you trust.
+  packages are checked offline against a stored licence token from a pinned
+  issuer, bound to this device's key; builds without the `entitlement`
+  feature (the default) or without a device key refuse every licensed
+  package. Each revocation-capable trust root's signed revocation list is
+  pulled anonymously with a size cap, and kill-listed builds are refused at
+  offer, install and load. Once enabled the host runs plugin code, so only
+  install plugins you trust.
 
 ## Scope
 

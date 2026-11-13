@@ -303,6 +303,8 @@ fn main() -> anyhow::Result<()> {
             on_blob_miss: None,
             // Headless relay has no in-app lifecycle consumers (fe-ui absent).
             lifecycle_rx: None,
+            // No plugin host blob.source on the relay: peers only.
+            blob_fallback: Default::default(),
         },
     );
 

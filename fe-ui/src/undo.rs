@@ -546,6 +546,7 @@ impl UndoState {
         &mut self,
         entry: Entry,
         origin: Origin,
+        door: &fe_runtime::scene_write::SceneWriteDoor,
         db: &crossbeam::channel::Sender<DbCommand>,
     ) -> Result<String, String> {
         self.ready()?;
@@ -556,8 +557,10 @@ impl UndoState {
             (&entry.before, &entry.after)
         };
         // Scene write door: a refusal leaves the stack and pending state untouched.
-        match crate::actions::node::try_submit_scene_write_on(
+        match crate::actions::node::try_submit_scene_write_through(
+            door,
             db,
+            &entry.petal_id,
             DbCommand::CommitCheckedNodeMutation {
                 node_id: entry.node_id.clone(),
                 mutation: target.mutation(),
@@ -596,6 +599,7 @@ impl UndoState {
         before: Transform,
         after: Transform,
         version: Option<i64>,
+        door: &fe_runtime::scene_write::SceneWriteDoor,
         db: &crossbeam::channel::Sender<DbCommand>,
     ) -> Result<bool, String> {
         self.sync(nav);
@@ -620,6 +624,7 @@ impl UndoState {
                 after_version: None,
             },
             Origin::Normal,
+            door,
             db,
         )?;
         Ok(true)
@@ -965,7 +970,12 @@ impl UndoState {
             self.redo.clear();
             return Err("Object changed since this edit; Undo skipped".into());
         }
-        self.start(entry, if redo { Origin::Redo } else { Origin::Undo }, db)?;
+        self.start(
+            entry,
+            if redo { Origin::Redo } else { Origin::Undo },
+            &fe_runtime::scene_write::SceneWriteDoor::installed(),
+            db,
+        )?;
         Ok(())
     }
     fn confirm_history(

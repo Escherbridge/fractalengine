@@ -383,7 +383,14 @@ cargo test -p fe-ui --lib -- atlas::dashboard atlas::model_editor atlas::search_
 cargo test -p fe-ui --lib -- extensions::
 cargo test -p fe-plugin -- net::tests:: bindings::resolver::tests:: tick::tests::tick_journey_skips_counts_and_degrades_without_flushing
 cargo test -p fractalengine --bin fractalengine -- --skip extension_host::admin_channel::tests:: extension_host:: plugin_bridge::
+cargo test -p fractalengine --bin fractalengine -- extension_ui_tests::
+cargo test -p fe-api --lib -- server::extension_mount_tests::
+cargo test -p fe-ui --lib -- panels::plugin_install_panel
 ```
+
+**Reach lines (turn 3 gate):** `extension_ui_tests::` (first-party extension UI registration in `fractalengine/src/main.rs`),
+`server::extension_mount_tests::` (fe-api extension route mount in `fe-api/src/server.rs`) and
+`panels::plugin_install_panel` (the superseded v1 consent modal's journey) matched no other batch filter.
 
 **Portal bundle validator (fe-format):** `fe-format/src/portal_bundle.rs` tests (`portal_bundle::tests::`) run in the second line,
 and the first line skips them so they run once. Their coverage: validator refusal classes, capability digest, and the capability

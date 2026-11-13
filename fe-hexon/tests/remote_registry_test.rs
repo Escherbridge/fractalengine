@@ -186,6 +186,7 @@ async fn search_download_verify_roundtrip() {
         let trust = SourceTrust {
             is_trust_root: Arc::new(|_| false),
             index_signer: Arc::new(|_| None),
+            is_killed: fe_hexon::registry_source::no_kill_list(),
             allow_unsigned_dev: true,
         };
         let source = remote_source("test registry", base.clone(), None, trust.clone()).unwrap();
@@ -225,6 +226,7 @@ async fn search_download_verify_roundtrip() {
         let trust = SourceTrust {
             is_trust_root: Arc::new(|_| false),
             index_signer: Arc::new(|_| None),
+            is_killed: fe_hexon::registry_source::no_kill_list(),
             allow_unsigned_dev: false,
         };
         remote_source("silent registry", format!("http://{silent_addr}"), None, trust).unwrap().list(None)
