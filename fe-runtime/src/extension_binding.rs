@@ -617,7 +617,7 @@ mod tests {
         assert_eq!(record.doc_key().unwrap(), "binding/VERSE#v-FRACTAL#f/ingest.decode/acme%2Fv2+raw/did:key:z6MkAuthor");
     }
 
-    // Catalogue ids pinned to manifest-v2.md's 2.0 list; the fe_sdk KNOWN_HOOKS equality is pinned by B3 (see AGENTS.md).
+    // Catalogue ids pinned to manifest-v2.md's 2.0 list and to fe_sdk's KNOWN_HOOKS / KEYED_HOOKS (R-HOOKS-12).
     #[test]
     fn catalogue_matches_the_documented_hook_set() {
         let served: Vec<&str> = served_hook_ids().collect();
@@ -632,6 +632,13 @@ mod tests {
         // A manifest may `provide` exactly the served hooks a package can serve; a web bundle binds `portal.open` bare.
         let providable: Vec<&str> = served.iter().copied().filter(|id| *id != "portal.open").collect();
         assert_eq!(providable, fe_sdk::manifest_v2::KNOWN_HOOKS, "catalogue and manifest v2 hook ids drifted");
+        // Only a keyed catalogue row may narrow `keys` in `provides` (R-BND-30: `petal.activate` is keyed by name).
+        let keyed: Vec<&str> = HOOK_CATALOGUE
+            .iter()
+            .filter(|spec| spec.tier == HookTier::V1 && spec.key_kind != HookKeyKind::None && spec.id != "portal.open")
+            .map(|spec| spec.id)
+            .collect();
+        assert_eq!(keyed, fe_sdk::manifest_v2::KEYED_HOOKS, "catalogue key column and manifest v2 KEYED_HOOKS drifted");
         for spec in HOOK_CATALOGUE {
             assert!(is_valid_hook_id(spec.id), "{}", spec.id);
         }

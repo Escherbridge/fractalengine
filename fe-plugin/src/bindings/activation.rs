@@ -1450,6 +1450,8 @@ mod tests {
             accepted: BTreeSet::new(),
             registry: vec![],
             package_policy: PackagePolicy::default(),
+            default_access: fe_policy::RoleLevel::None,
+            admitted_bundles: BTreeSet::new(),
         };
 
         // A replicated row alone never makes this host act: nothing is accepted in v1 yet.
@@ -1623,5 +1625,24 @@ mod tests {
         lock(&manager).uninstall_instance("inst-conn");
         activator.forget_installation("inst-conn");
         assert!(ticks.counters("inst-conn@p1").is_none() && ticks.counters("inst-conn@p3").is_none());
+
+        // R-X-04: a bound web bundle resolves from this host's admitted pairs, offers nothing while unadmitted, and
+        // never starts an instance (D-X5: only a local Open mounts it).
+        const BUNDLE: &str = "org.example.pump-docs";
+        let docs_point = BindingPoint::new("portal.open", "docs");
+        rows.push(row(&verse_scope, "portal.open", "docs", Some(BUNDLE), LOCAL, 40, json!({})));
+        let plan = reconcile(&mut activator, &rows, &facts, &manager);
+        assert!(plan.starts.is_empty(), "{plan:?}");
+        assert!(matches!(
+            state_of(&activator, "p1", &docs_point),
+            Some(BindingResolution::Unresolved { reason: UnresolvedReason::ConsentMissing, offer: None, .. })
+        ));
+        facts.admitted_bundles.insert((BUNDLE.into(), "h-docs".into()));
+        let plan = reconcile(&mut activator, &rows, &facts, &manager);
+        assert!(plan.starts.is_empty(), "an admitted bundle still starts nothing: {plan:?}");
+        assert!(matches!(
+            activator.need("p1", &docs_point),
+            Need::Builtin(Some(ResolvedPoint { resolution: BindingResolution::Resolved { .. }, .. }))
+        ));
     }
 }

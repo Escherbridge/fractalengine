@@ -82,6 +82,8 @@ pub struct RegistryBuild {
     pub package_id: String,
     pub version: String,
     pub provides: Vec<ProvidedHook>,
+    /// The kill list names the listed `content_hash`; never offered (R-X-28).
+    pub revoked: bool,
 }
 
 /// Package-level policy, replicated verse side and local side (§4.2 step 3).
@@ -101,6 +103,18 @@ impl PackagePolicy {
             && self.verse_allow_list.as_ref().is_none_or(|list| list.contains(package_id))
             && self.local_allow_list.as_ref().is_none_or(|list| list.contains(package_id))
     }
+
+    /// Which side refuses the package, verse first (row 7's `policy_source`).
+    pub fn verdict(&self, package_id: &str) -> PolicyVerdict {
+        let listed = |list: &Option<BTreeSet<String>>| list.as_ref().is_none_or(|list| list.contains(package_id));
+        if self.verse_deny.contains(package_id) || !listed(&self.verse_allow_list) {
+            PolicyVerdict::VerseDenies
+        } else if self.local_deny.contains(package_id) || !listed(&self.local_allow_list) {
+            PolicyVerdict::LocalDenies
+        } else {
+            PolicyVerdict::Admits
+        }
+    }
 }
 
 /// This host's facts for one verse; never replicated.
@@ -116,6 +130,20 @@ pub struct LocalFacts {
     pub accepted: BTreeSet<(String, String)>,
     pub registry: Vec<RegistryBuild>,
     pub package_policy: PackagePolicy,
+    /// The verse `default_access` (`viewer` or `none`); row 10's fallback when no grant applies (R-X-30).
+    pub default_access: RoleLevel,
+    /// Web bundles admitted on this host, `(package_id, content_hash)` (portal resolver; R-X-04).
+    pub admitted_bundles: BTreeSet<(String, String)>,
+}
+
+impl LocalFacts {
+    /// This host's role at `scope`: its grant, else the verse default, which never lends more than Viewer (§2.2).
+    pub fn local_role(&self, roles: &EffectiveRoles, scope: &str) -> RoleLevel {
+        match roles.role_at(&self.local_did, scope) {
+            RoleLevel::None => self.default_access.min(RoleLevel::Viewer),
+            granted => granted,
+        }
+    }
 }
 
 /// Everything the resolver reads; one verse, one moment.
@@ -172,39 +200,72 @@ fn version_order(record: &BindingRecord) -> (u64, Vec<u8>) {
     (record.written_at.parse::<u64>().unwrap_or(0), serde_json::to_vec(record).unwrap_or_default())
 }
 
-/// Resolve one point at one petal for this peer (§5.1).
-pub fn resolve(snapshot: &BindingSnapshot<'_>, petal: &PetalAddress, point: &BindingPoint) -> ResolvedPoint {
+/// What decides a point at a petal: the nearest effective row, the petal's stored terrain, or nothing.
+enum Decision<'a> {
+    Row { scope: String, level: BindingScopeLevel, record: &'a BindingRecord },
+    StoredTerrain { scope: String },
+    Unbound,
+}
+
+/// Nearest scope with an effective row wins; a stored terrain column is an implicit petal `builtin` (OQ-B6).
+fn decide<'a>(
+    rows: &'a [StoredRow],
+    roles: &EffectiveRoles,
+    stored_terrain_petals: &BTreeSet<String>,
+    petal: &PetalAddress,
+    point: &BindingPoint,
+) -> Decision<'a> {
     let scopes = resolution_scopes(&petal.verse_id, &petal.fractal_id, &petal.petal_id);
     let levels = [BindingScopeLevel::Petal, BindingScopeLevel::Fractal, BindingScopeLevel::Verse];
-    for (scope, level) in scopes.iter().zip(levels) {
-        let binding = effective_binding(snapshot.rows, snapshot.roles, scope, point);
-        let Some(record) = binding else {
-            if level == BindingScopeLevel::Petal
-                && point.hook == "petal.map"
-                && snapshot.stored_terrain_petals.contains(&petal.petal_id)
-            {
-                return ResolvedPoint {
-                    resolution: BindingResolution::Builtin { scope: Some(scope.clone()) },
-                    detail: ResolutionDetail { source_level: Some(level), implicit_terrain: true, ..Default::default() },
-                };
-            }
-            continue;
-        };
-        if record.mode == BindingMode::Builtin {
-            return ResolvedPoint {
-                resolution: BindingResolution::Builtin { scope: Some(scope.clone()) },
-                detail: ResolutionDetail {
-                    source_level: Some(level),
-                    builtin_config: Some(record.config.clone()),
-                    ..Default::default()
-                },
-            };
+    for (scope, level) in scopes.into_iter().zip(levels) {
+        if let Some(record) = effective_binding(rows, roles, &scope, point) {
+            return Decision::Row { scope, level, record };
         }
-        return check_local(snapshot, petal, point, scope, level, record);
+        if level == BindingScopeLevel::Petal && point.hook == "petal.map" && stored_terrain_petals.contains(&petal.petal_id) {
+            return Decision::StoredTerrain { scope };
+        }
     }
-    ResolvedPoint {
-        resolution: BindingResolution::Builtin { scope: None },
-        detail: ResolutionDetail::default(),
+    Decision::Unbound
+}
+
+/// The row deciding the point at the petal; `None` when nothing is bound or the petal's own terrain decides (R-BND-13).
+pub fn deciding_binding<'a>(
+    rows: &'a [StoredRow],
+    roles: &EffectiveRoles,
+    stored_terrain_petals: &BTreeSet<String>,
+    petal: &PetalAddress,
+    point: &BindingPoint,
+) -> Option<&'a BindingRecord> {
+    match decide(rows, roles, stored_terrain_petals, petal, point) {
+        Decision::Row { record, .. } => Some(record),
+        Decision::StoredTerrain { .. } | Decision::Unbound => None,
+    }
+}
+
+/// Resolve one point at one petal for this peer (§5.1).
+pub fn resolve(snapshot: &BindingSnapshot<'_>, petal: &PetalAddress, point: &BindingPoint) -> ResolvedPoint {
+    match decide(snapshot.rows, snapshot.roles, snapshot.stored_terrain_petals, petal, point) {
+        Decision::Row { scope, level, record } if record.mode == BindingMode::Builtin => ResolvedPoint {
+            resolution: BindingResolution::Builtin { scope: Some(scope) },
+            detail: ResolutionDetail {
+                source_level: Some(level),
+                builtin_config: Some(record.config.clone()),
+                ..Default::default()
+            },
+        },
+        Decision::Row { scope, level, record } => check_local(snapshot, petal, point, &scope, level, record),
+        Decision::StoredTerrain { scope } => ResolvedPoint {
+            resolution: BindingResolution::Builtin { scope: Some(scope) },
+            detail: ResolutionDetail {
+                source_level: Some(BindingScopeLevel::Petal),
+                implicit_terrain: true,
+                ..Default::default()
+            },
+        },
+        Decision::Unbound => ResolvedPoint {
+            resolution: BindingResolution::Builtin { scope: None },
+            detail: ResolutionDetail::default(),
+        },
     }
 }
 
@@ -230,6 +291,9 @@ fn check_local(
         return ResolvedPoint { resolution: BindingResolution::Elsewhere { runs_on: did }, detail };
     }
     let package_id = record.package_id.clone().unwrap_or_default();
+    if point.hook == PORTAL_OPEN {
+        return check_portal(snapshot, petal, record, package_id, scope, detail);
+    }
     let candidates = candidate_builds(facts, &package_id, record.version_req.as_deref());
     let outcome = first_failure(snapshot, petal, point, record, &package_id, &candidates);
     match outcome {
@@ -256,6 +320,51 @@ fn check_local(
             }
         }
     }
+}
+
+/// The hook a web bundle binds; it has no build facts and no instance (D-X5).
+const PORTAL_OPEN: &str = "portal.open";
+
+/// `portal.open` (R-X-04): rows 1-2, policy, the viewer floor, then an admitted `(package_id, content_hash)` pair.
+/// No offer: a bundle is admitted on the portal surface, never installed or updated from a binding.
+fn check_portal(
+    snapshot: &BindingSnapshot<'_>,
+    petal: &PetalAddress,
+    record: &BindingRecord,
+    package_id: String,
+    scope: &str,
+    mut detail: ResolutionDetail,
+) -> ResolvedPoint {
+    let facts = snapshot.facts;
+    let verdict = facts.package_policy.verdict(&package_id);
+    let reason = if !facts.host_enabled {
+        Some(UnresolvedReason::HostOff)
+    } else if hook_spec(&record.hook).is_none_or(|spec| spec.tier != HookTier::V1) {
+        Some(UnresolvedReason::UnknownHook)
+    } else if verdict != PolicyVerdict::Admits {
+        detail.policy_source = Some(verdict);
+        Some(UnresolvedReason::PolicyDenied)
+    } else if !facts.local_role(snapshot.roles, &petal_scope(petal)).is_at_least(RoleLevel::Viewer) {
+        Some(UnresolvedReason::RoleDenied)
+    } else if !facts.admitted_bundles.iter().any(|(admitted, _)| *admitted == package_id) {
+        Some(UnresolvedReason::ConsentMissing)
+    } else {
+        None
+    };
+    let resolution = match reason {
+        // A-14: an admitted bundle's installation is keyed by its package id.
+        None => {
+            detail.installation_id = Some(package_id.clone());
+            BindingResolution::Resolved { package_id, scope: scope.to_string() }
+        }
+        Some(reason) => BindingResolution::Unresolved { package_id, scope: scope.to_string(), reason, offer: None },
+    };
+    ResolvedPoint { resolution, detail }
+}
+
+/// The petal's own scope string (row 10 judges the role there).
+fn petal_scope(petal: &PetalAddress) -> String {
+    fe_policy::build_scope(&petal.verse_id, Some(&petal.fractal_id), Some(&petal.petal_id))
 }
 
 /// Installed builds of the package that satisfy `version_req`, highest SemVer first.
@@ -340,9 +449,8 @@ fn check_build(
     if validate_args(provided.config_schema.as_ref(), &record.config).is_err() {
         return Err(UnresolvedReason::InvalidConfig);
     }
-    let petal_scope = fe_policy::build_scope(&petal.verse_id, Some(&petal.fractal_id), Some(&petal.petal_id));
     let floor = if build.writes_scene { RoleLevel::Editor } else { RoleLevel::Viewer };
-    if !snapshot.roles.role_at(&facts.local_did, &petal_scope).is_at_least(floor) {
+    if !facts.local_role(snapshot.roles, &petal_scope(petal)).is_at_least(floor) {
         return Err(UnresolvedReason::RoleDenied);
     }
     if !build.consent_recorded {
@@ -395,7 +503,7 @@ fn gated_offer(
     let offer = reason.offer()?;
     let requirement = record.version_req.as_deref().map(VersionReq::parse);
     let registry_has = |needs_hook: bool| {
-        facts.registry.iter().filter(|build| build.package_id == package_id).any(|build| {
+        facts.registry.iter().filter(|build| build.package_id == package_id && !build.revoked).any(|build| {
             let satisfies = Version::parse(&build.version).is_ok_and(|version| match &requirement {
                 None => true,
                 Some(Ok(req)) => req.matches(&version),
@@ -408,7 +516,7 @@ fn gated_offer(
         BindingOffer::Install => facts.package_policy.admits(package_id) && registry_has(false),
         BindingOffer::Update => registry_has(reason == UnresolvedReason::NotProvided),
         BindingOffer::Override => facts.is_verse_owner_host,
-        BindingOffer::EditBinding => snapshot.roles.role_at(&facts.local_did, scope).is_at_least(RoleLevel::Manager),
+        BindingOffer::EditBinding => facts.local_role(snapshot.roles, scope).is_at_least(RoleLevel::Manager),
         BindingOffer::ReviewPermissions | BindingOffer::AllowInVerse | BindingOffer::Enable => true,
     };
     allowed.then_some(offer)
@@ -432,6 +540,9 @@ mod tests {
     const MANAGER: &str = "did:key:mgr";
     const LOCAL: &str = "did:key:local";
     const PKG: &str = "org.example.city-map";
+    const BUNDLE: &str = "org.example.pump-docs";
+    /// A DID with no grant in the verse.
+    const STRANGER: &str = "did:key:stranger";
 
     fn petal() -> PetalAddress {
         PetalAddress { verse_id: "v1".into(), fractal_id: "f1".into(), petal_id: "p1".into() }
@@ -495,6 +606,8 @@ mod tests {
             accepted: BTreeSet::from([("inst-1".to_string(), "v1".to_string())]),
             registry: vec![],
             package_policy: PackagePolicy::default(),
+            default_access: RoleLevel::None,
+            admitted_bundles: BTreeSet::new(),
         }
     }
 
@@ -533,7 +646,7 @@ mod tests {
         let rows = [row(BindingScopeLevel::Fractal, "petal.map", "", BindingMode::Extension, 10)];
         let mut registry_facts = facts();
         registry_facts.registry =
-            vec![RegistryBuild { package_id: PKG.into(), version: "1.4.0".into(), provides: build().provides }];
+            vec![RegistryBuild { package_id: PKG.into(), version: "1.4.0".into(), provides: build().provides, revoked: false }];
         let owner_host = LocalFacts { is_verse_owner_host: true, ..facts() };
         type Mutation = Box<dyn Fn(&mut LocalFacts)>;
         let table: Vec<(&str, Mutation, Option<UnresolvedReason>, Option<BindingOffer>)> = vec![
@@ -555,7 +668,10 @@ mod tests {
             ("disabled at this petal", Box::new(|f| { f.builds[0].disabled_petals.insert("p1".into()); }), Some(UnresolvedReason::Disabled), Some(BindingOffer::Enable)),
             ("degraded", Box::new(|f| f.builds[0].degraded = true), Some(UnresolvedReason::Degraded), None),
             ("capacity", Box::new(|f| f.builds[0].binding_instances = MAX_BINDING_INSTANCES_PER_INSTALLATION), Some(UnresolvedReason::Capacity), None),
-            ("writing extension needs editor", Box::new(|f| { f.builds[0].writes_scene = true; f.local_did = "did:key:viewer".into(); }), Some(UnresolvedReason::RoleDenied), None),
+            ("writing extension needs editor", Box::new(|f| { f.builds[0].writes_scene = true; f.local_did = "did:key:viewer".into(); f.default_access = RoleLevel::Viewer; }), Some(UnresolvedReason::RoleDenied), None),
+            ("no grant, verse default none", Box::new(|f| f.local_did = STRANGER.into()), Some(UnresolvedReason::RoleDenied), None),
+            ("no grant, verse default viewer lends the viewer floor", Box::new(|f| { f.local_did = STRANGER.into(); f.default_access = RoleLevel::Viewer; }), None, None),
+            ("the verse default never lends more than viewer", Box::new(|f| { f.builds[0].writes_scene = true; f.local_did = STRANGER.into(); f.default_access = RoleLevel::Manager; }), Some(UnresolvedReason::RoleDenied), None),
         ];
         for (name, mutate, expected_reason, expected_offer) in table {
             let mut world = facts();
@@ -584,12 +700,50 @@ mod tests {
         revoked.builds[0].revoked = true;
         let overridable = run(&rows, &revoked, &[], "petal.map", "");
         assert!(matches!(overridable.resolution, BindingResolution::Unresolved { offer: Some(BindingOffer::Override), .. }));
+        // R-X-28: a kill-listed registry build is never offered, for Install or Update.
+        let mut listed = registry_facts.clone();
+        listed.registry[0].revoked = true;
+        let mut absent = listed.clone();
+        absent.builds.clear();
+        assert!(matches!(run(&rows, &absent, &[], "petal.map", "").resolution, BindingResolution::Unresolved { offer: None, .. }));
+        listed.builds[0].version = "1.0.0".into();
+        assert!(matches!(run(&rows, &listed, &[], "petal.map", "").resolution, BindingResolution::Unresolved { offer: None, .. }));
         let mut denied = facts();
         denied.builds[0].policy = PolicyVerdict::LocalDenies;
         assert_eq!(run(&rows, &denied, &[], "petal.map", "").detail.policy_source, Some(PolicyVerdict::LocalDenies));
         // unknown-hook: a stretch hook is stored but unknown to this build.
         let stretch = [row(BindingScopeLevel::Verse, "asset.export", "", BindingMode::Extension, 10)];
         assert_eq!(reason_of(&run(&stretch, &facts(), &[], "asset.export", "")), Some(UnresolvedReason::UnknownHook));
+
+        // R-X-04: `portal.open` resolves from this host's admitted bundles and never offers Install or Update.
+        let mut bound = row(BindingScopeLevel::Verse, "portal.open", "docs", BindingMode::Extension, 10);
+        bound.record.package_id = Some(BUNDLE.into());
+        let admitted = |f: &mut LocalFacts| {
+            f.admitted_bundles.insert((BUNDLE.to_string(), "h-docs".to_string()));
+        };
+        let portal_table: Vec<(&str, Mutation, Option<UnresolvedReason>)> = vec![
+            ("admitted bundle", Box::new(admitted), None),
+            ("not admitted", Box::new(|_| {}), Some(UnresolvedReason::ConsentMissing)),
+            ("another package's admitted pair", Box::new(|f| { f.admitted_bundles.insert((PKG.to_string(), "h-docs".to_string())); }), Some(UnresolvedReason::ConsentMissing)),
+            ("a registry build is no Install offer", Box::new(|f| { f.builds.clear(); f.registry = vec![RegistryBuild { package_id: BUNDLE.into(), version: "1.0.0".into(), provides: vec![], revoked: false }]; }), Some(UnresolvedReason::ConsentMissing)),
+            ("host off", Box::new(move |f| { admitted(f); f.host_enabled = false; }), Some(UnresolvedReason::HostOff)),
+            ("verse policy denies", Box::new(move |f| { admitted(f); f.package_policy.verse_deny.insert(BUNDLE.into()); }), Some(UnresolvedReason::PolicyDenied)),
+            ("no grant, verse default none", Box::new(move |f| { admitted(f); f.local_did = STRANGER.into(); }), Some(UnresolvedReason::RoleDenied)),
+            ("no grant, verse default viewer", Box::new(move |f| { admitted(f); f.local_did = STRANGER.into(); f.default_access = RoleLevel::Viewer; }), None),
+        ];
+        for (name, mutate, expected_reason) in portal_table {
+            let mut world = facts();
+            mutate(&mut world);
+            let resolved = run(std::slice::from_ref(&bound), &world, &[], "portal.open", "docs");
+            assert_eq!(reason_of(&resolved), expected_reason, "portal row {name}");
+            match &resolved.resolution {
+                BindingResolution::Unresolved { offer, .. } => assert_eq!(*offer, None, "portal row {name} offers nothing"),
+                resolution => {
+                    assert!(resolution.is_extension(), "portal row {name} must resolve");
+                    assert_eq!(resolved.detail.installation_id.as_deref(), Some(BUNDLE), "A-14 installation key");
+                }
+            }
+        }
     }
 
     // Nearest scope wins with no fall-through; builtin masks outer; inherit looks outward.
@@ -631,7 +785,17 @@ mod tests {
         let other_petal = run(std::slice::from_ref(&verse), &facts(), &["p9"], "petal.map", "");
         assert!(other_petal.resolution.is_extension());
         let explicit = row(BindingScopeLevel::Petal, "petal.map", "", BindingMode::Extension, 6);
-        assert!(run(&[verse, explicit], &facts(), &["p1"], "petal.map", "").resolution.is_extension());
+        assert!(run(&[verse.clone(), explicit.clone()], &facts(), &["p1"], "petal.map", "").resolution.is_extension());
+        // R-BND-13: when the column decides, no outer row is the winner; an explicit petal row is.
+        let roles = roles();
+        let stored = BTreeSet::from(["p1".to_string()]);
+        let point = BindingPoint::new("petal.map", "");
+        let outer_only = [verse.clone()];
+        assert_eq!(deciding_binding(&outer_only, &roles, &stored, &petal(), &point), None);
+        assert!(deciding_binding(&outer_only, &roles, &BTreeSet::new(), &petal(), &point).is_some(), "no column: the verse row wins");
+        let both = [verse, explicit];
+        let winner = deciding_binding(&both, &roles, &stored, &petal(), &point).map(|record| record.scope.clone());
+        assert_eq!(winner, Some(scope_of(BindingScopeLevel::Petal)));
     }
 
     // Placement: explicit runs_on and one-peer hooks name another peer; the local author runs it.
