@@ -58,8 +58,12 @@ for the next data change). The shared `rate_hz: 1` bucket belongs to the host.
 
 ## §config
 
-The guest SDK has no binding-config read yet, so `format` (json|csv) is read from kv key `bi-push/format` (a JSON
-string), default json. When the BND turn lands a config read, replace `configured_format`.
+The manifest declares `provides: egress.connector`, so the crate enables the guest SDK's `hooks` feature and the
+component exports `hooks` (without it `fe-ext build`/`validate`/`pack` refuse `missing-export`; J8 pins both sides).
+`on_hook` answers the connector's `configure` call by adopting the binding's `format` (json|csv; the host already
+checked it against `config_schema`, an unknown name is still `invalid-input`); any other hook id is `Failed`, so the
+built-in serves it. Without a binding (sandbox, an unbound install) `format` falls back to kv key `bi-push/format`
+(a JSON string), then json. The bound value wins over the kv seed.
 
 ## Parity
 

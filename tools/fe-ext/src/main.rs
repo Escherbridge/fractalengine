@@ -41,13 +41,14 @@ enum Cmd {
         #[arg(long)]
         component: Option<PathBuf>,
     },
-    /// Build the sealed, signed plugin hexon.
+    /// Build the sealed, signed plugin hexon (after the same component checks as `validate`).
     Pack {
         #[arg(long, default_value = ".")]
         project: PathBuf,
         /// Signing key file (see `keygen`).
         #[arg(long)]
         key: PathBuf,
+        /// Output file, or a folder (existing, or ending in `/`) that gets `<id>-<version>.hexon`.
         #[arg(long)]
         out: Option<PathBuf>,
         #[arg(long)]
@@ -150,13 +151,16 @@ fn run(cli: Cli) -> Result<()> {
         Cmd::Pack { project, key: key_path, out, publisher_name, component } => {
             let project = Project::open(&project)?;
             let signing_key = key::load(&key_path)?;
-            let (bytes, package) = pack::pack(
-                &project.read_manifest()?,
-                &project.read_component(component.as_deref())?,
-                &signing_key,
-                publisher_name.as_deref(),
-            )?;
-            let out = out.unwrap_or_else(|| project.dir.join("dist").join(format!("{}-{}.hexon", package.package_id, package.version)));
+            let (manifest, component_bytes) = (project.read_manifest()?, project.read_component(component.as_deref())?);
+            // `check_provides` before sealing: a package the host would refuse with `missing-export` is never written.
+            validate::validate_component_for(&component_bytes, &validate::validate_manifest(&manifest)?.manifest)?;
+            let (bytes, package) = pack::pack(&manifest, &component_bytes, &signing_key, publisher_name.as_deref())?;
+            let file_name = format!("{}-{}.hexon", package.package_id, package.version);
+            let out = match out {
+                Some(out) if names_directory(&out) => out.join(file_name),
+                Some(out) => out,
+                None => project.dir.join("dist").join(file_name),
+            };
             write_output(&out, &bytes)?;
             println!("packed {}", out.display());
             println!("content_hash {}", package.content_hash);
@@ -213,6 +217,11 @@ fn run(cli: Cli) -> Result<()> {
         Cmd::Keygen { out } => println!("{}", key::generate(&out)?),
     }
     Ok(())
+}
+
+/// `--out` names a folder when it exists as one or ends in a path separator (`--out packages/`).
+fn names_directory(path: &Path) -> bool {
+    path.is_dir() || path.as_os_str().to_string_lossy().ends_with(['/', '\\'])
 }
 
 fn write_output(path: &Path, bytes: &[u8]) -> Result<()> {

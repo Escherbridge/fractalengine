@@ -32,6 +32,8 @@ crossbeam = { workspace = true }
 hex = "0.4"
 rand = "0.8"
 base64 = "0.22"
+# `index verify --index-key did:key:z...` decodes the multibase key (same major as fe-format).
+bs58 = "0.5"
 zip = "0.6"
 toml = "0.8"
 tokio = { workspace = true, features = ["io-util"] }

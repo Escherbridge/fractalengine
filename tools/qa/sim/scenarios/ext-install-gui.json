@@ -1,0 +1,73 @@
+{
+  "name": "ext-install-gui",
+  "description": "Extension administration through the app's own surfaces only (user decision 2026-11-09): the Owner host installs fleet-sim from a package file and device-adapter from the run's signed static index (Browse), confirms both consent dialogs by their own buttons, disables one installation over the local `fe-ext admin` channel and re-enables it in the panel, then uninstalls both. The viewer only proves installations stay host-local; the Owner starts first and so owns the default admin endpoint, and a misrouted CLI verb would answer not-found rather than act on the viewer (tools/qa/sim/AGENTS.md section ext). No REST admin route is called; REST is used only to read the installation list.",
+  "seed": 20261113,
+  "fixture": "basic",
+  "verse_name": "QA Basic",
+  "assets": "generated",
+  "peers": [
+    {"name": "owner", "role": "owner"},
+    {"name": "viewer", "role": "viewer"}
+  ],
+  "probe": {"rest_ms": 500, "hierarchy_ms": 2000, "ui_ms": 1000, "query_ms": 5000, "host_ms": 2000},
+  "steps": [
+    {
+      "id": "0", "title": "Preflight: the Owner is in the verse with no installation", "settle_s": 10,
+      "actions": [
+        {"peer": "owner", "via": "gui", "op": "click", "args": {"name": "Close window", "role": "button"}, "optional": true},
+        {"peer": "viewer", "via": "gui", "op": "click", "args": {"name": "Close window", "role": "button"}, "optional": true},
+        {"peer": "viewer", "via": "gui", "op": "click", "args": {"name": "Open verse QA Basic"}, "optional": true}
+      ],
+      "expect": [
+        {"probe": "role", "target": "$fixture.verse_id", "peers": ["owner"], "predicate": "equals", "value": "owner"},
+        {"probe": "extension", "target": "list", "path": "count", "peers": ["owner"], "predicate": "equals", "value": 0, "within_s": 10}
+      ]
+    },
+    {
+      "id": "1", "title": "Install fleet-sim from its package file; the consent dialog's own button confirms it", "settle_s": 30, "covers": ["R11", "R18"],
+      "note": "The file field route (`via: file`) stages the run-packed .hexon; the panel shows `Enable org.example.fleet-sim` (consent needed), which ext_consent clicks.",
+      "actions": [
+        {"id": "file_install", "peer": "owner", "via": "ext", "op": "ext_install", "args": {"package": "fleet-sim", "via": "file"}},
+        {"id": "fleet", "peer": "owner", "via": "ext", "op": "ext_consent", "args": {"package": "fleet-sim"}, "needs": ["file_install"]}
+      ],
+      "expect": [
+        {"probe": "extension", "target": "list", "path": "count", "peers": ["owner"], "predicate": "equals", "value": 1, "within_s": 30, "after": "fleet", "covers": "R11 the consented file install is listed"}
+      ]
+    },
+    {
+      "id": "2", "title": "Install device-adapter from the signed static index (Browse row); consent in the dialog", "settle_s": 40, "covers": ["R11", "R18"],
+      "note": "The Browse row `Install org.example.device-adapter <version>` comes from the run's index tree, verified against the pinned index key before it is offered (R-TOOL-23).",
+      "actions": [
+        {"id": "index_install", "peer": "owner", "via": "ext", "op": "ext_install", "args": {"package": "device-adapter"}},
+        {"id": "device", "peer": "owner", "via": "ext", "op": "ext_consent", "args": {"package": "device-adapter"}, "needs": ["index_install"]}
+      ],
+      "expect": [
+        {"probe": "extension", "target": "list", "path": "count", "peers": ["owner"], "predicate": "equals", "value": 2, "within_s": 30, "after": "device", "covers": "R11 the index install is listed beside the file install"},
+        {"probe": "extension", "target": "list", "path": "count", "peers": ["viewer"], "predicate": "equals", "value": 0, "mode": "always", "hold_s": 10, "after": "device", "covers": "installations are host-local (bus.md section 11)"}
+      ]
+    },
+    {
+      "id": "3", "title": "Disable over the local admin channel, re-enable in the panel", "settle_s": 40, "covers": ["R23"],
+      "note": "ext_disable defaults to `channel: cli` (`fe-ext admin --json disable <installation>`); ext_enable with `channel: gui` presses the binding toggles on the row's Overview.",
+      "actions": [
+        {"id": "cli_disable", "peer": "owner", "via": "ext", "op": "ext_disable", "args": {"installation": "$fleet.installation"}},
+        {"id": "gui_enable", "peer": "owner", "via": "ext", "op": "ext_enable", "args": {"installation": "$fleet.installation", "channel": "gui"}, "needs": ["cli_disable"], "sync": "+5"}
+      ],
+      "expect": [
+        {"probe": "extension", "target": "$fleet.installation", "path": "state", "peers": ["owner"], "predicate": "equals", "value": "disabled", "within_s": 20, "after": "cli_disable", "covers": "R23 the CLI verb reached this host"},
+        {"probe": "extension", "target": "$fleet.installation", "path": "state", "peers": ["owner"], "predicate": "not_equals", "value": "disabled", "within_s": 30, "after": "gui_enable"}
+      ]
+    },
+    {
+      "id": "4", "title": "Uninstall both through the two-step Uninstall / Confirm uninstall", "settle_s": 30, "covers": ["R11"],
+      "actions": [
+        {"id": "drop_fleet", "peer": "owner", "via": "ext", "op": "ext_uninstall", "args": {"installation": "$fleet.installation"}},
+        {"id": "drop_device", "peer": "owner", "via": "ext", "op": "ext_uninstall", "args": {"installation": "$device.installation"}, "needs": ["drop_fleet"]}
+      ],
+      "expect": [
+        {"probe": "extension", "target": "list", "path": "count", "peers": ["owner"], "predicate": "equals", "value": 0, "within_s": 30, "after": "drop_device", "covers": "R11 nothing stays installed"},
+        {"probe": "alive", "target": "all", "predicate": "present", "mode": "always", "hold_s": 5}
+      ]
+    }
+  ]
+}

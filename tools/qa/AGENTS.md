@@ -1371,7 +1371,7 @@ peer's own later writes measure those writes, and counting them read a 2-10 s ca
 longer than a value lasts share few values; the table says so. `repro` re-runs one step: `python tools/qa/sim/run.py <scenario> --steps <id>` (earlier steps that bind
 ids must be included in the range).
 
-### Extension scenarios (ext-fleet, ext-device, ext-bindings)
+### Extension scenarios (ext-fleet, ext-device, ext-bindings, ext-install-gui)
 
 Rationale and per-file notes: `tools/qa/sim/AGENTS.md` §ext. What an operator of the harness needs:
 

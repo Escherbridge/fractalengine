@@ -10,7 +10,8 @@ description = "First-party BI connector: pushes the guarded host/query rows as J
 crate-type = ["cdylib", "rlib"]
 
 [dependencies]
-fe-ext-guest = { path = "../../tools/fe-ext/guest" }
+# `hooks`: the manifest declares `provides` (egress.connector), so the component must export `hooks` (missing-export).
+fe-ext-guest = { path = "../../tools/fe-ext/guest", features = ["hooks"] }
 serde_json = "1"
 
 # The sandbox leg belongs in J8 (tools/fe-ext/tests/j8_cli.rs), so this crate never builds the host stack.

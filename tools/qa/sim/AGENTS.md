@@ -40,3 +40,15 @@ trust root is refused, fe-hexon `IndexKeyMisused`).
 
 **Known gaps.** The panel has no binding config form, so `ext_bind` enables the manifest's binding rows and records the
 scenario's `config` in `config_note` instead of sending it. `door: ws` commands still ride REST (no WS client).
+Install, consent and update have no CLI route in the driver: `fe-ext admin install-*` blocks on `pending-consent` until
+the dialog is answered, and the driver would have to click it from a second thread; the GUI route covers them.
+`ext-install-gui` has no update leg: run.py packs one build per example, so there is no newer version to offer
+(trigger: an example with a second staged version).
+
+**CLI routing.** The CLI reaches whichever app owns the default admin endpoint (the first to start, the owner in
+`peers.ps1` order) unless `instance` names one. A verb misrouted to another peer names an installation id that only
+exists on the intended host, so it answers `not-found` (loud), never acts on the wrong host.
+
+**`ext-install-gui`.** The GUI QA path in one run: file install (fleet-sim) and Browse install from the signed static
+index (device-adapter), both consented by the dialog's own button, a CLI `disable` and a panel `enable`, then both
+uninstalled; the viewer proves installations stay host-local. Two peers because `run.py` needs at least two.

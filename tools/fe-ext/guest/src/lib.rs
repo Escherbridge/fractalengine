@@ -1,10 +1,18 @@
-//! Guest SDK for FractalEngine extensions (WIT `fractalengine:plugin@2.0.0`, world `extension`).
+//! Guest SDK for FractalEngine extensions (WIT `fractalengine:plugin@2.0.0`, world `extension`; `extension-with-hooks` with feature `hooks`).
 //! Design notes: tools/fe-ext/AGENTS.md §guest-sdk. Contract: docs/extensions/authoring-guide.md.
 
 /// The generated bindings, straight from `fe-plugin/wit/fractal-plugin-2.wit`.
 pub mod bindings {
+    #[cfg(not(feature = "hooks"))]
     wit_bindgen::generate!({
         world: "extension",
+        path: "../../../fe-plugin/wit/fractal-plugin-2.wit",
+        pub_export_macro: true,
+    });
+    // Feature `hooks`: the `extension-with-hooks` world, for a manifest that declares `provides`.
+    #[cfg(feature = "hooks")]
+    wit_bindgen::generate!({
+        world: "extension-with-hooks",
         path: "../../../fe-plugin/wit/fractal-plugin-2.wit",
         pub_export_macro: true,
     });
@@ -55,9 +63,58 @@ pub trait Extension: 'static {
     }
     /// A queued `bus.call` completed.
     fn on_call_result(_call: u64, _outcome: Result<String, HostError>) {}
+    /// A hook call for a resolved binding (feature `hooks`); unhandled hooks are `Failed`, so the built-in serves.
+    #[cfg(feature = "hooks")]
+    fn on_hook(call: HookCall) -> Result<HookOutput, HookFailure> {
+        Err(HookFailure::Failed(format!("hook {} has no handler in this extension", call.hook)))
+    }
 }
 
-/// Export `$extension` (a type implementing [`Extension`]) as the component's four hook interfaces.
+/// Generated `hook-call` in, generated `hook-output` out, through [`hooks::Call::parse`] and [`hooks::Output::render`].
+#[cfg(feature = "hooks")]
+#[doc(hidden)]
+pub fn __dispatch_hook<E: Extension>(
+    call: bindings::exports::fractalengine::plugin::hooks::HookCall,
+) -> Result<bindings::exports::fractalengine::plugin::hooks::HookOutput, bindings::exports::fractalengine::plugin::hooks::HookError> {
+    use bindings::exports::fractalengine::plugin::hooks::{HookError, HookOutput as WitOutput};
+    let to_wit = |failure: HookFailure| match failure {
+        HookFailure::Refused(reason) => HookError::Refused(reason),
+        HookFailure::InvalidInput(reason) => HookError::InvalidInput(reason),
+        HookFailure::Failed(reason) => HookError::Failed(reason),
+    };
+    let parsed = HookCall::parse(call.hook, call.key, call.binding_scope, &call.config, &call.input, call.body).map_err(to_wit)?;
+    let (output, body) = E::on_hook(parsed).and_then(HookOutput::render).map_err(to_wit)?;
+    Ok(WitOutput { output, body })
+}
+
+/// The `hooks` export glue of [`extension!`]: present with feature `hooks`, empty without it.
+#[cfg(feature = "hooks")]
+#[doc(hidden)]
+#[macro_export]
+macro_rules! __hooks_glue {
+    ($extension:ty, $glue:ident) => {
+        impl $crate::bindings::exports::fractalengine::plugin::hooks::Guest for $glue {
+            fn on_hook(
+                call: $crate::bindings::exports::fractalengine::plugin::hooks::HookCall,
+            ) -> Result<
+                $crate::bindings::exports::fractalengine::plugin::hooks::HookOutput,
+                $crate::bindings::exports::fractalengine::plugin::hooks::HookError,
+            > {
+                $crate::__dispatch_hook::<$extension>(call)
+            }
+        }
+    };
+}
+
+/// The `hooks` export glue of [`extension!`]: present with feature `hooks`, empty without it.
+#[cfg(not(feature = "hooks"))]
+#[doc(hidden)]
+#[macro_export]
+macro_rules! __hooks_glue {
+    ($extension:ty, $glue:ident) => {};
+}
+
+/// Export `$extension` (a type implementing [`Extension`]) as the component's four hook interfaces (five with feature `hooks`).
 #[macro_export]
 macro_rules! extension {
     ($extension:ty) => {
@@ -108,6 +165,8 @@ macro_rules! extension {
                     <$extension as $crate::Extension>::on_call_result(call, outcome)
                 }
             }
+
+            $crate::__hooks_glue!($extension, FeExtGlue);
 
             $crate::bindings::export!(FeExtGlue with_types_in $crate::bindings);
     };

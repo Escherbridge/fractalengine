@@ -6,6 +6,10 @@ license = "Apache-2.0"
 description = "Rust guest SDK for FractalEngine extensions: generated WIT 2.0 bindings plus write-window, readings and route helpers"
 publish = false
 
+[features]
+# Generate the `extension-with-hooks` world and export `hooks.on-hook` (a manifest that declares `provides`).
+hooks = []
+
 [dependencies]
 wit-bindgen = "0.46"
 serde_json = "1"

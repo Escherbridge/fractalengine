@@ -1,5 +1,5 @@
 //! J8: one authoring journey through the real `fe-ext` binary, from `new` to a counter-signed package,
-//! plus the two shipped examples (R27) through `run --sandbox`, `pack` and `inspect`.
+//! plus the three shipped examples (R27) through `run --sandbox`, `validate`, `pack`, `sign`, `inspect` and `index build|verify`.
 //! Registered as the fe-ext batch in conductor/test-batches.md (`cargo test -p fe-ext -- j8`).
 
 use std::path::Path;
@@ -138,6 +138,11 @@ fn j8_new_validate_pack_inspect_countersign_and_sandbox() {
         assert_eq!(std::fs::read(&traces[0]).unwrap(), std::fs::read(&traces[1]).unwrap());
         outcomes(&serde_json::from_slice(&std::fs::read(&traces[0]).unwrap()).unwrap());
 
+        // validate with the built component runs check_provides (bi-push declares `provides`, so it exports `hooks`).
+        let validated = fe_ext(&["validate", "--project", example_path], root);
+        assert!(validated.status.success(), "{example} validate: {}", stderr(&validated));
+        assert!(stdout(&validated).contains("component ok"), "{example}: the built component was checked: {}", stdout(&validated));
+
         let package = root.join(format!("{example}.hexon"));
         let packed = fe_ext(&["pack", "--project", example_path, "--key", key.to_str().unwrap(), "--out", package.to_str().unwrap()], root);
         assert!(packed.status.success(), "{example} pack: {}", stderr(&packed));
@@ -159,6 +164,19 @@ fn j8_new_validate_pack_inspect_countersign_and_sandbox() {
 
         std::fs::copy(&package, packages.join(format!("{example}.hexon"))).unwrap();
         packed_ids.push(package_id);
+    }
+
+    // A `provides` manifest over a component without the `hooks` export is refused by validate and by pack.
+    let (bi_push, fleet_component) = (examples.join("bi-push"), examples.join("fleet-sim/dist/component.wasm"));
+    if bi_push.join("dist/component.wasm").is_file() && fleet_component.is_file() {
+        let (project_arg, component_arg) = (bi_push.to_str().unwrap(), fleet_component.to_str().unwrap());
+        let refused = fe_ext(&["validate", "--project", project_arg, "--component", component_arg], root);
+        assert!(!refused.status.success() && stderr(&refused).contains("missing-export"), "validate: {}", stderr(&refused));
+        let unsealed = root.join("no-hooks.hexon");
+        let pack_args = ["pack", "--project", project_arg, "--component", component_arg, "--key", key.to_str().unwrap(), "--out", unsealed.to_str().unwrap()];
+        let refused = fe_ext(&pack_args, root);
+        assert!(!refused.status.success() && stderr(&refused).contains("missing-export"), "pack: {}", stderr(&refused));
+        assert!(!unsealed.exists(), "a refused pack writes nothing");
     }
 
     // index build + verify: every packed example is listed, and StaticIndexSource re-verifies each one end to end

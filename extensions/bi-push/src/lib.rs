@@ -7,7 +7,10 @@ use std::cell::{Cell, RefCell};
 
 use fe_ext_guest::bindings::exports::fractalengine::plugin::bus_hooks::DeliveryKind;
 use fe_ext_guest::egress::{self, HttpMethod};
-use fe_ext_guest::{bus, extension, kv, log, Binding, BusEvent, Extension, HostError, IncomingResponse, OutgoingRequest, TickInfo};
+use fe_ext_guest::{
+    bus, extension, kv, log, Binding, BusEvent, Extension, HookCall, HookFailure, HookOutput, HostError, IncomingResponse,
+    OutgoingRequest, TickInfo,
+};
 use payload::{Format, Snapshot};
 
 /// The named query and egress ids declared in extension.json.
@@ -17,6 +20,8 @@ const SINK: &str = "sink";
 const MAX_BODY_BYTES: usize = 1_048_576;
 /// The kv key a host may seed with the binding's `format` config.
 const FORMAT_KEY: &str = "bi-push/format";
+/// The hook point this connector serves (manifest `provides`).
+const CONNECTOR_HOOK: &str = "egress.connector";
 
 /// The newest rendered snapshot; `generation` grows by one per snapshot.
 struct Latest {
@@ -28,6 +33,8 @@ struct Latest {
 thread_local! {
     static SUBSCRIPTION: Cell<Option<u64>> = const { Cell::new(None) };
     static LATEST: RefCell<Option<Latest>> = const { RefCell::new(None) };
+    /// The binding's `format`, set by the `egress.connector` configure call; wins over the kv seed.
+    static BOUND_FORMAT: Cell<Option<Format>> = const { Cell::new(None) };
     /// Newest generation the sink acknowledged with a 2xx.
     static DELIVERED: Cell<u64> = const { Cell::new(0) };
     /// The request in flight and the generation it carries.
@@ -38,8 +45,11 @@ fn warn(message: &str) {
     log::write(log::Level::Warn, message);
 }
 
-/// The configured format; JSON when unset or unknown.
+/// The binding's format, else the kv seed; JSON when unset or unknown.
 fn configured_format() -> Format {
+    if let Some(format) = BOUND_FORMAT.with(Cell::get) {
+        return format;
+    }
     kv::get(FORMAT_KEY)
         .ok()
         .flatten()
@@ -122,6 +132,19 @@ impl Extension for BiPush {
             Ok(id) => IN_FLIGHT.with(|slot| slot.set(Some((id, generation)))),
             Err(error) => warn(&format!("push refused: {error:?}; retried next tick")),
         }
+    }
+
+    /// `egress.connector` configure: adopt the binding's `format` (config already passed `config_schema`).
+    fn on_hook(call: HookCall) -> Result<HookOutput, HookFailure> {
+        if call.hook != CONNECTOR_HOOK {
+            return Err(HookFailure::Failed(format!("hook {} has no handler in this extension", call.hook)));
+        }
+        let format = match call.config.get("format").and_then(serde_json::Value::as_str) {
+            Some(name) => Some(Format::parse(name).ok_or_else(|| HookFailure::InvalidInput(format!("unknown format {name:?}")))?),
+            None => None,
+        };
+        BOUND_FORMAT.with(|slot| slot.set(format));
+        Ok(HookOutput::empty())
     }
 
     /// A 2xx marks its generation delivered; anything else leaves it for the next tick.

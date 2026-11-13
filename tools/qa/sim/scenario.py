@@ -205,7 +205,7 @@ def validate(scenario):
                                           for group in ("prepare", "actions") for a in step.get(group) or [] if isinstance(a, dict)):
             errors.append("peer %s: extension_policy loads at a restart; add a host restart op for that peer" % peer.get("name"))
     _validate_cadence(scenario.get("probe", {}), "probe", errors)
-    for index, watch in enumerate(scenario.get("watch", [])):
+    for index, watch in enumerate(scenario.get("watch") or []):
         if not isinstance(watch, dict) or watch.get("probe") not in PROBES or "target" not in watch:
             errors.append("watch[%d]: needs a known probe and a target" % index)
     defined = set()
@@ -228,7 +228,10 @@ def validate(scenario):
         barrier_peers = []
         step_actions = set()  # ids of this step's `actions` declared so far (prepare finishes before any of them starts)
         for group in ("prepare", "actions"):
-            for action in step.get(group, []):
+            if not isinstance(step.get(group) or [], list):
+                errors.append("%s: %s must be a list" % (where, group))
+                continue
+            for action in step.get(group) or []:
                 _validate_action(action, "%s %s" % (where, group), names, defined, errors)
                 if not isinstance(action, dict):
                     continue
@@ -251,7 +254,7 @@ def validate(scenario):
             errors.append("%s: a barrier needs at least two actions" % where)
         for index, expect in enumerate(step.get("expect", [])):
             _validate_expect(expect, "%s expect[%d]" % (where, index), names, defined, step, errors)
-        for checkpoint in step.get("checkpoints", []):
+        for checkpoint in step.get("checkpoints") or []:
             _check_keys(checkpoint, SCHEMA["$defs"]["checkpoint"]["properties"], where + " checkpoint", errors)
             if checkpoint.get("peer") not in names and checkpoint.get("peer") != "all":
                 errors.append("%s checkpoint: unknown peer %r" % (where, checkpoint.get("peer")))
@@ -356,7 +359,7 @@ def _validate_expect(expect, where, names, defined, step, errors):
     peers = expect.get("peers", "all")
     if peers != "all" and (not isinstance(peers, list) or any(p not in names for p in peers)):
         errors.append(where + ": peers must be 'all' or a list of scenario peer names")
-    step_ids = {a.get("id") for g in ("prepare", "actions") for a in step.get(g, []) if isinstance(a, dict)}
+    step_ids = {a.get("id") for g in ("prepare", "actions") for a in step.get(g) or [] if isinstance(a, dict)}
     if expect.get("after") and expect["after"] not in step_ids:
         errors.append(where + ": after must name an action id of the same step")
     if expect.get("mode", "eventually") not in ("eventually", "always"):
