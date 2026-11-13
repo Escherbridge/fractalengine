@@ -278,6 +278,12 @@ impl GovernanceConfig {
             entitlement: Arc::new(NoEntitlementVerifier),
         }
     }
+
+    /// Row 6 over this host's pinned issuers, stored tokens and device X25519 key ([`entitlement_check`]).
+    pub(crate) fn with_device_entitlement(mut self, device: Option<fe_identity::x25519::DeviceKeypair>) -> Self {
+        self.entitlement = entitlement_check(&self.config_dir, &self.local_did, device);
+        self
+    }
 }
 
 /// `FE_EXT_CONFIG_DIR`, else `<qa_root>/extensions`, else the per-user config dir's `fractalengine/extensions`.
@@ -679,13 +685,14 @@ impl ExtensionGovernance {
     }
 
     /// Mirror one acceptance the local DID just recorded (`accepted`) or withdrew; others' word never counts.
+    /// Before hydration the mirror stays `None` (fail closed): the DB replay, read after the durable write, carries it.
     pub(crate) fn note_acceptance(&self, actor_did: &str, installation_id: &str, verse_id: &str, accepted: bool) {
         if self.0.local_did.is_empty() || actor_did != self.0.local_did {
             return;
         }
         let changed = {
             let mut guard = write_guard(&self.0.acceptances);
-            let set = guard.get_or_insert_with(BTreeSet::new);
+            let Some(set) = guard.as_mut() else { return };
             let key = (installation_id.to_string(), verse_id.to_string());
             if accepted { set.insert(key) } else { set.remove(&key) }
         };

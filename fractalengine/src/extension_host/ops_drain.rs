@@ -160,7 +160,12 @@ fn open_in_system_browser(url: &str) -> Result<(), String> {
     if parsed.scheme() != "https" {
         return Err("invalid-input: only https pages are opened".into());
     }
-    let url = parsed.as_str();
+    if !parsed.username().is_empty() || parsed.password().is_some() {
+        return Err("invalid-input: a page URL carries no credentials".into());
+    }
+    // explorer.exe splits its argument on commas (`/select,`, `/root,`); an encoded comma means the same to the page.
+    let encoded = parsed.as_str().replace(',', "%2C");
+    let url = encoded.as_str();
     #[cfg(windows)]
     let opened = std::process::Command::new("explorer").arg(url).spawn().map(drop);
     #[cfg(target_os = "macos")]
