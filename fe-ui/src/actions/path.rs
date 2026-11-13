@@ -400,16 +400,13 @@ pub(crate) fn set_style(
     fill_color: Option<[f32; 4]>,
 ) {
     for (key, value) in style_property_writes(color, width, visible, closed, fill_color) {
-        if db_sender
-            .0
-            .send(DbCommand::SetNodeProperty {
-                node_id: track_node_id.clone(),
-                key: key.to_string(),
-                value,
-                correlation_id: None,
-            })
-            .is_err()
-        {
+        let command = DbCommand::SetNodeProperty {
+            node_id: track_node_id.clone(),
+            key: key.to_string(),
+            value,
+            correlation_id: None,
+        };
+        if super::node::submit_scene_write(db_sender, command) == super::node::GuiSend::Closed {
             bevy::log::warn!(
                 "db_sender channel closed — track-style SetNodeProperty not dispatched"
             );

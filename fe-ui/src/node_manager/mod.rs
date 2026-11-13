@@ -54,6 +54,8 @@ pub use transform_snap::{ToolSnapSettings, TransformAxisLock};
 mod terrain_authoring;
 pub use terrain_authoring::{TerrainAuthoringCommit, TerrainAuthoringState};
 pub(crate) use terrain_authoring::shape_at;
+/// The GUI scene write door (caller `Ui`); see `actions/AGENTS.md` §scene-write-door.
+pub use crate::actions::node::{submit_scene_write, try_submit_scene_write, try_submit_scene_write_on, GuiSend};
 mod viewport_pick;
 mod stamp_selection;
 pub use stamp_selection::{PromotedStampObservation, PromotedStampReader, StampSelectionOrigin};
@@ -418,6 +420,7 @@ impl Plugin for NodeManagerPlugin {
         app.init_resource::<path_gimbal_drag::PathGimbalDrag>();
         app.init_resource::<selection::SelectionState>();
         stamp_selection::register(app);
+        app.add_systems(Update, crate::actions::node::drain_gui_scene_writes);
         app.add_systems(Startup, crate::gimbal::configure_gimbal_gizmos);
         app.add_systems(
             Update,
@@ -945,6 +948,72 @@ mod tests {
             )
                 .chain(),
         );
+        // Refusing gate: the one scene door refuses, so no command is sent, the entity returns
+        // to its pre-drag pose and the player sees "Refused by <extension>".
+        {
+            use fe_runtime::scene_hook_gate::{
+                AugmentOp, SceneBinding, SceneHook, SceneHookBackend, SceneHookCall,
+                SceneHookGate, SceneHookReply, SceneHookReplySender,
+            };
+            struct RefusingBackend;
+            impl SceneHookBackend for RefusingBackend {
+                fn local_did(&self) -> &str {
+                    "did:key:local"
+                }
+                fn bound(&self, _hook: SceneHook, petal_id: &str) -> Option<SceneBinding> {
+                    (petal_id == "p").then(|| SceneBinding {
+                        package_id: "org.example.zoning".into(),
+                        binding_scope: "VERSE#v-FRACTAL#f".into(),
+                        config: serde_json::json!({}),
+                        property_scope: vec!["*".into()],
+                        may_augment: false,
+                    })
+                }
+                fn dispatch(&self, _call: SceneHookCall, reply: SceneHookReplySender) {
+                    let _ = reply.send(SceneHookReply::Refused("outside the zone".into()));
+                }
+                fn stage_augment(
+                    &self,
+                    _petal: &str,
+                    _package: &str,
+                    _node_id: &str,
+                    _ops: Vec<AugmentOp>,
+                ) -> Result<(), String> {
+                    Ok(())
+                }
+            }
+            let (door_tx, door_rx) = crossbeam::channel::unbounded();
+            app.insert_resource(fe_runtime::scene_write::SceneWriteDoor::new(
+                SceneHookGate::new(std::sync::Arc::new(RefusingBackend)),
+                door_tx,
+            ));
+            app.update();
+            assert!(rx.try_recv().is_err(), "a refused gimbal commit sends no command");
+            assert!(door_rx.try_recv().is_err(), "the door never sends a refused write");
+            let restored = *app.world().get::<Transform>(target).unwrap();
+            assert_eq!(restored.translation, Vec3::new(1.0, 2.0, 3.0), "entity back at before");
+            assert_eq!(restored.scale, Vec3::splat(2.0));
+            let advisory = app
+                .world()
+                .resource::<crate::actions::UiManager>()
+                .active_notice(0.0)
+                .map(|(notice, _)| notice.text.clone())
+                .unwrap_or_default();
+            assert!(
+                advisory.starts_with("Refused by org.example.zoning"),
+                "advisory shown, got {advisory:?}"
+            );
+            // Lift the refusal and replay the same gesture for the committed journey below.
+            app.world_mut()
+                .remove_resource::<fe_runtime::scene_write::SceneWriteDoor>();
+            *app.world_mut().get_mut::<Transform>(target).unwrap() = after;
+            begin_axis_drag(&mut app.world_mut().resource_mut::<NodeManager>());
+            let mut replay = ButtonInput::<MouseButton>::default();
+            replay.press(MouseButton::Left);
+            replay.clear();
+            replay.release(MouseButton::Left);
+            app.insert_resource(replay);
+        }
         app.update();
         app.world_mut()
             .resource_mut::<ButtonInput<MouseButton>>()

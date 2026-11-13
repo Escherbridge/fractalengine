@@ -394,11 +394,17 @@ pub(crate) fn apply_overrides(
         return Err("Stamp, path or permissions changed; reselect and review the draft".into());
     }
     let request_id = format!("ui-stamp-save-{}", ulid::Ulid::new());
-    db.0.send(DbCommand::CommitStampOverrides {
+    let command = DbCommand::CommitStampOverrides {
         edit: edit.clone(),
         correlation_id: request_id.clone(),
-    })
-    .map_err(|_| "Database connection closed; stamp save was not queued")?;
+    };
+    match super::node::submit_scene_write(db, command) {
+        super::node::GuiSend::Closed => {
+            return Err("Database connection closed; stamp save was not queued".into());
+        }
+        super::node::GuiSend::Refused(message) => return Err(message),
+        super::node::GuiSend::Sent | super::node::GuiSend::Waiting => {}
+    }
     state.pending_edit = Some((request_id, edit));
     state.edit_error = None;
     Ok(())
@@ -565,16 +571,13 @@ pub(crate) fn persist_override(
         );
         return;
     };
-    if db_sender
-        .0
-        .send(DbCommand::SetNodeProperty {
-            node_id: node_id.to_string(),
-            key: key.to_string(),
-            value,
-            correlation_id: None,
-        })
-        .is_err()
-    {
+    let command = DbCommand::SetNodeProperty {
+        node_id: node_id.to_string(),
+        key: key.to_string(),
+        value,
+        correlation_id: None,
+    };
+    if super::node::submit_scene_write(db_sender, command) == super::node::GuiSend::Closed {
         bevy::log::warn!("db_sender channel closed — stamp override {key} not persisted");
     }
 }

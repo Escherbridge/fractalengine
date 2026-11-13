@@ -81,30 +81,24 @@ pub(crate) fn set(
     key: String,
     value: serde_json::Value,
 ) {
-    if db_sender
-        .0
-        .send(DbCommand::SetNodeProperty {
-            node_id,
-            key,
-            value,
-            correlation_id: None,
-        })
-        .is_err()
-    {
+    let command = DbCommand::SetNodeProperty {
+        node_id,
+        key,
+        value,
+        correlation_id: None,
+    };
+    if super::node::submit_scene_write(db_sender, command) == super::node::GuiSend::Closed {
         bevy::log::warn!("db_sender channel closed — SetNodeProperty not dispatched");
     }
 }
 
 pub(crate) fn delete(db_sender: &DbCommandSender, node_id: String, key: String) {
-    if db_sender
-        .0
-        .send(DbCommand::DeleteNodeProperty {
-            node_id,
-            key,
-            correlation_id: None,
-        })
-        .is_err()
-    {
+    let command = DbCommand::DeleteNodeProperty {
+        node_id,
+        key,
+        correlation_id: None,
+    };
+    if super::node::submit_scene_write(db_sender, command) == super::node::GuiSend::Closed {
         bevy::log::warn!("db_sender channel closed — DeleteNodeProperty not dispatched");
     }
 }
@@ -189,14 +183,11 @@ pub(crate) fn finish_clear(
     }
     // One command = one commit and one replicated row version (QA-0129).
     for chunk in keys.chunks(fe_runtime::messages::MAX_CLEAR_PROPERTY_KEYS) {
-        if db_sender
-            .0
-            .send(DbCommand::ClearNodeProperties {
-                node_id: node_id.to_string(),
-                keys: chunk.to_vec(),
-            })
-            .is_err()
-        {
+        let command = DbCommand::ClearNodeProperties {
+            node_id: node_id.to_string(),
+            keys: chunk.to_vec(),
+        };
+        if super::node::submit_scene_write(db_sender, command) == super::node::GuiSend::Closed {
             bevy::log::warn!("db_sender channel closed — ClearNodeProperties not dispatched");
             return;
         }

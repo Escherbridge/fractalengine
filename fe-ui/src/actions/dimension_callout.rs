@@ -298,16 +298,13 @@ pub(crate) fn bind_created_callout(
     };
     map.record(node_id, Some(petal_id.to_string()), geometry.clone());
     for (key, value) in callout_properties(&geometry) {
-        if db_sender
-            .0
-            .send(DbCommand::SetNodeProperty {
-                node_id: node_id.to_string(),
-                key: key.to_string(),
-                value,
-                correlation_id: None,
-            })
-            .is_err()
-        {
+        let command = DbCommand::SetNodeProperty {
+            node_id: node_id.to_string(),
+            key: key.to_string(),
+            value,
+            correlation_id: None,
+        };
+        if super::node::submit_scene_write(db_sender, command) == super::node::GuiSend::Closed {
             bevy::log::warn!(
                 "db_sender channel closed — dimension callout contract keys not written"
             );
@@ -344,16 +341,13 @@ pub(crate) fn save_measure_as_callout(
     let callout_id = map.mint_callout_id();
     let position = callout_anchor_position(&geometry);
     map.stash_pending(callout_id.clone(), geometry);
-    if db_sender
-        .0
-        .send(DbCommand::CreateNode {
-            petal_id,
-            name,
-            position,
-            correlation_id: Some(format!("{CALLOUT_CORRELATION_PREFIX}{callout_id}")),
-        })
-        .is_err()
-    {
+    let command = DbCommand::CreateNode {
+        petal_id,
+        name,
+        position,
+        correlation_id: Some(format!("{CALLOUT_CORRELATION_PREFIX}{callout_id}")),
+    };
+    if super::node::submit_scene_write(db_sender, command) == super::node::GuiSend::Closed {
         bevy::log::warn!("db_sender channel closed — dimension callout node not created");
     }
 }

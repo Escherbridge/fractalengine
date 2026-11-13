@@ -89,12 +89,15 @@ fn next_authored_track_correlation_id() -> String {
 }
 
 fn enqueue_track_delete(db_tx: &DbCommandSender, track_node_id: &str) -> Result<(), &'static str> {
-    db_tx
-        .0
-        .send(DbCommand::DeleteNode {
-            node_id: track_node_id.to_string(),
-        })
-        .map_err(|_| "Database channel closed; track was not deleted")
+    use fe_ui::node_manager::{submit_scene_write, GuiSend};
+    let command = DbCommand::DeleteNode {
+        node_id: track_node_id.to_string(),
+    };
+    match submit_scene_write(db_tx, command) {
+        GuiSend::Sent | GuiSend::Waiting => Ok(()),
+        GuiSend::Refused(_) => Err("Track delete was refused by an extension"),
+        GuiSend::Closed => Err("Database channel closed; track was not deleted"),
+    }
 }
 
 fn projection_matches_track(candidate_track_id: &str, deleted_track_id: &str) -> bool {
@@ -779,17 +782,16 @@ impl PropertyOutcomes {
             );
         }
         let request_id = host_request_id();
-        sender
-            .0
-            .try_send(DbCommand::SetNodeProperty {
+        through_scene_door(
+            sender,
+            DbCommand::SetNodeProperty {
                 node_id: node_id.into(),
                 key: key.into(),
                 value: value.clone(),
                 correlation_id: Some(request_id.clone()),
-            })
-            .map_err(|_| {
-                "Database queue unavailable; property write was not submitted".to_string()
-            })?;
+            },
+            "Database queue unavailable; property write was not submitted",
+        )?;
         self.0.insert(
             request_id.clone(),
             Accepted::new(PropertyWrite {
@@ -904,15 +906,16 @@ impl PendingGpxImports {
             return Err("Import outcome source capacity is full; no track was submitted".into());
         }
         let request_id = host_request_id();
-        sender
-            .0
-            .try_send(DbCommand::CreateNode {
+        through_scene_door(
+            sender,
+            DbCommand::CreateNode {
                 petal_id: petal_id.into(),
                 name: track.draft.name.clone(),
                 position: track.draft.position,
                 correlation_id: Some(request_id.clone()),
-            })
-            .map_err(|_| "Database queue unavailable; track was not submitted".to_string())?;
+            },
+            "Database queue unavailable; track was not submitted",
+        )?;
         self.tracks.insert(
             request_id,
             Accepted::new(PendingTrackImport {
@@ -938,15 +941,16 @@ impl PendingGpxImports {
             return Err("Accepted import outcomes are full; no waypoint was submitted".into());
         }
         let request_id = host_request_id();
-        sender
-            .0
-            .try_send(DbCommand::CreateNode {
+        through_scene_door(
+            sender,
+            DbCommand::CreateNode {
                 petal_id: petal_id.into(),
                 name: waypoint.name.clone(),
                 position: waypoint.position,
                 correlation_id: Some(request_id.clone()),
-            })
-            .map_err(|_| "Database queue unavailable; waypoint was not submitted".to_string())?;
+            },
+            "Database queue unavailable; waypoint was not submitted",
+        )?;
         self.waypoints.insert(
             request_id,
             Accepted::new(PendingWaypointImport {
@@ -957,6 +961,20 @@ impl PendingGpxImports {
             }),
         );
         Ok(())
+    }
+}
+
+/// Submit one scene write through the GUI door (caller `Ui`); a refusal or a full queue is the `Err` text.
+fn through_scene_door(
+    sender: &DbCommandSender,
+    command: DbCommand,
+    unavailable: &str,
+) -> Result<(), String> {
+    use fe_ui::node_manager::{try_submit_scene_write, GuiSend};
+    match try_submit_scene_write(sender, command) {
+        GuiSend::Sent | GuiSend::Waiting => Ok(()),
+        GuiSend::Refused(message) => Err(message),
+        GuiSend::Closed => Err(unavailable.to_string()),
     }
 }
 
@@ -1420,17 +1438,16 @@ impl PendingPathEdits {
         {
             return Err("Accepted creation outcomes are full or the request ID is already owned; no create was submitted".into());
         }
-        sender
-            .0
-            .try_send(DbCommand::CreateNode {
+        through_scene_door(
+            sender,
+            DbCommand::CreateNode {
                 petal_id: petal_id.clone(),
                 name: name.clone(),
                 position: [0.0; 3],
                 correlation_id: Some(request_id.clone()),
-            })
-            .map_err(|_| {
-                "Database queue unavailable; track creation was not submitted".to_string()
-            })?;
+            },
+            "Database queue unavailable; track creation was not submitted",
+        )?;
         self.creates.insert(
             request_id,
             Accepted::new(PendingTrackCreate {
@@ -2727,9 +2744,9 @@ pub fn advance_path_edits(
                             continue;
                         }
                         let request_id = host_request_id();
-                        match db_tx.0.try_send(DbCommand::CreateNode { petal_id: petal_id.clone(), name: title.clone(), position, correlation_id: Some(request_id.clone()) }) {
+                        match through_scene_door(&db_tx, DbCommand::CreateNode { petal_id: petal_id.clone(), name: title.clone(), position, correlation_id: Some(request_id.clone()) }, "Database queue unavailable; annotation node was not submitted") {
                             Ok(()) => { pending.annotate_creates.insert(request_id, Accepted::new(PendingAnnotateCreate { petal_id, position, title, body, color })); }
-                            Err(_) => status.error = Some("Database queue unavailable; annotation node was not submitted".into()),
+                            Err(message) => status.error = Some(message),
                         }
                     }
                     PendingPathRead::ExportGpx { save_path } => {
@@ -2824,15 +2841,18 @@ fn persist_and_render_points(
     track_node_id: &str,
     points: Vec<TimestampedRoutePoint>,
 ) {
-    db_tx
-        .0
-        .send(DbCommand::SetNodeProperty {
+    if let Err(message) = through_scene_door(
+        db_tx,
+        DbCommand::SetNodeProperty {
             node_id: track_node_id.to_string(),
             key: GPX_POINTS_KEY.to_string(),
             value: route_points_to_json(&points),
             correlation_id: None,
-        })
-        .ok();
+        },
+        "Database queue unavailable; track points were not saved",
+    ) {
+        warn!(%message, "track point write was not submitted");
+    }
     reconcile_track_render(
         route_map,
         commands,

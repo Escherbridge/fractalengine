@@ -532,16 +532,13 @@ fn create_region_node(
 ) {
     let [cx, cz] = footprint_centroid(footprint);
     map.stash_pending_material(petal_id, region_id, material);
-    if db_sender
-        .0
-        .send(DbCommand::CreateNode {
-            petal_id: petal_id.to_string(),
-            name: earthwork_display_name(op, region_id),
-            position: [cx, 0.0, cz],
-            correlation_id: Some(format!("{EARTHWORK_CORRELATION_PREFIX}{region_id}")),
-        })
-        .is_err()
-    {
+    let command = DbCommand::CreateNode {
+        petal_id: petal_id.to_string(),
+        name: earthwork_display_name(op, region_id),
+        position: [cx, 0.0, cz],
+        correlation_id: Some(format!("{EARTHWORK_CORRELATION_PREFIX}{region_id}")),
+    };
+    if super::node::submit_scene_write(db_sender, command) == super::node::GuiSend::Closed {
         bevy::log::warn!("db_sender channel closed — earthwork region node not created");
     }
 }
@@ -1194,14 +1191,11 @@ pub(crate) fn handle_delete_region(
         // (sync-safe, N-4) when the map knows it. Auth is `CallerAuth::Local`
         // — the UI asserts no role (N-5).
         if let Some(node_id) = earthwork_map.forget_region(&petal_id, &region_id) {
-            if db_sender
-                .0
-                .send(DbCommand::TombstoneNode {
-                    node_id,
-                    auth: CallerAuth::Local,
-                })
-                .is_err()
-            {
+            let command = DbCommand::TombstoneNode {
+                node_id,
+                auth: CallerAuth::Local,
+            };
+            if super::node::submit_scene_write(db_sender, command) == super::node::GuiSend::Closed {
                 bevy::log::warn!("db_sender channel closed — earthwork node tombstone not sent");
             }
         }
