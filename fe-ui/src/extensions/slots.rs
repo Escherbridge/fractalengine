@@ -4,7 +4,7 @@ use std::collections::HashMap;
 
 use bevy_egui::egui;
 use fe_sdk::{UiContribution, UiWhen};
-use serde_json::Value;
+use serde_json::{json, Value};
 
 use crate::accessibility::ResponseExt;
 
@@ -14,12 +14,17 @@ const MAX_VALUE_CHARS: usize = 64;
 /// Placeholder shown for an absent value.
 const NO_VALUE: &str = "\u{2014}";
 
+/// Most nodes whose properties are cached for context-menu `when` filters; past this the cache restarts.
+const MAX_CACHED_NODES: usize = 256;
+
 /// A command button the user pressed; the binary drains these and dispatches to the package.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ExtensionCommandRequest {
     pub plugin_id: String,
     pub contribution_id: String,
     pub command: String,
+    /// Call args: `{"node_id": <clicked>}` from a context menu, `Null` from every other slot.
+    pub args: Value,
 }
 
 /// Slot-host state: latest stream values in, pressed commands out.
@@ -29,6 +34,8 @@ pub struct ExtensionSlotState {
     pub stream_values: HashMap<(String, String), Value>,
     /// Commands pressed since the last drain.
     pub pending_commands: Vec<ExtensionCommandRequest>,
+    /// Latest property bag per node id, fed by the binary from loaded node properties; read by context-menu `when`.
+    pub node_properties: HashMap<String, Value>,
 }
 
 impl ExtensionSlotState {
@@ -36,6 +43,22 @@ impl ExtensionSlotState {
     pub fn set_stream_value(&mut self, plugin_id: &str, stream: &str, value: Value) {
         self.stream_values
             .insert((plugin_id.to_owned(), stream.to_owned()), value);
+    }
+
+    /// Replace the cached property bag of a node (a non-object bag is ignored).
+    pub fn set_node_properties(&mut self, node_id: &str, properties: Value) {
+        if !properties.is_object() {
+            return;
+        }
+        if self.node_properties.len() >= MAX_CACHED_NODES && !self.node_properties.contains_key(node_id) {
+            self.node_properties.clear();
+        }
+        self.node_properties.insert(node_id.to_owned(), properties);
+    }
+
+    /// Drop a node's cached properties (node deleted).
+    pub fn forget_node(&mut self, node_id: &str) {
+        self.node_properties.remove(node_id);
     }
 
     /// Take the commands pressed since the last call.
@@ -75,6 +98,36 @@ impl<F: Fn(&str) -> Option<Value>> SlotContext for F {
     }
 }
 
+/// A node context that reads `base` first (`id`, `name`), then the node's cached property bag.
+pub struct LayeredNode<'a> {
+    base: &'a dyn SlotContext,
+    properties: Option<Value>,
+}
+
+impl SlotContext for LayeredNode<'_> {
+    fn property(&self, key: &str) -> Option<Value> {
+        self.base
+            .property(key)
+            .or_else(|| self.properties.as_ref()?.get(key).cloned())
+    }
+}
+
+/// Layer the cached properties of the node `base` calls `id` under its own keys, so `when` reads real node properties.
+pub fn with_cached_properties<'a>(base: &'a dyn SlotContext, state: &ExtensionSlotState) -> LayeredNode<'a> {
+    let properties = base
+        .property("id")
+        .and_then(|id| id.as_str().and_then(|id| state.node_properties.get(id).cloned()));
+    LayeredNode { base, properties }
+}
+
+/// The args a context-menu press sends: `{"node_id": <clicked>}`, or `Null` when the node has no id.
+pub fn context_args(node: &dyn SlotContext) -> Value {
+    match node.property("id") {
+        Some(Value::String(id)) => json!({ "node_id": id }),
+        _ => Value::Null,
+    }
+}
+
 /// Contributions with no command, rows or stream: listed in the Extensions details pane, never drawn as dead controls.
 pub fn details_only<'a>(contributions: &[&'a UiContribution]) -> Vec<&'a UiContribution> {
     contributions
@@ -109,11 +162,12 @@ pub fn format_value(value: &Value) -> String {
     }
 }
 
-fn press(state: &mut ExtensionSlotState, contribution: &UiContribution, command: &str) {
+fn press(state: &mut ExtensionSlotState, contribution: &UiContribution, command: &str, args: Value) {
     state.pending_commands.push(ExtensionCommandRequest {
         plugin_id: contribution.plugin_id.clone(),
         contribution_id: contribution.id.clone(),
         command: command.to_owned(),
+        args,
     });
 }
 
@@ -133,29 +187,31 @@ pub fn draw_command_slot(
         }
         let response = ui.button(&contribution.label).button_named(ui, &name);
         if response.clicked() {
-            press(state, contribution, command);
+            press(state, contribution, command, Value::Null);
         }
     }
 }
 
-/// ContextMenu: commanded entries whose `when` admits the clicked node; closes the menu on press.
+/// ContextMenu: commanded entries whose `when` admits the clicked node (id, name, cached properties); a press carries `{"node_id"}` and closes the menu.
 pub fn draw_context_menu_items(
     ui: &mut egui::Ui,
     contributions: &[&UiContribution],
     node: &dyn SlotContext,
     state: &mut ExtensionSlotState,
 ) {
+    let node = with_cached_properties(node, state);
+    let args = context_args(&node);
     for contribution in contributions {
         let Some(command) = contribution.command.as_deref() else {
             continue;
         };
         let name = contribution.accessible_name();
-        if name.is_empty() || !when_matches(contribution.when.as_ref(), node) {
+        if name.is_empty() || !when_matches(contribution.when.as_ref(), &node) {
             continue;
         }
         let response = ui.button(&contribution.label).button_named(ui, &name);
         if response.clicked() {
-            press(state, contribution, command);
+            press(state, contribution, command, args.clone());
             ui.close();
         }
     }
@@ -277,15 +333,42 @@ mod tests {
             });
         });
         assert!(state.pending_commands.is_empty());
-        press(&mut state, toolbar[0], "start");
+        press(&mut state, toolbar[0], "start", Value::Null);
         assert_eq!(toolbar[0].accessible_name(), "ext:fleet/start");
-        assert_eq!(state.take_commands()[0].command, "start");
+        let pressed = state.take_commands();
+        assert_eq!((pressed[0].command.as_str(), &pressed[0].args), ("start", &Value::Null));
 
         let vehicle = |key: &str| (key == "kind").then(|| json!("vehicle"));
         let building = |key: &str| (key == "kind").then(|| json!("building"));
         let menu = registry.get_by_slot(UiSlot::ContextMenu);
         assert!(when_matches(menu[0].when.as_ref(), &vehicle));
         assert!(!when_matches(menu[0].when.as_ref(), &building));
+
+        // Context-menu leg: `when` reads cached node properties and the press carries the clicked node id.
+        let start_this = UiContribution {
+            slot: UiSlot::ContextMenu,
+            plugin_id: "fleet".into(),
+            label: "Start this".into(),
+            id: "start-this".into(),
+            command: Some("start-this".into()),
+            when: Some(UiWhen { property: "fleet.config".into(), equals: None }),
+            ..Default::default()
+        };
+        let clicked = |key: &str| match key {
+            "id" => Some(json!("n1")),
+            "name" => Some(json!("Truck")),
+            _ => None,
+        };
+        assert!(!when_matches(start_this.when.as_ref(), &with_cached_properties(&clicked, &state)));
+        state.set_node_properties("n1", json!({ "fleet.config": { "speed": 3 } }));
+        let layered = with_cached_properties(&clicked, &state);
+        assert!(when_matches(start_this.when.as_ref(), &layered), "a node with fleet.config shows start-this");
+        assert_eq!(layered.property("name"), Some(json!("Truck")), "id and name still win over cached keys");
+        assert_eq!(context_args(&layered), json!({ "node_id": "n1" }));
+        press(&mut state, &start_this, "start-this", context_args(&layered));
+        assert_eq!(state.take_commands()[0].args, json!({ "node_id": "n1" }));
+        state.forget_node("n1");
+        assert!(!when_matches(start_this.when.as_ref(), &with_cached_properties(&clicked, &state)));
 
         let widget = registry.get_by_slot(UiSlot::DashboardWidget)[0].clone();
         assert!(state.stream_value(&widget).is_none());

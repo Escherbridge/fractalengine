@@ -174,15 +174,24 @@ impl BoundSlotsState {
     }
 
     /// Store a provider answer for `target`, attributed to its latest request; refused when unrequested, empty, oversized
-    /// or no longer bound. The feed's clock is not used: freshness counts from the request on the UI clock.
+    /// or no longer bound. Prefer [`Self::store_snippet_answer`], which carries the request's own arguments.
     pub fn store_snippet(&mut self, target: &SnippetTarget, label: &str, text: &str, _feed_secs: f64) -> bool {
+        let Some(args) = self.snippets.get(target).and_then(|entry| entry.requested.clone()) else {
+            return false;
+        };
+        self.store_snippet_answer(target, &args, label, text)
+    }
+
+    /// Store an answer computed for `args` (the request it answers); refused when `args` are not the latest request's
+    /// (a slower, older answer never overwrites a newer one or shows for another query), empty, oversized or unbound.
+    pub fn store_snippet_answer(&mut self, target: &SnippetTarget, args: &SnippetCallArgs, label: &str, text: &str) -> bool {
         let Some(entry) = self.snippets.get_mut(target) else {
             return false;
         };
-        let Some(args) = entry.requested.clone() else {
+        if entry.requested.as_ref() != Some(args) {
             return false;
-        };
-        entry.answered = Some(args);
+        }
+        entry.answered = Some(args.clone());
         if text.is_empty() || text.len() > MAX_SNIPPET_BYTES {
             entry.text.clear();
             return false;
@@ -296,6 +305,9 @@ mod tests {
         // The row names its binding and package, so it cannot pass for a compiled-in target; those come first (R33).
         let rows = state.bound_rows(&args, &none);
         assert_eq!(rows.len(), 1);
+        let older = SnippetCallArgs::from_inputs(&SnippetInputs { sql: "SELECT 0", ..inputs });
+        assert!(!state.store_snippet_answer(&target, &older, "Looker", "stale"), "an answer for other args is refused");
+        assert_eq!(state.bound_rows(&args, &none)[0].1.text, "explore: x", "and never overwrites the current one");
         assert_eq!(rows[0].0, "binding:egress.snippet:looker");
         assert_eq!(rows[0].1.label, "Looker \u{00B7} org.example.bi");
         assert!(!rows[0].1.builtin && rows[0].1.text == "explore: x");
