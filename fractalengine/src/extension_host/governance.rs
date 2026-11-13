@@ -3,7 +3,7 @@
 //! consent and override hydration; the op-log audit sink; the bus role and external-access feeds.
 //! Rationale and lock order: src/AGENTS.md §extension-governance.
 
-use std::collections::{HashMap, HashSet, VecDeque};
+use std::collections::{BTreeSet, HashMap, HashSet, VecDeque};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, OnceLock, PoisonError, RwLock, RwLockReadGuard, RwLockWriteGuard};
@@ -13,7 +13,7 @@ use bevy::prelude::{App, DetectChanges, MessageReader, Res, ResMut, Resource, Up
 use crossbeam::channel::{Receiver, Sender, TryRecvError, TrySendError};
 use fe_api::extensions::{AdminRefusal, AdminReply};
 use fe_database::handlers::extension_policy::{
-    self as policy_db, AuditAction, AuditEntry, AuditOutcome, ConsentRecord as StoredConsent, ExtensionPolicy,
+    self as policy_db, AcceptanceRecord, AuditAction, AuditEntry, AuditOutcome, ConsentRecord as StoredConsent, ExtensionPolicy,
     KillListOverride, KillListOverrideRequest, LocalPolicy, PolicyFacts, PolicyRow, TrustTier as PolicyTrust,
 };
 use fe_database::RoleLevel;
@@ -61,7 +61,7 @@ const AUDIT_BUFFER: usize = 4096;
 // Configuration
 // ---------------------------------------------------------------------------
 
-/// Row 6 seam for licensed builds; S-ENTITLEMENT's `EntitlementVerifier` plugs in once fe-format ships it.
+/// Row 6 seam for licensed builds: [`LocalEntitlements`] with feature `entitlement`, else [`NoEntitlementVerifier`].
 pub(crate) trait EntitlementCheck: Send + Sync {
     /// `Ok` when the licensed build holds a valid entitlement on this host.
     fn verify(&self, package: &PackageFacts) -> Result<(), String>;
@@ -73,6 +73,186 @@ pub(crate) struct NoEntitlementVerifier;
 impl EntitlementCheck for NoEntitlementVerifier {
     fn verify(&self, package: &PackageFacts) -> Result<(), String> {
         Err(format!("{} is licensed and this build has no entitlement verifier", package.package_id))
+    }
+}
+
+/// Pinned entitlement issuers (`[[issuer]] kid, did`) in the governance config dir; absent = none pinned.
+#[cfg_attr(not(feature = "entitlement"), allow(dead_code))]
+pub(crate) const ENTITLEMENT_ISSUERS_FILE: &str = "entitlement_issuers.toml";
+/// Subdirectory of the governance config dir holding one stored token per build.
+#[cfg_attr(not(feature = "entitlement"), allow(dead_code))]
+pub(crate) const ENTITLEMENT_TOKEN_DIR: &str = "entitlements";
+/// Largest stored token read (tokens are a few hundred bytes).
+#[cfg_attr(not(feature = "entitlement"), allow(dead_code))]
+const MAX_STORED_TOKEN_BYTES: u64 = 8 * 1024;
+
+/// Where row 6 finds a stored token; the token is verified anyway, so a store is never trusted.
+#[cfg_attr(not(feature = "entitlement"), allow(dead_code))]
+pub(crate) trait EntitlementTokens: Send + Sync {
+    /// The stored token for `(licensee_did, package_id, content_hash)`, if any.
+    fn token(&self, licensee_did: &str, package_id: &str, content_hash: &str) -> Option<String>;
+}
+
+/// `<dir>/<content_hash>.jwt`: a token covers exactly one build, so the hash names the file.
+#[cfg_attr(not(feature = "entitlement"), allow(dead_code))]
+pub(crate) struct FileTokenStore {
+    dir: PathBuf,
+}
+
+/// 64 lowercase hex characters: the only names the token store reads or writes (no path traversal).
+#[cfg_attr(not(feature = "entitlement"), allow(dead_code))]
+fn is_content_hash(value: &str) -> bool {
+    value.len() == 64 && value.bytes().all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+}
+
+#[cfg_attr(not(feature = "entitlement"), allow(dead_code))]
+impl FileTokenStore {
+    /// A store rooted at `dir` (created on the first write).
+    pub(crate) fn new(dir: PathBuf) -> Self {
+        Self { dir }
+    }
+
+    fn path(&self, content_hash: &str) -> Option<PathBuf> {
+        is_content_hash(content_hash).then(|| self.dir.join(format!("{content_hash}.jwt")))
+    }
+
+    /// Store the token for one build, staged then renamed so a crash never leaves half a token.
+    pub(crate) fn put(&self, content_hash: &str, token: &str) -> Result<(), String> {
+        let path = self.path(content_hash).ok_or("content_hash must be 64 lowercase hex characters")?;
+        if token.len() as u64 > MAX_STORED_TOKEN_BYTES || token.trim().is_empty() {
+            return Err("an entitlement token must be 1..=8 KiB".into());
+        }
+        std::fs::create_dir_all(&self.dir).map_err(|error| error.to_string())?;
+        let staging = path.with_extension("jwt.part");
+        std::fs::write(&staging, token.trim()).map_err(|error| error.to_string())?;
+        std::fs::rename(&staging, &path).map_err(|error| error.to_string())
+    }
+}
+
+impl EntitlementTokens for FileTokenStore {
+    fn token(&self, _licensee_did: &str, _package_id: &str, content_hash: &str) -> Option<String> {
+        let path = self.path(content_hash)?;
+        if std::fs::metadata(&path).ok()?.len() > MAX_STORED_TOKEN_BYTES {
+            tracing::warn!(path = %path.display(), "stored entitlement token over the size cap; ignored");
+            return None;
+        }
+        let token = std::fs::read_to_string(&path).ok()?;
+        Some(token.trim().to_string()).filter(|token| !token.is_empty())
+    }
+}
+
+/// Read `entitlement_issuers.toml`: absent = an empty keyring (every licensed build refused).
+#[cfg(feature = "entitlement")]
+pub(crate) fn load_issuer_keyring(path: &Path) -> Result<fe_format::entitlement::IssuerKeyring, String> {
+    #[derive(Deserialize)]
+    #[serde(deny_unknown_fields)]
+    struct IssuersFile {
+        #[serde(default)]
+        issuer: Vec<Issuer>,
+    }
+    #[derive(Deserialize)]
+    #[serde(deny_unknown_fields)]
+    struct Issuer {
+        kid: String,
+        did: String,
+    }
+    let mut keyring = fe_format::entitlement::IssuerKeyring::new();
+    let text = match std::fs::read_to_string(path) {
+        Ok(text) => text,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(keyring),
+        Err(error) => return Err(format!("{}: {error}", path.display())),
+    };
+    let file: IssuersFile = toml::from_str(&text).map_err(|error| format!("{}: {error}", path.display()))?;
+    for issuer in file.issuer {
+        keyring
+            .pin_did(&issuer.kid, &issuer.did)
+            .map_err(|error| format!("{}: issuer '{}': {error}", path.display(), issuer.kid))?;
+    }
+    Ok(keyring)
+}
+
+/// Row 6 over `fe_format::entitlement`: a stored token, verified offline against the pinned issuers, issued to
+/// the local identity for exactly this build, unexpired, and whose content key opens with this device's key.
+#[cfg(feature = "entitlement")]
+pub(crate) struct LocalEntitlements {
+    licensee_did: String,
+    verifier: Arc<dyn fe_format::entitlement::EntitlementVerifier>,
+    tokens: Arc<dyn EntitlementTokens>,
+    device: fe_identity::x25519::DeviceKeypair,
+}
+
+#[cfg(feature = "entitlement")]
+impl LocalEntitlements {
+    /// A check for `licensee_did` (the node DID) holding `device`'s X25519 key.
+    pub(crate) fn new(
+        licensee_did: String,
+        verifier: Arc<dyn fe_format::entitlement::EntitlementVerifier>,
+        tokens: Arc<dyn EntitlementTokens>,
+        device: fe_identity::x25519::DeviceKeypair,
+    ) -> Self {
+        Self { licensee_did, verifier, tokens, device }
+    }
+}
+
+#[cfg(feature = "entitlement")]
+impl EntitlementCheck for LocalEntitlements {
+    fn verify(&self, package: &PackageFacts) -> Result<(), String> {
+        use fe_format::entitlement::EntitlementExpectation;
+        let content_hash = package.content_hash.to_ascii_lowercase();
+        let token = self
+            .tokens
+            .token(&self.licensee_did, &package.package_id, &content_hash)
+            .ok_or_else(|| format!("{} is licensed and this host holds no entitlement for it", package.package_id))?;
+        let expected = EntitlementExpectation {
+            package_id: &package.package_id,
+            content_hash: &content_hash,
+            licensee_did: &self.licensee_did,
+        };
+        let mut secret = self.device.secret_bytes();
+        let verified = self.verifier.verify(&token, &expected, &secret, fe_format::entitlement::unix_now());
+        secret.iter_mut().for_each(|byte| *byte = 0);
+        // The recovered content key is dropped (and wiped) here: row 6 only proves this device may open the build.
+        verified
+            .map(drop)
+            .map_err(|error| format!("{} entitlement refused: {error}", package.package_id))
+    }
+}
+
+/// Row 6 for this host: with feature `entitlement` and a device key, [`LocalEntitlements`] over the pinned
+/// issuers and the token dir under `config_dir`; otherwise (or on an unreadable issuers file) [`NoEntitlementVerifier`].
+#[cfg_attr(not(feature = "entitlement"), allow(unused_variables))]
+pub(crate) fn entitlement_check(
+    config_dir: &Path,
+    licensee_did: &str,
+    device: Option<fe_identity::x25519::DeviceKeypair>,
+) -> Arc<dyn EntitlementCheck> {
+    #[cfg(feature = "entitlement")]
+    {
+        let Some(device) = device else {
+            tracing::warn!("no device key: licensed extensions are refused on this host");
+            return Arc::new(NoEntitlementVerifier);
+        };
+        if licensee_did.is_empty() {
+            return Arc::new(NoEntitlementVerifier);
+        }
+        match load_issuer_keyring(&config_dir.join(ENTITLEMENT_ISSUERS_FILE)) {
+            Ok(keyring) => {
+                if keyring.is_empty() {
+                    tracing::info!("no entitlement issuer is pinned: licensed extensions are refused until one is");
+                }
+                let verifier = Arc::new(fe_format::entitlement::KeyringVerifier::new(keyring));
+                let tokens = Arc::new(FileTokenStore::new(config_dir.join(ENTITLEMENT_TOKEN_DIR)));
+                Arc::new(LocalEntitlements::new(licensee_did.to_string(), verifier, tokens, device))
+            }
+            Err(reason) => {
+                tracing::error!(%reason, "entitlement issuers file is invalid: licensed extensions are refused");
+                Arc::new(NoEntitlementVerifier)
+            }
+        }
+    }
+    #[cfg(not(feature = "entitlement"))]
+    {
+        Arc::new(NoEntitlementVerifier)
     }
 }
 
@@ -303,6 +483,12 @@ struct GovernanceCore {
     wiring: Mutex<Wiring>,
     audit_tx: OnceLock<Sender<Value>>,
     audit_dropped: AtomicU64,
+    /// The local DID's "Allow in <verse>" set `(installation_id, verse_id)`; `None` until hydrated (R-GOV-31).
+    acceptances: RwLock<Option<BTreeSet<(String, String)>>>,
+    /// Bumped on every kill-list, override, policy, local-role and acceptance change (portal re-judge).
+    change_generation: AtomicU64,
+    /// One coalescing slot per subscriber; a full slot already holds a wake-up.
+    change_subscribers: Mutex<Vec<Sender<u64>>>,
 }
 
 /// Host-side extension governance (cheap clone); every extension host module shares this resource.
@@ -318,6 +504,8 @@ struct GovernanceSnapshot {
     consents: Vec<StoredConsent>,
     #[serde(default)]
     overrides: Vec<KillListOverride>,
+    #[serde(default)]
+    acceptances: Vec<AcceptanceRecord>,
 }
 
 fn read_guard<T>(lock: &RwLock<T>) -> RwLockReadGuard<'_, T> {
@@ -453,7 +641,57 @@ impl ExtensionGovernance {
             wiring: Mutex::new(Wiring::default()),
             audit_tx: OnceLock::new(),
             audit_dropped: AtomicU64::new(0),
+            acceptances: RwLock::new(None),
+            change_generation: AtomicU64::new(0),
+            change_subscribers: Mutex::new(Vec::new()),
         }))
+    }
+
+    // -- Change generation (portal re-judge) ------------------------------------------
+
+    /// The change generation: moves on every kill-list, override, policy, local-role and acceptance change.
+    pub(crate) fn generation(&self) -> u64 {
+        self.0.change_generation.load(Ordering::Acquire)
+    }
+
+    /// A wake-up per change (coalesced: at most one pending); the value is the generation that woke it.
+    pub(crate) fn subscribe(&self) -> Receiver<u64> {
+        let (tx, rx) = crossbeam::channel::bounded(1);
+        lock_guard(&self.0.change_subscribers).push(tx);
+        rx
+    }
+
+    /// Move the generation and wake subscribers; call with no other governance lock held.
+    fn bump(&self, why: &'static str) {
+        let generation = self.0.change_generation.fetch_add(1, Ordering::AcqRel) + 1;
+        tracing::trace!(generation, why, "extension governance changed");
+        lock_guard(&self.0.change_subscribers).retain(|subscriber| match subscriber.try_send(generation) {
+            Ok(()) | Err(TrySendError::Full(_)) => true,
+            Err(TrySendError::Disconnected(_)) => false,
+        });
+    }
+
+    // -- Local acceptance (R-GOV-31) ---------------------------------------------------
+
+    /// The local DID's acceptances from the lossless DB replay; `None` until hydrated (row 12 then refuses).
+    pub(crate) fn local_acceptances(&self) -> Option<BTreeSet<(String, String)>> {
+        read_guard(&self.0.acceptances).clone()
+    }
+
+    /// Mirror one acceptance the local DID just recorded (`accepted`) or withdrew; others' word never counts.
+    pub(crate) fn note_acceptance(&self, actor_did: &str, installation_id: &str, verse_id: &str, accepted: bool) {
+        if self.0.local_did.is_empty() || actor_did != self.0.local_did {
+            return;
+        }
+        let changed = {
+            let mut guard = write_guard(&self.0.acceptances);
+            let set = guard.get_or_insert_with(BTreeSet::new);
+            let key = (installation_id.to_string(), verse_id.to_string());
+            if accepted { set.insert(key) } else { set.remove(&key) }
+        };
+        if changed {
+            self.bump("acceptance");
+        }
     }
 
     /// The node DID governance administers as.
@@ -668,7 +906,12 @@ impl ExtensionGovernance {
         };
         tracing::info!(actor = actor_did, verse_id, "verse extension policy write requested");
         let (reply, receiver) = crossbeam::channel::bounded(1);
-        let command = DbCommand::SetExtensionPolicy { verse_id: verse_id.to_string(), policy, reply };
+        let command = DbCommand::SetExtensionPolicy {
+            verse_id: verse_id.to_string(),
+            policy,
+            actor_did: actor_did.to_string(),
+            reply,
+        };
         if self.0.db.send_timeout(command, DB_SEND_TIMEOUT).is_err() {
             return ready(Err(refusal("not-available", "the database is not accepting commands")));
         }
@@ -696,6 +939,7 @@ impl ExtensionGovernance {
         };
         if changed && !stale {
             self.feed_external(verse_id);
+            self.bump("policy");
             self.dispatch_logged(ManagerOp::Reevaluate(verse_id.to_string()));
         }
     }
@@ -710,6 +954,7 @@ impl ExtensionGovernance {
             generation
         };
         self.feed_external(verse_id);
+        self.bump("policy arrival");
         generation
     }
 
@@ -729,6 +974,7 @@ impl ExtensionGovernance {
         };
         if cleared {
             self.feed_external(verse_id);
+            self.bump("policy refreshed");
             self.dispatch_logged(ManagerOp::Reevaluate(verse_id.to_string()));
         }
         cleared
@@ -750,7 +996,14 @@ impl ExtensionGovernance {
 
     /// Startup load: policies (newest wins against any refresh already applied), overrides, local consents.
     fn apply_snapshot(&self, snapshot: GovernanceSnapshot) {
-        let GovernanceSnapshot { policies, consents, overrides } = snapshot;
+        let GovernanceSnapshot { policies, consents, overrides, acceptances } = snapshot;
+        // Acceptance is this identity's word only (R12): records are keyed by actor, a rotated key's never count.
+        let accepted: BTreeSet<(String, String)> = acceptances
+            .into_iter()
+            .filter(|record| !self.0.local_did.is_empty() && record.actor_did == self.0.local_did)
+            .map(|record| (record.installation_id, record.verse_id))
+            .collect();
+        *write_guard(&self.0.acceptances) = Some(accepted);
         let verses: Vec<String> = {
             let mut mirror = write_guard(&self.0.policies);
             let verses: Vec<String> = policies.iter().map(|row| row.verse_id.clone()).collect();
@@ -777,6 +1030,7 @@ impl ExtensionGovernance {
                 set.insert((record.verse_id.clone(), record.content_hash.to_ascii_lowercase()));
             }
         }
+        self.bump("hydrated");
         for record in overrides {
             self.dispatch_logged(ManagerOp::Override { verse_id: record.verse_id, content_hash: record.content_hash });
         }
@@ -860,6 +1114,7 @@ impl ExtensionGovernance {
             return Err(refusal("not-available", "the database recorded a different override"));
         }
         write_guard(&self.0.overrides).insert((recorded.verse_id.clone(), recorded.content_hash.to_ascii_lowercase()));
+        self.bump("kill-list override");
         self.dispatch_logged(ManagerOp::Override {
             verse_id: recorded.verse_id.clone(),
             content_hash: recorded.content_hash.clone(),
@@ -913,6 +1168,7 @@ impl ExtensionGovernance {
             });
             kill.effective = effective;
         }
+        self.bump("kill list");
         self.dispatch(ManagerOp::Revocation(list.clone()))
     }
 
@@ -961,7 +1217,10 @@ impl ExtensionGovernance {
     }
 
     fn set_local_role(&self, petal_id: &str, role: RoleLevel) {
-        write_guard(&self.0.roles).insert(petal_id.to_string(), role);
+        let previous = write_guard(&self.0.roles).insert(petal_id.to_string(), role);
+        if previous != Some(role) {
+            self.bump("local role");
+        }
     }
 
     fn set_peer_roles(&self, petal_id: &str, roles: &[(String, String)]) {
@@ -1374,6 +1633,17 @@ mod tests {
         };
         let governance = install(&mut app, config);
         let gates = governance.gates();
+        // The portal re-judges on this subscription instead of a timer.
+        let changes = governance.subscribe();
+        let mut seen = governance.generation();
+        let mut moved = |label: &str| {
+            let now = governance.generation();
+            assert!(now > seen, "{label} moves the governance generation");
+            seen = now;
+            assert!(changes.try_recv().is_ok(), "{label} wakes the subscriber");
+            while changes.try_recv().is_ok() {}
+        };
+        assert_eq!(governance.local_acceptances(), None, "no acceptance counts before hydration");
 
         // Tiers come from the vouching root's key; a key listed as publisher never gains release.
         let trust = governance.trust();
@@ -1410,11 +1680,26 @@ mod tests {
                 {"verse_id": VERSE, "content_hash": "7".repeat(64), "actor_did": "did:key:zRotated"},
                 {"verse_id": VERSE, "content_hash": "8".repeat(64)},
             ],
+            "acceptances": [
+                {"installation_id": "inst-local", "verse_id": VERSE, "actor_did": LOCAL},
+                {"installation_id": "inst-old-key", "verse_id": VERSE, "actor_did": "did:key:zRotated"},
+                {"installation_id": "inst-unattributed", "verse_id": VERSE},
+            ],
         })))
         .unwrap();
         let manager = Arc::new(RecordingManager::default());
         governance.attach_manager(manager.clone());
         app.update();
+        moved("hydration");
+
+        // R-GOV-31: acceptances are keyed by actor; only the node's own word counts, live changes included.
+        let local_only = BTreeSet::from([("inst-local".to_string(), VERSE.to_string())]);
+        assert_eq!(governance.local_acceptances(), Some(local_only.clone()), "a rotated or unattributed acceptance never counts");
+        governance.note_acceptance("did:key:zRemote", "inst-remote", VERSE, true);
+        assert_eq!(governance.local_acceptances(), Some(local_only));
+        governance.note_acceptance(LOCAL, "inst-local", VERSE, false);
+        moved("withdrawing an acceptance");
+        assert_eq!(governance.local_acceptances(), Some(BTreeSet::new()));
 
         // Hydrated: the verse's allow-list admits the vendor build; an unknown verse is first-party-only;
         // this device's deny list refuses even a release build; external bus access follows the row.
@@ -1442,6 +1727,7 @@ mod tests {
             outcome: ReplicatedRowOutcome::Applied,
         });
         app.update();
+        moved("a replicated policy row");
         assert!(gates.policy(VERSE, &vendor).unwrap_err().contains("re-read"));
         assert!(!external.external_access_allowed(VERSE), "external access closes while the row is re-read");
         let (refreshed_verse, refresh) = take(&db_rx, |command| match command {
@@ -1451,9 +1737,18 @@ mod tests {
         assert_eq!(refreshed_verse, VERSE);
         refresh.send(Ok(Some(policy_row(VERSE, 20, json!({"mode": "allow-list", "allow": []}))))).unwrap();
         app.update();
+        moved("the refreshed policy row");
         assert!(gates.policy(VERSE, &vendor).unwrap_err().contains("no allow entry"));
         assert!(!external.external_access_allowed(VERSE));
         assert!(manager.ops().contains(&format!("reevaluate {VERSE}")));
+
+        // A policy write carries the asking actor to the DB's `policy-change` audit (R-X-27).
+        drop(governance.set_verse_policy(LOCAL, VERSE, json!({"mode": "allow-list", "allow": []})));
+        let actor = take(&db_rx, |command| match command {
+            DbCommand::SetExtensionPolicy { actor_did, .. } => Some(actor_did),
+            _ => None,
+        });
+        assert_eq!(actor, LOCAL);
 
         // Row 8: an unresolved role fails closed; the node's resolved role decides.
         assert!(gates.role(PETAL, false).unwrap_err().contains("not resolved"));
@@ -1462,8 +1757,16 @@ mod tests {
             role: "viewer".into(),
         });
         app.update();
+        moved("a resolved local role");
         assert!(gates.role(PETAL, false).is_ok());
         assert!(gates.role(PETAL, true).unwrap_err().contains("viewer"));
+        let before = governance.generation();
+        app.world_mut().write_message(DbResult::LocalRoleResolved {
+            scope: format!("VERSE#{VERSE}-FRACTAL#01JFRACTAL-PETAL#{PETAL}"),
+            role: "viewer".into(),
+        });
+        app.update();
+        assert_eq!(governance.generation(), before, "re-resolving the same role is no change");
 
         // The Owner override: only the local identity asks; DB refusal codes surface; a recorded override
         // reaches this verse on this host and nothing else.
@@ -1491,8 +1794,73 @@ mod tests {
         assert_eq!(request["confirm"], "org.vendor.tool");
         reply.send(Ok(json!({"verse_id": VERSE, "content_hash": hash, "actor_did": LOCAL}))).unwrap();
         assert_eq!(worker.join().unwrap().unwrap()["verse_id"], VERSE);
+        moved("a recorded Owner override");
         assert!(governance.is_overridden(VERSE, &hash));
         assert!(!governance.is_overridden(OTHER_VERSE, &hash), "the override never reaches another verse");
         assert!(manager.ops().contains(&format!("override {VERSE} {hash}")));
+
+        // Row 6 store: a token is filed under its build's content hash, never under a caller-chosen path.
+        let store = FileTokenStore::new(dir.path().join(ENTITLEMENT_TOKEN_DIR));
+        assert!(store.put("../escape", "token").is_err());
+        assert!(store.put(&"B".repeat(64), "token").is_err(), "only lowercase hex names a token file");
+        assert_eq!(store.token(LOCAL, "org.fractalengine.fleet", "../escape"), None);
+        assert!(entitlement_check(dir.path(), LOCAL, None).verify(&licensed).is_err(), "no device key, no licensed build");
+
+        #[cfg(feature = "entitlement")]
+        {
+            use fe_format::entitlement::{ed25519_key_to_did, ContentKey, LocalIssuer, MintRequest, unix_now};
+            use fe_identity::x25519::DeviceKeypair;
+
+            let issuer = LocalIssuer::new("issuer-1", SigningKey::from_bytes(&[31; 32]), [32; 32]).unwrap();
+            let unpinned = LocalIssuer::new("issuer-2", SigningKey::from_bytes(&[36; 32]), [37; 32]).unwrap();
+            std::fs::write(
+                dir.path().join(ENTITLEMENT_ISSUERS_FILE),
+                format!("[[issuer]]\nkid = \"issuer-1\"\ndid = \"{}\"\n", ed25519_key_to_did(&issuer.verifying_key())),
+            )
+            .unwrap();
+            let licensee = did_of(5);
+            let device = DeviceKeypair::from_bytes([33; 32]);
+            let device_did = device.to_did_key();
+            let other_device_did = DeviceKeypair::from_bytes([34; 32]).to_did_key();
+            let content_key = ContentKey::from_bytes([35; 32]);
+            let build_hash = licensed.content_hash.clone();
+            let mint = |by: &LocalIssuer, device_did: &str, now: u64| {
+                let encrypted_key = by.encrypted_key_for(&content_key).unwrap();
+                by.mint(
+                    &MintRequest {
+                        licensee_did: &licensee,
+                        device_x25519_did: device_did,
+                        package_id: &licensed.package_id,
+                        content_hash: &build_hash,
+                        encrypted_key: &encrypted_key,
+                        ttl_secs: 3600,
+                        jti: None,
+                    },
+                    now,
+                )
+                .unwrap()
+            };
+            // The real wiring: pinned issuers file, token dir and device key under the governance config dir.
+            let check = entitlement_check(dir.path(), &licensee, Some(device));
+            let refused = |token: Option<String>| {
+                if let Some(token) = token {
+                    store.put(&build_hash, &token).unwrap();
+                }
+                check.verify(&licensed).unwrap_err()
+            };
+            assert!(refused(None).contains("holds no entitlement"));
+            assert!(refused(Some(mint(&issuer, &other_device_did, unix_now()))).contains("does not unwrap"), "another device's token");
+            assert!(refused(Some(mint(&issuer, &device_did, unix_now() - 3 * 3600))).contains("expired"));
+            assert!(refused(Some(mint(&unpinned, &device_did, unix_now()))).contains("not pinned"), "a forged kid");
+            store.put(&build_hash, &mint(&issuer, &device_did, unix_now())).unwrap();
+            assert!(check.verify(&licensed).is_ok(), "a valid token for this build, licensee and device");
+            let other_build = PackageFacts { content_hash: "0".repeat(64), ..licensed.clone() };
+            store.put(&other_build.content_hash, &mint(&issuer, &device_did, unix_now())).unwrap();
+            assert!(check.verify(&other_build).unwrap_err().contains("another content hash"), "a token covers one build");
+            assert!(entitlement_check(dir.path(), LOCAL, Some(DeviceKeypair::from_bytes([33; 32])))
+                .verify(&licensed)
+                .unwrap_err()
+                .contains("another licensee"));
+        }
     }
 }

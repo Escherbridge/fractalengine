@@ -70,6 +70,13 @@ pub(crate) fn start(
         .roots()
         .revocation_sources()
         .into_iter()
+        .filter(|(root, url)| match source_refusal(url) {
+            Some(reason) => {
+                tracing::warn!(root, url, %reason, "revocation source refused; it is never pulled");
+                false
+            }
+            None => true,
+        })
         .map(|(root, url)| (root.to_string(), url.to_string()))
         .collect();
     if sources.is_empty() {
@@ -100,17 +107,21 @@ fn run(
         }
     };
     runtime.block_on(async move {
-        let client = match pull_client() {
-            Ok(client) => client,
-            Err(error) => {
-                tracing::warn!(%error, "revocation pull client did not build; cached lists stay in force");
-                return;
-            }
-        };
+        // One client per source: its redirect policy and https rule are that source's own.
+        let clients: Vec<(String, String, reqwest::Client)> = sources
+            .into_iter()
+            .filter_map(|(root, url)| match pull_client(&url) {
+                Ok(client) => Some((root, url, client)),
+                Err(error) => {
+                    tracing::warn!(root, url, %error, "revocation pull client did not build; cached lists stay in force");
+                    None
+                }
+            })
+            .collect();
         while !stop.is_requested() {
-            for (root, url) in &sources {
+            for (root, url, client) in &clients {
                 tokio::select! {
-                    _ = pull_once(&client, &governance, root, url, cache_dir.as_deref()) => {}
+                    _ = pull_once(client, &governance, root, url, cache_dir.as_deref()) => {}
                     _ = stop.cancelled() => return,
                 }
             }
@@ -123,16 +134,67 @@ fn run(
     });
 }
 
-/// Anonymous client: no credentials or cookies, bounded time, redirects only to https.
-fn pull_client() -> reqwest::Result<reqwest::Client> {
+/// The URL's host as an IP literal (IPv6 brackets dropped); `None` for a name.
+fn host_ip(url: &reqwest::Url) -> Option<std::net::IpAddr> {
+    url.host_str()?.trim_start_matches('[').trim_end_matches(']').parse().ok()
+}
+
+/// Whether the URL's host is a loopback name or literal (`localhost`, 127.0.0.0/8, `::1`).
+fn is_loopback_host(url: &reqwest::Url) -> bool {
+    match host_ip(url) {
+        Some(ip) => ip.is_loopback(),
+        None => url.host_str().is_some_and(|name| name.eq_ignore_ascii_case("localhost")),
+    }
+}
+
+/// Why an operator-configured revocation URL is not pulled (R-NET-30): https, or http to loopback only; no
+/// userinfo; an IP literal must be global unicast or the configured loopback. Names are checked at connect time.
+pub(crate) fn source_refusal(url: &str) -> Option<String> {
+    let parsed = match reqwest::Url::parse(url) {
+        Ok(parsed) => parsed,
+        Err(error) => return Some(format!("not a URL: {error}")),
+    };
+    let loopback = is_loopback_host(&parsed);
+    match parsed.scheme() {
+        "https" => {}
+        "http" if loopback => {}
+        scheme => return Some(format!("scheme {scheme} is refused: https, or http to loopback only")),
+    }
+    if !parsed.username().is_empty() || parsed.password().is_some() {
+        return Some("a revocation URL carries no credentials".into());
+    }
+    if parsed.host_str().is_none_or(str::is_empty) {
+        return Some("a revocation URL names a host".into());
+    }
+    let literal = host_ip(&parsed);
+    match literal {
+        Some(ip) if !loopback && !fe_plugin::net::is_public_unicast(ip) => Some(format!("{ip} is not a public address")),
+        _ => None,
+    }
+}
+
+/// Same scheme, host and port: the only redirect a pull follows, so it never leaves the configured origin.
+fn same_origin(a: &reqwest::Url, b: &reqwest::Url) -> bool {
+    a.scheme() == b.scheme() && a.host() == b.host() && a.port_or_known_default() == b.port_or_known_default()
+}
+
+/// Anonymous client for one source: no proxy, cookies or referer; names resolve once through the shared
+/// `is_public_unicast` resolver (loopback names to loopback only); redirects stay on the source's origin.
+fn pull_client(url: &str) -> reqwest::Result<reqwest::Client> {
+    let loopback = reqwest::Url::parse(url).is_ok_and(|parsed| is_loopback_host(&parsed));
     reqwest::Client::builder()
         .connect_timeout(Duration::from_secs(10))
         .timeout(Duration::from_secs(30))
+        .dns_resolver(Arc::new(fe_plugin::net::CheckedResolver))
+        .no_proxy()
+        .referer(false)
+        .https_only(!loopback)
         .redirect(reqwest::redirect::Policy::custom(|attempt| {
+            let origin = attempt.previous().first().cloned();
             if attempt.previous().len() >= MAX_REDIRECTS {
                 attempt.error("too many redirects")
-            } else if attempt.url().scheme() != "https" {
-                attempt.error("a revocation list redirect must stay on https")
+            } else if origin.is_some_and(|origin| !same_origin(&origin, attempt.url())) {
+                attempt.error("a revocation list redirect must stay on the configured origin")
             } else {
                 attempt.follow()
             }
@@ -343,7 +405,10 @@ mod tests {
         // A newer list is the signer's word now: it names B, which stops; A is no longer listed (its rows stay
         // and nothing restarts by itself).
         let newer = signed(&revoker, "2026-11-09T00:00:00Z", &[COMPONENT_B]);
+        let changes = governance.subscribe();
+        let before = governance.generation();
         assert_eq!(apply(&governance, &newer, Some(&cache), "pull"), ["inst-b"]);
+        assert!(governance.generation() > before && changes.try_recv().is_ok(), "an accepted list wakes the portal re-judge");
         assert!(!governance.is_revoked_any(&[COMPONENT_A]));
         assert!(governance.is_revoked_any(&[COMPONENT_B]));
 
@@ -352,6 +417,26 @@ mod tests {
         forged.signer_key_id = "rev".into();
         assert!(governance.accept_revocation_list(&forged).is_err());
         assert!(!governance.is_revoked_any(&[COMPONENT_A]));
+
+        // R-NET-30: operator-configured sources are https or loopback, never a private or credentialed target.
+        for (url, pulled) in [
+            ("https://revocations.example.org/list.json", true),
+            ("http://127.0.0.1:9/revoked.json", true),
+            ("http://localhost:9/revoked.json", true),
+            ("https://[::1]/revoked.json", true),
+            ("http://revocations.example.org/list.json", false),
+            ("https://10.0.0.5/list.json", false),
+            ("https://169.254.169.254/latest", false),
+            ("https://[fd00::1]/list.json", false),
+            ("https://user:pass@revocations.example.org/list.json", false),
+            ("file:///etc/passwd", false),
+        ] {
+            assert_eq!(source_refusal(url).is_none(), pulled, "{url}");
+        }
+        let origin = reqwest::Url::parse("https://revocations.example.org/list.json").unwrap();
+        assert!(same_origin(&origin, &reqwest::Url::parse("https://revocations.example.org:443/v2.json").unwrap()));
+        assert!(!same_origin(&origin, &reqwest::Url::parse("http://revocations.example.org/list.json").unwrap()));
+        assert!(!same_origin(&origin, &reqwest::Url::parse("https://127.0.0.1/list.json").unwrap()));
 
         assert_eq!(parse_interval(Some("2")), MIN_PULL_INTERVAL, "the interval never drops under 10 s");
         assert_eq!(parse_interval(Some("junk")), DEFAULT_PULL_INTERVAL);
