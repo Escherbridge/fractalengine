@@ -1,7 +1,7 @@
 //! Send-side gate for the `scene.create` / `scene.transform` / `scene.property` binding hooks
 //! (docs/extensions/bindings.md §6); rationale in `fe-runtime/src/AGENTS.md` §scene-hook-gate.
 //!
-//! Issuers (GUI commit, REST, MCP, WS) ask the gate before they send a node write; the DB thread,
+//! Issuers (GUI commit, REST, MCP, WS) reach the gate through the one door, [`crate::scene_write`]; the DB thread,
 //! `ApplyReplicatedRow` and `PluginCommit` never pass through it. Faults and timeouts fail open and
 //! are counted (OQ-B4); a bound write whose hook input the caller sized over the cap is refused
 //! (steer 2026-11-09 02:45); only `property_scope` keys reach the guest; augments stage in the
@@ -120,9 +120,21 @@ pub enum SceneHookInput {
         rotation: [f32; 3],
         scale: [f32; 3],
     },
+    /// `value` is `null` for a deleted key.
     Property {
         petal_id: String,
         node_id: String,
+        key: String,
+        value: Value,
+    },
+    /// A create whose name and position the DB derives from `source_node_id` (duplicate, stamp promotion).
+    CreateFrom {
+        petal_id: String,
+        source_node_id: String,
+    },
+    /// One initial property of a node being created (`node: null` in the hook input).
+    InitialProperty {
+        petal_id: String,
         key: String,
         value: Value,
     },
@@ -132,9 +144,9 @@ impl SceneHookInput {
     /// The hook this write triggers.
     pub fn hook(&self) -> SceneHook {
         match self {
-            Self::Create { .. } => SceneHook::Create,
+            Self::Create { .. } | Self::CreateFrom { .. } => SceneHook::Create,
             Self::Transform { .. } => SceneHook::Transform,
-            Self::Property { .. } => SceneHook::Property,
+            Self::Property { .. } | Self::InitialProperty { .. } => SceneHook::Property,
         }
     }
 
@@ -143,15 +155,25 @@ impl SceneHookInput {
         match self {
             Self::Create { petal_id, .. }
             | Self::Transform { petal_id, .. }
-            | Self::Property { petal_id, .. } => petal_id,
+            | Self::Property { petal_id, .. }
+            | Self::CreateFrom { petal_id, .. }
+            | Self::InitialProperty { petal_id, .. } => petal_id,
         }
     }
 
     /// The written node; `None` for a create (its id exists only after commit).
     pub fn node_id(&self) -> Option<&str> {
         match self {
-            Self::Create { .. } => None,
+            Self::Create { .. } | Self::CreateFrom { .. } | Self::InitialProperty { .. } => None,
             Self::Transform { node_id, .. } | Self::Property { node_id, .. } => Some(node_id),
+        }
+    }
+
+    /// The property key a `scene.property` input carries.
+    pub fn property_key(&self) -> Option<&str> {
+        match self {
+            Self::Property { key, .. } | Self::InitialProperty { key, .. } => Some(key),
+            _ => None,
         }
     }
 
@@ -185,6 +207,20 @@ impl SceneHookInput {
                 ..
             } => json!({
                 "node": node_id,
+                "key": key,
+                "value": value,
+                "caller": caller,
+            }),
+            Self::CreateFrom {
+                petal_id,
+                source_node_id,
+            } => json!({
+                "petal_id": petal_id,
+                "proposed": { "source": source_node_id },
+                "caller": caller,
+            }),
+            Self::InitialProperty { key, value, .. } => json!({
+                "node": Value::Null,
                 "key": key,
                 "value": value,
                 "caller": caller,
@@ -338,7 +374,7 @@ impl SceneHookGate {
         let Some(binding) = backend.bound(hook, input.petal_id()) else {
             return SceneGateTicket::proceed();
         };
-        if let SceneHookInput::Property { key, .. } = &input {
+        if let Some(key) = input.property_key() {
             if !in_property_scope(&binding.property_scope, key) {
                 self.count(&binding.package_id, hook, |c| c.skipped += 1);
                 return SceneGateTicket::proceed();
@@ -379,6 +415,20 @@ impl SceneHookGate {
     /// Check one write from async code, waiting at most the hook's deadline.
     pub async fn check(&self, input: SceneHookInput, caller: SceneCaller) -> SceneVerdict {
         self.begin(input, caller).wait().await
+    }
+
+    /// The package `input` would reach (bound, and in `property_scope` for a property); never blocks.
+    pub fn dispatch_target(&self, input: &SceneHookInput) -> Option<String> {
+        let binding = self.backend.as_ref()?.bound(input.hook(), input.petal_id())?;
+        let in_scope = input
+            .property_key()
+            .is_none_or(|key| in_property_scope(&binding.property_scope, key));
+        in_scope.then_some(binding.package_id)
+    }
+
+    /// Count one write refused before dispatch because its hook input was caller-sized over a cap.
+    pub(crate) fn count_too_large(&self, package_id: &str, hook: SceneHook) {
+        self.count(package_id, hook, |c| c.too_large += 1);
     }
 
     /// One package's gate counters for one hook.
@@ -486,6 +536,11 @@ impl SceneAugment {
     /// The property sets that will stage.
     pub fn ops(&self) -> &[AugmentOp] {
         &self.ops
+    }
+
+    /// The written node, `None` while a create's node id is unknown.
+    pub fn subject(&self) -> Option<&str> {
+        self.subject.as_deref()
     }
 
     /// Stage on the written node (`scene.transform`, `scene.property`).
@@ -752,16 +807,16 @@ fn clean_reason(reason: &str) -> String {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
 
     /// A backend with one binding at petal `p1`; `answer: None` holds the call unanswered.
-    struct FakeBackend {
-        binding: SceneBinding,
-        answer: Option<SceneHookReply>,
-        calls: Mutex<Vec<SceneHookCall>>,
-        held: Mutex<Vec<SceneHookReplySender>>,
-        staged: Mutex<Vec<(String, Vec<AugmentOp>)>>,
+    pub(crate) struct FakeBackend {
+        pub(crate) binding: SceneBinding,
+        pub(crate) answer: Option<SceneHookReply>,
+        pub(crate) calls: Mutex<Vec<SceneHookCall>>,
+        pub(crate) held: Mutex<Vec<SceneHookReplySender>>,
+        pub(crate) staged: Mutex<Vec<(String, Vec<AugmentOp>)>>,
     }
 
     impl SceneHookBackend for FakeBackend {
@@ -802,7 +857,7 @@ mod tests {
         }
     }
 
-    fn gate_with(
+    pub(crate) fn gate_with(
         answer: Option<SceneHookReply>,
         may_augment: bool,
     ) -> (SceneHookGate, Arc<FakeBackend>) {
