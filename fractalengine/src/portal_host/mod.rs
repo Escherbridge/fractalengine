@@ -2,6 +2,7 @@
 //! Repository section (summary, Admit, Revoke) and the revoke listener's signals. Rationale: src/AGENTS.md §portal-host.
 
 pub(crate) mod broker;
+pub(crate) mod install;
 pub(crate) mod resolver;
 
 use std::collections::{HashMap, HashSet};
@@ -9,7 +10,7 @@ use std::sync::{Arc, Mutex, PoisonError};
 use std::time::{Duration, Instant};
 
 use bevy::ecs::change_detection::DetectChangesMut;
-use bevy::prelude::{App, IntoScheduleConfigs, MessageWriter, Res, ResMut, Resource, Update};
+use bevy::prelude::{App, IntoScheduleConfigs, Local, MessageWriter, Res, ResMut, Resource, Update};
 use bevy_egui::{EguiContexts, EguiPrimaryContextPass};
 use crossbeam::channel::{Receiver, RecvTimeoutError, Sender, TrySendError};
 use fe_api::portal_bundles::{inspect_stored, InspectedBundle, StoredBundleError};
@@ -29,7 +30,7 @@ use fe_ui::portal::repository_view::parse_summary;
 use fe_ui::portal::BundleAdmissionRequest;
 use fe_ui::verse_manager::VerseManager;
 use fe_webview::ipc::BundleState;
-use fe_webview::plugin::{apply_portal_admission, PortalBundleChanged};
+use fe_webview::plugin::{apply_portal_admission, PortalBindingChanged, PortalBundleChanged};
 use fe_webview::portal_bundle::admission::{
     self, AdmissionEvent, AdmissionSignal, GovernanceView, KillListStatus, RecordReason, RecordState,
 };
@@ -95,6 +96,9 @@ pub(crate) fn install(app: &mut App, config: PortalHostConfig, render_work: &Pen
     };
     let resolver = Arc::new(PortalResolver::new(config.db.clone(), config.blobs.clone(), source, governance_config));
     resolver::install(app, Arc::clone(&resolver), config.local_client_did);
+    // Feeds the binding facts (admitted set) and Disable all into the plugin bridge (R-X-04, R-X-33).
+    crate::plugin_bridge::link_portal_resolver(Arc::clone(resolver.view()));
+    configure_install(governance.as_ref(), &config.blobs);
     install_broker(app, &resolver, governance.as_ref());
 
     let (jobs, job_rx) = crossbeam::channel::bounded(JOB_QUEUE);
@@ -126,9 +130,21 @@ pub(crate) fn install(app: &mut App, config: PortalHostConfig, render_work: &Pen
         next_tick: None,
     });
     app.init_resource::<PortalConsent>();
-    app.add_systems(Update, drive_portal_host.in_set(AdmissionWriters));
+    app.add_systems(Update, (drive_portal_host, follow_binding_changes).in_set(AdmissionWriters));
     app.add_systems(EguiPrimaryContextPass, render_portal_consent);
     OwnedService::spawn("portal-host", move |stop| worker.run(&job_rx, &outcome_tx, &stop))
+}
+
+/// Registry installs of web bundles check the accepted kill list; without governance the path stays unconfigured (refuses).
+fn configure_install(governance: Option<&ExtensionGovernance>, blobs: &BlobStoreHandle) {
+    let Some(governance) = governance.cloned() else {
+        tracing::warn!("portal host: no governance, so registry web-bundle installs are refused");
+        return;
+    };
+    let kill_list: install::KillListPredicate = Arc::new(move |digest: &str| governance.is_revoked_any(&[digest]));
+    if !install::configure(install::InstallContext { blobs: blobs.clone(), kill_list }) {
+        tracing::debug!("portal host: the install context was already configured");
+    }
 }
 
 /// The broker over the integration bus, its one-op write sink and the scope tracker; no bus means no IPC data.
@@ -899,6 +915,26 @@ fn drive_portal_host(
     host.apply_outcomes(&mut dialog.0, ui, &mut signals, &mut changes, now_secs);
     host.follow_scene_changes(ui, &mut changes);
     host.tick(ui, &mut signals, &mut changes);
+}
+
+/// Update, in `AdmissionWriters`: the binding view moved while a bound portal is open, so it re-resolves and reloads
+/// (the host decides whether the build changed, `BundleHost::refresh_target`). Idle frames compare one counter.
+fn follow_binding_changes(
+    bindings: Option<Res<crate::plugin_bridge::ExtensionBindings>>,
+    ui: Res<UiManager>,
+    mut seen: Local<u64>,
+    mut changes: MessageWriter<PortalBindingChanged>,
+) {
+    let Some(bindings) = bindings else { return };
+    let generation = bindings.generation();
+    if generation == *seen {
+        return;
+    }
+    *seen = generation;
+    let Some(anchor) = ui.portal.bundle_node_id().and_then(|anchor| anchor.strip_prefix("binding:")) else { return };
+    if let Some((petal_id, package_id)) = anchor.split_once(':') {
+        changes.write(PortalBindingChanged { petal_id: petal_id.to_owned(), package_id: package_id.to_owned() });
+    }
 }
 
 /// The portal consent dialog, drawn only while an Admit awaits an answer.

@@ -403,7 +403,10 @@ fn main() {
         "Starting sync thread"
     );
 
-    let sync_thread = fe_sync::spawn_sync_thread(
+    // Extension `blob.source`: empty (peers only) until the plugin bridge installs a source; the sync thread's scene
+    // transfers and the `blob://` reader ask the same slot (src/AGENTS.md section extension-host).
+    let blob_fallback = fe_runtime::bevy_blob_reader::BlobFallbackSlot::default();
+    let sync_thread = fe_sync::spawn_sync_thread_with_sources(
         iroh_secret,
         blob_store.clone(),
         sync_cmd_rx,
@@ -415,6 +418,9 @@ fn main() {
         // Default data dir (FE_P2P_DIR env, `data/p2p`) — one DocsStack per
         // process for the desktop binary.
         None,
+        // Production transport (never the sim lab's virtual one).
+        None,
+        blob_fallback.clone(),
     );
 
     maintenance_services.push(fe_runtime::service_lifecycle::OwnedService::new("sync", Default::default(), sync_thread));
@@ -508,6 +514,7 @@ fn main() {
             blob_store: Some(blob_store),
             on_blob_miss: Some(on_miss),
             lifecycle_rx: Some(lifecycle_rx),
+            blob_fallback: blob_fallback.clone(),
         },
         window_chrome::primary_window(),
         AppOptions {
@@ -528,6 +535,7 @@ fn main() {
             local_did: node_kp.to_did_key(),
             api_cmd_tx: None,
             scene_changes: Some(entity_change_tx.subscribe()),
+            blob_fallback: Some(blob_fallback),
         },
     );
     // ingest.decode reads accepted payload files from the same content-addressed store.
@@ -790,6 +798,7 @@ fn main() {
         listening_tx: Some(api_listening_tx),
         extension_host: plugin_bridge::api_extension_host(&app),
         binding_host: plugin_bridge::api_binding_host(&app),
+        import_hooks: plugin_bridge::import_hooks_handle(&app),
     }));
 
     // Agent QA: write loopback-only API tokens for every local verse once the

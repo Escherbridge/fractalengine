@@ -4,7 +4,7 @@ use crate::backend::{BackendEvent, WebViewBackend, WindowGeometry};
 use crate::backends::ActiveBackend;
 use crate::ipc::{BrowserCommand, BrowserEvent, BundleState};
 use crate::portal_bundle::admission::AdmissionSignal;
-use crate::portal_bundle::{BridgeWebview, BundleHost, BundleResolver, BundleWebview, PortalBroker, PortalIntent};
+use crate::portal_bundle::{BridgeWebview, BundleHost, BundleResolver, BundleTarget, BundleWebview, PortalBroker, PortalIntent};
 use crate::security;
 use bevy::prelude::IntoScheduleConfigs;
 
@@ -36,6 +36,13 @@ pub struct PortalBundleChanged {
     pub node_id: String,
 }
 
+/// A scope's `portal.open` binding or its bound build's install changed (bindings.md §6): an open bound portal reloads.
+#[derive(Debug, Clone, PartialEq, Eq, bevy::prelude::Message)]
+pub struct PortalBindingChanged {
+    pub petal_id: String,
+    pub package_id: String,
+}
+
 pub struct WebViewPlugin;
 
 impl bevy::prelude::Plugin for WebViewPlugin {
@@ -45,6 +52,7 @@ impl bevy::prelude::Plugin for WebViewPlugin {
         app.add_message::<PortalIntent>();
         app.add_message::<AdmissionSignal>();
         app.add_message::<PortalBundleChanged>();
+        app.add_message::<PortalBindingChanged>();
         app.init_resource::<PortalPanelRect>();
         app.add_systems(bevy::prelude::Update, init_backend);
         app.add_systems(bevy::prelude::Update, dispatch_commands);
@@ -229,9 +237,9 @@ fn init_backend(world: &mut bevy::prelude::World) {
 /// Every `OpenBundle` in `commands` reports Unavailable (no embedded browser to mount into).
 fn report_bundles_unavailable(commands: &[BrowserCommand], events: &mut bevy::prelude::MessageWriter<BrowserEvent>) {
     for command in commands {
-        if let BrowserCommand::OpenBundle { node_id } = command {
+        if let Some(anchor) = command.bundle_anchor() {
             events.write(BrowserEvent::BundleState {
-                node_id: node_id.clone(),
+                node_id: anchor,
                 label: None,
                 state: BundleState::Unavailable,
             });
@@ -378,6 +386,24 @@ fn dispatch_commands(
                     });
                 }
             },
+            BrowserCommand::OpenBoundBundle { petal_id, package_id } => {
+                let target = BundleTarget::Bound { petal_id, package_id };
+                match bundles.as_mut() {
+                    Some(host) => {
+                        let resolver = resolver.as_ref().map(|resolver| Arc::clone(&resolver.0));
+                        for event in host.open_target(target, resolver, &mut *backend) {
+                            events.write(event);
+                        }
+                    }
+                    None => {
+                        events.write(BrowserEvent::BundleState {
+                            node_id: target.anchor(),
+                            label: None,
+                            state: BundleState::Unavailable,
+                        });
+                    }
+                }
+            }
             BrowserCommand::CloseBundle => {
                 if let Some(host) = bundles.as_mut() {
                     for event in host.close(&mut *backend) {
@@ -466,11 +492,13 @@ pub fn apply_portal_admission(
     backend_res: Option<bevy::ecs::system::NonSendMut<WebViewBackendRes>>,
     mut signals: bevy::prelude::MessageReader<AdmissionSignal>,
     mut changes: bevy::prelude::MessageReader<PortalBundleChanged>,
+    mut binding_changes: bevy::prelude::MessageReader<PortalBindingChanged>,
     mut events: bevy::prelude::MessageWriter<BrowserEvent>,
 ) {
     let Some(mut res) = backend_res else {
         signals.clear();
         changes.clear();
+        binding_changes.clear();
         return;
     };
     let WebViewBackendRes {
@@ -479,6 +507,7 @@ pub fn apply_portal_admission(
     let (Some(backend), Some(host)) = (backend.as_mut(), bundles.as_mut()) else {
         signals.clear();
         changes.clear();
+        binding_changes.clear();
         return;
     };
     // An Arc clone: the bridge closes alongside the `&mut` webview the host unloads through.
@@ -490,6 +519,12 @@ pub fn apply_portal_admission(
     }
     for change in changes.read() {
         for event in host.refresh(&change.node_id, &mut *backend) {
+            events.write(event);
+        }
+    }
+    for change in binding_changes.read() {
+        let target = BundleTarget::Bound { petal_id: change.petal_id.clone(), package_id: change.package_id.clone() };
+        for event in host.refresh_target(&target, &mut *backend) {
             events.write(event);
         }
     }

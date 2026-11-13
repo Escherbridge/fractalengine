@@ -2223,3 +2223,35 @@ Binary-side leaves of the extension host (`extension_host/`); `plugin_bridge::in
   and `RevocationPullService` beside `PluginHostService`; an absent or empty slot means nothing to stop.
 - **Payload bytes.** `main.rs` binds `ExtensionBlobSlot` to the shared blob store right after
   `install_with`, so `ingest.decode` reads accepted payload files from the same content-addressed store.
+
+## §extension-governance (extension_platform_20261107, turn 3 I-MAIN)
+
+How `main.rs` and `portal_host/mod.rs` hand governance state to the rest of the binary.
+
+- **One governance, three readers.** `plugin_bridge::install_with` builds `ExtensionGovernance`; `portal_host::install`
+  reads it as the portal's `GovernanceSource`, calls `plugin_bridge::link_portal_resolver(resolver.view())` so the
+  bridge can feed the admitted set (R-X-04) and store into the shared Disable all flag (R-X-33), and
+  `configure_install` gives `portal_host::install::install_from_registry` the blob store plus the accepted kill list
+  (`is_revoked_any`). Without governance the install path stays unconfigured and refuses (`Refusal::NotConfigured`).
+- **Import hooks.** `ApiConfig.import_hooks` is `plugin_bridge::import_hooks_handle(&app)`; `None` keeps non-GLB
+  uploads refused (relay, no plugin host).
+- **Scene blob source.** `main.rs` creates one `BlobFallbackSlot` before the sync thread starts and clones it into
+  `spawn_sync_thread_with_sources`, `BevyHandles.blob_fallback` (the `blob://` reader) and
+  `ExtensionBridgeConfig.blob_fallback` (the bridge installs and pumps the source). An empty slot is peers only.
+- **Bound portal reloads.** `follow_binding_changes` compares `ExtensionBindings::generation()` once per frame and,
+  while a `binding:<petal>:<package>` portal is open, writes `fe_webview::plugin::PortalBindingChanged`; the revoke
+  listener then calls `BundleHost::refresh_target`. `OpenBoundBundle` is written by fe-ui and mounted by fe-webview.
+
+## §admin-channel (turn 3)
+
+The local CLI channel (`extension_host/admin_channel.rs`, protocol in `fe-plugin/src/admin`) is spawned by
+`plugin_bridge`, never by `main.rs`, and never touches REST/MCP or tokens. Every request becomes an `AdminJob` on the
+ops worker; consent-needing verbs wait for the GUI dialog. `main.rs` holds no channel state. Setup and env
+switches: `fe-plugin/src/admin/AGENTS.md`.
+
+## §store-client (turn 3)
+
+The public store client (`docs/spec/store-client/contract-v1.md`) is read through `fe_hexon::registry_source`; the
+binary injects `SourceTrust.is_killed` from governance (plugin bridge) or `no_kill_list()` (terrain bridge). Web
+bundles install through `portal_host::install`, which checks the kill list against the claimed and the verified hash
+before storing a byte and never starts or binds anything; binding and consent stay GUI steps.

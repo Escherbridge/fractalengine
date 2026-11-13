@@ -190,3 +190,10 @@ The static export of a bundle (`GET /api/v1/nodes/{node_id}/portal/export.zip`) 
 in-app static mount and the export share the same feed ordering and CSP rules (`fe-api/src/AGENTS.md` §portal-bundles).
 The optional `tauri` dependency is deliberately left in place (it is the documented default backend); its removal is out
 of scope for this track.
+
+## §bound-bundle routing (extension_platform_20261107, turn 3)
+
+`dispatch_commands` mounts `BrowserCommand::OpenBoundBundle` through `BundleHost::open_target(BundleTarget::Bound)`;
+unavailable-backend reports use `bundle_anchor()` so bound anchors (`binding:<petal>:<package>`) report too.
+`PortalBindingChanged { petal_id, package_id }` is the binary's signal that a binding or its installed build moved;
+`apply_portal_admission` turns it into `refresh_target`, which reloads only an open, unrevoked mount of that target.
