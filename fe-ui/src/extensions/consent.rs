@@ -31,6 +31,8 @@ pub enum ConsentOrigin {
         /// Scope level the binding comes from, e.g. `petal Harbour`.
         binding_scope: String,
     },
+    /// The local-channel admin CLI staged the build (admin-channel.md section 5); never approves on its own.
+    Cli,
 }
 
 /// The verse Owner's kill-list override offer for a revoked build (governance.md section Kill-list override).
@@ -190,6 +192,7 @@ pub struct ConsentState {
     list_rendered: bool,
     override_text: String,
     decision: Option<ConsentDecision>,
+    attention_sent: bool,
 }
 
 impl ConsentState {
@@ -201,6 +204,7 @@ impl ConsentState {
         }
         self.pending = Some(request);
         self.list_rendered = false;
+        self.attention_sent = false;
         self.override_text.clear();
         true
     }
@@ -235,7 +239,7 @@ impl ConsentState {
         if let Some(request) = self.pending.take() {
             let accept_in_verse = match &request.origin {
                 ConsentOrigin::InstallOffer { verse_id, .. } => Some(verse_id.clone()),
-                ConsentOrigin::Direct => None,
+                ConsentOrigin::Direct | ConsentOrigin::Cli => None,
             };
             self.decision = Some(ConsentDecision::Approved {
                 installation_id: request.installation_id,
@@ -282,6 +286,12 @@ pub fn render(ctx: &egui::Context, state: &mut ConsentState) {
     let confirm_enabled = state.confirm_enabled();
     let override_enabled = state.override_enabled();
     let mut override_text = std::mem::take(&mut state.override_text);
+
+    // A CLI-staged request flashes the window once so the operator notices it (the dialog never approves itself).
+    if matches!(request.origin, ConsentOrigin::Cli) && !state.attention_sent {
+        state.attention_sent = true;
+        ctx.send_viewport_cmd(egui::ViewportCommand::RequestUserAttention(egui::UserAttentionType::Informational));
+    }
 
     crate::ui_shell::layout_policy::bounded_window(ctx, title(&request))
         // Above the Extensions window: a click there must never bury an open review (R-UI-28).
@@ -377,8 +387,14 @@ fn header(ui: &mut egui::Ui, request: &ConsentRequest) {
             .small()
             .color(theme::TEXT_MUTED),
     );
-    if let ConsentOrigin::InstallOffer { binding_scope, .. } = &request.origin {
-        ui.label(egui::RichText::new(format!("Offered by the binding at {binding_scope}")).small().color(theme::TEXT_MUTED));
+    match &request.origin {
+        ConsentOrigin::InstallOffer { binding_scope, .. } => {
+            ui.label(egui::RichText::new(format!("Offered by the binding at {binding_scope}")).small().color(theme::TEXT_MUTED));
+        }
+        ConsentOrigin::Cli => {
+            ui.label(egui::RichText::new("Requested from the command line").small().color(theme::TEXT_MUTED));
+        }
+        ConsentOrigin::Direct => {}
     }
     ui.add_space(8.0);
 }
@@ -544,6 +560,29 @@ mod tests {
                 accept_in_verse: Some("verse-harbour".into())
             })
         );
+
+        // CLI origin: same review, attention requested once, never auto-approved; approve and decline both answer.
+        let mut cli = request("d3", &["https://bi.example.org/"]);
+        cli.origin = ConsentOrigin::Cli;
+        assert!(state.request(cli.clone()));
+        assert!(state.pending().is_some() && state.take_decision().is_none(), "no decision without the operator");
+        assert!(!state.confirm_enabled(), "list must be read first");
+        frame(&mut state);
+        assert!(state.attention_sent, "window attention requested");
+        assert!(state.confirm_enabled());
+        state.approve();
+        assert_eq!(
+            state.take_decision(),
+            Some(ConsentDecision::Approved {
+                installation_id: "inst-1".into(),
+                capability_digest: "d3".into(),
+                accept_in_verse: None
+            })
+        );
+        assert!(state.request(cli));
+        frame(&mut state);
+        state.decline();
+        assert_eq!(state.take_decision(), Some(ConsentDecision::Declined { installation_id: "inst-1".into() }));
     }
 
     /// Journey: a kill-listed build never enables; only the exact typed package id enables the Owner override.
