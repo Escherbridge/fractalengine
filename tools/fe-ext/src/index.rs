@@ -552,6 +552,16 @@ fn catalog_base(target: &str) -> String {
     }
 }
 
+/// The endpoint `{base}` above a catalogue dir: `StaticIndexSource` appends `api/v1/catalog/` itself (R-TOOL-03).
+fn endpoint_base(catalog: &str) -> String {
+    let normalized = catalog.replace('\\', "/");
+    match normalized.strip_suffix(&format!("/{CATALOG_DIR}")) {
+        // `\` and `/` are one byte each, so the normalized prefix length indexes the original.
+        Some(root) => catalog[..root.len()].to_owned(),
+        None => catalog.to_owned(),
+    }
+}
+
 /// `base/location` for a document-named location; http(s) passes, absolute, drive or climbing paths are refused.
 fn locate(base: &str, location: &str) -> Result<String> {
     let lower = location.to_ascii_lowercase();
@@ -590,7 +600,7 @@ pub fn verify_tree(target: &str, index_key_did: &str, http: Option<Arc<dyn Bytes
         is_killed: no_kill_list(),
         allow_unsigned_dev: false,
     };
-    let source = StaticIndexSource::new(base.clone(), fetcher.clone(), trust.clone());
+    let source = StaticIndexSource::new(endpoint_base(&base), fetcher.clone(), trust.clone());
     let listing = source.list(None).map_err(|error| anyhow!("index: {error}"))?;
 
     let mut report = VerifyReport { stale: listing.stale, ..VerifyReport::default() };

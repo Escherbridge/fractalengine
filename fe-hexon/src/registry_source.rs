@@ -1857,7 +1857,7 @@ impl RegistrySource for StaticIndexSource {
 
 // ---- Protocol v1 ------------------------------------------------------------------------------
 
-/// Transport over a protocol-v1 registry; the binary adapts `fe-plugin`'s `RegistryClient` and `RemoteRegistryClient`.
+/// Transport over a protocol-v1 registry; implemented by `remote::RemoteProtocolV1Transport` (over `RemoteRegistryClient`).
 pub trait ProtocolV1Transport: Send + Sync {
     /// Value of the `X-Hexon-Registry-Protocol` header from a health probe, `None` when absent.
     fn protocol(&self) -> Result<Option<String>, String>;
