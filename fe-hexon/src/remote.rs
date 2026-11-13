@@ -24,6 +24,35 @@ const CONNECT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
 const READ_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(60);
 /// `hexon_type` of an extension package (`HexonType::Plugin`).
 const PLUGIN_HEXON_TYPE: &str = "plugin";
+/// Redirect hops a store or registry read follows (same origin only).
+const MAX_REDIRECTS: usize = 5;
+
+/// Redirects stay on the origin of the first request: never another host, never https to http, so a redirect
+/// cannot carry a read to loopback or the LAN unless the configured base already is there.
+pub fn same_origin_redirects() -> reqwest::redirect::Policy {
+    reqwest::redirect::Policy::custom(|attempt| {
+        let hops = attempt.previous().len();
+        let same_origin = attempt.previous().first().is_some_and(|first| first.origin() == attempt.url().origin());
+        if hops >= MAX_REDIRECTS {
+            attempt.error("too many redirects")
+        } else if same_origin {
+            attempt.follow()
+        } else {
+            attempt.stop()
+        }
+    })
+}
+
+/// The one client builder every store, registry and revocation reader starts from: connect and read-idle timeouts,
+/// no environment proxy (the address checks must see the real target) and same-origin redirects. Callers add their
+/// own checked resolver (`dns_resolver`) on top; nothing here sets credentials or a cookie store.
+pub fn store_client_builder() -> reqwest::ClientBuilder {
+    reqwest::Client::builder()
+        .connect_timeout(CONNECT_TIMEOUT)
+        .read_timeout(READ_TIMEOUT)
+        .no_proxy()
+        .redirect(same_origin_redirects())
+}
 
 /// Mirror of the registry's `ApiResponse` envelope.
 #[derive(Debug, Deserialize)]
@@ -66,15 +95,12 @@ pub struct RemoteRegistryClient {
 impl RemoteRegistryClient {
     /// Create a client for `base_url` (trailing slash tolerated) with optional bearer token.
     pub fn new(base_url: impl Into<String>, token: Option<String>) -> Self {
-        // A stalled registry must not hold the extension ops worker forever.
-        let http = reqwest::Client::builder()
-            .connect_timeout(CONNECT_TIMEOUT)
-            .read_timeout(READ_TIMEOUT)
-            .build()
-            .unwrap_or_else(|error| {
-                tracing::warn!(%error, "registry client: timeouts unavailable, using the default client");
-                reqwest::Client::new()
-            });
+        // A stalled registry must not hold the extension ops worker forever; a proxy or a cross-origin redirect
+        // must not re-target it. The fallback (TLS backend failure) still has no proxy and follows no redirect.
+        let http = store_client_builder().build().unwrap_or_else(|error| {
+            tracing::warn!(%error, "registry client: hardened client unavailable, requests are refused");
+            reqwest::Client::builder().no_proxy().redirect(reqwest::redirect::Policy::none()).build().unwrap_or_default()
+        });
         Self {
             base_url: base_url.into().trim_end_matches('/').to_string(),
             token,
@@ -270,9 +296,11 @@ impl RemoteRegistryClient {
         if advertised.is_some() {
             return Ok(advertised);
         }
-        // Store-client contract v1: `config.json` `registry_protocol` is the authority; the header is never required.
+        // Store-client contract v1: `{base}/api/v1/catalog/config.json` `registry_protocol` is the authority; the
+        // header is never required. Catalogue reads are anonymous: no bearer token, whatever the operator configured.
         let config = self
-            .get(format!("{}/config.json", self.base_url))
+            .http
+            .get(format!("{}/{}/config.json", self.base_url, crate::registry_source::CATALOG_PREFIX))
             .send()
             .await
             .context("registry config request failed")?;
@@ -280,8 +308,11 @@ impl RemoteRegistryClient {
             return Ok(None);
         }
         let body = self.get_capped_response(config, MAX_HEALTH_BYTES).await?;
-        let doc: serde_json::Value = serde_json::from_slice(&body).unwrap_or_default();
-        Ok(doc.get("registry_protocol").and_then(|v| v.as_u64()).map(|v| v.to_string()))
+        match crate::registry_source::parse_config(&body) {
+            Ok(_) => Ok(Some(crate::registry_source::PROTOCOL_V1.to_string())),
+            Err(crate::registry_source::RegistryError::ProtocolMismatch { found }) => Ok(found),
+            Err(error) => Err(anyhow!("registry config: {error}")),
+        }
     }
 
     /// Attestation document for `uri`: the manifest and header members from `/meta`, base64-encoded, so consent renders before download.
