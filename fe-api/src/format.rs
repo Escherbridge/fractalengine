@@ -9,7 +9,10 @@ use axum_extra::extract::Multipart;
 use fe_identity::api_token::ApiClaims;
 use fe_runtime::messages::{ApiCommand, DbCommand, DbResult};
 
+use fe_runtime::scene_hook_gate::SceneCallerKind;
+
 use crate::auth::require_role;
+use crate::mcp::scene_gate::{admit, Door};
 
 use crate::types::{is_valid_ulid, ApiResponse};
 
@@ -129,14 +132,14 @@ pub async fn import_petal(
     Extension(claims): Extension<ApiClaims>,
     Path(petal_id): Path<String>,
     mut multipart: Multipart,
-) -> impl IntoResponse {
+) -> Response {
+    let envelope_error =
+        |msg: &str| axum::Json(ApiResponse::<serde_json::Value>::error(msg)).into_response();
     if require_role(&claims, "editor").is_err() {
-        return axum::Json(ApiResponse::<serde_json::Value>::error(
-            "insufficient permissions",
-        ));
+        return envelope_error("insufficient permissions");
     }
     if !is_valid_ulid(&petal_id) {
-        return axum::Json(ApiResponse::<serde_json::Value>::error("invalid petal_id"));
+        return envelope_error("invalid petal_id");
     }
 
     // Resolve petal scope for enforcement
@@ -144,18 +147,14 @@ pub async fn import_petal(
         .await
         .is_none()
     {
-        return axum::Json(ApiResponse::<serde_json::Value>::error(
-            crate::rest::NOT_FOUND_OR_DENIED,
-        ));
+        return envelope_error(crate::rest::NOT_FOUND_OR_DENIED);
     }
 
     // Read the uploaded file
     let archive_bytes = match read_multipart_archive(&mut multipart).await {
         Some(bytes) => bytes,
         None => {
-            return axum::Json(ApiResponse::<serde_json::Value>::error(
-                "missing or unreadable 'archive' field in multipart upload",
-            ));
+            return envelope_error("missing or unreadable 'archive' field in multipart upload");
         }
     };
 
@@ -163,32 +162,41 @@ pub async fn import_petal(
     let data = match fe_format::HexonArchive::import(&archive_bytes) {
         Ok(d) => d,
         Err(e) => {
-            return axum::Json(ApiResponse::<serde_json::Value>::error(format!(
-                "invalid .hexon archive: {e}"
-            )));
+            return envelope_error(&format!("invalid .hexon archive: {e}"));
         }
     };
+
+    // All-or-nothing at the gate: admit every planned create first, so a refusal writes no row.
+    let door = Door { claims: &claims, kind: SceneCallerKind::Rest };
+    let mut admitted = Vec::with_capacity(data.nodes.len());
+    for node in &data.nodes {
+        let create = DbCommand::CreateNode {
+            petal_id: petal_id.clone(),
+            name: node.name.clone(),
+            position: node.position,
+            correlation_id: None,
+        };
+        match admit(door, &petal_id, create).await {
+            Ok(pair) => admitted.push(pair),
+            Err(denied) => return crate::rest::scene_denied_response(denied),
+        }
+    }
 
     // Create nodes in the target petal
     let mut created = 0u32;
     let mut errors = 0u32;
-    for node in &data.nodes {
+    for (db_cmd, admission) in admitted {
         let (reply_tx, reply_rx) = tokio::sync::oneshot::channel();
-        let cmd = ApiCommand::DbRequest {
-            cmd: DbCommand::CreateNode {
-                petal_id: petal_id.clone(),
-                name: node.name.clone(),
-                position: node.position,
-                correlation_id: None,
-            },
-            reply_tx,
-        };
+        let cmd = ApiCommand::DbRequest { cmd: db_cmd, reply_tx };
         if state.api_cmd_tx.send(cmd).is_err() {
             errors += 1;
             continue;
         }
         match tokio::time::timeout(std::time::Duration::from_secs(5), reply_rx).await {
-            Ok(Ok(DbResult::NodeCreated { .. })) => created += 1,
+            Ok(Ok(DbResult::NodeCreated { id, .. })) => {
+                admission.stage(Some(&id));
+                created += 1;
+            }
             _ => errors += 1,
         }
     }
@@ -204,6 +212,7 @@ pub async fn import_petal(
         "entries_count": data.entries.len(),
         "assets_count": data.assets.len(),
     })))
+    .into_response()
 }
 
 /// Read the first file field from a multipart upload.

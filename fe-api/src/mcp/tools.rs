@@ -667,7 +667,7 @@ pub(super) fn import_gpx(call: ToolCall<'_>) -> ToolFuture<'_> {
         let petal_id = scoped_petal(&call)?;
         let text = str_arg(call.args, "data_base64").to_string();
         let bytes = decode_base64(text, crate::limits::MCP_GPX_MAX_BYTES).await?;
-        crate::gpx::import_gpx_core(call.state, &petal_id, &bytes)
+        crate::gpx::import_gpx_core(call.state, door(&call), &petal_id, &bytes)
             .await
             .map_err(|e| e.message())
     })

@@ -11,7 +11,10 @@ use fe_runtime::messages::{DbCommand, DbResult};
 use fe_terrain::gpx::{compute_stats, gpx_to_scene_commands, parse_gpx_bytes, scene_nodes_to_gpx};
 use fe_terrain::projection::Projection;
 
+use fe_runtime::scene_hook_gate::SceneCallerKind;
+
 use crate::auth::require_role;
+use crate::mcp::scene_gate::{admit, Door, SceneDenied};
 use crate::types::{is_valid_ulid, ApiResponse};
 
 /// POST /api/v1/petals/:petal_id/import/gpx
@@ -49,9 +52,11 @@ pub async fn import_gpx(
         return envelope_error("missing or unreadable 'file' field in multipart upload");
     };
 
-    match import_gpx_core(&state, &petal_id, &gpx_bytes).await {
+    let door = Door { claims: &claims, kind: SceneCallerKind::Rest };
+    match import_gpx_core(&state, door, &petal_id, &gpx_bytes).await {
         Ok(payload) => axum::Json(ApiResponse::success(payload)).into_response(),
-        Err(e) => (
+        Err(GpxGateError::Denied(denied)) => crate::rest::scene_denied_response(denied),
+        Err(GpxGateError::Import(e)) => (
             e.status(),
             axum::Json(ApiResponse::<serde_json::Value>::error(e.message())),
         )
@@ -89,15 +94,34 @@ impl GpxImportError {
     }
 }
 
+/// Why a GPX import stopped before any node was created.
+pub(crate) enum GpxGateError {
+    Import(GpxImportError),
+    /// The scene gate refused a planned create (REST keeps its 409/413/400 form).
+    Denied(SceneDenied),
+}
+
+impl GpxGateError {
+    /// Client-facing message (MCP carries only the message).
+    pub(crate) fn message(&self) -> String {
+        match self {
+            Self::Import(e) => e.message(),
+            Self::Denied(d) => d.message(),
+        }
+    }
+}
+
 /// GPX import core shared by REST (multipart) + MCP `import_gpx` (base64);
 /// the caller has authorized the petal. Parses, projects around the bbox
 /// center, and creates one node per scene command.
 pub(crate) async fn import_gpx_core(
     state: &crate::server::ApiState,
+    door: Door<'_>,
     petal_id: &str,
     gpx_bytes: &[u8],
-) -> Result<serde_json::Value, GpxImportError> {
-    let data = parse_gpx_bytes(gpx_bytes).map_err(|e| GpxImportError::Invalid(e.to_string()))?;
+) -> Result<serde_json::Value, GpxGateError> {
+    let data = parse_gpx_bytes(gpx_bytes)
+        .map_err(|e| GpxGateError::Import(GpxImportError::Invalid(e.to_string())))?;
 
     let track_count = data.tracks.len();
     let waypoint_count = data.waypoints.len();
@@ -112,9 +136,9 @@ pub(crate) async fn import_gpx_core(
     let route_points: usize = data.routes.iter().map(|r| r.points.len()).sum();
     let parsed_points = total_points + route_points + waypoint_count;
     if parsed_points > crate::limits::GPX_MAX_POINTS {
-        return Err(GpxImportError::TooManyPoints {
+        return Err(GpxGateError::Import(GpxImportError::TooManyPoints {
             points: parsed_points,
-        });
+        }));
     }
 
     let stats = compute_stats(&data);
@@ -127,9 +151,8 @@ pub(crate) async fn import_gpx_core(
 
     let commands = gpx_to_scene_commands(&data, petal_id, &projection);
 
-    // Create nodes
-    let mut created = 0u32;
-    let mut errors = 0u32;
+    // All-or-nothing at the gate: admit every planned create first, so a refusal writes no row.
+    let mut admitted = Vec::with_capacity(commands.len());
     for cmd in &commands {
         let db_cmd = DbCommand::CreateNode {
             petal_id: petal_id.to_string(),
@@ -137,8 +160,22 @@ pub(crate) async fn import_gpx_core(
             position: cmd.position,
             correlation_id: None,
         };
+        admitted.push(
+            admit(door, petal_id, db_cmd)
+                .await
+                .map_err(GpxGateError::Denied)?,
+        );
+    }
+
+    // Create nodes
+    let mut created = 0u32;
+    let mut errors = 0u32;
+    for (db_cmd, admission) in admitted {
         match crate::rest::db_round_trip(state, db_cmd).await {
-            Ok(DbResult::NodeCreated { .. }) => created += 1,
+            Ok(DbResult::NodeCreated { id, .. }) => {
+                admission.stage(Some(&id));
+                created += 1;
+            }
             _ => errors += 1,
         }
     }
