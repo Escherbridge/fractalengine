@@ -5,7 +5,7 @@ use std::process::Command;
 
 use anyhow::{bail, Context, Result};
 use clap::{Parser, Subcommand};
-use fe_ext::{inspect, key, lab, new, pack, project::Project, sandbox, validate};
+use fe_ext::{admin, index, inspect, key, lab, new, pack, project::Project, sandbox, validate};
 
 #[derive(Parser)]
 #[command(name = "fe-ext", version, about = "Author, check, pack, sign and sandbox-run FractalEngine extensions")]
@@ -105,6 +105,11 @@ enum Cmd {
         #[arg(long)]
         out: Option<PathBuf>,
     },
+    /// Drive the running app's local admin channel (GUI-confirmed consent; never the network API).
+    Admin(admin::AdminArgs),
+    /// Build or verify a registry contract v1 static signed catalogue tree.
+    #[command(subcommand)]
+    Index(index::IndexCmd),
     /// Create a signing key file.
     Keygen {
         out: PathBuf,
@@ -138,7 +143,7 @@ fn run(cli: Cli) -> Result<()> {
             );
             let component_path = component.unwrap_or_else(|| project.component_path());
             if component_path.is_file() {
-                let digest = validate::validate_component(&std::fs::read(&component_path)?)?;
+                let digest = validate::validate_component_for(&std::fs::read(&component_path)?, &validated.manifest)?;
                 println!("component ok digest={digest}");
             }
         }
@@ -203,6 +208,8 @@ fn run(cli: Cli) -> Result<()> {
                 bail!("the run recorded hook faults (see the trace)");
             }
         }
+        Cmd::Admin(args) => admin::run_admin(args)?,
+        Cmd::Index(command) => index::run_index(&command)?,
         Cmd::Keygen { out } => println!("{}", key::generate(&out)?),
     }
     Ok(())
@@ -218,7 +225,7 @@ fn write_output(path: &Path, bytes: &[u8]) -> Result<()> {
 /// `cargo build --target wasm32-wasip2`, copy the artifact to `dist/component.wasm`, then admit it.
 fn build(project_dir: &Path, debug: bool) -> Result<()> {
     let project = Project::open(project_dir)?;
-    validate::validate_manifest(&project.read_manifest()?)?;
+    let validated = validate::validate_manifest(&project.read_manifest()?)?;
     let manifest_path = project.dir.join("Cargo.toml");
     // An explicit target dir: a CARGO_TARGET_DIR or config `target-dir` would otherwise move the artifact.
     let target_dir = project.dir.join("target");
@@ -237,7 +244,7 @@ fn build(project_dir: &Path, debug: bool) -> Result<()> {
         .join(profile)
         .join(format!("{}.wasm", project.crate_name()?.replace('-', "_")));
     let bytes = std::fs::read(&artifact).with_context(|| format!("reading {}", artifact.display()))?;
-    let digest = validate::validate_component(&bytes)?;
+    let digest = validate::validate_component_for(&bytes, &validated.manifest)?;
     write_output(&project.component_path(), &bytes)?;
     println!("built {} ({} bytes, digest {digest})", project.component_path().display(), bytes.len());
     Ok(())

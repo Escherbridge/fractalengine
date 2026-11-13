@@ -116,6 +116,9 @@ fn j8_new_validate_pack_inspect_countersign_and_sandbox() {
         ("device-adapter", "org.example.device-adapter", device_adapter_outcomes),
         ("bi-push", "org.example.bi-push", bi_push_outcomes),
     ];
+    let packages = root.join("packages");
+    std::fs::create_dir_all(&packages).unwrap();
+    let mut packed_ids = Vec::new();
     for (example, package_id, outcomes) in legs {
         let example_dir = examples.join(example);
         if !example_dir.join("dist/component.wasm").is_file() {
@@ -145,6 +148,40 @@ fn j8_new_validate_pack_inspect_countersign_and_sandbox() {
         // The sealed package is the one pack announced (same content hash on both sides of the CLI).
         let announced = stdout(&packed).lines().find_map(|line| line.strip_prefix("content_hash ").map(str::to_string));
         assert_eq!(facts["content_hash"].as_str(), announced.as_deref(), "{example}: inspect reads the packed build");
+
+        // sign: re-sealing under the reviewer key moves the content hash; the original stays the one that is indexed.
+        let resigned = root.join(format!("{example}-resigned.hexon"));
+        let signed = fe_ext(&["sign", package.to_str().unwrap(), "--key", counter_key.to_str().unwrap(), "--out", resigned.to_str().unwrap()], root);
+        assert!(signed.status.success(), "{example} sign: {}", stderr(&signed));
+        let resigned_facts: Value = serde_json::from_slice(&fe_ext(&["inspect", resigned.to_str().unwrap(), "--json"], root).stdout).unwrap();
+        assert_eq!(resigned_facts["package_id"], package_id);
+        assert_ne!(resigned_facts["content_hash"], facts["content_hash"], "{example}: a new publisher key is a new seal");
+
+        std::fs::copy(&package, packages.join(format!("{example}.hexon"))).unwrap();
+        packed_ids.push(package_id);
+    }
+
+    // index build + verify: every packed example is listed, and StaticIndexSource re-verifies each one end to end
+    // from the written tree against the pinned index key (a different key from every publisher).
+    if !packed_ids.is_empty() {
+        let index_key = root.join("index.key");
+        let keygen = fe_ext(&["keygen", index_key.to_str().unwrap()], root);
+        assert!(keygen.status.success(), "index keygen: {}", stderr(&keygen));
+        let index_did = stdout(&keygen).trim().to_string();
+        let tree = root.join("catalog-tree");
+        let built = fe_ext(
+            &["index", "build", "--packages", packages.to_str().unwrap(), "--base-url", "https://store.example.test", "--key", index_key.to_str().unwrap(), "--out", tree.to_str().unwrap()],
+            root,
+        );
+        assert!(built.status.success(), "index build: {}", stderr(&built));
+        assert!(stdout(&built).contains(&format!("index: {} package(s)", packed_ids.len())), "{}", stdout(&built));
+        let verified = fe_ext(&["index", "verify", tree.to_str().unwrap(), "--index-key", &index_did], root);
+        assert!(verified.status.success(), "index verify: {}{}", stdout(&verified), stderr(&verified));
+        for package_id in &packed_ids {
+            assert!(stdout(&verified).contains(*package_id), "verify names {package_id}: {}", stdout(&verified));
+        }
+        let wrong_pin = stdout(&fe_ext(&["keygen", root.join("other.key").to_str().unwrap()], root)).trim().to_string();
+        assert!(!fe_ext(&["index", "verify", tree.to_str().unwrap(), "--index-key", &wrong_pin], root).status.success(), "a foreign index key is refused");
     }
 
     // The scaffold's packaging half needs a built component: FE_EXT_TEST_COMPONENT points at the compiled

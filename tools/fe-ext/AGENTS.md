@@ -16,6 +16,8 @@ in `docs/extensions/` and `fe-plugin/wit/fractal-plugin-2.wit`; this file holds 
 | `inspect` | `src/inspect.rs` | Verifies with every signer accepted (trust is the host's decision) and prints the ids, hashes, capability digest, `publisher_did` and the verified `countersigners`. It never prints a "trusted by": under accept-all that would always name the publisher. |
 | `run --sandbox` | `src/sandbox.rs` | See §sandbox. |
 | `run --lab` | `src/lab.rs` | `--scenario <script.json> [--runs N] [--root DIR] [--out report.json]`: hosts the fleet-sim package as the fe-sim reading schedule (see §lab); `--runs` repeats the session and every fingerprint must equal the first. `--sandbox` and `--lab` are mutually exclusive. |
+| `admin <verb>` | `src/admin.rs` | Drives the running app over the LOCAL admin channel only (`fe_plugin::admin::transport`, instance picked by `FE_EXT_ADMIN_INSTANCE`); no token, URL or network fallback. Consent is never answered here: the reply names the pending consent and the GUI confirms it (docs/extensions/admin-channel.md). Exits non-zero when the app refuses or is not running. |
+| `index build\|verify` | `src/index.rs` | Writes and re-verifies a registry contract v1 static signed catalogue tree (`StaticIndexSource` end to end, pinned index key, index key never a publisher key). See �index. |
 | `keygen` | `src/key.rs` | A key is 64 hex characters (the ed25519 seed). Never overwrites. |
 
 ## §sandbox
@@ -77,6 +79,20 @@ host does (`fe-plugin/wit/AGENTS.md` §one-file).
 - `hooks`: `Call`/`Output`/`Failure`, `route` and `key_matches` for `hooks.on-hook` (bindings.md §7.3), re-exported as `HookCall`/`HookOutput`/`HookFailure`/`HookFn`. The `extension` world does not export `hooks`; a provider uses `extension-with-hooks` and maps the generated `hook-call` onto `Call::parse`.
 - The helpers compile natively (wit-bindgen stubs the imports off-wasm), so their pure parts carry unit tests.
 
+## �index
+
+`index build --packages DIR --base-url URL --key INDEX.key --out TREE` is deterministic (issue time defaults to the newest
+package `updated_at`); `index verify TREE|URL --index-key did:key:..` runs the same reader the app uses and lists
+`verified <id>@<version>` per package. File trees only here; an http(s) verify needs an injected fetcher
+(`run_index_with`). `validate` and `build` also run `check_provides`: a manifest declaring `provides` needs the hooks
+export (`missing-export`).
+
+## Cargo.lock policy
+
+`tools/fe-ext` is a workspace member and resolves through the root `Cargo.lock`; it has no lock of its own. The
+standalone guest crates (`tools/fe-ext/guest`, `extensions/*`) are excluded from the workspace and carry their own
+`Cargo.lock`, generated on their first build and committed with the crate so a pack is reproducible.
+
 ## Build wiring
 
 - Root `Cargo.toml` needs `tools/fe-ext` as a member (this crate inherits `edition`/`license` from the workspace, so
@@ -93,6 +109,6 @@ J8 (`tests/j8_cli.rs`, `cargo test -p fe-ext -- j8`) is the one journey: `new` f
 then each shipped example (`extensions/fleet-sim`, `extensions/device-adapter`, `extensions/bi-push`; bi-push asserts zero faults) once its `dist/component.wasm` exists
 (two sandbox runs, one fingerprint, identical traces, the fixture outcomes, `pack`, then `inspect` succeeding on the same
 content hash `pack` printed), then the scaffold's
-pack/countersign/tamper/sandbox half when `FE_EXT_TEST_COMPONENT` names a built component. The examples carry only
+pack/countersign/tamper/sandbox half (the examples' legs also run `sign`, `index build` and `index verify`) when `FE_EXT_TEST_COMPONENT` names a built component. The examples carry only
 pure unit tests; their sandbox legs moved here so no example crate builds the host stack. Guest-side unit tests run
 with `cargo test --manifest-path tools/fe-ext/guest/Cargo.toml`.

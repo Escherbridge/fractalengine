@@ -321,10 +321,10 @@ uses `ModelFleetSource` (`plan_fleet`); `start_with_source` takes any other sour
 `extensions/fleet-sim` package a live host runs. Everything else (SimNet, faults, `/api/v1/sim/*`, the HLC override)
 is unchanged, and the SimClock still never enters a production process (§hlc-sim).
 
-- **Status (G5, 2026-11-08): the seam exists, the hosting does not.** No source other than `ModelFleetSource` exists
-  outside tests. The adapter that would host the wasm package (it owns the fe-plugin dependency; fe-sim has none)
-  and its entry point `fe-ext run --lab` are not built: `tools/fe-ext` refuses `--lab` today. Movers are not driven
-  in the lab at all (a `ScheduledReading` plan carries sensors only), so a v2 document's movers are ignored there.
+- **Status (turn 3, 2026-11-13): hosted.** `tools/fe-ext/src/lab.rs` is the adapter that hosts the wasm fleet-sim package
+  as a `FleetSource` (it owns the fe-plugin dependency; fe-sim has none), reached through `fe-ext run --lab --scenario`.
+  `ModelFleetSource` stays the default for sessions started without it. Movers are still not driven in the lab (a
+  `ScheduledReading` plan carries sensors only), so a v2 document's movers are ignored there.
 - **Clock.** The source receives a `LabClock` over the session's `SimClock` at `fleet.start_ms`, before any peer
   spawns. The adapter implements `fe_plugin::tick::Clock` over `LabClock::now_ms` and steps the package tick by tick.
 - **Contract.** The plan is fixed at start: `ScheduledReading`s ordered by `(at_ms, sensor)`, sensor indices into
