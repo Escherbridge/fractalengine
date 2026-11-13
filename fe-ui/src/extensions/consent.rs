@@ -193,7 +193,12 @@ pub struct ConsentState {
     override_text: String,
     decision: Option<ConsentDecision>,
     attention_sent: bool,
+    /// When a CLI-origin dialog was first drawn in a focused window (`None` while unfocused or not yet drawn).
+    focused_since: Option<f64>,
 }
+
+/// Seconds a CLI-origin dialog must be on screen in a focused window before Enable arms (admin-channel.md section 5).
+pub const CLI_ARM_DELAY_SECS: f64 = 1.0;
 
 impl ConsentState {
     /// Open the modal; an update whose digest is already consented to opens nothing and returns false,
@@ -205,6 +210,7 @@ impl ConsentState {
         self.pending = Some(request);
         self.list_rendered = false;
         self.attention_sent = false;
+        self.focused_since = None;
         self.override_text.clear();
         true
     }
@@ -283,15 +289,24 @@ pub fn render(ctx: &egui::Context, state: &mut ConsentState) {
     let mut cancel = false;
     let mut override_clicked = false;
     let mut listed = false;
-    let confirm_enabled = state.confirm_enabled();
-    let override_enabled = state.override_enabled();
-    let mut override_text = std::mem::take(&mut state.override_text);
-
     // A CLI-staged request flashes the window once so the operator notices it (the dialog never approves itself).
     if matches!(request.origin, ConsentOrigin::Cli) && !state.attention_sent {
         state.attention_sent = true;
         ctx.send_viewport_cmd(egui::ViewportCommand::RequestUserAttention(egui::UserAttentionType::Informational));
     }
+    // An unsolicited dialog must not catch a click meant for what was under it: arm after a focused second.
+    let armed = !matches!(request.origin, ConsentOrigin::Cli) || {
+        let (now, focused) = ctx.input(|input| (input.time, input.focused));
+        state.focused_since = if focused { Some(state.focused_since.unwrap_or(now)) } else { None };
+        let shown_for = state.focused_since.map_or(0.0, |since| now - since);
+        if shown_for < CLI_ARM_DELAY_SECS {
+            ctx.request_repaint_after(std::time::Duration::from_secs_f64(CLI_ARM_DELAY_SECS - shown_for));
+        }
+        shown_for >= CLI_ARM_DELAY_SECS
+    };
+    let confirm_enabled = armed && state.confirm_enabled();
+    let override_enabled = state.override_enabled();
+    let mut override_text = std::mem::take(&mut state.override_text);
 
     crate::ui_shell::layout_policy::bounded_window(ctx, title(&request))
         // Above the Extensions window: a click there must never bury an open review (R-UI-28).
@@ -368,8 +383,10 @@ pub fn render(ctx: &egui::Context, state: &mut ConsentState) {
         state.override_kill_list();
     } else if cancel || !still_open {
         state.decline();
-    } else if listed {
+    } else if listed && armed {
         state.list_rendered = true;
+    } else if !armed {
+        state.list_rendered = false;
     }
 }
 
@@ -457,8 +474,14 @@ mod tests {
     use super::*;
 
     fn frame(state: &mut ConsentState) {
+        frame_at(state, 0.0, true);
+    }
+
+    /// One frame at `time` seconds with the window focused or not.
+    fn frame_at(state: &mut ConsentState, time: f64, focused: bool) {
         let ctx = egui::Context::default();
-        let _ = ctx.run(egui::RawInput::default(), |ctx| render(ctx, state));
+        let input = egui::RawInput { time: Some(time), focused, ..Default::default() };
+        let _ = ctx.run(input, |ctx| render(ctx, state));
     }
 
     fn section(title: &str, lines: &[&str]) -> ConsentSection {
@@ -561,14 +584,21 @@ mod tests {
             })
         );
 
-        // CLI origin: same review, attention requested once, never auto-approved; approve and decline both answer.
+        // CLI origin: same review, attention requested once, never auto-approved; Enable arms only after the dialog
+        // was on screen for CLI_ARM_DELAY_SECS in a focused window (an unfocused spell starts the count again).
         let mut cli = request("d3", &["https://bi.example.org/"]);
         cli.origin = ConsentOrigin::Cli;
         assert!(state.request(cli.clone()));
         assert!(state.pending().is_some() && state.take_decision().is_none(), "no decision without the operator");
         assert!(!state.confirm_enabled(), "list must be read first");
-        frame(&mut state);
+        frame_at(&mut state, 10.0, true);
         assert!(state.attention_sent, "window attention requested");
+        assert!(!state.confirm_enabled(), "a click landing as the dialog appears must not approve it");
+        frame_at(&mut state, 10.5, false);
+        let refocused = 10.6 + CLI_ARM_DELAY_SECS / 2.0;
+        frame_at(&mut state, refocused, true);
+        assert!(!state.confirm_enabled(), "losing focus restarts the arm delay");
+        frame_at(&mut state, refocused + CLI_ARM_DELAY_SECS, true);
         assert!(state.confirm_enabled());
         state.approve();
         assert_eq!(

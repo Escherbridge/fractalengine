@@ -20,8 +20,8 @@ use windows_sys::Win32::System::Threading::{
 
 use super::transport::{AdminStream, ConnectError, LocalEndpoint, PeerUser};
 
-/// Pipe instances alive at once (connected clients plus the one waiting); the server bounds clients further.
-const MAX_PIPE_INSTANCES: usize = 8;
+/// Pipe instances alive at once: served clients, `busy` responders (one each) and the one waiting, plus headroom.
+const MAX_PIPE_INSTANCES: usize = 2 * super::MAX_CLIENTS + 2;
 /// How long the client retries a pipe whose instances are all busy.
 const BUSY_WAIT: Duration = Duration::from_secs(2);
 /// `SDDL_REVISION_1`.

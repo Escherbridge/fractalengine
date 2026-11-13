@@ -133,10 +133,20 @@ pub fn build_request(command: &AdminCommand, id: &str) -> Result<AdminRequest> {
 pub fn pending_notice(pending: &PendingConsent) -> String {
     let kind = if pending.is_update { "update" } else { "install" };
     let digest: String = pending.capability_digest.chars().take(12).collect();
-    format!(
+    terminal_safe(&format!(
         "Waiting for approval of {kind} {} {} (capabilities {digest}). Review the request in the FractalEngine window; this command finishes when you answer there.",
         pending.name, pending.version
-    )
+    ))
+}
+
+/// Package-supplied text with control and bidi-override characters replaced, so it cannot drive the terminal.
+pub fn terminal_safe(text: &str) -> String {
+    text.chars()
+        .map(|c| {
+            let bidi = matches!(c, '\u{200E}' | '\u{200F}' | '\u{202A}'..='\u{202E}' | '\u{2066}'..='\u{2069}');
+            if c.is_control() || bidi { '\u{FFFD}' } else { c }
+        })
+        .collect()
 }
 
 /// The final reply frame as JSON.
@@ -151,9 +161,9 @@ pub fn render_human(reply: &AdminReply) -> String {
         ReplyOutcome::PendingConsent { consent } => pending_notice(consent),
         ReplyOutcome::Refused { code, message } => {
             if message.is_empty() {
-                format!("refused: {}", code.as_str())
+                terminal_safe(&format!("refused: {}", code.as_str()))
             } else {
-                format!("refused: {}: {message}", code.as_str())
+                terminal_safe(&format!("refused: {}: {message}", code.as_str()))
             }
         }
     }
@@ -162,13 +172,13 @@ pub fn render_human(reply: &AdminReply) -> String {
 fn render_result(result: &AdminResult) -> String {
     let mut lines = Vec::new();
     if let Some(message) = &result.message {
-        lines.push(message.clone());
+        lines.push(terminal_safe(message));
     }
     for installation in &result.installations {
-        lines.push(render_installation(installation));
+        lines.push(terminal_safe(&render_installation(installation)));
         for binding in &installation.bindings {
             let state = if binding.enabled { "on" } else { "off" };
-            lines.push(format!("    {} [{state}] {}", binding.binding_id, binding.label));
+            lines.push(terminal_safe(&format!("    {} [{state}] {}", binding.binding_id, binding.label)));
         }
     }
     if lines.is_empty() {
@@ -276,6 +286,12 @@ mod tests {
         let refused = AdminReply::refused("t1", RefusalCode::ConsentDeclined, "Declined in the app");
         assert_eq!(render_human(&refused), "refused: consent-declined: Declined in the app");
         assert_eq!(render_human(&AdminReply::ok("t1", AdminResult::default())), "ok");
+
+        // Package-supplied text cannot drive the terminal: escape sequences and bidi overrides are neutralised.
+        let hostile = AdminReply::refused("t1", RefusalCode::PackageInvalid, "bad \u{1b}]0;pwned\u{7}name\u{202E}gpj.exe\nApproved");
+        let shown = render_human(&hostile);
+        assert!(!shown.chars().any(|c| c.is_control() || c == '\u{202E}'), "{shown:?}");
+        assert!(shown.starts_with("refused: package-invalid: bad "), "{shown}");
     }
 
     #[test]

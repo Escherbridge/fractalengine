@@ -63,7 +63,16 @@ arguments means a `consent`, `bind`, `token` or `actor_did` field is a `bad-requ
 `AdminVerb::may_raise_consent` marks the three verbs (install-file, install-registry, update) that may
 answer `pending-consent`; `exchange` refuses a pending-consent for any other verb and a second one for the
 same request, so a confused or hostile server cannot make the CLI wait forever on a dialog that does not
-exist. The grant itself happens only through the GUI dialog (`ConsentOrigin::Cli`, A-GUI).
+exist. The grant itself happens only through the GUI dialog (`ConsentOrigin::Cli`, A-GUI), whose Enable
+arms only after a focused second on screen (R-ADMIN): an unsolicited dialog must not inherit a click.
+`fe-ext admin` passes every reply string through `terminal_safe` before printing, because names and
+messages come from package manifests (R-ADMIN).
+
+## §pipe-instances
+
+`MAX_PIPE_INSTANCES = 2 * MAX_CLIENTS + 2`: the listener holds up to `MAX_CLIENTS` served connections,
+up to `MAX_CLIENTS` `busy` responders and one waiting instance. With fewer instances the re-arm after a
+connect fails with `ERROR_PIPE_BUSY` and the next client stalls until a slot frees (R-ADMIN).
 
 ## §instances
 

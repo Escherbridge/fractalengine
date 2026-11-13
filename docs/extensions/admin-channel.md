@@ -128,7 +128,9 @@ uninstall) is allowed from the terminal. Granting things is not.
 - **Consent.** When a staged build needs consent, the app does the following:
   1. It opens the same consent dialog the panel opens, with `ConsentOrigin::Cli`: "Requested from
      the command line", the window asks for attention, and the capability review is identical. The
-     dialog never approves on its own.
+     dialog never approves on its own. Because it appears unasked, its Enable button arms only after the
+     dialog has been on screen for 1 s in a focused window (`CLI_ARM_DELAY_SECS`; losing focus restarts
+     the count), so a click or keypress meant for whatever was under it cannot approve it.
   2. It answers `pending-consent`.
   3. It waits for the operator. Approve leads to the verb completing and `ok`. Decline (or Discard)
      answers `refused` / `consent-declined`.
