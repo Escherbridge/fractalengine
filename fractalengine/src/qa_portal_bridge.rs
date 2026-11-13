@@ -3,7 +3,12 @@
 use crate::vision_bridge::ViewScope;
 use bevy::prelude::*;
 use fe_runtime::bridge::BridgeRequest;
-use fe_runtime::qa_portal::{self as fixture, FixtureCommand, FixtureOutcome, FixtureReceiver};
+use crate::portal_host::resolver::PortalResolverRes;
+use fe_runtime::qa_portal::{
+    self as fixture, FixtureCommand, FixtureObservation, FixtureOp, FixtureOutcome, FixtureReceipt,
+    FixtureReceiver, FixtureResult,
+};
+use fe_webview::portal_bundle::admission::GovernanceView;
 use fe_ui::{
     actions::UiManager, navigation_manager::NavigationManager, node_manager::NodeManager, plugin::LocalUserRole,
 };
@@ -56,6 +61,50 @@ pub(crate) fn context(
     })
 }
 
+/// Engage sets host-disabled (the Disable all state); disengage restores what it was before the first engage.
+fn kill_switch(
+    resolver: &crate::portal_host::resolver::PortalResolver,
+    engage: bool,
+    restore_to: &mut Option<bool>,
+    scope: String,
+) -> FixtureResult {
+    let view = resolver.view();
+    if engage {
+        restore_to.get_or_insert_with(|| view.host_disabled());
+        view.set_host_disabled(true);
+    } else {
+        view.set_host_disabled(restore_to.take().unwrap_or(false));
+    }
+    let disabled = view.host_disabled();
+    FixtureResult {
+        receipt: FixtureReceipt {
+            scope,
+            operation: FixtureOp::PortalKillSwitch { engage },
+            popup_session: 0,
+            page_generation: 0,
+            url: String::new(),
+            // The legacy observation is a required field; the outcome rides in `portal`.
+            observation: FixtureObservation {
+                page: "killswitch".into(),
+                title: String::new(),
+                heading: String::new(),
+                second_link: String::new(),
+                third_link: String::new(),
+                ready: true,
+                invoked: engage,
+            },
+            link_invoked: false,
+            native_refusal_observed: false,
+            capture_source: None,
+            width: None,
+            height: None,
+            sha256: None,
+            portal: Some(serde_json::json!({"killswitch": {"engaged": engage, "host_disabled": disabled}})),
+        },
+        png: None,
+    }
+}
+
 #[allow(clippy::too_many_arguments)] // Bevy system parameters
 fn serve(
     mut host: ResMut<Host>,
@@ -66,6 +115,8 @@ fn serve(
     view: ViewScope,
     backend: Option<NonSendMut<WebViewBackendRes>>,
     markers: Query<&fe_ui::plugin::SpawnedNodeMarker>,
+    resolver: Option<Res<PortalResolverRes>>,
+    mut restore_to: Local<Option<bool>>,
 ) {
     let mut backend = backend;
     if host.active.is_none() && host.rx.is_empty() {
@@ -110,6 +161,23 @@ fn serve(
         }
     }
     for request in host.rx.clone().try_iter().take(4) {
+        // The kill switch is host governance, not a page job: no mounted portal or backend is needed.
+        if let FixtureOp::PortalKillSwitch { engage } = request.op.operation {
+            let reply = if !view.covers(&request.caller_scope, Some(&nav))
+                || role.role != Some(fe_database::RoleLevel::Owner)
+            {
+                Err(fe_runtime::qa_debug::QaFailure::denied())
+            } else if !request.op.is_current() || request.reply_tx.is_closed() {
+                Err(fixture::stale())
+            } else {
+                match (resolver.as_deref(), nav.active_scope()) {
+                    (Some(resolver), Some(scope)) => Ok(kill_switch(&resolver.0, engage, &mut restore_to, scope)),
+                    _ => Err(fixture::unavailable()),
+                }
+            };
+            request.reply(reply);
+            continue;
+        }
         if host.active.is_some() {
             request.reply(Err(fixture::failure(
                 "portal_fixture_busy",

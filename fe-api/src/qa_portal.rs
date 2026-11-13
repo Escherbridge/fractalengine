@@ -106,7 +106,12 @@ async fn admitted(
             error.message,
         )
     })?;
-    let url_ok = if is_bundle_operation(operation) {
+    let url_ok = if matches!(operation, FixtureOp::PortalKillSwitch { .. }) {
+        // Host governance op: no page, so the receipt carries no URL.
+        result.receipt.url.is_empty()
+    } else if matches!(operation, FixtureOp::PortalIpcStats) && unmounted_totals(&result) {
+        result.receipt.url.is_empty()
+    } else if is_bundle_operation(operation) {
         is_bundle_origin_url(&result.receipt.url)
     } else {
         fe_runtime::qa_web::allows(&result.receipt.url)
@@ -265,6 +270,15 @@ fn is_bundle_operation(operation: FixtureOp) -> bool {
     )
 }
 
+/// True when ipc-stats answered process totals with no mounted bundle (R-POR-31).
+fn unmounted_totals(result: &FixtureResult) -> bool {
+    result
+        .receipt
+        .portal
+        .as_ref()
+        .is_some_and(|portal| portal.get("mounted") == Some(&serde_json::Value::Bool(false)))
+}
+
 /// True for `https://fe-portal.<label>.localhost[/...]` (or the non-Windows `fe-portal://` spelling) with a 28-char label.
 fn is_bundle_origin_url(raw: &str) -> bool {
     let Some(rest) = raw
@@ -345,7 +359,7 @@ pub struct KillSwitchRequest {
 }
 
 /// POST /api/v1/debug/portal/killswitch: `{"engage": bool}` only; gated like `portal_action`.
-/// The native bridge has no kill-switch operation yet, so a valid request is refused after the gate.
+/// The binary's bridge engages or restores the portal resolver's host-disabled state and echoes the outcome.
 pub async fn portal_killswitch(
     State(state): State<Arc<ApiState>>,
     Extension(claims): Extension<ApiClaims>,
@@ -375,12 +389,14 @@ pub async fn portal_killswitch(
             "QA authorization is no longer current",
         );
     }
-    tracing::warn!(engage = request.engage, "portal kill switch requested; native bridge operation missing");
-    refusal(
-        StatusCode::SERVICE_UNAVAILABLE,
-        "portal_killswitch_unavailable",
-        "Native kill-switch operation is not wired",
-    )
+    match admitted(&state, &claims, FixtureOp::PortalKillSwitch { engage: request.engage }).await {
+        Ok(result) => Json(json!({"ok":true,"data":{
+            "scope": result.receipt.scope,
+            "killswitch": result.receipt.portal.and_then(|portal| portal.get("killswitch").cloned()),
+        }}))
+        .into_response(),
+        Err(error) => error,
+    }
 }
 
 /// POST /api/v1/debug/portal/action: activate `data-fe-slot` number 1..32; the only input is the number.

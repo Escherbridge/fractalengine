@@ -124,6 +124,14 @@ impl Surface {
         {
             return false;
         }
+        if receipt
+            .portal
+            .as_ref()
+            .is_some_and(|portal| portal.get("mounted") == Some(&serde_json::Value::Bool(false)))
+        {
+            // Process totals while unmounted (R-POR-31): no mount to compare against.
+            return self.ipc_stats.is_some();
+        }
         if receipt.portal.is_some() {
             let Some(mounts) = &self.mounts else {
                 return false;
@@ -205,11 +213,33 @@ impl Surface {
         command: &FixtureCommand,
         kind: PortalKind,
     ) -> Result<(), QaFailure> {
-        let mounts = self.mounts.as_ref().ok_or_else(portal_not_mounted)?;
-        let (mount, _raw) = bundle_source(webview, visible, unusable, mounts)?;
+        // ipc-stats answers process totals while nothing is mounted (R-POR-31).
+        let totals_only = matches!(kind, PortalKind::IpcStats) && self.ipc_stats.is_some();
+        let found = match self
+            .mounts
+            .as_ref()
+            .ok_or_else(portal_not_mounted)
+            .and_then(|mounts| bundle_source(webview, visible, unusable, mounts))
+        {
+            Ok(found) => Some(found),
+            Err(_) if totals_only => None,
+            Err(error) => return Err(error),
+        };
         if !command.is_current() {
             return Err(fixture::stale());
         }
+        let Some((mount, _raw)) = found else {
+            self.portal = Some(PortalPending {
+                command: command.clone(),
+                mount_id: 0,
+                origin: String::new(),
+                kind,
+                generation: self.clock.generation.get(),
+                completion: Rc::new(RefCell::new(None)),
+                mounted: false,
+            });
+            return Ok(());
+        };
         let origin = mount.label.https_origin();
         let completion = Rc::new(RefCell::new(None));
         if !matches!(kind, PortalKind::IpcStats) {
@@ -222,6 +252,7 @@ impl Surface {
             kind,
             generation: self.clock.generation.get(),
             completion,
+            mounted: true,
         });
         Ok(())
     }
@@ -235,6 +266,33 @@ impl Surface {
         let job = self.portal.take()?;
         if !job.command.is_current() || self.clock.generation.get() != job.generation {
             return Some(Err(fixture::stale()));
+        }
+        if matches!(job.kind, PortalKind::IpcStats) {
+            // Live mount when it is still the one asked about, else process totals only.
+            let live = self
+                .mounts
+                .as_ref()
+                .and_then(|mounts| bundle_source(webview, visible, unusable, mounts).ok())
+                .filter(|(mount, _)| job.mounted && mount.mount_id == job.mount_id);
+            let Some(source) = &self.ipc_stats else {
+                return Some(Err(portal_not_mounted()));
+            };
+            return Some(Ok(match live {
+                Some((mount, raw)) => {
+                    let mode = match mount.mode {
+                        crate::portal_bundle::mount::MountMode::Admitted => "admitted",
+                        crate::portal_bundle::mount::MountMode::Static => "static",
+                    };
+                    let evidence = serde_json::json!({
+                        "label": mount.label.as_str(), "mode": mode, "mounted": true, "stats": source(),
+                    });
+                    self.portal_result(&job, raw, evidence)
+                }
+                None => {
+                    let evidence = serde_json::json!({"mounted": false, "stats": source()});
+                    self.portal_result(&job, String::new(), evidence)
+                }
+            }));
         }
         let Some(mounts) = &self.mounts else {
             return Some(Err(portal_not_mounted()));
@@ -776,6 +834,8 @@ impl PortalKind {
             FixtureOp::PortalObserve => Some(Self::Observe),
             FixtureOp::PortalSlot(slot) => Some(Self::Slot(slot)),
             FixtureOp::PortalIpcStats => Some(Self::IpcStats),
+            // The kill switch is the binary's op; the native surface never starts it.
+            FixtureOp::PortalKillSwitch { .. } => None,
             _ => None,
         }
     }
@@ -788,6 +848,8 @@ struct PortalPending {
     kind: PortalKind,
     generation: u64,
     completion: Rc<RefCell<Option<Completion>>>,
+    /// False for an ipc-stats job answered from process totals with no mount.
+    mounted: bool,
 }
 
 const PORTAL_SLOT_MAX: u8 = 32;

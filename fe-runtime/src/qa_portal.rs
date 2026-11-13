@@ -22,6 +22,8 @@ pub enum FixtureOp {
     PortalSlot(u8),
     /// Host IPC outcome counters.
     PortalIpcStats,
+    /// Engage or restore the portal resolver's host-disabled state (the Disable all path); served by the binary.
+    PortalKillSwitch { engage: bool },
 }
 
 #[derive(Clone, Debug)]
