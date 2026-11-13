@@ -341,12 +341,12 @@ pub async fn promote_instance(
     State(state): State<Arc<ApiState>>,
     Extension(claims): Extension<ApiClaims>,
     Path((petal_id, path_id, instance_index)): Path<(String, String, u32)>,
-) -> impl IntoResponse {
+) -> axum::response::Response {
     if require_role(&claims, "editor").is_err() {
-        return Json(ApiResponse::<PromoteDto>::error("insufficient permissions"));
+        return Json(ApiResponse::<PromoteDto>::error("insufficient permissions")).into_response();
     }
     if !is_valid_ulid(&petal_id) {
-        return Json(ApiResponse::<PromoteDto>::error("invalid petal_id"));
+        return Json(ApiResponse::<PromoteDto>::error("invalid petal_id")).into_response();
     }
     if crate::rest::authorized_petal_scope(&state, &claims, &petal_id)
         .await
@@ -355,7 +355,7 @@ pub async fn promote_instance(
     {
         return Json(ApiResponse::<PromoteDto>::error(
             crate::rest::NOT_FOUND_OR_DENIED,
-        ));
+        )).into_response();
     }
 
     let cmd = DbCommand::PromoteInstance {
@@ -368,7 +368,8 @@ pub async fn promote_instance(
     let door = Door { claims: &claims, kind: SceneCallerKind::Rest };
     let (cmd, admission) = match admit(door, &petal_id, cmd).await {
         Ok(admitted) => admitted,
-        Err(denied) => return Json(ApiResponse::<PromoteDto>::error(denied.message())),
+        // A door refusal keeps its REST 409/413 form (R-API-31 parity).
+        Err(denied) => return crate::rest::scene_denied_response(denied),
     };
     let (reply_tx, reply_rx) = tokio::sync::oneshot::channel();
     if state
@@ -376,7 +377,7 @@ pub async fn promote_instance(
         .send(ApiCommand::DbRequest { cmd, reply_tx })
         .is_err()
     {
-        return Json(ApiResponse::<PromoteDto>::error("internal channel closed"));
+        return Json(ApiResponse::<PromoteDto>::error("internal channel closed")).into_response();
     }
     match tokio::time::timeout(std::time::Duration::from_secs(5), reply_rx).await {
         Ok(Ok(DbResult::NodePromoted {
@@ -390,17 +391,18 @@ pub async fn promote_instance(
                 admission.stage(Some(&node_id));
             }
             Json(ApiResponse::success(PromoteDto {
-            node_id,
-            petal_id,
-            path_id,
-            instance_index,
-            newly_promoted,
-        }))
+                node_id,
+                petal_id,
+                path_id,
+                instance_index,
+                newly_promoted,
+            }))
+            .into_response()
         }
-        Ok(Ok(DbResult::Error(e))) => Json(ApiResponse::<PromoteDto>::error(e)),
-        Ok(Ok(_)) => Json(ApiResponse::<PromoteDto>::error("unexpected response")),
-        Ok(Err(_)) => Json(ApiResponse::<PromoteDto>::error("request cancelled")),
-        Err(_) => Json(ApiResponse::<PromoteDto>::error("request timed out")),
+        Ok(Ok(DbResult::Error(e))) => Json(ApiResponse::<PromoteDto>::error(e)).into_response(),
+        Ok(Ok(_)) => Json(ApiResponse::<PromoteDto>::error("unexpected response")).into_response(),
+        Ok(Err(_)) => Json(ApiResponse::<PromoteDto>::error("request cancelled")).into_response(),
+        Err(_) => Json(ApiResponse::<PromoteDto>::error("request timed out")).into_response(),
     }
 }
 

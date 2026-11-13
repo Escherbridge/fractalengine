@@ -698,7 +698,8 @@ pub(crate) async fn db_round_trip(
     }
 }
 
-/// Property-set core shared by REST + MCP `set_property` (caller has authorized).
+/// Ungated legacy property set; test-only (every API door uses [`set_property_as`]).
+#[cfg(test)]
 pub(crate) async fn set_property_core(
     state: &crate::server::ApiState,
     node_id: &str,
@@ -944,32 +945,28 @@ pub async fn delete_node_property(
     State(state): State<Arc<crate::server::ApiState>>,
     Extension(claims): Extension<ApiClaims>,
     Path((node_id, key)): Path<(String, String)>,
-) -> impl IntoResponse {
+) -> Response {
+    let error = |msg: &str| Json(ApiResponse::<PropertySetDto>::error(msg)).into_response();
     if require_role(&claims, "editor").is_err() {
-        return Json(ApiResponse::<PropertySetDto>::error(
-            "insufficient permissions",
-        ));
+        return error("insufficient permissions");
     }
     if !is_valid_ulid(&node_id) {
-        return Json(ApiResponse::<PropertySetDto>::error("invalid node_id"));
+        return error("invalid node_id");
     }
 
     // Resolve node scope for enforcement — deny if resolution fails
     let Some(scope) = crate::rest::authorized_node_scope(&state, &claims, &node_id).await else {
-        return Json(ApiResponse::<PropertySetDto>::error(
-            crate::rest::NOT_FOUND_OR_DENIED,
-        ));
+        return error(crate::rest::NOT_FOUND_OR_DENIED);
     };
     let Some(petal_id) = scope_petal_id(&scope) else {
-        return Json(ApiResponse::<PropertySetDto>::error(
-            "could not resolve node petal",
-        ));
+        return error("could not resolve node petal");
     };
 
+    // A door refusal keeps its 409/413 form, as on PUT (R-API-31 parity).
     let door = Door { claims: &claims, kind: SceneCallerKind::Rest };
     match delete_property_as(&state, door, &petal_id, &node_id, &key).await {
-        Ok(dto) => Json(ApiResponse::success(dto)),
-        Err(failure) => Json(ApiResponse::<PropertySetDto>::error(failure.message())),
+        Ok(dto) => Json(ApiResponse::success(dto)).into_response(),
+        Err(failure) => write_failure_response::<PropertySetDto>(failure),
     }
 }
 
@@ -1912,32 +1909,29 @@ pub async fn create_waypoint(
     Extension(claims): Extension<ApiClaims>,
     Path(petal_id): Path<String>,
     Json(req): Json<crate::types::CreateWaypointRequest>,
-) -> impl IntoResponse {
+) -> Response {
+    let error = |msg: &str| Json(ApiResponse::<CreatedEntityDto>::error(msg)).into_response();
     if require_role(&claims, "editor").is_err() {
-        return Json(ApiResponse::<CreatedEntityDto>::error(
-            "insufficient permissions",
-        ));
+        return error("insufficient permissions");
     }
     if !is_valid_ulid(&petal_id) {
-        return Json(ApiResponse::<CreatedEntityDto>::error("invalid petal_id"));
+        return error("invalid petal_id");
     }
     if crate::rest::authorized_petal_scope(&state, &claims, &petal_id)
         .await
         .is_none()
     {
-        return Json(ApiResponse::<CreatedEntityDto>::error(
-            crate::rest::NOT_FOUND_OR_DENIED,
-        ));
+        return error(crate::rest::NOT_FOUND_OR_DENIED);
     }
     let door = Door { claims: &claims, kind: SceneCallerKind::Rest };
     match create_waypoint_core(&state, door, &petal_id, &req).await {
-        Ok(dto) => Json(ApiResponse::success(dto)),
-        Err(e) => Json(ApiResponse::<CreatedEntityDto>::error(e.message())),
+        Ok(dto) => Json(ApiResponse::success(dto)).into_response(),
+        Err(failure) => write_failure_response::<CreatedEntityDto>(failure),
     }
 }
 
 /// Waypoint-create core shared by REST + MCP `create_waypoint` (caller has
-/// authorized the petal): project, create the node, tag its waypoint properties.
+/// authorized the petal): project, then create the node with its waypoint properties in one write.
 pub(crate) async fn create_waypoint_core(
     state: &crate::server::ApiState,
     door: Door<'_>,
@@ -1967,31 +1961,24 @@ pub(crate) async fn create_waypoint_core(
         props.insert("symbol".into(), serde_json::json!(sym));
     }
 
-    let cmd = DbCommand::CreateNode {
-        petal_id: petal_id.to_string(),
+    // One atomic object create: scene.create plus one scene.property call per waypoint key (R-API-31).
+    let input = fe_runtime::messages::CreateObjectInput {
         name: req.name.clone(),
+        asset_id: None,
         position,
-        correlation_id: None,
+        rotation: [0.0; 3],
+        scale: [1.0; 3],
+        properties: props,
     };
-    // scene.create through the one door; the lat/lon/tag properties are part of the create (not hooked apart).
-    let (cmd, admission) = admit(door, petal_id, cmd).await?;
-    match db_round_trip(state, cmd).await? {
-        DbResult::NodeCreated { id, name, .. } => {
-            admission.stage(Some(&id));
-            // Tag the waypoint properties; a failed tag is logged, not fatal.
-            for (key, value) in props {
-                if let Err(e) = set_property_core(state, &id, key.clone(), value).await {
-                    tracing::warn!("waypoint {id} property {key} not set: {e}");
-                }
-            }
-            Ok(CreatedEntityDto { id, name })
-        }
-        DbResult::Error(e) => {
-            tracing::error!("create_waypoint failed: {e}");
-            Err("operation failed".to_string().into())
-        }
-        _ => Err("unexpected response".to_string().into()),
-    }
+    let created = crate::node_history::create_core(state, door, petal_id, input).await?;
+    let id = created
+        .get("node_id")
+        .and_then(serde_json::Value::as_str)
+        .ok_or_else(|| WriteFailure::from("unexpected response".to_string()))?;
+    Ok(CreatedEntityDto {
+        id: id.to_owned(),
+        name: req.name.clone(),
+    })
 }
 
 /// PATCH /api/v1/nodes/:waypoint_id/move — move a waypoint to new lat/lon.
@@ -2003,23 +1990,24 @@ pub async fn move_waypoint(
     Extension(claims): Extension<ApiClaims>,
     Path(waypoint_id): Path<String>,
     Json(req): Json<crate::types::MoveWaypointRequest>,
-) -> impl IntoResponse {
+) -> Response {
+    let error = |msg: &str| Json(ApiResponse::<serde_json::Value>::error(msg)).into_response();
     if require_role(&claims, "editor").is_err() {
-        return Json(ApiResponse::error("insufficient permissions"));
+        return error("insufficient permissions");
     }
     if !is_valid_ulid(&waypoint_id) {
-        return Json(ApiResponse::error("invalid waypoint_id"));
+        return error("invalid waypoint_id");
     }
 
     // Resolve node scope
     let Some(scope) = crate::rest::authorized_node_scope(&state, &claims, &waypoint_id).await
     else {
-        return Json(ApiResponse::error(crate::rest::NOT_FOUND_OR_DENIED));
+        return error(crate::rest::NOT_FOUND_OR_DENIED);
     };
     let door = Door { claims: &claims, kind: SceneCallerKind::Rest };
     match move_waypoint_core(&state, door, &waypoint_id, &scope, &req).await {
-        Ok(payload) => Json(ApiResponse::<serde_json::Value>::success(payload)),
-        Err(e) => Json(ApiResponse::error(e.message())),
+        Ok(payload) => Json(ApiResponse::<serde_json::Value>::success(payload)).into_response(),
+        Err(failure) => write_failure_response::<serde_json::Value>(failure),
     }
 }
 
@@ -2057,13 +2045,27 @@ pub(crate) async fn move_waypoint_core(
     // A move is a reposition only: keep the node's stored rotation/scale
     // (`TransformPersist` writes all three, so they must be read first).
     let current = load_node_transform(state, waypoint_id).await?;
-    // scene.transform through the one door before anything is written (the lat/lon props ride along).
+    // Every hook verdict (scene.transform, then scene.property per key) before anything is written (R-API-31).
     let admission = admit_only(
         door,
         &petal_id,
         transform_command(waypoint_id, position, current.rotation, current.scale),
     )
     .await?;
+    let mut property_writes = Vec::with_capacity(3);
+    for (key, value) in [
+        ("lat", serde_json::json!(req.lat)),
+        ("lon", serde_json::json!(req.lon)),
+        ("ele", serde_json::json!(ele)),
+    ] {
+        let mutation = NodeMutation::PropertySet {
+            key: key.to_string(),
+            value,
+        };
+        property_writes.push(
+            crate::node_history::admit_mutation(door, &petal_id, waypoint_id, mutation).await?,
+        );
+    }
 
     // Fire-and-forget via `TransformPersist`: the DB thread emits no
     // `DbResult` for a transform write (it broadcasts TransformFailed instead),
@@ -2081,13 +2083,9 @@ pub(crate) async fn move_waypoint_core(
         tracing::warn!(waypoint_id, "TransformPersist send failed (DB bridge gone)");
     }
 
-    for (key, value) in [
-        ("lat", serde_json::json!(req.lat)),
-        ("lon", serde_json::json!(req.lon)),
-        ("ele", serde_json::json!(ele)),
-    ] {
-        if let Err(e) = set_property_core(state, waypoint_id, key.to_string(), value).await {
-            tracing::warn!("waypoint {waypoint_id} property {key} not updated: {e}");
+    for admitted in property_writes {
+        if let Err(failure) = crate::node_history::send_admitted(state, admitted).await {
+            tracing::warn!("waypoint {waypoint_id} property not updated: {}", failure.message());
         }
     }
 

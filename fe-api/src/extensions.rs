@@ -470,6 +470,9 @@ pub fn extension_audit(
     Ok(json!({ "installation": installation, "entries": rows }))
 }
 
+/// Longest installation id a denial audit row records.
+const MAX_AUDIT_TARGET_CHARS: usize = 128;
+
 /// The refusal every administration verb gets on REST, MCP and `/ws` (user decision 2026-11-09).
 pub const ADMIN_GUI_ONLY_MESSAGE: &str = "extension administration is not available over the API; use the Extensions panel or fe-ext admin";
 
@@ -482,8 +485,13 @@ pub fn administer(
     op: AdminOp,
 ) -> Result<Value, ExtError> {
     gate(host, claims)?;
+    // The path segment is caller-sized: the denial row keeps a bounded, control-free prefix.
     let target = match &op.installation {
-        Some(installation) => format!("{}@{installation}", op.verb.as_str()),
+        Some(installation) => {
+            let installation: String =
+                installation.chars().filter(|c| !c.is_control()).take(MAX_AUDIT_TARGET_CHARS).collect();
+            format!("{}@{installation}", op.verb.as_str())
+        }
         None => op.verb.as_str().to_string(),
     };
     host.record_denied_admin(&claims.sub, &target);
@@ -907,10 +915,9 @@ fn admin_response(
     installation: Option<String>,
     body: &[u8],
 ) -> Response {
-    let result = parse_body(body).and_then(|params| {
-        administer(host.0.as_ref(), claims, AdminOp { verb, installation, params })
-    });
-    respond(result)
+    // Refused whatever the body: a malformed body never answers differently from a well-formed one.
+    let params = parse_body(body).unwrap_or_else(|_| json!({}));
+    respond(administer(host.0.as_ref(), claims, AdminOp { verb, installation, params }))
 }
 
 async fn post_install(

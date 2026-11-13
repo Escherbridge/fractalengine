@@ -2391,9 +2391,10 @@ gone: the census in `fe-runtime/src/scene_write.rs` decides which `scene.*` hook
 |---|---|---|---|
 | REST `POST .../nodes`, `POST /api/v1/nodes` (+ `asset_id`) | `CreateNode` / `CreateNodeWithAsset` | `Rest` | 409 `refused`, 413 `input-too-large` |
 | REST `PATCH .../transform` | `UpdateNodeTransform` (verdict only; persists on `TransformPersist`) | `Rest` | same |
-| REST `PATCH` / `DELETE .../properties`, `POST .../mutations` | `CommitNodeMutation` (`node_history::commit_core`) | `Rest` | 409 / ok:false message |
+| REST `PATCH` / `DELETE .../properties`, `POST .../mutations` | `CommitNodeMutation` (`node_history::commit_core`) | `Rest` | 409 / 413 (`mutations`: ok:false message) |
 | REST `POST /petals/{p}/objects` | `CreateObject` (`node_history::create_core`) | `Rest` | ok:false message |
-| REST waypoint create / move, `promote_instance` | `CreateNode` / `UpdateNodeTransform` / `PromoteInstance` | `Rest` | ok:false message |
+| REST waypoint create / move, `promote_instance` | `CreateObject` (name, position, waypoint keys) / `UpdateNodeTransform` + one `CommitNodeMutation` per lat/lon/ele / `PromoteInstance` | `Rest` | 409 / 413 |
+| REST `.hexon` import, GPX import (MCP `import_gpx` uses `Mcp`) | one `CreateNode` per planned node, all admitted before the first write | `Rest` | 409 / 413 |
 | MCP `create_node`, `place_asset`, `promote_instance` | `CreateNode` / `CreateNodeWithAsset` / `PromoteInstance` | `Mcp` | tool error "Refused by <package>: <reason>" |
 | MCP `update_transform`, `set_property`, `delete_property`, `commit_node_mutation`, waypoints | transform / commit cores | `Mcp` | same |
 | `/ws` `entity_command` `create_node` / `set_node_property` / `delete_node_property` | create / commit cores | `Ws` | `entity_command_result.error` |
@@ -2406,14 +2407,18 @@ message; `From<WriteFailure> for String` lets MCP/WS use `?`). An unresolved pet
 admitted BEFORE the optimistic broadcast, so a refused move is never previewed; `/ws` admits each `transform_update`
 and stages that node's latest admission after the debounced `TransformPersist` is sent. An allowed augment
 (`Admission::stage`) is staged only after its write is durable. `/ws` reports caller kind `Ws` (`WS_SCENE_CALLER`).
-Waypoint lat/lon/tag properties ride the create/move admission (they are not hooked apart). Still outside the
-door: tombstone / delete (no `scene.delete` hook in v1) and the GPX and `.hexon` import loops in `gpx.rs` / `format.rs`
-(NEEDS: they take `Door` and call `admit` per node).
+Multi-write doors collect every verdict before the first write (R-API review): a waypoint create is ONE atomic
+`CreateObject`, so its lat/lon/ele/tag keys reach `scene.property` like any initial property; a waypoint move admits
+the transform and each property mutation (`node_history::admit_mutation`) before `TransformPersist` and
+`send_admitted`; GPX and `.hexon` imports admit every planned create first. A waypoint now needs a non-empty name
+(the object-create rule). Still outside the door: tombstone / delete (no `scene.delete` hook in v1) and the
+host-derived tracking metrics `check_tracking_and_alert` writes after an admitted transform (not caller input).
 ## §extensions-admin
 Install, consent, bind, unbind, enable, disable, update, uninstall and the kill-list override are refused on REST,
 MCP and `/ws` for EVERY caller, the verse Owner included (`extensions::administer`, 403 `admin-gui-only`:
-"use the Extensions panel or fe-ext admin"), with one `denial` audit row; a non-local actor keeps the uniform
-not-found (R12). Administration is the GUI plus the local `fe-ext admin` channel only; `ExtensionHost::administer`
+"use the Extensions panel or fe-ext admin"), with one `denial` audit row (installation id cut to 128 control-free
+chars); Disable all and Enable all are included. The refusal never depends on the body, so a malformed body answers
+like a well-formed one. A non-local actor keeps the uniform not-found (R12). Administration is the GUI plus the local `fe-ext admin` channel only; `ExtensionHost::administer`
 stays the host's judge for those two callers. `SetExtensionPolicy` carries the token `sub` as `actor_did`
 (`set_verse_policy`), so the `policy-change` audit names the API caller, not the local DID.
 ## §import-hooks-wiring

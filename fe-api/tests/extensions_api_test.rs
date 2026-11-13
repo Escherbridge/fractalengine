@@ -275,7 +275,7 @@ async fn extensions_api_journey() {
     assert_eq!(delegated, ExtError::not_found());
     assert!(host.seen.lock().unwrap().admin.is_empty(), "a delegated token never reaches the host's lifecycle");
     // Administration is GUI-only: even the Owner's local token is refused (403, one denial row) and the host never runs the verb.
-    for verb in [AdminVerb::Install, AdminVerb::Consent, AdminVerb::Bind, AdminVerb::Unbind, AdminVerb::Enable, AdminVerb::Update, AdminVerb::Uninstall, AdminVerb::KillListOverride] {
+    for verb in [AdminVerb::Install, AdminVerb::Consent, AdminVerb::Bind, AdminVerb::Unbind, AdminVerb::Enable, AdminVerb::Disable, AdminVerb::Update, AdminVerb::Uninstall, AdminVerb::DisableAll, AdminVerb::EnableAll, AdminVerb::KillListOverride] {
         let refused = administer(host.as_ref(), &local, op(verb, Some("inst-1"), json!({"digest": "good"}))).unwrap_err();
         assert_eq!((refused.status, refused.code), (403, "admin-gui-only"), "{verb:?}");
         assert!(refused.message.contains("Extensions panel or fe-ext admin"), "{}", refused.message);

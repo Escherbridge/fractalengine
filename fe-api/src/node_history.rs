@@ -12,7 +12,7 @@ use fe_runtime::scene_hook_gate::SceneCallerKind;
 use serde::Deserialize;
 use serde_json::{json, Value};
 
-use crate::mcp::scene_gate::{admit, scope_petal_id, Door, WriteFailure};
+use crate::mcp::scene_gate::{admit, scope_petal_id, Admission, Door, WriteFailure};
 use crate::{server::ApiState, types::ApiResponse};
 
 /// Bounded forward cursor page; versions are per object, not global time.
@@ -87,6 +87,24 @@ pub(crate) async fn commit_core(
     node_id: &str,
     mutation: NodeMutation,
 ) -> Result<Value, WriteFailure> {
+    let admitted = admit_mutation(door, petal_id, node_id, mutation).await?;
+    send_admitted(state, admitted).await
+}
+
+/// A mutation the door admitted but has not sent; lets a multi-write door collect every verdict first.
+pub(crate) struct AdmittedMutation {
+    command: DbCommand,
+    id: String,
+    admission: Admission,
+}
+
+/// Admit one mutation through the scene write door without sending it.
+pub(crate) async fn admit_mutation(
+    door: Door<'_>,
+    petal_id: &str,
+    node_id: &str,
+    mutation: NodeMutation,
+) -> Result<AdmittedMutation, WriteFailure> {
     let id = ulid::Ulid::new().to_string();
     let command = DbCommand::CommitNodeMutation {
         node_id: node_id.to_string(),
@@ -96,6 +114,15 @@ pub(crate) async fn commit_core(
         correlation_id: Some(id.clone()),
     };
     let (command, admission) = admit(door, petal_id, command).await?;
+    Ok(AdmittedMutation { command, id, admission })
+}
+
+/// Send an admitted mutation (DB round trip), then stage its augments.
+pub(crate) async fn send_admitted(
+    state: &ApiState,
+    admitted: AdmittedMutation,
+) -> Result<Value, WriteFailure> {
+    let AdmittedMutation { command, id, admission } = admitted;
     let committed = correlated(state, command, &id).await?;
     admission.stage(None);
     Ok(committed)
