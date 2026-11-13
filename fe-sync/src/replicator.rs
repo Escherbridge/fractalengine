@@ -200,20 +200,21 @@ pub trait VerseReplicator: Send + Sync {
 // MockVerseReplicator — test double
 // ---------------------------------------------------------------------------
 
+/// Tables whose snapshot reads EVERY author's entry per key (per-(key, author)
+/// retention), so a forged later entry cannot shadow the genuine one.
+pub const ALL_AUTHOR_TABLES: [&str; 2] = ["role", fe_runtime::extension_binding::BINDING_DOC_PREFIX];
+
 /// In-memory mock of `VerseReplicator` for testing.
 ///
 /// Stores entries in a `HashMap<String, Vec<u8>>` keyed by `"{table}/{record_id}"`.
 /// Every `write_row` call broadcasts a `RowChange` to all active subscribers.
 pub struct MockVerseReplicator {
     entries: Mutex<HashMap<String, Vec<u8>>>,
-    /// RP-5 §2.5 step 3: `role/` keys need per-(key, author) retention so a
-    /// unit test can exercise the "snapshot reads every author" guarantee
-    /// without a real iroh loopback (`entries` is single-author-per-key,
-    /// matching `single_latest_per_key` — exactly the gap role rows must
-    /// NOT have). Seeded by `write_row` (for this instance's own author)
-    /// and by `seed_role_entry` (to simulate another author's write
-    /// landing in the shared doc); read by `snapshot`.
-    role_entries: Mutex<HashMap<String, HashMap<String, Vec<u8>>>>,
+    /// Per-(key, author) retention for the [`ALL_AUTHOR_TABLES`] (`role`,
+    /// `binding`), mirroring the iroh all-authors snapshot pass; keyed by
+    /// `(table, record_id)` then author. Seeded by `write_row` and
+    /// `seed_all_authors_entry`; read by `snapshot`.
+    all_author_entries: Mutex<HashMap<(String, String), HashMap<String, Vec<u8>>>>,
     subscribers: Mutex<Vec<mpsc::Sender<RowChange>>>,
     author_id: String,
     closed: Mutex<bool>,
@@ -223,7 +224,7 @@ impl MockVerseReplicator {
     pub fn new(author_id: impl Into<String>) -> Self {
         Self {
             entries: Mutex::new(HashMap::new()),
-            role_entries: Mutex::new(HashMap::new()),
+            all_author_entries: Mutex::new(HashMap::new()),
             subscribers: Mutex::new(Vec::new()),
             author_id: author_id.into(),
             closed: Mutex::new(false),
@@ -244,16 +245,17 @@ impl MockVerseReplicator {
             .unwrap_or(false)
     }
 
-    /// Test-only: seed another author's `role/{record_id}` entry directly
-    /// into this replica's store, simulating a peer's write landing in the
-    /// shared doc without standing up a real loopback transport (RP-5
-    /// §2.5 step 3). Scoped to `role` because that is the one table whose
-    /// multi-author semantics need exercising here.
-    pub fn seed_role_entry(&self, record_id: &str, author_id: &str, data: &[u8]) {
-        self.role_entries
+    /// Test-only: seed another author's entry for an [`ALL_AUTHOR_TABLES`]
+    /// table (`role` or `binding`), simulating a peer's write landing in the
+    /// shared doc without a loopback transport; other tables are ignored.
+    pub fn seed_all_authors_entry(&self, table: &str, record_id: &str, author_id: &str, data: &[u8]) {
+        if !ALL_AUTHOR_TABLES.contains(&table) {
+            return;
+        }
+        self.all_author_entries
             .lock()
             .unwrap_or_else(|e| e.into_inner())
-            .entry(record_id.to_string())
+            .entry((table.to_string(), record_id.to_string()))
             .or_default()
             .insert(author_id.to_string(), data.to_vec());
     }
@@ -281,11 +283,11 @@ impl VerseReplicator for MockVerseReplicator {
                 .lock()
                 .map_err(|e| anyhow::anyhow!("lock poisoned: {e}"))?
                 .insert(key, data.clone());
-            if table == "role" {
-                self.role_entries
+            if ALL_AUTHOR_TABLES.contains(&table.as_str()) {
+                self.all_author_entries
                     .lock()
                     .map_err(|e| anyhow::anyhow!("lock poisoned: {e}"))?
-                    .entry(record_id.clone())
+                    .entry((table.clone(), record_id.clone()))
                     .or_default()
                     .insert(self.author_id.clone(), data.clone());
             }
@@ -334,8 +336,8 @@ impl VerseReplicator for MockVerseReplicator {
                 .lock()
                 .map_err(|e| anyhow::anyhow!("lock poisoned: {e}"))?
                 .clone();
-            let role_entries = self
-                .role_entries
+            let all_author_entries = self
+                .all_author_entries
                 .lock()
                 .map_err(|e| anyhow::anyhow!("lock poisoned: {e}"))?
                 .clone();
@@ -348,12 +350,10 @@ impl VerseReplicator for MockVerseReplicator {
                 let Some((table, record_id)) = key.split_once('/') else {
                     continue;
                 };
-                if table == "role" {
-                    // RP-5 §2.5 step 3: `role` rows come exclusively from
-                    // `role_entries` below (ALL authors), never from the
-                    // single-author `entries` map — a single-winner view
-                    // here would reproduce the exact `single_latest_per_key`
-                    // shadowing bug this step closes.
+                if ALL_AUTHOR_TABLES.contains(&table) {
+                    // `role`/`binding` rows come only from the all-authors
+                    // map below; a single-winner view here would reproduce
+                    // the `single_latest_per_key` shadowing bug.
                     continue;
                 }
                 out.push(RowChange {
@@ -366,10 +366,10 @@ impl VerseReplicator for MockVerseReplicator {
                     data,
                 });
             }
-            for (record_id, by_author) in role_entries {
+            for ((table, record_id), by_author) in all_author_entries {
                 for (author_id, data) in by_author {
                     out.push(RowChange {
-                        table: "role".to_string(),
+                        table: table.clone(),
                         record_id: record_id.clone(),
                         content_hash: *blake3::hash(&data).as_bytes(),
                         author_id,
@@ -990,12 +990,16 @@ impl VerseReplicator for IrohDocsReplicator {
             // genuine entry from this pass entirely, hiding it from every
             // fresh peer whose only source is this snapshot. Drop the
             // single-winner `role` rows this pass picked up and replace them
-            // with every author's entry under the `role/` prefix.
-            out.retain(|c| c.table != "role" && c.table != "node");
-            let role_query = iroh_docs::store::Query::key_prefix("role/")
-                .include_empty()
-                .build();
-            out.extend(collect_query_rows(&doc, &blobs, role_query).await);
+            // with every author's entry under the `role/` prefix. Extension
+            // `binding/` rows get the same pass (B1): the key names its
+            // author_did, and a forged entry on it must not hide the real one.
+            out.retain(|c| !ALL_AUTHOR_TABLES.contains(&c.table.as_str()) && c.table != "node");
+            for table in ALL_AUTHOR_TABLES {
+                let all_authors_query = iroh_docs::store::Query::key_prefix(format!("{table}/"))
+                    .include_empty()
+                    .build();
+                out.extend(collect_query_rows(&doc, &blobs, all_authors_query).await);
+            }
             // QA-0100: a node's transform is an `edit_seq` register merged by the
             // DB, so a (re)joining peer must see EVERY author's entry — the newest
             // one can be the register's tie loser. Oldest first, so the blind-merged
@@ -2896,6 +2900,63 @@ mod tests {
                 "the forged entry is also visible (and separately denied by validate_statement)",
             );
         assert_eq!(attacker_row.data, forged.as_bytes());
+
+        // B1 binding leg: an extension binding key names its author_did, so
+        // a forged later entry on the owner's binding key gets the same pass.
+        let binding_id = format!("VERSE#verse-r5/petal.map/_/{owner_did}");
+        let genuine_binding = format!(
+            r#"{{"scope":"VERSE#verse-r5","hook":"petal.map","key":"_","author_did":"{owner_did}","extension":"acme.terrain","written_at":1}}"#
+        );
+        let forged_binding = format!(
+            r#"{{"scope":"VERSE#verse-r5","hook":"petal.map","key":"_","author_did":"{owner_did}","extension":"evil.terrain","written_at":99}}"#
+        );
+        owner
+            .write_row("binding", &binding_id, genuine_binding.as_bytes())
+            .await
+            .expect("owner writes the genuine binding");
+        /// Drain `rx` until `author`'s `binding` entry arrives (20 s cap).
+        async fn wait_for_binding(rx: &mut mpsc::Receiver<RowChange>, author: &str) {
+            tokio::time::timeout(std::time::Duration::from_secs(20), async {
+                while let Some(change) = rx.recv().await {
+                    if change.table == "binding" && change.author_id == author {
+                        return;
+                    }
+                }
+                panic!("replica stream closed before the binding entry arrived");
+            })
+            .await
+            .expect("the binding entry reaches the other side");
+        }
+        wait_for_binding(&mut attacker_rx, &owner_did).await;
+        attacker
+            .write_row("binding", &binding_id, forged_binding.as_bytes())
+            .await
+            .expect("attacker writes the forged binding");
+        wait_for_binding(&mut owner_rx, &attacker_did).await;
+
+        // Convergence: both peers' snapshots surface the owner's genuine
+        // binding and the forgery side by side (the forgery is rejected
+        // downstream by the author_did-vs-author check).
+        for (side, replica) in [("owner", &owner), ("attacker", &attacker)] {
+            let snap = replica.snapshot().await.expect("snapshot the doc");
+            let binding_rows: Vec<&RowChange> = snap
+                .iter()
+                .filter(|c| c.table == "binding" && c.record_id == binding_id)
+                .collect();
+            let genuine_row = binding_rows
+                .iter()
+                .find(|c| c.author_id == owner_did)
+                .unwrap_or_else(|| {
+                    panic!("{side}: the genuine binding must survive a later forged entry on its key")
+                });
+            assert_eq!(genuine_row.data, genuine_binding.as_bytes(), "{side}");
+            let forged_row = binding_rows
+                .iter()
+                .find(|c| c.author_id == attacker_did)
+                .unwrap_or_else(|| panic!("{side}: the forged binding is visible too"));
+            assert_eq!(forged_row.data, forged_binding.as_bytes(), "{side}");
+            assert_eq!(binding_rows.len(), 2, "{side}: exactly one row per (key, author)");
+        }
 
         owner.close().await.unwrap();
         attacker.close().await.unwrap();
