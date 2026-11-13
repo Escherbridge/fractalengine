@@ -39,6 +39,60 @@ Ratified in the user grill on 2026-11-07. Do not re-litigate (`.omc/state/bus/SE
 
 <!-- Binding; maintained by the orchestrating session (P2P-QA). Dated bullets, newest first. -->
 
+- 2026-11-13 (orchestrator, SECURITY, mandatory for R-BIN; automated commit review of I-BIN) - **unbounded
+  import-conversion threads.** fractalengine/src/plugin_bridge.rs spawns one `fe-ext-import` thread per
+  asset.import conversion and calls the hook with no deadline (`live.call(.., None)`), so a caller can pile up
+  stalled threads and buffers past every per-extension cap. Run conversions through a bounded pool or semaphore
+  (small fixed limit; answer `WorkerAnswer::Failed` with a capacity reason when full) and pass `IMPORT_DEADLINE`
+  as the call deadline so a stalled conversion releases its thread and buffer. Check every other
+  `thread::Builder`/`spawn` added in extension_host/ and plugin_bridge.rs for the same pattern.
+- 2026-11-13 (orchestrator, mandatory for R-UI) - GUI scene-gate parity, remaining: fe-ui undo.rs, editor_batch,
+  earthwork_volumes and stamp_selection now submit through `try_submit_scene_write_on` (orchestrator commit).
+  Still to check/fix: fe-ui/src/verse_manager/db_results/nodes.rs:71 sends `DbCommand::SetNodeProperty` directly;
+  fe-ui/src/actions/asset.rs `apply_overrides` (called from stamp_selection.rs) may reach `CommitStampOverrides`
+  outside the door. Route both through the helper or prove they are not user scene writes.
+- 2026-11-13 (orchestrator, mandatory integration; swarm analyst run, verified by grep) - (1) **I-BIN / I-MAIN /
+  R-BIN - compile break:** `SourceTrust` gained `is_killed` (fe-hexon/src/registry_source.rs) but the literals in
+  fractalengine/src/plugin_bridge.rs (~3958) and fractalengine/src/terrain_bridge.rs (~908) do not set it. Plugin
+  bridge: the host predicate over the accepted revocation set (hash under any id; the audited Owner override is
+  decided inside it). Terrain: `fe_hexon::registry_source::no_kill_list()`. Whoever owns each file adds it; R-BIN
+  verifies both. (2) **R-API - scene-gate door parity:** GPX import (fe-api/src/gpx.rs) and .hexon import
+  (fe-api/src/format.rs) still create nodes without the scene door; admit every CreateNode through the shared
+  gate with the REST door kind and the uniform refusal. (3) **R-UI - GUI write paths:** fe-ui undo.rs,
+  editor_batch/mod.rs (~755), actions/earthwork_volumes.rs (~650) and node_manager/stamp_selection.rs (~592) must
+  go through `try_submit_scene_write_on` / `submit_scene_write` (Refused maps to the existing error path); then
+  drop transform_broadcast's proxy gate. C-EXT lists any write path still outside the gate as MISSING.
+  Lesson for every slice: when a contract adds a struct field, grep every literal constructor across the tree.
+- 2026-11-13 (orchestrator, SECURITY, mandatory for R-STORE; automated commit review) - **reference registry
+  serves any blob by hash without authorization.** fe-hexon-registry/src/routes.rs `GET /blobs/{file}` streams
+  any stored archive whose content hash matches, including packages a private registry does not list publicly.
+  Contract v1 makes downloads anonymous only for packages in the public catalogue: serve /blobs only for
+  packages present in the published index, or put it behind `require_token` unless the operator opts in to
+  public blobs with a config flag (default: gated on a registry that has any token configured). Answer the
+  uniform 404 for unknown and unlisted hashes alike (no existence oracle).
+- 2026-11-13 (orchestrator, SECURITY, mandatory for R-STORE; automated commit review of S-ENT) - **entitlement
+  key wrap is not bound to the package (key-unwrap oracle).** fe-format/src/entitlement.rs `wrap_aad` covers only
+  the domain + ephemeral + recipient keys, and minting unwraps whatever `encrypted_key` the request carries, so a
+  wrap lifted from package A can be presented in a request for package B and re-wrapped to the caller's device.
+  Bind the wrap to the package: put `package_id` and `content_hash` in the wrap AAD and/or KDF input
+  (`encrypted_key_for` / `wrap_content_key`), require them in `unwrap_content_key`, add them to `paid_entry_aad`,
+  and state in the contract docs that an issuer takes `encrypted_key` only from its own catalogue record for the
+  requested package, never from the request. Extend the entitlement journey with a cross-package wrap that must
+  fail to open.
+- 2026-11-13 (orchestrator, SECURITY, mandatory for R-PLUG; automated commit review) - **registry client SSRF
+  gaps** in fe-plugin/src/registry_client.rs: (1) the client builder has no `.no_proxy()`, so an environment
+  proxy (HTTP(S)_PROXY) takes the connection and `CheckedResolver` never sees the target - add `.no_proxy()`
+  like the egress clients; (2) the redirect policy only runs `host_refusal` on the URL text, so a redirect can
+  land on loopback or drop https->http - allow redirects only to the same origin (or disable them), never
+  https->http, and loopback only when the configured base itself is loopback. Apply the same two rules to every
+  other reqwest client the store client / registry_source / revocation pull builds (one shared builder).
+- 2026-11-13 (orchestrator, SECURITY, mandatory for R-BND; automated commit review of X-DECODE) - **whole-flush
+  rule bypass in the readings flush.** fe-database/src/handlers/plugin_host.rs writes readings per source-class
+  group in a loop (`insert_readings_with_provenance` per class) and breaks on the first error, so earlier groups
+  stay written when a later group is refused: a partial flush. Validate EVERYTHING first (including the
+  payload-membership check for stamped payload ids, in `door_readings` before `commit`/`authorize_readings`),
+  or validate every class group before writing any, so a flush is all-or-nothing. Extend the flush journey with
+  one mixed-class batch whose second group is refused and assert that no row from the first group landed.
 - 2026-11-09 06:30 (USER DECISIONS, binding) — **Extension administration is a GUI surface, optionally
   exposed through a CLI — not REST.** install / consent / bind (acceptance) / enable / update / unbind /
   uninstall stay refused on REST and MCP for every caller (plugin_bridge.rs behaviour stands); governance.md
