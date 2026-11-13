@@ -406,7 +406,7 @@ fn main() {
     // Extension `blob.source`: empty (peers only) until the plugin bridge installs a source; the sync thread's scene
     // transfers and the `blob://` reader ask the same slot (src/AGENTS.md section extension-host).
     let blob_fallback = fe_runtime::bevy_blob_reader::BlobFallbackSlot::default();
-    let sync_thread = fe_sync::spawn_sync_thread_with_sources(
+    let sync_thread = fe_sync::sync_thread::spawn_sync_thread_with_sources(
         iroh_secret,
         blob_store.clone(),
         sync_cmd_rx,

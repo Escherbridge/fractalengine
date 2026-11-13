@@ -6,6 +6,7 @@ use std::io::Write as _;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
+use fe_plugin::bindings::activation::SharedEgressBuckets;
 use fe_plugin::bus::{AuditSink, RoleSource};
 use fe_plugin::net::{Credential, CredentialStore, Net, NetSources};
 use fe_plugin::tick::Clock;
@@ -87,14 +88,15 @@ impl CredentialStore for FileCredentialStore {
     }
 }
 
-/// The broker over the host's injected sources; `runtime` is the current Tokio runtime (None outside one: no dial-outs, no egress).
+/// The broker over the host's injected sources and the binding activator's shared egress buckets; `runtime` is the current Tokio runtime (None outside one: no dial-outs, no egress).
 pub fn build_net(
     clock: Arc<dyn Clock>,
     roles: Arc<dyn RoleSource>,
     audit: Arc<dyn AuditSink>,
     extension_data_dir: &Path,
+    shared_egress: SharedEgressBuckets,
 ) -> Net {
     let credentials: Arc<dyn CredentialStore> = Arc::new(FileCredentialStore::new(extension_data_dir));
     let runtime = tokio::runtime::Handle::try_current().ok();
-    Net::new(clock, NetSources { roles, audit, credentials, runtime })
+    Net::new(clock, NetSources { roles, audit, credentials, runtime, shared_egress })
 }
