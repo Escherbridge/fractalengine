@@ -659,6 +659,7 @@ pub(super) fn move_waypoint(call: ToolCall<'_>) -> ToolFuture<'_> {
             &req,
         )
         .await
+        .map_err(String::from)
     })
 }
 

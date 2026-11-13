@@ -636,17 +636,11 @@ async fn html_payload_is_served_as_attachment_with_nosniff() {
     let bundle = html_bundle(&html);
     let boundary = "BUNDLEBOUNDARY";
     let mut multipart = format!(
-        "--{boundary}
-Content-Disposition: form-data; name=\"file\"; filename=\"b.hexon\"
-         Content-Type: application/octet-stream
-
-"
+        "--{boundary}\r\nContent-Disposition: form-data; name=\"file\"; filename=\"b.hexon\"\r\nContent-Type: application/octet-stream\r\n\r\n"
     )
     .into_bytes();
     multipart.extend_from_slice(&bundle);
-    multipart.extend_from_slice(format!("
---{boundary}--
-").as_bytes());
+    multipart.extend_from_slice(format!("\r\n--{boundary}--\r\n").as_bytes());
     let req = Request::builder()
         .method("POST")
         .uri(format!("/api/v1/petals/{petal}/portal-bundles"))
