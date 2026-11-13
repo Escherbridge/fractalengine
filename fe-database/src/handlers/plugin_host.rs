@@ -661,7 +661,7 @@ pub(crate) async fn commit(
 }
 
 /// Check staged readings as the readings door does (declared metric, RFC-3339 or epoch-ms time,
-/// anchors of the bound petal) before any effect, so one bad reading refuses the whole flush (R6).
+/// anchors and stamped payloads of the bound petal) before any effect, so one bad reading refuses the whole flush (R6).
 async fn door_readings(
     db: &Db,
     admission: &PluginAdmission,
@@ -682,6 +682,12 @@ async fn door_readings(
     let mut anchors = BTreeSet::new();
     let mut inputs = Vec::with_capacity(readings.len());
     for reading in readings {
+        if reading.metric.trim().is_empty() {
+            return Err(refuse(
+                PluginRefusal::InvalidInput,
+                IotIngestError::EmptyMetric.to_string(),
+            ));
+        }
         if !grant.allows_metric(&reading.metric) {
             return Err(refuse(
                 PluginRefusal::CapabilityDenied,
@@ -725,6 +731,28 @@ async fn door_readings(
             PluginRefusal::InvalidInput,
             IotIngestError::UnknownAnchor(unknown.clone()).to_string(),
         ));
+    }
+    // The door's payload rule, checked here so no class group is refused after another landed (R6).
+    let payload_ids: Vec<String> = inputs
+        .iter()
+        .filter_map(|input| input.payload_id.clone())
+        .collect::<BTreeSet<_>>()
+        .into_iter()
+        .collect();
+    if !payload_ids.is_empty() {
+        let mut response = db
+            .query("SELECT VALUE payload_id FROM device_payload WHERE petal_id=$plugin_payload_petal AND payload_id IN $plugin_payload_ids")
+            .bind(("plugin_payload_petal", admission.petal_id().to_string()))
+            .bind(("plugin_payload_ids", payload_ids.clone()))
+            .await?
+            .check()?;
+        let known: Vec<String> = response.take(0)?;
+        if let Some(unknown) = payload_ids.iter().find(|id| !known.contains(*id)) {
+            return Err(refuse(
+                PluginRefusal::InvalidInput,
+                IotIngestError::UnknownPayload(unknown.clone()).to_string(),
+            ));
+        }
     }
     Ok(inputs)
 }

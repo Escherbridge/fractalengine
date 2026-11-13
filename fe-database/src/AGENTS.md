@@ -1814,8 +1814,11 @@ seam, the blob store, the replication sender and the loop's `DeferredPublication
 order is the R6 whole-flush rule:
 
 1. **Refuse up front.** A revoked lease, an invalid batch, or a reading anchored on a node the
-   same batch deletes is refused before anything is written. The door then validates the
-   readings against the bound petal.
+   same batch deletes is refused before anything is written. The door then validates every
+   reading against the bound petal: metric, time, anchor AND, for a decoded reading, that its
+   host-stamped `payload_id` names a `device_payload` row of that petal (R-BND 2026-11-13).
+   Readings land in one door call per source class, so every rule the door enforces must be
+   checked here first; otherwise a refused second class group would leave the first written.
 2. **Commit the scene batch atomically.** A readings-only flush still re-checks the Editor
    floor and the pinned ancestry.
 3. **Publish what survived.** A created, deleted or property-changed node is published at
@@ -1828,9 +1831,11 @@ order is the R6 whole-flush rule:
 Every journal fact the batch writes carries `payload.ext = {package_id, content_hash}`
 (`stamp_provenance`), the created node's `baseline` fact included: a plain create writes no
 other fact, so without it that node had no provenance at all (R-BND). Decoder stamping
-(`payload_id`, `source_class: decoder`, bindings.md §6 `ingest.decode`) has no carrier on
-`PluginCommit` yet: `StagedReading` holds neither, so decoded readings land as the grant's class
-with no payload link until the seam gains one.
+(bindings.md §6 `ingest.decode`, R-X-29) rides `StagedReading.provenance {payload_id,
+source_class}`: `#[serde(skip_deserializing)]`, set only by the host import from the in-flight
+decode call's stamp, so a decoded reading lands under the decoder class linked to its payload.
+Only a DB failure after validation can still leave a flush partial; that answers
+`unknown-outcome`.
 
 If the scene batch committed but its readings failed, the reply is `unknown-outcome`, never
 a retry instruction. The old arm destructured `BatchOutcome.nodes` as a 4-tuple (E0308 after
@@ -1849,7 +1854,9 @@ the policy row's author and the override's Owner check both use it.
 - **`SetExtensionPolicy` audits who asked** (R-X-27). The command's `actor_did` (the API token `sub`, or the
   local DID for the GUI and the admin channel) is the `policy-change` entry's actor, for the ok and the
   refused outcome alike, through `extension_policy::set_policy_as`. The row is still authored by
-  `local_did`; an empty `actor_did` is recorded as `local_did`.
+  `local_did`; an empty `actor_did` is recorded as `local_did`. A named actor other than `local_did` must
+  itself hold Manager+ at the verse (R-BND 2026-11-13): the DB re-checks rather than trusting that the
+  caller did, the `put_binding` `caller_did` pattern, and audits the refusal under that actor.
 
 - **`AppendExtensionAudit` refuses `kill-list-override` entries.** `load_kill_list_overrides`
   rebuilds overrides from ok audit entries at startup, so an appended one would hydrate as an

@@ -1299,6 +1299,41 @@ fn test_rename_entity_omits_node_scene_change() {
         }),
         ..reading_for(&anchors[0], 20)
     };
+    // R6 whole flush across class groups: a grant-class reading beside a decoded one whose payload is
+    // unknown refuses up front, and neither group lands.
+    let forged = StagedReading {
+        provenance: Some(fe_sdk::plugin_host::ReadingProvenance {
+            payload_id: "01NOSUCHPAYLOAD0000000000".into(),
+            source_class: SourceClass::Decoder,
+        }),
+        ..reading_for(&anchors[0], 31)
+    };
+    let (reply, rx) = crossbeam::channel::bounded(1);
+    db.cmd_tx
+        .send(DbCommand::PluginCommit {
+            admission: sensor_admission.clone(),
+            ops: vec![],
+            readings: vec![reading_for(&anchors[0], 30), forged],
+            reply,
+        })
+        .unwrap();
+    assert!(
+        matches!(
+            rx.recv_timeout(Duration::from_secs(5)).unwrap(),
+            Err(fe_runtime::plugin_host::PluginRefusal::InvalidInput(_))
+        ),
+        "an unknown decode payload refuses the whole mixed-class flush"
+    );
+    match request(DbCommand::RawQuery {
+        correlation_id: None,
+        sql: "SELECT reading_id FROM iot_reading WHERE value >= 30 AND value <= 31".into(),
+        vars: std::collections::HashMap::new(),
+    }) {
+        DbResult::QueryResult { data, .. } => {
+            assert!(data.is_empty(), "no row of the refused flush landed, got {data:?}")
+        }
+        other => panic!("expected the refused-flush probe, got {other:?}"),
+    }
     let (reply, rx) = crossbeam::channel::bounded(1);
     db.cmd_tx
         .send(DbCommand::PluginCommit {

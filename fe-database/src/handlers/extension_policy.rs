@@ -573,6 +573,15 @@ pub async fn set_policy_as(
     policy.validate(verse_id).map_err(PolicyWriteError::Invalid)?;
     policy.verse_id = None;
     let verse_scope = crate::scope::build_scope(verse_id, None, None);
+    // A named actor other than this node must hold Manager+ itself; the DB re-checks, never trusts the caller.
+    if actor_did != local_did {
+        let actor_role = crate::role_manager::resolve_role(db, actor_did, &verse_scope).await?;
+        if !actor_role.is_at_least(RoleLevel::Manager) {
+            let reason = format!("{actor_did} holds {actor_role} at {verse_scope}; the policy row needs Manager+");
+            append_audit(db, &AuditEntry::verse(AuditAction::PolicyChange, actor_did, verse_id, AuditOutcome::Refused, Some(reason.clone()))).await?;
+            return Err(PolicyWriteError::RoleDenied(reason));
+        }
+    }
     let role = crate::role_manager::resolve_role(db, local_did, &verse_scope).await?;
     if !role.is_at_least(RoleLevel::Manager) {
         let reason = format!("this node holds {role} at {verse_scope}; the policy row needs Manager+");
