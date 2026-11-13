@@ -111,6 +111,26 @@ trusting "pure efficiency" claims; push control; a board that silently drifts st
 
 ## 2. State
 
+- **2026-11-13 — SWARM TURN 3 COMPLETE AND COMPILED; pushed.** Turn 3 (`wf_b0df7ead-28e`, 73 slices: 62 done /
+  11 partial / 0 failed) completed the extension system (admin CLI `fe-ext admin` over a local OS-user channel,
+  one scene gate in the shared write path, decode provenance, store client contract v1, Browse/Install/Update UI,
+  static signed index tooling, native portal kill switch) and the private marketplace services (workspace
+  `services/market-core`, `services/registry`, `services/plugin-marketplace`: hosted registry, publisher
+  verification + review + counter-signing, entitlement issuance with manual grant; no payment processor).
+  Close + refine `wf_949ff699-7d5`: R-Z NEEDS closed (`7b19b9c5`), then `cargo check --all-targets` GREEN on every
+  public crate, the three example extensions and all three private crates. CI: `FE_DEV_TOOLS=1` for the release
+  test sweep + optional Windows signing (Azure Artifact Signing, pinned SHA; secrets not set, so builds are
+  unsigned; `docs/release-signing.md`); the old `latest` prerelease was deleted, auto-publish recreates it on a
+  green run. **NOT done:** no test batch has run (user rule); R-BIN-19 `request_licence_token` still answers
+  not-available (needs an EntitlementClient in plugin_bridge: anonymous no-redirect/no-proxy transport, keyring
+  verifier over the pinned issuers file, file token store); earthwork follow-up writes gate against the active
+  petal, not the node's petal; private: listing activation ignores the review ApprovalGate and
+  publisher_verified is never set (fix before self-serve opens; allow_list default is safe); `blob.mirror` has no
+  after_commit caller; AC-6 real-registry plugin journey; portal PJ1-PJ9 runs + WebView2 spikes; the six analytics
+  findings (`.omc/state/turn3-extra-findings.md`). Records: `conductor/tracks/*/completeness-turn3.md`,
+  `review-turn3/`, `.omc/plans/turn3-plan.md` (refine checklist + test batch ids), `.omc/state/swarm-ledger.md`.
+  **Next:** user names test batches (`tools\qa	est_batches.ps1 -Batches <ids>`; private batches need a runner
+  decision) -> fix failures -> turn 4 for the NOT-done list -> signing provider decision.
 - **2026-11-09 ~07:15 — BOTH TRACKS MERGED INTO MAIN AND PUSHED (user: secure the work before usage runs
   out).** origin/main = `6fdbd951` (merges `0b579b64` ext-platform, `f2adc8f0` portal — 9 conflicts resolved as
   unions + 4 compile fixes; lock `6fdbd951`). Branches `track/extension-platform` + `track/portal-surface` and the
