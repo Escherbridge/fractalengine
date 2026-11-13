@@ -7,11 +7,14 @@ use axum::response::{IntoResponse, Response};
 use axum::Extension;
 use fe_identity::api_token::ApiClaims;
 use fe_runtime::messages::{ApiCommand, DbCommand, DbResult, TransformUpdate};
-use fe_runtime::scene_hook_gate::{
-    SceneAugment, SceneCaller, SceneCallerKind, SceneHookGate, SceneHookInput, SceneVerdict,
-};
+use fe_runtime::messages::NodeMutation;
+use fe_runtime::scene_hook_gate::SceneCallerKind;
+use fe_runtime::scene_write::SceneRefusal;
 
 use crate::auth::{require_role, require_scope};
+use crate::mcp::scene_gate::{
+    admit, admit_only, scope_petal_id, Door, SceneDenied, WriteFailure,
+};
 #[cfg(test)]
 use crate::db_reader::ReadDb;
 use crate::types::{
@@ -107,74 +110,42 @@ fn created(id: String, name: String) -> Response {
     Json(ApiResponse::success(CreatedEntityDto { id, name })).into_response()
 }
 
-/// Ask the installed `scene.*` gate before a node write (bindings.md §6); `input` is built only
-/// when a gate is installed. Faults, timeouts and unbound petals proceed (OQ-B4).
-pub(crate) async fn scene_gate_verdict(
-    claims: &ApiClaims,
-    kind: SceneCallerKind,
-    input: impl FnOnce() -> SceneHookInput,
-) -> SceneVerdict {
-    match SceneHookGate::installed() {
-        Some(gate) => {
-            gate.check(input(), SceneCaller::api(kind, &claims.sub))
-                .await
+/// REST form of a door refusal: `409 refused` with the guest's reason, `413 input-too-large` for
+/// caller-sized hook input, `400` when the command is not a valid scene write.
+pub(crate) fn scene_denied_response(denied: SceneDenied) -> Response {
+    let body = match &denied {
+        SceneDenied::Hook(SceneRefusal::Refused { package_id, reason }) => serde_json::json!({
+            "ok": false, "data": null, "error": "refused",
+            "package_id": package_id, "reason": reason,
+        }),
+        SceneDenied::Hook(SceneRefusal::InputTooLarge { package_id, limit_bytes }) => {
+            serde_json::json!({
+                "ok": false, "data": null, "error": "input-too-large",
+                "package_id": package_id, "limit_bytes": limit_bytes,
+            })
         }
-        None => SceneVerdict::Proceed { augment: None },
-    }
-}
-
-/// REST form of [`scene_gate_verdict`]: a refusal is `409 refused` with the guest's reason; a bound
-/// write whose hook input is over the cap is `413 input-too-large`.
-async fn scene_gate_rest(
-    claims: &ApiClaims,
-    input: impl FnOnce() -> SceneHookInput,
-) -> Result<Option<SceneAugment>, Response> {
-    match scene_gate_verdict(claims, SceneCallerKind::Rest, input).await {
-        SceneVerdict::Proceed { augment } => Ok(augment),
-        SceneVerdict::Refused { package_id, reason } => Err((
-            StatusCode::CONFLICT,
-            Json(serde_json::json!({
-                "ok": false,
-                "data": null,
-                "error": "refused",
-                "package_id": package_id,
-                "reason": reason,
-            })),
-        )
-            .into_response()),
-        SceneVerdict::InputTooLarge {
-            package_id,
-            limit_bytes,
-        } => Err((
-            StatusCode::PAYLOAD_TOO_LARGE,
-            Json(serde_json::json!({
-                "ok": false,
-                "data": null,
-                "error": "input-too-large",
-                "package_id": package_id,
-                "limit_bytes": limit_bytes,
-            })),
-        )
-            .into_response()),
-    }
-}
-
-/// Stage an allowed augment once its write is sent; it never delays or fails the write.
-fn stage_scene_augment(augment: Option<SceneAugment>, created_node_id: Option<&str>) {
-    let Some(augment) = augment else { return };
-    let staged = match created_node_id {
-        Some(node_id) => augment.stage_created(node_id),
-        None => augment.stage(),
+        SceneDenied::Hook(SceneRefusal::TooManyHookCalls { package_id, limit }) => {
+            serde_json::json!({
+                "ok": false, "data": null, "error": "input-too-large",
+                "package_id": package_id, "limit_calls": limit,
+            })
+        }
+        SceneDenied::Door(_) => serde_json::json!({
+            "ok": false, "data": null, "error": denied.message(),
+        }),
     };
-    if let Err(error) = staged {
-        tracing::warn!(%error, "scene hook augment was not staged");
+    let status = StatusCode::from_u16(denied.http_status()).unwrap_or(StatusCode::CONFLICT);
+    (status, Json(body)).into_response()
+}
+
+/// REST answer for a core failure: a door refusal keeps its status, anything else the historical 200 envelope.
+fn write_failure_response<T: serde::Serialize>(failure: WriteFailure) -> Response {
+    match failure {
+        WriteFailure::Denied(denied) => scene_denied_response(denied),
+        WriteFailure::Failed(message) => Json(ApiResponse::<T>::error(message)).into_response(),
     }
 }
 
-/// The petal of an authorized node scope (`VERSE#v-FRACTAL#f-PETAL#p`).
-fn scope_petal_id(scope: &str) -> Option<String> {
-    fe_database::parse_scope(scope).ok()?.petal_id
-}
 
 // ---------------------------------------------------------------------------
 // Handlers
@@ -401,20 +372,11 @@ async fn create_node_in_petal(
         // CreateNode carries no rotation/scale; dropping them silently is worse.
         return create_denied(StatusCode::BAD_REQUEST, "rotation/scale require asset_id");
     }
-    let augment = match scene_gate_rest(claims, || SceneHookInput::Create {
-        petal_id: petal_id.clone(),
-        name: req.name.clone(),
-        position: req.position.unwrap_or([0.0; 3]),
-    })
-    .await
-    {
-        Ok(augment) => augment,
-        Err(refused) => return refused,
-    };
+    let door = Door { claims, kind: SceneCallerKind::Rest };
     if let Some(asset_id) = req.asset_id.as_deref() {
         let placed = crate::upload::place_asset_core(
             state,
-            claims,
+            door,
             &petal_id,
             &req.name,
             asset_id,
@@ -424,29 +386,33 @@ async fn create_node_in_petal(
         )
         .await;
         return match placed {
-            Ok(p) => {
-                stage_scene_augment(augment, Some(&p.node_id));
-                Json(ApiResponse::success(serde_json::json!({
-                    "id": p.node_id,
-                    "name": p.name,
-                    "asset_id": p.asset_id,
-                    "asset_path": p.asset_path,
-                })))
-                .into_response()
+            Ok(p) => Json(ApiResponse::success(serde_json::json!({
+                "id": p.node_id,
+                "name": p.name,
+                "asset_id": p.asset_id,
+                "asset_path": p.asset_path,
+            })))
+            .into_response(),
+            Err(WriteFailure::Denied(denied)) => scene_denied_response(denied),
+            Err(WriteFailure::Failed(e)) if e == crate::upload::UNKNOWN_ASSET => {
+                create_denied(StatusCode::NOT_FOUND, &e)
             }
-            Err(e) if e == crate::upload::UNKNOWN_ASSET => create_denied(StatusCode::NOT_FOUND, &e),
-            Err(e) => create_failed(e),
+            Err(WriteFailure::Failed(e)) => create_failed(e),
         };
     }
     let cmd = DbCommand::CreateNode {
-        petal_id,
+        petal_id: petal_id.clone(),
         name: req.name,
         position: req.position.unwrap_or([0.0, 0.0, 0.0]),
         correlation_id: None,
     };
+    let (cmd, admission) = match admit(door, &petal_id, cmd).await {
+        Ok(admitted) => admitted,
+        Err(denied) => return scene_denied_response(denied),
+    };
     match db_round_trip(state, cmd).await {
         Ok(DbResult::NodeCreated { id, name, .. }) => {
-            stage_scene_augment(augment, Some(&id));
+            admission.stage(Some(&id));
             created(id, name)
         }
         Ok(DbResult::Error(e)) => {
@@ -487,22 +453,15 @@ pub async fn update_transform(
     }
 
     // scene.transform runs before the optimistic broadcast, so a refused move is never previewed.
-    let augment = match scope_petal_id(&scope) {
+    let admission = match scope_petal_id(&scope) {
         Some(petal_id) => {
-            let gated = scene_gate_rest(&claims, || SceneHookInput::Transform {
-                petal_id,
-                node_id: node_id.clone(),
-                position: req.position,
-                rotation: req.rotation,
-                scale: req.scale,
-            })
-            .await;
-            match gated {
-                Ok(augment) => augment,
-                Err(refused) => return refused,
+            let door = Door { claims: &claims, kind: SceneCallerKind::Rest };
+            match admit_only(door, &petal_id, transform_command(&node_id, req.position, req.rotation, req.scale)).await {
+                Ok(admission) => admission,
+                Err(denied) => return scene_denied_response(denied),
             }
         }
-        None => None,
+        None => return error("could not resolve node petal"),
     };
 
     let mut outcomes = state.entity_change_tx.subscribe();
@@ -519,7 +478,7 @@ pub async fn update_transform(
         Some(false) => return error(TRANSFORM_REFUSED),
         None => "queued",
     };
-    stage_scene_augment(augment, None);
+    admission.stage(None);
 
     Json(ApiResponse::success(serde_json::json!({
         "node_id": node_id,
@@ -527,6 +486,21 @@ pub async fn update_transform(
         "persist": persist
     })))
     .into_response()
+}
+
+/// The door's view of a transform write (it persists on the `TransformPersist` rail, not as this command).
+pub(crate) fn transform_command(
+    node_id: &str,
+    position: [f32; 3],
+    rotation: [f32; 3],
+    scale: [f32; 3],
+) -> DbCommand {
+    DbCommand::UpdateNodeTransform {
+        node_id: node_id.to_string(),
+        position,
+        rotation,
+        scale,
+    }
 }
 
 /// Reply copy for a transform the DB refused after the optimistic preview.
@@ -690,31 +664,15 @@ pub async fn set_node_property(
     let Some(scope) = crate::rest::authorized_node_scope(&state, &claims, &node_id).await else {
         return error(crate::rest::NOT_FOUND_OR_DENIED.into());
     };
-
-    // scene.property: only keys inside the bound build's property_scope reach the guest.
-    let augment = match scope_petal_id(&scope) {
-        Some(petal_id) => {
-            let gated = scene_gate_rest(&claims, || SceneHookInput::Property {
-                petal_id,
-                node_id: node_id.clone(),
-                key: req.key.clone(),
-                value: req.value.clone(),
-            })
-            .await;
-            match gated {
-                Ok(augment) => augment,
-                Err(refused) => return refused,
-            }
-        }
-        None => None,
+    let Some(petal_id) = scope_petal_id(&scope) else {
+        return error("could not resolve node petal".into());
     };
 
-    match set_property_as(&state, &claims, &node_id, req.key, req.value).await {
-        Ok(dto) => {
-            stage_scene_augment(augment, None);
-            Json(ApiResponse::success(dto)).into_response()
-        }
-        Err(e) => error(e),
+    // scene.property (only keys inside the bound build's property_scope reach the guest) is asked by the core.
+    let door = Door { claims: &claims, kind: SceneCallerKind::Rest };
+    match set_property_as(&state, door, &petal_id, &node_id, req.key, req.value).await {
+        Ok(dto) => Json(ApiResponse::success(dto)).into_response(),
+        Err(failure) => write_failure_response::<PropertySetDto>(failure),
     }
 }
 
@@ -773,19 +731,21 @@ pub(crate) async fn set_property_core(
     }
 }
 
-/// Actor-attributed property command for validated REST/MCP/WS principals.
+/// Actor-attributed property command for validated REST/MCP/WS principals; the door gates it.
 pub(crate) async fn set_property_as(
     state: &crate::server::ApiState,
-    claims: &ApiClaims,
+    door: Door<'_>,
+    petal_id: &str,
     node_id: &str,
     key: String,
     value: serde_json::Value,
-) -> Result<PropertySetDto, String> {
+) -> Result<PropertySetDto, WriteFailure> {
     crate::node_history::commit_core(
         state,
-        claims,
+        door,
+        petal_id,
         node_id,
-        fe_runtime::messages::NodeMutation::PropertySet {
+        NodeMutation::PropertySet {
             key: key.clone(),
             value,
         },
@@ -797,18 +757,20 @@ pub(crate) async fn set_property_as(
     })
 }
 
-/// Actor-attributed optional-property removal for validated principals.
+/// Actor-attributed optional-property removal for validated principals; the door gates it.
 pub(crate) async fn delete_property_as(
     state: &crate::server::ApiState,
-    claims: &ApiClaims,
+    door: Door<'_>,
+    petal_id: &str,
     node_id: &str,
     key: &str,
-) -> Result<PropertySetDto, String> {
+) -> Result<PropertySetDto, WriteFailure> {
     crate::node_history::commit_core(
         state,
-        claims,
+        door,
+        petal_id,
         node_id,
-        fe_runtime::messages::NodeMutation::PropertyDeleted {
+        NodeMutation::PropertyDeleted {
             key: key.to_string(),
         },
     )
@@ -993,18 +955,21 @@ pub async fn delete_node_property(
     }
 
     // Resolve node scope for enforcement — deny if resolution fails
-    if crate::rest::authorized_node_scope(&state, &claims, &node_id)
-        .await
-        .is_none()
-    {
+    let Some(scope) = crate::rest::authorized_node_scope(&state, &claims, &node_id).await else {
         return Json(ApiResponse::<PropertySetDto>::error(
             crate::rest::NOT_FOUND_OR_DENIED,
         ));
-    }
+    };
+    let Some(petal_id) = scope_petal_id(&scope) else {
+        return Json(ApiResponse::<PropertySetDto>::error(
+            "could not resolve node petal",
+        ));
+    };
 
-    match delete_property_as(&state, &claims, &node_id, &key).await {
+    let door = Door { claims: &claims, kind: SceneCallerKind::Rest };
+    match delete_property_as(&state, door, &petal_id, &node_id, &key).await {
         Ok(dto) => Json(ApiResponse::success(dto)),
-        Err(e) => Json(ApiResponse::<PropertySetDto>::error(e)),
+        Err(failure) => Json(ApiResponse::<PropertySetDto>::error(failure.message())),
     }
 }
 
@@ -1964,9 +1929,10 @@ pub async fn create_waypoint(
             crate::rest::NOT_FOUND_OR_DENIED,
         ));
     }
-    match create_waypoint_core(&state, &petal_id, &req).await {
+    let door = Door { claims: &claims, kind: SceneCallerKind::Rest };
+    match create_waypoint_core(&state, door, &petal_id, &req).await {
         Ok(dto) => Json(ApiResponse::success(dto)),
-        Err(e) => Json(ApiResponse::<CreatedEntityDto>::error(e)),
+        Err(e) => Json(ApiResponse::<CreatedEntityDto>::error(e.message())),
     }
 }
 
@@ -1974,13 +1940,14 @@ pub async fn create_waypoint(
 /// authorized the petal): project, create the node, tag its waypoint properties.
 pub(crate) async fn create_waypoint_core(
     state: &crate::server::ApiState,
+    door: Door<'_>,
     petal_id: &str,
     req: &crate::types::CreateWaypointRequest,
-) -> Result<CreatedEntityDto, String> {
+) -> Result<CreatedEntityDto, WriteFailure> {
     let position = match load_petal_projection(state, petal_id).await {
         Some(proj) => match proj.wgs84_to_local(req.lat, req.lon, req.ele) {
             Ok([x, y, z]) => [x as f32, y as f32, z as f32],
-            Err(e) => return Err(format!("projection failed: {e}")),
+            Err(e) => return Err(format!("projection failed: {e}").into()),
         },
         None => {
             tracing::warn!("no terrain config for petal {petal_id}, using identity projection");
@@ -2006,8 +1973,11 @@ pub(crate) async fn create_waypoint_core(
         position,
         correlation_id: None,
     };
+    // scene.create through the one door; the lat/lon/tag properties are part of the create (not hooked apart).
+    let (cmd, admission) = admit(door, petal_id, cmd).await?;
     match db_round_trip(state, cmd).await? {
         DbResult::NodeCreated { id, name, .. } => {
+            admission.stage(Some(&id));
             // Tag the waypoint properties; a failed tag is logged, not fatal.
             for (key, value) in props {
                 if let Err(e) = set_property_core(state, &id, key.clone(), value).await {
@@ -2018,9 +1988,9 @@ pub(crate) async fn create_waypoint_core(
         }
         DbResult::Error(e) => {
             tracing::error!("create_waypoint failed: {e}");
-            Err("operation failed".to_string())
+            Err("operation failed".to_string().into())
         }
-        _ => Err("unexpected response".to_string()),
+        _ => Err("unexpected response".to_string().into()),
     }
 }
 
@@ -2046,9 +2016,10 @@ pub async fn move_waypoint(
     else {
         return Json(ApiResponse::error(crate::rest::NOT_FOUND_OR_DENIED));
     };
-    match move_waypoint_core(&state, &waypoint_id, &scope, &req).await {
+    let door = Door { claims: &claims, kind: SceneCallerKind::Rest };
+    match move_waypoint_core(&state, door, &waypoint_id, &scope, &req).await {
         Ok(payload) => Json(ApiResponse::<serde_json::Value>::success(payload)),
-        Err(e) => Json(ApiResponse::error(e)),
+        Err(e) => Json(ApiResponse::error(e.message())),
     }
 }
 
@@ -2057,15 +2028,16 @@ pub async fn move_waypoint(
 /// is read from it rather than re-queried.
 pub(crate) async fn move_waypoint_core(
     state: &crate::server::ApiState,
+    door: Door<'_>,
     waypoint_id: &str,
     node_scope: &str,
     req: &crate::types::MoveWaypointRequest,
-) -> Result<serde_json::Value, String> {
+) -> Result<serde_json::Value, WriteFailure> {
     let Some(petal_id) = fe_database::parse_scope(node_scope)
         .ok()
         .and_then(|parts| parts.petal_id)
     else {
-        return Err("could not resolve node petal".to_string());
+        return Err("could not resolve node petal".to_string().into());
     };
     let ele = req.ele.unwrap_or(0.0);
 
@@ -2079,12 +2051,19 @@ pub(crate) async fn move_waypoint_core(
     };
     // D-A5: a promoted stamp is path-locked — refuse before any write (incl. lat/lon props).
     if let Some(denial) = stamp_translate_denied(state, waypoint_id, position).await {
-        return Err(denial.to_string());
+        return Err(denial.to_string().into());
     }
 
     // A move is a reposition only: keep the node's stored rotation/scale
     // (`TransformPersist` writes all three, so they must be read first).
     let current = load_node_transform(state, waypoint_id).await?;
+    // scene.transform through the one door before anything is written (the lat/lon props ride along).
+    let admission = admit_only(
+        door,
+        &petal_id,
+        transform_command(waypoint_id, position, current.rotation, current.scale),
+    )
+    .await?;
 
     // Fire-and-forget via `TransformPersist`: the DB thread emits no
     // `DbResult` for a transform write (it broadcasts TransformFailed instead),
@@ -2112,6 +2091,7 @@ pub(crate) async fn move_waypoint_core(
         }
     }
 
+    admission.stage(None);
     Ok(serde_json::json!({
         "node_id": waypoint_id,
         "lat": req.lat,
@@ -2541,6 +2521,10 @@ mod tests {
     use std::collections::HashSet;
     use std::sync::Arc;
 
+    fn test_door(claims: &ApiClaims) -> Door<'_> {
+        Door { claims, kind: SceneCallerKind::Rest }
+    }
+
     async fn setup_test_db() -> surrealdb::Surreal<surrealdb::engine::local::Db> {
         let db = surrealdb::Surreal::new::<surrealdb::engine::local::Mem>(())
             .await
@@ -2849,24 +2833,28 @@ mod tests {
                     match operation {
                         0 => set_property_as(
                             &state,
-                            &claims,
+                            test_door(&claims),
+                            "petal",
                             "node",
                             "key".into(),
                             serde_json::json!(10),
                         )
                         .await
-                        .map(|_| ()),
-                        1 => delete_property_as(&state, &claims, "node", "key")
+                        .map(|_| ())
+                        .map_err(WriteFailure::message),
+                        1 => delete_property_as(&state, test_door(&claims), "petal", "node", "key")
                             .await
-                            .map(|_| ()),
+                            .map(|_| ())
+                            .map_err(WriteFailure::message),
                         2 => crate::node_history::create_core(
                             &state,
-                            &claims,
+                            test_door(&claims),
                             "petal",
                             serde_json::from_value(serde_json::json!({"name":"object"})).unwrap(),
                         )
                         .await
-                        .map(|_| ()),
+                        .map(|_| ())
+                        .map_err(WriteFailure::message),
                         3 => crate::node_history::read_core(&state, &claims, "node", 0, 1, None)
                             .await
                             .map(|_| ()),

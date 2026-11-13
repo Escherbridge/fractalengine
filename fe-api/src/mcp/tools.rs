@@ -7,12 +7,20 @@ use serde_json::{json, Value};
 use fe_runtime::messages::{
     ApiCommand, DbCommand, DbResult, DevicePayloadInput, NodeMutation, SourceClass,
 };
-use fe_runtime::scene_hook_gate::{SceneCallerKind, SceneHookInput};
+use fe_runtime::scene_hook_gate::SceneCallerKind;
 
-use super::scene_gate::{gate_scene_write, scope_petal_id, stage_scene_augment};
+use super::scene_gate::{admit, admit_only, scope_petal_id, Door};
 use super::{ToolCall, ToolFuture, ToolOutcome};
 use crate::endpoint::{caller_auth, load_node};
 use crate::upload::{GlbPayload, MCP_MAX_ASSET_BYTES};
+
+/// The scene write door for this call (caller kind `Mcp`; fe-api/AGENTS.md §scene-gate-doors).
+fn door<'a>(call: &ToolCall<'a>) -> Door<'a> {
+    Door {
+        claims: call.claims,
+        kind: SceneCallerKind::Mcp,
+    }
+}
 
 // ---------------------------------------------------------------------------
 // Argument helpers
@@ -152,22 +160,19 @@ pub(super) fn create_node(call: ToolCall<'_>) -> ToolFuture<'_> {
         let petal_id = scoped_petal(&call)?;
         let position = vec3_arg(call.args, "position", [0.0; 3])?;
         let name = str_arg(call.args, "name").to_string();
-        // scene.create, as REST create_node asks it (fe-api/AGENTS.md §scene-gate-doors).
-        let augment = gate_scene_write(call.claims, SceneCallerKind::Mcp, || SceneHookInput::Create {
-            petal_id: petal_id.clone(),
-            name: name.clone(),
-            position,
-        })
-        .await?;
         let cmd = DbCommand::CreateNode {
-            petal_id,
+            petal_id: petal_id.clone(),
             name,
             position,
             correlation_id: None,
         };
+        // scene.create through the one door, as REST create_node asks it.
+        let (cmd, admission) = admit(door(&call), &petal_id, cmd)
+            .await
+            .map_err(|denied| denied.message())?;
         match crate::rest::db_round_trip(call.state, cmd).await? {
             DbResult::NodeCreated { id, name, .. } => {
-                stage_scene_augment(augment, Some(&id));
+                admission.stage(Some(&id));
                 Ok(json!({ "id": id, "name": name }))
             }
             DbResult::Error(e) => Err(db_failure("create_node", &e)),
@@ -188,7 +193,7 @@ pub(super) fn update_transform(call: ToolCall<'_>) -> ToolFuture<'_> {
             return Err(denial.to_string());
         }
         // scene.transform before the optimistic broadcast, so a refused move is never previewed.
-        let augment = gate_transform(&call, node_id, position, rotation, scale).await?;
+        let admission = gate_transform(&call, node_id, position, rotation, scale).await?;
         // Same core and verdict wait as REST PATCH .../transform (QA-0087).
         let mut outcomes = call.state.entity_change_tx.subscribe();
         crate::rest::persist_transform(call.state, call.claims, node_id, position, rotation, scale);
@@ -196,7 +201,7 @@ pub(super) fn update_transform(call: ToolCall<'_>) -> ToolFuture<'_> {
         match crate::rest::transform_outcome(&mut outcomes, node_id, position).await {
             Some(false) => Err(crate::rest::TRANSFORM_REFUSED.to_string()),
             Some(true) | None => {
-                stage_scene_augment(augment, None);
+                admission.stage(None);
                 Ok(json!({ "status": "ok" }))
             }
         }
@@ -272,17 +277,26 @@ pub(super) fn promote_instance(call: ToolCall<'_>) -> ToolFuture<'_> {
             return Err(crate::rest::NOT_FOUND_OR_DENIED.to_string());
         }
         let cmd = DbCommand::PromoteInstance {
-            petal_id,
+            petal_id: petal_id.clone(),
             path_id,
             instance_index,
             auth: caller_auth(call.claims),
         };
+        // A promotion is a node create (scene.create, source = the stamp instance).
+        let (cmd, admission) = admit(door(&call), &petal_id, cmd)
+            .await
+            .map_err(|denied| denied.message())?;
         match crate::rest::db_round_trip(call.state, cmd).await? {
             DbResult::NodePromoted {
                 node_id,
                 newly_promoted,
                 ..
-            } => Ok(json!({ "node_id": node_id, "newly_promoted": newly_promoted })),
+            } => {
+                if newly_promoted {
+                    admission.stage(Some(&node_id));
+                }
+                Ok(json!({ "node_id": node_id, "newly_promoted": newly_promoted }))
+            }
             DbResult::Error(e) => {
                 tracing::warn!("promote_instance MCP denied/failed: {e}");
                 Err("operation failed or not permitted".to_string())
@@ -428,16 +442,10 @@ pub(super) fn place_asset(call: ToolCall<'_>) -> ToolFuture<'_> {
         let position = vec3_arg(call.args, "position", [0.0; 3])?;
         let rotation = vec3_arg(call.args, "rotation", [0.0; 3])?;
         let scale = vec3_arg(call.args, "scale", [1.0; 3])?;
-        // A placed asset is a node create: scene.create, as REST create_node with an asset_id.
-        let augment = gate_scene_write(call.claims, SceneCallerKind::Mcp, || SceneHookInput::Create {
-            petal_id: petal_id.clone(),
-            name: name.to_string(),
-            position,
-        })
-        .await?;
+        // A placed asset is a node create: scene.create through the door inside the core.
         let placed = crate::upload::place_asset_core(
             call.state,
-            call.claims,
+            door(&call),
             &petal_id,
             name,
             asset_id,
@@ -446,7 +454,6 @@ pub(super) fn place_asset(call: ToolCall<'_>) -> ToolFuture<'_> {
             scale,
         )
         .await?;
-        stage_scene_augment(augment, Some(&placed.node_id));
         Ok(serde_json::to_value(placed).unwrap_or_default())
     })
 }
@@ -460,51 +467,31 @@ pub(super) fn set_property(call: ToolCall<'_>) -> ToolFuture<'_> {
         let node_id = str_arg(call.args, "node_id");
         let key = str_arg(call.args, "key").to_string();
         let value = call.args.get("value").cloned().unwrap_or(Value::Null);
-        let augment = gate_property(&call, node_id, &key, &value).await?;
-        let dto = crate::rest::set_property_as(call.state, call.claims, node_id, key, value).await?;
-        stage_scene_augment(augment, None);
+        let petal_id = node_petal(&call)?;
+        let dto =
+            crate::rest::set_property_as(call.state, door(&call), &petal_id, node_id, key, value).await?;
         Ok(serde_json::to_value(dto).unwrap_or_default())
     })
 }
 
-/// scene.property on the authorized node, as REST set_node_property asks it (only `property_scope` keys reach the guest).
-async fn gate_property(
-    call: &ToolCall<'_>,
-    node_id: &str,
-    key: &str,
-    value: &Value,
-) -> Result<Option<fe_runtime::scene_hook_gate::SceneAugment>, String> {
-    let Some(petal_id) = scope_petal_id(scope_str(call)?) else {
-        return Ok(None);
-    };
-    gate_scene_write(call.claims, SceneCallerKind::Mcp, || SceneHookInput::Property {
-        petal_id,
-        node_id: node_id.to_string(),
-        key: key.to_string(),
-        value: value.clone(),
-    })
-    .await
+/// The petal of the authorized node scope; a node without one cannot be written.
+fn node_petal(call: &ToolCall<'_>) -> Result<String, String> {
+    scope_petal_id(scope_str(call)?).ok_or_else(|| "could not resolve node petal".to_string())
 }
 
-/// scene.transform on the authorized node.
+/// scene.transform on the authorized node (its send rides the TransformPersist rail).
 async fn gate_transform(
     call: &ToolCall<'_>,
     node_id: &str,
     position: [f32; 3],
     rotation: [f32; 3],
     scale: [f32; 3],
-) -> Result<Option<fe_runtime::scene_hook_gate::SceneAugment>, String> {
-    let Some(petal_id) = scope_petal_id(scope_str(call)?) else {
-        return Ok(None);
-    };
-    gate_scene_write(call.claims, SceneCallerKind::Mcp, || SceneHookInput::Transform {
-        petal_id,
-        node_id: node_id.to_string(),
-        position,
-        rotation,
-        scale,
-    })
-    .await
+) -> Result<super::scene_gate::Admission, String> {
+    let petal_id = node_petal(call)?;
+    let command = crate::rest::transform_command(node_id, position, rotation, scale);
+    admit_only(door(call), &petal_id, command)
+        .await
+        .map_err(|denied| denied.message())
 }
 
 pub(super) fn get_properties(call: ToolCall<'_>) -> ToolFuture<'_> {
@@ -589,16 +576,10 @@ pub(super) fn commit_node_mutation(call: ToolCall<'_>) -> ToolFuture<'_> {
         )
         .map_err(|e| format!("invalid mutation: {e}"))?;
         let node_id = str_arg(call.args, "node_id");
-        // A property set or full transform is a scene write like set_property / update_transform.
-        let augment = match &mutation {
-            NodeMutation::PropertySet { key, value } => gate_property(&call, node_id, key, value).await?,
-            NodeMutation::FullTransform { position, rotation, scale } => {
-                gate_transform(&call, node_id, *position, *rotation, *scale).await?
-            }
-            NodeMutation::PropertyDeleted { .. } => None,
-        };
-        let committed = crate::node_history::commit_core(call.state, call.claims, node_id, mutation).await?;
-        stage_scene_augment(augment, None);
+        // The core admits the mutation through the door (property set/delete, full transform).
+        let petal_id = node_petal(&call)?;
+        let committed =
+            crate::node_history::commit_core(call.state, door(&call), &petal_id, node_id, mutation).await?;
         Ok(committed)
     })
 }
@@ -622,9 +603,11 @@ pub(super) fn set_field_schema(call: ToolCall<'_>) -> ToolFuture<'_> {
 
 pub(super) fn delete_property(call: ToolCall<'_>) -> ToolFuture<'_> {
     Box::pin(async move {
+        let petal_id = node_petal(&call)?;
         let dto = crate::rest::delete_property_as(
             call.state,
-            call.claims,
+            door(&call),
+            &petal_id,
             str_arg(call.args, "node_id"),
             str_arg(call.args, "key"),
         )
@@ -656,7 +639,7 @@ pub(super) fn create_waypoint(call: ToolCall<'_>) -> ToolFuture<'_> {
                 .and_then(Value::as_str)
                 .map(str::to_string),
         };
-        let dto = crate::rest::create_waypoint_core(call.state, &petal_id, &req).await?;
+        let dto = crate::rest::create_waypoint_core(call.state, door(&call), &petal_id, &req).await?;
         Ok(json!({ "id": dto.id, "name": dto.name }))
     })
 }
@@ -670,6 +653,7 @@ pub(super) fn move_waypoint(call: ToolCall<'_>) -> ToolFuture<'_> {
         };
         crate::rest::move_waypoint_core(
             call.state,
+            door(&call),
             str_arg(call.args, "node_id"),
             scope_str(&call)?,
             &req,

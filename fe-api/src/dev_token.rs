@@ -158,19 +158,28 @@ pub fn spawn_dev_token_writer(writer: DevTokenWriter) {
     }
 }
 
-/// Spawn a stoppable owner of dev-token publication.
+/// Spawn a stoppable owner of dev-token publication under a fresh client DID.
 pub fn spawn_dev_token_service(writer: DevTokenWriter) -> std::io::Result<fe_runtime::service_lifecycle::OwnedService> {
+    spawn_dev_token_service_as(writer, fe_identity::new_client_did())
+}
+
+/// [`spawn_dev_token_service`] under the caller's client DID, so the portal host and the dev tokens
+/// share one API client (one upload bucket, one `client` claim).
+pub fn spawn_dev_token_service_as(
+    writer: DevTokenWriter,
+    client_did: String,
+) -> std::io::Result<fe_runtime::service_lifecycle::OwnedService> {
     use fe_runtime::service_lifecycle::{OwnedService, StopSignal};
     let stop = StopSignal::default();
     let worker_stop = stop.clone();
     let spawned = std::thread::Builder::new()
         .name("fe-dev-token".to_string())
-        .spawn(move || writer.run(worker_stop))?;
+        .spawn(move || writer.run(worker_stop, client_did))?;
     Ok(OwnedService::new("dev-token", stop, spawned))
 }
 
 impl DevTokenWriter {
-    fn run(self, stop: fe_runtime::service_lifecycle::StopSignal) {
+    fn run(self, stop: fe_runtime::service_lifecycle::StopSignal, client_did: String) {
         let bound = loop {
             if stop.is_requested() { return; }
             match self.listening_rx.recv_timeout(std::time::Duration::from_millis(100)) {
@@ -195,7 +204,6 @@ impl DevTokenWriter {
         };
         // One API client per process: the agent's uploads share one owner
         // bucket across rewrites (fe-identity/src/AGENTS.md §api-token).
-        let client_did = fe_identity::new_client_did();
         while !stop.is_requested() {
             let mut verse_ids = match self.verse_ids_rx.recv_timeout(std::time::Duration::from_millis(100)) {
                 Ok(ids) => ids,

@@ -17,6 +17,7 @@ use fe_runtime::messages::{DbCommand, DbResult};
 use serde::Serialize;
 
 use crate::auth::require_role;
+use crate::mcp::scene_gate::{admit, Door, WriteFailure};
 use crate::server::ApiState;
 use crate::types::{is_valid_ulid, ApiResponse};
 
@@ -530,17 +531,17 @@ pub struct PlacedAsset {
 /// then `CreateNodeWithAsset` with a correlated reply; the DB thread
 /// validates the asset row exists.
 #[allow(clippy::too_many_arguments)]
-pub async fn place_asset_core(
+pub(crate) async fn place_asset_core(
     state: &ApiState,
-    claims: &ApiClaims,
+    door: Door<'_>,
     petal_id: &str,
     name: &str,
     asset_id: &str,
     position: [f32; 3],
     rotation: [f32; 3],
     scale: [f32; 3],
-) -> Result<PlacedAsset, String> {
-    validate_scene_asset(state, claims, asset_id).await?;
+) -> Result<PlacedAsset, WriteFailure> {
+    validate_scene_asset(state, door.claims, asset_id).await?;
     let correlation_id = ulid::Ulid::new().to_string();
     let cmd = DbCommand::CreateNodeWithAsset {
         petal_id: petal_id.to_string(),
@@ -551,7 +552,9 @@ pub async fn place_asset_core(
         scale,
         correlation_id: Some(correlation_id.clone()),
     };
-    match crate::rest::db_round_trip(state, cmd).await? {
+    // scene.create through the one door; the augment is staged on the created node below.
+    let (cmd, admission) = admit(door, petal_id, cmd).await?;
+    let placed = match crate::rest::db_round_trip(state, cmd).await? {
         DbResult::GltfImported {
             node_id,
             asset_id,
@@ -584,7 +587,9 @@ pub async fn place_asset_core(
             tracing::error!("CreateNodeWithAsset reply mismatch (not ours): {other:?}");
             Err("operation failed".to_string())
         }
-    }
+    }?;
+    admission.stage(Some(&placed.node_id));
+    Ok(placed)
 }
 
 // ---------------------------------------------------------------------------

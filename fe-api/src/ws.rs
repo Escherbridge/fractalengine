@@ -9,9 +9,9 @@ use tokio::sync::broadcast;
 
 use fe_identity::api_token::ApiClaims;
 use fe_runtime::messages::{ApiCommand, DbCommand, DbResult, SceneChange, TransformUpdate};
-use fe_runtime::scene_hook_gate::{SceneAugment, SceneCallerKind, SceneHookInput};
+use fe_runtime::scene_hook_gate::SceneCallerKind;
 
-use crate::mcp::scene_gate::{gate_scene_write, scope_petal_id, stage_scene_augment};
+use crate::mcp::scene_gate::{admit, admit_only, scope_petal_id, Admission, Door};
 use crate::server::{ApiHosts, ApiState};
 
 /// The `scene.*` caller kind for `/ws` writes (hook input `caller.kind: "ws"`; steer 2026-11-09 02:45).
@@ -235,7 +235,7 @@ async fn handle_socket(mut socket: WebSocket, state: Arc<ApiState>, hosts: ApiHo
     let mut transform_debounce: std::collections::HashMap<String, TransformTriple> =
         std::collections::HashMap::new();
     // Augments the scene gate allowed for each node's pending transform; staged once its persist is sent.
-    let mut transform_augments: std::collections::HashMap<String, SceneAugment> =
+    let mut transform_augments: std::collections::HashMap<String, Admission> =
         std::collections::HashMap::new();
     let mut debounce_interval = tokio::time::interval(std::time::Duration::from_millis(200));
     debounce_interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
@@ -384,20 +384,19 @@ async fn handle_socket(mut socket: WebSocket, state: Arc<ApiState>, hosts: ApiHo
                             continue;
                         };
                         // scene.transform before the optimistic broadcast, as REST asks it (§scene-gate-doors).
-                        let augment = match gate_scene_write(&claims, WS_SCENE_CALLER, || SceneHookInput::Transform {
-                            petal_id: petal_id.clone(),
-                            node_id: node_id.clone(),
-                            position,
-                            rotation,
-                            scale,
-                        })
+                        let door = Door { claims: &claims, kind: WS_SCENE_CALLER };
+                        let admission = match admit_only(
+                            door,
+                            &petal_id,
+                            crate::rest::transform_command(&node_id, position, rotation, scale),
+                        )
                         .await
                         {
-                            Ok(augment) => augment,
-                            Err(refusal) => {
+                            Ok(admission) => admission,
+                            Err(denied) => {
                                 send_protected(&mut socket, &state, &claims, &WsServerMsg::Error {
                                     code: "refused".into(),
-                                    message: format!("node {node_id}: {refusal}"),
+                                    message: format!("node {node_id}: {}", denied.message()),
                                 }).await;
                                 continue;
                             }
@@ -418,9 +417,10 @@ async fn handle_socket(mut socket: WebSocket, state: Arc<ApiState>, hosts: ApiHo
                         // The debounce_interval branch drains this map and sends
                         // TransformPersist commands so the DB isn't flooded by
                         // high-frequency WS streams. A superseded proposal's augment is dropped with it.
-                        match augment {
-                            Some(augment) => { transform_augments.insert(node_id.clone(), augment); }
-                            None => { transform_augments.remove(&node_id); }
+                        if admission.is_empty() {
+                            transform_augments.remove(&node_id);
+                        } else {
+                            transform_augments.insert(node_id.clone(), admission);
                         }
                         transform_debounce.insert(node_id, (position, rotation, scale));
                     }
@@ -565,7 +565,7 @@ async fn handle_socket(mut socket: WebSocket, state: Arc<ApiState>, hosts: ApiHo
                     break;
                 }
                 for (node_id, (position, rotation, scale)) in transform_debounce.drain() {
-                    let augment = transform_augments.remove(&node_id);
+                    let admission = transform_augments.remove(&node_id);
                     let sent = state.api_cmd_tx.send(ApiCommand::TransformPersist {
                         node_id,
                         position,
@@ -573,7 +573,9 @@ async fn handle_socket(mut socket: WebSocket, state: Arc<ApiState>, hosts: ApiHo
                         scale,
                     });
                     if sent.is_ok() {
-                        stage_scene_augment(augment, None);
+                        if let Some(admission) = admission {
+                            admission.stage(None);
+                        }
                     } else {
                         tracing::warn!("WS transform persist send failed (DB bridge gone)");
                     }
@@ -866,27 +868,25 @@ async fn handle_entity_command(
         return Err(crate::rest::NOT_FOUND_OR_DENIED.into());
     };
 
-    // scene.create / scene.property ask the gate as REST does; a refusal is the command's error (§scene-gate-doors).
-    let (db_cmd, create_augment) = match command {
+    // Every scene write passes the one door with the `Ws` caller kind; a refusal is the command's error.
+    let door = Door { claims, kind: WS_SCENE_CALLER };
+    let (db_cmd, create_admission) = match command {
         Ec::CreateNode {
             petal_id,
             name,
             position,
         } => {
             let position = position.unwrap_or([0.0, 0.0, 0.0]);
-            let augment = gate_scene_write(claims, WS_SCENE_CALLER, || SceneHookInput::Create {
-                petal_id: petal_id.clone(),
-                name: name.clone(),
-                position,
-            })
-            .await?;
             let cmd = DbCommand::CreateNode {
-                petal_id,
+                petal_id: petal_id.clone(),
                 name,
                 position,
                 correlation_id: None,
             };
-            (cmd, augment)
+            let (cmd, admission) = admit(door, &petal_id, cmd)
+                .await
+                .map_err(|denied| denied.message())?;
+            (cmd, Some(admission))
         }
         Ec::DeleteNode { node_id } => (DbCommand::DeleteNode { node_id }, None),
         Ec::SetNodeProperty {
@@ -894,28 +894,19 @@ async fn handle_entity_command(
             key,
             value,
         } => {
-            let augment = match scope_petal_id(&scope) {
-                Some(petal_id) => {
-                    gate_scene_write(claims, WS_SCENE_CALLER, || SceneHookInput::Property {
-                        petal_id,
-                        node_id: node_id.clone(),
-                        key: key.clone(),
-                        value: value.clone(),
-                    })
-                    .await?
-                }
-                None => None,
-            };
-            let dto = crate::rest::set_property_as(state, claims, &node_id, key, value)
+            let petal_id = scope_petal_id(&scope)
+                .ok_or_else(|| "could not resolve node petal".to_string())?;
+            let dto = crate::rest::set_property_as(state, door, &petal_id, &node_id, key, value)
                 .await
-                .map_err(entity_command_failure)?;
-            stage_scene_augment(augment, None);
+                .map_err(|failure| entity_command_failure(failure.message()))?;
             return Ok(serde_json::json!({"node_id": dto.node_id, "key": dto.key}));
         }
         Ec::DeleteNodeProperty { node_id, key } => {
-            let dto = crate::rest::delete_property_as(state, claims, &node_id, &key)
+            let petal_id = scope_petal_id(&scope)
+                .ok_or_else(|| "could not resolve node petal".to_string())?;
+            let dto = crate::rest::delete_property_as(state, door, &petal_id, &node_id, &key)
                 .await
-                .map_err(entity_command_failure)?;
+                .map_err(|failure| entity_command_failure(failure.message()))?;
             return Ok(serde_json::json!({"node_id": dto.node_id, "key": dto.key}));
         }
     };
@@ -933,7 +924,9 @@ async fn handle_entity_command(
         Ok(Ok(DbResult::NodeCreated {
             id, name, petal_id, ..
         })) => {
-            stage_scene_augment(create_augment, Some(&id));
+            if let Some(admission) = create_admission {
+                admission.stage(Some(&id));
+            }
             Ok(serde_json::json!({
                 "node_id": id, "name": name, "petal_id": petal_id,
             }))

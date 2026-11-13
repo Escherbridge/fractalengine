@@ -240,6 +240,11 @@ fn op(verb: AdminVerb, installation: Option<&str>, params: Value) -> AdminOp {
     AdminOp { verb, installation: installation.map(str::to_string), params }
 }
 
+/// The GUI / `fe-ext admin` path: the same host judging an administration verb as the local DID, never through the API.
+fn gui(host: &FakeHost, op: AdminOp) -> Result<Value, ExtError> {
+    host.administer(LOCAL, op).map_err(ExtError::from)
+}
+
 #[tokio::test]
 async fn extensions_api_journey() {
     let host = FakeHost::new(6);
@@ -269,9 +274,20 @@ async fn extensions_api_journey() {
     let delegated = administer(host.as_ref(), &delegate, op(AdminVerb::Uninstall, Some("inst-1"), json!({}))).unwrap_err();
     assert_eq!(delegated, ExtError::not_found());
     assert!(host.seen.lock().unwrap().admin.is_empty(), "a delegated token never reaches the host's lifecycle");
-    // Local administration runs; a precondition refusal maps to its suggested status.
-    assert_eq!(administer(host.as_ref(), &local, op(AdminVerb::Consent, Some("inst-1"), json!({"digest": "good"}))).unwrap()["done"], "consent");
-    let stale = administer(host.as_ref(), &local, op(AdminVerb::Consent, Some("inst-1"), json!({"digest": "old"}))).unwrap_err();
+    // Administration is GUI-only: even the Owner's local token is refused (403, one denial row) and the host never runs the verb.
+    for verb in [AdminVerb::Install, AdminVerb::Consent, AdminVerb::Bind, AdminVerb::Unbind, AdminVerb::Enable, AdminVerb::Update, AdminVerb::Uninstall, AdminVerb::KillListOverride] {
+        let refused = administer(host.as_ref(), &local, op(verb, Some("inst-1"), json!({"digest": "good"}))).unwrap_err();
+        assert_eq!((refused.status, refused.code), (403, "admin-gui-only"), "{verb:?}");
+        assert!(refused.message.contains("Extensions panel or fe-ext admin"), "{}", refused.message);
+    }
+    {
+        let seen = host.seen.lock().unwrap();
+        assert!(seen.admin.is_empty(), "no API caller reaches the host's lifecycle");
+        assert_eq!(seen.denied.last().unwrap(), &(LOCAL.to_string(), "kill-list-override@inst-1".to_string()));
+    }
+    // The same host judges the verb for the GUI / CLI; a precondition refusal maps to its suggested status.
+    assert_eq!(gui(host.as_ref(), op(AdminVerb::Consent, Some("inst-1"), json!({"digest": "good"}))).unwrap()["done"], "consent");
+    let stale = gui(host.as_ref(), op(AdminVerb::Consent, Some("inst-1"), json!({"digest": "old"}))).unwrap_err();
     assert_eq!((stale.status, stale.code), (409, "consent-mismatch"));
 
     // R15 commands: the local caller gets the guest's result; guest refusals map to 409; an out-of-scope
@@ -361,7 +377,7 @@ async fn extensions_api_journey() {
         ("role-denied", 403),
         ("consent-missing", 409),
     ] {
-        let refused = administer(host.as_ref(), &local, op(AdminVerb::Enable, Some("inst-1"), json!({"refuse": code}))).unwrap_err();
+        let refused = gui(host.as_ref(), op(AdminVerb::Enable, Some("inst-1"), json!({"refuse": code}))).unwrap_err();
         assert_eq!((refused.status, refused.code), (status, code));
     }
 
@@ -394,18 +410,18 @@ async fn extensions_api_journey() {
     };
     let component = "b".repeat(64);
     let component = component.as_str();
-    let first_party = administer(host.as_ref(), &local, bind(PACKAGE, "0.1.5", component, "publisher")).unwrap_err();
+    let first_party = gui(host.as_ref(), bind(PACKAGE, "0.1.5", component, "publisher")).unwrap_err();
     assert_eq!((first_party.status, first_party.code), (403, "policy-denied"));
-    assert!(administer(host.as_ref(), &local, bind(PACKAGE, "0.1.5", component, "release")).is_ok());
+    assert!(gui(host.as_ref(), bind(PACKAGE, "0.1.5", component, "release")).is_ok());
 
     // A Manager sets the allow-list; the host writes it (as its local DID) and binds are judged by it.
     put_verse_policy(host.as_ref(), &manager, true, VERSE, allow_list).await.unwrap();
     assert_eq!(get_verse_policy(host.as_ref(), &editor, true, VERSE).await.unwrap()["policy"]["mode"], "allow-list");
-    assert!(administer(host.as_ref(), &local, bind(PACKAGE, "0.1.5", component, "publisher")).is_ok());
-    let out_of_range = administer(host.as_ref(), &local, bind(PACKAGE, "0.2.0", component, "publisher")).unwrap_err();
+    assert!(gui(host.as_ref(), bind(PACKAGE, "0.1.5", component, "publisher")).is_ok());
+    let out_of_range = gui(host.as_ref(), bind(PACKAGE, "0.2.0", component, "publisher")).unwrap_err();
     assert_eq!(out_of_range.code, "policy-denied");
     // governance.md J6: a denied component digest stays denied when the build is re-sealed under a new id.
-    let renamed = administer(host.as_ref(), &local, bind("org.example.renamed", "1.0.0", DENIED_DIGEST, "publisher")).unwrap_err();
+    let renamed = gui(host.as_ref(), bind("org.example.renamed", "1.0.0", DENIED_DIGEST, "publisher")).unwrap_err();
     assert_eq!(renamed.code, "policy-denied");
     assert!(renamed.message.contains("deny-listed"), "{}", renamed.message);
 
@@ -414,9 +430,9 @@ async fn extensions_api_journey() {
     let remote_override = administer(host.as_ref(), &remote, op(AdminVerb::KillListOverride, None, override_params.clone())).unwrap_err();
     assert_eq!(remote_override, ExtError::not_found());
     assert_eq!(host.seen.lock().unwrap().denied.last().unwrap(), &(REMOTE.to_string(), "kill-list-override".to_string()));
-    administer(host.as_ref(), &local, op(AdminVerb::KillListOverride, None, override_params)).unwrap();
+    gui(host.as_ref(), op(AdminVerb::KillListOverride, None, override_params)).unwrap();
     assert_eq!(host.seen.lock().unwrap().admin.last().unwrap().1, AdminVerb::KillListOverride);
-    let mismatch = administer(host.as_ref(), &local, op(AdminVerb::KillListOverride, None, json!({"refuse": "confirmation-mismatch"}))).unwrap_err();
+    let mismatch = gui(host.as_ref(), op(AdminVerb::KillListOverride, None, json!({"refuse": "confirmation-mismatch"}))).unwrap_err();
     assert_eq!((mismatch.status, mismatch.code), (409, "confirmation-mismatch"));
 }
 

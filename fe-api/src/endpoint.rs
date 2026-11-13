@@ -14,9 +14,11 @@ use axum::{Extension, Json};
 use fe_entity_store::NodeAddress;
 use fe_identity::api_token::ApiClaims;
 use fe_runtime::messages::{ApiCommand, CallerAuth, DbCommand, DbResult};
+use fe_runtime::scene_hook_gate::SceneCallerKind;
 use serde::{Deserialize, Serialize};
 
 use crate::auth::{require_role, require_scope};
+use crate::mcp::scene_gate::{admit, Door};
 use crate::server::ApiState;
 use crate::types::{is_valid_ulid, ApiResponse};
 
@@ -356,13 +358,19 @@ pub async fn promote_instance(
         ));
     }
 
-    let (reply_tx, reply_rx) = tokio::sync::oneshot::channel();
     let cmd = DbCommand::PromoteInstance {
         petal_id: petal_id.clone(),
         path_id: path_id.clone(),
         instance_index,
         auth: caller_auth(&claims),
     };
+    // A promotion is a node create (scene.create, source = the stamp instance) through the one door.
+    let door = Door { claims: &claims, kind: SceneCallerKind::Rest };
+    let (cmd, admission) = match admit(door, &petal_id, cmd).await {
+        Ok(admitted) => admitted,
+        Err(denied) => return Json(ApiResponse::<PromoteDto>::error(denied.message())),
+    };
+    let (reply_tx, reply_rx) = tokio::sync::oneshot::channel();
     if state
         .api_cmd_tx
         .send(ApiCommand::DbRequest { cmd, reply_tx })
@@ -377,13 +385,18 @@ pub async fn promote_instance(
             path_id,
             instance_index,
             newly_promoted,
-        })) => Json(ApiResponse::success(PromoteDto {
+        })) => {
+            if newly_promoted {
+                admission.stage(Some(&node_id));
+            }
+            Json(ApiResponse::success(PromoteDto {
             node_id,
             petal_id,
             path_id,
             instance_index,
             newly_promoted,
-        })),
+        }))
+        }
         Ok(Ok(DbResult::Error(e))) => Json(ApiResponse::<PromoteDto>::error(e)),
         Ok(Ok(_)) => Json(ApiResponse::<PromoteDto>::error("unexpected response")),
         Ok(Err(_)) => Json(ApiResponse::<PromoteDto>::error("request cancelled")),

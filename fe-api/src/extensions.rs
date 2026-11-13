@@ -1,4 +1,4 @@
-//! Extensions API (spec R11/R12/R15, bus.md §8): status, audit, local-identity administration,
+//! Extensions API (spec R11/R12/R15, bus.md §8): status, audit, the GUI-only administration refusal,
 //! commands, ingress mount and extension streams; rationale in `fe-api/AGENTS.md` §extensions.
 //!
 //! fe-api never links the plugin host: the binary implements [`ExtensionHost`] over `fe_plugin`'s
@@ -81,7 +81,7 @@ pub enum CommandFailure {
 /// The eventual answer of an admitted command: the guest's JSON text or a failure.
 pub type CommandReply = oneshot::Receiver<Result<String, CommandFailure>>;
 
-/// Lifecycle verbs only the host's local DID may run (R12).
+/// Lifecycle verbs the API refuses for every caller (GUI and local `fe-ext admin` only).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AdminVerb {
     Install,
@@ -243,7 +243,7 @@ pub trait ExtensionHost: Send + Sync {
     fn status(&self, installation: &str) -> Option<Value>;
     /// The newest `limit` audit rows of one installation, newest first.
     fn audit(&self, installation: &str, limit: usize) -> Option<Vec<Value>>;
-    /// Run a lifecycle verb as the local DID.
+    /// Run a lifecycle verb as the local DID; reached by the GUI and the local admin channel, never by REST/MCP/WS.
     fn administer(&self, actor_did: &str, op: AdminOp) -> Result<Value, AdminRefusal>;
     /// Record one `denial` audit row for a non-local administration attempt (R12).
     fn record_denied_admin(&self, actor_did: &str, target: &str);
@@ -287,7 +287,8 @@ pub trait ExtensionHost: Send + Sync {
         not_wired("the verse extension policy")
     }
     /// Write the verse policy AS THE LOCAL DID (fe-database `set_policy_with_replication`); the caller's
-    /// own Manager+ and scope were checked here. One `policy-change` audit entry either way.
+    /// own Manager+ and scope were checked here and `actor_did` (the token `sub`) rides `SetExtensionPolicy`
+    /// into the `policy-change` audit entry, which is written either way.
     fn set_verse_policy(&self, _actor_did: &str, _verse_id: &str, _policy: Value) -> AdminReply {
         not_wired("the verse extension policy")
     }
@@ -469,23 +470,28 @@ pub fn extension_audit(
     Ok(json!({ "installation": installation, "entries": rows }))
 }
 
-/// Install, consent, bind, enable, disable, update and uninstall: the local DID only (R12).
-/// A non-local actor gets the uniform not-found plus one `denial` audit row, whatever the host switch says.
+/// The refusal every administration verb gets on REST, MCP and `/ws` (user decision 2026-11-09).
+pub const ADMIN_GUI_ONLY_MESSAGE: &str = "extension administration is not available over the API; use the Extensions panel or fe-ext admin";
+
+/// Install, consent, bind, enable, disable, update, uninstall and the kill-list override are GUI-only plus the
+/// local `fe-ext admin` channel: this door refuses them for EVERY caller, the verse Owner included, and writes one
+/// `denial` audit row. A non-local actor keeps the uniform not-found (R12: no existence oracle).
 pub fn administer(
     host: &dyn ExtensionHost,
     claims: &ApiClaims,
     op: AdminOp,
 ) -> Result<Value, ExtError> {
     gate(host, claims)?;
-    if !is_local(host, claims) {
-        let target = match &op.installation {
-            Some(installation) => format!("{}@{installation}", op.verb.as_str()),
-            None => op.verb.as_str().to_string(),
-        };
-        host.record_denied_admin(&claims.sub, &target);
-        return Err(ExtError::not_found());
+    let target = match &op.installation {
+        Some(installation) => format!("{}@{installation}", op.verb.as_str()),
+        None => op.verb.as_str().to_string(),
+    };
+    host.record_denied_admin(&claims.sub, &target);
+    if is_local(host, claims) {
+        Err(ExtError::new(403, "admin-gui-only", ADMIN_GUI_ONLY_MESSAGE))
+    } else {
+        Err(ExtError::not_found())
     }
-    host.administer(&claims.sub, op).map_err(ExtError::from)
 }
 
 /// Wait for a database-backed host answer under the reply deadline.

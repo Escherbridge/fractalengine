@@ -493,6 +493,7 @@ fn main() -> anyhow::Result<()> {
         listening_tx: None,
         extension_host: None,
         binding_host: None,
+        import_hooks: None,
     });
 
     app.insert_resource(RevocationBroadcastSender(revocation_tx));

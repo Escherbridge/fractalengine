@@ -2381,28 +2381,44 @@ the answer is the uniform not-found either way, so the order reveals nothing).
 
 ## §scene-gate-doors
 
-Every API door that creates a node, moves one or sets a property asks the `scene.*` gate
-(`fe_runtime::scene_hook_gate`, bindings.md §6) through ONE function, `rest::scene_gate_verdict`, after its own
-authz and before its write (R-API door parity, steer 2026-11-09 02:45):
+Every API door that creates a node, moves one, sets or deletes a property, commits a mutation, creates an
+object, promotes a stamp or places an asset passes ONE core, `fe_runtime::scene_write` (R-X-13), through the
+crate-shared `mcp/scene_gate.rs` (`admit` / `admit_only` over `scene_write::submit(caller_kind, SceneWrite)`),
+after the door's own authz and before its write. Per-door hook-input building and `rest::scene_gate_verdict` are
+gone: the census in `fe-runtime/src/scene_write.rs` decides which `scene.*` hooks a command triggers.
 
-| Door | Hook | Caller kind | Refusal |
+| Door | Command admitted | Caller kind | Refusal |
 |---|---|---|---|
-| REST `POST .../nodes`, `POST /api/v1/nodes`, `PATCH .../transform`, `PATCH .../properties` | create / transform / property | `Rest` | 409 `refused` |
-| MCP `create_node`, `place_asset` | create | `Mcp` | tool error "Refused by <package>: <reason>" |
-| MCP `update_transform`, `set_property`, `commit_node_mutation` (`full_transform` / `property_set`) | transform / property | `Mcp` | same |
-| `/ws` `entity_command` `create_node` / `set_node_property` | create / property | `Ws` | `entity_command_result.error` |
-| `/ws` `transform_update` | transform | `Ws` | `error {code: "refused", message: "node <id>: ..."}` |
+| REST `POST .../nodes`, `POST /api/v1/nodes` (+ `asset_id`) | `CreateNode` / `CreateNodeWithAsset` | `Rest` | 409 `refused`, 413 `input-too-large` |
+| REST `PATCH .../transform` | `UpdateNodeTransform` (verdict only; persists on `TransformPersist`) | `Rest` | same |
+| REST `PATCH` / `DELETE .../properties`, `POST .../mutations` | `CommitNodeMutation` (`node_history::commit_core`) | `Rest` | 409 / ok:false message |
+| REST `POST /petals/{p}/objects` | `CreateObject` (`node_history::create_core`) | `Rest` | ok:false message |
+| REST waypoint create / move, `promote_instance` | `CreateNode` / `UpdateNodeTransform` / `PromoteInstance` | `Rest` | ok:false message |
+| MCP `create_node`, `place_asset`, `promote_instance` | `CreateNode` / `CreateNodeWithAsset` / `PromoteInstance` | `Mcp` | tool error "Refused by <package>: <reason>" |
+| MCP `update_transform`, `set_property`, `delete_property`, `commit_node_mutation`, waypoints | transform / commit cores | `Mcp` | same |
+| `/ws` `entity_command` `create_node` / `set_node_property` / `delete_node_property` | create / commit cores | `Ws` | `entity_command_result.error` |
+| `/ws` `transform_update` | `UpdateNodeTransform` | `Ws` | `error {code: "refused", message: "node <id>: ..."}` |
 
-`mcp/scene_gate.rs` holds the MCP/WS wrapper: any verdict other than `Proceed` keeps the write unsent (so a new
-refusal kind, such as R-HOOKS' over-cap `input-too-large`, fails closed here without an edit), and an allowed
-augment stages only after its write was sent (`stage_created` with the new node id for a create). A transform is
-gated BEFORE the optimistic broadcast, so a refused move is never previewed. `/ws` gates each `transform_update`
-(REST parity, not the GUI's commit-only rule) and stages that node's latest augment after the debounced
-`TransformPersist` is sent; a superseded proposal's augment is dropped with it. `/ws` reports caller kind `Ws`
-(hook input `caller.kind: "ws"`, `ws.rs` `WS_SCENE_CALLER`; R-X). The scene hook input is JSON, so the bus WIT
-`caller-kind`, which has no `ws`, is not involved. Doors still outside the gate (HANDED-OFF in review-turn2/R-API.md): REST
-`POST /nodes/{id}/mutations` and `POST /petals/{p}/objects` (`node_history.rs`), waypoint create/move, GPX import
-and `promote_instance` on both REST and MCP; one shared-core gate inside those cores is the fix.
+Cores that several doors share (`commit_core`, `create_core`, `place_asset_core`, `create_waypoint_core`,
+`move_waypoint_core`, `set_property_as`, `delete_property_as`) take a `Door { claims, kind }` plus the authorized
+petal and return `WriteFailure` (`Denied(SceneDenied)` keeps REST's 409/413 form, `Failed(String)` the historical
+message; `From<WriteFailure> for String` lets MCP/WS use `?`). An unresolved petal fails closed. A transform is
+admitted BEFORE the optimistic broadcast, so a refused move is never previewed; `/ws` admits each `transform_update`
+and stages that node's latest admission after the debounced `TransformPersist` is sent. An allowed augment
+(`Admission::stage`) is staged only after its write is durable. `/ws` reports caller kind `Ws` (`WS_SCENE_CALLER`).
+Waypoint lat/lon/tag properties ride the create/move admission (they are not hooked apart). Still outside the
+door: tombstone / delete (no `scene.delete` hook in v1) and the GPX and `.hexon` import loops in `gpx.rs` / `format.rs`
+(NEEDS: they take `Door` and call `admit` per node).
+## §extensions-admin
+Install, consent, bind, unbind, enable, disable, update, uninstall and the kill-list override are refused on REST,
+MCP and `/ws` for EVERY caller, the verse Owner included (`extensions::administer`, 403 `admin-gui-only`:
+"use the Extensions panel or fe-ext admin"), with one `denial` audit row; a non-local actor keeps the uniform
+not-found (R12). Administration is the GUI plus the local `fe-ext admin` channel only; `ExtensionHost::administer`
+stays the host's judge for those two callers. `SetExtensionPolicy` carries the token `sub` as `actor_did`
+(`set_verse_policy`), so the `policy-change` audit names the API caller, not the local DID.
+## §import-hooks-wiring
+`ApiConfig.import_hooks` (`Option<ImportHooksHandle>`) is layered onto the whole router as a request extension in
+`run_server`; the upload route reads it. `None` (relay, harness) keeps non-GLB uploads refused.
 ## §portal-bundles (`portal_bundles.rs`, portal_surface_20261107 T0.3 / T4.2)
 
 Routes: `POST /api/v1/petals/{petal_id}/portal-bundles` (multipart upload, body cap `route_body_limit()`) and

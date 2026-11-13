@@ -40,8 +40,10 @@ real-store terrain and API publisher-cap journeys own those assertions.
 
 ## Scene-gate wrapper and plugin-host stand-ins (R-API, 2026-11-09)
 
-`mcp/scene_gate.rs` is crate-shared: `mcp/tools.rs` and `ws.rs` both call it, and it only wraps
-`rest::scene_gate_verdict` (REST keeps its own 409 form). `server.rs` `absent_hosts` holds the not-found
+`mcp/scene_gate.rs` is crate-shared (`rest.rs`, `node_history.rs`, `upload.rs`, `endpoint.rs`, `mcp/tools.rs`,
+`ws.rs`): `admit` / `admit_only` run a command through `fe_runtime::scene_write::submit` with the door's caller
+kind; REST renders a refusal with `rest::scene_denied_response` (409 / 413 / 400), MCP and WS use the message.
+See `../AGENTS.md` §scene-gate-doors. `server.rs` `absent_hosts` holds the not-found
 stand-ins for an unwired `ExtensionHost` / `BindingHost`; they back REST routes only and never enter
 `ApiHosts`. Door table and rationale: `../AGENTS.md` §scene-gate-doors and §extensions "Mounting".
 ## §portal-bundles — export route (portal_surface_20261107 T4.2 / S8)

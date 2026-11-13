@@ -128,6 +128,9 @@ pub struct ApiConfig {
     pub extension_host: Option<Arc<dyn extensions::ExtensionHost>>,
     /// Binding plane behind `/api/v1/bindings`, the `apis/{key}` alias and MCP binding tools; `None` mounts nothing.
     pub binding_host: Option<Arc<dyn bindings::BindingHost>>,
+    /// `asset.import` hook seam layered onto the router as a request extension (the upload route reads it);
+    /// `None` (relay, harness tests) keeps non-GLB uploads refused (AGENTS.md §import-hooks).
+    pub import_hooks: Option<import_hooks::ImportHooksHandle>,
 }
 
 /// Read `FE_API_UPLOAD_QUOTA_BYTES` once at startup; unset or unparseable
@@ -250,6 +253,10 @@ async fn run_server(config: ApiConfig, stop: fe_runtime::service_lifecycle::Stop
         state,
         server::ApiHosts { extension: config.extension_host, binding: config.binding_host },
     );
+    let router = match config.import_hooks {
+        Some(handle) => router.layer(axum::Extension(handle)),
+        None => router,
+    };
 
     let listener = tokio::net::TcpListener::bind(&config.bind_addr)
         .await

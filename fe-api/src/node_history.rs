@@ -8,9 +8,11 @@ use axum::{
 };
 use fe_identity::api_token::ApiClaims;
 use fe_runtime::messages::{DbCommand, DbResult, NodeMutation};
+use fe_runtime::scene_hook_gate::SceneCallerKind;
 use serde::Deserialize;
 use serde_json::{json, Value};
 
+use crate::mcp::scene_gate::{admit, scope_petal_id, Door, WriteFailure};
 use crate::{server::ApiState, types::ApiResponse};
 
 /// Bounded forward cursor page; versions are per object, not global time.
@@ -77,49 +79,54 @@ pub(crate) async fn read_core(
     Ok(value)
 }
 
+/// Commit one mutation through the scene write door (hooks, augments), then the DB round trip.
 pub(crate) async fn commit_core(
     state: &ApiState,
-    claims: &ApiClaims,
+    door: Door<'_>,
+    petal_id: &str,
     node_id: &str,
     mutation: NodeMutation,
-) -> Result<Value, String> {
+) -> Result<Value, WriteFailure> {
     let id = ulid::Ulid::new().to_string();
-    correlated(
-        state,
-        DbCommand::CommitNodeMutation {
-            node_id: node_id.to_string(),
-            mutation,
-            actor_did: claims.sub.clone(),
-            grant: fe_runtime::node_history::NodeAccessGrant::Scoped(claims.scope.clone()),
-            correlation_id: Some(id.clone()),
-        },
-        &id,
-    )
-    .await
+    let command = DbCommand::CommitNodeMutation {
+        node_id: node_id.to_string(),
+        mutation,
+        actor_did: door.claims.sub.clone(),
+        grant: fe_runtime::node_history::NodeAccessGrant::Scoped(door.claims.scope.clone()),
+        correlation_id: Some(id.clone()),
+    };
+    let (command, admission) = admit(door, petal_id, command).await?;
+    let committed = correlated(state, command, &id).await?;
+    admission.stage(None);
+    Ok(committed)
 }
 
+/// Create one object through the scene write door (create + initial property hooks), then the DB round trip.
 pub(crate) async fn create_core(
     state: &ApiState,
-    claims: &ApiClaims,
+    door: Door<'_>,
     petal_id: &str,
     input: fe_runtime::messages::CreateObjectInput,
-) -> Result<Value, String> {
+) -> Result<Value, WriteFailure> {
     if let Some(asset_id) = &input.asset_id {
-        crate::upload::validate_scene_asset(state, claims, asset_id).await?;
+        crate::upload::validate_scene_asset(state, door.claims, asset_id).await?;
     }
     let id = ulid::Ulid::new().to_string();
-    correlated(
-        state,
-        DbCommand::CreateObject {
-            petal_id: petal_id.to_string(),
-            input,
-            actor_did: claims.sub.clone(),
-            grant: fe_runtime::node_history::NodeAccessGrant::Scoped(claims.scope.clone()),
-            correlation_id: Some(id.clone()),
-        },
-        &id,
-    )
-    .await
+    let command = DbCommand::CreateObject {
+        petal_id: petal_id.to_string(),
+        input,
+        actor_did: door.claims.sub.clone(),
+        grant: fe_runtime::node_history::NodeAccessGrant::Scoped(door.claims.scope.clone()),
+        correlation_id: Some(id.clone()),
+    };
+    let (command, admission) = admit(door, petal_id, command).await?;
+    let created = correlated(state, command, &id).await?;
+    let created_node_id = created
+        .get("node_id")
+        .and_then(Value::as_str)
+        .map(str::to_owned);
+    admission.stage(created_node_id.as_deref());
+    Ok(created)
 }
 
 #[derive(PartialEq)]
@@ -231,11 +238,10 @@ async fn authorized(
     claims: &ApiClaims,
     node_id: &str,
     role: &str,
-) -> Result<(), String> {
+) -> Result<String, String> {
     crate::auth::require_role(claims, role).map_err(|_| "insufficient permissions")?;
     crate::rest::covered_scope(claims, resolved_scope(state, node_id).await)
-        .ok_or(crate::rest::NOT_FOUND_OR_DENIED)?;
-    Ok(())
+        .ok_or_else(|| crate::rest::NOT_FOUND_OR_DENIED.to_string())
 }
 
 fn response(result: Result<Value, String>) -> Json<ApiResponse<Value>> {
@@ -253,7 +259,7 @@ pub async fn history(
 ) -> Json<ApiResponse<Value>> {
     response(
         match authorized(&state, &claims, &node_id, "viewer").await {
-            Ok(()) => {
+            Ok(_) => {
                 read_core(
                     &state,
                     &claims,
@@ -277,7 +283,7 @@ pub async fn state_at(
 ) -> Json<ApiResponse<Value>> {
     response(
         match authorized(&state, &claims, &node_id, "viewer").await {
-            Ok(()) => read_core(&state, &claims, &node_id, 0, 1, Some(query.at_version)).await,
+            Ok(_) => read_core(&state, &claims, &node_id, 0, 1, Some(query.at_version)).await,
             Err(error) => Err(error),
         },
     )
@@ -291,7 +297,15 @@ pub async fn mutate(
 ) -> Json<ApiResponse<Value>> {
     response(
         match authorized(&state, &claims, &node_id, "editor").await {
-            Ok(()) => commit_core(&state, &claims, &node_id, mutation).await,
+            Ok(scope) => match scope_petal_id(&scope) {
+                Some(petal_id) => {
+                    let door = Door { claims: &claims, kind: SceneCallerKind::Rest };
+                    commit_core(&state, door, &petal_id, &node_id, mutation)
+                        .await
+                        .map_err(WriteFailure::message)
+                }
+                None => Err("could not resolve node petal".to_string()),
+            },
             Err(error) => Err(error),
         },
     )
@@ -311,7 +325,10 @@ pub async fn create(
     {
         Err(crate::rest::NOT_FOUND_OR_DENIED.into())
     } else {
-        create_core(&state, &claims, &petal_id, input).await
+        let door = Door { claims: &claims, kind: SceneCallerKind::Rest };
+        create_core(&state, door, &petal_id, input)
+            .await
+            .map_err(WriteFailure::message)
     };
     response(result)
 }

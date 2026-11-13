@@ -490,5 +490,6 @@ fn owned_api_config(
         listening_tx: Some(listening_tx),
         extension_host: None,
         binding_host: None,
+        import_hooks: None,
     }
 }
