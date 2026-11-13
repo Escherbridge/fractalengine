@@ -30,15 +30,14 @@
       "id": "1", "title": "Owner sets the verse policy, the editor installs and consents, the fleet binds to the petal", "settle_s": 30, "covers": ["R18", "R22"],
       "note": "Policy mode allow-list names the fleet package id and exact content hash; the row is judged role-at-write on every replica. The viewer must refuse the install (Editor floor).",
       "actions": [
-        {"id": "pkg", "peer": "owner", "via": "rest", "op": "request", "args": {"method": "GET", "path": "/api/v1/extensions/catalog/fleet-sim"}},
-        {"id": "policy", "peer": "owner", "via": "rest", "op": "set_extension_policy", "args": {"verse_id": "$fixture.verse_id", "mode": "allow-list", "allow": [{"package_id": "org.example.fleet-sim", "content_hash": "$pkg.content_hash"}], "ceilings": {"egress": "none"}}, "needs": ["pkg"]},
-        {"id": "viewer_install", "peer": "viewer", "via": "rest", "op": "install_extension", "args": {"package": "fleet-sim", "verse_id": "$fixture.verse_id"}, "expect": "refused", "needs": ["policy"], "sync": "+3"},
-        {"id": "inst", "peer": "editor", "via": "rest", "op": "install_extension", "args": {"package": "fleet-sim", "verse_id": "$fixture.verse_id"}, "needs": ["policy"], "sync": "+5", "bind": {"installation": "installation", "content_hash": "content_hash"}},
-        {"id": "consent", "peer": "editor", "via": "rest", "op": "consent_extension", "args": {"installation": "$inst.installation", "grants": "manifest"}, "needs": ["inst"]},
-        {"id": "bound", "peer": "editor", "via": "rest", "op": "bind_extension", "args": {"installation": "$inst.installation", "petal_id": "$fixture.petal_a_id", "config": {"movers": 4, "hz": 2, "seed": 20261108}, "discover": "mover"}, "needs": ["consent"]}
+        {"id": "policy", "peer": "owner", "via": "rest", "op": "set_extension_policy", "args": {"verse_id": "$fixture.verse_id", "mode": "allow-list", "allow": [{"package_id": "org.example.fleet-sim", "content_hash": "$run.packages.fleet-sim.content_hash"}], "ceilings": {"egress": "none"}}},
+        {"id": "viewer_install", "peer": "viewer", "via": "ext", "op": "ext_install", "args": {"package": "fleet-sim", "verse_id": "$fixture.verse_id"}, "expect": "refused", "needs": ["policy"], "sync": "+3"},
+        {"id": "inst", "peer": "editor", "via": "ext", "op": "ext_install", "args": {"package": "fleet-sim", "verse_id": "$fixture.verse_id"}, "needs": ["policy"], "sync": "+5"},
+        {"id": "consent", "peer": "editor", "via": "ext", "op": "ext_consent", "args": {"package": "fleet-sim"}, "needs": ["inst"]},
+        {"id": "bound", "peer": "editor", "via": "ext", "op": "ext_bind", "args": {"installation": "$consent.installation", "petal_id": "$fixture.petal_a_id", "config": {"movers": 4, "hz": 2, "seed": 20261108}, "discover": "mover"}, "needs": ["consent"]}
       ],
       "expect": [
-        {"probe": "extension", "target": "$inst.installation", "path": "state", "peers": ["editor"], "predicate": "equals", "value": "active", "within_s": 30, "covers": "R11 status after consent and bind"},
+        {"probe": "extension", "target": "$consent.installation", "path": "state", "peers": ["editor"], "predicate": "equals", "value": "active", "within_s": 30, "covers": "R11 status after consent and bind"},
         {"probe": "extension", "target": "list", "path": "count", "peers": ["viewer"], "predicate": "equals", "value": 0, "mode": "always", "hold_s": 10, "covers": "R22 the refused install left no installation on the viewer"}
       ]
     },
@@ -46,12 +45,12 @@
       "id": "2", "title": "Four movers at 2 Hz for 3 minutes: one batched commit per tick, transforms agree on every peer", "settle_s": 190, "covers": ["R4", "R5"],
       "note": "Run is bounded by hold_s 180. commits <= ticks_run and four ops per commit are exposed by the extension probe as derived fields commits_within_ticks (bool) and ops_per_commit. The installation is host-local (bus.md section 11), so its counters live on the editor's host, and the editor host log must hold no 'slow DB command' line for PluginCommit and no 504 (analyze.py reads the host log).",
       "actions": [
-        {"id": "start", "peer": "editor", "via": "rest", "op": "extension_command", "args": {"installation": "$inst.installation", "petal_id": "$fixture.petal_a_id", "command": "start", "args": {}}}
+        {"id": "start", "peer": "editor", "via": "rest", "op": "extension_command", "args": {"installation": "$consent.installation", "petal_id": "$fixture.petal_a_id", "command": "start", "args": {}}}
       ],
       "expect": [
-        {"probe": "extension", "target": "$inst.installation", "path": "counters.commits_within_ticks", "peers": ["editor"], "predicate": "equals", "value": true, "mode": "always", "hold_s": 180, "after": "start", "covers": "R5 commits <= ticks_run"},
-        {"probe": "extension", "target": "$inst.installation", "path": "counters.ops_per_commit", "peers": ["editor"], "predicate": "equals", "value": 4, "within_s": 60, "after": "start"},
-        {"probe": "extension", "target": "$inst.installation", "path": "counters.refusals", "peers": ["editor"], "predicate": "equals", "value": 0, "within_s": 60, "after": "start", "covers": "R22 an Editor-floor identity is never refused for authority"},
+        {"probe": "extension", "target": "$consent.installation", "path": "counters.commits_within_ticks", "peers": ["editor"], "predicate": "equals", "value": true, "mode": "always", "hold_s": 180, "after": "start", "covers": "R5 commits <= ticks_run"},
+        {"probe": "extension", "target": "$consent.installation", "path": "counters.ops_per_commit", "peers": ["editor"], "predicate": "equals", "value": 4, "within_s": 60, "after": "start"},
+        {"probe": "extension", "target": "$consent.installation", "path": "counters.refusals", "peers": ["editor"], "predicate": "equals", "value": 0, "within_s": 60, "after": "start", "covers": "R22 an Editor-floor identity is never refused for authority"},
         {"probe": "transform", "target": "$bound.mover0", "path": "position", "predicate": "agree", "peers": "all", "within_s": 90, "covers": "R5 transforms agree on every peer"},
         {"probe": "ui", "target": "view", "path": "notice.text", "peers": ["editor"], "predicate": "excludes", "value": "504", "mode": "always", "hold_s": 180}
       ]
@@ -60,13 +59,13 @@
       "id": "3", "title": "Bus command floors: viewer refused, owner admitted, through REST and WS", "settle_s": 30, "covers": ["R10", "R20"],
       "note": "Commands mount petal-scoped (docs/extensions/bus.md section 8). The viewer is below the command role floor on both doors; the owner is above it.",
       "actions": [
-        {"id": "viewer_rest", "peer": "viewer", "via": "rest", "op": "extension_command", "args": {"installation": "$inst.installation", "petal_id": "$fixture.petal_a_id", "command": "stop", "args": {}, "door": "rest"}, "expect": "refused"},
-        {"id": "viewer_ws", "peer": "viewer", "via": "rest", "op": "extension_command", "args": {"installation": "$inst.installation", "petal_id": "$fixture.petal_a_id", "command": "stop", "args": {}, "door": "ws"}, "expect": "refused"},
-        {"id": "owner_ws", "peer": "owner", "via": "rest", "op": "extension_command", "args": {"installation": "$inst.installation", "petal_id": "$fixture.petal_a_id", "command": "start", "args": {}, "door": "ws"}, "sync": "+2"}
+        {"id": "viewer_rest", "peer": "viewer", "via": "rest", "op": "extension_command", "args": {"installation": "$consent.installation", "petal_id": "$fixture.petal_a_id", "command": "stop", "args": {}, "door": "rest"}, "expect": "refused"},
+        {"id": "viewer_ws", "peer": "viewer", "via": "rest", "op": "extension_command", "args": {"installation": "$consent.installation", "petal_id": "$fixture.petal_a_id", "command": "stop", "args": {}, "door": "ws"}, "expect": "refused"},
+        {"id": "owner_ws", "peer": "owner", "via": "rest", "op": "extension_command", "args": {"installation": "$consent.installation", "petal_id": "$fixture.petal_a_id", "command": "start", "args": {}, "door": "ws"}, "sync": "+2"}
       ],
       "expect": [
-        {"probe": "extension", "target": "$inst.installation", "path": "counters.commands_refused", "peers": ["editor"], "predicate": "equals", "value": 2, "within_s": 20, "after": "viewer_ws"},
-        {"probe": "extension", "target": "$inst.installation", "path": "state", "peers": ["editor"], "predicate": "equals", "value": "active", "within_s": 20, "after": "owner_ws"}
+        {"probe": "extension", "target": "$consent.installation", "path": "counters.commands_refused", "peers": ["editor"], "predicate": "equals", "value": 2, "within_s": 20, "after": "viewer_ws"},
+        {"probe": "extension", "target": "$consent.installation", "path": "state", "peers": ["editor"], "predicate": "equals", "value": "active", "within_s": 20, "after": "owner_ws"}
       ]
     },
     {
@@ -86,9 +85,9 @@
         {"peer": "owner", "via": "gui", "op": "click", "args": {"name": "Confirm Assign role editor to ${peers.editor.did}", "exact": true, "wait_s": 3}, "optional": true}
       ],
       "expect": [
-        {"probe": "extension", "target": "$inst.installation", "path": "state", "peers": ["editor"], "predicate": "not_equals", "value": "active", "within_s": 60, "after": "editor_demoted", "covers": "R22 the demoted identity's instance stops"},
+        {"probe": "extension", "target": "$consent.installation", "path": "state", "peers": ["editor"], "predicate": "not_equals", "value": "active", "within_s": 60, "after": "editor_demoted", "covers": "R22 the demoted identity's instance stops"},
         {"probe": "transform", "target": "$bound.mover0", "path": "position", "predicate": "agree", "peers": "all", "within_s": 60, "after": "hold_demoted", "covers": "no divergence while demoted"},
-        {"probe": "extension", "target": "$inst.installation", "path": "state", "peers": ["editor"], "predicate": "equals", "value": "active", "within_s": 90, "after": "regrant", "covers": "R22 re-grant resumes the binding"}
+        {"probe": "extension", "target": "$consent.installation", "path": "state", "peers": ["editor"], "predicate": "equals", "value": "active", "within_s": 90, "after": "regrant", "covers": "R22 re-grant resumes the binding"}
       ]
     },
     {
@@ -96,12 +95,12 @@
       "note": "OD-E1 (user decision 2026-11-08, docs/extensions/governance.md section Provenance): revocation is stop, never withdrawal. The fleet's rows stay on every peer with their host-stamped {package_id, content_hash}; fleet_readings counts the rows stamped org.example.fleet-sim. After the drain no fleet row lands (R23 AC), so that count holds still and agrees everywhere. Only the editor hosts the installation, so only it reports the state.",
       "actions": [
         {"id": "hand_edit", "peer": "editor", "via": "rest", "op": "set_property", "args": {"node_id": "$bound.mover0", "key": "hand_note", "value": "kept"}},
-        {"id": "revoke_list", "peer": "owner", "via": "rest", "op": "publish_revocation", "args": {"entries": [{"package_id": "org.example.fleet-sim", "content_hash": "$inst.content_hash"}]}, "needs": ["hand_edit"]},
+        {"id": "revoke_list", "peer": "owner", "via": "rest", "op": "publish_revocation", "args": {"entries": [{"package_id": "org.example.fleet-sim", "content_hash": "$run.packages.fleet-sim.content_hash"}]}, "needs": ["hand_edit"]},
         {"id": "drained", "peer": "owner", "via": "host", "op": "sleep", "args": {"seconds": 30}, "needs": ["revoke_list"]},
-        {"id": "reinstall", "peer": "editor", "via": "rest", "op": "install_extension", "args": {"package": "fleet-sim", "verse_id": "$fixture.verse_id"}, "expect": "refused", "needs": ["revoke_list"], "sync": "+30"}
+        {"id": "reinstall", "peer": "editor", "via": "ext", "op": "ext_install", "args": {"package": "fleet-sim", "verse_id": "$fixture.verse_id"}, "expect": "refused", "needs": ["revoke_list"], "sync": "+30"}
       ],
       "expect": [
-        {"probe": "extension", "target": "$inst.installation", "path": "state", "peers": ["editor"], "predicate": "equals", "value": "revoked", "within_s": 60, "after": "revoke_list", "covers": "R23 layer d stops the running instance"},
+        {"probe": "extension", "target": "$consent.installation", "path": "state", "peers": ["editor"], "predicate": "equals", "value": "revoked", "within_s": 60, "after": "revoke_list", "covers": "R23 layer d stops the running instance"},
         {"probe": "query", "target": "fleet_readings", "path": "count", "peers": "all", "predicate": "count", "value": {"min": 1}, "within_s": 90, "after": "revoke_list", "covers": "R24 stamp-and-stop: the fleet's readings stay"},
         {"probe": "query", "target": "fleet_readings", "path": "digest", "peers": "all", "predicate": "agree", "within_s": 20, "after": "drained", "covers": "R23 no fleet row lands after the stop"},
         {"probe": "transform", "target": "$bound.mover0", "path": "position", "predicate": "agree", "peers": "all", "within_s": 90, "after": "revoke_list", "covers": "R24 moved nodes keep their last fleet position"},

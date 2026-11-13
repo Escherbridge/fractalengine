@@ -13,12 +13,26 @@ LOOPBACK_HOST = "127.0.0.1"
 INDEX_DOMAIN = b"fractalengine/catalog-index/v1\n"  # fe-hexon registry_source INDEX_SIGNING_DOMAIN + LF
 # Two keys, never one: an index key that is also a trust root is refused (fe-hexon verify_index IndexKeyMisused,
 # store-client steer 2026-11-08 20:45), so the index key is pinned per source and the revocation key is the trust root.
-INDEX_KEY_ID = "fe-sim-index"
 REVOCATION_KEY_ID = "fe-sim-revocation"
+CATALOG_PREFIX = "/api/v1/catalog"  # fe-hexon registry_source CATALOG_PREFIX under the endpoint base
+PUBLISHER_KEY_ID = "fe-sim-publisher"  # trust-file label of the run publisher key that signs the packed examples
 SOURCE_ID = "fe-sim-loopback"
 DEFAULT_MQTT_PORT = int(os.environ.get("FE_SIM_MQTT_PORT", "18831"))
 DEFAULT_HTTP_PORT = int(os.environ.get("FE_SIM_LOOPBACK_HTTP_PORT", "18832"))
 DEFAULT_SINK_PORT = int(os.environ.get("FE_SIM_SINK_PORT", "18833"))
+
+
+BASE58 = "123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz"
+
+
+def base58(data):
+    """Bitcoin-alphabet base58 (the multibase `z` body of a did:key)."""
+    number = int.from_bytes(data, "big")
+    out = ""
+    while number:
+        number, rest = divmod(number, 58)
+        out = BASE58[rest] + out
+    return BASE58[0] * (len(data) - len(data.lstrip(bytes(1)))) + out
 
 
 def canonical(value):
@@ -36,19 +50,29 @@ class SigningRoot:
     def __init__(self, seed_text, purpose):
         from cryptography.hazmat.primitives import serialization
         from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
-        self._key = Ed25519PrivateKey.from_private_bytes(
-            hashlib.sha256(("fe-sim-%s:%s" % (purpose, seed_text)).encode()).digest())
+        self._seed_text = "fe-sim-%s:%s" % (purpose, seed_text)
+        self._key = Ed25519PrivateKey.from_private_bytes(hashlib.sha256(self._seed_text.encode()).digest())
         self.public_hex = self._key.public_key().public_bytes(
             serialization.Encoding.Raw, serialization.PublicFormat.Raw).hex()
 
     def sign_hex(self, message):
         return self._key.sign(message).hex()
 
+    @property
+    def seed_hex(self):
+        """The 32-byte seed in the hex key-file form `fe-ext keygen` writes (fe-ext key.rs)."""
+        return hashlib.sha256(self._seed_text.encode()).hexdigest()
+
+    @property
+    def did(self):
+        """The did:key of the public key (fe-format verifying_key_to_did: 0xed01 multicodec prefix, base58btc)."""
+        return "did:key:z" + base58(bytes([0xED, 0x01]) + bytes.fromhex(self.public_hex))
+
 
 def signed_index(index_key, doc):
-    """Index document signed as INDEX_KEY_ID: the domain line, then canonical JSON without `signature`."""
+    """Index document signed by the index key's did:key id: the domain line, then canonical JSON without `signature`."""
     doc = {k: v for k, v in doc.items() if k != "signature"}
-    doc["signer_key_id"] = INDEX_KEY_ID
+    doc["signer_key_id"] = index_key.did
     doc["signature"] = index_key.sign_hex(INDEX_DOMAIN + canonical(doc).encode("utf-8"))
     return doc
 
@@ -347,6 +371,9 @@ class Loopback:
         self.dir = os.path.join(run_dir, "loopback")
         os.makedirs(self.dir, exist_ok=True)
         self.index_key = SigningRoot(seed, "index")
+        self.publisher_key = SigningRoot(seed, "publisher")
+        self.site_dir = None  # the `fe-ext index build --out` tree this run serves (serve_tree); stage.ps1 -Loopback verifies it
+        self.packages = {}  # example name -> {package_id, version, content_hash, path}; the scenarios' $run.packages
         self.revocation_root = SigningRoot(seed, "revocation")
         self.site = StaticSite(http_port)
         self.sink = HttpSink(sink_port)
@@ -373,17 +400,61 @@ class Loopback:
         return "http://%s:%d/" % (LOOPBACK_HOST, self.sink.port)
 
     def describe(self):
-        """What the peers need to trust this run's revocation root and pin its index key (see write_extension_config)."""
+        """What the peers need to trust this run's revocation root and publisher key and pin its index key (see write_extension_config)."""
         # role "publisher", not "dev": a dev root loads only with FE_EXT_DEV=1 in a debug build, so a release stage
         # would drop it silently and never accept a revocation list.
         trusted = ('[[publisher]]\nkey_id = "%s"\npublic_key = "%s"\nrevocation = true\nrevocation_url = "%s"\n'
-                   'role = "publisher"\n' % (REVOCATION_KEY_ID, self.revocation_root.public_hex, self.revocation_url))
-        source = {"id": SOURCE_ID, "label": "fe-sim loopback", "kind": "static", "base": self.index_url,
-                  "index_keys": [{"key_id": INDEX_KEY_ID, "public_key": self.index_key.public_hex}]}
-        return {"revocation_key_id": REVOCATION_KEY_ID, "revocation_public_key": self.revocation_root.public_hex,
-                "index_key_id": INDEX_KEY_ID, "index_public_key": self.index_key.public_hex,
+                   'role = "publisher"\n\n'
+                   '[[publisher]]\nkey_id = "%s"\npublic_key = "%s"\nrole = "publisher"\n'
+                   % (REVOCATION_KEY_ID, self.revocation_root.public_hex, self.revocation_url,
+                      PUBLISHER_KEY_ID, self.publisher_key.public_hex))
+        # The index key id is the key's did:key, the id `fe-ext index build` signs under (tools/fe-ext/src/index.rs).
+        source = {"id": SOURCE_ID, "label": "fe-sim loopback", "kind": "static", "base": self.index_url.rstrip("/"),
+                  "index_keys": [{"key_id": self.index_key.did, "public_key": self.index_key.public_hex}]}
+        return {"schema": "fe-qa-sim-loopback-v1", "revocation_key_id": REVOCATION_KEY_ID,
+                "revocation_public_key": self.revocation_root.public_hex,
+                "index_key_id": self.index_key.did, "index_public_key": self.index_key.public_hex,
+                "publisher_key_id": PUBLISHER_KEY_ID, "publisher_did": self.publisher_key.did,
+                "publisher_public_key": self.publisher_key.public_hex,
                 "revocation_url": self.revocation_url, "index_url": self.index_url, "mqtt_url": self.mqtt_url,
-                "sink_url": self.sink_url, "trusted_publisher_toml": trusted, "extension_sources": [source]}
+                "sink_url": self.sink_url, "trusted_publisher_toml": trusted, "extension_sources": [source],
+                "site_dir": self.site_dir, "packages": self.packages}
+
+    def write_keys(self, key_dir):
+        """Hex seed files for `fe-ext pack --key` (publisher) and `fe-ext index build --key` (index); never the revocation root."""
+        os.makedirs(key_dir, exist_ok=True)
+        paths = {}
+        for label, root in (("publisher", self.publisher_key), ("index", self.index_key)):
+            paths[label] = os.path.join(key_dir, "%s.key" % label)
+            with open(paths[label], "w", encoding="utf-8", newline="\n") as handle:
+                handle.write(root.seed_hex + "\n")
+        return paths
+
+    def serve_tree(self, tree_dir, packages=None):
+        """Serve a `fe-ext index build` tree (api/v1/catalog/**, blobs/**) from the static site and record the staged packages.
+
+        The tree was built with --base-url pointing at this site, so every download_url resolves here.
+        """
+        kinds = {".json": "application/json", ".hexon": "application/octet-stream"}
+        count = 0
+        for folder, _dirs, names in os.walk(tree_dir):
+            for name in sorted(names):
+                full = os.path.join(folder, name)
+                url = "/" + os.path.relpath(full, tree_dir).replace(os.sep, "/")
+                with open(full, "rb") as handle:
+                    self.site.put(url, handle.read(), kinds.get(os.path.splitext(name)[1].lower(), "application/octet-stream"))
+                count += 1
+        self.site_dir = tree_dir
+        self.packages = dict(packages or {})
+        self.write_descriptor()
+        return count
+
+    def write_descriptor(self):
+        """loopback.json: what the run staged (keys, urls, site tree, packages); stage.ps1 -Loopback reads it back."""
+        info = self.describe()
+        with open(os.path.join(self.dir, "loopback.json"), "w", encoding="utf-8") as handle:
+            json.dump(info, handle, indent=1)
+        return info
 
     def write_extension_config(self, config_dir):
         """Write trusted_publishers.toml and extension_sources.json where the peers read them (FE_EXT_CONFIG_DIR)."""
@@ -401,10 +472,7 @@ class Loopback:
         for service in (self.site, self.sink, self.broker):
             service.start()
         self.started = True
-        info = self.describe()
-        with open(os.path.join(self.dir, "loopback.json"), "w", encoding="utf-8") as handle:
-            json.dump(info, handle, indent=1)
-        return info
+        return self.write_descriptor()
 
     def stop(self):
         if not self.started:
@@ -421,14 +489,14 @@ class Loopback:
         rows = []
         for entry in entries:
             detail = json.dumps(details[entry["package_id"]], sort_keys=True).encode("utf-8")
-            self.site.put("/packages/%s.json" % entry["package_id"], detail)
+            self.site.put(CATALOG_PREFIX + "/packages/%s.json" % entry["package_id"], detail)
             rows.append({**entry, "detail_hash": blake3_hex(detail)})
         for path, data in (packages or {}).items():
             self.site.put(path if path.startswith("/") else "/" + path, data, "application/octet-stream")
         stamp = issued_at or time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
         # index_key_id here is an unsigned hint; the host trusts only the key pinned in extension_sources.json.
-        self.site.put("/config.json", json.dumps({"registry_protocol": 1, "index_key_id": INDEX_KEY_ID}))
-        self.site.put("/index.json", json.dumps(signed_index(self.index_key, {"schema_version": 1, "issued_at": stamp, "entries": rows})))
+        self.site.put(CATALOG_PREFIX + "/config.json", json.dumps({"registry_protocol": 1, "index_key_id": self.index_key.did}))
+        self.site.put(CATALOG_PREFIX + "/index.json", json.dumps(signed_index(self.index_key, {"schema_version": 1, "issued_at": stamp, "entries": rows})))
         return self.index_url
 
     def publish_revocation(self, entries, at=None):

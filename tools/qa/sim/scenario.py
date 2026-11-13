@@ -15,14 +15,18 @@ VIAS = {
     "rest": {"request", "create_fractal", "create_petal", "create_node", "set_transform", "set_property",
              "delete_property", "delete_node", "upsert_group", "delete_group", "upload_asset", "query",
              "lookup_node", "lookup_petal", "lookup_group", "ingest_readings",
-             # extension platform (E19) and scoped bindings (BND-11, bindings.md section 9); driver.py EXTENSION_OPS
-             "install_extension", "consent_extension", "bind_extension", "set_extension_policy", "extension_command",
-             "ingress_post", "mqtt_publish", "publish_revocation", "set_binding", "accept_extension",
+             # extension platform REST doors that exist for callers (E19, BND-11, bindings.md section 9); driver.py EXTENSION_OPS.
+             # Administration (install, consent, bind, enable, update, uninstall) is not REST: it is the "ext" via below.
+             "set_extension_policy", "extension_command", "ingress_post", "mqtt_publish", "publish_revocation", "set_binding",
              "upload_bundle", "create_repository_node", "portal_update_bundle", "portal_slot", "portal_observe",
              "portal_ipc_stats", "portal_admit", "portal_killswitch", "portal_ipc_post", "regrant_role"},
     "mcp": None,  # any MCP tool name; args are the tool arguments
     "gui": {"click", "click_until", "type", "key", "scroll", "scroll_until", "wait_for", "click_at"},
     "host": {"restart", "stop_peer", "sleep", "wait_role", "fingerprint"},
+    # Extension administration through the app's own surfaces (user decision 2026-11-09): the Extensions panel by
+    # accessible name, or `fe-ext admin` on the local channel; consent is always a GUI click. driver.py EXT_OPS.
+    "ext": {"ext_install", "ext_consent", "ext_accept", "ext_bind", "ext_enable", "ext_disable", "ext_update",
+            "ext_uninstall", "ext_kill_override", "ext_list"},
     "macro": {"place_grid", "drone_flight", "freeplay"},
 }
 PROBES = ("node", "transform", "properties", "hierarchy", "groups", "terrain", "role", "nav", "ui",
@@ -197,8 +201,8 @@ def validate(scenario):
                                               for d in policy["deny"])):
             errors.append("peer %s: extension_policy is {deny: [package ids]}" % peer.get("name"))
         if policy is not None and not any(a.get("peer") == peer.get("name") and a.get("via") == "host" and a.get("op") == "restart"
-                                          for step in scenario.get("steps", []) if isinstance(step, dict)
-                                          for group in ("prepare", "actions") for a in step.get(group, []) if isinstance(a, dict)):
+                                          for step in scenario.get("steps") or [] if isinstance(step, dict)
+                                          for group in ("prepare", "actions") for a in step.get(group) or [] if isinstance(a, dict)):
             errors.append("peer %s: extension_policy loads at a restart; add a host restart op for that peer" % peer.get("name"))
     _validate_cadence(scenario.get("probe", {}), "probe", errors)
     for index, watch in enumerate(scenario.get("watch", [])):

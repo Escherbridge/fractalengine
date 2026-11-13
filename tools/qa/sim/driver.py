@@ -6,6 +6,7 @@ import math
 import os
 import random
 import re
+import subprocess
 import threading
 import time
 import urllib.parse
@@ -14,6 +15,7 @@ from concurrent.futures import ThreadPoolExecutor
 import portal_probe
 import predicates
 from client import Outcome, extract_id
+import fe  # noqa: E402 - client.py put tools/qa on sys.path
 from runtime import small
 from scenario import UnresolvedRef, source_probe, target_key
 
@@ -22,9 +24,12 @@ BARRIER_TIMEOUT_S = 120.0
 NEEDS_WAIT_S = 90.0  # longest a dependent waits for a same-step dependency still in flight before it counts as unmet
 LIVE_POLL_S = 0.25
 FINGERPRINT_NODE_CAP = 400
-# Extension-platform REST ops (scenario.VIAS["rest"]); each dispatches to Driver._ext_<op>.
-EXTENSION_OPS = {"install_extension", "consent_extension", "bind_extension", "set_extension_policy", "extension_command",
-                 "ingress_post", "mqtt_publish", "publish_revocation", "set_binding", "accept_extension"}
+# Extension-platform REST ops (scenario.VIAS["rest"]); each dispatches to Driver._ext_<op>. Administration is not here:
+# install, consent, bind, enable, update and uninstall are the "ext" via (EXT_OPS), GUI or local channel, never REST.
+EXTENSION_OPS = {"set_extension_policy", "extension_command", "ingress_post", "mqtt_publish", "publish_revocation", "set_binding"}
+EXT_OPS = {"ext_install", "ext_consent", "ext_accept", "ext_bind", "ext_enable", "ext_disable", "ext_update", "ext_uninstall",
+           "ext_kill_override", "ext_list"}
+REPO_ROOT = os.path.abspath(os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "..", ".."))
 REF_NAME = re.compile(r"\$\{?([A-Za-z_][A-Za-z0-9_]*)")
 
 
@@ -162,9 +167,11 @@ class Driver:
     """Runs scenario steps against live peers and records events/expectations/steps JSONL."""
 
     def __init__(self, scenario, clients, ctx, clock, recorder, store, cadence, run_dir, host=None,
-                 steps=None, log=print, loopback=None):
+                 steps=None, log=print, loopback=None, stage_dir=None):
+        self.stage_dir = stage_dir  # the staged build directory: fe-ext.exe sits beside fractalengine.exe
+        self.repo_root = REPO_ROOT
         self.loopback = loopback  # loopback.Loopback (MQTT broker, signed revocation list) when run.py started one
-        self.installs = {}  # installation id -> package id, from install_extension results
+        self.installs = {}  # installation id -> package id, from ext_consent results
         self.device_nodes = {}  # (petal id, device id) -> node id, for ingress_post / ingest_readings by device
         self.scenario = scenario
         self.clients = clients
@@ -420,6 +427,8 @@ class Driver:
             return client.mcp(op, args)
         if via == "gui":
             return client.gui(op, args)
+        if via == "ext":
+            return self.ext_op(client, op, args)
         if via == "host":
             return self.host_op(client, op, args)
         if via == "macro":
@@ -509,44 +518,314 @@ class Driver:
     def _package_of(self, args):
         return args.get("package_id") or self.installs.get(self._installation_of(args)) or "org.example.%s" % args.get("package", "")
 
-    def _ext_install_extension(self, client, args, verse):
-        out = client.rest("POST", "/api/v1/extensions", {k: v for k, v in args.items() if k != "verse_id"} | {"verse_id": verse})
-        data = out.get("data")
-        if out.ok and isinstance(data, dict):
-            installation = data.get("installation") or data.get("id")
-            data.setdefault("installation", installation)
-            if installation:
-                self.installs[installation] = data.get("package_id") or "org.example.%s" % args.get("package", "")
-        return out
+    # -- extension administration through the app's own surfaces (via "ext"; tools/qa/sim/AGENTS.md section ext) ----
+    # The Extensions panel is driven by accessible name (docs/extensions/extensions-ui.md) and `fe-ext admin` speaks the
+    # local admin channel (docs/extensions/admin-channel.md). Neither path answers consent for the operator: the driver
+    # clicks the consent dialog's own button, so every grant is still a GUI click. Nothing here calls a REST admin route.
+    EXT_ERROR_LINE = re.compile(r"^(host-off|package-invalid|untrusted-signer|revoked|entitlement-required|policy-denied|"
+                                r"role-denied|consent-missing|not-available|not-found|invalid-input)\b.*$")
+    EXT_CLI_ENV = "FE_EXT_ADMIN_INSTANCE"
 
-    def _ext_consent_extension(self, client, args, verse):
-        body = {k: v for k, v in args.items() if k != "installation"}
-        return client.rest("POST", "/api/v1/extensions/%s/consent" % args["installation"], body)
+    def ext_op(self, client, op, args):
+        return getattr(self, "_x_" + op[len("ext_"):])(client, args)
 
-    def _ext_accept_extension(self, client, args, verse):
-        """Local acceptance in a verse (bindings.md 5.3) is the bind verb with verse_id and no petal (governance.md section Audit)."""
-        body = {"verse_id": verse}
-        if args.get("source_class"):  # a manifest with a class set takes the one-class pick here (bindings.md 5.3)
-            body["source_class"] = args["source_class"]
-        return client.rest("POST", "/api/v1/extensions/%s/bind" % args["installation"], body)
+    def _x_package(self, args):
+        """(example name, package id, version, path) for an op's `package` (an example name) or `package_id`."""
+        staged = (self.loopback.packages if self.loopback is not None else {}) or {}
+        name = args.get("package")
+        entry = staged.get(name) if name else next((e for e in staged.values() if e.get("package_id") == args.get("package_id")), None)
+        entry = entry or {}
+        package_id = args.get("package_id") or entry.get("package_id") or ("org.example.%s" % name if name else "")
+        return name, package_id, args.get("version") or entry.get("version"), entry.get("path")
 
-    def _ext_bind_extension(self, client, args, verse):
-        body = {k: v for k, v in args.items() if k not in ("installation", "discover")}
-        out = client.rest("POST", "/api/v1/extensions/%s/bind" % args["installation"], body)
+    def _x_nodes(self, client, fragment):
+        """Visible ui-tree nodes whose accessible name contains `fragment`: [(name, enabled)]; [] when the app is unreachable."""
+        try:
+            tree = fe.probe(client.run(), "ui-tree", None, {"name": fragment})
+            return [(n["name"], bool(n.get("enabled", True))) for n in fe.tree_nodes(tree) if not n.get("hidden")]
+        except (fe.Refused, fe.NotRunning):
+            return []
+
+    def _x_has(self, client, name, enabled=None):
+        """True when a control named exactly `name` is visible (and enabled, when `enabled` is True)."""
+        return any(n.casefold() == name.casefold() and (enabled is not True or on) for n, on in self._x_nodes(client, name))
+
+    def _x_click(self, client, name, wait_s=8.0, role=None):
+        args = {"name": name, "exact": True, "wait_s": wait_s}
+        if role:
+            args["role"] = role
+        return client.gui("click", args)
+
+    def _x_wait_any(self, client, names, wait_s):
+        """First of `names` that appears within wait_s (exact name, visible), else None."""
+        deadline = time.monotonic() + wait_s
+        while True:
+            for name in names:
+                if self._x_has(client, name):
+                    return name
+            if time.monotonic() >= deadline or self.abort.is_set():
+                return None
+            time.sleep(0.4)
+
+    def _x_open_panel(self, client, view="Installed extensions"):
+        """Open the Extensions panel (the toolbar toggle) and select a view tab; refuses with the failing click's outcome."""
+        if not self._x_wait_any(client, ["Installed extensions", "Browse extensions"], 0.6):
+            opened = self._x_click(client, "Toggle Extensions panel", 6.0)
+            if not opened.ok:
+                return opened
+            if not self._x_wait_any(client, ["Installed extensions"], 6.0):
+                return self._refused("ext_panel_missing", "the Extensions panel did not open")
+        return self._x_click(client, view, 6.0)
+
+    def _x_error(self, client):
+        """The bridge's refusal line (kebab reason, verbatim) when the panel shows its error row, then dismiss it."""
+        if not self._x_has(client, "Dismiss extension error"):
+            return None
+        line = None
+        try:
+            tree = fe.probe(client.run(), "ui-tree", None)
+            names = [n["name"] for n in fe.tree_nodes(tree) if not n.get("hidden")]
+            line = next((n for n in names if self.EXT_ERROR_LINE.match(n)), None)
+        except (fe.Refused, fe.NotRunning):
+            pass
+        self._x_click(client, "Dismiss extension error", 2.0)
+        return line or "unreadable"
+
+    def _x_installations(self, client):
+        """GET /api/v1/extensions (a read): [{installation, package_id, state}]; empty when the list is not readable."""
+        out = client.rest("GET", "/api/v1/extensions")
+        data = out.get("data") if out.ok else None
+        rows = data.get("extensions") if isinstance(data, dict) else data
+        return [{"installation": r.get("installation") or r.get("id"), "package_id": r.get("package_id"), "state": r.get("state")}
+                for r in rows or [] if isinstance(r, dict)]
+
+    def _x_find_installation(self, client, package_id, wait_s):
+        deadline = time.monotonic() + wait_s
+        while True:
+            rows = [r for r in self._x_installations(client) if r["package_id"] == package_id and r["installation"]]
+            if rows:
+                return rows[-1]
+            if time.monotonic() >= deadline or self.abort.is_set():
+                return None
+            time.sleep(0.5)
+
+    def _x_stage_install(self, client, args):
+        """Panel route of an install up to the consent dialog: Browse row when the package is indexed, else the file field."""
+        name, package_id, version, path = self._x_package(args)
+        if args.get("via", "browse") == "file" or not version:
+            if not path:
+                return None, self._refused("no_package_file", "no staged .hexon for %s (run.py stages the examples)" % (name or package_id))
+            opened = self._x_open_panel(client, "Installed extensions")
+            if not opened.ok:
+                return None, opened
+            typed = client.gui("type", {"into": "Package file path", "text": path, "exact": True})
+            if not typed.ok:
+                return None, typed
+            return package_id, self._x_click(client, "Install from file", 6.0)
+        opened = self._x_open_panel(client, "Browse extensions")
+        if not opened.ok:
+            return None, opened
+        self._x_click(client, "Refresh extension list", 3.0)
+        return package_id, self._x_click(client, "Install %s %s" % (package_id, version), float(args.get("wait_s", 20)))
+
+    def _x_install_outcome(self, client, package_id, wait_s, keep_dialog=False):
+        """Classify what the panel shows after an install press: consent needed (ok), kill-listed or refused (refused)."""
+        enable, override = "Enable %s" % package_id, "Override kill list for %s" % package_id
+        seen = self._x_wait_any(client, [enable, override, "Dismiss extension error"], wait_s)
+        if seen == enable:
+            return Outcome(status=200, ok=True, refused=False, data={"package_id": package_id, "state": "needs_consent"})
+        if seen == override:
+            if not keep_dialog:
+                self._x_click(client, "Cancel extension consent", 3.0)
+            return Outcome(status=200, ok=False, refused=True, code="revoked", error="the build is kill-listed; only the verse Owner override lifts it",
+                           data={"package_id": package_id, "state": "kill_listed"})
+        if seen:
+            reason = self._x_error(client)
+            return Outcome(status=200, ok=False, refused=True, code=reason, error="install refused: %s" % reason, data={"package_id": package_id})
+        return self._refused("ext_no_response", "neither the consent dialog nor an error row appeared for %s" % package_id)
+
+    def _x_install(self, client, args):
+        """ext_install: stage the package and stop at the consent dialog; ext_consent answers it. A refusal is the panel's own line."""
+        package_id, pressed = self._x_stage_install(client, args)
+        if not package_id:
+            return pressed
+        if not pressed.ok:
+            reason = self._x_error(client)
+            return self._refused(reason or pressed.get("code") or "install_not_offered", "install not offered: %s" % (reason or pressed.get("error")))
+        return self._x_install_outcome(client, package_id, float(args.get("outcome_wait_s", 25)))
+
+    def _x_kill_override(self, client, args):
+        """ext_kill_override: the verse Owner's audited override, in the consent dialog (typed package id); consent is still owed."""
+        package_id, pressed = self._x_stage_install(client, args)
+        if not package_id:
+            return pressed
+        if not pressed.ok:
+            return pressed
+        seen = self._x_install_outcome(client, package_id, float(args.get("outcome_wait_s", 25)), keep_dialog=True)
+        if seen.get("code") != "revoked":
+            return seen if not seen.ok else self._refused("not_kill_listed", "%s was not kill-listed, nothing to override" % package_id)
+        typed = client.gui("type", {"into": "Confirm package id to override kill list", "text": package_id, "exact": True})
+        if not typed.ok:
+            return typed
+        clicked = self._x_click(client, "Override kill list for %s" % package_id, 6.0)
+        if not clicked.ok:
+            return clicked
+        if not self._x_wait_any(client, ["Enable %s" % package_id], 15.0):  # a fresh ConsentNeeded for the same installation
+            return self._refused("override_not_applied", "no consent dialog followed the override of %s" % package_id)
+        return Outcome(status=200, ok=True, refused=False, data={"package_id": package_id, "state": "needs_consent", "overridden": True})
+
+    def _x_consent(self, client, args):
+        """ext_consent: the consent dialog's own button ("Enable <id>", or "Update <id>" on a re-prompt), then read the installation id."""
+        _name, package_id, _version, _path = self._x_package(args)
+        label = "Update %s" % package_id if args.get("reprompt") else "Enable %s" % package_id
+        clicked = self._x_click(client, label, float(args.get("wait_s", 15)))
+        if not clicked.ok:
+            return clicked
+        found = self._x_find_installation(client, package_id, float(args.get("installation_wait_s", 20)))
+        if not found:
+            return self._refused("installation_not_listed", "no installation of %s appeared after consent" % package_id)
+        self.installs[found["installation"]] = package_id
+        return Outcome(status=200, ok=True, refused=False,
+                       data={"installation": found["installation"], "package_id": package_id, "state": found["state"]})
+
+    def _x_accept(self, client, args):
+        """ext_accept: the Bindings view's one offer ("Allow in this verse"); its consent dialog is answered when it opens."""
+        hook, key = args.get("hook", "petal.map"), args.get("key", "")
+        opened = self._x_open_panel(client, "Extension bindings")
+        if not opened.ok:
+            return opened
+        point = "binding:%s:%s:action" % (hook, key) if key else "binding:%s:action" % hook
+        clicked = self._x_click(client, point, float(args.get("wait_s", 10)))
+        if not clicked.ok:
+            return clicked
+        package_id = self._x_package(args)[1] or self.installs.get(args.get("installation", ""), "")
+        if package_id and self._x_wait_any(client, ["Enable %s" % package_id], 4.0):
+            clicked = self._x_click(client, "Enable %s" % package_id, 6.0)
+        return clicked
+
+    def _x_binding_buttons(self, client, package_id, verb):
+        """Names of the "<verb> <binding label> for <id>" toggles of an open Overview."""
+        return [n for n, on in self._x_nodes(client, " for %s" % package_id) if n.startswith(verb + " ") and on]
+
+    def _x_toggle(self, client, args, verb):
+        """GUI route of enable/disable: Open the row, press every (or the named) binding toggle."""
+        _name, package_id, _version, _path = self._x_package({**args, "package_id": args.get("package_id") or self.installs.get(args.get("installation", ""))})
+        opened = self._x_open_panel(client, "Installed extensions")
+        if not opened.ok:
+            return opened
+        opened = self._x_click(client, "Open %s" % package_id, 8.0)
+        if not opened.ok:
+            return opened
+        names = self._x_binding_buttons(client, package_id, verb)
+        if args.get("binding"):
+            names = [n for n in names if n == "%s %s for %s" % (verb, args["binding"], package_id)]
+        if not names:
+            return self._refused("no_binding_toggle", "no %s control for %s" % (verb, package_id))
+        out = None
+        for name in names:
+            out = self._x_click(client, name, 6.0)
+            if not out.ok:
+                return out
+            if verb == "Enable" and self._x_wait_any(client, ["Enable %s" % package_id], 1.5):  # Needs consent: Enable asks first
+                out = self._x_click(client, "Enable %s" % package_id, 6.0)
+        return Outcome(status=200, ok=bool(out and out.ok), refused=not (out and out.ok), data={"toggled": names})
+
+    def _x_cli(self, client, verb_args, args):
+        """Run `fe-ext admin --json <verb>` on the local channel; the reply frame is the outcome (consent stays a GUI click)."""
+        exe = self.fe_ext_exe()
+        if not exe:
+            return self._refused("no_fe_ext", "fe-ext was not staged (stage.ps1 builds it) and target/debug has none")
+        env = dict(os.environ)
+        instance = args.get("instance")
+        if instance:
+            env[self.EXT_CLI_ENV] = instance
+        try:
+            done = subprocess.run([exe, "admin", "--json"] + verb_args, capture_output=True, text=True, env=env,
+                                  timeout=float(args.get("cli_timeout_s", 120)))
+        except (OSError, subprocess.SubprocessError) as error:
+            return self._refused("cli_failed", str(error)[:300])
+        try:
+            reply = json.loads(done.stdout.strip().splitlines()[-1]) if done.stdout.strip() else {}
+        except ValueError:
+            reply = {}
+        status = reply.get("status")
+        if status == "ok":
+            return Outcome(status=200, ok=True, refused=False, data=reply.get("result") or {})
+        return Outcome(status=200, ok=False, refused=True, code=reply.get("code") or "cli_failed",
+                       error=(reply.get("message") or done.stderr or "fe-ext admin failed")[:300])
+
+    def fe_ext_exe(self):
+        """The staged fe-ext (beside the staged fractalengine.exe), else target/debug."""
+        for base in (self.stage_dir, os.path.join(self.repo_root, "target", "debug")):
+            candidate = os.path.join(base, "fe-ext.exe") if base else None
+            if candidate and os.path.isfile(candidate):
+                return candidate
+        return None
+
+    def _x_disable(self, client, args):
+        if args.get("channel", "cli") == "gui":
+            return self._x_toggle(client, args, "Disable")
+        return self._x_cli(client, ["disable", args["installation"]] + (["--binding", args["binding"]] if args.get("binding") else []), args)
+
+    def _x_enable(self, client, args):
+        if args.get("channel", "cli") == "gui":
+            return self._x_toggle(client, args, "Enable")
+        return self._x_cli(client, ["enable", args["installation"]] + (["--binding", args["binding"]] if args.get("binding") else []), args)
+
+    def _x_bind(self, client, args):
+        """ext_bind: enable the installation's binding rows in the panel, then name the nodes the instance made (`discover`).
+
+        Binding config (movers, hz, devices) is the manifest's: the panel has no config form, so `config` is recorded, not sent.
+        """
+        enabled = self._x_toggle(client, {**args, "channel": "gui"}, "Enable")
+        if not enabled.ok:
+            return enabled
+        data = dict(enabled.get("data") or {})
+        if args.get("config"):
+            data["config_note"] = "panel binding uses manifest defaults; config %s was not sent" % json.dumps(args["config"], sort_keys=True)
         prefix = args.get("discover")
-        if out.ok and prefix and args.get("petal_id"):  # name the nodes the instance made: movers, mover0.. (probe targets)
+        if prefix and args.get("petal_id"):  # the same node discovery as the REST era: mover0.. as probe targets
             sql = "SELECT node_id, display_name FROM node WHERE petal_id = %s AND tombstone = NONE" % surreal_string(args["petal_id"])
             found = self._poll_lookup(client, lambda: client.rest("POST", "/api/v1/query", {"sql": sql}),
                                       lambda rows: [r for r in rows if str(r.get("display_name", "")).startswith(prefix)]
                                       if isinstance(rows, list) else None, float(args.get("wait_s", 20)))
-            data = out.get("data") if isinstance(out.get("data"), dict) else {}
             if found.ok:
                 nodes = sorted(found["data"].get("id") or [], key=lambda r: str(r.get("display_name")))
                 data["movers"] = [n.get("node_id") for n in nodes]
                 for index, node in enumerate(nodes):
                     data["%s%d" % (prefix, index)] = node.get("node_id")
-            out["data"] = data
+        return Outcome(status=200, ok=True, refused=False, data=data)
+
+    def _x_update(self, client, args):
+        """ext_update: Open the row, press "Update <id> to <version>"; a changed capability digest raises the dialog (ext_consent reprompt)."""
+        _name, package_id, version, _path = self._x_package({**args, "package_id": args.get("package_id") or self.installs.get(args.get("installation", ""))})
+        opened = self._x_open_panel(client, "Installed extensions")
+        if not opened.ok:
+            return opened
+        opened = self._x_click(client, "Open %s" % package_id, 8.0)
+        if not opened.ok:
+            return opened
+        name = "Update %s to %s" % (package_id, version) if version else next(
+            (n for n, on in self._x_nodes(client, "Update %s to " % package_id) if on), "Update %s" % package_id)
+        return self._x_click(client, name, float(args.get("wait_s", 10)))
+
+    def _x_uninstall(self, client, args):
+        """ext_uninstall: the two-step Uninstall / Confirm uninstall on the row's Overview."""
+        package_id = args.get("package_id") or self.installs.get(args.get("installation", "")) or self._x_package(args)[1]
+        opened = self._x_open_panel(client, "Installed extensions")
+        if not opened.ok:
+            return opened
+        opened = self._x_click(client, "Open %s" % package_id, 8.0)
+        if not opened.ok:
+            return opened
+        for name in ("Uninstall %s" % package_id, "Confirm uninstall %s" % package_id):
+            out = self._x_click(client, name, 6.0)
+            if not out.ok:
+                return out
         return out
+
+    def _x_list(self, client, args):
+        return Outcome(status=200, ok=True, refused=False, data={"installations": self._x_installations(client)})
 
     def _ext_set_extension_policy(self, client, args, verse):
         body = {k: v for k, v in args.items() if k != "verse_id"}
@@ -764,10 +1043,10 @@ class Driver:
                        error="%s has no API route or GUI affordance in this build (IPC row posts)" % op)
 
     def _portal_admit(self, client, args):
-        """`portal_admit`: the repository view's "Admit bundle" button (ux.md section 5); an optional confirm click follows."""
+        """`portal_admit`: the repository view's "Admit bundle" button (ux.md section 5), then the consent dialog's "Enable <package_id>"."""
         out = client.gui("click", {"name": "Admit bundle", "exact": True, "wait_s": float(args.get("wait_s", 5))})
-        if out.ok:
-            client.gui("click", {"name": "Confirm Admit bundle", "exact": True, "wait_s": 1})  # consent step, if the build has one
+        if out.ok and args.get("package_id"):  # the admit consent dialog confirms with "Enable <package_id>" (governance consent)
+            out = client.gui("click", {"name": "Enable %s" % args["package_id"], "exact": True, "wait_s": float(args.get("confirm_wait_s", 8))})
         return out
 
     def _regrant_role(self, client, args):

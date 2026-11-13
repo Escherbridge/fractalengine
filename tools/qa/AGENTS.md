@@ -1371,6 +1371,34 @@ peer's own later writes measure those writes, and counting them read a 2-10 s ca
 longer than a value lasts share few values; the table says so. `repro` re-runs one step: `python tools/qa/sim/run.py <scenario> --steps <id>` (earlier steps that bind
 ids must be included in the range).
 
+### Extension scenarios (ext-fleet, ext-device, ext-bindings)
+
+Rationale and per-file notes: `tools/qa/sim/AGENTS.md` §ext. What an operator of the harness needs:
+
+- **Administration is not REST.** Install, consent, bind, accept, enable, update, uninstall and the kill-list override
+  are the `ext` via (`ext_install`, `ext_consent`, `ext_accept`, `ext_bind`, `ext_enable`, `ext_disable`, `ext_update`,
+  `ext_uninstall`, `ext_kill_override`, `ext_list`). The driver clicks the Extensions panel by the accessible names of
+  `docs/extensions/extensions-ui.md`, or runs `fe-ext admin --json <verb>` on the local channel
+  (`docs/extensions/admin-channel.md`). Consent is always the consent dialog's own `Enable <package_id>` click. The REST
+  doors that remain are the policy PUT, bus commands, ingress, bindings PUT/DELETE and the GET reads the probes use.
+- **Staged index (R-TOOL-23).** A scenario that uses `ext` makes `run.py` start the loopback and stage the examples
+  it names (`"package": "<name>"` args, `$run.packages.<name>.*` refs): `fe-ext build`, `pack` under a run publisher
+  key, `index build` under a distinct run index key, `index verify`, then the tree is served at
+  `http://127.0.0.1:<port>/api/v1/catalog/**`. Content hashes are `$run.packages.<name>.content_hash`; there is no REST
+  catalogue. `fe-ext.exe` comes from the stage (`stage.ps1` builds and copies it) or `target/debug`.
+- **Run-scoped config (R-TOOL-35).** `run.py` writes `<run>/extensions/{trusted_publishers.toml,extension_sources.json}`
+  and exports `FE_EXT_CONFIG_DIR` before the peers start: the revocation root (`revocation = true`), the run publisher
+  root, and the static source pinned to the index key's `did:key`. `FE_EXT_REVOCATION_PULL_SECS` defaults to `10` (the
+  15 minute default would never land a `publish_revocation` inside a run). `peers[].extension_policy: {deny: [ids]}`
+  gives that peer its own config dir with an `extensions.toml`; it loads at the peer's next host `restart` op.
+- **Local channel is one per OS user.** Only the first app to start owns the default endpoint, so `ext_enable` and
+  `ext_disable` default to `channel: "cli"` for the owner and take `channel: "gui"` (optionally `binding`) for any
+  peer; `instance` selects `FE_EXT_ADMIN_INSTANCE` when a peer was started with one.
+- **`stage.ps1 -Loopback <run>\loopback\loopback.json`** re-verifies that run's index tree with the staged `fe-ext`.
+- **Portal.** `portal_admit` clicks `Admit bundle` and then the consent dialog's `Enable <package_id>`;
+  `portal_killswitch` posts `{engage}` to `/api/v1/debug/portal/killswitch` (P-KILL makes it real). `portal_ipc_post`
+  stays refused as `portal_op_unwired` (no seam).
+
 ## Native Portal fixture client
 
 `fe.py portal-fixture observe` reads only the fixed native fixture document facts. `second-link` invokes its actual second anchor and waits for a current observed page two. `refused-third-link` invokes the actual third anchor and reports the exact native refusal with the original page retained. Neither action submits a Navigate URL. These routes require input opt-in, Owner, the current selected Portal/Petal and a captured live helper. A loading document is a retryable refusal; wrong content is never reported as a successful page identity.

@@ -98,26 +98,6 @@
       "note": "The verse policy allows both builds (city-map, and city-map-legacy for step 6). The viewer installs while its policy still admits the package: its local extensions.toml deny (peers[].extension_policy) loads only at the restart in step 3. city-map provides petal.map without scene writes, so Viewer+ passes row 10 (assumed fixture manifest, bindings.md 8.1). Acceptance is the bind verb with verse_id (governance.md section Audit).",
       "actions": [
         {
-          "id": "pkg",
-          "peer": "owner",
-          "via": "rest",
-          "op": "request",
-          "args": {
-            "method": "GET",
-            "path": "/api/v1/extensions/catalog/city-map"
-          }
-        },
-        {
-          "id": "legacy_pkg",
-          "peer": "owner",
-          "via": "rest",
-          "op": "request",
-          "args": {
-            "method": "GET",
-            "path": "/api/v1/extensions/catalog/city-map-legacy"
-          }
-        },
-        {
           "id": "policy",
           "peer": "owner",
           "via": "rest",
@@ -128,30 +108,23 @@
             "allow": [
               {
                 "package_id": "org.example.city-map",
-                "content_hash": "$pkg.content_hash"
+                "content_hash": "$run.packages.city-map.content_hash"
               },
               {
                 "package_id": "org.example.city-map-legacy",
-                "content_hash": "$legacy_pkg.content_hash"
+                "content_hash": "$run.packages.city-map-legacy.content_hash"
               }
             ]
-          },
-          "needs": [
-            "pkg",
-            "legacy_pkg"
-          ]
+          }
         },
         {
           "id": "o_inst",
           "peer": "owner",
-          "via": "rest",
-          "op": "install_extension",
+          "via": "ext",
+          "op": "ext_install",
           "args": {
             "package": "city-map",
             "verse_id": "$fixture.verse_id"
-          },
-          "bind": {
-            "installation": "installation"
           },
           "needs": [
             "policy"
@@ -160,11 +133,10 @@
         {
           "id": "o_consent",
           "peer": "owner",
-          "via": "rest",
-          "op": "consent_extension",
+          "via": "ext",
+          "op": "ext_consent",
           "args": {
-            "installation": "$o_inst.installation",
-            "grants": "manifest"
+            "package": "city-map"
           },
           "needs": [
             "o_inst"
@@ -173,10 +145,10 @@
         {
           "id": "o_accept",
           "peer": "owner",
-          "via": "rest",
-          "op": "accept_extension",
+          "via": "ext",
+          "op": "ext_accept",
           "args": {
-            "installation": "$o_inst.installation"
+            "installation": "$o_consent.installation"
           },
           "needs": [
             "o_consent"
@@ -185,14 +157,11 @@
         {
           "id": "v_inst",
           "peer": "viewer",
-          "via": "rest",
-          "op": "install_extension",
+          "via": "ext",
+          "op": "ext_install",
           "args": {
             "package": "city-map",
             "verse_id": "$fixture.verse_id"
-          },
-          "bind": {
-            "installation": "installation"
           },
           "needs": [
             "policy"
@@ -201,11 +170,10 @@
         {
           "id": "v_consent",
           "peer": "viewer",
-          "via": "rest",
-          "op": "consent_extension",
+          "via": "ext",
+          "op": "ext_consent",
           "args": {
-            "installation": "$v_inst.installation",
-            "grants": "manifest"
+            "package": "city-map"
           },
           "needs": [
             "v_inst"
@@ -214,10 +182,10 @@
         {
           "id": "v_accept",
           "peer": "viewer",
-          "via": "rest",
-          "op": "accept_extension",
+          "via": "ext",
+          "op": "ext_accept",
           "args": {
-            "installation": "$v_inst.installation"
+            "installation": "$v_consent.installation"
           },
           "needs": [
             "v_consent"
@@ -298,7 +266,7 @@
       "expect": [
         {
           "probe": "extension",
-          "target": "$o_inst.installation",
+          "target": "$o_consent.installation",
           "path": "state",
           "peers": [
             "owner"
@@ -431,24 +399,20 @@
         {
           "id": "e_inst",
           "peer": "editor",
-          "via": "rest",
-          "op": "install_extension",
+          "via": "ext",
+          "op": "ext_install",
           "args": {
             "package": "city-map",
             "verse_id": "$fixture.verse_id"
-          },
-          "bind": {
-            "installation": "installation"
           }
         },
         {
           "id": "e_consent",
           "peer": "editor",
-          "via": "rest",
-          "op": "consent_extension",
+          "via": "ext",
+          "op": "ext_consent",
           "args": {
-            "installation": "$e_inst.installation",
-            "grants": "manifest"
+            "package": "city-map"
           },
           "needs": [
             "e_inst"
@@ -457,10 +421,10 @@
         {
           "id": "e_accept",
           "peer": "editor",
-          "via": "rest",
-          "op": "accept_extension",
+          "via": "ext",
+          "op": "ext_accept",
           "args": {
-            "installation": "$e_inst.installation"
+            "installation": "$e_consent.installation"
           },
           "needs": [
             "e_consent"
@@ -905,14 +869,11 @@
         {
           "id": "el_inst",
           "peer": "editor",
-          "via": "rest",
-          "op": "install_extension",
+          "via": "ext",
+          "op": "ext_install",
           "args": {
             "package": "city-map-legacy",
             "verse_id": "$fixture.verse_id"
-          },
-          "bind": {
-            "installation": "installation"
           },
           "needs": [
             "unmask"
@@ -921,11 +882,10 @@
         {
           "id": "el_consent",
           "peer": "editor",
-          "via": "rest",
-          "op": "consent_extension",
+          "via": "ext",
+          "op": "ext_consent",
           "args": {
-            "installation": "$el_inst.installation",
-            "grants": "manifest"
+            "package": "city-map-legacy"
           },
           "needs": [
             "el_inst"
@@ -934,10 +894,10 @@
         {
           "id": "el_accept",
           "peer": "editor",
-          "via": "rest",
-          "op": "accept_extension",
+          "via": "ext",
+          "op": "ext_accept",
           "args": {
-            "installation": "$el_inst.installation"
+            "installation": "$el_consent.installation"
           },
           "needs": [
             "el_consent"
@@ -973,7 +933,7 @@
             "entries": [
               {
                 "package_id": "org.example.city-map-legacy",
-                "content_hash": "$legacy_pkg.content_hash"
+                "content_hash": "$run.packages.city-map-legacy.content_hash"
               }
             ]
           },
@@ -985,8 +945,8 @@
         {
           "id": "refused_owner",
           "peer": "owner",
-          "via": "rest",
-          "op": "install_extension",
+          "via": "ext",
+          "op": "ext_install",
           "args": {
             "package": "city-map-legacy",
             "verse_id": "$fixture.verse_id"
@@ -1000,8 +960,8 @@
         {
           "id": "refused_viewer",
           "peer": "viewer",
-          "via": "rest",
-          "op": "install_extension",
+          "via": "ext",
+          "op": "ext_install",
           "args": {
             "package": "city-map-legacy",
             "verse_id": "$fixture.verse_id"
@@ -1014,58 +974,34 @@
         {
           "id": "override",
           "peer": "owner",
-          "via": "rest",
-          "op": "request",
+          "via": "ext",
+          "op": "ext_kill_override",
           "args": {
-            "method": "POST",
-            "path": "/api/v1/extensions/kill-list-overrides",
-            "body": {
-              "verse_id": "$fixture.verse_id",
-              "package_id": "org.example.city-map-legacy",
-              "content_hash": "$legacy_pkg.content_hash",
-              "confirm": "org.example.city-map-legacy"
-            }
+            "package": "city-map-legacy"
           },
           "needs": [
             "refused_owner"
           ]
         },
         {
-          "id": "ol_inst",
+          "id": "ol_consent",
           "peer": "owner",
-          "via": "rest",
-          "op": "install_extension",
+          "via": "ext",
+          "op": "ext_consent",
           "args": {
-            "package": "city-map-legacy",
-            "verse_id": "$fixture.verse_id"
-          },
-          "bind": {
-            "installation": "installation"
+            "package": "city-map-legacy"
           },
           "needs": [
             "override"
           ]
         },
         {
-          "id": "ol_consent",
-          "peer": "owner",
-          "via": "rest",
-          "op": "consent_extension",
-          "args": {
-            "installation": "$ol_inst.installation",
-            "grants": "manifest"
-          },
-          "needs": [
-            "ol_inst"
-          ]
-        },
-        {
           "id": "ol_accept",
           "peer": "owner",
-          "via": "rest",
-          "op": "accept_extension",
+          "via": "ext",
+          "op": "ext_accept",
           "args": {
-            "installation": "$ol_inst.installation"
+            "installation": "$ol_consent.installation"
           },
           "needs": [
             "ol_consent"

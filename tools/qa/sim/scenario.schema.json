@@ -237,6 +237,7 @@
             "mcp",
             "gui",
             "host",
+            "ext",
             "macro"
           ]
         },

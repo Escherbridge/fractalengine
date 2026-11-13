@@ -1,14 +1,19 @@
 ﻿# tools/qa/stage.ps1 — build (if needed) and stage the GUI binary + its QA
 # helper for isolated, lock-free launches. See tools/qa/AGENTS.md.
 #
-# Usage: powershell -File tools\qa\stage.ps1
+# Usage: powershell -File tools\qa\stage.ps1 [-Loopback <run>\loopback\loopback.json]
+#
+# Also builds fe-ext and stages fe-ext.exe beside fractalengine.exe: the sim packs the example extensions and builds
+# its static index with it, and `fe-ext admin` drives the local admin channel (tools/qa/AGENTS.md section sim).
+# -Loopback reads a run's loopback.json and verifies the static index tree it names with the staged fe-ext
+# (`fe-ext index verify <site_dir> --index-key <index_key_id>`); the stage fails when the tree does not verify.
 #
 # If another cargo/rustc is already running (a build this script does not
 # own — another lane's build, per the "cargo is single-tenant" rule), this
 # SKIPS the build and reuses the newest already-staged build instead of
 # racing it for the lock.
 [CmdletBinding()]
-param([ValidateRange(1,16)][int]$Jobs = 2, [switch]$NativeObserver)
+param([ValidateRange(1,16)][int]$Jobs = 2, [switch]$NativeObserver, [string]$Loopback)
 
 . "$PSScriptRoot\_lib.ps1"
 $ErrorActionPreference = 'Stop'
@@ -54,6 +59,8 @@ try {
     if ($LASTEXITCODE -ne 0) { throw "QA archive sealer build failed: $LASTEXITCODE" }
     & cargo build -p fe-database --example legacy_adoption_fixture -j $Jobs
     if ($LASTEXITCODE -ne 0) { throw "QA legacy fixture helper build failed: $LASTEXITCODE" }
+    & cargo build -p fe-ext --bin fe-ext -j $Jobs
+    if ($LASTEXITCODE -ne 0) { throw "fe-ext build failed: $LASTEXITCODE" }
 } finally {
     Pop-Location
 }
@@ -90,6 +97,10 @@ $legacyFixtureSrc = Join-Path $QaRepoRoot 'target/debug/examples/legacy_adoption
 if (-not (Test-Path -LiteralPath $legacyFixtureSrc)) { throw 'QA legacy fixture helper is missing after build' }
 Copy-Item -LiteralPath $legacyFixtureSrc -Destination (Join-Path $stageDir 'legacy_adoption_fixture.exe')
 
+$feExtSrc = Join-Path $QaRepoRoot 'target/debug/fe-ext.exe'
+if (-not (Test-Path -LiteralPath $feExtSrc)) { throw 'fe-ext is missing after build' }
+Copy-Item -LiteralPath $feExtSrc -Destination (Join-Path $stageDir 'fe-ext.exe')
+
 $manifest = @{
     kind = 'fractalengine-qa-stage-v1'
     source_commit = (& git -C $QaRepoRoot rev-parse HEAD).Trim()
@@ -99,11 +110,20 @@ $manifest = @{
     exe_sha256 = (Get-FileHash -LiteralPath (Join-Path $stageDir 'fractalengine.exe') -Algorithm SHA256).Hash
     seal_hexon_sha256 = (Get-FileHash -LiteralPath (Join-Path $stageDir 'seal_hexon.exe') -Algorithm SHA256).Hash
     legacy_fixture_sha256 = (Get-FileHash -LiteralPath (Join-Path $stageDir 'legacy_adoption_fixture.exe') -Algorithm SHA256).Hash
+    fe_ext_sha256 = (Get-FileHash -LiteralPath (Join-Path $stageDir 'fe-ext.exe') -Algorithm SHA256).Hash
 }
 if ($NativeObserver) {
     $nativeOutput = @(& "$PSScriptRoot\native_observer\build.ps1" -OutputDirectory $stageDir)
     $manifest.native_observer = $nativeOutput[-1]
     if ($manifest.native_observer.schema -cne 'fe-native-helper-stage-v1') { throw 'Native helper build manifest unavailable' }
+}
+if ($Loopback) {
+    $loopbackInfo = Get-Content -LiteralPath $Loopback -Raw | ConvertFrom-Json
+    if ($loopbackInfo.schema -ne 'fe-qa-sim-loopback-v1') { throw "Not a sim loopback.json: $Loopback" }
+    if (-not $loopbackInfo.site_dir) { throw "loopback.json names no static index tree (site_dir): the run has not staged its packages" }
+    & (Join-Path $stageDir 'fe-ext.exe') index verify $loopbackInfo.site_dir --index-key $loopbackInfo.index_key_id
+    if ($LASTEXITCODE -ne 0) { throw "The run's static index does not verify with the staged fe-ext: $($loopbackInfo.site_dir)" }
+    Write-QaLog "Verified the run's static index ($($loopbackInfo.site_dir)) with the staged fe-ext"
 }
 if ((Get-QaSourceFingerprint) -ne $sourceFingerprint) { throw 'Build inputs changed while staging; rerun stage.ps1' }
 $manifest | ConvertTo-Json | Set-Content -LiteralPath (Join-Path $stageDir 'stage.json') -Encoding UTF8

@@ -5,6 +5,7 @@ import hashlib
 import json
 import math
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -115,6 +116,7 @@ def foreign_cargo_running():
 
 def ensure_stage(args):
     name, manifest = newest_stage()
+    manifest = manifest or {}
     head = subprocess.run(["git", "rev-parse", "HEAD"], capture_output=True, text=True, cwd=REPO_ROOT).stdout.strip()
     if args.stage:
         return args.stage, args.allow_stale_stage
@@ -385,6 +387,8 @@ class Host:
         return self.record
 
     def reload(self):
+        if not self.owner_dir:
+            raise RuntimeError("reload before the peers were started or attached")
         with open(os.path.join(self.owner_dir, "peers.json"), encoding="utf-8-sig") as handle:
             self.record = json.load(handle)
         return self.record
@@ -444,6 +448,8 @@ class Host:
             time.sleep(JOIN_RETRY_PAUSE_S)
 
     def restart(self, name, no_bootstrap):
+        if not self.owner_dir:
+            raise RuntimeError("restart before the peers were started or attached")
         extra = "-Peer %s -OwnerRun %s%s" % (name, ps_quote(self.owner_dir), " -NoBootstrap" if no_bootstrap else "")
         code, out, err = powershell(self.peers_cmd("Restart", extra), timeout=900, env=self.peer_env.get(name))
         if code != 0:
@@ -544,22 +550,84 @@ def load_assets():
     return assets
 
 
-def namespaces(host, run_dir):
+def namespaces(host, run_dir, packages=None):
     owner = host.member("owner")
     with open(os.path.join(owner["run_dir"], "current.json"), encoding="utf-8-sig") as handle:
         fixture = json.load(handle).get("fixture_detail") or {}
     peers = {m["name"]: {"did": m.get("public_did"), "role": m.get("role"), "run_dir": m["run_dir"],
                          "api_base": m.get("api_base")} for m in host.record["members"]}
-    return {"fixture": fixture, "peers": peers, "assets": load_assets(), "run": {"dir": run_dir}}
+    return {"fixture": fixture, "peers": peers, "assets": load_assets(), "run": {"dir": run_dir, "packages": packages or {}}}
 
 
 LOOPBACK_OPS = {"mqtt_publish", "publish_revocation"}
+# Example crates the extension scenarios install; staged by name (`package` args and `$run.packages.<name>` refs).
+EXAMPLE_PROJECTS = {"fleet-sim": "extensions/fleet-sim", "device-adapter": "extensions/device-adapter",
+                    "bi-push": "extensions/bi-push"}
+PACKAGE_REFS = re.compile(r'"package"\s*:\s*"([A-Za-z0-9_.-]+)"|\$\{?run\.packages\.([A-Za-z0-9_-]+)')
 
 
 # -- main ---------------------------------------------------------------------------------------------
 def uses_loopback(scenario):
-    """True when a step fires an op that needs the loopback broker or the signed revocation list."""
-    return any(a.get("op") in LOOPBACK_OPS for step in scenario["steps"] for g in ("prepare", "actions") for a in step.get(g, []))
+    """True when a step needs the loopback broker, the signed revocation list or the staged extension index (via ext)."""
+    return any(a.get("op") in LOOPBACK_OPS or a.get("via") == "ext"
+               for step in scenario["steps"] for g in ("prepare", "actions") for a in step.get(g) or [])
+
+
+def scenario_packages(scenario):
+    """Example names a scenario installs or reads hashes of: `"package": "<name>"` args and `$run.packages.<name>` refs."""
+    text = json.dumps({k: v for k, v in scenario.items() if not k.startswith("_")})
+    return sorted({a or b for a, b in PACKAGE_REFS.findall(text)})
+
+
+def find_fe_ext(stage_dir):
+    """fe-ext.exe from the staged build (stage.ps1 copies it beside fractalengine.exe), else target/debug."""
+    for base in (stage_dir, os.path.join(REPO_ROOT, "target", "debug")):
+        candidate = os.path.join(base, "fe-ext.exe") if base else None
+        if candidate and os.path.isfile(candidate):
+            return candidate
+    raise SystemExit("fe-ext.exe is neither in the stage nor in target/debug; run tools\\qa\\stage.ps1 (it builds fe-ext)")
+
+
+def run_fe_ext(command, timeout, what):
+    """Run one fe-ext command; a failure aborts the staging with the tail of its output."""
+    done = subprocess.run(command, capture_output=True, text=True, timeout=timeout, cwd=REPO_ROOT)
+    if done.returncode != 0:
+        raise RuntimeError("fe-ext %s failed (%d): %s" % (what, done.returncode, (done.stdout + done.stderr)[-1500:]))
+    return done.stdout
+
+
+def stage_extension_packages(run_dir, loopback, scenario, stage_dir):
+    """Pack the scenario's example extensions under the run publisher key, build the signed static index and serve it.
+
+    R-TOOL-23: hashes come from the packed builds (`$run.packages.<name>.content_hash`), not from a REST catalogue, and the
+    host installs from the index source staged in extension_sources.json (the Browse row or `install-registry`).
+    """
+    names = scenario_packages(scenario)
+    if not names:
+        return {}
+    exe = find_fe_ext(stage_dir)
+    keys = loopback.write_keys(os.path.join(run_dir, "extensions", "keys"))
+    packages_dir = os.path.join(run_dir, "loopback", "packages")
+    site_dir = os.path.join(run_dir, "loopback", "site")
+    os.makedirs(packages_dir, exist_ok=True)
+    staged = {}
+    for name in names:
+        project = EXAMPLE_PROJECTS.get(name)
+        project_dir = os.path.join(REPO_ROOT, project) if project else None
+        if not project_dir or not os.path.isdir(project_dir):
+            raise RuntimeError("no example project for package %r (known: %s)" % (name, ", ".join(sorted(EXAMPLE_PROJECTS))))
+        run_fe_ext([exe, "build", "--project", project_dir], 3600, "build " + name)
+        path = os.path.join(packages_dir, name + ".hexon")
+        run_fe_ext([exe, "pack", "--project", project_dir, "--key", keys["publisher"], "--out", path], 600, "pack " + name)
+        facts = json.loads(run_fe_ext([exe, "inspect", path, "--json"], 120, "inspect " + name))
+        staged[name] = {"package_id": facts["package_id"], "version": facts["version"], "content_hash": facts["content_hash"],
+                        "capability_digest": facts.get("capability_digest"), "path": path}
+    issued_at = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+    run_fe_ext([exe, "index", "build", "--packages", packages_dir, "--base-url", loopback.index_url.rstrip("/"),
+                "--key", keys["index"], "--out", site_dir, "--issued-at", issued_at, "--valid-days", "1"], 600, "index build")
+    run_fe_ext([exe, "index", "verify", site_dir, "--index-key", loopback.index_key.did], 300, "index verify")
+    loopback.serve_tree(site_dir, staged)
+    return staged
 
 
 def stage_extension_config(run_dir, loopback):
@@ -636,6 +704,10 @@ def run(args):
                 log("WARNING: --attach: the peers were started elsewhere, so they do not trust this run's loopback keys")
             else:
                 meta["extension_config"] = stage_extension_config(run_dir, loopback)
+                staged = stage_extension_packages(run_dir, loopback, scenario, launch["stage_dir"] if launch else None)
+                meta["extension_packages"] = {n: {k: v for k, v in e.items() if k != "path"} for n, e in staged.items()}
+                if staged:
+                    log("extension index staged: %s" % ", ".join("%s %s" % (e["package_id"], e["version"]) for e in staged.values()))
         if args.attach:
             host.attach()
             attached_exe = host.record["members"][0]["process_identity"].get("exe_path")
@@ -663,7 +735,7 @@ def run(args):
         meta["cadence"] = cadence.as_dict()
         with open(os.path.join(run_dir, "run.json"), "w", encoding="utf-8") as handle:
             json.dump(meta, handle, indent=1)
-        ctx = scenario_mod.Context(namespaces(host, run_dir))
+        ctx = scenario_mod.Context(namespaces(host, run_dir, loopback.packages if loopback else None))
         verse = ctx.lookup("fixture.verse_id")
         clients = {m["name"]: PeerClient(m, verse) for m in host.record["members"] if m["name"] in present}
         store = LiveStore()
@@ -672,7 +744,8 @@ def run(args):
         sampler.start(host.pids())
         prober = Prober(scenario, clients, ctx, clock, recorder, store, cadence, steps)
         prober.start()
-        driver = Driver(scenario, clients, ctx, clock, recorder, store, cadence, run_dir, host=host, steps=steps, log=log, loopback=loopback)
+        driver = Driver(scenario, clients, ctx, clock, recorder, store, cadence, run_dir, host=host, steps=steps, log=log, loopback=loopback,
+                        stage_dir=launch["stage_dir"] if launch else None)
         watchdog = threading.Timer(args.max_uptime_s, lambda: (log("max uptime reached: aborting the driver"), driver.abort.set()))
         watchdog.daemon = True
         watchdog.start()
