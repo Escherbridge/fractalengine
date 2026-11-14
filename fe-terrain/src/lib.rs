@@ -18,6 +18,7 @@ pub mod splat;
 pub mod terrain_proposal;
 pub mod tiles;
 pub mod volume_report;
+pub mod profile;
 
 #[cfg(feature = "render")]
 pub mod layers;

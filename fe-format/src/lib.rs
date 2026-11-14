@@ -15,6 +15,7 @@ pub mod manifest;
 pub mod partial;
 pub mod portal_bundle;
 pub mod signature;
+pub mod snapshot;
 #[cfg(test)]
 pub(crate) mod test_support;
 
@@ -36,6 +37,10 @@ pub use partial::{
     HEADER_DOC_VERSION,
 };
 pub use signature::{sign_manifest, verify_manifest, verifying_key_to_did};
+pub use snapshot::{
+    export_petal_snapshot, import_petal_snapshot, ImportedPetalSnapshot, OpLogRange,
+    PetalSnapshotData, SnapshotMeta,
+};
 
 use serde::{Deserialize, Serialize};
 
