@@ -181,6 +181,9 @@ pub enum ImportError {
     /// The rows are malformed or not attributable to the snapshot's petal; nothing was written.
     #[error("invalid petal snapshot: {0}")]
     Invalid(String),
+    /// A node, reading or op-log marker in the snapshot already exists here under another owner; nothing was written.
+    #[error("snapshot rows collide with existing local rows")]
+    Collision,
     /// The restore transaction failed and was cancelled, then cascade-cleaned; no partial petal remains.
     #[error("petal snapshot restore failed: {0:#}")]
     Db(anyhow::Error),
@@ -188,6 +191,18 @@ pub enum ImportError {
 
 /// THROW text of the in-transaction existence guard, mapped back to [`ImportError::PetalExists`].
 const PETAL_EXISTS_MARKER: &str = "petal_snapshot_import_petal_exists";
+/// THROW text of the in-transaction identity guards, mapped back to [`ImportError::Collision`].
+const COLLISION_MARKER: &str = "petal_snapshot_import_collision";
+/// Op types an honest exporter never emits (no petal attribution) and whose rows act as owner-level audit.
+const REFUSED_OP_TYPES: [&str; 2] = ["ExtensionAudit", "ElevatedQuery"];
+/// Payload fields other writers look op-log rows up by (request and operation ids); imported ones must be fresh.
+const OPLOG_MARKER_FIELDS: [&str; 5] = [
+    "editor_batch_request_id",
+    "editor_request_id",
+    "stamp_request_id",
+    "operation_id",
+    "group_restore_of",
+];
 
 /// Defensive cleanup after a failed restore: every row keyed to the petal id, the petal row last.
 const CASCADE_SCRIPT: &str = "BEGIN TRANSACTION;
@@ -197,7 +212,7 @@ DELETE node WHERE petal_id = $petal;
 DELETE room WHERE petal_id = $petal;
 DELETE model WHERE petal_id = $petal;
 DELETE iot_reading WHERE petal_id = $petal;
-DELETE field_def WHERE string::ends_with(scope, $petal_segment) OR string::contains(scope, $petal_segment_child);
+DELETE field_def WHERE scope = $petal_scope OR string::starts_with(scope, $petal_scope_child);
 DELETE petal WHERE petal_id = $petal;
 COMMIT TRANSACTION;";
 
@@ -211,15 +226,30 @@ pub async fn import_petal_snapshot(db: &Db, rows: PetalSnapshotRows) -> Result<(
     if petal_exists(db, &petal_id).await.map_err(ImportError::Db)? {
         return Err(ImportError::PetalExists);
     }
+    // Import never creates a fractal: the parent must exist here, and it fixes the petal's scope.
+    let fractal_id = string_field(&rows.petal, "fractal_id")
+        .filter(|fractal_id| !fractal_id.is_empty())
+        .ok_or_else(|| invalid("the petal row has no fractal_id"))?
+        .to_string();
+    let fractal_scope = crate::handlers::crud::resolve_fractal_scope_handler(db, &fractal_id)
+        .await
+        .map_err(ImportError::Db)?
+        .ok_or_else(|| invalid("the snapshot's parent fractal does not exist here"))?;
+    let petal_scope = format!("{fractal_scope}-PETAL#{petal_id}");
     let source_node_id = string_field(&rows.petal, "node_id").unwrap_or_default().to_string();
-    let plan = RestorePlan::build(&petal_id, rows)?;
+    let plan = RestorePlan::build(&petal_id, &petal_scope, rows)?;
     let clock_maxima = plan.clock_maxima;
 
     if let Err(error) = run_restore(db, plan).await {
-        if format!("{error:#}").contains(PETAL_EXISTS_MARKER) {
+        let text = format!("{error:#}");
+        // Guard refusals cancel the transaction before any write: nothing to clean, and nothing ours to delete.
+        if text.contains(PETAL_EXISTS_MARKER) {
             return Err(ImportError::PetalExists);
         }
-        if let Err(cleanup) = cascade_delete_petal(db, &petal_id).await {
+        if text.contains(COLLISION_MARKER) {
+            return Err(ImportError::Collision);
+        }
+        if let Err(cleanup) = cascade_delete_petal(db, &petal_id, &petal_scope).await {
             tracing::warn!(petal_id = %petal_id, "petal snapshot cascade cleanup failed: {cleanup:#}");
         }
         return Err(ImportError::Db(error));
@@ -255,26 +285,32 @@ pub async fn import_petal_snapshot_reply(
             petal_id,
             correlation_id,
         },
-        Err(ImportError::PetalExists) => DbResult::PetalSnapshotImportRefused {
-            petal_id,
-            reason: ImportError::PetalExists.to_string(),
-            correlation_id,
-        },
+        // Refusals carry their reason; nothing was written for any of them.
+        Err(error @ (ImportError::PetalExists | ImportError::Collision | ImportError::Invalid(_))) => {
+            DbResult::PetalSnapshotImportRefused {
+                petal_id,
+                reason: error.to_string(),
+                correlation_id,
+            }
+        }
         Err(error) => correlated_failure(&correlation_id, format!("ImportPetalSnapshot {petal_id} failed: {error}")),
     }
 }
 
 /// The validated restore transaction: script, its bindings and the highest restored clock per family.
 struct RestorePlan {
+    /// Guards first (they must see only pre-existing rows), then the writes.
     script: String,
+    /// Write statements, appended after every guard when the plan is finished.
+    writes: String,
     bindings: Vec<(String, Value)>,
     /// Max op-log `lamport_clock`, node-log `hlc_timestamp` and reading `hlc_timestamp`.
     clock_maxima: [u64; 3],
 }
 
 impl RestorePlan {
-    /// Validate every row against the snapshot petal and render one `BEGIN … COMMIT` script; writes nothing.
-    fn build(petal_id: &str, rows: PetalSnapshotRows) -> Result<Self, ImportError> {
+    /// Validate every row against the snapshot petal and its scope, render one `BEGIN … COMMIT` script; writes nothing.
+    fn build(petal_id: &str, petal_scope: &str, rows: PetalSnapshotRows) -> Result<Self, ImportError> {
         let PetalSnapshotRows {
             mut petal,
             nodes,
@@ -289,13 +325,23 @@ impl RestorePlan {
         } = rows;
         let mut plan = Self {
             script: String::from("BEGIN TRANSACTION;\n"),
+            writes: String::new(),
             bindings: Vec::new(),
             clock_maxima: [0; 3],
         };
+        // Any row already keyed to this petal id (the petal, or orphans of it) refuses the import, so the
+        // failure cascade below can only ever delete rows this import wrote.
         let petal_binding = plan.bind(json!(petal_id));
-        plan.push(format!(
-            "IF array::len((SELECT VALUE id FROM petal WHERE petal_id = ${petal_binding})) > 0 {{ THROW '{PETAL_EXISTS_MARKER}' }}"
+        let petal_tables = ["petal", "node", "room", "model", "iot_reading"]
+            .map(|table| format!("array::len((SELECT VALUE id FROM {table} WHERE petal_id = ${petal_binding})) > 0"))
+            .join(" OR ");
+        let scope_child = format!("{petal_scope}-");
+        let scope_binding = plan.bind(json!(petal_scope));
+        let scope_child_binding = plan.bind(json!(scope_child));
+        plan.guard(format!(
+            "IF {petal_tables} OR array::len((SELECT VALUE id FROM field_def WHERE scope = ${scope_binding} OR string::starts_with(scope, ${scope_child_binding}))) > 0 {{ THROW '{PETAL_EXISTS_MARKER}' }}"
         ));
+        let inside_petal_scope = |scope: &str| scope == petal_scope || scope.starts_with(&scope_child);
 
         let petal_record = record_id(&petal, "petal")?.to_string();
         let bounds = match take_field(&mut petal, "bounds") {
@@ -313,7 +359,13 @@ impl RestorePlan {
         for mut node in nodes {
             let record = record_id(&node, "node")?.to_string();
             require_petal(&node, "node", petal_id)?;
-            let node_id = string_field(&node, "node_id").ok_or_else(|| invalid("a node row has no node_id"))?.to_string();
+            let node_id = string_field(&node, "node_id")
+                .filter(|node_id| !node_id.is_empty())
+                .ok_or_else(|| invalid("a node row has no node_id"))?
+                .to_string();
+            if node_ids.contains(&node_id) {
+                return Err(invalid(format!("node_id {node_id} appears twice in the snapshot")));
+            }
             if let Some(asset_id) = string_field(&node, "asset_id") {
                 referenced_assets.insert(asset_id.to_string());
             }
@@ -340,7 +392,7 @@ impl RestorePlan {
 
         for field_def in field_defs {
             let record = record_id(&field_def, "field_def")?.to_string();
-            if !string_field(&field_def, "scope").is_some_and(|scope| scope_names_petal(scope, petal_id)) {
+            if !string_field(&field_def, "scope").is_some_and(inside_petal_scope) {
                 return Err(invalid("a field_def row is scoped outside the snapshot petal"));
             }
             let statement = plan.create_statement(&record, field_def, None);
@@ -391,19 +443,64 @@ impl RestorePlan {
             tracing::info!(petal_id, skipped = roles.len(), "petal snapshot role rows are not restored");
         }
 
+        // Node ids referenced but not restored (readings or history of deleted nodes): must not exist here.
+        let mut dangling_node_ids: HashSet<String> = HashSet::new();
+        let mut reading_ids: HashSet<String> = HashSet::new();
         for reading in iot_readings {
             let record = record_id(&reading, "iot_reading")?.to_string();
             require_petal(&reading, "iot_reading", petal_id)?;
+            let reading_id = string_field(&reading, "reading_id")
+                .filter(|reading_id| !reading_id.is_empty())
+                .ok_or_else(|| invalid("an iot_reading row has no reading_id"))?;
+            if !reading_ids.insert(reading_id.to_string()) {
+                return Err(invalid(format!("reading_id {reading_id} appears twice in the snapshot")));
+            }
+            if let Some(node_id) = string_field(&reading, "node_id").filter(|node_id| !node_ids.contains(*node_id)) {
+                dangling_node_ids.insert(node_id.to_string());
+            }
             observe_clock(&mut plan.clock_maxima[2], reading.get("hlc_timestamp"), "iot_reading hlc_timestamp")?;
             let statement = plan.create_statement(&record, reading, None);
             plan.push(statement);
         }
 
         let node_id_refs: HashSet<&str> = node_ids.iter().map(String::as_str).collect();
+        let mut oplog_markers: HashSet<String> = HashSet::new();
+        let mut adopted_asset_ids: HashSet<String> = HashSet::new();
         for entry in oplog {
             let record = record_id(&entry, "op_log")?.to_string();
             if !oplog_entry_matches_petal(&entry, petal_id, &node_id_refs) {
                 return Err(invalid("an op_log entry is not attributable to the snapshot petal"));
+            }
+            let op_type = string_field(&entry, "op_type").unwrap_or_default();
+            if REFUSED_OP_TYPES.contains(&op_type) {
+                return Err(invalid(format!("an op_log entry of type {op_type} is never part of a petal snapshot")));
+            }
+            // Containment: every petal, scope and node reference the payload carries stays inside this petal.
+            let payload = &entry["payload"];
+            if !matches!(&payload["petal_id"], Value::Null) && payload["petal_id"].as_str() != Some(petal_id) {
+                return Err(invalid("an op_log entry names another petal"));
+            }
+            if !matches!(&payload["scope"], Value::Null) && !payload["scope"].as_str().is_some_and(inside_petal_scope) {
+                return Err(invalid("an op_log entry is scoped outside the snapshot petal"));
+            }
+            match &payload["node_id"] {
+                Value::Null => {}
+                Value::String(node_id) => {
+                    if !node_id_refs.contains(node_id.as_str()) {
+                        dangling_node_ids.insert(node_id.clone());
+                    }
+                }
+                _ => return Err(invalid("an op_log entry has a non-string payload node_id")),
+            }
+            for field in OPLOG_MARKER_FIELDS {
+                if let Some(marker) = payload[field].as_str() {
+                    oplog_markers.insert(marker.to_string());
+                }
+            }
+            if op_type == "SceneAssetAdopted" {
+                if let Some(asset_id) = payload["asset_id"].as_str() {
+                    adopted_asset_ids.insert(asset_id.to_string());
+                }
             }
             let lamport = entry
                 .get("lamport_clock")
@@ -416,6 +513,29 @@ impl RestorePlan {
             plan.push(statement);
         }
 
+        // Identity guards (security inbox 5, 6, 8): every imported identity other writers look up must be
+        // new here, so a snapshot can never take over or shadow another scope's rows.
+        let mut node_identities = node_ids;
+        node_identities.extend(dangling_node_ids);
+        plan.collision_guard(|set| format!("SELECT VALUE id FROM node WHERE node_id IN ${set}"), node_identities);
+        plan.collision_guard(|set| format!("SELECT VALUE id FROM iot_reading WHERE reading_id IN ${set}"), reading_ids);
+        let marker_lookup = OPLOG_MARKER_FIELDS
+            .map(|field| format!("payload.{field} IN $"))
+            .to_vec();
+        plan.collision_guard(
+            |set| {
+                let clauses: Vec<String> = marker_lookup.iter().map(|clause| format!("{clause}{set}")).collect();
+                format!("SELECT VALUE id FROM op_log WHERE {}", clauses.join(" OR "))
+            },
+            oplog_markers,
+        );
+        plan.collision_guard(
+            |set| format!("SELECT VALUE id FROM op_log WHERE op_type = 'SceneAssetAdopted' AND payload.asset_id IN ${set}"),
+            adopted_asset_ids,
+        );
+
+        let writes = std::mem::take(&mut plan.writes);
+        plan.script.push_str(&writes);
         plan.script.push_str("COMMIT TRANSACTION;");
         Ok(plan)
     }
@@ -441,10 +561,28 @@ impl RestorePlan {
         format!("CREATE type::record(${record_binding}) CONTENT {content}")
     }
 
-    /// Append one statement to the script.
+    /// Append one write statement.
     fn push(&mut self, statement: String) {
+        self.writes.push_str(&statement);
+        self.writes.push_str(";\n");
+    }
+
+    /// Append one guard; guards run before every write.
+    fn guard(&mut self, statement: String) {
         self.script.push_str(&statement);
         self.script.push_str(";\n");
+    }
+
+    /// Guard: THROW [`COLLISION_MARKER`] when `select` (a `SELECT VALUE id … IN $set`) finds any row for `values`.
+    fn collision_guard(&mut self, select: impl FnOnce(&str) -> String, values: HashSet<String>) {
+        if values.is_empty() {
+            return;
+        }
+        let mut values: Vec<String> = values.into_iter().collect();
+        values.sort();
+        let binding = self.bind(json!(values));
+        let select = select(&binding);
+        self.guard(format!("IF array::len(({select})) > 0 {{ THROW '{COLLISION_MARKER}' }}"));
     }
 }
 
@@ -476,11 +614,11 @@ async fn petal_exists(db: &Db, petal_id: &str) -> anyhow::Result<bool> {
 }
 
 /// Delete everything keyed to `petal_id` ([`CASCADE_SCRIPT`]); only called after a failed restore.
-async fn cascade_delete_petal(db: &Db, petal_id: &str) -> anyhow::Result<()> {
+async fn cascade_delete_petal(db: &Db, petal_id: &str, petal_scope: &str) -> anyhow::Result<()> {
     db.query(CASCADE_SCRIPT)
         .bind(("petal", petal_id.to_string()))
-        .bind(("petal_segment", format!("-PETAL#{petal_id}")))
-        .bind(("petal_segment_child", format!("-PETAL#{petal_id}-")))
+        .bind(("petal_scope", petal_scope.to_string()))
+        .bind(("petal_scope_child", format!("{petal_scope}-")))
         .await
         .context("petal snapshot cascade failed")?
         .check()

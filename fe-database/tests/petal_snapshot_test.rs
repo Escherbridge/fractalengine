@@ -2,11 +2,14 @@
 
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use fe_database::handlers::petal_snapshot::{export_petal_snapshot, import_petal_snapshot, ImportError};
+use fe_database::handlers::petal_snapshot::{
+    export_petal_snapshot, import_petal_snapshot, import_petal_snapshot_reply, ImportError,
+};
 use fe_database::op_log::commit_operation;
 use fe_database::types::{NodeId, OpLogEntry, OpType};
 use fe_format::snapshot as archive_format;
 use fe_format::{AssetEntry, EntryKind, HexonManifest, HexonType};
+use fe_runtime::messages::DbResult;
 use fe_runtime::petal_snapshot::PetalSnapshotRows;
 use serde_json::{json, Value};
 
@@ -387,6 +390,7 @@ async fn petal_snapshot_export_then_import_journey() {
         "node_id": "node-a1", "op_type": "TransformUpdate", "payload": {"node_id": "node-a1"}, "sig": "00".repeat(64),
     }));
     let clock_db = fresh_db().await;
+    seed_fractal(&clock_db).await;
     run(&clock_db, "CREATE asset CONTENT { asset_id: 'asset-node', name: 'local', content_type: 'model/gltf-binary', size_bytes: 4, created_at: '2026-11-13T00:00:00Z' }",
         json!({})).await;
     import_petal_snapshot(&clock_db, ahead).await.expect("import carrying a near-future clock");
@@ -409,11 +413,29 @@ async fn petal_snapshot_export_then_import_journey() {
 
     // Refusal leg: rows outside the petal are refused up front; a SCHEMAFULL rejection mid-transaction leaves nothing.
     let refused_db = fresh_db().await;
+    seed_fractal(&refused_db).await;
     let mut foreign_node = snapshot.clone();
     foreign_node.nodes[0]["petal_id"] = json!(SIBLING);
     let mut unreferenced_asset = snapshot.clone();
     unreferenced_asset.assets[0]["asset_id"] = json!("asset-unplaced");
-    for (case, rows) in [("foreign node", foreign_node), ("unreferenced asset", unreferenced_asset)] {
+    // Still names PETAL#petal-a, but under another fractal: history may not reach outside the petal's scope.
+    let mut foreign_scope = snapshot.clone();
+    foreign_scope.oplog[2]["payload"]["scope"] = json!(format!("VERSE#{VERSE}-FRACTAL#elsewhere-PETAL#{PETAL}"));
+    // An owner-level audit row is never exported, so a snapshot carrying one was forged.
+    let mut forged_audit = snapshot.clone();
+    forged_audit.oplog.push(json!({
+        "id": "op_log:forged_audit", "lamport_clock": 1, "hlc_timestamp": "1:0001", "node_id": "did:key:owner",
+        "op_type": "ElevatedQuery", "payload": {"petal_id": PETAL, "sql": "DELETE role"}, "sig": "00".repeat(64),
+    }));
+    let mut missing_fractal = snapshot.clone();
+    missing_fractal.petal["fractal_id"] = json!("fractal-gone");
+    for (case, rows) in [
+        ("foreign node", foreign_node),
+        ("unreferenced asset", unreferenced_asset),
+        ("op-log scope outside the petal", foreign_scope),
+        ("forged owner audit", forged_audit),
+        ("parent fractal absent", missing_fractal),
+    ] {
         let outcome = import_petal_snapshot(&refused_db, rows).await;
         assert!(matches!(outcome, Err(ImportError::Invalid(_))), "{case}: {outcome:?}");
     }
@@ -424,4 +446,18 @@ async fn petal_snapshot_export_then_import_journey() {
     for sql in ["SELECT * FROM petal", "SELECT * FROM node", "SELECT * FROM node_log", "SELECT * FROM asset", "SELECT * FROM op_log"] {
         assert!(select(&refused_db, sql).await.is_empty(), "{sql}: no partial petal survives a refused import");
     }
+
+    // Identity leg: a snapshot node whose node_id already lives in another petal here cannot take it over.
+    let collision_db = fresh_db().await;
+    seed_fractal(&collision_db).await;
+    seed_node(&collision_db, "petal-elsewhere", "node-a1", None).await;
+    let reply = import_petal_snapshot_reply(&collision_db, snapshot.clone(), Some("collide-1".into())).await;
+    assert!(
+        matches!(&reply, DbResult::PetalSnapshotImportRefused { reason, correlation_id: Some(id), .. }
+            if reason.contains("collide") && id == "collide-1"),
+        "a colliding node_id is refused with its reason: {reply:?}"
+    );
+    assert!(select(&collision_db, "SELECT * FROM petal").await.is_empty(), "nothing restored");
+    let owners = select(&collision_db, "SELECT VALUE petal_id FROM node WHERE node_id = 'node-a1'").await;
+    assert_eq!(owners, [json!("petal-elsewhere")], "the existing node keeps its petal");
 }

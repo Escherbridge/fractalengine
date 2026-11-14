@@ -21,9 +21,11 @@ pub async fn install_crate(
 ) -> Result<(), anyhow::Error> {
     let tags_json = serde_json::to_string(tags)?;
 
-    // Delete-then-create in one request: re-install of the same pair stays one row.
+    // Delete-then-create in one transaction: re-install of the same pair stays one row, and a failed
+    // CREATE never leaves the pair with no row.
     db.query(
         r#"
+        BEGIN TRANSACTION;
         DELETE FROM crate_registry WHERE hexon_uri = $hexon_uri AND petal_id = $petal_id;
         CREATE crate_registry SET
             hexon_uri = $hexon_uri,
@@ -37,6 +39,7 @@ pub async fn install_crate(
             size_bytes = $size_bytes,
             installed_at = <string> time::now(),
             signature_valid = true;
+        COMMIT TRANSACTION;
         "#,
     )
     .bind(("hexon_uri", hexon_uri.to_string()))
@@ -68,6 +71,7 @@ pub async fn install_crate_entry(
 ) -> Result<(), anyhow::Error> {
     db.query(
         r#"
+        BEGIN TRANSACTION;
         DELETE FROM crate_entry WHERE hexon_uri = $hexon_uri AND entry_id = $entry_id;
         CREATE crate_entry SET
             entry_id = $entry_id,
@@ -77,6 +81,7 @@ pub async fn install_crate_entry(
             format = $format,
             label = $label,
             metadata = IF $metadata = NULL { NONE } ELSE { $metadata };
+        COMMIT TRANSACTION;
         "#,
     )
     .bind(("entry_id", entry_id.to_string()))
@@ -95,8 +100,10 @@ pub async fn install_crate_entry(
 /// Remove a crate and all its entries from every petal.
 pub async fn uninstall_crate(db: &Surreal<Db>, hexon_uri: &str) -> Result<(), anyhow::Error> {
     db.query(
-        "DELETE FROM crate_entry WHERE hexon_uri = $hexon_uri; \
-         DELETE FROM crate_registry WHERE hexon_uri = $hexon_uri;",
+        "BEGIN TRANSACTION; \
+         DELETE FROM crate_entry WHERE hexon_uri = $hexon_uri; \
+         DELETE FROM crate_registry WHERE hexon_uri = $hexon_uri; \
+         COMMIT TRANSACTION;",
     )
     .bind(("hexon_uri", hexon_uri.to_string()))
     .await?

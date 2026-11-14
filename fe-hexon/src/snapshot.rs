@@ -249,12 +249,19 @@ pub fn restore_snapshot_archive(
         .map_err(|error| SnapshotError::Archive(format!("{error:#}")))?;
 
     let shipped: BTreeSet<&str> = imported.blobs.iter().map(|(hash, _)| hash.as_str()).collect();
+    let mut referenced: BTreeSet<String> = BTreeSet::new();
     for row in &imported.data.assets {
         if let Some(hash) = content_hash_of(row) {
-            if !shipped.contains(hash.to_ascii_lowercase().as_str()) {
-                return Err(SnapshotError::MissingBlob(hash.to_string()));
+            let hash = hash.to_ascii_lowercase();
+            if !shipped.contains(hash.as_str()) {
+                return Err(SnapshotError::MissingBlob(hash));
             }
+            referenced.insert(hash);
         }
+    }
+    // A blob no asset row references would be stored with nothing pointing at it: refuse the archive.
+    if let Some(unreferenced) = shipped.iter().find(|hash| !referenced.contains(**hash)) {
+        return Err(SnapshotError::Archive(format!("unreferenced blob {unreferenced}")));
     }
 
     for (hash, body) in &imported.blobs {

@@ -188,6 +188,9 @@ impl HexonRegistry {
         if self.get_in_petal(&uri, petal_id).is_some() {
             return Err(RegistryError::AlreadyInstalled(uri));
         }
+        // Script, PetalSnapshot and Plugin have their own install paths: refuse before any blob or row write.
+        crate::handlers::check_content_installable(&package.manifest.hexon_type)
+            .map_err(RegistryError::Package)?;
 
         // Every catalogued blob must be present and hash to its asset_hash before ANY is stored
         // (D-76 (3); see src/AGENTS.md §blob-store).
@@ -693,8 +696,9 @@ mod tests {
         enum Corruption {
             Missing,
             Mismatched,
+            NotContent,
         }
-        for corruption in [Corruption::Missing, Corruption::Mismatched] {
+        for corruption in [Corruption::Missing, Corruption::Mismatched, Corruption::NotContent] {
             let keypair = test_signing_key();
             let mut package = test_package(&keypair);
             let hash = package.entries[0].asset_hash.clone();
@@ -708,6 +712,10 @@ mod tests {
                         b"bytes that are not the catalogued model".to_vec(),
                     );
                 }
+                // A petal snapshot restores through its own import route, never as content.
+                Corruption::NotContent => {
+                    package.manifest.hexon_type = HexonType::PetalSnapshot;
+                }
             }
             let temp_dir = std::env::temp_dir().join(format!("hexon_test_{}", ulid::Ulid::new()));
             let mut registry = HexonRegistry::new(temp_dir.clone());
@@ -719,9 +727,9 @@ mod tests {
                     matches!(&result, Err(RegistryError::MissingAssetBlob(h)) if *h == hash),
                     "missing blob: {result:?}"
                 ),
-                Corruption::Mismatched => assert!(
+                Corruption::Mismatched | Corruption::NotContent => assert!(
                     matches!(&result, Err(RegistryError::Package(_))),
-                    "mismatched blob: {result:?}"
+                    "refused package: {result:?}"
                 ),
             }
             assert!(registry.list_installed(None).is_empty());

@@ -33,6 +33,8 @@ pub const MAX_SNAPSHOT_ARCHIVE_BYTES: usize = crate::upload::MAX_ASSET_BYTES;
 pub const SNAPSHOT_ROUTE_BODY_LIMIT: usize = MAX_SNAPSHOT_ARCHIVE_BYTES + 1024 * 1024;
 /// Multipart field carrying the archive.
 const ARCHIVE_FIELD: &str = "archive";
+/// Prefix of the DB refusal reason for a malformed or out-of-petal snapshot (`ImportError::Invalid`).
+const INVALID_SNAPSHOT_REASON: &str = "invalid petal snapshot";
 
 /// The one existence-safe denial: missing, out of scope, or under-privileged look the same.
 fn denied() -> Response {
@@ -288,13 +290,22 @@ pub async fn import_petal_snapshot(
         Ok(DbResult::PetalSnapshotImported { petal_id, .. }) => {
             Json(ApiResponse::success(serde_json::json!({ "petal_id": petal_id }))).into_response()
         }
-        Ok(DbResult::PetalSnapshotImportRefused { petal_id, reason, .. }) => (
-            StatusCode::CONFLICT,
-            Json(serde_json::json!({
-                "ok": false, "data": null, "error": "refused", "petal_id": petal_id, "reason": reason,
-            })),
-        )
-            .into_response(),
+        // A malformed or out-of-petal snapshot is the caller's error (400); an existing petal or a colliding
+        // identity is a conflict with local state (409). Nothing was written either way.
+        Ok(DbResult::PetalSnapshotImportRefused { petal_id, reason, .. }) => {
+            let status = if reason.starts_with(INVALID_SNAPSHOT_REASON) {
+                StatusCode::BAD_REQUEST
+            } else {
+                StatusCode::CONFLICT
+            };
+            (
+                status,
+                Json(serde_json::json!({
+                    "ok": false, "data": null, "error": "refused", "petal_id": petal_id, "reason": reason,
+                })),
+            )
+                .into_response()
+        }
         Ok(DbResult::RequestFailed { error, .. }) => {
             tracing::warn!(petal_id = %snapshot_petal_id, "petal snapshot import failed: {error}");
             envelope_error(StatusCode::INTERNAL_SERVER_ERROR, "snapshot import failed")
