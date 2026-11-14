@@ -4,7 +4,7 @@ use std::collections::BTreeSet;
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
 use std::sync::OnceLock;
 
-use ed25519_dalek::{Signature, Signer, SigningKey, Verifier, VerifyingKey};
+use ed25519_dalek::{Signature, Signer, SigningKey, VerifyingKey};
 
 use serde::{Deserialize, Serialize};
 
@@ -54,6 +54,12 @@ pub const MAX_ADVERT_TTL_MS: u64 = 30 * 24 * 60 * 60 * 1000;
 /// Most live adverts one verse may hold.
 pub const MAX_ADVERTS_PER_VERSE: usize = 4;
 
+/// Future clock skew tolerated on `issued_at_ms` (spec §4.4 item 5: `issued_at <= now + 60 s`).
+pub const MAX_ISSUED_AT_SKEW_MS: u64 = 60_000;
+
+/// Domain suffixes that only resolve on a local network (RFC 6762, RFC 8375, ICANN `.internal`, common `.lan`).
+const LOCAL_ONLY_DOMAIN_SUFFIXES: [&str; 4] = [".local", ".home.arpa", ".internal", ".lan"];
+
 /// Why a signed advert was refused.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AdvertRefusal {
@@ -64,6 +70,7 @@ pub enum AdvertRefusal {
     VerseMismatch,
     UrlPolicy,
     OverBound,
+    IssuedInFuture,
 }
 
 impl AdvertRefusal {
@@ -77,6 +84,7 @@ impl AdvertRefusal {
             Self::VerseMismatch => "verse_mismatch",
             Self::UrlPolicy => "url_policy",
             Self::OverBound => "over_bound",
+            Self::IssuedInFuture => "issued_in_future",
         }
     }
 }
@@ -356,8 +364,20 @@ pub fn validate_advertised_relay_url_with(
             if normalized == "localhost" || normalized.ends_with(".localhost") {
                 return Err(RelayUrlError::RefusedDestination(normalized));
             }
-            // A domain can still resolve to a refused address: the dial site checks every resolved address.
-            RelayReach::Public
+            // Single-label and local-only names resolve on the operator's LAN: private reach, opt-in only.
+            let local_only = !normalized.contains('.')
+                || LOCAL_ONLY_DOMAIN_SUFFIXES
+                    .iter()
+                    .any(|suffix| normalized.ends_with(suffix));
+            if local_only {
+                if !policy.allow_private {
+                    return Err(RelayUrlError::PrivateDestination(normalized));
+                }
+                RelayReach::Private
+            } else {
+                // A domain can still resolve to a refused address: the dial site checks every resolved address.
+                RelayReach::Public
+            }
         }
     };
     Ok(AdvertisedRelayUrl { url: parsed, reach })
@@ -494,7 +514,8 @@ pub fn verify_row_at(
         .and_then(|encoded| hex::decode(encoded).ok())
         .and_then(|bytes| Signature::from_slice(&bytes).ok())
         .ok_or(AdvertRefusal::BadSignature)?;
-    key.verify(&signing_message(row), &signature)
+    // Strict verification refuses malleable signatures and small-order keys (spec: `verify_strict`).
+    key.verify_strict(&signing_message(row), &signature)
         .map_err(|_| AdvertRefusal::BadSignature)?;
     if fe_identity::did_key_from_public_key(key) != row.advertised_by {
         return Err(AdvertRefusal::AuthorMismatch);
@@ -510,6 +531,10 @@ pub fn verify_row_at(
     };
     if expires.saturating_sub(issued) > MAX_ADVERT_TTL_MS {
         return Err(AdvertRefusal::TtlTooLong);
+    }
+    // A future issue time would stretch the lifetime cap past its intent.
+    if issued > now_ms.saturating_add(MAX_ISSUED_AT_SKEW_MS) {
+        return Err(AdvertRefusal::IssuedInFuture);
     }
     if expires <= now_ms {
         return Err(AdvertRefusal::Expired);
@@ -588,6 +613,11 @@ mod tests {
             ("https://localhost", false, false, false),
             ("https://LOCALHOST.", false, false, false),
             ("https://relay.localhost", false, false, false),
+            // Single-label and local-only names: private reach, opt-in only, never home.
+            ("https://relay", false, true, false),
+            ("https://printer.local", false, true, false),
+            ("https://relay.home.arpa.", false, true, false),
+            ("https://relay.internal", false, true, false),
             // Private ranges: operator opt-in only, and never home eligible.
             ("https://10.0.0.5", false, true, false),
             ("https://172.16.4.4", false, true, false),
@@ -699,6 +729,14 @@ mod tests {
                 signed("https://relay.example.org", &|r| r.verse_id = Some("verse-2".into())),
                 signer.verifying_key(),
                 AdvertRefusal::VerseMismatch,
+            ),
+            (
+                signed("https://relay.example.org", &|r| {
+                    r.issued_at_ms = Some(now + MAX_ISSUED_AT_SKEW_MS + 1);
+                    r.expires_at_ms = Some(now + MAX_ISSUED_AT_SKEW_MS + 60_000);
+                }),
+                signer.verifying_key(),
+                AdvertRefusal::IssuedInFuture,
             ),
             (signed("http://relay.example.org", &|_| {}), signer.verifying_key(), AdvertRefusal::UrlPolicy),
             (signed("https://10.0.0.5", &|_| {}), signer.verifying_key(), AdvertRefusal::UrlPolicy),

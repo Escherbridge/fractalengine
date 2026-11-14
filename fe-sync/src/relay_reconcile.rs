@@ -142,6 +142,10 @@ impl RelayReconciler {
                 }
                 _ => AdoptionMode::DialOnly,
             };
+            // Under `Disabled` adverts are inert unless pinned: no dial allowlisting of a peer's relay.
+            if !self.relays_enabled && mode != AdoptionMode::Pinned {
+                continue;
+            }
             next_adoption.insert(url.to_string(), mode);
             if mode == AdoptionMode::DialOnly {
                 next_known.insert(url.to_string());
@@ -610,14 +614,15 @@ mod tests {
         assert_eq!(reconciler.source_of(DEFAULT_A), Some(RelaySource::Default));
         assert_eq!(reconciler.source_of(COVERED), Some(RelaySource::Advertised));
 
-        // A covered private relay is never adopted automatically; under Disabled nothing is.
+        // A covered private relay is never adopted automatically; under Disabled adverts are inert.
         let private = adverts(&[("verse-a", &[PRIVATE_COVERED])]);
         let mut strict = RelayReconciler::with_tiers(BTreeSet::new(), set(&[DEFAULT_A]));
         let ops = strict.plan_tiers(&tier_inputs(&dial_only, &private, Some(DEFAULT_A), &[PRIVATE_COVERED], true, healthy));
         assert_eq!(ops, vec![known(PRIVATE_COVERED)]);
         let mut disabled = RelayReconciler::from_relay_config(&RelayConfig::Disabled);
         let ops = disabled.plan_tiers(&tier_inputs(&dial_only, &both_verses, None, &[COVERED], true, healthy));
-        assert_eq!(ops, vec![known(COVERED)]);
+        assert!(ops.is_empty(), "disabled relays planned {ops:?}");
+        assert!(disabled.known().is_empty() && disabled.source_of(COVERED).is_none());
         let custom = RelayReconciler::from_relay_config(&RelayConfig::Custom(vec![CONFIGURED.to_string()]));
         assert!(custom.defaults().is_empty() && custom.configured().len() == 1);
 

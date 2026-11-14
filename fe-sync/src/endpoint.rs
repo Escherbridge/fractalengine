@@ -7,14 +7,17 @@
 
 use std::net::{Ipv4Addr, Ipv6Addr, SocketAddr, SocketAddrV4, SocketAddrV6};
 use std::path::Path;
-use std::collections::BTreeSet;
-use std::sync::{Arc, Once, RwLock};
+use std::collections::{BTreeMap, BTreeSet};
+use std::sync::{Arc, Mutex, Once, RwLock};
 use std::time::Duration;
 
 use anyhow::Result;
 use iroh::address_lookup::MemoryLookup;
 
 use crate::relay_config::{RelayAccessToken, RelayConfig};
+
+/// Most relay URLs remembered per peer for re-filtering when the allowlist changes.
+pub const MAX_REMEMBERED_RELAYS_PER_PEER: usize = 8;
 
 /// File under the P2P data dir naming the UDP ports this node last bound (QA-0145).
 pub const ENDPOINT_PORTS_FILE: &str = "endpoint-ports.json";
@@ -71,6 +74,8 @@ pub struct SyncEndpoint {
     relay_token_configured: bool,
     /// Relay URLs a peer address may name; see `src/AGENTS.md` §relay-trust.
     relay_allowlist: Arc<RwLock<BTreeSet<iroh::RelayUrl>>>,
+    /// Relay URLs each peer's addresses named (filtered or not), so an allowlist change re-applies to the book.
+    peer_relays: Arc<Mutex<BTreeMap<iroh::EndpointId, BTreeSet<iroh::RelayUrl>>>>,
 }
 
 /// How long [`SyncEndpoint::node_addr`] waits for a home relay — iroh's own
@@ -231,6 +236,7 @@ impl SyncEndpoint {
             endpoint,
             address_book,
             relay_allowlist: Arc::new(RwLock::new(relay_allowlist)),
+            peer_relays: Arc::new(Mutex::new(BTreeMap::new())),
             relay_enabled: !matches!(relay_config, RelayConfig::Disabled),
             relay_token_configured: token.is_some(),
         })
@@ -269,7 +275,19 @@ impl SyncEndpoint {
     /// Relay URLs outside the allowlist are stripped first (input filter, not an egress allowlist).
     pub fn add_peer_addr(&self, addr: iroh::EndpointAddr) {
         let filtered = {
+            // Lock order: allowlist, then peer_relays, then the address book (same in `set_relay_allowlist`).
             let allowlist = self.relay_allowlist.read().unwrap_or_else(|poisoned| poisoned.into_inner());
+            {
+                let mut peer_relays = self.peer_relays.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+                let remembered = peer_relays.entry(addr.id).or_default();
+                for transport in &addr.addrs {
+                    if let iroh::TransportAddr::Relay(url) = transport {
+                        if remembered.len() < MAX_REMEMBERED_RELAYS_PER_PEER {
+                            remembered.insert(url.clone());
+                        }
+                    }
+                }
+            }
             let before = addr.addrs.len();
             let filtered = crate::relay_trust::filter_peer_addr(addr, &allowlist);
             let stripped = before - filtered.addrs.len();
@@ -281,10 +299,38 @@ impl SyncEndpoint {
         self.address_book.add_endpoint_info(filtered);
     }
 
-    /// Replace the set of relay URLs a peer address may name.
+    /// Replace the set of relay URLs a peer address may name and re-apply it to every stored peer address.
     pub fn set_relay_allowlist(&self, urls: impl IntoIterator<Item = iroh::RelayUrl>) {
+        let next: BTreeSet<iroh::RelayUrl> = urls.into_iter().collect();
         let mut allowlist = self.relay_allowlist.write().unwrap_or_else(|poisoned| poisoned.into_inner());
-        *allowlist = urls.into_iter().collect();
+        if *allowlist == next {
+            return;
+        }
+        *allowlist = next;
+        // The book merges addresses, so a relay that left the allowlist must be removed here and one that joined restored.
+        let peer_relays = self.peer_relays.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+        for (peer, relays) in peer_relays.iter() {
+            let Some(stored) = self.address_book.get_endpoint_info(*peer) else {
+                continue;
+            };
+            let stored = stored.to_endpoint_addr();
+            let mut addrs: BTreeSet<iroh::TransportAddr> = stored
+                .addrs
+                .iter()
+                .filter(|transport| !matches!(transport, iroh::TransportAddr::Relay(_)))
+                .cloned()
+                .collect();
+            addrs.extend(
+                relays
+                    .iter()
+                    .filter(|url| allowlist.contains(*url))
+                    .cloned()
+                    .map(iroh::TransportAddr::Relay),
+            );
+            if addrs != stored.addrs {
+                self.address_book.set_endpoint_info(iroh::EndpointAddr { id: *peer, addrs });
+            }
+        }
     }
 
     /// Watcher over the connection status of the endpoint's home relays
@@ -346,8 +392,17 @@ mod tests {
                 let stored = stored.to_endpoint_addr();
                 assert!(stored.addrs.iter().all(|transport| !matches!(transport, iroh::TransportAddr::Relay(_))), "stray relay stripped");
                 assert!(stored.ip_addrs().any(|ip| *ip == direct), "direct address kept");
+                // Allowlisting it later restores the remembered relay; revoking it strips it again.
+                let stored_relays = |ep: &SyncEndpoint| -> Vec<iroh::RelayUrl> {
+                    let stored = ep.address_book.get_endpoint_info(peer).expect("peer stored").to_endpoint_addr();
+                    stored.relay_urls().cloned().collect()
+                };
                 ep.set_relay_allowlist([stray_relay.clone()]);
-                assert!(ep.relay_allowlist.read().unwrap().contains(&stray_relay));
+                assert_eq!(stored_relays(&ep), vec![stray_relay.clone()], "allowlisted relay restored");
+                ep.set_relay_allowlist(std::iter::empty());
+                assert!(stored_relays(&ep).is_empty(), "revoked relay stripped from the stored address");
+                let stored = ep.address_book.get_endpoint_info(peer).expect("peer stored").to_endpoint_addr();
+                assert!(stored.ip_addrs().any(|ip| *ip == direct), "direct address survives the re-filter");
                 ep.shutdown().await;
 
                 // QA-0145: a restarted node re-binds the ports it recorded, so the
