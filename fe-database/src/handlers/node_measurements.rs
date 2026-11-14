@@ -56,7 +56,7 @@ pub(crate) async fn read(
         if series.metric.len() > 256 || series.units.len() > 128 {
             anyhow::bail!("measurement series name exceeds display limit");
         }
-        let mut response = db.query(format!("SELECT reading_id, recorded_at, recorded_at_ms, value FROM iot_reading WHERE {ancestry} AND metric = $metric AND units = $units ORDER BY recorded_at_ms, reading_id LIMIT $cap"))
+        let mut response = db.query(format!("SELECT reading_id, recorded_at, recorded_at_ms, value FROM iot_reading WHERE {ancestry} AND metric = $metric AND units = $units ORDER BY recorded_at_ms DESC, reading_id DESC LIMIT $cap"))
             .bind(("node", node_id.to_owned())).bind(("petal", petal_id.to_owned()))
             .bind(("fractal", fractal)).bind(("verse", parts.verse_id))
             .bind(("metric", series.metric.clone())).bind(("units", series.units.clone()))
@@ -81,6 +81,7 @@ pub(crate) async fn read(
     .await?;
     let truncated = points.len() > limit;
     points.truncate(limit);
+    points.reverse();
     Ok(NodeMeasurements {
         node_id: node_id.to_owned(),
         petal_id: petal_id.to_owned(),

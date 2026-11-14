@@ -27,6 +27,7 @@ pub struct NodeMeasurements {
     pub available_series: Vec<MeasurementSeries>,
     pub series_truncated: bool,
     pub points: Vec<MeasurementPoint>,
+    /// True when older points were omitted; `points` are the newest `limit`, ascending.
     pub truncated: bool,
     pub limit: usize,
 }

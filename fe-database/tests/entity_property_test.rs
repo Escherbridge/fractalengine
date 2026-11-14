@@ -566,7 +566,7 @@ fn a_dimension_callout_node_round_trips_through_the_property_store() {
         DbResult::IotReadingsInserted { written: 5, .. }
     ));
     for (units, limit, expected, truncated) in [
-        ("m", 2, vec![10.0, 11.0], true),
+        ("m", 2, vec![11.0, 12.0], true),
         ("ft", 1024, vec![33.0], false),
         ("m", usize::MAX, vec![10.0, 11.0, 12.0], false),
     ] {

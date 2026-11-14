@@ -172,7 +172,7 @@ impl MeasurementsState {
         }
         if current.truncated {
             ui.label(format!(
-                "Partial series: first {} points in event-time order. Later points are omitted.",
+                "Showing the latest {} points.",
                 current.limit
             ));
         }
