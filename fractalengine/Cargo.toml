@@ -90,3 +90,6 @@ plugin-host = []
 # Licensed extensions: R19 row 6 verifies a stored licence token offline (extension_host/governance.rs). Off by
 # default: every licensed build is refused until a release turns it on (src/AGENTS.md §extension-governance).
 entitlement = ["fe-format/entitlement"]
+# Desktop relay-capable mode (NET-30): also needs the Settings consent toggle, a public self-test and a dial-back
+# confirmation at runtime (src/AGENTS.md §desktop-relay).
+relay-server = ["fe-sync/relay-server"]

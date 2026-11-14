@@ -45,3 +45,5 @@ fe-format = { path = "../fe-format" }
 default = []
 sim-control = ["dep:fe-sim"]
 plugin-host = ["dep:fe-plugin"]
+# Opt-in embedded members-only relay (NET-24): also needs FE_RELAY_SERVE=1 at runtime (src/relay_serve.rs).
+relay-server = ["fe-sync/relay-server"]

@@ -29,6 +29,7 @@ mod qa_dev_token;
 mod qa_log;
 mod qa_portal_bridge;
 mod qa_invitation_bridge;
+mod relay_serve_bridge;
 mod render_wake;
 mod screenshot_bridge;
 mod terrain_bridge;
@@ -133,6 +134,8 @@ fn main() {
     // before the sync thread builds its endpoint. See src/AGENTS.md §app-settings.
     let (app_settings, settings_path) = fe_ui::settings::load_startup_settings();
     fe_sync::relay_config::set_settings_relay_spec(app_settings.relay.clone());
+    // NET-30: auto-home and act-as-prober are read by the sync thread at startup, so register them here too.
+    relay_serve_bridge::register_settings(&app_settings);
 
     let maintenance_jobs = fe_runtime::maintenance::HostJobs::install().expect("one host job owner");
     let mut maintenance_services = Vec::new();
@@ -431,6 +434,20 @@ fn main() {
     );
 
     maintenance_services.push(fe_runtime::service_lifecycle::OwnedService::new("sync", Default::default(), sync_thread));
+
+    // NET-32: API diagnostics calls reach the sync thread through this bridge; it exits when the API drops the sender.
+    let (network_diagnostics_tx, network_diagnostics_rx) =
+        crossbeam::channel::bounded::<fe_runtime::net_diagnostics::NetworkDiagnosticsCall>(16);
+    if let Err(error) =
+        fe_sync::net_diagnostics::bridge_network_diagnostics(network_diagnostics_rx, sync_cmd_tx.clone())
+    {
+        tracing::warn!(%error, "network diagnostics bridge did not start; the diagnostics route answers 503");
+    }
+
+    // NET-30: desktop relay-capable mode; consent, feature, self-test and dial-back are checked off the main thread.
+    if app_settings.serve_relay {
+        spawn_desktop_relay_gate(app_settings.clone(), sync_cmd_tx.clone(), shared_db.clone());
+    }
 
     // M2/F7 (A17): API→sync distributed-query bridge. The API thread's
     // distributed surfaces send `DistributedQueryCall`s; this bridge forwards
@@ -818,6 +835,7 @@ fn main() {
         // Usage log and metrics bind from env; relay adverts signed as the sync author (fe-api/AGENTS.md §usage-metering).
         network_ops: fe_api::network_ops::NetworkOps {
             advertisement_signer: Some(advertisement_signer),
+            network_diagnostics: Some(network_diagnostics_tx),
             ..fe_api::network_ops::NetworkOps::from_env()
         },
     }));
@@ -1095,6 +1113,148 @@ struct SceneChangeReceiver(crossbeam::channel::Receiver<fe_runtime::messages::Sc
 /// Arc-backed Bevy handle for the API and scene-change hot cache.
 #[derive(bevy::prelude::Resource, Clone)]
 struct SharedEntityStore(Arc<fe_entity_store::EntityStore>);
+
+// ---------------------------------------------------------------------------
+// Desktop relay-capable mode (NET-30): see src/AGENTS.md §desktop-relay
+// ---------------------------------------------------------------------------
+
+/// Self-test polls before giving up on a verdict (one every [`SELF_TEST_POLL_INTERVAL`]).
+const SELF_TEST_POLL_ATTEMPTS: u32 = 24;
+const SELF_TEST_POLL_INTERVAL: std::time::Duration = std::time::Duration::from_secs(5);
+/// Dial-back requests before the provisional relay is stopped (peers may open verses late).
+#[cfg(feature = "relay-server")]
+const DIALBACK_ATTEMPTS: u32 = 3;
+#[cfg(feature = "relay-server")]
+const DIALBACK_RETRY_INTERVAL: std::time::Duration = std::time::Duration::from_secs(20);
+
+/// Spawns the thread that gates, starts and confirms the desktop relay; it holds the relay for the process lifetime.
+fn spawn_desktop_relay_gate(
+    settings: fe_ui::settings::AppSettings,
+    sync_command_sender: fe_sync::SyncCommandSender,
+    db: fe_database::repo::Db,
+) {
+    let spawned = std::thread::Builder::new().name("desktop-relay-gate".into()).spawn(move || {
+        // Multi-thread: the relay's listener and reconciler tasks must keep running after `maybe_start` returns.
+        let runtime = match tokio::runtime::Builder::new_multi_thread()
+            .worker_threads(2)
+            .thread_name("desktop-relay")
+            .enable_all()
+            .build()
+        {
+            Ok(runtime) => runtime,
+            Err(error) => {
+                tracing::warn!(%error, "desktop relay not started: runtime build failed");
+                return;
+            }
+        };
+        let feature_built = cfg!(feature = "relay-server");
+        let verdict = if feature_built { wait_for_self_test_verdict(&sync_command_sender) } else { None };
+        let hosted_verses = runtime.block_on(load_hosted_verse_ids(&db));
+        // The dial-back probes the listening relay, so it can only run after a provisional start; a failed
+        // confirmation stops the relay again (the pure gate still refuses everything before that point).
+        let provisional = verdict.as_deref() == Some("public");
+        let Some(handle) = relay_serve_bridge::maybe_start(
+            runtime.handle(),
+            &settings,
+            verdict.as_deref(),
+            provisional,
+            hosted_verses,
+        ) else {
+            return;
+        };
+        if !confirm_dialback(&runtime) {
+            tracing::warn!("desktop relay stopped: no verse peer confirmed it is reachable (dial-back)");
+            drop(handle);
+            return;
+        }
+        tracing::info!("desktop relay confirmed reachable by a verse peer; serving until exit");
+        let _relay = handle;
+        loop {
+            std::thread::park();
+        }
+    });
+    if let Err(error) = spawned {
+        tracing::warn!(%error, "desktop relay gate thread did not start");
+    }
+}
+
+/// Asks the sync thread for its reachability verdict until it leaves `pending`; `None` when it never does.
+fn wait_for_self_test_verdict(sync_command_sender: &fe_sync::SyncCommandSender) -> Option<String> {
+    for attempt in 0..SELF_TEST_POLL_ATTEMPTS {
+        if attempt > 0 {
+            std::thread::sleep(SELF_TEST_POLL_INTERVAL);
+        }
+        let (reply, answer) = crossbeam::channel::bounded(1);
+        if sync_command_sender
+            .send(fe_sync::SyncCommand::GetNetworkDiagnostics { detail: false, reply })
+            .is_err()
+        {
+            tracing::warn!("desktop relay gate: the sync thread is not accepting commands");
+            return None;
+        }
+        match answer.recv_timeout(SELF_TEST_POLL_INTERVAL) {
+            Ok(snapshot) if snapshot.node.reachability_verdict != "pending" => {
+                return Some(snapshot.node.reachability_verdict);
+            }
+            Ok(_) | Err(_) => continue,
+        }
+    }
+    None
+}
+
+/// Verse ids in the local store: the hosted set the embedded relay may serve (empty on a read error).
+async fn load_hosted_verse_ids(db: &fe_database::repo::Db) -> std::collections::BTreeSet<String> {
+    let read = async {
+        let mut response = db.query("SELECT VALUE verse_id FROM verse").await?.check()?;
+        anyhow::Ok(response.take::<Vec<String>>(0)?)
+    };
+    match read.await {
+        Ok(verse_ids) => verse_ids.into_iter().collect(),
+        Err(error) => {
+            tracing::warn!(%error, "desktop relay gate could not list hosted verses");
+            std::collections::BTreeSet::new()
+        }
+    }
+}
+
+/// Public `https://` URL peers dial for the desktop relay: the configured hostname plus a non-443 bind port.
+#[cfg(feature = "relay-server")]
+fn desktop_relay_public_url() -> Option<String> {
+    use fe_sync::relay_server::{RELAY_SERVE_HOSTNAME_ENV, RELAY_SERVE_HTTPS_BIND_ENV};
+    let hostname = std::env::var(RELAY_SERVE_HOSTNAME_ENV).ok()?.trim().to_owned();
+    if hostname.is_empty() {
+        return None;
+    }
+    let port = std::env::var(RELAY_SERVE_HTTPS_BIND_ENV)
+        .ok()
+        .and_then(|bind| bind.trim().parse::<std::net::SocketAddr>().ok())
+        .map_or(443, |bind| bind.port());
+    Some(if port == 443 { format!("https://{hostname}") } else { format!("https://{hostname}:{port}") })
+}
+
+/// True once a verse peer returns a signed dial-back record saying the relay URL answered.
+#[cfg(feature = "relay-server")]
+fn confirm_dialback(runtime: &tokio::runtime::Runtime) -> bool {
+    let Some(url) = desktop_relay_public_url() else {
+        tracing::warn!("desktop relay has no public hostname to confirm; set FE_RELAY_SERVE_HOSTNAME");
+        return false;
+    };
+    for attempt in 0..DIALBACK_ATTEMPTS {
+        if attempt > 0 {
+            std::thread::sleep(DIALBACK_RETRY_INTERVAL);
+        }
+        if let Some(record) = runtime.block_on(fe_sync::dialback_responder::request_dialback(&url)) {
+            return record.ok;
+        }
+    }
+    false
+}
+
+/// Without the relay server nothing is ever started, so there is nothing to confirm.
+#[cfg(not(feature = "relay-server"))]
+fn confirm_dialback(_runtime: &tokio::runtime::Runtime) -> bool {
+    false
+}
 
 /// Startup system: the first-party terrain extension contributes its UI slots (compiled in, never a package; AC-2).
 fn register_first_party_extension_ui(mut extensions: bevy::prelude::ResMut<fe_ui::plugin::UiExtensions>) {

@@ -12,6 +12,7 @@ use fe_runtime::channels::ChannelHandles;
 use fe_runtime::messages::DbCommand;
 use tracing_subscriber::EnvFilter;
 
+mod relay_serve;
 mod replicas;
 
 /// Bevy resource carrying the "shutdown requested" flag set by the signal
@@ -252,6 +253,27 @@ fn main() -> anyhow::Result<()> {
         }
     }
 
+    // NET-24: opt-in embedded members-only relay. Its gate is installed before the sync thread starts so no
+    // admission snapshot is missed; a refused config exits non-zero with the named reason (AC-2).
+    let embedded_relay_runtime = if std::env::var_os("FE_RELAY_SERVE").is_some() {
+        Some(
+            tokio::runtime::Builder::new_multi_thread()
+                .worker_threads(2)
+                .thread_name("embedded-relay")
+                .enable_all()
+                .build()?,
+        )
+    } else {
+        None
+    };
+    let _embedded_relay = match &embedded_relay_runtime {
+        Some(runtime) => {
+            let hosted_verses = runtime.block_on(load_hosted_verse_ids(&shared_db));
+            relay_serve::maybe_spawn_embedded_relay(runtime.handle(), hosted_verses)?
+        }
+        None => None,
+    };
+
     // Sync thread
     let (sync_cmd_tx, sync_cmd_rx) = crossbeam::channel::bounded(256);
     let (sync_evt_tx, sync_evt_rx) = crossbeam::channel::bounded(256);
@@ -289,6 +311,15 @@ fn main() -> anyhow::Result<()> {
     {
         let sync_tx_for_repl = sync_cmd_tx.clone();
         std::thread::spawn(move || run_replication_bridge(repl_rx, &sync_tx_for_repl));
+    }
+
+    // NET-32: API diagnostics calls reach the sync thread through this bridge; it exits when the API drops the sender.
+    let (network_diagnostics_tx, network_diagnostics_rx) =
+        crossbeam::channel::bounded::<fe_runtime::net_diagnostics::NetworkDiagnosticsCall>(16);
+    if let Err(error) =
+        fe_sync::net_diagnostics::bridge_network_diagnostics(network_diagnostics_rx, sync_cmd_tx.clone())
+    {
+        tracing::warn!(%error, "network diagnostics bridge did not start; the diagnostics route answers 503");
     }
 
     // Clone db_cmd_tx before it moves into BevyHandles — needed for graceful shutdown.
@@ -510,6 +541,7 @@ fn main() -> anyhow::Result<()> {
         // Usage log and metrics bind from env; relay adverts signed as the sync author (fe-api/AGENTS.md §usage-metering).
         network_ops: fe_api::network_ops::NetworkOps {
             advertisement_signer: Some(advertisement_signer),
+            network_diagnostics: Some(network_diagnostics_tx),
             ..fe_api::network_ops::NetworkOps::from_env()
         },
     });
@@ -551,6 +583,21 @@ fn main() -> anyhow::Result<()> {
         tracing::warn!(?exit, "Relay exited with a non-success status");
     }
     Ok(())
+}
+
+/// Verse ids in the local store: the hosted set the embedded relay may serve (empty on a read error).
+async fn load_hosted_verse_ids(db: &fe_database::repo::Db) -> std::collections::BTreeSet<String> {
+    let read = async {
+        let mut response = db.query("SELECT VALUE verse_id FROM verse").await?.check()?;
+        anyhow::Ok(response.take::<Vec<String>>(0)?)
+    };
+    match read.await {
+        Ok(verse_ids) => verse_ids.into_iter().collect(),
+        Err(error) => {
+            tracing::warn!(%error, "embedded relay could not list hosted verses");
+            std::collections::BTreeSet::new()
+        }
+    }
 }
 
 /// Spawn the fe-sim control bridge (sim-control builds only, AND the runtime
