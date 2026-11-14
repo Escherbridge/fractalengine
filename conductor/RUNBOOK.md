@@ -111,6 +111,25 @@ trusting "pure efficiency" claims; push control; a board that silently drifts st
 
 ## 2. State
 
+- **2026-11-14 03:25 MST — ROUND 5 SWARM RUNNING (100 slices); CI on round 4 still running.** Round-5 plan
+  (`wf_8e026152-8ba`, 13 agents, 2.5M tokens): eleven sonnet scopers checked every item round 4 left open
+  against code at HEAD (most were already done: e.g. HEXON 46 done / 12 left), opus merge, sonnet critic PASS;
+  orchestrator re-check: 0 unordered ownership overlaps, no cycles. **100 slices = 54 feature, 15 gates, 18
+  integration, 11 bookkeeping, 2 checklist; 65 sonnet / 24 haiku / 11 opus (one clock slice + ten
+  security-bearing gates); 82 public, 18 private; critical path 12.** Files: `.omc/state/turn5-dag.json`,
+  `turn5-args.json`, `turn5-slices/<id>.json`, `.omc/plans/turn5-plan.md` (coverage §6, 50 user questions with
+  defaults §9, refine checklist §10), steer `.omc/state/turn5-steer.md` (lists the security fixes that must not
+  regress). Swarm `wf_07396894-5b3` (task `w5ju6nyu9`), script `<session dir>/workflows/scripts/round5-swarm.js`
+  (the round-4 script re-pointed). Resume: `Workflow({scriptPath: "<that script>", resumeFromRunId:
+  "wf_07396894-5b3", args: {"width":5,"n":100,"edges":142,"sig":25066}})`, `TaskStop` the old id first. Result
+  reader: `.omc/plans/turn4-result.py <journal> .omc/state/turn5-args.json summary|holds|partial|questions`.
+  **CI:** run `43576085892` on `43f03526`; the background shell writes
+  `.omc/research/ci-43576085892-failed-20261114.log`. Its failures are fixed AFTER this swarm (one writer in
+  the tree), not during. **After the swarm:** commit holds (the leak scan matches `.striped`; the commit agents'
+  `git commit` is sometimes refused by the permission classifier), refine pass (re-run
+  `round4-refine-wf_00887a68-005.js` logic on the crates in plan §10), CI test fixes, a sonnet security re-audit
+  of the round-5 diff, QA checklist is refreshed by the swarm's own Q5-CHECKLIST slices, then push
+  (`git push -4 origin main`), then §7 step 3.
 - **2026-11-14 02:25 MST — ROUND 4 CODE PUSHED (about 220 commits); FIRST CI TEST SWEEP ON IT IS RUNNING.**
   Security round 2 (`wf_0763b288-447`: `da703e7c` fe-database, `6d687807` fe-sync, `5af2f0bf` fe-api) and a
   one-agent round 3 (`6ea479cb`): the opus re-verify returned **no push blockers**; FIXED: imported history is
