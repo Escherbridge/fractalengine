@@ -381,6 +381,7 @@ pub(crate) fn status_bar(
         .map(|status| status.online)
         .unwrap_or(dashboard.is_online);
     let mut action = None;
+    let mut unsaved_action = None;
     egui::TopBottomPanel::bottom("statusbar")
         .exact_height(minimum + 4.0)
         .frame(
@@ -406,6 +407,7 @@ pub(crate) fn status_bar(
                         ui.separator();
                         crate::role_chip::role_status(ui, local_role, nav, node_identity);
                         ui.separator();
+                        unsaved_action = super::unsaved_edits::unsaved_edits_segment(ui, minimum);
                         if let Some(counts) = &counts {
                             ui.add(
                                 egui::Label::new(
@@ -436,6 +438,9 @@ pub(crate) fn status_bar(
                 )
                 .1;
         });
+    if let Some(unsaved) = unsaved_action {
+        super::unsaved_edits::apply_unsaved_edit_action(ui_mgr, unsaved, now);
+    }
     match action {
         Some(FooterAction::TogglePeers) => {
             if matches!(ui_mgr.active_dialog, ActiveDialog::PeerDebug) {
