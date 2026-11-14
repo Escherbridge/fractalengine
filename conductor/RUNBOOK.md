@@ -111,6 +111,22 @@ trusting "pure efficiency" claims; push control; a board that silently drifts st
 
 ## 2. State
 
+- **2026-11-14 04:30 MST — ROUND 5 CODE COMPLETE (uncompiled); FINISH WORKFLOW RUNNING.** The resume
+  (`wsiach6kq`) ended with **0 blocked / skipped / failed**: every one of the 100 slices has run (46 done, 6
+  partial, 48 no-op on the second pass). **It did NOT replay from cache:** resume is prefix-cached, so changing
+  the one blocked slice's prompt re-ran the whole swarm (147 agents, 15.3M tokens, 46 min, on top of the first
+  run's 15.3M); memory `workflow-resume-is-prefix-cached`. Round 5 total: about 33M tokens with planning, about
+  100 local commits since `ab007037`. Holds: two slices had nothing left to commit (already in HEAD), one had a
+  git-ignored `qa/` file (the three conductor ledgers committed as `bf1fe0f7`). Partials left: R5-CITY and
+  I5-DB/I5-UI/R5-INT-2 report NEEDS lines that may or may not have landed (`DbResult::NodeCreated.scale`,
+  `EntityAccessState::verse_local_only()` getter, CLOCK5-01's op_log test leg): the compile pass shows what is
+  missing; `python -I .omc/plans/turn4-result.py <journal wf_07396894-5b3> .omc/state/turn5-args.json partial`.
+  **Running:** `wf_650905e2-c2c` (task `w7s74x2se`): the twelve-step refine pass as a child workflow, then three
+  sonnet agents on the seven failing CI tests (below), a builder check + commit, and a sonnet security re-audit
+  of `ab007037..HEAD` (regressions of the listed fixes, inbox entry 16, new findings, `push_blockers`). It
+  returns early if refine is not green. **Then:** push if `push_blockers` is empty (`git push -4 origin main`),
+  watch CI (`gh api repos/Escherbridge/fractalengine/actions/jobs/<job id>/logs` for the log), refresh the QA
+  checklist if Q5-CHECKLIST left gaps, and hand the user the open decisions.
 - **2026-11-14 03:40 MST (clock corrected; the two entries below are stamped about 40 min ahead) — FIRST CI TEST
   SWEEP ON ROUND-4 CODE: 7 failures in about 1,640 tests.** Run `43576085892` on `43f03526`: Windows build
   and Lint green; Linux sweep: fe-terrain 343/0, **fe-ui 1088 passed / 6 failed, fractalengine 142 passed / 1
