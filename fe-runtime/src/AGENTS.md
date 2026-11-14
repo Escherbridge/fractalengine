@@ -374,6 +374,11 @@ order:
   caller exists yet: the commands are explicit-only by design (fe-database
   `canon_log/AGENTS.md` §device-enrolment). Test:
   `device_enrolment_replies_reach_only_their_own_waiter`.
+- **Petal snapshot family (INT5-01, HEXON5-02).** `ExportPetalSnapshot` and `ImportPetalSnapshot` are correlated
+  families (`ReplyKind::PetalSnapshotExport` and `PetalSnapshotImport`, `app.rs:483-485`). `PetalSnapshotImported`
+  and `PetalSnapshotImportRefused` share the import family (`app.rs:624`), so a refused import answers its waiter
+  instead of timing out. `ReadPetalReadings` has no arm (`app.rs` never names it) and stays uncorrelated; only the
+  GUI Readings tab reads it (`fe-ui/src/gis/readings.rs`).
 - **Typed correlated failure — `RequestFailed` (2026-10-11, RT-CORR-EDGE).**
   `DbResult::RequestFailed { error, correlation_id }` is the generic failure
   for correlated commands whose family has no family-specific failure
@@ -921,6 +926,11 @@ to another waiter. GUI request IDs are consumed only by their owning form.
 
 ## Local EntityAccess
 
+`EntityAccessSnapshot.grants` = admitted role statements at exactly the target scope, newest first, at most 256
+(`EntityGrantRecord`: role, peer_did, grantor_did, revoked, hlc; `fe-database/src/handlers/entity_access.rs:189`). It is
+the latest statement per (scope, peer, grantor), not an op log. The load runs only after `prepare_parent_mutation`
+admits the caller (`entity_access.rs:42`), so a refused caller gets no grants.
+
 EntityAccess is a local desktop command with an explicit EntityType/id/full scope and fresh request ID. Its actor is always the DB thread identity. It is not a serialized HTTP/MCP request and adds no API pending-reply family. EntityAccessFinished is consumed only by its exact open-dialog request. Snapshots contain bounded metadata and effective roles; custom Debug output redacts generated invite/token credentials. Secret mint receipts are accepted only while the matching target's API tab remains active.
 
 ## Stamp override batch
@@ -1289,6 +1299,7 @@ cannot forget a hook: it either goes through the door or its command is not in t
 |---|---|---|
 | `CreateNode`, `CreateNodeWithAsset`, `ImportGltf` | `scene.create` | name, position |
 | `CreateObject` | `scene.create` + `scene.property` | one property call per initial key, node null |
+| `ImportPetalSnapshot` | `scene.create` + `scene.property` | one create per node, one property call per initial key; capped by `MAX_HOOK_CALLS_PER_WRITE` (`scene_write.rs:19`) |
 | `DuplicateNode` | `scene.create` | `proposed.source` = the copied node |
 | `PromoteInstance`, `PromoteCheckedStamp` | `scene.create` | `proposed.source` = `{path}#inst-{i}` |
 | `UpdateNodeTransform` | `scene.transform` | |
@@ -1374,7 +1385,8 @@ Row version 1 of the `__relays` replica table (`RELAY_ADVERT_TABLE`; `RELAY_ADVE
 
 - `parse_row` checks `v` before the full shape, so a v2 row is skipped with a warning and is not counted as malformed. Unknown extra fields are tolerated (forward compatible).
 - Fields: `url`, `advertised_by`, optional `note`. Signed rows also carry `verse_id`, `issued_at_ms`, `expires_at_ms`, optional `dialback` (a `DialbackRecord`) and `sig`.
-- Signed v1 body: the hex ed25519 signature covers `RELAY_ADVERT_SIGNING_DOMAIN` (`fe-relay-adv-v1\0`) followed by the canonical body. The body is key-sorted and whitespace-free so every peer signs identical bytes. The TTL (`expires_at_ms - issued_at_ms`) is capped at `MAX_ADVERT_TTL_MS` (30 days). `issued_at_ms` may lead local time by at most `MAX_ISSUED_AT_SKEW_MS` (60 s). A verse holds at most `MAX_ADVERTS_PER_VERSE` (4) live adverts.
+- Signed v1 body: the hex ed25519 signature covers `RELAY_ADVERT_SIGNING_DOMAIN` (`fe-relay-adv-v1\0`) followed by `canonical_body` (`relay_advertisement.rs:460`): version, then length-prefixed fields in fixed order (`push_field`). Only the `dialback` value is key-sorted JSON. This is not the key-sorted whole-row JSON the spec names; every peer signs identical bytes.
+- Local-only names (single-label, `.local`-style) resolve to `RelayReach::Private` and need the operator opt-in; without it they are refused as `PrivateDestination` (`relay_advertisement.rs:367-376`). The TTL (`expires_at_ms - issued_at_ms`) is capped at `MAX_ADVERT_TTL_MS` (30 days). `issued_at_ms` may lead local time by at most `MAX_ISSUED_AT_SKEW_MS` (60 s). A verse holds at most `MAX_ADVERTS_PER_VERSE` (4) live adverts.
 
 ### One URL validator
 

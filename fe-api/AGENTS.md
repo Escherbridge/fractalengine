@@ -72,7 +72,7 @@ when a route lands.
 | Agent token bootstrap (§qa-dev-token) | Not a route: the GUI writes loopback-only API tokens (Owner where the node owns the verse) for every local verse to `FE_API_DEV_TOKEN_OUT` once the API listens; unset = off |
 | Relay advertisement (§relay-advertise) | `POST /api/v1/verses/{verse_id}/relays`, `DELETE /api/v1/verses/{verse_id}/relays` |
 | Network diagnostics (§network-diagnostics) | `GET /api/v1/network/diagnostics` (scope-confined; also MCP `get_network_diagnostics`) |
-| MCP | `POST /mcp` (`mcp::mcp_handler`) — 49-row `ToolSpec` table: 36 always advertised, `screenshot`/`get_camera` only on a GUI host (either capture bridge wired), `inject_input` only when its own input bridge is wired, the 5 QA-debug tools (`ui_tree`, `ui_state`, `ui_logs`, `dialog_answers`, `window`) only when the QA-debug seam is wired (GUI host), the 5 `sim_*` only on a sim lab host (§mcp-dispatch; the table's `requires` column and the length assert in `mcp/mod.rs` are the source of truth); 16 MiB body cap + 8-way concurrency limit (§asset-ingest) |
+| MCP | `POST /mcp` (`mcp::mcp_handler`) — 55-row `ToolSpec` table (length assert `mcp/mod.rs:813`): `screenshot`/`get_camera` only on a GUI host (either capture bridge wired), `inject_input` only when its own input bridge is wired, the 5 QA-debug tools (`ui_tree`, `ui_state`, `ui_logs`, `dialog_answers`, `window`) only when the QA-debug seam is wired (GUI host), the 5 `sim_*` only on a sim lab host (§mcp-dispatch; the table's `requires` column and the length assert in `mcp/mod.rs` are the source of truth); 16 MiB body cap + 8-way concurrency limit (§asset-ingest) |
 
 ## §existence-oracle (REST/WS denial unification, 2026-10-10)
 
@@ -962,7 +962,9 @@ in-memory; no temp files) or local CSV serialization.
   `bytes=-0` (empty suffix) is also 416 (M4 minor #10).
 - **Readings order and snapshot cutoff (EXT-13).** `iot_reading` exports are sorted by `(recorded_at_ms, reading_id)`
   and accept `as_of_ms`, a post-filter on `recorded_at_ms` (`export::prepare_export`; refused for node exports). A pinned
-  cutoff keeps the page identical across reads, so its strong ETag stays stable for DuckDB range reads.
+  cutoff keeps the page identical across reads, so its strong ETag stays stable for DuckDB range reads. A readings
+  snapshot does not pin anchor positions: the cutoff filters only on `recorded_at_ms` (`export.rs:155-156`).
+  TODO: confirm how share links carry the cutoff (`fe-api/src/share.rs` stores the exact SQL, `share.rs:29`).
 - **Validators + caching (DEC-C18, M4 fix M1, 2026-10-09).** A22's
   "immutable cache" expectation is amended: export/share bodies are LIVE
   query output, so they carry `Cache-Control: private, no-store` (json share
@@ -2457,8 +2459,11 @@ Tests: `tests/portal_bundle_test.rs` (R9); the anchor-petal reach and the nosnif
 `POST /api/v1/petals/import-snapshot` restores one (multipart field `archive`, body limit `SNAPSHOT_ROUTE_BODY_LIMIT`).
 Both are Manager+ (`SNAPSHOT_MINIMUM_ROLE`). The import authorizes on a parse-only pass before any blob is written.
 
-- **Blobs before rows.** The import restores blobs through `fe_hexon::snapshot::restore_snapshot_archive` before it sends
-  `DbCommand::ImportPetalSnapshot`. An archive refused at that step never reaches the DB thread.
+- **Blobs before rows, rolled back on refusal.** The import stores blobs through `fe_hexon::snapshot::restore_snapshot_archive`
+  before it sends `DbCommand::ImportPetalSnapshot`, because rows must never point at missing blobs. Restore returns the
+  hashes it newly wrote; on a refusal, a `RequestFailed` reply or an unsent command they are removed again
+  (`discard_new_blobs`, `petal_snapshot.rs:395-400`), so a refused import leaves no orphan blob. Pre-existing blobs are
+  never removed. A timeout, dropped or unexpected reply may still have committed, so its new blobs are kept.
 - **Op-log entries are written DB-side.** `ExportPetal` and `ImportPetal` are recorded by fe-database
   (`handlers/petal_snapshot.rs`), not by this route.
 - **Scene hooks on import (limit).** The gate judges one `scene.create` per node from display name, position
@@ -2466,8 +2471,9 @@ Both are Manager+ (`SNAPSHOT_MINIMUM_ROLE`). The import authorizes on a parse-on
   rotation, `node_log`, `op_log` or rooms. Node ids exist only DB-side, so augments cannot be staged: an admission
   carrying any augment is refused 409 `hook-augment-unsupported` (nothing written); an empty one proceeds. Hook
   refusals keep the shared 409/413 forms. Tested in `tests/export_share_test.rs` (`petal_snapshot_export_import_authz_journey`).
-- **Import trust is not closed here.** Identity collisions with rows under another petal, and op-log entries carried by the
-  archive, are tracked in the petal-snapshot review files; do not read this section as a claim that they are refused.
+- **Imported history.** `GET /api/v1/petals/{petal_id}/imported-history?after_lamport=&limit=` (`imported_history.rs`) lists
+  quarantined op-log rows from `op_log_imported` (summary fields and `imported_by`, no payload), Manager+ with the export's
+  existence-safe 404 (`petal_snapshot::denied`), read through `db_reader` with bound parameters.
 
 ## units
 
@@ -2484,6 +2490,7 @@ stays scale-agnostic, so a petal's `world_scale` change never converts stored va
 ## §usage-metering
 
 One measurement point. `usage_middleware` emits one `UsageEvent` (fe-runtime §usage) per request after the handler returns. `route_class` is the axum matched route template, so `/api/v1/petals/{petal_id}/nodes` is recorded and the expanded path never is. The caller slot (`UsageCallerSlot`) is filled by `auth` once the token is verified, so DID and scope come from the claims that authorised the request. Public routes leave both empty.
+`record_usage` is the outermost layer in `run_server` (`lib.rs:280-284`), so every route and the auth layer sit inside one event. `auth_middleware` (`auth.rs:15`) fills `UsageCallerSlot`. The `/metrics` listener stops with the API `StopSignal` (`lib.rs:291-293`).
 
 `NetworkOps::from_env()` reads `FE_API_USAGE_LOG` (a JSON-lines path) and `FE_API_METRICS_BIND` once at startup. Unset means `NoopUsageSink` and no listener. An unwritable log path warns and turns metering off; it does not stop the server.
 
@@ -2502,3 +2509,6 @@ That makes the request a peer row for every check. The URL goes through the peer
 - Scope: `confine_to_claims` keeps only the peers and verses the token reads at Viewer+, judging each verse once. A peer in no readable verse is absent.
 - Redaction: addresses are removed and IP-literal relay hosts are masked unless detail is on. Detail needs `FE_API_NETWORK_DETAIL` and the `NETWORK_DETAIL_GATE` operator gate. The module doc says detail returns full peer IP addresses to Owner tokens, so leave it unset unless you need that.
 - Timeout: the sync reply is awaited for at most `REPLY_TIMEOUT` (2 s). A slow sync thread yields a `DiagnosticsError`, not a hung request.
+- Bridge: the handler `try_send`s on a bounded crossbeam channel (`network.rs:151`). Full maps to `Unavailable` (503) with one warn per 10 s; Disconnected maps to `Unavailable` with one warn per request. A stalled sync thread can neither block the request nor flood the log.
+- Startup opt-in: `announce_detail_opt_in` (`network.rs:134`) runs once from `spawn_api_service_inner` (`lib.rs:206`) and logs the detail warning at boot. Per-request reads stay silent.
+- MCP: `get_network_diagnostics` is a `TOOLS` row with `min_role: Viewer`, `scope_rule: Global` and `requires: ToolSeam::NetworkDiagnostics` (`mcp/mod.rs:311-320`), so it is hidden without the bridge.
