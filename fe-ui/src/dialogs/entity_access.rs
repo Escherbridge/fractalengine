@@ -183,6 +183,20 @@ pub(crate) fn mark_verse_local_only(
         .unwrap_or(false);
 }
 
+/// Per-frame wrapper: marks the open dialog local only from the in-memory tree; a verse missing from the tree is not local only (`false`).
+pub(crate) fn mark_verse_local_only_from_tree(
+    dialog: &mut ActiveDialog,
+    hierarchy: &crate::verse_manager::VerseManager,
+) {
+    mark_verse_local_only(dialog, |verse_id| {
+        hierarchy
+            .verses
+            .iter()
+            .find(|verse| verse.id == verse_id)
+            .map(|verse| verse.namespace_id.is_none())
+    });
+}
+
 fn current_target(dialog: &ActiveDialog) -> Option<EntityAccessTarget> {
     let ActiveDialog::EntitySettings {
         entity_type,
@@ -1310,4 +1324,102 @@ pub(crate) fn role_confirmation_refresh_journey(
     };
     assert!(receiver.try_recv().is_err());
     apply(manager, target, &final_read, &Ok(bulk));
+
+    // Local-only verse (no replica namespace): the reason shows and Generate invite stays disabled; with a namespace it arms.
+    let invite_ctx = egui::Context::default();
+    let mut invite_time = 0.0;
+    let mut invite_frame = |manager: &mut UiManager, events: Vec<egui::Event>| {
+        invite_time += 0.05;
+        let output = invite_ctx.run(
+            egui::RawInput {
+                screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(800.0, 900.0))),
+                time: Some(invite_time),
+                events,
+                ..Default::default()
+            },
+            |ctx| {
+                egui::CentralPanel::default().show(ctx, |ui| {
+                    if let ActiveDialog::EntitySettings { access, .. } = &mut manager.active_dialog {
+                        let mut role = String::from("viewer");
+                        let mut expiry = 24;
+                        invite_controls(ui, access, &mut role, &mut expiry, None);
+                    }
+                });
+            },
+        );
+        let mut texts = Vec::new();
+        let mut shapes: Vec<_> = output.shapes.iter().map(|shape| &shape.shape).collect();
+        while let Some(shape) = shapes.pop() {
+            match shape {
+                egui::Shape::Text(text) => texts.push((
+                    text.galley.job.text.clone(),
+                    egui::Rect::from_min_size(text.pos, text.galley.size()).center(),
+                )),
+                egui::Shape::Vec(children) => shapes.extend(children.iter()),
+                _ => {}
+            }
+        }
+        texts
+    };
+    let verse_id = match &manager.active_dialog {
+        ActiveDialog::EntitySettings { details, .. } => details
+            .loaded
+            .as_ref()
+            .map(|stored| stored.verse_id.clone())
+            .expect("Journey dialog has loaded details"),
+        _ => panic!("Journey runs inside Entity Settings"),
+    };
+    let recipient = fe_identity::NodeKeypair::generate().to_did_key();
+    if let ActiveDialog::EntitySettings { access, .. } = &mut manager.active_dialog {
+        access.invitation.reset();
+        access.invitation.recipient = recipient;
+    }
+    for namespace_id in [None, Some("ns".to_string())] {
+        let local_only = namespace_id.is_none();
+        let tree = crate::verse_manager::VerseManager::from_verses(vec![crate::verse_manager::VerseEntry {
+            id: verse_id.clone(),
+            name: "Journey verse".into(),
+            namespace_id,
+            expanded: false,
+            fractals: vec![],
+        }]);
+        mark_verse_local_only_from_tree(&mut manager.active_dialog, &tree);
+        invite_frame(manager, vec![]);
+        let labels = invite_frame(manager, vec![]);
+        assert_eq!(
+            labels.iter().any(|(text, _)| text == LOCAL_ONLY_REASON),
+            local_only,
+            "The local-only reason shows exactly for a verse without a namespace"
+        );
+        let point = labels
+            .iter()
+            .find(|(text, _)| text == "Generate invite")
+            .expect("Generate invite is painted")
+            .1;
+        for pressed in [true, false] {
+            invite_frame(
+                manager,
+                vec![
+                    egui::Event::PointerMoved(point),
+                    egui::Event::PointerButton {
+                        pos: point,
+                        button: egui::PointerButton::Primary,
+                        pressed,
+                        modifiers: egui::Modifiers::NONE,
+                    },
+                ],
+            );
+        }
+        let ActiveDialog::EntitySettings { access, .. } = &mut manager.active_dialog else {
+            panic!("Journey runs inside Entity Settings")
+        };
+        assert_eq!(access.verse_local_only, local_only, "The wrapper mirrors the tree into the dialog state");
+        assert_eq!(
+            access.invitation.busy(),
+            !local_only,
+            "A local-only verse never starts an invitation; a replicated one does"
+        );
+        access.invitation.reset();
+        assert!(receiver.try_recv().is_err(), "Clicking Generate invite sends no command before the coordinator drives it");
+    }
 }
