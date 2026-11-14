@@ -888,13 +888,14 @@ impl Plugin for GardenerConsolePlugin {
         app.init_resource::<crate::invitations::ReplicaHandoff>();
         // Peer Debug snapshot holder; idempotent next to fe-sync's own registration.
         app.init_resource::<fe_sync::status::NetworkDiagnosticsState>();
-        // Self-test verdict request + mirror into Settings (both tolerate absent fe-sync resources).
+        // Self-test verdict request then mirror into Settings, in the order settings.rs tests (both tolerate absent fe-sync resources).
         app.add_systems(
             Update,
             (
-                crate::settings::mirror_self_test_verdict,
                 crate::settings::request_self_test_verdict,
-            ),
+                crate::settings::mirror_self_test_verdict,
+            )
+                .chain(),
         );
         // Mesh-instance watchdog runs in Last so its gate lands before the
         // next frame's spawners (see AGENTS.md §mesh-budget).

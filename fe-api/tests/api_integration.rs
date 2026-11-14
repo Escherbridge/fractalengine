@@ -982,6 +982,21 @@ async fn hexon_crates_publish_install_search_entries_asset_journey() {
         .expect("editor import request");
     let (status, _, bytes) = send_on(&router, import).await;
     assert_eq!((status, bytes), denial);
+
+    // Imported history shares the mount and floor: tokenless 401, editor denied, Manager+ reads an empty page.
+    let history_path = format!("/api/v1/petals/{petal}/imported-history");
+    let tokenless = Request::builder()
+        .method("GET")
+        .uri(history_path.clone())
+        .body(Body::empty())
+        .expect("tokenless history request");
+    let (status, _, _) = send_on(&router, tokenless).await;
+    assert_eq!(status, StatusCode::UNAUTHORIZED);
+    let (status, _, bytes) = send_on(&router, authed("GET", history_path.clone(), &editor)).await;
+    assert_eq!((status, bytes), denial);
+    let (status, history, _) = send_on(&router, authed("GET", history_path, &owner)).await;
+    assert_eq!(status, StatusCode::OK, "{history}");
+    assert_eq!(history["data"]["entries"], json!([]), "{history}");
 }
 
 // ---------------------------------------------------------------------------

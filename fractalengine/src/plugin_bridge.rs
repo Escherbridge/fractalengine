@@ -2164,7 +2164,13 @@ struct BindingSignals {
 impl BindingSignals {
     fn send(&self, signal: BindingSignal) {
         if self.sender.send(signal).is_err() {
-            tracing::warn!("extension binding worker is gone");
+            // Warn once per process; every later dropped signal would repeat it per DB event.
+            static WORKER_GONE_REPORTED: AtomicBool = AtomicBool::new(false);
+            if WORKER_GONE_REPORTED.swap(true, Ordering::Relaxed) {
+                tracing::debug!("extension binding worker is gone; signal dropped");
+            } else {
+                tracing::warn!("extension binding worker is gone; later binding signals are dropped");
+            }
         }
     }
 

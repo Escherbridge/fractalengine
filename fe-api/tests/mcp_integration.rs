@@ -1291,6 +1291,8 @@ async fn tools_list_inventory() {
             .filter_map(|p| p["peer_did"].as_str())
             .collect();
         assert_eq!(dids, vec!["did:key:zInScope"], "peers confined to the token's verses");
+        // The stub bridge ignores `call.detail`, so this pins the API-side redaction for a non-Owner.
+        assert_eq!(snapshot["peers"][0]["addrs"], json!(["ipv4:ephemeral"]), "addresses redacted");
 
         let below = call_tool_on(&state, &hosts, &claims("VERSE#v1", "none"), "get_network_diagnostics", json!({})).await;
         assert_eq!(below["result"]["isError"], true, "{below}");

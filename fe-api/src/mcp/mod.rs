@@ -196,6 +196,11 @@ pub fn tool_specs() -> &'static [ToolSpec] {
     TOOLS
 }
 
+/// Input schema of a tool that takes no arguments.
+fn no_arguments_schema() -> serde_json::Value {
+    serde_json::json!({ "type": "object", "properties": {}, "additionalProperties": false })
+}
+
 macro_rules! tool {
     ($name:ident, $role:ident, $rule:expr, requires $seam:ident, content, $desc:expr) => {
         tool!(@spec $name, $role, $rule, Some(ToolSeam::$seam), true, $desc)
@@ -302,8 +307,17 @@ static TOOLS: &[ToolSpec] = &[
         "List a petal's geo-positioned nodes with gis.annotation.* data; optional single spatial filter (bbox, bbox_ll, or radius+cx+cz). Requires viewer role + petal scope."),
     tool!(query, Viewer, ScopeRule::None,
         "Run a read-only SurrealQL SELECT through the /api/v1/query guard pipeline (rate limit, SELECT-only, table whitelist, token-scope filter injection, row/byte caps). Requires viewer role."),
-    tool!(get_network_diagnostics, Viewer, Global, requires NetworkDiagnostics,
-        "Read-only peer-network snapshot (relay mode, home relay, peers confined to the token's verses, addresses redacted unless the operator opted in and the caller is Owner). Requires viewer role."),
+    // Literal spec: its no-argument schema lives here, not in `tools::schema` (R5-INT-2).
+    ToolSpec {
+        name: "get_network_diagnostics",
+        description: "Read-only peer-network snapshot (relay mode, home relay, peers confined to the token's verses, addresses redacted unless the operator opted in and the caller is Owner). Requires viewer role.",
+        input_schema: no_arguments_schema,
+        min_role: RoleLevel::Viewer,
+        scope_rule: Global,
+        requires: Some(ToolSeam::NetworkDiagnostics),
+        content_reply: false,
+        handler: tools::get_network_diagnostics,
+    },
     // --- R5 MCP parity: device format descriptors + device payload ingest (CDL-SPEC10 A5) ---
     tool!(register_device_format, Manager, VerseArg("verse_id"),
         "Declare a device payload format (format_id + mime + optional informative JSON Schema, never enforced in v1) for a verse; immutable per (verse_id, format_id) — re-declaring the SAME mime is an idempotent success, a DIFFERENT mime is a conflict. Requires manager role + verse scope."),
