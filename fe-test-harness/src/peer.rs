@@ -315,24 +315,24 @@ impl TestPeer {
                         }) => {
                             match create_node(&db, &petal_id, &name, position).await {
                                 Ok(id) => {
-                                    db_result_tx
-                                        .send(DbResult::NodeCreated {
-                                            id,
-                                            petal_id,
-                                            name,
-                                            has_asset: false,
-                                            correlation_id,
-                                            position,
-                                            scale: [1.0; 3],
-                                        })
-                                        .ok();
+                                    if let Err(e) = db_result_tx.send(DbResult::NodeCreated {
+                                        id,
+                                        petal_id,
+                                        name,
+                                        has_asset: false,
+                                        correlation_id,
+                                        position,
+                                        scale: [1.0; 3],
+                                    }) {
+                                        tracing::warn!("NodeCreated send failed: {e:?}");
+                                    }
                                 }
                                 Err(e) => {
-                                    db_result_tx
-                                        .send(DbResult::Error(format!(
-                                            "Create node failed: {e}"
-                                        )))
-                                        .ok();
+                                    if let Err(send_error) = db_result_tx.send(DbResult::Error(
+                                        format!("Create node failed: {e}"),
+                                    )) {
+                                        tracing::warn!("Create node error send failed: {send_error:?}");
+                                    }
                                 }
                             }
                         }
@@ -1115,10 +1115,25 @@ impl TestPeer {
                                 tracing::warn!("CrateEntryInstalled send failed: {e:?}");
                             }
                         }
-                        Ok(DbCommand::UninstallCrate { hexon_uri, .. }) => {
-                            if let Err(e) =
-                                db_result_tx.send(DbResult::CrateUninstalled { hexon_uri })
-                            {
+                        // Same per-petal routing as the production dispatcher (security inbox 16).
+                        Ok(DbCommand::UninstallCrate { hexon_uri, petal_id }) => {
+                            let outcome = match petal_id.as_deref() {
+                                Some(petal) => {
+                                    fe_database::handlers::crate_registry::uninstall_crate_in_petal(
+                                        &db, &hexon_uri, petal,
+                                    )
+                                    .await
+                                }
+                                None => {
+                                    fe_database::handlers::crate_registry::uninstall_crate(&db, &hexon_uri)
+                                        .await
+                                }
+                            };
+                            let reply = match outcome {
+                                Ok(()) => DbResult::CrateUninstalled { hexon_uri },
+                                Err(e) => DbResult::Error(format!("Uninstall crate failed: {e}")),
+                            };
+                            if let Err(e) = db_result_tx.send(reply) {
                                 tracing::warn!("CrateUninstalled send failed: {e:?}");
                             }
                         }

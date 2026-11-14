@@ -570,7 +570,19 @@ fn duplicate_copies_row_minus_path_identity_keys() {
         matches!(h.recv(), DbResult::PetalTerrainLoaded { .. }),
         "terrain set echoes PetalTerrainLoaded"
     );
-    let node = h.create_node(&petal, "N");
+    h.send(DbCommand::CreateNode {
+        petal_id: petal.clone(),
+        name: "N".into(),
+        position: [0.0, 0.0, 0.0],
+        correlation_id: None,
+    });
+    let node = match h.recv() {
+        DbResult::NodeCreated { id, scale, .. } => {
+            assert_eq!(scale, [0.01_f32; 3], "create echoes the petal's applied world scale");
+            id
+        }
+        o => panic!("expected NodeCreated, got {o:?}"),
+    };
     h.set_property(&node, "owning_path_id", serde_json::json!("path"));
     h.set_property(&node, "path_id", serde_json::json!("path"));
     h.set_property(&node, "instance_index", serde_json::json!(2));
@@ -641,6 +653,124 @@ fn duplicate_copies_row_minus_path_identity_keys() {
     // The source keeps its identity untouched.
     let src_props = h.get_properties(&node);
     assert_eq!(src_props["node_kind"], serde_json::json!("stamp"));
+
+    // INT5-13: a dispatched snapshot import answers its caller, then refreshes the hierarchy.
+    h.send(DbCommand::ExportPetalSnapshot {
+        petal_id: petal.clone(),
+        correlation_id: Some("export-1".into()),
+    });
+    let snapshot = match h.recv() {
+        DbResult::PetalSnapshotExported { rows, correlation_id, .. } => {
+            assert_eq!(correlation_id.as_deref(), Some("export-1"));
+            *rows
+        }
+        o => panic!("expected PetalSnapshotExported, got {o:?}"),
+    };
+    // A refused import (the petal exists here) answers its waiter and refreshes nothing.
+    h.send(DbCommand::ImportPetalSnapshot {
+        rows: Box::new(snapshot.clone()),
+        correlation_id: Some("import-refused".into()),
+        actor: None,
+    });
+    match h.recv() {
+        DbResult::PetalSnapshotImportRefused { correlation_id, .. } => {
+            assert_eq!(correlation_id.as_deref(), Some("import-refused"));
+        }
+        o => panic!("expected PetalSnapshotImportRefused, got {o:?}"),
+    }
+    h.send(DbCommand::Ping);
+    assert!(
+        matches!(h.recv(), DbResult::Pong),
+        "a refused import is not followed by a hierarchy refresh"
+    );
+
+    // An accepted import on a second peer: the reply first, then HierarchyLoaded holding the petal.
+    let restorer = Harness::start();
+    restorer.create_hierarchy();
+    restorer.send(DbCommand::LoadHierarchy);
+    let parent_fractal = match restorer.recv() {
+        DbResult::HierarchyLoaded { verses } => verses[0].fractals[0].id.clone(),
+        o => panic!("expected HierarchyLoaded, got {o:?}"),
+    };
+    let mut rows = snapshot;
+    rows.petal["fractal_id"] = serde_json::json!(parent_fractal);
+    // History and schema rows carry the source fractal's scope; only state rows move here.
+    rows.oplog.clear();
+    rows.field_defs.clear();
+    restorer.send(DbCommand::ImportPetalSnapshot {
+        rows: Box::new(rows),
+        correlation_id: Some("import-1".into()),
+        actor: Some("did:key:z6MkEditor".into()),
+    });
+    match restorer.recv() {
+        DbResult::PetalSnapshotImported { petal_id, correlation_id } => {
+            assert_eq!(petal_id, petal);
+            assert_eq!(correlation_id.as_deref(), Some("import-1"));
+        }
+        o => panic!("expected PetalSnapshotImported, got {o:?}"),
+    }
+    match restorer.recv() {
+        DbResult::HierarchyLoaded { verses } => {
+            let restored = verses
+                .iter()
+                .flat_map(|verse| &verse.fractals)
+                .filter(|fractal| fractal.id == parent_fractal)
+                .flat_map(|fractal| &fractal.petals)
+                .find(|candidate| candidate.id == petal)
+                .expect("the refreshed hierarchy holds the imported petal");
+            for expected in [&node, &copy_id] {
+                assert!(
+                    restored.nodes.iter().any(|restored_node| &restored_node.id == expected),
+                    "restored petal lists node {expected}"
+                );
+            }
+        }
+        o => panic!("expected HierarchyLoaded after the import, got {o:?}"),
+    }
+
+    // Security inbox 16: a per-petal uninstall leaves the crate installed in the other petal.
+    let crate_uri = "hexon://pub/shared-crate";
+    let holders = |harness: &Harness| -> Vec<serde_json::Value> {
+        harness.send(DbCommand::RawQuery {
+            sql: "SELECT VALUE petal_id FROM crate_registry WHERE hexon_uri = $uri".into(),
+            vars: [("uri".to_string(), serde_json::json!(crate_uri))].into_iter().collect(),
+            correlation_id: None,
+        });
+        match harness.recv() {
+            DbResult::QueryResult { data, .. } => data,
+            o => panic!("expected QueryResult, got {o:?}"),
+        }
+    };
+    for holder in ["petal-a", "petal-b"] {
+        restorer.send(DbCommand::InstallCrate {
+            hexon_uri: crate_uri.into(),
+            manifest_hash: "hash".into(),
+            publisher_did: "did:key:z6MkPublisher".into(),
+            hexon_type: "model".into(),
+            version: "1.0.0".into(),
+            name: "Shared".into(),
+            tags: Vec::new(),
+            petal_id: holder.into(),
+            size_bytes: 1,
+        });
+        assert!(matches!(restorer.recv(), DbResult::CrateInstalled { .. }));
+    }
+    restorer.send(DbCommand::UninstallCrate {
+        hexon_uri: crate_uri.into(),
+        petal_id: Some("petal-a".into()),
+    });
+    assert!(matches!(restorer.recv(), DbResult::CrateUninstalled { .. }));
+    assert_eq!(
+        holders(&restorer),
+        vec![serde_json::json!("petal-b")],
+        "uninstalling from petal A keeps petal B's install"
+    );
+    restorer.send(DbCommand::UninstallCrate {
+        hexon_uri: crate_uri.into(),
+        petal_id: None,
+    });
+    assert!(matches!(restorer.recv(), DbResult::CrateUninstalled { .. }));
+    assert!(holders(&restorer).is_empty(), "a petal-less uninstall drops every petal's row");
 }
 
 #[test]
