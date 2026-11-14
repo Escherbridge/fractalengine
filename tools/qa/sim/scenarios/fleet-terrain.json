@@ -1,6 +1,6 @@
 {
   "name": "fleet-terrain",
-  "description": "Terrain and roadway fleet journey (H6-6): on the QA Terrain fixture the owner imports three small roadway GPX tracks (tools/qa/sim/assets/roads/*.gpx, placed inside the fixture tileset bounds around lat -0.0027 lon 0.0027) over Petal A, the editor installs the fleet-sim extension, and three route-following movers whose fleet.config names the imported tracks run at 2 Hz for 2 minutes. Expects the tracks and route geometry on every peer and every mover transform in agreement on every peer. Gaps: no probe exposes terrain height or a range predicate, so 'within the tileset bounds' and 'Y within 2 m of terrain' are not asserted (the roads are short enough to stay inside by construction); the REST GPX route is multipart and the driver has no multipart GPX op, so the MCP import_gpx door carries the same GPX bytes as inline base64 (NEEDS driver op for the files; CLOCK-12 owns driver.py); an import does not write gpx_points, so the scenario sets it from the same coordinates.",
+  "description": "Terrain and roadway fleet journey (H6-6): on the QA Terrain fixture the owner imports three small roadway GPX tracks (tools/qa/sim/assets/roads/*.gpx, placed inside the fixture tileset bounds around lat -0.0027 lon 0.0027) over Petal A, the editor installs the fleet-sim extension, and three route-following movers whose fleet.config names the imported tracks run at 2 Hz for 2 minutes. Expects the tracks and route geometry on every peer and every mover transform in agreement on every peer. Gaps: no probe exposes terrain height or a range predicate, so 'within the tileset bounds' and 'Y within 2 m of terrain' are not asserted (the roads are short enough to stay inside by construction); an import does not write gpx_points, so the scenario sets it from the same coordinates.",
   "seed": 20261113,
   "fixture": "terrain",
   "verse_name": "QA Terrain",
@@ -113,33 +113,33 @@
         {
           "id": "gpx_a",
           "peer": "owner",
-          "via": "mcp",
-          "op": "import_gpx",
+          "via": "rest",
+          "op": "upload_gpx",
           "args": {
             "petal_id": "$fixture.petal_a_id",
-            "data_base64": "PD94bWwgdmVyc2lvbj0iMS4wIiBlbmNvZGluZz0iVVRGLTgiPz4KPGdweCB2ZXJzaW9uPSIxLjEiIGNyZWF0b3I9ImZlLXFhLXNpbSIgeG1sbnM9Imh0dHA6Ly93d3cudG9wb2dyYWZpeC5jb20vR1BYLzEvMSI+CiAgPHRyaz4KICAgIDxuYW1lPlJvYWQgQTwvbmFtZT4KICAgIDx0cmtzZWc+CiAgICAgIDx0cmtwdCBsYXQ9Ii0wLjAwMzAiIGxvbj0iMC4wMDEwIj48ZWxlPjA8L2VsZT48L3Rya3B0PgogICAgICA8dHJrcHQgbGF0PSItMC4wMDMwIiBsb249IjAuMDAyMCI+PGVsZT4wPC9lbGU+PC90cmtwdD4KICAgICAgPHRya3B0IGxhdD0iLTAuMDAzMCIgbG9uPSIwLjAwMzAiPjxlbGU+MDwvZWxlPjwvdHJrcHQ+CiAgICAgIDx0cmtwdCBsYXQ9Ii0wLjAwMzAiIGxvbj0iMC4wMDQwIj48ZWxlPjA8L2VsZT48L3Rya3B0PgogICAgPC90cmtzZWc+CiAgPC90cms+CjwvZ3B4Pgo="
+            "path": "assets/roads/road-a.gpx"
           },
           "sync": "+2"
         },
         {
           "id": "gpx_b",
           "peer": "owner",
-          "via": "mcp",
-          "op": "import_gpx",
+          "via": "rest",
+          "op": "upload_gpx",
           "args": {
             "petal_id": "$fixture.petal_a_id",
-            "data_base64": "PD94bWwgdmVyc2lvbj0iMS4wIiBlbmNvZGluZz0iVVRGLTgiPz4KPGdweCB2ZXJzaW9uPSIxLjEiIGNyZWF0b3I9ImZlLXFhLXNpbSIgeG1sbnM9Imh0dHA6Ly93d3cudG9wb2dyYWZpeC5jb20vR1BYLzEvMSI+CiAgPHRyaz4KICAgIDxuYW1lPlJvYWQgQjwvbmFtZT4KICAgIDx0cmtzZWc+CiAgICAgIDx0cmtwdCBsYXQ9Ii0wLjAwNDUiIGxvbj0iMC4wMDI1Ij48ZWxlPjA8L2VsZT48L3Rya3B0PgogICAgICA8dHJrcHQgbGF0PSItMC4wMDM1IiBsb249IjAuMDAyNSI+PGVsZT4wPC9lbGU+PC90cmtwdD4KICAgICAgPHRya3B0IGxhdD0iLTAuMDAyNSIgbG9uPSIwLjAwMjUiPjxlbGU+MDwvZWxlPjwvdHJrcHQ+CiAgICAgIDx0cmtwdCBsYXQ9Ii0wLjAwMTUiIGxvbj0iMC4wMDI1Ij48ZWxlPjA8L2VsZT48L3Rya3B0PgogICAgPC90cmtzZWc+CiAgPC90cms+CjwvZ3B4Pgo="
+            "path": "assets/roads/road-b.gpx"
           },
           "sync": "+2"
         },
         {
           "id": "gpx_c",
           "peer": "owner",
-          "via": "mcp",
-          "op": "import_gpx",
+          "via": "rest",
+          "op": "upload_gpx",
           "args": {
             "petal_id": "$fixture.petal_a_id",
-            "data_base64": "PD94bWwgdmVyc2lvbj0iMS4wIiBlbmNvZGluZz0iVVRGLTgiPz4KPGdweCB2ZXJzaW9uPSIxLjEiIGNyZWF0b3I9ImZlLXFhLXNpbSIgeG1sbnM9Imh0dHA6Ly93d3cudG9wb2dyYWZpeC5jb20vR1BYLzEvMSI+CiAgPHRyaz4KICAgIDxuYW1lPlJvYWQgQzwvbmFtZT4KICAgIDx0cmtzZWc+CiAgICAgIDx0cmtwdCBsYXQ9Ii0wLjAwNDAiIGxvbj0iMC4wMDE1Ij48ZWxlPjA8L2VsZT48L3Rya3B0PgogICAgICA8dHJrcHQgbGF0PSItMC4wMDMwIiBsb249IjAuMDAyNSI+PGVsZT4wPC9lbGU+PC90cmtwdD4KICAgICAgPHRya3B0IGxhdD0iLTAuMDAyMCIgbG9uPSIwLjAwMzUiPjxlbGU+MDwvZWxlPjwvdHJrcHQ+CiAgICA8L3Rya3NlZz4KICA8L3Ryaz4KPC9ncHg+Cg=="
+            "path": "assets/roads/road-c.gpx"
           },
           "sync": "+2"
         },

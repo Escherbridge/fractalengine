@@ -24,7 +24,7 @@ PARTIAL_MIN_S = 0.0
 WINDOW_SLACK_S = 0.05  # a step that closed this much short of an expectation's own within_s cut its window (QA-0163 c)
 SETTLED_TEXT_CHARS = 60
 WRITE_REST_OPS = {"create_fractal", "create_petal", "create_node", "set_transform", "set_property", "delete_property",
-                  "delete_node", "upsert_group", "delete_group", "upload_asset", "ingest_readings"}
+                  "delete_node", "upsert_group", "delete_group", "upload_asset", "upload_gpx", "ingest_readings"}
 WRITE_MCP_PREFIXES = ("create_", "update_", "delete_", "set_", "place_", "upload_", "ingest_", "register_", "install_",
                       "import_", "move_", "promote_", "commit_", "sim_start", "sim_stop", "sim_step", "sim_inject")
 TIMEOUT_TEXT = re.compile(r"timed out|timeout", re.I)

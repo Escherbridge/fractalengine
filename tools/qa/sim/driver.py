@@ -13,6 +13,7 @@ import urllib.parse
 from concurrent.futures import ThreadPoolExecutor
 
 import portal_probe
+from gpx_upload import upload_gpx
 import predicates
 from client import Outcome, extract_id
 import fe  # noqa: E402 - client.py put tools/qa on sys.path
@@ -473,6 +474,8 @@ class Driver:
             return client.rest("DELETE", "/api/v1/petals/%s/visibility-groups/%s" % (args["petal_id"], args["group_id"]))
         if op == "upload_asset":
             return client.upload_multipart(args["petal_id"], args["path"], args.get("name"))
+        if op == "upload_gpx":
+            return upload_gpx(client, args["petal_id"], args["path"], args.get("name"))
         if op in PORTAL_OPS:
             return self.portal_op(client, op, args, verse)
         if op == "query":

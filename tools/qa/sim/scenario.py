@@ -13,7 +13,7 @@ SEARCH_DIRS = (os.path.join(REPO_ROOT, "qa", "sim", "scenarios"), os.path.join(H
 
 VIAS = {
     "rest": {"request", "create_fractal", "create_petal", "create_node", "set_transform", "set_property",
-             "delete_property", "delete_node", "upsert_group", "delete_group", "upload_asset", "query",
+             "delete_property", "delete_node", "upsert_group", "delete_group", "upload_asset", "upload_gpx", "query",
              "lookup_node", "lookup_petal", "lookup_group", "ingest_readings",
              # extension platform REST doors that exist for callers (E19, BND-11, bindings.md section 9); driver.py EXTENSION_OPS.
              # Administration (install, consent, bind, enable, update, uninstall) is not REST: it is the "ext" via below.
