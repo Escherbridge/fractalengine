@@ -30,8 +30,9 @@ fn test_tampered_sealed_plugin_rejected() {
         .as_str()
         .unwrap()
         .to_string();
-    // Admission never compiles the component here (that is the plugin host's job), so stub bytes suffice.
-    let sealed = PluginHexonBuilder::new(extension_json.to_vec(), b"\0asm-component-stub".to_vec())
+    // Admission never compiles the component (the plugin host's job) but checks the component preamble.
+    let stub_component = [&[0x00, 0x61, 0x73, 0x6d, 0x0d, 0x00, 0x01, 0x00][..], b"stub"].concat();
+    let sealed = PluginHexonBuilder::new(extension_json.to_vec(), stub_component)
         .build(&key)
         .expect("plugin seals");
     let strict = IntegrityPolicy::RequireSealed { pin: None };

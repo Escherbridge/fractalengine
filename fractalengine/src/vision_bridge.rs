@@ -2119,19 +2119,29 @@ mod tests {
         h.app.update();
         let before = h.main_state();
         assert_eq!(before.2, 60.0_f32.to_radians());
-        let mut reply = h.capture(orbit_capture(CaptureMode::Window, 4, None));
-        h.app.update();
-        assert!(h.locked(), "the pose is held under the lock");
         let expected = compute_orbit_transform(
             Vec3::new(10.0, 0.0, -4.0),
             25.0,
             30f32.to_radians(),
             20f32.to_radians(),
         );
+        let mut spec = orbit_capture(CaptureMode::Window, 4, None);
+        spec.pose = Some(PoseSpec {
+            camera: Some(fe_runtime::vision::CameraPose {
+                position: expected.translation.to_array().map(f64::from),
+                target: [10.0, 0.0, -4.0],
+                up: None,
+                fov_deg: Some(DEFAULT_FOV_DEG),
+            }),
+            ..Default::default()
+        });
+        let mut reply = h.capture(spec);
+        h.app.update();
+        assert!(h.locked(), "the pose is held under the lock");
         let (posed, _, _) = h.main_state();
         assert!((posed.translation - expected.translation).length() < 1e-4);
         let first_applied = observed.lock().unwrap().last().copied().unwrap();
-        assert_eq!(first_applied.0, before.2, "an orbit pose keeps the camera's own fov");
+        assert_eq!(first_applied.0, (DEFAULT_FOV_DEG as f32).to_radians());
         assert_eq!(first_applied.1, first_applied.2,
             "first applied EndPass uses the projection actually cached for rendering");
         assert!((first_applied.3 - expected.translation).length() < 1e-4);
@@ -2141,7 +2151,7 @@ mod tests {
         assert!(h.locked(), "still held while the frame is captured");
         h.deliver_frame(shot);
         let (_, pose) = expect_capture(h.update_until_reply(&mut reply));
-        assert_eq!(pose.source, PoseSource::Orbit);
+        assert_eq!(pose.source, PoseSource::Camera);
         assert!(pose.restored);
         assert_eq!(pose.settle_frames_used, 4);
         assert!(
