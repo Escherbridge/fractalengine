@@ -604,3 +604,13 @@ an owner such as `EditorBatchState` promises "an unsent write never becomes pend
 hidden retry would break that. Only writes already queued for a gate answer are retried by the
 frame drain (`Queued::Admitted`). Blocking submits never return `Busy`; their match arms list
 it only for exhaustiveness.
+
+The retry door is the opt-in exception. `submit_scene_write_retrying` (`node.rs`) queues a
+full-channel write with bounded backoff, so the answer is `Waiting`, never `Busy`. Retries:
+`RETRY_ATTEMPTS` = 8 after the first send, delay doubling from `FIRST_RETRY_DELAY` (50 ms) up to
+`MAX_RETRY_DELAY` (2 s), about 7.2 s in total. A write that exhausts them is dead-lettered
+(`Settled::DeadLettered`) and its owner gets `RequestFailed` on its correlation id. Dead letters
+are session-only and capped at `DEAD_LETTER_CAP` (32); the oldest is dropped with a warning.
+Gate refusals are final and never dead-lettered. The "Unsaved edits" list reads
+`dead_letters()`; `retry_dead_letter` re-gates the stored command. Undo and stamp promotion
+opt in. Other callers keep the non-retrying doors.

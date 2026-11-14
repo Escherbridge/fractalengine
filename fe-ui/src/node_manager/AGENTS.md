@@ -227,6 +227,54 @@ frame's right-click still opens the object menu) and stale-TRUE on the frame it 
 3. `deselect` (node selection only)
 4. `activate(Select)` (switch tool)
 
+## §road-builder — road tool (`road_*.rs`, road_builder FR-1..FR-10)
+
+Activated with **L** (`panels/toolbar.rs:107`). Modes on keys 1, 2, 3 (straight, curved,
+freeform); Backspace removes the last committed segment (`road_interaction.rs` `ROAD_KEYS`).
+Design choices:
+
+- **D-1 curved = three-click quadratic Bezier**, reusing `curve::bezier`; no new curve math.
+- **D-2 plain `gpx_points`**: a road is stored as ordinary path points. No curve parameters are
+  persisted, so the road is an ordinary path after commit.
+- **D-3 snapped endpoints share coordinates, not identity.** Two roads that meet at a snapped
+  vertex hold equal points but no shared node id. This is the documented limitation; junction
+  inference is for a later procedural-roads track.
+- **D-38 placement**: the cursor point comes from `ground_snap` (height field or Y=0). See
+  `fe-ui/src/AGENTS.md` §ground-snap.
+- **Snap resolution order** (`road_snap.rs`): vertex > guide intersection > single guide >
+  angle > raw. Angle snap toggles from the Options panel only, because A is the camera's
+  fly-left key.
+- **Click priority**: `ClickPriority::Road` sits right after `Measure` in the router
+  (`router.rs:26-28`, `:334-335`), so it outranks path and gimbal while Road is active. The
+  spec said "next to PathPlace"; this placement is deliberate.
+- **Escape is two-stage**, riding `GestureParams.cancel_all` (see §staged-escape).
+- **Metric readout** is `measure::measure_world_scale` + `geometry::format_distance_m`, which
+  replaces the plan's `metric_scale` helper.
+- **Router order** in the nested chain is brush, measure, road (`router.rs:334-336`).
+- **HANDED-OFF**: the pen-create failure cleanup is not wired to a production `DbResult::Error`
+  path at HEAD (`fe-ui/src/AGENTS.md` §path-editor, road first commit).
+
+### §road-snap — pure snap core (`road_snap.rs`)
+
+Angle snap quantises the anchor-to-cursor direction to `increment_deg` relative to the previous
+segment (or world +X), keeping the distance and the cursor Y. Guides are parallel or crossing
+half-lines from open track endpoints, with a parallel threshold on the 2D cross product of unit
+directions. Snap radius is in world metres, converted through `meters_to_world`.
+
+### §road-interaction — viewport system (`road_interaction.rs`)
+
+Claims the press, snaps the cursor (candidate and guide caps at `MAX_SNAP_ENTRIES`, 2048, per
+frame, NFR-2), feeds the chain reducer, and maps each commit to an existing `UiAction`. No new
+action kind (FR-10). The chain stays tied to the track its first commit created and clears when
+that track disappears.
+
+### §road-chain — placement model (`road_chain.rs`)
+
+A pure reducer turns clicks and drags into `RoadCommit`s. It keeps a per-chain log of appended
+point counts, so undo-last-segment removes exactly what the last segment added. Points closer
+than the chain tolerance (world units, XZ) are the same anchor. `road_overlay.rs` draws the ghost
+polyline, guides, snap ring and a cursor-tethered live length readout.
+
 ## §pen-tool — pen (phase 1 polyline + phase 2 curves/shapes + bezier anchors)
 
 `Tool::Pen` (`panels/toolbar.rs`, hotkey `P` via `shortcuts.rs`) is the

@@ -439,6 +439,11 @@ mutate-and-round-trip idiom as `set_layer_field`, new `UiAction::GisSetViewMode`
 owned by another track — the field name/values are a fixed contract, do not
 rename.
 
+**Readings tab** (`gis/readings.rs`, Data window). While visible it sends one
+`DbCommand::ReadPetalReadings` every 2 s (`POLL_INTERVAL_S`), never more than one in flight.
+The Pause updates checkbox stops polling. Rows are newest first; clicking a row selects
+and frames that node (`request_select_and_frame`).
+
 ## §gpx-import — integration contract for the main binary
 
 `panels::gpx_import_card` (embedded in the GIS panel's Query tab) is
@@ -634,6 +639,15 @@ pattern exactly (queue + status resource, no fe-ui-side I/O).
    (inspector `anchor_readout`) and the tool-level default
    (`pen_new_anchor_kind`) are documented in `panels/AGENTS.md`
    §tool-inspector / §tool-panel.
+
+### Road first commit (path-editor note)
+
+The road builder's first commit reuses the pen's create path. `PendingPenCreate.trailing_points`
+(`gis/mod.rs`) carries the points after the first, and `next_road_correlation_id()` mints
+`road-track:N` ids. `fail_pending_pen_create(correlation_id)` clears a pending create for either
+prefix, and a foreign id leaves it in place. At HEAD no production `DbResult::Error` path calls it
+(tests only), so the failure cleanup is not yet wired; see the HANDED-OFF note in
+`node_manager/AGENTS.md` §road-builder. Details: that section.
 
 ## §data-icons — type icons on three surfaces (`data_icons_20260713`)
 
@@ -1144,13 +1158,45 @@ into `render_terrain_tools_section`'s own call chain — that function lives in
 
 `geometry` is a verbatim copy of fe-terrain's pure ruler formulas
 (`polygon_area_m2` / `world_to_real_distance` / `bearing_deg`) plus a local
-`sanitize_world_scale`. fe-ui must NOT depend on fe-terrain, so the pure
+`sanitize_world_scale` delegates to `fe_format::scale` (the one world-scale formula, CITY-03).
+fe-ui must NOT depend on fe-terrain, so the pure
 formulas are **copied, not imported** (same boundary rule as
 `terrain_map::tileset_to_terrain_json` building `TerrainConfig` JSON by hand).
 Kept byte-for-byte equivalent to `fe_terrain::ruler` — if either changes, sync
 by hand. **Metrically honest:** an unusable `world_scale` (≤0/unset) sanitizes to
 `1.0`, so the returned numbers are world units, not meters — callers surface the
 "no map scale" chip (NFR-4) rather than fabricating meters.
+
+## §units — UI units audit (FR-3, CITY-14)
+
+Meters are a UI-edge concern: every value shown or typed in fe-ui is converted through
+`fe_format::scale` (`world = real_m * scale`, `real_m = world / scale`); stored and replicated
+values stay world units. Audit verdicts at HEAD:
+
+| Surface | Verdict |
+|---|---|
+| Inspector position and size (`panels/inspector.rs`) | DONE: widgets convert through geometry |
+| GltfImport dialog position (`dialogs/gltf_import.rs`) | DONE: meters |
+| GIS panel (`panels/gis_panel.rs`) | DONE |
+| Path point interaction (`node_manager/path_point_interaction.rs`) | DONE |
+| Transform snap grid (`node_manager/transform_snap.rs`) | DONE |
+| Path segment lengths and stamp spacing | DONE: accessor shims (CITY-03) |
+| PetalMapState populate | DONE: clamped through the accessor |
+| Gimbal, transform broadcast, viewport label readouts | N/A: no numeric readouts exist |
+| Ruler HUD | DONE: `fe-terrain` effective world scale, same formula after CITY-01 |
+
+Decisions: OQ-1 meters only in the UI; OQ-3 `InspectorFormState.world_scale` is the single
+write path (`panels/inspector.rs`). The Measure readout returns "no scale" (NaN) when no map is
+bound; that is a display choice (`node_manager/measure.rs`), not a conversion rule.
+
+## §ground-snap — terrain-aware ground point (D-38)
+
+`node_manager/ground_snap.rs` finds the cursor's world point. It iterates a fixed point over the
+`TerrainHeightField`: intersect the ray with a plane at the last height, read the height there,
+and repeat until the heights agree (parallax correction). Pure math, bounded by
+`GROUND_SNAP_ITERATIONS` (4). OQ-2 resolved: height-field sampling, not a mesh raycast. Off-terrain
+points fall back to `y = 0`. The context-menu `CreateNodeAt` uses the same world point.
+There is no main-binary bridge: fe-ui reads the fe-renderer resource directly.
 
 ## §visibility — hide/isolate that is real everywhere (hierarchy_visibility_groups)
 
@@ -1249,6 +1295,12 @@ it (D-4), but a petal persisted hidden and then entered keeps an enabled
 would stay hidden behind a dead eye.
 
 **Still session-only:** solo.
+
+## Access tab local-only verses
+
+A verse with no `namespace_id` (the seeded Genesis Verse) is local only. The Access tab
+says so and disables Generate invite with that reason (`dialogs/entity_access.rs`,
+`LOCAL_ONLY_REASON`, QA-0177). Giving it a namespace would need a seed migration.
 
 ## Accessible control names and observations
 
