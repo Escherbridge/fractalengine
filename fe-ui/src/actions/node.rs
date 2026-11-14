@@ -736,6 +736,50 @@ fn pump_scene_door_at(doors: &Mutex<GuiDoorQueue>, now: Instant) -> Vec<Settled>
     settled
 }
 
+/// Test seam: serializes tests that touch the process-wide GUI door queue.
+#[cfg(test)]
+pub(crate) static GUI_DOOR_TEST_LOCK: Mutex<()> = Mutex::new(());
+
+/// Test seam: the retry bound a test must outlast to exhaust the GUI door's backoff.
+#[cfg(test)]
+pub(crate) const GUI_DOOR_RETRY_ATTEMPTS: u32 = RETRY_ATTEMPTS;
+
+/// Test seam: pump the GUI door at `now + delay`; returns the settled count.
+#[cfg(test)]
+pub(crate) fn pump_gui_door_after(delay: Duration) -> usize {
+    pump_gui_door_outcome_after(delay).0
+}
+
+/// Test seam: pump like [`pump_gui_door_after`] and also return the `RequestFailed` replies
+/// the frame drain would write for refused or dead-lettered writes.
+#[cfg(test)]
+pub(crate) fn pump_gui_door_outcome_after(delay: Duration) -> (usize, Vec<DbResult>) {
+    let settled = pump_scene_door_at(&GUI_DOOR, Instant::now() + delay);
+    let count = settled.len();
+    let failures = settled
+        .into_iter()
+        .filter_map(|done| match done {
+            Settled::Sent(_) => None,
+            Settled::Refused {
+                message,
+                correlation_id,
+            } => correlation_id.map(|correlation_id| DbResult::RequestFailed {
+                error: message,
+                correlation_id,
+            }),
+            Settled::DeadLettered {
+                label,
+                reason,
+                correlation_id,
+            } => correlation_id.map(|correlation_id| DbResult::RequestFailed {
+                error: format!("{label} was not saved: {reason}"),
+                correlation_id,
+            }),
+        })
+        .collect();
+    (count, failures)
+}
+
 /// Send `CreateNode` for an empty node at `position` in `petal_id`.
 pub(crate) fn create_at(db_sender: &DbCommandSender, petal_id: String, position: [f32; 3]) {
     let command = DbCommand::CreateNode {

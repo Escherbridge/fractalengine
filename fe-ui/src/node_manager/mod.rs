@@ -880,6 +880,10 @@ mod tests {
 
     #[test]
     fn cancel_axis_drag_returns_the_pre_drag_snapshot_and_keeps_the_selection() {
+        // The journey queues writes on the process-wide GUI door; hold the lock so no other test sees them.
+        let _door_lock = crate::actions::node::GUI_DOOR_TEST_LOCK
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
         let mut mgr = NodeManager::default();
         mgr.select(entity(1), "node-1");
         begin_axis_drag(&mut mgr);
@@ -1041,17 +1045,50 @@ mod tests {
             replay.release(MouseButton::Left);
             app.insert_resource(replay);
         }
+        // Retry leg: the DB channel is full at release, so the checked commit waits in the door.
+        let unbounded_sender = app
+            .world()
+            .resource::<fe_runtime::app::DbCommandSender>()
+            .0
+            .clone();
+        let (full_tx, full_rx) = crossbeam::channel::bounded(1);
+        full_tx.send(DbCommand::Ping).unwrap();
+        app.insert_resource(fe_runtime::app::DbCommandSender(full_tx));
         app.update();
         app.world_mut()
             .resource_mut::<ButtonInput<MouseButton>>()
             .clear();
+        let notice = app
+            .world()
+            .resource::<crate::actions::UiManager>()
+            .active_notice(0.0)
+            .map(|(notice, _)| notice.text.clone())
+            .unwrap_or_default();
+        assert!(
+            !notice.to_lowercase().contains("busy"),
+            "a full channel must queue the edit, not report busy: {notice:?}"
+        );
+        assert!(
+            app.world().resource::<crate::undo::UndoState>().is_pending(),
+            "the queued undo-stack edit is pending its receipt"
+        );
+        assert!(matches!(full_rx.try_recv(), Ok(DbCommand::Ping)), "only the prefill is in the channel");
+        assert!(full_rx.try_recv().is_err(), "the write waits in the door, not the channel");
+        assert_eq!(
+            crate::actions::node::pump_gui_door_after(std::time::Duration::from_millis(100)),
+            1,
+            "the first backoff has elapsed: the door settles the write"
+        );
         assert_eq!(
             app.world()
                 .resource::<crate::undo::UndoState>()
                 .history_counts(),
             (0, 0)
         );
-        let command = rx.try_recv().expect("release sends one checked operation");
+        let command = full_rx
+            .try_recv()
+            .expect("the retried release reaches the channel once");
+        app.insert_resource(fe_runtime::app::DbCommandSender(unbounded_sender.clone()));
         let DbCommand::CommitCheckedNodeMutation {
             expected,
             mutation,
@@ -1100,6 +1137,62 @@ mod tests {
                 .history_counts(),
             (1, 0)
         );
+        // Exhaustion leg: a channel that stays full past the whole backoff fails the undo cleanly.
+        {
+            let (full_tx, full_rx) = crossbeam::channel::bounded(1);
+            full_tx.send(DbCommand::Ping).unwrap();
+            app.insert_resource(fe_runtime::app::DbCommandSender(full_tx));
+            app.world_mut()
+                .resource_scope(|world, mut undo: Mut<crate::undo::UndoState>| {
+                    undo.replay(
+                        false,
+                        world.resource(),
+                        world.resource(),
+                        world.resource(),
+                        &world.resource::<fe_runtime::app::DbCommandSender>().0,
+                    )
+                })
+                .expect("a full channel queues the undo instead of refusing it");
+            assert!(app.world().resource::<crate::undo::UndoState>().is_pending());
+            let mut settled = 0;
+            let mut failures = Vec::new();
+            for _ in 0..=crate::actions::node::GUI_DOOR_RETRY_ATTEMPTS {
+                let (count, failed) = crate::actions::node::pump_gui_door_outcome_after(
+                    std::time::Duration::from_secs(10),
+                );
+                settled += count;
+                failures.extend(failed);
+            }
+            assert_eq!(settled, 1, "the write dead-letters once, after the bounded backoff");
+            assert_eq!(failures.len(), 1, "the owner learns of it through one RequestFailed");
+            assert!(matches!(full_rx.try_recv(), Ok(DbCommand::Ping)));
+            assert!(full_rx.try_recv().is_err(), "the undo never reached the channel");
+            for failure in failures {
+                app.world_mut().write_message(failure);
+            }
+            app.update();
+            let DbCommand::ResolveCheckedNodeMutation {
+                request_id,
+                correlation_id,
+                ..
+            } = full_rx.try_recv().expect("the failure triggers a read-back")
+            else {
+                panic!("reconcile asks for the stored outcome")
+            };
+            app.world_mut()
+                .write_message(DbResult::CheckedNodeMutationResolved {
+                    node_id: "node-1".into(),
+                    request_id,
+                    receipt: None,
+                    current: state.clone(),
+                    correlation_id,
+                });
+            app.update();
+            let undo = app.world().resource::<crate::undo::UndoState>();
+            assert!(!undo.is_pending(), "the failed undo ends");
+            assert_eq!(undo.history_counts(), (1, 0), "a failed undo records no history entry");
+            app.insert_resource(fe_runtime::app::DbCommandSender(unbounded_sender));
+        }
         app.world_mut().resource_mut::<NodeManager>().deselect();
         app.world_mut()
             .resource_scope(|world, mut undo: Mut<crate::undo::UndoState>| {
