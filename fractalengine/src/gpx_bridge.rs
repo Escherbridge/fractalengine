@@ -171,6 +171,35 @@ fn authored_track_properties(name: &str) -> [(&'static str, serde_json::Value); 
     ]
 }
 
+/// Submit the authored-track property writes for a created node; returns the partial-init message on a refused send.
+fn submit_authored_track_properties(
+    pending: &mut PendingPathEdits,
+    db_tx: &DbCommandSender,
+    node_id: &str,
+    name: &str,
+) -> Option<String> {
+    let mut confirmations = PendingPropertyConfirms::new();
+    let mut failure = None;
+    for (key, value) in authored_track_properties(name) {
+        match pending.property_outcomes.submit(db_tx, node_id, key, value) {
+            Ok(request) => {
+                confirmations.insert(request);
+            }
+            Err(error) => {
+                pending.failed_track_properties.insert(node_id.to_string());
+                failure = Some(format!("Track node exists; initialization is partial: {error}"));
+                break;
+            }
+        }
+    }
+    if !confirmations.is_empty() {
+        pending.track_property_confirms.insert(node_id.to_string(), confirmations);
+    } else {
+        pending.failed_track_properties.remove(node_id);
+    }
+    failure
+}
+
 /// Build the single merged track node draft, positioned at the first
 /// trackpoint in document order. Returns `None` when the file has no
 /// trackpoints at all (waypoint-only GPX files are handled as standalone).
@@ -2350,21 +2379,8 @@ pub fn advance_path_edits(
             DbResult::NodeCreated { id, petal_id, name, position, correlation_id: Some(request_id), .. } => {
                 if pending.creates.get(request_id).is_some_and(|owner| !owner.retired && owner.payload.petal_id == *petal_id && owner.payload.name == *name && owner.payload.position == *position) {
                     pending.creates.remove(request_id);
-                    let mut confirmations = PendingPropertyConfirms::new();
-                    for (key, value) in authored_track_properties(name) {
-                        match pending.property_outcomes.submit(&db_tx, id, key, value) {
-                            Ok(request) => { confirmations.insert(request); }
-                            Err(error) => {
-                                pending.failed_track_properties.insert(id.clone());
-                                status.error = Some(format!("Track node exists; initialization is partial: {error}"));
-                                break;
-                            }
-                        }
-                    }
-                    if !confirmations.is_empty() {
-                        pending.track_property_confirms.insert(id.clone(), confirmations);
-                    } else {
-                        pending.failed_track_properties.remove(id);
+                    if let Some(message) = submit_authored_track_properties(&mut pending, &db_tx, id, name) {
+                        status.error = Some(message);
                     }
                     continue;
                 }
@@ -4125,6 +4141,31 @@ mod tests {
         assert_eq!(find("path_kind"), &serde_json::json!("designed"));
         assert_eq!(find("gis.track.name"), &serde_json::json!("Main Road"));
         assert_eq!(find("gpx_points"), &serde_json::json!([]));
+    }
+
+    #[test]
+    fn road_track_create_echo_submits_designed_and_import_stays_recorded() {
+        let (sender_inner, commands) = crossbeam::channel::unbounded();
+        let sender = DbCommandSender(sender_inner);
+        let mut pending = PendingPathEdits::default();
+        // Production-shaped correlation id minted by fe-ui's next_road_correlation_id.
+        pending.submit_create(&sender, "road-track:1".into(), "p".into(), "Main Road".into()).unwrap();
+        pending.creates.remove("road-track:1");
+        assert!(submit_authored_track_properties(&mut pending, &sender, "node-1", "Main Road").is_none());
+        let written: Vec<(String, serde_json::Value)> = commands
+            .try_iter()
+            .filter_map(|command| match command {
+                DbCommand::SetNodeProperty { node_id, key, value, .. } if node_id == "node-1" => Some((key, value)),
+                _ => None,
+            })
+            .collect();
+        assert!(written.contains(&("path_kind".to_string(), serde_json::json!("designed"))));
+        assert!(written.contains(&("gpx_type".to_string(), serde_json::json!("track"))));
+        assert!(!written.iter().any(|(_, value)| value == &serde_json::json!("recorded")));
+
+        let data = parse(SAMPLE_GPX);
+        let draft = build_track_draft(&data, &Projection::new(45.0, -122.0, 100.0), &compute_stats(&data)).unwrap();
+        assert_eq!(prop(&draft, "path_kind"), &serde_json::json!("recorded"));
     }
 
     #[test]
