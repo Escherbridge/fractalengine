@@ -909,23 +909,43 @@ impl UndoState {
             self.pending = None;
         }
     }
-    fn reconcile(&mut self, db: &crossbeam::channel::Sender<DbCommand>) -> Result<(), String> {
+    /// Ask the DB for the stored outcome without blocking; `Ok(false)` means the queue was full and the SAVE_TIMEOUT sweep retries.
+    fn reconcile(&mut self, db: &crossbeam::channel::Sender<DbCommand>) -> Result<bool, String> {
         let pending = self.pending.as_mut().ok_or("No edit is pending")?;
         if pending.entry.is_none() {
             return Err("Waiting for the path's stored points".into());
         }
         let entry = pending.entry.as_ref().unwrap();
         let id = request_id();
-        db.send(DbCommand::ResolveCheckedNodeMutation {
+        match db.try_send(DbCommand::ResolveCheckedNodeMutation {
             node_id: entry.node_id.clone(),
             petal_id: entry.petal_id.clone(),
             request_id: pending.request_id.clone(),
             correlation_id: id.clone(),
-        })
-        .map_err(|_| "Database connection closed; saved outcome remains unknown")?;
-        pending.resolve_id = Some(id);
-        pending.started = Instant::now();
-        Ok(())
+        }) {
+            Ok(()) => {
+                pending.resolve_id = Some(id);
+                pending.started = Instant::now();
+                Ok(true)
+            }
+            Err(crossbeam::channel::TrySendError::Full(_)) => {
+                pending.resolve_id = None;
+                pending.started = Instant::now();
+                Ok(false)
+            }
+            Err(crossbeam::channel::TrySendError::Disconnected(_)) => {
+                Err("Database connection closed; saved outcome remains unknown".into())
+            }
+        }
+    }
+    /// Age the pending edit past SAVE_TIMEOUT so the retry sweep fires without waiting.
+    #[cfg(test)]
+    pub(crate) fn expire_pending_for_test(&mut self) {
+        if let Some(pending) = self.pending.as_mut() {
+            pending.started = Instant::now()
+                .checked_sub(SAVE_TIMEOUT + std::time::Duration::from_millis(1))
+                .unwrap_or_else(Instant::now);
+        }
     }
     pub(crate) fn replay(
         &mut self,
@@ -1137,8 +1157,10 @@ pub(crate) fn observe_results(
                     }
                     Err(error) => {
                         ui.show_error(error, now);
-                        if let Err(error) = undo.reconcile(&db.0) {
-                            ui.show_error(error, now);
+                        match undo.reconcile(&db.0) {
+                            Ok(true) => {}
+                            Ok(false) => ui.show_advisory("Checking the saved outcome shortly", now),
+                            Err(error) => ui.show_error(error, now),
                         }
                     }
                 }
@@ -1154,8 +1176,10 @@ pub(crate) fn observe_results(
                 undo.pending.as_mut().unwrap().conflict =
                     error.contains("changed") || error.contains("moved");
                 ui.show_advisory(error.clone(), now);
-                if let Err(error) = undo.reconcile(&db.0) {
-                    ui.show_error(error, now);
+                match undo.reconcile(&db.0) {
+                    Ok(true) => {}
+                    Ok(false) => ui.show_advisory("Checking the saved outcome shortly", now),
+                    Err(error) => ui.show_error(error, now),
                 }
             }
             DbResult::RequestFailed {
@@ -1317,8 +1341,10 @@ pub(crate) fn observe_results(
             "Save confirmation is delayed; checking its exact stored outcome",
             now,
         );
-        if let Err(error) = undo.reconcile(&db.0) {
-            ui.show_error(error, now);
+        match undo.reconcile(&db.0) {
+            Ok(true) => {}
+            Ok(false) => ui.show_advisory("Checking the saved outcome shortly", now),
+            Err(error) => ui.show_error(error, now),
         }
     }
     undo.flush_hydration(&db.0);

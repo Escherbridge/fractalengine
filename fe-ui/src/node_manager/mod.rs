@@ -1141,7 +1141,7 @@ mod tests {
         {
             let (full_tx, full_rx) = crossbeam::channel::bounded(1);
             full_tx.send(DbCommand::Ping).unwrap();
-            app.insert_resource(fe_runtime::app::DbCommandSender(full_tx));
+            app.insert_resource(fe_runtime::app::DbCommandSender(full_tx.clone()));
             app.world_mut()
                 .resource_scope(|world, mut undo: Mut<crate::undo::UndoState>| {
                     undo.replay(
@@ -1167,18 +1167,32 @@ mod tests {
             assert_eq!(failures.len(), 1, "the owner learns of it through one RequestFailed");
             assert!(matches!(full_rx.try_recv(), Ok(DbCommand::Ping)));
             assert!(full_rx.try_recv().is_err(), "the undo never reached the channel");
+            // Frame-never-blocks leg: the channel is still full when the failure lands, so reconcile
+            // must return at once, keep the edit pending and send nothing until the retry sweep.
+            full_tx.send(DbCommand::Ping).unwrap();
             for failure in failures {
                 app.world_mut().write_message(failure);
             }
+            app.update();
+            assert!(
+                app.world().resource::<crate::undo::UndoState>().is_pending(),
+                "the edit stays pending while the read-back cannot be queued"
+            );
+            assert!(matches!(full_rx.try_recv(), Ok(DbCommand::Ping)), "only the prefill was in the channel");
+            assert!(full_rx.try_recv().is_err(), "a full channel defers the read-back");
+            app.world_mut()
+                .resource_mut::<crate::undo::UndoState>()
+                .expire_pending_for_test();
             app.update();
             let DbCommand::ResolveCheckedNodeMutation {
                 request_id,
                 correlation_id,
                 ..
-            } = full_rx.try_recv().expect("the failure triggers a read-back")
+            } = full_rx.try_recv().expect("the retry sweep delivers the read-back")
             else {
                 panic!("reconcile asks for the stored outcome")
             };
+            assert!(full_rx.try_recv().is_err(), "exactly one read-back is delivered");
             app.world_mut()
                 .write_message(DbResult::CheckedNodeMutationResolved {
                     node_id: "node-1".into(),
