@@ -1868,6 +1868,91 @@ mod tests {
                 .verify(&licensed)
                 .unwrap_err()
                 .contains("another licensee"));
+
+            // "Check licence": the token client asks the source's issuer and files the token where row 6 reads it.
+            use crate::extension_host::licence_client::LicenceTokens;
+            use crate::extension_host::ops_drain::{LicenceAnswer, LicenceRequest};
+            use crate::extension_host::sources::AnonymousHttpFetcher;
+            use fe_hexon::entitlement_client::{Licensee, TokenHttpResponse, TokenTransport};
+            use fe_hexon::registry_source::{CatalogConfig, FEATURE_ENTITLEMENTS};
+
+            /// An issuer endpoint: checks each signed request like a registry would, then answers `status` with `body`.
+            struct FakeIssuer {
+                status: u16,
+                body: serde_json::Value,
+                verified: Mutex<Vec<fe_format::entitlement::TokenRequest>>,
+            }
+            impl TokenTransport for FakeIssuer {
+                fn post_json(&self, url: &str, body: &[u8], _max_bytes: u64) -> Result<TokenHttpResponse, String> {
+                    assert!(url.ends_with("/api/v1/catalog/entitlements/token"), "{url}");
+                    let Ok(request) = fe_format::entitlement::verify_token_request(body, unix_now()) else {
+                        let refused = json!({"ok": false, "data": null, "error": "invalid_request"});
+                        return Ok(TokenHttpResponse { status: 400, body: refused.to_string().into_bytes(), retry_after_secs: None });
+                    };
+                    self.verified.lock().unwrap().push(request);
+                    Ok(TokenHttpResponse { status: self.status, body: self.body.to_string().into_bytes(), retry_after_secs: None })
+                }
+            }
+            let identity = SigningKey::from_bytes(&[5; 32]);
+            let device_secret = DeviceKeypair::from_bytes([33; 32]).secret_bytes();
+            let keys = Licensee { identity: &identity, device_secret: &device_secret };
+            assert_eq!(keys.did(), licensee, "the licensee the row 6 check was built for");
+            let config = CatalogConfig { features: [FEATURE_ENTITLEMENTS.to_owned()].into(), ..CatalogConfig::default() };
+            let ask = |tokens: &LicenceTokens, source_id: &str, transport: Arc<dyn TokenTransport>| {
+                let request = LicenceRequest {
+                    source_id,
+                    base: "https://issuer.example/store",
+                    package_id: &licensed.package_id,
+                    content_hash: &build_hash,
+                    config: Some(config.clone()),
+                    transport: Some(transport),
+                };
+                tokens.request(&request, keys, unix_now())
+            };
+            let not_pinned = tempfile::tempdir().unwrap();
+            let unused: Arc<dyn TokenTransport> =
+                Arc::new(FakeIssuer { status: 500, body: json!({}), verified: Mutex::new(Vec::new()) });
+            assert!(ask(&LicenceTokens::new(not_pinned.path()).unwrap(), "store", unused)
+                .unwrap_err()
+                .contains("no entitlement issuer is pinned"));
+
+            std::fs::remove_file(dir.path().join(ENTITLEMENT_TOKEN_DIR).join(format!("{build_hash}.jwt"))).unwrap();
+            assert!(check.verify(&licensed).unwrap_err().contains("holds no entitlement"), "no token before the check");
+            let tokens = LicenceTokens::new(dir.path()).unwrap();
+            let denying = Arc::new(FakeIssuer {
+                status: 403,
+                body: json!({"ok": false, "data": null, "error": "not_entitled"}),
+                verified: Mutex::new(Vec::new()),
+            });
+            assert_eq!(ask(&tokens, "denying", denying.clone() as Arc<dyn TokenTransport>), Ok(LicenceAnswer::Missing), "403 not_entitled is no licence yet");
+            assert_eq!(denying.verified.lock().unwrap().len(), 1, "the refusal answered a correctly signed request");
+            assert!(check.verify(&licensed).is_err(), "a refusal files nothing");
+
+            let issuing = Arc::new(FakeIssuer {
+                status: 200,
+                body: json!({ "token": mint(&issuer, &device_did, unix_now()) }),
+                verified: Mutex::new(Vec::new()),
+            });
+            let held = ask(&tokens, "issuing", issuing.clone() as Arc<dyn TokenTransport>);
+            assert!(
+                matches!(&held, Ok(LicenceAnswer::Held { expires: Some(at) }) if at.ends_with('Z') && at.len() == 20),
+                "{held:?}"
+            );
+            let sent = issuing.verified.lock().unwrap();
+            assert_eq!(
+                (sent[0].package_id.as_str(), sent[0].content_hash.as_str(), sent[0].device_x25519_did.as_str()),
+                (licensed.package_id.as_str(), build_hash.as_str(), device_did.as_str()),
+                "the request names exactly this build and device"
+            );
+            drop(sent);
+            assert!(check.verify(&licensed).is_ok(), "the issued token passes row 6 offline");
+
+            // The source's transport refuses an internal target when the endpoint itself is public (no packet is sent).
+            let public = AnonymousHttpFetcher::for_base("https://1.1.1.1/store").unwrap();
+            assert!(public
+                .post_json("http://127.0.0.1:9/api/v1/catalog/entitlements/token", b"{}", 1024)
+                .unwrap_err()
+                .contains("refusing a local or private address"));
         }
     }
 }

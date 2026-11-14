@@ -7,6 +7,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use ed25519_dalek::VerifyingKey;
+use fe_hexon::entitlement_client::{TokenHttpResponse, TokenTransport};
 use fe_hexon::registry_source::{
     BytesFetcher, FetchedPackage, FileFetcher, Listing, LocalSource, RegistryEntry, RegistryError, RegistrySource,
     SourceTrust, StaticIndexSource,
@@ -86,6 +87,8 @@ struct SourceEntry {
     catalog: Option<Arc<StaticIndexSource>>,
     /// The endpoint base the licence issuer sits under.
     base: Option<String>,
+    /// The checked http(s) transport licence token requests go through (http(s) static endpoints only).
+    transport: Option<Arc<dyn TokenTransport>>,
 }
 
 /// What [`build_one`] produces for a usable source.
@@ -93,6 +96,7 @@ struct Built {
     source: Arc<dyn RegistrySource>,
     catalog: Option<Arc<StaticIndexSource>>,
     base: Option<String>,
+    transport: Option<Arc<dyn TokenTransport>>,
 }
 
 /// The sources Browse offers, in configured order.
@@ -113,13 +117,14 @@ impl SourceSet {
             let built = build_one(config, shared).unwrap_or_else(|reason| {
                 tracing::warn!(source = %config.id, %reason, "extension source unusable");
                 let source = Arc::new(UnusableSource { label: config.label.clone(), reason }) as Arc<dyn RegistrySource>;
-                Built { source, catalog: None, base: None }
+                Built { source, catalog: None, base: None, transport: None }
             });
             entries.push(SourceEntry {
                 browse: BrowseSource { id: config.id.clone(), label: config.label.clone() },
                 source: built.source,
                 catalog: built.catalog,
                 base: built.base,
+                transport: built.transport,
             });
         }
         Self { entries }
@@ -147,6 +152,11 @@ impl SourceSet {
     /// The endpoint base of a contract v1 source (where its licence issuer is reached).
     pub fn base(&self, id: &str) -> Option<&str> {
         self.entry(id).and_then(|entry| entry.base.as_deref())
+    }
+
+    /// The SSRF-checked transport of a contract v1 http(s) source (the same instance on every call); `None` otherwise.
+    pub fn token_transport(&self, id: &str) -> Option<Arc<dyn TokenTransport>> {
+        self.entry(id).and_then(|entry| entry.transport.clone())
     }
 }
 
@@ -179,7 +189,7 @@ impl RegistrySource for UnusableSource {
 
 fn build_one(config: &SourceConfig, shared: &SourceTrust) -> Result<Built, String> {
     fn plain(source: Arc<dyn RegistrySource>) -> Built {
-        Built { source, catalog: None, base: None }
+        Built { source, catalog: None, base: None, transport: None }
     }
     match &config.kind {
         SourceKind::Local { path } => Ok(plain(Arc::new(LocalSource::new(path.clone(), shared.clone())))),
@@ -196,17 +206,19 @@ fn build_one(config: &SourceConfig, shared: &SourceTrust) -> Result<Built, Strin
                 return Err(format!("index key {key_id} is a trust root; an index key never signs packages"));
             }
             let trust = endpoint_trust(shared, pins);
-            let fetcher: Arc<dyn BytesFetcher> = if is_http(base) {
-                Arc::new(AnonymousHttpFetcher::for_base(base)?)
+            let (fetcher, transport): (Arc<dyn BytesFetcher>, Option<Arc<dyn TokenTransport>>) = if is_http(base) {
+                // One fetcher serves both documents and token POSTs, so both share its `allow_local` decision.
+                let http = Arc::new(AnonymousHttpFetcher::for_base(base)?);
+                (http.clone(), Some(http))
             } else {
-                Arc::new(FileFetcher)
+                (Arc::new(FileFetcher), None)
             };
             let source = StaticIndexSource::new(base, fetcher, trust);
             let catalog = Arc::new(match cache {
                 Some(path) => source.with_cache(path.clone()),
                 None => source,
             });
-            Ok(Built { source: catalog.clone(), catalog: Some(catalog), base: Some(base.to_owned()) })
+            Ok(Built { source: catalog.clone(), catalog: Some(catalog), base: Some(base.to_owned()), transport })
         }
         SourceKind::ProtocolV1 { base_url } => {
             let url = reqwest::Url::parse(base_url.trim()).map_err(|error| format!("base_url: {error}"))?;
@@ -276,32 +288,30 @@ impl AnonymousHttpFetcher {
         Ok(Self { allow_local, runtime })
     }
 
-    async fn get_async(&self, location: &str, max_bytes: u64) -> Result<Vec<u8>, RegistryError> {
-        let transport = |reason: String| RegistryError::Transport(reason);
-        let url = reqwest::Url::parse(location).map_err(|error| transport(format!("bad location {location:?}: {error}")))?;
+    /// A client pinned to the checked addresses of `location`'s host: anonymous, no proxy, no redirects, bounded time.
+    async fn pinned_client(&self, location: &str) -> Result<(reqwest::Client, reqwest::Url), String> {
+        let url = reqwest::Url::parse(location).map_err(|error| format!("bad location {location:?}: {error}"))?;
         if !matches!(url.scheme(), "http" | "https") {
-            return Err(transport(format!("{location:?}: only http and https locations are read")));
+            return Err(format!("{location:?}: only http and https locations are read"));
         }
         if !url.username().is_empty() || url.password().is_some() {
-            return Err(transport(format!("{location:?}: credentials in a location are refused")));
+            return Err(format!("{location:?}: credentials in a location are refused"));
         }
-        let port = url.port_or_known_default().ok_or_else(|| transport(format!("{location:?}: no port")))?;
-        let host = url.host_str().ok_or_else(|| transport(format!("{location:?}: no host")))?;
+        let port = url.port_or_known_default().ok_or_else(|| format!("{location:?}: no port"))?;
+        let host = url.host_str().ok_or_else(|| format!("{location:?}: no host"))?;
         // `host_str` keeps the brackets of an IPv6 literal.
         let (domain, addrs): (Option<String>, Vec<SocketAddr>) = match host.trim_matches(['[', ']']).parse::<IpAddr>() {
             Ok(ip) => (None, vec![SocketAddr::new(ip, port)]),
             Err(_) => {
-                let resolved = tokio::net::lookup_host((host, port))
-                    .await
-                    .map_err(|error| transport(format!("{host}: {error}")))?;
+                let resolved = tokio::net::lookup_host((host, port)).await.map_err(|error| format!("{host}: {error}"))?;
                 (Some(host.to_owned()), resolved.collect())
             }
         };
         if addrs.is_empty() {
-            return Err(transport(format!("{location:?}: the host does not resolve")));
+            return Err(format!("{location:?}: the host does not resolve"));
         }
         if !self.allow_local && addrs.iter().any(|addr| is_internal(addr.ip())) {
-            return Err(transport(format!("{location:?}: refusing a local or private address")));
+            return Err(format!("{location:?}: refusing a local or private address"));
         }
         let mut builder = reqwest::Client::builder()
             .redirect(reqwest::redirect::Policy::none())
@@ -313,7 +323,13 @@ impl AnonymousHttpFetcher {
             // The connection goes to the addresses just checked, not to a second lookup.
             builder = builder.resolve_to_addrs(domain, &addrs);
         }
-        let client = builder.build().map_err(|error| transport(error.to_string()))?;
+        let client = builder.build().map_err(|error| error.to_string())?;
+        Ok((client, url))
+    }
+
+    async fn get_async(&self, location: &str, max_bytes: u64) -> Result<Vec<u8>, RegistryError> {
+        let transport = |reason: String| RegistryError::Transport(reason);
+        let (client, url) = self.pinned_client(location).await.map_err(transport)?;
         let mut response = client.get(url).send().await.map_err(|error| transport(error.to_string()))?;
         let status = response.status();
         if status == reqwest::StatusCode::NOT_FOUND {
@@ -362,5 +378,49 @@ fn base_is_internal(url: &reqwest::Url) -> bool {
 impl BytesFetcher for AnonymousHttpFetcher {
     fn get(&self, location: &str, max_bytes: u64) -> Result<Vec<u8>, RegistryError> {
         self.runtime.block_on(self.get_async(location, max_bytes))
+    }
+}
+
+impl AnonymousHttpFetcher {
+    /// POST `body` as JSON with the GET path's checks; any status is returned (the caller maps it), a redirect is refused.
+    async fn post_json_async(&self, location: &str, body: &[u8], max_bytes: u64) -> Result<TokenHttpResponse, String> {
+        let (client, url) = self.pinned_client(location).await?;
+        let mut response = client
+            .post(url)
+            .header(reqwest::header::CONTENT_TYPE, "application/json")
+            .header(reqwest::header::ACCEPT, "application/json")
+            .body(body.to_vec())
+            .send()
+            .await
+            .map_err(|error| error.to_string())?;
+        let status = response.status();
+        if status.is_redirection() {
+            return Err(format!("{location:?}: redirects are not followed ({status})"));
+        }
+        // Only the delta-seconds form is honoured; an HTTP-date falls back to the client's default backoff.
+        let retry_after_secs = response
+            .headers()
+            .get(reqwest::header::RETRY_AFTER)
+            .and_then(|value| value.to_str().ok())
+            .and_then(|value| value.trim().parse::<u64>().ok());
+        let too_large = || format!("{location:?}: response over {max_bytes} bytes");
+        if response.content_length().is_some_and(|length| length > max_bytes) {
+            return Err(too_large());
+        }
+        let mut collected = Vec::new();
+        while let Some(chunk) = response.chunk().await.map_err(|error| error.to_string())? {
+            if collected.len() as u64 + chunk.len() as u64 > max_bytes {
+                return Err(too_large());
+            }
+            collected.extend_from_slice(&chunk);
+        }
+        Ok(TokenHttpResponse { status: status.as_u16(), body: collected, retry_after_secs })
+    }
+}
+
+/// Licence token POSTs share the document fetcher's pinned, anonymous client rules.
+impl TokenTransport for AnonymousHttpFetcher {
+    fn post_json(&self, url: &str, body: &[u8], max_bytes: u64) -> Result<TokenHttpResponse, String> {
+        self.runtime.block_on(self.post_json_async(url, body, max_bytes))
     }
 }

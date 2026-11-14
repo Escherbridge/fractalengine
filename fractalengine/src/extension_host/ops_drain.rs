@@ -145,6 +145,10 @@ pub struct LicenceRequest<'a> {
     pub package_id: &'a str,
     /// The listed build the token must cover.
     pub content_hash: &'a str,
+    /// The endpoint's `config.json`; `None` when unreachable (a held token still answers).
+    pub config: Option<fe_hexon::registry_source::CatalogConfig>,
+    /// The source's SSRF-checked http(s) transport; `None` for a folder endpoint.
+    pub transport: Option<Arc<dyn fe_hexon::entitlement_client::TokenTransport>>,
 }
 
 /// What the issuer answered once the token verified.
@@ -779,6 +783,8 @@ impl OpsWorker {
                 base,
                 package_id: &package_id,
                 content_hash: &verified.listed.latest_content_hash,
+                config: catalog.config().ok(),
+                transport: self.sources.token_transport(&source_id),
             };
             self.ports.request_licence_token(&request)
         })();

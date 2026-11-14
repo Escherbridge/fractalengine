@@ -6,6 +6,9 @@ pub(crate) mod admin_channel;
 pub(crate) mod governance;
 /// `asset.import` over the binding worker (fe-api `ImportHooks`).
 pub(crate) mod import_hooks;
+/// Licence token requests through a source's checked transport, kept where governance row 6 reads them.
+#[cfg(feature = "entitlement")]
+pub(crate) mod licence_client;
 /// The network broker over the host's roles, audit sink and local credential file.
 pub(crate) mod net_sources;
 /// The Extensions panel's op drain against the plugin manager.
