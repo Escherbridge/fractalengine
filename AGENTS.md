@@ -3,6 +3,8 @@
 This file is the canonical reference for AI agents (Claude, Codex, etc.) working on this codebase.
 Read this before touching any source file.
 
+Agent vision: fe-api/AGENTS.md section screenshot and section camera-state; fractalengine/src/AGENTS.md section vision.
+
 ---
 
 ## Project Overview

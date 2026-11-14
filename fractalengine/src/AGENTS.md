@@ -764,19 +764,22 @@ fe-terrain either (root `AGENTS.md` §petal-map, fe-sync `AGENTS.md`
   when `AppSettings.hexon_registry_url`/`FE_HEXON_REGISTRY_URL` resolves to
   something — `fe_ui::settings::resolve_hexon_registry_url`, same precedence
   shape as the relay spec) is drained on its own background thread,
-  `terrain_bridge::install_from_registry`: `FetchStrategy::fetch_header`
-  (`RequireSealed`, no pin — the operator's chosen registry IS the trust
-  anchor, same model as `/download`) → `fetch_chunk` for every chunk a
-  container names (or the one whole-archive chunk for a monolithic hexon),
-  each one checked against the signed integrity root before it is ever
-  written anywhere → `assemble_sealed_container` (container) or
-  `HexonStore::install_tileset` directly (monolithic) → `TilesetRegistry::reload`.
-  This is the FIRST production caller of `fe_hexon::partial::FetchStrategy`/
-  `RemoteRegistryClient` (`fractalengine/Cargo.toml` now enables `fe-hexon`'s
-  `remote` feature) — closes the "gate built but never wired" class of
-  finding for the HTTP partial-fetch half (S5/S7a already wired the P2P half).
-  Progress (`HexonAssembleOutcome::RegistryProgress`, header-resolved `0/N`
-  through every chunk) and the terminal `RegistryInstalled`/`RegistryFailed`
+  `terrain_bridge::install_from_registry` (production, 2026-11-14):
+  `RegistrySource::list` filtered to the requested id (a pinned `@version`
+  must match) → `ProtocolV1Source::fetch_hexon_with_progress` →
+  `requested_uri_matches`, `check_protocol`, `refuse_killed`, then the WHOLE
+  sealed package through `download_with_progress`, capped at
+  `PACKAGE_MAX_BYTES` (64 MiB), verified by `verify_fetched_hexon` on the
+  complete bytes only → `HexonStore::install_tileset` → `TilesetRegistry::reload`.
+  The operator's chosen registry is the trust anchor (`SourceTrust` accepts
+  any valid seal, `allow_unsigned_dev: false`). The chunked
+  `fetch_and_install_from_registry` core (`fetch_header` then `fetch_chunk`
+  per container chunk) is `#[cfg(test)]` only; the partial-fetch gate is still
+  exercised by the P2P half (S5/S7a).
+  Progress: `terrain_bridge` forwards `RegistryProgress { bytes_received,
+  total_bytes }` as `HexonAssembleOutcome::RegistryProgress`, dropping repeats
+  and regressions; the expected total is the listed entry size, and the
+  successful download ends with exactly one `(n, n)` event. The terminal `RegistryInstalled`/`RegistryFailed`
   travel over the SAME `HexonAssembleResultSender` channel as
   `AssembleDownload`, and `drain_hexon_assemble_results` reuses the existing
   `TilesetDownloads`/Downloads-tab UI to show them, keyed by the REQUESTED
@@ -1097,6 +1100,21 @@ Editor+-gated (RP-4) and every writer validates its `did:key` grammar
   `a_petal_authored_pin_overrides_an_earlier_first_contact_tofu_pin`,
   `the_publisher_pin_chain_prefers_installed_then_petal_then_tofu`.
 
+## §desktop-relay (embedded relay gate in the desktop binary)
+
+`main.rs` calls `spawn_desktop_relay_gate` after the sync thread starts (`main.rs:419` then `:464`), on its own
+`desktop-relay-gate` thread with a 2-worker runtime. Order on that thread: `wait_for_self_test_verdict` polls
+`GetNetworkDiagnostics` until the verdict leaves `pending` (`None` when it never does; `relay-server` builds only);
+`load_owned_verse_ids` lists `verse` rows with `created_by` = the node DID (joined verses are never served); then
+`relay_serve_bridge::maybe_start` runs with `provisional = verdict == "public"` in its `dialback_passed` slot, so a
+public verdict starts the listener before the dial-back (the probe needs a listening relay to reach). `confirm_dialback` asks a verse peer to dial `FE_RELAY_SERVE_HOSTNAME` (3 attempts, 20 s
+apart); a `ok: false` or no answer drops the handle and the relay stops. A confirmed relay is held (`let _relay`)
+and the thread parks until exit. The pure startup gate is `relay_serve_bridge::decide`: feature AND toggle AND
+`public` self-test AND passing dial-back; anything else refuses before a listener binds.
+Consent list: `publish_servable_verses` records the owned verses at startup, and `start` re-records the served set
+after bind (`fe_ui::settings::record_relay_servable_verses`), so the consent step shows only verses that can be served.
+Snapshot buffering (INT5-04) and the revoke path are in `fe-sync/src/AGENTS.md` §relay-server.
+
 ## §window-chrome (frameless window + app icon, 2026-10-31)
 
 - **Window.** `window_chrome::primary_window()` is handed to
@@ -1183,10 +1201,14 @@ Editor+-gated (RP-4) and every writer validates its `did:key` grammar
   swap-chain view for the minimized surface) the entity, its observer and the
   held reply senders leak forever — and the agent waited out the full timeout
   for a refusal it can now read immediately.
-- Known edge (not fixed): an API capture and an F12 press in the SAME frame
-  spawn two `Screenshot`s of one window; Bevy despawns the duplicate, so one
-  side gets "capture request dropped" (API) or no toast (F12). Merge the two
-  into one per-frame capture if it is ever seen in practice.
+- F12 and API captures never collide: `capture_screenshot_on_f12` keeps a
+  `Local<bool>` and spawns its `Screenshot` only on a frame where
+  `PendingScreenshots` is empty and no `CameraCaptureLock` is held;
+  `capture_pending_screenshots` also holds for a frame in which a `Screenshot`
+  was spawned (`Added<Screenshot>` without `Capturing`), so at most one
+  `Screenshot` per frame and both sides are delivered. Residual: a continuous
+  every-frame stream of API captures could postpone a held F12 (agents poll
+  every few seconds; accepted).
 - `capture_screenshot_on_f12` is the human path: F12 saves
   `data/screenshots/fractalengine-YYYYMMDD-HHMMSS-mmm.png` (UTC; `data/` is the
   app data dir beside the DB) off-thread, and `surface_saved_screenshots` toasts
@@ -2195,8 +2217,8 @@ made a default-build reset quiesce half the app and then fail.
   switch is on) through the governance gates. `main.rs` hands fe-api `plugin_bridge::api_extension_host` and
   `api_binding_host` (`ApiConfig::extension_host` / `binding_host`) and installs the process
   `SceneHookGate` over `plugin_bridge::scene_hook_backend` before the API serves.
-- **Registry installs.** `terrain_bridge::install_from_registry` lists then `fetch_hexon`s through
-  `fe_hexon::remote::remote_source` (whole archive, 64 MiB cap, verified locally). Trust is the operator-chosen
+- **Registry installs.** `terrain_bridge::install_from_registry` lists then `fetch_hexon_with_progress`es through
+  `fe_hexon::remote::remote_source` (whole archive, 64 MiB cap, verified locally, byte progress forwarded). Trust is the operator-chosen
   registry: any valid seal, never unsigned; a plugin package is refused here (Extensions panel only).
 - **Map bindings.** `bridge_petal_terrain` asks `ExtensionBindings::petal_map_need`, decides with
   `extension_host::petal_map::PetalMapResolver` and records `PetalMapState::bound_source`; see

@@ -2436,6 +2436,9 @@ Read-time, role-gated book of `__relays` rows (`fe_sync::relay_advertise::RelayA
 - Policy `FE_SYNC_RELAY_ADVERTISE_POLICY` (`RelayAdvertisePolicy`): `dialonly` (default) dials advertised relays and never adds them to the map; `pinned:<url>,<url>` also adds the named ones; `deny` ignores adverts. Unknown values warn and fall back to `dialonly`.
 - Signed mode `FE_SYNC_RELAY_ADVERT_SIGNED` (`RelayAdvertSignedMode`): `compat` (default) admits unsigned rows under the other checks for one release; `require` refuses any row without a valid signature.
 
+- Tombstone memo (NET5-01): a withdrawal from another author is remembered, so a later re-delivery of the row it cancels is refused (`tombstone_refuses`, `remember_tombstone`, `relay_advertise.rs:418-460`). Caps: `RELAY_TOMBSTONE_PER_VERSE_CAP` 64 and `RELAY_TOMBSTONE_CAP` 1024 (`relay_advertise.rs:25,28`); overflow is counted (`tombstone_evicted()`). Entries are stamped at receipt time (`now_ms`). TODO: guidance for choosing new record ids, `fe-sync/src/relay_advertise.rs`.
+- TODO (NET5-07 live-endpoint legs): write from `fe-sync/src/relay_advertise.rs` and the NET5-07 result; not derived in this pass.
+
 Tripwires: reconciliation never removes a configured relay, and an advert whose author lacks the Manager role never reaches the map.
 
 ## §relay-trust
@@ -2448,6 +2451,11 @@ Which advertised relays this node may use, and how far (`fe_sync::relay_trust`, 
 - `select_bounded` caps how many relays are promoted at once.
 - `filter_peer_addr(addr, allowed_relays)` is the single address-book choke point. It drops a peer's relay transport addresses that are not in the allowed set before the address is stored or dialled. Residual: direct IP transport addresses a peer supplies are not filtered here, and iroh dials them as before.
 - Signed rows expire. The expiry timer and the coverage triggers re-run the evaluation.
+- Signature check: signed `__relays` rows are verified with `verify_strict` (`fe-runtime/src/relay_advertisement.rs`).
+- `Disabled` makes adverts inert unless pinned: a peer's relay is never added to the dial allowlist (`relay_reconcile.rs:145`, `:617`).
+- Allowlist changes re-filter: each peer's relay URLs are remembered (bounded, `endpoint.rs:19`) so a change to the allowlist re-applies `filter_peer_addr` without a new handshake.
+- Auto-home toggle: `set_auto_home_relay` is called from `relay_serve_bridge::register_settings` (`fractalengine/src/relay_serve_bridge.rs:89`), which runs at `main.rs:138`, before the sync thread spawns (`main.rs:419`). Hazard B (`net_diagnostics.rs:135`): open verses whose adverts omit this node's advertised home relay.
+- TODO (NET5-06): the Custom-relay strip (a node on a Custom relay strips a peer's n0 home relay unless a Manager advertises it), the resolve-checked DialOnly allowlist and its rebinding residual, and the local-only name Private-reach rule. Derive from `fe-sync/src/relay_reconcile.rs`, `fe-sync/src/endpoint.rs` and `fe-runtime/src/relay_advertisement.rs`; not written in this pass.
 
 ## §gossip-signing
 
@@ -2478,6 +2486,14 @@ The embedded members-only relay (`fe_sync::relay_server`, feature `relay-server`
 - Certificates: `FE_RELAY_SERVE_CERT_MODE` selects ACME (`FE_RELAY_SERVE_ACME_CONTACT`, `FE_RELAY_SERVE_ACME_STAGING`) or supplied files (`FE_RELAY_SERVE_CERT_PATH`, `FE_RELAY_SERVE_KEY_PATH`).
 - The desktop serves a relay only after consent and a passing reachability self-test (fe-ui §app-settings).
 - Tests run the relay in-process with `run_relay_server_with_access` (`fe-sync/tests/peer_relay_e2e_test.rs`).
+- Env names (`relay_server.rs:17-35`): `FE_RELAY_SERVE`, `FE_RELAY_SERVE_CERT_MODE`, `FE_RELAY_SERVE_ACME_CONTACT`, `FE_RELAY_SERVE_ACME_STAGING`, `FE_RELAY_SERVE_CERT_PATH`, `FE_RELAY_SERVE_KEY_PATH`, `FE_RELAY_SERVE_HTTPS_BIND`, `FE_RELAY_SERVE_HTTP_BIND`, `FE_RELAY_SERVE_VERSES`, `FE_RELAY_SERVE_HOSTNAME`.
+- TODO (NET5-04): the e2e test runs the production reconciler; confirm against `fe-sync/tests/peer_relay_e2e_test.rs` before documenting.
+
+## §relay-server (buffered snapshot and revoke, INT5-04)
+
+- The gate can be installed after the sync thread starts. `install_gate` applies the newest admission snapshot buffered on the push path (`relay_server.rs:1468-1491`), so a late gate starts populated instead of denying every member.
+- `revoke` drops the DID from the buffered snapshot as well as from an installed gate (`relay_server.rs:1498`), so a late gate fails closed for a revoked member.
+- The buffer lock also orders a push against an install; a snapshot pushed while no gate exists is not lost.
 
 ## §reachability
 
@@ -2489,6 +2505,8 @@ How this node proves it is reachable from the internet (`fe_sync::reachability`,
 - The HTTPS prober (`DialbackProber`) fetches `/ping` (`PROBE_PATH`), reads at most `MAX_PROBE_BODY_BYTES` (1024), and gives up after `PROBE_TOTAL_TIMEOUT` (5 s). It is rate-limited globally (`GLOBAL_PROBES_PER_WINDOW` = 10) and per requester, per 60 s window.
 - A waiter settles only on an `ok` record (`accept_result`); a failing record leaves it pending so the timeout reports failure. `register_in_verses` / `accept_result_in_verse` also bind it to the verses the request went to. Each answer holds its probe permit for at most `ANSWER_BUDGET`, and DNS has its own `resolve_timeout` inside the prober.
 - SSRF controls: the target URL passes the advertised-relay validator, every address the resolver returns is checked (`ProbeRefusal::ForbiddenAddress`), and the connection uses an address that was checked. Residual: the checks run at resolution. A client that resolves again at connect time reopens a DNS rebinding window.
+- Self-test (INT5-05a): `net_diagnostics::reachability_self_test` runs the real net-report probe when the `net-report` feature is built (default on, `fe-sync/Cargo.toml`); without it the verdict stays `pending` (`net_diagnostics.rs:114-124`). Called from `sync_thread.rs:1107` and `:1293`.
+- The HTTPS prober builds its client with `no_proxy()` and connects only to the checked addresses (`dialback_prober.rs:211`), so no proxy re-resolves the host.
 
 ## §net-diagnostics
 
