@@ -637,6 +637,7 @@ fn a_viewers_enrolment_never_needs_editor_and_a_pre_membership_enrolment_is_defe
             hlc,
             editor_since: None,
             manager_since: None,
+            windows: Vec::new(),
         };
         (
             verse.to_string(),

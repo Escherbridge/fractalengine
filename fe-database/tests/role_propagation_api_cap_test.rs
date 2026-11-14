@@ -253,6 +253,7 @@ fn statement(
         hlc,
         editor_since: None,
         manager_since: None,
+        windows: Vec::new(),
     };
     (
         format!("{scope}/{peer}/{owner}"),

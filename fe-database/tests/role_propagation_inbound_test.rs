@@ -213,6 +213,7 @@ fn statement(
         hlc,
         editor_since: None,
         manager_since: None,
+        windows: Vec::new(),
     };
     Statement {
         grantor: grantor.to_string(),
