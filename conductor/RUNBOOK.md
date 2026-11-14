@@ -149,6 +149,9 @@ trusting "pure efficiency" claims; push control; a board that silently drifts st
   app). CITY-02, `271bb210`. Routed to gate R-CITY-1 by a steer (fixed global range in scale.rs, post-cast check
   in crud.rs, refusal at the terrain write). Same verification rule. Later automated findings on swarm commits
   are handled the same way: confirm, steer the owning gate, list here.
+  **Third (22:10, MEDIUM, confirmed):** `fe-sync/src/relay_advertise.rs::quarantine` (NET-06, `55b64d4d`) is one
+  global FIFO of 1024, so a non-Manager author can flood it and evict a Manager's advert that arrived before its
+  role. Steered to R-NET-2: one entry per (verse, record), per-author cap, evict the heaviest author.
   **After the swarm:** read the result with python from the task output or journal (it is large); relay
   `user_questions`; apply `needs` that no integration slice took; refine pass in plan §10 order; then §7 step 3.
 - **2026-11-13 18:55 MST — ROUND 4 PLANNING (done 20:40; `wf_d595d1cd-8d1`, 12 agents, 3.0M tokens); CI fix PUSHED (`8530377d`, 18:40), CI verdict due ~20:15.**
