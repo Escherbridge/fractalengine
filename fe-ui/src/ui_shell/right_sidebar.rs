@@ -853,7 +853,7 @@ fn render_settings_section(
                 crate::plugin::MAX_MESH_INSTANCES,
             )
             .labelled(ui, label)
-            .on_hover_text("MeshInstanceBudget.ceiling — the mesh-instance watchdog gate");
+            .on_hover_text("Most 3D objects shown at once; the viewer pauses extra ones");
         });
         settings_row(ui, "Entity cap", |ui, label| {
             usize_drag(
@@ -1175,11 +1175,11 @@ fn render_registry_setting(ui: &mut egui::Ui, app_settings: &mut AppSettings) {
     let mut buffer = ui
         .data_mut(|data| data.get_temp::<String>(buffer_id))
         .unwrap_or_else(|| app_settings.hexon_registry_url.clone().unwrap_or_default());
-    settings_row(ui, "Hexon registry", |ui, label| {
+    settings_row(ui, "Map registry", |ui, label| {
         ui.add(crate::ui_shell::layout_policy::text_input(ui, &mut buffer).desired_width(220.0))
             .labelled(ui, label)
             .on_hover_text(
-                "Hosted fe-hexon-registry base URL, e.g. https://hexons.example.com \
+                "Hosted map registry base URL, e.g. https://hexons.example.com \
                  (FE_HEXON_REGISTRY_URL overrides); blank = no registry configured",
             );
     });
@@ -2966,6 +2966,93 @@ mod tests {
                 let confirmed=values[0];
                 for _ in 0..3 {point_frame(vec![],&mut point_time,&mut values,confirmed);}
                 assert_eq!(values.len(),1,"receipt and idle frames cannot repeat a move");
+            }
+        }
+    }
+
+    /// Developer terms that must never reach a person (see `fe-ui/src/AGENTS.md` copy rules).
+    const FORBIDDEN_USER_COPY: [&str; 5] = [
+        "tombstone",
+        "MeshInstanceBudget",
+        "endpoint_api_surface",
+        "Tools panel",
+        "hexon_id",
+    ];
+
+    #[test]
+    fn user_copy_has_no_dev_jargon() {
+        // Covers the Settings section (labels plus every control's hover text); other sections lack a headless harness here.
+        let ctx = egui::Context::default();
+        ctx.style_mut(|style| {
+            style.interaction.tooltip_delay = 0.0;
+            style.interaction.show_tooltips_only_when_still = false;
+        });
+        let mut state = RightSidebarState::default();
+        let mut app_settings = AppSettings::default();
+        let mut ts_settings = crate::timeseries_settings::TimeseriesSettingsState::default();
+        let nav = NavigationManager::default();
+        let hierarchy = VerseManager::from_verses(vec![]);
+        let editor = LocalUserRole {
+            role: Some(fe_database::RoleLevel::Editor),
+        };
+        let mut render_override = crate::settings::PetalRenderOverride::default();
+        let mut session = crate::settings::SettingsSession::default();
+        let mut topbar = super::super::topbar::TopbarState::default();
+        let (db_tx, _db_rx) = crossbeam::channel::unbounded();
+        let mut time = 0.0;
+        let mut collected: Vec<String> = Vec::new();
+        let mut frame = |pointer: Option<egui::Pos2>| {
+            time += 0.05;
+            super::super::layout_policy::begin_frame(&ctx, true);
+            let events = pointer.map(egui::Event::PointerMoved).into_iter().collect();
+            let output = ctx.run(
+                egui::RawInput {
+                    screen_rect: Some(egui::Rect::from_min_size(
+                        egui::Pos2::ZERO,
+                        egui::vec2(1000.0, 800.0),
+                    )),
+                    time: Some(time),
+                    events,
+                    ..Default::default()
+                },
+                |ctx| {
+                    super::super::layout_policy::begin_ui_pass(ctx);
+                    render_settings_section(
+                        ctx,
+                        &mut state,
+                        &mut app_settings,
+                        &mut ts_settings,
+                        &nav,
+                        &db_tx,
+                        &hierarchy,
+                        &editor,
+                        &mut render_override,
+                        &mut session,
+                        &mut topbar,
+                    );
+                },
+            );
+            for clipped in &output.shapes {
+                if let egui::epaint::Shape::Text(text) = &clipped.shape {
+                    collected.push(text.galley.text().to_owned());
+                }
+            }
+            super::super::layout_policy::observations(&ctx)
+        };
+        frame(None);
+        let observed = frame(None);
+        for control in observed.controls {
+            let center = control.rect.center();
+            frame(Some(center));
+            frame(Some(center));
+        }
+        assert!(
+            collected.iter().any(|text| text.contains("Most 3D objects shown at once")),
+            "hovering every Settings control must surface the mesh budget tooltip"
+        );
+        for text in &collected {
+            for term in FORBIDDEN_USER_COPY {
+                assert!(!text.contains(term), "dev jargon {term:?} in user copy {text:?}");
             }
         }
     }

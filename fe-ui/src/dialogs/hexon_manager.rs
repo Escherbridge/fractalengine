@@ -109,7 +109,7 @@ pub fn render_hexon_manager(
                         match file_dialogs.choose(crate::file_dialogs::FileDialogRequest {
                             kind: fe_runtime::qa_debug::DialogKind::Open,
                             verse_id: active_verse_id,
-                            filters: &[("Hexon archive", &["hexon"])],
+                            filters: &[("Map package", &["hexon"])],
                             suggested_name: None,
                         }) {
                             Ok(Some(path)) => actions.push(UiAction::HexonInstallFromFile(path)),
@@ -131,7 +131,7 @@ pub fn render_hexon_manager(
                 ui.add_enabled_ui(registry_url.is_some(), |ui| {
                     ui.add(
                         crate::ui_shell::layout_policy::text_input(ui, registry_uri_buf)
-                            .hint_text("hexon_id or hexon_id@version")
+                            .hint_text("package name or name@version")
                             .desired_width((ui.available_width() - 120.0).max(64.0)),
                     )
                     .named(ui, "Registry map ID and optional version");
