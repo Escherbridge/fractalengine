@@ -7,7 +7,7 @@ use std::sync::{Arc, Mutex};
 use bevy::image::Image;
 use bevy::input::ButtonInput;
 use bevy::prelude::{
-    App, Commands, Entity, KeyCode, On, PostUpdate, Query, Res, ResMut, Resource, Time, Update,
+    App, Commands, Entity, KeyCode, Local, On, PostUpdate, Query, Res, ResMut, Resource, Time, Update,
     With, World,
 };
 use bevy::render::view::screenshot::{Capturing, Screenshot, ScreenshotCaptured};
@@ -255,11 +255,22 @@ fn civil_from_days(days: i64) -> (i64, u32, u32) {
 pub fn capture_screenshot_on_f12(
     keys: Res<ButtonInput<KeyCode>>,
     results: Res<ScreenshotSaveResults>,
+    pending_api: Res<PendingScreenshots>,
+    capture_lock: Option<Res<CameraCaptureLock>>,
+    mut press_waiting: Local<bool>,
     mut commands: Commands,
 ) {
-    if !keys.just_pressed(KeyCode::F12) {
+    if keys.just_pressed(KeyCode::F12) {
+        *press_waiting = true;
+    }
+    if !*press_waiting {
         return;
     }
+    // One `Screenshot` per frame on the window: defer to the next clear frame.
+    if !pending_api.is_empty() || capture_lock.is_some() {
+        return;
+    }
+    *press_waiting = false;
     let unix_millis = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap_or_default()
@@ -567,6 +578,39 @@ mod tests {
         frame(&mut world);
         assert_eq!(captures(&mut world), 1);
         assert!(reply.try_recv().is_err(), "awaiting the frame");
+    }
+
+    /// F12 in the same frame as a held plain-GET request spawns no second
+    /// `Screenshot`; the keypress waits and fires once on the next clear frame.
+    #[test]
+    fn f12_waits_a_frame_while_an_api_capture_is_pending() {
+        let (mut world, tx) = bridge_world(Some("v"), (1280, 720));
+        world.init_resource::<ScreenshotSaveResults>();
+        world.init_resource::<ButtonInput<KeyCode>>();
+        let mut schedule = bevy::ecs::schedule::Schedule::default();
+        schedule.add_systems(capture_screenshot_on_f12);
+
+        let _reply = send(&tx, "api", "VERSE#v");
+        drain(&mut world);
+        assert!(!world.resource::<PendingScreenshots>().is_empty());
+        world.resource_mut::<ButtonInput<KeyCode>>().press(KeyCode::F12);
+        schedule.run(&mut world);
+        assert_eq!(captures(&mut world), 0, "F12 deferred behind the API capture");
+
+        capture(&mut world);
+        assert_eq!(captures(&mut world), 1, "the API capture took the frame");
+        world.resource_mut::<ButtonInput<KeyCode>>().clear();
+        // Later frame: the API request is served, so the held key now fires.
+        let screenshot = world.query::<Entity>().iter(&world).collect::<Vec<_>>();
+        for entity in screenshot {
+            if world.get::<Screenshot>(entity).is_some() {
+                world.despawn(entity);
+            }
+        }
+        schedule.run(&mut world);
+        assert_eq!(captures(&mut world), 1, "the deferred F12 fires once");
+        schedule.run(&mut world);
+        assert_eq!(captures(&mut world), 1, "and only once");
     }
 
     #[test]
