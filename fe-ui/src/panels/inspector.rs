@@ -104,6 +104,7 @@ pub(crate) fn right_inspector(
                                 hierarchy,
                                 local_role,
                                 &inspector.hierarchy_card.peers,
+                                nav,
                                 ui_mgr,
                             );
                             ui.separator();
@@ -346,7 +347,7 @@ fn inspector_tab_body(
                 return;
             }
             ui.add_space(4.0);
-            inspector_entity_section(ui, node_mgr, ui_mgr);
+            inspector_entity_section(ui, node_mgr, hierarchy, ui_mgr);
             ui.add_space(2.0);
             repository_section(ui, node_mgr, ui_mgr, local_role);
             bound_bundle_offer_section(ui, node_mgr, ui_mgr);
@@ -416,6 +417,7 @@ pub(crate) fn build_nav_scope(nav: &NavigationManager) -> String {
 fn inspector_entity_section(
     ui: &mut egui::Ui,
     node_mgr: &crate::node_manager::NodeManager,
+    hierarchy: &VerseManager,
     ui_mgr: &mut UiManager,
 ) {
     crate::ui_shell::layout_policy::section_header(ui,
@@ -429,6 +431,13 @@ fn inspector_entity_section(
         // Rendered OUTSIDE a Grid (F1): a Grid cell ignores `set_max_width`,
         // which is the width-blowout bug `clipped_value*` exists to avoid.
         if let Some(sel) = node_mgr.primary() {
+            let node_name = hierarchy
+                .all_nodes()
+                .find(|node| node.id == sel.node_id)
+                .map(|node| node.name.as_str())
+                .filter(|name| !name.is_empty())
+                .unwrap_or("Node");
+            ui.label(egui::RichText::new(format!("Node: {node_name}")).strong());
             ui.horizontal(|ui| {
                 ui.label(
                     egui::RichText::new("Node ID")
@@ -1520,7 +1529,20 @@ fn inspector_api_access_section(
                         ui.add_space(1.0);
                     }
                     if let Some((jti, sub)) = revoke_jti.take() {
-                        db_tx.send(DbCommand::RevokeApiToken { jti, sub }).ok();
+                        let revoke_error_id = token_revoke_error_id();
+                        if let Err(error) = db_tx.send(DbCommand::RevokeApiToken { jti, sub }) {
+                            bevy::log::warn!("Failed to revoke API token: {error}");
+                            ui.ctx().data_mut(|data| {
+                                data.insert_temp(revoke_error_id, TOKEN_REVOKE_SEND_ERROR.to_string());
+                            });
+                        } else {
+                            ui.ctx().data_mut(|data| data.remove::<String>(revoke_error_id));
+                        }
+                    }
+                    let revoke_error: Option<String> =
+                        ui.ctx().data(|data| data.get_temp(token_revoke_error_id()));
+                    if let Some(message) = revoke_error {
+                        ui.add(egui::Label::new(egui::RichText::new(message).color(theme::STATUS_OFFLINE)).wrap());
                     }
                 }
 
@@ -1533,6 +1555,7 @@ fn inspector_api_access_section(
                     let can_prev = current_page > 0;
                     if ui.add_enabled(can_prev, egui::Button::new("\u{25C0}").fill(theme::BG_BUTTON).min_size(minimum)).named(ui, "Previous API token page").clicked() {
                         inspector.api_tokens_page = current_page.saturating_sub(1);
+                        ui.ctx().data_mut(|data| data.remove::<String>(token_revoke_error_id()));
                         send_scoped_token_list(db_tx, &inspector.api_token_scope_buf, inspector.api_tokens_page);
                     }
                     ui.label(
@@ -1543,6 +1566,7 @@ fn inspector_api_access_section(
                     let can_next = current_page + 1 < total_pages;
                     if ui.add_enabled(can_next, egui::Button::new("\u{25B6}").fill(theme::BG_BUTTON).min_size(minimum)).named(ui, "Next API token page").clicked() {
                         inspector.api_tokens_page = current_page + 1;
+                        ui.ctx().data_mut(|data| data.remove::<String>(token_revoke_error_id()));
                         send_scoped_token_list(db_tx, &inspector.api_token_scope_buf, inspector.api_tokens_page);
                     }
                     if layout_policy::action(ui, egui::Button::new("\u{21BB} Refresh").fill(theme::BG_BUTTON), "Refresh API token page").clicked() {
@@ -1555,23 +1579,29 @@ fn inspector_api_access_section(
         });
 }
 
+const TOKEN_REVOKE_SEND_ERROR: &str = "Could not send the revoke request. Reopen the Inspector and try again.";
+
+/// Temp-data key holding the visible revoke failure message.
+fn token_revoke_error_id() -> egui::Id {
+    egui::Id::new("inspector_token_revoke_error")
+}
+
 /// Send a scoped, paginated token list request.
 fn send_scoped_token_list(db_tx: &crossbeam::channel::Sender<DbCommand>, scope: &str, page: u32) {
-    if scope.is_empty() {
-        db_tx
-            .send(DbCommand::ListApiTokens {
-                offset: page * API_TOKEN_PAGE_SIZE,
-                limit: API_TOKEN_PAGE_SIZE,
-            })
-            .ok();
+    let command = if scope.is_empty() {
+        DbCommand::ListApiTokens {
+            offset: page * API_TOKEN_PAGE_SIZE,
+            limit: API_TOKEN_PAGE_SIZE,
+        }
     } else {
-        db_tx
-            .send(DbCommand::ListApiTokensByScope {
-                scope_prefix: scope.to_string(),
-                offset: page * API_TOKEN_PAGE_SIZE,
-                limit: API_TOKEN_PAGE_SIZE,
-            })
-            .ok();
+        DbCommand::ListApiTokensByScope {
+            scope_prefix: scope.to_string(),
+            offset: page * API_TOKEN_PAGE_SIZE,
+            limit: API_TOKEN_PAGE_SIZE,
+        }
+    };
+    if let Err(error) = db_tx.send(command) {
+        bevy::log::warn!("Failed to list API tokens: {error}");
     }
 }
 
@@ -4506,6 +4536,48 @@ mod tests {
                     if jti == "compact-revoke-jti" && sub == "compact-token-issuer")
                 );
                 assert!(target_rx.try_recv().is_err());
+                // A closed DB channel must surface a visible error instead of vanishing.
+                drop(target_rx);
+                let (retry, _) = target_frame(
+                    3,
+                    &manager,
+                    &selected,
+                    &mut form,
+                    &mut feedback,
+                    vec![],
+                    &mut target_time,
+                );
+                target_click(
+                    3,
+                    &manager,
+                    &selected,
+                    &mut form,
+                    &mut feedback,
+                    retry.controls[retry.controls.len() - 5].rect.center(),
+                    &mut target_time,
+                );
+                let (armed_again, _) = target_frame(
+                    3,
+                    &manager,
+                    &selected,
+                    &mut form,
+                    &mut feedback,
+                    vec![],
+                    &mut target_time,
+                );
+                target_click(
+                    3,
+                    &manager,
+                    &selected,
+                    &mut form,
+                    &mut feedback,
+                    armed_again.controls[armed_again.controls.len() - 5].rect.center(),
+                    &mut target_time,
+                );
+                target_frame(3, &manager, &selected, &mut form, &mut feedback, vec![], &mut target_time);
+                let shown: Option<String> =
+                    target_ctx.data(|data| data.get_temp(token_revoke_error_id()));
+                assert_eq!(shown.as_deref(), Some(TOKEN_REVOKE_SEND_ERROR));
             }
             selected.deselect();
             let (empty, _) = target_frame(

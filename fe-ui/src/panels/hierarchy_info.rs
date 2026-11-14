@@ -134,10 +134,15 @@ fn plural(count: usize, singular: &str) -> String {
     format!("{count} {singular}{}", if count == 1 { "" } else { "s" })
 }
 
+/// `(online, known)` peer counts from the registry.
+pub(crate) fn peer_counts(peers: &PeerRegistry) -> (usize, usize) {
+    (peers.iter().filter(|(_, entry)| entry.is_online).count(), peers.len())
+}
+
 /// Resolve an entity against the in-memory tree; `None` for a Node or a stale id.
 pub(crate) fn describe(
     hierarchy: &VerseManager,
-    peer_count: usize,
+    peer_counts: (usize, usize),
     entity: &InspectedEntity,
 ) -> Option<HierarchyInfo> {
     match entity {
@@ -149,7 +154,7 @@ pub(crate) fn describe(
                 header: format!("Verse: {}", verse.name),
                 name: verse.name.clone(),
                 id: verse.id.clone(),
-                counts: vec![plural(verse.fractals.len(), "fractal"), plural(peer_count, "known peer")],
+                counts: vec![plural(verse.fractals.len(), "fractal"), format!("{} online of {}", peer_counts.0, peer_counts.1)],
                 verse_id: verse.id.clone(),
                 fractal_id: None,
             })
@@ -183,6 +188,17 @@ pub(crate) fn describe(
     }
 }
 
+/// "Your role" line, only when the card's entity is the deepest active scope (never a wrong role).
+pub(crate) fn role_line(info: &HierarchyInfo, nav: &NavigationManager, local_role: &LocalUserRole) -> Option<String> {
+    let card_scope = match info.kind {
+        EntitySettingsType::Verse => fe_database::build_scope(&info.verse_id, None, None),
+        EntitySettingsType::Fractal => fe_database::build_scope(&info.verse_id, Some(info.id.as_str()), None),
+        _ => fe_database::build_scope(&info.verse_id, info.fractal_id.as_deref(), Some(info.id.as_str())),
+    };
+    (nav.active_scope().as_deref() == Some(card_scope.as_str()))
+        .then(|| format!("Your role: {}", crate::notice::role_label(local_role.role)))
+}
+
 /// Denial copy when the local role cannot open Settings; `None` when allowed.
 pub(crate) fn settings_denial(role: &LocalUserRole) -> Option<String> {
     (!role.can_edit()).then(|| widgets::role_denial_reason(role, "Editor", None))
@@ -195,9 +211,10 @@ pub fn render_hierarchy_info(
     hierarchy: &VerseManager,
     local_role: &LocalUserRole,
     peers: &PeerRegistry,
+    nav: &NavigationManager,
     ui_mgr: &mut UiManager,
 ) {
-    let Some(info) = describe(hierarchy, peers.len(), entity) else {
+    let Some(info) = describe(hierarchy, peer_counts(peers), entity) else {
         return;
     };
     ui.label(egui::RichText::new(&info.header).strong());
@@ -213,7 +230,9 @@ pub fn render_hierarchy_info(
     for count in &info.counts {
         ui.label(count);
     }
-    ui.label(format!("Your role: {}", crate::notice::role_label(local_role.role)));
+    if let Some(line) = role_line(&info, nav, local_role) {
+        ui.label(line);
+    }
     ui.add_space(4.0);
     let denial = settings_denial(local_role).unwrap_or_default();
     let opened = widgets::role_gated(
@@ -298,19 +317,29 @@ mod tests {
 
         // Header and count strings per level.
         let info = |entity: InspectedEntity, peers| describe(&hierarchy, peers, &entity).unwrap();
-        let petal = info(InspectedEntity::Petal { id: "p1".into() }, 0);
+        let petal = info(InspectedEntity::Petal { id: "p1".into() }, (0, 0));
         assert_eq!((petal.header.as_str(), petal.counts.as_slice()), ("Petal: Pier", ["0 nodes".to_string()].as_slice()));
-        let fractal = info(InspectedEntity::Fractal { id: "f1".into() }, 0);
+        let fractal = info(InspectedEntity::Fractal { id: "f1".into() }, (0, 0));
         assert_eq!((fractal.header.as_str(), fractal.counts.as_slice()), ("Fractal: Harbour", ["2 petals".to_string()].as_slice()));
-        let verse = info(InspectedEntity::Verse { id: "v1".into() }, 1);
+        let mut registry = PeerRegistry::default();
+        registry.set_online("did:key:alice", true);
+        registry.set_online("did:key:bob", false);
+        let verse = info(InspectedEntity::Verse { id: "v1".into() }, peer_counts(&registry));
         assert_eq!(verse.header, "Verse: Atlas");
-        assert_eq!(verse.counts, ["1 fractal".to_string(), "1 known peer".to_string()]);
-        assert!(describe(&hierarchy, 0, &InspectedEntity::Node { id: "n1".into() }).is_none());
+        assert_eq!(verse.counts, ["1 fractal".to_string(), "1 online of 2".to_string()]);
+        assert!(describe(&hierarchy, (0, 0), &InspectedEntity::Node { id: "n1".into() }).is_none());
 
         // Settings is denied to a Viewer with the role_denial_reason text, allowed to an Editor.
         let viewer = LocalUserRole { role: Some(RoleLevel::Viewer) };
         assert_eq!(settings_denial(&viewer).as_deref(), Some("Editor role needed \u{2014} you are Viewer"));
         assert_eq!(settings_denial(&LocalUserRole { role: Some(RoleLevel::Editor) }), None);
+
+        // "Your role" shows only on the card of the deepest active scope (nav is at petal p2 here).
+        let editor = LocalUserRole { role: Some(RoleLevel::Editor) };
+        let verse_card = describe(&hierarchy, (0, 0), &InspectedEntity::Verse { id: "v1".into() }).unwrap();
+        let petal_card = describe(&hierarchy, (0, 0), &InspectedEntity::Petal { id: "p2".into() }).unwrap();
+        assert_eq!(role_line(&verse_card, &nav, &editor), None);
+        assert_eq!(role_line(&petal_card, &nav, &editor).as_deref(), Some("Your role: Editor"));
 
         // The card renders for a verse without opening a dialog on its own.
         let mut ui_mgr = UiManager::default();
@@ -318,7 +347,7 @@ mod tests {
         let entity = InspectedEntity::Verse { id: "v1".into() };
         let _ = ctx.run(egui::RawInput::default(), |ctx| {
             egui::CentralPanel::default().show(ctx, |ui| {
-                render_hierarchy_info(ui, &entity, &hierarchy, &viewer, &peers, &mut ui_mgr);
+                render_hierarchy_info(ui, &entity, &hierarchy, &viewer, &peers, &nav, &mut ui_mgr);
             });
         });
         assert!(!ui_mgr.any_dialog_open());
