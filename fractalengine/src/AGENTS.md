@@ -696,6 +696,12 @@ final sweep.
    pending reconciliation with whatever fe-ui's `gpx_ops` worker actually
    ships (see above).
 
+### path_kind provenance
+
+`gpx_bridge.rs` (`PATH_KIND_KEY`) stamps `properties.path_kind`: `designed` for paths drawn in the editor, `recorded` for
+imported GPX. Absence means `recorded` (legacy rows and the fe-api HTTP import). BI filter example:
+`WHERE properties.path_kind == 'designed'`. fe-api import parity is out of scope.
+
 ## §tileset-p2p — host wiring for P2P tileset streaming (`p2p_asset_streaming_20260718` S4)
 
 fe-ui has no fe-terrain dependency, so this binary is the only place that can
@@ -1101,6 +1107,8 @@ Editor+-gated (RP-4) and every writer validates its `did:key` grammar
   X live in fe-ui — fe-ui/src/ui_shell/AGENTS.md §window-chrome. The close X
   routes through `WindowCloseRequested`, the OS-close path; the GUI has no other
   exit handler, so the DB/sync threads see the same shutdown either way.
+- **Title.** `window_chrome.rs` builds `[FE_PEER_LABEL] <petal> · <verse> — FractalEngine` (verse-only or the app name
+  when the petal is absent) and writes it only when it changes.
 - **Icon art.** `assets/branding/icon.png` (256x256) + `icon.ico`
   (16/24/32/48/64/128/256): a six-petal flower in the theme's accent colours
   (`theme::BG_TOOLBAR` field, `ICON_TRACK` petals, `ICON_POINT` core).
@@ -2195,6 +2203,32 @@ made a default-build reset quiesce half the app and then fail.
   §extension-host for the off-frame call, the 5 s deadline and the binding-change re-check.
 - **Relay.** `fractalengine-relay`'s own `plugin-host` feature (default off) adds a bare
   `PluginHostPlugin` (no scene backend) and the same `PackageAdmission` from the env var.
+
+### Licence tokens
+
+- `request_licence_token` answers `LicenceTokens` (`extension_host/licence_client.rs`). The request is an anonymous, checked
+  POST through `extension_host/sources.rs`: no proxy, no redirects, pinned addresses.
+- The verifier is the pinned keyring in `entitlement_issuers.toml` (`governance.rs`). An absent or empty keyring refuses
+  every licensed build.
+- An issued token is stored twice: a client record for renewal, and a per-hash governance file that row 6 verifies offline.
+- Only the cargo feature `entitlement` turns this on.
+
+### blob.mirror tap
+
+`extension_host/blob_mirror_tap.rs` maps committed local `GltfImported` results (`blob://<hash>.glb`) to
+`MirrorQueue::after_commit`. Replicated blobs are not mirrored (decision default, 2026-11-13). A full queue drops the entry
+and counts the drop.
+
+### Registry offers
+
+The ops worker refreshes `RegistryOffers` (`extension_host/registry_offers.rs`) for package ids named by unresolved bindings:
+listing plus header provides, at most 16 header fetches, cached by `content_hash`, a 10 minute cadence, and on browse. The
+plugin worker resolves `gated_offer` over it; `filter_offers` remains the last word.
+
+### Hexon Manager local install
+
+A failed Install from file raises an Error notice naming the file and the reason (QA-0173). The QA log ring still withholds
+verse-less lines by design.
 
 ## §extension-host (extension_platform_20261107, turn-2 review R-HOOKS)
 

@@ -185,6 +185,9 @@ below are the rationale for those files; §reviews-and-open lists the gate verdi
   This includes a reopen of the same `a-` label after a refresh. Both documents are builds of one (publisher, package).
   The worst case is a build revoked moments earlier, still alive until the unload commits, while the next build of
   the same package is already mounted. The spikes decide whether a per-document key is needed.
+  Run them with `cargo run -p fe-webview --example portal_spikes -- all` on Windows. Results land in
+  `target/portal-spikes.jsonl`, and whoever runs them appends those results to `docs/spec/portal-bundle/protocol.md`
+  after its last section.
 - **P-4's fallback is not built** (`review-p1.md` P1-05): if the unload navigation is refused or
   never commits (a page-initiated `about:blank` racing the host's can consume the one-shot
   token), the unmounted document keeps running hidden. It has no mount, so no bytes, no IPC and

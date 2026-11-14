@@ -25,6 +25,7 @@ pub struct CreateNodeRequest {
     /// (where it comes from the URL). Required for the legacy `/api/v1/nodes` path.
     pub petal_id: Option<String>,
     pub name: String,
+    /// World units; see fe-api/AGENTS.md §units.
     pub position: Option<[f32; 3]>,
     /// Bind the node to an uploaded asset (routes through `place_asset_core`).
     #[serde(default)]
@@ -37,6 +38,7 @@ pub struct CreateNodeRequest {
     pub scale: Option<[f32; 3]>,
 }
 
+/// World units on the wire; see fe-api/AGENTS.md §units.
 #[derive(Debug, Deserialize)]
 pub struct UpdateTransformRequest {
     pub position: [f32; 3],
@@ -77,6 +79,7 @@ pub enum EntityCommand {
     CreateNode {
         petal_id: String,
         name: String,
+        /// World units; see fe-api/AGENTS.md §units.
         #[serde(default)]
         position: Option<[f32; 3]>,
     },
@@ -193,6 +196,7 @@ pub struct NodeDto {
     pub webpage_url: Option<String>,
 }
 
+/// World units on the wire; see fe-api/AGENTS.md §units.
 #[derive(Debug, Clone, Serialize)]
 pub struct TransformDto {
     pub position: [f32; 3],

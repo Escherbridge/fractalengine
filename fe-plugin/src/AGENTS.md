@@ -213,7 +213,7 @@ origins. Native/Rhai calls wait for the actual injected sink; the WASM read and
 write imports use that same context rather than fabricated data or receipts.
 WASM's existing core ABI has a fixed response buffer at offset zero, now NUL
 terminated; reads return -1 on failure and existing void writes warn on failure.
-This does not implement the aspirational component-model WIT ABI.
+The 2.0 component host is bound to `fe-plugin/wit/fractal-plugin-2.wit` (header `BOUND`; see `fe-plugin/src/wasm/AGENTS.md`).
 
 A DB command that was not enqueued is a definite refusal. A timed-out/disconnected
 commit reply is explicitly an unknown outcome and must be reconciled before any
@@ -315,7 +315,8 @@ Manifest v2 replaces both fields with declared `ingress[]`/`egress[]` (docs/exte
 `registry_client.rs` (S4) fetches over registry protocol v1 and hands the bytes to `install_plugin`.
 
 - **Protocol first.** `/health` must answer `X-Hexon-Registry-Protocol: 1` (or `protocol_version: 1`
-  in the body, read under a 64 KiB cap), and the download response must carry the header too.
+  in the body, read under a 64 KiB cap), or config.json (`check_protocol`). The download response's header is checked only
+  when present.
 - **Identity triangle.** `fetch_package(uri)` refuses a package whose `signatures.json` `package_id`
   differs from the requested uri's id (`{id}` or `{id}@{version}`, the registry's `split_uri`);
   `install_plugin` then requires the signed manifest's `id` to equal that same id.
@@ -325,10 +326,9 @@ Manifest v2 replaces both fields with declared `ingress[]`/`egress[]` (docs/exte
   `fetch_package_listed(uri, listed_content_hash)` refuses a package whose manifest hash differs from the listed
   one, or that has none (fail closed). Any caller holding a listed hash must use it; the interim 1.0
   `install_from_registry` still calls bare `fetch_package` and relies on the payload-hash check alone.
-- **Licensed packages are refused** (`EntitlementUnavailable`) until hexon_entitlements_20261031 S1
-  ships `fe_format::entitlement`. Then enable fe-format's `entitlement` feature and, for
-  `LicenseType::Paid`, call `verifier.verify(token, package_id, content_hash)` and
-  `open_paid_entry(content_key, payload)` before the hash check: one call site, no new verifier code.
+- **Licensed packages are refused** (`EntitlementUnavailable`, `registry_client.rs:295`) by this v1 client, which fails
+  closed on every paid `license.json`. `fe_format::entitlement` has shipped; the paid path is the v2 call site, governance
+  row 6 (`fractalengine/src/extension_host/governance.rs`, feature `entitlement`).
 - **Interim v1 layout**: `plugin/manifest.json` (CapabilityManifest 1.0 + `id`), `plugin/payload.wasm`
   (core module), `plugin/signatures.json` (`{package_id, content_hash, signatures}`), read with
   `HexonArchive::read_member` and no sealed-hexon check. docs/extensions/package-format.md supersedes it

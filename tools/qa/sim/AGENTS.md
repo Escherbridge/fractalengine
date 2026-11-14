@@ -52,3 +52,9 @@ exists on the intended host, so it answers `not-found` (loud), never acts on the
 **`ext-install-gui`.** The GUI QA path in one run: file install (fleet-sim) and Browse install from the signed static
 index (device-adapter), both consented by the dialog's own button, a CLI `disable` and a panel `enable`, then both
 uninstalled; the viewer proves installations stay host-local. Two peers because `run.py` needs at least two.
+
+## Scenario list
+
+- `fleet-terrain` (`scenarios/fleet-terrain.json`): fixture terrain, three roadway GPX tracks imported, then fleet-sim movers
+  on those tracks (turn-3 analytics finding 6). The REST GPX route is multipart and the driver has no multipart op, so the
+  MCP `import_gpx` door carries the same bytes inline as base64.

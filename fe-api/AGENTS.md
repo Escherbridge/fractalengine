@@ -188,11 +188,10 @@ Makes every object a stable `fe://verse/fractal/petal/node` endpoint you can
   is fe-database `update_node_transform_handler` (any `node_kind = stamp` row,
   checked before the op-log commit; fe-database/src/AGENTS.md §lifecycle). REST
   and WS accept `is_addressable_node_id` ids on the transform route so a
-  promoted stamp can be rotated/scaled at all (MCP already did). Deferred: API
-  rotation/scale on a stamp writes the row's `rotation`/`scale` columns, but the
-  renderer reads the `stamp.override.*` properties (`fe-ui/src/actions/asset.rs`
-  `STAMP_SCALE_KEY`/`STAMP_ROTATION_KEY`) — mapping API rotation/scale onto the
-  overrides is a follow-up, not part of T5-LOCK.
+  promoted stamp can be rotated/scaled at all (MCP already did). A rotation/scale
+  written here lands in the row's `rotation`/`scale` columns and, in the same transaction, in the
+  `stamp.override.*` properties the renderer reads. Write-through rule:
+  fe-database/src/handlers/AGENTS.md §stamp-transform.
 - **Generic node abstraction + type tags (FR-6, N-10).** Promoted stamps (T2) and
   earthwork regions (T3) are ordinary `node` rows tagged by
   `properties.node_kind` (`stamp` / `earthwork_region`). This track reads them
@@ -959,6 +958,9 @@ in-memory; no temp files) or local CSV serialization.
   buffered `Vec<u8>` (capped at `EXPORT_MAX_BYTES`), so the slice is free.
   Covered by `export.rs`'s `body_response_*` / `range_*` unit tests.
   `bytes=-0` (empty suffix) is also 416 (M4 minor #10).
+- **Readings order and snapshot cutoff (EXT-13).** `iot_reading` exports are sorted by `(recorded_at_ms, reading_id)`
+  and accept `as_of_ms`, a post-filter on `recorded_at_ms` (`export::prepare_export`; refused for node exports). A pinned
+  cutoff keeps the page identical across reads, so its strong ETag stays stable for DuckDB range reads.
 - **Validators + caching (DEC-C18, M4 fix M1, 2026-10-09).** A22's
   "immutable cache" expectation is amended: export/share bodies are LIVE
   query output, so they carry `Cache-Control: private, no-store` (json share
@@ -2446,3 +2448,28 @@ Export: `GET /api/v1/nodes/{node_id}/portal/export.zip` (see `src/AGENTS.md` §p
 
 Tests: `tests/portal_bundle_test.rs` (R9); the anchor-petal reach and the nosniff attachment rule are extended in
 `asset_ownership_test.rs` and `device_ingest_test.rs`.
+
+## §petal-snapshot
+
+`petal_snapshot.rs`: `GET /api/v1/petals/{petal_id}/snapshot.hexon` exports a full-history petal snapshot, and
+`POST /api/v1/petals/import-snapshot` restores one (multipart field `archive`, body limit `SNAPSHOT_ROUTE_BODY_LIMIT`).
+Both are Manager+ (`SNAPSHOT_MINIMUM_ROLE`). The import authorizes on a parse-only pass before any blob is written.
+
+- **Blobs before rows.** The import restores blobs through `fe_hexon::snapshot::restore_snapshot_archive` before it sends
+  `DbCommand::ImportPetalSnapshot`. An archive refused at that step never reaches the DB thread.
+- **Op-log entries are written DB-side.** `ExportPetal` and `ImportPetal` are recorded by fe-database
+  (`handlers/petal_snapshot.rs`), not by this route.
+- **Import trust is not closed here.** Identity collisions with rows under another petal, and op-log entries carried by the
+  archive, are tracked in the petal-snapshot review files; do not read this section as a claim that they are refused.
+
+## units
+
+Positions, rotations and node scale factors on REST, WebSocket and MCP are WORLD units. The DB mirrors them, and sync
+stays scale-agnostic, so a petal's `world_scale` change never converts stored values twice.
+
+- **Meters are a UI-edge concern.** The editor shows meters; the conversion lives in fe-ui, not in this crate.
+- **Formula.** `real_m = world / scale` and `world = real_m * scale`, implemented once in `fe_format::scale`
+  (see fe-format/src/AGENTS.md §scale).
+- **Placement.** The caller supplies `y` on placement endpoints; the server does not snap to terrain.
+- **Reading a petal's scale.** A client reads the petal's `world_scale` from `GET /api/v1/petals/{petal_id}/terrain`
+  and converts with the formula above.

@@ -1415,6 +1415,8 @@ excluded IDs are never PASS and do not remain in executable gold membership. New
 catalog before any coverage claim. `audited_source_commit` identifies this source review; the final staged
 fingerprint stays null until the main owner reconciles the final build inputs. No historical PASS is imported.
 
+Reconciled at source commit `8a7157db`; the staged fingerprint remains null.
+
 `catalog_source_rules.json` supplies explicit shared-source and action ownership where a file serves multiple
 families. `catalog_sources.py` uses only stdlib file reads and writes the catalog views; it never calls Git,
 launches processes/apps, reads token stores or accesses network. After reviewing source and the canonical JSON,
@@ -1666,3 +1668,8 @@ journeys PJ1-PJ10 and fixture bundle sources are in [`portal/AGENTS.md`](portal/
 - **Fixed operations only.** Routes `/api/v1/debug/portal/{observe,action,ipc-stats}` (`fe-api/src/qa_portal.rs`) run fixed,
   host-owned scripts and numbered slots. No caller supplies JavaScript, selectors or URLs.
 - **Not yet run.** T5.5 (the PJ1-PJ9 execution) is open. Desk-checked code is not evidence; receipts and PNGs come from the run.
+
+## §docs-link-check
+
+`python tools/qa/docs_link_check.py` is the R26 rule for `docs/extensions`: every relative link resolves to a real file, and
+each rust, toml, json or wit block sits next to a link to a real example file. Run it in the refine pass.
