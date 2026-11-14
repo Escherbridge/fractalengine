@@ -828,6 +828,8 @@ replication model is forbidden.
   `src/AGENTS.md` §hlc) — every simulated peer reads time from the same
   accelerable clock, keeping monotonicity and run-to-run determinism.
 
+**Signed frames (NET-27).** The virtual transport carries `FEG1` signed gossip frames byte-identically, so signature checks run over the bytes the sender signed (§gossip-signing). Simulated and real transports therefore see the same frames.
+
 ## §sharding (M2/F6 — A13/A14)
 
 The sharded hybrid timeseries fabric: `sharding.rs` (shard model + per-verse
@@ -1926,6 +1928,8 @@ are only as large as the 16 MiB hook body cap (`BLOB_SOURCE_MAX_BYTES`), so a sc
 by a source. The binary must thread ONE slot into `spawn_sync_thread_with_sources`, `BevyHandles.blob_fallback` and
 the plugin host's `install` (handed off to I-MAIN/C-EXT; until then both stay peers-only).
 
+**P2P download-rate cap (NET-11).** `FE_MAX_DOWNLOAD_RATE` (`MAX_DOWNLOAD_RATE_ENV`) sets the pacer in `tileset_transfer` for bytes received from peers. Residual: the pacer bounds total bytes per second. It does not bound how many peers send at once.
+
 ## distributed-catalog-restart
 
 A fresh fabric must restore owner plus Petal-to-Fractal ancestry before a
@@ -2412,3 +2416,83 @@ skips the publish job entirely. That job reads and re-hashes the asset blob, re-
 root and takes three `InspectSceneAssetTransfer { Publish }` admissions on the DB lane; the owner
 of the drone flight ran it about 280 times for the one unchanged drone mesh (840 admissions). The
 entry is written only when a publish job completed, so holding it proves the blob was published.
+
+## §relay-advertise
+
+Read-time, role-gated book of `__relays` rows (`fe_sync::relay_advertise::RelayAdvertisementBook`, FR-7). A row passes four steps, in order:
+
+| Step | Owner | Decides |
+|---|---|---|
+| parse | fe-runtime `parse_row` | row version and shape |
+| URL | fe-runtime `validate_advertised_relay_url` | destination class |
+| author | this book, `RELAY_ADVERTISER_FLOOR` = Manager | author's role at read time |
+| map | `relay_reconcile::RelayReconciler` | which URLs enter the relay map |
+
+- Role is judged at read time, not write time. A row whose author is not yet Manager waits in quarantine (`RELAY_QUARANTINE_CAP` = 1024 overall, `RELAY_QUARANTINE_PER_AUTHOR_CAP` = 8 per author) and is admitted when the role arrives, with no new write. A demotion calls `rejudge`, which withdraws that author's adverts. Overflow is counted (`quarantine_evicted()`, `quarantine_author_evicted()`) and never logged per row.
+- Expiry: `expire(now_ms)` withdraws signed rows past `expires_at_ms`.
+- Output: `AdvertChange::{Admitted, Withdrawn}` events and `urls_by_verse()`.
+- Sync plane only. The fabric and the inbound pump consume the book. `__relays` rows are never forwarded to the DB thread.
+- Relay map: `RelayReconciler::plan_tiers` is a pure planner over three tiers (`RelaySource::{Configured, Default, Advertised}`) that emits `RelayOp::{Insert, Remove, Known}`. Configured relays are never removed. Each inserted URL records the verses advertising it and is removed only when the last one withdraws.
+- Policy `FE_SYNC_RELAY_ADVERTISE_POLICY` (`RelayAdvertisePolicy`): `dialonly` (default) dials advertised relays and never adds them to the map; `pinned:<url>,<url>` also adds the named ones; `deny` ignores adverts. Unknown values warn and fall back to `dialonly`.
+- Signed mode `FE_SYNC_RELAY_ADVERT_SIGNED` (`RelayAdvertSignedMode`): `compat` (default) admits unsigned rows under the other checks for one release; `require` refuses any row without a valid signature.
+
+Tripwires: reconciliation never removes a configured relay, and an advert whose author lacks the Manager role never reaches the map.
+
+## §relay-trust
+
+Which advertised relays this node may use, and how far (`fe_sync::relay_trust`, `relay_config`).
+
+- `AdoptionMode::{DialOnly, HomeEligible, Pinned}` is the tier each advertised relay lands in.
+- `evaluate_coverage(participating_verses, healthy_admitted)`: a relay is home-eligible only when every verse this node participates in advertises it healthily. Only public https relays qualify (fe-runtime `home_eligible()`).
+- Auto-home is the local setting `AppSettings.auto_home_relay` (default on; fe-ui §app-settings).
+- `select_bounded` caps how many relays are promoted at once.
+- `filter_peer_addr(addr, allowed_relays)` is the single address-book choke point. It drops a peer's relay transport addresses that are not in the allowed set before the address is stored or dialled. Residual: direct IP transport addresses a peer supplies are not filtered here, and iroh dials them as before.
+- Signed rows expire. The expiry timer and the coverage triggers re-run the evaluation.
+
+## §gossip-signing
+
+Every gossip broadcast is signed and every inbound frame is verified (`fe_sync::gossip_auth`).
+
+- Frame `SignedGossipFrame`: magic `FEG1`, version 1, signed under the domain `fe-gossip-v1\0`:
+
+  ```rust
+  pub const SIGNING_DOMAIN: &[u8] = b"fe-gossip-v1\0";
+  ```
+
+- Kinds `GossipFrameKind::{Compute, TilesetAd, ReachProbe, ReachResult}`, each with its own `max_age_ms`.
+- Replay guard: a per-author window of `REPLAY_WINDOW_CAPACITY` (256) nonces of `NONCE_BYTES` (16) each, tracking at most `MAX_TRACKED_AUTHORS` (4096) authors. A frame more than `MAX_FUTURE_SKEW_MS` (60 s) in the future is refused. A frame over `MAX_FRAME_BYTES` is never decoded.
+- Per-author latch: once an author has sent a verified signed frame, its unsigned frames are refused. Before the latch, an unsigned frame passes the older F23 admission rules.
+- Mode `FE_SYNC_GOSSIP_SIGNING`: unset or `compat` (default) accepts unsigned legacy frames; `require` refuses every unsigned frame. A verse manifest with `gossip_signing: required` can only tighten the mode, never loosen it. Flipping the default to `require` is a later release decision.
+- The virtual transport carries signed frames byte-identically (§virtual-transport), so verification sees the bytes the sender signed.
+
+## §peer-relay-server
+
+The embedded members-only relay (`fe_sync::relay_server`, feature `relay-server`; used by the `fractalengine-relay` binary and by desktop relay mode).
+
+- Admission: `RelayMembershipGate` admits only Viewer+ members of the verses in `FE_RELAY_SERVE_VERSES`. Its membership set is a snapshot the fabric pushes on every role or `__peers` change (NET-21), not a database read per connection.
+- `FE_RELAY_SERVE_ACCESS` accepts only `members` (or unset). Any open value refuses to start.
+- Profiles `RelayServeProfile::{Operator, Desktop}`. Default client caps are 1024 and 64. The desktop profile has a denial breaker (`BREAKER_DENIALS_PER_MINUTE` = 600, `BREAKER_HOT_MINUTES` = 3) with a `DESKTOP_BREAKER_COOLDOWN` of 600 s.
+- Client IP logging is opt-in (`FE_RELAY_SERVE_LOG_IPS`). Abuse log lines are rate-limited per `ABUSE_LOG_WINDOW` (60 s).
+- Certificates: `FE_RELAY_SERVE_CERT_MODE` selects ACME (`FE_RELAY_SERVE_ACME_CONTACT`, `FE_RELAY_SERVE_ACME_STAGING`) or supplied files (`FE_RELAY_SERVE_CERT_PATH`, `FE_RELAY_SERVE_KEY_PATH`).
+- The desktop serves a relay only after consent and a passing reachability self-test (fe-ui §app-settings).
+- Tests run the relay in-process with `run_relay_server_with_access` (`fe-sync/tests/peer_relay_e2e_test.rs`).
+
+## §reachability
+
+How this node proves it is reachable from the internet (`fe_sync::reachability`, `dialback_prober`, `dialback_responder`).
+
+- `reachability::classify(summary)` maps a net-report summary to `ReachabilityVerdict::{Public, BehindNat, Cgnat, SymmetricNat, CaptivePortal, NoUdp}`. The Peer Debug network panel shows the verdict.
+- Dial-back is the proof. A node asks a verse member to probe it by sending a signed `reach_probe` frame (`DialbackRequester`, `request_dialback`). The member's `DialbackResponder` answers with a signed `reach_result` frame. Limits: `MAX_CONCURRENT_PROBES` (4), `MAX_PENDING_REQUESTS` (16), `MAX_REQUEST_VERSES` (4), and `REQUEST_TIMEOUT` (probe timeout plus 5 s).
+- Acting as a prober is opt-in: the `act_as_prober` setting, default off (`set_act_as_prober`).
+- The HTTPS prober (`DialbackProber`) fetches `/ping` (`PROBE_PATH`), reads at most `MAX_PROBE_BODY_BYTES` (1024), and gives up after `PROBE_TOTAL_TIMEOUT` (5 s). It is rate-limited globally (`GLOBAL_PROBES_PER_WINDOW` = 10) and per requester, per 60 s window.
+- SSRF controls: the target URL passes the advertised-relay validator, every address the resolver returns is checked (`ProbeRefusal::ForbiddenAddress`), and the connection uses an address that was checked. Residual: the checks run at resolution. A client that resolves again at connect time reopens a DNS rebinding window.
+
+## §net-diagnostics
+
+The sync thread's view of the network, built for the API and the Peer Debug panel (`fe_sync::net_diagnostics`; types in `fe_runtime::net_diagnostics`).
+
+- `connection_kind` derives each peer's `PeerConnectionKind` (direct or relayed) from its active transport addresses. `downgrade_hint` says when the relay mode is why a peer is relayed.
+- `relay_mode_label`, `relay_health_label` (`RelayHealth::{Unknown, Healthy, Degraded, Unreachable, Disabled}`) and `reachability_label` turn state into the words both surfaces show.
+- `build_snapshot` assembles the redacted `NetworkDiagnostics`. `collect_peer_rows` gathers the per-peer rows.
+- `bridge_network_diagnostics` answers `SyncCommand::GetNetworkDiagnostics` and writes `fe_sync::status::NetworkDiagnosticsState`. The API reads that state (fe-api §network-diagnostics). The Peer Debug dialog asks for a fresh snapshot (fe-ui dialogs §peer-debug-network).
+- Addresses are removed before the snapshot leaves the sync thread unless the caller asks for detail.

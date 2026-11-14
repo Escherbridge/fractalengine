@@ -1351,3 +1351,41 @@ pending-family entry, so an extension reply can never satisfy an unrelated API w
 inflated bytes whatever the directory claims (zip-bomb guard). This is why fe-runtime depends on `zip` (deflate only, no
 default features, same pin as fe-format and fe-webview). Only header members are read here; full bundle validation lives
 in `fe-format::portal_bundle`.
+
+## §usage
+
+Generic per-request telemetry seam (`fe_runtime::usage`, FR-1 seam S-RELAY). The API and the relay both emit into it; neither owns it.
+
+- `UsageEvent` is one measured request. `route_class` is the matched route template (`/api/v1/petals/{petal_id}/nodes`), never the expanded path, so no id from a URL reaches a sink and the value set stays bounded.
+- `caller_did` and `scope` are `None` on public routes.
+- `UsageSink` receives events and must not block the request path. `NoopUsageSink` is the default and writes nothing.
+- `JsonLinesUsageSink::open(path)` is the reference sink: append mode (never truncates), one JSON object per line, one writer thread behind a bounded queue (`USAGE_QUEUE_CAPACITY` = 4096). A full queue drops the event and bumps `dropped_events()`; a request never waits on disk.
+- `FanoutUsageSink` forwards each event to several sinks, so one measurement point can feed a log and a metrics registry.
+
+The API side (`NetworkOps`, the usage middleware) is in `fe-api/AGENTS.md` §usage-metering.
+
+## §log-format
+
+`log_format::LogFormat::from_env()` reads `FE_LOG_FORMAT`. Only a trimmed, case-insensitive `json` selects one JSON object per line. Every other value, and an unset variable, selects the human format byte-for-byte as before, so grep-based pipelines keep working. The switch is opt-in for that reason. Both binaries read it once while building the tracing subscriber.
+
+## §relay-advertisement
+
+Row version 1 of the `__relays` replica table (`RELAY_ADVERT_TABLE`; `RELAY_ADVERT_ROW_VERSION` = 1). Defined in `fe_runtime::relay_advertisement`.
+
+- `parse_row` checks `v` before the full shape, so a v2 row is skipped with a warning and is not counted as malformed. Unknown extra fields are tolerated (forward compatible).
+- Fields: `url`, `advertised_by`, optional `note`. Signed rows also carry `verse_id`, `issued_at_ms`, `expires_at_ms`, optional `dialback` (a `DialbackRecord`) and `sig`.
+- Signed v1 body: the hex ed25519 signature covers `RELAY_ADVERT_SIGNING_DOMAIN` (`fe-relay-adv-v1\0`) followed by the canonical body. The body is key-sorted and whitespace-free so every peer signs identical bytes. The TTL (`expires_at_ms - issued_at_ms`) is capped at `MAX_ADVERT_TTL_MS` (30 days). `issued_at_ms` may lead local time by at most `MAX_ISSUED_AT_SKEW_MS` (60 s). A verse holds at most `MAX_ADVERTS_PER_VERSE` (4) live adverts.
+
+### One URL validator
+
+`validate_advertised_relay_url` is the only way to obtain an `AdvertisedRelayUrl`. It is synchronous and never resolves DNS. Dial sites re-check every resolved address with `check_resolved_relay_address`. It refuses:
+
+- userinfo, query or fragment;
+- loopback, unspecified, link-local (this includes the cloud metadata address), multicast, broadcast or reserved addresses, `localhost`, and domains ending in `.local`, `.home.arpa`, `.internal` or `.lan`;
+- private, CGNAT and unique-local ranges, and plain http, unless the operator opt-in is set.
+
+The opt-in is `FE_SYNC_ALLOW_PRIVATE_RELAYS` (`1`, `true` or `yes`; default off), read once into `AdvertisedRelayPolicy::process()`. Signed rows use the stricter `RelayUrlPolicy`: https only, public destinations, allowlisted ports.
+
+The operator's own relay (`FE_SYNC_RELAY`, settings) is operator trust and never passes through this validator. The types keep the two paths apart, so a peer row cannot reach the operator path.
+
+Only a public https relay is `home_eligible()`. A private relay is never promoted to home, opt-in or not.

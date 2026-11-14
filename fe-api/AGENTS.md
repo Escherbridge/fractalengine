@@ -70,6 +70,8 @@ when a route lands.
 | Agent camera read-back (§camera-state) | `GET /api/v1/debug/camera` — live pose/active hierarchy/projection; same opt-in as screenshot; Owner; 10/s per DID |
 | Agent input injection (§agent-input-surface) | `POST /api/v1/debug/input` — synthetic pointer/keyboard/scroll, optional `capture_after` PNG (which must also clear the screenshot gate); OFF unless `FE_API_INPUT_ALLOW=1` (mutates state, unlike the two rows above); Owner; 5/s per DID; scope-confined to the ACTIVE verse; refused 409 while a posed capture holds the camera |
 | Agent token bootstrap (§qa-dev-token) | Not a route: the GUI writes loopback-only API tokens (Owner where the node owns the verse) for every local verse to `FE_API_DEV_TOKEN_OUT` once the API listens; unset = off |
+| Relay advertisement (§relay-advertise) | `POST /api/v1/verses/{verse_id}/relays`, `DELETE /api/v1/verses/{verse_id}/relays` |
+| Network diagnostics (§network-diagnostics) | `GET /api/v1/network/diagnostics` (scope-confined; also MCP `get_network_diagnostics`) |
 | MCP | `POST /mcp` (`mcp::mcp_handler`) — 49-row `ToolSpec` table: 36 always advertised, `screenshot`/`get_camera` only on a GUI host (either capture bridge wired), `inject_input` only when its own input bridge is wired, the 5 QA-debug tools (`ui_tree`, `ui_state`, `ui_logs`, `dialog_answers`, `window`) only when the QA-debug seam is wired (GUI host), the 5 `sim_*` only on a sim lab host (§mcp-dispatch; the table's `requires` column and the length assert in `mcp/mod.rs` are the source of truth); 16 MiB body cap + 8-way concurrency limit (§asset-ingest) |
 
 ## §existence-oracle (REST/WS denial unification, 2026-10-10)
@@ -2473,3 +2475,25 @@ stays scale-agnostic, so a petal's `world_scale` change never converts stored va
 - **Placement.** The caller supplies `y` on placement endpoints; the server does not snap to terrain.
 - **Reading a petal's scale.** A client reads the petal's `world_scale` from `GET /api/v1/petals/{petal_id}/terrain`
   and converts with the formula above.
+
+## §usage-metering
+
+One measurement point. `usage_middleware` emits one `UsageEvent` (fe-runtime §usage) per request after the handler returns. `route_class` is the axum matched route template, so `/api/v1/petals/{petal_id}/nodes` is recorded and the expanded path never is. The caller slot (`UsageCallerSlot`) is filled by `auth` once the token is verified, so DID and scope come from the claims that authorised the request. Public routes leave both empty.
+
+`NetworkOps::from_env()` reads `FE_API_USAGE_LOG` (a JSON-lines path) and `FE_API_METRICS_BIND` once at startup. Unset means `NoopUsageSink` and no listener. An unwritable log path warns and turns metering off; it does not stop the server.
+
+Metrics are opt-in and live on their own listener, not on the API router. `metrics::listener_count()` stays 0 unless `FE_API_METRICS_BIND` is set. The scrape endpoint has no bearer-token check, so it must never share the API router and its middleware. The operator controls exposure with the bind address. A non-loopback bind is accepted with a warning, because `/metrics` there is unauthenticated. Series carry only template labels (`route_class`, `method`, status class), so cardinality is bounded by the router.
+
+## §relay-advertise
+
+`relay_advertise::post_relay` and `delete_relay` serve `POST` and `DELETE /api/v1/verses/{verse_id}/relays`. The handler signs the row with the node's advertisement signer and replicates it to the verse's `__relays` table, so other peers will dial it.
+
+That makes the request a peer row for every check. The URL goes through the peer validator (fe-runtime §relay-advertisement). Loopback, link-local, metadata and, without the opt-in, private addresses are refused with a typed 400 before anything is signed. An API token never selects the operator path: the operator's own relay is set by `FE_SYNC_RELAY`, not by this route. A peer-run relay must carry a `dialback` attestation, and it is refused unless its prober is a verse member (`prober_is_member`). Expiry is capped by `MAX_ADVERT_TTL_MS`.
+
+## §network-diagnostics
+
+`GET /api/v1/network/diagnostics` (`network::get_network_diagnostics`) and the MCP tool `get_network_diagnostics` return the sync thread's snapshot (`NetworkDiagnostics`; producer in fe-sync §net-diagnostics).
+
+- Scope: `confine_to_claims` keeps only the peers and verses the token reads at Viewer+, judging each verse once. A peer in no readable verse is absent.
+- Redaction: addresses are removed and IP-literal relay hosts are masked unless detail is on. Detail needs `FE_API_NETWORK_DETAIL` and the `NETWORK_DETAIL_GATE` operator gate. The module doc says detail returns full peer IP addresses to Owner tokens, so leave it unset unless you need that.
+- Timeout: the sync reply is awaited for at most `REPLY_TIMEOUT` (2 s). A slow sync thread yields a `DiagnosticsError`, not a hung request.

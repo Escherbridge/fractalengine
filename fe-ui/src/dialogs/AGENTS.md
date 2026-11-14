@@ -461,3 +461,9 @@ PreUpdate guard uses only the last completed viewport/frame/pass snapshot rather
 than egui read_response outside a pass. The private masked TextEdit and real Join
 button additionally check their prepared pass before inserting/submitting. See
 ../invitations/AGENTS.md, Completed-pass Join input snapshots.
+
+## §peer-debug-network (NET-31)
+
+The Peer Debug dialog's Network block (`peer_debug.rs::render_network_block`) shows the redacted snapshot held in `fe_sync::status::NetworkDiagnosticsState`. Rows: Relay mode, Home relay, Relay health, Port mapping, Reachability, Relay server. When the home relay is not advertised in one or more verses, a warning says their peers may not reach this node through it. Opening the dialog asks the sync thread for a fresh snapshot (`SyncCommand::GetNetworkDiagnostics`).
+
+No IP addresses are shown: the panel renders the redacted snapshot. The test `network_panel_renders_fixture_without_ips` renders a fixture and asserts that no address appears.

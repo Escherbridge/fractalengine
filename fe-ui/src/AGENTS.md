@@ -816,6 +816,14 @@ soft budgets routed through them (`.min(HARD_CAP)` at each spawn site, and
   (`ui_shell/right_sidebar.rs::render_settings_section`), which reads/writes
   `AppSettings` directly; there is no Settings dialog or toggle action.
 
+### Network toggles (NET-30)
+
+Three toggles in `settings::AppSettings`, read at startup:
+
+- `auto_home_relay` (default on): a relay that every participating verse advertises healthily may become this node's home relay. Only public https relays qualify (fe-sync §relay-trust).
+- `act_as_prober` (default off): answer dial-back reachability checks for verse peers (fe-sync §reachability).
+- `serve_relay` (default off): serve a members-only relay for my verses. It needs the `relay-server` build and a passing self-test (fe-sync §peer-relay-server). It stays off by default because it makes this machine a listener for verse traffic.
+
 ## §terrain-map — Hexon Manager, P2P tileset downloads (`p2p_asset_streaming_20260718` S4)
 
 `terrain_map/` owns which tileset(s) the active petal uses (`PetalMapState`),
