@@ -283,12 +283,13 @@ SI, the integration wiring slice, runs serially at the join of every BUILD wave:
 - [x] T5.1 QA lane: harness spec, PJ1–PJ10 text, fixture sources, scenario JSON (AUTHOR-ONLY) — f4cf05eb
 - [x] T6.1 static export spec (AUTHOR-ONLY) — e3fc03df
 - [ ] T1.2 spikes SP-1..SP-7 (BUILD) — desk check only (a15c3bc8, protocol.md §12); SP-1..SP-9 not run on WebView2
+; code done (EXT-06/EXT-07 harness), run pending (user-gated, WebView2 box)
 - [x] T0.2 fe-format validator (BUILD) — ce3df043, unbuilt
 - [x] T0.3 fe-api bundle routes + listing + `NodeKind::Repository` (BUILD) — 114c0a28, unbuilt
 - [x] T1.3 custom protocol + CSP + navigation allowlist (BUILD) — 134d00c5, unbuilt
 - [x] T1.4 delete `tauri_commands.rs` (BUILD) — file absent at HEAD, lib.rs line dropped, unbuilt
 - [x] R-P1 protocol security review (BUILD) — eb909b4c, verdict PASS-WITH-FIXES in review-p1.md (fixes applied)
-- [ ] T3.2 repository inspector + chrome (BUILD) — PARTIAL: code in dcfcd388, Repository call site unwired (P3-03)
+- [x] T3.2 repository inspector + chrome (BUILD) — code dcfcd388; call site wired at fe-ui/src/panels/inspector.rs:351 (P3-03 closed)
 - [x] T5.2 bundle builder (BUILD) — 4c02d9fb, unbuilt
 - [x] T5.3 sim `portal` probe (BUILD) — 4c02d9fb, unbuilt
 - [x] T5.4 fixed bundle QA operations + `fe.py portal` (BUILD) — 4c02d9fb and eabcef17, unbuilt
@@ -296,10 +297,12 @@ SI, the integration wiring slice, runs serially at the join of every BUILD wave:
 - [x] T2.2 IPC bridge (BUILD) — 382f9d7d, unbuilt
 - [x] T0.4 scene-asset MIME branch, cross-track (BUILD) — abfead92, unbuilt
 - [ ] T2.3 readings broadcast, only on the OD-13 fallback (BUILD) — not started; the OD-13 fallback is not triggered (no readings_ingested_tx in fe-api)
+; annotated not applicable: OD-13 fallback never triggered (readings reach portals over the bus host/readings)
 - [x] R-P2 IPC security review (BUILD) — review-p2.md verdict PASS
 - [x] T4.2 admission integration, revoke, static feeds (BUILD) — fc29e431, unbuilt
 - [x] R-P4 admission security review (BUILD) — eb909b4c, verdict PASS-WITH-FIXES, NEEDS P4-06 still open in review-p4.md
 - [ ] T5.5 run PJ1–PJ9 + sim scenarios (BUILD)
 - [x] D docs consolidation + test-batches rows (R6, R9), this pass
 - [ ] full sweep once (campaign end, on user request)
-- [ ] T6.2 static export (BUILD, later)
+- [x] T6.2 static export (BUILD, later)
+ — code complete (portal_bundles.rs:946, test portal_bundle_test.rs:439)

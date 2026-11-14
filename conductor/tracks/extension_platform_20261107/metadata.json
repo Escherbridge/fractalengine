@@ -6,7 +6,7 @@
   "status": "pending",
   "priority": "P1",
   "created_at": "2026-11-07T00:00:00Z",
-  "updated_at": "2026-11-07T23:37:53Z",
+  "updated_at": "2026-11-13T00:00:00Z",
   "origin": "user grill 2026-11-07 (extension platform program; D-X1..D-X4 ratified, D-X5..D-X8 recorded)",
   "alignment": "Extends conductor/open-core.md's S-PLUGIN seam (realised by plugin_host_revival_20261031) and consumes S-REGISTRY and S-ENTITLEMENT (hexon_entitlements_20261031) unchanged. Realises the user's 2026-11-07 extension platform program on the open side of the open-core line: anything a self-hoster needs to run, verify or extend is open. Serves the roadmap's primary analytics persona (device adapters, BI connectors) and its platform persona (fleets, authoring). Any party may build catalogues, review or counter-signing on these seams; this repo never names or depends on such consumers.",
   "depends_on": ["plugin_host_revival_20261031", "hexon_entitlements_20261031", "agent_input_surface_20261031"],
@@ -28,7 +28,7 @@
   ],
   "spec": "./spec.md",
   "plan": "./plan.md",
-  "progress": { "done": 0, "open": 43, "plan": "./plan.md" },
+  "progress": { "done": 40, "open": 3, "plan": "./plan.md" },
   "open_decisions": [
     "OD-E1 kill switch withdraws host-stamped extension rows, amending the S-PLUGIN text (rec: yes, as a versioned seam change after ratification)",
     "OD-E2 native or Wasm for first-party behaviour extensions (rec: Wasm for simulation and device adapters; native for terrain, the registry client and BI built-ins)",
@@ -48,7 +48,8 @@
     "2026-11-07: cfd7fce6, which landed during authoring, root-caused the city-lite ceiling as ExecuteTsPartial running 4-5 s back to back on the DB thread, not transform or ingest volume. The track still keeps one batched command per instance per tick (R5) as a structural rule, because every write shares that one serial queue; the measured bypass appears only as OD-E5.",
     "2026-11-07 alignment proposals for plugin_host_revival_20261031, which runs in the same session under plan A-1: (1) its AC-1 (no host thread when the flag is unset) no longer matches the GUI binary, so OD-4's flag should gate package admission; (2) its S3 modal should be created at fe-ui/src/extensions/consent.rs; (3) its S4 protocol-v1 client should land as the protocol-v1 RegistrySource in fe-hexon, so fe-plugin stays fetch-free.",
     "2026-11-07 sibling alignment: the portal track's plan assumes a host broker offering node, readings and query streams, extension streams, commands and hooks (its A-1), and governance-owned per-peer admission records with change notifications (its A-2). Spec R13, R14 and R23 (host/admission) provide those, and R3 reserves kind 'web-bundle' for its portal manifest section.",
-    "2026-11-07 partitions were computed at cfd7fce6 while P2P-QA was committing to fe-database, fe-sync and fe-runtime and editing tools/qa/sim/prober.py. Slices touching those (E4, E10, E10W, and E19's driver work) must be re-verified after the campaign merges. E10W is unpartitioned."
+    "2026-11-07 partitions were computed at cfd7fce6 while P2P-QA was committing to fe-database, fe-sync and fe-runtime and editing tools/qa/sim/prober.py. Slices touching those (E4, E10, E10W, and E19's driver work) must be re-verified after the campaign merges. E10W is unpartitioned.",
+    "2026-11-13 round 4 (T-EXT bookkeeping): 40 of 43 plan tasks ticked after HEAD verification (gates G1-G6 in review.md; P4.4 and P6.3 are run/GUI-QA and user-gated; P6.5 docs folds owned by I-DOC-API). Round-4 defaults taken: EXT-13 documents minting a petal-scoped token (no GUI-to-API seam); blob.mirror mirrors local commits only; FE_PEER_LABEL env only for the window title."
   ],
   "partitions": {
     "computed_at": "2026-11-07T23:37:53Z",
