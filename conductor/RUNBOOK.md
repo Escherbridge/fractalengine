@@ -143,6 +143,12 @@ trusting "pure efficiency" claims; push control; a board that silently drifts st
   fixed by the orchestrator (the file is swarm-owned); routed as a binding steer in `.omc/state/turn4-steer.md`
   to gate R-NET-1 and the dial-site owners. **Verify at the refine pass** that R-NET-1's review file records it
   and that the table test has the refused rows; if not, fix it before any push of swarm code.
+  **Second open finding (21:55, MEDIUM, confirmed):** the map world scale has no global cap
+  (`fe-format/src/scale.rs::sanitize_world_scale` accepts any finite positive f64; `fe-database/src/handlers/
+  crud.rs` then casts to f32, so a stored `world_scale: 1e300` becomes an infinite node scale in a panic=abort
+  app). CITY-02, `271bb210`. Routed to gate R-CITY-1 by a steer (fixed global range in scale.rs, post-cast check
+  in crud.rs, refusal at the terrain write). Same verification rule. Later automated findings on swarm commits
+  are handled the same way: confirm, steer the owning gate, list here.
   **After the swarm:** read the result with python from the task output or journal (it is large); relay
   `user_questions`; apply `needs` that no integration slice took; refine pass in plan §10 order; then §7 step 3.
 - **2026-11-13 18:55 MST — ROUND 4 PLANNING (done 20:40; `wf_d595d1cd-8d1`, 12 agents, 3.0M tokens); CI fix PUSHED (`8530377d`, 18:40), CI verdict due ~20:15.**
