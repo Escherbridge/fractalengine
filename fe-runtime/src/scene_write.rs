@@ -32,6 +32,7 @@ pub const SCENE_WRITE_CENSUS: &[CensusRow] = &[
     CensusRow { variant: "CreateNodeWithAsset", hooks: "scene.create", note: "name, position" },
     CensusRow { variant: "ImportGltf", hooks: "scene.create", note: "name, position" },
     CensusRow { variant: "CreateObject", hooks: "scene.create + scene.property", note: "one property call per initial key, node null" },
+    CensusRow { variant: "ImportPetalSnapshot", hooks: "scene.create + scene.property", note: "one create per node, one property call per initial key" },
     CensusRow { variant: "DuplicateNode", hooks: "scene.create", note: "proposed.source = the copied node" },
     CensusRow { variant: "PromoteInstance", hooks: "scene.create", note: "proposed.source = {path}#inst-{i}" },
     CensusRow { variant: "PromoteCheckedStamp", hooks: "scene.create", note: "proposed.source = {path}#inst-{i}" },
@@ -136,7 +137,8 @@ impl SceneWrite {
             | DbCommand::SetNodeProperty { correlation_id, .. }
             | DbCommand::DeleteNodeProperty { correlation_id, .. }
             | DbCommand::CommitNodeMutation { correlation_id, .. }
-            | DbCommand::SetNodeView { correlation_id, .. } => correlation_id.as_deref(),
+            | DbCommand::SetNodeView { correlation_id, .. }
+            | DbCommand::ImportPetalSnapshot { correlation_id, .. } => correlation_id.as_deref(),
             DbCommand::PromoteCheckedStamp { correlation_id, .. }
             | DbCommand::CommitCheckedNodeMutation { correlation_id, .. }
             | DbCommand::CommitCheckedEditorBatch { correlation_id, .. }
@@ -528,6 +530,11 @@ fn census<'a>(petal: &str, command: &'a DbCommand) -> Option<Census<'a>> {
             }));
             found(vec![petal_id.as_str()], inputs)
         }
+        DbCommand::ImportPetalSnapshot { rows, .. } => {
+            // A row without a petal id carries "" so it never matches the authorized petal.
+            let carried = rows.petal.get("petal_id").and_then(Value::as_str).unwrap_or_default();
+            found(vec![carried], snapshot_inputs(petal, &rows.nodes))
+        }
         DbCommand::DuplicateNode { node_id, .. } => {
             found(Vec::new(), vec![create_from(petal, node_id.clone())])
         }
@@ -670,7 +677,6 @@ fn census<'a>(petal: &str, command: &'a DbCommand) -> Option<Census<'a>> {
         | DbCommand::ReadNodeMeasurements { .. }
         | DbCommand::ReadPetalReadings { .. }
         | DbCommand::ExportPetalSnapshot { .. }
-        | DbCommand::ImportPetalSnapshot { .. }
         | DbCommand::ReadSceneMaterials { .. }
         | DbCommand::DeleteFieldDef { .. }
         | DbCommand::ScopedQuery { .. }
@@ -707,6 +713,26 @@ fn create(petal: &str, name: &str, position: [f32; 3]) -> SceneHookInput {
         name: name.to_owned(),
         position,
     }
+}
+
+/// One `scene.create` per imported node row plus one `scene.property` per initial key (`node: null`).
+fn snapshot_inputs(petal: &str, nodes: &[Value]) -> Vec<SceneHookInput> {
+    let axis = |value: &Value| value.as_f64().unwrap_or(0.0) as f32;
+    let mut inputs = Vec::new();
+    for node in nodes {
+        // Stored rows: GeoJSON `position.coordinates` = [x, z], height in `elevation`.
+        let coordinates = &node["position"]["coordinates"];
+        let position = [axis(&coordinates[0]), axis(&node["elevation"]), axis(&coordinates[1])];
+        inputs.push(create(petal, node["display_name"].as_str().unwrap_or_default(), position));
+        if let Some(properties) = node["properties"].as_object() {
+            inputs.extend(properties.iter().map(|(key, value)| SceneHookInput::InitialProperty {
+                petal_id: petal.to_owned(),
+                key: key.clone(),
+                value: value.clone(),
+            }));
+        }
+    }
+    inputs
 }
 
 fn create_from(petal: &str, source_node_id: String) -> SceneHookInput {
@@ -837,6 +863,25 @@ mod tests {
         }
     }
 
+    fn import_snapshot(petal: &str, keys: &[&str]) -> DbCommand {
+        let properties: serde_json::Map<String, Value> =
+            keys.iter().map(|key| ((*key).to_owned(), json!("A"))).collect();
+        DbCommand::ImportPetalSnapshot {
+            rows: Box::new(crate::petal_snapshot::PetalSnapshotRows {
+                petal: json!({"petal_id": petal}),
+                nodes: vec![json!({
+                    "node_id": "n1",
+                    "display_name": "kiosk",
+                    "position": {"type": "Point", "coordinates": [1.0, 2.0]},
+                    "elevation": 3.0,
+                    "properties": properties,
+                })],
+                ..Default::default()
+            }),
+            correlation_id: Some("import-1".into()),
+        }
+    }
+
     fn settle(door: &SceneWriteDoor, kind: SceneCallerKind, write: SceneWrite) -> SceneWriteOutcome {
         door.submit(kind, write)
             .poll(Instant::now())
@@ -860,6 +905,7 @@ mod tests {
             ("refused delete", refuse.clone(), "p1", DbCommand::DeleteNodeProperty { node_id: "n1".into(), key: "zone".into(), correlation_id: None }, Some(("refused", 409)), 1),
             ("caller-sized value", allow.clone(), "p1", set_property("n1", "zone", oversized), Some(("input-too-large", 413)), 0),
             ("too many calls", allow, "p1", create_object("p1", many), Some(("input-too-large", 413)), 0),
+            ("refused snapshot import", refuse.clone(), "p1", import_snapshot("p1", &[]), Some(("refused", 409)), 1),
         ];
         for (label, answer, petal, command, refusal, calls) in cases {
             let (gate, backend) = gate_with(Some(answer), true);
@@ -896,6 +942,15 @@ mod tests {
             correlation_id: Some("req-1".into()),
         };
         assert_eq!(SceneWrite::new("p1", tagged).unwrap().correlation_id(), Some("req-1"));
+        // A snapshot import is judged as the creates it performs, in the petal it restores.
+        let import = SceneWrite::new("p1", import_snapshot("p1", &["zone", "owner"])).unwrap();
+        assert_eq!(import.correlation_id(), Some("import-1"));
+        assert_eq!(import.hook_inputs()[0], create("p1", "kiosk", [1.0, 3.0, 2.0]));
+        assert_eq!(import.hook_inputs().len(), 3);
+        assert!(matches!(
+            SceneWrite::new("p2", import_snapshot("p1", &[])),
+            Err(SceneWriteError::PetalMismatch { .. })
+        ));
         let census: Vec<_> = SCENE_WRITE_CENSUS.iter().map(|row| row.variant).collect();
         let mut unique = census.clone();
         unique.sort_unstable();

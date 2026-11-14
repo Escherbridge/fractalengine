@@ -14,6 +14,7 @@ pub mod limits;
 pub mod manifest;
 pub mod partial;
 pub mod portal_bundle;
+pub mod scale;
 pub mod signature;
 pub mod snapshot;
 #[cfg(test)]
