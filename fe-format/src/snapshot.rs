@@ -138,6 +138,30 @@ fn check_meta(meta: &SnapshotMeta, oplog: &[Value]) -> Result<()> {
     Ok(())
 }
 
+/// Refuse a meta whose present `table_row_counts` keys name an unknown table or disagree with the shipped rows.
+fn check_table_row_counts(meta: &SnapshotMeta, data: &PetalSnapshotData) -> Result<()> {
+    // An empty `{}` petal row is the exporter's encoding of "no petal row".
+    let petal_rows = match data.petal.as_object() {
+        Some(object) if !object.is_empty() => 1,
+        _ => 0,
+    };
+    for (table, claimed) in &meta.table_row_counts {
+        let actual = match table.as_str() {
+            "petal" => petal_rows,
+            "oplog" => data.oplog.len() as u64,
+            stem => match state_tables(data).iter().find(|(name, _)| *name == stem) {
+                Some((_, rows)) => rows.len() as u64,
+                None => bail!("table_row_counts names unknown table {table:?}"),
+            },
+        };
+        ensure!(
+            *claimed == actual,
+            "table_row_counts[{table}] claims {claimed} rows but the archive ships {actual}"
+        );
+    }
+    Ok(())
+}
+
 /// True when `name` is a lowercase 64-char blake3 hex digest.
 fn is_blake3_hex(name: &str) -> bool {
     name.len() == 64 && name.bytes().all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
@@ -315,6 +339,20 @@ pub fn import_petal_snapshot(bytes: &[u8]) -> Result<ImportedPetalSnapshot> {
     check_oplog_order(&oplog)?;
     check_meta(&meta, &oplog)?;
 
+    let data = PetalSnapshotData {
+        petal,
+        nodes: take("nodes"),
+        node_log: take("node_log"),
+        field_defs: take("field_defs"),
+        rooms: take("rooms"),
+        models: take("models"),
+        assets: take("assets"),
+        roles: take("roles"),
+        iot_readings: take("iot_readings"),
+        oplog,
+    };
+    check_table_row_counts(&meta, &data)?;
+
     let mut blob_names: Vec<String> = Vec::new();
     for index in 0..archive.len() {
         let name = archive.by_index_raw(index)?.name().to_string();
@@ -339,18 +377,6 @@ pub fn import_petal_snapshot(bytes: &[u8]) -> Result<ImportedPetalSnapshot> {
         blobs.push((hash, body));
     }
 
-    let data = PetalSnapshotData {
-        petal,
-        nodes: take("nodes"),
-        node_log: take("node_log"),
-        field_defs: take("field_defs"),
-        rooms: take("rooms"),
-        models: take("models"),
-        assets: take("assets"),
-        roles: take("roles"),
-        iot_readings: take("iot_readings"),
-        oplog,
-    };
     Ok(ImportedPetalSnapshot {
         manifest,
         meta,
@@ -402,7 +428,7 @@ mod tests {
             scope: "petal".into(),
             source_node_id: "node-a".into(),
             exported_at: "2026-01-02T00:00:00Z".into(),
-            table_row_counts: BTreeMap::from([("nodes".to_string(), 2)]),
+            table_row_counts: BTreeMap::new(),
             op_log_range: OpLogRange {
                 min_lamport: oplog.first().map(lamport).unwrap_or(0),
                 max_lamport: oplog.last().map(lamport).unwrap_or(0),
@@ -455,7 +481,22 @@ mod tests {
         };
         let blob = b"glb-bytes".to_vec();
         let hash = blake3::hash(&blob).to_hex().to_string();
-        let meta = meta_for(&data.oplog);
+        let mut meta = meta_for(&data.oplog);
+        meta.table_row_counts = [
+            ("petal", 1),
+            ("nodes", 2),
+            ("node_log", 1),
+            ("field_defs", 1),
+            ("rooms", 1),
+            ("models", 1),
+            ("assets", 1),
+            ("roles", 1),
+            ("iot_readings", 1),
+            ("oplog", 4),
+        ]
+        .into_iter()
+        .map(|(table, count)| (table.to_string(), count))
+        .collect();
         let bytes = export_petal_snapshot(
             manifest(HexonType::PetalSnapshot),
             &meta,
@@ -589,5 +630,36 @@ mod tests {
             );
             assert!(result.is_err());
         }
+
+        // Table rows: export does not cross-check them, so a lying meta reaches import, which must refuse it.
+        let two_nodes = PetalSnapshotData {
+            petal: json!({ "petal_id": "petal-1" }),
+            nodes: vec![json!({ "node_id": "n1" }), json!({ "node_id": "n2" })],
+            oplog: oplog_rows(&[1, 2]),
+            ..PetalSnapshotData::default()
+        };
+        let import_with_counts = |counts: &[(&str, u64)]| {
+            let mut meta = meta_for(&two_nodes.oplog);
+            meta.table_row_counts = counts.iter().map(|(t, c)| (t.to_string(), *c)).collect();
+            let bytes = export_petal_snapshot(
+                manifest(HexonType::PetalSnapshot),
+                &meta,
+                &two_nodes,
+                vec![],
+                vec![],
+            )
+            .unwrap();
+            import_petal_snapshot(&bytes)
+        };
+        let wrong_nodes = import_with_counts(&[("nodes", 3)]).unwrap_err().to_string();
+        assert!(wrong_nodes.contains("nodes"), "names the table: {wrong_nodes}");
+        assert!(import_with_counts(&[("gadgets", 0)]).is_err(), "unknown table key");
+        assert!(import_with_counts(&[("petal", 0)]).is_err(), "petal row is present");
+        assert!(import_with_counts(&[("oplog", 5)]).is_err(), "oplog count lies");
+        assert!(
+            import_with_counts(&[("petal", 1), ("nodes", 2), ("rooms", 0), ("oplog", 2)]).is_ok(),
+            "a correct map passes"
+        );
+        assert!(import_with_counts(&[]).is_ok(), "an empty map passes");
     }
 }
