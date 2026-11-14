@@ -11,7 +11,7 @@ use bevy_egui::egui;
 use crate::accessibility::ResponseExt;
 
 use super::{ActiveDialog, CreateKind};
-use crate::actions::node::{try_submit_scene_write_on, GuiSend};
+use crate::actions::node::try_submit_scene_write_on;
 use crate::actions::{send_or_toast, UiManager};
 use crate::theme;
 use fe_runtime::messages::DbCommand;
