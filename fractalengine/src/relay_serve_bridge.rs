@@ -59,13 +59,6 @@ impl RelayServeHandle {
     }
 }
 
-/// One owned-verse row for the consent list.
-#[derive(serde::Deserialize)]
-struct OwnedVerseRow {
-    verse_id: String,
-    name: Option<String>,
-}
-
 /// Lists the local user's verses (id, name) for the relay consent step; call once at startup, off the UI thread.
 pub async fn publish_servable_verses(db: &fe_database::repo::Db, local_did: String) {
     let read = async {
@@ -74,11 +67,17 @@ pub async fn publish_servable_verses(db: &fe_database::repo::Db, local_did: Stri
             .bind(("did", local_did))
             .await?
             .check()?;
-        anyhow::Ok(response.take::<Vec<OwnedVerseRow>>(0)?)
+        anyhow::Ok(response.take::<Vec<serde_json::Value>>(0)?)
     };
     match read.await {
         Ok(rows) => fe_ui::settings::record_relay_servable_verses(
-            rows.into_iter().map(|row| (row.verse_id, row.name.unwrap_or_default())).collect(),
+            rows.into_iter()
+                .filter_map(|row| {
+                    let verse_id = row.get("verse_id")?.as_str()?.to_string();
+                    let name = row.get("name").and_then(|value| value.as_str()).unwrap_or_default().to_string();
+                    Some((verse_id, name))
+                })
+                .collect(),
         ),
         Err(error) => tracing::warn!(%error, "could not list servable verses for the relay consent step"),
     }
