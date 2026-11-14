@@ -83,8 +83,9 @@ merely restate them will be deduplicated against this list.
   the build or the rolling download.
 - **Peer write admission has residual gaps.** Inbound replicated rows are
   admitted on the database thread only when their author holds Editor+ at
-  the verse scope (fe-policy, deny-by-default), the row's references all
-  resolve inside the replica's verse (a reference into another verse is
+  the row's own scope (Manager+ for governance, extension-policy and
+  requirement changes; fe-policy, deny-by-default, roles read from local
+  tables, never the wire), the row's references all resolve inside the replica's verse (a reference into another verse is
   denied; one not yet known locally waits), and every row other than the
   verse manifest waits until the manifest has landed. Residuals: the first
   manifest of a verse is accepted on trust at first use (it must name a

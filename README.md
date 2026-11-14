@@ -90,8 +90,8 @@ files. Extract the **whole** archive, read `QUICKSTART.txt`, and run
 next to the binary, the app keeps its database in a `data/` folder beside it,
 wherever you launch it from. To back up or move an install, copy the whole
 folder; settings and installed map tilesets live in per-user folders (see
-`QUICKSTART.txt`). The packages are unsigned alpha builds, and there is no
-macOS build.
+`QUICKSTART.txt`). The rolling packages are unsigned alpha builds (a tagged
+release's notes say whether it is signed), and there is no macOS build.
 
 ---
 
@@ -141,7 +141,7 @@ cargo deny --all-features check advisories bans sources licenses
 cd fuzz && cargo +nightly fuzz run jwt_parse -- -max_total_time=60
 ```
 
-CI's PR test sweep is intentionally scoped to three crates (`cargo test --release --no-fail-fast -p fe-ui -p fe-terrain -p fractalengine`); the full suite runs only through the batch runner described below.
+CI's PR test sweep is intentionally scoped to three crates (`cargo test --release --no-fail-fast -p fe-ui -p fe-terrain -p fractalengine`), plus two named `fe-sync` acceptance tests on Linux (the iroh store migration and the relay-assisted connection); the full suite runs only through the batch runner described below.
 
 Tests run in selectable batches, on purpose rather than by habit. Each batch in
 [conductor/test-batches.md](conductor/test-batches.md) is a short list of plain
