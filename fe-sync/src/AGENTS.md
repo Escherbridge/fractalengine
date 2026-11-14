@@ -2436,8 +2436,11 @@ Read-time, role-gated book of `__relays` rows (`fe_sync::relay_advertise::RelayA
 - Policy `FE_SYNC_RELAY_ADVERTISE_POLICY` (`RelayAdvertisePolicy`): `dialonly` (default) dials advertised relays and never adds them to the map; `pinned:<url>,<url>` also adds the named ones; `deny` ignores adverts. Unknown values warn and fall back to `dialonly`.
 - Signed mode `FE_SYNC_RELAY_ADVERT_SIGNED` (`RelayAdvertSignedMode`): `compat` (default) admits unsigned rows under the other checks for one release; `require` refuses any row without a valid signature.
 
-- Tombstone memo (NET5-01): a withdrawal from another author is remembered, so a later re-delivery of the row it cancels is refused (`tombstone_refuses`, `remember_tombstone`, `relay_advertise.rs:418-460`). Caps: `RELAY_TOMBSTONE_PER_VERSE_CAP` 64 and `RELAY_TOMBSTONE_CAP` 1024 (`relay_advertise.rs:25,28`); overflow is counted (`tombstone_evicted()`). Entries are stamped at receipt time (`now_ms`). TODO: guidance for choosing new record ids, `fe-sync/src/relay_advertise.rs`.
-- TODO (NET5-07 live-endpoint legs): write from `fe-sync/src/relay_advertise.rs` and the NET5-07 result; not derived in this pass.
+- Tombstone memo (NET5-01): a withdrawal from another author is remembered, so a later re-delivery of the row it cancels is refused (`tombstone_refuses`, `remember_tombstone`, `relay_advertise.rs:418-460`). Caps: `RELAY_TOMBSTONE_PER_VERSE_CAP` 64 and `RELAY_TOMBSTONE_CAP` 1024 (`relay_advertise.rs:25,28`); overflow is counted (`tombstone_evicted()`). Entries are stamped at receipt time (`now_ms`).
+  Why: iroh-docs keys entries per author, so a Manager's tombstone and another Manager's advert for the same record are separate entries with no delivery order. The memo lets the withdrawal win either way.
+  Window: a row from the advert's author for the same `(verse, record)` is refused while it is unsigned or was issued at or before the memo's receipt time. A row issued after that time is a legitimate re-advertisement and clears the memo; a row from the tombstoner's own author clears it too.
+  Default: receipt-time comparison, because the tombstone carries no issued time. A re-advertisement by the original author under the same record id within the same instant is suppressed, so the remedy is a new record id.
+- Live-endpoint legs (sync_thread.rs relay-adoption journey, tests module from `sync_thread.rs:4904`): `insert_planned_relay` and `remove_planned_relay` (`sync_thread.rs:2321`, `:2365`) run against a real `SyncEndpoint` built with `RelayConfig::Disabled`. A pinned insert is in the map with no auth token, a withdrawn advert removes its relay at refcount zero, and a configured relay is never removed.
 
 Tripwires: reconciliation never removes a configured relay, and an advert whose author lacks the Manager role never reaches the map.
 
@@ -2455,7 +2458,9 @@ Which advertised relays this node may use, and how far (`fe_sync::relay_trust`, 
 - `Disabled` makes adverts inert unless pinned: a peer's relay is never added to the dial allowlist (`relay_reconcile.rs:145`, `:617`).
 - Allowlist changes re-filter: each peer's relay URLs are remembered (bounded, `endpoint.rs:19`) so a change to the allowlist re-applies `filter_peer_addr` without a new handshake.
 - Auto-home toggle: `set_auto_home_relay` is called from `relay_serve_bridge::register_settings` (`fractalengine/src/relay_serve_bridge.rs:89`), which runs at `main.rs:138`, before the sync thread spawns (`main.rs:419`). Hazard B (`net_diagnostics.rs:135`): open verses whose adverts omit this node's advertised home relay.
-- TODO (NET5-06): the Custom-relay strip (a node on a Custom relay strips a peer's n0 home relay unless a Manager advertises it), the resolve-checked DialOnly allowlist and its rebinding residual, and the local-only name Private-reach rule. Derive from `fe-sync/src/relay_reconcile.rs`, `fe-sync/src/endpoint.rs` and `fe-runtime/src/relay_advertisement.rs`; not written in this pass.
+- Custom-relay strip: on `Custom` the reconciler's tiers hold only the configured URLs (`relay_reconcile.rs:79-83`). A peer's n0 home relay is outside the allowlist, so `filter_peer_addr` strips it unless a Manager advertises that relay and it enters the DialOnly tier.
+- Local-only names: a single-label name or one ending in `LOCAL_ONLY_DOMAIN_SUFFIXES` (`.local`, `.home.arpa`, `.internal`, `.lan`) resolves to `RelayReach::Private` and needs the private-relay opt-in (`fe-runtime/src/relay_advertisement.rs:367-376`).
+- Resolve-checked DialOnly allowlist (`sync_thread.rs`, `filter_resolvable` near `:2165`): each DialOnly URL is resolved through `advertised_relay_insertable` under `ADVERTISED_RELAY_RESOLVE_TIMEOUT` (5 s). Verdicts are cached for `DIAL_ONLY_VERDICT_TTL` (10 min) and at most `DIAL_ONLY_RESOLVE_LIMIT` (8) URLs are considered per pass. Configured, Default and inserted (Pinned) entries are not re-resolved. Residual: iroh makes the connection, so DNS can rebind after this check.
 
 ## §gossip-signing
 
@@ -2487,7 +2492,7 @@ The embedded members-only relay (`fe_sync::relay_server`, feature `relay-server`
 - The desktop serves a relay only after consent and a passing reachability self-test (fe-ui §app-settings).
 - Tests run the relay in-process with `run_relay_server_with_access` (`fe-sync/tests/peer_relay_e2e_test.rs`).
 - Env names (`relay_server.rs:17-35`): `FE_RELAY_SERVE`, `FE_RELAY_SERVE_CERT_MODE`, `FE_RELAY_SERVE_ACME_CONTACT`, `FE_RELAY_SERVE_ACME_STAGING`, `FE_RELAY_SERVE_CERT_PATH`, `FE_RELAY_SERVE_KEY_PATH`, `FE_RELAY_SERVE_HTTPS_BIND`, `FE_RELAY_SERVE_HTTP_BIND`, `FE_RELAY_SERVE_VERSES`, `FE_RELAY_SERVE_HOSTNAME`.
-- TODO (NET5-04): the e2e test runs the production reconciler; confirm against `fe-sync/tests/peer_relay_e2e_test.rs` before documenting.
+- The e2e test (`fe-sync/tests/peer_relay_e2e_test.rs`) wraps its own TLS server with `EmbeddedRelay::adopt_running_server` (`relay_server.rs:1327`). The production `run_reconciler` (`relay_server.rs:1374`, every `RECONCILE_INTERVAL` 250 ms and on revoke) does the eviction; the test only polls `tracked_connections`.
 
 ## §relay-server (buffered snapshot and revoke, INT5-04)
 

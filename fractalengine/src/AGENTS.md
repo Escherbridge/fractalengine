@@ -699,7 +699,7 @@ final sweep.
 ### path_kind provenance
 
 `gpx_bridge.rs` (`PATH_KIND_KEY`) stamps `properties.path_kind`: `designed` for paths drawn in the editor, `recorded` for
-imported GPX. Absence means `recorded` (legacy rows and the fe-api HTTP import). BI filter example:
+imported GPX. The `NodeCreated` echo of a designed path goes through `submit_authored_track_properties` (`gpx_bridge.rs:175`), which has its own test. Absence means `recorded` (legacy rows and the fe-api HTTP import). BI filter example:
 `WHERE properties.path_kind == 'designed'`. fe-api import parity is out of scope.
 
 ## §tileset-p2p — host wiring for P2P tileset streaming (`p2p_asset_streaming_20260718` S4)
