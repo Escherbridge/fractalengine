@@ -55,7 +55,7 @@ use fractalengine_test_harness::api::ApiHarness;
 /// `ToolSeam::Input`), for 39 total; the extension platform adds 5 host-gated
 /// tools (`list_extensions`, `extension_command`, `list_bindings`,
 /// `set_binding`, `clear_binding`) beyond the original table.
-const EXPECTED_TOOLS: [&str; 54] = [
+const EXPECTED_TOOLS: [&str; 55] = [
     "get_hierarchy",
     "create_verse",
     "create_fractal",
@@ -98,6 +98,8 @@ const EXPECTED_TOOLS: [&str; 54] = [
     "install_tileset",
     "get_gis_nodes",
     "query",
+    // Host-gated by ToolSeam::NetworkDiagnostics (hidden without the sync-thread bridge)
+    "get_network_diagnostics",
     // CDL-SPEC10 A5: R5 MCP parity (device format descriptors + device payload ingest)
     "register_device_format",
     "list_device_formats",
@@ -425,6 +427,7 @@ fn db_command(m: &mut Model, cmd: DbCommand, store: Option<&BlobStoreHandle>) ->
                 has_asset: false,
                 correlation_id,
                 position,
+                scale: [1.0; 3],
             }
         }
         DbCommand::Ping => DbResult::Pong,
@@ -1156,10 +1159,12 @@ async fn tools_list_inventory() {
                         | "list_bindings"
                         | "set_binding"
                         | "clear_binding"
+                        | "get_network_diagnostics"
                 )
         })
         .collect();
     assert_eq!(names, non_lab, "31 tools off a sim lab host");
+    assert!(!names.iter().any(|n| n == "get_network_diagnostics"), "hidden without the bridge");
     // tools/list and the dispatch table are one source of truth.
     let table: Vec<&str> = tool_specs()
         .iter()
@@ -1212,6 +1217,7 @@ async fn tools_list_inventory() {
                         | "list_bindings"
                         | "set_binding"
                         | "clear_binding"
+                        | "get_network_diagnostics"
                 )
         })
         .collect();
@@ -1238,6 +1244,63 @@ async fn tools_list_inventory() {
         .iter()
         .filter(|t| t.name.starts_with("sim_"))
         .all(|t| t.requires == Some(ToolSeam::SimControl)));
+
+    // A host wired with the diagnostics bridge lists `get_network_diagnostics`; a Viewer gets a
+    // snapshot confined to the token's verse, and a token below Viewer hits the role gate.
+    {
+        use fe_runtime::net_diagnostics::{
+            NetworkDiagnostics, NetworkDiagnosticsCall, NodeDiagnostics, PeerConnectionKind,
+            PeerDiagnostics,
+        };
+        let (bridge, bridge_calls) = crossbeam::channel::unbounded::<NetworkDiagnosticsCall>();
+        std::thread::spawn(move || {
+            while let Ok(call) = bridge_calls.recv() {
+                let peer = |did: &str, verses: &[&str]| PeerDiagnostics {
+                    peer_did: did.to_string(),
+                    verse_ids: verses.iter().map(|verse| verse.to_string()).collect(),
+                    kind: PeerConnectionKind::Direct,
+                    relay_host: None,
+                    addrs: vec!["203.0.113.7:51820".to_string()],
+                };
+                let snapshot = NetworkDiagnostics {
+                    node: NodeDiagnostics::default(),
+                    peers: vec![peer("did:key:zInScope", &["v1"]), peer("did:key:zOutOfScope", &["v2"])],
+                };
+                let _ = call.reply.send(snapshot);
+            }
+        });
+        let Emu { state, .. } = emu(true);
+        let hosts = ApiHosts { network_diagnostics: Some(bridge), ..ApiHosts::default() };
+        let viewer = claims("VERSE#v1", "viewer");
+        let listing = rpc_on(&state, &hosts, &viewer, "tools/list", json!({})).await;
+        let listed: Vec<&str> = listing["result"]["tools"]
+            .as_array()
+            .expect("tools array")
+            .iter()
+            .filter_map(|t| t["name"].as_str())
+            .collect();
+        assert!(listed.contains(&"get_network_diagnostics"), "{listed:?}");
+
+        let reply = call_tool_on(&state, &hosts, &viewer, "get_network_diagnostics", json!({})).await;
+        assert_ne!(reply["result"]["isError"], true, "{reply}");
+        let snapshot: serde_json::Value = serde_json::from_str(&tool_text(&reply)).expect("snapshot json");
+        let dids: Vec<&str> = snapshot["peers"]
+            .as_array()
+            .expect("peers array")
+            .iter()
+            .filter_map(|p| p["peer_did"].as_str())
+            .collect();
+        assert_eq!(dids, vec!["did:key:zInScope"], "peers confined to the token's verses");
+
+        let below = call_tool_on(&state, &hosts, &claims("VERSE#v1", "none"), "get_network_diagnostics", json!({})).await;
+        assert_eq!(below["result"]["isError"], true, "{below}");
+        assert_eq!(tool_text(&below), "insufficient permissions");
+
+        // Absent seam: calling the name answers the unknown-tool text.
+        let absent = call_tool_on(&state, &ApiHosts::default(), &viewer, "get_network_diagnostics", json!({})).await;
+        assert_eq!(absent["result"]["isError"], true, "{absent}");
+        assert_eq!(tool_text(&absent), "unknown tool: get_network_diagnostics");
+    }
 
     // initialize + notifications/initialized handshake.
     let (_, body) = h

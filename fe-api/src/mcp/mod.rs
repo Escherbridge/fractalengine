@@ -144,6 +144,8 @@ pub enum ToolSeam {
     Extensions,
     /// The binding plane (`ApiConfig.binding_host`; GUI hosts only).
     Bindings,
+    /// The sync-thread diagnostics bridge (`ApiHosts.network_diagnostics`).
+    NetworkDiagnostics,
 }
 
 /// Whether this host wires the seam `spec` needs. `screenshot` (the plain
@@ -162,6 +164,7 @@ pub fn tool_available(spec: &ToolSpec, state: &ApiState, hosts: &ApiHosts) -> bo
         Some(ToolSeam::QaDebug) => state.input.qa_debug.is_some(),
         Some(ToolSeam::Extensions) => hosts.extension.is_some(),
         Some(ToolSeam::Bindings) => hosts.binding.is_some(),
+        Some(ToolSeam::NetworkDiagnostics) => hosts.network_diagnostics.is_some(),
     }
 }
 
@@ -222,7 +225,7 @@ use ScopeRule::{
     BindingTarget, FieldDefArg, Global, HierarchyArgs, HistoryNodeArg, NodeArg, PetalArg, VerseArg,
 };
 
-/// DEC-C14: the 20-name mcp_scene_primitives vocabulary + 9 shipped extras = 29.
+/// DEC-C14: the 20-name mcp_scene_primitives vocabulary plus later additions (55 rows today; README.md MCP surface states the count).
 static TOOLS: &[ToolSpec] = &[
     tool!(get_hierarchy, Viewer, ScopeRule::None,
         "Get the full verse/fractal/petal/node hierarchy, filtered to the token scope. Requires viewer role."),
@@ -299,6 +302,8 @@ static TOOLS: &[ToolSpec] = &[
         "List a petal's geo-positioned nodes with gis.annotation.* data; optional single spatial filter (bbox, bbox_ll, or radius+cx+cz). Requires viewer role + petal scope."),
     tool!(query, Viewer, ScopeRule::None,
         "Run a read-only SurrealQL SELECT through the /api/v1/query guard pipeline (rate limit, SELECT-only, table whitelist, token-scope filter injection, row/byte caps). Requires viewer role."),
+    tool!(get_network_diagnostics, Viewer, Global, requires NetworkDiagnostics,
+        "Read-only peer-network snapshot (relay mode, home relay, peers confined to the token's verses, addresses redacted unless the operator opted in and the caller is Owner). Requires viewer role."),
     // --- R5 MCP parity: device format descriptors + device payload ingest (CDL-SPEC10 A5) ---
     tool!(register_device_format, Manager, VerseArg("verse_id"),
         "Declare a device payload format (format_id + mime + optional informative JSON Schema, never enforced in v1) for a verse; immutable per (verse_id, format_id) — re-declaring the SAME mime is an idempotent success, a DIFFERENT mime is a conflict. Requires manager role + verse scope."),
@@ -791,12 +796,13 @@ mod tests {
         }
         assert_eq!(
             TOOLS.len(),
-            54,
+            55,
             "DEC-C14: 27 non-sim + 5 sim (p2p_asset_streaming S6 added set_petal_render_distance); \
              CDL-SPEC10 A5 added 4 R5 device tools (register/list_device_formats, \
              ingest/list_device_payloads); §screenshot added `screenshot`; \
              agent_vision_20261031 added `get_camera`; agent_input_surface_20261031 added \
-             `inject_input`; the extension platform added 5 host-gated tools"
+             `inject_input`; the extension platform added 5 host-gated tools; \
+             `get_network_diagnostics` (ToolSeam::NetworkDiagnostics) is hidden without the bridge"
         );
         // Binding tools address their scope by ids the dispatcher resolves, never in the handler.
         for name in ["list_bindings", "set_binding", "clear_binding"] {
