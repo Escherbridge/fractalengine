@@ -4999,8 +4999,8 @@ mod tests {
     /// SYNC-RELAYWATCH acceptance: home-relay snapshots fold through the
     /// watcher's emit seam into `SyncStatus.health` (Unknown → Healthy →
     /// Degraded → Healthy), and an unchanged snapshot emits nothing.
-    #[test]
-    fn relay_watch_drives_health_into_sync_status() {
+    #[tokio::test]
+    async fn relay_watch_drives_health_into_sync_status() {
         use crate::status::{
             drain_sync_events, SyncEventReceiverRes, SyncStatus, TilesetEventBuffer,
         };
@@ -5080,6 +5080,129 @@ mod tests {
         );
         assert_eq!(kept, BTreeSet::from([good.clone()]));
         assert_eq!(calls.get(), 4, "both URLs are re-resolved after the TTL");
+
+        // Live-endpoint legs (AC-6/7/8): planned ops applied to a real iroh endpoint. IP-literal public https URLs need no DNS and no private-relay opt-in.
+        const PINNED_RELAY: &str = "https://203.0.113.10/";
+        const CONFIGURED_RELAY: &str = "https://203.0.113.20/";
+        let endpoint = SyncEndpoint::new(iroh::SecretKey::from_bytes(&[7u8; 32]), &RelayConfig::Disabled)
+            .await
+            .expect("endpoint binds with relays disabled");
+        // iroh 1.3 has no public relay-map getter: swap in an equivalent entry, read the previous one, then restore the map.
+        async fn relay_entry(endpoint: &SyncEndpoint, raw: &str) -> Option<Arc<iroh::RelayConfig>> {
+            let url: iroh::RelayUrl = raw.parse().expect("relay url");
+            let previous = endpoint
+                .inner()
+                .insert_relay(url.clone(), advertised_relay_entry(url.clone()))
+                .await;
+            match &previous {
+                Some(entry) => {
+                    endpoint.inner().insert_relay(url, entry.clone()).await;
+                }
+                None => {
+                    endpoint.inner().remove_relay(&url).await;
+                }
+            }
+            previous
+        }
+        async fn apply(adoption: &mut RelayAdoption, ops: Vec<RelayOp>, endpoint: &SyncEndpoint) {
+            for op in ops {
+                match op {
+                    RelayOp::Insert(raw) => insert_planned_relay(adoption, &raw, Some(endpoint)).await,
+                    RelayOp::Remove(raw) => remove_planned_relay(adoption, &raw, Some(endpoint)).await,
+                    RelayOp::Known(_) => {}
+                }
+            }
+        }
+        let pinned_policy = RelayAdvertisePolicy::Pinned(vec![PINNED_RELAY.to_string()]);
+        let plan = |adoption: &mut RelayAdoption, advertised: &BTreeMap<String, BTreeSet<String>>| {
+            adoption.reconciler.plan_tiers(&RelayReconcileInputs {
+                policy: &pinned_policy,
+                advertised,
+                home_connected: None,
+                coverage: BTreeSet::new(),
+                auto_home: false,
+                home_health: RelayHealth::Unknown,
+            })
+        };
+        let adverts = |rows: &[(&str, &[&str])]| -> BTreeMap<String, BTreeSet<String>> {
+            rows.iter()
+                .map(|(verse, urls)| (verse.to_string(), urls.iter().map(|url| url.to_string()).collect()))
+                .collect()
+        };
+        let mut adoption = RelayAdoption::new(RelayReconciler::from_relay_config(&RelayConfig::Disabled));
+        let insert_op = RelayOp::Insert(PINNED_RELAY.to_string());
+        let remove_op = RelayOp::Remove(PINNED_RELAY.to_string());
+
+        // AC-7: a pinned advert enters the live relay map without a token and without a restart.
+        assert!(relay_entry(&endpoint, PINNED_RELAY).await.is_none(), "map starts without the relay");
+        let both = adverts(&[("verse-a", &[PINNED_RELAY]), ("verse-b", &[PINNED_RELAY])]);
+        let ops = plan(&mut adoption, &both);
+        assert_eq!(ops, vec![insert_op.clone()]);
+        apply(&mut adoption, ops, &endpoint).await;
+        let entry = relay_entry(&endpoint, PINNED_RELAY).await.expect("pinned relay is in the live map");
+        assert!(entry.auth_token.is_none(), "an adopted relay never carries a token");
+
+        // AC-8: one verse withdrawing keeps the relay; the last withdrawal removes it.
+        let ops = plan(&mut adoption, &adverts(&[("verse-b", &[PINNED_RELAY])]));
+        assert!(ops.is_empty(), "refcount 1 keeps the relay: {ops:?}");
+        assert!(relay_entry(&endpoint, PINNED_RELAY).await.is_some());
+        let ops = plan(&mut adoption, &adverts(&[]));
+        assert_eq!(ops, vec![remove_op.clone()]);
+        apply(&mut adoption, ops, &endpoint).await;
+        assert!(relay_entry(&endpoint, PINNED_RELAY).await.is_none(), "refcount zero removes it from the live map");
+
+        // AC-6: three failed health checks remove an adopted relay and keep it out while cooled.
+        let ops = plan(&mut adoption, &both);
+        apply(&mut adoption, ops, &endpoint).await;
+        assert!(relay_entry(&endpoint, PINNED_RELAY).await.is_some());
+        adoption.replan = false;
+        let start = std::time::Instant::now();
+        for _ in 1..ADOPTED_RELAY_FAILURE_LIMIT {
+            adoption.record_probe(PINNED_RELAY, false, start);
+        }
+        assert!(!adoption.replan && !adoption.health.is_failed(PINNED_RELAY), "below the limit nothing is removed");
+        adoption.record_probe(PINNED_RELAY, false, start);
+        assert!(adoption.replan && adoption.health.is_failed(PINNED_RELAY));
+        // Mirrors reconcile_advertised_relays: failed relays are filtered out of the advertised set.
+        let without_failed = |adoption: &RelayAdoption| {
+            let mut advertised = both.clone();
+            for urls in advertised.values_mut() {
+                urls.retain(|url| !adoption.health.is_failed(url));
+            }
+            advertised
+        };
+        let advertised = without_failed(&adoption);
+        let ops = plan(&mut adoption, &advertised);
+        assert_eq!(ops, vec![remove_op.clone()]);
+        apply(&mut adoption, ops, &endpoint).await;
+        assert!(relay_entry(&endpoint, PINNED_RELAY).await.is_none(), "unhealthy adopted relay left the live map");
+        let advertised = without_failed(&adoption);
+        let ops = plan(&mut adoption, &advertised);
+        assert!(ops.is_empty(), "a cooled relay is not re-inserted: {ops:?}");
+        assert!(adoption.health.release_cooled(start + ADOPTED_RELAY_FAILED_COOLDOWN + std::time::Duration::from_secs(1)));
+        let advertised = without_failed(&adoption);
+        let ops = plan(&mut adoption, &advertised);
+        assert_eq!(ops, vec![insert_op], "after the cooldown the relay is adopted again");
+        apply(&mut adoption, ops, &endpoint).await;
+        assert!(relay_entry(&endpoint, PINNED_RELAY).await.is_some());
+
+        // A configured relay keeps its token entry: the planner never plans it and a direct removal is refused.
+        let configured_url: iroh::RelayUrl = CONFIGURED_RELAY.parse().expect("relay url");
+        endpoint
+            .inner()
+            .insert_relay(
+                configured_url.clone(),
+                Arc::new(iroh::RelayConfig::new(configured_url, None).with_auth_token("operator-token")),
+            )
+            .await;
+        let mut configured_adoption =
+            RelayAdoption::new(RelayReconciler::new(BTreeSet::from([CONFIGURED_RELAY.to_string()])));
+        let ops = plan(&mut configured_adoption, &adverts(&[("verse-a", &[CONFIGURED_RELAY])]));
+        assert!(ops.is_empty(), "an advert naming a configured relay plans nothing: {ops:?}");
+        apply(&mut configured_adoption, vec![RelayOp::Remove(CONFIGURED_RELAY.to_string())], &endpoint).await;
+        let kept = relay_entry(&endpoint, CONFIGURED_RELAY).await.expect("configured relay survives");
+        assert_eq!(kept.auth_token.as_deref(), Some("operator-token"));
+        endpoint.shutdown().await;
     }
 
     #[test]
