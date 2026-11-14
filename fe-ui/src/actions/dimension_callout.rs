@@ -113,22 +113,37 @@ pub(crate) fn callout_anchor_position(geometry: &CalloutGeometry) -> [f32; 3] {
     ]
 }
 
-/// Display name for a freshly-created callout node, e.g. `"Dimension 12.5 m"`.
-/// Reads the SAME readout row the Options panel already shows, so the node's
-/// name never disagrees with what the user just saw.
-pub(crate) fn callout_display_name(measure: &MeasureState, world_scale: f64) -> String {
+/// The readout value for the callout's mode (`"12.5 m"`), from the one shared readout math.
+fn readout_value(measure: &MeasureState, world_scale: f64) -> String {
     let out = crate::node_manager::measure::readout(measure, world_scale);
     let rows = crate::node_manager::measure::readout_rows(&out, measure.closed);
     let wanted = match measure.mode {
         MeasureMode::Tape => "Distance",
         MeasureMode::Area => "Area",
     };
-    let value = rows
-        .into_iter()
+    rows.into_iter()
         .find(|(label, _)| *label == wanted)
         .map(|(_, v)| v)
-        .unwrap_or_default();
-    format!("Dimension {value}")
+        .unwrap_or_default()
+}
+
+/// Display name for a freshly-created callout node, e.g. `"Dimension 12.5 m"`.
+pub(crate) fn callout_display_name(measure: &MeasureState, world_scale: f64) -> String {
+    format!("Dimension {}", readout_value(measure, world_scale))
+}
+
+/// In-world label text for a stored callout, recomputed per frame (A12), equal to the node name's readout.
+pub(crate) fn callout_label_text(geometry: &CalloutGeometry, world_scale: f64) -> String {
+    let measure = MeasureState {
+        mode: geometry.mode,
+        anchors: geometry
+            .anchors
+            .iter()
+            .map(|a| [a[0] as f32, a[1] as f32, a[2] as f32])
+            .collect(),
+        closed: geometry.closed,
+    };
+    readout_value(&measure, world_scale)
 }
 
 /// Extract the callout id from a `callout:{id}` correlation id.
@@ -360,13 +375,7 @@ pub(crate) fn save_measure_as_callout(
     }
 }
 
-/// Draws every visible callout in the active petal as gizmo line segments
-/// (+ the closing edge for Area), always — not mode-gated, outside the
-/// selection chain (`node_manager::mod` registers this next to
-/// `billboard::billboard_face_camera`). The in-world readout LABEL (A12:
-/// recomputed here, never stored — see `callout_display_name`) is deferred to
-/// a future egui-pass wiring (`fe-ui/src/viewport_labels.rs`'s pattern); only
-/// the geometry is drawn by this slice (RUNBOOK §4 user-gated in-app pass).
+/// Draws every visible callout in the active petal as gizmo lines (+ the closing edge for Area).
 pub(crate) fn draw_dimension_callouts(
     map: Res<DimensionCalloutMap>,
     nav: Res<NavigationManager>,
@@ -388,6 +397,51 @@ pub(crate) fn draw_dimension_callouts(
                 gizmos.line(*last, *first, CALLOUT_COLOR);
             }
         }
+    }
+}
+
+/// Paints each visible callout's readout at its anchor position (egui pass, like `viewport_labels`).
+pub(crate) fn draw_dimension_callout_labels(
+    mut ctx: bevy_egui::EguiContexts,
+    map: Res<DimensionCalloutMap>,
+    nav: Res<NavigationManager>,
+    vis: Res<VisibilityState>,
+    petal_map: Res<crate::plugin::PetalMapState>,
+    viewport_rect: Res<crate::plugin::ViewportRect>,
+    cameras: Query<(&Camera, &GlobalTransform), With<fe_renderer::camera::OrbitCameraController>>,
+) {
+    use bevy_egui::egui;
+    if map.nodes.is_empty() {
+        return;
+    }
+    let Ok((camera, cam_tx)) = cameras.single() else {
+        return;
+    };
+    let Ok(ectx) = ctx.ctx_mut() else { return };
+    let world_scale = crate::node_manager::measure::measure_world_scale(
+        &petal_map,
+        nav.active_petal_id.as_deref(),
+    );
+    let painter = ectx.layer_painter(egui::LayerId::new(
+        egui::Order::Background,
+        egui::Id::new("dimension_callout_labels"),
+    ));
+    for geometry in visible_callouts(&map, &nav, &vis) {
+        let world = Vec3::from(callout_anchor_position(geometry));
+        let Ok(screen) = camera.world_to_viewport(cam_tx, world) else {
+            continue;
+        };
+        let pos = egui::pos2(screen.x, screen.y - 14.0);
+        if !viewport_rect.0.contains(pos) {
+            continue;
+        }
+        painter.text(
+            pos,
+            egui::Align2::CENTER_BOTTOM,
+            callout_label_text(geometry, world_scale),
+            egui::FontId::proportional(12.0),
+            crate::theme::TEXT_VIEWPORT_HINT,
+        );
     }
 }
 
@@ -456,6 +510,16 @@ mod tests {
         assert_eq!(geometry.mode, MeasureMode::Area);
         assert!(geometry.closed);
         assert_eq!(geometry.anchors.len(), 3);
+
+        // The in-world label equals the created node's readout at any world scale.
+        for world_scale in [1.0_f64, 0.01] {
+            let hundred_metre_tape = tape(vec![[0.0, 0.0, 0.0], [100.0 * world_scale as f32, 0.0, 0.0]], false);
+            let tape_geometry = callout_from_measure(&hundred_metre_tape).expect("tape");
+            assert_eq!(
+                format!("Dimension {}", callout_label_text(&tape_geometry, world_scale)),
+                callout_display_name(&hundred_metre_tape, world_scale)
+            );
+        }
     }
 
     #[test]
