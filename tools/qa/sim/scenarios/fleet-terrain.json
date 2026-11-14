@@ -1,0 +1,646 @@
+{
+  "name": "fleet-terrain",
+  "description": "Terrain and roadway fleet journey (H6-6): on the QA Terrain fixture the owner imports three small roadway GPX tracks (tools/qa/sim/assets/roads/*.gpx, placed inside the fixture tileset bounds around lat -0.0027 lon 0.0027) over Petal A, the editor installs the fleet-sim extension, and three route-following movers whose fleet.config names the imported tracks run at 2 Hz for 2 minutes. Expects the tracks and route geometry on every peer and every mover transform in agreement on every peer. Gaps: no probe exposes terrain height or a range predicate, so 'within the tileset bounds' and 'Y within 2 m of terrain' are not asserted (the roads are short enough to stay inside by construction); the REST GPX route is multipart and the driver has no multipart GPX op, so the MCP import_gpx door carries the same GPX bytes as inline base64 (NEEDS driver op for the files; CLOCK-12 owns driver.py); an import does not write gpx_points, so the scenario sets it from the same coordinates.",
+  "seed": 20261113,
+  "fixture": "terrain",
+  "verse_name": "QA Terrain",
+  "assets": "generated",
+  "peers": [
+    {
+      "name": "owner",
+      "role": "owner"
+    },
+    {
+      "name": "editor",
+      "role": "editor"
+    },
+    {
+      "name": "viewer",
+      "role": "viewer"
+    }
+  ],
+  "probe": {
+    "rest_ms": 500,
+    "hierarchy_ms": 2000,
+    "ui_ms": 1000,
+    "query_ms": 5000,
+    "host_ms": 2000
+  },
+  "steps": [
+    {
+      "id": "0",
+      "title": "Preflight: every peer in the shared terrain verse",
+      "settle_s": 15,
+      "actions": [
+        {
+          "peer": "editor",
+          "via": "gui",
+          "op": "click",
+          "args": {
+            "name": "Close window",
+            "role": "button"
+          },
+          "optional": true
+        },
+        {
+          "peer": "editor",
+          "via": "gui",
+          "op": "click",
+          "args": {
+            "name": "Open verse QA Terrain"
+          },
+          "optional": true
+        },
+        {
+          "peer": "viewer",
+          "via": "gui",
+          "op": "click",
+          "args": {
+            "name": "Close window",
+            "role": "button"
+          },
+          "optional": true
+        },
+        {
+          "peer": "viewer",
+          "via": "gui",
+          "op": "click",
+          "args": {
+            "name": "Open verse QA Terrain"
+          },
+          "optional": true
+        }
+      ],
+      "expect": [
+        {
+          "probe": "role",
+          "target": "$fixture.verse_id",
+          "peers": [
+            "owner"
+          ],
+          "predicate": "equals",
+          "value": "owner"
+        },
+        {
+          "probe": "role",
+          "target": "$fixture.verse_id",
+          "peers": [
+            "editor"
+          ],
+          "predicate": "equals",
+          "value": "editor"
+        },
+        {
+          "probe": "role",
+          "target": "$fixture.verse_id",
+          "peers": [
+            "viewer"
+          ],
+          "predicate": "equals",
+          "value": "viewer"
+        }
+      ]
+    },
+    {
+      "id": "1",
+      "title": "Owner imports three roadway tracks over the terrain petal and sets their route geometry",
+      "settle_s": 60,
+      "covers": [
+        "H6-6"
+      ],
+      "note": "Each GPX is centred on its own bounding box, so every track node lands near the petal origin and the three roads cross there. The route geometry is in the same local metres (x east, z north).",
+      "actions": [
+        {
+          "id": "gpx_a",
+          "peer": "owner",
+          "via": "mcp",
+          "op": "import_gpx",
+          "args": {
+            "petal_id": "$fixture.petal_a_id",
+            "data_base64": "PD94bWwgdmVyc2lvbj0iMS4wIiBlbmNvZGluZz0iVVRGLTgiPz4KPGdweCB2ZXJzaW9uPSIxLjEiIGNyZWF0b3I9ImZlLXFhLXNpbSIgeG1sbnM9Imh0dHA6Ly93d3cudG9wb2dyYWZpeC5jb20vR1BYLzEvMSI+CiAgPHRyaz4KICAgIDxuYW1lPlJvYWQgQTwvbmFtZT4KICAgIDx0cmtzZWc+CiAgICAgIDx0cmtwdCBsYXQ9Ii0wLjAwMzAiIGxvbj0iMC4wMDEwIj48ZWxlPjA8L2VsZT48L3Rya3B0PgogICAgICA8dHJrcHQgbGF0PSItMC4wMDMwIiBsb249IjAuMDAyMCI+PGVsZT4wPC9lbGU+PC90cmtwdD4KICAgICAgPHRya3B0IGxhdD0iLTAuMDAzMCIgbG9uPSIwLjAwMzAiPjxlbGU+MDwvZWxlPjwvdHJrcHQ+CiAgICAgIDx0cmtwdCBsYXQ9Ii0wLjAwMzAiIGxvbj0iMC4wMDQwIj48ZWxlPjA8L2VsZT48L3Rya3B0PgogICAgPC90cmtzZWc+CiAgPC90cms+CjwvZ3B4Pgo="
+          },
+          "sync": "+2"
+        },
+        {
+          "id": "gpx_b",
+          "peer": "owner",
+          "via": "mcp",
+          "op": "import_gpx",
+          "args": {
+            "petal_id": "$fixture.petal_a_id",
+            "data_base64": "PD94bWwgdmVyc2lvbj0iMS4wIiBlbmNvZGluZz0iVVRGLTgiPz4KPGdweCB2ZXJzaW9uPSIxLjEiIGNyZWF0b3I9ImZlLXFhLXNpbSIgeG1sbnM9Imh0dHA6Ly93d3cudG9wb2dyYWZpeC5jb20vR1BYLzEvMSI+CiAgPHRyaz4KICAgIDxuYW1lPlJvYWQgQjwvbmFtZT4KICAgIDx0cmtzZWc+CiAgICAgIDx0cmtwdCBsYXQ9Ii0wLjAwNDUiIGxvbj0iMC4wMDI1Ij48ZWxlPjA8L2VsZT48L3Rya3B0PgogICAgICA8dHJrcHQgbGF0PSItMC4wMDM1IiBsb249IjAuMDAyNSI+PGVsZT4wPC9lbGU+PC90cmtwdD4KICAgICAgPHRya3B0IGxhdD0iLTAuMDAyNSIgbG9uPSIwLjAwMjUiPjxlbGU+MDwvZWxlPjwvdHJrcHQ+CiAgICAgIDx0cmtwdCBsYXQ9Ii0wLjAwMTUiIGxvbj0iMC4wMDI1Ij48ZWxlPjA8L2VsZT48L3Rya3B0PgogICAgPC90cmtzZWc+CiAgPC90cms+CjwvZ3B4Pgo="
+          },
+          "sync": "+2"
+        },
+        {
+          "id": "gpx_c",
+          "peer": "owner",
+          "via": "mcp",
+          "op": "import_gpx",
+          "args": {
+            "petal_id": "$fixture.petal_a_id",
+            "data_base64": "PD94bWwgdmVyc2lvbj0iMS4wIiBlbmNvZGluZz0iVVRGLTgiPz4KPGdweCB2ZXJzaW9uPSIxLjEiIGNyZWF0b3I9ImZlLXFhLXNpbSIgeG1sbnM9Imh0dHA6Ly93d3cudG9wb2dyYWZpeC5jb20vR1BYLzEvMSI+CiAgPHRyaz4KICAgIDxuYW1lPlJvYWQgQzwvbmFtZT4KICAgIDx0cmtzZWc+CiAgICAgIDx0cmtwdCBsYXQ9Ii0wLjAwNDAiIGxvbj0iMC4wMDE1Ij48ZWxlPjA8L2VsZT48L3Rya3B0PgogICAgICA8dHJrcHQgbGF0PSItMC4wMDMwIiBsb249IjAuMDAyNSI+PGVsZT4wPC9lbGU+PC90cmtwdD4KICAgICAgPHRya3B0IGxhdD0iLTAuMDAyMCIgbG9uPSIwLjAwMzUiPjxlbGU+MDwvZWxlPjwvdHJrcHQ+CiAgICA8L3Rya3NlZz4KICA8L3Ryaz4KPC9ncHg+Cg=="
+          },
+          "sync": "+2"
+        },
+        {
+          "id": "road_a",
+          "peer": "owner",
+          "via": "rest",
+          "op": "lookup_node",
+          "args": {
+            "petal_id": "$fixture.petal_a_id",
+            "name": "Road A",
+            "wait_s": 20
+          },
+          "needs": [
+            "gpx_a"
+          ]
+        },
+        {
+          "id": "road_b",
+          "peer": "owner",
+          "via": "rest",
+          "op": "lookup_node",
+          "args": {
+            "petal_id": "$fixture.petal_a_id",
+            "name": "Road B",
+            "wait_s": 20
+          },
+          "needs": [
+            "gpx_b"
+          ]
+        },
+        {
+          "id": "road_c",
+          "peer": "owner",
+          "via": "rest",
+          "op": "lookup_node",
+          "args": {
+            "petal_id": "$fixture.petal_a_id",
+            "name": "Road C",
+            "wait_s": 20
+          },
+          "needs": [
+            "gpx_c"
+          ]
+        },
+        {
+          "id": "geom_a",
+          "peer": "owner",
+          "via": "rest",
+          "op": "set_property",
+          "args": {
+            "node_id": "$road_a.id",
+            "key": "gpx_points",
+            "value": [
+              [
+                -167,
+                0,
+                0
+              ],
+              [
+                -56,
+                0,
+                0
+              ],
+              [
+                56,
+                0,
+                0
+              ],
+              [
+                167,
+                0,
+                0
+              ]
+            ]
+          },
+          "needs": [
+            "road_a"
+          ]
+        },
+        {
+          "id": "geom_b",
+          "peer": "owner",
+          "via": "rest",
+          "op": "set_property",
+          "args": {
+            "node_id": "$road_b.id",
+            "key": "gpx_points",
+            "value": [
+              [
+                0,
+                0,
+                -166
+              ],
+              [
+                0,
+                0,
+                -55
+              ],
+              [
+                0,
+                0,
+                55
+              ],
+              [
+                0,
+                0,
+                166
+              ]
+            ]
+          },
+          "needs": [
+            "road_b"
+          ]
+        },
+        {
+          "id": "geom_c",
+          "peer": "owner",
+          "via": "rest",
+          "op": "set_property",
+          "args": {
+            "node_id": "$road_c.id",
+            "key": "gpx_points",
+            "value": [
+              [
+                -111,
+                0,
+                -111
+              ],
+              [
+                0,
+                0,
+                0
+              ],
+              [
+                111,
+                0,
+                111
+              ]
+            ]
+          },
+          "needs": [
+            "road_c"
+          ]
+        }
+      ],
+      "expect": [
+        {
+          "probe": "node",
+          "target": "$road_a.id",
+          "predicate": "present",
+          "peers": "all",
+          "within_s": 30
+        },
+        {
+          "probe": "node",
+          "target": "$road_b.id",
+          "predicate": "present",
+          "peers": "all",
+          "within_s": 30
+        },
+        {
+          "probe": "node",
+          "target": "$road_c.id",
+          "predicate": "present",
+          "peers": "all",
+          "within_s": 30
+        },
+        {
+          "probe": "properties",
+          "target": "$road_a.id",
+          "path": "gpx_points",
+          "peers": "all",
+          "predicate": "present",
+          "within_s": 30
+        },
+        {
+          "probe": "properties",
+          "target": "$road_b.id",
+          "path": "gpx_points",
+          "peers": "all",
+          "predicate": "present",
+          "within_s": 30
+        },
+        {
+          "probe": "properties",
+          "target": "$road_c.id",
+          "path": "gpx_points",
+          "peers": "all",
+          "predicate": "present",
+          "within_s": 30
+        }
+      ]
+    },
+    {
+      "id": "2",
+      "title": "Policy, install, consent, fleet config naming the imported roads, bind",
+      "settle_s": 40,
+      "covers": [
+        "R18",
+        "R22"
+      ],
+      "actions": [
+        {
+          "id": "policy",
+          "peer": "owner",
+          "via": "rest",
+          "op": "set_extension_policy",
+          "args": {
+            "verse_id": "$fixture.verse_id",
+            "mode": "allow-list",
+            "allow": [
+              {
+                "package_id": "org.example.fleet-sim",
+                "content_hash": "$run.packages.fleet-sim.content_hash"
+              }
+            ],
+            "ceilings": {
+              "egress": "none"
+            }
+          }
+        },
+        {
+          "id": "inst",
+          "peer": "editor",
+          "via": "ext",
+          "op": "ext_install",
+          "args": {
+            "package": "fleet-sim",
+            "verse_id": "$fixture.verse_id"
+          },
+          "needs": [
+            "policy"
+          ],
+          "sync": "+5"
+        },
+        {
+          "id": "mover0",
+          "peer": "editor",
+          "via": "rest",
+          "op": "create_node",
+          "args": {
+            "fractal_id": "$fixture.fractal_id",
+            "petal_id": "$fixture.petal_a_id",
+            "name": "mover0",
+            "position": [
+              0,
+              0,
+              0
+            ]
+          },
+          "needs": [
+            "inst"
+          ]
+        },
+        {
+          "id": "mover1",
+          "peer": "editor",
+          "via": "rest",
+          "op": "create_node",
+          "args": {
+            "fractal_id": "$fixture.fractal_id",
+            "petal_id": "$fixture.petal_a_id",
+            "name": "mover1",
+            "position": [
+              0,
+              0,
+              0
+            ]
+          },
+          "needs": [
+            "inst"
+          ]
+        },
+        {
+          "id": "mover2",
+          "peer": "editor",
+          "via": "rest",
+          "op": "create_node",
+          "args": {
+            "fractal_id": "$fixture.fractal_id",
+            "petal_id": "$fixture.petal_a_id",
+            "name": "mover2",
+            "position": [
+              0,
+              0,
+              0
+            ]
+          },
+          "needs": [
+            "inst"
+          ]
+        },
+        {
+          "id": "fleet",
+          "peer": "editor",
+          "via": "rest",
+          "op": "create_node",
+          "args": {
+            "fractal_id": "$fixture.fractal_id",
+            "petal_id": "$fixture.petal_a_id",
+            "name": "fleet",
+            "position": [
+              0,
+              0,
+              0
+            ]
+          },
+          "needs": [
+            "inst"
+          ]
+        },
+        {
+          "id": "fleet_cfg",
+          "peer": "editor",
+          "via": "rest",
+          "op": "set_property",
+          "args": {
+            "node_id": "$fleet.id",
+            "key": "fleet.config",
+            "value": {
+              "anchors": [
+                "mover0",
+                "mover1",
+                "mover2"
+              ],
+              "sensors": [],
+              "movers": [
+                {
+                  "node": "mover0",
+                  "route": "Road A",
+                  "speed_mps": 8,
+                  "loop": true
+                },
+                {
+                  "node": "mover1",
+                  "route": "Road B",
+                  "speed_mps": 10,
+                  "loop": true
+                },
+                {
+                  "node": "mover2",
+                  "route": "Road C",
+                  "speed_mps": 12,
+                  "loop": true
+                }
+              ],
+              "mover_tick_ms": 500,
+              "start_ms": 1000000,
+              "duration_ms": 120000
+            }
+          },
+          "needs": [
+            "fleet"
+          ]
+        },
+        {
+          "id": "consent",
+          "peer": "editor",
+          "via": "ext",
+          "op": "ext_consent",
+          "args": {
+            "package": "fleet-sim"
+          },
+          "needs": [
+            "inst"
+          ]
+        },
+        {
+          "id": "bound",
+          "peer": "editor",
+          "via": "ext",
+          "op": "ext_bind",
+          "args": {
+            "installation": "$consent.installation",
+            "petal_id": "$fixture.petal_a_id",
+            "config": {
+              "movers": 3,
+              "hz": 2,
+              "routes": [
+                "Road A",
+                "Road B",
+                "Road C"
+              ]
+            },
+            "discover": "mover"
+          },
+          "needs": [
+            "consent",
+            "fleet_cfg",
+            "mover0",
+            "mover1",
+            "mover2"
+          ]
+        }
+      ],
+      "expect": [
+        {
+          "probe": "extension",
+          "target": "$consent.installation",
+          "path": "state",
+          "peers": [
+            "editor"
+          ],
+          "predicate": "equals",
+          "value": "active",
+          "within_s": 30
+        },
+        {
+          "probe": "properties",
+          "target": "$fleet.id",
+          "path": "fleet.config",
+          "peers": "all",
+          "predicate": "present",
+          "within_s": 30
+        }
+      ]
+    },
+    {
+      "id": "3",
+      "title": "Three movers follow the imported roads at 2 Hz for 2 minutes: transforms agree on every peer",
+      "settle_s": 140,
+      "covers": [
+        "R4",
+        "R5"
+      ],
+      "note": "Run is bounded by hold_s 120. Terrain height and tileset-bounds checks need a height probe and a range predicate (see the description); agreement on every peer is the asserted observable.",
+      "actions": [
+        {
+          "id": "start",
+          "peer": "editor",
+          "via": "rest",
+          "op": "extension_command",
+          "args": {
+            "installation": "$consent.installation",
+            "petal_id": "$fixture.petal_a_id",
+            "command": "start",
+            "args": {}
+          }
+        }
+      ],
+      "expect": [
+        {
+          "probe": "transform",
+          "target": "$mover0.id",
+          "path": "position",
+          "predicate": "agree",
+          "peers": "all",
+          "within_s": 90,
+          "after": "start"
+        },
+        {
+          "probe": "transform",
+          "target": "$mover1.id",
+          "path": "position",
+          "predicate": "agree",
+          "peers": "all",
+          "within_s": 90,
+          "after": "start"
+        },
+        {
+          "probe": "transform",
+          "target": "$mover2.id",
+          "path": "position",
+          "predicate": "agree",
+          "peers": "all",
+          "within_s": 90,
+          "after": "start"
+        },
+        {
+          "probe": "extension",
+          "target": "$consent.installation",
+          "path": "counters.refusals",
+          "peers": [
+            "editor"
+          ],
+          "predicate": "equals",
+          "value": 0,
+          "within_s": 60,
+          "after": "start"
+        },
+        {
+          "probe": "ui",
+          "target": "view",
+          "path": "notice.text",
+          "peers": [
+            "editor"
+          ],
+          "predicate": "excludes",
+          "value": "504",
+          "mode": "always",
+          "hold_s": 120
+        },
+        {
+          "probe": "alive",
+          "target": "all",
+          "predicate": "present",
+          "mode": "always",
+          "hold_s": 10
+        }
+      ]
+    }
+  ]
+}
