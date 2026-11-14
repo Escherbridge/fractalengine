@@ -19,8 +19,9 @@
     "backend_compile": "integrated production build passed; latest baseline a1a8691b",
     "live_both_scenario": "pass13 all38 functional checks and local restart passed; distributed restart/final combined acceptance pending",
     "integrated_sweep": "pending",
-    "latest_focused_packet": "pass33; not final full coverage"
+    "latest_focused_packet": "pass33; not final full coverage",
+    "round4_2026_11_13": "RD2, RD3 and native Viewer Join ticked (source/focused evidence). DATA-01..03 and DATA-06 code done, live runs user-gated. Membership convergence deferred per scene_publication/AGENTS.md:120-122. QA-0035/0063/0064/0066/0068 closed or fixed_verified_focused; QA-0065/0067 fixed_verified_focused; QA-0069 fixed_verified under project_completion_20261104."
   },
-  "updated_at": "2026-11-04",
+  "updated_at": "2026-11-13",
   "completion_track": "../project_completion_20261104/metadata.json"
 }

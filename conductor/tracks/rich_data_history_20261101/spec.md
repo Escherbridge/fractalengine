@@ -61,7 +61,7 @@ as a single object's history is explicitly labeled. Tools expose the common capa
 unsupported mixed operations refuse as a whole. Supported group transformations use an explicit shared
 selection-center pivot, capture all original poses and versions once, restore all on cancellation, and
 commit atomically with one Undo action. Paths and derived stamps require their own truthful adapters.
-Existing group commands have an unmapped replication gap; local success cannot establish peer sharing.
+Group registry changes publish with the petal row (QA-0123). Group membership transactions are not yet convergent: the scene publication seam defers them (fe-database/src/handlers/scene_publication/AGENTS.md:120-122). Peer visibility still needs an in-app paired check before it is claimed.
 
 History playback exposes completed saves. Individual field audit facts remain available, but an interior
 atomic-save cut returns no reconstructed state and points to the completed boundary. Explicit validated
