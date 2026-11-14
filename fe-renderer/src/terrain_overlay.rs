@@ -4,6 +4,18 @@
 use crate::terrain_height::TerrainHeightField;
 use bevy::prelude::*;
 
+/// Session-only sub-toggle for the cut/fill heatmap drape on the proposal overlay (default on); fe-ui binds it, fe-terrain reads it.
+#[derive(Resource, Debug, Clone, Copy, PartialEq, Eq)]
+pub struct HeatmapOverlayToggle {
+    pub enabled: bool,
+}
+
+impl Default for HeatmapOverlayToggle {
+    fn default() -> Self {
+        Self { enabled: true }
+    }
+}
+
 /// Marker for spawned proposal ghost geometry (analytics overlay, not true terrain).
 #[derive(Component, Debug, Clone, Copy)]
 pub struct ProposalGhost;

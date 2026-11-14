@@ -275,20 +275,8 @@ impl Default for ProposalOverlayBudget {
     }
 }
 
-/// Sub-toggle for the FR-2 cut/fill heatmap drape within the `ProposalOverlay`
-/// layer (OD-10): the layer itself still gates everything via
-/// `sync_layer_visibility`; this only hides the heatmap drape while the ghost
-/// (and baked terrain) stay visible. Defaults on (OD-8).
-#[derive(Resource, Debug, Clone, Copy, PartialEq, Eq)]
-pub struct HeatmapOverlayToggle {
-    pub enabled: bool,
-}
-
-impl Default for HeatmapOverlayToggle {
-    fn default() -> Self {
-        Self { enabled: true }
-    }
-}
+/// Heatmap drape sub-toggle (OD-8/OD-10); lives in the fe-renderer seam so fe-ui can bind it.
+pub use fe_renderer::terrain_overlay::HeatmapOverlayToggle;
 
 /// Marker for a committed proposal's FR-2 heatmap drape; own marker/owner
 /// (delta-viz tripwire) — `render_terrain_proposals` despawns it alongside

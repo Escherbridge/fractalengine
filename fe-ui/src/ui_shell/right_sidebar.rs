@@ -114,6 +114,8 @@ pub struct RightSidebarState {
     /// Settings-section residency readout, refreshed by `update_residency_readout`.
     pub residency: ResidencyReadout,
     pub(crate) width: super::layout_policy::PanelWidthState,
+    /// Session-only "Cut/fill colors" checkbox; mirrored to the fe-renderer toggle by `sync_heatmap_overlay_toggle`.
+    pub heatmap_overlay: fe_renderer::terrain_overlay::HeatmapOverlayToggle,
 }
 
 /// What is resident right now (D-74 pointer-set): ledger nodes + stamp groups,
@@ -145,7 +147,22 @@ pub fn update_residency_readout(
     ledger: bevy::prelude::Res<crate::verse_manager::ResidencyLedger>,
     stats: Option<bevy::prelude::Res<fe_runtime::diag15m::ResidencyStats>>,
     mut state: bevy::prelude::ResMut<RightSidebarState>,
+    toggle: Option<bevy::prelude::ResMut<fe_renderer::terrain_overlay::HeatmapOverlayToggle>>,
+    mut last_synced: bevy::prelude::Local<fe_renderer::terrain_overlay::HeatmapOverlayToggle>,
 ) {
+    use bevy::ecs::change_detection::DetectChangesMut;
+    if let Some(mut toggle) = toggle {
+        // Bypass deref so an unchanged frame does not flag change detection.
+        let (state_ref, toggle_ref) = (state.bypass_change_detection(), toggle.bypass_change_detection());
+        let (before_state, before_toggle) = (state_ref.heatmap_overlay, *toggle_ref);
+        mirror_heatmap_overlay_toggle(state_ref, toggle_ref, &mut last_synced);
+        if state_ref.heatmap_overlay != before_state {
+            state.set_changed();
+        }
+        if *toggle_ref != before_toggle {
+            toggle.set_changed();
+        }
+    }
     let stats = stats.as_deref().copied().unwrap_or_default();
     let next = ResidencyReadout {
         nodes: ledger.node_count(),
@@ -155,6 +172,23 @@ pub fn update_residency_readout(
     };
     if state.residency != next {
         state.residency = next;
+    }
+}
+
+/// Two-way mirror between the sidebar checkbox and the renderer toggle, writing only on change.
+fn mirror_heatmap_overlay_toggle(
+    state: &mut RightSidebarState,
+    toggle: &mut fe_renderer::terrain_overlay::HeatmapOverlayToggle,
+    last_synced: &mut fe_renderer::terrain_overlay::HeatmapOverlayToggle,
+) {
+    if state.heatmap_overlay != *last_synced {
+        *last_synced = state.heatmap_overlay;
+        if *toggle != *last_synced {
+            *toggle = *last_synced;
+        }
+    } else if *toggle != *last_synced {
+        *last_synced = *toggle;
+        state.heatmap_overlay = *toggle;
     }
 }
 
@@ -709,6 +743,7 @@ fn render_terrain_tools_section(
     role:&LocalUserRole,
 ) {
     terrain_tools_panel::ensure_defaults(tool_panel_state);
+    let mut heatmap_overlay = state.heatmap_overlay;
     section_chrome(ctx, state, RightSidebarSection::TerrainTools, |ui| {
         terrain_tools_panel::render_palette(ui, tool_panel_state);
         ui.add_space(6.0);
@@ -716,8 +751,9 @@ fn render_terrain_tools_section(
         ui.add_space(6.0);
         ui.separator();
         ui.add_space(6.0);
-        terrain_tools_panel::render_proposal_list(ui, proposal_state, ui_mgr);
+        terrain_tools_panel::render_proposal_list(ui, proposal_state, ui_mgr, &mut heatmap_overlay);
     });
+    state.heatmap_overlay = heatmap_overlay;
 }
 
 /// Measured terrain/material/object report with optional footprint geometry.

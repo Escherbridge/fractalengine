@@ -254,6 +254,7 @@ pub(crate) fn render_proposal_list(
     ui: &mut egui::Ui,
     proposal_state: &mut ProposalEditState,
     ui_mgr: &mut UiManager,
+    heatmap_overlay: &mut fe_renderer::terrain_overlay::HeatmapOverlayToggle,
 ) {
     ui.label(
         egui::RichText::new("Proposals")
@@ -270,6 +271,11 @@ pub(crate) fn render_proposal_list(
         );
         return;
     }
+
+    ui.checkbox(&mut heatmap_overlay.enabled, "Cut/fill colors")
+        .named(ui, "Cut/fill colors")
+        .on_hover_text("Shade the proposed change: red = cut, blue = fill");
+    ui.add_space(2.0);
 
     // Collect an owned display list first (id, debug label) so the loop below
     // holds no live borrow of `proposal_state.proposals` — lets it freely
