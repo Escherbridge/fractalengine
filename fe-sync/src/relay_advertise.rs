@@ -21,6 +21,12 @@ pub const ADVERT_ISSUED_SKEW_MS: u64 = 60_000;
 /// Bound on quarantined advertisements across all verses (same posture as `__shards`).
 pub const RELAY_QUARANTINE_CAP: usize = 1024;
 
+/// Bound on remembered withdrawals per verse.
+pub const RELAY_TOMBSTONE_PER_VERSE_CAP: usize = 64;
+
+/// Bound on remembered withdrawals across all verses.
+pub const RELAY_TOMBSTONE_CAP: usize = 1024;
+
 /// Bound on quarantined advertisements one author holds in one verse.
 pub const RELAY_QUARANTINE_PER_AUTHOR_CAP: usize = 8;
 
@@ -62,6 +68,14 @@ struct QuarantinedAdvert {
     arrival: u64,
 }
 
+/// A Manager+ withdrawal remembered so an older cross-author row arriving later cannot resurrect the record.
+#[derive(Debug, Clone)]
+struct TombstoneMemo {
+    tombstoner_did: String,
+    seen_at_ms: u64,
+    arrival: u64,
+}
+
 /// Per-verse eligible advertisements, the bounded visible subset emitted as changes, and a per-author bounded quarantine.
 #[derive(Debug, Default)]
 pub struct RelayAdvertisementBook {
@@ -76,6 +90,11 @@ pub struct RelayAdvertisementBook {
     quarantine_arrivals: u64,
     quarantine_evicted: u64,
     quarantine_author_evicted: u64,
+    /// verse id → record id → remembered Manager+ withdrawal (bounded per verse and overall).
+    tombstones: BTreeMap<String, BTreeMap<String, TombstoneMemo>>,
+    tombstone_len: usize,
+    tombstone_arrivals: u64,
+    tombstone_evicted: u64,
 }
 
 /// Outcome of the structural checks every row passes before the role gate.
@@ -127,7 +146,7 @@ impl RelayAdvertisementBook {
         let mut changes = Vec::new();
 
         if is_tombstone || data.is_empty() {
-            self.observe_withdrawal(verse_id, record_id, author_did, &scope, &role_of);
+            self.observe_withdrawal(verse_id, record_id, author_did, &scope, &role_of, now_ms);
             self.publish(verse_id, now_ms, &mut changes);
             return changes;
         }
@@ -137,6 +156,15 @@ impl RelayAdvertisementBook {
 
         match judge_structure(verse_id, record_id, author_did, data, now_ms, self.signed_mode) {
             Structural::Valid { url, row } => {
+                if self.tombstone_refuses(verse_id, record_id, author_did, &row) {
+                    tracing::debug!(
+                        verse_id,
+                        record_id,
+                        author = author_did,
+                        "relay advertisement refused: a Manager+ withdrawal of this record was seen at or after its issue time"
+                    );
+                    return changes;
+                }
                 if role_of(author_did, &scope).is_at_least(RELAY_ADVERTISER_FLOOR) {
                     self.make_eligible(verse_id, record_id, author_did, url, row);
                 } else {
@@ -246,6 +274,9 @@ impl RelayAdvertisementBook {
                     row,
                     ..
                 } = entry;
+                if self.tombstone_refuses(&verse_id, &record_id, &author_did, &row) {
+                    continue;
+                }
                 self.make_eligible(&verse_id, &record_id, &author_did, url, row);
             }
             touched.insert(verse_id);
@@ -277,6 +308,15 @@ impl RelayAdvertisementBook {
         self.quarantine.retain(|_, authors| !authors.is_empty());
         self.quarantine_len -= removed;
 
+        let mut dropped_memos = 0;
+        for records in self.tombstones.values_mut() {
+            let before = records.len();
+            records.retain(|_, memo| memo.seen_at_ms.saturating_add(MAX_ADVERT_TTL_MS) >= now_ms);
+            dropped_memos += before - records.len();
+        }
+        self.tombstones.retain(|_, records| !records.is_empty());
+        self.tombstone_len -= dropped_memos;
+
         let verses: BTreeSet<String> = self
             .visible
             .keys()
@@ -294,6 +334,9 @@ impl RelayAdvertisementBook {
     pub fn close_verse(&mut self, verse_id: &str) -> Vec<AdvertChange> {
         if let Some(authors) = self.quarantine.remove(verse_id) {
             self.quarantine_len -= authors.values().map(VecDeque::len).sum::<usize>();
+        }
+        if let Some(records) = self.tombstones.remove(verse_id) {
+            self.tombstone_len -= records.len();
         }
         self.admitted.remove(verse_id);
         let Some(records) = self.visible.remove(verse_id) else {
@@ -356,6 +399,85 @@ impl RelayAdvertisementBook {
         self.quarantine_author_evicted
     }
 
+    /// How many remembered withdrawals are held (diagnostics/tests).
+    pub fn tombstone_len(&self) -> usize {
+        self.tombstone_len
+    }
+
+    /// How many remembered withdrawals were evicted under either cap (diagnostics/tests).
+    pub fn tombstone_evicted(&self) -> u64 {
+        self.tombstone_evicted
+    }
+
+    /// True when a remembered withdrawal by another author outranks this row; otherwise a superseding row clears the memo.
+    fn tombstone_refuses(
+        &mut self,
+        verse_id: &str,
+        record_id: &str,
+        author_did: &str,
+        row: &RelayAdvertisementRow,
+    ) -> bool {
+        let Some(memo) = self.tombstones.get(verse_id).and_then(|records| records.get(record_id)) else {
+            return false;
+        };
+        let refused = memo.tombstoner_did != author_did
+            && row.issued_at_ms.map_or(true, |issued| issued <= memo.seen_at_ms);
+        if !refused {
+            self.forget_tombstone(verse_id, record_id);
+        }
+        refused
+    }
+
+    fn forget_tombstone(&mut self, verse_id: &str, record_id: &str) {
+        let Some(records) = self.tombstones.get_mut(verse_id) else {
+            return;
+        };
+        if records.remove(record_id).is_some() {
+            self.tombstone_len -= 1;
+        }
+        if records.is_empty() {
+            self.tombstones.remove(verse_id);
+        }
+    }
+
+    /// Remember a Manager+ withdrawal, evicting the oldest memo under the per-verse then the global cap.
+    fn remember_tombstone(&mut self, verse_id: &str, record_id: &str, tombstoner_did: &str, now_ms: u64) {
+        self.forget_tombstone(verse_id, record_id);
+        let in_verse = self.tombstones.get(verse_id).map_or(0, BTreeMap::len);
+        if in_verse >= RELAY_TOMBSTONE_PER_VERSE_CAP {
+            let oldest = self.tombstones.get(verse_id).and_then(|records| {
+                records.iter().min_by_key(|(_, memo)| memo.arrival).map(|(id, _)| id.clone())
+            });
+            if let Some(oldest) = oldest {
+                self.forget_tombstone(verse_id, &oldest);
+                self.tombstone_evicted += 1;
+            }
+        }
+        if self.tombstone_len >= RELAY_TOMBSTONE_CAP {
+            let oldest = self
+                .tombstones
+                .iter()
+                .flat_map(|(verse, records)| {
+                    records.iter().map(move |(id, memo)| (memo.arrival, verse.clone(), id.clone()))
+                })
+                .min();
+            if let Some((_, verse, id)) = oldest {
+                self.forget_tombstone(&verse, &id);
+                self.tombstone_evicted += 1;
+            }
+        }
+        self.tombstone_arrivals += 1;
+        self.tombstones.entry(verse_id.to_string()).or_default().insert(
+            record_id.to_string(),
+            TombstoneMemo {
+                tombstoner_did: tombstoner_did.to_string(),
+                seen_at_ms: now_ms,
+                arrival: self.tombstone_arrivals,
+            },
+        );
+        self.tombstone_len += 1;
+    }
+
     fn observe_withdrawal(
         &mut self,
         verse_id: &str,
@@ -363,9 +485,11 @@ impl RelayAdvertisementBook {
         author_did: &str,
         scope: &str,
         role_of: &impl Fn(&str, &str) -> RoleLevel,
+        now_ms: u64,
     ) {
         let author_is_manager = role_of(author_did, scope).is_at_least(RELAY_ADVERTISER_FLOOR);
         if author_is_manager {
+            self.remember_tombstone(verse_id, record_id, author_did, now_ms);
             self.drop_quarantined_record(verse_id, record_id);
         } else {
             self.remove_pending(verse_id, author_did, record_id);
@@ -866,6 +990,43 @@ mod tests {
         let urls: Vec<String> = book.urls_by_verse()[VERSE].iter().cloned().collect();
         assert_eq!(urls, vec!["https://extra.example/".to_string(), "https://viewer.example/".to_string()]);
         assert_eq!(book.admitted(VERSE).len(), 2);
+
+        // Tombstone memo: a Manager's withdrawal that arrives before the original row still wins.
+        let memo_signer = fe_identity::keypair::NodeKeypair::from_bytes(&[7u8; 32]).expect("seed key");
+        let memo_did = memo_signer.to_did_key();
+        roles.set(&memo_did, RoleLevel::Manager);
+        let memo_now = unix_now_ms();
+        let mut memo_book = RelayAdvertisementBook::with_signed_mode(RelayAdvertSignedMode::Compat);
+        assert!(memo_book.observe_at(VERSE, "r-x", MANAGER, &[], true, roles.role_of(), memo_now).is_empty());
+        assert_eq!(memo_book.tombstone_len(), 1);
+        let older = signed_row(&memo_signer, "https://memo.example.org", memo_now, |_| {});
+        assert!(memo_book.observe_at(VERSE, "r-x", &memo_did, &wire(&older), false, roles.role_of(), memo_now).is_empty());
+        assert!(memo_book.urls_by_verse().is_empty() && memo_book.admitted(VERSE).is_empty(), "the late older row stays withdrawn");
+        assert_eq!(memo_book.quarantine_len(), 0, "a memo-refused row is never quarantined");
+        // A row issued after the memo's receipt is a legitimate re-advertisement and clears the memo.
+        let later_now = memo_now + 10_000;
+        let newer = signed_row(&memo_signer, "https://memo.example.org", later_now, |_| {});
+        assert_eq!(
+            memo_book.observe_at(VERSE, "r-x", &memo_did, &wire(&newer), false, roles.role_of(), later_now),
+            vec![admitted("r-x", "https://memo.example.org/")]
+        );
+        assert_eq!(memo_book.tombstone_len(), 0);
+        // A Viewer's tombstone leaves no memo, so the following row is admitted.
+        assert!(memo_book.observe_at(VERSE, "r-y", VIEWER, &[], true, roles.role_of(), later_now).is_empty());
+        assert_eq!(memo_book.tombstone_len(), 0);
+        let viewer_case = signed_row(&memo_signer, "https://memo-y.example.org", later_now, |_| {});
+        assert_eq!(
+            memo_book.observe_at(VERSE, "r-y", &memo_did, &wire(&viewer_case), false, roles.role_of(), later_now),
+            vec![admitted("r-y", "https://memo-y.example.org/")]
+        );
+        // The memo is bounded per verse, oldest evicted first, and the replica closing drops it.
+        for index in 0..=RELAY_TOMBSTONE_PER_VERSE_CAP {
+            memo_book.observe_at(VERSE, &format!("r-gone-{index}"), MANAGER, &[], true, roles.role_of(), later_now);
+        }
+        assert_eq!(memo_book.tombstone_len(), RELAY_TOMBSTONE_PER_VERSE_CAP);
+        assert_eq!(memo_book.tombstone_evicted(), 1);
+        memo_book.close_verse(VERSE);
+        assert_eq!(memo_book.tombstone_len(), 0);
 
         // Closing the replica withdraws everything it contributed.
         assert_eq!(book.close_verse(VERSE).len(), 2);
