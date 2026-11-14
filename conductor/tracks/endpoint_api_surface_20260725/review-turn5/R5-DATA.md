@@ -13,6 +13,6 @@ R5-DATA-7 KEPT (hygiene) - no new swallowed send, no hot-path allocation, no cli
 
 SEC-INBOX: no entries name fe-database/tests/node_lifecycle_test.rs (inbox has no matches) - n/a.
 
-DATA5-01 COMPLETE fe-database/tests/node_lifecycle_test.rs:829-980
+DATA5-01 COMPLETE fe-database/tests/node_lifecycle_test.rs:803-981
 
 Verdict: PASS (not compiled or run per round rules; types and fields checked against fe-runtime messages and lib.rs).
