@@ -27,6 +27,11 @@ pub enum SyncCommand {
         request: crate::join_ticket::JoinReplicaRequest,
         reply: crossbeam::channel::Sender<crate::join_ticket::JoinReplicaReadiness>,
     },
+    /// Network diagnostics snapshot (peers, relay, reachability); `detail` leaves peer addresses unredacted.
+    GetNetworkDiagnostics {
+        detail: bool,
+        reply: crossbeam::channel::Sender<fe_runtime::net_diagnostics::NetworkDiagnostics>,
+    },
     /// Request a blob from the network for a given verse.
     ///
     /// The sync thread will first check the local blob store; if present it
@@ -326,6 +331,8 @@ pub enum SyncEvent {
     /// §relay-health. Not silent: a `Degraded`/`Unreachable` transition is
     /// loud-logged by the sync thread at the point of failure.
     RelayHealthChanged { health: RelayHealth },
+    /// Redacted diagnostics snapshot, emitted after a request when it changes (drained into `NetworkDiagnosticsState`).
+    NetworkDiagnostics(fe_runtime::net_diagnostics::NetworkDiagnostics),
     /// Reply to [`SyncCommand::GetShardLedger`] (M2/F6): the verse's current
     /// timeseries fabric — settings, peer declarations, shard ledger — as a
     /// JSON dump. Diagnostics/harness assertions only; the fabric itself is

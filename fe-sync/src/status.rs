@@ -30,6 +30,10 @@ pub struct SyncStatus {
     pub health: RelayHealth,
 }
 
+/// Latest redacted network diagnostics snapshot (None until one was requested).
+#[derive(Resource, Default)]
+pub struct NetworkDiagnosticsState(pub Option<fe_runtime::net_diagnostics::NetworkDiagnostics>);
+
 /// Bevy resource that buffers tileset distribution events for the UI layer.
 ///
 /// `drain_sync_events` pushes tileset-related events here; `fe-ui` drains
@@ -85,6 +89,7 @@ pub fn drain_sync_events(
     mut tileset_buf: ResMut<TilesetEventBuffer>,
     mut streamed_buf: Option<ResMut<StreamedTilesetEventBuffer>>,
     mut scene_buf: Option<ResMut<SceneAssetEventBuffer>>,
+    mut diagnostics_state: Option<ResMut<NetworkDiagnosticsState>>,
 ) {
     let Some(receiver) = receiver else { return };
     let Ok(rx) = receiver.0.lock() else { return };
@@ -168,6 +173,11 @@ pub fn drain_sync_events(
                     tracing::info!(?health, "Relay health updated");
                 }
                 status.health = health;
+            }
+            SyncEvent::NetworkDiagnostics(snapshot) => {
+                if let Some(state) = diagnostics_state.as_mut() {
+                    state.0 = Some(snapshot);
+                }
             }
             SyncEvent::ReplicaOpenFailed {
                 ref verse_id,

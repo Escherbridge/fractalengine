@@ -970,6 +970,9 @@ pub fn spawn_sync_thread_with_sources(
             // NET-22: Configured / Default / Advertised tiers, coverage, the adopted-relay health loop.
             let mut relay_adoption =
                 RelayAdoption::new(RelayReconciler::from_relay_config(&relay_config));
+            // NET-28: cached self-test verdict and the last redacted snapshot emitted (None until a request subscribes).
+            let mut diagnostics_verdict: Option<&'static str> = None;
+            let mut last_diagnostics: Option<fe_runtime::net_diagnostics::NetworkDiagnostics> = None;
             let (adoption_probe_tx, mut adoption_probe_rx) =
                 tokio::sync::mpsc::channel::<(String, bool)>(32);
             let mut relay_adoption_tick = tokio::time::interval(RELAY_ADOPTION_TICK);
@@ -1094,6 +1097,19 @@ pub fn spawn_sync_thread_with_sources(
                             relay_adoption.check_adopted(&adoption_probe_tx, std::time::Instant::now());
                         }
                         relay_adoption.on_tick(std::time::Instant::now());
+                        // NET-28: re-run the self-test and emit the redacted snapshot when it changed, only after a request subscribed.
+                        if last_diagnostics.is_some() {
+                            if let Some(verdict) = endpoint.as_ref().and_then(|ep| crate::net_diagnostics::reachability_self_test(ep.inner())) {
+                                diagnostics_verdict = Some(verdict);
+                            }
+                            let redacted = network_diagnostics_snapshot(
+                                false, &relay_config, relay_health, &relay_adoption, &replicas, endpoint.as_ref(), diagnostics_verdict,
+                            ).await;
+                            if last_diagnostics.as_ref() != Some(&redacted) {
+                                last_diagnostics = Some(redacted.clone());
+                                send_sync_event(&evt_tx, SyncEvent::NetworkDiagnostics(redacted));
+                            }
+                        }
                         // Expiry timer: an expired advert becomes a Withdrawn change, not just a read-time skip.
                         let now_ms = std::time::SystemTime::now()
                             .duration_since(std::time::UNIX_EPOCH)
@@ -1241,6 +1257,30 @@ pub fn spawn_sync_thread_with_sources(
                     }
                     maybe_cmd = async_cmd_rx.recv() => {
                         match maybe_cmd {
+                            Some(SyncCommand::GetNetworkDiagnostics { detail, reply }) => {
+                                // Self-test on demand; a pending report keeps the last cached verdict.
+                                if let Some(verdict) = endpoint.as_ref().and_then(|ep| crate::net_diagnostics::reachability_self_test(ep.inner())) {
+                                    diagnostics_verdict = Some(verdict);
+                                }
+                                let snapshot = network_diagnostics_snapshot(
+                                    detail, &relay_config, relay_health, &relay_adoption, &replicas, endpoint.as_ref(), diagnostics_verdict,
+                                ).await;
+                                // The event and status resource only ever carry the redacted form.
+                                let redacted = if detail {
+                                    network_diagnostics_snapshot(
+                                        false, &relay_config, relay_health, &relay_adoption, &replicas, endpoint.as_ref(), diagnostics_verdict,
+                                    ).await
+                                } else {
+                                    snapshot.clone()
+                                };
+                                if reply.try_send(snapshot).is_err() {
+                                    tracing::debug!("Network diagnostics caller is no longer waiting");
+                                }
+                                if last_diagnostics.as_ref() != Some(&redacted) {
+                                    last_diagnostics = Some(redacted.clone());
+                                    send_sync_event(&evt_tx, SyncEvent::NetworkDiagnostics(redacted));
+                                }
+                            }
                             Some(SyncCommand::InspectJoinedReplica { request, reply }) => {
                                 let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH);
                                 let outcome = match now {
@@ -2012,6 +2052,43 @@ impl RelayAdoption {
             .cloned()
             .collect()
     }
+}
+
+/// Builds the diagnostics snapshot from live endpoint paths and the relay adoption state (see `AGENTS.md` §net-diagnostics).
+async fn network_diagnostics_snapshot(
+    detail: bool,
+    relay_config: &RelayConfig,
+    relay_health: RelayHealth,
+    adoption: &RelayAdoption,
+    replicas: &HashMap<String, Box<dyn VerseReplicator>>,
+    endpoint: Option<&SyncEndpoint>,
+    verdict: Option<&'static str>,
+) -> fe_runtime::net_diagnostics::NetworkDiagnostics {
+    let mut peers = Vec::new();
+    if let Some(endpoint) = endpoint {
+        let mut shared: BTreeMap<String, (iroh::EndpointId, Vec<String>)> = BTreeMap::new();
+        for (verse_id, replica) in replicas {
+            let Some(roster) = replica.scene_provider_roster() else { continue };
+            let Ok(ids) = roster.peers() else { continue };
+            for id in ids {
+                shared.entry(id.to_string()).or_insert_with(|| (id, Vec::new())).1.push(verse_id.clone());
+            }
+        }
+        for (_, verse_ids) in shared.values_mut() {
+            verse_ids.sort();
+        }
+        peers = crate::net_diagnostics::collect_peer_rows(endpoint.inner(), shared.into_values().collect(), detail).await;
+    }
+    crate::net_diagnostics::build_snapshot(crate::net_diagnostics::SnapshotInputs {
+        relay_mode: crate::net_diagnostics::relay_mode_label(relay_config),
+        home_relay: adoption.home_connected(),
+        relay_health,
+        portmapper: "unknown",
+        reachability_verdict: verdict,
+        relay_server_state: if cfg!(feature = "relay-server") { "available" } else { "not-built" },
+        unadvertised_home_verses: &adoption.unadvertised_home_verses,
+        peers,
+    })
 }
 
 /// Relay reconciliation (S7, NET-22): re-plan the three relay tiers when adverts, open verses, home status or health changed, then apply.
@@ -4868,6 +4945,17 @@ mod tests {
             "expected RelayHealthChanged event, got {health:?}"
         );
 
+        // NET-28: the diagnostics command answers with a Disabled relay mode and zero peers.
+        let (diagnostics_tx, diagnostics_rx) = crossbeam::channel::bounded(1);
+        cmd_tx
+            .send(SyncCommand::GetNetworkDiagnostics { detail: false, reply: diagnostics_tx })
+            .unwrap();
+        let diagnostics = diagnostics_rx
+            .recv_timeout(std::time::Duration::from_secs(5))
+            .expect("diagnostics reply");
+        assert_eq!(diagnostics.node.relay_mode, "disabled");
+        assert!(diagnostics.peers.is_empty());
+
         cmd_tx.send(SyncCommand::Shutdown).unwrap();
         handle.join().expect("sync thread panicked");
         assert!(matches!(
@@ -4880,7 +4968,7 @@ mod tests {
         // Stopped event.
         let stopped = loop {
             match evt_rx.recv_timeout(std::time::Duration::from_secs(2)) {
-                Ok(SyncEvent::RelayHealthChanged { .. }) => continue,
+                Ok(SyncEvent::RelayHealthChanged { .. } | SyncEvent::NetworkDiagnostics(_)) => continue,
                 other => break other,
             }
         };
