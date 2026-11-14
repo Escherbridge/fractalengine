@@ -12,6 +12,100 @@ pub(crate) enum PropertyValueKind {
     Null,
 }
 
+/// Parses a form value for any selectable type, validating semantic types (see panels/AGENTS.md property types).
+pub(crate) fn parse_selected(selected: &str, raw: &str) -> Result<Value, String> {
+    match selected {
+        "datetime" => chrono::DateTime::parse_from_rfc3339(raw.trim())
+            .map(|_| Value::String(raw.trim().to_owned()))
+            .map_err(|_| {
+                "datetime expects an RFC 3339 timestamp, for example 2026-11-13T09:30:00Z."
+                    .to_owned()
+            }),
+        "address" => bounded_text("address", raw, 256, true),
+        "blob_ref" => bounded_text("blob_ref", raw, 512, false),
+        "hexon_ref" => bounded_text("hexon_ref", raw, 512, false),
+        "geometry_point" => parse_geometry(selected, raw, GEOMETRY_POINT_HINT, is_point),
+        "geometry_polygon" => parse_geometry(selected, raw, GEOMETRY_POLYGON_HINT, is_polygon),
+        other => PropertyValueKind::from_selection(other)
+            .ok_or_else(|| "Choose a supported property type.".to_owned())
+            .and_then(|kind| kind.parse(raw)),
+    }
+}
+
+const GEOMETRY_POINT_HINT: &str =
+    "geometry_point expects GeoJSON like {\"type\":\"Point\",\"coordinates\":[x,y]} with finite numbers.";
+const GEOMETRY_POLYGON_HINT: &str = "geometry_polygon expects GeoJSON Polygon coordinates: rings of at least 4 finite [x,y] positions, each ring closed (first equals last).";
+
+fn bounded_text(
+    type_name: &str,
+    raw: &str,
+    max_chars: usize,
+    allow_inner_whitespace: bool,
+) -> Result<Value, String> {
+    let text = raw.trim();
+    let valid = !text.is_empty()
+        && text.chars().count() <= max_chars
+        && (allow_inner_whitespace || !text.chars().any(char::is_whitespace));
+    if valid {
+        Ok(Value::String(text.to_owned()))
+    } else if allow_inner_whitespace {
+        Err(format!(
+            "{type_name} expects non-empty text of at most {max_chars} characters."
+        ))
+    } else {
+        Err(format!(
+            "{type_name} expects a non-empty identifier without spaces, at most {max_chars} characters."
+        ))
+    }
+}
+
+fn parse_geometry(
+    type_name: &str,
+    raw: &str,
+    hint: &str,
+    shape_check: fn(&Value) -> bool,
+) -> Result<Value, String> {
+    let value = PropertyValueKind::Object
+        .parse(raw)
+        .map_err(|error| format!("{type_name}: {error} {hint}"))?;
+    if shape_check(&value) {
+        Ok(value)
+    } else {
+        Err(hint.to_owned())
+    }
+}
+
+fn is_position(value: &Value) -> bool {
+    value.as_array().is_some_and(|coords| {
+        (coords.len() == 2 || coords.len() == 3)
+            && coords
+                .iter()
+                .all(|c| c.as_f64().is_some_and(f64::is_finite))
+    })
+}
+
+fn is_point(value: &Value) -> bool {
+    value.get("type").and_then(Value::as_str) == Some("Point")
+        && value.get("coordinates").is_some_and(is_position)
+}
+
+fn is_polygon(value: &Value) -> bool {
+    if value.get("type").and_then(Value::as_str) != Some("Polygon") {
+        return false;
+    }
+    let Some(rings) = value.get("coordinates").and_then(Value::as_array) else {
+        return false;
+    };
+    !rings.is_empty()
+        && rings.iter().all(|ring| {
+            ring.as_array().is_some_and(|positions| {
+                positions.len() >= 4
+                    && positions.iter().all(is_position)
+                    && positions.first() == positions.last()
+            })
+        })
+}
+
 impl PropertyValueKind {
     pub(crate) fn from_selection(selected: &str) -> Option<Self> {
         match selected {
