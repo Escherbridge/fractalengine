@@ -240,10 +240,11 @@ impl TilesetRegistry {
     }
 }
 
-/// Flatten a blocking tile read, warning on I/O or format errors.
+/// Flatten a blocking tile read, warning on I/O or format errors (an entitlement refusal is a silent miss).
 fn read_or_warn(tileset_id: &str, read: Result<Option<Arc<[u8]>>>) -> Option<Vec<u8>> {
     match read {
         Ok(bytes) => bytes.map(|bytes| bytes.to_vec()),
+        Err(err) if super::entitlement::is_entitlement_refusal(&err) => None,
         Err(err) => {
             tracing::warn!(tileset_id, error = %err, "tile read failed");
             None

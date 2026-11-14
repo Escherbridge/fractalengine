@@ -11,6 +11,7 @@ use std::collections::HashSet;
 use std::sync::Arc;
 
 use super::cache::DiskTileCache;
+use super::entitlement::is_entitlement_refusal;
 use super::hexon_source::{HexonTileSource, Probe, ResidentTile, TileLayer};
 use super::source::TileCoord;
 use super::streamed::StreamedTileSource;
@@ -127,6 +128,11 @@ impl TileLoader {
                         })
                     }
                     Ok(_) => {}
+                    Err(err) if is_entitlement_refusal(&err) => tracing::debug!(
+                        tile = %coord.cache_key(),
+                        ?layer,
+                        "hexon tile needs an entitlement; trying the next source"
+                    ),
                     Err(err) => tracing::warn!(
                         tile = %coord.cache_key(),
                         ?layer,
@@ -157,6 +163,7 @@ impl TileLoader {
             .filter(|(_, src)| src.covers(coord))
             .find_map(|(source, src)| match src.load_baked_splats_blocking(coord) {
                 Ok(splats) => splats.map(|splats| SplatHit { splats, source }),
+                Err(err) if is_entitlement_refusal(&err) => None,
                 Err(err) => {
                     tracing::warn!(tile = %coord.cache_key(), error = %err, "baked splat read failed");
                     None
@@ -728,6 +735,32 @@ mod tests {
     use fe_format::manifest::{ElevationEncoding, HexonManifest, HexonType, TilesetMeta};
     use fe_format::HexonArchive;
 
+    fn test_manifest(hexon_id: &str) -> HexonManifest {
+        HexonManifest {
+            schema_version: "1.0.0".into(),
+            hexon_id: hexon_id.into(),
+            hexon_type: HexonType::TerrainTileset,
+            publisher_did: "did:key:z6Mktest".into(),
+            publisher_name: None,
+            version: "0.1.0".into(),
+            build_id: None,
+            name: "Test".into(),
+            description: None,
+            tags: vec![],
+            created_at: "2026-01-01T00:00:00Z".into(),
+            updated_at: "2026-01-01T00:00:00Z".into(),
+            source_peer_did: None,
+            approx_size_bytes: None,
+            min_engine_version: None,
+            homepage_url: None,
+            dependencies: vec![],
+            platforms: vec![],
+            address: None,
+            integrity: None,
+            signature: None,
+        }
+    }
+
     fn make_hexon_source(
         tiles: Vec<(String, Vec<u8>)>,
         satellite: Vec<(String, Vec<u8>)>,
@@ -754,29 +787,7 @@ mod tests {
             crs: None, // deliberately legacy — differs from Default's Some("EPSG:4326")
             ..Default::default()
         };
-        let manifest = HexonManifest {
-            schema_version: "1.0.0".into(),
-            hexon_id: "test".into(),
-            hexon_type: HexonType::TerrainTileset,
-            publisher_did: "did:key:z6Mktest".into(),
-            publisher_name: None,
-            version: "0.1.0".into(),
-            build_id: None,
-            name: "Test".into(),
-            description: None,
-            tags: vec![],
-            created_at: "2026-01-01T00:00:00Z".into(),
-            updated_at: "2026-01-01T00:00:00Z".into(),
-            source_peer_did: None,
-            approx_size_bytes: None,
-            min_engine_version: None,
-            homepage_url: None,
-            dependencies: vec![],
-            platforms: vec![],
-            address: None,
-            integrity: None,
-            signature: None,
-        };
+        let manifest = test_manifest("test");
         let bytes =
             HexonArchive::export_tileset(manifest, &meta, &tiles, &satellite, None).unwrap();
         HexonTileSource::from_archive(&bytes).unwrap()
@@ -811,6 +822,60 @@ mod tests {
         let data = composite.get_tile_sync(coord);
         assert!(data.is_some());
         assert_eq!(data.unwrap(), vec![42u8; 16]);
+
+        // A licensed, gateless source: the free tile loads, the non-free one is a silent miss.
+        let free_coord = coord;
+        let sealed_coord = TileCoord::new(coord.x + 1, coord.y, coord.zoom);
+        let license = fe_format::License {
+            license_type: fe_format::LicenseType::Paid,
+            payment_verification_url: Some("https://publisher.example/pay".into()),
+            free_entries: vec![format!("terrain/tiles/{}.png", free_coord.cache_key())],
+            ..fe_format::License::default()
+        };
+        let meta = TilesetMeta {
+            bounds: [45.0, -122.0, 46.0, -121.0],
+            min_zoom: 10,
+            max_zoom: 12,
+            tile_size: 256,
+            elevation_encoding: ElevationEncoding::TerrainRgb,
+            tile_count: 2,
+            region_name: "Test".into(),
+            crs: None,
+            ..Default::default()
+        };
+        let tiles = vec![
+            (free_coord.cache_key(), vec![1u8; 16]),
+            (sealed_coord.cache_key(), vec![2u8; 16]),
+        ];
+        let archive = HexonArchive::export_tileset(
+            test_manifest("licensed-test"),
+            &meta,
+            &tiles,
+            &[],
+            Some(license),
+        )
+        .unwrap();
+        let dir = std::env::temp_dir().join(format!(
+            "fe_composite_entitlement_{}_{}",
+            std::process::id(),
+            line!()
+        ));
+        let store = super::super::store::HexonStore::with_dir(dir.clone()).unwrap();
+        store.install_tileset(&archive).unwrap();
+        let licensed = store.load_tileset("licensed-test").unwrap();
+        let refusal = licensed
+            .load_layer_blocking(TileLayer::Elevation, sealed_coord)
+            .expect_err("a non-free tile of a gateless licensed source is refused");
+        assert!(is_entitlement_refusal(&refusal), "{refusal:#}");
+        assert!(!is_entitlement_refusal(&anyhow::anyhow!("disk full")));
+        let mut licensed_composite = CompositeTileSource::new();
+        licensed_composite.add_hexon_source(licensed);
+        assert_eq!(
+            licensed_composite.get_tile_sync(free_coord).unwrap(),
+            vec![1u8; 16]
+        );
+        assert!(licensed_composite.get_tile_sync(sealed_coord).is_none());
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

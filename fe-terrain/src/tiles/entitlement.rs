@@ -20,6 +20,11 @@ pub struct EntitlementRequired {
     pub member: String,
 }
 
+/// True when `err` (anywhere in its chain) is an [`EntitlementRequired`] state rather than a read fault.
+pub(crate) fn is_entitlement_refusal(err: &anyhow::Error) -> bool {
+    err.chain().any(|cause| cause.is::<EntitlementRequired>())
+}
+
 /// Hexon Manager view of one installed tileset's entitlement.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TilesetEntitlement {
