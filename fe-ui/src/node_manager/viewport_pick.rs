@@ -298,6 +298,10 @@ mod tests {
     /// the lattice — refuses the click; shown again, the same click selects it.
     #[test]
     fn a_ribbon_hidden_by_its_layer_is_not_picked_until_shown() {
+        // The retry leg queues writes on the process-wide GUI door; hold the lock so no other test sees them.
+        let _door_lock = crate::actions::node::GUI_DOOR_TEST_LOCK
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
         use crate::panels::toolbar::Tool;
         let down =
             || ClickArbiter::pressed_along(Ray3d::new(Vec3::new(5.0, 50.0, 0.0), Dir3::NEG_Y));
@@ -846,21 +850,77 @@ mod tests {
                 .resource::<crate::node_manager::StampSelectionCatalog>()
                 .origin(1)
                 .unwrap();
+            // Retry leg: the DB channel is full at reselect, so the promotion waits in the scene-write door.
+            let unbounded_sender = app
+                .world()
+                .resource::<fe_runtime::app::DbCommandSender>()
+                .0
+                .clone();
+            let (full_tx, full_rx) = crossbeam::channel::bounded(1);
+            full_tx.send(DbCommand::Ping).unwrap();
+            app.insert_resource(fe_runtime::app::DbCommandSender(full_tx));
             app.world_mut()
                 .resource_mut::<crate::actions::UiManager>()
                 .push_action(crate::actions::UiAction::SelectStamp { origin });
             app.update();
-            let commands: Vec<_> = stamp_rx.try_iter().collect();
-            let [DbCommand::PromoteCheckedStamp {
+            {
+                let state = app
+                    .world()
+                    .resource::<crate::actions::asset::StampInteractionState>();
+                assert!(
+                    state.selection_promotion.is_some(),
+                    "a queued promotion stays pending while the door holds it"
+                );
+                assert!(
+                    state.edit_error().is_none(),
+                    "a full channel queues the promotion, it does not report busy"
+                );
+            }
+            let notice = app
+                .world()
+                .resource::<crate::actions::UiManager>()
+                .active_notice(0.0)
+                .map(|(notice, _)| notice.text.to_lowercase())
+                .unwrap_or_default();
+            assert!(
+                !notice.contains("busy") && !notice.contains("not promoted"),
+                "no error toast while the promotion is queued: {notice:?}"
+            );
+            assert!(
+                matches!(full_rx.try_recv(), Ok(DbCommand::Ping)),
+                "only the prefill is in the channel"
+            );
+            assert!(
+                full_rx.try_recv().is_err(),
+                "the promotion waits in the door, not the channel"
+            );
+            assert_eq!(
+                crate::actions::node::pump_gui_door_after(std::time::Duration::from_millis(100)),
+                1,
+                "the first backoff has elapsed: the door settles the promotion"
+            );
+            app.insert_resource(fe_runtime::app::DbCommandSender(unbounded_sender));
+            let command = full_rx
+                .try_recv()
+                .expect("the retried promotion reaches the channel once");
+            let DbCommand::PromoteCheckedStamp {
                 capture: fresh_capture,
                 correlation_id: fresh_request,
-            }] = commands.as_slice()
+            } = command
             else {
-                panic!("an explicit authorized reselect queues one fresh promotion: {commands:?}")
+                panic!("an explicit authorized reselect queues one fresh promotion: {command:?}")
             };
-            assert_ne!(&promotion_request, fresh_request);
-            capture = fresh_capture.clone();
-            promotion_request = fresh_request.clone();
+            assert_eq!(
+                app.world()
+                    .resource::<crate::actions::asset::StampInteractionState>()
+                    .selection_promotion
+                    .as_deref(),
+                Some(fresh_request.as_str()),
+                "the retried command carries the pending correlation id"
+            );
+            assert_ne!(promotion_request, fresh_request);
+            capture = fresh_capture;
+            promotion_request = fresh_request;
         }
         let late_capture = capture.clone();
         let late_request = promotion_request.clone();
@@ -896,6 +956,13 @@ mod tests {
                 .node_id,
             "t1#inst-1",
             "only the authoritative receipt binds the durable address"
+        );
+        assert!(
+            app.world()
+                .resource::<crate::actions::asset::StampInteractionState>()
+                .selection_promotion
+                .is_none(),
+            "the reply to the retried promotion resolves the pending request"
         );
         assert_eq!(
             app.world().get::<SpawnedNodeMarker>(stamp).unwrap().node_id,
