@@ -183,6 +183,8 @@ Canonical serialization: Base32 (52 chars) or hex with `0x` prefix. Tag literals
 | `bundle` | Mixed collection | `entries.json`, `assets/` |
 | `observation_batch` | Columnar observation batch (SPEC-10 §3.1): readings + payload refs | `observations/readings.parquet`, `observations/payload_refs.parquet` |
 | `plugin` | Sealed third-party extension: manifest v2 header plus a Wasm component (see `docs/extensions/package-format.md`) | `plugin/extension.json` (header), `plugin/component.wasm` (body) |
+| `script` | Sealed script package (one type system; runtime script, future) | `entries.json`, `assets/` |
+| `petal_snapshot` | Exported petal state: rows, ordered op-log and content-addressed blobs (see [PetalSnapshot](#petalsnapshot-hexon_type-petal_snapshot)) | `snapshot/meta.json`, `snapshot/state/*.json`, `snapshot/oplog.jsonl`, `assets/` |
 
 ### Platform Targeting (amp-compatible)
 
@@ -451,6 +453,10 @@ GeoJSON FeatureCollection overlays.
 
 ### Manifest Signature
 
+There is one signing scheme: canonical JSON, implemented once in `fe-format` as `sign_manifest` and
+`verify_manifest` (`fe-format/src/signature.rs`). The former raw-manifest-bytes scheme in `fe-hexon` is retired
+(delta-spec amendment A3, resolved in favour of canonical JSON). Process: `fe-format/src/AGENTS.md` §signature.
+
 Ed25519 signature of manifest JSON with `signature` field zeroed:
 
 1. Set `manifest.signature = ""`
@@ -503,6 +509,61 @@ Every `asset_hash` is BLAKE3 hex of the blob at `assets/{hash}`. Verify on extra
 3. **HLC timestamps** enable point-in-time queries and distributed merge without coordination.
 
 4. **Peer provenance.** Every log entry carries `source_did` for trust and auditing.
+
+---
+
+## PetalSnapshot (`hexon_type: petal_snapshot`)
+
+A petal snapshot is a sealed-or-unsealed `.hexon` that carries one petal's state so a peer can restore it verbatim.
+Reference code: `fe-format/src/snapshot.rs` (`export_petal_snapshot`, `import_petal_snapshot`); process notes in
+`fe-format/src/AGENTS.md` §petal-snapshot.
+
+Layout:
+
+```
+manifest.json                 # hexon_type "petal_snapshot", signed canonical JSON
+entries.json                  # asset catalogue for the referenced blobs
+snapshot/meta.json            # SnapshotMeta (below)
+snapshot/state/nodes.json     # one JSON array per state table, in this order:
+snapshot/state/node_log.json  #   nodes, node_log, field_defs, rooms, models,
+snapshot/state/field_defs.json#   assets, roles, iot_readings
+snapshot/state/rooms.json
+snapshot/state/models.json
+snapshot/state/assets.json
+snapshot/state/roles.json
+snapshot/state/iot_readings.json
+snapshot/oplog.jsonl          # one op-log row per line, lamport_clock strictly ascending
+assets/{blake3}              # content-addressed blobs; name is the lowercase 64-char blake3 hex of the bytes
+```
+
+`snapshot/meta.json` (`SnapshotMeta`):
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `snapshot_format_version` | u32 | Must equal `SNAPSHOT_FORMAT_VERSION` (1) |
+| `oplog_predicate_version` | u32 | Must equal `OPLOG_PREDICATE_VERSION` (1) |
+| `petal_id` | string | Non-empty; the petal this snapshot came from |
+| `scope` | string | Export scope label |
+| `source_node_id` | string | Node that produced the export (provenance) |
+| `exported_at` | string | Export timestamp |
+| `table_row_counts` | map<string, u64> | Row count per state table |
+| `op_log_range` | `{min_lamport, max_lamport, count}` | Must match the first and last `oplog.jsonl` rows and the row count |
+
+Op-log predicate v1: the exported op-log is the set of rows the predicate selects for the petal, emitted in strictly
+ascending `lamport_clock` order. Each row carries a u64 `lamport_clock`; an export or import that sees a row
+missing it, or a non-ascending pair, refuses the archive.
+
+Import rules:
+
+- Blob bytes are hashed and must match their `assets/{blake3}` name; a mismatch refuses the whole archive.
+- A snapshot whose manifest `hexon_type` is not `petal_snapshot` is refused.
+- The snapshot's manifest signature is verified through `fe-format` (see Manifest Signature). An archive that claims a
+  seal must verify (fail closed).
+- Import refuses to restore into a petal that already exists locally. Import never creates a verse or fractal; the
+  parent fractal must already exist (HEXON-10 owns the restore transaction and the HLC advance).
+
+Forward-compatible design, not implemented here: `conductor/tracks/hexon_delta_format_20260710` describes delta
+hexons as a later extension. Nothing in this section depends on it.
 
 ---
 
@@ -616,3 +677,11 @@ XChaCha20-Poly1305 under a 32-byte content key, with the package id and entry id
 
 A client without a valid token still loads the free entries; it never persists decrypted paid content. Reference code:
 `fe-format/src/entitlement.rs` (feature `entitlement`), `fe-hexon/src/{entitlement_client,entitlement_gate}.rs`.
+
+---
+
+## Changelog
+
+- **1.1.0** (additive, no version bump): `hexon_type` values `script` and `petal_snapshot` added to the Hexon Types table;
+  PetalSnapshot section added; manifest signing narrowed to the single canonical-JSON scheme in `fe-format` (A3); the legacy
+  `.fecrate` container and its `crate_id` manifest field are removed, with no compatibility reader.
