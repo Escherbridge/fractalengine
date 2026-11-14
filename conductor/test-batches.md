@@ -210,11 +210,12 @@ Toasts, dialogs, window chrome, status bar, embedded webview (PetalPortal), app 
 | `fe-webview/**` | 64 |
 | `fractalengine/src/{panic_log,window_chrome}.rs` | 5 |
 | `fe-ui/src/actions/mod.rs` (`active_dialog_entity_settings` journey only, UI-07) | new |
+| `fe-ui/src/dialogs/peer_debug.rs` (network diagnostics panel) | new |
 
 **Total ≈ 198**
 
 ```bash
-cargo test -p fe-ui --lib -- notice:: ui_shell:: dialogs::join panels::widgets panels::toolbar panels::sidebar panels::tool_options panels::tool_inspector panels::tool_panel settings:: portal:: plugin:: actions::tests::active_dialog_entity_settings
+cargo test -p fe-ui --lib -- notice:: ui_shell:: dialogs::join panels::widgets panels::toolbar panels::sidebar panels::tool_options panels::tool_inspector panels::tool_panel settings:: portal:: plugin:: actions::tests::active_dialog_entity_settings dialogs::peer_debug
 cargo test -p fe-webview --lib --test security_test --test tauri_backend_test --test tauri_cutover_test
 cargo test -p fe-webview --test portal_protocol_journey --test portal_ipc_journey
 cargo test -p fractalengine --bin fractalengine -- portal_host::
@@ -267,6 +268,9 @@ fe-sync, distributed query, tileset transfer, relay, network thread.
 | `fe-network/**` | 6 |
 | `fractalengine-relay/**` | 9 |
 | `fe-runtime/src/{peer_registry,distributed_query,blob_transport,blob_store,bevy_blob_reader}.rs` | 34 |
+| `fe-runtime/src/{relay_advertisement,dialback,net_diagnostics}.rs` | new |
+| `fractalengine/src/relay_serve_bridge.rs` (`--bin fractalengine`) | new |
+| `fe-sync/tests/peer_relay_e2e_test.rs` (`relay-server` feature; slow) | new |
 | `fe-ui/src/dialogs/join.rs` *(cross-listed — see R6)* | — |
 
 **Total ≈ 375**
@@ -277,7 +281,11 @@ cargo test -p fe-sync --lib -- docs_engine::tests::a_hash_with_no_tileset_contex
 cargo test -p fe-api --test distributed_query_test
 cargo test -p fe-network
 cargo test -p fractalengine-relay
-cargo test -p fe-runtime --lib -- peer_registry distributed_query blob_transport blob_store bevy_blob_reader
+cargo test -p fe-runtime --lib -- peer_registry distributed_query blob_transport blob_store bevy_blob_reader relay_advertisement dialback net_diagnostics
+cargo test -p fe-sync --features relay-server -- relay_server
+cargo test -p fe-sync --features relay-server --test peer_relay_e2e_test
+cargo test -p fractalengine-relay --features relay-server -- relay_serve
+cargo test -p fractalengine --bin fractalengine -- relay_serve_bridge
 ```
 
 **Binding and scene-asset legs (turn 3):** the all-authors binding wait lives in
@@ -289,7 +297,8 @@ source fallback is `scene_assets::transfer::tests::blob_source_serves_scene_byte
 and the next line runs it alone. That test carries the QA-0118 re-arm assertion (a refused scene fetch is retried once the
 provider admits again) and the portal-bundle prefetch check. Its name predates QA-0118; renaming it is a separate change.
 
-**Slow sub-batch:** `fe-sync/tests/relay_assisted_test.rs` and `fe-sync/tests/tileset_transfer_test.rs`
+**Slow sub-batch:** `fe-sync/tests/relay_assisted_test.rs`, `fe-sync/tests/tileset_transfer_test.rs` and
+`fe-sync/tests/peer_relay_e2e_test.rs` (feature-gated `relay-server`; real relay handshake, run via its own line above)
 touch real endpoints/relay handshakes — flagged by the stress/timing scan; verify at campaign end if a
 single run is slow, otherwise keep inline (not confirmed as slow as role_propagation_inbound).
 
@@ -302,6 +311,8 @@ REST, MCP tools, operator gate, screenshot/vision/input, egress/export, elevated
 | Source paths | Approx. count |
 |---|---|
 | `fe-api/**` minus the files cross-listed into R4/R7/R8 (terrain_mutation_test, petal_render_distance_api_test, hexon_tileset_test, asset_ownership_test, distributed_query_test, device_ingest_test, iot_ingest_test, sim_control_test, visibility_groups_api_test) | ≈ 243 |
+| `fe-runtime/src/usage.rs` (usage sink, `usage::tests::`) | new |
+| `fe-api/src/{metrics,network,network_ops,relay_advertise}.rs` (module `tests::` only) | new |
 | `fe-database/src/handlers/elevated_query.rs` | 5 |
 | `fe-database/src/{api_token_store,session_cache}.rs`, `fe-database/src/handlers/api_token.rs` | 7 |
 | `fe-runtime/src/vision.rs` | 5 |
@@ -318,9 +329,9 @@ REST, MCP tools, operator gate, screenshot/vision/input, egress/export, elevated
 ```bash
 cargo test -p fe-api --test api_integration --test api_harness_smoke --test mcp_integration --test screenshot_test --test vision_test --test vision_scope_test --test token_lifecycle_test --test namespace_capability_test --test existence_oracle_test --test record_id_read_test --test gis_test --test export_share_test --test share_signer_persistence_test --test analytics_scope_test --test portal_bundle_test --test ws_integration
 cargo test -p fe-api --test bindings_api_test --test extensions_api_test
-cargo test -p fe-api --lib -- auth:: crs:: bridge_client endpoint:: entity_store_bridge export:: operator_gate query_guard rest:: mcp:: share:: upload:: visibility:: vision:: ws::
+cargo test -p fe-api --lib -- auth:: crs:: bridge_client endpoint:: entity_store_bridge export:: operator_gate query_guard rest:: mcp:: share:: upload:: visibility:: vision:: ws:: network:: network_ops:: metrics:: relay_advertise::
 cargo test -p fe-database --lib -- handlers::elevated_query api_token_store session_cache handlers::api_token
-cargo test -p fe-runtime --lib -- vision::
+cargo test -p fe-runtime --lib -- vision:: usage::
 cargo test -p fractalengine --bin fractalengine -- screenshot_bridge vision_bridge
 cargo test -p fractalengine --test security_harness
 ```
@@ -511,10 +522,11 @@ itself (not a specific feature); otherwise the owning region's batch already exe
 | Source paths | Approx. count |
 |---|---|
 | `fe-runtime/src/{messages,wiring,app,shared_node,diag15m,ktx2_guard,safe_id,asset_gc,bridge,timeseries}.rs`, `fe-runtime/tests/shared_node_test.rs` | 93 |
+| `fe-runtime/src/log_format.rs` (`log_format::tests::`) | new |
 | `fe-ui/src/plugin.rs` *(see Consolidation candidates — recommend splitting by owning resource)* | 19 |
 
 ```bash
-cargo test -p fe-runtime --lib -- messages:: wiring:: app:: shared_node diag15m ktx2_guard safe_id asset_gc bridge:: timeseries::
+cargo test -p fe-runtime --lib -- messages:: wiring:: app:: shared_node diag15m ktx2_guard safe_id asset_gc bridge:: timeseries:: log_format::
 cargo test -p fe-runtime --test shared_node_test
 cargo test -p fe-ui --lib -- plugin::
 ```
@@ -610,6 +622,13 @@ Non-cargo check (not a runner chunk; the extension docs link check, EXT-08): `py
 | `fractalengine/tests/security_harness.rs` | R9 |
 | `fractalengine/tests/integration_test.rs` | Harness |
 | `fe-test-harness/**` | Harness (always slow) |
+| `fe-runtime/src/usage.rs` | R9 |
+| `fe-runtime/src/log_format.rs` | Misc |
+| `fe-runtime/src/{relay_advertisement,dialback,net_diagnostics}.rs` | R8 |
+| `fe-api/src/{metrics,network,network_ops,relay_advertise}.rs` | R9 |
+| `fe-sync/tests/peer_relay_e2e_test.rs` | R8 (slow sub-batch) |
+| `fractalengine/src/relay_serve_bridge.rs` | R8 |
+| `fe-ui/src/dialogs/peer_debug.rs` | R6 |
 | `fe-entity-store/**`, `fe-query/**` | R3 |
 
 ---
