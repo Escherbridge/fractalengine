@@ -131,10 +131,12 @@ trusting "pure efficiency" claims; push control; a board that silently drifts st
   with `--no-fail-fast`, exposed three more `fractalengine` failures; fixed in `30d16662` (camera pose with an
   explicit fov in the vision test; Wasm component preamble in the security-harness stub; racy
   `try_recv`-after-update assertions removed from the local hexon install test, so off-thread placement is no
-  longer asserted). Gate `cargo check -p fractalengine --all-targets` green. **`30d16662` and the runbook commits
-  are NOT pushed: github.com was unreachable at 21:05** — retry `git push origin main`, then watch the run.
-  While the swarm runs every push restarts CI on a tree with unbuilt swarm commits, so push `30d16662` alone
-  only if no swarm commit sits above it (`git push origin 30d16662:main` does that), else wait for the refine pass.
+  longer asserted). Gate `cargo check -p fractalengine --all-targets` green. **Pushed 21:20 as `2b289db1`
+  (`git push -4 origin 2b289db1:main`: plain `git push` could not connect over IPv6 while curl could; use `-4`).
+  CI verdict on `2b289db1` due ~22:55 — `gh run list --branch main --limit 2`, read every `test result:` line.**
+  Do NOT `git push origin main` while the swarm runs: it would publish unbuilt swarm commits and cancel the CI
+  run. Push a named commit (`git push -4 origin <sha>:main`) only for a CI fix that sits below the swarm commits;
+  everything else waits for the refine pass.
   **After the swarm:** read the result with python from the task output or journal (it is large); relay
   `user_questions`; apply `needs` that no integration slice took; refine pass in plan §10 order; then §7 step 3.
 - **2026-11-13 18:55 MST — ROUND 4 PLANNING (done 20:40; `wf_d595d1cd-8d1`, 12 agents, 3.0M tokens); CI fix PUSHED (`8530377d`, 18:40), CI verdict due ~20:15.**
