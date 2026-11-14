@@ -314,11 +314,12 @@ fn a_non_owner_creating_a_petal_gets_no_implicit_owner_row() {
     let crowded=access("access-many-statements",Access::Load {peer_dids:vec![]}).expect("a grantee's many statements list it once");
     assert_eq!(crowded.roles.iter().filter(|(did,_)|did==PEER).count(),1);
     // The Access read is bounded in SQL by numeric hlc (string column: '9' < '1000' lexically), then truncated to 256.
+    // One grantee with 300 grantors: statements pass the 256 cap, distinct members stay under it.
     let crowded_scope=target.scope.clone();
     let hlc_values:Vec<String>=(1..=297).map(|n|n.to_string()).chain(["1000","1001","1002"].map(String::from)).collect();
     let bounded_rows:Vec<serde_json::Value>=hlc_values.iter().enumerate().map(|(i,hlc)|serde_json::json!({
-        "statement_key":format!("{crowded_scope}/did:key:bounded-{i}/{}",local_did()),"verse_id":owned_parts.verse_id,"scope":crowded_scope,
-        "peer_did":format!("did:key:bounded-{i}"),"grantor_did":local_did(),"role":"viewer","revoked":false,"hlc":hlc,"updated_at":"2026-11-08T00:00:00Z"})).collect();
+        "statement_key":format!("{crowded_scope}/did:key:bounded/did:key:bounded-grantor-{i}"),"verse_id":owned_parts.verse_id,"scope":crowded_scope,
+        "peer_did":"did:key:bounded","grantor_did":format!("did:key:bounded-grantor-{i}"),"role":"viewer","revoked":false,"hlc":hlc,"updated_at":"2026-11-08T00:00:00Z"})).collect();
     rt.block_on(async {db.query("INSERT INTO role_grant $statements").bind(("statements",bounded_rows)).await.expect("seed bounded rows").check().expect("seeded bounded rows")});
     let bounded=access("access-bounded-grants",Access::Load {peer_dids:vec![]}).expect("bounded grant record");
     assert_eq!(bounded.grants.len(),256,"the grant record is truncated to MAX_PEERS");

@@ -247,6 +247,10 @@ fn api_reader_reads_db_thread_writes_through_the_shared_handle() {
         row["node_id"] = serde_json::json!(inbound);
         row["elevation"] = serde_json::json!(n as f64);
         row["_fe_scene"]["hlc"] = serde_json::json!((base_clock + n).to_string());
+        // The per-key clock's `transform` version is what applies (field_clock/AGENTS.md §wire); restamp it too.
+        let transform = row.pointer_mut("/_fe_clock/own/transform").expect("published transform version");
+        transform["hlc"] = serde_json::json!((base_clock + n).to_string());
+        transform["value"]["elevation"] = serde_json::json!(n as f64);
         serde_json::to_vec(&row).unwrap()
     };
     let reading = serde_json::json!({
@@ -307,13 +311,14 @@ fn api_reader_reads_db_thread_writes_through_the_shared_handle() {
                 .await.unwrap().check().unwrap();
         });
     }).join().unwrap();
+    // Every shared clone goes BEFORE the DB thread exits, or the store stays locked (src/AGENTS.md §shared-handle).
+    drop(spawned.db_thread.shared_db);
     spawned.cmd_tx.send(DbCommand::Shutdown).unwrap();
     assert!(matches!(
         spawned.res_rx.recv_timeout(TIMEOUT).unwrap(),
         DbResult::Stopped
     ));
     spawned.db_thread.join_handle.join().unwrap();
-    drop(spawned.db_thread.shared_db);
     let (cmd_tx, cmd_rx) = crossbeam::channel::bounded(1);
     let (res_tx, res_rx) = crossbeam::channel::bounded(1);
     let failed = spawn_db_thread_shared(
@@ -374,9 +379,11 @@ fn shared_reader_errors_instead_of_hanging_after_db_thread_exit() {
         outcome.is_err(),
         "reader must error once the DB thread is gone, got {outcome:?}"
     );
+    // A clone alive at DB-thread exit pins this store for the process (src/AGENTS.md §shared-handle): the terminal leg gets its own.
+    let dir = tempfile::tempdir().expect("terminal tempdir");
 
     let identity = fe_identity::NodeKeypair::generate();
-    let terminal = spawn_on_with_identity(dir.path(), Some(fe_identity::NodeKeypair::from_bytes(&identity.seed_bytes()).unwrap()));
+    let terminal = spawn_on_with_identity(dir.path(),Some(fe_identity::NodeKeypair::from_bytes(&identity.seed_bytes()).unwrap()));
     terminal.cmd_tx.send(DbCommand::CreateVerse { name: "before-terminal".into() }).unwrap();
     let DbResult::VerseCreated {id:before_verse,..}=terminal.res_rx.recv_timeout(TIMEOUT).unwrap() else {panic!("created owned verse")};
     let auth_runtime=tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
@@ -387,15 +394,14 @@ fn shared_reader_errors_instead_of_hanging_after_db_thread_exit() {
     let DbResult::ApiTokenMinted {jti:revoked_jti,..}=terminal.res_rx.recv_timeout(TIMEOUT).unwrap() else {panic!("persisted token mint")};
     terminal.cmd_tx.send(DbCommand::RevokeApiToken {jti:revoked_jti.clone(),sub:identity.to_did_key()}).unwrap();
     assert!(matches!(terminal.res_rx.recv_timeout(TIMEOUT).unwrap(),DbResult::ApiTokenRevoked {..}));
+    drop(terminal.db_thread.shared_db);
     terminal.cmd_tx.send(DbCommand::Shutdown).unwrap();
     assert!(matches!(terminal.res_rx.recv_timeout(TIMEOUT).unwrap(),DbResult::Stopped));
     terminal.db_thread.join_handle.join().unwrap();
-    drop(terminal.db_thread.shared_db);
     let terminal=spawn_on_with_identity(dir.path(),Some(fe_identity::NodeKeypair::from_bytes(&identity.seed_bytes()).unwrap()));
     assert!(auth_runtime.block_on(fe_database::api_token_store::is_token_revoked(&terminal.db_thread.shared_db,&revoked_jti)).unwrap(),"Ordinary revocation survives closing and reopening the real store");
     assert_eq!(auth_runtime.block_on(fe_database::api_auth::current_generation(&terminal.db_thread.shared_db)).unwrap(),previous_generation,"Ordinary restart does not invalidate unrelated credentials");
-    let reader = terminal.db_thread.shared_db.clone();
-    let jobs = fe_runtime::maintenance::HostJobs::default();
+    let jobs =fe_runtime::maintenance::HostJobs::default();
     jobs.freeze().unwrap();
     let mut services: Vec<_> = ["api", "sync", "network", "plugin", "replication", "distributed-query", "scene-bridge", "transform-bridge", "listener-fanout"]
         .into_iter().map(|name| fe_runtime::service_lifecycle::OwnedService::spawn(name, |stop| {
@@ -410,6 +416,8 @@ fn shared_reader_errors_instead_of_hanging_after_db_thread_exit() {
         std::thread::sleep(Duration::from_millis(1));
     };
     let replay = proof.clone();
+    // Quiesced readers (the joined API service) hold no clone when the worker exits, so the reopen below can lock the store.
+    drop(terminal.db_thread.shared_db);
     for _ in 0..65 { terminal.cmd_tx.send(DbCommand::Ping).unwrap(); }
     terminal.cmd_tx.send(DbCommand::TerminalDevelopmentReset {
         request_id: "real-worker-reset".into(), confirmation: "RESET".into(), proof,
@@ -436,8 +444,6 @@ fn shared_reader_errors_instead_of_hanging_after_db_thread_exit() {
     assert_eq!(drained, 65, "draining bounded results must let the final DB barrier run");
     terminal.db_thread.join_handle.join().expect("terminal DB worker joins");
     assert!(terminal.cmd_tx.send(DbCommand::Ping).is_err());
-    assert!(read_verse_on_foreign_runtime(reader, "any".into()).is_err());
-    drop(terminal.db_thread.shared_db);
 
     let reopened = spawn_on_with_identity(dir.path(), Some(fe_identity::NodeKeypair::from_bytes(&identity.seed_bytes()).unwrap()));
     reopened.cmd_tx.send(DbCommand::LoadHierarchy).unwrap();

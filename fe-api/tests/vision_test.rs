@@ -440,7 +440,18 @@ async fn second_posed_capture_while_one_is_in_flight_is_409() {
     let surface = ScreenshotSurface::new(true, None)
         .with_vision(tx)
         .with_reply_timeout(Duration::from_millis(500));
-    serve_vision(rx, Duration::from_millis(250));
+    // Gated backend: the first capture stays in flight until the test releases it.
+    let (arrived_tx, mut arrived_rx) = tokio::sync::mpsc::unbounded_channel::<()>();
+    let (release_tx, release_rx) = std::sync::mpsc::channel::<()>();
+    std::thread::spawn(move || {
+        while let Ok(request) = rx.recv() {
+            let VisionOp::Capture(spec) = &request.op else { continue };
+            let _ = arrived_tx.send(());
+            let _ = release_rx.recv();
+            let pose = resolved_pose_for(spec);
+            request.reply(Ok(VisionOutput::Capture { png: FAKE_PNG.to_vec(), pose }));
+        }
+    });
 
     let h1 = ApiHarness::spawn_with_screenshot(surface.clone())
         .await
@@ -454,10 +465,13 @@ async fn second_posed_capture_while_one_is_in_flight_is_409() {
     let body = json!({
         "pose": { "orbit": { "focus": [0.0, 0.0, 0.0], "yaw_deg": 0.0, "pitch_deg": 0.0, "distance": 10.0 } }
     });
-    let (first, second) = tokio::join!(
-        post_screenshot(&h1, &owner_a, &body),
-        post_screenshot(&h2, &owner_b, &body),
-    );
+    let (first, second) = tokio::join!(post_screenshot(&h1, &owner_a, &body), async {
+        // Send the second only once the first has reached the host, then release the first.
+        arrived_rx.recv().await.expect("first capture reached the host");
+        let second = post_screenshot(&h2, &owner_b, &body).await;
+        release_tx.send(()).expect("release first capture");
+        second
+    });
 
     assert_eq!(second.status, StatusCode::CONFLICT, "{:?}", second.json());
     assert_eq!(second.json()["code"], "capture_in_progress");

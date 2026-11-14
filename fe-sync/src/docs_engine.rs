@@ -1311,7 +1311,7 @@ mod tests {
                 directory.extend_from_slice(&data_len.to_le_bytes());
                 directory.extend_from_slice(&data_len.to_le_bytes());
                 directory.extend_from_slice(&name_len.to_le_bytes());
-                directory.extend_from_slice(&[0; 12]); // extra, comment, disk, internal attrs
+                directory.extend_from_slice(&[0; 8]); // extra, comment, disk, internal attrs
                 directory.extend_from_slice(&0u32.to_le_bytes()); // external attrs
                 directory.extend_from_slice(&offset.to_le_bytes());
                 directory.extend_from_slice(name.as_bytes());
@@ -1455,6 +1455,10 @@ mod tests {
         let second_publication=tokio::time::timeout(std::time::Duration::from_secs(20), publication_rx.recv()).await.unwrap().unwrap();
         assert_eq!(second_publication.record_id,second_asset_id,"same bytes do not collapse metadata identities");
         assert_eq!(second_publication.row_hash,second_row_hash);
+        // The provider serves a scene blob only once its row is published (classified).
+        source_jobs.publish_row("scene-v", bundle_row_hash);
+        let bundle_publication = tokio::time::timeout(std::time::Duration::from_secs(20), publication_rx.recv()).await.unwrap().unwrap();
+        assert_eq!(bundle_publication.record_id, bundle_asset_id, "the portal-bundle row publishes like any scene row");
         assert!(
             provider_dir
                 .path()

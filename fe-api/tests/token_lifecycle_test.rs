@@ -16,6 +16,15 @@ use fractalengine_test_harness::api::ApiHarness;
 async fn minted_token_authenticates_then_is_revoked_live() {
     let h = ApiHarness::spawn().await.expect("spawn harness");
     let token = h.mint_token("VERSE#v1", "viewer");
+    // Play the DB thread: answer GetHierarchy with an empty tree (detached; ends with the process).
+    let command_rx = h.api_command_receiver();
+    std::thread::spawn(move || {
+        while let Ok(command) = command_rx.recv() {
+            if let fe_runtime::messages::ApiCommand::GetHierarchy { reply_tx } = command {
+                let _ = reply_tx.send(Vec::new());
+            }
+        }
+    });
 
     // 1. A freshly minted token authenticates over the real middleware.
     let (status, _) = h.get("/api/v1/hierarchy", Some(&token)).await;

@@ -430,6 +430,45 @@ fn db_command(m: &mut Model, cmd: DbCommand, store: Option<&BlobStoreHandle>) ->
                 scale: [1.0; 3],
             }
         }
+        // Mirrors the CreateObject commit: one receipt carrying the created row.
+        DbCommand::CreateObject {
+            petal_id,
+            input,
+            actor_did,
+            correlation_id,
+            ..
+        } => {
+            let id = ulid();
+            m.log.push(json!({
+                "cmd": "CreateObject", "node_id": id, "petal_id": petal_id, "actor_did": actor_did,
+            }));
+            let receipt = serde_json::from_value(json!({
+                "node_id": id, "history_version": 1, "persist": "committed",
+                "state": {
+                    "node_id": id, "petal_id": petal_id, "display_name": input.name,
+                    "asset_id": input.asset_id, "position": input.position,
+                    "elevation": input.position[1], "rotation": input.rotation,
+                    "scale": input.scale, "properties": input.properties, "edit_seq": 0,
+                    "interactive": input.asset_id.is_some(), "created_at": "emulator",
+                    "tombstone": null
+                }
+            }))
+            .unwrap();
+            m.nodes.push(NodeRec {
+                id,
+                petal_id,
+                name: input.name,
+                position: input.position,
+                rotation: input.rotation,
+                scale: input.scale,
+                asset_id: input.asset_id,
+                properties: input.properties,
+            });
+            DbResult::NodeMutationCommitted {
+                receipt,
+                correlation_id,
+            }
+        }
         DbCommand::Ping => DbResult::Pong,
         // Mirrors fe-database `promote_instance_handler` (DEC-C21 M7): an ABSENT
         // path is tolerated, a FOREIGN one refused — the API must gate both alike.
@@ -778,7 +817,13 @@ fn db_command(m: &mut Model, cmd: DbCommand, store: Option<&BlobStoreHandle>) ->
                 correlation_id,
             }
         }
-        _ => DbResult::Error("unhandled command in emulator".into()),
+        other => {
+            // Name the variant so a missing emulator arm is visible; never panic (fuzz).
+            let debug = format!("{other:?}");
+            let variant = debug.split([' ', '{', '(']).next().unwrap_or_default();
+            eprintln!("emulator: unhandled DbCommand::{variant}");
+            DbResult::Error("unhandled command in emulator".into())
+        }
     }
 }
 
@@ -2980,7 +3025,10 @@ async fn waypoint_and_gpx_tools_round_trip() {
 async fn terrain_and_tileset_tools_reach_their_cores() {
     let Emu { state, model, .. } = emu(true);
     let home = seed_chain(&model, "home");
-    let editor = claims(&home.verse_scope(), "editor");
+    let mut editor = claims(&home.verse_scope(), "editor");
+    // Terrain writes need a host-issued credential (c0aa2bce): host sub, i64-safe exp.
+    editor.sub = fe_identity::did_key_from_public_key(&state.verifying_key);
+    editor.exp = 4_102_444_800;
 
     // set_petal_terrain mirrors REST: an invalid TerrainConfig never reaches
     // the DB thread; a valid one is stored, and null clears it.
@@ -3114,7 +3162,7 @@ impl SplitMix64 {
 /// with values valid enough to clear `check_required_args` and reach the
 /// handler. [`fuzz_args_for`] trims it to ONE tool's schema keys; one random
 /// key of that schema is then replaced per iteration — see [`mutate`].
-fn fuzz_baseline_args(home: &Chain, asset_id: &str) -> serde_json::Value {
+fn fuzz_baseline_args(home: &Chain, asset_id: &str, field_def_id: &str) -> serde_json::Value {
     json!({
         "verse_id": home.verse, "fractal_id": home.fractal,
         "petal_id": home.petal, "node_id": home.node,
@@ -3135,14 +3183,22 @@ fn fuzz_baseline_args(home: &Chain, asset_id: &str) -> serde_json::Value {
         "schema": serde_json::Value::Null,
         "files": [b64(&tiny_glb())], "recorded_at": "2026-01-01T00:00:00Z",
         "payload_id": "fuzz-payload-id", "from_ms": 0, "to_ms": 1,
+        // Field schema tools: a registered def id + the smallest descriptor that parses.
+        "field_def_id": field_def_id,
+        "descriptor": { "version": 1, "schema": { "type": "string" } },
     })
 }
 
 /// The baseline trimmed to one tool's schema `keys`: a superset key could
 /// trip a depth check (`create_fractal` + `petal_id` → "unexpected …") and
 /// silently keep the tool from ever reaching its handler.
-fn fuzz_args_for(home: &Chain, asset_id: &str, keys: &[String]) -> serde_json::Value {
-    let mut args = fuzz_baseline_args(home, asset_id);
+fn fuzz_args_for(
+    home: &Chain,
+    asset_id: &str,
+    field_def_id: &str,
+    keys: &[String],
+) -> serde_json::Value {
+    let mut args = fuzz_baseline_args(home, asset_id, field_def_id);
     args.as_object_mut()
         .expect("baseline is an object")
         .retain(|k, _| keys.contains(k));
@@ -3245,6 +3301,13 @@ async fn mcp_structured_fuzz_never_panics_or_leaks_to_channel() {
             .unwrap()
             .assets
             .push((asset_id.clone(), "00".repeat(32)));
+        // Per-tool field def stored at the home verse scope (field-schema tools).
+        let field_def_id = ulid();
+        model
+            .lock()
+            .unwrap()
+            .field_defs
+            .insert(field_def_id.clone(), home.verse_scope());
         let schema = (spec.input_schema)();
         let keys: Vec<String> = schema["properties"]
             .as_object()
@@ -3272,7 +3335,7 @@ async fn mcp_structured_fuzz_never_panics_or_leaks_to_channel() {
                 role_below(spec.min_role).to_string()
             };
             let c = claims(&home.verse_scope(), &role);
-            let mut args = fuzz_args_for(&home, &asset_id, &keys);
+            let mut args = fuzz_args_for(&home, &asset_id, &field_def_id, &keys);
             if let Some((key, variant)) = &mutation {
                 mutate(args.as_object_mut().unwrap(), key, *variant);
             }

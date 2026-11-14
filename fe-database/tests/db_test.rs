@@ -100,6 +100,7 @@ struct SharedSceneDb {
     cmd_tx: crossbeam::channel::Sender<DbCommand>,
     res_rx: crossbeam::channel::Receiver<DbResult>,
     scene_tx: tokio::sync::broadcast::Sender<SceneChange>,
+    blobs: BlobStoreHandle,
     _tmp_dir: tempfile::TempDir, // kept alive so the directory isn't deleted
 }
 
@@ -132,10 +133,11 @@ fn shared_scene_db() -> &'static SharedSceneDb {
         let (res_tx, res_rx) = crossbeam::channel::bounded::<DbResult>(256);
         let (scene_tx, _discard_rx) = tokio::sync::broadcast::channel::<SceneChange>(256);
 
+        let blobs = mock_blob_store();
         let _handle = fe_database::spawn_db_thread_with_sync(
             cmd_rx,
             res_tx,
-            mock_blob_store(),
+            blobs.clone(),
             None,
             None,
             None,
@@ -158,6 +160,7 @@ fn shared_scene_db() -> &'static SharedSceneDb {
             cmd_tx,
             res_rx,
             scene_tx,
+            blobs,
             _tmp_dir: tmp_dir,
         }
     })
@@ -1268,6 +1271,8 @@ fn test_rename_entity_omits_node_scene_change() {
         }),
         DbResult::DeviceFormatRegistered { .. }
     ));
+    // CreateAsset refuses a hash the blob store never held; store the frame first.
+    let frame_hash = fe_database::hash_to_hex(&db.blobs.add_blob(b"frame-01").unwrap());
     let payload_id = match request(DbCommand::InsertDevicePayloads {
         petal_id: sibling.clone(),
         verse_id: Some(verse_id),
@@ -1284,7 +1289,7 @@ fn test_rename_entity_omits_node_scene_change() {
             name: "frame.bin".into(),
             content_type: "application/octet-stream".into(),
             size_bytes: 8,
-            content_hash: "ab".repeat(32),
+            content_hash: frame_hash,
             owner_did: "did:key:z6MkDecoderTest".into(),
         }],
         correlation_id: None,

@@ -7387,7 +7387,8 @@ mod tests {
                     [0.0; 3],
                     vec![0.0; 3],
                     vec![1.0; 3],
-                    json!({"payload":"x".repeat(60_000)})
+                    // 40 KB doubles into _fe_clock (~82 KB row, under 96 KiB); 145 rows pass 8 MiB.
+                    json!({"payload":"x".repeat(40_000)})
                         .as_object()
                         .unwrap()
                         .clone(),

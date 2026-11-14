@@ -1000,9 +1000,12 @@ mod tests {
         let memo_signer = fe_identity::keypair::NodeKeypair::from_bytes(&[7u8; 32]).expect("seed key");
         let memo_did = memo_signer.to_did_key();
         roles.set(&memo_did, RoleLevel::Manager);
+        // A Manager distinct from the advertiser: the memo only binds other authors.
+        const MEMO_TOMBSTONER: &str = "did:key:memo-tombstoner";
+        roles.set(MEMO_TOMBSTONER, RoleLevel::Manager);
         let memo_now = unix_now_ms();
         let mut memo_book = RelayAdvertisementBook::with_signed_mode(RelayAdvertSignedMode::Compat);
-        assert!(memo_book.observe_at(VERSE, "r-x", MANAGER, &[], true, roles.role_of(), memo_now).is_empty());
+        assert!(memo_book.observe_at(VERSE, "r-x", MEMO_TOMBSTONER, &[], true, roles.role_of(), memo_now).is_empty());
         assert_eq!(memo_book.tombstone_len(), 1);
         let older = signed_row(&memo_signer, "https://memo.example.org", memo_now, |_| {});
         assert!(memo_book.observe_at(VERSE, "r-x", &memo_did, &wire(&older), false, roles.role_of(), memo_now).is_empty());
@@ -1039,7 +1042,7 @@ mod tests {
         );
         assert_eq!(memo_book.tombstone_len(), 0);
         // A Viewer's tombstone leaves no memo, so the following row is admitted.
-        assert!(memo_book.observe_at(VERSE, "r-y", VIEWER, &[], true, roles.role_of(), later_now).is_empty());
+        assert!(memo_book.observe_at(VERSE, "r-y", "did:key:memo-viewer", &[], true, roles.role_of(), later_now).is_empty());
         assert_eq!(memo_book.tombstone_len(), 0);
         let viewer_case = signed_row(&memo_signer, "https://memo-y.example.org", later_now, |_| {});
         assert_eq!(
@@ -1048,7 +1051,7 @@ mod tests {
         );
         // The memo is bounded per verse, oldest evicted first, and the replica closing drops it.
         for index in 0..=RELAY_TOMBSTONE_PER_VERSE_CAP {
-            memo_book.observe_at(VERSE, &format!("r-gone-{index}"), MANAGER, &[], true, roles.role_of(), later_now);
+            memo_book.observe_at(VERSE, &format!("r-gone-{index}"), MEMO_TOMBSTONER, &[], true, roles.role_of(), later_now);
         }
         assert_eq!(memo_book.tombstone_len(), RELAY_TOMBSTONE_PER_VERSE_CAP);
         assert_eq!(memo_book.tombstone_evicted(), 1);

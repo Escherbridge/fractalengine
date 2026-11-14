@@ -1453,7 +1453,8 @@ joined thread (os error 33 on Windows) and an in-process reopen of the same
 path — the restart tests above and `node_view_test.rs` — failed. Since OF-2
 the router runs on the runtime's worker threads (§shared-handle), so the
 yield/sleep gives that worker time to finish; the join after `Stopped` stays
-the reopen barrier. A live shared clone defeats this close (§shared-handle).
+the reopen barrier only when every shared clone was dropped before the thread
+exited; a clone alive at exit pins the lock for the process (§shared-handle).
 
 **Promotion write-side contract.** `promote_instance_handler` writes
 `properties: { node_kind: 'stamp', path_id, owning_path_id, instance_index }` —
@@ -1589,8 +1590,14 @@ of routes, copying the source session's ns/db/vars. Two consequences:
   stays held until the process exits (verified: an in-process reopen then fails
   with os error 33). Both binaries exit right after shutdown, so this only
   matters in-process; durability rests on the per-commit fsync
-  (`SURREAL_DATASTORE_SYNC_DATA=every`, set by both mains). Tests that reopen a
-  store must not keep a shared clone alive. The pre-OF-2 binaries built the reader on a throwaway
+  (`SURREAL_DATASTORE_SYNC_DATA=every`, set by both mains). The holder is
+  surrealdb-core's `surrealkv-commit-coordinator` std thread (sync mode
+  `every`): it owns a SurrealKV `Tree` clone and exits only in
+  `Datastore::shutdown`, so the lock is pinned for the process, not released
+  late (2026-11-14: a 15 s retry never reopened; a clone-free shutdown reopened
+  on the first try). **The reopen barrier is: drop every shared clone BEFORE
+  the DB thread exits (`Shutdown`, or a terminal reset's `break`), then join.**
+  Dropping a clone after the join is too late. The pre-OF-2 binaries built the reader on a throwaway
   current-thread runtime that was dropped right after hydration, so even where
   the second open succeeded its router was already dead.
 

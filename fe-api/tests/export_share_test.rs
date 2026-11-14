@@ -2025,11 +2025,11 @@ async fn petal_snapshot_export_import_authz_journey() {
     let refused = body_json(response).await;
     assert_eq!(refused["error"], "refused", "{refused}");
     assert_eq!(refused["petal_id"], petal_id.as_str(), "{refused}");
-    // The DB thread received the token holder's DID as the import actor (the gate sends none, so it never got here).
+    // Two real imports reached the DB (superseded-binding leg, then this one), each with the token holder's DID; gate and hook-unjudgeable refusals sent none.
     assert_eq!(
         *import_actors.lock().expect("actor log"),
-        vec![Some(manager_subject)],
-        "the real import carries the Manager token's sub"
+        vec![Some(manager_subject.clone()), Some(manager_subject)],
+        "each real import carries the Manager token's sub"
     );
 
     // Editor, and a Manager of another fractal, are denied before anything is restored.
