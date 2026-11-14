@@ -7,7 +7,7 @@
 use anyhow::{bail, Context, Result};
 use base64::engine::general_purpose::STANDARD as BASE64;
 use base64::Engine as _;
-use ed25519_dalek::{Signature, Signer, SigningKey, Verifier, VerifyingKey};
+use ed25519_dalek::{Signature, Signer, SigningKey, VerifyingKey};
 use serde::Serialize;
 use serde_json::Value;
 
@@ -97,7 +97,8 @@ pub fn verify_manifest(json: &[u8], sig: &str, publisher_did: &str) -> Result<bo
 
     let verifying_key = did_key_to_verifying_key(publisher_did)?;
 
-    match verifying_key.verify(canonical.as_bytes(), &signature) {
+    // Strict check rejects small-order public keys (unification NFR-3).
+    match verifying_key.verify_strict(canonical.as_bytes(), &signature) {
         Ok(()) => Ok(true),
         Err(_) => Ok(false),
     }
@@ -163,6 +164,7 @@ pub fn verifying_key_to_did(key: &VerifyingKey) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use ed25519_dalek::Verifier;
     use rand::rngs::OsRng;
 
     #[test]
@@ -214,6 +216,30 @@ mod tests {
 
         let ok = verify_manifest(&json, &tampered, &did).unwrap();
         assert!(!ok, "tampered signature must not verify");
+
+        // Small-order row: identity-point key with R = identity, S = 0 passes plain
+        // `verify` for any message, so only `verify_strict` turns this red.
+        let mut identity_key_bytes = vec![0xed, 0x01, 0x01];
+        identity_key_bytes.extend_from_slice(&[0u8; 31]);
+        let identity_did = format!("did:key:z{}", bs58::encode(&identity_key_bytes).into_string());
+        let mut forged_signature = [0u8; 64];
+        forged_signature[0] = 0x01;
+        let forged_base64 = BASE64.encode(forged_signature);
+
+        let identity_key = did_key_to_verifying_key(&identity_did).unwrap();
+        let mut canonical_doc: Value = serde_json::from_slice(&json).unwrap();
+        canonical_doc["signature"] = Value::String(String::new());
+        let canonical = canonical_json(&canonical_doc);
+        assert!(
+            identity_key
+                .verify(canonical.as_bytes(), &Signature::from_slice(&forged_signature).unwrap())
+                .is_ok(),
+            "non-strict verify accepts the small-order forgery (mutation check)"
+        );
+        assert!(
+            !verify_manifest(&json, &forged_base64, &identity_did).unwrap(),
+            "small-order publisher key must be refused"
+        );
     }
 
     #[test]
