@@ -1,7 +1,10 @@
 //! `__relays` advertisement row (v1) and the single advertised-relay URL validator; see `fe-runtime/src/AGENTS.md` §relay-advertisement.
 
+use std::collections::BTreeSet;
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
 use std::sync::OnceLock;
+
+use ed25519_dalek::{Signature, Signer, SigningKey, Verifier, VerifyingKey};
 
 use serde::{Deserialize, Serialize};
 
@@ -18,14 +21,73 @@ pub const RELAY_ADVERT_TABLE: &str = "__relays";
 pub const RELAY_ADVERT_ROW_VERSION: u32 = 1;
 
 /// One advertised relay row; unknown extra fields are tolerated (forward compatible).
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
 pub struct RelayAdvertisementRow {
     pub v: u32,
     pub url: String,
     pub advertised_by: String,
     #[serde(default)]
     pub note: Option<String>,
+    /// Verse the advert is scoped to (signed rows only).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub verse_id: Option<String>,
+    /// Unix ms after which the advert is void (signed rows only).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub expires_at_ms: Option<u64>,
+    /// Unix ms the advertiser signed the row at (signed rows only).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub issued_at_ms: Option<u64>,
+    /// Optional dial-back attestation, signed as part of the body.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub dialback: Option<serde_json::Value>,
+    /// Hex ed25519 signature over `RELAY_ADVERT_SIGNING_DOMAIN || canonical_body`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sig: Option<String>,
 }
+
+/// Signing domain of a signed v1 advert body.
+pub const RELAY_ADVERT_SIGNING_DOMAIN: &[u8] = b"fe-relay-adv-v1\0";
+
+/// Longest lifetime (`expires_at_ms - issued_at_ms`) a signed advert may claim: 30 days.
+pub const MAX_ADVERT_TTL_MS: u64 = 30 * 24 * 60 * 60 * 1000;
+
+/// Most live adverts one verse may hold.
+pub const MAX_ADVERTS_PER_VERSE: usize = 4;
+
+/// Why a signed advert was refused.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AdvertRefusal {
+    BadSignature,
+    AuthorMismatch,
+    Expired,
+    TtlTooLong,
+    VerseMismatch,
+    UrlPolicy,
+    OverBound,
+}
+
+impl AdvertRefusal {
+    /// Stable snake_case name for diagnostics.
+    pub fn name(self) -> &'static str {
+        match self {
+            Self::BadSignature => "bad_signature",
+            Self::AuthorMismatch => "author_mismatch",
+            Self::Expired => "expired",
+            Self::TtlTooLong => "ttl_too_long",
+            Self::VerseMismatch => "verse_mismatch",
+            Self::UrlPolicy => "url_policy",
+            Self::OverBound => "over_bound",
+        }
+    }
+}
+
+impl std::fmt::Display for AdvertRefusal {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.name())
+    }
+}
+
+impl std::error::Error for AdvertRefusal {}
 
 /// Outcome of parsing raw row bytes.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -52,6 +114,8 @@ pub enum RelayUrlError {
     PrivateDestination(String),
     /// Plain http without the operator opt-in.
     InsecureScheme,
+    /// Port outside the `RelayUrlPolicy` allowlist.
+    PortNotAllowed(u16),
 }
 
 impl std::fmt::Display for RelayUrlError {
@@ -78,6 +142,7 @@ impl std::fmt::Display for RelayUrlError {
                 f,
                 "relay url must be https (http allowed only with {ALLOW_PRIVATE_RELAYS_ENV}=1)"
             ),
+            Self::PortNotAllowed(port) => write!(f, "relay port {port} is not allowlisted"),
         }
     }
 }
@@ -298,6 +363,172 @@ pub fn validate_advertised_relay_url_with(
     Ok(AdvertisedRelayUrl { url: parsed, reach })
 }
 
+/// Strict policy for signed v1 adverts: https only, public destinations, allowlisted ports.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RelayUrlPolicy {
+    pub allowed_ports: BTreeSet<u16>,
+}
+
+impl Default for RelayUrlPolicy {
+    fn default() -> Self {
+        Self {
+            allowed_ports: BTreeSet::from([443]),
+        }
+    }
+}
+
+impl RelayUrlPolicy {
+    /// Validates under STRICT rules (no private opt-in), then requires an allowlisted port.
+    pub fn check(&self, raw: &str) -> Result<AdvertisedRelayUrl, RelayUrlError> {
+        let accepted = validate_advertised_relay_url_with(raw, AdvertisedRelayPolicy::STRICT)?;
+        let port = accepted.url().port_or_known_default().unwrap_or(0);
+        if self.allowed_ports.contains(&port) {
+            Ok(accepted)
+        } else {
+            Err(RelayUrlError::PortNotAllowed(port))
+        }
+    }
+}
+
+fn push_field(body: &mut Vec<u8>, bytes: &[u8]) {
+    body.extend_from_slice(&(bytes.len() as u32).to_be_bytes());
+    body.extend_from_slice(bytes);
+}
+
+fn push_optional(body: &mut Vec<u8>, bytes: Option<&[u8]>) {
+    match bytes {
+        Some(bytes) => {
+            body.push(1);
+            push_field(body, bytes);
+        }
+        None => body.push(0),
+    }
+}
+
+/// Key-sorted, whitespace-free JSON so the dial-back value signs identically on every peer.
+fn canonical_json(value: &serde_json::Value, out: &mut String) {
+    match value {
+        serde_json::Value::Object(map) => {
+            let mut keys: Vec<&String> = map.keys().collect();
+            keys.sort();
+            out.push('{');
+            for (index, key) in keys.into_iter().enumerate() {
+                if index > 0 {
+                    out.push(',');
+                }
+                out.push_str(&serde_json::Value::String(key.clone()).to_string());
+                out.push(':');
+                canonical_json(&map[key], out);
+            }
+            out.push('}');
+        }
+        serde_json::Value::Array(items) => {
+            out.push('[');
+            for (index, item) in items.iter().enumerate() {
+                if index > 0 {
+                    out.push(',');
+                }
+                canonical_json(item, out);
+            }
+            out.push(']');
+        }
+        other => out.push_str(&other.to_string()),
+    }
+}
+
+/// Stable, length-prefixed body of a row in fixed field order; `sig` is excluded.
+pub fn canonical_body(row: &RelayAdvertisementRow) -> Vec<u8> {
+    let mut body = Vec::new();
+    body.extend_from_slice(&row.v.to_be_bytes());
+    push_field(&mut body, row.url.as_bytes());
+    push_field(&mut body, row.advertised_by.as_bytes());
+    push_optional(&mut body, row.note.as_deref().map(str::as_bytes));
+    push_optional(&mut body, row.verse_id.as_deref().map(str::as_bytes));
+    let expires = row.expires_at_ms.map(u64::to_be_bytes);
+    push_optional(&mut body, expires.as_ref().map(|bytes| &bytes[..]));
+    let issued = row.issued_at_ms.map(u64::to_be_bytes);
+    push_optional(&mut body, issued.as_ref().map(|bytes| &bytes[..]));
+    let dialback = row.dialback.as_ref().map(|value| {
+        let mut text = String::new();
+        canonical_json(value, &mut text);
+        text
+    });
+    push_optional(&mut body, dialback.as_deref().map(str::as_bytes));
+    body
+}
+
+fn signing_message(row: &RelayAdvertisementRow) -> Vec<u8> {
+    let mut message = RELAY_ADVERT_SIGNING_DOMAIN.to_vec();
+    message.extend_from_slice(&canonical_body(row));
+    message
+}
+
+/// Signs the row in place; `advertised_by` must already be the signer's did:key or verification refuses it.
+pub fn sign_row(row: &mut RelayAdvertisementRow, signing_key: &SigningKey) {
+    let signature = signing_key.sign(&signing_message(row));
+    row.sig = Some(hex::encode(signature.to_bytes()));
+}
+
+fn unix_now_ms() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|elapsed| elapsed.as_millis() as u64)
+        .unwrap_or(0)
+}
+
+/// Verifies a signed row now, with no verse expectation; see `verify_row_at`.
+pub fn verify_row(row: &RelayAdvertisementRow, key: &VerifyingKey) -> Result<(), AdvertRefusal> {
+    verify_row_at(row, key, unix_now_ms(), None)
+}
+
+/// Full signed-row check at `now_ms`; `expected_verse` pins the verse the row was read from.
+pub fn verify_row_at(
+    row: &RelayAdvertisementRow,
+    key: &VerifyingKey,
+    now_ms: u64,
+    expected_verse: Option<&str>,
+) -> Result<(), AdvertRefusal> {
+    let signature = row
+        .sig
+        .as_deref()
+        .and_then(|encoded| hex::decode(encoded).ok())
+        .and_then(|bytes| Signature::from_slice(&bytes).ok())
+        .ok_or(AdvertRefusal::BadSignature)?;
+    key.verify(&signing_message(row), &signature)
+        .map_err(|_| AdvertRefusal::BadSignature)?;
+    if fe_identity::did_key_from_public_key(key) != row.advertised_by {
+        return Err(AdvertRefusal::AuthorMismatch);
+    }
+    if let Some(expected) = expected_verse {
+        if row.verse_id.as_deref() != Some(expected) {
+            return Err(AdvertRefusal::VerseMismatch);
+        }
+    }
+    // A signed row must state a bounded lifetime; an absent bound is an unbounded one.
+    let (Some(issued), Some(expires)) = (row.issued_at_ms, row.expires_at_ms) else {
+        return Err(AdvertRefusal::TtlTooLong);
+    };
+    if expires.saturating_sub(issued) > MAX_ADVERT_TTL_MS {
+        return Err(AdvertRefusal::TtlTooLong);
+    }
+    if expires <= now_ms {
+        return Err(AdvertRefusal::Expired);
+    }
+    RelayUrlPolicy::default()
+        .check(&row.url)
+        .map_err(|_| AdvertRefusal::UrlPolicy)?;
+    Ok(())
+}
+
+/// Refuses a new advert when the verse already holds `MAX_ADVERTS_PER_VERSE`.
+pub fn check_advert_bound(live_adverts_in_verse: usize) -> Result<(), AdvertRefusal> {
+    if live_adverts_in_verse >= MAX_ADVERTS_PER_VERSE {
+        Err(AdvertRefusal::OverBound)
+    } else {
+        Ok(())
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -400,5 +631,95 @@ mod tests {
         for (value, allow_private) in env_cases {
             assert_eq!(AdvertisedRelayPolicy::from_env_value(value).allow_private, allow_private, "{value:?}");
         }
+
+        // Signed v1 rows: each refusal, plus http, private literal and a non-allowlisted port.
+        let signer = SigningKey::from_bytes(&[7u8; 32]);
+        let other = SigningKey::from_bytes(&[8u8; 32]);
+        let author = fe_identity::did_key_from_public_key(&signer.verifying_key());
+        let now = 1_000_000_000u64;
+        let signed = |url: &str, mutate: &dyn Fn(&mut RelayAdvertisementRow)| {
+            let mut row = RelayAdvertisementRow {
+                v: RELAY_ADVERT_ROW_VERSION,
+                url: url.to_string(),
+                advertised_by: author.clone(),
+                verse_id: Some("verse-1".to_string()),
+                issued_at_ms: Some(now - 1_000),
+                expires_at_ms: Some(now + 60_000),
+                dialback: Some(serde_json::json!({"b": 1, "a": [true]})),
+                ..Default::default()
+            };
+            mutate(&mut row);
+            sign_row(&mut row, &signer);
+            row
+        };
+        let good = signed("https://relay.example.org", &|_| {});
+        let verify = |row: &RelayAdvertisementRow, key: &VerifyingKey| {
+            verify_row_at(row, key, now, Some("verse-1"))
+        };
+        assert_eq!(verify(&good, &signer.verifying_key()), Ok(()));
+        let reordered = RelayAdvertisementRow {
+            dialback: Some(serde_json::json!({"a": [true], "b": 1})),
+            ..good.clone()
+        };
+        assert_eq!(canonical_body(&reordered), canonical_body(&good));
+        let wire: RelayAdvertisementRow =
+            serde_json::from_slice(&serde_json::to_vec(&good).unwrap()).unwrap();
+        assert_eq!(verify(&wire, &signer.verifying_key()), Ok(()));
+
+        let mut tampered = good.clone();
+        tampered.url = "https://evil.example.org".to_string();
+        let mut unsigned = good.clone();
+        unsigned.sig = None;
+        let ttl_cap = now + MAX_ADVERT_TTL_MS + 5_000;
+        let refusals: Vec<(RelayAdvertisementRow, VerifyingKey, AdvertRefusal)> = vec![
+            (tampered, signer.verifying_key(), AdvertRefusal::BadSignature),
+            (unsigned, signer.verifying_key(), AdvertRefusal::BadSignature),
+            (good.clone(), other.verifying_key(), AdvertRefusal::BadSignature),
+            (
+                signed("https://relay.example.org", &|r| r.advertised_by = "did:key:zOther".into()),
+                signer.verifying_key(),
+                AdvertRefusal::AuthorMismatch,
+            ),
+            (
+                signed("https://relay.example.org", &|r| r.expires_at_ms = Some(now - 1)),
+                signer.verifying_key(),
+                AdvertRefusal::Expired,
+            ),
+            (
+                signed("https://relay.example.org", &|r| r.expires_at_ms = Some(ttl_cap)),
+                signer.verifying_key(),
+                AdvertRefusal::TtlTooLong,
+            ),
+            (
+                signed("https://relay.example.org", &|r| r.expires_at_ms = None),
+                signer.verifying_key(),
+                AdvertRefusal::TtlTooLong,
+            ),
+            (
+                signed("https://relay.example.org", &|r| r.verse_id = Some("verse-2".into())),
+                signer.verifying_key(),
+                AdvertRefusal::VerseMismatch,
+            ),
+            (signed("http://relay.example.org", &|_| {}), signer.verifying_key(), AdvertRefusal::UrlPolicy),
+            (signed("https://10.0.0.5", &|_| {}), signer.verifying_key(), AdvertRefusal::UrlPolicy),
+            (
+                signed("https://relay.example.org:8443", &|_| {}),
+                signer.verifying_key(),
+                AdvertRefusal::UrlPolicy,
+            ),
+        ];
+        for (row, key, expected) in refusals {
+            assert_eq!(verify(&row, &key), Err(expected), "{} {}", row.url, expected);
+        }
+        let wider = RelayUrlPolicy {
+            allowed_ports: BTreeSet::from([443, 8443]),
+        };
+        assert!(wider.check("https://relay.example.org:8443").is_ok());
+        assert_eq!(
+            RelayUrlPolicy::default().check("https://relay.example.org:8443"),
+            Err(RelayUrlError::PortNotAllowed(8443))
+        );
+        assert_eq!(check_advert_bound(MAX_ADVERTS_PER_VERSE - 1), Ok(()));
+        assert_eq!(check_advert_bound(MAX_ADVERTS_PER_VERSE), Err(AdvertRefusal::OverBound));
     }
 }
