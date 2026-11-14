@@ -127,6 +127,15 @@ impl FsBlobStore {
         }
     }
 
+    /// Remove a blob by hash (rollback of a blob this caller newly stored); a missing blob is not an error.
+    pub fn remove(&self, hash: &str) -> Result<(), RegistryError> {
+        match std::fs::remove_file(self.blob_path(hash)?) {
+            Ok(()) => Ok(()),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+            Err(error) => Err(RegistryError::Io(error)),
+        }
+    }
+
     /// Check if a blob exists (`false` for an invalid hash).
     pub fn has(&self, hash: &str) -> bool {
         self.blob_path(hash).is_ok_and(|path| path.exists())

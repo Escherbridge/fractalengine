@@ -303,8 +303,8 @@ pub async fn import_petal_snapshot(
         fe_hexon::snapshot::restore_snapshot_archive(&restore_bytes, &FsBlobStore::open_default())
     })
     .await;
-    let rows = match restored {
-        Ok(Ok(rows)) => rows,
+    let (rows, newly_stored) = match restored {
+        Ok(Ok(restored)) => (restored.rows, restored.newly_stored),
         Ok(Err(error)) => {
             return envelope_error(StatusCode::BAD_REQUEST, format!("invalid petal snapshot: {error}"))
         }
@@ -315,6 +315,7 @@ pub async fn import_petal_snapshot(
     };
     // The restore re-parsed the same bytes; refuse if it disagrees with what was authorized.
     if rows.petal != petal_row {
+        discard_new_blobs_off_thread(newly_stored).await;
         return envelope_error(StatusCode::BAD_REQUEST, "invalid petal snapshot: inconsistent petal row");
     }
 
@@ -332,9 +333,11 @@ pub async fn import_petal_snapshot(
         Ok(DbResult::PetalSnapshotImported { petal_id, .. }) => {
             Json(ApiResponse::success(serde_json::json!({ "petal_id": petal_id }))).into_response()
         }
-        // A malformed or out-of-petal snapshot is the caller's error (400); an existing petal or a colliding
-        // identity is a conflict with local state (409). Nothing was written either way.
+        // Every other outcome leaves the blobs this call wrote with no row pointing at them: roll them back.
         Ok(DbResult::PetalSnapshotImportRefused { petal_id, reason, .. }) => {
+            // A malformed or out-of-petal snapshot is the caller's error (400); an existing petal or a colliding
+            // identity is a conflict with local state (409). No rows were written either way.
+            discard_new_blobs_off_thread(newly_stored).await;
             let status = if reason.starts_with(INVALID_SNAPSHOT_REASON) {
                 StatusCode::BAD_REQUEST
             } else {
@@ -349,10 +352,31 @@ pub async fn import_petal_snapshot(
                 .into_response()
         }
         Ok(DbResult::RequestFailed { error, .. }) => {
+            discard_new_blobs_off_thread(newly_stored).await;
             tracing::warn!(petal_id = %snapshot_petal_id, "petal snapshot import failed: {error}");
             envelope_error(StatusCode::INTERNAL_SERVER_ERROR, "snapshot import failed")
         }
-        Ok(_) => envelope_error(StatusCode::INTERNAL_SERVER_ERROR, "unexpected database reply"),
-        Err(response) => response,
+        Ok(_) => {
+            discard_new_blobs_off_thread(newly_stored).await;
+            envelope_error(StatusCode::INTERNAL_SERVER_ERROR, "unexpected database reply")
+        }
+        Err(response) => {
+            discard_new_blobs_off_thread(newly_stored).await;
+            response
+        }
+    }
+}
+
+/// Remove the blobs this import newly wrote, off the async thread (blocking file I/O).
+async fn discard_new_blobs_off_thread(newly_stored: Vec<String>) {
+    if newly_stored.is_empty() {
+        return;
+    }
+    let outcome = tokio::task::spawn_blocking(move || {
+        fe_hexon::snapshot::discard_new_blobs(&FsBlobStore::open_default(), &newly_stored);
+    })
+    .await;
+    if let Err(error) = outcome {
+        tracing::warn!("petal snapshot blob rollback task failed: {error}");
     }
 }

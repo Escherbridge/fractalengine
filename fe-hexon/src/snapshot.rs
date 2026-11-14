@@ -239,11 +239,27 @@ pub fn build_snapshot_archive(
         .map_err(|error| SnapshotError::Archive(format!("{error:#}")))
 }
 
+/// Rows for `ImportPetalSnapshot` plus the blob hashes this restore newly wrote (the only ones a rollback may remove).
+#[derive(Debug, Clone, PartialEq)]
+pub struct RestoredSnapshot {
+    pub rows: PetalSnapshotRows,
+    pub newly_stored: Vec<String>,
+}
+
+/// Remove blobs a refused or failed import newly wrote; pre-existing blobs are never in `newly_stored`.
+pub fn discard_new_blobs(blobs: &FsBlobStore, newly_stored: &[String]) {
+    for hash in newly_stored {
+        if let Err(error) = blobs.remove(hash) {
+            tracing::warn!(%hash, "snapshot rollback could not remove blob: {error}");
+        }
+    }
+}
+
 /// Verify an archive and its blobs, write the blobs, then return the rows for `ImportPetalSnapshot`.
 pub fn restore_snapshot_archive(
     bytes: &[u8],
     blobs: &FsBlobStore,
-) -> Result<PetalSnapshotRows, SnapshotError> {
+) -> Result<RestoredSnapshot, SnapshotError> {
     // Import re-hashes every blob; nothing is written until it and the cross-check pass.
     let imported = import_petal_snapshot(bytes)
         .map_err(|error| SnapshotError::Archive(format!("{error:#}")))?;
@@ -264,10 +280,18 @@ pub fn restore_snapshot_archive(
         return Err(SnapshotError::Archive(format!("unreferenced blob {unreferenced}")));
     }
 
+    let mut newly_stored: Vec<String> = Vec::new();
     for (hash, body) in &imported.blobs {
-        blobs.store(hash, body)?;
+        match blobs.store(hash, body) {
+            Ok(true) => newly_stored.push(hash.clone()),
+            Ok(false) => {}
+            Err(error) => {
+                discard_new_blobs(blobs, &newly_stored);
+                return Err(error.into());
+            }
+        }
     }
-    Ok(rows_from_data(imported.data))
+    Ok(RestoredSnapshot { rows: rows_from_data(imported.data), newly_stored })
 }
 
 #[cfg(test)]
@@ -334,8 +358,20 @@ mod tests {
         let target_dir = tempfile::tempdir().unwrap();
         let target = FsBlobStore::new(target_dir.path().to_path_buf());
         let restored = restore_snapshot_archive(&archive, &target).unwrap();
-        assert_eq!(restored, rows);
+        assert_eq!(restored.rows, rows);
+        assert_eq!(restored.newly_stored, vec![good_hash.clone()]);
         assert_eq!(target.load(&good_hash).unwrap(), good_bytes);
+
+        // Rollback removes only what the restore newly wrote; a pre-existing blob survives.
+        discard_new_blobs(&target, &restored.newly_stored);
+        assert!(!target.has(&good_hash));
+        let preexisting_dir = tempfile::tempdir().unwrap();
+        let preexisting = FsBlobStore::new(preexisting_dir.path().to_path_buf());
+        preexisting.store(&good_hash, &good_bytes).unwrap();
+        let second = restore_snapshot_archive(&archive, &preexisting).unwrap();
+        assert!(second.newly_stored.is_empty());
+        discard_new_blobs(&preexisting, &second.newly_stored);
+        assert!(preexisting.has(&good_hash));
 
         // Corrupt one blob byte inside the archive: refused before any blob is written.
         let mut corrupted = archive.clone();
