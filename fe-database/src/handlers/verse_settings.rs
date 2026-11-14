@@ -275,5 +275,11 @@ mod tests {
         assert_eq!(row["ts_mode"], serde_json::json!("sharded"));
         assert_eq!(row["ts_replication_factor"], serde_json::json!(1));
         assert_eq!(row["ts_bucket_width_ms"], serde_json::json!(86_400_000));
+        // The manifest is published through the clocked seam: the changed key is signed by the local author.
+        assert_eq!(row["_fe_clock"]["author"], OWNER);
+        assert!(
+            row["_fe_clock"]["own"]["ts_mode"]["hlc"].is_string(),
+            "ts_mode carries its own clocked version"
+        );
     }
 }

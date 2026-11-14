@@ -251,19 +251,34 @@ mod tests {
     #[tokio::test]
     async fn set_then_load_hierarchy_carries_the_value() {
         let db = db_with_petal("p1").await;
-        let store = mem_blob_store();
+        let mock_store = std::sync::Arc::new(MockBlobStore::new());
+        let store: BlobStoreHandle = mock_store.clone();
+        let (repl_tx, repl_rx) = crossbeam::channel::bounded(4);
         let got = set_petal_render_distance_handler(
             &db,
             "owner-did",
             &owner_auth(),
             "p1",
             Some(1234.5),
-            None,
+            Some(&repl_tx),
             &store,
         )
         .await
         .expect("set ok");
         assert_eq!(got, Some(1234.5));
+
+        // Published bytes: the petal row carries the render_distance key in the author's own clock map.
+        let event = repl_rx.try_recv().expect("a ReplicationEvent was emitted");
+        assert_eq!(event.table, "petal");
+        let row_bytes = mock_store
+            .bytes_for(&event.content_hash)
+            .expect("blob present");
+        let published: serde_json::Value = serde_json::from_slice(&row_bytes).expect("row json");
+        assert_eq!(published["_fe_clock"]["author"], "owner-did");
+        assert!(
+            published["_fe_clock"]["own"]["render_distance"]["hlc"].is_string(),
+            "render_distance carries its own clocked version"
+        );
 
         let loaded = get_petal_render_distance_handler(&db, "p1")
             .await
