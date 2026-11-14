@@ -117,23 +117,14 @@ pub(crate) fn copy_row(ui: &mut egui::Ui, ui_mgr: &mut UiManager, label: &str, v
     );
 }
 
-/// world_scale sanitized: ≤0 / non-finite ⇒ 1.0 (1 world-unit : 1 m).
-fn sane_scale(world_scale: f64) -> f64 {
-    if world_scale.is_finite() && world_scale > 0.0 {
-        world_scale
-    } else {
-        1.0
-    }
-}
-
 /// World units → meters (`real_m = world / world_scale`).
 pub(crate) fn world_to_meters(world: f32, world_scale: f64) -> f32 {
-    (world as f64 / sane_scale(world_scale)) as f32
+    crate::geometry::world_to_meters(world, world_scale)
 }
 
 /// Meters → world units (`world = m * world_scale`).
 pub(crate) fn meters_to_world(meters: f32, world_scale: f64) -> f32 {
-    (meters as f64 * sane_scale(world_scale)) as f32
+    crate::geometry::meters_to_world(meters, world_scale)
 }
 
 /// Single-line value, ellipsis-clipped to the available width instead of

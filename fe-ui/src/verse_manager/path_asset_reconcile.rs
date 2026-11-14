@@ -213,11 +213,7 @@ pub(super) fn transform_at_arc_length(points: &[[f32; 3]], arc_m: f32) -> ([f32;
 /// scale) so a bad petal config never zeroes or flips the spacing (FR-3).
 #[allow(clippy::neg_cmp_op_on_partial_ord)] // NaN scale must take the degenerate branch
 pub(super) fn sanitize_world_scale(world_scale: f32) -> f32 {
-    if world_scale.is_finite() && world_scale > 0.0 {
-        world_scale
-    } else {
-        1.0
-    }
+    fe_format::scale::sanitize_world_scale(f64::from(world_scale)) as f32
 }
 
 #[cfg(test)]

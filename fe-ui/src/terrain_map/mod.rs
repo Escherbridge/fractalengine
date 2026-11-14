@@ -244,11 +244,7 @@ pub(crate) fn tileset_to_terrain_json(
             ts.hexon_id
         );
     }
-    let world_scale = if world_scale.is_finite() && world_scale > 0.0 {
-        world_scale
-    } else {
-        1.0
-    };
+    let world_scale = fe_format::scale::sanitize_world_scale(world_scale);
     let mut json = serde_json::json!({
         "enabled": true,
         "origin": {

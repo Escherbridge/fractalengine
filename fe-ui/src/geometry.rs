@@ -1,24 +1,19 @@
-//! fe-ui-LOCAL pure mirror of fe-terrain's ruler geometry. fe-ui must NOT
-//! depend on fe-terrain, so the pure formulas are copied verbatim (not
-//! imported). Callers add the "no map scale" chip when `world_scale` is unset —
+//! fe-ui f32 adapter over `fe_format::scale` plus pure ruler geometry. fe-ui must NOT
+//! depend on fe-terrain; scale math comes from `fe_format::scale`. Callers add the "no map scale" chip when `world_scale` is unset —
 //! this module is honest about it: an unusable scale sanitizes to `1.0`, so the
 //! returned numbers are world units, not meters. See `fe-ui/src/AGENTS.md`
 //! §geometry-mirror.
 
 /// Sanitize a world scale (world units per real meter): finite and `> 0`, else
-/// `1.0`. Mirror of `fe_terrain::scale::sanitize_world_scale` (do NOT import).
+/// `1.0`. Delegates to `fe_format::scale::sanitize_world_scale`.
 pub(crate) fn sanitize_world_scale(scale: f64) -> f64 {
-    if scale.is_finite() && scale > 0.0 {
-        scale
-    } else {
-        1.0
-    }
+    fe_format::scale::sanitize_world_scale(scale)
 }
 
 /// Real meters to petal-local world units. A conversion that would overflow
 /// `f32` falls back to the human-scale value instead of leaking infinity.
 pub(crate) fn meters_to_world(meters: f32, scale: f64) -> f32 {
-    let converted = meters as f64 * sanitize_world_scale(scale);
+    let converted = fe_format::scale::meters_to_world(meters as f64, scale);
     if !converted.is_finite() || converted.abs() > f32::MAX as f64 {
         return meters;
     }
@@ -37,15 +32,9 @@ pub(crate) fn meters_to_world(meters: f32, scale: f64) -> f32 {
 /// height/delta in metres, converting back to world units at the emit
 /// boundary via `meters_to_world`.
 ///
-/// NOTE: fe-ui also has a second, simpler (non-overflow-guarded)
-/// `world_to_meters`/`meters_to_world` pair in `panels/widgets.rs`, used by
-/// the inspector/GIS panel/egress card. This is pre-existing duplication
-/// (not introduced or resolved by this pass) — this module stays the
-/// fe-terrain-mirror seam already imported by `node_manager::brush_interaction`
-/// and `sculpt_cursor`; see `fe-ui/src/AGENTS.md` §geometry-mirror.
+/// `panels/widgets.rs` delegates its pair to this module; see `fe-ui/src/AGENTS.md` §geometry-mirror.
 pub(crate) fn world_to_meters(world_units: f32, scale: f64) -> f32 {
-    let sanitized = sanitize_world_scale(scale);
-    let converted = world_units as f64 / sanitized;
+    let converted = fe_format::scale::world_to_meters(world_units as f64, scale);
     if !converted.is_finite() || converted.abs() > f32::MAX as f64 {
         return world_units;
     }

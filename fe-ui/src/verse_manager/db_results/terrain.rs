@@ -64,12 +64,7 @@ pub(super) fn handle_petal_terrain_loaded(
         })
         .unwrap_or_default();
     // Restore the stored world scale (drives the settings slider + camera).
-    petal_map.world_scale = terrain
-        .as_ref()
-        .and_then(|t| t.get("world_scale"))
-        .and_then(|v| v.as_f64())
-        .filter(|s| s.is_finite() && *s > 0.0)
-        .unwrap_or(1.0);
+    petal_map.world_scale = fe_format::scale::world_scale_from_terrain_json(terrain.as_ref());
     // Any other load for the active petal is persisted truth (an earlier,
     // superseded set's echo, a peer's write, a plain Get), so it becomes what
     // a still-pending set rolls back to if denied.
@@ -170,12 +165,19 @@ mod tests {
         let mut proposals = ProposalEditState::default();
         let terrain = Some(json!({
             "enabled": true,
+            "world_scale": 0.5,
+            "scale_bounds": [0.001, 0.1],
             "proposals": [
                 { "id": "p1", "op": "raise", "footprint": [[0.0, 0.0], [1.0, 0.0], [1.0, 1.0]], "delta": 2.0 }
             ],
         }));
 
         handle_petal_terrain_loaded("p1", &terrain, &nav, &mut petal_map, &mut proposals, None);
+
+        assert_eq!(
+            petal_map.world_scale, 0.1,
+            "an out-of-bounds stored scale lands clamped into scale_bounds"
+        );
 
         assert!(proposals.hydrated, "load marks the mirror trustworthy");
         assert_eq!(proposals.proposals.len(), 1);

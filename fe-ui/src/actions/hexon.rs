@@ -258,20 +258,9 @@ fn rollback_baseline(petal_map: &PetalMapState) -> (Vec<String>, f64) {
     }
 }
 
-/// Clamp a world scale into `[min, max]` bounds (FR-6); no fe-terrain dep —
-/// fe-ui owns this trivial clamp locally per the layering boundary (C6).
+/// Clamp a world scale into `[min, max]` bounds (FR-6); delegates to `fe_format::scale`.
 fn clamp_to_bounds(scale: f64, bounds: Option<[f64; 2]>) -> f64 {
-    let sanitized = if scale.is_finite() && scale > 0.0 {
-        scale
-    } else {
-        1.0
-    };
-    match bounds {
-        Some([min, max]) if min.is_finite() && max.is_finite() && min > 0.0 && max >= min => {
-            sanitized.clamp(min, max)
-        }
-        _ => sanitized,
-    }
+    fe_format::scale::clamp_world_scale_to_bounds(scale, bounds)
 }
 
 /// Sets (or clears) the session-only residency override for `petal_id` — a

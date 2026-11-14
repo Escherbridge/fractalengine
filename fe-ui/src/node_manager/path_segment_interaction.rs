@@ -252,13 +252,9 @@ fn nearest_segment(
 
 /// Guard `world_scale` (world units per real meter) to a positive, finite value;
 /// falls back to `1.0` (human scale) on `≤ 0` / non-finite. Mirrors
-/// `fe_terrain::scale::sanitize_world_scale` (fe-ui must not depend on it).
+/// `fe_format::scale::sanitize_world_scale`.
 fn guard_world_scale(scale: f64) -> f64 {
-    if scale.is_finite() && scale > 0.0 {
-        scale
-    } else {
-        1.0
-    }
+    fe_format::scale::sanitize_world_scale(scale)
 }
 
 /// Ground-plane (XZ) world distance between two points — height (Y) ignored, to
