@@ -868,6 +868,11 @@ mod tests {
             .expect_err("a non-free tile of a gateless licensed source is refused");
         assert!(is_entitlement_refusal(&refusal), "{refusal:#}");
         assert!(!is_entitlement_refusal(&anyhow::anyhow!("disk full")));
+        // Installed sources are lazy: the free tile must be read in before the sync path sees it.
+        assert!(licensed
+            .load_layer_blocking(TileLayer::Elevation, free_coord)
+            .unwrap()
+            .is_some());
         let mut licensed_composite = CompositeTileSource::new();
         licensed_composite.add_hexon_source(licensed);
         assert_eq!(

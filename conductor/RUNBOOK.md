@@ -111,6 +111,18 @@ trusting "pure efficiency" claims; push control; a board that silently drifts st
 
 ## 2. State
 
+- **2026-11-14 (after the 05:15 entry) — FIRST CI SWEEP ON ROUND-5 CODE: 1,648 PASSED, 2 FAILED; BOTH FIXED.**
+  Run 43588234926 on `9660e699`: Windows build and lint green, Linux sweep 1,648 passed / 2 failed, no compile
+  errors (log: `.omc/research/ci-43588234926-linux-20261114.log`). The tooltip test fixed on a 60% guess
+  (`user_copy_has_no_dev_jargon`) passed. Both failures were stale tests, product unchanged (two sonnet agents,
+  traces re-checked by the orchestrator): `tiles::composite::tests::composite_sync_from_hexon` asked the
+  resident-only sync path for a tile of a lazy installed source it had never loaded (now loads the free tile
+  first; the bytes-equal and sealed-absent assertions stay); `node_manager::road_chain::tests::
+  road_chain_helpers_table` used samples 0.005 apart against a 0.02 spacing, an exact float tie (fixture now
+  steps 0.0075, expected count 14). `cargo check -p fe-terrain -p fe-ui --all-targets` green. Neither fix has
+  been run; the CI run on the fix commit is the proof. Still owed: whole-surface review (§7 step 3), the user's
+  batch choice, the private-repo push decision, the defaulted decisions, untracking the session log.
+
 - **2026-11-14 05:15 MST — ROUND 5 COMPILED, CI TESTS FIXED, RE-AUDITED AND PUSHED.** Finish workflow
   `wf_650905e2-c2c` (17 agents, 1.56M tokens, 27 min): refine green on all twelve steps (5 errors fixed);
   the seven CI failures fixed in one commit (six stale or brittle tests: a tiny-scale test below the new global

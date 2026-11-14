@@ -604,8 +604,8 @@ mod tests {
         assert!(matches!(&commits[..], [RoadCommit::CreateTrack { points }] if points.len() == kept.len()));
         assert_eq!(state.anchor, samples.last().copied());
 
-        // 1:100 petal: 2 m spacing is 0.02 world units; without a map it stays 2.0 world.
-        let fine: Vec<[f32; 3]> = (0..=40).map(|step| at(step as f32 * 0.005, 0.0)).collect();
+        // 1:100 petal: 2 m spacing is 0.02 world units; 0.0075 steps keep every 3rd sample clear of f32 ties.
+        let fine: Vec<[f32; 3]> = (0..=40).map(|step| at(step as f32 * 0.0075, 0.0)).collect();
         let committed_points = |world_scale: f64| {
             let mut scaled = RoadBuilderState::default();
             scaled.world_scale = world_scale;
@@ -622,7 +622,7 @@ mod tests {
         };
         let scaled_points = committed_points(0.01);
         assert_eq!(scaled_points.len(), decimate(&fine, 0.02).len());
-        assert_eq!(scaled_points.len(), 11);
+        assert_eq!(scaled_points.len(), 14);
         assert!(scaled_points.windows(2).all(|pair| planar_distance(pair[0], pair[1]) >= 0.02 - 1e-6));
         assert_eq!(committed_points(f64::NAN).len(), 2);
 
