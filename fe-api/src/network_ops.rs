@@ -17,6 +17,8 @@ pub struct NetworkOps {
     pub metrics: Option<Arc<MetricsRegistry>>,
     /// Key that signs relay advertisements; `None` disables signed advertisement.
     pub advertisement_signer: Option<Arc<fe_identity::NodeKeypair>>,
+    /// Call seam to the sync thread's diagnostics bridge; `None` answers 503 (see `network.rs`).
+    pub network_diagnostics: Option<fe_runtime::net_diagnostics::NetworkDiagnosticsCallSender>,
 }
 
 impl Default for NetworkOps {
@@ -26,6 +28,7 @@ impl Default for NetworkOps {
             metrics_bind: None,
             metrics: None,
             advertisement_signer: None,
+            network_diagnostics: None,
         }
     }
 }
