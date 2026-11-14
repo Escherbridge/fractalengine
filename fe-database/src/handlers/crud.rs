@@ -9,7 +9,7 @@ use fe_runtime::messages::{
 };
 
 use super::invite::{generate_namespace_secret, store_namespace_secret};
-use crate::{hash_from_hex, hash_to_hex, replicate_row, BlobStoreHandle, ReplicationSender};
+use crate::{hash_from_hex, hash_to_hex, BlobStoreHandle, ReplicationSender};
 
 // ---------------------------------------------------------------------------
 // Verse
@@ -49,20 +49,15 @@ pub(crate) async fn create_verse_handler(
         ts_bucket_width_ms: fe_runtime::timeseries::DEFAULT_BUCKET_WIDTH_MS as i64,
         view_hidden: None,
     };
-    let row_json = serde_json::to_value(&verse_row)?;
-
     Repo::<Verse>::create(db, &verse_row).await?;
 
-    replicate_row(
-        repl_tx,
-        blob_store,
-        &verse_id,
-        "verse",
-        &verse_id,
-        serde_json::to_string(&row_json)
-            .unwrap_or_default()
-            .as_bytes(),
-    );
+    if let Err(error) = crate::field_clock::publish_clocked_row(
+        db, blob_store, repl_tx, local_did, &verse_id, "verse", &verse_id, true,
+    )
+    .await
+    {
+        tracing::warn!(verse_id = %verse_id, "committed verse clocked publish failed: {error:#}");
+    }
 
     if let Some(ss) = secret_store {
         if let Err(e) = store_namespace_secret(ss.as_ref(), &verse_id, &ns_secret_hex) {
@@ -110,16 +105,13 @@ pub(crate) async fn create_fractal_handler(
     parent.commit(db, &["CREATE fractal CONTENT $entity_new_fractal"],
         vec![("entity_new_fractal".into(), crate::repo::strip_json_nulls(row_json.clone()))]).await?;
 
-    replicate_row(
-        repl_tx,
-        blob_store,
-        verse_id,
-        "fractal",
-        &fractal_id,
-        serde_json::to_string(&row_json)
-            .unwrap_or_default()
-            .as_bytes(),
-    );
+    if let Err(error) = crate::field_clock::publish_clocked_row(
+        db, blob_store, repl_tx, local_did, verse_id, "fractal", &fractal_id, true,
+    )
+    .await
+    {
+        tracing::warn!(fractal_id = %fractal_id, "committed fractal clocked publish failed: {error:#}");
+    }
 
     tracing::info!("Created fractal: {name} ({fractal_id}) in verse {verse_id}");
     Ok(fractal_id)
@@ -1780,6 +1772,55 @@ mod delete_node_tests {
         .expect("seed scope chain statements");
         crate::op_log::init_hlc(0);
         db
+    }
+
+    /// Blob store that keeps every published row so a test can read the replicated bytes.
+    #[derive(Default)]
+    struct CapturingStore(std::sync::Mutex<Vec<Vec<u8>>>);
+
+    impl crate::BlobStore for CapturingStore {
+        fn add_blob(&self, bytes: &[u8]) -> anyhow::Result<crate::BlobHash> {
+            let mut rows = self.0.lock().unwrap();
+            rows.push(bytes.to_vec());
+            Ok([rows.len() as u8; 32])
+        }
+        fn get_blob_path(&self, _hash: &crate::BlobHash) -> Option<std::path::PathBuf> {
+            None
+        }
+        fn has_blob(&self, _hash: &crate::BlobHash) -> bool {
+            true
+        }
+        fn remove_blob(&self, _hash: &crate::BlobHash) -> anyhow::Result<()> {
+            Ok(())
+        }
+    }
+
+    /// Created fractals publish clocked `name`, and an unchanged re-publish keeps the same own versions.
+    #[tokio::test]
+    async fn created_fractal_publishes_its_own_clocked_name() {
+        let db = setup_mem_db().await;
+        let store = std::sync::Arc::new(CapturingStore::default());
+        let blobs: BlobStoreHandle = store.clone();
+        let (sender, _receiver) = crossbeam::channel::bounded(16);
+        let did = "did:key:z6MkA";
+        let fractal_id = create_fractal_handler(&db, &blobs, Some(&sender), "verse-1", "Riverside", did)
+            .await
+            .expect("create fractal");
+        let own_of = |index: usize| {
+            let rows = store.0.lock().unwrap();
+            let row: serde_json::Value = serde_json::from_slice(&rows[index]).expect("row json");
+            row["_fe_clock"].clone()
+        };
+        let first = own_of(0);
+        assert_eq!(first["author"], did);
+        let name = &first["own"]["name"];
+        assert_eq!(name["value"], "Riverside");
+        assert!(name["hlc"].as_str().unwrap().parse::<u64>().unwrap() > 0, "{name}");
+
+        crate::field_clock::publish_clocked_row(&db, &blobs, Some(&sender), did, "verse-1", "fractal", &fractal_id, true)
+            .await
+            .expect("unchanged re-publish");
+        assert_eq!(own_of(1), first, "unchanged data must not restamp");
     }
 
     #[tokio::test]

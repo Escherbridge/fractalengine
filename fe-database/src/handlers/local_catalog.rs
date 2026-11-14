@@ -4,7 +4,7 @@ use fe_runtime::messages::EntityType;
 use serde_json::{Value, json};
 
 use crate::repo::Db;
-use crate::{BlobStoreHandle, ReplicationSender, replicate_row};
+use crate::{BlobStoreHandle, ReplicationSender};
 
 const CATALOG_LIMIT: usize = 1024;
 
@@ -31,8 +31,31 @@ pub(crate) async fn publish_petal(
         &parts.verse_id,
         EntityType::Petal,
         petal,
+        true,
     )
     .await
+}
+
+/// Re-clock and publish a committed Verse, Fractal or Petal after a rename or description edit.
+pub(crate) async fn publish_entity(
+    db: &Db,
+    blobs: &BlobStoreHandle,
+    sender: Option<&ReplicationSender>,
+    actor: &str,
+    kind: EntityType,
+    id: &str,
+) -> anyhow::Result<()> {
+    if sender.is_none() {
+        return Ok(());
+    }
+    let scope = match kind {
+        EntityType::Verse => Some(crate::build_scope(id, None, None)),
+        EntityType::Fractal => super::crud::resolve_fractal_scope_handler(db, id).await?,
+        EntityType::Petal => super::crud::resolve_petal_scope_handler(db, id).await?,
+    }
+    .ok_or_else(|| anyhow::anyhow!("committed entity ancestry is unavailable"))?;
+    let parts = crate::parse_scope(&scope)?;
+    publish_member(db, blobs, sender, actor, &parts.verse_id, kind, id, true).await
 }
 
 async fn publish_member(
@@ -43,6 +66,7 @@ async fn publish_member(
     verse: &str,
     kind: EntityType,
     id: &str,
+    restamp: bool,
 ) -> anyhow::Result<()> {
     let access = super::entity::prepare_parent_mutation(db, kind, id, actor).await?;
     let (table, select) = match kind {
@@ -80,11 +104,9 @@ async fn publish_member(
         rows.len() == 1,
         "catalog target ancestry is missing or ambiguous"
     );
-    let bytes = serde_json::to_vec(&crate::repo::strip_json_nulls(
-        rows.into_iter().next().unwrap(),
-    ))?;
-    replicate_row(sender, blobs, verse, table, id, &bytes);
-    Ok(())
+    let row = crate::repo::strip_json_nulls(rows.into_iter().next().unwrap());
+    crate::field_clock::publish::publish_clocked_value(db, blobs, sender, actor, verse, table, id, row, restamp)
+        .await
 }
 
 /// Re-publish only current stored catalog rows the actual local identity may manage.
@@ -116,7 +138,7 @@ pub(crate) async fn reemit(
         fractals.len() <= CATALOG_LIMIT && petals.len() <= CATALOG_LIMIT,
         "local catalog exceeds the 1024 member recovery limit"
     );
-    publish_member(db, blobs, sender, actor, verse, EntityType::Verse, verse).await?;
+    publish_member(db, blobs, sender, actor, verse, EntityType::Verse, verse, false).await?;
     let mut published = 1;
     for (kind, field, members) in [
         (EntityType::Fractal, "fractal_id", fractals),
@@ -140,7 +162,7 @@ pub(crate) async fn reemit(
             {
                 continue;
             }
-            publish_member(db, blobs, sender, actor, verse, kind, id).await?;
+            publish_member(db, blobs, sender, actor, verse, kind, id, false).await?;
             published += 1;
         }
     }
