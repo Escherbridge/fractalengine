@@ -5907,12 +5907,20 @@ mod tests {
             // A forged peer row cannot carry the local author's per-key clock; it travels as v1.
             winner.as_object_mut().unwrap().remove("_fe_clock");
             winner["properties"]["peer_winner"] = json!(true);
-            source
-                .query("CREATE role CONTENT {peer_did:'did:ra',scope:$scope,role:'editor'}")
-                .bind(("scope", scope))
+            // Per-key versions are judged by the role statements in force when written (QA-0165).
+            let editor_statement = |peer: &str, revoked: bool, hlc: u64, windows: Vec<fe_policy::GrantWindow>| fe_policy::RoleStatement {
+                scope: scope.to_string(),
+                peer_did: peer.into(),
+                grantor_did: "did:qa".into(),
+                role: fe_policy::GrantedRole::Editor,
+                revoked,
+                hlc,
+                editor_since: None,
+                manager_since: None,
+                windows,
+            };
+            crate::role_grants::submit_statement(&source, "scene-v", &editor_statement("did:ra", false, 1, Vec::new()))
                 .await
-                .unwrap()
-                .check()
                 .unwrap();
             let mut admissions =
                 crate::handlers::inbound_admissions::InboundAdmissions::for_local_publisher("did:qa");
@@ -5937,10 +5945,10 @@ mod tests {
                 "automatic recovery does not re-sign changed foreign state"
             );
 
-            // QA-0121: a row admitted while its author was an Editor is re-judged once
-            // the author is demoted: the newest admissible replica version is restored,
-            // and a node only the demoted author ever wrote is removed — the same
-            // decision every peer reaches, whichever of revoke and row it saw first.
+            // QA-0165 (replaces QA-0121's current-role re-judge): a version admitted while its
+            // author held Editor SURVIVES the author's later demotion on every peer — the
+            // revoke closes a grant window that still proves the earlier write — while a
+            // version stamped after the revoke is stored but never wins.
             let (judged, _) = node_history::create_object_granted(
                 &source,
                 "scene-p",
@@ -5972,12 +5980,8 @@ mod tests {
             revoked["properties"]["revoked_wrote"] = json!(1);
             let mut orphan = revoked.clone();
             orphan["node_id"] = json!("judged-orphan");
-            source
-                .query("CREATE role CONTENT {peer_did:'did:rb',scope:$scope,role:'editor'}")
-                .bind(("scope", scope))
+            crate::role_grants::submit_statement(&source, "scene-v", &editor_statement("did:rb", false, 1, Vec::new()))
                 .await
-                .unwrap()
-                .check()
                 .unwrap();
             for (id, row) in [(judged.as_str(), &revoked), ("judged-orphan", &orphan)] {
                 let reports = admissions
@@ -5985,42 +5989,52 @@ mod tests {
                     .await;
                 assert_eq!(reports[0].outcome, ReplicatedRowOutcome::Applied, "{id}");
             }
-            source
-                .query("DELETE role WHERE peer_did='did:rb'")
+            // The revoke carries the closed window [grant, revoke) its key's history proves.
+            let window = fe_policy::GrantWindow { role: fe_policy::GrantedRole::Editor, since: 1, until: owner_hlc + 2 };
+            crate::role_grants::submit_statement(&source, "scene-v", &editor_statement("did:rb", true, owner_hlc + 2, vec![window]))
                 .await
-                .unwrap()
-                .check()
                 .unwrap();
             let candidates = vec![
                 ("did:qa".to_string(), owner_bytes.clone()),
                 ("did:rb".to_string(), serde_json::to_vec(&revoked).unwrap()),
             ];
-            assert_eq!(
-                scene::rejudge(&source, "scene-v", &judged, &candidates, "did:qa", None, false)
-                    .await
-                    .unwrap(),
-                scene::Rejudged::Restored(ReplicatedRowOutcome::Applied)
-            );
-            let restored = node_history::snapshot(&source, &judged).await.unwrap().unwrap();
-            assert!(
-                restored["properties"].get("revoked_wrote").is_none(),
-                "the demoted author's newer version is gone: {restored}"
-            );
-            assert_eq!(
-                scene::rejudge(&source, "scene-v", &judged, &candidates, "did:qa", None, false)
-                    .await
-                    .unwrap(),
-                scene::Rejudged::Unchanged,
-                "an admissible current version is left alone"
-            );
+            for _ in 0..2 {
+                assert_eq!(
+                    scene::rejudge(&source, "scene-v", &judged, &candidates, "did:qa", None, false)
+                        .await
+                        .unwrap(),
+                    scene::Rejudged::Unchanged,
+                    "a version written inside a closed grant window stays admissible"
+                );
+            }
+            let kept = node_history::snapshot(&source, &judged).await.unwrap().unwrap();
+            assert_eq!(kept["properties"]["revoked_wrote"], json!(1), "the demoted author's earlier edit survives: {kept}");
             let only_revoked = vec![("did:rb".to_string(), serde_json::to_vec(&orphan).unwrap())];
-            assert!(matches!(
+            assert_eq!(
                 scene::rejudge(&source, "scene-v", "judged-orphan", &only_revoked, "did:qa", None, false)
                     .await
                     .unwrap(),
-                scene::Rejudged::Removed { ref petal_id } if petal_id == "scene-p"
-            ));
-            assert!(node_history::snapshot(&source, "judged-orphan").await.unwrap().is_none());
+                scene::Rejudged::Unchanged
+            );
+            assert!(node_history::snapshot(&source, "judged-orphan").await.unwrap().is_some());
+            // After the revoke the author is still a member, so its clocked row is stored, but it never wins.
+            let mut late = revoked.clone();
+            late["_fe_scene"]["hlc"] = json!((owner_hlc + 3).to_string());
+            late["properties"]["revoked_wrote"] = json!(2);
+            let late_version = crate::field_clock::wire::FieldVersion {
+                field: "properties/revoked_wrote".into(),
+                author: "did:rb".into(),
+                hlc: owner_hlc + 3,
+                value: Some(json!(2)),
+                deleted: false,
+            };
+            late["_fe_clock"] = crate::field_clock::wire::encode_own("did:rb", &[late_version]);
+            let reports = admissions
+                .apply(&source, "scene-v", "node", &judged, &serde_json::to_vec(&late).unwrap(), "did:rb", None)
+                .await;
+            assert_eq!(reports[0].outcome, ReplicatedRowOutcome::NotApplicable, "{reports:?}");
+            let kept = node_history::snapshot(&source, &judged).await.unwrap().unwrap();
+            assert_eq!(kept["properties"]["revoked_wrote"], json!(1), "a post-revoke version never wins: {kept}");
 
             // QA-0131: judged by the role held WHEN WRITTEN. did:rc is granted,
             // revoked, writes while revoked, then re-granted: that row stays
@@ -6039,6 +6053,7 @@ mod tests {
                 hlc,
                 editor_since: None,
                 manager_since: None,
+                windows: Vec::new(),
             };
             let row_at = |id: &str, hlc: u64| {
                 let mut row = revoked.clone();

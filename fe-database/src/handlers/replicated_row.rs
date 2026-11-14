@@ -725,7 +725,8 @@ async fn admit_inbound_row(
         }
         Confined::Stop(other) => return Ok(other),
     };
-    if matches!(table, "verse" | "fractal" | "petal") && super::clocked_row::carries_field_clock(row_bytes) {
+    // Clocked node rows too (CLOCK-07): a pre-demotion version must still reach the per-key judge.
+    if matches!(table, "verse" | "fractal" | "petal" | "node") && super::clocked_row::carries_field_clock(row_bytes) {
         // Filling a missing namespace_id picks the replica this node opens next: still a verse Manager's call.
         if table == "verse" && fills_namespace_id(db, verse_id, row_bytes).await? {
             let verse_scope = vec![crate::scope::build_scope(verse_id, None, None)];
@@ -3904,6 +3905,26 @@ mod tests {
         for peer in [&left, &right] {
             seed_verse_with_roles(peer, "v1", &[("did:key:peer-ed", "editor"), ("did:key:peer-ez", "editor")]).await;
         }
+        // Clocked versions are judged by role statements held at write time (QA-0165), so complete
+        // snapshots converge on a pair whose Editors were granted by the owner's statements.
+        let (clocked_left, clocked_right) = (schema_db().await, schema_db().await);
+        for peer in [&clocked_left, &clocked_right] {
+            seed_verse_with_roles(peer, "v1", &[]).await;
+            for author in ["did:key:peer-ed", "did:key:peer-ez"] {
+                let grant = fe_policy::RoleStatement {
+                    scope: crate::scope::build_scope("v1", None, None),
+                    peer_did: author.to_string(),
+                    grantor_did: "did:key:owner-a".to_string(),
+                    role: fe_policy::GrantedRole::Editor,
+                    revoked: false,
+                    hlc: 1,
+                    editor_since: None,
+                    manager_since: None,
+                    windows: Vec::new(),
+                };
+                crate::role_grants::submit_statement(peer, "v1", &grant).await.expect("grant Editor");
+            }
+        }
         let edit = |node: &str, author: &str, name: &str, hlc: Option<u64>| {
             let mut row: serde_json::Value = serde_json::from_slice(&gated_node_row(node)).unwrap();
             row["display_name"] = serde_json::json!(name);
@@ -3920,12 +3941,13 @@ mod tests {
             "node_id": "node-q156-gone", "petal_id": "petal-1", "tombstone": { "hlc": 7, "source_did": by },
         })).unwrap();
         let writes = [
-            ("node-q156-legacy", vec![edit("node-q156-legacy", "did:key:peer-ed", "ed", None), edit("node-q156-legacy", "did:key:peer-ez", "ez", None)]),
-            ("node-q156-complete", vec![edit("node-q156-complete", "did:key:peer-ez", "older", Some(2 << 16)), edit("node-q156-complete", "did:key:peer-ed", "newer", Some(3 << 16))]),
-            ("node-q156-gone", vec![edit("node-q156-gone", "did:key:peer-ed", "live", None), ("did:key:peer-ed".to_string(), gone("did:key:peer-ed")), ("did:key:peer-ez".to_string(), gone("did:key:peer-ez"))]),
+            ("node-q156-legacy", false, vec![edit("node-q156-legacy", "did:key:peer-ed", "ed", None), edit("node-q156-legacy", "did:key:peer-ez", "ez", None)]),
+            ("node-q156-complete", true, vec![edit("node-q156-complete", "did:key:peer-ez", "older", Some(2 << 16)), edit("node-q156-complete", "did:key:peer-ed", "newer", Some(3 << 16))]),
+            ("node-q156-gone", false, vec![edit("node-q156-gone", "did:key:peer-ed", "live", None), ("did:key:peer-ed".to_string(), gone("did:key:peer-ed")), ("did:key:peer-ez".to_string(), gone("did:key:peer-ez"))]),
         ];
-        for (node, rows) in &writes {
-            for (peer, order) in [(&left, rows.clone()), (&right, rows.iter().rev().cloned().collect::<Vec<_>>())] {
+        for (node, clocked, rows) in &writes {
+            let (left, right) = if *clocked { (&clocked_left, &clocked_right) } else { (&left, &right) };
+            for (peer, order) in [(left, rows.clone()), (right, rows.iter().rev().cloned().collect::<Vec<_>>())] {
                 for (author, row) in order {
                     apply_replicated_row_handler(peer, "v1", "node", node, &row, &author, None).await.unwrap();
                 }
@@ -3933,12 +3955,79 @@ mod tests {
             // A deleted node is judged on its marker only: a never-live replica has no name to compare.
             let fields = if *node == "node-q156-gone" { "tombstone" } else { "display_name, properties, tombstone" };
             let read = format!("SELECT {fields} FROM node WHERE node_id = '{node}'");
-            assert_eq!(select_json(&left, &read).await, select_json(&right, &read).await, "{node} converges in either arrival order");
+            assert_eq!(select_json(left, &read).await, select_json(right, &read).await, "{node} converges in either arrival order");
         }
-        for (node, name) in [("node-q156-complete", "newer"), ("node-q156-legacy", "ez")] {
+        for (peer, node, name) in [(&clocked_left, "node-q156-complete", "newer"), (&left, "node-q156-legacy", "ez")] {
             let read = format!("SELECT VALUE display_name FROM node WHERE node_id = '{node}'");
-            assert_eq!(select_json(&left, &read).await, vec![serde_json::json!(name)], "the later clock and the higher-ranked legacy writer win");
+            assert_eq!(select_json(peer, &read).await, vec![serde_json::json!(name)], "the later clock and the higher-ranked legacy writer win");
         }
+
+        // QA-0156 per-key: two authors' concurrent writes to DIFFERENT properties of one node both
+        // survive on every peer, whatever the order (an edit that outran the create waits for it).
+        let clocked_node = |node: &str, author: &str, hlc: u64, columns: serde_json::Value, own: &[(&str, u64)]| {
+            use crate::field_clock::wire::{encode_own, keys_of, FieldVersion, CLOCK_COLUMN};
+            let mut row = serde_json::json!({
+                "node_id": node, "petal_id": "petal-1", "created_at": "2026-10-07T00:00:00Z",
+                "display_name": "shared", "position": { "type": "Point", "coordinates": [1.5, 2.5] },
+                "elevation": 0.0, "rotation": [0.0, 0.0, 0.0, 1.0], "scale": [1.0, 1.0, 1.0],
+                "interactive": true, "edit_seq": 0,
+            });
+            for (column, value) in columns.as_object().unwrap() {
+                row[column] = value.clone();
+            }
+            row["_fe_scene"] = serde_json::json!({ "version": 1, "complete": true, "hlc": hlc.to_string(), "publisher": author });
+            let versions: Vec<FieldVersion> = keys_of("node", &row)
+                .into_iter()
+                .filter_map(|(field, value)| {
+                    let (_, stamped) = own.iter().find(|(key, _)| *key == field)?;
+                    Some(FieldVersion { field, author: author.to_string(), hlc: *stamped, value: Some(value), deleted: false })
+                })
+                .collect();
+            row[CLOCK_COLUMN] = encode_own(author, &versions);
+            (author.to_string(), serde_json::to_vec(&row).unwrap())
+        };
+        let created = [("transform", 2 << 16), ("display_name", 2 << 16), ("interactive", 2 << 16)];
+        let by_ed = [created[0], created[1], created[2], ("properties/by_ed", 3 << 16)];
+        let keyed = vec![
+            clocked_node("node-q156-keys", "did:key:peer-ed", 2 << 16, serde_json::json!({}), &created),
+            clocked_node("node-q156-keys", "did:key:peer-ed", 3 << 16, serde_json::json!({ "properties": { "by_ed": 1 } }), &by_ed),
+            clocked_node("node-q156-keys", "did:key:peer-ez", (3 << 16) + 1, serde_json::json!({ "properties": { "by_ez": 2 } }), &[("properties/by_ez", (3 << 16) + 1)]),
+        ];
+        for (peer, order) in [(&clocked_left, keyed.clone()), (&clocked_right, keyed.iter().rev().cloned().collect::<Vec<_>>())] {
+            let mut admissions = crate::handlers::inbound_admissions::InboundAdmissions::new();
+            for (author, row) in order {
+                admissions.apply(peer, "v1", "node", "node-q156-keys", &row, &author, None).await;
+            }
+        }
+        let read = "SELECT VALUE properties FROM node WHERE node_id = 'node-q156-keys'";
+        assert_eq!(select_json(&clocked_left, read).await, select_json(&clocked_right, read).await);
+        assert_eq!(
+            select_json(&clocked_left, read).await,
+            vec![serde_json::json!({ "by_ed": 1, "by_ez": 2 })],
+            "both authors' property keys survive in either arrival order"
+        );
+
+        // N-4 with clocked rows: a later live version by another Editor never resurrects a clocked tombstone.
+        let tombstoned = [("transform", 2 << 16), ("display_name", 2 << 16), ("interactive", 2 << 16), ("tombstone", 4 << 16)];
+        let n4c = [
+            (clocked_node("node-n4c", "did:key:peer-ed", 2 << 16, serde_json::json!({}), &created), ReplicatedRowOutcome::Applied),
+            (
+                clocked_node("node-n4c", "did:key:peer-ed", 4 << 16, serde_json::json!({ "tombstone": { "hlc": 4u64 << 16, "source_did": "did:key:peer-ed" } }), &tombstoned),
+                ReplicatedRowOutcome::AppliedTombstone,
+            ),
+            (
+                clocked_node("node-n4c", "did:key:peer-ez", 5 << 16, serde_json::json!({ "display_name": "revived" }), &[("display_name", 5 << 16)]),
+                ReplicatedRowOutcome::SkippedTombstoned,
+            ),
+        ];
+        for ((author, row), expected) in n4c {
+            let outcome = apply_replicated_row_handler(&clocked_left, "v1", "node", "node-n4c", &row, &author, None)
+                .await
+                .unwrap();
+            assert_eq!(outcome, expected, "{author}");
+        }
+        let rows = select_json(&clocked_left, "SELECT tombstone FROM node WHERE node_id = 'node-n4c'").await;
+        assert!(rows[0]["tombstone"].is_object(), "the clocked tombstone survives a later live version: {rows:?}");
     }
 
     #[tokio::test]
