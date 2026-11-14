@@ -7,8 +7,8 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 use anyhow::Context;
 use fe_policy::{
-    latest_per_grantor, materialize, ChangedDids, EffectiveRoles, GrantedRole, RoleLevel,
-    RoleStatement, RoleStatementPayload,
+    latest_per_grantor, materialize, ChangedDids, EffectiveRoles, GrantWindow, GrantedRole,
+    RoleLevel, RoleStatement, RoleStatementPayload, MAX_GRANT_WINDOWS,
 };
 
 use crate::repo::Db;
@@ -60,6 +60,7 @@ pub fn statement_payload_bytes(stmt: &RoleStatement) -> Vec<u8> {
         hlc: stmt.hlc,
         editor_since: stmt.editor_since,
         manager_since: stmt.manager_since,
+        windows: stmt.windows.clone(),
     };
     serde_json::to_vec(&payload).unwrap_or_default()
 }
@@ -138,7 +139,53 @@ fn statement_from_row(row: &serde_json::Value) -> Option<RoleStatement> {
         hlc: text("hlc")?.parse().ok()?,
         editor_since: since(row, "editor_since")?,
         manager_since: since(row, "manager_since")?,
+        windows: stored_windows(row, text("hlc")?.parse().ok()?)?,
     })
+}
+
+/// The optional JSON-string `windows` column: `Some(vec![])` when absent, `None` when
+/// malformed or not a valid window list for a statement stamped `hlc` (QA-0165).
+fn stored_windows(row: &serde_json::Value, hlc: u64) -> Option<Vec<GrantWindow>> {
+    let windows: Vec<GrantWindow> = match row.get("windows") {
+        None | Some(serde_json::Value::Null) => return Some(Vec::new()),
+        Some(value) => serde_json::from_str(value.as_str()?).ok()?,
+    };
+    windows_are_well_formed(&windows, hlc).then_some(windows)
+}
+
+/// The shape fe-policy admits: at most [`MAX_GRANT_WINDOWS`] Editor/Manager windows,
+/// non-empty, sorted, disjoint and closed no later than `hlc`.
+fn windows_are_well_formed(windows: &[GrantWindow], hlc: u64) -> bool {
+    windows.len() <= MAX_GRANT_WINDOWS
+        && windows.iter().all(|window| {
+            matches!(window.role, GrantedRole::Editor | GrantedRole::Manager)
+                && window.since < window.until
+                && window.until <= hlc
+        })
+        && windows.windows(2).all(|pair| pair[0].until <= pair[1].since)
+}
+
+/// The windows of `stmt` this peer's own history of the key proves (security inbox 4):
+/// re-derived from the stored `prior` live version, each claimed window kept only when a
+/// re-derived window of the same role contains it, so a payload can narrow, never widen.
+pub fn proven_windows(prior: Option<&RoleStatement>, stmt: &RoleStatement) -> Vec<GrantWindow> {
+    if stmt.windows.is_empty() {
+        return Vec::new();
+    }
+    let derived = RoleStatement { windows: Vec::new(), ..stmt.clone() }
+        .continuing_with_frontier(prior, None)
+        .windows;
+    stmt.windows
+        .iter()
+        .filter(|claimed| {
+            derived.iter().any(|local| {
+                local.role == claimed.role
+                    && local.since <= claimed.since
+                    && claimed.until <= local.until
+            })
+        })
+        .copied()
+        .collect()
 }
 
 /// An optional decimal-string continuity column: `Some(None)` when absent, `None` when malformed.
@@ -285,6 +332,12 @@ fn statement_row(verse_id: &str, stmt: &RoleStatement, held: bool) -> serde_json
             row[field] = serde_json::Value::String(since.to_string());
         }
     }
+    if !stmt.windows.is_empty() {
+        // A JSON string, like the continuity columns: window HLCs exceed SurrealDB's i64.
+        row["windows"] = serde_json::Value::String(
+            serde_json::to_string(&stmt.windows).unwrap_or_default(),
+        );
+    }
     if held {
         row["received_at"] = serde_json::Value::String(now);
     }
@@ -398,6 +451,46 @@ pub fn authorized_at_write(
         .is_at_least(level)
 }
 
+/// QA-0165 write-time-only judge: did `author` hold `level` at `scope` at HLC `hlc`, by the
+/// admitted statements and their grant windows? False before the manifest (no owner known).
+pub async fn held_at_write(
+    db: &Db,
+    verse_id: &str,
+    author: &str,
+    scope: &str,
+    level: RoleLevel,
+    hlc: u64,
+) -> anyhow::Result<bool> {
+    let Some(owner) = verse_owner(db, verse_id).await? else {
+        return Ok(false);
+    };
+    let admitted = load_admitted(db, verse_id).await?;
+    Ok(held_at_write_in(&owner, &admitted, author, scope, level, hlc))
+}
+
+/// Pure core of [`held_at_write`] over a loaded verse view, so a batch judge loads once.
+pub fn held_at_write_in(
+    view_owner: &str,
+    admitted: &[RoleStatement],
+    author: &str,
+    scope: &str,
+    level: RoleLevel,
+    hlc: u64,
+) -> bool {
+    fe_policy::held_at(view_owner, admitted.iter(), author, scope, level, hlc)
+}
+
+/// Every ADMITTED statement whose scope is exactly `scope` (read-only; the Access panel).
+pub async fn load_scope_statements(db: &Db, scope: &str) -> anyhow::Result<Vec<RoleStatement>> {
+    select_statements(
+        db,
+        "SELECT * FROM role_grant WHERE scope = $s",
+        GRANT_TABLE,
+        vec![("s", scope.to_string())],
+    )
+    .await
+}
+
 /// Place one VALIDATED statement (`fe_policy::validate_statement` already passed) under
 /// §2.4's rules: one live version per key, admit if admissible, else hold within the
 /// grantor's budget. Never touches the `role` cache — call [`repartition`] after `Admitted`.
@@ -413,9 +506,18 @@ pub async fn place_statement(
         );
     }
     let live = live_version(db, stmt).await?;
+    // Wire windows are untrusted: keep only what this key's stored history proves.
+    let proven = RoleStatement {
+        windows: proven_windows(live.as_ref().map(|(_, existing)| existing), stmt),
+        ..stmt.clone()
+    };
+    let stmt = &proven;
     if let Some((_, existing)) = &live {
+        // A redelivered version keeps the windows proven when it first arrived.
+        let same_version = existing.hlc == stmt.hlc
+            && RoleStatement { windows: existing.windows.clone(), ..stmt.clone() } == *existing;
         let newer = latest_per_grantor([existing, stmt]).into_iter().next();
-        if existing == stmt || newer.as_ref() != Some(stmt) {
+        if same_version || newer.as_ref() != Some(stmt) {
             return Ok(Placement::Superseded);
         }
     }
@@ -496,16 +598,22 @@ pub(crate) async fn commit_local_statement(
     peer: &str, scope: &str, role: GrantedRole, revoked: bool,
     authority: crate::handlers::entity::ParentMutation, owner: &str,
 ) -> anyhow::Result<RoleStatement> {
-    let mut candidate = RoleStatement { scope: scope.into(), peer_did: peer.into(), grantor_did: caller.into(), role, revoked, hlc: 0, editor_since: None, manager_since: None };
+    let mut candidate = RoleStatement { scope: scope.into(), peer_did: peer.into(), grantor_did: caller.into(), role, revoked, hlc: 0, editor_since: None, manager_since: None, windows: Vec::new() };
     let key = statement_record_id(&candidate);
-    let grant_select = "SELECT statement_key,verse_id,scope,peer_did,grantor_did,role,revoked,hlc,updated_at FROM role_grant WHERE statement_key=$local_role_key";
-    let pending_select = "SELECT statement_key,verse_id,scope,peer_did,grantor_did,role,revoked,hlc,updated_at,received_at FROM role_statement_pending WHERE statement_key=$local_role_key";
+    // The fence covers continuity and windows too: the new version is derived from them.
+    let grant_select = "SELECT statement_key,verse_id,scope,peer_did,grantor_did,role,revoked,hlc,(editor_since ?? '') AS editor_since,(manager_since ?? '') AS manager_since,(windows ?? '') AS windows,updated_at FROM role_grant WHERE statement_key=$local_role_key";
+    let pending_select = "SELECT statement_key,verse_id,scope,peer_did,grantor_did,role,revoked,hlc,(editor_since ?? '') AS editor_since,(manager_since ?? '') AS manager_since,(windows ?? '') AS windows,updated_at,received_at FROM role_statement_pending WHERE statement_key=$local_role_key";
     let mut response=db.query(format!("{grant_select};{pending_select}"))
         .bind(("local_role_key",key.clone())).await?.check()?;
     let granted:Vec<serde_json::Value>=response.take(0)?;
     let pending:Vec<serde_json::Value>=response.take(1)?;
     anyhow::ensure!(granted.len() <= 1 && pending.len() <= 1,"Ambiguous role statement identity");
     let prior = live_version(db,&candidate).await?.map(|(_,statement)|statement);
+    // QA-0165 revoke frontier: a closed window ends at the peer's last write this node holds.
+    let frontier = match prior {
+        Some(_) => crate::field_clock::author_frontier(db, verse_id, peer).await?,
+        None => None,
+    };
     let verse_id=verse_id.to_owned();
     let (mut guards,mut bindings)=authority.into_parts();
     guards.push(format!("IF ({grant_select}) != $local_role_granted {{ THROW 'role statement changed'; }}"));
@@ -525,8 +633,9 @@ pub(crate) async fn commit_local_statement(
     let mut committed = None;
     crate::op_log::commit_operation_atomic_with(db,entry,|clock| {
         candidate.hlc=clock;
-        // QA-0131: a change that stays at Editor+/Manager keeps the key's continuity.
-        candidate=candidate.clone().continuing(prior.as_ref());
+        // QA-0131: a change that stays at Editor+/Manager keeps the key's continuity;
+        // a break closes a window at the frontier (None: the peer never wrote, close at `clock`).
+        candidate=candidate.clone().continuing_with_frontier(prior.as_ref(),frontier);
         let allowed=prior.as_ref().is_none_or(|prior| latest_per_grantor([prior,&candidate]).first()==Some(&candidate));
         bindings.push(("local_role_allowed".into(),serde_json::json!(allowed)));
         bindings.push(("local_role_row".into(),statement_row(&verse_id,&candidate,false)));
@@ -969,6 +1078,7 @@ mod tests {
             hlc: u64::MAX,
             editor_since: Some(u64::MAX - 1),
             manager_since: None,
+            windows: vec![GrantWindow { role: GrantedRole::Manager, since: 3, until: u64::MAX - 2 }],
         };
         let payload: RoleStatementPayload =
             serde_json::from_slice(&statement_payload_bytes(&stmt)).expect("payload");
@@ -977,6 +1087,36 @@ mod tests {
         let stored = statement_row("v1", &stmt, false);
         assert_eq!(stored.get("manager_since"), None, "absent continuity stays absent");
         assert_eq!(statement_from_row(&stored), Some(stmt.clone()), "and survives storage");
+        assert_eq!(payload.windows, stmt.windows, "grant windows ride the wire");
+        // QA-0165: a malformed or impossible stored window list rejects the row, never defaults.
+        for bad in ["not json", r#"[{"role":"manager","since":5,"until":5}]"#] {
+            let mut corrupt = stored.clone();
+            corrupt["windows"] = serde_json::Value::String(bad.into());
+            assert_eq!(statement_from_row(&corrupt), None, "{bad} is refused");
+        }
+        // Security inbox 4: with no stored history of the key, a claimed window proves nothing.
+        assert!(proven_windows(None, &stmt).is_empty());
+        let prior = RoleStatement { hlc: 10, editor_since: None, windows: Vec::new(), role: GrantedRole::Manager, ..stmt.clone() };
+        let revoke = RoleStatement {
+            revoked: true,
+            hlc: 20,
+            editor_since: None,
+            windows: vec![
+                GrantWindow { role: GrantedRole::Manager, since: 10, until: 15 },
+                GrantWindow { role: GrantedRole::Manager, since: 15, until: 20 },
+            ],
+            ..stmt.clone()
+        };
+        assert_eq!(
+            proven_windows(Some(&prior), &revoke),
+            revoke.windows,
+            "windows inside the locally derived [10, 20) are kept as the grantor narrowed them"
+        );
+        let widened = RoleStatement {
+            windows: vec![GrantWindow { role: GrantedRole::Manager, since: 1, until: 20 }],
+            ..revoke.clone()
+        };
+        assert!(proven_windows(Some(&prior), &widened).is_empty(), "a window wider than the history is dropped");
         assert_eq!(payload.role, "editor");
         assert_eq!(
             statement_record_id(&stmt),

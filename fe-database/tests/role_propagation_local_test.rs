@@ -301,6 +301,38 @@ async fn a_manager_grant_then_owner_revocation_of_the_manager_voids_the_grant_lo
     let payload = events[0].1.as_ref().expect("role payload");
     assert!(payload.revoked && payload.peer_did == m && payload.grantor_did == OWNER);
 
+    // QA-0165: the revoke closes M's Manager span as a stored window; M never wrote, so
+    // the window ends at the revoke itself, and M's write-time role is judged by it.
+    let revocation = admitted
+        .iter()
+        .find(|s| s.peer_did == m && s.grantor_did == OWNER)
+        .expect("owner's revocation of M is admitted");
+    assert_eq!(payload.windows, revocation.windows, "the window rides the wire");
+    let [window] = revocation.windows.as_slice() else {
+        panic!("one closed Manager window: {:?}", revocation.windows);
+    };
+    assert_eq!(window.role, GrantedRole::Manager);
+    assert_eq!(window.until, revocation.hlc, "no frontier: closed at the revoke");
+    let mut stored = fx
+        .db
+        .query("SELECT VALUE windows FROM role_grant WHERE peer_did = $m AND grantor_did = $o")
+        .bind(("m", m))
+        .bind(("o", OWNER))
+        .await
+        .expect("windows column");
+    let stored: Vec<Option<String>> = stored.take(0).expect("windows rows");
+    assert!(
+        matches!(stored.as_slice(), [Some(json)] if json.contains("manager")),
+        "the role_grant row carries the window: {stored:?}"
+    );
+    let manager_scope = verse_scope();
+    let (db, manager_scope) = (&fx.db, manager_scope.as_str());
+    let held_at = move |hlc: u64| {
+        role_grants::held_at_write(db, VERSE, m, manager_scope, RoleLevel::Manager, hlc)
+    };
+    assert!(held_at(window.since).await.expect("inside"), "M was Manager inside the window");
+    assert!(!held_at(window.until).await.expect("after"), "and is not after the revoke");
+
     // Regranting M re-admits every held statement down the subtree, with no re-delivery.
     fx.assign(OWNER, m, &verse_scope(), "manager")
         .await
@@ -311,6 +343,14 @@ async fn a_manager_grant_then_owner_revocation_of_the_manager_voids_the_grant_lo
         .await
         .expect("held")
         .is_empty());
+    assert!(
+        held_at(window.since).await.expect("inside, after regrant"),
+        "the regrant carries the closed window forward"
+    );
+    assert!(
+        !held_at(window.until).await.expect("gap, after regrant"),
+        "the gap between revoke and regrant stays unheld"
+    );
 }
 
 #[tokio::test]
@@ -467,6 +507,7 @@ async fn a_held_statement_is_promoted_when_a_local_owner_grant_empowers_its_gran
         hlc: 7,
         editor_since: None,
         manager_since: None,
+        windows: Vec::new(),
     };
     let (placement, _) = role_grants::submit_statement(&fx.db, VERSE, &early)
         .await

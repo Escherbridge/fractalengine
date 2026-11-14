@@ -83,6 +83,7 @@ fn statements(
                 hlc: canonical_hlc(row)?,
                 editor_since: None,
                 manager_since: None,
+                windows: Vec::new(),
             })
         })
         .collect()

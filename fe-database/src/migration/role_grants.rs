@@ -192,6 +192,7 @@ async fn convert_to_owner_statement(
             hlc: lamport,
             editor_since: None,
             manager_since: None,
+            windows: Vec::new(),
         };
         admit_local_statement(db, &verse_id, &stmt).await
     })
