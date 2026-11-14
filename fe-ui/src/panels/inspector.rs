@@ -2076,7 +2076,7 @@ fn render_property_row(
     }
     if let Some(draft) = editor.drafts.get_mut(key) {
         columns.expanded(ui, |ui| {
-            render_property_draft(ui, key, value, draft, loading, columns.height, actions);
+            render_property_draft(ui, key, value, draft, loading, can_edit, columns.height, actions);
         });
     } else if expanded && (value.is_object() || value.is_array()) {
         columns.expanded(ui, |ui| {
@@ -2104,6 +2104,7 @@ fn render_property_draft(
     value: &serde_json::Value,
     draft: &mut PropertyDraft,
     loading: bool,
+    can_edit: bool,
     target: f32,
     actions: &mut PropertyTableActions,
 ) {
@@ -2141,8 +2142,11 @@ fn render_property_draft(
     ui.label(egui::RichText::new(status).small().color(theme::TEXT_DIM))
         .observed(ui);
     ui.horizontal_wrapped(|ui| {
-        let can_save =
-            !loading && draft.pending.is_none() && draft.dirty() && value == &draft.source;
+        let can_save = can_edit
+            && !loading
+            && draft.pending.is_none()
+            && draft.dirty()
+            && value == &draft.source;
         if ui
             .add_enabled(
                 can_save,
