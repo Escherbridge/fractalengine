@@ -1,0 +1,22 @@
+{
+  "id": "utility_node_contract_20261113",
+  "type": "feature",
+  "title": "Utility node contract and assets-in-volume takeoff (reserved)",
+  "description": "Reserved P4 track spun out of terrain_proposal_delta_viz_20261025 FR-11. Defines the utility node property contract and the clipped-length takeoff before any code. No code is committed by this track until its trigger fires.",
+  "status": "deferred",
+  "priority": "P4",
+  "created_at": "2026-11-13T00:00:00Z",
+  "updated_at": "2026-11-13T00:00:00Z",
+  "origin": "terrain_proposal_delta_viz_20261025 plan task 'Spin out a utility-node-contract track; reserve only' (round 4, slice UI-12)",
+  "trigger": "a user asks for utility takeoff, or OD-5 true 3D volume lands",
+  "depends_on": ["terrain_proposal_delta_viz_20261025"],
+  "blocks": [],
+  "related": ["terrain_proposal_delta_viz_20261025", "map_scale_authority_20260716"],
+  "spec": "./spec.md",
+  "plan": "./plan.md",
+  "progress": { "done": 0, "open": 1, "plan": "./plan.md" },
+  "partitions": {
+    "confidence": "none",
+    "note": "No code slices committed; partitions are computed when the trigger fires."
+  }
+}
