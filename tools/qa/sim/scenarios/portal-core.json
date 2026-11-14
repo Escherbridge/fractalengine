@@ -440,6 +440,19 @@
         },
         {
           "peer": "owner",
+          "via": "gui",
+          "op": "click",
+          "args": {
+            "name": "Open bundle"
+          },
+          "id": "open_act",
+          "needs": [
+            "adm_act"
+          ],
+          "note": "accessible name placeholder: T3.1 ux.md fixes the exact Open name; opens the Actions repo node ract, the last-created repository node in this step"
+        },
+        {
+          "peer": "owner",
           "via": "rest",
           "op": "portal_ipc_post",
           "args": {
@@ -447,7 +460,10 @@
             "package_id": "qa.portal.actions",
             "content_hash": "$act.content_hash"
           },
-          "id": "r_frame"
+          "id": "r_frame",
+          "needs": [
+            "open_act"
+          ]
         },
         {
           "peer": "owner",
@@ -458,7 +474,10 @@
             "package_id": "qa.portal.actions",
             "content_hash": "$act.content_hash"
           },
-          "id": "r_hidden"
+          "id": "r_hidden",
+          "needs": [
+            "open_act"
+          ]
         },
         {
           "peer": "owner",
@@ -469,7 +488,10 @@
             "package_id": "qa.portal.actions",
             "content_hash": "$act.content_hash"
           },
-          "id": "r_stale"
+          "id": "r_stale",
+          "needs": [
+            "open_act"
+          ]
         },
         {
           "peer": "owner",
@@ -482,7 +504,8 @@
           },
           "id": "r_control",
           "needs": [
-            "adm_act"
+            "adm_act",
+            "open_act"
           ]
         }
       ],
