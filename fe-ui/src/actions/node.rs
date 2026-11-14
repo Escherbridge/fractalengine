@@ -520,6 +520,21 @@ pub fn submit_scene_write(db_sender: &DbCommandSender, command: DbCommand) -> Gu
     submit_with(&GUI_DOOR, &door, &db_sender.0, command, true, None, FullChannel::Report, Instant::now())
 }
 
+/// Blocking submit authorized against `petal_id`: follow-up writes created from a `DbResult` name the node's own petal.
+pub fn submit_scene_write_in(db_sender: &DbCommandSender, petal_id: &str, command: DbCommand) -> GuiSend {
+    submit_scene_write_in_through(&SceneWriteDoor::installed(), &db_sender.0, petal_id, command)
+}
+
+/// As [`submit_scene_write_in`] through an explicit door and raw sender.
+pub(crate) fn submit_scene_write_in_through(
+    door: &SceneWriteDoor,
+    sender: &Sender<DbCommand>,
+    petal_id: &str,
+    command: DbCommand,
+) -> GuiSend {
+    submit_with(&GUI_DOOR, door, sender, command, true, Some(petal_id), FullChannel::Report, Instant::now())
+}
+
 /// As [`submit_scene_write`] for frame systems that must not block on a full channel.
 pub fn try_submit_scene_write(db_sender: &DbCommandSender, command: DbCommand) -> GuiSend {
     let door = SceneWriteDoor::installed();
@@ -943,5 +958,49 @@ mod tests {
         assert!(!discard_dead_letter_in(&doors, third_id));
         assert_eq!(door_counts(&doors), (0, 0));
         assert!(matches!(retry_dead_letter_in(&doors, third_id, third_at), GuiSend::Refused(_)));
+
+        // Petal-hint leg: a follow-up write is judged against the node's own petal, not the active one.
+        {
+            use fe_runtime::scene_hook_gate::{
+                AugmentOp, SceneBinding, SceneHook, SceneHookBackend, SceneHookCall, SceneHookGate,
+                SceneHookReply, SceneHookReplySender,
+            };
+            struct RefusingBackend;
+            impl SceneHookBackend for RefusingBackend {
+                fn local_did(&self) -> &str {
+                    "did:key:local"
+                }
+                fn bound(&self, _hook: SceneHook, petal_id: &str) -> Option<SceneBinding> {
+                    (petal_id == "p-node").then(|| SceneBinding {
+                        package_id: "org.example.zoning".into(),
+                        binding_scope: "VERSE#v-FRACTAL#f".into(),
+                        config: serde_json::json!({}),
+                        property_scope: vec!["*".into()],
+                        may_augment: false,
+                    })
+                }
+                fn dispatch(&self, _call: SceneHookCall, reply: SceneHookReplySender) {
+                    let _ = reply.send(SceneHookReply::Refused("outside the zone".into()));
+                }
+                fn stage_augment(
+                    &self,
+                    _petal: &str,
+                    _package: &str,
+                    _node_id: &str,
+                    _ops: Vec<AugmentOp>,
+                ) -> Result<(), String> {
+                    Ok(())
+                }
+            }
+            let (door_tx, _door_rx) = crossbeam::channel::unbounded();
+            let hooked = SceneWriteDoor::new(SceneHookGate::new(std::sync::Arc::new(RefusingBackend)), door_tx);
+            let (tx, rx) = crossbeam::channel::bounded(4);
+            let refused = submit_scene_write_in_through(&hooked, &tx, "p-node", property_write("node-petal"));
+            assert!(matches!(refused, GuiSend::Refused(_)), "judged against the node's petal");
+            assert!(rx.try_recv().is_err(), "a refused follow-up sends nothing");
+            let sent = submit_scene_write_in_through(&hooked, &tx, "p-active", property_write("active-petal"));
+            assert_eq!(sent, GuiSend::Sent);
+            assert_eq!(received_id(&rx).as_deref(), Some("active-petal"));
+        }
     }
 }

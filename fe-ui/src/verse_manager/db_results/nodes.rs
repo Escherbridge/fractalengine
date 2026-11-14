@@ -67,8 +67,9 @@ pub(super) fn handle_node_created(
             crate::actions::terrain_proposal::earthwork_node_properties(region_id, &material)
         {
             // Through the scene write door so a bound scene hook sees the follow-up writes too.
-            if crate::actions::node::submit_scene_write(
+            if crate::actions::node::submit_scene_write_in(
                 db_sender,
+                petal_id,
                 fe_runtime::messages::DbCommand::SetNodeProperty {
                     node_id: id.to_string(),
                     key: key.to_string(),
@@ -78,7 +79,7 @@ pub(super) fn handle_node_created(
             ).channel_unavailable()
             {
                 bevy::log::warn!(
-                    "db_sender channel closed — earthwork node contract keys not written"
+                    "db_sender closed — earthwork node contract keys not written for petal {petal_id}"
                 );
                 break;
             }

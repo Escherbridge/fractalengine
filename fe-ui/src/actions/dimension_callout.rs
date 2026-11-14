@@ -319,7 +319,7 @@ pub(crate) fn bind_created_callout(
             value,
             correlation_id: None,
         };
-        if super::node::submit_scene_write(db_sender, command).channel_unavailable() {
+        if super::node::submit_scene_write_in(db_sender, petal_id, command).channel_unavailable() {
             bevy::log::warn!(
                 "db_sender channel closed — dimension callout contract keys not written"
             );
