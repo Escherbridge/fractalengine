@@ -1,6 +1,7 @@
 //! Portal WebView2 spike runner (protocol.md §10, §12); see `fe-webview/src/portal_bundle/AGENTS.md` §spikes.
 //!
-//! `cargo run -p fe-webview --example portal_spikes -- <SP-1|SP-2|...|all> [--out <file>]`
+//! `cargo run -p fe-webview --example portal_spikes -- <SP-1|SP-2|...|SP-9|all> [--out <file>]`
+//! (SP-9 re-runs this binary as a child with `--sp9-child <wry|native>`.)
 
 #[cfg(not(all(windows, feature = "backend-tauri")))]
 fn main() {
@@ -9,16 +10,15 @@ fn main() {
 
 #[cfg(all(windows, feature = "backend-tauri"))]
 mod spikes_a;
-// EXT-07 adds SP-5..SP-9: `mod spikes_b;` plus `spikes_b::SPIKES` in `TABLE` below.
-// #[cfg(all(windows, feature = "backend-tauri"))]
-// mod spikes_b;
+#[cfg(all(windows, feature = "backend-tauri"))]
+mod spikes_b;
 
 #[cfg(all(windows, feature = "backend-tauri"))]
-pub use harness::{Harness, Outcome, RequestRecord, Spike};
+pub use harness::{Admission, Fixture, Harness, HarnessOptions, IpcRecord, Outcome, RequestRecord, Spike};
 
 /// Every spike the runner can execute, in run order.
 #[cfg(all(windows, feature = "backend-tauri"))]
-const TABLE: &[&[Spike]] = &[spikes_a::SPIKES];
+const TABLE: &[&[Spike]] = &[spikes_a::SPIKES, spikes_b::SPIKES];
 
 #[cfg(all(windows, feature = "backend-tauri"))]
 const DEFAULT_OUT: &str = "target/portal-spikes.jsonl";
@@ -41,7 +41,13 @@ fn main() {
 
     let mut selection: Vec<String> = Vec::new();
     let mut out_path = DEFAULT_OUT.to_owned();
-    let mut arguments = std::env::args().skip(1);
+    let mut arguments = std::env::args().skip(1).peekable();
+    // SP-9's child process: one variant, one result line on stdout, never the runner's output file.
+    if arguments.peek().map(String::as_str) == Some(spikes_b::CHILD_FLAG) {
+        arguments.next();
+        let mode = arguments.next().unwrap_or_default();
+        std::process::exit(spikes_b::sp9_child(&mode));
+    }
     while let Some(argument) = arguments.next() {
         if argument == "--out" {
             match arguments.next() {
@@ -125,7 +131,7 @@ fn main() {
 
 #[cfg(all(windows, feature = "backend-tauri"))]
 fn usage(message: &str) -> ! {
-    eprintln!("{message}\nusage: cargo run -p fe-webview --example portal_spikes -- <SP-1|...|all> [--out <file>]");
+    eprintln!("{message}\nusage: cargo run -p fe-webview --example portal_spikes -- <SP-1|...|SP-9|all> [--out <file>]");
     std::process::exit(2);
 }
 
@@ -142,16 +148,18 @@ mod harness {
 
     use ed25519_dalek::SigningKey;
     use fe_webview::ipc::BundleState;
+    use fe_webview::portal_bundle::feeds::FeedSource;
+    use fe_webview::portal_bundle::limits::MAX_SOURCE_BYTES;
     use fe_webview::portal_bundle::origin::{admitted_label, Label};
     use fe_webview::portal_bundle::protocol::serve;
     use fe_webview::portal_bundle::{
-        prepare, AdmissionVerdict, Attempt, BundleIdentity, BundleResolver, BundleSource, Decision, NavigationGate,
-        PortalMounts, SCHEME,
+        prepare, AdmissionVerdict, Attempt, BundleIdentity, BundleResolver, BundleSource, Decision, Mount,
+        NavigationGate, PortalMounts, SCHEME,
     };
     use http::{Request, Response, StatusCode};
     use serde_json::json;
-    use webview2_com::Microsoft::Web::WebView2::Win32::ICoreWebView2;
-    use webview2_com::FrameNavigationStartingEventHandler;
+    use webview2_com::Microsoft::Web::WebView2::Win32::{ICoreWebView2, COREWEBVIEW2_PERMISSION_KIND};
+    use webview2_com::{FrameNavigationStartingEventHandler, PermissionRequestedEventHandler, WebMessageReceivedEventHandler};
     use windows::core::{HSTRING, PWSTR};
     use winit::application::ApplicationHandler;
     use winit::dpi::LogicalSize;
@@ -162,6 +170,10 @@ mod harness {
     use wry::{WebView, WebViewBuilder, WebViewExtWindows};
 
     const PACKAGE: &str = "org.example.portal-spikes";
+    /// Bundle B: same publisher, another package, so another admitted label (SP-6).
+    const PACKAGE_B: &str = "org.example.portal-spikes-b";
+    /// Stored prefix of each IPC sender URL.
+    const SOURCE_KEPT_CHARS: usize = 512;
     /// Harness-owned scheme standing in for an external page (the production gate admits only public https origins).
     const SPIKE_SCHEME: &str = "fe-spike";
     /// Where a page reports back: answered by the harness before the production handler sees the request.
@@ -190,6 +202,41 @@ mod harness {
         pub method: String,
         pub service_worker: Option<String>,
         pub status: u16,
+    }
+
+    /// One page-to-host message the native `WebMessageReceived` logger saw.
+    #[derive(Debug, Clone)]
+    pub struct IpcRecord {
+        /// The sender URL, cut to its first 512 characters.
+        pub source: String,
+        /// Full sender URL length in UTF-16 units.
+        pub source_length: usize,
+        /// The string body; `None` when dropped or not a string.
+        pub body: Option<String>,
+        /// Dropped unread because the sender URL is over `MAX_SOURCE_BYTES` (P-2).
+        pub dropped: bool,
+    }
+
+    /// Which sealed fixture a mount reads.
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    pub enum Fixture {
+        A,
+        B,
+    }
+
+    /// How the fixture resolver judges the build.
+    pub enum Admission {
+        /// Admitted for the sealing publisher: an `a-` label.
+        Admitted,
+        /// No admission record: a static `s-` mount with these feeds.
+        Static(FeedSource),
+    }
+
+    /// Runner switches; SP-9's child sets `wry_ipc_handler`.
+    #[derive(Debug, Clone, Copy, Default)]
+    pub struct HarnessOptions {
+        /// Register wry's `with_ipc_handler` (the handler P-2 replaced).
+        pub wry_ipc_handler: bool,
     }
 
     /// Host-side state the navigation callback reads and writes (it runs inside `pump`).
@@ -256,6 +303,8 @@ mod harness {
     struct FixedResolver {
         path: PathBuf,
         publisher_did: String,
+        admitted: bool,
+        feeds: FeedSource,
     }
 
     impl BundleResolver for FixedResolver {
@@ -264,12 +313,31 @@ mod harness {
         }
 
         fn verdict(&self, _identity: &BundleIdentity) -> AdmissionVerdict {
-            AdmissionVerdict::Admitted { publisher_did: self.publisher_did.clone() }
+            if self.admitted {
+                AdmissionVerdict::Admitted { publisher_did: self.publisher_did.clone() }
+            } else {
+                AdmissionVerdict::Unadmitted { can_admit: false }
+            }
+        }
+
+        fn feeds(&self, _node_id: &str) -> FeedSource {
+            self.feeds.clone()
         }
     }
 
-    /// Bundle A: one page whose behaviour is chosen by `?spike=` (app.js), plus the service-worker script SP-4 registers.
-    fn archive() -> Vec<u8> {
+    /// A fresh mount of the sealed fixture at `path` (a `Mount` is installed by value, so each open prepares one).
+    fn mount_fixture(path: PathBuf, publisher_did: &str, admission: Admission) -> anyhow::Result<Mount> {
+        let (admitted, feeds) = match admission {
+            Admission::Admitted => (true, FeedSource::default()),
+            Admission::Static(feeds) => (false, feeds),
+        };
+        let resolver = FixedResolver { path, publisher_did: publisher_did.to_owned(), admitted, feeds };
+        prepare(&resolver, "spike-node", u64::MAX).map_err(|state| anyhow::anyhow!("fixture bundle did not mount: {state:?}"))
+    }
+
+    /// A fixture bundle for `package`: one page whose behaviour is chosen by `?spike=` (app.js, app_b.js), plus the
+    /// service-worker script SP-4 registers.
+    fn archive(package: &str) -> Vec<u8> {
         let portal = json!({
             "schema": "fe-portal-bundle/1", "entry": "web/index.html", "title": "Portal spikes",
             "csp": { "connect": [], "img": [], "font": [], "media": [], "frame": ["https://example.org"],
@@ -278,23 +346,25 @@ mod harness {
             "subscriptions": { "node": false, "readings": false, "queries": [] },
             "commands": {}, "hooks": [], "streams": [], "ui_intents": []
         });
-        let extension = json!({ "manifest_version": 2, "id": PACKAGE, "version": "1.0.0", "kind": "web-bundle", "portal": portal });
+        let extension = json!({ "manifest_version": 2, "id": package, "version": "1.0.0", "kind": "web-bundle", "portal": portal });
         let manifest = json!({
-            "schema_version": "1.0.0", "hexon_id": PACKAGE, "hexon_type": "plugin",
+            "schema_version": "1.0.0", "hexon_id": package, "hexon_type": "plugin",
             "publisher_did": "did:key:z6Mkunsealed", "version": "1.0.0", "name": "Portal spikes",
             "created_at": "2026-11-13T00:00:00Z", "updated_at": "2026-11-13T00:00:00Z"
         });
         let mut zip = zip::ZipWriter::new(std::io::Cursor::new(Vec::new()));
         let options = zip::write::SimpleFileOptions::default();
-        let members: [(&str, Vec<u8>); 6] = [
+        let members: [(&str, Vec<u8>); 7] = [
             ("manifest.json", serde_json::to_vec(&manifest).unwrap_or_default()),
             ("entries.json", br#"{"entries":[]}"#.to_vec()),
             ("plugin/extension.json", serde_json::to_vec(&extension).unwrap_or_default()),
             (
                 "web/index.html",
-                b"<!doctype html><title>spike A</title><script src=\"/app.js\"></script>".to_vec(),
+                b"<!doctype html><title>spike bundle</title><script src=\"/app.js\"></script><script src=\"/app_b.js\"></script>"
+                    .to_vec(),
             ),
             ("web/app.js", super::spikes_a::BUNDLE_SCRIPT.as_bytes().to_vec()),
+            ("web/app_b.js", super::spikes_b::BUNDLE_SCRIPT.as_bytes().to_vec()),
             ("web/sw.js", b"self.addEventListener('fetch', () => {});".to_vec()),
         ];
         for (name, bytes) in members {
@@ -309,6 +379,8 @@ mod harness {
         match path {
             "/b.html" => Some(super::spikes_a::PAGE_B),
             "/probe.html" => Some(super::spikes_a::PAGE_PROBE),
+            "/sp8.html" => Some(super::spikes_b::PAGE_SP8_EXTERNAL),
+            "/sp9.html" => Some(super::spikes_b::PAGE_SP9),
             _ => None,
         }
     }
@@ -351,22 +423,39 @@ mod harness {
         /// Every URL the native `FrameNavigationStarting` handler saw.
         pub frame_navigations: Arc<Mutex<Vec<String>>>,
         bypass: Rc<RefCell<Vec<String>>>,
+        /// Every `(url, decision)` the navigation callback produced, in order.
+        decisions: Rc<RefCell<Vec<(String, String)>>>,
+        /// URL prefixes the callback judges, logs, then cancels (SP-7).
+        probes: Rc<RefCell<Vec<String>>>,
+        ipc_messages: Arc<Mutex<Vec<IpcRecord>>>,
+        permissions: Arc<Mutex<Vec<(i32, String)>>>,
+        wry_ipc_received: Rc<Cell<u32>>,
         hook: Rc<NavigationHook>,
         deadline: Instant,
-        _fixture: TempFile,
+        publisher_did: String,
+        fixture_a: TempFile,
+        fixture_b: TempFile,
+    }
+
+    /// Seal `package`'s fixture under `key` into a temp file.
+    fn write_fixture(package: &str, key: &SigningKey) -> anyhow::Result<TempFile> {
+        let sealed = fe_format::seal(&archive(package), key)?;
+        let path = std::env::temp_dir().join(format!("fe-portal-spikes-{}.hexon", ulid::Ulid::new()));
+        std::fs::write(&path, &sealed)?;
+        Ok(TempFile(path))
     }
 
     impl Harness {
         pub fn new() -> anyhow::Result<Self> {
+            Self::with_options(HarnessOptions::default())
+        }
+
+        pub fn with_options(options: HarnessOptions) -> anyhow::Result<Self> {
             let key = SigningKey::from_bytes(&[7u8; 32]);
             let publisher_did = fe_format::verifying_key_to_did(&key.verifying_key());
-            let sealed = fe_format::seal(&archive(), &key)?;
-            let path = std::env::temp_dir().join(format!("fe-portal-spikes-{}.hexon", ulid::Ulid::new()));
-            std::fs::write(&path, &sealed)?;
-            let fixture = TempFile(path.clone());
-            let resolver = FixedResolver { path, publisher_did: publisher_did.clone() };
-            let mount = prepare(&resolver, "spike-node", u64::MAX)
-                .map_err(|state| anyhow::anyhow!("fixture bundle did not mount: {state:?}"))?;
+            let fixture_a = write_fixture(PACKAGE, &key)?;
+            let fixture_b = write_fixture(PACKAGE_B, &key)?;
+            let mount = mount_fixture(fixture_a.0.clone(), &publisher_did, Admission::Admitted)?;
             let label_a = mount.label.clone();
             let entry_url = mount.entry_url.clone();
             let mounts = PortalMounts::new();
@@ -388,6 +477,11 @@ mod harness {
             let navigations: Rc<RefCell<Vec<String>>> = Rc::default();
             let frame_navigations: Arc<Mutex<Vec<String>>> = Arc::default();
             let bypass: Rc<RefCell<Vec<String>>> = Rc::default();
+            let decisions: Rc<RefCell<Vec<(String, String)>>> = Rc::default();
+            let probes: Rc<RefCell<Vec<String>>> = Rc::default();
+            let ipc_messages: Arc<Mutex<Vec<IpcRecord>>> = Arc::default();
+            let permissions: Arc<Mutex<Vec<(i32, String)>>> = Arc::default();
+            let wry_ipc_received: Rc<Cell<u32>> = Rc::default();
             let hook: Rc<NavigationHook> = Rc::default();
 
             let protocol_mounts = mounts.clone();
@@ -398,9 +492,11 @@ mod harness {
             let navigation_log = navigations.clone();
             let navigation_bypass = bypass.clone();
             let navigation_hook = hook.clone();
+            let decision_log = decisions.clone();
+            let navigation_probes = probes.clone();
 
             use wry::WebViewBuilderExtWindows as _;
-            let webview = WebViewBuilder::new()
+            let mut builder = WebViewBuilder::new()
                 // The production handler, wrapped only to record each request and to answer page reports.
                 .with_asynchronous_custom_protocol(SCHEME.to_owned(), move |_id, request, responder| {
                     let response = match take_report(&request, &protocol_reports) {
@@ -444,16 +540,28 @@ mod harness {
                         if url.contains("/b.html") {
                             navigation_hook.on_spike_page_navigation();
                         }
+                        decision_log.borrow_mut().push((url, "spike-scheme".to_owned()));
                         return true;
                     }
                     if navigation_bypass.borrow().iter().any(|allowed| *allowed == url) {
+                        decision_log.borrow_mut().push((url, "bypass".to_owned()));
                         return true;
                     }
                     let attempt = Attempt { raw_url: &url, is_redirect: false, is_main_frame: true };
-                    !matches!(navigation_gate.decide(&attempt), Decision::Refuse(_))
+                    let decision = navigation_gate.decide(&attempt);
+                    let probe = navigation_probes.borrow().iter().any(|prefix| url.starts_with(prefix.as_str()));
+                    let allow = !probe && !matches!(decision, Decision::Refuse(_));
+                    let logged = if probe { format!("{decision:?} (probe, cancelled)") } else { format!("{decision:?}") };
+                    decision_log.borrow_mut().push((url, logged));
+                    allow
                 })
-                .with_https_scheme(true)
-                .build(window)?;
+                .with_https_scheme(true);
+            if options.wry_ipc_handler {
+                // SP-9: wry's own handler, whose `Request::builder().uri(source).unwrap()` is the abort under test.
+                let received = wry_ipc_received.clone();
+                builder = builder.with_ipc_handler(move |_request| received.set(received.get() + 1));
+            }
+            let webview = builder.build(window)?;
 
             let native = webview.webview();
             *hook.native.borrow_mut() = Some(native.clone());
@@ -474,6 +582,63 @@ mod harness {
             unsafe { native.add_FrameNavigationStarting(&frame_handler, &mut token) }
                 .map_err(|error| anyhow::anyhow!("FrameNavigationStarting registration failed: {error}"))?;
 
+            // Native page-to-host logger (P-2's shape): the sender URL is judged against its cap before the body is read.
+            let message_log = ipc_messages.clone();
+            let message_handler = WebMessageReceivedEventHandler::create(Box::new(move |_, args| {
+                let Some(args) = args else { return Ok(()) };
+                let mut raw_source = PWSTR::null();
+                // SAFETY: on success WebView2 hands over a CoTaskMem string that `take_pwstr` frees.
+                let source = match unsafe { args.Source(&mut raw_source) } {
+                    Ok(()) => webview2_com::take_pwstr(raw_source),
+                    Err(_) => String::new(),
+                };
+                let source_length = source.encode_utf16().count();
+                let dropped = source_length > MAX_SOURCE_BYTES;
+                let body = if dropped {
+                    None
+                } else {
+                    let mut raw_body = PWSTR::null();
+                    // SAFETY: as above; a non-string message fails here and is kept as `None`.
+                    match unsafe { args.TryGetWebMessageAsString(&mut raw_body) } {
+                        Ok(()) => Some(webview2_com::take_pwstr(raw_body).chars().take(1024).collect()),
+                        Err(_) => None,
+                    }
+                };
+                message_log.lock().unwrap_or_else(PoisonError::into_inner).push(IpcRecord {
+                    source: source.chars().take(SOURCE_KEPT_CHARS).collect(),
+                    source_length,
+                    body,
+                    dropped,
+                });
+                Ok(())
+            }));
+            let mut message_token = 0i64;
+            // SAFETY: registered on the UI thread that owns the webview.
+            unsafe { native.add_WebMessageReceived(&message_handler, &mut message_token) }
+                .map_err(|error| anyhow::anyhow!("WebMessageReceived registration failed: {error}"))?;
+
+            // Permission requests (SP-8's local-network question): logged, left at the default state.
+            let permission_log = permissions.clone();
+            let permission_handler = PermissionRequestedEventHandler::create(Box::new(move |_, args| {
+                if let Some(args) = args {
+                    let mut kind = COREWEBVIEW2_PERMISSION_KIND::default();
+                    // SAFETY: plain out-parameter on the UI thread.
+                    let _ = unsafe { args.PermissionKind(&mut kind) };
+                    let mut raw = PWSTR::null();
+                    // SAFETY: as for `Source` above.
+                    let uri = match unsafe { args.Uri(&mut raw) } {
+                        Ok(()) => webview2_com::take_pwstr(raw),
+                        Err(_) => String::new(),
+                    };
+                    permission_log.lock().unwrap_or_else(PoisonError::into_inner).push((kind.0, uri));
+                }
+                Ok(())
+            }));
+            let mut permission_token = 0i64;
+            // SAFETY: registered on the UI thread that owns the webview.
+            unsafe { native.add_PermissionRequested(&permission_handler, &mut permission_token) }
+                .map_err(|error| anyhow::anyhow!("PermissionRequested registration failed: {error}"))?;
+
             Ok(Self {
                 webview,
                 native,
@@ -489,9 +654,16 @@ mod harness {
                 navigations,
                 frame_navigations,
                 bypass,
+                decisions,
+                probes,
+                ipc_messages,
+                permissions,
+                wry_ipc_received,
                 hook,
                 deadline: Instant::now(),
-                _fixture: fixture,
+                publisher_did,
+                fixture_a,
+                fixture_b,
             })
         }
 
@@ -503,6 +675,11 @@ mod harness {
             self.frame_navigations.lock().unwrap_or_else(PoisonError::into_inner).clear();
             self.navigations.borrow_mut().clear();
             self.bypass.borrow_mut().clear();
+            self.decisions.borrow_mut().clear();
+            self.probes.borrow_mut().clear();
+            self.ipc_messages.lock().unwrap_or_else(PoisonError::into_inner).clear();
+            self.permissions.lock().unwrap_or_else(PoisonError::into_inner).clear();
+            self.wry_ipc_received.set(0);
             self.hook.posts_on_navigation.set(0);
             self.hook.posted.set(0);
             self.hook.navigation_started.set(false);
@@ -559,12 +736,82 @@ mod harness {
             format!("https://{SPIKE_SCHEME}.localhost{path_and_query}")
         }
 
-        /// Open bundle A as the host does (entry token, then load) with `?<query>`.
+        /// Open bundle A as the host does (entry token, then load) with `?<query>`; remounts A if another mount is live.
         pub fn enter_bundle(&mut self, query: &str) -> anyhow::Result<()> {
+            let a_live = self.mounts.current().is_some_and(|mount| mount.label == self.label_a);
+            if !a_live {
+                let mount = self.prepare_mount(Fixture::A, Admission::Admitted)?;
+                self.mounts.install(mount);
+            }
             let url = format!("{}?{query}", self.entry_url);
             self.gate.expect_entry(url.clone());
             self.webview.load_url(&url)?;
             Ok(())
+        }
+
+        /// A fresh mount of `fixture`, not installed.
+        pub fn prepare_mount(&self, fixture: Fixture, admission: Admission) -> anyhow::Result<Mount> {
+            let path = match fixture {
+                Fixture::A => self.fixture_a.0.clone(),
+                Fixture::B => self.fixture_b.0.clone(),
+            };
+            mount_fixture(path, &self.publisher_did, admission)
+        }
+
+        /// Install `mount` as the live mount and open it as the host does, with `?<query>`.
+        pub fn open_mount(&mut self, mount: Mount, query: &str) -> anyhow::Result<Label> {
+            let label = mount.label.clone();
+            let url = format!("{}?{query}", mount.entry_url);
+            self.mounts.install(mount);
+            self.gate.expect_entry(url.clone());
+            self.webview.load_url(&url)?;
+            Ok(label)
+        }
+
+        /// Host `load_url`, judged by the gate like any navigation.
+        pub fn load_url(&mut self, url: &str) -> anyhow::Result<()> {
+            self.webview.load_url(url)?;
+            Ok(())
+        }
+
+        /// Host `load_html` (`NavigateToString`), judged by the gate like any navigation.
+        pub fn load_html(&mut self, html: &str) -> anyhow::Result<()> {
+            self.webview.load_html(html)?;
+            Ok(())
+        }
+
+        /// The native webview, for DevTools protocol calls.
+        pub fn native(&self) -> &ICoreWebView2 {
+            &self.native
+        }
+
+        /// Snapshot of every `(url, decision)` the navigation callback logged.
+        pub fn decisions(&self) -> Vec<(String, String)> {
+            self.decisions.borrow().clone()
+        }
+
+        pub fn clear_decisions(&self) {
+            self.decisions.borrow_mut().clear();
+        }
+
+        /// Judge, log and then cancel every navigation whose URL starts with `prefix` (until the next spike).
+        pub fn probe_navigation(&self, prefix: &str) {
+            self.probes.borrow_mut().push(prefix.to_owned());
+        }
+
+        /// Page-to-host messages the native logger saw.
+        pub fn ipc_messages(&self) -> Vec<IpcRecord> {
+            self.ipc_messages.lock().unwrap_or_else(PoisonError::into_inner).clone()
+        }
+
+        /// `(permission kind, uri)` of every permission request.
+        pub fn permission_requests(&self) -> Vec<(i32, String)> {
+            self.permissions.lock().unwrap_or_else(PoisonError::into_inner).clone()
+        }
+
+        /// Messages wry's `with_ipc_handler` delivered (only with `HarnessOptions::wry_ipc_handler`).
+        pub fn wry_ipc_received(&self) -> u32 {
+            self.wry_ipc_received.get()
         }
 
         /// Load an external harness page (never judged by the gate).
