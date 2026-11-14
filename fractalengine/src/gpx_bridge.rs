@@ -3402,10 +3402,10 @@ mod tests {
             lifecycle.update();
             assert!(lifecycle.world().resource::<PathEditStatus>().error.as_deref().unwrap().contains("unknown"));
             assert!(lifecycle.world().resource::<PendingPathEdits>().creates.contains_key(&delayed_create), "timeouts report unknown without dropping or replaying accepted requests");
-            lifecycle.world_mut().write_message(DbResult::NodeCreated { id: "old-created".into(), petal_id: "p".into(), name: "Same name".into(), has_asset: false, correlation_id: Some(old_create.clone()), position: [0.0; 3] });
+            lifecycle.world_mut().write_message(DbResult::NodeCreated { id: "old-created".into(), petal_id: "p".into(), name: "Same name".into(), has_asset: false, correlation_id: Some(old_create.clone()), position: [0.0; 3], scale: [1.0; 3] });
             lifecycle.world_mut().write_message(DbResult::RequestFailed { correlation_id: failed_create.clone(), error: "fixture denied".into() });
             lifecycle.world_mut().write_message(DbResult::NodePropertySet { node_id: "track".into(), key: GPX_POINTS_KEY.into(), correlation_id: Some(property_request) });
-            lifecycle.world_mut().write_message(DbResult::NodeCreated { id: "old-import".into(), petal_id: "p".into(), name: "Same name".into(), has_asset: false, correlation_id: Some(old_import.clone()), position: [0.0; 3] });
+            lifecycle.world_mut().write_message(DbResult::NodeCreated { id: "old-import".into(), petal_id: "p".into(), name: "Same name".into(), has_asset: false, correlation_id: Some(old_import.clone()), position: [0.0; 3], scale: [1.0; 3] });
             lifecycle.world_mut().write_message(DbResult::RequestFailed { correlation_id: failed_waypoint, error: "fixture denied".into() });
             lifecycle.update();
             let pending = lifecycle.world().resource::<PendingPathEdits>();
@@ -3420,7 +3420,7 @@ mod tests {
             let new_import = lifecycle.world().resource::<PendingGpxImports>().tracks.keys().next().unwrap().clone();
             assert_ne!(new_import, old_import);
             assert!(matches!(accepted_commands.try_recv(), Ok(DbCommand::CreateNode { correlation_id: Some(ref id), .. }) if *id == new_import));
-            lifecycle.world_mut().write_message(DbResult::NodeCreated { id: "old-import".into(), petal_id: "p".into(), name: "Same name".into(), has_asset: false, correlation_id: Some(old_import), position: [0.0; 3] });
+            lifecycle.world_mut().write_message(DbResult::NodeCreated { id: "old-import".into(), petal_id: "p".into(), name: "Same name".into(), has_asset: false, correlation_id: Some(old_import), position: [0.0; 3], scale: [1.0; 3] });
             lifecycle.update();
             assert!(lifecycle.world().resource::<PendingGpxImports>().tracks.contains_key(&new_import), "a late old birth cannot satisfy a new same-name/Petal import");
             assert!(accepted_commands.try_recv().is_err(), "no properties or child births continue from the stale tuple");

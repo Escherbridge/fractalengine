@@ -10,6 +10,11 @@ use crate::dialogs::ActiveDialog;
 use crate::gis::PathEditorState;
 use crate::navigation_manager::NavigationManager;
 
+/// Echoed scale with any non-finite or non-positive component replaced by 1.0.
+fn sanitized_echo_scale(scale: [f32; 3]) -> [f32; 3] {
+    scale.map(|component| if component.is_finite() && component > 0.0 { component } else { 1.0 })
+}
+
 /// `NodeCreated`: add the node to the tree, flush a pending pen auto-create,
 /// bind an earthwork-region correlation (T3) or a dimension-callout
 /// correlation (HS-P6-CALLOUT), and re-sync the Paths tab.
@@ -21,6 +26,7 @@ pub(super) fn handle_node_created(
     has_asset: bool,
     correlation_id: Option<&str>,
     position: [f32; 3],
+    scale: [f32; 3],
     verse_mgr: &mut VerseManager,
     nav: &NavigationManager,
     ui_mgr: &mut UiManager,
@@ -33,7 +39,7 @@ pub(super) fn handle_node_created(
         verse_mgr.add_node(
             petal_id,
             NodeEntry {
-                transform: Default::default(),
+                transform: Transform::from_scale(Vec3::from(sanitized_echo_scale(scale))),
                 id: id.to_string(),
                 name: name.to_string(),
                 has_asset,

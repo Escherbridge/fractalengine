@@ -737,6 +737,7 @@ pub(super) fn apply_db_results(
                 has_asset,
                 correlation_id,
                 position,
+                scale,
             } => nodes::handle_node_created(
                 id,
                 petal_id,
@@ -744,6 +745,7 @@ pub(super) fn apply_db_results(
                 *has_asset,
                 correlation_id.as_deref().filter(|id| local_role.can_edit() || crate::path_ops::is_host_path_request(id)),
                 *position,
+                *scale,
                 &mut verse_mgr,
                 &nav,
                 &mut ui_mgr,
@@ -1858,7 +1860,7 @@ mod tests {
             "New",
             false,
             None,
-            [0.0; 3],
+            [0.0; 3], [1.0; 3],
             &mut mgr,
             &nav,
             &mut ui,
@@ -1889,7 +1891,7 @@ mod tests {
             "New",
             false,
             None,
-            [0.0; 3],
+            [0.0; 3], [1.0; 3],
             &mut mgr,
             &nav,
             &mut ui,
@@ -1921,7 +1923,7 @@ mod tests {
             "Earthwork raise r2",
             false,
             Some("earthwork:r2"),
-            [3.0, 0.0, 4.0],
+            [3.0, 0.0, 4.0], [1.0; 3],
             &mut mgr,
             &nav,
             &mut ui,
@@ -1992,7 +1994,7 @@ mod tests {
             "Track",
             false,
             Some("pen-track:t1"),
-            [0.0; 3],
+            [0.0; 3], [1.0; 3],
             &mut mgr,
             &nav,
             &mut ui,
@@ -2048,7 +2050,7 @@ mod tests {
             "Track",
             false,
             Some("pen-track:t2"),
-            [0.0; 3],
+            [0.0; 3], [1.0; 3],
             &mut mgr,
             &nav,
             &mut ui,
@@ -2093,7 +2095,7 @@ mod tests {
             "Track",
             false,
             Some("pen-track:t3"),
-            [0.0; 3],
+            [0.0; 3], [0.01; 3],
             &mut mgr,
             &nav,
             &mut ui,
@@ -2104,6 +2106,9 @@ mod tests {
         );
         assert_eq!(path_state.editing_track_id.as_deref(), Some("n2"));
         assert!(!path_state.has_pending_pen_create());
+        let born = mgr.all_nodes().find(|node| node.id == "n2").unwrap();
+        assert_eq!(born.transform.scale, Vec3::splat(0.01), "the echoed petal-map scale reaches the tree entry");
+        assert_eq!(born.position, [0.0; 3], "position stays authoritative");
         let actions = ui.drain_actions();
         assert_eq!(actions.len(), 2, "first anchor then the trailing shape, in order");
         match &actions[0] {
@@ -2123,7 +2128,7 @@ mod tests {
             other => panic!("expected trailing PathAppendShape, got {other:?}"),
         }
         nodes::handle_node_created(
-            "n2", "p1", "Track", false, Some("pen-track:t3"), [0.0; 3],
+            "n2", "p1", "Track", false, Some("pen-track:t3"), [0.0; 3], [1.0; 3],
             &mut mgr, &nav, &mut ui, &mut path_state, &tx,
             &mut crate::actions::terrain_proposal::EarthworkNodeMap::default(),
             &mut crate::actions::dimension_callout::DimensionCalloutMap::default(),
@@ -2131,6 +2136,14 @@ mod tests {
         assert!(ui.drain_actions().is_empty(), "a duplicate birth cannot append the first anchor twice");
         assert_eq!(path_state.editing_track_id.as_deref(), Some("n2"));
         assert_eq!(mgr.all_nodes().filter(|node| node.id == "n2").count(), 1);
+        nodes::handle_node_created(
+            "bad-scale", "p1", "Track", false, None, [0.0; 3], [f32::NAN, 1.0, 1.0],
+            &mut mgr, &nav, &mut ui, &mut path_state, &tx,
+            &mut crate::actions::terrain_proposal::EarthworkNodeMap::default(),
+            &mut crate::actions::dimension_callout::DimensionCalloutMap::default(),
+        );
+        let sanitized = mgr.all_nodes().find(|node| node.id == "bad-scale").unwrap();
+        assert_eq!(sanitized.transform.scale, Vec3::splat(1.0), "a non-finite echo never reaches a Transform");
 
         for changed in 0..4 {
             let mut manager = tree();
@@ -2150,7 +2163,7 @@ mod tests {
             let intent = navigation.intent_revision;
             let mut pending_ui = UiManager::default();
             nodes::handle_node_created(
-                "late-pen", "p1", "Track", false, Some("pen-track:late"), [0.0; 3],
+                "late-pen", "p1", "Track", false, Some("pen-track:late"), [0.0; 3], [1.0; 3],
                 &mut manager, &navigation, &mut pending_ui, &mut editor, &tx,
                 &mut crate::actions::terrain_proposal::EarthworkNodeMap::default(),
                 &mut crate::actions::dimension_callout::DimensionCalloutMap::default(),
@@ -2179,7 +2192,7 @@ mod tests {
             "Foreign",
             false,
             Some("authored-track:9"),
-            [0.0; 3],
+            [0.0; 3], [1.0; 3],
             &mut mgr,
             &nav,
             &mut ui,
@@ -2200,7 +2213,7 @@ mod tests {
         let private_id = format!("{}fixture", crate::path_ops::HOST_PATH_REQUEST_PREFIX);
         path_state.pending_pen_create = Some(pen_stash(&private_id, &nav, &mgr));
         nodes::handle_node_created(
-            "private-node", "p1", "Track", false, Some(&private_id), [0.0; 3],
+            "private-node", "p1", "Track", false, Some(&private_id), [0.0; 3], [1.0; 3],
             &mut mgr, &nav, &mut ui, &mut path_state, &tx,
             &mut crate::actions::terrain_proposal::EarthworkNodeMap::default(),
             &mut crate::actions::dimension_callout::DimensionCalloutMap::default(),
@@ -2210,7 +2223,7 @@ mod tests {
         mgr.invalidate_scene_access(&nav);
         path_state.pending_pen_create = Some(pen_stash("pen-track:retired", &nav, &mgr));
         nodes::handle_node_created(
-            "retired-node", "p1", "Track", false, Some("pen-track:retired"), [0.0; 3],
+            "retired-node", "p1", "Track", false, Some("pen-track:retired"), [0.0; 3], [1.0; 3],
             &mut mgr, &nav, &mut ui, &mut path_state, &tx,
             &mut crate::actions::terrain_proposal::EarthworkNodeMap::default(),
             &mut crate::actions::dimension_callout::DimensionCalloutMap::default(),
@@ -2232,7 +2245,7 @@ mod tests {
             "Imported",
             false,
             None,
-            [0.0; 3],
+            [0.0; 3], [1.0; 3],
             &mut mgr,
             &nav,
             &mut ui,
