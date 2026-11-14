@@ -603,6 +603,8 @@ fn dispatch_selections(
             crate::actions::node::GuiSend::Refused(message) => {
                 state.selection_error(format!("Stamp was not promoted: {message}"))
             }
+            crate::actions::node::GuiSend::Busy => state
+                .selection_error("Database queue is busy; stamp was not promoted. Select it again."),
             crate::actions::node::GuiSend::Closed => state
                 .selection_error("Database connection closed; stamp selection was not promoted"),
         }

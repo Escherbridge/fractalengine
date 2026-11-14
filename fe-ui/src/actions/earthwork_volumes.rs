@@ -647,7 +647,7 @@ impl VolumePersistence {
                 if now < write.at {
                     return;
                 }
-                // Scene write door: Waiting/Sent are owned by the door queue (its full-channel retry replaces the local backoff).
+                // Scene write door: a Waiting write is owned by the door queue; Busy keeps this unsent write for the local backoff.
                 match crate::actions::node::try_submit_scene_write_on(
                     db,
                     DbCommand::CommitCheckedEditorBatch {
@@ -669,6 +669,13 @@ impl VolumePersistence {
                         );
                         self.write = None;
                         self.next_read = now + RETRY_READ;
+                    }
+                    crate::actions::node::GuiSend::Busy => {
+                        write.at = now + 0.5;
+                        self.status.insert(
+                            write.demand.node.clone(),
+                            "Volume save queued: DB channel is full; no write accepted yet.",
+                        );
                     }
                     crate::actions::node::GuiSend::Closed => {
                         self.status.insert(

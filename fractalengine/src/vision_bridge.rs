@@ -2131,7 +2131,7 @@ mod tests {
         let (posed, _, _) = h.main_state();
         assert!((posed.translation - expected.translation).length() < 1e-4);
         let first_applied = observed.lock().unwrap().last().copied().unwrap();
-        assert_eq!(first_applied.0, (DEFAULT_FOV_DEG as f32).to_radians());
+        assert_eq!(first_applied.0, before.2, "an orbit pose keeps the camera's own fov");
         assert_eq!(first_applied.1, first_applied.2,
             "first applied EndPass uses the projection actually cached for rendering");
         assert!((first_applied.3 - expected.translation).length() < 1e-4);

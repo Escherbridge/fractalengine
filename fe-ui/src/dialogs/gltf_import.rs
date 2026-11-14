@@ -49,9 +49,8 @@ pub(crate) fn submit_import(
             ui_mgr.gltf_import_request.error = Some(reason);
             false
         }
-        GuiSend::Closed => {
-            // The door reports full and disconnected alike; the channel tells them apart for the toast.
-            let why = if db_tx.is_full() { "database busy" } else { "not connected" };
+        unsent @ (GuiSend::Busy | GuiSend::Closed) => {
+            let why = if unsent == GuiSend::Busy { "database busy" } else { "not connected" };
             bevy::log::warn!("Database queue {why}; glTF import was not sent");
             ui_mgr.show_error(format!("Couldn't import the model: {why}; action was not sent"), now);
             false

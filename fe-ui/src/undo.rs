@@ -574,6 +574,9 @@ impl UndoState {
         ) {
             crate::actions::node::GuiSend::Sent | crate::actions::node::GuiSend::Waiting => {}
             crate::actions::node::GuiSend::Refused(message) => return Err(message),
+            crate::actions::node::GuiSend::Busy => {
+                return Err("Database queue is busy; edit was not queued. Try again.".into())
+            }
             crate::actions::node::GuiSend::Closed => {
                 return Err("Database connection closed; edit was not queued".into())
             }
@@ -884,6 +887,9 @@ impl UndoState {
         ) {
             crate::actions::node::GuiSend::Sent | crate::actions::node::GuiSend::Waiting => {}
             crate::actions::node::GuiSend::Refused(message) => return Err(message),
+            crate::actions::node::GuiSend::Busy => {
+                return Err("Database queue is busy; point edit was not queued. Try again.".into())
+            }
             crate::actions::node::GuiSend::Closed => {
                 return Err("Database connection closed; point edit was not queued".into())
             }

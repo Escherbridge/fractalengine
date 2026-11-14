@@ -399,7 +399,7 @@ pub(crate) fn apply_overrides(
         correlation_id: request_id.clone(),
     };
     match super::node::submit_scene_write(db, command) {
-        super::node::GuiSend::Closed => {
+        super::node::GuiSend::Busy | super::node::GuiSend::Closed => {
             return Err("Database connection closed; stamp save was not queued".into());
         }
         super::node::GuiSend::Refused(message) => return Err(message),

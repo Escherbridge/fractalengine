@@ -581,3 +581,26 @@ keys stay (`STRUCTURAL_PROPERTY_KEYS` / `_PREFIXES`: parent edges, gpx/path/stam
 definitions, earthwork identity, `view.*` — group membership changes go through
 the Groups commands, never a raw property delete). Extend those lists when a new
 engine object kind stores its definition in `properties`.
+
+## §scene-write-door — the one GUI entry for scene writes (`node.rs`)
+
+Every GUI scene write goes through `submit_scene_write` / `try_submit_scene_write[_on|_through]`
+so a bound scene hook judges it before the DB thread sees it. `GuiSend` tells the caller what
+happened to that one write, and each answer has one owner:
+
+| Answer | Meaning | Who owns the write next |
+|---|---|---|
+| `Sent` | on the DB channel | the DB reply |
+| `Waiting` | the gate is still answering (or an earlier write is queued ahead) | the door queue; a late refusal or closed channel arrives as `RequestFailed` on the write's correlation id |
+| `Refused` | a hook said no; the advisory is already queued | nobody — never sent |
+| `Busy` | non-blocking submit, channel full | the caller — never sent, nothing queued |
+| `Closed` | channel disconnected | nobody — never sent |
+
+`Busy` and `Closed` must stay distinct (2026-11-13, CI regression after `1f6e7ca5`): `Closed`
+is terminal and callers drop their pending state on it, while a full channel is transient.
+Collapsing them made the earthwork volume save discard a write it should have retried and made
+selection edits report a closed connection. The door does not queue a `Busy` write itself:
+an owner such as `EditorBatchState` promises "an unsent write never becomes pending", and a
+hidden retry would break that. Only writes already queued for a gate answer are retried by the
+frame drain (`Queued::Admitted`). Blocking submits never return `Busy`; their match arms list
+it only for exhaustiveness.

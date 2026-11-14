@@ -96,7 +96,7 @@ fn enqueue_track_delete(db_tx: &DbCommandSender, track_node_id: &str) -> Result<
     match submit_scene_write(db_tx, command) {
         GuiSend::Sent | GuiSend::Waiting => Ok(()),
         GuiSend::Refused(_) => Err("Track delete was refused by an extension"),
-        GuiSend::Closed => Err("Database channel closed; track was not deleted"),
+        GuiSend::Busy | GuiSend::Closed => Err("Database channel closed; track was not deleted"),
     }
 }
 
@@ -974,7 +974,7 @@ fn through_scene_door(
     match try_submit_scene_write(sender, command) {
         GuiSend::Sent | GuiSend::Waiting => Ok(()),
         GuiSend::Refused(message) => Err(message),
-        GuiSend::Closed => Err(unavailable.to_string()),
+        GuiSend::Busy | GuiSend::Closed => Err(unavailable.to_string()),
     }
 }
 

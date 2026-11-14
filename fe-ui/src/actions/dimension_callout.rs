@@ -348,7 +348,7 @@ pub(crate) fn save_measure_as_callout(
         correlation_id: Some(format!("{CALLOUT_CORRELATION_PREFIX}{callout_id}")),
     };
     match super::node::submit_scene_write(db_sender, command) {
-        super::node::GuiSend::Closed => {
+        super::node::GuiSend::Busy | super::node::GuiSend::Closed => {
             bevy::log::warn!("db_sender channel closed — dimension callout node not created");
             map.take_pending(&callout_id);
         }

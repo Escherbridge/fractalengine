@@ -762,6 +762,12 @@ impl EditorBatchState {
         ) {
             crate::actions::node::GuiSend::Sent | crate::actions::node::GuiSend::Waiting => {}
             crate::actions::node::GuiSend::Refused(message) => return Err(message),
+            crate::actions::node::GuiSend::Busy => {
+                return Err(
+                    "Database queue is busy; no selection edit was queued. Apply again when ready."
+                        .into(),
+                )
+            }
             crate::actions::node::GuiSend::Closed => {
                 return Err("Database connection closed; no selection edit was queued".into())
             }

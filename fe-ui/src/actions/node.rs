@@ -27,6 +27,8 @@ pub enum GuiSend {
     Waiting,
     /// The gate refused; the advisory text is queued for the player.
     Refused(String),
+    /// A non-blocking submit found the DB channel full: not sent, nothing queued; the caller may submit again.
+    Busy,
     /// The DB channel is closed.
     Closed,
 }
@@ -140,12 +142,14 @@ fn submit_with(
 }
 
 fn send_plain(sender: &Sender<DbCommand>, command: DbCommand, blocking: bool) -> GuiSend {
-    let sent = if blocking {
-        sender.send(command).is_ok()
-    } else {
-        sender.try_send(command).is_ok()
-    };
-    if sent { GuiSend::Sent } else { GuiSend::Closed }
+    if blocking {
+        return if sender.send(command).is_ok() { GuiSend::Sent } else { GuiSend::Closed };
+    }
+    match sender.try_send(command) {
+        Ok(()) => GuiSend::Sent,
+        Err(TrySendError::Full(_)) => GuiSend::Busy,
+        Err(TrySendError::Disconnected(_)) => GuiSend::Closed,
+    }
 }
 
 /// Send an admitted write at once, or queue the refusal advisory (the caller also gets it back).

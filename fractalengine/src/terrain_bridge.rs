@@ -3195,8 +3195,8 @@ mod tests {
     /// (same fixture shape as `fe-terrain`'s
     /// `container_backed_source_serves_tiles_from_every_chunk`, just sealed);
     /// queuing `HexonOp::InstallFromRegistry` and driving it through
-    /// `drain_hexon_ops` fetches the header, fetches every chunk (reporting
-    /// progress 0/3 → 3/3), reassembles the sealed container and installs it
+    /// `drain_hexon_ops` fetches the whole package (`fetch_hexon`, progress
+    /// 0/1 → 1/1) and installs the sealed container
     /// — proven by reading a real tile back through the registry afterward,
     /// not just checking the result enum.
     #[test]
@@ -3266,8 +3266,8 @@ mod tests {
             .collect();
         assert_eq!(
             progress,
-            vec![(0, 3), (1, 3), (2, 3), (3, 3)],
-            "progress must run header (0/3) through every chunk in order: {outcomes:?}"
+            vec![(0, 1), (1, 1)],
+            "production installs via one whole-package `fetch_hexon`: progress 0/1 then 1/1: {outcomes:?}"
         );
         match outcomes.last() {
             Some(HexonAssembleOutcome::RegistryInstalled {
