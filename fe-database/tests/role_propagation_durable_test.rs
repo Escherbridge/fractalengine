@@ -324,7 +324,8 @@ fn a_non_owner_creating_a_petal_gets_no_implicit_owner_row() {
     assert_eq!(bounded.grants.len(),256,"the grant record is truncated to MAX_PEERS");
     for newest in [1002u64,1001,1000] {assert!(bounded.grants.iter().any(|g|g.hlc==newest),"numeric newest {newest} survives the bound");}
     assert!(bounded.grants.windows(2).all(|pair|pair[0].hlc>=pair[1].hlc),"grants are listed newest first");
-    let everything=rt.block_on(fe_database::role_grants::load_scope_statements(&db,&crowded_scope,100_000)).expect("unbounded read");
+    let everything=rt.block_on(fe_database::role_grants::load_scope_statements(&db,&crowded_scope,usize::MAX)).expect("capped read");
+    assert!(everything.len()>=301&&everything.len()<=fe_database::role_grants::MAX_SCOPE_STATEMENTS,"a huge caller limit is capped, and every seeded row fits under the cap");
     let mut numeric_newest:Vec<u64>=everything.iter().map(|stmt|stmt.hlc).collect();
     numeric_newest.sort_unstable_by(|a,b|b.cmp(a));
     let five=rt.block_on(fe_database::role_grants::load_scope_statements(&db,&crowded_scope,5)).expect("limited read");

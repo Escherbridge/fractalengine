@@ -188,20 +188,32 @@ pub(crate) fn describe(
     }
 }
 
-/// "Your role" line, only when the card's entity is the deepest active scope (never a wrong role).
-pub(crate) fn role_line(info: &HierarchyInfo, nav: &NavigationManager, local_role: &LocalUserRole) -> Option<String> {
+/// True when the card's entity is the deepest active scope, the only scope `LocalUserRole` is resolved for.
+pub(crate) fn card_is_active_scope(info: &HierarchyInfo, nav: &NavigationManager) -> bool {
     let card_scope = match info.kind {
         EntitySettingsType::Verse => fe_database::build_scope(&info.verse_id, None, None),
         EntitySettingsType::Fractal => fe_database::build_scope(&info.verse_id, Some(info.id.as_str()), None),
         _ => fe_database::build_scope(&info.verse_id, info.fractal_id.as_deref(), Some(info.id.as_str())),
     };
-    (nav.active_scope().as_deref() == Some(card_scope.as_str()))
-        .then(|| format!("Your role: {}", crate::notice::role_label(local_role.role)))
+    nav.active_scope().as_deref() == Some(card_scope.as_str())
 }
 
 /// Denial copy when the local role cannot open Settings; `None` when allowed.
 pub(crate) fn settings_denial(role: &LocalUserRole) -> Option<String> {
     (!role.can_edit()).then(|| widgets::role_denial_reason(role, "Editor", None))
+}
+
+/// Settings denial for a card: a card outside the active scope is denied (its role is unknown), else the role gate.
+pub(crate) fn card_settings_denial(info: &HierarchyInfo, scope_is_active: bool, role: &LocalUserRole) -> Option<String> {
+    if !scope_is_active {
+        let level = match info.kind {
+            EntitySettingsType::Verse => "verse",
+            EntitySettingsType::Fractal => "fractal",
+            _ => "petal",
+        };
+        return Some(format!("Open this {level} to use its settings"));
+    }
+    settings_denial(role)
 }
 
 /// Info card for a verse, fractal or petal; a Node renders nothing (the node form owns it).
@@ -230,11 +242,12 @@ pub fn render_hierarchy_info(
     for count in &info.counts {
         ui.label(count);
     }
-    if let Some(line) = role_line(&info, nav, local_role) {
-        ui.label(line);
+    let scope_is_active = card_is_active_scope(&info, nav);
+    if scope_is_active {
+        ui.label(format!("Your role: {}", crate::notice::role_label(local_role.role)));
     }
     ui.add_space(4.0);
-    let denial = settings_denial(local_role).unwrap_or_default();
+    let denial = card_settings_denial(&info, scope_is_active, local_role).unwrap_or_default();
     let opened = widgets::role_gated(
         ui,
         denial.is_empty(),
@@ -334,12 +347,18 @@ mod tests {
         assert_eq!(settings_denial(&viewer).as_deref(), Some("Editor role needed \u{2014} you are Viewer"));
         assert_eq!(settings_denial(&LocalUserRole { role: Some(RoleLevel::Editor) }), None);
 
-        // "Your role" shows only on the card of the deepest active scope (nav is at petal p2 here).
+        // Role line and Settings follow only the card of the deepest active scope (nav is at petal p2 here).
         let editor = LocalUserRole { role: Some(RoleLevel::Editor) };
         let verse_card = describe(&hierarchy, (0, 0), &InspectedEntity::Verse { id: "v1".into() }).unwrap();
         let petal_card = describe(&hierarchy, (0, 0), &InspectedEntity::Petal { id: "p2".into() }).unwrap();
-        assert_eq!(role_line(&verse_card, &nav, &editor), None);
-        assert_eq!(role_line(&petal_card, &nav, &editor).as_deref(), Some("Your role: Editor"));
+        assert!(!card_is_active_scope(&verse_card, &nav));
+        assert!(card_is_active_scope(&petal_card, &nav));
+        assert_eq!(
+            card_settings_denial(&verse_card, card_is_active_scope(&verse_card, &nav), &editor).as_deref(),
+            Some("Open this verse to use its settings"),
+            "a petal-scope Editor role never opens the verse's Settings"
+        );
+        assert_eq!(card_settings_denial(&petal_card, card_is_active_scope(&petal_card, &nav), &editor), None);
 
         // The card renders for a verse without opening a dialog on its own.
         let mut ui_mgr = UiManager::default();

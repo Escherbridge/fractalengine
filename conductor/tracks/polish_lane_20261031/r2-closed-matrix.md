@@ -95,7 +95,7 @@ OUT per spec (D-64 and the spec OUT list): peer blob fetch, T28, S-1, D-23, CANO
 | DW-01 | open | `fe-ui/src/panels/gis_panel.rs:500` | 2491704; one message serves never-run and empty |
 | DW-02 | open | `fe-ui/src/panels/gis_panel.rs:261` | 2491704; Bbox label, no Ctrl+Enter or scope chip |
 | DW-03 | closed | `fe-ui/src/panels/path_editor_card.rs:151` | 0d51987; default name |
-| DW-04 | closed | `fe-ui/src/panels/egress_card.rs:250` | 0d51987; TTL validated; mint is OUT (D-64); mint OUT (D-64, EGR-MINT) |
+| DW-04 | closed | `fe-ui/src/panels/egress_card.rs:250` | 0d51987; TTL validated; mint OUT (D-64, EGR-MINT) |
 
 ## Tally
 
@@ -107,7 +107,7 @@ Exact anchor and one-line fix per open id (fix text from the R2 suggestion, trim
 
 - X-06 `fe-ui/src/panels/terrain_tools_panel.rs:316`: proposal delete is single click while other sites use confirm_button. Fix: Extract the inspector revoke pattern into `widgets::confirm_button(ui, id, label, confirm_label)` and use it at every site. Owner: `panels/widgets.rs` + call sites 
 - X-12 `fe-ui/src/panels/gis_panel.rs:369`: BG_SAVE on a non-save action; BG_BUTTON_ACTIVE still the selected fill at inspector.rs:226. Fix: Use one `tab_fill(active)` = `mode_button_fill` everywhere. Make primary buttons neutral-bright. Add `STATUS_NORMAL` grey. Owner: `theme.rs`, `panels/toolbar.rs` 
-- X-13 `fe-ui/src/dialogs/context_menu.rs:686`: Debug output in menu headers; also terrain_tools_panel.rs:296. Fix: Show names (find_petal_name etc.). Put ids behind a copyable "ID" affordance. Use 1-based indices, human dates ("expires in 6 d") and a humanized panel name table. Owner:
+- X-13 `fe-ui/src/dialogs/context_menu.rs:686`: Debug output in menu headers; also terrain_tools_panel.rs:296. Fix: Show names (find_petal_name etc.). Put ids behind a copyable "ID" affordance. Use 1-based indices, human dates ("expires in 6 d") and a humanized panel name table. Owner: listed files
 - X-14 `fe-ui/src/dialogs/context_menu.rs:146`: tombstone jargon; also volume_report_panel.rs:840 integration tolerance. Fix: Rewrite in plain language ("Max mesh instances before spawning pauses", "Deleted for everyone (syncs to peers)"). Owner: listed files 
 - X-15 `fe-ui/src/dialogs/context_menu.rs:168`: track wording kept in labels. Fix: Do a single terminology sweep: path, map, node, point, "glTF model". Owner: listed files 
 - X-16 `fe-ui/src/panels/asset_card.rs:92`: unclipped path label. Fix: Sweep `widgets::clipped_value` (+ tooltip) onto every user-content label. Owner: listed files 

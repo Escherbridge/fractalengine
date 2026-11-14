@@ -1579,7 +1579,7 @@ fn inspector_api_access_section(
         });
 }
 
-const TOKEN_REVOKE_SEND_ERROR: &str = "Could not send the revoke request. Reopen the Inspector and try again.";
+const TOKEN_REVOKE_SEND_ERROR: &str = "Could not send the revoke request: the database is not responding. Restart FractalEngine, then revoke again.";
 
 /// Temp-data key holding the visible revoke failure message.
 fn token_revoke_error_id() -> egui::Id {

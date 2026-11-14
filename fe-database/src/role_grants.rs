@@ -480,15 +480,20 @@ pub fn held_at_write_in(
     fe_policy::held_at(view_owner, admitted.iter(), author, scope, level, hlc)
 }
 
-/// Up to `limit` ADMITTED statements at exactly `scope`, numerically newest hlc first (read-only; the Access panel).
+/// Hard ceiling on one [`load_scope_statements`] read, whatever limit the caller asks for.
+pub const MAX_SCOPE_STATEMENTS: usize = 1024;
+
+/// Up to `limit` (capped at [`MAX_SCOPE_STATEMENTS`]) ADMITTED statements at exactly `scope`, numerically newest hlc first (read-only; the Access panel).
 pub async fn load_scope_statements(
     db: &Db,
     scope: &str,
     limit: usize,
 ) -> anyhow::Result<Vec<RoleStatement>> {
+    let limit = limit.min(MAX_SCOPE_STATEMENTS);
     // hlc is a decimal STRING without leading zeros: length then text orders it numerically.
     let sql = format!(
-        "SELECT *, string::len(hlc) AS hlc_digits FROM role_grant WHERE scope = $s          ORDER BY hlc_digits DESC, hlc DESC LIMIT {limit}"
+        "SELECT *, string::len(hlc) AS hlc_digits FROM role_grant WHERE scope = $s \
+         ORDER BY hlc_digits DESC, hlc DESC LIMIT {limit}"
     );
     select_statements(db, &sql, GRANT_TABLE, vec![("s", scope.to_string())]).await
 }
