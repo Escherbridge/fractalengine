@@ -29,6 +29,8 @@ pub mod input;
 pub mod iot;
 pub mod limits;
 pub mod mcp;
+pub mod metrics;
+pub mod network_ops;
 pub mod node_history;
 pub mod operator_gate;
 pub mod portal_bundles;
@@ -38,6 +40,7 @@ pub mod qa_invitation;
 pub mod qa_portal;
 pub mod qa_scene_asset;
 pub mod query_guard;
+pub mod relay_advertise;
 pub mod render_distance;
 pub mod rest;
 pub mod screenshot;
@@ -49,6 +52,7 @@ mod terrain_credential;
 pub mod timeseries_query;
 pub mod types;
 pub mod upload;
+pub mod usage_middleware;
 pub mod visibility;
 pub mod vision;
 pub mod ws;
@@ -131,6 +135,8 @@ pub struct ApiConfig {
     /// `asset.import` hook seam layered onto the router as a request extension (the upload route reads it);
     /// `None` (relay, harness tests) keeps non-GLB uploads refused (AGENTS.md §import-hooks).
     pub import_hooks: Option<import_hooks::ImportHooksHandle>,
+    /// Usage sink, opt-in metrics listener and relay advertisement signer; `Default` turns all off (AGENTS.md §usage-metering).
+    pub network_ops: network_ops::NetworkOps,
 }
 
 /// Read `FE_API_UPLOAD_QUOTA_BYTES` once at startup; unset or unparseable
@@ -257,6 +263,13 @@ async fn run_server(config: ApiConfig, stop: fe_runtime::service_lifecycle::Stop
         Some(handle) => router.layer(axum::Extension(handle)),
         None => router,
     };
+    // Relay advertise/withdraw handlers read the advertisement signer from this extension.
+    let router = router.layer(axum::Extension(config.network_ops.clone()));
+    // Outermost, so every route (and the auth layer's caller slot) sits inside one usage event.
+    let router = router.layer(axum::middleware::from_fn_with_state(
+        config.network_ops.usage_sink_with_metrics(),
+        usage_middleware::record_usage,
+    ));
 
     let listener = tokio::net::TcpListener::bind(&config.bind_addr)
         .await
@@ -264,6 +277,13 @@ async fn run_server(config: ApiConfig, stop: fe_runtime::service_lifecycle::Stop
 
     let local_addr = listener.local_addr().unwrap();
     tracing::info!("API server listening on {local_addr}");
+    if let (Some(bind), Some(registry)) = (&config.network_ops.metrics_bind, &config.network_ops.metrics) {
+        let metrics_stop = stop.clone();
+        let stopped = async move { metrics_stop.cancelled().await };
+        if let Err(error) = metrics::spawn_metrics_listener(bind, registry.clone(), stopped).await {
+            tracing::warn!(%error, bind = %bind, "metrics listener failed to bind; /metrics is off");
+        }
+    }
     if let Some(listening_tx) = config.listening_tx {
         if listening_tx.send(local_addr).is_err() {
             tracing::warn!("API listening notification had no receiver");

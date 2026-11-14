@@ -393,6 +393,7 @@ pub fn build_router_with_hosts(state: Arc<ApiState>, hosts: ApiHosts) -> Router 
         // Local kill switch for the QA lane (`{"engage": bool}` only), behind the same portal-fixture Owner+input gate
         // as `action` (steer 2026-11-09 02:15; handler `qa_portal::portal_killswitch`).
         .route("/api/v1/debug/portal/killswitch", post(crate::qa_portal::portal_killswitch).layer(axum::extract::DefaultBodyLimit::max(64)))
+        .route("/api/v1/debug/portal/ipc-post", post(crate::qa_portal::portal_ipc_post).layer(axum::extract::DefaultBodyLimit::max(256)))
         .route("/api/v1/debug/portal-fixture/observe", get(crate::qa_portal::observe))
         .route("/api/v1/debug/portal-fixture/action", post(crate::qa_portal::action).layer(axum::extract::DefaultBodyLimit::max(1024)))
         .route("/api/v1/debug/portal-fixture/capture", post(crate::qa_portal::capture).layer(axum::extract::DefaultBodyLimit::max(1024)))
@@ -509,6 +510,9 @@ pub fn build_router_with_hosts(state: Arc<ApiState>, hosts: ApiHosts) -> Router 
             "/api/v1/sim/inject-fault",
             post(crate::sim::post_inject_fault),
         )
+        // Relay advertisement (Manager+ on the verse; refused without a configured signer)
+        .route("/api/v1/verses/{verse_id}/relays", post(crate::relay_advertise::post_relay))
+        .route("/api/v1/verses/{verse_id}/relays/{relay_id}", delete(crate::relay_advertise::delete_relay))
         // MCP: 16 MiB body cap for every method + bounded concurrency
         // (DEC-C21; large GLBs use REST multipart — §asset-ingest).
         .route(

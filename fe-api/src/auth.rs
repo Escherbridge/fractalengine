@@ -32,6 +32,10 @@ pub async fn auth_middleware(
     // QA-0161: the durable credential read is a per-request DB read; debug timing splits it out.
     tracing::debug!(authenticate_ms = started.elapsed().as_secs_f64() * 1000.0, path = %req.uri().path(), "API credential check timing");
 
+    // Name the verified caller on the outer usage event; a second fill keeps the first (OnceLock).
+    if let Some(slot) = req.extensions().get::<crate::usage_middleware::UsageCallerSlot>() {
+        let _ = slot.0.set((claims.sub.clone(), claims.scope.clone()));
+    }
     req.extensions_mut().insert(claims);
     Ok(next.run(req).await)
 }
