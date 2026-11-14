@@ -7,7 +7,8 @@
 
 use fe_database::{spawn_db_thread_with_sync_and_lifecycle, BlobStoreHandle, LifecycleEventSender};
 use fe_runtime::blob_store::mock::MockBlobStore;
-use fe_runtime::messages::{CallerAuth, DbCommand, DbResult, LifecycleEvent};
+use fe_runtime::messages::{CallerAuth, DbCommand, DbResult, LifecycleEvent, SceneChange};
+use std::cell::RefCell;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -34,6 +35,7 @@ struct Harness {
     cmd_tx: Option<crossbeam::channel::Sender<DbCommand>>,
     res_rx: crossbeam::channel::Receiver<DbResult>,
     life_rx: crossbeam::channel::Receiver<LifecycleEvent>,
+    scene_rx: RefCell<tokio::sync::broadcast::Receiver<SceneChange>>,
     handle: Option<std::thread::JoinHandle<()>>,
     _dir: tempfile::TempDir,
 }
@@ -44,6 +46,7 @@ impl Harness {
         let (res_tx, res_rx) = crossbeam::channel::bounded::<DbResult>(64);
         let (life_tx, life_rx) = crossbeam::channel::bounded::<LifecycleEvent>(64);
         let life_tx: LifecycleEventSender = life_tx;
+        let (scene_tx, scene_rx) = tokio::sync::broadcast::channel::<SceneChange>(1024);
         let blob_store: BlobStoreHandle = Arc::new(MockBlobStore::new());
         let dir = tempfile::tempdir().expect("temp dir");
         let db_path = dir.path().join("fe.db").to_string_lossy().to_string();
@@ -55,7 +58,7 @@ impl Harness {
             None,
             None,
             None,
-            None,
+            Some(scene_tx),
             Some(db_path),
             Some(life_tx),
         )
@@ -65,6 +68,7 @@ impl Harness {
             cmd_tx: Some(cmd_tx),
             res_rx,
             life_rx,
+            scene_rx: RefCell::new(scene_rx),
             handle: Some(handle),
             _dir: dir,
         };
@@ -90,6 +94,19 @@ impl Harness {
     }
     fn drain_life(&self) {
         while self.life_rx.try_recv().is_ok() {}
+    }
+    /// Every scene change broadcast so far; call after a reply that follows the sends.
+    fn drain_scene(&self) -> Vec<SceneChange> {
+        use tokio::sync::broadcast::error::TryRecvError;
+        let mut receiver = self.scene_rx.borrow_mut();
+        let mut changes = Vec::new();
+        loop {
+            match receiver.try_recv() {
+                Ok(change) => changes.push(change),
+                Err(TryRecvError::Lagged(_)) => continue,
+                Err(TryRecvError::Empty | TryRecvError::Closed) => return changes,
+            }
+        }
     }
 
     fn create_hierarchy(&self) -> String {
@@ -812,6 +829,21 @@ fn stamp_translate_is_rejected_but_rotation_and_scale_persist() {
     };
     let (origin, _, _) = transform(&stamp);
     let properties_before = h.get_properties(&stamp);
+    // `stamp.override.*` scene changes for one node, as (key, value) in send order.
+    let override_changes = |changes: &[SceneChange], node: &str| -> Vec<(String, serde_json::Value)> {
+        changes
+            .iter()
+            .filter_map(|change| match change {
+                SceneChange::PropertyChanged {
+                    node_id, key, value, ..
+                } if node_id == node && key.starts_with("stamp.override.") => {
+                    Some((key.clone(), value.clone()))
+                }
+                _ => None,
+            })
+            .collect()
+    };
+    h.drain_scene();
 
     // Moving it is refused before the op-log commit: the row is unchanged.
     h.send(DbCommand::UpdateNodeTransform {
@@ -821,6 +853,11 @@ fn stamp_translate_is_rejected_but_rotation_and_scale_persist() {
         scale: [3.0, 3.0, 3.0],
     });
     let (position, rotation, scale) = transform(&stamp);
+    // The read-back reply follows every send of the refused update (one DB thread).
+    assert!(
+        override_changes(&h.drain_scene(), &stamp).is_empty(),
+        "a refused move fans out no stamp override"
+    );
     assert_eq!(position, origin, "a stamp must not translate");
     assert_eq!(rotation, [0.0, 0.0, 0.0], "a rejected move writes nothing");
     assert_eq!(scale, [1.0, 1.0, 1.0]);
@@ -860,9 +897,53 @@ fn stamp_translate_is_rejected_but_rotation_and_scale_persist() {
     for (got, want) in quaternion.iter().zip(expected) {
         assert!((got - want).abs() < 1e-5, "rotation override {quaternion:?}");
     }
+    // ...and fanned out live: one NodeTransform and one change per override key,
+    // each carrying exactly the stored value (the renderer must not revert).
+    let changes = h.drain_scene();
+    assert!(
+        changes.iter().any(|change| matches!(
+            change,
+            SceneChange::NodeTransform { node_id, .. } if node_id == &stamp
+        )),
+        "the accepted transform is broadcast"
+    );
+    let fanned = override_changes(&changes, &stamp);
+    assert_eq!(fanned.len(), 2, "one change per override key: {fanned:?}");
+    for key in ["stamp.override.scale", "stamp.override.rotation"] {
+        let matching: Vec<_> = fanned.iter().filter(|(k, _)| k == key).collect();
+        assert_eq!(matching.len(), 1, "exactly one {key} change: {fanned:?}");
+        assert_eq!(matching[0].1, properties[key], "{key} change equals the stored override");
+    }
 
-    // A plain node still moves freely.
+    // The CommitNodeMutation door (API/MCP) fans out the same two overrides.
+    h.send(DbCommand::CommitNodeMutation {
+        node_id: stamp.clone(),
+        mutation: fe_runtime::messages::NodeMutation::FullTransform {
+            position: origin,
+            rotation: [0.0, 0.5, 0.0],
+            scale: [1.5, 1.5, 1.5],
+        },
+        actor_did: "did:key:z6MkEditor".into(),
+        grant: fe_runtime::node_history::NodeAccessGrant::Local,
+        correlation_id: Some("stamp-commit".into()),
+    });
+    match h.recv() {
+        DbResult::NodeMutationCommitted { .. } => {}
+        o => panic!("expected NodeMutationCommitted, got {o:?}"),
+    }
+    let properties = h.get_properties(&stamp);
+    let fanned = override_changes(&h.drain_scene(), &stamp);
+    assert_eq!(fanned.len(), 2, "commit door: one change per key: {fanned:?}");
+    for key in ["stamp.override.scale", "stamp.override.rotation"] {
+        let matching: Vec<_> = fanned.iter().filter(|(k, _)| k == key).collect();
+        assert_eq!(matching.len(), 1, "commit door: exactly one {key} change");
+        assert_eq!(matching[0].1, properties[key], "commit door: {key} equals stored");
+    }
+    assert_eq!(properties["stamp.override.scale"], serde_json::json!([1.5, 1.5, 1.5]));
+
+    // A plain node still moves freely, and fans out no stamp override.
     let node = h.create_node(&petal, "plain");
+    h.drain_scene();
     h.send(DbCommand::UpdateNodeTransform {
         node_id: node.clone(),
         position: [4.0, 0.0, 2.0],
@@ -870,6 +951,33 @@ fn stamp_translate_is_rejected_but_rotation_and_scale_persist() {
         scale: [1.0; 3],
     });
     assert_eq!(transform(&node).0, [4.0, 0.0, 2.0]);
+    h.send(DbCommand::CommitNodeMutation {
+        node_id: node.clone(),
+        mutation: fe_runtime::messages::NodeMutation::FullTransform {
+            position: [5.0, 0.0, 2.0],
+            rotation: [0.0, 0.5, 0.0],
+            scale: [2.0; 3],
+        },
+        actor_did: "did:key:z6MkEditor".into(),
+        grant: fe_runtime::node_history::NodeAccessGrant::Local,
+        correlation_id: Some("plain-commit".into()),
+    });
+    match h.recv() {
+        DbResult::NodeMutationCommitted { .. } => {}
+        o => panic!("expected NodeMutationCommitted, got {o:?}"),
+    }
+    let changes = h.drain_scene();
+    assert!(
+        changes.iter().any(|change| matches!(
+            change,
+            SceneChange::NodeTransform { node_id, .. } if node_id == &node
+        )),
+        "the plain node's transform is still broadcast"
+    );
+    assert!(
+        override_changes(&changes, &node).is_empty(),
+        "a plain node fans out no stamp override"
+    );
 }
 
 // --- T5 parity: a UI delete and an API delete write the same op-log entry ---
