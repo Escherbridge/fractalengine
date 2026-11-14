@@ -22,6 +22,9 @@ Defaults are what the process uses when the variable is unset.
 | `FE_SYNC_RELAY_ADVERTISE_POLICY` | `dialonly` | `fe-sync/src/relay_config.rs:255` | What to do with relays other verse members advertise. See §5. |
 | `FE_SYNC_ALLOW_PRIVATE_RELAYS` | off | `fe-runtime/src/relay_advertisement.rs:12` | Set to `1`, `true` or `yes` to accept advertised relays on private addresses and over `http://`. See §5. |
 | `FE_SYNC_RELAY_ADVERT_SIGNED` | `compat` | `fe-sync/src/relay_config.rs:88` | `compat` accepts unsigned advertisement rows; `require` refuses them. Any other value fails closed to `require`. |
+| `FE_SYNC_GOSSIP_SIGNING` | `compat` | `fe-sync/src/gossip_auth.rs:26` | `compat` admits unsigned gossip frames under the older attribution rules; `require` refuses them. Any other non-empty value fails closed to `require`. See [`SECURITY.md`](../SECURITY.md) (gossip attribution). |
+| `FE_API_NETWORK_DETAIL` | off | `fe-api/src/network.rs:24` | Set to `1` to let Owner tokens see full peer IP addresses on the network diagnostics route and the MCP `get_network_diagnostics` tool. Leave unset unless you are debugging connectivity. |
+| `FE_RELAY_SERVE` | off | `fe-sync/src/relay_server.rs` (`from_lookup`) | Set to exactly `1` to start the embedded members-only relay. Any other value binds no listener. See §6. |
 | `FE_SHUTDOWN_AFTER_SECS` | unset (run until signalled) | `fractalengine-relay/src/main.rs:735-752` | Requests the same graceful shutdown as SIGTERM after N seconds. Used for one-shot runs and smoke tests. |
 | `SURREAL_DATASTORE_SYNC_DATA` | `every` (set by the relay when unset) | `fractalengine-relay/src/main.rs:42` | SurrealKV fsync mode: `never`, `every`, or a duration above 100 ms. |
 | `RUST_LOG` | unset | tracing filter | Log filter, for example `info` or `fe_sync=debug`. |
@@ -181,7 +184,94 @@ token would be sent.
 **Signed adverts.** `FE_SYNC_RELAY_ADVERT_SIGNED=require` refuses unsigned rows from peers that run
 older code. Keep the default `compat` for one release after an upgrade, then set `require`.
 
+## 6. Embedded members-only relay
+
+A node can serve its own iroh relay to the members of the verses it hosts, so members reach each other
+without the public fleet. The relay admits only current members (the membership gate runs on every
+connection), and it serves no open access: `FE_RELAY_SERVE_ACCESS` accepts only `members`, and any other
+value refuses to start. The feature is compiled into the standalone `fe-relay` binary through
+`fe-sync`'s `relay-server` feature. It is off unless you turn it on.
+
+**Environment (`fe-relay`, operator profile).** Unset values take the default in the last column.
+
+| Variable | Default | Effect |
+|----------|---------|--------|
+| `FE_RELAY_SERVE` | off | Must be exactly `1`. |
+| `FE_RELAY_SERVE_CERT_MODE` | none (required) | `acme` or `manual`. Refuses to start when unset or unknown. |
+| `FE_RELAY_SERVE_HOSTNAME` | none | Public hostname. Required by `acme`. Also the name members see. |
+| `FE_RELAY_SERVE_ACME_CONTACT` | none | Required by `acme`: the account contact the ACME client registers. |
+| `FE_RELAY_SERVE_ACME_STAGING` | `false` | `1` uses the ACME staging directory. Use it for the first run. |
+| `FE_RELAY_SERVE_CERT_PATH` / `FE_RELAY_SERVE_KEY_PATH` | none | PEM chain and key, required by `manual`. The chain is reloaded daily. |
+| `FE_RELAY_SERVE_VERSES` | none (required) | Comma-separated verse ids to serve, or `hosted` for every verse this node hosts. A listed verse this node does not host refuses to start. |
+| `FE_RELAY_SERVE_ACCESS` | `members` | Only `members` is accepted. |
+| `FE_RELAY_SERVE_HTTPS_BIND` | `0.0.0.0:443` | HTTPS relay listener. |
+| `FE_RELAY_SERVE_HTTP_BIND` | `0.0.0.0:80` | Plain HTTP listener. |
+| `FE_RELAY_SERVE_QAD` / `FE_RELAY_SERVE_QAD_BIND` | `1` on the operator profile, `0` on desktop | QUIC address discovery, and its UDP bind address (defaults to the iroh-relay QUIC port). |
+| `FE_RELAY_SERVE_METRICS_BIND` | none | Metrics listener. Must be a loopback address; any other value refuses to start. |
+| `FE_RELAY_SERVE_MAX_CLIENTS` | `1024` (desktop `64`) | Connected-client cap. |
+| `FE_RELAY_SERVE_MAX_CONN_PER_ENDPOINT` | `4` (desktop `2`) | Connections allowed per endpoint. |
+| `FE_RELAY_SERVE_CLIENT_RX_BPS` / `FE_RELAY_SERVE_CLIENT_RX_BURST` | `2 MiB/s` / `4 MiB` (desktop `512 KiB/s` / `1 MiB`) | Per-client inbound rate and burst. |
+| `FE_RELAY_SERVE_LOG_IPS` | off | `1` writes client IP addresses to the relay's logs. |
+
+The bind addresses, cert mode, verse set and limits are read once at startup. Change them with a restart.
+
+**ACME recipe.** Point `relay.example.com` at the host and open ports 80 and 443 to it. Use staging first:
+
+```bash
+FE_RELAY_SERVE=1
+FE_RELAY_SERVE_CERT_MODE=acme
+FE_RELAY_SERVE_HOSTNAME=relay.example.com
+FE_RELAY_SERVE_ACME_CONTACT=mailto:ops@example.com
+FE_RELAY_SERVE_ACME_STAGING=1
+FE_RELAY_SERVE_VERSES=hosted
+```
+
+When the staging certificate issues, set `FE_RELAY_SERVE_ACME_STAGING=0` (or unset it) and restart.
+
+**Manual-certificate recipe.** Use this when a certificate comes from your own CA or ACME client:
+
+```bash
+FE_RELAY_SERVE=1
+FE_RELAY_SERVE_CERT_MODE=manual
+FE_RELAY_SERVE_HOSTNAME=relay.example.com
+FE_RELAY_SERVE_CERT_PATH=/etc/relay/fullchain.pem
+FE_RELAY_SERVE_KEY_PATH=/etc/relay/privkey.pem
+FE_RELAY_SERVE_VERSES=hosted
+```
+
+The chain is reloaded daily, so a renewed certificate applies within a day. Restart the relay to apply it at once.
+
+**Firewall and flood guidance.** Open only what the relay needs: TCP 443 and 80, and UDP on the QAD port
+when QAD is on. Keep the metrics listener on loopback. The membership gate refuses non-members, but it
+runs after the connection opens, so a flood reaches the relay before it is refused. Bound it at the edge:
+
+- Limit new connections per source address at the firewall or with your provider's DDoS protection.
+- Keep `FE_RELAY_SERVE_MAX_CONN_PER_ENDPOINT` at its default. Raise `FE_RELAY_SERVE_MAX_CLIENTS` only after you have measured the memory cost.
+- On the operator profile a breaker trip only logs a warning and the relay keeps serving. Watch the logs for repeated `relay.` abuse events and act at the edge.
+
+**Restart and revocation.** Revoking a member does not need a restart. The admission gate is reconciled
+about every 250 ms, and a revoked member's live connections are evicted within 5 seconds. Restart
+after a configuration or certificate change (see the table above). If a revoked member is still
+connected after 5 seconds, stop the relay with SIGTERM, which runs its graceful shutdown, and report it.
+
+**Desktop relay (off by default).** A desktop node can serve a relay only when all of these hold:
+
+1. The binary was built with the `relay-server` feature.
+2. The operator turned on the relay setting (`serve_relay` in `settings.ron`). It is `false` by default.
+3. A reachability self-test reports `public`.
+4. A verse peer returns a signed dial-back confirming the public URL answered.
+
+The public URL comes from `FE_RELAY_SERVE_HOSTNAME` and `FE_RELAY_SERVE_HTTPS_BIND`. Without a hostname the
+dial-back cannot confirm and the relay does not serve. The desktop profile is smaller: 64 clients, 2 per
+endpoint, 512 KiB/s, no QAD. A breaker trip closes the listener for 10 minutes. A desktop relay is for a
+small group on a machine that is publicly reachable; use the operator profile for anything larger.
+
+**Privacy.** The relay operator can see which members connect and the traffic metadata of relayed sessions.
+The relay's start-up warning says so. `FE_RELAY_SERVE_LOG_IPS=1` also writes
+client addresses to the logs, so leave it off unless you need them.
+
 ## Related
 
 - Docker images, compose profiles and the container variable table: [`docker/README.md`](../docker/README.md).
 - Relay design notes, the self-host recipe source and the acceptance test: `fe-sync/src/AGENTS.md` §relay-health.
+- Security residuals for the relay and gossip signing: [`SECURITY.md`](../SECURITY.md).

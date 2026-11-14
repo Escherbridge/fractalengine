@@ -87,10 +87,32 @@ merely restate them will be deduplicated against this list.
   the verse scope (fe-policy, deny-by-default). Residuals: rows for a verse
   whose manifest has not arrived yet are admitted on the replica capability
   alone (bootstrap window); an admitted row's references into other verses
-  are not yet checked; and compute/ledger gossip frames relayed through a
-  neighbour cannot be attributed on the wire, so they fall back to
-  claim-based admission. Treat anyone holding a verse's namespace
-  capability as able to write to it.
+  are not yet checked; and gossip frames relayed through a neighbour are
+  attributed by claim until signing is enforced (see S-1 below). Treat
+  anyone holding a verse's namespace capability as able to write to it.
+- **S-1: gossip relayed attribution, closed under signing but not by
+  default.** Each gossip frame (`FEG1`, `fe-sync/src/gossip_auth.rs`) now
+  carries an ed25519 signature over verse, author, HLC, kind and payload.
+  Ingress verifies it before the compute, tileset and reachability handlers
+  run (`open_ingress`), so a relayed frame is attributed to its signer rather
+  than to a claimed name. The default
+  `FE_SYNC_GOSSIP_SIGNING=compat` still admits unsigned legacy frames under
+  the older rules while their claimed author is not latched as a signer.
+  Set `FE_SYNC_GOSSIP_SIGNING=require`, or `gossip_signing: "required"` in a
+  verse manifest, to refuse unsigned frames. Compat is kept for one release
+  so peers can upgrade together. The default flips to `require` at a named
+  trigger: the next minor release, or once every declared peer is latched.
+  Residuals after signing: a relay operator still sees which nodes connect
+  and traffic metadata (see the next item). A node's identity is its endpoint
+  key, so after a key rotation the old DID's frames stop being admitted once
+  its role statements are revoked.
+- **Embedded relay residuals.** The members-only relay
+  (`docs/relay-operations.md` §6) admits only current members, but it runs
+  the membership check after the connection opens. Its operator sees which
+  members connect, their addresses and traffic metadata, and the start-up
+  warning says so. FractalEngine does not set the upstream iroh-relay
+  `accept_conn_limit`, so a connection flood is bounded only by the
+  per-endpoint and client caps and by the firewall in front of the relay.
 - **The plugin sandbox is young and has not had an external audit.** Rhai
   and WebAssembly plugins run with operation limits, fuel metering, and
   capability manifests. `network_scope` and `external_http` are denied at
