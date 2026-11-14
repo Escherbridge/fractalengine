@@ -1,144 +1,74 @@
-use base64::{engine::general_purpose::STANDARD, Engine};
-use ed25519_dalek::{Signature, Signer, SigningKey, VerifyingKey};
+//! Hexon signing is fe-format's canonical-JSON scheme (see `src/AGENTS.md` §unified-format).
 
-use fe_identity::did_key::public_key_from_did_key;
+pub use fe_format::{sign_manifest, verify_manifest};
 
-/// Sign a manifest JSON blob with the publisher's ed25519 key.
-///
-/// Returns a base64-encoded signature string.
-pub fn sign_manifest(manifest_json: &[u8], keypair: &SigningKey) -> Result<String, anyhow::Error> {
-    let sig: Signature = keypair.sign(manifest_json);
-    Ok(STANDARD.encode(sig.to_bytes()))
-}
-
-/// Verify a manifest signature against a publisher's did:key.
-///
-/// Extracts the Ed25519 verifying key from the did:key string and checks
-/// the base64-encoded signature against the manifest JSON bytes.
-pub fn verify_manifest(
-    manifest_json: &[u8],
-    signature: &str,
-    publisher_did: &str,
-) -> Result<bool, anyhow::Error> {
-    let verifying_key: VerifyingKey = public_key_from_did_key(publisher_did)?;
-
-    let sig_bytes = STANDARD
-        .decode(signature)
-        .map_err(|e| anyhow::anyhow!("base64 decode failed: {}", e))?;
-
-    let sig: Signature = Signature::from_slice(&sig_bytes)
-        .map_err(|e| anyhow::anyhow!("invalid signature bytes: {}", e))?;
-
-    // Use verify_strict to prevent small-subgroup attacks
-    Ok(verifying_key.verify_strict(manifest_json, &sig).is_ok())
-}
-
-/// Compute a BLAKE3 hash of the manifest JSON for deduplication.
+/// BLAKE3 hex of manifest JSON bytes, used as a dedupe key (not a signature input).
 pub fn manifest_hash(manifest_json: &[u8]) -> String {
-    let hash = blake3::hash(manifest_json);
-    hash.to_hex().to_string()
+    blake3::hash(manifest_json).to_hex().to_string()
 }
 
-/// Compute a BLAKE3 hash of arbitrary asset bytes.
+/// BLAKE3 hex of asset bytes: the `asset_hash` every entry and `assets/{hash}` member uses.
 pub fn asset_hash(data: &[u8]) -> String {
-    let hash = blake3::hash(data);
-    hash.to_hex().to_string()
+    blake3::hash(data).to_hex().to_string()
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use ed25519_dalek::SigningKey;
+    use fe_format::{verifying_key_to_did, HexonManifest, HexonType};
     use rand::rngs::OsRng;
 
-    fn test_signing_key() -> SigningKey {
-        SigningKey::generate(&mut OsRng)
+    fn manifest(publisher_did: &str) -> HexonManifest {
+        HexonManifest {
+            schema_version: "1.0.0".to_string(),
+            hexon_id: "test-model".to_string(),
+            hexon_type: HexonType::Model,
+            publisher_did: publisher_did.to_string(),
+            publisher_name: None,
+            version: "1.0.0".to_string(),
+            build_id: None,
+            name: "test".to_string(),
+            description: None,
+            tags: vec![],
+            created_at: "2026-01-01T00:00:00Z".to_string(),
+            updated_at: "2026-01-01T00:00:00Z".to_string(),
+            source_peer_did: None,
+            approx_size_bytes: None,
+            min_engine_version: None,
+            homepage_url: None,
+            dependencies: vec![],
+            platforms: vec![],
+            address: None,
+            integrity: None,
+            signature: None,
+        }
     }
 
+    /// Sign a manifest struct, then check the signature against an edited or re-formatted copy.
     #[test]
-    fn test_sign_and_verify_roundtrip() {
-        let keypair = test_signing_key();
-        let manifest = br#"{"name":"test","version":"1.0.0"}"#;
-        let publisher_did = format!("did:key:z{}", {
-            use multibase::Base;
-            let pub_key = keypair.verifying_key();
-            let mut bytes = vec![0xed, 0x01];
-            bytes.extend_from_slice(&pub_key.to_bytes());
-            multibase::encode(Base::Base58Btc, &bytes)
-                .strip_prefix("z")
-                .unwrap()
-                .to_string()
-        });
+    fn test_sign_and_verify_canonical_manifest() {
+        let keypair = SigningKey::generate(&mut OsRng);
+        let did = verifying_key_to_did(&keypair.verifying_key());
+        let original = manifest(&did);
+        let signature = sign_manifest(&serde_json::to_vec(&original).unwrap(), &keypair).unwrap();
 
-        let sig = sign_manifest(manifest, &keypair).expect("signing should succeed");
-        let valid =
-            verify_manifest(manifest, &sig, &publisher_did).expect("verification should not error");
-        assert!(valid, "signature should be valid");
-    }
+        // The signature covers canonical JSON with `signature` blanked: pretty-printing the
+        // signed manifest (signature filled in) still verifies.
+        let mut signed = original.clone();
+        signed.signature = Some(signature.clone());
+        let pretty = serde_json::to_vec_pretty(&signed).unwrap();
+        assert!(verify_manifest(&pretty, &signature, &did).unwrap());
 
-    #[test]
-    fn test_tampered_manifest_fails() {
-        let keypair = test_signing_key();
-        let manifest = br#"{"name":"test","version":"1.0.0"}"#;
-        let publisher_did = format!("did:key:z{}", {
-            use multibase::Base;
-            let pub_key = keypair.verifying_key();
-            let mut bytes = vec![0xed, 0x01];
-            bytes.extend_from_slice(&pub_key.to_bytes());
-            multibase::encode(Base::Base58Btc, &bytes)
-                .strip_prefix("z")
-                .unwrap()
-                .to_string()
-        });
+        // One flipped field is refused.
+        let mut tampered = signed.clone();
+        tampered.version = "2.0.0".to_string();
+        let tampered_json = serde_json::to_vec(&tampered).unwrap();
+        assert!(!verify_manifest(&tampered_json, &signature, &did).unwrap(), "tampered manifest must fail");
 
-        let sig = sign_manifest(manifest, &keypair).expect("signing should succeed");
-        let tampered = br#"{"name":"test","version":"2.0.0"}"#;
-        let valid =
-            verify_manifest(tampered, &sig, &publisher_did).expect("verification should not error");
-        assert!(!valid, "tampered manifest should fail verification");
-    }
-
-    #[test]
-    fn test_wrong_publisher_fails() {
-        let keypair = test_signing_key();
-        let wrong_keypair = test_signing_key();
-        let manifest = br#"{"name":"test"}"#;
-
-        let wrong_did = format!("did:key:z{}", {
-            use multibase::Base;
-            let pub_key = wrong_keypair.verifying_key();
-            let mut bytes = vec![0xed, 0x01];
-            bytes.extend_from_slice(&pub_key.to_bytes());
-            multibase::encode(Base::Base58Btc, &bytes)
-                .strip_prefix("z")
-                .unwrap()
-                .to_string()
-        });
-
-        let sig = sign_manifest(manifest, &keypair).expect("signing should succeed");
-        let valid =
-            verify_manifest(manifest, &sig, &wrong_did).expect("verification should not error");
-        assert!(!valid, "wrong publisher should fail verification");
-    }
-
-    #[test]
-    fn test_invalid_did_key_errors() {
-        let result = verify_manifest(b"{}", "some_sig", "not-a-did-key");
-        assert!(result.is_err(), "invalid did:key should error");
-    }
-
-    #[test]
-    fn test_manifest_hash_deterministic() {
-        let data = br#"{"test":true}"#;
-        let h1 = manifest_hash(data);
-        let h2 = manifest_hash(data);
-        assert_eq!(h1, h2, "same input must produce same hash");
-    }
-
-    #[test]
-    fn test_asset_hash_different_for_different_data() {
-        let h1 = asset_hash(b"hello");
-        let h2 = asset_hash(b"world");
-        assert_ne!(h1, h2, "different input must produce different hash");
+        // Another publisher's DID is refused; a malformed DID is an error.
+        let other = verifying_key_to_did(&SigningKey::generate(&mut OsRng).verifying_key());
+        assert!(!verify_manifest(&pretty, &signature, &other).unwrap(), "wrong publisher must fail");
+        assert!(verify_manifest(&pretty, &signature, "not-a-did-key").is_err());
     }
 }

@@ -4,13 +4,14 @@
 
 use std::borrow::Cow;
 use std::collections::BTreeSet;
-use std::io::Cursor;
 
 use fe_format::entitlement::{
     open_paid_entry, unix_now, ContentKey, EntitlementClaims, EntitlementError, EntitlementExpectation,
     EntitlementVerifier, TOKEN_CLOCK_LEEWAY_SECS,
 };
-use fe_format::limits::{read_entry_capped, MAX_JSON_ENTRY_BYTES};
+use fe_format::integrity::MANIFEST_PATH;
+use fe_format::limits::MAX_JSON_ENTRY_BYTES;
+use fe_format::HexonArchive;
 
 use crate::entitlement_client::Licensee;
 use crate::manifest::{License, LicenseType};
@@ -29,18 +30,10 @@ impl LicenseTerms {
         Self::default()
     }
 
-    /// Terms of a hexon package licence: only `Paid` requires an entitlement.
-    pub fn from_license(license: &License) -> Self {
+    /// Terms of a `.hexon` licence: only `Paid` requires an entitlement.
+    pub fn from_format_license(license: &License) -> Self {
         Self {
-            licensed: license.license_type == LicenseType::Paid,
-            free_entries: license.free_entries.iter().cloned().collect(),
-        }
-    }
-
-    /// Terms of an fe-format (sealed `.hexon`) licence.
-    pub fn from_format_license(license: &fe_format::License) -> Self {
-        Self {
-            licensed: matches!(license.license_type, fe_format::LicenseType::Paid),
+            licensed: matches!(license.license_type, LicenseType::Paid),
             free_entries: license.free_entries.iter().cloned().collect(),
         }
     }
@@ -221,11 +214,8 @@ impl EntitlementGate {
 
 /// The archive's `content_hash`, recomputed from its own `manifest.json` (never from a document).
 pub fn archive_content_hash(archive: &[u8]) -> anyhow::Result<String> {
-    let mut zip = zip::ZipArchive::new(Cursor::new(archive))?;
-    let mut manifest = zip.by_name("manifest.json")?;
-    let declared = manifest.size();
-    let mut budget = MAX_JSON_ENTRY_BYTES;
-    let raw = read_entry_capped(&mut manifest, declared, MAX_JSON_ENTRY_BYTES, &mut budget)?;
+    let raw = HexonArchive::read_member(archive, MANIFEST_PATH, MAX_JSON_ENTRY_BYTES)?
+        .ok_or_else(|| anyhow::anyhow!("missing {MANIFEST_PATH}"))?;
     fe_format::integrity::content_hash(&raw)
 }
 
@@ -272,13 +262,10 @@ mod tests {
         let identity = SigningKey::from_bytes(&random_bytes());
         let device = random_bytes();
         let licensee = Licensee { identity: &identity, device_secret: &device };
-        let terms = LicenseTerms::from_license(&License {
+        let terms = LicenseTerms::from_format_license(&License {
             license_type: LicenseType::Paid,
-            attribution: None,
-            payment_provider: None,
-            payment_verification_url: None,
             free_entries: vec!["preview_1".into()],
-            encrypted_key: None,
+            ..License::default()
         });
 
         // AC-1: an unlicensed archive never reaches the verifier and loads every entry verbatim.
