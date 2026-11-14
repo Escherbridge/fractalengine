@@ -155,7 +155,13 @@ pub fn update_residency_readout(
 ) {
     use bevy::ecs::change_detection::DetectChangesMut;
     if let Some(layer_visible) = layer_visible {
-        mirror_proposal_layer_hidden(&mut state, layer_visible.visible);
+        // Bypass deref so an unchanged frame does not flag change detection.
+        let state_ref = state.bypass_change_detection();
+        let before = state_ref.proposal_layer_hidden;
+        mirror_proposal_layer_hidden(state_ref, layer_visible.visible);
+        if state_ref.proposal_layer_hidden != before {
+            state.set_changed();
+        }
     }
     if let Some(mut toggle) = toggle {
         // Bypass deref so an unchanged frame does not flag change detection.
