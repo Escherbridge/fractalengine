@@ -812,3 +812,180 @@ async fn read_node_returns_each_type_specific_payload() {
         );
     }
 }
+
+// ---------------------------------------------------------------------------
+// (z) /crates on unified hexon types: publish, install, list, entries, asset, entitlement
+// ---------------------------------------------------------------------------
+
+/// Router over the harness identity and DB with a real `HexonRegistry` wired in (the harness has none).
+fn router_with_hexon_registry(h: &ApiHarness, registry_dir: std::path::PathBuf) -> axum::Router {
+    use std::sync::{Arc, Mutex};
+    let state = fe_api::server::ApiState {
+        api_cmd_tx: h.state.api_cmd_tx.clone(),
+        transform_broadcast_tx: h.state.transform_broadcast_tx.clone(),
+        entity_change_tx: h.state.entity_change_tx.clone(),
+        verifying_key: h.state.verifying_key,
+        revoked_jtis: h.state.revoked_jtis.clone(),
+        blob_store: h.state.blob_store.clone(),
+        cors_origins: h.state.cors_origins.clone(),
+        db_reader: h.state.db_reader.clone(),
+        terrain_capture: Default::default(),
+        query_rate_limiter: tokio::sync::Mutex::new(std::collections::HashMap::new()),
+        entity_store: None,
+        tileset_registry: None,
+        hexon_registry: Some(Arc::new(Mutex::new(
+            fe_hexon::registry::HexonRegistry::new(registry_dir),
+        ))),
+        announcement_store: None,
+        replication_tx: None,
+        distributed_tx: None,
+        sim_control_tx: None,
+        share_signer: h.state.share_signer.clone(),
+        elevated_query_allowed: false,
+        upload_quota_bytes: h.state.upload_quota_bytes,
+        screenshot: fe_api::screenshot::ScreenshotSurface::disabled(),
+        input: fe_api::input::InputSurface::disabled(),
+    };
+    fe_api::server::build_router(Arc::new(state))
+}
+
+/// Send one request through `router`, returning (status, lenient JSON or null, raw bytes).
+async fn send_on(
+    router: &axum::Router,
+    request: Request<Body>,
+) -> (StatusCode, serde_json::Value, Vec<u8>) {
+    use tower::ServiceExt;
+    let response = router.clone().oneshot(request).await.expect("router oneshot");
+    let status = response.status();
+    let bytes = body_bytes(response).await;
+    let value = serde_json::from_slice(&bytes).unwrap_or(serde_json::Value::Null);
+    (status, value, bytes)
+}
+
+/// A one-file multipart upload body and its content-type header.
+fn multipart_file(file_name: &str, bytes: &[u8]) -> (String, Vec<u8>) {
+    let boundary = "hexon-journey-boundary";
+    let mut body = format!(
+        "--{boundary}\r\nContent-Disposition: form-data; name=\"file\"; filename=\"{file_name}\"\r\nContent-Type: application/octet-stream\r\n\r\n"
+    )
+    .into_bytes();
+    body.extend_from_slice(bytes);
+    body.extend_from_slice(format!("\r\n--{boundary}--\r\n").as_bytes());
+    (format!("multipart/form-data; boundary={boundary}"), body)
+}
+
+#[tokio::test]
+async fn hexon_crates_publish_install_search_entries_asset_journey() {
+    use fe_hexon::manifest::{EntryKind, LicenseType};
+    use fe_hexon::publisher::HexonBuilder;
+
+    let h = ApiHarness::spawn().await.expect("spawn harness");
+    let hier = h.seed_hierarchy().await.expect("seed hierarchy");
+    let registry_dir = tempfile::tempdir().expect("registry dir");
+    let router = router_with_hexon_registry(&h, registry_dir.path().to_path_buf());
+    let signing_key = ed25519_dalek::SigningKey::from_bytes(&[7u8; 32]);
+
+    const MODEL_BYTES: &[u8] = b"journey model bytes";
+    const FULL_BYTES: &[u8] = b"journey licensed full-resolution bytes";
+    const PREVIEW_BYTES: &[u8] = b"journey licensed preview bytes";
+    let free_package = HexonBuilder::new("api-journey-free", "did:key:z6MkPlaceholder")
+        .name("Journey Free")
+        .version("1.0.0")
+        .add_entry_with_file("model_1", EntryKind::Model, "glb", "Model", MODEL_BYTES)
+        .build(&signing_key)
+        .expect("build free hexon");
+    let paid_package = HexonBuilder::new("api-journey-paid", "did:key:z6MkPlaceholder")
+        .name("Journey Paid")
+        .version("1.0.0")
+        .license(LicenseType::Paid)
+        .free_entry("preview_1")
+        .add_entry_with_file("preview_1", EntryKind::Model, "glb", "Preview", PREVIEW_BYTES)
+        .add_entry_with_file("full_1", EntryKind::Model, "glb", "Full", FULL_BYTES)
+        .build(&signing_key)
+        .expect("build paid hexon");
+
+    let owner = h.mint_token(&hier.verse_scope(), "owner");
+    let editor = h.mint_token(&hier.verse_scope(), "editor");
+    let viewer = h.mint_token(&hier.verse_scope(), "viewer");
+    let petal = &hier.petal_id;
+
+    let publish = |package: &Vec<u8>, token: &str| {
+        let (content_type, body) = multipart_file("pack.hexon", package);
+        Request::builder()
+            .method("POST")
+            .uri("/api/v1/crates/publish")
+            .header("authorization", format!("Bearer {token}"))
+            .header("content-type", content_type)
+            .body(Body::from(body))
+            .expect("publish request")
+    };
+    let authed = |method: &str, uri: String, token: &str| {
+        Request::builder()
+            .method(method)
+            .uri(uri)
+            .header("authorization", format!("Bearer {token}"))
+            .body(Body::empty())
+            .expect("request")
+    };
+
+    // An editor cannot publish; the owner can, for both packages.
+    let (_, refused, _) = send_on(&router, publish(&free_package, &editor)).await;
+    assert_eq!(refused["error"], "insufficient permissions", "{refused}");
+    for package in [&free_package, &paid_package] {
+        let (_, published, _) = send_on(&router, publish(package, &owner)).await;
+        assert_eq!(published["ok"], true, "{published}");
+    }
+
+    // Install is real: an editor's install returns the new record, a viewer's is denied.
+    let free_uri = "api-journey-free@1.0.0";
+    let paid_uri = "api-journey-paid@1.0.0";
+    let install_path = |uri: &str| format!("/api/v1/crates/{uri}/install?petal_id={petal}");
+    let (_, denied, _) = send_on(&router, authed("POST", install_path(free_uri), &viewer)).await;
+    assert_eq!(denied["error"], "insufficient permissions", "{denied}");
+    for uri in [free_uri, paid_uri] {
+        let (_, installed, _) = send_on(&router, authed("POST", install_path(uri), &editor)).await;
+        assert_eq!(installed["ok"], true, "{installed}");
+        assert_eq!(installed["data"]["petal_id"], petal.as_str());
+    }
+
+    // The petal lists both installs with their unified hexon_id.
+    let (_, listed, _) = send_on(
+        &router,
+        authed("GET", format!("/api/v1/crates/installed?petal_id={petal}"), &viewer),
+    )
+    .await;
+    let ids: Vec<&str> = listed["data"]
+        .as_array()
+        .expect("installed list")
+        .iter()
+        .filter_map(|record| record["hexon_id"].as_str())
+        .collect();
+    assert!(ids.contains(&"api-journey-free") && ids.contains(&"api-journey-paid"), "{listed}");
+
+    // Entries expose fe-format fields; the asset route returns the original bytes.
+    let (_, entries, _) = send_on(
+        &router,
+        authed("GET", format!("/api/v1/crates/{free_uri}/entries?petal_id={petal}"), &viewer),
+    )
+    .await;
+    assert_eq!(entries["data"][0]["entry_id"], "model_1", "{entries}");
+    assert_eq!(entries["data"][0]["kind"], "model", "{entries}");
+    let asset_path = |uri: &str, entry: &str| {
+        format!("/api/v1/crates/{uri}/entries/{entry}/asset?petal_id={petal}")
+    };
+    let (status, _, bytes) =
+        send_on(&router, authed("GET", asset_path(free_uri, "model_1"), &viewer)).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(bytes, MODEL_BYTES);
+
+    // Licensed package: the free preview serves, the non-free entry is 403 entitlement_required.
+    let (status, _, bytes) =
+        send_on(&router, authed("GET", asset_path(paid_uri, "preview_1"), &viewer)).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(bytes, PREVIEW_BYTES);
+    let (status, refusal, bytes) =
+        send_on(&router, authed("GET", asset_path(paid_uri, "full_1"), &viewer)).await;
+    assert_eq!(status, StatusCode::FORBIDDEN);
+    assert_eq!(refusal["code"], "entitlement_required", "{refusal}");
+    assert!(!bytes.windows(FULL_BYTES.len()).any(|window| window == FULL_BYTES));
+}

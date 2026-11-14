@@ -33,6 +33,7 @@ pub mod metrics;
 pub mod network_ops;
 pub mod node_history;
 pub mod operator_gate;
+pub mod petal_snapshot;
 pub mod portal_bundles;
 pub mod property_schema;
 pub mod qa_debug;

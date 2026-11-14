@@ -278,6 +278,16 @@ pub fn build_router_with_hosts(state: Arc<ApiState>, hosts: ApiHosts) -> Router 
             "/api/v1/petals/{petal_id}/import",
             post(crate::format::import_petal),
         )
+        // Petal snapshot (roles + full history; Manager+): archive export and import
+        .route(
+            "/api/v1/petals/{petal_id}/snapshot.hexon",
+            get(crate::petal_snapshot::export_petal_snapshot),
+        )
+        .route(
+            "/api/v1/petals/import-snapshot",
+            post(crate::petal_snapshot::import_petal_snapshot)
+                .layer(DefaultBodyLimit::max(crate::petal_snapshot::SNAPSHOT_ROUTE_BODY_LIMIT)),
+        )
         // GPX import/export
         .route(
             "/api/v1/petals/{petal_id}/import/gpx",
