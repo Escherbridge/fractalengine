@@ -500,9 +500,18 @@ bridge with no consumers). Rationale carried over from the deleted crate:
 - `revoke_session` enters `op_log::commit_operation` before evicting the
   cache entry, so a failed append leaves the cache unchanged. Its
   `sig: "00".repeat(64)` is one of the workspace's known
-  placeholder op-log signatures (13 sites tracked by the hexon-p2p-commons
-  research); broadcasting the revocation to peers
+  placeholder op-log signatures (36 production sites, see
+  `conductor/tracks/oss_release_20260717/spec.md` FR-2 register); broadcasting the revocation to peers
   (`NetworkCommand::BroadcastRevocation`) is still deferred (Sprint 5B).
+
+## §startup-and-lanes
+
+- **Field clock seed is fatal.** `field_clock::migrate::seed_legacy_floor` runs in the DB thread's startup
+  block before the shared handle is published (`lib.rs` ~697-706). An error sends `DbInitError::FieldClockSeed`
+  and aborts init, the same contract as the scene watermark.
+- **Read and export commands.** `ReadPetalReadings` (`lib.rs` ~1962) and `ExportPetalSnapshot` (`lib.rs` ~2388)
+  are dispatched in the ordinary command match, not in the inbound-row lane (`ApplyReplicatedRow`, `lib.rs` ~2432).
+  Neither publishes.
 
 ## §reconcile
 
@@ -701,7 +710,7 @@ one sub-module per domain:
 - `node_measurements` — `ReadNodeMeasurements` series and points for one node (handlers/AGENTS.md
   §Node measurement projections). Point cap keeps the NEWEST rows (query DESC, then reversed) so a live
   series keeps moving; `truncated` means older points were omitted, not newer ones (turn-3 analytics finding 2).
-- `petal_readings` — Viewer-gated latest-per-(node, metric) summary over the last 60 s, at most 256 rows,
+- `petal_readings` — Viewer-gated latest-per-(node, metric, units) summary over the last 60 s (units of one metric never fold together; names over 256 bytes or units over 128 bytes are skipped, `handlers/petal_readings.rs`), at most 256 rows,
   feeding the Data window Readings tab. Authorized before and after the read (the same check-both-sides
   shape as node measurements); the source scan is capped at 5,000 rows and reports `source_capped`.
 - `crud` placement default — `create_node_as` and `import_gltf_handler` write the node scale as `[ws; 3]`
@@ -722,7 +731,7 @@ one sub-module per domain:
 - `api_token` — API token minting, revocation, and listing
 - `seed` — default data seeding
 - `admin` — database reset
-- `crate_registry` — hexon crate registry install/uninstall
+- `crate_registry` — hexon crate registry install/uninstall. Rows are replaced per `(hexon_uri, petal_id)` by delete+create in one transaction, `crate_entry` rows per `(hexon_uri, entry_id)`; both are backed by UNIQUE indexes `idx_crate_registry_pair` / `idx_crate_entry_pair` (`schema.rs` ~1038-1043). `UninstallCrate{petal_id: Some}` drops one petal row, and the shared entry rows only when no petal still holds the build; `None` drops everything. Old random-id rows are not migrated.
 - `petal_terrain` — per-petal terrain config get/set; `*_reply` builders answer
   correlated (API) callers privately (`PetalTerrainFetched` / `RequestFailed`).
   S6 (critic step 8): now op-logs (`OpType::SetPetalTerrain`) before the
@@ -1023,6 +1032,10 @@ the DB plane around it.
 - **Out of reach:** neither statement table is in `ELEVATED_WRITABLE_TABLES`
   (pinned by `elevated_writable_tables_never_include_role_tables`), nor in
   fe-api `/query`'s `ALLOWED_TABLES` (plan §7 A7, RP-9 records it).
+- **Access-tab grant read (UI5-07).** `role_grants::load_scope_statements(db, scope, limit)` caps the
+  caller's limit at `MAX_SCOPE_STATEMENTS` (1024) in the SQL `LIMIT`, ordered `string::len(hlc)` then `hlc`
+  (`role_grants.rs` ~486-497). `hlc` is a decimal string, so a plain `ORDER BY hlc DESC` would be lexicographic.
+  The UI listing is advisory; the server is authoritative.
 
 ## §inbound-admissions (role_propagation_20261013 RP-3)
 

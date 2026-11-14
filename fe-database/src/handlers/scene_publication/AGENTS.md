@@ -69,7 +69,9 @@ live row regardless of clock. An incoming tombstone can dominate a newer live st
 older tombstone cannot replace a known later tombstone. Replica-open transport timestamps
 are never substituted for original commit clocks. The local clock is an ordering watermark,
 NOT a delivery acknowledgement. Enqueue failure leaves the exact durable source eligible
-for the same-clock retry.
+for the same-clock retry. A journaled edit below the known scene clock still publishes while it holds a
+winning key (`publisher.rs` `journal_covers`); merged keys are never stamped as own (`inbound.rs`
+`pending_local_keys`). Tombstones keep the strict rule.
 
 The complete receiver replaces row contents with an inline geometry cast and commits that
 replacement with its clock. This preserves property deletion instead of recursively merging

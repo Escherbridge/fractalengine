@@ -139,6 +139,9 @@ and calls `publish_clocked_value`. With `restamp` it stamps each key whose value
 winner as a new local own version (`stamp_changed_keys`), then writes `_fe_clock` (own versions only,
 `encode_own`, at most `MAX_OWN_KEYS`) into the replicated row bytes. No sender is a no-op; an empty local
 DID is refused. Petal rows go out with the petal hint (`replicate_row_with_petal`).
+`publish_clocked_row` is proven by published-bytes assertions (`_fe_clock` author is the local DID and own
+carries the changed key) for petal terrain (`handlers/petal_terrain.rs`), petal render distance
+(`handlers/petal_render_distance.rs`) and verse settings (`handlers/verse_settings.rs`).
 
 ## §rejudge
 
