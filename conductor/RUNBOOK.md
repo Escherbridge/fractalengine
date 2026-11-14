@@ -111,6 +111,27 @@ trusting "pure efficiency" claims; push control; a board that silently drifts st
 
 ## 2. State
 
+- **2026-11-14 — SCOPED REVIEW DONE, FIXES COMMITTED LOCALLY, TESTS RUNNING.** Review `wf_e715df70-1b8` over
+  `2b289db1..HEAD`: 26 findings; skeptics confirmed 11 (2 HIGH, 6 MED, 3 LOW), refuted 2, 1 uncertain, 12 LOW
+  unverified. Full findings: `.omc/state/round45-review-findings.json`. Seven fix agents (opus on the clock and
+  on sync/relay, sonnet on the rest), then two opus adversarial reviewers on the database and sync fixes (all
+  "holds with residuals"; residuals fixed in a second round). Compile: `cargo check --all-targets` green on every
+  touched crate, with and without `relay-server`. Commits (local, NOT pushed): `7e750a06` clock floor fill
+  (database-2; new column `row_field_version.claim_hlc`), `e6ce2c22` snapshot import (database-3/-4,
+  extension-host-4), `c167ef4d` fe-api (api-runtime-1/-3), `ece50339` fe-sync and desktop relay
+  (sync-relay-1/-2/-3, bin-terrain-1), `67b2ce87` fe-hexon (extension-host-1/-3), `1d41eb8e` fe-ui door
+  (ui-2..5), `df072b90` terrain and paths (bin-terrain-3/-4; bin-terrain-2 documented, not fixed), `56a3d479` QA
+  checklist section "Review fixes". NOT verified by any run yet: tests in flight are the new clock and registry
+  legs, then batches `R7,R8,R9,R10` (summary printed per chunk; logs under `.omc/logs/tests/<stamp>/` and
+  `.omc/research/test-extras-20261114.log`). No source edits until that run ends. Lesson recorded: fix agents
+  must get their own scratch file prefix (two shared `patch.py`; caught, no damage). Open after the review:
+  QA checklist "Open after the review" (licensed tilesets cannot unlock: token source undecided; import into a
+  hooked scope is refused outright until hooks can judge an absent petal; API relay advertise needs a dial-back
+  record no route returns; verses created after relay start need a restart; hexon registry not wired into the
+  app; retry of an undoable edit records no Undo; files the reviewers did not read). Next: read the test
+  summary, fix failures in one pass (sonnet; opus for clock or sync), `cargo check`, re-run only failed chunks,
+  leak scan, one push (carries the 11 local commits), CI watched by a haiku monitor agent.
+
 - **2026-11-14 — FOUR USER DECISIONS; REVIEW AND TESTS IN FLIGHT.** Answers (AskUserQuestion): scoped review
   now; push the private repo; untrack and ignore the session log; run the batches for the crates CI never runs.
   Done: private repo pushed (`5423823..e7f3258`, 46 commits, secret and personal-path scan over every commit in

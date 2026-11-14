@@ -898,3 +898,15 @@ Checks for the fixes made after the scoped review of `2b289db1..HEAD`. Findings 
 - [ ] RF-OPEN-5 · The hexon registry is not wired into the shipped app (`hexon_registry: None`) and has no rehydration.
 - [ ] RF-OPEN-6 · Retrying a dead-lettered undoable edit records no Undo entry (default taken; awaiting a decision).
 - [ ] RF-OPEN-7 · Review coverage gaps: files the reviewers listed as not read (16 in fe-ui, 15 in the host binary incl. `extension_host/`, 12 each in fe-database and fe-api, 7 each in fe-sync and the extension crates).
+- [ ] RF-OPEN-8 · Replicas the desktop relay opened stay open after the relay stops, until restart; a served verse whose open always fails retries and logs every 30 s.
+- [ ] RF-OPEN-9 · A relay host name is approved by one resolver and dialled by another, so it can resolve differently at dial time (predates the fixes).
+- [ ] RF-OPEN-10 · Clock floor fill: a peer keeps its own upgrade-seeded value when it demotes a competing sender while peers holding only the filled copy drop it; peers agree on an unedited column only once every distinct value has been published once.
+- [ ] RF-OPEN-11 · The relay advertisement rate limit (10 posts per minute per caller and verse, 429) has no automated test; check by hand: 11 POSTs inside a minute -> the 11th is 429.
+
+### Added by the adversarial review of the fixes
+- [ ] RF-DB2-4 · sim · Two pre-upgrade peers hold different descriptions for the same petal; each publishes it to two new peers in opposite orders -> both new peers show the same description.
+- [ ] RF-DB2-5 · sim · An Editor's publish fills a column on a new peer; the Editor's grant is then revoked back past that write -> after the role view settles, the filled value is gone on that peer (the publisher's own value stays on the publisher).
+- [ ] RF-DB4-2 · batch · Import a snapshot whose asset names another petal's id -> the stored asset is anchored to the imported petal.
+- [ ] RF-API1-2 · api · Bind a `scene.create` hook on a fractal, then clear it from another manager (`mode: inherit`), then import a snapshot into that fractal -> not refused as `hook-unjudgeable`.
+- [ ] RF-SR1-3 · app · Lease a served verse through a write before the relay pins it, wait for the lease to expire -> the replica stays open (debug log), members stay admitted.
+- [ ] RF-BT1-2 · app · Desktop relay dial-back with no peer online -> attempts at about 0, 65, 195 and 455 s, then the relay stops.
