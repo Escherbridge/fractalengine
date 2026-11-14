@@ -1887,6 +1887,7 @@ async fn petal_snapshot_export_import_authz_journey() {
     // Every actor the DB thread receives on an import, in arrival order.
     let import_actors = Arc::new(std::sync::Mutex::new(Vec::<Option<String>>::new()));
     let recorded_actors = Arc::clone(&import_actors);
+    let fixture_db = db.clone();
     tokio::spawn(async move {
         use fe_database::handlers::petal_snapshot::{export_petal_snapshot_reply, import_petal_snapshot_reply};
         loop {
@@ -1991,7 +1992,7 @@ async fn petal_snapshot_export_import_authz_journey() {
     // Manager onto the source node: the petal already exists, so the import is refused, never merged.
     let multipart = Multipart::from_request(upload(&archive), &()).await.expect("multipart");
     let manager_subject = manager.sub.clone();
-    let response = import_petal_snapshot(State(state.clone()), Extension(manager), multipart).await;
+    let response = import_petal_snapshot(State(state.clone()), Extension(manager.clone()), multipart).await;
     assert_eq!(response.status(), StatusCode::CONFLICT);
     let refused = body_json(response).await;
     assert_eq!(refused["error"], "refused", "{refused}");
@@ -2004,9 +2005,76 @@ async fn petal_snapshot_export_import_authz_journey() {
     );
 
     // Editor, and a Manager of another fractal, are denied before anything is restored.
-    for caller in [editor, foreign_manager] {
+    for caller in [editor.clone(), foreign_manager.clone()] {
         let multipart = Multipart::from_request(upload(&archive), &()).await.expect("multipart");
         let response = import_petal_snapshot(State(state.clone()), Extension(caller), multipart).await;
         assert_eq!(response.status(), StatusCode::NOT_FOUND, "import denied with the existence-safe 404");
+    }
+
+    // Imported history: a never-imported petal lists nothing (Manager of its fractal still passes the gate).
+    let history = |caller: ApiClaims, after_lamport: Option<u64>| {
+        let state = state.clone();
+        let petal_id = petal_id.clone();
+        async move {
+            fe_api::imported_history::imported_history(
+                State(state),
+                Extension(caller),
+                Path(petal_id),
+                Query(fe_api::imported_history::ImportedHistoryParams { after_lamport, limit: None }),
+            )
+            .await
+        }
+    };
+    let response = history(manager.clone(), None).await;
+    assert_eq!(response.status(), StatusCode::OK);
+    let never_imported = body_json(response).await;
+    assert_eq!(never_imported["data"]["entries"], serde_json::json!([]), "{never_imported}");
+    assert!(never_imported["data"]["next_after_lamport"].is_null(), "{never_imported}");
+
+    // Free the petal (rows only) so the same archive now restores; its op-log lands quarantined.
+    fixture_db
+        .query("DELETE node WHERE petal_id = $petal; DELETE petal WHERE petal_id = $petal;")
+        .bind(("petal", petal_id.clone()))
+        .await
+        .expect("free the petal")
+        .check()
+        .expect("free the petal");
+    let multipart = Multipart::from_request(upload(&archive), &()).await.expect("multipart");
+    let response = import_petal_snapshot(State(state.clone()), Extension(manager.clone()), multipart).await;
+    assert_eq!(response.status(), StatusCode::OK, "the Manager import onto a free petal succeeds");
+
+    let response = history(manager.clone(), None).await;
+    assert_eq!(response.status(), StatusCode::OK);
+    let listed = body_json(response).await;
+    let entries = listed["data"]["entries"].as_array().expect("entries array").clone();
+    let listed_lamports: Vec<u64> =
+        entries.iter().map(|entry| entry["lamport_clock"].as_u64().expect("lamport_clock")).collect();
+    assert_eq!(listed_lamports, lamports, "the archive's op-log, lamport-ascending: {listed}");
+    assert!(
+        entries.iter().all(|entry| entry["imported_by"] == manager.sub.as_str()),
+        "every row names the importing token's DID: {listed}"
+    );
+    assert!(
+        entries.iter().all(|entry| entry["import_id"] == entries[0]["import_id"] && entry["import_id"].is_string()),
+        "one import, one shared import_id: {listed}"
+    );
+    assert!(entries.iter().all(|entry| entry.get("payload").is_none()), "summary rows carry no payload: {listed}");
+    assert_eq!(listed["data"]["next_after_lamport"], serde_json::json!(lamports[1]), "{listed}");
+
+    // The cursor is exclusive: after the first lamport only the rest comes back.
+    let response = history(manager.clone(), Some(lamports[0])).await;
+    let rest = body_json(response).await;
+    let rest_lamports: Vec<u64> = rest["data"]["entries"]
+        .as_array()
+        .expect("entries array")
+        .iter()
+        .map(|entry| entry["lamport_clock"].as_u64().expect("lamport_clock"))
+        .collect();
+    assert_eq!(rest_lamports, lamports[1..].to_vec(), "{rest}");
+
+    // Editor and a foreign-fractal Manager get the existence-safe 404, never the history.
+    for caller in [editor, foreign_manager] {
+        let response = history(caller, None).await;
+        assert_eq!(response.status(), StatusCode::NOT_FOUND, "imported history is Manager+ of the petal's fractal");
     }
 }
