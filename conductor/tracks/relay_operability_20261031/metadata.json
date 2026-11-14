@@ -6,7 +6,7 @@
   "status": "code-complete-pending-sweep",
   "priority": "P1",
   "created_at": "2026-10-31T00:00:00Z",
-  "updated_at": "2026-11-13T00:00:00Z",
+  "updated_at": "2026-11-14T00:00:00Z",
   "origin": "user grill 2026-10-31 (open-core alignment)",
   "alignment": "Open-core rule (conductor/open-core.md): anything a self-hoster needs to run, verify or extend FractalEngine belongs here. This track is the public owner of seams S-RELAY and S-RELAY-ADVERTISE (conductor/open-core.md Seams table), which any downstream operator tooling may consume; this repo never depends on or names such consumers. Builds on fe-sync's iroh 1.3 port (iroh_1_0_upgrade_20260711) and its §relay-health RelayConfig/RelayHealth model.",
   "depends_on": [],
@@ -14,7 +14,7 @@
   "related": ["iroh_1_0_upgrade_20260711 (its iroh 1.3 port is landed and is what FR-7 builds on; its remaining sweep + flag-day rollout do not gate this track)", "peer_networking_support_20261031 (next phase: consumes and hardens S-RELAY-ADVERTISE, adds the embedded members-only relay; its W1 waits for this track's S9 verdict)", "release_ci_20260429", "hexon_entitlements_20261031", "plugin_host_revival_20261031", "agent_input_surface_20261031"],
   "spec": "./spec.md",
   "plan": "./plan.md",
-  "progress": { "done": 9, "open": 1, "plan": "./plan.md" },
+  "progress": {"done": 9, "open": 1, "plan": "./plan.md"},
   "open_decisions": [
     "OD-1 metrics bind: separate listener/port (recommended, off unless FE_API_METRICS_BIND set) vs a route on the main authenticated port",
     "OD-2 TLS: documented reverse-proxy recipe only (recommended for v1) vs an in-process rustls listener opt-in",
@@ -32,7 +32,8 @@
     "2026-10-31: CROSS-TRACK SEQUENCING (fresh-context review). Shared paths with other public tracks — fe-runtime/src/{lib.rs,AGENTS.md} (agent_input_surface S1), fe-api/src/{server.rs,lib.rs} + fe-api/AGENTS.md (agent_input_surface S3; plugin_host_revival S1 mounts extension routes in server.rs), fractalengine/src/main.rs (agent_input_surface S4, plugin_host_revival S1), fractalengine-relay/src/main.rs (plugin_host_revival S1). Fixed order for those files: agent_input_surface_20261031 -> relay_operability_20261031 -> plugin_host_revival_20261031; never run two tracks' owning slices concurrently, and the later track re-greps symbols after the earlier one's commit. polish_lane_20261031 (in flight) also owns fe-api/AGENTS.md, fe-runtime/src/AGENTS.md, fe-sync/src/{sharding.rs,AGENTS.md}: S1/S6/S7 start only after the polish waves owning those files close. conductor/tracks.md is append-only for every track (last writer rebases).",
     "2026-10-31: fresh-context spec review — PASS-WITH-FIXES; fixes applied in place.",
     "2026-10-31: cross-track changes applied by the peer_networking_support_20261031 F0 design review (that track consumes S-RELAY-ADVERTISE): (1) OD-6 default AutoAdopt → DialOnly; (2) __relays row gains a required `v` field, unknown fields ignored, unknown `v` skipped (AC-11); (3) role admission runs at read time on the inbound-apply path with quarantine and re-evaluation on advertiser demotion, and the SignedEntry author must equal advertised_by; (4) removal is refcounted across verses and remove_relay is never called on a configured URL; (5) advertised relays never carry RelayAccessToken — tripwire, insert_relay with auth_token: None; (6) FR-7 risk text corrected: doc rows are SignedEntry-attributed, the claim-based residual is gossip-only; (7) one `validate_advertised_relay_url` in fe-sync/src/relay_advertise.rs is the single URL hook; (8) OD-4 and the no-embedded-server non-goal now point to peer_networking_support_20261031 as the next phase. AC-8 and S7's flow tests were reworded to match.",
-    "2026-11-13 (T-NET, round 4): S1-S8 code-done at HEAD via NET-01..NET-10 (commits 7464a5ac..8a7157db); S9 review done (R-NET-1, R-NET-2 PASS-WITH-FIXES), full sweep pending user order. Defaults taken for open decisions: OD-6 = DialOnly (changed from AutoAdopt at the peer_networking F0 review); OD-13 = auto_home_relay ON (round-4 steer: defaults)."
+    "2026-11-13 (T-NET, round 4): S1-S8 code-done at HEAD via NET-01..NET-10 (commits 7464a5ac..8a7157db); S9 review done (R-NET-1, R-NET-2 PASS-WITH-FIXES), full sweep pending user order. Defaults taken for open decisions: OD-6 = DialOnly (changed from AutoAdopt at the peer_networking F0 review); OD-13 = auto_home_relay ON (round-4 steer: defaults).",
+    "2026-11-14 round 5 (T5-NET): NET5-01 (tombstone memo), NET5-02 (net-report feature, default on), NET5-03 and NET5-04 (late gate snapshot, e2e adoption) and INT5-04 are COMPLETE at HEAD per review-turn5/R5-NET-1.md (PASS-WITH-FIXES). Verdicts recorded in review.md. S9 sweep and the tracks.md row stay open (user-gated)."
   ],
   "partitions": {
     "computed_at": "2026-10-31T00:00:00Z",

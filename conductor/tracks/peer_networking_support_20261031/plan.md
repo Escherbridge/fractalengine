@@ -114,7 +114,7 @@ partitions_confidence: hypothesis
 
 ### Gate F1: adversarial security review of access control and advertisement hardening (fable)
 
-- [ ] **F1** (fable): scope is the P2, P3 and P4 diff plus all of W2. OPEN: the security part ran as R-NET-3 and R-NET-4 (PASS-WITH-FIXES, `review-turn4/`); `review-fable-f1.md` was not written.
+- [x] **F1** (fable): scope is the P2, P3 and P4 diff plus all of W2. VERDICT PASS-WITH-FIXES (R-NET-3 and R-NET-4, `review-turn4/`); pointer and fixed-finding list in `review-fable-f1.md`. Fixed after the gate: SEC-INBOX 7 (`1e83a398`), N3-16 and N4-25 (NET5-06).
   - Run `/security-review` on `relay_server.rs`, `relay_trust.rs`, `reachability.rs` and the `__relays` admission path.
   - Attack the gate: Sybil peers, the revoke race, an `open_to_all` leak.
   - Attack the planner: removal of a Configured URL, a token leak.
@@ -136,7 +136,7 @@ partitions_confidence: hypothesis
 
 ### Gate F2: gossip protocol review (fable)
 
-- [ ] **F2** (fable): attack the protocol. OPEN: ran as R-NET-5 (PASS-WITH-FIXES); `review-fable-f2.md` was not written.
+- [x] **F2** (fable): attack the protocol. VERDICT PASS-WITH-FIXES (R-NET-5, `review-turn4/`); pointer and fixed-finding list in `review-fable-f2.md`. Fixed after the gate: SEC-INBOX 13 and 14 (`1e83a398`). N5-08 remains HANDED-OFF.
   - Replay across a restart with an empty LRU, and within the max-age window.
   - Key rotation and revoked DIDs.
   - Mixed-version downgrade: a legacy frame from a latched author, a bad signature behind the magic, a fresh peer that has no latch yet.
@@ -147,13 +147,13 @@ partitions_confidence: hypothesis
 
 ### W4: relay-capable desktop and diagnostics surfaces
 
-- [ ] **P13** (sonnet, W4a): OPEN. Command and responder landed (NET-28 `f8191254`, NET-29 `ccd1a19c`). The self-test is dead code: `fe-sync/src/net_diagnostics.rs:113` gates on feature `net-report`, which `fe-sync/Cargo.toml` does not declare (R6-05 HANDED-OFF).
+- [ ] **P13** (sonnet, W4a): code done, run pending (user-gated). Command and responder landed (NET-28 `f8191254`, NET-29 `ccd1a19c`). R6-05 fixed by NET5-02: `fe-sync/Cargo.toml` now declares `net-report` (default on), so the self-test in `fe-sync/src/net_diagnostics.rs:113` can run. Open until a person sees a verdict in Settings.
   - `SyncCommand::GetNetworkDiagnostics` → `SyncEvent::NetworkDiagnostics`;
   - the self-test, run on demand and on network change;
   - the dial-back responder: signed `reach_probe` frames, FR-2b controls;
   - files: `sync_thread.rs`, `messages.rs`, `status.rs`, plus the §net-diagnostics section.
   - *Acceptance:* AC-13, and the responder half of AC-15.
-- [ ] **P11** (sonnet, W4b): OPEN. Code landed (NET-30, `75256acc` and `6066a4a0`; `fe-ui/src/settings.rs:110-133`), but the gated start cannot pass: R-NET-6 R6-05, R6-10, R6-11 are HANDED-OFF and the gate fails closed.
+- [ ] **P11** (sonnet, W4b): code done, run pending (user-gated). Code landed (NET-30, `75256acc` and `6066a4a0`; `fe-ui/src/settings.rs:110-133`). R6-05 (NET5-02), R6-07 (I5-UI mirror) and R6-11 (NET5-03) are fixed. R6-10 is STILL OPEN at HEAD: `fractalengine/src/relay_serve_bridge.rs` `decide()` still requires `dialback_passed` before `Start`, and the dial-back probes a relay that is not listening yet, so the start stays unreachable. Stays open.
   - a non-default `relay-server` feature in `fractalengine`;
   - `AppSettings.serve_relay`, default false; `AppSettings.act_as_prober`, default false; `AppSettings.auto_home_relay`, default true (OD-13 toggle);
   - a toggle and consent dialog in `ui_shell/right_sidebar.rs`;
@@ -186,7 +186,7 @@ partitions_confidence: hypothesis
 
 ### Gate F3: pre-merge full networking security review (fable)
 
-- [ ] **F3** (fable): full-diff review, including `/security-review`. OPEN: ran as R-NET-6 (PASS-WITH-FIXES, and the relay start stays unreachable until R6-05, R6-10, R6-11 land); evidence and sweep are user-gated.
+- [ ] **F3** (fable): full-diff review, including `/security-review`. VERDICT PASS-WITH-FIXES (R-NET-6, `../p2p_asset_streaming_20260718/review-turn4/`); pointer in `review-fable-f3.md`. Open: R6-10 (relay start still needs a dial-back that needs a listener), so the relay start stays unreachable. In-app and batch evidence is user-gated.
   - Evidence is the P15 e2e run log: two peers plus a relay.
   - Run `cargo deny check` over the `iroh-relay/server` dependency tree.
   - Check AC-1 to AC-16 against the code, and the tripwires mechanically.

@@ -17,7 +17,7 @@
   "research_refs": [
     "research/hexon-p2p-commons/stages/stage3-p2p-crdt-performance-sota.md"
   ],
-  "notes": "iroh 1.0 shipped 2026-06-15 (supersedes the April 2026 '0.35 is the production pin' finding). Hard deadline is external and non-negotiable; self-hosted 1.x relay is the resilient fallback. Coordinate with p2p_mycelium_completion_20260701: wire real iroh-docs against 1.x directly if still in flight. Priority demoted to P2 per 2026-07-14 alignment (rises P1 by Q4). 2026-07-15 (p2p_unblock_now FR-4): fe-sync now pins iroh-quinn-proto 0.13 directly to select BBR congestion control (iroh 0.35 default is CUBIC, ~30x slower for blobs per iroh#4286) — when bumping iroh to 1.x, bump iroh-quinn-proto in lockstep and re-verify the congestion-controller default/API (see fe-sync/src/AGENTS.md §congestion-control).",
+  "notes": "iroh 1.0 shipped 2026-06-15 (supersedes the April 2026 '0.35 is the production pin' finding). Hard deadline is external and non-negotiable; self-hosted 1.x relay is the resilient fallback. Coordinate with p2p_mycelium_completion_20260701: wire real iroh-docs against 1.x directly if still in flight. Priority demoted to P2 per 2026-07-14 alignment (rises P1 by Q4). 2026-07-15 (p2p_unblock_now FR-4): fe-sync now pins iroh-quinn-proto 0.13 directly to select BBR congestion control (iroh 0.35 default is CUBIC, ~30x slower for blobs per iroh#4286) — when bumping iroh to 1.x, bump iroh-quinn-proto in lockstep and re-verify the congestion-controller default/API (see fe-sync/src/AGENTS.md §congestion-control). 2026-11-14 (T5-NET): port landed (iroh 1.3 / iroh-docs 0.101 / iroh-gossip 0.101 / iroh-blobs 0.103.1); relay-assisted acceptance criterion done 2026-10-25 against a local container. Open: orchestrator test sweep (incl. legacy_v035_fixture_migrates_and_reads_back), flag-day rollout before 2026-12-31 (user-gated), fixture packaging, and socket2 shim removal.",
   "alignment": {
     "verdict": "ENABLING-HARDENING",
     "priority": "P2 (rises P1 by Q4)",
@@ -27,7 +27,7 @@
   "validation_notes": "VALIDATED 2026-07-19: pending — evidence: Cargo.toml:61 still pins `iroh = \"0.35\"`, unchanged. Calendar-driven deadline (2026-12-31) not yet reached (~5.4 months out); no premature work needed. Note: p2p_asset_streaming_20260718's D-77/E2 decision explicitly builds FR-3 transport on 0.35 behind a trait seam (not yet implemented either), consistent with this track's deferred posture. remaining: not started, on schedule; do NOT archive.",
   "doneness_note": "2026-10-11: port landed in the working tree (uncommitted) — workspace on iroh 1.3 stack, 0.35 store migration + fixture, legacy bootstrap JSON compat, SYNC-RELAYWATCH watcher; check/clippy/fmt/deny gates clean; tests pending orchestrator sweep; relay-assisted AC open. Previous note (2026-10-10): not started.",
   "audited": "2026-10-11",
-  "updated_at": "2026-10-11T00:00:00Z",
+  "updated_at": "2026-11-14T00:00:00Z",
   "progress": {
     "done": 6,
     "open": 3,

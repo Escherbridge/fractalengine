@@ -167,7 +167,7 @@ A `ReachabilityProbe` adapter wraps `net_report` behind `unstable-net-report`, s
 4. `verse_id` equals the replica's verse.
 5. `issued_at ≤ now + 60 s < expires_at`.
 6. The URL passes `RelayUrlPolicy`: `https` only, no userinfo/query/fragment, host at most 253 bytes, no private IP literal, and port 443 or an allowlisted port.
-7. The set is bounded: at most 4 live advertisements per verse (the newest among the highest role wins; extras are counted) and at most 8 adopted relays per process.
+7. The set is bounded: at most 4 live advertisements per verse (oldest issued wins among the highest role (churn-resistant); extras are counted) and at most 8 adopted relays per process.
 
 **Adoption modes.** Adoption is local and never replicated. Each URL is `Ignore`, `DialOnly` or `HomeEligible`.
 
