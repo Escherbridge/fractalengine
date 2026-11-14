@@ -111,6 +111,14 @@ trusting "pure efficiency" claims; push control; a board that silently drifts st
 
 ## 2. State
 
+- **2026-11-14 — CI WATCHING MOVED OFF THE ORCHESTRATOR (user directive).** The user: "stop fiddling with ci
+  ... or delegate it to a monitor agent". Rule from here: after a push, a background haiku monitor agent
+  (read-only) polls the run, saves the Linux job log under `.omc/research/` and reports totals plus each failed
+  test with its panic line; the orchestrator keeps working and never ends a turn waiting for CI. Failures are
+  listed and their fixes batched into the next planned sweep, not pushed one commit per run. The fix commit
+  `61c6a162` is pushed; its run (43596433455) is with the monitor and its verdict is NOT yet known. This entry
+  is committed locally only: pushing it would cancel that run.
+
 - **2026-11-14 (after the 05:15 entry) — FIRST CI SWEEP ON ROUND-5 CODE: 1,648 PASSED, 2 FAILED; BOTH FIXED.**
   Run 43588234926 on `9660e699`: Windows build and lint green, Linux sweep 1,648 passed / 2 failed, no compile
   errors (log: `.omc/research/ci-43588234926-linux-20261114.log`). The tooltip test fixed on a 60% guess
