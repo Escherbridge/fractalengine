@@ -17,6 +17,7 @@ fe-policy = { path = "../fe-policy" }
 fe-canonical-log = { path = "../fe-canonical-log" }
 # SPEC-10 §4.5 legacy_identifier (migration/AGENTS.md §transform-mapping).
 fe-sdk = { path = "../fe-sdk" }
+fe-format = { path = "../fe-format", default-features = false }
 surrealdb = { workspace = true }
 # SurrealQL's own parser counts an elevated script's statements (EL-1/EL-3,
 # src/AGENTS.md §handlers "elevated"). The exact version `surrealdb` already

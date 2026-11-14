@@ -250,6 +250,8 @@ fn is_transparent(command: &DbCommand) -> bool {
             | DbCommand::GetPetalVisibilityGroups { .. }
             | DbCommand::ReadNodeHistory { .. }
             | DbCommand::ReadNodeMeasurements { .. }
+            | DbCommand::ReadPetalReadings { .. }
+            | DbCommand::ExportPetalSnapshot { .. }
             | DbCommand::ReadSceneMaterials { .. }
             | DbCommand::RawQuery { .. }
             | DbCommand::ExecuteTsPartial { .. }

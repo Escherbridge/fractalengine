@@ -13,6 +13,7 @@ pub enum DbInitError {
     SchemaApply(String),
     ApiTokenSchemaApply(String),
     SceneClockRecovery(String),
+    FieldClockSeed(String),
 }
 
 impl std::fmt::Display for DbInitError {
@@ -26,6 +27,7 @@ impl std::fmt::Display for DbInitError {
                 write!(f, "Failed to set SurrealDB namespace/database: {e}")
             }
             DbInitError::SceneClockRecovery(error) => write!(f,"Scene clock recovery failed: {error}"),
+            DbInitError::FieldClockSeed(error) => write!(f, "Field clock legacy seeding failed: {error}"),
             DbInitError::SchemaApply(e) => write!(f, "Schema application failed: {e}"),
             DbInitError::ApiTokenSchemaApply(e) => {
                 write!(f, "API token schema application failed: {e}")
@@ -66,6 +68,7 @@ pub mod api_token_store;
 pub mod atlas;
 pub mod canon_log;
 mod command_lane;
+pub(crate) mod field_clock;
 pub mod handlers;
 pub mod invite;
 mod join_authority;
@@ -690,6 +693,15 @@ pub fn spawn_db_thread_shared(
                 };
                 op_log::init_hlc(max_lc.max(scene_hlc));
             }
+            // Per-key clock legacy floor before any clocked write; fatal like the scene watermark.
+            match field_clock::migrate::seed_legacy_floor(&db).await {
+                Ok(seeded) => tracing::debug!(seeded, "field clock legacy floor seeded"),
+                Err(error) => {
+                    tracing::warn!("field clock legacy seeding failed: {error:#}");
+                    let _ = startup_tx.send(Err(DbInitError::FieldClockSeed(format!("{error:#}"))));
+                    return;
+                }
+            }
 
             // The shared handle is ready only after fatal clock recovery has succeeded.
             let _ = startup_tx.send(Ok(db.clone()));
@@ -886,7 +898,7 @@ pub fn spawn_db_thread_shared(
                     }
                     Ok(DbCommand::CreateNode { petal_id, name, position, correlation_id }) => {
                         match handlers::crud::create_node_as(&db, &petal_id, &name, position, &local_did).await {
-                            Ok(id) => {
+                            Ok((id, applied_scale)) => {
                                 handlers::scene_publication::publish_after_commit(&db,&blob_store,repl_tx.as_ref(),&local_did,&id).await;
                                 if let Some(ref ect) = entity_change_tx {
                                     let _ = ect.send(fe_runtime::messages::SceneChange::NodeAdded {
@@ -896,7 +908,7 @@ pub fn spawn_db_thread_shared(
                                             name: name.clone(),
                                             position,
                                             rotation: [0.0, 0.0, 0.0, 1.0],
-                                            scale: [1.0, 1.0, 1.0],
+                                            scale: applied_scale,
                                             has_asset: false,
                                             asset_path: None,
                                         },
@@ -1929,6 +1941,13 @@ pub fn spawn_db_thread_shared(
                         };
                         send_result(&tx, reply);
                     }
+                    Ok(DbCommand::ReadPetalReadings { petal_id, since_ms, grant, correlation_id }) => {
+                        let reply = match handlers::petal_readings::read(&db, &petal_id, since_ms, &grant, &local_did).await {
+                            Ok(summary) => DbResult::PetalReadingsLoaded { summary, correlation_id },
+                            Err(error) => DbResult::RequestFailed { error: format!("Read readings failed: {error}"), correlation_id },
+                        };
+                        send_result(&tx, reply);
+                    }
                     Ok(DbCommand::ReadSceneMaterials { petal_id, expected_scope, node_ids, correlation_id }) => {
                         let reply = match handlers::scene_materials::read(&db, &petal_id, &expected_scope, &node_ids, &local_did).await {
                             Ok(materials) => DbResult::SceneMaterialsLoaded { materials, correlation_id },
@@ -2337,6 +2356,15 @@ pub fn spawn_db_thread_shared(
                             Ok(()) => send_result(&tx, DbResult::CrateUninstalled { hexon_uri }),
                             Err(e) => send_result(&tx, DbResult::Error(format!("Uninstall crate failed: {e}"))),
                         }
+                    }
+                    // --- Petal snapshots (HEXON-09/10; refuse-on-existing import) ---
+                    Ok(DbCommand::ExportPetalSnapshot { petal_id, correlation_id }) => {
+                        let reply = handlers::petal_snapshot::export_petal_snapshot_reply(&db, petal_id, correlation_id).await;
+                        send_result(&tx, reply);
+                    }
+                    Ok(DbCommand::ImportPetalSnapshot { rows, correlation_id }) => {
+                        let reply = handlers::petal_snapshot::import_petal_snapshot_reply(&db, *rows, correlation_id).await;
+                        send_result(&tx, reply);
                     }
                     // CDL-R2 (W4-8): self-signed device enrolment, published as an
                     // ordinary replicated row (canon_log/AGENTS.md §device-enrolment).

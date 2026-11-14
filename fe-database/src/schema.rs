@@ -150,6 +150,8 @@ define_table! {
         /// QA-0131 continuity HLCs (decimal strings); absent = `hlc`.
         editor_since:  Option<String> => "TYPE option<string>",
         manager_since: Option<String> => "TYPE option<string>",
+        /// Closed Editor/Manager grant windows as a JSON string (CLOCK-04); absent = none.
+        windows:       Option<String> => "TYPE option<string>",
         updated_at:    String => "TYPE string"
     }
 }
@@ -167,6 +169,7 @@ define_table! {
         hlc:           String => "TYPE string",
         editor_since:  Option<String> => "TYPE option<string>",
         manager_since: Option<String> => "TYPE option<string>",
+        windows:       Option<String> => "TYPE option<string>",
         updated_at:    String => "TYPE string",
         received_at:   String => "TYPE string"
     }
@@ -318,6 +321,32 @@ define_table! {
         hlc: i64 => "TYPE int ASSERT $value > 0",
         publisher: String => "TYPE string",
         row_fingerprint: String => "TYPE string"
+    }
+}
+
+define_table! {
+    /// One author's version of one key of a clocked row; LOCAL (field_clock/AGENTS.md §storage).
+    table "row_field_version" => RowFieldVersion (id: rid) {
+        tbl: String => "TYPE string",
+        rid: String => "TYPE string",
+        verse_id: String => "TYPE string",
+        field_key: String => "TYPE string",
+        author: String => "TYPE string",
+        hlc: i64 => "TYPE int ASSERT $value >= 0",
+        /// Canonical JSON text of the value; `NONE` when deleted.
+        value_json: Option<String> => "TYPE option<string>",
+        deleted: bool => "TYPE bool"
+    }
+}
+
+define_table! {
+    /// Cached winning (hlc, author) per key of a clocked row; LOCAL (field_clock/AGENTS.md §storage).
+    table "row_field_clock" => RowFieldClock (id: rid) {
+        tbl: String => "TYPE string",
+        rid: String => "TYPE string",
+        field_key: String => "TYPE string",
+        hlc: i64 => "TYPE int ASSERT $value >= 0",
+        author: String => "TYPE string"
     }
 }
 
@@ -795,6 +824,15 @@ pub async fn apply_all(db: &crate::repo::Db) -> anyhow::Result<()> {
     Repo::<NodeSceneClock>::apply_schema(db).await?;
     db.query("DEFINE INDEX IF NOT EXISTS idx_node_scene_clock ON TABLE node_scene_clock FIELDS node_id UNIQUE")
         .await?.check()?;
+    Repo::<RowFieldVersion>::apply_schema(db).await?;
+    Repo::<RowFieldClock>::apply_schema(db).await?;
+    db.query(
+        "DEFINE INDEX IF NOT EXISTS idx_row_field_version ON TABLE row_field_version FIELDS tbl, rid, field_key, author UNIQUE;
+         DEFINE INDEX IF NOT EXISTS idx_row_field_version_author ON TABLE row_field_version FIELDS verse_id, author;
+         DEFINE INDEX IF NOT EXISTS idx_row_field_clock ON TABLE row_field_clock FIELDS tbl, rid, field_key UNIQUE;
+         DEFINE INDEX IF NOT EXISTS idx_row_field_clock_row ON TABLE row_field_clock FIELDS tbl, rid;",
+    )
+    .await?.check().map_err(|e| anyhow::anyhow!("field clock indexes: {e}"))?;
     Repo::<NodeLegacyWriter>::apply_schema(db).await?;
     db.query("DEFINE INDEX IF NOT EXISTS idx_node_legacy_writer ON TABLE node_legacy_writer FIELDS node_id UNIQUE")
         .await?.check()?;
@@ -1027,6 +1065,8 @@ pub const DEVELOPMENT_RESET_TABLE_NAMES: &[&str] = &[
     "asset",
     "node_log",
     "node_scene_clock",
+    "row_field_version",
+    "row_field_clock",
     "node_legacy_writer",
     "asset_inbound_author",
     "iot_reading",
