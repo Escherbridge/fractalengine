@@ -111,8 +111,21 @@ trusting "pure efficiency" claims; push control; a board that silently drifts st
 
 ## 2. State
 
-- **2026-11-13 18:25 MST — RESUME; §7 step 1 fix committed locally (`44ecc1b6`), NOT pushed (push denied by the
-  permission classifier; user's call), so CI on `main` is still red.** Drift found at
+- **2026-11-13 18:55 MST — ROUND 4 PLANNING RUNNING; CI fix PUSHED (`8530377d`, 18:40), CI verdict due ~20:15.**
+  The user authorized pushes and widened round 4 to every track with a plan (§3). Pushed: `44ecc1b6`
+  (`GuiSend::Busy`), `1b44888f` (`GuiSend::channel_unavailable()` at the eight blocking callers + `--no-fail-fast`
+  on the CI sweep), `8530377d`. **Do not push again before that CI run ends: a new push cancels the run in
+  flight** (check `gh run list --branch main --limit 2`; read every `test result:` line). Planning workflow
+  `wf_d595d1cd-8d1` (task `w1clfv5yx`): ten scopers (EXT, MKT, HEXON, CITY, NET, DATA, CLOCK, UI, REL, NEW) write
+  `.omc/state/turn4-scope/<GROUP>.json`; an opus planner writes `.omc/state/turn4-dag.json`,
+  `.omc/state/turn4-args.json`, `.omc/plans/turn4-plan.md`; an opus critic fixes them. Resume after a sleep or
+  kill: `Workflow({scriptPath: "<this session>/workflows/scripts/round4-plan-wf_d595d1cd-8d1.js",
+  resumeFromRunId: "wf_d595d1cd-8d1"})` (session dir `9e91d24c-8e3f-487d-b465-931414454ecb`). **After it:** the
+  orchestrator re-checks ownership overlap and cycles itself, then launches the execution swarm from the turn-3
+  script (`a1c488fe-…/workflows/scripts/ext-program-swarm-turn3.js`) with the turn-4 preamble and
+  `args = turn4-args.json` (§7 step 2).
+- **2026-11-13 18:25 MST — RESUME; §7 step 1 fix committed (`44ecc1b6`; pushed 18:40 after the user authorized
+  it).** Drift found at
   resume: (1) the hand-off entry below is stamped 19:45 but was pushed at 18:11 MST; (2) the red run stopped at
   the fe-ui binary (`cargo test` without `--no-fail-fast`), so the `fractalengine` tests never ran in it; the run
   before (`43437948878`, `45f88a69`) had fe-ui 1069/0 and TWO `fractalengine` failures this file never recorded:
@@ -315,6 +328,24 @@ trusting "pure efficiency" claims; push control; a board that silently drifts st
 | Critic tick 8 (W4 close / role-propagation pre-launch) | accountability critic | 11 directives AC-41..AC-51 (C11-C21): RP-4s + RP-9b dual review added, AC-42 durable local-statement re-emit, AC-43 three-valued confinement, AC-44 enrolment floor Deferred split, AC-45 C3 false-premise correction, AC-46 stale-API-token cap, AC-47 STREAMED-TERRAIN-PIN promoted to RP-4b, AC-48 gate-text + harness-manifest fix, AC-49 RP-0 (oversized-window test + typed rejection), AC-50 BLOB-HASH-CAPABILITY ledger row, AC-51 bookkeeping | ON_TRACK |
 
 ## 3. Decisions
+
+**2026-11-13 ~18:45 MST (user, round-4 grill; supersedes the round-4 scope in §7 step 2):**
+- **Push authorized "as needed"** for this campaign (user message). `8530377d` pushed 18:40.
+- **Round 4 scope = every conductor track that has a plan with open tasks**, not only the extension program
+  (chosen over "extension program only", the recommendation). Spec-only tracks (no plan.md tasks), the
+  off-strategy `profile_manager_20260419` and ratification-blocked items stay out unless the scoping pass finds
+  them unblocked (orchestrator's reading of "with a plan"). *Reversal: cheap before launch, expensive after.*
+- **Registry install shows real download progress again** (not 0/1 then 1/1); the test returns to ordered
+  multi-step progress. *Reversal: cheap.*
+- **Full DB queue: retry queue plus dead-letter list.** User's words: "clients can declare a refresh with a
+  queue and pause visible updates but there has to be some sort of dlq with a retry system". Orchestrator's
+  reading: the scene-write door keeps an admitted write and retries it (bounded, with backoff) for callers that
+  opt in; while it is queued the caller shows a pending state and holds back the optimistic visible update; a
+  write that exhausts its retries moves to a dead-letter list the user can see, retry or discard. *Reversal:
+  moderate (callers change shape).*
+- **QA-0165 = role at write time, and build it in round 4:** the per-key `(HLC, author)` clock for
+  verse/fractal/petal rows and non-transform node fields (root of QA-0156/0165/0166). The P2P simulator is its
+  verification, run when the user names it. *Reversal: expensive (wire and storage semantics).*
 
 **2026-11-13 19:40 (user, hand-off grill):**
 - **Order = fix CI, then round 4, then review, then tests.** Chosen over "tests now" because a round-4 change
@@ -698,9 +729,8 @@ three-session bus model that this single orchestrator session replaced).** Stand
 run until step 4; `cargo check -p <crate>` is the only gate; never stage `conductor/.conductor_session_log`;
 leak grep before every public commit.
 
-1. **Get `main` green — fix committed LOCALLY as `44ecc1b6` (2026-11-13), NOT pushed: the push was denied by
-   the permission classifier and waits for the user.** `git push origin main`, then confirm the CI run on it:
-   `gh run list --branch main --limit 2`. If it is red, read EVERY `test result:` line: the sweep stops at the
+1. **Get `main` green — fix pushed as `8530377d` (2026-11-13 18:40); confirm the CI run on it** (due ~20:15 MST;
+   no push before it ends, a push cancels it): `gh run list --branch main --limit 2`. If it is red, read EVERY `test result:` line: the sweep stops at the
    first failing binary, so a failure can hide later ones (`gh run view <id> --log-failed`, captured to
    `.omc/research/`). Per-chunk progress for registry installs is gone since `7ae7adad` (one `fetch_hexon`
    call); if the Hexon Manager should show real download progress again, that is a product slice for round 4,
@@ -710,7 +740,14 @@ leak grep before every public commit.
    (earthwork) and returned an error containing "busy" (editor batch); restore both behaviours through the gated
    path. Gate: `cargo check -p fe-ui --all-targets`. Do not run tests locally unless the user names the batch;
    push and let CI's sweep confirm (`gh run list --branch main --limit 2`). A green run republishes `latest`.
-2. **Round 4: the held-out code.** One swarm, same shape as turn 3 (`ext-program-swarm-turn3.js` as the template,
+2. **Round 4: every track with a plan (scope widened by the user 2026-11-13, §3).** The slice list is
+   `.omc/state/turn4-dag.json` and the plan `.omc/plans/turn4-plan.md` (written by `wf_d595d1cd-8d1`; if they
+   are missing, resume that workflow first). Launch: the turn-3 script with its PREAMBLE re-pointed at the
+   turn-4 files, `TRACK` taken from each slice's `tk`, and `grep -v AZURE_TENANT_ID` before the leak grep;
+   width 5; workers never build or commit. During the swarm: commits stay local; report at every wave barrier
+   (memory `slice-run-live-visibility`); `/handoff rolling`. After it: the refine pass in the plan's REFINE
+   CHECKLIST order, then step 3. The H1-H7 list below is now one input among several (group EXT, MKT, NEW).
+   Original text: One swarm, same shape as turn 3 (`ext-program-swarm-turn3.js` as the template,
    width 5, one owner per central file, leaves never build, serialized commit step with ignore check + leak
    grep; add `AZURE_TENANT_ID` to the leak-grep allow-list). Slices:
    - **H1 licence tokens (public).** `request_licence_token` in the plugin bridge still answers not-available.
@@ -790,15 +827,15 @@ leak grep before every public commit.
   that did not exist).
 - Reviewed: fe-ui diff by a separate-context reviewer, PASS-WITH-FIXES (ledger row); the two test edits read by
   the orchestrator.
-- In flight: nothing. Two local commits are unpushed (the fix and this runbook update). CI run `43539046646`
-  on the hand-off commit will end red for the old reason.
-- Blocked (user): `git push origin main` (denied to the agent by the permission classifier).
+- Then (18:40): user authorized pushes; `1b44888f` (`channel_unavailable()`, CI `--no-fail-fast`) and
+  `8530377d` pushed; round-4 grill answered (§3).
+- In flight: CI run on `8530377d`; planning workflow `wf_d595d1cd-8d1` (§2 top entry).
 - Deferred: `GuiSend::is_unsent()` for the eight `== GuiSend::Closed` callers (trigger: any of them moves to a
   `try_` variant); whether undo and stamp promotion should block again on a full channel instead of returning a
   busy error (trigger: a user sees "queue is busy" on Undo in the app); H4 untouched (it is the
   `SetNodeProperty` follow-up in `fe-ui/src/verse_manager/db_results/nodes.rs:70`, which names no petal, not
   the volume save).
-- Next: push, confirm CI (read every `test result:` line), then `/slice` for round 4 (§7 step 2).
+- Next: verify the turn-4 DAG (overlap + cycles), launch the execution swarm (§7 step 2), confirm CI.
 
 ### 2026-11-13 19:45 (actual ~18:10 MST) — hand-off, focus on held-out work
 - Done: swarm turns 1-3 (extension platform, portal surface, private marketplace services); both tracks merged
