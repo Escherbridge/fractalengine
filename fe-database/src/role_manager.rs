@@ -216,7 +216,19 @@ async fn issue_local_statement(
     let prior = role_grants::load_effective_roles(db, verse_id).await?;
     let stmt=role_grants::commit_local_statement(db,entry,verse_id,caller_did,peer_did,scope,role,revoked,authority,&owner).await?;
     // A crash before this line is repaired by the startup repartition and re-emit (AC-42).
-    role_grants::repartition(db, verse_id, prior.as_ref()).await?;
+    let changed = role_grants::repartition(db, verse_id, prior.as_ref()).await?;
+    // Re-judge clocked rows of every DID whose role moved, plus the peer (its window changed); echoed by the next retry.
+    let dids: Vec<String> = changed
+        .risen
+        .into_iter()
+        .chain(changed.fallen)
+        .chain(std::iter::once(peer_did.to_owned()))
+        .collect::<std::collections::BTreeSet<_>>()
+        .into_iter()
+        .collect();
+    if let Err(error) = crate::field_clock::rejudge::rejudge_local(db, verse_id, &dids).await {
+        tracing::warn!(verse_id, "clocked row re-judge after a local role statement failed: {error:#}");
+    }
     role_grants::publish_statement(repl_tx, blob_store, verse_id, &stmt);
     Ok(stmt)
 }

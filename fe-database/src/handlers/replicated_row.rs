@@ -81,6 +81,10 @@ pub struct ApplyReport {
     pub risen_dids: Vec<String>,
     /// The verse manifest landed with this apply (the verse row was unknown before).
     pub manifest_landed: bool,
+    /// Clocked rows a role change re-judged (field_clock/AGENTS.md §rejudge), echoed like applied rows.
+    pub rejudged: Vec<super::inbound_admissions::RowReport>,
+    /// Nodes that re-judge removed locally, as (node id, petal id).
+    pub removed_nodes: Vec<(String, String)>,
 }
 
 impl ApplyReport {
@@ -90,6 +94,34 @@ impl ApplyReport {
             outcome,
             risen_dids: Vec::new(),
             manifest_landed: false,
+            rejudged: Vec::new(),
+            removed_nodes: Vec::new(),
+        }
+    }
+
+    /// Re-judge the clocked rows of `dids` after a role change; a failure is warned, never fails the apply.
+    async fn rejudge(
+        &mut self,
+        db: &Db,
+        verse_id: &str,
+        dids: Vec<String>,
+        entity_change_tx: Option<&SceneChangeSender>,
+    ) {
+        let dids: Vec<String> = dids
+            .into_iter()
+            .filter(|did| !did.is_empty())
+            .collect::<std::collections::BTreeSet<_>>()
+            .into_iter()
+            .collect();
+        if dids.is_empty() {
+            return;
+        }
+        match crate::field_clock::rejudge::rejudge_authors_detailed(db, verse_id, &dids, entity_change_tx).await {
+            Ok(rejudged) => {
+                self.rejudged.extend(rejudged.reports);
+                self.removed_nodes.extend(rejudged.removed_nodes);
+            }
+            Err(error) => tracing::warn!(verse_id, "clocked row re-judge after a role change failed: {error:#}"),
         }
     }
 }
@@ -129,7 +161,7 @@ pub(crate) async fn apply_replicated_row_reporting_with_publisher(
     // RP-3: role statements bypass the Editor+ write gate — their gate is the
     // fe-policy validator plus durable placement (plan §2.4).
     if table == crate::role_grants::ROLE_DOC_TABLE {
-        return apply_role_statement(db, verse_id, record_id, row_bytes, author_did).await;
+        return apply_role_statement(db, verse_id, record_id, row_bytes, author_did, entity_change_tx).await;
     }
     // The manifest-apply path must notice the owner becoming known (or
     // changing) so the role partition promotes pre-manifest holds.
@@ -194,7 +226,16 @@ pub(crate) async fn apply_replicated_row_reporting_with_publisher(
             // `prior = None` seeds the owner and every admitted peer as risen,
             // which promotes every held statement the new owner empowers.
             let changed = crate::role_grants::repartition(db, verse_id, None).await?;
-            report.risen_dids = changed.risen;
+            report.risen_dids = changed.risen.clone();
+            // Owner admission is settled by identity, so both owners' versions are re-judged too.
+            let dids = changed
+                .risen
+                .into_iter()
+                .chain(changed.fallen)
+                .chain(owner_before)
+                .chain(owner_after)
+                .collect();
+            report.rejudge(db, verse_id, dids, entity_change_tx).await;
         }
     }
     Ok(report)
@@ -244,6 +285,7 @@ async fn apply_role_statement(
     record_id: &str,
     row_bytes: &[u8],
     author_did: &str,
+    entity_change_tx: Option<&SceneChangeSender>,
 ) -> anyhow::Result<ApplyReport> {
     // A `Doc::del` carries no HLC and iroh's `del` is a prefix delete;
     // revocation is a non-empty `revoked: true` statement (§2.1).
@@ -294,11 +336,15 @@ async fn apply_role_statement(
     let (placement, changed) = crate::role_grants::submit_statement(db, verse_id, &stmt).await?;
     crate::op_log::observe_role_statement_hlc(stmt.hlc);
     use crate::role_grants::Placement;
-    let report = match placement {
+    // Re-judge every DID whose role moved, plus the statement's peer: a window can change without its level changing.
+    let mut rejudge_dids: Vec<String> = changed.risen.iter().chain(&changed.fallen).cloned().collect();
+    if placement == Placement::Admitted {
+        rejudge_dids.push(stmt.peer_did.clone());
+    }
+    let mut report = match placement {
         Placement::Admitted => ApplyReport {
-            outcome: ReplicatedRowOutcome::Applied,
             risen_dids: changed.risen,
-            manifest_landed: false,
+            ..ApplyReport::of(ReplicatedRowOutcome::Applied)
         },
         // Not newer than the live version: idempotent, nothing written. The
         // key is still deferred while that live version sits in the held store.
@@ -315,6 +361,7 @@ async fn apply_role_statement(
         // re-read forwards it again once its grantor is empowered (§2.5).
         Placement::RefusedOverBudget => ApplyReport::of(ReplicatedRowOutcome::Deferred(waiting)),
     };
+    report.rejudge(db, verse_id, rejudge_dids, entity_change_tx).await;
     Ok(report)
 }
 
@@ -2973,7 +3020,79 @@ mod tests {
             vec![serde_json::json!("did:key:dave")],
             "the held author's version is kept for a later re-judge"
         );
-        // TODO(CLOCK-10): admit did:key:mgr's Manager grant, run rejudge_authors, then assert the name is "Dave's petal".
+        // The upgrade seeds the pre-clock values as the legacy floor (author '', hlc 0).
+        crate::field_clock::seed_legacy_floor(&db).await.expect("seed legacy floor");
+
+        // The owner's Manager grant for mgr arrives: dave's held grant is promoted and the
+        // re-judge (DB-local, over stored versions) makes his stored rename the value.
+        let statement = |peer: &str, grantor: &str, role: &str, revoked: bool, hlc: u64, windows: Vec<fe_policy::GrantWindow>| {
+            serde_json::to_vec(&fe_policy::RoleStatementPayload {
+                scope: "VERSE#v1".to_string(),
+                peer_did: peer.to_string(),
+                grantor_did: grantor.to_string(),
+                role: role.to_string(),
+                revoked,
+                hlc,
+                editor_since: None,
+                manager_since: None,
+                windows,
+            })
+            .unwrap()
+        };
+        let mut queue = crate::handlers::inbound_admissions::InboundAdmissions::new();
+        let petal_report = crate::handlers::inbound_admissions::RowReport {
+            verse_id: "v1".into(),
+            table: "petal".into(),
+            record_id: "petal-1".into(),
+            outcome: ReplicatedRowOutcome::Applied,
+        };
+        let reports = queue
+            .apply(
+                &db,
+                "v1",
+                crate::role_grants::ROLE_DOC_TABLE,
+                "VERSE#v1/did:key:mgr/did:key:owner-a",
+                &statement("did:key:mgr", "did:key:owner-a", "manager", false, 50, Vec::new()),
+                "did:key:owner-a",
+                None,
+            )
+            .await;
+        assert_eq!(reports[0].outcome, ReplicatedRowOutcome::Applied);
+        assert!(reports.contains(&petal_report), "the re-judged petal is echoed: {reports:?}");
+        assert_eq!(
+            select_json(&db, "SELECT name FROM petal WHERE petal_id = 'petal-1'").await[0]["name"],
+            "Dave's petal"
+        );
+
+        // QA-0131 late revoke: mgr's revoke closes dave's Editor window at 150, below his applied
+        // version's hlc 200, so the re-judge demotes it and the legacy floor wins again.
+        let window = vec![fe_policy::GrantWindow { role: fe_policy::GrantedRole::Editor, since: 100, until: 150 }];
+        let reports = queue
+            .apply(
+                &db,
+                "v1",
+                crate::role_grants::ROLE_DOC_TABLE,
+                "VERSE#v1/did:key:dave/did:key:mgr",
+                &statement("did:key:dave", "did:key:mgr", "editor", true, 150, window),
+                "did:key:mgr",
+                None,
+            )
+            .await;
+        assert_eq!(reports[0].outcome, ReplicatedRowOutcome::Applied);
+        assert!(reports.contains(&petal_report), "the demoted petal is echoed: {reports:?}");
+        assert_eq!(
+            select_json(&db, "SELECT name FROM petal WHERE petal_id = 'petal-1'").await[0]["name"],
+            "P"
+        );
+        assert_eq!(
+            select_json(
+                &db,
+                "SELECT VALUE author FROM row_field_clock WHERE tbl = 'petal' AND rid = 'petal-1' AND field_key = 'name'"
+            )
+            .await,
+            vec![serde_json::json!("")],
+            "the cached winner is the legacy floor; dave's version stays stored"
+        );
     }
 
     /// Re-delivery of an already-applied row is idempotent-harmless (the
@@ -3717,6 +3836,7 @@ mod tests {
             hlc: 1,
             editor_since: None,
             manager_since: None,
+            windows: Vec::new(),
         };
         let mut queue = InboundAdmissions::new();
         let reports = queue

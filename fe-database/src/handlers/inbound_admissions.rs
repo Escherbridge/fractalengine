@@ -69,6 +69,8 @@ pub struct InboundAdmissions {
     by_wait: HashMap<Trigger, BTreeSet<u64>>,
     by_verse: HashMap<String, BTreeSet<u64>>,
     by_author: HashMap<(String, String), BTreeSet<u64>>,
+    /// Nodes a role-change re-judge removed locally, (node id, petal id), until the DB loop takes them.
+    removed_nodes: Vec<(String, String)>,
 }
 
 impl Default for InboundAdmissions {
@@ -99,7 +101,19 @@ impl InboundAdmissions {
             by_wait: HashMap::new(),
             by_verse: HashMap::new(),
             by_author: HashMap::new(),
+            removed_nodes: Vec::new(),
         }
+    }
+
+    /// Take the nodes a role-change re-judge removed since the last call (the DB loop sends `NodeDeleted` for each).
+    pub fn take_removed_nodes(&mut self) -> Vec<(String, String)> {
+        std::mem::take(&mut self.removed_nodes)
+    }
+
+    /// Collect a run's re-judge results: rows into `reports`, removed nodes into the queue's outbox.
+    fn collect_rejudged(&mut self, report: &mut ApplyReport, reports: &mut Vec<RowReport>) {
+        reports.append(&mut report.rejudged);
+        self.removed_nodes.append(&mut report.removed_nodes);
     }
 
     /// Queued rows across every verse.
@@ -177,8 +191,9 @@ impl InboundAdmissions {
             record_id: record_id.to_string(),
             author_did: author_did.to_string(),
         };
-        let report = run(db, &key, row_bytes, self.local_publisher.as_deref(), entity_change_tx).await;
+        let mut report = run(db, &key, row_bytes, self.local_publisher.as_deref(), entity_change_tx).await;
         let mut reports = vec![row_report(&key, &report.outcome)];
+        self.collect_rejudged(&mut report, &mut reports);
         let mut triggers = VecDeque::new();
         self.settle(key, row_bytes.to_vec(), None, &report, &mut triggers);
         self.drain(db, triggers, entity_change_tx, &mut reports)
@@ -202,7 +217,16 @@ impl InboundAdmissions {
             })
             .cloned()
             .collect();
-        let mut reports = Vec::new();
+        // Re-judge results of local role statements (role_manager) are echoed with this retry.
+        let local = crate::field_clock::rejudge::take_local(verse_id);
+        for (node_id, petal_id) in &local.removed_nodes {
+            super::replicated_row::emit_scene_change(
+                entity_change_tx,
+                fe_runtime::messages::SceneChange::NodeRemoved { node_id: node_id.clone(), petal_id: petal_id.clone() },
+            );
+        }
+        self.removed_nodes.extend(local.removed_nodes);
+        let mut reports = local.reports;
         self.drain(db, triggers, entity_change_tx, &mut reports)
             .await;
         reports
@@ -236,10 +260,11 @@ impl InboundAdmissions {
                     continue;
                 };
                 retries += 1;
-                let report = run(db, &row.key, &row.bytes, self.local_publisher.as_deref(), entity_change_tx).await;
+                let mut report = run(db, &row.key, &row.bytes, self.local_publisher.as_deref(), entity_change_tx).await;
                 if !matches!(report.outcome, ReplicatedRowOutcome::Deferred(_)) {
                     reports.push(row_report(&row.key, &report.outcome));
                 }
+                self.collect_rejudged(&mut report, reports);
                 self.settle(row.key, row.bytes, Some(row.reason), &report, &mut triggers);
             }
         }

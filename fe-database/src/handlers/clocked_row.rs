@@ -368,29 +368,10 @@ async fn apply_once(
     );
     bindings.push(("fe_row_count".into(), json!(usize::from(stored.is_some()))));
     bindings.push(("fe_versions_before".into(), Value::Array(versions_before)));
-    let mut unset = Vec::new();
-    let mut geometry = None;
+    let mut writes = ColumnWrites { patch, ..ColumnWrites::default() };
     let row_targets: Vec<&FieldVersion> = if stored.is_none() { winners.values().collect() } else { changed.clone() };
-    for winner in &row_targets {
-        // Winners come from parsed versions or the store, never from the value-less cache, unless unchanged.
-        let Some(version) = versions.get(&(winner.field.clone(), winner.author.clone())) else {
-            continue;
-        };
-        let value = version.value.as_ref().filter(|_| !version.deleted);
-        if Some(version.field.as_str()) == shape.geometry {
-            match value {
-                Some(value) => geometry = Some(value.clone()),
-                None => unset.push(version.field.clone()),
-            }
-            continue;
-        }
-        match value {
-            Some(value) => {
-                patch.insert(version.field.clone(), value.clone());
-            }
-            None => unset.push(version.field.clone()),
-        }
-    }
+    writes.add_winners(shape, &row_targets, &versions);
+    let ColumnWrites { mut patch, unset, geometry } = writes;
     let created = stored.is_none();
     let row_changed = created || !patch.is_empty() || !unset.is_empty() || geometry.is_some();
     if created {
@@ -399,18 +380,11 @@ async fn apply_once(
         }
         statements.push(format!("CREATE {table} CONTENT $fe_row_content"));
         bindings.push(("fe_row_content".into(), Value::Object(patch)));
+        if let (Some(column), Some(value)) = (shape.geometry, &geometry) {
+            statements.push(geometry_statement(table, shape.id_field, column, "fe_row_rid", value)?);
+        }
     } else {
-        if !patch.is_empty() {
-            statements.push(format!("UPDATE {table} MERGE $fe_row_patch WHERE {} = $fe_row_rid", shape.id_field));
-            bindings.push(("fe_row_patch".into(), Value::Object(patch)));
-        }
-        if !unset.is_empty() {
-            // Every name passed `is_plain_identifier`.
-            statements.push(format!("UPDATE {table} UNSET {} WHERE {} = $fe_row_rid", unset.join(", "), shape.id_field));
-        }
-    }
-    if let (Some(column), Some(value)) = (shape.geometry, &geometry) {
-        statements.push(geometry_statement(table, shape.id_field, column, "fe_row_rid", value)?);
+        ColumnWrites { patch, unset, geometry }.push_update(table, shape, &mut statements, &mut bindings)?;
     }
     if !written.is_empty() {
         let (versions_statements, versions_bindings) = store::versions_write_sql(table, rid, verse_id, &written)?;
@@ -430,6 +404,196 @@ async fn apply_once(
             crate::op_log::observe_scene_hlc(clock);
         }
     }
+    Ok(if row_changed {
+        ReplicatedRowOutcome::Applied
+    } else {
+        ReplicatedRowOutcome::NotApplicable
+    })
+}
+
+/// Column writes of one row update: MERGE patch, UNSET columns and the geometry value.
+#[derive(Default)]
+struct ColumnWrites {
+    patch: Map<String, Value>,
+    unset: Vec<String>,
+    geometry: Option<Value>,
+}
+
+impl ColumnWrites {
+    /// Add each target's stored value (a deleted version unsets its column); values come from `versions`, never the value-less cache.
+    fn add_winners(
+        &mut self,
+        shape: &TableShape,
+        targets: &[&FieldVersion],
+        versions: &BTreeMap<(String, String), FieldVersion>,
+    ) {
+        for winner in targets {
+            let Some(version) = versions.get(&(winner.field.clone(), winner.author.clone())) else {
+                continue;
+            };
+            let value = version.value.as_ref().filter(|_| !version.deleted);
+            match (value, Some(version.field.as_str()) == shape.geometry) {
+                (Some(value), true) => self.geometry = Some(value.clone()),
+                (Some(value), false) => {
+                    self.patch.insert(version.field.clone(), value.clone());
+                }
+                (None, _) => self.unset.push(version.field.clone()),
+            }
+        }
+    }
+
+    fn is_empty(&self) -> bool {
+        self.patch.is_empty() && self.unset.is_empty() && self.geometry.is_none()
+    }
+
+    /// Append the UPDATE statements of an existing row keyed by `$fe_row_rid`.
+    fn push_update(
+        self,
+        table: &str,
+        shape: &TableShape,
+        statements: &mut Vec<String>,
+        bindings: &mut Vec<(String, Value)>,
+    ) -> anyhow::Result<()> {
+        if !self.patch.is_empty() {
+            statements.push(format!("UPDATE {table} MERGE $fe_row_patch WHERE {} = $fe_row_rid", shape.id_field));
+            bindings.push(("fe_row_patch".into(), Value::Object(self.patch)));
+        }
+        if !self.unset.is_empty() {
+            // Every name passed `is_plain_identifier`.
+            statements.push(format!("UPDATE {table} UNSET {} WHERE {} = $fe_row_rid", self.unset.join(", "), shape.id_field));
+        }
+        if let (Some(column), Some(value)) = (shape.geometry, &self.geometry) {
+            statements.push(geometry_statement(table, shape.id_field, column, "fe_row_rid", value)?);
+        }
+        Ok(())
+    }
+}
+
+/// Re-judge one stored verse/fractal/petal row from its stored versions alone; see field_clock/AGENTS.md §rejudge.
+/// `Applied` when a column changed; winners may be demoted, but a required column never loses its last value.
+pub(crate) async fn rematerialize(
+    db: &Db,
+    verse_id: &str,
+    table: &str,
+    rid: &str,
+    view: &VerseView,
+) -> anyhow::Result<ReplicatedRowOutcome> {
+    let Some(shape) = TableShape::of(table) else {
+        anyhow::bail!("{table} is not a clocked hierarchy table");
+    };
+    let mut attempt = 0;
+    loop {
+        attempt += 1;
+        match rematerialize_once(db, verse_id, table, &shape, rid, view).await {
+            Err(error) if attempt < FENCE_ATTEMPTS && is_fence_error(&error) => {
+                tracing::debug!(verse_id, table, rid, attempt, "clocked row moved under the re-judge; re-reading");
+            }
+            outcome => return outcome,
+        }
+    }
+}
+
+/// Deepest scope of a stored hierarchy row, `None` when it is unknown or sits in another verse.
+async fn stored_scope(db: &Db, verse_id: &str, table: &str, rid: &str) -> anyhow::Result<Option<String>> {
+    use crate::handlers::crud::{
+        resolve_fractal_scope_handler, resolve_petal_scope_handler, resolve_verse_scope_handler,
+    };
+    let scope = match table {
+        "verse" if rid == verse_id => resolve_verse_scope_handler(db, rid).await?,
+        "fractal" => resolve_fractal_scope_handler(db, rid).await?,
+        "petal" => resolve_petal_scope_handler(db, rid).await?,
+        _ => None,
+    };
+    Ok(scope.filter(|scope| crate::scope::parse_scope(scope).is_ok_and(|parts| parts.verse_id == verse_id)))
+}
+
+/// One read-judge-write re-judge pass under the same fences as [`apply_once`].
+async fn rematerialize_once(
+    db: &Db,
+    verse_id: &str,
+    table: &str,
+    shape: &TableShape,
+    rid: &str,
+    view: &VerseView,
+) -> anyhow::Result<ReplicatedRowOutcome> {
+    if lookup_row(db, table, shape.id_field, rid, "* OMIT id").await?.is_none() {
+        return Ok(ReplicatedRowOutcome::NotApplicable);
+    }
+    let Some(scope) = stored_scope(db, verse_id, table, rid).await? else {
+        return Ok(ReplicatedRowOutcome::NotApplicable);
+    };
+    let stored_versions = store::load_versions(db, table, rid).await?;
+    if stored_versions.is_empty() {
+        return Ok(ReplicatedRowOutcome::NotApplicable);
+    }
+    let cached = cached_winners(db, table, rid).await?;
+    let versions_before = stored_versions
+        .iter()
+        .map(|version| -> anyhow::Result<Value> { Ok(json!([version.field, version.author, stored_hlc(version.hlc)?])) })
+        .collect::<anyhow::Result<Vec<_>>>()?;
+    let versions: BTreeMap<(String, String), FieldVersion> = stored_versions
+        .into_iter()
+        .map(|version| ((version.field.clone(), version.author.clone()), version))
+        .collect();
+
+    // Judge every stored version afresh against the admitted statements (write-time role, QA-0165).
+    let mut verdicts: HashMap<(String, u64, bool), bool> = HashMap::new();
+    let mut by_key: BTreeMap<&str, Vec<FieldVersion>> = BTreeMap::new();
+    for version in versions.values() {
+        let manager = required_level(table, &version.field) == RoleLevel::Manager;
+        let admitted = *verdicts
+            .entry((version.author.clone(), version.hlc, manager))
+            .or_insert_with(|| view.admits_at(table, &scope, version));
+        if admitted {
+            by_key.entry(version.field.as_str()).or_default().push(version.clone());
+        }
+    }
+    let mut winners: BTreeMap<String, FieldVersion> = by_key
+        .iter()
+        .filter_map(|(field, admissible)| merge::winner(admissible, |_| true).map(|won| ((*field).to_owned(), won.clone())))
+        .collect();
+    // A required column with no admissible version keeps its cached winner, so the row stays valid.
+    for winner in &cached {
+        if shape.undeletable.contains(&winner.field.as_str()) && !winners.contains_key(&winner.field) {
+            tracing::debug!(verse_id, table, rid, field = %winner.field, "required key has no admissible version; keeping its value");
+            winners.insert(winner.field.clone(), winner.clone());
+        }
+    }
+    let is_cached = |winner: &FieldVersion| {
+        cached
+            .iter()
+            .any(|old| old.field == winner.field && old.hlc == winner.hlc && old.author == winner.author)
+    };
+    let changed: Vec<&FieldVersion> = winners.values().filter(|winner| !is_cached(*winner)).collect();
+    if changed.is_empty() && winners.len() == cached.len() {
+        return Ok(ReplicatedRowOutcome::NotApplicable);
+    }
+    let mut writes = ColumnWrites::default();
+    writes.add_winners(shape, &changed, &versions);
+    // A demoted key (no admissible version left) loses its column.
+    for old in cached.iter().filter(|old| !winners.contains_key(&old.field)) {
+        if is_plain_identifier(&old.field) && !writes.unset.contains(&old.field) {
+            writes.unset.push(old.field.clone());
+        }
+    }
+    let row_changed = !writes.is_empty();
+
+    let (mut statements, mut bindings) = clock_fence(table, rid, &cached)?;
+    statements.insert(0, VERSIONS_FENCE.into());
+    statements.insert(
+        0,
+        format!(
+            "IF array::len((SELECT VALUE {id} FROM {table} WHERE {id} = $fe_row_rid)) != 1 {{ THROW '{FENCE_MESSAGE}'; }}",
+            id = shape.id_field
+        ),
+    );
+    bindings.push(("fe_versions_before".into(), Value::Array(versions_before)));
+    writes.push_update(table, shape, &mut statements, &mut bindings)?;
+    let winner_refs: Vec<&FieldVersion> = winners.values().collect();
+    let (clock_statements, clock_bindings) = store::clock_write_sql(table, rid, &winner_refs)?;
+    statements.extend(clock_statements);
+    bindings.extend(clock_bindings);
+    commit(db, statements, bindings).await?;
     Ok(if row_changed {
         ReplicatedRowOutcome::Applied
     } else {
