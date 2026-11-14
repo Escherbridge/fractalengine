@@ -203,22 +203,33 @@ pub fn request_self_test_verdict(
     mut last_request_secs: Local<f32>,
 ) {
     let Some(sender) = sender else { return };
-    if last_self_test_verdict().is_some() {
-        return;
-    }
     let now = time.elapsed_secs();
     if *last_request_secs != 0.0 && now - *last_request_secs < SELF_TEST_REQUEST_INTERVAL_SECS {
+        return;
+    }
+    if self_test_verdict_known() {
         return;
     }
     *last_request_secs = now.max(f32::MIN_POSITIVE);
     // The diagnostics state resource carries the result, so the direct reply is dropped.
     let (reply, _unused_receiver) = crossbeam::channel::bounded(1);
-    if sender
-        .0
-        .send(fe_sync::SyncCommand::GetNetworkDiagnostics { detail: false, reply })
-        .is_err()
-    {
-        warn!("Sync channel closed; GetNetworkDiagnostics not sent");
+    // try_send: a full command queue must never stall the frame; the next interval retries.
+    match sender.0.try_send(fe_sync::SyncCommand::GetNetworkDiagnostics { detail: false, reply }) {
+        Ok(()) => {}
+        Err(crossbeam::channel::TrySendError::Full(_)) => {
+            warn!("Sync command queue full; self-test verdict request retried later");
+        }
+        Err(crossbeam::channel::TrySendError::Disconnected(_)) => {
+            warn!("Sync channel closed; GetNetworkDiagnostics not sent");
+        }
+    }
+}
+
+/// True once a self-test verdict is recorded (no allocation).
+fn self_test_verdict_known() -> bool {
+    match LAST_SELF_TEST_VERDICT.lock() {
+        Ok(guard) => guard.is_some(),
+        Err(poisoned) => poisoned.into_inner().is_some(),
     }
 }
 
@@ -840,6 +851,43 @@ mod tests {
         assert_eq!(relay_servable_verses(), vec![verse("v9", "Nine")]);
         record_relay_servable_verses(Vec::new());
         assert!(relay_servable_verses().is_empty());
+
+        // Verdict flow (INT5-06): requests go out only while no verdict is known; "pending" never overwrites one.
+        record_self_test_verdict(None);
+        let (command_sender, command_receiver) = crossbeam::channel::bounded(4);
+        let mut app = App::new();
+        app.init_resource::<Time>();
+        app.init_resource::<fe_sync::status::NetworkDiagnosticsState>();
+        app.insert_resource(fe_sync::SyncCommandSenderRes(command_sender));
+        app.add_systems(Update, (request_self_test_verdict, mirror_self_test_verdict).chain());
+        let set_verdict = |app: &mut App, verdict: &str| {
+            let mut state = app.world_mut().resource_mut::<fe_sync::status::NetworkDiagnosticsState>();
+            let mut snapshot = state.0.take().unwrap_or_default();
+            snapshot.node.reachability_verdict = verdict.to_owned();
+            state.0 = Some(snapshot);
+        };
+        app.update();
+        assert!(matches!(
+            command_receiver.try_recv(),
+            Ok(fe_sync::SyncCommand::GetNetworkDiagnostics { detail: false, .. })
+        ));
+        app.update();
+        assert!(command_receiver.try_recv().is_err(), "one request per interval");
+        set_verdict(&mut app, "pending");
+        app.update();
+        assert_eq!(last_self_test_verdict(), None, "pending is not a verdict");
+        set_verdict(&mut app, "public");
+        app.update();
+        assert_eq!(last_self_test_verdict().as_deref(), Some("public"));
+        set_verdict(&mut app, "pending");
+        app.update();
+        assert_eq!(last_self_test_verdict().as_deref(), Some("public"), "pending never overwrites a verdict");
+        app.world_mut()
+            .resource_mut::<Time>()
+            .advance_by(std::time::Duration::from_secs_f32(SELF_TEST_REQUEST_INTERVAL_SECS + 1.0));
+        app.update();
+        assert!(command_receiver.try_recv().is_err(), "no request once a verdict is known");
+        record_self_test_verdict(None);
     }
 
     #[test]

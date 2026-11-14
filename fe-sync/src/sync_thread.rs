@@ -2126,7 +2126,12 @@ impl RelayAdoption {
             considered,
             &mut self.dial_only_verdicts,
             now,
-            |url| resolutions.get(url).cloned().unwrap_or(Ok(())),
+            |url| {
+                resolutions
+                    .get(url)
+                    .cloned()
+                    .unwrap_or_else(|| Err("relay lookup did not complete".to_string()))
+            },
         ));
         allowed
     }
@@ -2137,6 +2142,13 @@ const DIAL_ONLY_RESOLVE_LIMIT: usize = 8;
 
 /// How long a DialOnly resolution verdict is trusted before it is re-resolved.
 const DIAL_ONLY_VERDICT_TTL: std::time::Duration = std::time::Duration::from_secs(10 * 60);
+
+/// Drop relays sitting out their failure cooldown from every verse's advertised set before planning.
+fn drop_failed_relays(health: &AdoptedRelayHealth, advertised: &mut BTreeMap<String, BTreeSet<String>>) {
+    for urls in advertised.values_mut() {
+        urls.retain(|url| !health.is_failed(url));
+    }
+}
 
 /// A cached verdict younger than the TTL.
 fn verdict_is_fresh(
@@ -2240,13 +2252,11 @@ async fn reconcile_advertised_relays(
     for fabric in fabrics.values() {
         for (verse_id, urls) in fabric.advertised_relay_urls() {
             if replicas.contains_key(&verse_id) {
-                advertised
-                    .entry(verse_id)
-                    .or_default()
-                    .extend(urls.into_iter().filter(|url| !adoption.health.is_failed(url)));
+                advertised.entry(verse_id).or_default().extend(urls);
             }
         }
     }
+    drop_failed_relays(&adoption.health, &mut advertised);
 
     let coverage = evaluate_coverage(&adoption.open_verses_seen, &advertised);
     let home_connected = adoption.home_connected();
@@ -5163,12 +5173,10 @@ mod tests {
         assert!(!adoption.replan && !adoption.health.is_failed(PINNED_RELAY), "below the limit nothing is removed");
         adoption.record_probe(PINNED_RELAY, false, start);
         assert!(adoption.replan && adoption.health.is_failed(PINNED_RELAY));
-        // Mirrors reconcile_advertised_relays: failed relays are filtered out of the advertised set.
+        // The same filter reconcile_advertised_relays applies before planning.
         let without_failed = |adoption: &RelayAdoption| {
             let mut advertised = both.clone();
-            for urls in advertised.values_mut() {
-                urls.retain(|url| !adoption.health.is_failed(url));
-            }
+            drop_failed_relays(&adoption.health, &mut advertised);
             advertised
         };
         let advertised = without_failed(&adoption);

@@ -130,9 +130,12 @@ fn warn_bridge_full_rate_limited() {
     }
 }
 
-/// Logs the loud detail opt-in warning once at startup (per-request reads stay silent).
+/// Logs the loud detail opt-in warning once per process (per-request reads stay silent).
 pub fn announce_detail_opt_in() {
-    NETWORK_DETAIL_GATE.opted_in_from_env();
+    static ANNOUNCED: std::sync::Once = std::sync::Once::new();
+    ANNOUNCED.call_once(|| {
+        NETWORK_DETAIL_GATE.opted_in_from_env();
+    });
 }
 
 /// Asks the sync thread for a snapshot and confines it to the caller; shared by REST and MCP.
