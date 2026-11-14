@@ -187,12 +187,24 @@ at ~3× tileset bytes.
 
 ## 6. PAS-P1V run (relay mode + health, headless)
 
-*(Empty slot — PAS-P3P4 S9, 2026-10-13. `scripts/relay-health-verify.ps1`
-exists (S4 `3d89b60`) and is not yet executed; this slice is docs-only and
-runs no scripts. Paste the captured `scripts/relay-health-verify.log` output
-here — resolved-mode line + default-relay warning (Default only) + a
-relay-health line per mode, for Default / Custom / Disabled — at campaign
-end, per plan Phase 1 verification and the doneness-ledger PAS-P1V row.)*
+Executed 2026-10-25 (log: `scripts/relay-health-verify.log`, script:
+`scripts/relay-health-verify.ps1`, run header `PAS-P1V relay-health-verify --
+2026-10-25T06:47:17`). Result: **12 / 12 checks passed**.
+
+Per-mode evidence (quoted PASS lines from the log):
+
+- Default: `[PASS] resolved relay config line names relay_config=Default`,
+  `[PASS] default-relay rate-limit warning present (Default mode)`,
+  `[PASS] a relay-health line was captured for Default mode`.
+- Custom (`FE_SYNC_RELAY=http://127.0.0.1:3340`): `[PASS] resolved relay config
+  line names relay_config=Custom`, `[PASS] default-relay rate-limit warning
+  ABSENT (Custom mode)`, `[PASS] a relay-health line was captured for Custom mode`.
+- Disabled (`FE_SYNC_RELAY=disabled`): `[PASS] resolved relay config line names
+  relay_config=Disabled`, `[PASS] default-relay rate-limit warning ABSENT
+  (Disabled mode)`, `[PASS] a relay-health line was captured for Disabled mode`.
+
+Summary, verbatim from the log: `Checks: 12 / 12 passed` and
+`PASS: relay-health-verify (PAS-P1V) - all checks passed`.
 
 ## Appendix — reproduction script
 
