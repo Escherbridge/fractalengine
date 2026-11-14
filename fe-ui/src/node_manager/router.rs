@@ -115,18 +115,9 @@ impl ClickArbiter {
         self.phase == PointerPhase::Press
     }
 
-    // FR-1 API surface for the next router consumer (`glb_mesh_picking_20260713`)
-    // and the unit tests; not yet read by an in-tree consumer system.
-    #[allow(dead_code)]
     /// Whether `who` owns this frame's click.
     pub(super) fn is_owner(&self, who: ClickPriority) -> bool {
         self.owner == Some(who)
-    }
-
-    #[allow(dead_code)]
-    /// Resolved cursor position (physical pixels), when inside the viewport.
-    pub(super) fn cursor(&self) -> Option<Vec2> {
-        self.cursor
     }
 
     /// Resolved pointer phase for this frame (consumed by the pen gesture's

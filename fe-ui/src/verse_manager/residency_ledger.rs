@@ -775,6 +775,7 @@ mod tests {
 
     /// Holds the DB command receiver so spawner sends never hit a closed channel.
     #[derive(Resource)]
+    // Test-only: the field keeps the channel open; it is never read.
     struct DbCommandSink(
         #[allow(dead_code)] crossbeam::channel::Receiver<fe_runtime::messages::DbCommand>,
     );

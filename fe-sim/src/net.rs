@@ -747,8 +747,6 @@ fn change_from_entry(entry: &DocEntry, author: &str) -> RowChange {
 /// closed-replica write rejection) is preserved for parity.
 pub struct SimVerseReplicator {
     net: Arc<SimNet>,
-    #[allow(dead_code)]
-    verse_id: String,
     namespace_id: String,
     peer: String,
     /// This instance's subscriber registration tokens (one per subscribe).
@@ -759,11 +757,10 @@ pub struct SimVerseReplicator {
 
 impl SimVerseReplicator {
     /// Built by [`SimTransportFactory`] at each replica open.
-    pub fn new(net: Arc<SimNet>, verse_id: String, namespace_id: String, peer: String) -> Self {
+    pub fn new(net: Arc<SimNet>, namespace_id: String, peer: String) -> Self {
         net.register_peer(&peer);
         Self {
             net,
-            verse_id,
             namespace_id,
             peer,
             tokens: Mutex::new(Vec::new()),
@@ -955,14 +952,13 @@ impl SimTransportFactory {
 impl VirtualTransportFactory for SimTransportFactory {
     fn open_replica(
         &self,
-        verse_id: &str,
+        _verse_id: &str,
         namespace_id: &str,
         _namespace_secret: Option<String>,
         local_did: &str,
     ) -> Box<dyn VirtualReplica> {
         Box::new(SimVerseReplicator::new(
             self.net.clone(),
-            verse_id.to_string(),
             namespace_id.to_string(),
             local_did.to_string(),
         ))
@@ -1019,9 +1015,9 @@ mod tests {
         let clock = SimClock::new(1_000_000);
         let net = SimNet::new(clock);
         let alpha =
-            SimVerseReplicator::new(net.clone(), "v1".into(), "ns".into(), "did:alpha".into());
+            SimVerseReplicator::new(net.clone(), "ns".into(), "did:alpha".into());
         let beta =
-            SimVerseReplicator::new(net.clone(), "v1".into(), "ns".into(), "did:beta".into());
+            SimVerseReplicator::new(net.clone(), "ns".into(), "did:beta".into());
         let beta_rx = block_on(beta.subscribe()).expect("beta subscribes");
         let _alpha_rx = block_on(alpha.subscribe()).expect("alpha subscribes");
         Fixture {
@@ -1071,7 +1067,7 @@ mod tests {
 
         // A fresh replica converges from the snapshot at open time.
         let joiner =
-            SimVerseReplicator::new(f.net.clone(), "v1".into(), "ns".into(), "did:gamma".into());
+            SimVerseReplicator::new(f.net.clone(), "ns".into(), "did:gamma".into());
         let joiner_snap = block_on(joiner.snapshot()).unwrap();
         assert_eq!(joiner_snap.len(), 1);
     }
