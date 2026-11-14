@@ -1,6 +1,6 @@
 //! Per-key (HLC, author) clock; see field_clock/AGENTS.md.
-// Seams are consumed by CLOCK-05/06/07/08/10; drop this allow once every item is wired.
-#![allow(dead_code, unused_imports)]
+// Re-exports admissible, VerseView, rejudge_authors, load_rows_by_authors, apply_keys are reached via submodule paths only.
+#![allow(unused_imports)]
 
 pub(crate) mod judge;
 pub(crate) mod merge;
