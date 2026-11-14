@@ -111,7 +111,28 @@ trusting "pure efficiency" claims; push control; a board that silently drifts st
 
 ## 2. State
 
-- **2026-11-13 21:15 MST — ROUND 4 SWARM RUNNING.** Workflow `wf_004b3e4d-8b4` (task `wfeuh0ih9`): 210 slices
+- **2026-11-14 00:05 MST — ROUND 4 SWARM DONE; REFINE (compile) PASS RUNNING; `main` CI GREEN on `2b289db1`.**
+  Swarm `wf_004b3e4d-8b4`: 210 slices = **178 done / 32 partial / 0 failed, blocked or skipped**; 421 agents,
+  48.8M subagent tokens, 2 h 51 min; about 200 commits public, 24 private, all LOCAL and **never compiled**. Nine
+  commits were held (five leak-scan hits, all false positives or reworded: `stripe` matches egui's `.striped`;
+  one git-ignored `qa/` output; three commit commands refused by the permission classifier) and were committed
+  by the orchestrator (`ce5be456`..`720b7f1f`, private `696cd56`). Result reader:
+  `python -I .omc/plans/turn4-result.py <journal.jsonl> .omc/state/turn4-args.json summary|holds|partial|
+  questions|needs` (journal in `…/subagents/workflows/wf_004b3e4d-8b4/`). Counts: 32 user questions, 696 NEEDS
+  lines (most consumed by the I-* slices; the leftovers show up as compile errors or in the C-* critics'
+  `completeness-turn4.md`), 401 QA lines.
+  **Running now:** (1) refine workflow `wf_00887a68-005` (task `wauu6d7jf`): twelve serial steps S01-core ..
+  S12-noncargo in the plan §10 order, each `cargo check -p <crate> --all-targets`, fix in place, commit; sonnet,
+  opus from the third attempt; stops at the first step still red after four attempts. Resume:
+  `Workflow({scriptPath: "<session dir>/workflows/scripts/round4-refine-wf_00887a68-005.js", resumeFromRunId:
+  "wf_00887a68-005"})`. It is the ONLY builder: run no cargo and edit no source while it runs. (2) a sonnet
+  security audit of the 15 inbox entries against code at HEAD (read-only; its report lists OPEN entries with fix
+  briefs). (3) the QA scribe refreshing `conductor/qa-checklist-round4.md` from all 210 slices.
+  **Then, in order:** fix every OPEN/PARTLY security entry (sonnet executors from the audit's briefs, opus for
+  the clock grant-window one), re-check the touched crates; a round-5 slice list from the 32 partials + the
+  critics' gaps (`turn4-result.py partial`); §7 step 3 whole-surface review; tests when the user names batches.
+  **Nothing from the swarm is pushed.** Push only after refine is green AND the security entries are closed.
+- **2026-11-13 21:15 MST — ROUND 4 SWARM (finished 00:05; see above).** Workflow `wf_004b3e4d-8b4` (task `wfeuh0ih9`): 210 slices
   (132 feature, 25 integration, 33 opus gates, 10 bookkeeping, 10 completeness critics; 95 sonnet / 82 opus /
   33 haiku; 191 public, 19 private), width 5, longest chain first, critical path 18, no cargo, serialized
   leak-checked commits per tree. Inputs: `.omc/state/turn4-dag.json` (split per slice in
