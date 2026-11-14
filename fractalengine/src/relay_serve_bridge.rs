@@ -45,6 +45,45 @@ pub struct RelayServeHandle {
     _relay: fe_sync::relay_server::EmbeddedRelay,
 }
 
+impl RelayServeHandle {
+    /// Verse ids the running relay admits members through.
+    pub fn served_verse_ids(&self) -> BTreeSet<String> {
+        #[cfg(feature = "relay-server")]
+        {
+            self._relay.gate().served_verse_ids()
+        }
+        #[cfg(not(feature = "relay-server"))]
+        {
+            BTreeSet::new()
+        }
+    }
+}
+
+/// One owned-verse row for the consent list.
+#[derive(serde::Deserialize)]
+struct OwnedVerseRow {
+    verse_id: String,
+    name: Option<String>,
+}
+
+/// Lists the local user's verses (id, name) for the relay consent step; call once at startup, off the UI thread.
+pub async fn publish_servable_verses(db: &fe_database::repo::Db, local_did: String) {
+    let read = async {
+        let mut response = db
+            .query("SELECT verse_id, name FROM verse WHERE created_by = $did")
+            .bind(("did", local_did))
+            .await?
+            .check()?;
+        anyhow::Ok(response.take::<Vec<OwnedVerseRow>>(0)?)
+    };
+    match read.await {
+        Ok(rows) => fe_ui::settings::record_relay_servable_verses(
+            rows.into_iter().map(|row| (row.verse_id, row.name.unwrap_or_default())).collect(),
+        ),
+        Err(error) => tracing::warn!(%error, "could not list servable verses for the relay consent step"),
+    }
+}
+
 /// Registers the startup-read toggles with fe-sync and the Settings UI; call once before the sync thread starts.
 pub fn register_settings(settings: &fe_ui::settings::AppSettings) {
     fe_sync::relay_config::set_auto_home_relay(settings.auto_home_relay);
@@ -124,7 +163,21 @@ fn start(runtime: &tokio::runtime::Handle, hosted_verses: BTreeSet<String>) -> O
         return None;
     }
     match runtime.block_on(EmbeddedRelay::spawn(config, gate)) {
-        Ok(relay) => Some(RelayServeHandle { _relay: relay }),
+        Ok(relay) => {
+            let handle = RelayServeHandle { _relay: relay };
+            let served = handle.served_verse_ids();
+            tracing::info!(verses = served.len(), ids = ?served, "desktop relay serving verses");
+            let known_names = fe_ui::settings::relay_servable_verses();
+            let published = served
+                .into_iter()
+                .map(|id| {
+                    let name = known_names.iter().find(|(known_id, _)| *known_id == id).map(|(_, name)| name.clone()).unwrap_or_default();
+                    (id, name)
+                })
+                .collect();
+            fe_ui::settings::record_relay_servable_verses(published);
+            Some(handle)
+        }
         Err(error) => {
             tracing::warn!(reason = error.name(), "desktop relay failed to bind");
             None

@@ -1269,8 +1269,20 @@ fn render_network_setting(ui: &mut egui::Ui, app_settings: &mut AppSettings) {
     }
     if pending {
         ui.label("This device's public address becomes visible and it carries traffic for verse members.");
+        let servable_verses = crate::settings::relay_servable_verses();
+        if servable_verses.is_empty() {
+            ui.label("You own no verses yet: nothing would be served.");
+        } else {
+            for line in crate::settings::consent_verse_lines(&servable_verses, 8) {
+                ui.label(line);
+            }
+        }
         ui.horizontal(|ui| {
-            if ui.button("Confirm").observed(ui).clicked() {
+            if ui
+                .add_enabled(!servable_verses.is_empty(), egui::Button::new("Confirm"))
+                .observed(ui)
+                .clicked()
+            {
                 app_settings.serve_relay = true;
                 pending = false;
             }

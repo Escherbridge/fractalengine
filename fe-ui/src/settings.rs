@@ -143,6 +143,9 @@ static RELAY_SERVE_BUILT: std::sync::atomic::AtomicBool = std::sync::atomic::Ato
 /// Latest reachability self-test verdict label (`public`, `behind_nat`, ...); `None` while pending.
 static LAST_SELF_TEST_VERDICT: std::sync::Mutex<Option<String>> = std::sync::Mutex::new(None);
 
+/// Verses (id, display name) this device would serve if relay serving is switched on.
+static RELAY_SERVABLE_VERSES: std::sync::Mutex<Vec<(String, String)>> = std::sync::Mutex::new(Vec::new());
+
 /// Host binary registers whether relay serving is compiled in.
 pub fn set_relay_serve_built(built: bool) {
     RELAY_SERVE_BUILT.store(built, std::sync::atomic::Ordering::Relaxed);
@@ -158,6 +161,64 @@ pub fn record_self_test_verdict(label: Option<String>) {
     match LAST_SELF_TEST_VERDICT.lock() {
         Ok(mut guard) => *guard = label,
         Err(poisoned) => *poisoned.into_inner() = label,
+    }
+}
+
+/// Host binary records the verses the consent step lists.
+pub fn record_relay_servable_verses(verses: Vec<(String, String)>) {
+    match RELAY_SERVABLE_VERSES.lock() {
+        Ok(mut guard) => *guard = verses,
+        Err(poisoned) => *poisoned.into_inner() = verses,
+    }
+}
+
+/// Verses (id, display name) the consent step lists.
+pub fn relay_servable_verses() -> Vec<(String, String)> {
+    match RELAY_SERVABLE_VERSES.lock() {
+        Ok(guard) => guard.clone(),
+        Err(poisoned) => poisoned.into_inner().clone(),
+    }
+}
+
+/// One consent line per verse (name, id when the name is blank), capped with a trailing "+N more".
+pub fn consent_verse_lines(verses: &[(String, String)], cap: usize) -> Vec<String> {
+    let mut lines: Vec<String> = verses
+        .iter()
+        .take(cap)
+        .map(|(id, name)| if name.trim().is_empty() { id.clone() } else { name.clone() })
+        .collect();
+    if verses.len() > cap {
+        lines.push(format!("+{} more", verses.len() - cap));
+    }
+    lines
+}
+
+/// Seconds between self-test verdict requests while no verdict is recorded.
+const SELF_TEST_REQUEST_INTERVAL_SECS: f32 = 10.0;
+
+/// Bevy system: asks the sync thread for diagnostics every 10 s until a self-test verdict is recorded.
+pub fn request_self_test_verdict(
+    sender: Option<Res<fe_sync::SyncCommandSenderRes>>,
+    time: Res<Time>,
+    mut last_request_secs: Local<f32>,
+) {
+    let Some(sender) = sender else { return };
+    if last_self_test_verdict().is_some() {
+        return;
+    }
+    let now = time.elapsed_secs();
+    if *last_request_secs != 0.0 && now - *last_request_secs < SELF_TEST_REQUEST_INTERVAL_SECS {
+        return;
+    }
+    *last_request_secs = now.max(f32::MIN_POSITIVE);
+    // The diagnostics state resource carries the result, so the direct reply is dropped.
+    let (reply, _unused_receiver) = crossbeam::channel::bounded(1);
+    if sender
+        .0
+        .send(fe_sync::SyncCommand::GetNetworkDiagnostics { detail: false, reply })
+        .is_err()
+    {
+        warn!("Sync channel closed; GetNetworkDiagnostics not sent");
     }
 }
 
@@ -760,6 +821,25 @@ mod tests {
         assert!(relay_serve_blocker(true, Some("behind_nat")).is_some());
         assert!(relay_serve_blocker(true, None).is_some());
         assert!(relay_serve_blocker(true, Some("public")).is_none());
+
+        // (verses, cap, expected consent lines)
+        let verse = |id: &str, name: &str| (id.to_owned(), name.to_owned());
+        let table = [
+            (vec![], 8, vec![]),
+            (vec![verse("v1", "Alpha"), verse("v2", "")], 8, vec!["Alpha".to_owned(), "v2".to_owned()]),
+            (
+                vec![verse("v1", "A"), verse("v2", "B"), verse("v3", "C")],
+                2,
+                vec!["A".to_owned(), "B".to_owned(), "+1 more".to_owned()],
+            ),
+        ];
+        for (verses, cap, expected) in table {
+            assert_eq!(consent_verse_lines(&verses, cap), expected);
+        }
+        record_relay_servable_verses(vec![verse("v9", "Nine")]);
+        assert_eq!(relay_servable_verses(), vec![verse("v9", "Nine")]);
+        record_relay_servable_verses(Vec::new());
+        assert!(relay_servable_verses().is_empty());
     }
 
     #[test]
