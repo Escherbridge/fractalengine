@@ -595,6 +595,7 @@ happened to that one write, and each answer has one owner:
 | `Refused` | a hook said no; the advisory is already queued | nobody — never sent |
 | `Busy` | non-blocking submit, channel full | the caller — never sent, nothing queued |
 | `Closed` | channel disconnected | nobody — never sent |
+| `Waiting` via retry | opt-in `submit_scene_write_retrying` (`actions/node.rs:591`) queues a full-channel write with backoff | the door queue; never `Busy` |
 
 `Busy` and `Closed` must stay distinct (2026-11-13, CI regression after `1f6e7ca5`): `Closed`
 is terminal and callers drop their pending state on it, while a full channel is transient.
@@ -613,4 +614,34 @@ full-channel write with bounded backoff, so the answer is `Waiting`, never `Busy
 are session-only and capped at `DEAD_LETTER_CAP` (32); the oldest is dropped with a warning.
 Gate refusals are final and never dead-lettered. The "Unsaved edits" list reads
 `dead_letters()`; `retry_dead_letter` re-gates the stored command. Undo and stamp promotion
-opt in. Other callers keep the non-retrying doors.
+opt in (`undo.rs:560`, `undo.rs:875`, `stamp_selection.rs:593`). Other callers keep the non-retrying doors.
+
+Retry and discard (`node.rs:612-619`): `retry_dead_letter` re-gates the stored command through
+`retry_dead_letter_in` (`node.rs:659`), re-enters the queue with a fresh retry budget and keeps its
+correlation id; `discard_dead_letter` drops it for good. A retried dead letter has no owner. The plan
+default (section 9, item 36) is that the `verse_manager` arms apply it and undo history does not
+record it. TODO: verify that against `fe-ui/src/undo.rs` and the `verse_manager` arms.
+
+Petal hint for follow-up writes: `submit_scene_write_in` (`node.rs:540`) and
+`submit_scene_write_in_through` (`node.rs:545`) authorize against the petal the caller names. Writes
+born from a `DbResult` use them, so the door judges them against the node's own petal rather than
+`GuiDoorQueue.active_petal` (`node.rs:181`). Callers: the earthwork bind
+(`verse_manager/db_results/nodes.rs:76`) and the callout bind (`actions/dimension_callout.rs:322`).
+
+Undo reconcile: the `SAVE_TIMEOUT` sweep skips a pending edit while `scene_write_in_door(request_id)`
+holds (`undo.rs:965`, and the timeout block at `undo.rs:1338`), because the write has not reached the
+DB yet. The path-read timeout (`undo.rs:1329`, `p.entry.is_none()`) has no door check.
+
+Dead-letter UI: `fe-ui/src/panels/unsaved_edits.rs` renders `dead_letters()` as a "Saving n..."
+spinner (queued writes), an "n unsaved" chip, and a Retry and Discard action per row
+(`apply_unsaved_edit_action`).
+
+FIFO rule: `pump_locked` (`node.rs:520`) pops the head and stops at the first write that is still
+held, so a backing-off head holds every write behind it and no later write overtakes it.
+
+Test seam: `submit_scene_write_in_through` (`node.rs:545`) and `try_submit_scene_write_through`
+(`node.rs:579`) take an explicit door and sender; the opt-in retry assertions (`node.rs:967-1048`)
+drive the door through them. Test-only hooks in `node.rs` (`cfg(test)`): `pump_gui_door_after` (`node.rs:765`)
+and `pump_gui_door_outcome_after` (`node.rs:772`) pump the GUI door after a delay, `GUI_DOOR_RETRY_ATTEMPTS`
+(`node.rs:761`) exposes the retry budget, and `GUI_DOOR_TEST_LOCK` (`node.rs:757`) serialises every test that
+touches the process-wide `GUI_DOOR`.

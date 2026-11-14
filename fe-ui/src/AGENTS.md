@@ -492,8 +492,8 @@ pattern exactly (queue + status resource, no fe-ui-side I/O).
    alongside `surface_gpx_import_status` in `plugin.rs`.
 2. **Track listing** (`crate::gis::PathEditorState`, state module
    `gis/mod.rs`): track nodes are identified by a new reserved property key,
-   `gis.track.name` (`actions::node_props::TRACK_NAME_KEY`) — set by the
-   bridge on `CreateTrack`/import, mirroring how `gis.annotation.title`
+   `gis.track.name` (the literal key, set by `fractalengine/src/gpx_bridge.rs` on
+   `CreateTrack`/import; `gis/query.rs` keeps its own copy), mirroring how `gis.annotation.title`
    marks annotated nodes. `gis::query::track_query` builds the same
    "`SELECT` where `properties[key] != NONE`" shape as `annotation_query`;
    `actions::path::query_tracks` submits it via `DbCommand::RawQuery`, and
@@ -645,9 +645,13 @@ pattern exactly (queue + status resource, no fe-ui-side I/O).
 The road builder's first commit reuses the pen's create path. `PendingPenCreate.trailing_points`
 (`gis/mod.rs`) carries the points after the first, and `next_road_correlation_id()` mints
 `road-track:N` ids. `fail_pending_pen_create(correlation_id)` clears a pending create for either
-prefix, and a foreign id leaves it in place. At HEAD no production `DbResult::Error` path calls it
-(tests only), so the failure cleanup is not yet wired; see the HANDED-OFF note in
-`node_manager/AGENTS.md` §road-builder. Details: that section.
+prefix, and a foreign id leaves it in place. Pen and road share that cleanup: the `RequestFailed`
+arm in `verse_manager/db_results/mod.rs:1006` calls it, so a failed correlated create frees the
+tool (AC-10.2). `DbResult::NodeCreated` carries the applied `scale` (`fe-runtime/src/messages.rs:1646`)
+and `handle_node_created` feeds it through `sanitized_echo_scale` (`verse_manager/db_results/nodes.rs:42`),
+so an empty node on a scaled petal shows at its real size at once (map_scale_authority FR-2).
+The road readout is drawn in `EguiPrimaryContextPass` after `gardener_ui_system` (`plugin.rs` ~:1119),
+never from `Update`.
 
 ## §data-icons — type icons on three surfaces (`data_icons_20260713`)
 
@@ -733,6 +737,12 @@ live `SpawnedNodeMarker` entity (stamp instances excluded via
 `Without<PathAssetInstance>`): every API `GetHierarchy` poll re-broadcasts
 `HierarchyLoaded`, and before this guard each event duplicated the entire
 active petal's scene — the amplification behind the crash.
+
+## §copy-rules — user-facing copy
+
+`ui_shell/right_sidebar.rs` test `user_copy_has_no_dev_jargon` (filter `ui_shell::`) hovers every
+Settings control and fails if any rendered text contains a term from `FORBIDDEN_USER_COPY`. Options,
+Maps, Groups and Inspector sections are not covered (no headless harness).
 
 ## §app-settings — the D-78 application settings surface
 
@@ -823,6 +833,11 @@ Three toggles in `settings::AppSettings`, read at startup:
 - `auto_home_relay` (default on): a relay that every participating verse advertises healthily may become this node's home relay. Only public https relays qualify (fe-sync §relay-trust).
 - `act_as_prober` (default off): answer dial-back reachability checks for verse peers (fe-sync §reachability).
 - `serve_relay` (default off): serve a members-only relay for my verses. It needs the `relay-server` build and a passing self-test (fe-sync §peer-relay-server). It stays off by default because it makes this machine a listener for verse traffic.
+
+Relay consent lists the verses this node can serve (`settings::record_relay_servable_verses` /
+`relay_servable_verses`, settings.rs:168-176). The self-test verdict is requested from the sync thread
+every 10 s until one is recorded (`request_self_test_verdict`, settings.rs:200); a `pending` reading
+never overwrites a recorded verdict (`mirror_self_test_verdict`, settings.rs:237-247).
 
 ## §terrain-map — Hexon Manager, P2P tileset downloads (`p2p_asset_streaming_20260718` S4)
 
@@ -1205,6 +1220,8 @@ and repeat until the heights agree (parallax correction). Pure math, bounded by
 `GROUND_SNAP_ITERATIONS` (4). OQ-2 resolved: height-field sampling, not a mesh raycast. Off-terrain
 points fall back to `y = 0`. The context-menu `CreateNodeAt` uses the same world point.
 There is no main-binary bridge: fe-ui reads the fe-renderer resource directly.
+`plugin::ViewportCursorWorld` is set from this `ground_point` (`plugin.rs:1565`), so context-menu GLB
+placement lands on the terrain surface rather than the `y = 0` plane (D-38).
 
 ## §visibility — hide/isolate that is real everywhere (hierarchy_visibility_groups)
 
