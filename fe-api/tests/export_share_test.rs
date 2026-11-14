@@ -1989,6 +1989,34 @@ async fn petal_snapshot_export_import_authz_journey() {
     }
     gate.set(&petal_id, GateMode::Unbound);
 
+    // A scene hook bound at the destination fractal or verse cannot be judged through the absent petal: 409, no DB call.
+    for bound_scope in ["VERSE#v1-FRACTAL#f1", "VERSE#v1"] {
+        fixture_db.query("CREATE extension_binding CONTENT { binding_key: 'k', verse_id: 'v1', scope: $scope, hook: 'scene.create', author_did: 'did:key:z6MkOwner', mode: 'extension' }")
+            .bind(("scope", bound_scope))
+            .await
+            .expect("seed binding row");
+        let multipart = Multipart::from_request(upload(&archive), &()).await.expect("multipart");
+        let response = import_petal_snapshot(State(state.clone()), Extension(manager.clone()), multipart).await;
+        assert_eq!(response.status(), StatusCode::CONFLICT, "{bound_scope}");
+        let body = body_json(response).await;
+        assert_eq!(body["error"], "hook-unjudgeable", "{bound_scope}: {body}");
+        assert!(body.get("petal_id").is_none(), "{bound_scope}: refused before the DB: {body}");
+        fixture_db.query("DELETE extension_binding").await.expect("clear binding rows");
+    }
+
+    // A stale `extension` row superseded by a newer `inherit` from another author is no hook in effect.
+    fixture_db.query("CREATE extension_binding CONTENT { binding_key: 'k1', verse_id: 'v1', scope: 'VERSE#v1-FRACTAL#f1', hook: 'scene.create', author_did: 'did:key:z6MkOwner', mode: 'extension', written_at: '5' }")
+        .await
+        .expect("seed stale binding");
+    fixture_db.query("CREATE extension_binding CONTENT { binding_key: 'k2', verse_id: 'v1', scope: 'VERSE#v1-FRACTAL#f1', hook: 'scene.create', author_did: 'did:key:z6MkOther', mode: 'inherit', written_at: '9' }")
+        .await
+        .expect("seed superseding inherit");
+    let multipart = Multipart::from_request(upload(&archive), &()).await.expect("multipart");
+    let response = import_petal_snapshot(State(state.clone()), Extension(manager.clone()), multipart).await;
+    let body = body_json(response).await;
+    assert_ne!(body["error"], "hook-unjudgeable", "superseded binding must not refuse: {body}");
+    fixture_db.query("DELETE extension_binding").await.expect("clear binding rows");
+
     // Manager onto the source node: the petal already exists, so the import is refused, never merged.
     let multipart = Multipart::from_request(upload(&archive), &()).await.expect("multipart");
     let manager_subject = manager.sub.clone();

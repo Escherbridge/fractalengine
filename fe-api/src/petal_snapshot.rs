@@ -38,6 +38,9 @@ const ARCHIVE_FIELD: &str = "archive";
 /// Error code when a bound scene hook admits an import only with augments, which an import cannot apply.
 pub const HOOK_AUGMENT_UNSUPPORTED: &str = "hook-augment-unsupported";
 
+/// Error code when a scene hook is bound at the destination fractal or verse: the gate cannot judge an absent petal.
+pub const HOOK_UNJUDGEABLE: &str = "hook-unjudgeable";
+
 /// Prefix of the DB refusal reason for a malformed or out-of-petal snapshot (`ImportError::Invalid`).
 const INVALID_SNAPSHOT_REASON: &str = "invalid petal snapshot";
 
@@ -60,6 +63,44 @@ pub(crate) fn manager_covers(claims: &ApiClaims, scope: Option<String>) -> Optio
     let subject = crate::auth::api_token_context(claims);
     fe_hexon::authz::authorize(&subject, &Action::Manage, &scope).ok()?;
     Some(scope)
+}
+
+/// Whether a live extension scene hook is bound at the fractal scope or its verse; `Err` = unreadable (fail closed).
+/// Without `db_reader` (harness hosts) there is nothing to read and the answer is `false`.
+async fn scene_hook_bound_above(state: &ApiState, fractal_scope: &str) -> Result<bool, ()> {
+    let Some(db) = state.db_reader.as_ref() else {
+        return Ok(false);
+    };
+    let mut scopes = vec![fractal_scope.to_owned()];
+    if let Some((verse_scope, _)) = fractal_scope.split_once("-FRACTAL#") {
+        scopes.push(verse_scope.to_owned());
+    }
+    let mut response = db
+        .query("SELECT scope, hook, mode, written_at, payload FROM extension_binding WHERE scope IN $scopes AND string::starts_with(hook, 'scene.')")
+        .bind(("scopes", scopes))
+        .await
+        .map_err(|error| tracing::warn!("snapshot import binding read failed: {error}"))?;
+    let rows: Vec<Value> = response
+        .take(0)
+        .map_err(|error| tracing::warn!("snapshot import binding read failed: {error}"))?;
+    // Newest version per (scope, hook, key) wins; a tie keeps `extension` (fail closed).
+    let mut newest: std::collections::HashMap<(String, String, String), (u64, bool)> = std::collections::HashMap::new();
+    for row in &rows {
+        let text = |field: &str| row.get(field).and_then(Value::as_str).unwrap_or_default().to_owned();
+        let key = row
+            .get("payload")
+            .and_then(Value::as_str)
+            .and_then(|payload| serde_json::from_str::<Value>(payload).ok())
+            .and_then(|payload| payload.get("key").and_then(Value::as_str).map(str::to_owned))
+            .unwrap_or_default();
+        let written_at = text("written_at").parse::<u64>().unwrap_or(0);
+        let is_extension = text("mode") == "extension";
+        let slot = newest.entry((text("scope"), text("hook"), key)).or_insert((written_at, is_extension));
+        if written_at > slot.0 || (written_at == slot.0 && is_extension) {
+            *slot = (written_at, is_extension);
+        }
+    }
+    Ok(newest.values().any(|(_, is_extension)| *is_extension))
 }
 
 /// A round trip with no usable reply: the error response, and whether the DB thread never got the command.
@@ -284,8 +325,27 @@ pub async fn import_petal_snapshot(
         return denied();
     };
     let resolved = crate::rest::resolve_fractal_scope(&state, fractal_id).await;
-    if manager_covers(&claims, resolved).is_none() {
+    if manager_covers(&claims, resolved.clone()).is_none() {
         return denied();
+    }
+    // The petal is absent here, so the petal-keyed gate below finds no binding; refuse while a hook binds above it.
+    if let Some(scope) = resolved.as_deref() {
+        match scene_hook_bound_above(&state, scope).await {
+            Ok(false) => {}
+            Ok(true) => {
+                return (
+                    StatusCode::CONFLICT,
+                    Json(serde_json::json!({
+                        "ok": false, "data": null, "error": HOOK_UNJUDGEABLE,
+                        "reason": "a scene hook is bound at the destination fractal or verse; an import cannot be judged by it",
+                    })),
+                )
+                    .into_response();
+            }
+            Err(()) => {
+                return envelope_error(StatusCode::SERVICE_UNAVAILABLE, "scene hook bindings unavailable");
+            }
+        }
     }
 
     // Scene gate: bound extensions judge the import (one create per node) before any blob is written.

@@ -1121,6 +1121,16 @@ async fn relay_advertise_and_network_diagnostics_journey() {
     let tombstone_path = blob_store.get_blob_path(&tombstone.content_hash).expect("tombstone blob");
     assert!(std::fs::read(tombstone_path).expect("read tombstone").is_empty());
 
+    // The per-verse live cap: the withdrawn advert freed its slot, so MAX_ADVERTS_PER_VERSE more fit and one more is 409.
+    let capped = json!({ "url": "https://relay.example.org", "expires_at_ms": now_ms + 3_600_000 });
+    for _ in 0..fe_runtime::relay_advertisement::MAX_ADVERTS_PER_VERSE {
+        let (status, _, _) = send_on(&router, authed_json("POST", &relays_path, &owner, Some(capped.clone()))).await;
+        assert_eq!(status, StatusCode::CREATED);
+    }
+    let (status, _, _) = send_on(&router, authed_json("POST", &relays_path, &owner, Some(capped))).await;
+    assert_eq!(status, StatusCode::CONFLICT, "over the live cap is refused");
+    while events.try_recv().is_ok() {}
+
     // Diagnostics: the route sits behind auth and answers through the sync bridge (a fake sync thread replies).
     let anonymous = Request::builder().uri("/api/v1/network/diagnostics").body(Body::empty()).expect("request");
     let (status, _, _) = send_on(&router, anonymous).await;

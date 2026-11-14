@@ -13,7 +13,7 @@ use fe_identity::NodeKeypair;
 use fe_runtime::dialback::{self, DialbackRecord};
 use fe_runtime::relay_advertisement::{
     sign_row, AdvertisedRelayUrl, RelayAdvertisementRow, RelayUrlPolicy, MAX_ADVERT_TTL_MS,
-    RELAY_ADVERT_ROW_VERSION, RELAY_ADVERT_TABLE,
+    MAX_ADVERTS_PER_VERSE, RELAY_ADVERT_ROW_VERSION, RELAY_ADVERT_TABLE,
 };
 use fe_runtime::safe_id::is_safe_path_id;
 use serde::Deserialize;
@@ -41,6 +41,27 @@ pub struct PostRelayBody {
     /// Marks the relay as run by this peer even when the host is not this node's own relay host.
     #[serde(default)]
     pub peer_run: bool,
+}
+
+/// Live adverts this node posted per verse as (relay_id, expires_at_ms); in-memory, see §relay-advertise.
+static LIVE_ADVERTS: std::sync::Mutex<Vec<(String, String, u64)>> = std::sync::Mutex::new(Vec::new());
+
+/// Posts allowed per caller and verse inside `POST_WINDOW_MS`, regardless of expiry or withdrawals.
+const MAX_POSTS_PER_WINDOW: usize = 10;
+/// Sliding window of the post rate limit.
+const POST_WINDOW_MS: u64 = 60_000;
+/// Post timestamps (ms) keyed `relay_advert:{sub}:{verse}`; in-memory sliding window.
+static RECENT_POSTS: std::sync::Mutex<Vec<(String, u64)>> = std::sync::Mutex::new(Vec::new());
+
+/// Record a post for `key`; false when the caller is over the window allowance.
+fn admit_post(key: &str, now_ms: u64) -> bool {
+    let mut recent = RECENT_POSTS.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+    recent.retain(|(_, at)| now_ms.saturating_sub(*at) < POST_WINDOW_MS);
+    if recent.iter().filter(|(recorded, _)| recorded == key).count() >= MAX_POSTS_PER_WINDOW {
+        return false;
+    }
+    recent.push((key.to_owned(), now_ms));
+    true
 }
 
 /// Env var naming the relay this node itself uses (same name fe-sync reads).
@@ -219,6 +240,9 @@ pub async fn post_relay(
     let Some(signer) = network_ops.and_then(|Extension(ops)| ops.advertisement_signer) else {
         return error_response(StatusCode::SERVICE_UNAVAILABLE, "relay advertisement signer not configured");
     };
+    if !admit_post(&format!("relay_advert:{}:{verse_id}", claims.sub), unix_now_ms()) {
+        return error_response(StatusCode::TOO_MANY_REQUESTS, "too many relay advertisement posts; retry later");
+    }
     let own_host = own_relay_host();
     let prober_member = match body.dialback.as_ref() {
         Some(record) => prober_is_verse_member(&state, &verse_id, &record.prober_did).await,
@@ -238,7 +262,19 @@ pub async fn post_relay(
         Err(AdvertRequestError(message)) => return error_response(StatusCode::BAD_REQUEST, &message),
     };
     let relay_id = ulid::Ulid::new().to_string();
+    let expires_at_ms = body.expires_at_ms.unwrap_or_default();
+    {
+        // Check and reserve under one lock so concurrent posts cannot overshoot the cap.
+        let mut live = LIVE_ADVERTS.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        let now_ms = unix_now_ms();
+        live.retain(|(_, _, expires)| *expires > now_ms);
+        if live.iter().filter(|(verse, _, _)| *verse == verse_id).count() >= MAX_ADVERTS_PER_VERSE {
+            return error_response(StatusCode::CONFLICT, "too many live relay advertisements for this verse; withdraw one first");
+        }
+        live.push((verse_id.clone(), relay_id.clone(), expires_at_ms));
+    }
     if let Err(response) = store_and_replicate(&state, &verse_id, &relay_id, &bytes) {
+        LIVE_ADVERTS.lock().unwrap_or_else(std::sync::PoisonError::into_inner).retain(|(_, id, _)| *id != relay_id);
         return response;
     }
     (
@@ -274,6 +310,7 @@ pub async fn delete_relay(
     if let Err(response) = store_and_replicate(&state, &verse_id, &relay_id, &[]) {
         return response;
     }
+    LIVE_ADVERTS.lock().unwrap_or_else(std::sync::PoisonError::into_inner).retain(|(_, id, _)| *id != relay_id);
     StatusCode::NO_CONTENT.into_response()
 }
 

@@ -1785,13 +1785,17 @@ async fn field_def_in_scope(
 ) -> bool {
     let Some(rows) = crate::gis::run_select(
         state,
-        "SELECT scope FROM field_def WHERE field_def_id = $fid LIMIT 1",
+        "SELECT scope FROM field_def WHERE field_def_id = $fid LIMIT 2",
         vec![("fid".to_string(), serde_json::json!(field_def_id))],
     )
     .await
     else {
         return false;
     };
+    // An id shared by two rows is ambiguous: authorize neither.
+    if rows.len() != 1 {
+        return false;
+    }
     rows.first()
         .and_then(|row| row.get("scope"))
         .and_then(serde_json::Value::as_str)

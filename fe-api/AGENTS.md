@@ -2471,6 +2471,12 @@ Both are Manager+ (`SNAPSHOT_MINIMUM_ROLE`). The import authorizes on a parse-on
   rotation, `node_log`, `op_log` or rooms. Node ids exist only DB-side, so augments cannot be staged: an admission
   carrying any augment is refused 409 `hook-augment-unsupported` (nothing written); an empty one proceeds. Hook
   refusals keep the shared 409/413 forms. Tested in `tests/export_share_test.rs` (`petal_snapshot_export_import_authz_journey`).
+- **Hooks bound above the destination (`hook-unjudgeable`).** Scene bindings resolve per PETAL (fractal and verse rows
+  are inherited into a petal's resolved view in the host cache), and an import's petal is absent locally, so the
+  petal-keyed gate can never see a fractal- or verse-bound hook. `scene_hook_bound_above` reads `extension_binding` for
+  the destination fractal scope and its verse; a live `scene.*` extension row there refuses the import 409
+  `hook-unjudgeable` before any blob is written (fail closed; unreadable = 503; no `db_reader` = not checked). Only the newest version per (scope, hook, key) counts (an `inherit` after an `extension` lifts it); admissibility is not evaluated here, so a demoted author's newest binding still counts (fail closed).
+  NEEDS (fe-runtime/plugin_bridge): a scope-keyed `scene_binding` fallback would let such hooks judge instead of refuse.
 - **Imported history.** `GET /api/v1/petals/{petal_id}/imported-history?after_lamport=&limit=` (`imported_history.rs`) lists
   quarantined op-log rows from `op_log_imported` (summary fields and `imported_by`, no payload), Manager+ with the export's
   existence-safe 404 (`petal_snapshot::denied`), read through `db_reader` with bound parameters.
@@ -2501,6 +2507,11 @@ Metrics are opt-in and live on their own listener, not on the API router. `metri
 `relay_advertise::post_relay` and `delete_relay` serve `POST` and `DELETE /api/v1/verses/{verse_id}/relays`. The handler signs the row with the node's advertisement signer and replicates it to the verse's `__relays` table, so other peers will dial it.
 
 That makes the request a peer row for every check. The URL goes through the peer validator (fe-runtime §relay-advertisement). Loopback, link-local, metadata and, without the opt-in, private addresses are refused with a typed 400 before anything is signed. An API token never selects the operator path: the operator's own relay is set by `FE_SYNC_RELAY`, not by this route. A peer-run relay must carry a `dialback` attestation, and it is refused unless its prober is a verse member (`prober_is_member`). Expiry is capped by `MAX_ADVERT_TTL_MS`.
+
+Per-verse cap: `LIVE_ADVERTS` (in memory, per process) counts this node's unexpired adverts per verse; the
+`MAX_ADVERTS_PER_VERSE`+1th POST is 409, DELETE frees the slot. A restart forgets it (the sync gate still bounds live adverts).
+Known gap: no route returns a `DialbackRecord` (`request_dialback` keeps only its ok flag, `main.rs:1266`), so a peer-run or
+self relay cannot be advertised over REST; fix needs a NetworkOps dialback seam.
 
 ## §network-diagnostics
 
