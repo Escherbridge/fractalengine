@@ -5,7 +5,7 @@ pub mod skybox;
 pub mod sound;
 pub mod terrain;
 
-use crate::manifest::HexonKind;
+use crate::manifest::HexonType;
 use crate::package::HexonPackageData;
 use crate::registry::FsBlobStore;
 
@@ -40,21 +40,26 @@ pub fn handle_install(
     petal_id: &str,
     blob_store: &FsBlobStore,
 ) -> Result<InstallResult, anyhow::Error> {
-    match package.manifest.hexon_type {
-        HexonKind::Model => model::handle_model_install(package, petal_id, blob_store),
-        HexonKind::Material => material::handle_material_install(package, petal_id, blob_store),
-        HexonKind::Skybox => skybox::handle_skybox_install(package, petal_id, blob_store),
-        HexonKind::Terrain => terrain::handle_terrain_install(package, petal_id, blob_store),
-        HexonKind::GpxCollection => {
+    match &package.manifest.hexon_type {
+        HexonType::Model => model::handle_model_install(package, petal_id, blob_store),
+        HexonType::Material => material::handle_material_install(package, petal_id, blob_store),
+        HexonType::Skybox => skybox::handle_skybox_install(package, petal_id, blob_store),
+        HexonType::Terrain => terrain::handle_terrain_install(package, petal_id, blob_store),
+        HexonType::GpxCollection => {
             gpx_collection::handle_gpx_install(package, petal_id, blob_store)
         }
-        HexonKind::Sound => sound::handle_sound_install(package, petal_id, blob_store),
+        HexonType::Sound => sound::handle_sound_install(package, petal_id, blob_store),
+        // Script and PetalSnapshot have their own install paths; this dispatcher refuses them.
+        HexonType::Script | HexonType::PetalSnapshot => Err(anyhow::anyhow!(
+            "hexon type {} has no install handler here",
+            package.manifest.hexon_type
+        )),
         _ => {
-            // Theme, Script — no special handling yet
+            // Theme, Scene, Bundle, ... — no special handling yet
             Ok(InstallResult {
                 registered_assets: vec![],
                 summary: format!(
-                    "Installed {:?} crate (no special handler)",
+                    "Installed {} hexon (no special handler)",
                     package.manifest.hexon_type
                 ),
                 extras: InstallExtras::default(),

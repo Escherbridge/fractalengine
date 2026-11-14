@@ -35,7 +35,7 @@ pub fn handle_gpx_install(
             result.registered_assets.push(entry.asset_hash.clone());
         }
 
-        if entry.kind == EntryKind::GpxFile {
+        if entry.kind == EntryKind::GpxTrack {
             gpx_count += 1;
             info!(
                 "Registered GPX file {} ({}) for petal {}",
@@ -59,7 +59,7 @@ pub fn extract_gpx_files(package: &HexonPackageData) -> Vec<GpxFileData> {
     package
         .entries
         .iter()
-        .filter(|e| e.kind == EntryKind::GpxFile)
+        .filter(|e| e.kind == EntryKind::GpxTrack)
         .filter_map(|entry| {
             let bytes = package.assets.get(&entry.asset_hash)?;
             Some(GpxFileData {

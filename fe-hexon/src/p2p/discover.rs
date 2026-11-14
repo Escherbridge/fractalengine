@@ -4,7 +4,7 @@ use std::collections::HashMap;
 
 use serde::{Deserialize, Serialize};
 
-use crate::manifest::{HexonKind, HexonManifest};
+use crate::manifest::{HexonManifest, HexonType};
 use crate::p2p::announce::AnnouncementStore;
 
 /// A search result containing manifest metadata and hosting peers.
@@ -23,8 +23,8 @@ pub struct SearchQuery {
     pub query: Option<String>,
     /// All specified tags must be present on the announcement
     pub tags: Vec<String>,
-    /// Filter by hexon kind
-    pub kind: Option<HexonKind>,
+    /// Filter by hexon type
+    pub kind: Option<HexonType>,
 }
 
 /// Search the local announcement store and return grouped results.
@@ -85,32 +85,35 @@ pub fn search_announcements(
         .map(|(uri, peers)| {
             // Find the first announcement for this URI to extract metadata
             let ann = filtered.iter().find(|a| a.hexon_uri == uri).unwrap();
-            let kind: HexonKind = ann.hexon_type.parse().unwrap_or(HexonKind::Model);
+            let kind: HexonType = ann.hexon_type.parse().unwrap_or(HexonType::Model);
 
-            // Parse crate_id and version from URI
-            let (crate_id, version) = uri
-                .rsplit_once('@')
-                .map(|(c, v)| (c.to_string(), v.to_string()))
-                .unwrap_or_else(|| (uri.clone(), "0.0.0".to_string()));
+            // Parse hexon_id and version from URI
+            let (hexon_id, version) = fe_format::split_hexon_uri(&uri);
+            let hexon_id = hexon_id.to_string();
+            let version = version.unwrap_or("0.0.0").to_string();
 
             let manifest = HexonManifest {
-                schema_version: 1,
-                crate_id,
-                publisher_did: String::new(),
-                publisher_name: String::new(),
-                version,
-                build_id: String::new(),
-                name: String::new(),
-                description: String::new(),
-                tags: ann.tags.clone(),
+                schema_version: "1.0.0".to_string(),
+                hexon_id,
                 hexon_type: kind,
+                publisher_did: String::new(),
+                publisher_name: None,
+                version,
+                build_id: None,
+                name: String::new(),
+                description: None,
+                tags: ann.tags.clone(),
                 created_at: String::new(),
                 updated_at: String::new(),
-                approx_size_bytes: ann.approx_size_bytes,
-                min_engine_version: String::new(),
+                source_peer_did: None,
+                approx_size_bytes: Some(ann.approx_size_bytes),
+                min_engine_version: None,
                 homepage_url: None,
                 dependencies: vec![],
-                signature: String::new(),
+                platforms: vec![],
+                address: None,
+                integrity: None,
+                signature: None,
             };
 
             HexonSearchResult {
@@ -124,50 +127,58 @@ pub fn search_announcements(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::manifest::HexonKind;
+    use crate::manifest::HexonType;
     use crate::p2p::announce::AnnouncementStore;
 
     fn make_store() -> AnnouncementStore {
         let mut store = AnnouncementStore::new();
 
         let manifest1 = HexonManifest {
-            schema_version: 1,
-            crate_id: "forest-terrain".to_string(),
+            schema_version: "1.0.0".to_string(),
+            hexon_id: "forest-terrain".to_string(),
+            hexon_type: HexonType::Terrain,
             publisher_did: "did:key:zpub1".to_string(),
-            publisher_name: "Publisher A".to_string(),
+            publisher_name: Some("Publisher A".to_string()),
             version: "2.1.0".to_string(),
-            build_id: "b1".to_string(),
+            build_id: Some("b1".to_string()),
             name: "Forest Terrain".to_string(),
-            description: "A forest terrain pack".to_string(),
+            description: Some("A forest terrain pack".to_string()),
             tags: vec!["terrain".to_string(), "forest".to_string()],
-            hexon_type: HexonKind::Terrain,
             created_at: "2026-01-01T00:00:00Z".to_string(),
             updated_at: "2026-01-01T00:00:00Z".to_string(),
-            approx_size_bytes: 10_000,
-            min_engine_version: "0.8.0".to_string(),
+            source_peer_did: None,
+            approx_size_bytes: Some(10_000),
+            min_engine_version: Some("0.8.0".to_string()),
             homepage_url: None,
             dependencies: vec![],
-            signature: "sig1".to_string(),
+            platforms: vec![],
+            address: None,
+            integrity: None,
+            signature: Some("sig1".to_string()),
         };
 
         let manifest2 = HexonManifest {
-            schema_version: 1,
-            crate_id: "robot-model".to_string(),
+            schema_version: "1.0.0".to_string(),
+            hexon_id: "robot-model".to_string(),
+            hexon_type: HexonType::Model,
             publisher_did: "did:key:zpub2".to_string(),
-            publisher_name: "Publisher B".to_string(),
+            publisher_name: Some("Publisher B".to_string()),
             version: "1.0.0".to_string(),
-            build_id: "b2".to_string(),
+            build_id: Some("b2".to_string()),
             name: "Robot Model".to_string(),
-            description: "A robot model".to_string(),
+            description: Some("A robot model".to_string()),
             tags: vec!["model".to_string(), "sci-fi".to_string()],
-            hexon_type: HexonKind::Model,
             created_at: "2026-02-01T00:00:00Z".to_string(),
             updated_at: "2026-02-01T00:00:00Z".to_string(),
-            approx_size_bytes: 25_000,
-            min_engine_version: "0.8.0".to_string(),
+            source_peer_did: None,
+            approx_size_bytes: Some(25_000),
+            min_engine_version: Some("0.8.0".to_string()),
             homepage_url: None,
             dependencies: vec![],
-            signature: "sig2".to_string(),
+            platforms: vec![],
+            address: None,
+            integrity: None,
+            signature: Some("sig2".to_string()),
         };
 
         store.record(AnnouncementStore::from_manifest(
@@ -198,12 +209,12 @@ mod tests {
     fn test_search_by_kind() {
         let store = make_store();
         let query = SearchQuery {
-            kind: Some(HexonKind::Terrain),
+            kind: Some(HexonType::Terrain),
             ..Default::default()
         };
         let results = search_announcements(&store, &query);
         assert_eq!(results.len(), 1);
-        assert_eq!(results[0].manifest.crate_id, "forest-terrain");
+        assert_eq!(results[0].manifest.hexon_id, "forest-terrain");
         // Two peers host it
         assert_eq!(results[0].hosting_peers.len(), 2);
     }
@@ -217,7 +228,7 @@ mod tests {
         };
         let results = search_announcements(&store, &query);
         assert_eq!(results.len(), 1);
-        assert_eq!(results[0].manifest.crate_id, "robot-model");
+        assert_eq!(results[0].manifest.hexon_id, "robot-model");
     }
 
     #[test]
@@ -229,14 +240,14 @@ mod tests {
         };
         let results = search_announcements(&store, &query);
         assert_eq!(results.len(), 1);
-        assert_eq!(results[0].manifest.crate_id, "forest-terrain");
+        assert_eq!(results[0].manifest.hexon_id, "forest-terrain");
     }
 
     #[test]
     fn test_search_combined_filters() {
         let store = make_store();
         let query = SearchQuery {
-            kind: Some(HexonKind::Terrain),
+            kind: Some(HexonType::Terrain),
             tags: vec!["forest".to_string()],
             query: Some("terrain".to_string()),
         };

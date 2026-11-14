@@ -52,7 +52,7 @@ pub fn handle_terrain_install(
     let gpx_count = package
         .entries
         .iter()
-        .filter(|e| e.kind == EntryKind::GpxFile)
+        .filter(|e| e.kind == EntryKind::GpxTrack)
         .count();
 
     result.summary = format!(
