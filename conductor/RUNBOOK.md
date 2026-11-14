@@ -111,7 +111,33 @@ trusting "pure efficiency" claims; push control; a board that silently drifts st
 
 ## 2. State
 
-- **2026-11-13 18:55 MST — ROUND 4 PLANNING RUNNING; CI fix PUSHED (`8530377d`, 18:40), CI verdict due ~20:15.**
+- **2026-11-13 21:15 MST — ROUND 4 SWARM RUNNING.** Workflow `wf_004b3e4d-8b4` (task `wfeuh0ih9`): 210 slices
+  (132 feature, 25 integration, 33 opus gates, 10 bookkeeping, 10 completeness critics; 95 sonnet / 82 opus /
+  33 haiku; 191 public, 19 private), width 5, longest chain first, critical path 18, no cargo, serialized
+  leak-checked commits per tree. Inputs: `.omc/state/turn4-dag.json` (split per slice in
+  `.omc/state/turn4-slices/<id>.json`), `.omc/state/turn4-args.json`, `.omc/plans/turn4-plan.md` (coverage §6,
+  defaults for 50 user questions §9, REFINE CHECKLIST §10, test batches §11), and the live steering channel
+  `.omc/state/turn4-steer.md` (workers read it at start; add a dated block on top to steer slices not yet
+  started). Orchestrator check before launch: 0 unordered ownership overlaps, no cycles
+  (`scratchpad/orch_verify.py`, logic repeatable from the plan §2). **Resume after a sleep or kill** (memory
+  `workflow-dies-across-sleep`): `Workflow({scriptPath: "C:/Users/atooz/.claude/projects/c--Users-atooz-
+  Programming-fractalengine-workspace-fractalengine/9e91d24c-8e3f-487d-b465-931414454ecb/workflows/scripts/
+  round4-swarm-wf_004b3e4d-8b4.js", resumeFromRunId: "wf_004b3e4d-8b4", args: {"width":5,"n":210,"edges":408,
+  "sig":57915}})`; `TaskStop` the old id first. Progress: `journal.jsonl` in
+  `…/subagents/workflows/wf_004b3e4d-8b4/` and `git log` in both trees (subjects end "swarm round 4").
+  **Private repo:** the foundry subtree migration ran (`856e347`, `bc3f78a`, `e262ffe`; gis-tile-etl history
+  imported under `foundry/`, not pushed).
+  **CI:** run `43540707179` on `8530377d` proved the fe-ui pair and the registry test fixed (fe-ui 1069/0) and,
+  with `--no-fail-fast`, exposed three more `fractalengine` failures; fixed in `30d16662` (camera pose with an
+  explicit fov in the vision test; Wasm component preamble in the security-harness stub; racy
+  `try_recv`-after-update assertions removed from the local hexon install test, so off-thread placement is no
+  longer asserted). Gate `cargo check -p fractalengine --all-targets` green. **`30d16662` and the runbook commits
+  are NOT pushed: github.com was unreachable at 21:05** — retry `git push origin main`, then watch the run.
+  While the swarm runs every push restarts CI on a tree with unbuilt swarm commits, so push `30d16662` alone
+  only if no swarm commit sits above it (`git push origin 30d16662:main` does that), else wait for the refine pass.
+  **After the swarm:** read the result with python from the task output or journal (it is large); relay
+  `user_questions`; apply `needs` that no integration slice took; refine pass in plan §10 order; then §7 step 3.
+- **2026-11-13 18:55 MST — ROUND 4 PLANNING (done 20:40; `wf_d595d1cd-8d1`, 12 agents, 3.0M tokens); CI fix PUSHED (`8530377d`, 18:40), CI verdict due ~20:15.**
   The user authorized pushes and widened round 4 to every track with a plan (§3). Pushed: `44ecc1b6`
   (`GuiSend::Busy`), `1b44888f` (`GuiSend::channel_unavailable()` at the eight blocking callers + `--no-fail-fast`
   on the CI sweep), `8530377d`. **Do not push again before that CI run ends: a new push cancels the run in
@@ -346,6 +372,19 @@ trusting "pure efficiency" claims; push control; a board that silently drifts st
 - **QA-0165 = role at write time, and build it in round 4:** the per-key `(HLC, author)` clock for
   verse/fractal/petal rows and non-transform node fields (root of QA-0156/0165/0166). The P2P simulator is its
   verification, run when the user names it. *Reversal: expensive (wire and storage semantics).*
+
+**2026-11-13 20:50 MST (user, launch grill):**
+- **Launch all 210 slices in one swarm** (chosen over a two-halves launch), knowing the estimate of 60-90M
+  subagent tokens and 8-14 h. *Reversal: `TaskStop wfeuh0ih9`; finished slices stay committed.*
+- **Per-key clock: every peer upgrades together** (flag day, as with iroh 1.x). No dual-format writing.
+  *Reversal: expensive.*
+- **Revoke cuts at what the revoker has seen** (the revoked author's grant window closes at the newest write
+  clock the revoker received from them). *Reversal: moderate (admission rule + spec).*
+- **Foundry subtree migration: run it** — done, private repo, local only.
+- The other 46 scoper questions follow the defaults in `.omc/plans/turn4-plan.md` §9 (unasked; highest stakes:
+  transform folded into the per-key clock and `edit_seq` retired for clocked rows (q7); registry installs stay
+  capped at 64 MiB with byte progress only (q38); dead-letter Retry re-sends without re-recording Undo history
+  (q36); crate consolidation G-1/G-2 deferred (q40)). Review them when the swarm reports.
 
 **2026-11-13 19:40 (user, hand-off grill):**
 - **Order = fix CI, then round 4, then review, then tests.** Chosen over "tests now" because a round-4 change
@@ -829,13 +868,17 @@ leak grep before every public commit.
   the orchestrator.
 - Then (18:40): user authorized pushes; `1b44888f` (`channel_unavailable()`, CI `--no-fail-fast`) and
   `8530377d` pushed; round-4 grill answered (§3).
-- In flight: CI run on `8530377d`; planning workflow `wf_d595d1cd-8d1` (§2 top entry).
+- 20:40-21:15: planning returned 210 slices (critic PASS-WITH-FIXES, orchestrator re-check clean); launch
+  grill (§3); foundry subtree migrated; CI on `8530377d` red on three further tests, fixed in `30d16662`;
+  swarm `wf_004b3e4d-8b4` launched.
+- In flight: the round-4 swarm (§2 top entry). Unpushed: `30d16662` and runbook commits (github unreachable).
 - Deferred: `GuiSend::is_unsent()` for the eight `== GuiSend::Closed` callers (trigger: any of them moves to a
   `try_` variant); whether undo and stamp promotion should block again on a full channel instead of returning a
   busy error (trigger: a user sees "queue is busy" on Undo in the app); H4 untouched (it is the
   `SetNodeProperty` follow-up in `fe-ui/src/verse_manager/db_results/nodes.rs:70`, which names no petal, not
   the volume save).
-- Next: verify the turn-4 DAG (overlap + cycles), launch the execution swarm (§7 step 2), confirm CI.
+- Next: push `30d16662` when github answers and confirm CI; on the swarm's completion notice follow §2 "After
+  the swarm".
 
 ### 2026-11-13 19:45 (actual ~18:10 MST) — hand-off, focus on held-out work
 - Done: swarm turns 1-3 (extension platform, portal surface, private marketplace services); both tracks merged
